@@ -38,6 +38,37 @@ pub fn min_max_decimate(
     output
 }
 
+/// Allocation-free min-max decimation into a caller-owned buffer of `[min, max]` pairs.
+///
+/// Unlike [`min_max_decimate`], every output bucket is always a `[min, max]` pair, even when
+/// there are fewer input samples than buckets (neighbouring buckets then repeat a sample), so
+/// renderers can map bucket `i` to screen column `i` without special cases.
+/// An empty input fills `output` with `[0.0, 0.0]`.
+pub fn min_max_decimate_into(input_samples: &[f32], output: &mut [[f32; 2]]) {
+    let n = input_samples.len();
+    let buckets = output.len();
+    if n == 0 {
+        output.fill([0.0, 0.0]);
+        return;
+    }
+
+    for (i, bucket) in output.iter_mut().enumerate() {
+        let start = ((i as u64 * n as u64) / buckets as u64) as usize;
+        let end = ((((i + 1) as u64 * n as u64) / buckets as u64) as usize)
+            .max(start + 1)
+            .min(n);
+        let start = start.min(n - 1);
+
+        let mut min_val = f32::INFINITY;
+        let mut max_val = f32::NEG_INFINITY;
+        for &val in &input_samples[start..end] {
+            min_val = min_val.min(val);
+            max_val = max_val.max(val);
+        }
+        *bucket = [min_val, max_val];
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -56,5 +87,30 @@ mod tests {
         
         assert_eq!(min_overall, -150.0);
         assert_eq!(max_overall, 80.0);
+    }
+
+    #[test]
+    fn test_min_max_into_preserves_peaks_and_pairs() {
+        let mut data = vec![0.0f32; 1000];
+        data[250] = -150.0;
+        data[255] = 80.0;
+
+        let mut out = vec![[0.0f32; 2]; 10];
+        min_max_decimate_into(&data, &mut out);
+        assert_eq!(out[2], [-150.0, 80.0]);
+        assert_eq!(out[0], [0.0, 0.0]);
+    }
+
+    #[test]
+    fn test_min_max_into_fewer_samples_than_buckets() {
+        let data = [1.0f32, 2.0, 3.0];
+        let mut out = vec![[0.0f32; 2]; 6];
+        min_max_decimate_into(&data, &mut out);
+        // Each bucket maps to exactly one sample, in order
+        assert_eq!(out, vec![[1.0, 1.0], [1.0, 1.0], [2.0, 2.0], [2.0, 2.0], [3.0, 3.0], [3.0, 3.0]]);
+
+        let mut empty = vec![[9.0f32; 2]; 3];
+        min_max_decimate_into(&[], &mut empty);
+        assert_eq!(empty, vec![[0.0, 0.0]; 3]);
     }
 }
