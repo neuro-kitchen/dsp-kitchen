@@ -1,0 +1,13 @@
+[package]
+name = "dsp-synapse"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+dsp-core.workspace = true
+dsp-base.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
