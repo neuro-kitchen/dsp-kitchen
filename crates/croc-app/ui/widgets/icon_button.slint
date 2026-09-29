@@ -1,0 +1,26 @@
+// Reusable IconButton with dark theme styling
+export component IconButton inherits Rectangle {
+    in property <string> icon_text: "▶";
+    in property <bool> is_active: false;
+    in property <color> active_color: #38bdf8;
+    callback clicked <=> touch.clicked;
+
+    width: 32px;
+    height: 30px;
+    border-radius: 4px;
+    background: touch.pressed ? #2d333b : (touch.has-hover ? #21262d : (root.is_active ? #1e293b : #161b22));
+    border-width: 1px;
+    border-color: root.is_active ? root.active_color : (touch.has-hover ? #444c56 : #30363d);
+
+    Text {
+        text: root.icon_text;
+        color: root.is_active ? root.active_color : (touch.has-hover ? #f0f6fc : #c9d1d9);
+        font-size: 13px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+    }
+}

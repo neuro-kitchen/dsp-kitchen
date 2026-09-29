@@ -1,5 +1,9 @@
 // Crock-App: High-Performance Electrophysiology & Signal Viewer in Slint
-// Inspired by Rerun SDK timeline architecture with screen-space LOD decimation
+// Android-style MVVM Architecture: View Layer Assembly
+
+import { Header } from "components/header.slint";
+import { TimeSeriesView } from "components/time_series_view.slint";
+import { TimelinePanel } from "components/timeline_panel.slint";
 
 export struct TimeTick {
     pos_pct: float,
@@ -46,64 +50,6 @@ export global AppLogic {
     callback canvas_resized(length, length);
 }
 
-// Reusable IconButton with dark theme styling
-component IconButton inherits Rectangle {
-    in property <string> icon_text: "▶";
-    in property <bool> is_active: false;
-    in property <color> active_color: #38bdf8;
-    callback clicked <=> touch.clicked;
-
-    width: 32px;
-    height: 30px;
-    border-radius: 4px;
-    background: touch.pressed ? #2d333b : (touch.has-hover ? #21262d : (root.is_active ? #1e293b : #161b22));
-    border-width: 1px;
-    border-color: root.is_active ? root.active_color : (touch.has-hover ? #444c56 : #30363d);
-
-    Text {
-        text: root.icon_text;
-        color: root.is_active ? root.active_color : (touch.has-hover ? #f0f6fc : #c9d1d9);
-        font-size: 13px;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-    }
-
-    touch := TouchArea {
-        mouse-cursor: pointer;
-    }
-}
-
-// Small Pill Button for zoom / presets
-component PillButton inherits Rectangle {
-    in property <string> text: "100ms";
-    in property <bool> selected: false;
-    callback clicked <=> touch.clicked;
-
-    height: 24px;
-    border-radius: 12px;
-    background: root.selected ? #0284c7 : (touch.has-hover ? #21262d : #161b22);
-    border-width: 1px;
-    border-color: root.selected ? #38bdf8 : #30363d;
-
-    HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 10px;
-        Text {
-            text: root.text;
-            color: root.selected ? #ffffff : (touch.has-hover ? #f0f6fc : #8b949e);
-            font-size: 11px;
-            font-weight: root.selected ? 600 : 400;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-        }
-    }
-
-    touch := TouchArea {
-        mouse-cursor: pointer;
-    }
-}
-
-
 export component AppWindow inherits Window {
     title: "Croc Signal Viewer (Slint)";
     min-width: 900px;
@@ -116,426 +62,52 @@ export component AppWindow inherits Window {
         padding: 0px;
         spacing: 0px;
 
-        // ====================================================================
-        // 1. TOP HEADER / CONTROL BAR
-        // ====================================================================
-        Rectangle {
-            height: 52px;
-            background: #161b22;
+        // 1. Modular Header Component
+        Header {
+            dataset_name: AppState.dataset_name;
+            channel_count: AppState.channel_count;
+            sample_rate: AppState.sample_rate;
+            visible_window_sec: AppState.visible_window_sec;
+            amplitude_scale: AppState.amplitude_scale;
+            channel_label_range: AppState.channel_label_range;
 
-            // Bottom border divider
-            Rectangle {
-                width: 100%;
-                height: 1px;
-                y: parent.height - 1px;
-                background: #30363d;
-            }
-
-
-            HorizontalLayout {
-                padding-left: 16px;
-                padding-right: 16px;
-                alignment: space-between;
-
-                // Left: App Logo & Dataset info
-                HorizontalLayout {
-                    spacing: 14px;
-                    alignment: start;
-
-                    // Brand Badge
-                    HorizontalLayout {
-                        spacing: 6px;
-                        alignment: center;
-                        Rectangle {
-                            width: 24px;
-                            height: 24px;
-                            border-radius: 4px;
-                            background: #0284c7;
-                            Text {
-                                text: "🐊";
-                                font-size: 14px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
-                        Text {
-                            text: "CROC";
-                            color: #38bdf8;
-                            font-size: 15px;
-                            font-weight: 700;
-                            vertical-alignment: center;
-                        }
-                    }
-
-                    // Divider
-                    Rectangle { width: 1px; height: 24px; background: #30363d; y: 14px; }
-
-                    // Dataset Metadata Chip
-                    HorizontalLayout {
-                        spacing: 8px;
-                        alignment: center;
-                        Text {
-                            text: AppState.dataset_name;
-                            color: #e6edf3;
-                            font-size: 13px;
-                            font-weight: 600;
-                            vertical-alignment: center;
-                        }
-                        Rectangle {
-                            height: 18px;
-                            border-radius: 9px;
-                            background: #21262d;
-                            border-width: 1px;
-                            border-color: #30363d;
-                            HorizontalLayout {
-                                padding-left: 6px;
-                                padding-right: 6px;
-                                Text {
-                                    text: "\{AppState.channel_count} Ch @ \{AppState.sample_rate / 1000.0} kHz";
-                                    color: #8b949e;
-                                    font-size: 11px;
-                                    vertical-alignment: center;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Center: Time Window Presets (Zoom)
-                HorizontalLayout {
-                    spacing: 6px;
-                    alignment: center;
-
-                    Text {
-                        text: "Window:";
-                        color: #8b949e;
-                        font-size: 11px;
-                        vertical-alignment: center;
-                    }
-
-                    PillButton {
-                        text: "25ms";
-                        selected: AppState.visible_window_sec == 0.025;
-                        clicked => { AppLogic.set_window_duration(0.025); }
-                    }
-                    PillButton {
-                        text: "50ms";
-                        selected: AppState.visible_window_sec == 0.050;
-                        clicked => { AppLogic.set_window_duration(0.050); }
-                    }
-                    PillButton {
-                        text: "100ms";
-                        selected: AppState.visible_window_sec == 0.100;
-                        clicked => { AppLogic.set_window_duration(0.100); }
-                    }
-                    PillButton {
-                        text: "250ms";
-                        selected: AppState.visible_window_sec == 0.250;
-                        clicked => { AppLogic.set_window_duration(0.250); }
-                    }
-                    PillButton {
-                        text: "500ms";
-                        selected: AppState.visible_window_sec == 0.500;
-                        clicked => { AppLogic.set_window_duration(0.500); }
-                    }
-                    PillButton {
-                        text: "1.0s";
-                        selected: AppState.visible_window_sec == 1.0;
-                        clicked => { AppLogic.set_window_duration(1.0); }
-                    }
-                }
-
-                // Right: Amplitude & Channel Navigation
-                HorizontalLayout {
-                    spacing: 10px;
-                    alignment: end;
-
-                    // Amplitude Zoom
-                    HorizontalLayout {
-                        spacing: 4px;
-                        alignment: center;
-                        Text { text: "Gain:"; color: #8b949e; font-size: 11px; vertical-alignment: center; }
-                        IconButton {
-                            icon_text: "-";
-                            clicked => { AppLogic.zoom_amplitude(0.75); }
-                        }
-                        Text {
-                            text: "\{AppState.amplitude_scale}x";
-                            color: #c9d1d9;
-                            font-size: 11px;
-                            vertical-alignment: center;
-                        }
-                        IconButton {
-                            icon_text: "+";
-                            clicked => { AppLogic.zoom_amplitude(1.33); }
-                        }
-                    }
-
-                    Rectangle { width: 1px; height: 24px; background: #30363d; y: 14px; }
-
-                    // Channel Pagination
-                    HorizontalLayout {
-                        spacing: 6px;
-                        alignment: center;
-                        IconButton {
-                            icon_text: "▲";
-                            clicked => { AppLogic.prev_channel_page(); }
-                        }
-                        Text {
-                            text: AppState.channel_label_range;
-                            color: #58a6ff;
-                            font-size: 11px;
-                            font-weight: 600;
-                            vertical-alignment: center;
-                        }
-                        IconButton {
-                            icon_text: "▼";
-                            clicked => { AppLogic.next_channel_page(); }
-                        }
-                    }
-                }
-            }
+            set_window_duration(d) => { AppLogic.set_window_duration(d); }
+            zoom_amplitude(f) => { AppLogic.zoom_amplitude(f); }
+            prev_channel_page() => { AppLogic.prev_channel_page(); }
+            next_channel_page() => { AppLogic.next_channel_page(); }
         }
 
-        // ====================================================================
-        // 2. CENTRAL SIGNAL VIEWPORT (CANVAS WITH SCREEN-SPACE DECIMATION)
-        // ====================================================================
-        Rectangle {
-            background: #090d13;
+        // 2. Modular Central Time Series Viewport Component
+        TimeSeriesView {
+            waveform_image: AppState.waveform_image;
+            visible_window_sec: AppState.visible_window_sec;
 
-            // Signal Waveform Raster Image
-            Image {
-                width: 100%;
-                height: 100%;
-                source: AppState.waveform_image;
-                image-fit: fill;
-            }
-
-            // Interactive Gestures on Signal Viewport
-            viewport_touch := TouchArea {
-                width: 100%;
-                height: 100%;
-
-                // Wheel zooming
-                scroll-event(event) => {
-                    if (event.delta_y > 0) {
-                        AppLogic.zoom_time(0.8); // zoom in
-                    } else if (event.delta_y < 0) {
-                        AppLogic.zoom_time(1.25); // zoom out
-                    }
-                    accept
-                }
-
-                // Drag to pan
-                moved => {
-                    if (viewport_touch.pressed) {
-                        // Pan proportional to drag
-                        let dx = (viewport_touch.mouse_x - viewport_touch.pressed_x) / 1px;
-                        let dt = -dx * (AppState.visible_window_sec / 800.0);
-                        AppLogic.pan_time(dt);
-                    }
-                }
-            }
-
-            // Window dimension observer
-            init => {
-                AppLogic.canvas_resized(self.width, self.height);
-            }
+            zoom_time(f) => { AppLogic.zoom_time(f); }
+            pan_time(dt) => { AppLogic.pan_time(dt); }
+            canvas_resized(w, h) => { AppLogic.canvas_resized(w, h); }
         }
 
-        // ====================================================================
-        // 3. RERUN-INSPIRED BOTTOM TIMELINE PANEL
-        // ====================================================================
-        Rectangle {
-            height: 130px;
-            background: #161b22;
+        // 3. Modular Timeline Panel Component
+        TimelinePanel {
+            total_duration_sec: AppState.total_duration_sec;
+            current_time_sec: AppState.current_time_sec;
+            visible_window_sec: AppState.visible_window_sec;
+            window_start_sec: AppState.window_start_sec;
+            is_playing: AppState.is_playing;
+            loop_playback: AppState.loop_playback;
+            playback_speed: AppState.playback_speed;
+            time_readout: AppState.time_readout;
+            total_spikes_detected: AppState.total_spikes_detected;
+            status_message: AppState.status_message;
 
-            // Top border divider
-            Rectangle {
-                width: 100%;
-                height: 1px;
-                y: 0px;
-                background: #30363d;
-            }
-
-
-            VerticalLayout {
-                padding-left: 16px;
-                padding-right: 16px;
-                padding-top: 8px;
-                padding-bottom: 8px;
-                spacing: 6px;
-
-                // 3A. Playback Control Bar
-                HorizontalLayout {
-                    height: 32px;
-                    alignment: space-between;
-
-                    // Playback Transport Buttons
-                    HorizontalLayout {
-                        spacing: 4px;
-                        alignment: start;
-
-                        IconButton {
-                            icon_text: "⏮";
-                            clicked => { AppLogic.jump_to_start(); }
-                        }
-                        IconButton {
-                            icon_text: "◀";
-                            clicked => { AppLogic.step_backward(); }
-                        }
-                        IconButton {
-                            icon_text: AppState.is_playing ? "⏸" : "▶";
-                            is_active: AppState.is_playing;
-                            active_color: #38bdf8;
-                            clicked => { AppLogic.toggle_play_pause(); }
-                        }
-                        IconButton {
-                            icon_text: "▶";
-                            clicked => { AppLogic.step_forward(); }
-                        }
-                        IconButton {
-                            icon_text: "⏭";
-                            clicked => { AppLogic.jump_to_end(); }
-                        }
-                        IconButton {
-                            icon_text: "🔁";
-                            is_active: AppState.loop_playback;
-                            active_color: #a855f7;
-                            clicked => { AppLogic.toggle_loop(); }
-                        }
-
-                        // Playback Speed
-                        PillButton {
-                            text: "\{AppState.playback_speed}x";
-                            clicked => {
-                                if (AppState.playback_speed == 1.0) {
-                                    AppLogic.set_playback_speed(2.0);
-                                } else if (AppState.playback_speed == 2.0) {
-                                    AppLogic.set_playback_speed(0.5);
-                                } else {
-                                    AppLogic.set_playback_speed(1.0);
-                                }
-                            }
-                        }
-                    }
-
-                    // Center: Formatted Time Readout
-                    HorizontalLayout {
-                        spacing: 8px;
-                        alignment: center;
-                        Text {
-                            text: AppState.time_readout;
-                            color: #f0f6fc;
-                            font-size: 13px;
-                            font-weight: 700;
-                            vertical-alignment: center;
-                        }
-                    }
-
-                    // Right: Event Counter & Memory Safety Badge
-                    HorizontalLayout {
-                        spacing: 8px;
-                        alignment: end;
-                        Rectangle {
-                            height: 20px;
-                            border-radius: 4px;
-                            background: #1c2128;
-                            border-width: 1px;
-                            border-color: #388bfd33;
-                            HorizontalLayout {
-                                padding-left: 6px;
-                                padding-right: 6px;
-                                Text {
-                                    text: "⚡ \{AppState.total_spikes_detected} Events";
-                                    color: #79c0ff;
-                                    font-size: 11px;
-                                    font-weight: 600;
-                                    vertical-alignment: center;
-                                }
-                            }
-                        }
-                        Text {
-                            text: AppState.status_message;
-                            color: #7ee787;
-                            font-size: 11px;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
-
-                // 3B. Timeline Track & Scrubber (Rerun Style)
-                Rectangle {
-                    height: 38px;
-                    border-radius: 4px;
-                    background: #0d1117;
-                    border-width: 1px;
-                    border-color: #30363d;
-                    clip: true;
-
-                    // Shaded Visible Window Indicator
-                    Rectangle {
-                        x: (AppState.window_start_sec / AppState.total_duration_sec) * parent.width;
-                        width: Math.max(8px, (AppState.visible_window_sec / AppState.total_duration_sec) * parent.width);
-                        height: 100%;
-                        background: #0284c733;
-                        border-width: 1px;
-                        border-color: #38bdf888;
-                    }
-
-
-                    // Draggable Playhead (Vertical Coral/Red Bar)
-                    Rectangle {
-                        x: (AppState.current_time_sec / AppState.total_duration_sec) * parent.width - 1.5px;
-                        width: 3px;
-                        height: 100%;
-                        background: #f43f5e;
-
-                        // Playhead top marker flag
-                        Rectangle {
-                            y: 0px;
-                            x: -4px;
-                            width: 11px;
-                            height: 8px;
-                            border-radius: 2px;
-                            background: #f43f5e;
-                        }
-                    }
-
-                    // Timeline Scrubber Interaction
-                    scrubber_touch := TouchArea {
-                        width: 100%;
-                        height: 100%;
-                        mouse-cursor: pointer;
-
-                        pointer-event(event) => {
-                            if (event.kind == PointerEventKind.down) {
-                                let ratio = Math.clamp(scrubber_touch.mouse_x / parent.width, 0.0, 1.0);
-                                AppLogic.scrub_to_ratio(ratio);
-                            }
-                        }
-
-                        moved => {
-                            if (scrubber_touch.pressed) {
-                                let ratio = Math.clamp(scrubber_touch.mouse_x / parent.width, 0.0, 1.0);
-                                AppLogic.scrub_to_ratio(ratio);
-                            }
-                        }
-                    }
-                }
-
-                // 3C. Timeline Time Ruler Tick Marks
-                HorizontalLayout {
-                    height: 16px;
-                    alignment: space-between;
-
-                    Text { text: "0.00s"; color: #8b949e; font-size: 10px; }
-                    Text { text: "\{AppState.total_duration_sec * 0.25}s"; color: #484f58; font-size: 10px; }
-                    Text { text: "\{AppState.total_duration_sec * 0.50}s"; color: #8b949e; font-size: 10px; }
-                    Text { text: "\{AppState.total_duration_sec * 0.75}s"; color: #484f58; font-size: 10px; }
-                    Text { text: "\{AppState.total_duration_sec}s"; color: #8b949e; font-size: 10px; }
-                }
-            }
+            toggle_play_pause() => { AppLogic.toggle_play_pause(); }
+            step_forward() => { AppLogic.step_forward(); }
+            step_backward() => { AppLogic.step_backward(); }
+            jump_to_start() => { AppLogic.jump_to_start(); }
+            jump_to_end() => { AppLogic.jump_to_end(); }
+            toggle_loop() => { AppLogic.toggle_loop(); }
+            set_playback_speed(s) => { AppLogic.set_playback_speed(s); }
+            scrub_to_ratio(r) => { AppLogic.scrub_to_ratio(r); }
         }
     }
 }

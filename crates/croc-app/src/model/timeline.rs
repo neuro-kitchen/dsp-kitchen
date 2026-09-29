@@ -1,4 +1,10 @@
+//! Timeline and playback state model.
+//!
+//! Provides playhead management, transport controls, loop semantics,
+//! scrubbing, and visible time window clamping.
+
 /// Rerun-style interactive timeline state controller.
+#[derive(Debug, Clone)]
 pub struct TimelineState {
     pub current_time_sec: f64,
     pub total_duration_sec: f64,
@@ -56,13 +62,13 @@ impl TimelineState {
         self.scrub_to(t);
     }
 
-    /// Steps forward by one frame (e.g. 1/30s or 1/60s).
+    /// Steps forward by a given step time (e.g. 1/30s).
     pub fn step_forward(&mut self, step_sec: f64) {
         self.current_time_sec = (self.current_time_sec + step_sec).min(self.total_duration_sec);
         self.follow_playhead();
     }
 
-    /// Steps backward by one frame.
+    /// Steps backward by a given step time.
     pub fn step_backward(&mut self, step_sec: f64) {
         self.current_time_sec = (self.current_time_sec - step_sec).max(0.0);
         self.follow_playhead();
@@ -176,4 +182,3 @@ mod tests {
         assert!((tl.window_start_sec - 5.000).abs() < 1e-6);
     }
 }
-
