@@ -40,7 +40,7 @@ pub fn create_zarr_recording(
 
     root_group.attributes_mut().insert(
         "instrument".into(),
-        serde_json::Value::String("Neuropixels 1.0".into()),
+        serde_json::Value::String("Generic Sensor Array".into()),
     );
     root_group.attributes_mut().insert(
         "sample_rate_hz".into(),
