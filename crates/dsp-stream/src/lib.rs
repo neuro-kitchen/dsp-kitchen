@@ -1,11 +1,17 @@
-//! High-throughput transport, streaming circular ring buffers, Zarr v3, and visualization decimation.
+//! High-throughput continuous streaming, lock-free ring buffering, chunked Zarr v3 persistence, and LOD decimation.
 
-pub mod decimate;
+pub mod buffer;
+pub mod storage;
+pub mod reduction;
 pub mod purpose;
-pub mod zarr;
-pub mod ring;
 
+// Convenient re-exports
+pub use buffer::MultiChannelRingBuffer;
+pub use storage::{create_zarr_recording, read_zarr_recording};
+pub use reduction::min_max_decimate;
 pub use purpose::StreamPurpose;
-pub use decimate::min_max_decimate;
-pub use zarr::{create_zarr_recording, read_zarr_recording};
-pub use ring::MultiChannelRingBuffer;
+
+// Backward-compatible module aliases
+pub use reduction as decimate;
+pub use storage as zarr;
+pub use buffer as ring;
