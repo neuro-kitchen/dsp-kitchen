@@ -1,0 +1,114 @@
+import { ListView, CheckBox, LineEdit, Button } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { AppState, AppLogic } from "../logic.slint";
+
+component SectionTitle inherits Text {
+    color: Theme.text-muted;
+    font-size: Theme.font-small;
+    font-weight: 700;
+}
+
+// Left panel: the dataset and every channel; checkboxes edit the focused view's selection.
+export component DataPanel inherits Rectangle {
+    background: Theme.surface;
+    clip: true;
+
+    Rectangle {
+        x: parent.width - 1px;
+        width: 1px;
+        background: Theme.border;
+    }
+
+    VerticalLayout {
+        padding: 10px;
+        spacing: 8px;
+
+        SectionTitle { text: "DATASET"; }
+        Text {
+            text: AppState.dataset_name;
+            color: Theme.text;
+            font-size: Theme.font-body;
+            font-weight: 600;
+            overflow: elide;
+        }
+        Text {
+            text: AppState.dataset_info;
+            color: Theme.text-muted;
+            font-size: Theme.font-small;
+            wrap: word-wrap;
+        }
+
+        Rectangle { height: 1px; background: Theme.border; }
+
+        HorizontalLayout {
+            SectionTitle { text: "CHANNELS"; vertical-alignment: center; }
+            Rectangle { horizontal-stretch: 1; }
+            Text {
+                text: AppState.focused.valid ? "→ " + AppState.focused.title : "no view";
+                color: Theme.accent;
+                font-size: Theme.font-small;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 4px;
+            Button { text: "All"; clicked => { AppLogic.select_all(); } }
+            Button { text: "None"; clicked => { AppLogic.select_none(); } }
+            Button { text: "Invert"; clicked => { AppLogic.select_invert(); } }
+        }
+
+        LineEdit {
+            placeholder-text: "Ranges, e.g. 0-31, 40 ↵";
+            accepted(text) => { AppLogic.select_ranges(text); }
+        }
+        if AppState.range_error != "": Text {
+            text: AppState.range_error;
+            color: #f85149;
+            font-size: Theme.font-small;
+            wrap: word-wrap;
+        }
+
+        LineEdit {
+            placeholder-text: "Filter channels";
+            edited(text) => { AppLogic.set_channel_filter(text); }
+        }
+
+        // Virtualized: only visible rows are instantiated (smooth at 384+ channels)
+        ListView {
+            vertical-stretch: 1;
+            for row in AppState.channel_rows: HorizontalLayout {
+                height: 26px;
+                padding-left: 2px;
+                padding-right: 6px;
+                spacing: 6px;
+                CheckBox {
+                    checked: row.checked;
+                    enabled: AppState.focused.valid;
+                    toggled => { AppLogic.toggle_channel(row.channel); }
+                }
+                Rectangle {
+                    width: 8px;
+                    VerticalLayout {
+                        alignment: center;
+                        Rectangle { height: 8px; border-radius: 4px; background: row.color; }
+                    }
+                }
+                Text {
+                    text: row.label;
+                    color: row.checked ? Theme.text : Theme.text-dim;
+                    font-size: Theme.font-small;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                Text {
+                    text: row.events;
+                    color: Theme.text-dim;
+                    font-size: 10px;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}

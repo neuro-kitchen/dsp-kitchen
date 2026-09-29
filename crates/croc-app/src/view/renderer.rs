@@ -1,7 +1,16 @@
-//! Waveform rasterizer and screen-space viewport renderer.
+//! Waveform rasterizer for the plot area.
+//!
+//! Draws only the plot itself (traces or heatmap, grid, spike ticks, scale bar); all text
+//! (channel labels, time axis, readouts) is laid out by Slint around and over the image.
 
+use std::sync::Arc;
+
+use dsp_stream::min_max_decimate_into;
 use slint::{Rgba8Pixel, SharedPixelBuffer};
-use crate::model::decimate_min_max;
+
+use crate::model::{SignalSource, SpikeEventStore};
+
+use super::canvas::{blend_color, Canvas};
 
 /// Palette for multi-channel visualization (vibrant, modern dark-theme colors)
 pub const CHANNEL_COLORS: [Rgba8Pixel; 8] = [
@@ -21,250 +30,357 @@ const BASELINE_COLOR: Rgba8Pixel = Rgba8Pixel { r: 33, g: 38, b: 45, a: 255 }; /
 const TEXT_COLOR: Rgba8Pixel = Rgba8Pixel { r: 139, g: 148, b: 158, a: 255 }; // Gray text #8b949e
 const SPIKE_MARKER_COLOR: Rgba8Pixel = Rgba8Pixel { r: 250, g: 204, b: 21, a: 255 }; // Gold #facc15
 
-/// Configuration parameters for waveform rendering.
-pub struct RenderConfig<'a> {
-    pub raw_data: &'a [f32],
-    pub total_samples: usize,
-    pub total_channels: usize,
-    pub channel_offset: usize,
-    pub visible_channels: usize,
-    pub window_start_sec: f64,
-    pub visible_window_sec: f64,
-    pub sample_rate: f64,
-    pub amplitude_scale: f32,
-    pub spike_times: &'a [f64],
-    pub spike_channels: &'a [usize],
+/// Amplitude (µV) that maps to `LANE_FILL` of a lane's half-height at gain 1x.
+pub const NOMINAL_UV: f32 = 80.0;
+/// Fraction of the lane half-height used by `NOMINAL_UV`.
+const LANE_FILL: f32 = 0.84;
+
+/// How the plot area visualizes channels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum ViewMode {
+    /// One trace per lane for the visible channel page.
+    #[default]
+    Traces,
+    /// All channels as rows, color = peak |amplitude| per screen column.
+    Heatmap,
 }
 
-pub struct WaveformRenderer;
+/// Everything needed to draw one frame of one view. Sendable to the worker thread.
+#[derive(Clone)]
+pub struct RenderRequest {
+    /// View this frame belongs to.
+    pub view_id: u32,
+    pub source: Arc<dyn SignalSource>,
+    pub events: Arc<SpikeEventStore>,
+    /// Physical pixel size of the plot area.
+    pub width: u32,
+    pub height: u32,
+    /// Display scale factor (physical px per logical px); sets line and marker thickness.
+    pub scale: f32,
+    pub mode: ViewMode,
+    /// Channels to draw, top to bottom (traces: the lanes on screen; heatmap: every row).
+    pub channels: Vec<usize>,
+    pub window_start_sec: f64,
+    pub window_sec: f64,
+    pub amplitude_scale: f32,
+    /// Times of vertical grid lines (the time-axis ticks).
+    pub grid_times: Vec<f64>,
+    /// Height of the amplitude scale bar in µV (0 = none).
+    pub scale_bar_uv: f32,
+}
+
+/// Pixels per µV for a lane of `lane_h` pixels at the given gain.
+pub fn px_per_uv(lane_h: f32, amplitude_scale: f32) -> f32 {
+    lane_h * 0.5 * LANE_FILL * amplitude_scale / NOMINAL_UV
+}
+
+/// Rasterizer with reusable scratch buffers (no per-frame allocations besides the image).
+#[derive(Default)]
+pub struct WaveformRenderer {
+    buckets: Vec<[f32; 2]>,
+    heat: Vec<f32>,
+}
 
 impl WaveformRenderer {
-    /// Renders multi-channel signals into a Slint SharedPixelBuffer using screen-space Min-Max LOD decimation.
-    pub fn render(
-        width: u32,
-        height: u32,
-        config: &RenderConfig,
-    ) -> SharedPixelBuffer<Rgba8Pixel> {
-        let width = width.max(100);
-        let height = height.max(100);
-        let mut pixel_buffer = SharedPixelBuffer::new(width, height);
-        let pixels = pixel_buffer.make_mut_bytes();
-
-        // 1. Fill background (4 bytes per RGBA pixel)
-        for chunk in pixels.chunks_exact_mut(4) {
-            chunk[0] = BG_COLOR.r;
-            chunk[1] = BG_COLOR.g;
-            chunk[2] = BG_COLOR.b;
-            chunk[3] = BG_COLOR.a;
-        }
-
-        let left_margin = 70usize;
-        let right_margin = 20usize;
-        let top_margin = 20usize;
-        let bottom_margin = 30usize;
-
-        if (width as usize) <= left_margin + right_margin || (height as usize) <= top_margin + bottom_margin {
-            return pixel_buffer;
-        }
-
-        let plot_w = (width as usize) - left_margin - right_margin;
-        let plot_h = (height as usize) - top_margin - bottom_margin;
-
-        let num_channels = config.visible_channels.min(config.total_channels.saturating_sub(config.channel_offset));
-        if num_channels == 0 || config.total_samples == 0 {
-            return pixel_buffer;
-        }
-
-        let lane_h = plot_h as f32 / num_channels as f32;
-
-        // Helper closure to set a pixel safely
-        let w_usize = width as usize;
-        let h_usize = height as usize;
-        let mut set_pixel = |x: usize, y: usize, color: Rgba8Pixel| {
-            if x < w_usize && y < h_usize {
-                let idx = (y * w_usize + x) * 4;
-                pixels[idx] = color.r;
-                pixels[idx + 1] = color.g;
-                pixels[idx + 2] = color.b;
-                pixels[idx + 3] = color.a;
-            }
+    pub fn render(&mut self, req: &RenderRequest) -> SharedPixelBuffer<Rgba8Pixel> {
+        let source = req.source.as_ref();
+        let width = req.width.max(1);
+        let height = req.height.max(1);
+        let mut pixel_buffer = SharedPixelBuffer::<Rgba8Pixel>::new(width, height);
+        let mut canvas = Canvas {
+            pixels: pixel_buffer.make_mut_slice(),
+            width: width as usize,
+            height: height as usize,
         };
+        canvas.pixels.fill(BG_COLOR);
 
-        // 2. Draw vertical time grid lines
-        let num_grid_cols = 10;
-        for g in 0..=num_grid_cols {
-            let gx = left_margin + (g * plot_w) / num_grid_cols;
-            for y in top_margin..(top_margin + plot_h) {
-                set_pixel(gx, y, GRID_COLOR);
+        let samples = source.samples();
+        if samples == 0 || source.channels() == 0 || req.window_sec <= 0.0 {
+            return pixel_buffer;
+        }
+
+        // Visible sample range
+        let sr = source.sample_rate();
+        let start = ((req.window_start_sec * sr).round().max(0.0) as usize).min(samples);
+        let end = (((req.window_start_sec + req.window_sec) * sr).round().max(0.0) as usize).min(samples);
+
+        // Time grid aligned with the axis ticks
+        let w = canvas.width as f64;
+        for &t in &req.grid_times {
+            let x = ((t - req.window_start_sec) / req.window_sec * w).round();
+            if x >= 0.0 && x < w {
+                canvas.vline(x as usize, 0, canvas.height, GRID_COLOR);
             }
         }
 
-        // 3. Compute visible sample range
-        let start_sample_f = (config.window_start_sec * config.sample_rate).round().max(0.0);
-        let end_sample_f = ((config.window_start_sec + config.visible_window_sec) * config.sample_rate).round().min(config.total_samples as f64);
-
-        let start_sample = (start_sample_f as usize).min(config.total_samples);
-        let end_sample = (end_sample_f as usize).min(config.total_samples);
-        let window_samples = end_sample.saturating_sub(start_sample);
-
-        // Typical extracellular voltage scale (approx +/- 80 uV maps to 80% of lane half-height)
-        let nominal_scale = 80.0f32;
-        let half_lane = lane_h * 0.42;
-
-        // 4. Render each channel
-        for ch_idx in 0..num_channels {
-            let actual_ch = config.channel_offset + ch_idx;
-            let color = CHANNEL_COLORS[ch_idx % CHANNEL_COLORS.len()];
-            let lane_center_y = top_margin as f32 + (ch_idx as f32 + 0.5) * lane_h;
-            let channel_data_offset = actual_ch * config.total_samples;
-
-            // Draw horizontal baseline
-            let baseline_y = lane_center_y.round() as usize;
-            for x in left_margin..(left_margin + plot_w) {
-                if x % 4 != 0 {
-                    set_pixel(x, baseline_y, BASELINE_COLOR);
-                }
-            }
-
-            // Draw channel marker in margin
-            draw_channel_marker(&mut set_pixel, 12, baseline_y, actual_ch, color);
-
-            if window_samples == 0 {
-                continue;
-            }
-
-            let channel_data = &config.raw_data[channel_data_offset..channel_data_offset + config.total_samples];
-            let buckets = decimate_min_max(channel_data, start_sample, window_samples, plot_w);
-
-            let mut prev_y_min = baseline_y;
-            let mut prev_y_max = baseline_y;
-
-            for col in 0..plot_w {
-                let px = left_margin + col;
-                let b = buckets[col];
-
-                let scaled_min = (b.min * config.amplitude_scale) / nominal_scale;
-                let scaled_max = (b.max * config.amplitude_scale) / nominal_scale;
-
-                let y0 = (lane_center_y - scaled_max * half_lane)
-                    .clamp(top_margin as f32, (top_margin + plot_h - 1) as f32)
-                    .round() as usize;
-                let y1 = (lane_center_y - scaled_min * half_lane)
-                    .clamp(top_margin as f32, (top_margin + plot_h - 1) as f32)
-                    .round() as usize;
-
-                let cur_y_min = y0.min(y1);
-                let cur_y_max = y0.max(y1);
-
-                let draw_min = if col == 0 { cur_y_min } else { cur_y_min.min(prev_y_max) };
-                let draw_max = if col == 0 { cur_y_max } else { cur_y_max.max(prev_y_min) };
-
-                for y in draw_min..=draw_max {
-                    set_pixel(px, y, color);
-                }
-
-                prev_y_min = cur_y_min;
-                prev_y_max = cur_y_max;
-            }
+        self.buckets.resize(canvas.width, [0.0, 0.0]);
+        match req.mode {
+            ViewMode::Traces => self.draw_traces(&mut canvas, source, &req.events, req, start, end),
+            ViewMode::Heatmap => self.draw_heatmap(&mut canvas, source, req, start, end),
         }
-
-        // 5. Draw Spike Events / Detected Action Potential Markers
-        let win_start = config.window_start_sec;
-        let win_end = config.window_start_sec + config.visible_window_sec;
-
-        for (&st, &sch) in config.spike_times.iter().zip(config.spike_channels.iter()) {
-            if st >= win_start && st <= win_end {
-                if sch >= config.channel_offset && sch < config.channel_offset + num_channels {
-                    let local_ch = sch - config.channel_offset;
-                    let lane_center_y = top_margin as f32 + (local_ch as f32 + 0.5) * lane_h;
-                    let col_ratio = (st - win_start) / config.visible_window_sec;
-                    let sx = left_margin + ((col_ratio * plot_w as f64).round() as usize).min(plot_w - 1);
-                    let sy = (lane_center_y - lane_h * 0.40).round() as usize;
-
-                    // Diamond marker
-                    set_pixel(sx, sy, SPIKE_MARKER_COLOR);
-                    set_pixel(sx - 1, sy, SPIKE_MARKER_COLOR);
-                    set_pixel(sx + 1, sy, SPIKE_MARKER_COLOR);
-                    set_pixel(sx, sy - 1, SPIKE_MARKER_COLOR);
-                    set_pixel(sx, sy + 1, SPIKE_MARKER_COLOR);
-                }
-            }
-        }
-
-        // 6. Draw Bottom Time Axis Label & Scale Bar
-        let scale_y = top_margin + plot_h + 12;
-        let scale_x = width as usize - right_margin - 80;
-        for x in scale_x..(scale_x + 60) {
-            set_pixel(x, scale_y, TEXT_COLOR);
-        }
-        set_pixel(scale_x, scale_y - 3, TEXT_COLOR);
-        set_pixel(scale_x, scale_y - 2, TEXT_COLOR);
-        set_pixel(scale_x, scale_y - 1, TEXT_COLOR);
-        set_pixel(scale_x + 60, scale_y - 3, TEXT_COLOR);
-        set_pixel(scale_x + 60, scale_y - 2, TEXT_COLOR);
-        set_pixel(scale_x + 60, scale_y - 1, TEXT_COLOR);
 
         pixel_buffer
     }
+
+    fn draw_traces(
+        &mut self,
+        canvas: &mut Canvas,
+        source: &dyn SignalSource,
+        events: &SpikeEventStore,
+        req: &RenderRequest,
+        start: usize,
+        end: usize,
+    ) {
+        let num_channels = req.channels.len();
+        if num_channels == 0 {
+            return;
+        }
+
+        let lane_h = canvas.height as f32 / num_channels as f32;
+        let k = px_per_uv(lane_h, req.amplitude_scale);
+        let thickness = req.scale.max(1.0);
+        let t_end = req.window_start_sec + req.window_sec;
+
+        for lane in 0..num_channels {
+            let ch = req.channels[lane];
+            if ch >= source.channels() {
+                continue;
+            }
+            let color = CHANNEL_COLORS[ch % CHANNEL_COLORS.len()];
+            let center = (lane as f32 + 0.5) * lane_h;
+
+            // Dashed baseline
+            let by = center.round() as usize;
+            for x in (0..canvas.width).filter(|x| x % 4 != 0) {
+                canvas.set(x, by, BASELINE_COLOR);
+            }
+
+            // Spike ticks: faint full-lane line + solid tick at the lane top
+            for &t in events.in_window(ch, req.window_start_sec, t_end) {
+                let x = ((t - req.window_start_sec) / req.window_sec * canvas.width as f64) as usize;
+                let top = (lane as f32 * lane_h) as usize;
+                let bottom = ((lane + 1) as f32 * lane_h) as usize;
+                canvas.vline_alpha(x, top, bottom, SPIKE_MARKER_COLOR, 0.18);
+                let tick = (6.0 * req.scale) as usize;
+                for dx in 0..(thickness as usize).max(1) {
+                    canvas.vline(x + dx, top + 1, top + 1 + tick, SPIKE_MARKER_COLOR);
+                }
+            }
+
+            if end <= start {
+                continue;
+            }
+            min_max_decimate_into(&source.channel(ch)[start..end], &mut self.buckets);
+
+            // Anti-aliased min/max envelope, joined to the previous column for continuity
+            let (lo_clip, hi_clip) = (0.0, canvas.height as f32 - 1.0);
+            let mut prev: Option<(f32, f32)> = None;
+            for (x, &[mn, mx]) in self.buckets.iter().enumerate() {
+                let y_top = (center - mx * k).clamp(lo_clip, hi_clip);
+                let y_bot = (center - mn * k).clamp(lo_clip, hi_clip);
+                let (mut a, mut b) = (y_top, y_bot);
+                if let Some((pa, pb)) = prev {
+                    // Bridge the gap to the previous column so steep edges stay connected
+                    a = a.min(pb);
+                    b = b.max(pa);
+                }
+                prev = Some((y_top, y_bot));
+                canvas.span_aa(x, a - thickness * 0.5, b + thickness * 0.5, color);
+            }
+        }
+
+        // Amplitude scale bar in the bottom-right corner of the last lane
+        if req.scale_bar_uv > 0.0 {
+            let bar_h = req.scale_bar_uv * k;
+            let x = canvas.width.saturating_sub((12.0 * req.scale) as usize);
+            let bottom = canvas.height as f32 - 6.0 * req.scale;
+            let top = (bottom - bar_h).max(0.0);
+            for dx in 0..(thickness as usize).max(1) {
+                canvas.vline(x + dx, top as usize, bottom as usize, TEXT_COLOR);
+            }
+        }
+    }
+
+    fn draw_heatmap(
+        &mut self,
+        canvas: &mut Canvas,
+        source: &dyn SignalSource,
+        req: &RenderRequest,
+        start: usize,
+        end: usize,
+    ) {
+        let rows = &req.channels;
+        let channels = rows.len();
+        let (w, h) = (canvas.width, canvas.height);
+        if end <= start || channels == 0 {
+            return;
+        }
+
+        // Peak |amplitude| per (row, column), normalized by the gain-scaled nominal range
+        self.heat.resize(channels * w, 0.0);
+        let norm = req.amplitude_scale / (NOMINAL_UV * 1.5);
+        for (r, &ch) in rows.iter().enumerate() {
+            let row = &mut self.heat[r * w..(r + 1) * w];
+            if ch >= source.channels() {
+                row.fill(0.0);
+                continue;
+            }
+            min_max_decimate_into(&source.channel(ch)[start..end], &mut self.buckets);
+            for (v, &[mn, mx]) in row.iter_mut().zip(&self.buckets) {
+                // Squared for contrast: background noise stays dark, spikes stand out
+                let a = (mn.abs().max(mx.abs()) * norm).min(1.0);
+                *v = a * a;
+            }
+        }
+
+        // Each pixel row shows the max over the channels it covers
+        for y in 0..h {
+            let c0 = y * channels / h;
+            let c1 = ((y + 1) * channels / h).max(c0 + 1).min(channels);
+            for x in 0..w {
+                let mut v = 0.0f32;
+                for ch in c0..c1 {
+                    v = v.max(self.heat[ch * w + x]);
+                }
+                canvas.set(x, y, heat_color(v));
+            }
+        }
+    }
 }
 
-/// Draws a stylized channel indicator on the left margin.
-fn draw_channel_marker<F>(set_pixel: &mut F, x: usize, y: usize, ch: usize, color: Rgba8Pixel)
-where
-    F: FnMut(usize, usize, Rgba8Pixel),
-{
-    // Draw colored channel dot
-    for dy in 0..4 {
-        for dx in 0..4 {
-            set_pixel(x + dx, y - 2 + dy, color);
-        }
-    }
+/// Draws the timeline overview strip: one bar per column, height = normalized spike density.
+pub fn render_overview(width: u32, height: u32, density: &[f32]) -> SharedPixelBuffer<Rgba8Pixel> {
+    const STRIP_BG: Rgba8Pixel = Rgba8Pixel { r: 13, g: 17, b: 23, a: 255 }; // #0d1117
+    const BAR: Rgba8Pixel = Rgba8Pixel { r: 121, g: 192, b: 255, a: 255 }; // #79c0ff
+    let (w, h) = (width.max(1), height.max(1));
+    let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(w, h);
+    let mut canvas = Canvas { pixels: buffer.make_mut_slice(), width: w as usize, height: h as usize };
+    canvas.pixels.fill(STRIP_BG);
 
-    let bar_x = x + 10;
-    let units = ch % 10;
-    let tens = ch / 10;
-
-    for i in 0..tens.min(3) {
-        for dy in 0..6 {
-            set_pixel(bar_x + i * 3, y - 3 + dy, TEXT_COLOR);
-        }
+    let bins = density.len();
+    if bins == 0 {
+        return buffer;
     }
-
-    for i in 0..units.min(9) {
-        for dy in 0..3 {
-            set_pixel(bar_x + 12 + i * 2, y - 1 + dy, TEXT_COLOR);
+    for x in 0..canvas.width {
+        let d = density[(x * bins / canvas.width).min(bins - 1)];
+        if d <= 0.0 {
+            continue;
         }
+        let bar = d * canvas.height as f32;
+        let top = canvas.height as f32 - bar;
+        // Brighter where denser, anti-aliased top edge
+        canvas.span_aa(x, top, canvas.height as f32, blend_color(STRIP_BG, BAR, 0.35 + 0.45 * d));
     }
+    buffer
+}
+
+/// Dark-to-bright sequential colormap (navy → violet → orange → yellow).
+fn heat_color(v: f32) -> Rgba8Pixel {
+    const STOPS: [(f32, [f32; 3]); 5] = [
+        (0.00, [9.0, 13.0, 19.0]),
+        (0.25, [49.0, 36.0, 110.0]),
+        (0.50, [150.0, 45.0, 120.0]),
+        (0.75, [240.0, 110.0, 50.0]),
+        (1.00, [252.0, 230.0, 90.0]),
+    ];
+    let v = v.clamp(0.0, 1.0);
+    let i = STOPS.iter().position(|s| s.0 >= v).unwrap_or(4).max(1);
+    let (t0, c0) = STOPS[i - 1];
+    let (t1, c1) = STOPS[i];
+    let f = (v - t0) / (t1 - t0);
+    let mix = |j: usize| (c0[j] + (c1[j] - c0[j]) * f) as u8;
+    Rgba8Pixel { r: mix(0), g: mix(1), b: mix(2), a: 255 }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Dataset;
+
+    /// Request for `mode` over `ds`: traces show the first 4 channels, heatmap every channel.
+    fn request(ds: Dataset, mode: ViewMode) -> RenderRequest {
+        let events = Arc::new(SpikeEventStore::detect(&ds));
+        let channels = match mode {
+            ViewMode::Traces => (0..4.min(ds.total_channels)).collect(),
+            ViewMode::Heatmap => (0..ds.total_channels).collect(),
+        };
+        RenderRequest {
+            view_id: 1,
+            source: Arc::new(ds),
+            events,
+            width: 800,
+            height: 400,
+            scale: 1.0,
+            mode,
+            channels,
+            window_start_sec: 0.0,
+            window_sec: 0.100,
+            amplitude_scale: 1.0,
+            grid_times: vec![0.05],
+            scale_bar_uv: 50.0,
+        }
+    }
 
     #[test]
-    fn test_renderer_output_dimensions() {
-        let channels = 8;
-        let samples = 5000;
-        let data = vec![10.0f32; channels * samples];
-        let spikes = vec![0.050];
-        let spike_channels = vec![0];
+    fn test_renderer_output_dimensions_and_trace_pixels() {
+        let mut r = WaveformRenderer::default();
+        for mode in [ViewMode::Traces, ViewMode::Heatmap] {
+            let req = request(Dataset::generate_synthetic(8, 30_000.0, 0.5), mode);
+            let buf = r.render(&req);
+            assert_eq!((buf.width(), buf.height()), (800, 400));
+            // Something other than background was drawn
+            assert!(buf.as_slice().iter().any(|p| *p != BG_COLOR));
+        }
+    }
 
-        let config = RenderConfig {
-            raw_data: &data,
-            total_samples: samples,
-            total_channels: channels,
-            channel_offset: 0,
-            visible_channels: 4,
-            window_start_sec: 0.0,
-            visible_window_sec: 0.100,
-            sample_rate: 30000.0,
-            amplitude_scale: 1.0,
-            spike_times: &spikes,
-            spike_channels: &spike_channels,
-        };
+    #[test]
+    fn test_out_of_range_channels_are_skipped() {
+        let mut req = request(Dataset::generate_synthetic(2, 10_000.0, 0.2), ViewMode::Traces);
+        req.channels = vec![0, 99];
+        let mut r = WaveformRenderer::default();
+        assert_eq!(r.render(&req).width(), 800);
+        req.mode = ViewMode::Heatmap;
+        assert_eq!(r.render(&req).width(), 800);
+    }
 
-        let buf = WaveformRenderer::render(800, 400, &config);
-        assert_eq!(buf.width(), 800);
-        assert_eq!(buf.height(), 400);
+    #[test]
+    fn test_heat_color_endpoints() {
+        assert_eq!(heat_color(0.0), BG_COLOR);
+        assert_eq!(heat_color(1.0), Rgba8Pixel { r: 252, g: 230, b: 90, a: 255 });
+        assert_eq!(heat_color(2.0), heat_color(1.0));
+    }
+
+    /// Per-frame render cost on the local datasets. Run with:
+    /// `cargo test -p croc-app --release bench_render -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bench_render() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../playground/data");
+        let cases = [
+            ("mearec_32ch_10s.bin", ViewMode::Traces, 0.1),
+            ("mearec_32ch_10s.bin", ViewMode::Traces, 1.0),
+            ("mearec_32ch_10s.bin", ViewMode::Heatmap, 1.0),
+            ("mock_signal_384ch.bin", ViewMode::Traces, 1.0),
+            ("mock_signal_384ch.bin", ViewMode::Heatmap, 1.0),
+        ];
+        for (file, mode, window_sec) in cases {
+            let Ok(ds) = Dataset::load_from_file(&root.join(file), None, None) else {
+                println!("skip {file} (not found)");
+                continue;
+            };
+            let mut r = WaveformRenderer::default();
+            let mut req = RenderRequest { width: 1136, height: 550, window_sec, ..request(ds, mode) };
+            if mode == ViewMode::Traces {
+                req.channels = (0..8).collect();
+            }
+            r.render(&req); // warm-up
+            let n = 20;
+            let t0 = std::time::Instant::now();
+            for _ in 0..n {
+                std::hint::black_box(r.render(&req));
+            }
+            let ms = t0.elapsed().as_secs_f64() * 1000.0 / n as f64;
+            println!("{file:24} {mode:?} {window_sec:>4}s  {ms:6.2} ms/frame");
+        }
     }
 }

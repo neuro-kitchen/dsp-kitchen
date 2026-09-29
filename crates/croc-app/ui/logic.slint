@@ -1,0 +1,107 @@
+// Application state (Rust → UI) and intents (UI → Rust).
+
+import { ViewKind, DropSide, SeatData, DividerData, ChannelRow, FocusedView } from "types.slint";
+
+export global AppState {
+    // Dataset
+    in-out property <string> dataset_name;
+    in-out property <string> dataset_info;
+    in-out property <int> channel_count: 0;
+    in-out property <float> sample_rate: 0;
+    in-out property <float> total_duration_sec: 1.0;
+    in-out property <int> total_spikes_detected: 0;
+
+    // Workspace
+    in-out property <[SeatData]> seats;
+    in-out property <[DividerData]> dividers;
+    in-out property <FocusedView> focused;
+
+    // Data panel
+    in-out property <[ChannelRow]> channel_rows;
+    in-out property <string> range_error;
+
+    // Shared timeline
+    in-out property <float> current_time_sec: 0;
+    in-out property <float> visible_window_sec: 0.100;
+    in-out property <float> window_start_sec: 0;
+    in-out property <bool> is_playing: false;
+    in-out property <bool> loop_playback: true;
+    in-out property <float> playback_speed: 1.0;
+    in-out property <string> time_readout;
+    in-out property <image> overview_image;
+    in-out property <string> status_message;
+
+    // Chrome
+    in-out property <bool> show_data: true;
+    in-out property <bool> show_properties: true;
+    in-out property <bool> show_timeline: true;
+    in-out property <bool> show_help: false;
+    in-out property <bool> show_about: false;
+    in-out property <[string]> recent_files;
+    // Bumped by Rust to hand keyboard focus back to the shortcut scope
+    in-out property <int> focus_request: 0;
+}
+
+export global AppLogic {
+    // Timeline
+    callback toggle_play_pause();
+    callback step_forward();
+    callback step_backward();
+    callback jump_to_start();
+    callback jump_to_end();
+    callback toggle_loop();
+    callback set_playback_speed(float);
+    callback set_window_duration(float);
+    callback scrub_to_ratio(float);
+    callback pan_overview(float);
+    callback set_window_edges(float, float);
+    callback overview_resized(length, length);
+
+    // Keyboard (act on the focused view / shared timeline)
+    callback pan_fraction(float);
+    callback zoom_center(float);
+    callback focused_gain(float);
+    callback focused_scroll(int);
+    callback focused_page(bool);
+
+    // Per view (pointer positions are logical px inside the plot)
+    callback zoom_at(int, float, length);
+    callback pan_pixels(int, length);
+    callback zoom_gain(int, float);
+    callback scroll_channels(int, int);
+    callback set_lanes(int, int);
+    callback hover_at(int, length, length);
+    callback plot_double_clicked(int, length);
+    callback focus_view(int);
+    callback activate_view(int);
+    callback close_view(int);
+    callback set_view_kind(int, ViewKind);
+
+    // Dock
+    callback workspace_resized(length, length);
+    callback divider_pressed(int);
+    callback divider_dragged(int, length);
+    // Moves a view onto the seat showing `target`
+    callback dock_drop(int, int, DropSide);
+    pure callback view_to_transfer(int) -> data-transfer;
+    // -1 when the payload is not a view
+    pure callback transfer_to_view(data-transfer) -> int;
+
+    // Data panel (focused view's selection)
+    callback toggle_channel(int);
+    callback select_all();
+    callback select_none();
+    callback select_invert();
+    callback select_ranges(string);
+    callback set_channel_filter(string);
+
+    // Menu
+    callback open_file();
+    callback open_recent(int);
+    callback quit();
+    callback add_view(ViewKind);
+    // 0 = data, 1 = properties, 2 = timeline
+    callback toggle_panel(int);
+    callback reset_layout();
+    callback compact_layout();
+}

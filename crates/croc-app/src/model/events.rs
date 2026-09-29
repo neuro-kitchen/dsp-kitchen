@@ -1,10 +1,21 @@
 //! Action potential / spike event detection for the timeline event track.
 
+use dsp_synapse::detect_spikes_multichannel;
+
+use super::source::SignalSource;
+
+/// Threshold in robust noise standard deviations (Quiroga MAD estimate in `dsp-synapse`).
+const THRESHOLD_FACTOR: f32 = 4.5;
+/// Refractory period after a detection.
+const REFRACTORY_SEC: f64 = 0.002;
+
 /// Collection of detected spike events across channels.
 #[derive(Debug, Clone, Default)]
 pub struct SpikeEventStore {
+    /// All event times, sorted ascending (for the overview track).
     pub times_sec: Vec<f64>,
-    pub channels: Vec<usize>,
+    /// Per-channel sorted event times (for windowed lookups while rendering).
+    by_channel: Vec<Vec<f64>>,
 }
 
 impl SpikeEventStore {
@@ -17,68 +28,61 @@ impl SpikeEventStore {
         self.times_sec.is_empty()
     }
 
-    /// Scans multi-channel signal buffer for negative threshold crossings (-4.5 * noise_std)
-    /// with a 2.0 ms refractory period.
-    pub fn detect_from_raw(
-        raw_data: &[f32],
-        total_channels: usize,
-        total_samples: usize,
-        sample_rate: f64,
-    ) -> Self {
-        let mut times_sec = Vec::new();
-        let mut channels = Vec::new();
+    /// Number of events detected on `channel`.
+    pub fn count(&self, channel: usize) -> usize {
+        self.by_channel.get(channel).map_or(0, Vec::len)
+    }
 
-        if total_channels == 0 || total_samples == 0 || raw_data.len() < total_channels * total_samples {
-            return Self { times_sec, channels };
+    /// Event times of `channel` within `[t0, t1]`, found by binary search.
+    pub fn in_window(&self, channel: usize, t0: f64, t1: f64) -> &[f64] {
+        let Some(times) = self.by_channel.get(channel) else { return &[] };
+        let lo = times.partition_point(|&t| t < t0);
+        let hi = times.partition_point(|&t| t <= t1);
+        &times[lo..hi.max(lo)]
+    }
+
+    /// Detects negative threshold crossings per channel with `dsp-synapse`
+    /// (`-4.5 * sigma_n`, local-minimum peak, 2 ms refractory).
+    pub fn detect(source: &dyn SignalSource) -> Self {
+        let sample_rate = source.sample_rate();
+        let refractory_samples = (sample_rate * REFRACTORY_SEC) as usize;
+        let samples = source.samples();
+
+        let mut by_channel = Vec::with_capacity(source.channels());
+        let mut all: Vec<f64> = Vec::new();
+
+        for ch in 0..source.channels() {
+            // Channels are detected independently so the refractory state never leaks across them
+            let events = detect_spikes_multichannel(
+                source.channel(ch),
+                1,
+                samples,
+                THRESHOLD_FACTOR,
+                refractory_samples,
+            );
+            let times: Vec<f64> = events
+                .iter()
+                .map(|e| e.sample_index as f64 / sample_rate)
+                .collect();
+            all.extend_from_slice(&times);
+            by_channel.push(times);
         }
 
-        let refractory_samples = (sample_rate * 0.002) as usize; // 2.0 ms
-
-        for ch in 0..total_channels {
-            let ch_offset = ch * total_samples;
-            let channel_data = &raw_data[ch_offset..ch_offset + total_samples];
-
-            let mut noise_std = 15.0f32;
-            let calc_len = channel_data.len().min(1000);
-            if calc_len > 0 {
-                let mut sum_sq = 0.0f64;
-                for &val in &channel_data[0..calc_len] {
-                    sum_sq += (val as f64) * (val as f64);
-                }
-                noise_std = ((sum_sq / calc_len as f64).sqrt() as f32).max(5.0);
-            }
-
-            let threshold = -4.5 * noise_std;
-            let mut in_refractory = 0usize;
-
-            for (i, &sample) in channel_data.iter().enumerate() {
-                if in_refractory > 0 {
-                    in_refractory -= 1;
-                    continue;
-                }
-                if sample < threshold {
-                    let t_sec = i as f64 / sample_rate;
-                    times_sec.push(t_sec);
-                    channels.push(ch);
-                    in_refractory = refractory_samples;
-                }
-            }
-        }
-
-        Self { times_sec, channels }
+        all.sort_by(f64::total_cmp);
+        Self { times_sec: all, by_channel }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Dataset;
 
     #[test]
     fn test_spike_event_detection() {
         let sample_rate = 10_000.0;
         let samples = 2_000;
-        let channels = 2;
-        let mut data = vec![1.0f32; channels * samples];
+        let mut data = vec![1.0f32; 2 * samples];
 
         // Inject two clear spikes on ch 0 separated by > 2ms (20 samples)
         data[500] = -100.0;
@@ -87,12 +91,18 @@ mod tests {
 
         // Inject one clear spike on ch 1
         data[samples + 1000] = -110.0;
+        let ds = Dataset::from_samples("test", data, 2, sample_rate);
 
-        let store = SpikeEventStore::detect_from_raw(&data, channels, samples, sample_rate);
+        let store = SpikeEventStore::detect(&ds);
         assert_eq!(store.len(), 3);
-        assert_eq!(store.channels, vec![0, 0, 1]);
         assert!((store.times_sec[0] - 0.050).abs() < 1e-6);
         assert!((store.times_sec[1] - 0.060).abs() < 1e-6);
         assert!((store.times_sec[2] - 0.100).abs() < 1e-6);
+
+        assert_eq!(store.in_window(0, 0.0, 1.0), &[0.050, 0.060]);
+        assert_eq!(store.in_window(1, 0.0, 1.0), &[0.100]);
+        assert_eq!(store.in_window(0, 0.055, 1.0), &[0.060]);
+        assert_eq!(store.in_window(1, 0.0, 0.05), &[] as &[f64]);
+        assert_eq!(store.in_window(5, 0.0, 1.0), &[] as &[f64]);
     }
 }
