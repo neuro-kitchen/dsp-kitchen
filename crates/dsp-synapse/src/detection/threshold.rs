@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use super::noise::estimate_noise_std;
 
 /// Detected action potential event (spike).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -8,29 +9,7 @@ pub struct SpikeEvent {
     pub peak_amplitude_uv: f32,
 }
 
-/// Computes the robust estimate of the background noise standard deviation (Quiroga et al., 2004):
-/// `sigma_n = median(|x|) / 0.6745`
-pub fn estimate_noise_std(signal: &[f32]) -> f32 {
-    if signal.is_empty() {
-        return 0.0;
-    }
-
-    let mut abs_vals: Vec<f32> = signal.iter().map(|&x| x.abs()).collect();
-    let mid = abs_vals.len() / 2;
-    // Partial sort to find median efficiently in O(N) time
-    abs_vals.select_nth_unstable_by(mid, |a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let median = abs_vals[mid];
-
-    median / 0.6745f32
-}
-
 /// Detects multi-channel action potential threshold crossings with adaptive noise estimation.
-///
-/// - `data`: Flat 2D array [channels, samples]
-/// - `channels`: Channel count
-/// - `samples`: Sample count
-/// - `threshold_factor`: Multiplier `k` (typically 4.0 to 5.0)
-/// - `refractory_samples`: Minimum samples between successive spikes on the same channel (e.g. 30 samples / 1 ms @ 30kHz)
 pub fn detect_spikes_multichannel(
     data: &[f32],
     channels: usize,
@@ -69,7 +48,6 @@ pub fn detect_spikes_multichannel(
         }
     }
 
-    // Sort chronologically
     all_spikes.sort_by_key(|s| s.sample_index);
     all_spikes
 }
@@ -81,11 +59,9 @@ mod tests {
     #[test]
     fn test_noise_estimation_and_spike_detection() {
         let mut signal = vec![0.0f32; 1000];
-        // Inject Gaussian-like background
         for i in 0..1000 {
-            signal[i] = ((i % 5) as f32 - 2.0) * 5.0; // std ~ 7
+            signal[i] = ((i % 5) as f32 - 2.0) * 5.0;
         }
-        // Inject strong spike at sample 300
         signal[299] = -50.0;
         signal[300] = -120.0;
         signal[301] = -40.0;
