@@ -1,0 +1,26 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "dsp-kitchen"
+version = "0.1.0"
+description = "High-throughput real-time digital signal processing library in Rust for large-scale neuroscience electrophysiology"
+readme = "README.md"
+authors = [{ name = "jesusdpa1", email = "jesuspenalozaa2@gmail.com" }]
+requires-python = ">=3.10"
+dependencies = [
+    "matplotlib>=3.10.9",
+    "numpy>=2.2.6",
+    "polars>=1.44.2",
+    "python-dotenv>=1.2.3",
+]
+
+[tool.maturin]
+manifest-path = "crates/dsp-bridge/Cargo.toml"
+module-name = "dsp_kitchen._dsp_kitchen"
+features = ["pyo3/extension-module"]
+python-source = "src"
+
+[dependency-groups]
+dev = ["ipykernel>=7.3.0", "ipywidgets>=8.1.9", "ruff>=0.16.9"]
