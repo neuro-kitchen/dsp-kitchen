@@ -125,9 +125,75 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         sweep: bool,
     },
+
+    /// Serve a dataset (.bin) or continuous synthetic signal over high-throughput QUIC
+    #[command(alias = "stream-server")]
+    Serve {
+        /// UDP socket address to bind the QUIC server on
+        #[arg(short, long, default_value = "127.0.0.1:50051")]
+        bind: std::net::SocketAddr,
+
+        /// Path to recording dataset file (.bin) to stream (omitting streams live synthetic signals)
+        #[arg(short, long, alias = "input")]
+        file: Option<PathBuf>,
+
+        /// Number of channels (overrides sidecar metadata or synthetic default)
+        #[arg(short, long)]
+        channels: Option<usize>,
+
+        /// Sample rate in Hz (overrides sidecar metadata or synthetic default)
+        #[arg(short = 'r', long)]
+        sample_rate: Option<f64>,
+
+        /// Samples per streaming frame chunk
+        #[arg(short = 's', long, default_value_t = 500)]
+        chunk_size: usize,
+
+        /// Do not loop dataset when reaching end of file
+        #[arg(long, default_value_t = false)]
+        no_loop: bool,
+
+        /// Disable real-time pacing and push at maximum wire line rate (stress test)
+        #[arg(long, default_value_t = false, alias = "stress")]
+        no_realtime: bool,
+
+        /// Optional path to export the server TLS certificate DER
+        #[arg(long)]
+        cert_out: Option<PathBuf>,
+    },
+
+    /// Connect to a QUIC stream server and benchmark transmission speed, latency, jitter, and packet loss
+    #[command(alias = "benchmark-net", alias = "test-stream")]
+    Receive {
+
+        /// QUIC server socket address
+        #[arg(short, long, default_value = "127.0.0.1:50051")]
+        addr: std::net::SocketAddr,
+
+        /// TLS server name
+        #[arg(long, default_value = "localhost")]
+        server_name: String,
+
+        /// Path to custom server TLS certificate DER (if omitted, accepts self-signed cert)
+        #[arg(long)]
+        cert: Option<PathBuf>,
+
+        /// Benchmark test duration in seconds (0 for unlimited / until Ctrl+C)
+        #[arg(short, long, default_value_t = 5.0)]
+        duration: f64,
+
+        /// Maximum frames to receive (0 for unlimited)
+        #[arg(short = 'n', long, default_value_t = 0)]
+        max_frames: u64,
+
+        /// Optional destination to save received continuous signal stream (.bin)
+        #[arg(short = 'o', long)]
+        save: Option<PathBuf>,
+    },
 }
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     let cli = Cli::parse();
 
@@ -192,7 +258,50 @@ fn main() -> anyhow::Result<()> {
                 )?;
             }
         }
+        Commands::Serve {
+            bind,
+            file,
+            channels,
+            sample_rate,
+            chunk_size,
+            no_loop,
+            no_realtime,
+            cert_out,
+        } => {
+            let loop_stream = !no_loop;
+            let realtime = !no_realtime;
+            commands::serve::run_serve(
+                bind,
+                file,
+                channels,
+                sample_rate,
+                chunk_size,
+                loop_stream,
+                realtime,
+                cert_out,
+            )
+            .await?;
+        }
+        Commands::Receive {
+            addr,
+            server_name,
+            cert,
+            duration,
+            max_frames,
+            save,
+        } => {
+            commands::receive::run_receive(
+                addr,
+                server_name,
+                cert,
+                duration,
+                max_frames,
+                save,
+            )
+            .await?;
+        }
     }
 
     Ok(())
 }
+

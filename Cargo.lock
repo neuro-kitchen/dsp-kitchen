@@ -1311,6 +1311,7 @@ dependencies = [
  "dsp-stream",
  "dsp-synapse",
  "memmap2",
+ "quinn",
  "serde",
  "serde_json",
  "tokio",
