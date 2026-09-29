@@ -1,20 +1,23 @@
+pub mod buffer;
 pub mod filter;
 pub mod linalg;
 pub mod math;
-pub mod mmap;
 pub mod pipeline;
 pub mod spatial;
 pub mod synapse;
 
+// Backward-compatible module alias
+pub use buffer as mmap;
+
 use pyo3::prelude::*;
 
+use crate::buffer::PyMmapRecording;
 use crate::filter::{
     bandpass_filter, median_filter_9p, notch_filter, teager_kaiser_filter, PyBandpassFilter,
     PyMedianFilter, PyNotchFilter, PyTeagerKaiser,
 };
 use crate::linalg::PyPca;
 use crate::math::{scale_samples, PyClamp, PyScale, PySubtractBaseline};
-use crate::mmap::PyMmapRecording;
 use crate::pipeline::{PyDspSession, PyPipeline};
 use crate::spatial::{common_average_reference, PyCommonAverageReference};
 use crate::synapse::{detect_spikes, estimate_noise, PyProbeLayout, PySpikeEvent};
