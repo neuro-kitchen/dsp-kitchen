@@ -9,7 +9,7 @@ pub mod network;
 // Convenient re-exports
 pub use buffer::MultiChannelRingBuffer;
 pub use storage::{create_zarr_recording, read_zarr_recording};
-pub use reduction::min_max_decimate;
+pub use reduction::{min_max_decimate, min_max_decimate_into};
 pub use purpose::StreamPurpose;
 pub use network::{
     generate_self_signed_tls, generate_server_config, make_client_config_with_cert,
