@@ -1,0 +1,20 @@
+[package]
+name = "dsp-stream"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+dsp-core.workspace = true
+shared_memory.workspace = true
+memmap2.workspace = true
+zarrs.workspace = true
+quinn.workspace = true
+tonic.workspace = true
+prost.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
