@@ -10,7 +10,11 @@
 import os
 from pathlib import Path
 import numpy as np
-import matplotlib.pyplot as plt
+try:
+    import matplotlib.pyplot as plt
+    HAS_MATPLOTLIB = True
+except ImportError:
+    HAS_MATPLOTLIB = False
 
 import dsp_kitchen
 from dsp_kitchen.pipeline import Pipeline
@@ -87,34 +91,37 @@ print(f"  Filt Ch0 Min/Max:  {filtered_32[0].min():.2f} / {filtered_32[0].max():
 time_ms = np.arange(num_samples) / sample_rate * 1000.0
 inspect_ch = 0
 
-plt.figure(figsize=(13, 8))
+if HAS_MATPLOTLIB:
+    plt.figure(figsize=(13, 8))
 
-# Subplot 1: Raw Electrophysiology Trace (Channel 0)
-plt.subplot(3, 1, 1)
-plt.plot(time_ms, chunk_384[inspect_ch], color="#1f77b4", linewidth=1.2, label=f"Raw Channel {inspect_ch}")
-plt.title(f"Channel {inspect_ch}: Raw Electrophysiology Recording (60 Hz Hum + AP Spikes)", fontsize=12, fontweight="bold")
-plt.ylabel("Raw (ADC / μV)", fontsize=10)
-plt.grid(True, linestyle="--", alpha=0.5)
-plt.legend(loc="upper right")
+    # Subplot 1: Raw Electrophysiology Trace (Channel 0)
+    plt.subplot(3, 1, 1)
+    plt.plot(time_ms, chunk_384[inspect_ch], color="#1f77b4", linewidth=1.2, label=f"Raw Channel {inspect_ch}")
+    plt.title(f"Channel {inspect_ch}: Raw Electrophysiology Recording (60 Hz Hum + AP Spikes)", fontsize=12, fontweight="bold")
+    plt.ylabel("Raw (ADC / μV)", fontsize=10)
+    plt.grid(True, linestyle="--", alpha=0.5)
+    plt.legend(loc="upper right")
 
-# Subplot 2: 384-Channel Pipeline (Bandpassed + Notched + 384ch CAR)
-plt.subplot(3, 1, 2)
-plt.plot(time_ms, filtered_384[inspect_ch], color="#2ca02c", linewidth=1.2, label="384-ch Pipeline Output")
-plt.title(f"Channel {inspect_ch}: 384-Channel In-VRAM Pipeline (Bandpass 300-6000Hz + Notch 60Hz + CAR)", fontsize=12, fontweight="bold")
-plt.ylabel("Filtered (μV)", fontsize=10)
-plt.grid(True, linestyle="--", alpha=0.5)
-plt.legend(loc="upper right")
+    # Subplot 2: 384-Channel Pipeline (Bandpassed + Notched + 384ch CAR)
+    plt.subplot(3, 1, 2)
+    plt.plot(time_ms, filtered_384[inspect_ch], color="#2ca02c", linewidth=1.2, label="384-ch Pipeline Output")
+    plt.title(f"Channel {inspect_ch}: 384-Channel In-VRAM Pipeline (Bandpass 300-6000Hz + Notch 60Hz + CAR)", fontsize=12, fontweight="bold")
+    plt.ylabel("Filtered (μV)", fontsize=10)
+    plt.grid(True, linestyle="--", alpha=0.5)
+    plt.legend(loc="upper right")
 
-# Subplot 3: 32-Channel Sub-Array Pipeline Output
-plt.subplot(3, 1, 3)
-plt.plot(time_ms, filtered_32[inspect_ch], color="#d62728", linewidth=1.2, label="32-ch Sub-Array Output")
-plt.title(f"Channel {inspect_ch}: 32-Channel Pipeline Output (Tuned Launch Geometry)", fontsize=12, fontweight="bold")
-plt.xlabel("Time (ms)", fontsize=11)
-plt.ylabel("Filtered (μV)", fontsize=10)
-plt.grid(True, linestyle="--", alpha=0.5)
-plt.legend(loc="upper right")
+    # Subplot 3: 32-Channel Sub-Array Pipeline Output
+    plt.subplot(3, 1, 3)
+    plt.plot(time_ms, filtered_32[inspect_ch], color="#d62728", linewidth=1.2, label="32-ch Sub-Array Output")
+    plt.title(f"Channel {inspect_ch}: 32-Channel Pipeline Output (Tuned Launch Geometry)", fontsize=12, fontweight="bold")
+    plt.xlabel("Time (ms)", fontsize=11)
+    plt.ylabel("Filtered (μV)", fontsize=10)
+    plt.grid(True, linestyle="--", alpha=0.5)
+    plt.legend(loc="upper right")
 
-plt.tight_layout()
-plt.show()
+    plt.tight_layout()
+    plt.show()
+else:
+    print("\n[Plotting skipped: matplotlib not installed in current environment]")
 
 # %%

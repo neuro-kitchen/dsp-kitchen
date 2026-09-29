@@ -1,5 +1,5 @@
 """
-dsp-kitchen: High-throughput real-time digital signal processing library in Rust for large-scale neuroscience electrophysiology.
+dsp-kitchen: High-throughput real-time digital signal processing library in Rust for large-scale electrophysiology and neural time-series.
 """
 
 from typing import Optional, Union, Tuple, Dict, Any
@@ -15,20 +15,27 @@ except ImportError:
 # Import the native PyO3 Rust extension module
 from ._dsp_kitchen import (
     ProbeLayout,
+    SpikeEvent,
     MmapRecording,
     DspSession,
     Pipeline,
     Scale,
     SubtractBaseline,
+    Clamp,
     NotchFilter,
     BandpassFilter,
     CommonAverageReference,
     MedianFilter,
+    TeagerKaiser,
+    PCA,
     notch_filter,
     bandpass_filter,
     common_average_reference,
     scale_samples,
     median_filter_9p,
+    teager_kaiser_filter,
+    detect_spikes,
+    estimate_noise,
     __version__,
 )
 
@@ -38,6 +45,14 @@ from . import filters
 from . import spatial
 from . import math
 from . import pipeline
+from . import linalg
+from . import synapse
+
+# Convenience probe aliases
+neuropixels_1_0_layout = synapse.neuropixels_1_0_layout
+neuropixels_2_0_layout = synapse.neuropixels_2_0_layout
+tetrode_layout = synapse.tetrode_layout
+utah_array_layout = synapse.utah_array_layout
 
 __all__ = [
     # Submodules
@@ -46,29 +61,41 @@ __all__ = [
     "spatial",
     "math",
     "pipeline",
+    "linalg",
+    "synapse",
     # Core Pipeline & Types
     "Pipeline",
     "ProbeLayout",
+    "SpikeEvent",
     "MmapRecording",
     "DspSession",
+    "PCA",
     # Stage Classes
     "Scale",
     "SubtractBaseline",
+    "Clamp",
     "NotchFilter",
     "BandpassFilter",
     "CommonAverageReference",
     "MedianFilter",
+    "TeagerKaiser",
     # Direct Functions
     "notch_filter",
     "bandpass_filter",
     "common_average_reference",
     "scale_samples",
     "median_filter_9p",
+    "teager_kaiser_filter",
+    "detect_spikes",
+    "estimate_noise",
     # Helpers
     "get_local_path",
     "resolve_data_path",
     "load_recording",
     "neuropixels_1_0_layout",
+    "neuropixels_2_0_layout",
+    "tetrode_layout",
+    "utah_array_layout",
     "__version__",
 ]
 
@@ -109,9 +136,3 @@ def load_recording(
     rec = MmapRecording(str(resolved_path), channels=channels, samples=samples, sample_rate=sample_rate)
     arr = rec.to_numpy()
     return rec, arr
-
-def neuropixels_1_0_layout() -> ProbeLayout:
-    """
-    Returns the standard 384-channel Neuropixels 1.0 probe layout.
-    """
-    return ProbeLayout.neuropixels_1_0()

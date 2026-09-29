@@ -13,6 +13,7 @@ crate-type = ["cdylib", "rlib"]
 dsp-core.workspace = true
 dsp-base.workspace = true
 dsp-stream.workspace = true
+dsp-synapse.workspace = true
 cubecl = { workspace = true, features = ["wgpu"] }
 pyo3.workspace = true
 memmap2.workspace = true

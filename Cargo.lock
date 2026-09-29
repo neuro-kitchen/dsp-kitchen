@@ -1222,6 +1222,7 @@ dependencies = [
  "dsp-base",
  "dsp-core",
  "dsp-stream",
+ "dsp-synapse",
  "memmap2",
  "pyo3",
  "serde",
