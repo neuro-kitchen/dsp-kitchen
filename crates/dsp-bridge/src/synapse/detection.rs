@@ -1,5 +1,9 @@
 use pyo3::prelude::*;
-use dsp_synapse::detection::{detect_spikes_multichannel, estimate_noise_std, SpikeEvent};
+use dsp_synapse::detection::{
+    detect_spikes_multichannel, estimate_noise_std, deduplicate_spikes_spatial,
+    SpikeEvent, DeduplicatedSpike,
+};
+use super::probe::PyProbeLayout;
 
 /// Detected spike event.
 #[pyclass(name = "SpikeEvent", skip_from_py_object)]
@@ -15,10 +19,43 @@ pub struct PySpikeEvent {
 
 #[pymethods]
 impl PySpikeEvent {
+    #[new]
+    pub fn new(channel_id: usize, sample_index: u64, peak_amplitude_uv: f32) -> Self {
+        Self {
+            channel_id,
+            sample_index,
+            peak_amplitude_uv,
+        }
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "SpikeEvent(channel={}, sample={}, peak={:.2}uV)",
             self.channel_id, self.sample_index, self.peak_amplitude_uv
+        )
+    }
+}
+
+/// Spatially deduplicated action potential event.
+#[pyclass(name = "DeduplicatedSpike", skip_from_py_object)]
+#[derive(Clone)]
+pub struct PyDeduplicatedSpike {
+    #[pyo3(get)]
+    pub primary_channel: usize,
+    #[pyo3(get)]
+    pub sample_index: u64,
+    #[pyo3(get)]
+    pub peak_amplitude_uv: f32,
+    #[pyo3(get)]
+    pub participating_channels: Vec<usize>,
+}
+
+#[pymethods]
+impl PyDeduplicatedSpike {
+    fn __repr__(&self) -> String {
+        format!(
+            "DeduplicatedSpike(primary={}, sample={}, peak={:.2}uV, neighbors={:?})",
+            self.primary_channel, self.sample_index, self.peak_amplitude_uv, self.participating_channels
         )
     }
 }
@@ -70,6 +107,36 @@ pub fn detect_spikes<'py>(
         .collect();
 
     Ok(py_spikes)
+}
+
+#[pyfunction]
+#[pyo3(signature = (spikes, probe, radius_um=50.0, window_samples=15))]
+pub fn deduplicate_spikes(
+    spikes: Vec<PyRef<PySpikeEvent>>,
+    probe: PyRef<PyProbeLayout>,
+    radius_um: f32,
+    window_samples: u64,
+) -> Vec<PyDeduplicatedSpike> {
+    let rust_spikes: Vec<SpikeEvent> = spikes
+        .iter()
+        .map(|s| SpikeEvent {
+            channel_id: s.channel_id,
+            sample_index: s.sample_index,
+            peak_amplitude_uv: s.peak_amplitude_uv,
+        })
+        .collect();
+
+    let deduped = deduplicate_spikes_spatial(&rust_spikes, &probe.inner, radius_um, window_samples);
+
+    deduped
+        .into_iter()
+        .map(|d: DeduplicatedSpike| PyDeduplicatedSpike {
+            primary_channel: d.primary_channel,
+            sample_index: d.sample_index,
+            peak_amplitude_uv: d.peak_amplitude_uv,
+            participating_channels: d.participating_channels,
+        })
+        .collect()
 }
 
 #[pyfunction]

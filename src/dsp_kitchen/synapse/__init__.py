@@ -1,13 +1,22 @@
 """
-Neuroscience-specific algorithms: probe layouts, neural spike detection, waveform extraction,
-and Quiroga noise estimation.
+Neuroscience-specific algorithms: probe layouts, neural spike detection,
+spatial deduplication, sub-sample sinc realignment, multi-channel snippet extraction,
+and electrophysiology metrics (ISI violations, SNR, templates).
 """
 
+from typing import List, Optional, Tuple
 from .._dsp_kitchen import (
     ProbeLayout,
     SpikeEvent,
+    DeduplicatedSpike,
+    WaveformSnippet,
     detect_spikes,
+    deduplicate_spikes,
     estimate_noise,
+    extract_snippets,
+    compute_isi,
+    compute_snr,
+    compute_template,
 )
 
 def neuropixels_1_0_layout() -> ProbeLayout:
@@ -26,13 +35,29 @@ def utah_array_layout() -> ProbeLayout:
     """Returns the standard 10x10 (96-channel) Utah array layout."""
     return ProbeLayout.utah_array()
 
+def custom_layout(
+    name: str,
+    positions: List[Tuple[float, float]],
+    shank_ids: Optional[List[int]] = None,
+) -> ProbeLayout:
+    """Creates a custom probe layout from 2D coordinates."""
+    return ProbeLayout.from_positions(name, positions, shank_ids)
+
 __all__ = [
     "ProbeLayout",
     "SpikeEvent",
+    "DeduplicatedSpike",
+    "WaveformSnippet",
     "detect_spikes",
+    "deduplicate_spikes",
     "estimate_noise",
+    "extract_snippets",
+    "compute_isi",
+    "compute_snr",
+    "compute_template",
     "neuropixels_1_0_layout",
     "neuropixels_2_0_layout",
     "tetrode_layout",
     "utah_array_layout",
+    "custom_layout",
 ]
