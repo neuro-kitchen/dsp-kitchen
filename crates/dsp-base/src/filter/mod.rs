@@ -1,6 +1,7 @@
 pub mod iir;
 pub mod fir;
 pub mod non_linear;
+pub mod template;
 
 // Convenient flat re-exports for common workflows
 pub use iir::{
@@ -10,6 +11,7 @@ pub use iir::{
 };
 pub use fir::execute_fir;
 pub use non_linear::{execute_median_9p, execute_teager_kaiser};
+pub use template::{TemplateFilter, subtract_template_1d, subtract_template_multichannel};
 
 #[cfg(test)]
 mod tests {

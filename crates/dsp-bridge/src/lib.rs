@@ -13,8 +13,8 @@ use pyo3::prelude::*;
 
 use crate::buffer::PyMmapRecording;
 use crate::filter::{
-    bandpass_filter, median_filter_9p, notch_filter, teager_kaiser_filter, PyBandpassFilter,
-    PyMedianFilter, PyNotchFilter, PyTeagerKaiser,
+    bandpass_filter, median_filter_9p, notch_filter, subtract_template, teager_kaiser_filter,
+    PyBandpassFilter, PyMedianFilter, PyNotchFilter, PyTeagerKaiser, PyTemplateFilter,
 };
 use crate::linalg::PyPca;
 use crate::math::{scale_samples, PyClamp, PyScale, PySubtractBaseline};
@@ -42,6 +42,7 @@ fn _dsp_kitchen(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCommonAverageReference>()?;
     m.add_class::<PyMedianFilter>()?;
     m.add_class::<PyTeagerKaiser>()?;
+    m.add_class::<PyTemplateFilter>()?;
     m.add_class::<PyPipeline>()?;
     m.add_class::<PyDspSession>()?;
     m.add_class::<PyPca>()?;
@@ -53,6 +54,7 @@ fn _dsp_kitchen(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(scale_samples, m)?)?;
     m.add_function(wrap_pyfunction!(median_filter_9p, m)?)?;
     m.add_function(wrap_pyfunction!(teager_kaiser_filter, m)?)?;
+    m.add_function(wrap_pyfunction!(subtract_template, m)?)?;
     m.add_function(wrap_pyfunction!(detect_spikes, m)?)?;
     m.add_function(wrap_pyfunction!(deduplicate_spikes, m)?)?;
     m.add_function(wrap_pyfunction!(estimate_noise, m)?)?;
