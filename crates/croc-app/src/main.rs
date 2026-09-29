@@ -1,22 +1,23 @@
+mod controller;
 mod model;
 mod view;
 mod viewmodel;
 
-use std::cell::RefCell;
 use std::path::PathBuf;
-use std::rc::Rc;
+use std::sync::Arc;
 use anyhow::Result;
 use clap::Parser;
-use slint::{ComponentHandle, Image, SharedString, Timer, TimerMode};
 
-use model::Dataset;
+use controller::Controller;
+use model::{Dataset, SignalSource};
+use view::{ViewMode, WaveformRenderer};
 use viewmodel::AppViewModel;
 
 slint::include_modules!();
 
 #[derive(Parser, Debug)]
 #[command(name = "croc-app")]
-#[command(about = "High-Performance Multi-Channel Signal & Electrophysiology Viewer in Slint (MVVM Architecture)")]
+#[command(about = "Croc: multi-view electrophysiology signal workbench (Slint, MVVM)")]
 struct Args {
     /// Path to recording dataset file (.bin)
     #[arg(short, long)]
@@ -30,9 +31,25 @@ struct Args {
     #[arg(short = 'r', long)]
     sample_rate: Option<f64>,
 
-    /// Optional path to export a rendered waveform snapshot PNG and exit
+    /// Optional path to export a rendered plot snapshot PNG and exit
     #[arg(long)]
     snapshot: Option<PathBuf>,
+
+    /// Render the snapshot in heatmap mode
+    #[arg(long)]
+    heatmap: bool,
+
+    /// Open the window, capture it to this PNG once views have rendered, and exit
+    #[arg(long)]
+    screenshot: Option<PathBuf>,
+
+    /// Window size for --screenshot, e.g. 1280x800 (logical px)
+    #[arg(long, default_value = "1280x800")]
+    size: String,
+
+    /// Neither restore nor save the workspace layout (--screenshot restores but never saves)
+    #[arg(long)]
+    no_session: bool,
 }
 
 fn main() -> Result<()> {
@@ -40,7 +57,7 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     // 1. Load Model (Dataset) and initialize ViewModel
-    let dataset = Dataset::load_or_synthetic(args.file, args.channels, args.sample_rate)?;
+    let dataset = Dataset::load_or_synthetic(args.file.clone(), args.channels, args.sample_rate)?;
     println!(
         "Loaded dataset: {} ({} channels, {} samples, {:.2}s @ {:.1} kHz)",
         dataset.name,
@@ -49,225 +66,57 @@ fn main() -> Result<()> {
         dataset.total_duration_sec(),
         dataset.sample_rate / 1000.0
     );
+    let path = args.file.clone().filter(|p| p.exists());
+    let mut vm = AppViewModel::new(dataset, path.clone());
+    if let Some(p) = path {
+        vm.push_recent(p);
+    }
+    println!("Detected {} timeline events across {} channels.", vm.events.len(), vm.dataset.total_channels);
 
-    let mut initial_vm = AppViewModel::new(dataset);
-    println!(
-        "Detected {} timeline events across {} channels.",
-        initial_vm.events.len(),
-        initial_vm.dataset.total_channels
-    );
-
-    // 2. Optional Headless Snapshot Export
+    // 2. Optional headless snapshot of the default traces (or heatmap) view
     if let Some(snap_path) = args.snapshot {
-        println!("Exporting headless waveform snapshot to: {}", snap_path.display());
-        initial_vm.timeline.scrub_to(2.45);
-        let pixel_buf = initial_vm.render_waveform_buffer(1200, 600);
-        image::save_buffer(
-            &snap_path,
-            pixel_buf.as_bytes(),
-            1200,
-            600,
-            image::ExtendedColorType::Rgba8,
-        )?;
-        println!("Waveform snapshot successfully saved (1200x600 px).");
+        let (w, h) = (1200u32, 600u32);
+        vm.timeline.scrub_to(2.45);
+        let kind = if args.heatmap { ViewMode::Heatmap } else { ViewMode::Traces };
+        let mut view = vm.views.iter().find(|v| v.kind == kind).expect("default layout has both kinds").clone();
+        view.set_canvas(w, h, 1.0);
+        let source: Arc<dyn SignalSource> = vm.dataset.clone();
+        let req = view.render_request(&vm.timeline, source, vm.events.clone());
+        let pixel_buf = WaveformRenderer::default().render(&req);
+        image::save_buffer(&snap_path, pixel_buf.as_bytes(), w, h, image::ExtendedColorType::Rgba8)?;
+        println!("Plot snapshot saved to {} ({w}x{h} px).", snap_path.display());
         return Ok(());
     }
 
-    // 3. Initialize Slint View and Bind ViewModel State
+    // 3. Window + controller (restores the saved layout, wires intents, starts the frame timer)
     let ui = AppWindow::new()?;
-    let state = ui.global::<AppState>();
-    let logic = ui.global::<AppLogic>();
+    // A screenshot restores the saved layout but never overwrites it
+    let restore = !args.no_session;
+    let save = restore && args.screenshot.is_none();
+    let _controller = Controller::install(&ui, vm, restore, save);
 
-    state.set_dataset_name(SharedString::from(&initial_vm.dataset.name));
-    state.set_channel_count(initial_vm.dataset.total_channels as i32);
-    state.set_sample_rate(initial_vm.dataset.sample_rate as f32);
-    state.set_total_duration_sec(initial_vm.timeline.total_duration_sec as f32);
-    state.set_total_spikes_detected(initial_vm.events.len() as i32);
-    state.set_visible_channels_count(initial_vm.visible_channels as i32);
-
-    let vm = Rc::new(RefCell::new(initial_vm));
-
-    // Synchronizes ViewModel state with Slint AppState
-    let sync_ui = {
-        let ui_weak = ui.as_weak();
-        let vm = Rc::clone(&vm);
-        move || {
-            let Some(ui) = ui_weak.upgrade() else { return };
-            let v = vm.borrow();
-
-            let pixel_buf = v.render_waveform_buffer(v.canvas_width, v.canvas_height);
-            let image = Image::from_rgba8(pixel_buf);
-
-            let state = ui.global::<AppState>();
-            state.set_waveform_image(image);
-            state.set_current_time_sec(v.timeline.current_time_sec as f32);
-            state.set_window_start_sec(v.timeline.window_start_sec as f32);
-            state.set_visible_window_sec(v.timeline.visible_window_sec as f32);
-            state.set_time_readout(SharedString::from(v.time_readout()));
-            state.set_is_playing(v.timeline.is_playing);
-            state.set_loop_playback(v.timeline.loop_playback);
-            state.set_playback_speed(v.timeline.playback_speed as f32);
-            state.set_amplitude_scale(v.amplitude_scale);
-            state.set_channel_label_range(SharedString::from(v.channel_label_range()));
-        }
-    };
-
-    // Initial render
-    sync_ui();
-
-    // 4. Bind View Intents (AppLogic Callbacks) -> ViewModel
-    {
-        let vm = Rc::clone(&vm);
-        let sync_ui = sync_ui.clone();
-        logic.on_toggle_play_pause(move || {
-            vm.borrow_mut().on_toggle_play();
-            sync_ui();
-        });
-    }
-
-    {
-        let vm = Rc::clone(&vm);
-        let sync_ui = sync_ui.clone();
-        logic.on_step_forward(move || {
-            vm.borrow_mut().on_step_forward();
-            sync_ui();
-        });
-    }
-
-    {
-        let vm = Rc::clone(&vm);
-        let sync_ui = sync_ui.clone();
-        logic.on_step_backward(move || {
-            vm.borrow_mut().on_step_backward();
-            sync_ui();
-        });
-    }
-
-    {
-        let vm = Rc::clone(&vm);
-        let sync_ui = sync_ui.clone();
-        logic.on_jump_to_start(move || {
-            vm.borrow_mut().on_jump_to_start();
-            sync_ui();
-        });
-    }
-
-    {
-        let vm = Rc::clone(&vm);
-        let sync_ui = sync_ui.clone();
-        logic.on_jump_to_end(move || {
-            vm.borrow_mut().on_jump_to_end();
-            sync_ui();
-        });
-    }
-
-    {
-        let vm = Rc::clone(&vm);
-        let sync_ui = sync_ui.clone();
-        logic.on_toggle_loop(move || {
-            vm.borrow_mut().on_toggle_loop();
-            sync_ui();
-        });
-    }
-
-    {
-        let vm = Rc::clone(&vm);
-        let sync_ui = sync_ui.clone();
-        logic.on_set_playback_speed(move |spd| {
-            vm.borrow_mut().on_set_playback_speed(spd);
-            sync_ui();
-        });
-    }
-
-    {
-        let vm = Rc::clone(&vm);
-        let sync_ui = sync_ui.clone();
-        logic.on_set_window_duration(move |dur| {
-            vm.borrow_mut().on_set_window_duration(dur);
-            sync_ui();
-        });
-    }
-
-    {
-        let vm = Rc::clone(&vm);
-        let sync_ui = sync_ui.clone();
-        logic.on_scrub_to_ratio(move |ratio| {
-            vm.borrow_mut().on_scrub_to_ratio(ratio);
-            sync_ui();
-        });
-    }
-
-    {
-        let vm = Rc::clone(&vm);
-        let sync_ui = sync_ui.clone();
-        logic.on_zoom_time(move |factor| {
-            vm.borrow_mut().on_zoom_time(factor);
-            sync_ui();
-        });
-    }
-
-    {
-        let vm = Rc::clone(&vm);
-        let sync_ui = sync_ui.clone();
-        logic.on_pan_time(move |dt| {
-            vm.borrow_mut().on_pan_time(dt);
-            sync_ui();
-        });
-    }
-
-    {
-        let vm = Rc::clone(&vm);
-        let sync_ui = sync_ui.clone();
-        logic.on_zoom_amplitude(move |factor| {
-            vm.borrow_mut().on_zoom_amplitude(factor);
-            sync_ui();
-        });
-    }
-
-    {
-        let vm = Rc::clone(&vm);
-        let sync_ui = sync_ui.clone();
-        logic.on_next_channel_page(move || {
-            vm.borrow_mut().on_next_channel_page();
-            sync_ui();
-        });
-    }
-
-    {
-        let vm = Rc::clone(&vm);
-        let sync_ui = sync_ui.clone();
-        logic.on_prev_channel_page(move || {
-            vm.borrow_mut().on_prev_channel_page();
-            sync_ui();
-        });
-    }
-
-    {
-        let vm = Rc::clone(&vm);
-        let sync_ui = sync_ui.clone();
-        logic.on_canvas_resized(move |w, h| {
-            vm.borrow_mut().on_canvas_resized(w, h);
-            sync_ui();
-        });
-    }
-
-    // 5. 60 FPS Animation & Playback Timer
-    let timer = Timer::default();
-    {
-        let vm = Rc::clone(&vm);
-        let sync_ui = sync_ui.clone();
-        timer.start(
-            TimerMode::Repeated,
-            std::time::Duration::from_millis(16), // ~60 Hz
-            move || {
-                let changed = vm.borrow_mut().on_tick();
-                if changed {
-                    sync_ui();
+    let _capture = args.screenshot.map(|path| {
+        let (w, h) = args.size.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?))).unwrap_or((1280.0, 800.0));
+        ui.window().set_size(slint::LogicalSize::new(w, h));
+        let weak = ui.as_weak();
+        let timer = slint::Timer::default();
+        // Enough time for the first layout pass and the worker's first frames
+        timer.start(slint::TimerMode::SingleShot, std::time::Duration::from_millis(1500), move || {
+            if let Some(ui) = weak.upgrade() {
+                match ui.window().take_snapshot() {
+                    Ok(buf) => {
+                        let saved = image::save_buffer(&path, buf.as_bytes(), buf.width(), buf.height(), image::ExtendedColorType::Rgba8);
+                        println!("Screenshot {} ({}x{} px): {saved:?}", path.display(), buf.width(), buf.height());
+                    }
+                    Err(e) => eprintln!("Screenshot failed: {e}"),
                 }
-            },
-        );
-    }
+            }
+            let _ = slint::quit_event_loop();
+        });
+        timer
+    });
 
     ui.run()?;
+    Controller::shutdown();
     Ok(())
 }

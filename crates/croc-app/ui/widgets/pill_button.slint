@@ -1,3 +1,5 @@
+import { Theme } from "../theme.slint";
+
 // Reusable PillButton for presets and toggle options
 export component PillButton inherits Rectangle {
     in property <string> text: "100ms";
@@ -6,17 +8,17 @@ export component PillButton inherits Rectangle {
 
     height: 24px;
     border-radius: 12px;
-    background: root.selected ? #0284c7 : (touch.has-hover ? #21262d : #161b22);
+    background: root.selected ? Theme.accent-strong : (touch.has-hover ? Theme.surface-raised : Theme.surface);
     border-width: 1px;
-    border-color: root.selected ? #38bdf8 : #30363d;
+    border-color: root.selected ? Theme.accent : Theme.border;
 
     HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 10px;
+        padding-left: 8px;
+        padding-right: 8px;
         Text {
             text: root.text;
-            color: root.selected ? #ffffff : (touch.has-hover ? #f0f6fc : #8b949e);
-            font-size: 11px;
+            color: root.selected ? #ffffff : (touch.has-hover ? Theme.text-strong : Theme.text-muted);
+            font-size: Theme.font-small;
             font-weight: root.selected ? 600 : 400;
             horizontal-alignment: center;
             vertical-alignment: center;

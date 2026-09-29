@@ -1,18 +1,17 @@
 //! Model layer for croc-app.
 //!
 //! Encapsulates domain models and pure business logic:
-//! - `Dataset`: Binary/synthetic recording buffer and metadata
+//! - `SignalSource`: Read-only data source trait consumed by views
+//! - `Dataset`: Memory-mapped / synthetic recording implementing `SignalSource`
 //! - `TimelineState`: Interactive playback, scrubbing, and temporal coordinates
-//! - `decimation`: Constant O(W) screen-space Min-Max LOD decimation
-//! - `events`: Action potential detection and timeline event markers
+//! - `events`: Action potential detection (via `dsp-synapse`) and timeline event markers
 
 pub mod dataset;
-pub mod decimation;
 pub mod events;
+pub mod source;
 pub mod timeline;
 
 pub use dataset::Dataset;
-#[allow(unused_imports)]
-pub use decimation::{decimate_min_max, LodBucket};
 pub use events::SpikeEventStore;
+pub use source::SignalSource;
 pub use timeline::TimelineState;

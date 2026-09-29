@@ -1,0 +1,33 @@
+import { Theme } from "../theme.slint";
+import { AppState, AppLogic } from "../logic.slint";
+import { Seat } from "seat.slint";
+import { Splitter } from "splitter.slint";
+
+// The dock: seats and gutters placed by Rust (Slint has no recursion, so the split tree is
+// walked flat on the Rust side). Reports its own size so Rust can lay the tree out.
+export component Workspace inherits Rectangle {
+    background: Theme.window-bg;
+
+    init => { AppLogic.workspace_resized(self.width, self.height); }
+    changed width => { AppLogic.workspace_resized(self.width, self.height); }
+    changed height => { AppLogic.workspace_resized(self.width, self.height); }
+
+    for seat in AppState.seats: Seat {
+        x: seat.x;
+        y: seat.y;
+        width: seat.width;
+        height: seat.height;
+        data: seat;
+    }
+
+    // After the seats so a gutter is hit before the seats beside it
+    for divider in AppState.dividers: Splitter {
+        x: divider.x;
+        y: divider.y;
+        width: divider.width;
+        height: divider.height;
+        columns: divider.columns;
+        pressed => { AppLogic.divider_pressed(divider.index); }
+        moved(delta) => { AppLogic.divider_dragged(divider.index, delta); }
+    }
+}

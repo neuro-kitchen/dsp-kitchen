@@ -1,0 +1,136 @@
+import { SpinBox, ComboBox, Button } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { ViewKind } from "../types.slint";
+import { AppState, AppLogic } from "../logic.slint";
+import { PillButton } from "../widgets/pill_button.slint";
+
+component SectionTitle inherits Text {
+    color: Theme.text-muted;
+    font-size: Theme.font-small;
+    font-weight: 700;
+}
+
+component Label inherits Text {
+    color: Theme.text-muted;
+    font-size: Theme.font-small;
+    vertical-alignment: center;
+}
+
+// Right panel: settings of the focused view, plus the shared time window.
+export component PropertiesPanel inherits Rectangle {
+    background: Theme.surface;
+    clip: true;
+
+    Rectangle {
+        x: 0px;
+        width: 1px;
+        background: Theme.border;
+    }
+
+    VerticalLayout {
+        padding: 10px;
+        spacing: 10px;
+        alignment: start;
+
+        SectionTitle { text: "VIEW"; }
+
+        if !AppState.focused.valid: Text {
+            text: "Select a view, or add one from the View menu.";
+            color: Theme.text-muted;
+            font-size: Theme.font-small;
+            wrap: word-wrap;
+        }
+
+        if AppState.focused.valid: VerticalLayout {
+            spacing: 10px;
+
+            Text {
+                text: AppState.focused.title;
+                color: Theme.text;
+                font-size: Theme.font-body;
+                font-weight: 600;
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                Label { text: "Type"; width: 64px; }
+                ComboBox {
+                    model: ["Traces", "Heatmap"];
+                    current-index: AppState.focused.kind == ViewKind.heatmap ? 1 : 0;
+                    selected(value) => {
+                        AppLogic.set_view_kind(AppState.focused.view_id,
+                            value == "Heatmap" ? ViewKind.heatmap : ViewKind.traces);
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                Label { text: "Channels"; width: 64px; }
+                Text {
+                    text: "\{AppState.focused.selected} selected";
+                    color: Theme.text;
+                    font-size: Theme.font-small;
+                    vertical-alignment: center;
+                }
+            }
+
+            if AppState.focused.kind == ViewKind.traces: HorizontalLayout {
+                spacing: 8px;
+                Label { text: "On screen"; width: 64px; }
+                SpinBox {
+                    minimum: 1;
+                    maximum: Math.max(1, AppState.focused.lanes_max);
+                    value: AppState.focused.lanes;
+                    edited(v) => { AppLogic.set_lanes(AppState.focused.view_id, v); }
+                }
+            }
+
+            if AppState.focused.kind == ViewKind.traces: HorizontalLayout {
+                spacing: 8px;
+                Label { text: "Showing"; width: 64px; }
+                Button { text: "▲"; clicked => { AppLogic.focused_page(false); } }
+                Text {
+                    text: AppState.focused.range_label;
+                    color: Theme.link;
+                    font-size: Theme.font-small;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                Button { text: "▼"; clicked => { AppLogic.focused_page(true); } }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                Label { text: "Gain"; width: 64px; }
+                Button { text: "−"; clicked => { AppLogic.zoom_gain(AppState.focused.view_id, 0.75); } }
+                Text {
+                    text: AppState.focused.gain_label;
+                    color: Theme.text;
+                    font-size: Theme.font-small;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                Button { text: "+"; clicked => { AppLogic.zoom_gain(AppState.focused.view_id, 1.0 / 0.75); } }
+            }
+        }
+
+        Rectangle { height: 1px; background: Theme.border; }
+
+        SectionTitle { text: "TIME WINDOW (ALL VIEWS)"; }
+        // Two rows of presets so the panel stays narrow
+        for row in [
+            [{ label: "25 ms", sec: 0.025 }, { label: "50 ms", sec: 0.050 }, { label: "100 ms", sec: 0.100 }],
+            [{ label: "250 ms", sec: 0.250 }, { label: "500 ms", sec: 0.500 }, { label: "1 s", sec: 1.0 }],
+        ]: HorizontalLayout {
+            spacing: 4px;
+            for preset in row: PillButton {
+                text: preset.label;
+                selected: Math.abs(AppState.visible_window_sec - preset.sec) < 0.0005;
+                clicked => { AppLogic.set_window_duration(preset.sec); }
+            }
+        }
+    }
+}

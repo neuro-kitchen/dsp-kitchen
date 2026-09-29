@@ -90,10 +90,23 @@ impl TimelineState {
         self.follow_playhead();
     }
 
-    /// Scales visible window duration by a zoom factor.
-    pub fn zoom_time(&mut self, factor: f64) {
-        let new_dur = self.visible_window_sec * factor;
-        self.set_window_duration(new_dur);
+    /// Scales the visible window around an anchor point, keeping the time under
+    /// `anchor_ratio` (0.0 = window start, 1.0 = window end) fixed on screen.
+    pub fn zoom_at(&mut self, factor: f64, anchor_ratio: f64) {
+        let ratio = anchor_ratio.clamp(0.0, 1.0);
+        let anchor_time = self.window_start_sec + ratio * self.visible_window_sec;
+        self.visible_window_sec =
+            (self.visible_window_sec * factor).clamp(0.005, self.total_duration_sec);
+        let max_start = (self.total_duration_sec - self.visible_window_sec).max(0.0);
+        self.window_start_sec =
+            (anchor_time - ratio * self.visible_window_sec).clamp(0.0, max_start);
+    }
+
+    /// Sets the visible window to `[start, end]` seconds (min 5 ms), clamped to the recording.
+    pub fn set_window_range(&mut self, start_sec: f64, end_sec: f64) {
+        self.visible_window_sec = (end_sec - start_sec).clamp(0.005, self.total_duration_sec);
+        let max_start = (self.total_duration_sec - self.visible_window_sec).max(0.0);
+        self.window_start_sec = start_sec.clamp(0.0, max_start);
     }
 
     /// Pans the visible time window by delta seconds without moving the playhead.
@@ -180,5 +193,39 @@ mod tests {
         // Pan forward 0.1s
         tl.pan_time(0.1);
         assert!((tl.window_start_sec - 5.000).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_set_window_range_clamps() {
+        let mut tl = TimelineState::new(10.0);
+        tl.set_window_range(2.0, 3.5);
+        assert_eq!((tl.window_start_sec, tl.visible_window_sec), (2.0, 1.5));
+
+        // Minimum width and right-edge clamping
+        tl.set_window_range(9.999, 9.9995);
+        assert!((tl.visible_window_sec - 0.005).abs() < 1e-12);
+        assert!((tl.window_start_sec - 9.995).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_zoom_at_keeps_anchor_fixed() {
+        let mut tl = TimelineState::new(10.0);
+        tl.window_start_sec = 4.0;
+        tl.visible_window_sec = 1.0;
+
+        // Anchor at 25% of the window -> t = 4.25 must stay at 25%
+        tl.zoom_at(0.5, 0.25);
+        assert!((tl.visible_window_sec - 0.5).abs() < 1e-9);
+        let anchor = tl.window_start_sec + 0.25 * tl.visible_window_sec;
+        assert!((anchor - 4.25).abs() < 1e-9);
+
+        // Zooming out past the start clamps the window to 0
+        tl.window_start_sec = 0.1;
+        tl.zoom_at(4.0, 0.0);
+        assert!((tl.visible_window_sec - 2.0).abs() < 1e-9);
+        assert_eq!(tl.window_start_sec, 0.1);
+        tl.zoom_at(1.0, 1.0);
+        tl.zoom_at(2.0, 1.0);
+        assert_eq!(tl.window_start_sec, 0.0);
     }
 }
