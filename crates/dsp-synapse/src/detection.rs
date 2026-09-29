@@ -8,28 +8,92 @@ pub struct SpikeEvent {
     pub peak_amplitude_uv: f32,
 }
 
-/// Simple voltage threshold detector (e.g. 5x standard deviation).
-pub fn detect_threshold_crossings(
-    signal: &[f32],
-    num_samples: usize,
-    channel_id: usize,
-    threshold_uv: f32,
+/// Computes the robust estimate of the background noise standard deviation (Quiroga et al., 2004):
+/// `sigma_n = median(|x|) / 0.6745`
+pub fn estimate_noise_std(signal: &[f32]) -> f32 {
+    if signal.is_empty() {
+        return 0.0;
+    }
+
+    let mut abs_vals: Vec<f32> = signal.iter().map(|&x| x.abs()).collect();
+    let mid = abs_vals.len() / 2;
+    // Partial sort to find median efficiently in O(N) time
+    abs_vals.select_nth_unstable_by(mid, |a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let median = abs_vals[mid];
+
+    median / 0.6745f32
+}
+
+/// Detects multi-channel action potential threshold crossings with adaptive noise estimation.
+///
+/// - `data`: Flat 2D array [channels, samples]
+/// - `channels`: Channel count
+/// - `samples`: Sample count
+/// - `threshold_factor`: Multiplier `k` (typically 4.0 to 5.0)
+/// - `refractory_samples`: Minimum samples between successive spikes on the same channel (e.g. 30 samples / 1 ms @ 30kHz)
+pub fn detect_spikes_multichannel(
+    data: &[f32],
+    channels: usize,
+    samples: usize,
+    threshold_factor: f32,
     refractory_samples: usize,
 ) -> Vec<SpikeEvent> {
-    let mut spikes = Vec::new();
-    let mut last_spike_sample = 0usize;
+    assert_eq!(data.len(), channels * samples);
+    let mut all_spikes = Vec::new();
 
-    for i in 1..num_samples {
-        let val = signal[i];
-        if val < -threshold_uv && (spikes.is_empty() || i > last_spike_sample + refractory_samples) {
-            spikes.push(SpikeEvent {
-                channel_id,
-                sample_index: i as u64,
-                peak_amplitude_uv: val,
-            });
-            last_spike_sample = i;
+    for ch in 0..channels {
+        let offset = ch * samples;
+        let ch_slice = &data[offset..offset + samples];
+
+        let sigma = estimate_noise_std(ch_slice);
+        if sigma <= 0.0 || sigma.is_nan() {
+            continue;
+        }
+
+        let thresh = -threshold_factor * sigma;
+        let mut last_spike_sample = 0usize;
+
+        for t in 1..samples.saturating_sub(1) {
+            let val = ch_slice[t];
+            // Negative peak detection: strictly below threshold AND lower than immediate neighbors
+            if val < thresh && val < ch_slice[t - 1] && val <= ch_slice[t + 1] {
+                if all_spikes.is_empty() || t > last_spike_sample + refractory_samples {
+                    all_spikes.push(SpikeEvent {
+                        channel_id: ch,
+                        sample_index: t as u64,
+                        peak_amplitude_uv: val,
+                    });
+                    last_spike_sample = t;
+                }
+            }
         }
     }
 
-    spikes
+    // Sort chronologically
+    all_spikes.sort_by_key(|s| s.sample_index);
+    all_spikes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_noise_estimation_and_spike_detection() {
+        let mut signal = vec![0.0f32; 1000];
+        // Inject Gaussian-like background
+        for i in 0..1000 {
+            signal[i] = ((i % 5) as f32 - 2.0) * 5.0; // std ~ 7
+        }
+        // Inject strong spike at sample 300
+        signal[299] = -50.0;
+        signal[300] = -120.0;
+        signal[301] = -40.0;
+
+        let spikes = detect_spikes_multichannel(&signal, 1, 1000, 4.0, 30);
+        assert_eq!(spikes.len(), 1);
+        assert_eq!(spikes[0].channel_id, 0);
+        assert_eq!(spikes[0].sample_index, 300);
+        assert_eq!(spikes[0].peak_amplitude_uv, -120.0);
+    }
 }
