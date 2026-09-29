@@ -1,0 +1,29 @@
+// Reusable PillButton for presets and toggle options
+export component PillButton inherits Rectangle {
+    in property <string> text: "100ms";
+    in property <bool> selected: false;
+    callback clicked <=> touch.clicked;
+
+    height: 24px;
+    border-radius: 12px;
+    background: root.selected ? #0284c7 : (touch.has-hover ? #21262d : #161b22);
+    border-width: 1px;
+    border-color: root.selected ? #38bdf8 : #30363d;
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        Text {
+            text: root.text;
+            color: root.selected ? #ffffff : (touch.has-hover ? #f0f6fc : #8b949e);
+            font-size: 11px;
+            font-weight: root.selected ? 600 : 400;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+    }
+}
