@@ -1,6 +1,53 @@
-[package]
-name = "dsp-kitchen"
+[workspace]
+resolver = "2"
+members = [
+    "crates/dsp-core",
+    "crates/dsp-base",
+    "crates/dsp-synapse",
+    "crates/dsp-stream",
+    "crates/dsp-bridge",
+    "crates/dsp-cli",
+]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
+authors = ["dsp-kitchen contributors"]
+license = "MIT OR Apache-2.0"
 
-[dependencies]
+[workspace.dependencies]
+dsp-core = { path = "crates/dsp-core" }
+dsp-base = { path = "crates/dsp-base" }
+dsp-synapse = { path = "crates/dsp-synapse" }
+dsp-stream = { path = "crates/dsp-stream" }
+dsp-bridge = { path = "crates/dsp-bridge" }
+
+# Compute
+cubecl = { version = "0.10.0", default-features = false }
+
+# CLI & Configuration
+clap = { version = "4.6.7", features = ["derive", "cargo", "env"] }
+
+# IPC & Transport
+shared_memory = "0.12.4"
+memmap2 = "0.9.11"
+zarrs = "0.23"
+quinn = "0.11.12"
+tonic = "0.14.6"
+prost = "0.14"
+
+# Python Interop
+pyo3 = { version = "0.29.2", features = ["extension-module"] }
+
+# Concurrency & Async
+tokio = { version = "1.43", features = ["full"] }
+
+# Serialization & Utilities
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+anyhow = "1.0"
+num-traits = "0.2"
+num-rational = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
