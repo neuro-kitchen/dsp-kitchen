@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// 3D physical position of a sensor contact in micrometers (µm).
+/// Physical coordinates of a single sensor recording site (in micrometers or unit space).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Position3D {
     pub x_um: f32,
@@ -9,8 +9,8 @@ pub struct Position3D {
 }
 
 impl Position3D {
-    pub const fn new(x_um: f32, y_um: f32, z_um: f32) -> Self {
-        Self { x_um, y_um, z_um }
+    pub fn new(x: f32, y: f32, z: f32) -> Self {
+        Self { x_um: x, y_um: y, z_um: z }
     }
 
     pub fn distance_to(&self, other: &Self) -> f32 {
@@ -21,22 +21,26 @@ impl Position3D {
     }
 }
 
-/// Description of a single sensor recording site.
+/// Metadata and physical specifications for an individual sensor site.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SensorSite {
     pub channel_id: usize,
-    pub position: Position3D,
+    pub device_index: usize,
+    pub group_id: usize,
     pub shank_id: usize,
-    pub is_enabled: bool,
+    pub position: Position3D,
+    pub enabled: bool,
 }
 
 impl SensorSite {
     pub fn new(channel_id: usize, position: Position3D, shank_id: usize) -> Self {
         Self {
             channel_id,
-            position,
+            device_index: channel_id,
+            group_id: 0,
             shank_id,
-            is_enabled: true,
+            position,
+            enabled: true,
         }
     }
 }
