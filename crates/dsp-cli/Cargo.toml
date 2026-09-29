@@ -24,4 +24,6 @@ tracing-subscriber.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 cubecl = { workspace = true, features = ["wgpu"] }
+quinn.workspace = true
 anyhow.workspace = true
+

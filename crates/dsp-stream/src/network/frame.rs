@@ -78,6 +78,16 @@ impl StreamFrame {
         <Self as Message>::decode(buf)
     }
 
+    /// Returns total wire byte size including the 4-byte length prefix.
+    pub fn total_wire_bytes(&self) -> usize {
+        4 + self.encoded_len()
+    }
+
+    /// Returns uncompressed float32 payload size in bytes.
+    pub fn payload_bytes(&self) -> usize {
+        self.data.len() * std::mem::size_of::<f32>()
+    }
+
     /// Resolves the typed StreamPurpose.
     pub fn stream_purpose(&self) -> StreamPurpose {
         match self.purpose {
@@ -88,3 +98,4 @@ impl StreamFrame {
         }
     }
 }
+

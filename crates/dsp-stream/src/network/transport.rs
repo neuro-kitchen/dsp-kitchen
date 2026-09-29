@@ -43,11 +43,24 @@ impl QuicStreamServer {
         self.endpoint.local_addr()
     }
 
-    /// Asynchronously accepts the next incoming QUIC client connection.
-    pub async fn accept(&self) -> Option<quinn::Connection> {
-        let incoming = self.endpoint.accept().await?;
-        incoming.await.ok()
+    /// Returns a reference to the underlying Quinn endpoint.
+    pub fn endpoint(&self) -> &quinn::Endpoint {
+        &self.endpoint
     }
+
+    /// Asynchronously accepts the next successfully established QUIC client connection.
+    pub async fn accept(&self) -> Option<quinn::Connection> {
+        loop {
+            let incoming = self.endpoint.accept().await?;
+            match incoming.await {
+                Ok(conn) => return Some(conn),
+                Err(e) => {
+                    tracing::warn!("QUIC incoming handshake failed: {e}");
+                }
+            }
+        }
+    }
+
 
     /// Sends a length-delimited `StreamFrame` over a QUIC send stream.
     pub async fn send_frame(
@@ -279,4 +292,39 @@ mod tests {
             mb_transferred, elapsed, throughput_mb_s
         );
     }
+
+    #[tokio::test]
+    async fn test_quic_insecure_client_connection() {
+        let server_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let (server_config, _cert_der) =
+            crate::network::generate_server_config(vec!["localhost".to_string(), "127.0.0.1".to_string()])
+                .expect("Failed to create server config");
+
+        let server = QuicStreamServer::bind(server_addr, server_config).expect("Failed to bind server");
+        let bound_addr = server.local_addr().expect("Failed to get local addr");
+
+        tokio::spawn(async move {
+            if let Some(conn) = server.accept().await {
+                let (mut send, mut recv) = conn.open_bi().await.unwrap();
+                let frame = StreamFrame::new(
+                    0, 0, 1, 10, 1000.0, vec![1.0; 10], StreamPurpose::Processing,
+                );
+                QuicStreamServer::send_frame(&mut send, &frame).await.unwrap();
+                let _ = send.finish();
+                let mut ack = [0u8; 2];
+                let _ = recv.read_exact(&mut ack).await;
+            }
+        });
+
+        let client_config = crate::network::make_insecure_client_config().expect("Failed client config");
+        let client = QuicStreamClient::bind(client_config).expect("Failed to bind client");
+        let conn = client.connect(bound_addr, "localhost").await.expect("Client failed to connect");
+        let (mut client_send, mut recv) = conn.accept_bi().await.expect("accept_bi failed");
+        let frame = QuicStreamClient::recv_frame(&mut recv).await.unwrap();
+        assert!(frame.is_some());
+        client_send.write_all(b"OK").await.unwrap();
+        let _ = client_send.finish();
+    }
 }
+
+

@@ -69,7 +69,18 @@ cargo run -p dsp-cli --release -- inspect
 
 # Run dynamic 1..1024 multi-channel throughput sweep
 cargo run -p dsp-cli --release -- benchmark --sweep
+
+# Serve a dataset over encrypted QUIC transport (clock-paced real-time simulation)
+cargo run -p dsp-cli --release -- serve --file playground/data/mearec_32ch_10s.bin
+
+# In another terminal: Connect and benchmark latency, jitter, throughput & packet loss
+cargo run -p dsp-cli --release -- receive --addr 127.0.0.1:50051 --duration 10.0
+
+# Line-rate stress testing (unthrottled line-rate throughput)
+cargo run -p dsp-cli --release -- serve --file playground/data/mock_signal_384ch.bin --no-realtime
+cargo run -p dsp-cli --release -- receive --addr 127.0.0.1:50051 --max-frames 300
 ```
+
 
 #### 4. Build and Install Python Bindings (`dsp-bridge`)
 

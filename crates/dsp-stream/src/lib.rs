@@ -11,7 +11,11 @@ pub use buffer::MultiChannelRingBuffer;
 pub use storage::{create_zarr_recording, read_zarr_recording};
 pub use reduction::min_max_decimate;
 pub use purpose::StreamPurpose;
-pub use network::{StreamFrame, generate_self_signed_tls, QuicStreamClient, QuicStreamServer};
+pub use network::{
+    generate_self_signed_tls, generate_server_config, make_client_config_with_cert,
+    make_insecure_client_config, QuicStreamClient, QuicStreamServer, StreamFrame,
+};
+
 
 // Backward-compatible module aliases
 pub use reduction as decimate;
