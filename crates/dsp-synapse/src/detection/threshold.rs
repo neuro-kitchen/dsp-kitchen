@@ -52,6 +52,35 @@ pub fn detect_spikes_multichannel(
     all_spikes
 }
 
+/// Polymorphic MAD threshold detector implementing [`crate::traits::SpikeDetector`].
+#[derive(Debug, Clone)]
+pub struct ThresholdSpikeDetector {
+    pub threshold_factor: f32,
+    pub refractory_ms: f64,
+}
+
+impl Default for ThresholdSpikeDetector {
+    fn default() -> Self {
+        Self {
+            threshold_factor: 4.5,
+            refractory_ms: 1.0,
+        }
+    }
+}
+
+impl crate::traits::SpikeDetector for ThresholdSpikeDetector {
+    fn detect(
+        &self,
+        data: &[f32],
+        channels: usize,
+        samples: usize,
+        sample_rate_hz: f64,
+    ) -> Vec<SpikeEvent> {
+        let ref_samples = ((sample_rate_hz * self.refractory_ms * 1e-3).round() as usize).max(1);
+        detect_spikes_multichannel(data, channels, samples, self.threshold_factor, ref_samples)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
