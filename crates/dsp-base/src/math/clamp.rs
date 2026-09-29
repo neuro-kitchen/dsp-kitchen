@@ -1,28 +1,28 @@
 use cubecl::prelude::*;
 use crate::geometry::LaunchGeometry;
-use super::kernels::neo_kernel;
+use super::kernels::clamp_samples_kernel;
 
-/// High-level host dispatcher for the discrete Nonlinear Energy Operator.
-pub fn execute_neo<R: Runtime>(
+/// High-level host dispatcher for elementwise sample clamping.
+pub fn execute_clamp<R: Runtime>(
     client: &ComputeClient<R>,
     input: &cubecl::server::Handle,
     output: &cubecl::server::Handle,
-    channels: usize,
-    samples: usize,
+    total_elements: usize,
+    min_val: f32,
+    max_val: f32,
     is_cpu: bool,
 ) {
-    let geom = LaunchGeometry::for_channels_and_samples(channels, samples, is_cpu);
-    let total_elements = channels * samples;
+    let geom = LaunchGeometry::for_1d(total_elements, is_cpu);
 
     unsafe {
-        neo_kernel::launch::<R>(
+        clamp_samples_kernel::launch::<R>(
             client,
             geom.cube_count,
             geom.cube_dim,
             ArrayArg::from_raw_parts(input.clone(), total_elements),
             ArrayArg::from_raw_parts(output.clone(), total_elements),
-            channels as u32,
-            samples as u32,
+            min_val,
+            max_val,
         );
     }
 }

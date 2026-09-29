@@ -107,13 +107,12 @@ impl LaunchGeometry {
                 is_cpu: true,
             }
         } else {
-            let workgroup_size = if channels <= 32 {
-                32u32
-            } else if channels <= 128 {
-                64u32
-            } else {
-                256u32
-            };
+            let warp_size = 32u32;
+            let min_wg = warp_size;
+            let max_wg = 256u32;
+            // Align to nearest hardware warp multiple, smoothly scaling from 32 to 256
+            let desired = ((channels as u32 + warp_size - 1) / warp_size) * warp_size;
+            let workgroup_size = desired.clamp(min_wg, max_wg);
             let num_cubes = ((channels as u32) + workgroup_size - 1) / workgroup_size;
 
             Self {
