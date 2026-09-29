@@ -1,0 +1,19 @@
+[package]
+name = "dsp-base"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[features]
+default = ["wgpu"]
+wgpu = ["cubecl/wgpu"]
+cpu = ["cubecl/cpu"]
+cuda = ["cubecl/cuda"]
+hip = ["cubecl/hip"]
+
+[dependencies]
+dsp-core.workspace = true
+cubecl.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
