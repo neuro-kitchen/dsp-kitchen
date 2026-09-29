@@ -38,3 +38,49 @@ pub fn extract_waveform_pca(
 
     Some((pca, per_spike_pcs))
 }
+
+/// Classical PCA feature embedder implementing [`crate::traits::FeatureEmbedder`].
+#[derive(Debug, Clone, Copy)]
+pub struct PcaFeatureEmbedder {
+    pub num_components: usize,
+}
+
+impl Default for PcaFeatureEmbedder {
+    fn default() -> Self {
+        Self { num_components: 4 }
+    }
+}
+
+impl crate::traits::FeatureEmbedder for PcaFeatureEmbedder {
+    fn embed(&self, batch: &crate::extraction::SnippetBatch) -> (Vec<f32>, usize) {
+        let d = self.num_components.max(1);
+        if batch.num_spikes == 0 {
+            return (Vec::new(), d);
+        }
+
+        let feat_len = batch.num_channels * batch.num_samples;
+        let num_spikes = batch.num_spikes;
+
+        // Transpose [num_spikes, feat_len] -> [feat_len, num_spikes]
+        let mut matrix = vec![0.0f32; feat_len * num_spikes];
+        for s_idx in 0..num_spikes {
+            let snip = batch.snippet_slice(s_idx);
+            for f in 0..feat_len {
+                matrix[f * num_spikes + s_idx] = snip[f];
+            }
+        }
+
+        let pca = PcaModel::fit(&matrix, feat_len, num_spikes, d);
+        let projected_flat = pca.project_cpu(&matrix, feat_len, num_spikes);
+        let actual_d = pca.num_components;
+
+        let mut out = vec![0.0f32; num_spikes * actual_d];
+        for s_idx in 0..num_spikes {
+            for k in 0..actual_d {
+                out[s_idx * actual_d + k] = projected_flat[k * num_spikes + s_idx];
+            }
+        }
+        (out, actual_d)
+    }
+}
+
