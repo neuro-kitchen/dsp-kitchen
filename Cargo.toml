@@ -4,6 +4,7 @@ members = [
     "crates/dsp-core",
     "crates/dsp-base",
     "crates/dsp-synapse",
+    "crates/dsp-synapse-ml",
     "crates/dsp-stream",
     "crates/dsp-bridge",
     "crates/dsp-cli",
@@ -21,11 +22,14 @@ license = "MIT OR Apache-2.0"
 dsp-core = { path = "crates/dsp-core" }
 dsp-base = { path = "crates/dsp-base" }
 dsp-synapse = { path = "crates/dsp-synapse" }
+dsp-synapse-ml = { path = "crates/dsp-synapse-ml" }
 dsp-stream = { path = "crates/dsp-stream" }
 dsp-bridge = { path = "crates/dsp-bridge" }
 
-# Compute
+# Compute & Tensors
 cubecl = { version = "0.10.0", default-features = false }
+ndarray = "0.17.2"
+bytemuck = { version = "1.25.2", features = ["derive"] }
 
 # CLI & Configuration
 clap = { version = "4.6.7", features = ["derive", "cargo", "env"] }
