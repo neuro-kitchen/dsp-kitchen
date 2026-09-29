@@ -40,6 +40,29 @@ impl PyProbeLayout {
         }
     }
 
+    #[staticmethod]
+    #[pyo3(signature = (name, positions, shank_ids=None))]
+    pub fn from_positions(name: &str, positions: Vec<(f32, f32)>, shank_ids: Option<Vec<usize>>) -> Self {
+        let contacts = positions
+            .into_iter()
+            .enumerate()
+            .map(|(idx, (x, y))| {
+                let shank = shank_ids.as_ref().and_then(|s| s.get(idx)).copied().unwrap_or(0);
+                dsp_core::SensorSite {
+                    channel_id: idx,
+                    device_index: idx,
+                    group_id: shank,
+                    shank_id: shank,
+                    position: dsp_core::Position3D::new(x, y, 0.0),
+                    enabled: true,
+                }
+            })
+            .collect();
+        Self {
+            inner: SensorLayout::new(name, contacts),
+        }
+    }
+
     #[getter]
     pub fn name(&self) -> String {
         self.inner.name.clone()
