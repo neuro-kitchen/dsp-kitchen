@@ -9,7 +9,7 @@ pub use iir::{
     BandpassCoeffs, design_butterworth_bandpass_4th, execute_bandpass,
 };
 pub use fir::execute_fir;
-pub use non_linear::execute_median_9p;
+pub use non_linear::{execute_median_9p, execute_teager_kaiser};
 
 #[cfg(test)]
 mod tests {

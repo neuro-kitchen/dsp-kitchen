@@ -1,10 +1,10 @@
 use cubecl::prelude::*;
 
-/// CubeCL kernel for the discrete Nonlinear Energy Operator (NEO):
+/// CubeCL kernel for the discrete Teager-Kaiser Energy Operator (TKEO):
 /// `psi[n] = x[n]^2 - x[n-1] * x[n+1]`
-/// Accentuates action potentials and transient energy bursts in neural traces.
+/// Accentuates high-frequency instantaneous energy transitions and transient bursts.
 #[cube(launch)]
-pub fn neo_kernel(
+pub fn teager_kaiser_kernel(
     input: &Array<f32>,
     output: &mut Array<f32>,
     num_channels: u32,
