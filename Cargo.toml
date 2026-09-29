@@ -7,7 +7,9 @@ members = [
     "crates/dsp-stream",
     "crates/dsp-bridge",
     "crates/dsp-cli",
+    "crates/croc-app",
 ]
+
 
 [workspace.package]
 version = "0.1.0"
