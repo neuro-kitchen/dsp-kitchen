@@ -1,0 +1,46 @@
+# neuro-convert metadata template.
+# Everything the source files do not record, plus how each source item maps to the output.
+# Keys under streams / events / tables are source names; "*" is the default for unlisted items.
+
+session:
+  description: "One or two sentences describing the session."   # required
+  # identifier: "my-unique-id"             # optional; a UUID is generated otherwise
+  # start_time: "2025-02-26T15:25:56-05:00" # optional; overrides the recorded time (needs a zone)
+  timezone: "-05:00"                        # zone of the recorded local start time
+  experiment_description: "What the experiment is about."
+  experimenters: ["Last, First"]
+  lab: "Lab name"
+  institution: "Institution"
+  keywords: []
+
+subject:
+  id: "subject-01"                          # defaults to the recorded subject name
+  species: "Rattus norvegicus"              # Latin binomial (DANDI requires it)
+  sex: U                                    # M, F, U (unknown) or O (other)
+  age: P90D                                 # ISO 8601 duration (DANDI requires it)
+  # strain: "Sprague Dawley"
+  # description: ""
+
+electrode_groups:
+  - name: grid
+    description: "Electrode array description"
+    location: "anatomical location"
+    # device: "RZ2(1)"                      # defaults to the first recorded device
+    # impedance: { table: Z_grid }          # table with R1 (kOhm), R2 (kOhm), ... columns
+
+streams:
+  "*": { type: timeseries, unit: a.u. }     # default for every stream
+  # SourceName:
+  #   type: electrical                      # electrical (ElectricalSeries) or timeseries
+  #   electrode_group: grid                 # required for electrical streams
+  #   name: OutputName                      # output name (default: source name)
+  #   description: "..."
+  #   conversion: 1.0                       # stored value → volts (electrical) or → unit
+  #   include: false                        # leave the stream out
+
+events:
+  # "*": { include: true }
+  # SourceName: { name: OutputName, description: "...", include: false }
+
+tables:
+  # "*": { include: true }

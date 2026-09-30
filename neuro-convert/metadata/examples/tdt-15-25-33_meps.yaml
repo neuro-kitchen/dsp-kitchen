@@ -1,0 +1,29 @@
+# Metadata for the TDT block playground/data/15-25-33_meps (HD_MEPs_v2).
+# Placeholders are marked; replace them before publishing.
+
+session:
+  description: "Motor evoked potentials recorded with a diaphragm HD-EMG grid during electrical stimulation (test session)."
+  start_time: "2025-01-01T12:00:00-05:00"   # placeholder
+  lab: "Example Lab"                         # placeholder
+  institution: "Example University"          # placeholder
+  keywords: [HD-EMG, diaphragm, motor evoked potentials]
+
+subject:
+  species: "Rattus norvegicus"
+  sex: U
+  # age: P90D                                # add before publishing (DANDI requires it)
+
+electrode_groups:
+  - name: HDEMG
+    description: "32-channel high-density EMG grid"
+    location: diaphragm
+    impedance: { table: Z_HDEMG }            # R1..R32 (kOhm), last measurement per channel
+  - name: EMG
+    description: "2-channel bipolar EMG"
+    location: unknown                        # placeholder
+
+streams:
+  "*": { type: timeseries, unit: a.u. }      # every stream not listed below
+  HDEG: { type: electrical, electrode_group: HDEMG, name: HDEMG, description: "Diaphragm HD-EMG" }
+  RawG: { type: electrical, electrode_group: EMG, name: EMG }
+  SU_1: { include: false }                   # processed copy of HDEG
