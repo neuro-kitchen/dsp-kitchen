@@ -8,6 +8,7 @@ use crate::metrics::WaveformTemplate;
 /// individual snippets in RAM.
 #[derive(Debug, Clone)]
 pub struct TemplateAccumulator {
+    channel_ids: Vec<usize>,
     num_channels: usize,
     num_samples: usize,
     count: u64,
@@ -16,10 +17,13 @@ pub struct TemplateAccumulator {
 }
 
 impl TemplateAccumulator {
-    /// Creates a new accumulator for snippets of shape `[num_channels, num_samples]`.
-    pub fn new(num_channels: usize, num_samples: usize) -> Self {
+    /// Creates a new accumulator for snippets of shape `[channel_ids.len(), num_samples]` whose
+    /// rows lie on recording channels `channel_ids`.
+    pub fn new(channel_ids: Vec<usize>, num_samples: usize) -> Self {
+        let num_channels = channel_ids.len();
         let len = num_channels * num_samples;
         Self {
+            channel_ids,
             num_channels,
             num_samples,
             count: 0,
@@ -97,12 +101,7 @@ impl TemplateAccumulator {
             .map(|&m2| ((m2 / n).max(0.0).sqrt()) as f32)
             .collect();
 
-        Some(WaveformTemplate {
-            num_channels: self.num_channels,
-            num_samples: self.num_samples,
-            mean,
-            std,
-        })
+        Some(WaveformTemplate::new(self.channel_ids.clone(), self.num_samples, mean, std))
     }
 }
 
@@ -141,7 +140,7 @@ mod tests {
         ];
 
         let batch = compute_mean_template(&snippets).unwrap();
-        let mut acc = TemplateAccumulator::new(2, 3);
+        let mut acc = TemplateAccumulator::new(vec![0, 1], 3);
         for s in &snippets {
             acc.update(s);
         }

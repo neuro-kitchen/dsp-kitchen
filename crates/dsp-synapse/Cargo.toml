@@ -5,6 +5,12 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[features]
+default = []
+cpu = ["dsp-base/cpu"]
+cuda = ["dsp-base/cuda"]
+hip = ["dsp-base/hip"]
+
 [dependencies]
 dsp-core.workspace = true
 dsp-base.workspace = true
@@ -13,3 +19,6 @@ cubecl = { workspace = true, features = ["wgpu"] }
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

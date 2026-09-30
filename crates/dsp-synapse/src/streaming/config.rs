@@ -1,6 +1,7 @@
 //! Configuration and dynamic halo computation for out-of-core spike sorting.
 
 use dsp_base::pipeline::Pipeline;
+use dsp_core::{DspError, DspResult};
 
 /// Half-window lobe margin for Lanczos/sinc fractional resampling (`W = 8` samples).
 pub const SINC_RESAMPLE_MARGIN: usize = 8;
@@ -10,8 +11,12 @@ pub const SINC_RESAMPLE_MARGIN: usize = 8;
 pub struct StreamingSortConfig {
     /// Duration of each valid interior streaming batch in seconds (default: `10.0` s).
     pub batch_duration_sec: f64,
-    /// Duration of the initial noise-floor calibration window in seconds (default: `5.0` s).
+    /// Total duration of the noise-floor calibration in seconds (default: `5.0` s), split into
+    /// `calibration_chunks` chunks spread evenly over the recording.
     pub calibration_duration_sec: f64,
+    /// Number of calibration chunks; σ per channel is the median of the per-chunk estimates
+    /// (default: `5`).
+    pub calibration_chunks: usize,
     /// Negative threshold multiplier in units of Quiroga $\sigma_n$ (default: `5.0`).
     pub threshold_factor: f32,
     /// Refractory period in milliseconds (default: `1.0` ms).
@@ -33,6 +38,7 @@ impl Default for StreamingSortConfig {
         Self {
             batch_duration_sec: 10.0,
             calibration_duration_sec: 5.0,
+            calibration_chunks: 5,
             threshold_factor: 5.0,
             refractory_ms: 1.0,
             spatial_radius_um: 150.0,
@@ -75,19 +81,51 @@ impl StreamingSortConfig {
         ((self.batch_duration_sec.max(0.5) * sample_rate.max(1.0)).round() as u64).max(1)
     }
 
+    /// Global sample range where spikes are detected: a full snippet plus the realignment margin
+    /// fits inside the recording.
+    pub fn detection_range(&self, sample_rate: f64, total_samples: u64) -> std::ops::Range<u64> {
+        let margin = crate::extraction::extraction_margin(self.apply_sinc_shift);
+        let start = (self.pre_samples(sample_rate) + margin) as u64;
+        let end = total_samples.saturating_sub((self.post_samples(sample_rate) + margin) as u64);
+        start..end.max(start)
+    }
+
+    /// Calibration chunks: `calibration_chunks` ranges totalling `calibration_duration_sec`,
+    /// spread evenly across `0..total_samples` (fewer / shorter for short recordings).
+    pub fn calibration_chunks(&self, sample_rate: f64, total_samples: u64) -> Vec<std::ops::Range<u64>> {
+        let k = self.calibration_chunks.max(1) as u64;
+        let total_len = ((self.calibration_duration_sec.max(0.1) * sample_rate.max(1.0)).round() as u64).max(k);
+        let len = (total_len / k).min(total_samples);
+        if len == 0 {
+            return Vec::new();
+        }
+        let span = total_samples - len;
+        (0..k)
+            .map(|i| {
+                let start = if k == 1 { 0 } else { span * i / (k - 1) };
+                start..start + len
+            })
+            .collect()
+    }
+
     /// Computes the required `(left_halo, right_halo)` in samples at `sample_rate` Hz
     /// given the filter stages in `pipeline`:
     ///
-    /// - `left_halo = pipeline.settling_samples(fs) + pre_samples(fs) + refractory_samples(fs) + SINC_RESAMPLE_MARGIN`
-    /// - `right_halo = post_samples(fs) + refractory_samples(fs) + SINC_RESAMPLE_MARGIN`
-    pub fn compute_halos(&self, sample_rate: f64, pipeline: &Pipeline) -> (u64, u64) {
-        let settling = pipeline.settling_samples(sample_rate);
+    /// - `left_halo = settling_left + pre_samples(fs) + refractory_samples(fs) + SINC_RESAMPLE_MARGIN`
+    /// - `right_halo = settling_right + post_samples(fs) + refractory_samples(fs) + SINC_RESAMPLE_MARGIN`
+    ///
+    /// where `(settling_left, settling_right) = pipeline.settling(fs)` (forward-backward filters need
+    /// both sides).
+    pub fn compute_halos(&self, sample_rate: f64, pipeline: &Pipeline) -> DspResult<(u64, u64)> {
+        let (settle_left, settle_right) = pipeline
+            .settling(sample_rate)
+            .map_err(|e| DspError::InvalidConfig(e.to_string()))?;
         let pre = self.pre_samples(sample_rate);
         let post = self.post_samples(sample_rate);
         let refrac = self.refractory_samples(sample_rate);
 
-        let left = (settling + pre + refrac + SINC_RESAMPLE_MARGIN) as u64;
-        let right = (post + refrac + SINC_RESAMPLE_MARGIN) as u64;
-        (left, right)
+        let left = (settle_left + pre + refrac + SINC_RESAMPLE_MARGIN) as u64;
+        let right = (settle_right + post + refrac + SINC_RESAMPLE_MARGIN) as u64;
+        Ok((left, right))
     }
 }

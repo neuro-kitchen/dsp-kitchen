@@ -11,6 +11,11 @@ use crate::traits::{MatchedSpike, SpikeMatcher};
 
 /// Deconvolves multi-channel continuous data using Orthogonal Matching Pursuit (OMP)
 /// against a dictionary of `WaveformTemplate`s.
+///
+/// Each template row is compared with the recording channel it belongs to
+/// (`channel_ids`); rows on channels outside the recording are ignored. All templates must have the
+/// same length. A match starting at sample `s` is reported at its trough, `s + trough_index`.
+#[allow(clippy::too_many_arguments)]
 pub fn match_spikes_omp(
     data: &[f32],
     channels: usize,
@@ -27,17 +32,23 @@ pub fn match_spikes_omp(
     }
 
     let t_len = templates[0].num_samples;
+    assert!(templates.iter().all(|t| t.num_samples == t_len), "templates must share one length");
     if t_len == 0 || samples <= t_len {
         return Vec::new();
     }
-    let center_offset = t_len / 2;
 
-    // Precompute template energy ||W_u||^2
-    let mut energies = Vec::with_capacity(templates.len());
-    for tmpl in templates {
-        let e: f32 = tmpl.mean.iter().map(|v| v * v).sum();
-        energies.push(e.max(1e-8));
-    }
+    // (template row, recording channel) pairs inside the recording, per template.
+    let rows: Vec<Vec<(usize, usize)>> = templates
+        .iter()
+        .map(|t| t.channel_ids.iter().enumerate().filter(|(_, c)| **c < channels).map(|(r, &c)| (r, c)).collect())
+        .collect();
+
+    // Energy ||W_u||^2 over the rows that take part in the match
+    let energies: Vec<f32> = templates
+        .iter()
+        .zip(&rows)
+        .map(|(t, rs)| rs.iter().map(|&(r, _)| t.row(r).iter().map(|v| v * v).sum::<f32>()).sum::<f32>().max(1e-8))
+        .collect();
 
     let mut residual = data.to_vec();
     let mut matched = Vec::new();
@@ -57,14 +68,10 @@ pub fn match_spikes_omp(
             let mut best_a = 0.0f32;
 
             for (u, tmpl) in templates.iter().enumerate() {
-                let u_ch = tmpl.num_channels.min(channels);
                 let mut dot = 0.0f32;
-                for c in 0..u_ch {
-                    let res_off = c * samples + s;
-                    let tmpl_off = c * t_len;
-                    for i in 0..t_len {
-                        dot += residual[res_off + i] * tmpl.mean[tmpl_off + i];
-                    }
+                for &(r, c) in &rows[u] {
+                    let res = &residual[c * samples + s..c * samples + s + t_len];
+                    dot += res.iter().zip(tmpl.row(r)).map(|(x, w)| x * w).sum::<f32>();
                 }
 
                 let raw_a = dot / energies[u];
@@ -92,7 +99,6 @@ pub fn match_spikes_omp(
                 let u = best_unit_at[s];
                 let scale = best_scale_at[s];
                 let tmpl = &templates[u];
-                let u_ch = tmpl.num_channels.min(channels);
 
                 let sub_lag = parabolic_subsample_offset(
                     -best_gain_at[s - 1],
@@ -101,17 +107,16 @@ pub fn match_spikes_omp(
                 );
 
                 // Subtract scaled template from residual
-                for c in 0..u_ch {
-                    let res_off = c * samples + s;
-                    let tmpl_off = c * t_len;
-                    for i in 0..t_len {
-                        residual[res_off + i] -= scale * tmpl.mean[tmpl_off + i];
+                for &(r, c) in &rows[u] {
+                    let res = &mut residual[c * samples + s..c * samples + s + t_len];
+                    for (x, w) in res.iter_mut().zip(tmpl.row(r)) {
+                        *x -= scale * w;
                     }
                 }
 
                 matched.push(MatchedSpike {
                     unit_id: u,
-                    sample_index: (s + center_offset) as u64,
+                    sample_index: (s + tmpl.trough_index) as u64,
                     subsample_lag: sub_lag,
                     amplitude_scale: scale,
                     score: g.sqrt(),
@@ -199,18 +204,8 @@ mod tests {
         }
 
         let templates = vec![
-            WaveformTemplate {
-                num_channels: 2,
-                num_samples: t_len,
-                mean: mean0.clone(),
-                std: vec![1.0; channels * t_len],
-            },
-            WaveformTemplate {
-                num_channels: 2,
-                num_samples: t_len,
-                mean: mean1.clone(),
-                std: vec![1.0; channels * t_len],
-            },
+            WaveformTemplate::new(vec![0, 1], t_len, mean0.clone(), vec![1.0; channels * t_len]),
+            WaveformTemplate::new(vec![0, 1], t_len, mean1.clone(), vec![1.0; channels * t_len]),
         ];
 
         // Inject BOTH Unit 0 at s=80 and Unit 1 at s=84 (overlapping by 16 of 20 samples!)
@@ -224,9 +219,52 @@ mod tests {
 
         let matched = match_spikes_omp(&raw, channels, samples, &templates, 0.7, 1.3, 1000.0, 4);
         assert_eq!(matched.len(), 2);
+        // Reported at the trough (sample 10 of the template), not the template centre.
+        assert_eq!(templates[0].trough_index, 10);
         assert_eq!(matched[0].unit_id, 0);
         assert_eq!(matched[0].sample_index, 90);
         assert_eq!(matched[1].unit_id, 1);
         assert_eq!(matched[1].sample_index, 94);
+    }
+
+    #[test]
+    fn test_omp_uses_template_channels_and_reports_trough() {
+        // 32-channel recording; unit 0 on channels 20-23, unit 1 on channels 24-27.
+        let (channels, samples, t_len, trough) = (32usize, 1_000usize, 30usize, 10usize);
+        let wave = |i: usize| {
+            let x = (i as f32 - trough as f32) / 2.0;
+            -100.0 * (1.0 - 0.3 * x * x) * (-0.5 * x * x).exp()
+        };
+        let template = |gains: [f32; 4], first: usize| {
+            let mut mean = Vec::new();
+            for g in gains {
+                mean.extend((0..t_len).map(|i| g * wave(i)));
+            }
+            WaveformTemplate::new((first..first + 4).collect(), t_len, mean, vec![1.0; 4 * t_len])
+        };
+        let templates = vec![template([1.0, 0.6, 0.3, 0.1], 20), template([0.2, 1.0, 0.7, 0.4], 24)];
+        assert_eq!(templates[0].trough_index, trough);
+
+        let mut raw = vec![0.0f32; channels * samples];
+        let events = [(0usize, 200usize), (1, 215), (0, 600), (1, 800)];
+        for &(u, start) in &events {
+            let t = &templates[u];
+            for (r, &c) in t.channel_ids.iter().enumerate() {
+                for (i, w) in t.row(r).iter().enumerate() {
+                    raw[c * samples + start + i] += w;
+                }
+            }
+        }
+        // A large unrelated signal on channels 0-3 (where the old code looked) must not match.
+        for c in 0..4 {
+            for i in 0..t_len {
+                raw[c * samples + 400 + i] += 3.0 * wave(i);
+            }
+        }
+
+        let matched = match_spikes_omp(&raw, channels, samples, &templates, 0.7, 1.3, 1_000.0, 4);
+        let got: Vec<(usize, u64)> = matched.iter().map(|m| (m.unit_id, m.sample_index)).collect();
+        let expected: Vec<(usize, u64)> = events.iter().map(|&(u, s)| (u, (s + trough) as u64)).collect();
+        assert_eq!(got, expected);
     }
 }

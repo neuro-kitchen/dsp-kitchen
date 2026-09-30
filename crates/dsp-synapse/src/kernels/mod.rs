@@ -5,8 +5,8 @@ pub mod threshold;
 pub mod extract_sinc;
 pub mod template_reduce;
 
-pub use threshold::{detect_channel_troughs_kernel, execute_detect_spikes_in_vram};
-pub use extract_sinc::{extract_sinc_snippets_kernel, execute_extract_sinc_in_vram};
+pub use threshold::{DetectionCarry, NO_SPIKE, detect_channel_troughs_kernel, execute_detect_spikes_in_vram};
+pub use extract_sinc::{VramSnippets, extract_sinc_snippets_kernel, execute_extract_sinc_in_vram};
 pub use template_reduce::{
     BatchTemplateStats, reduce_channel_templates_kernel, execute_reduce_templates_in_vram,
 };
@@ -95,8 +95,9 @@ mod tests {
             post_samples,
             true,
         );
+        let knn_table = precompute_knn_table(&probe, channels, k_neighbors);
         let mut cpu_accs: Vec<TemplateAccumulator> = (0..channels)
-            .map(|_| TemplateAccumulator::new(k_neighbors, snippet_len))
+            .map(|ch| TemplateAccumulator::new(knn_table[ch * k_neighbors..(ch + 1) * k_neighbors].iter().map(|&c| c as usize).collect(), snippet_len))
             .collect();
         for snip in &cpu_snips {
             cpu_accs[snip.primary_channel].update(snip);
@@ -107,7 +108,6 @@ mod tests {
         let client = WgpuRuntime::client(&device);
         let trace_handle = client.create_from_slice(f32::as_bytes(&trace));
         let sigmas_handle = client.create_from_slice(f32::as_bytes(&sigmas));
-        let knn_table = precompute_knn_table(&probe, k_neighbors);
         let knn_handle = client.create_from_slice(u32::as_bytes(&knn_table));
 
         let gpu_spikes = execute_detect_spikes_in_vram::<WgpuRuntime>(
@@ -118,15 +118,16 @@ mod tests {
             samples,
             1,
             samples - 1,
+            0,
             threshold_factor,
             refrac,
             256,
-            false,
+            None,
         );
         assert_eq!(gpu_spikes, cpu_spikes);
 
         let gpu_dedup = deduplicate_spikes_spatial(&gpu_spikes, &probe, 150.0, refrac as u64);
-        let (snips_handle, prim_handle) = execute_extract_sinc_in_vram::<WgpuRuntime>(
+        let extracted = execute_extract_sinc_in_vram::<WgpuRuntime>(
             &client,
             &trace_handle,
             &knn_handle,
@@ -137,24 +138,23 @@ mod tests {
             pre_samples,
             post_samples,
             true,
-            false,
         )
         .unwrap();
 
+        assert_eq!(extracted.dropped, 0);
         let batch_stats = execute_reduce_templates_in_vram::<WgpuRuntime>(
             &client,
-            &snips_handle,
-            &prim_handle,
+            &extracted.snippets,
+            &extracted.primary_channels,
             channels,
-            gpu_dedup.len(),
+            extracted.num_spikes(),
             k_neighbors,
             snippet_len,
-            false,
         );
 
         let elems_per_spike = k_neighbors * snippet_len;
         let mut gpu_accs: Vec<TemplateAccumulator> = (0..channels)
-            .map(|_| TemplateAccumulator::new(k_neighbors, snippet_len))
+            .map(|ch| TemplateAccumulator::new(knn_table[ch * k_neighbors..(ch + 1) * k_neighbors].iter().map(|&c| c as usize).collect(), snippet_len))
             .collect();
         for ch in 0..channels {
             let cnt = batch_stats.counts[ch] as u64;
@@ -176,5 +176,27 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn detection_overflow_retries_without_losing_crossings() {
+        let (channels, samples) = (2usize, 3_000usize);
+        let mut trace = vec![0.0f32; channels * samples];
+        for ch in 0..channels {
+            for t in (50..samples - 50).step_by(40) {
+                trace[ch * samples + t] = -100.0;
+            }
+        }
+        let client = WgpuRuntime::client(&WgpuDevice::default());
+        let trace_h = client.create_from_slice(f32::as_bytes(&trace));
+        let sig_h = client.create_from_slice(f32::as_bytes(&[5.0f32, 5.0]));
+        let run = |cap: usize| {
+            execute_detect_spikes_in_vram::<WgpuRuntime>(
+                &client, &trace_h, &sig_h, channels, samples, 1, samples - 1, 0, 5.0, 10, cap, None,
+            )
+        };
+        let full = run(10_000);
+        assert_eq!(full.len(), 2 * ((samples - 100) / 40 + 1));
+        assert_eq!(run(3), full);
     }
 }

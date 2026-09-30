@@ -6,8 +6,8 @@ pub mod presence_ratio;
 pub mod snr;
 pub mod template;
 
-pub use amplitude_cutoff::compute_amplitude_cutoff;
-pub use contamination::{compute_hill_contamination, compute_llobet_contamination};
+pub use amplitude_cutoff::{compute_amplitude_cutoff, compute_amplitude_cutoff_with};
+pub use contamination::{compute_llobet_contamination, count_refractory_violations};
 pub use isi::{IsiMetrics, compute_isi_violations};
 pub use isolation::{
     compute_d_prime, compute_isolation_distance, compute_silhouette_score,

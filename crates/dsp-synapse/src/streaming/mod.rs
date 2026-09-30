@@ -6,4 +6,4 @@ pub mod runner;
 
 pub use accumulator::TemplateAccumulator;
 pub use config::{SINC_RESAMPLE_MARGIN, StreamingSortConfig};
-pub use runner::{StreamingSortResult, StreamingSpikeRunner};
+pub use runner::{StreamingSortResult, StreamingSpikeRunner, calibrate_noise};

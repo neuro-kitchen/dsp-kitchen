@@ -4,7 +4,7 @@ pub mod neo;
 pub mod noise;
 pub mod threshold;
 
-pub use dedup::{DeduplicatedSpike, deduplicate_spikes_spatial};
+pub use dedup::{DeduplicatedSpike, StreamingDedup, deduplicate_spikes_spatial};
 pub use matched_filter::{
     MatchedFilterSpikeDetector, canonical_biphasic_prototype, detect_spikes_matched_filter,
 };

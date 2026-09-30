@@ -18,6 +18,11 @@ pub struct Correlogram {
 
 /// Computes the symmetric Auto-Correlogram (ACG) of a sorted spike train (in sample indices),
 /// excluding the trivial zero-lag self-coincidence ($i = j$).
+///
+/// Counts are over **ordered** pairs $(i, j)$, $i \ne j$, at lag $t_j - t_i$ (as SpikeInterface's
+/// correlograms): every unordered pair adds one count at $+\Delta t$ and one at $-\Delta t$, so two
+/// distinct spikes in the same sample add 2 to the centre bin, and the ACG equals the CCG of the
+/// train with itself minus the $i = j$ terms.
 pub fn compute_autocorrelogram(
     sorted_samples: &[u64],
     sample_rate_hz: f64,
@@ -152,5 +157,21 @@ mod tests {
         let train_b: Vec<u64> = train_a.iter().map(|&t| t + 3).collect();
         let ccg = compute_crosscorrelogram(&train_a, &train_b, 1000.0, 1.0, 25.0);
         assert_eq!(ccg.counts[center + 3], 20);
+    }
+
+    #[test]
+    fn acg_counts_ordered_pairs_and_matches_self_ccg() {
+        let train = [100u64, 100, 130, 400, 415, 1_000];
+        let acg = compute_autocorrelogram(&train, 30_000.0, 0.5, 5.0);
+        let ccg = compute_crosscorrelogram(&train, &train, 30_000.0, 0.5, 5.0);
+        let centre = acg.counts.len() / 2;
+        // Self-CCG has the 6 i = j terms in the centre bin; the coincident pair (100, 100) adds 2.
+        assert_eq!(ccg.counts[centre] - acg.counts[centre], 6);
+        assert_eq!(acg.counts[centre], 2);
+        let mut rest = ccg.counts.clone();
+        rest[centre] -= 6;
+        assert_eq!(rest, acg.counts);
+        // Symmetric
+        assert!(acg.counts.iter().eq(acg.counts.iter().rev()));
     }
 }

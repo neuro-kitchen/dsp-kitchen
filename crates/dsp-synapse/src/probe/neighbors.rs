@@ -33,14 +33,16 @@ pub fn find_k_nearest_neighbors(
     dists.iter().take(k).map(|(ch, _)| *ch).collect()
 }
 
-/// Precomputes a flat `[total_channels * k]` lookup table of $K$-nearest neighbor channel IDs
-/// (`u32`) for every channel in `layout`.
-pub fn precompute_knn_table(layout: &SensorLayout, k: usize) -> Vec<u32> {
-    let total_ch = layout.total_channels();
+/// Precomputes a flat `[num_channels * k]` table of the `k` nearest enabled sites (recording
+/// channel ids, `u32`) for every recording channel `0..num_channels`: row `ch` serves spikes whose
+/// primary channel is `ch`. Rows are padded with the channel itself when fewer than `k` sites exist,
+/// and channels absent from `layout` map only to themselves, so every entry is a valid row of the
+/// recording buffer.
+pub fn precompute_knn_table(layout: &SensorLayout, num_channels: usize, k: usize) -> Vec<u32> {
     let k = k.max(1);
-    let mut table = vec![0u32; total_ch * k];
-    for ch in 0..total_ch {
-        let nbrs = find_k_nearest_neighbors(layout, ch, k);
+    let mut table = vec![0u32; num_channels * k];
+    for ch in 0..num_channels {
+        let nbrs: Vec<usize> = find_k_nearest_neighbors(layout, ch, k).into_iter().filter(|&c| c < num_channels).collect();
         let row = &mut table[ch * k..(ch + 1) * k];
         for (idx, slot) in row.iter_mut().enumerate() {
             *slot = nbrs.get(idx).copied().unwrap_or(ch) as u32;
@@ -62,8 +64,23 @@ mod tests {
         assert_eq!(neighbors.len(), 4);
         assert_eq!(neighbors[0], 0); // Nearest is always self (dist 0)
 
-        let table = precompute_knn_table(&probe, 4);
+        let table = precompute_knn_table(&probe, 384, 4);
         assert_eq!(table.len(), 384 * 4);
         assert_eq!(table[0], 0);
+    }
+
+    #[test]
+    fn test_table_for_non_contiguous_layout() {
+        use dsp_core::layout::{Position3D, SensorSite};
+        // Sites for channels 0, 2 and 5 only, in a recording of 6 channels.
+        let layout = SensorLayout::new(
+            "sparse",
+            [0usize, 2, 5].iter().map(|&c| SensorSite::new(c, Position3D::new(0.0, c as f32 * 10.0, 0.0), 0)).collect(),
+        );
+        let table = precompute_knn_table(&layout, 6, 2);
+        assert_eq!(table.len(), 12);
+        assert_eq!(&table[5 * 2..6 * 2], &[5, 2]); // row keyed by channel id 5, not by position
+        assert_eq!(&table[1 * 2..2 * 2], &[1, 1]); // channel without a site: itself only
+        assert!(table.iter().all(|&c| c < 6));
     }
 }
