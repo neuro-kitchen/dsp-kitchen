@@ -2,7 +2,7 @@ use pyo3::prelude::*;
 use dsp_base::linalg::PcaModel;
 use cubecl::prelude::ComputeClient;
 use cubecl::{CubeElement, Runtime};
-use dsp_base::ComputeTask;
+use dsp_core::compute::ComputeTask;
 
 use crate::pipeline::compute_target;
 

@@ -18,7 +18,7 @@ default = []
 extension-module = ["pyo3/extension-module"]
 
 [dependencies]
-dsp-core.workspace = true
+dsp-core = { workspace = true, features = ["compute"] }
 dsp-base.workspace = true
 dsp-io.workspace = true
 dsp-stream.workspace = true

@@ -8,7 +8,7 @@ use dsp_synapse_ml::{
     OnnxWaveformDenoiser, SynapseMlDevice, Tensor2D, Tensor3D,
 };
 use super::models::{numpy_3d_to_snippet_batch, snippet_batch_to_numpy_3d};
-use crate::array::{to_numpy, F32Array};
+use crate::array::{runtime_error, to_numpy, F32Array};
 
 /// Burn-ONNX (`onnx-ir = "0.21.0"`) graph runner exposed to Python.
 #[pyclass(name = "OnnxModelRunner", skip_from_py_object)]
@@ -92,7 +92,7 @@ impl PyOnnxModelRunner {
             "cebra" => CebraProfile::new(k, t, embedding_dim).wrap_embedder(self.inner.clone()),
             _ => OnnxFeatureEmbedder::new(self.inner.clone(), embedding_dim),
         };
-        let (flat, actual_dim) = py.detach(|| embedder.embed(&batch));
+        let (flat, actual_dim) = py.detach(|| embedder.embed(&batch)).map_err(runtime_error)?;
         to_numpy(py, flat, &[batch.num_spikes, actual_dim])
     }
 
@@ -106,7 +106,7 @@ impl PyOnnxModelRunner {
         let [_, k, t] = batch.shape();
         let denoiser: OnnxWaveformDenoiser =
             DartsortProfile::new(k, t, 8).wrap_denoiser(self.inner.clone());
-        let out = py.detach(|| denoiser.denoise(&batch));
+        let out = py.detach(|| denoiser.denoise(&batch)).map_err(runtime_error)?;
         snippet_batch_to_numpy_3d(py, out)
     }
 }

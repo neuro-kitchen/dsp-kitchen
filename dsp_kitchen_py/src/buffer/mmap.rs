@@ -128,11 +128,7 @@ impl PyMmapRecording {
     /// NumPy dtype name of the stored samples.
     #[getter]
     pub fn dtype(&self) -> &'static str {
-        match self.inner.info().format {
-            SampleFormat::I16 => "int16",
-            SampleFormat::U16 => "uint16",
-            SampleFormat::F32 => "float32",
-        }
+        self.inner.info().format.name()
     }
 
     #[getter]
@@ -156,9 +152,12 @@ impl PyMmapRecording {
     /// gain). Keeps this recording alive while the array exists.
     pub fn to_numpy<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
         match slf.get().inner.info().format {
+            SampleFormat::I8 => Self::stored_view::<i8>(slf),
             SampleFormat::I16 => Self::stored_view::<i16>(slf),
             SampleFormat::U16 => Self::stored_view::<u16>(slf),
+            SampleFormat::I32 => Self::stored_view::<i32>(slf),
             SampleFormat::F32 => Self::stored_view::<f32>(slf),
+            SampleFormat::F64 => Self::stored_view::<f64>(slf),
         }
     }
 
