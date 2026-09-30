@@ -44,6 +44,25 @@ impl SafetensorsMap {
         self.tensors.contains_key(name)
     }
 
+    /// Iterates over all `(key, (shape, data))` entries in deterministic key order.
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &(Vec<usize>, Vec<f32>))> {
+        self.tensors.iter()
+    }
+
+    /// Inserts a raw dynamic shape + `Vec<f32>` buffer into the map.
+    pub fn insert_raw(&mut self, name: impl Into<String>, shape: Vec<usize>, data: Vec<f32>) {
+        let expected: usize = shape.iter().product();
+        assert_eq!(
+            data.len(),
+            expected,
+            "SafetensorsMap::insert_raw shape {:?} expects {} elements, got {}",
+            shape,
+            expected,
+            data.len()
+        );
+        self.tensors.insert(name.into(), (shape, data));
+    }
+
     /// Inserts a rank-`D` `Tensor` into the map.
     pub fn insert_tensor<const D: usize>(&mut self, name: impl Into<String>, tensor: &Tensor<D>) {
         self.tensors.insert(

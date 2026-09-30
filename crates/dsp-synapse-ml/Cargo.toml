@@ -20,7 +20,9 @@ dsp-synapse.workspace = true
 burn-tensor.workspace = true
 burn-flex = { workspace = true, optional = true }
 burn-wgpu = { workspace = true, optional = true }
+onnx-ir.workspace = true
 safetensors.workspace = true
+memmap2.workspace = true
 cubecl.workspace = true
 bytemuck.workspace = true
 serde.workspace = true
