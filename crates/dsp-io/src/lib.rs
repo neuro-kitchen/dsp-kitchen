@@ -8,6 +8,7 @@ pub mod mtscomp;
 #[cfg(feature = "zarr")]
 pub mod nwb;
 pub mod raw;
+pub mod sources;
 pub mod spikeglx;
 pub mod synthetic;
 #[cfg(feature = "zarr")]
@@ -19,6 +20,7 @@ use dsp_core::{DspError, DspResult, RecordingSource};
 
 pub use mtscomp::MtscompRecording;
 pub use raw::{write_raw, RawParams, RawRecording};
+pub use sources::{default_source, open_source, sources, SourceEntry, SourceKind};
 pub use spikeglx::SpikeGlxMeta;
 pub use synthetic::{SyntheticParams, SyntheticRecording};
 #[cfg(feature = "zarr")]
