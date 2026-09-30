@@ -8,7 +8,7 @@ pub mod network;
 pub mod reader;
 
 // Convenient re-exports
-pub use buffer::MultiChannelRingBuffer;
+pub use buffer::{MultiChannelRingBuffer, OverrunPolicy};
 pub use purpose::StreamPurpose;
 pub use reader::PrefetchReader;
 pub use network::{
