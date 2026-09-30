@@ -4,7 +4,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use super::info::RecordingInfo;
-use super::source::{check_read, RecordingSource};
+use super::source::{check_read, check_read_stored, RecordingSource};
 use crate::error::{DspError, DspResult};
 
 /// Zero-copy lazy slice of a [`RecordingSource`] across a sample range `[start..end)`
@@ -52,6 +52,7 @@ impl SlicedRecording {
             .iter()
             .map(|&c| p_info.channels[c].clone())
             .collect();
+        info.layout = p_info.layout.as_ref().map(|l| l.select_channels(&channel_map));
 
         Ok(Self {
             parent,
@@ -85,6 +86,13 @@ impl RecordingSource for SlicedRecording {
         let offset = self.sample_range.start;
         self.parent
             .read(&mapped_ch, (offset + samples.start)..(offset + samples.end), out)
+    }
+
+    fn read_stored(&self, channels: &[usize], samples: Range<u64>, out: &mut [u8]) -> DspResult<()> {
+        let _ = check_read_stored(&self.info, channels, &samples, out.len())?;
+        let mapped_ch: Vec<usize> = channels.iter().map(|&c| self.channel_map[c]).collect();
+        let offset = self.sample_range.start;
+        self.parent.read_stored(&mapped_ch, (offset + samples.start)..(offset + samples.end), out)
     }
 }
 
