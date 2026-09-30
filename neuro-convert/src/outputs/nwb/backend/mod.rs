@@ -13,7 +13,7 @@ use crate::model::SampleType;
 
 pub type Attrs = Map<String, Value>;
 
-/// Streams a large 1-D or 2-D dataset in pieces (safe to share between threads).
+/// Streams a large dataset in pieces along its first dimension (safe to share between threads).
 pub trait RowSink: Send + Sync {
     /// Writes rows `start..start + rows` (the first dimension) from row-major little-endian
     /// bytes of the dataset's sample type.

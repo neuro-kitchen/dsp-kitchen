@@ -18,6 +18,8 @@ pub struct MetadataFile {
     pub streams: BTreeMap<String, StreamSpec>,
     pub events: BTreeMap<String, ItemSpec>,
     pub tables: BTreeMap<String, ItemSpec>,
+    /// Snippet (spike waveform) stores, by source name or `*`.
+    pub snippets: BTreeMap<String, SnippetSpec>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -102,6 +104,20 @@ pub struct StreamSpec {
     pub conversion: Option<f64>,
 }
 
+/// How a snippet store is written: one NWB `SpikeEventSeries` per channel, on the electrodes of
+/// `electrode_group` (channel `c` is the group's `c`-th electrode, 1-based as in TDT).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SnippetSpec {
+    pub include: Option<bool>,
+    /// Output name prefix (defaults to the source name, made safe); series are `<name>_ch<c>`.
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub electrode_group: Option<String>,
+    /// Multiplier from stored snippet values to volts.
+    pub conversion: Option<f64>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ItemSpec {
@@ -141,6 +157,18 @@ impl MetadataFile {
 
     pub fn table(&self, name: &str) -> ItemSpec {
         item(&self.tables, name)
+    }
+
+    pub fn snippet(&self, name: &str) -> SnippetSpec {
+        let own = self.snippets.get(name).cloned().unwrap_or_default();
+        let def = self.snippets.get("*").cloned().unwrap_or_default();
+        SnippetSpec {
+            include: own.include.or(def.include),
+            name: own.name,
+            description: own.description,
+            electrode_group: own.electrode_group.or(def.electrode_group),
+            conversion: own.conversion.or(def.conversion),
+        }
     }
 }
 

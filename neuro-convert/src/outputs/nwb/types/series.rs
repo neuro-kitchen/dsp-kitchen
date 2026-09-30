@@ -21,7 +21,7 @@ pub fn write_continuous(
     b: &dyn Backend,
     plan: &SeriesPlan,
     rec: &dyn Recording,
-    chunk_seconds: f64,
+    chunks: crate::outputs::nwb::ChunkPolicy,
     threads: usize,
     done: &AtomicU64,
 ) -> Result<()> {
@@ -44,13 +44,13 @@ pub fn write_continuous(
     } else {
         (vec![rows, cols], vec!["num_times", "num_DIM2"])
     };
-    let chunk = ((chunk_seconds * info.sample_rate).round() as u64).max(1);
-    // Unscaled integer sources keep their type (half the size of float32); `conversion` scales
+    // Unscaled sources keep their stored type: integers (half the size of float32; `conversion`
+    // scales) and float64 (no precision lost); everything else is written as float32
     let native = info.stored_as != SampleType::F32
-        && info.stored_as != SampleType::F64
         && info.channels.iter().all(|c| c.gain == 1.0 && c.offset == 0.0)
         && rec.read_stored(&[], 0..0, &mut []).unwrap_or(false);
     let ty = if native { info.stored_as } else { SampleType::F32 };
+    let chunk = chunks.rows(info.sample_rate, cols as usize, ty.bytes());
     let sink = b.stream(&format!("{path}/data"), &shape, chunk, ty, &dims, data_attrs)?;
 
     if let Some(_group) = plan.electrode_group {

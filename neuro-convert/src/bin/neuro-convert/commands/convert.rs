@@ -21,6 +21,10 @@ pub struct ConvertArgs {
     /// Write uncompressed (fastest, ~30 % larger)
     #[arg(long)]
     no_compression: bool,
+    /// Chunk length along time: seconds (default 1) or `auto` (about 10 MB per chunk, NeuroConv's
+    /// default, so series of any rate and channel count get similar-sized chunks)
+    #[arg(long, default_value = "1")]
+    chunk: nwb::ChunkPolicy,
     /// Worker threads for copying data (default: all cores)
     #[arg(long)]
     threads: Option<usize>,
@@ -50,7 +54,7 @@ pub fn run(a: &ConvertArgs) -> anyhow::Result<()> {
     }
 
     let gzip = (!a.no_compression).then_some(a.gzip);
-    let mut options = NwbOptions { gzip, overwrite: a.overwrite, ..Default::default() };
+    let mut options = NwbOptions { gzip, overwrite: a.overwrite, chunks: a.chunk, ..Default::default() };
     if let Some(t) = a.threads {
         options.threads = t;
     }
@@ -89,6 +93,19 @@ fn print_plan(plan: &NwbPlan, session: &neuro_convert::Session) {
     for e in &plan.events {
         let place = if e.table { "events" } else { "acquisition" };
         println!("{place}/{:8} ← {:6} ({} events)", e.name, e.source, session.events[e.event].len());
+    }
+    for p in &plan.snippets {
+        let sn = &session.snippets[p.snippet];
+        let sorted = sn.sort_codes.iter().any(|&c| c != 0);
+        println!(
+            "acquisition/{}_ch*  ← {:6} SpikeEventSeries  {:>3} ch  {} snippets x {} samples{}",
+            p.name,
+            p.source,
+            p.rows.len(),
+            sn.len(),
+            sn.samples_per_snippet,
+            if sorted { "  (+ sorted units in /units)" } else { "" }
+        );
     }
     for t in &plan.tables {
         println!("analysis/{} ← table", t.name);

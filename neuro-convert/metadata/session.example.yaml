@@ -44,3 +44,14 @@ events:
 
 tables:
   # "*": { include: true }
+
+snippets:
+  # Spike snippet stores (e.g. TDT eNe1). Written as one NWB SpikeEventSeries per channel on the
+  # electrodes of `electrode_group` (channel c = the group's c-th electrode, 1-based); sorted
+  # snippets (non-zero sort codes) also go to /units, one unit per channel and sort code.
+  # SourceName:
+  #   electrode_group: grid                 # required to write the store
+  #   name: OutputName                      # series are OutputName_ch<c>
+  #   description: "..."
+  #   conversion: 1.0                       # stored value → volts (needed for integer snippets)
+  #   include: false

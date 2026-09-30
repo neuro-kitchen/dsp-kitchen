@@ -38,4 +38,7 @@ pub struct Device {
     pub name: String,
     pub description: String,
     pub manufacturer: Option<String>,
+    /// Model of the device (e.g. `RZ2`), written as an NWB `DeviceModel` with the manufacturer.
+    #[serde(default)]
+    pub model: Option<String>,
 }

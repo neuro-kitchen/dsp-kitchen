@@ -3,7 +3,7 @@
 
 pub mod file;
 
-pub use file::{ElectrodeGroupSpec, ImpedanceSpec, ItemSpec, MetadataFile, StreamSpec, StreamType};
+pub use file::{ElectrodeGroupSpec, ImpedanceSpec, ItemSpec, MetadataFile, SnippetSpec, StreamSpec, StreamType};
 
 /// Severity of a problem found while planning an output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]

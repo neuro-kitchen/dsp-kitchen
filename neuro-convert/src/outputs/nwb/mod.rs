@@ -21,13 +21,49 @@ use crate::model::Session;
 use backend::zarr::ZarrBackend;
 use backend::Backend;
 
+/// Chunk length along time for continuous data.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ChunkPolicy {
+    /// A fixed duration for every series (default 1 s).
+    Seconds(f64),
+    /// About [`AUTO_CHUNK_BYTES`] per chunk: the length follows each series' rate, channel count
+    /// and sample size, so every series gets similar-sized chunks.
+    Auto,
+}
+
+/// Target chunk size of [`ChunkPolicy::Auto`]: 10 MB, NeuroConv's default (`chunk_mb=10.0`).
+pub const AUTO_CHUNK_BYTES: u64 = 10_000_000;
+
+impl ChunkPolicy {
+    /// Rows (samples) per chunk for a series of `channels` values of `sample_bytes` at `rate` Hz.
+    pub fn rows(self, rate: f64, channels: usize, sample_bytes: usize) -> u64 {
+        match self {
+            ChunkPolicy::Seconds(s) => ((s * rate).round() as u64).max(1),
+            ChunkPolicy::Auto => (AUTO_CHUNK_BYTES / (channels.max(1) * sample_bytes.max(1)) as u64).max(1),
+        }
+    }
+}
+
+impl std::str::FromStr for ChunkPolicy {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, String> {
+        if s.eq_ignore_ascii_case("auto") {
+            return Ok(ChunkPolicy::Auto);
+        }
+        match s.trim_end_matches('s').parse::<f64>() {
+            Ok(v) if v > 0.0 && v.is_finite() => Ok(ChunkPolicy::Seconds(v)),
+            _ => Err(format!("chunk must be a positive number of seconds or `auto`, got {s:?}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct NwbOptions {
     /// gzip level 1–9 for datasets; `None` writes uncompressed (fastest). Default 1: on the
     /// 47 min TDT test block, 24 % smaller for ~35 % more write time.
     pub gzip: Option<u32>,
     /// Chunk length along time for continuous data.
-    pub chunk_seconds: f64,
+    pub chunks: ChunkPolicy,
     pub threads: usize,
     pub overwrite: bool,
 }
@@ -35,7 +71,7 @@ pub struct NwbOptions {
 impl Default for NwbOptions {
     fn default() -> Self {
         let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
-        Self { gzip: Some(1), chunk_seconds: 1.0, threads, overwrite: false }
+        Self { gzip: Some(1), chunks: ChunkPolicy::Seconds(1.0), threads, overwrite: false }
     }
 }
 
@@ -91,6 +127,11 @@ pub fn write(
             types::series::write_events(b, e, ev)?;
         }
     }
+    for p in &plan.snippets {
+        types::snippets::write(b, p, &session.snippets[p.snippet])?;
+    }
+    let stores: Vec<_> = plan.snippets.iter().map(|p| (p, &session.snippets[p.snippet])).collect();
+    types::snippets::write_units(b, &stores)?;
 
     // Continuous data, with a monitor thread reporting progress
     let total: u64 = plan.series.iter().map(|s| {
@@ -107,7 +148,7 @@ pub fn write(
             }
         });
         let r = plan.series.iter().try_for_each(|s| {
-            types::series::write_continuous(b, s, session.recordings[s.recording].as_ref(), options.chunk_seconds, options.threads, &done)
+            types::series::write_continuous(b, s, session.recordings[s.recording].as_ref(), options.chunks, options.threads, &done)
         });
         finished.store(true, Ordering::Relaxed);
         r

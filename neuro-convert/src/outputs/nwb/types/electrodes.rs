@@ -1,5 +1,5 @@
 //! `/general/extracellular_ephys`: electrode groups and the electrodes table (one row per
-//! channel of every electrical series, in series order).
+//! channel of every electrical series, in series order, then snippet channels without a series).
 
 use serde_json::json;
 
@@ -13,7 +13,7 @@ pub const TABLE_PATH: &str = "/general/extracellular_ephys/electrodes";
 
 pub fn write(b: &dyn Backend, plan: &NwbPlan, session: &Session) -> Result<()> {
     let electrical: Vec<_> = plan.series.iter().filter_map(|s| s.electrode_group.map(|g| (s, g))).collect();
-    if plan.groups.is_empty() && electrical.is_empty() {
+    if plan.groups.is_empty() && electrical.is_empty() && plan.extra_electrodes.is_empty() {
         return Ok(());
     }
     b.group("/general/extracellular_ephys", Attrs::new())?;
@@ -32,6 +32,14 @@ pub fn write(b: &dyn Backend, plan: &NwbPlan, session: &Session) -> Result<()> {
             group_name.push(g.name.clone());
             channel_name.push(c.name.clone());
         }
+    }
+    // Snippet channels whose group has no electrical series
+    for (gi, name) in &plan.extra_electrodes {
+        let g = &plan.groups[*gi];
+        location.push(g.location.clone());
+        group.push(format!("/general/extracellular_ephys/{}", g.name));
+        group_name.push(g.name.clone());
+        channel_name.push(name.clone());
     }
     let with_imp = plan.impedance_ohms.len() == location.len() && !location.is_empty();
     let mut colnames = vec!["location", "group", "group_name", "channel_name"];

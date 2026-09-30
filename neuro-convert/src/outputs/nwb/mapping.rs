@@ -68,6 +68,23 @@ pub struct EventPlan {
     pub table: bool,
 }
 
+/// One snippet store to write: a `SpikeEventSeries` per channel in `/acquisition`, and its sorted
+/// units (non-zero sort codes) in `/units`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SnippetPlan {
+    /// Index into `Session::snippets`.
+    pub snippet: usize,
+    pub source: String,
+    /// Series names are `<name>_ch<channel>`.
+    pub name: String,
+    pub description: String,
+    pub electrode_group: usize,
+    /// Multiplier from the stored snippet values to volts.
+    pub conversion: f64,
+    /// `(source channel, electrodes-table row)` for every channel with snippets.
+    pub rows: Vec<(u16, usize)>,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TablePlan {
     pub table: usize,
@@ -84,6 +101,10 @@ pub struct NwbPlan {
     pub series: Vec<SeriesPlan>,
     pub events: Vec<EventPlan>,
     pub tables: Vec<TablePlan>,
+    pub snippets: Vec<SnippetPlan>,
+    /// Electrodes-table rows after those of the electrical series, for snippet channels whose
+    /// group has no electrical series: `(group index, channel name)`.
+    pub extra_electrodes: Vec<(usize, String)>,
     /// Impedance in ohms per electrodes-table row (NaN = not measured); empty = no `imp` column.
     pub impedance_ohms: Vec<f32>,
     /// Source items left out (by the metadata file).
@@ -186,14 +207,14 @@ pub fn resolve(session: &Session, meta: &MetadataFile, new_identifier: impl FnOn
         let device = match &g.device {
             Some(d) => {
                 if !plan.devices.iter().any(|x| &x.name == d) {
-                    plan.devices.push(Device { name: d.clone(), description: "declared in the metadata file".into(), manufacturer: None });
+                    plan.devices.push(Device { name: d.clone(), description: "declared in the metadata file".into(), manufacturer: None, model: None });
                 }
                 d.clone()
             }
             None => match plan.devices.first() {
                 Some(d) => d.name.clone(),
                 None => {
-                    plan.devices.push(Device { name: "acquisition_system".into(), description: "recording hardware".into(), manufacturer: None });
+                    plan.devices.push(Device { name: "acquisition_system".into(), description: "recording hardware".into(), manufacturer: None, model: None });
                     "acquisition_system".into()
                 }
             },
@@ -234,6 +255,18 @@ pub fn resolve(session: &Session, meta: &MetadataFile, new_identifier: impl FnOn
         let electrical = kind == StreamType::Electrical;
         if electrical && spec.unit.as_deref().is_some_and(|u| u != "volts" && u != "V" && u != "a.u.") {
             issues.push(Issue::warning(format!("stream {}: electrical series are stored in volts; use conversion to scale", info.name)));
+        }
+        // TDT integer stores record a Synapse `Scale` (Milli, Micro, …) that TDT's own reader does not
+        // apply; without a conversion the stored units would be written as they are
+        let integer = !matches!(info.stored_as, crate::model::SampleType::F32 | crate::model::SampleType::F64);
+        if let Some(scale) = info.metadata.get("listing_scale").filter(|s| integer && s.as_str() != "Unity" && spec.conversion.is_none()) {
+            issues.push(Issue::warning(format!(
+                "stream {}: stored as {} with TDT scale {scale:?} and no conversion; values are written as stored. \
+                 Set streams.{}.conversion (and unit) to the factor from stored units to the physical unit",
+                info.name,
+                info.stored_as.name(),
+                info.name
+            )));
         }
         let first_electrode = electrode_row;
         if electrical {
@@ -283,12 +316,66 @@ pub fn resolve(session: &Session, meta: &MetadataFile, new_identifier: impl FnOn
         plan.tables.push(TablePlan { table: i, name: spec.name.unwrap_or_else(|| safe_name(&t.name)), description: spec.description.unwrap_or_else(|| t.description.clone()) });
     }
 
-    for sn in &session.snippets {
-        plan.issues.push(Issue::warning(format!(
-            "snippets {} ({} waveforms) are not exported yet (NWB SpikeEventSeries mapping pending)",
-            sn.name,
-            sn.len()
-        )));
+    // Snippets: one SpikeEventSeries per channel on the electrodes of the store's group
+    for (i, sn) in session.snippets.iter().enumerate() {
+        let spec = meta.snippet(&sn.name);
+        if spec.include == Some(false) {
+            plan.skipped.push(format!("snippets {}", sn.name));
+            continue;
+        }
+        let Some(group) = spec.electrode_group.as_ref() else {
+            plan.issues.push(Issue::warning(format!(
+                "snippets {} ({} waveforms) are not written: set snippets.{}.electrode_group (NWB spike waveforms belong to electrodes)",
+                sn.name,
+                sn.len(),
+                sn.name
+            )));
+            continue;
+        };
+        let Some(gi) = plan.groups.iter().position(|g| &g.name == group) else {
+            plan.issues.push(Issue::error(format!("snippets {}: electrode_group {group:?} is not declared under electrode_groups", sn.name)));
+            continue;
+        };
+        if sn.unit != "V" && spec.conversion.is_none() {
+            plan.issues.push(Issue::warning(format!(
+                "snippets {}: values are in {} and no conversion is set; set snippets.{}.conversion to the factor to volts",
+                sn.name, sn.unit, sn.name
+            )));
+        }
+        let mut channels: Vec<u16> = sn.channels.clone();
+        channels.sort_unstable();
+        channels.dedup();
+        // Channel c is the c-th electrode of the group's first electrical series, else a new row
+        let series = plan.series.iter().find(|s| s.electrode_group == Some(gi)).map(|s| (s.first_electrode, session.recordings[s.recording].info().channel_count()));
+        let mut rows = Vec::with_capacity(channels.len());
+        for c in channels {
+            let row = match series {
+                Some((first, n)) if c >= 1 && (c as usize) <= n => first + c as usize - 1,
+                Some((_, n)) => {
+                    plan.issues.push(Issue::error(format!(
+                        "snippets {}: channel {c} is outside the {n} electrodes of group {group:?}",
+                        sn.name
+                    )));
+                    continue;
+                }
+                None => {
+                    plan.extra_electrodes.push((gi, format!("{} {c}", sn.name)));
+                    electrode_row + plan.extra_electrodes.len() - 1
+                }
+            };
+            rows.push((c, row));
+        }
+        plan.snippets.push(SnippetPlan {
+            snippet: i,
+            source: sn.name.clone(),
+            name: spec.name.unwrap_or_else(|| safe_name(&sn.name)),
+            description: spec.description.unwrap_or_else(|| {
+                if sn.description.is_empty() { format!("{} spike snippets from the {} recording", sn.name, session.provenance.format) } else { sn.description.clone() }
+            }),
+            electrode_group: gi,
+            conversion: spec.conversion.unwrap_or(1.0),
+            rows,
+        });
     }
 
     // Electrode impedances, one per electrodes-table row
@@ -308,11 +395,13 @@ pub fn resolve(session: &Session, meta: &MetadataFile, new_identifier: impl FnOn
             };
             plan.impedance_ohms.extend(values);
         }
+        plan.impedance_ohms.extend(std::iter::repeat_n(f32::NAN, plan.extra_electrodes.len()));
     }
 
     // Names must be unique within their NWB group
     let mut seen = std::collections::BTreeSet::new();
-    for n in plan.series.iter().map(|s| &s.name).chain(plan.events.iter().filter(|e| !e.table).map(|e| &e.name)) {
+    let snippet_names: Vec<String> = plan.snippets.iter().flat_map(|p| p.rows.iter().map(move |(c, _)| format!("{}_ch{c}", p.name))).collect();
+    for n in plan.series.iter().map(|s| &s.name).chain(plan.events.iter().filter(|e| !e.table).map(|e| &e.name)).chain(&snippet_names) {
         if !seen.insert(n.clone()) {
             plan.issues.push(Issue::error(format!("two acquisition items are named {n:?}: rename one in the metadata file")));
         }
