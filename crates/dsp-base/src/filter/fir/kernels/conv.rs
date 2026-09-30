@@ -1,4 +1,5 @@
 use cubecl::prelude::*;
+use dsp_core::compute::{channel_position, sample_position};
 
 /// CubeCL kernel for direct-form multi-channel FIR convolution.
 /// Assumes Channel-Major order: [num_channels, num_samples].
@@ -12,8 +13,8 @@ pub fn fir_filter_kernel(
     num_samples: u32,
     num_taps: u32,
 ) {
-    let sample_idx = ABSOLUTE_POS_X;
-    let channel_idx = ABSOLUTE_POS_Y;
+    let sample_idx = sample_position();
+    let channel_idx = channel_position();
 
     if sample_idx < num_samples && channel_idx < num_channels {
         let channel_offset = channel_idx * num_samples;

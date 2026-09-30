@@ -4,10 +4,11 @@
 
 use cubecl::prelude::*;
 use dsp_base::filter::{execute_fir, execute_median_9p, execute_teager_kaiser};
-use dsp_base::math::{execute_baseline_subtract, execute_clamp, execute_scaling};
+use dsp_base::math::{execute_baseline_subtract, execute_clamp, execute_scaling, execute_unpack_stored, stored_words};
+use dsp_core::SampleFormat;
 use dsp_base::pipeline::{Pipeline, PipelineStage};
 use dsp_base::spatial::execute_direct_car;
-use dsp_base::{ComputeTarget, ComputeTask};
+use dsp_core::compute::{ComputeTarget, ComputeTask};
 
 const CHANNELS: usize = 37;
 const SAMPLES: usize = 5_003;
@@ -105,6 +106,46 @@ impl ComputeTask for Check {
         execute_scaling::<R>(&client, &ones, &big_out, big, 2.0, 1.0);
         let got = read(&big_out);
         assert!(got.iter().all(|v| *v == 3.0), "{name}: large elementwise launch left elements unwritten");
+
+        // Stored samples → µV: every device format, extremes, an odd count (partial last word)
+        let (ch, n) = (3usize, 7usize);
+        let gains = [0.5f32, 2.0, 1.0];
+        let offsets = [1.0f32, -3.0, 0.0];
+        let (gains_h, offsets_h) = (client.create_from_slice(f32::as_bytes(&gains)), client.create_from_slice(f32::as_bytes(&offsets)));
+        let ints: [i64; 7] = [0, 1, -1, 100, -100, i64::MIN, i64::MAX];
+        for format in [SampleFormat::I8, SampleFormat::I16, SampleFormat::U16, SampleFormat::I32, SampleFormat::F32] {
+            let values: Vec<f64> = (0..ch * n)
+                .map(|i| {
+                    let v = ints[i % n];
+                    match format {
+                        SampleFormat::I8 => v.clamp(i8::MIN as i64, i8::MAX as i64) as f64,
+                        SampleFormat::I16 => v.clamp(i16::MIN as i64, i16::MAX as i64) as f64,
+                        SampleFormat::U16 => v.clamp(0, u16::MAX as i64) as f64,
+                        SampleFormat::I32 => v.clamp(i32::MIN as i64, i32::MAX as i64) as f64,
+                        _ => v.clamp(-1_000_000, 1_000_000) as f64 + 0.25,
+                    }
+                })
+                .collect();
+            let bytes: Vec<u8> = values
+                .iter()
+                .flat_map(|&v| match format {
+                    SampleFormat::I8 => (v as i8).to_le_bytes().to_vec(),
+                    SampleFormat::I16 => (v as i16).to_le_bytes().to_vec(),
+                    SampleFormat::U16 => (v as u16).to_le_bytes().to_vec(),
+                    SampleFormat::I32 => (v as i32).to_le_bytes().to_vec(),
+                    _ => (v as f32).to_le_bytes().to_vec(),
+                })
+                .collect();
+            let words = client.create_from_slice(u32::as_bytes(&stored_words(&bytes)));
+            let out = client.empty(ch * n * 4);
+            execute_unpack_stored::<R>(&client, &words, format, &gains_h, &offsets_h, &out, ch, n).unwrap();
+            let got = read(&out);
+            for (i, v) in values.iter().enumerate() {
+                let want = (*v as f32) * gains[i / n] + offsets[i / n];
+                assert_eq!(got[i], want, "{name}: {format:?} value {i} ({v})");
+            }
+        }
+        assert!(execute_unpack_stored::<R>(&client, &input, SampleFormat::F64, &gains_h, &offsets_h, &output, ch, n).is_err());
 
         // Pipeline with filter and stencil stages.
         let pipeline = Pipeline::with_stages(vec![

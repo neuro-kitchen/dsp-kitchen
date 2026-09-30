@@ -1,5 +1,5 @@
 use cubecl::prelude::*;
-use crate::geometry::LaunchGeometry;
+use dsp_core::compute::LaunchGeometry;
 use super::kernels::teager_kaiser_kernel;
 
 /// High-level host dispatcher for the discrete Teager-Kaiser Energy Operator.

@@ -1,5 +1,6 @@
 use cubecl::prelude::*;
-use crate::geometry::LaunchGeometry;
+use dsp_core::compute::{channel_position, sample_position};
+use dsp_core::compute::LaunchGeometry;
 
 /// Common Average Referencing (CAR) subtraction with precomputed average trace.
 #[cube(launch)]
@@ -10,8 +11,8 @@ pub fn subtract_common_average_kernel(
     num_channels: u32,
     num_samples: u32,
 ) {
-    let sample_idx = ABSOLUTE_POS_X;
-    let channel_idx = ABSOLUTE_POS_Y;
+    let sample_idx = sample_position();
+    let channel_idx = channel_position();
 
     if sample_idx < num_samples && channel_idx < num_channels {
         let linear_idx = channel_idx * num_samples + sample_idx;
@@ -21,7 +22,7 @@ pub fn subtract_common_average_kernel(
 }
 
 /// Direct Common Average Referencing (CAR) kernel.
-/// Parallelized across samples (`ABSOLUTE_POS_X`).
+/// Parallelized across samples ([`sample_position`]).
 /// Computes the mean across channels at each time step and subtracts it directly in one pass.
 /// Requires zero intermediate buffer allocation!
 #[cube(launch)]
@@ -31,7 +32,7 @@ pub fn direct_car_kernel(
     num_channels: u32,
     num_samples: u32,
 ) {
-    let sample_idx = ABSOLUTE_POS_X;
+    let sample_idx = sample_position();
 
     if sample_idx < num_samples {
         let mut sum = 0.0f32;

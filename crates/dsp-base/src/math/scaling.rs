@@ -1,5 +1,5 @@
 use cubecl::prelude::*;
-use crate::geometry::LaunchGeometry;
+use dsp_core::compute::LaunchGeometry;
 use super::kernels::scale_samples_kernel;
 
 /// High-level host dispatcher for scaling and offsetting a signal buffer.

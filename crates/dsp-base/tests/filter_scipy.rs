@@ -108,7 +108,10 @@ fn device_low_cutoffs_match_f64_reference() {
         for (mode, expected) in [(FilterMode::Forward, &expected_fwd), (FilterMode::ForwardBackward, &expected_fb)] {
             let got = &run_device(&sos, mode, &x, 1)[0];
             let err = max_abs_diff(got, expected);
-            assert!(err < 2e-5 * scale, "{name} {mode:?}: max error {err}");
+            // The 0.5 Hz high-pass sits at the f32 rounding floor: measured 1.89e-5–1.97e-5 of the
+            // amplitude across time-block splits (one block 1.95e-5), so the limit leaves margin
+            // for summation order. Plain f32 direct form II is ~1e-2 here.
+            assert!(err < 2.5e-5 * scale, "{name} {mode:?}: max error {err}");
         }
     }
 }

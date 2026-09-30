@@ -1,5 +1,5 @@
 use cubecl::prelude::*;
-use crate::geometry::LaunchGeometry;
+use dsp_core::compute::LaunchGeometry;
 use super::kernels::baseline_subtract_kernel;
 
 /// High-level host dispatcher for subtracting per-channel baseline offsets.

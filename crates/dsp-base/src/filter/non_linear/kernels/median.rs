@@ -1,4 +1,5 @@
 use cubecl::prelude::*;
+use dsp_core::compute::{channel_position, sample_position};
 
 /// 3-element median using 3 min/max comparisons.
 #[cube]
@@ -45,8 +46,8 @@ pub fn median_filter_9p_kernel(
     num_channels: u32,
     num_samples: u32,
 ) {
-    let sample_idx = ABSOLUTE_POS_X;
-    let channel_idx = ABSOLUTE_POS_Y;
+    let sample_idx = sample_position();
+    let channel_idx = channel_position();
 
     if sample_idx < num_samples && channel_idx < num_channels {
         let channel_offset = channel_idx * num_samples;

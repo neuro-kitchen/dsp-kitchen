@@ -8,7 +8,8 @@ use super::stage::PipelineStage;
 use crate::filter::design::FilterError;
 use crate::filter::iir::DeviceFilter;
 use crate::filter::{execute_median_9p, execute_teager_kaiser};
-use crate::math::{execute_clamp, execute_scaling};
+use crate::math::{execute_clamp, execute_scaling, execute_unpack_stored, stored_words};
+use dsp_core::{DspError, DspResult, SampleFormat};
 use crate::spatial::execute_direct_car;
 
 /// How consecutive chunks relate to each other.
@@ -45,6 +46,9 @@ pub struct PipelineWorkspace<R: Runtime> {
     buf_pong: Handle,
     scratch: Handle,
     scratch_floats: usize,
+    /// Per-channel gain and offset for stored chunks, and the buffer they are unpacked into.
+    stored_scaling: Option<(Handle, Handle)>,
+    unpacked: Option<Handle>,
 }
 
 impl<R: Runtime> PipelineWorkspace<R> {
@@ -109,6 +113,8 @@ impl<R: Runtime> PipelineWorkspace<R> {
             buf_pong,
             scratch,
             scratch_floats: 1,
+            stored_scaling: None,
+            unpacked: None,
         };
         workspace.reserve(initial_samples);
         Ok(workspace)
@@ -141,6 +147,7 @@ impl<R: Runtime> PipelineWorkspace<R> {
             let bytes = (self.channels * samples * 4).max(4);
             self.buf_ping = self.client.empty(bytes);
             self.buf_pong = self.client.empty(bytes);
+            self.unpacked = None;
             self.capacity_samples = samples;
         }
         let need = self
@@ -219,6 +226,38 @@ impl<R: Runtime> PipelineWorkspace<R> {
         assert_eq!(input.len(), self.channels * samples);
         let in_handle = self.client.create_from_slice(f32::as_bytes(input));
         self.process_handle(&in_handle, samples)
+    }
+
+    /// Sets the per-channel gain and offset (µV per stored unit) used by
+    /// [`Self::process_stored_chunk_in_vram`].
+    pub fn set_stored_scaling(&mut self, gains: &[f32], offsets: &[f32]) {
+        assert_eq!(gains.len(), self.channels);
+        assert_eq!(offsets.len(), self.channels);
+        self.stored_scaling =
+            Some((self.client.create_from_slice(f32::as_bytes(gains)), self.client.create_from_slice(f32::as_bytes(offsets))));
+    }
+
+    /// Uploads a `[channels, samples]` chunk of stored values (`format`, little-endian, as
+    /// [`dsp_core::RecordingSource::read_stored`] returns it), scales it to µV on the device and
+    /// runs the pipeline. Integer recordings move `format.bytes()` per sample instead of 4. Needs
+    /// [`Self::set_stored_scaling`]; see [`Self::process_handle`] for the returned handle.
+    pub fn process_stored_chunk_in_vram(&mut self, stored: &[u8], format: SampleFormat, samples: usize) -> DspResult<Handle> {
+        if stored.len() != self.channels * samples * format.bytes() {
+            return Err(DspError::ShapeMismatch { expected: vec![self.channels, samples, format.bytes()], actual: vec![stored.len()] });
+        }
+        let (gains, offsets) = self
+            .stored_scaling
+            .clone()
+            .ok_or_else(|| DspError::InvalidConfig("set_stored_scaling before processing stored chunks".into()))?;
+        self.reserve(samples);
+        let unpacked = self
+            .unpacked
+            .get_or_insert_with(|| self.client.empty((self.channels * self.capacity_samples * 4).max(4)))
+            .clone();
+        let words = self.client.create_from_slice(u32::as_bytes(&stored_words(stored)));
+        execute_unpack_stored::<R>(&self.client, &words, format, &gains, &offsets, &unpacked, self.channels, samples)?;
+        let unused = ((self.capacity_samples - samples) * self.channels * 4) as u64;
+        Ok(self.process_handle(&unpacked.offset_end(unused), samples))
     }
 
     /// Runs the pipeline on a `[channels, samples]` host chunk and writes the result to `output`.

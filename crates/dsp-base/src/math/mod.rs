@@ -2,10 +2,12 @@ pub mod kernels;
 pub mod scaling;
 pub mod baseline;
 pub mod clamp;
+pub mod unpack;
 
 pub use scaling::execute_scaling;
 pub use baseline::execute_baseline_subtract;
 pub use clamp::execute_clamp;
+pub use unpack::{execute_unpack_stored, stored_words};
 
 #[cfg(test)]
 mod tests {

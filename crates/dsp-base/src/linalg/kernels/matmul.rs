@@ -1,4 +1,5 @@
 use cubecl::prelude::*;
+use dsp_core::compute::{channel_position, sample_position};
 
 /// CubeCL kernel for matrix projection: `Y = W^T * (X - mean)`.
 /// - `input_x`: Flat 2D matrix [channels, samples]
@@ -15,8 +16,8 @@ pub fn pca_project_kernel(
     num_samples: u32,
     num_components: u32,
 ) {
-    let sample_idx = ABSOLUTE_POS_X;
-    let comp_idx = ABSOLUTE_POS_Y;
+    let sample_idx = sample_position();
+    let comp_idx = channel_position();
 
     if sample_idx < num_samples && comp_idx < num_components {
         let mut sum = 0.0f32;

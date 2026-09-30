@@ -1,7 +1,7 @@
 use cubecl::prelude::*;
 use super::svd::SymmetricEig;
 use super::kernels::pca_project_kernel;
-use crate::geometry::LaunchGeometry;
+use dsp_core::compute::LaunchGeometry;
 
 /// Fitted Principal Component Analysis model.
 #[derive(Debug, Clone)]
