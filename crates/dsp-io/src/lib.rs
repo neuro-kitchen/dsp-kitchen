@@ -5,6 +5,8 @@
 
 mod codec;
 pub mod mtscomp;
+#[cfg(feature = "zarr")]
+pub mod nwb;
 pub mod raw;
 pub mod spikeglx;
 pub mod synthetic;
@@ -20,10 +22,13 @@ pub use raw::{write_raw, RawParams, RawRecording};
 pub use spikeglx::SpikeGlxMeta;
 pub use synthetic::{SyntheticParams, SyntheticRecording};
 #[cfg(feature = "zarr")]
+pub use nwb::NwbZarrRecording;
+#[cfg(feature = "zarr")]
 pub use zarr::{write_zarr, ZarrRecording};
 
 /// Opens a recording, detecting its format from the path:
-/// - a Zarr v3 store (directory with `zarr.json`, or a `.zarr` path),
+/// - an NWB file stored as Zarr (`.nwb.zarr`; its largest electrical series),
+/// - a Zarr v3 store with a `/traces` array (directory with `zarr.json`, or a `.zarr` path),
 /// - SpikeGLX (`.bin` + `key=value` `.meta`), including IBL mtscomp `.cbin` + `.ch`,
 /// - a raw binary file with a JSON sidecar (`rec.bin` + `rec.meta`).
 pub fn open(path: &Path) -> DspResult<Box<dyn RecordingSource>> {
@@ -33,6 +38,15 @@ pub fn open(path: &Path) -> DspResult<Box<dyn RecordingSource>> {
     if path.is_dir() || path.extension().is_some_and(|e| e == "zarr") {
         #[cfg(feature = "zarr")]
         if path.join("zarr.json").exists() {
+            if nwb::is_nwb_zarr(path) {
+                return Ok(Box::new(NwbZarrRecording::open(path)?));
+            }
+            if !path.join("traces").join("zarr.json").exists() {
+                return Err(DspError::UnsupportedFormat(format!(
+                    "{} is a Zarr store but neither an NWB file nor a /traces recording",
+                    path.display()
+                )));
+            }
             return Ok(Box::new(ZarrRecording::open(path)?));
         }
         return Err(DspError::UnsupportedFormat(format!("{} is a folder but not a Zarr v3 store", path.display())));
