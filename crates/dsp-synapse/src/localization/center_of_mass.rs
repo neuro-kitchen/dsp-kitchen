@@ -75,7 +75,7 @@ impl Default for CenterOfMassLocalizer {
 }
 
 impl PeakLocalizer for CenterOfMassLocalizer {
-    fn localize(&self, batch: &SnippetBatch, layout: &SensorLayout) -> Vec<[f32; 3]> {
+    fn localize(&self, batch: &SnippetBatch, layout: &SensorLayout) -> dsp_core::DspResult<Vec<[f32; 3]>> {
         let mut out = Vec::with_capacity(batch.num_spikes);
         let mut ptp_buf = vec![0.0f32; batch.num_channels];
 
@@ -91,6 +91,6 @@ impl PeakLocalizer for CenterOfMassLocalizer {
                 self.amplitude_power,
             ));
         }
-        out
+        Ok(out)
     }
 }

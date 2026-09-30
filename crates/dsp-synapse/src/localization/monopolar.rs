@@ -190,7 +190,7 @@ impl Default for MonopolarTriangulator {
 }
 
 impl PeakLocalizer for MonopolarTriangulator {
-    fn localize(&self, batch: &SnippetBatch, layout: &SensorLayout) -> Vec<[f32; 3]> {
+    fn localize(&self, batch: &SnippetBatch, layout: &SensorLayout) -> dsp_core::DspResult<Vec<[f32; 3]>> {
         let mut out = Vec::with_capacity(batch.num_spikes);
         let mut ptp_buf = vec![0.0f32; batch.num_channels];
 
@@ -203,7 +203,7 @@ impl PeakLocalizer for MonopolarTriangulator {
                 localize_spike_monopolar(ch_ids, &ptp_buf, layout, self.max_iterations);
             out.push(coords);
         }
-        out
+        Ok(out)
     }
 }
 

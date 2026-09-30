@@ -3,10 +3,10 @@
 
 use cubecl::prelude::ComputeClient;
 use cubecl::{CubeElement, Runtime};
-use dsp_base::{ComputeTarget, ComputeTask};
+use dsp_core::compute::{ComputeTarget, ComputeTask};
 
 use dsp_base::pipeline::{Pipeline, PipelineWorkspace};
-use dsp_core::{ChunkSchedule, DspError, DspResult, ProbeLayout, RecordingSource};
+use dsp_core::{ChunkSchedule, DspError, DspResult, HaloWindow, ProbeLayout, RecordingSource, SampleFormat};
 use dsp_stream::PrefetchReader;
 
 use crate::detection::{DeduplicatedSpike, StreamingDedup, estimate_noise_std};
@@ -143,9 +143,6 @@ impl StreamingSpikeRunner {
             .client()
             .create_from_slice(u32::as_bytes(&knn_table));
 
-        let max_spikes_per_channel =
-            ((batch_samples as usize) / refrac_samples.max(1)).clamp(256, 32_768);
-
         // Spikes are detected where a full snippet (plus sinc taps) can be cut from the recording.
         let margin = extraction_margin(self.config.apply_sinc_shift);
         let detect_range = self.config.detection_range(fs, total_samples);
@@ -166,13 +163,20 @@ impl StreamingSpikeRunner {
         let mut dedup = StreamingDedup::new(probe, self.config.spatial_radius_um, refrac_samples as u64);
         debug_assert!(left_halo as usize >= refrac_samples + pre_samples + margin);
 
-        let reader = PrefetchReader::new(source, schedule);
-        reader.for_each_window(|win, raw_padded| {
+        // Integer recordings upload their stored values and are scaled on the device
+        let stored = matches!(info.format, SampleFormat::I8 | SampleFormat::I16 | SampleFormat::U16 | SampleFormat::I32)
+            && total_samples > 0
+            && source.read_stored(&[0], 0..1, &mut vec![0u8; info.format.bytes()]).is_ok();
+        if stored {
+            let gains: Vec<f32> = info.channels.iter().map(|c| c.gain_uv).collect();
+            let offsets: Vec<f32> = info.channels.iter().map(|c| c.offset_uv).collect();
+            workspace.set_stored_scaling(&gains, &offsets);
+        }
+        let client = workspace.client().clone();
+
+        let mut process = |win: &HaloWindow, filt_handle: cubecl::server::Handle| -> DspResult<()> {
             let n_read = win.read_len();
             let read_start = win.read_global.start;
-
-            // 1. Filter padded chunk in-VRAM (reusing persistent ping-pong buffers without host readback)
-            let filt_handle = workspace.process_chunk_in_vram(raw_padded, n_read);
 
             // 2. Detect crossings in this window's share of the detection range, continuing the
             //    refractory period from the previous window
@@ -180,7 +184,7 @@ impl StreamingSpikeRunner {
             let det_end = win.valid_global.end.min(detect_range.end);
             if det_start < det_end {
                 let crossings = execute_detect_spikes_in_vram::<R>(
-                    workspace.client(),
+                    &client,
                     &filt_handle,
                     &sigmas_handle,
                     channels,
@@ -190,7 +194,6 @@ impl StreamingSpikeRunner {
                     read_start,
                     self.config.threshold_factor,
                     refrac_samples,
-                    max_spikes_per_channel,
                     Some(&mut carry),
                 );
                 total_raw_crossings += crossings.len() as u64;
@@ -214,7 +217,7 @@ impl StreamingSpikeRunner {
 
             // 4. Extract Blackman-Harris sinc-realigned snippets and reduce moments directly in VRAM
             if let Some(extracted) = execute_extract_sinc_in_vram::<R>(
-                workspace.client(),
+                &client,
                 &filt_handle,
                 &knn_handle,
                 channels,
@@ -227,11 +230,10 @@ impl StreamingSpikeRunner {
             ) {
                 debug_assert_eq!(extracted.dropped, 0, "finalized spikes lie inside the window");
                 let batch_stats = execute_reduce_templates_in_vram::<R>(
-                    workspace.client(),
+                    &client,
                     &extracted.snippets,
-                    &extracted.primary_channels,
+                    &extracted.primaries,
                     channels,
-                    extracted.num_spikes(),
                     k_neighbors,
                     snippet_samples,
                 );
@@ -244,8 +246,8 @@ impl StreamingSpikeRunner {
                         let end = start + elems_per_spike;
                         acc.merge_batch(
                             count,
-                            &batch_stats.sum[start..end],
-                            &batch_stats.sum_sq[start..end],
+                            &batch_stats.mean[start..end],
+                            &batch_stats.m2[start..end],
                         );
                     }
                 }
@@ -260,7 +262,21 @@ impl StreamingSpikeRunner {
             }
 
             Ok(())
-        })?;
+        };
+
+        // 1. Filter each padded chunk in VRAM (persistent ping-pong buffers, no host readback)
+        let reader = PrefetchReader::new(source, schedule);
+        if stored {
+            reader.for_each_window_stored(|win, bytes| {
+                let filt_handle = workspace.process_stored_chunk_in_vram(bytes, info.format, win.read_len())?;
+                process(win, filt_handle)
+            })?;
+        } else {
+            reader.for_each_window(|win, raw_padded| {
+                let filt_handle = workspace.process_chunk_in_vram(raw_padded, win.read_len());
+                process(win, filt_handle)
+            })?;
+        }
 
         let channel_templates = accumulators.iter().map(|a| a.finalize()).collect();
 

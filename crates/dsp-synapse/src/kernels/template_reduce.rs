@@ -1,104 +1,120 @@
 use cubecl::prelude::*;
-use dsp_base::geometry::LaunchGeometry;
+use dsp_core::compute::LaunchGeometry;
 
-/// CubeCL kernel reducing extracted `[num_spikes, k_neighbors, snippet_len]` snippets in VRAM
-/// into per-channel `[channels, k_neighbors, snippet_len]` first-moment (`sum`) and second-moment
-/// (`sum_sq`) tensors, plus `out_counts[channels]`.
+/// CubeCL kernel reducing extracted `[num_spikes, k_neighbors, snippet_len]` snippets in VRAM into
+/// per-channel `[channels, k_neighbors, snippet_len]` mean and second central moment ($M_2$).
 ///
-/// Parallelized with 1 GPU thread per `(channel, k_idx, sample_idx)` slot in
-/// `[0, channels * k_neighbors * snippet_len)`.
+/// Spikes arrive segmented by primary channel: `spike_order[segment_offsets[ch]..segment_offsets[ch + 1]]`
+/// lists the spikes of channel `ch`. One unit per `(channel, k_idx, sample_idx)` slot walks only its
+/// channel's segment (total work O(N·K·L)) with Welford updates, so no large sums cancel in f32.
 #[cube(launch)]
 pub fn reduce_channel_templates_kernel(
     snippets: &Array<f32>,
-    spike_primary_channels: &Array<u32>,
-    out_sum: &mut Array<f32>,
-    out_sum_sq: &mut Array<f32>,
-    out_counts: &mut Array<u32>,
+    spike_order: &Array<u32>,
+    segment_offsets: &Array<u32>,
+    out_mean: &mut Array<f32>,
+    out_m2: &mut Array<f32>,
     num_channels: u32,
-    num_spikes: u32,
     elems_per_spike: u32,
 ) {
     let tid = ABSOLUTE_POS as u32;
-    let total_slots = num_channels * elems_per_spike;
-
-    if tid < total_slots {
+    if tid < num_channels * elems_per_spike {
         let ch = tid / elems_per_spike;
         let rem = tid - ch * elems_per_spike;
+        let start = segment_offsets[ch as usize];
+        let end = segment_offsets[(ch + 1u32) as usize];
 
-        let mut acc_sum = 0.0f32;
-        let mut acc_sum_sq = 0.0f32;
-        let mut count = 0u32;
-
-        let mut i = 0u32;
-        while i < num_spikes {
-            let p_ch = spike_primary_channels[i as usize];
-            if p_ch == ch {
-                let val = snippets[(i * elems_per_spike + rem) as usize];
-                acc_sum = acc_sum + val;
-                acc_sum_sq = acc_sum_sq + val * val;
-                count = count + 1u32;
-            }
-            i = i + 1u32;
+        let mut mean = 0.0f32;
+        let mut m2 = 0.0f32;
+        let mut j = start;
+        while j < end {
+            let spike = spike_order[j as usize];
+            let val = snippets[(spike * elems_per_spike + rem) as usize];
+            let n = (j - start + 1u32) as f32;
+            let delta = val - mean;
+            mean += delta / n;
+            m2 += delta * (val - mean);
+            j += 1u32;
         }
 
-        out_sum[tid as usize] = acc_sum;
-        out_sum_sq[tid as usize] = acc_sum_sq;
-        if rem == 0u32 {
-            out_counts[ch as usize] = count;
-        }
+        out_mean[tid as usize] = mean;
+        out_m2[tid as usize] = m2;
     }
 }
 
-/// Host-side batch reduction result downloaded from VRAM (`sum`, `sum_sq`, and `counts` per channel).
+/// Per-channel batch moments downloaded from VRAM: `counts[channels]`, and `mean` / `m2` of
+/// shape `[channels, k_neighbors, snippet_len]`.
 pub struct BatchTemplateStats {
     pub counts: Vec<u32>,
-    pub sum: Vec<f32>,
-    pub sum_sq: Vec<f32>,
+    pub mean: Vec<f32>,
+    pub m2: Vec<f32>,
 }
 
-/// Host-side dispatcher executing [`reduce_channel_templates_kernel`] on the in-VRAM extracted
-/// snippets and returning only the compact `[channels * k_neighbors * snippet_len]` batch statistics.
+/// Host-side dispatcher executing [`reduce_channel_templates_kernel`] on in-VRAM extracted snippets.
+/// `primary_channels[i]` is the primary channel of snippet `i`; snippets on channels
+/// `>= channels` are ignored.
 pub fn execute_reduce_templates_in_vram<R: Runtime>(
     client: &ComputeClient<R>,
     snippets_handle: &cubecl::server::Handle,
-    prim_channels_handle: &cubecl::server::Handle,
+    primary_channels: &[u32],
     channels: usize,
-    num_spikes: usize,
     k_neighbors: usize,
     snippet_len: usize,
 ) -> BatchTemplateStats {
+    let num_spikes = primary_channels.len();
     let elems_per_spike = k_neighbors * snippet_len;
     let total_slots = channels * elems_per_spike;
 
-    let out_sum_handle = client.empty(total_slots * std::mem::size_of::<f32>());
-    let out_sum_sq_handle = client.empty(total_slots * std::mem::size_of::<f32>());
-    let out_counts_handle = client.empty(channels * std::mem::size_of::<u32>());
+    // Counting sort of the snippets by primary channel.
+    let mut counts = vec![0u32; channels];
+    for &ch in primary_channels {
+        if let Some(c) = counts.get_mut(ch as usize) {
+            *c += 1;
+        }
+    }
+    let mut offsets = vec![0u32; channels + 1];
+    for ch in 0..channels {
+        offsets[ch + 1] = offsets[ch] + counts[ch];
+    }
+    let mut cursor = offsets.clone();
+    let mut order = vec![0u32; offsets[channels] as usize];
+    for (i, &ch) in primary_channels.iter().enumerate() {
+        let ch = ch as usize;
+        if ch < channels {
+            order[cursor[ch] as usize] = i as u32;
+            cursor[ch] += 1;
+        }
+    }
+    if order.is_empty() || total_slots == 0 {
+        return BatchTemplateStats { counts, mean: vec![0.0; total_slots], m2: vec![0.0; total_slots] };
+    }
+
+    let order_handle = client.create_from_slice(u32::as_bytes(&order));
+    let offsets_handle = client.create_from_slice(u32::as_bytes(&offsets));
+    let out_mean_handle = client.empty(total_slots * std::mem::size_of::<f32>());
+    let out_m2_handle = client.empty(total_slots * std::mem::size_of::<f32>());
 
     let geom = LaunchGeometry::elementwise(client, total_slots);
-
     unsafe {
         reduce_channel_templates_kernel::launch::<R>(
             client,
             geom.cube_count,
             geom.cube_dim,
             ArrayArg::from_raw_parts(snippets_handle.clone(), num_spikes * elems_per_spike),
-            ArrayArg::from_raw_parts(prim_channels_handle.clone(), num_spikes),
-            ArrayArg::from_raw_parts(out_sum_handle.clone(), total_slots),
-            ArrayArg::from_raw_parts(out_sum_sq_handle.clone(), total_slots),
-            ArrayArg::from_raw_parts(out_counts_handle.clone(), channels),
+            ArrayArg::from_raw_parts(order_handle, order.len()),
+            ArrayArg::from_raw_parts(offsets_handle, channels + 1),
+            ArrayArg::from_raw_parts(out_mean_handle.clone(), total_slots),
+            ArrayArg::from_raw_parts(out_m2_handle.clone(), total_slots),
             channels as u32,
-            num_spikes as u32,
             elems_per_spike as u32,
         );
     }
 
-    let counts_bytes = client.read_one(out_counts_handle).expect("VRAM read counts");
-    let sum_bytes = client.read_one(out_sum_handle).expect("VRAM read sum");
-    let sum_sq_bytes = client.read_one(out_sum_sq_handle).expect("VRAM read sum_sq");
-
+    let mean_bytes = client.read_one(out_mean_handle).expect("VRAM read mean");
+    let m2_bytes = client.read_one(out_m2_handle).expect("VRAM read m2");
     BatchTemplateStats {
-        counts: u32::from_bytes(&counts_bytes).to_vec(),
-        sum: f32::from_bytes(&sum_bytes).to_vec(),
-        sum_sq: f32::from_bytes(&sum_sq_bytes).to_vec(),
+        counts,
+        mean: f32::from_bytes(&mean_bytes).to_vec(),
+        m2: f32::from_bytes(&m2_bytes).to_vec(),
     }
 }

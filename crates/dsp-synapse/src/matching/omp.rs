@@ -5,16 +5,29 @@
 //! $a \in [a_{\min}, a_{\max}]$, and subtracting the fitted waveform.
 //! Implements `crate::traits::SpikeMatcher`.
 
+use cubecl::prelude::*;
+use dsp_core::compute::{ComputeTarget, ComputeTask, LaunchGeometry};
+use dsp_core::{DspError, DspResult};
+
 use crate::extraction::parabolic_subsample_offset;
+use crate::kernels::{omp_score_kernel, omp_subtract_kernel};
 use crate::metrics::WaveformTemplate;
 use crate::traits::{MatchedSpike, SpikeMatcher};
 
+/// OMP settings shared by the host entry points.
+#[derive(Debug, Clone, Copy)]
+struct OmpParams {
+    min_amplitude_scale: f32,
+    max_amplitude_scale: f32,
+    min_explained_energy: f32,
+    max_passes: usize,
+}
+
 /// Deconvolves multi-channel continuous data using Orthogonal Matching Pursuit (OMP)
-/// against a dictionary of `WaveformTemplate`s.
+/// against a dictionary of `WaveformTemplate`s, on the default compute target
+/// ([`ComputeTarget::from_env`]); see [`match_spikes_omp_on`].
 ///
-/// Each template row is compared with the recording channel it belongs to
-/// (`channel_ids`); rows on channels outside the recording are ignored. All templates must have the
-/// same length. A match starting at sample `s` is reported at its trough, `s + trough_index`.
+/// Fails when no compute runtime is compiled in.
 #[allow(clippy::too_many_arguments)]
 pub fn match_spikes_omp(
     data: &[f32],
@@ -25,6 +38,59 @@ pub fn match_spikes_omp(
     max_amplitude_scale: f32,
     min_explained_energy: f32,
     max_passes: usize,
+) -> DspResult<Vec<MatchedSpike>> {
+    struct Task<'a> {
+        data: &'a [f32],
+        channels: usize,
+        samples: usize,
+        templates: &'a [WaveformTemplate],
+        params: OmpParams,
+    }
+    impl ComputeTask for Task<'_> {
+        type Output = Vec<MatchedSpike>;
+        fn run<R: Runtime>(self, client: ComputeClient<R>) -> Vec<MatchedSpike> {
+            omp_on(&client, self.data, self.channels, self.samples, self.templates, self.params)
+        }
+    }
+    let params = OmpParams { min_amplitude_scale, max_amplitude_scale, min_explained_energy, max_passes };
+    ComputeTarget::from_env()
+        .and_then(|target| target.run(Task { data, channels, samples, templates, params }))
+        .map_err(|e| DspError::ComputeError(e.to_string()))
+}
+
+/// [`match_spikes_omp`] on `client`'s runtime.
+///
+/// Each template row is compared with the recording channel it belongs to
+/// (`channel_ids`); rows on channels outside the recording are ignored. All templates must have the
+/// same length. A match starting at sample `s` is reported at its trough, `s + trough_index`.
+///
+/// Every pass scores all starts × templates on the device (best template, amplitude in
+/// `[min, max]` and energy reduction per start), picks local maxima of the reduction above
+/// `min_explained_energy` on the host, and subtracts them from the device residual; overlapping
+/// spikes are resolved by later passes.
+#[allow(clippy::too_many_arguments)]
+pub fn match_spikes_omp_on<R: Runtime>(
+    client: &ComputeClient<R>,
+    data: &[f32],
+    channels: usize,
+    samples: usize,
+    templates: &[WaveformTemplate],
+    min_amplitude_scale: f32,
+    max_amplitude_scale: f32,
+    min_explained_energy: f32,
+    max_passes: usize,
+) -> Vec<MatchedSpike> {
+    let params = OmpParams { min_amplitude_scale, max_amplitude_scale, min_explained_energy, max_passes };
+    omp_on(client, data, channels, samples, templates, params)
+}
+
+fn omp_on<R: Runtime>(
+    client: &ComputeClient<R>,
+    data: &[f32],
+    channels: usize,
+    samples: usize,
+    templates: &[WaveformTemplate],
+    params: OmpParams,
 ) -> Vec<MatchedSpike> {
     assert_eq!(data.len(), channels * samples);
     if templates.is_empty() || channels == 0 || samples == 0 {
@@ -37,101 +103,115 @@ pub fn match_spikes_omp(
         return Vec::new();
     }
 
-    // (template row, recording channel) pairs inside the recording, per template.
-    let rows: Vec<Vec<(usize, usize)>> = templates
-        .iter()
-        .map(|t| t.channel_ids.iter().enumerate().filter(|(_, c)| **c < channels).map(|(r, &c)| (r, c)).collect())
-        .collect();
-
-    // Energy ||W_u||^2 over the rows that take part in the match
-    let energies: Vec<f32> = templates
-        .iter()
-        .zip(&rows)
-        .map(|(t, rs)| rs.iter().map(|&(r, _)| t.row(r).iter().map(|v| v * v).sum::<f32>()).sum::<f32>().max(1e-8))
-        .collect();
-
-    let mut residual = data.to_vec();
-    let mut matched = Vec::new();
+    // Template rows on channels inside the recording, flattened per unit
+    let mut row_offsets = vec![0u32];
+    let mut row_channels = Vec::new();
+    let mut row_data = Vec::new();
+    let mut energies = Vec::with_capacity(templates.len());
+    for t in templates {
+        let mut energy = 0.0f32;
+        for (r, &c) in t.channel_ids.iter().enumerate().filter(|(_, c)| **c < channels) {
+            row_channels.push(c as u32);
+            row_data.extend_from_slice(t.row(r));
+            energy += t.row(r).iter().map(|v| v * v).sum::<f32>();
+        }
+        row_offsets.push(row_channels.len() as u32);
+        energies.push(energy.max(1e-8));
+    }
+    let max_rows = row_offsets.windows(2).map(|w| w[1] - w[0]).max().unwrap_or(0) as usize;
+    if max_rows == 0 {
+        return Vec::new();
+    }
+    let num_units = templates.len();
     let valid_starts = samples - t_len;
 
-    for _pass in 0..max_passes.max(1) {
-        let mut added_in_pass = 0usize;
+    let residual = client.create_from_slice(f32::as_bytes(data));
+    let offsets_h = client.create_from_slice(u32::as_bytes(&row_offsets));
+    let channels_h = client.create_from_slice(u32::as_bytes(&row_channels));
+    let data_h = client.create_from_slice(f32::as_bytes(&row_data));
+    let energies_h = client.create_from_slice(f32::as_bytes(&energies));
+    let unit_h = client.empty(valid_starts * 4);
+    let scale_h = client.empty(valid_starts * 4);
+    let gain_h = client.empty(valid_starts * 4);
+    let rows_len = row_channels.len();
 
-        // Compute best template and projection score at each time step s
-        let mut best_unit_at = vec![0usize; valid_starts];
-        let mut best_scale_at = vec![0.0f32; valid_starts];
-        let mut best_gain_at = vec![0.0f32; valid_starts];
-
-        for s in 0..valid_starts {
-            let mut max_gain = 0.0f32;
-            let mut best_u = 0usize;
-            let mut best_a = 0.0f32;
-
-            for (u, tmpl) in templates.iter().enumerate() {
-                let mut dot = 0.0f32;
-                for &(r, c) in &rows[u] {
-                    let res = &residual[c * samples + s..c * samples + s + t_len];
-                    dot += res.iter().zip(tmpl.row(r)).map(|(x, w)| x * w).sum::<f32>();
-                }
-
-                let raw_a = dot / energies[u];
-                if raw_a >= min_amplitude_scale && raw_a <= max_amplitude_scale {
-                    // Energy reduction = 2 * a * dot - a^2 * ||W||^2
-                    let gain = 2.0 * raw_a * dot - raw_a * raw_a * energies[u];
-                    if gain > max_gain {
-                        max_gain = gain;
-                        best_u = u;
-                        best_a = raw_a;
-                    }
-                }
-            }
-
-            best_unit_at[s] = best_u;
-            best_scale_at[s] = best_a;
-            best_gain_at[s] = max_gain;
+    let mut matched = Vec::new();
+    for _pass in 0..params.max_passes.max(1) {
+        let geom = LaunchGeometry::elementwise(client, valid_starts);
+        unsafe {
+            omp_score_kernel::launch::<R>(
+                client,
+                geom.cube_count,
+                geom.cube_dim,
+                ArrayArg::from_raw_parts(residual.clone(), channels * samples),
+                ArrayArg::from_raw_parts(offsets_h.clone(), num_units + 1),
+                ArrayArg::from_raw_parts(channels_h.clone(), rows_len),
+                ArrayArg::from_raw_parts(data_h.clone(), rows_len * t_len),
+                ArrayArg::from_raw_parts(energies_h.clone(), num_units),
+                ArrayArg::from_raw_parts(unit_h.clone(), valid_starts),
+                ArrayArg::from_raw_parts(scale_h.clone(), valid_starts),
+                ArrayArg::from_raw_parts(gain_h.clone(), valid_starts),
+                samples as u32,
+                valid_starts as u32,
+                num_units as u32,
+                t_len as u32,
+                params.min_amplitude_scale,
+                params.max_amplitude_scale,
+            );
         }
+        let best_unit_at = u32::from_bytes(&client.read_one(unit_h.clone()).expect("VRAM read units")).to_vec();
+        let best_scale_at = f32::from_bytes(&client.read_one(scale_h.clone()).expect("VRAM read scales")).to_vec();
+        let best_gain_at = f32::from_bytes(&client.read_one(gain_h.clone()).expect("VRAM read gains")).to_vec();
 
         // Greedily pick local maxima in energy reduction that exceed `min_explained_energy`
+        let (mut pick_units, mut pick_starts, mut pick_scales) = (Vec::new(), Vec::new(), Vec::new());
         let mut s = 1usize;
         while s + 1 < valid_starts {
             let g = best_gain_at[s];
-            if g >= min_explained_energy && g >= best_gain_at[s - 1] && g >= best_gain_at[s + 1] {
-                let u = best_unit_at[s];
+            if g >= params.min_explained_energy && g >= best_gain_at[s - 1] && g >= best_gain_at[s + 1] {
+                let u = best_unit_at[s] as usize;
                 let scale = best_scale_at[s];
-                let tmpl = &templates[u];
-
-                let sub_lag = parabolic_subsample_offset(
-                    -best_gain_at[s - 1],
-                    -best_gain_at[s],
-                    -best_gain_at[s + 1],
-                );
-
-                // Subtract scaled template from residual
-                for &(r, c) in &rows[u] {
-                    let res = &mut residual[c * samples + s..c * samples + s + t_len];
-                    for (x, w) in res.iter_mut().zip(tmpl.row(r)) {
-                        *x -= scale * w;
-                    }
-                }
-
+                let sub_lag = parabolic_subsample_offset(-best_gain_at[s - 1], -best_gain_at[s], -best_gain_at[s + 1]);
+                pick_units.push(u as u32);
+                pick_starts.push(s as u32);
+                pick_scales.push(scale);
                 matched.push(MatchedSpike {
                     unit_id: u,
-                    sample_index: (s + tmpl.trough_index) as u64,
+                    sample_index: (s + templates[u].trough_index) as u64,
                     subsample_lag: sub_lag,
                     amplitude_scale: scale,
                     score: g.sqrt(),
                 });
-                added_in_pass += 1;
-                // Advance by `t_len` inside this pass so any overlapping spike within `< t_len`
-                // is resolved in the next OMP pass after `residual` has been updated!
+                // Skip the template length within this pass: a spike overlapping this one is
+                // resolved in the next pass, after the residual has been updated
                 s += t_len;
             } else {
                 s += 1;
             }
         }
-
-        if added_in_pass == 0 {
+        if pick_units.is_empty() {
             break;
+        }
+
+        let picks = pick_units.len();
+        let geom = LaunchGeometry::elementwise(client, picks * max_rows * t_len);
+        unsafe {
+            omp_subtract_kernel::launch::<R>(
+                client,
+                geom.cube_count,
+                geom.cube_dim,
+                ArrayArg::from_raw_parts(residual.clone(), channels * samples),
+                ArrayArg::from_raw_parts(offsets_h.clone(), num_units + 1),
+                ArrayArg::from_raw_parts(channels_h.clone(), rows_len),
+                ArrayArg::from_raw_parts(data_h.clone(), rows_len * t_len),
+                ArrayArg::from_raw_parts(client.create_from_slice(u32::as_bytes(&pick_units)), picks),
+                ArrayArg::from_raw_parts(client.create_from_slice(u32::as_bytes(&pick_starts)), picks),
+                ArrayArg::from_raw_parts(client.create_from_slice(f32::as_bytes(&pick_scales)), picks),
+                samples as u32,
+                picks as u32,
+                max_rows as u32,
+                t_len as u32,
+            );
         }
     }
 
@@ -166,7 +246,7 @@ impl SpikeMatcher for OmpSpikeMatcher {
         channels: usize,
         samples: usize,
         templates: &[WaveformTemplate],
-    ) -> Vec<MatchedSpike> {
+    ) -> DspResult<Vec<MatchedSpike>> {
         match_spikes_omp(
             data,
             channels,
@@ -217,7 +297,7 @@ mod tests {
             }
         }
 
-        let matched = match_spikes_omp(&raw, channels, samples, &templates, 0.7, 1.3, 1000.0, 4);
+        let matched = match_spikes_omp(&raw, channels, samples, &templates, 0.7, 1.3, 1000.0, 4).unwrap();
         assert_eq!(matched.len(), 2);
         // Reported at the trough (sample 10 of the template), not the template centre.
         assert_eq!(templates[0].trough_index, 10);
@@ -262,7 +342,7 @@ mod tests {
             }
         }
 
-        let matched = match_spikes_omp(&raw, channels, samples, &templates, 0.7, 1.3, 1_000.0, 4);
+        let matched = match_spikes_omp(&raw, channels, samples, &templates, 0.7, 1.3, 1_000.0, 4).unwrap();
         let got: Vec<(usize, u64)> = matched.iter().map(|m| (m.unit_id, m.sample_index)).collect();
         let expected: Vec<(usize, u64)> = events.iter().map(|&(u, s)| (u, (s + trough) as u64)).collect();
         assert_eq!(got, expected);

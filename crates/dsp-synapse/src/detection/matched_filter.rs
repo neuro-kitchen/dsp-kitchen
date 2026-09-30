@@ -128,16 +128,16 @@ impl SpikeDetector for MatchedFilterSpikeDetector {
         channels: usize,
         samples: usize,
         sample_rate_hz: f64,
-    ) -> Vec<SpikeEvent> {
+    ) -> dsp_core::DspResult<Vec<SpikeEvent>> {
         let ref_samples = ((sample_rate_hz * self.refractory_ms * 1e-3).round() as usize).max(1);
-        detect_spikes_matched_filter(
+        Ok(detect_spikes_matched_filter(
             data,
             channels,
             samples,
             &self.prototype,
             self.threshold_factor,
             ref_samples,
-        )
+        ))
     }
 }
 

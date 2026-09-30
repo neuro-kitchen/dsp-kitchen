@@ -57,11 +57,11 @@ impl TemplateAccumulator {
         }
     }
 
-    /// Merges a GPU-reduced batch of `batch_count` waveforms given their per-sample `batch_sum`
-    /// ($\sum x$) and `batch_sum_sq` ($\sum x^2$) using Chan's parallel variance update formula.
-    pub fn merge_batch(&mut self, batch_count: u64, batch_sum: &[f32], batch_sum_sq: &[f32]) {
+    /// Merges a GPU-reduced batch of `batch_count` waveforms given their per-sample `batch_mean`
+    /// and second central moment `batch_m2` using Chan's parallel variance update formula.
+    pub fn merge_batch(&mut self, batch_count: u64, batch_mean: &[f32], batch_m2: &[f32]) {
         let expected = self.num_channels * self.num_samples;
-        if batch_count == 0 || batch_sum.len() != expected || batch_sum_sq.len() != expected {
+        if batch_count == 0 || batch_mean.len() != expected || batch_m2.len() != expected {
             return;
         }
 
@@ -71,10 +71,8 @@ impl TemplateAccumulator {
         self.count += batch_count;
 
         for i in 0..expected {
-            let sum_b = batch_sum[i] as f64;
-            let sum_sq_b = batch_sum_sq[i] as f64;
-            let mean_b = sum_b / n_b;
-            let m2_b = (sum_sq_b - sum_b * mean_b).max(0.0);
+            let mean_b = batch_mean[i] as f64;
+            let m2_b = (batch_m2[i] as f64).max(0.0);
 
             if n_a == 0.0 {
                 self.mean[i] = mean_b;
