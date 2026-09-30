@@ -33,6 +33,7 @@ cubecl = { version = "0.10.0", default-features = false }
 burn-tensor = "0.21.0"
 burn-flex = "0.21.0"
 burn-wgpu = "0.21.0"
+onnx-ir = "0.21.0"
 safetensors = "0.8.0"
 bytemuck = { version = "1.25.2", features = ["derive"] }
 
