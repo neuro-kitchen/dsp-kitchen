@@ -1,3 +1,3 @@
 pub mod ring;
 
-pub use ring::MultiChannelRingBuffer;
+pub use ring::{MultiChannelRingBuffer, OverrunPolicy};

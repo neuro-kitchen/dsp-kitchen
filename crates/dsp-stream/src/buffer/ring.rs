@@ -1,31 +1,48 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
 use dsp_core::error::{DspError, DspResult};
+
+/// What [`MultiChannelRingBuffer::push_chunk`] does when a chunk does not fit in the free space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OverrunPolicy {
+    /// Refuse the chunk with [`DspError::BufferOverrun`]; nothing is overwritten.
+    #[default]
+    Reject,
+    /// Overwrite the oldest unread samples and move the read position past them (counted in
+    /// [`MultiChannelRingBuffer::dropped_samples`]). Live streams that must never block use this.
+    DropOldest,
+}
 
 /// Multi-channel circular ring buffer for real-time continuous stream ingestion.
 /// Pre-allocates all memory at construction (zero allocation during streaming).
-/// Layout: Channel-Major `[channels, capacity_samples]`.
+/// Layout: Channel-Major `[channels, capacity_samples]`. Single owner (`&mut self`); share it across
+/// threads behind a mutex or channel.
 pub struct MultiChannelRingBuffer {
     channels: usize,
     capacity_samples: usize,
     buffer: Vec<f32>,
-    write_pos: AtomicUsize,
-    read_pos: AtomicUsize,
-    available_samples: AtomicUsize,
+    write_pos: usize,
+    read_pos: usize,
+    available_samples: usize,
+    policy: OverrunPolicy,
+    dropped_samples: u64,
 }
 
 impl MultiChannelRingBuffer {
     pub fn new(channels: usize, capacity_samples: usize) -> Self {
+        Self::with_policy(channels, capacity_samples, OverrunPolicy::Reject)
+    }
+
+    pub fn with_policy(channels: usize, capacity_samples: usize, policy: OverrunPolicy) -> Self {
         assert!(channels > 0, "Channels must be > 0");
         assert!(capacity_samples > 0, "Capacity must be > 0");
-
-        let total_size = channels * capacity_samples;
         Self {
             channels,
             capacity_samples,
-            buffer: vec![0.0f32; total_size],
-            write_pos: AtomicUsize::new(0),
-            read_pos: AtomicUsize::new(0),
-            available_samples: AtomicUsize::new(0),
+            buffer: vec![0.0f32; channels * capacity_samples],
+            write_pos: 0,
+            read_pos: 0,
+            available_samples: 0,
+            policy,
+            dropped_samples: 0,
         }
     }
 
@@ -38,7 +55,16 @@ impl MultiChannelRingBuffer {
     }
 
     pub fn available_samples(&self) -> usize {
-        self.available_samples.load(Ordering::Acquire)
+        self.available_samples
+    }
+
+    pub fn free_samples(&self) -> usize {
+        self.capacity_samples - self.available_samples
+    }
+
+    /// Unread samples overwritten under [`OverrunPolicy::DropOldest`].
+    pub fn dropped_samples(&self) -> u64 {
+        self.dropped_samples
     }
 
     /// Pushes a chunk of shape [channels, chunk_samples] into the ring buffer.
@@ -49,42 +75,33 @@ impl MultiChannelRingBuffer {
                 actual: vec![data.len()],
             });
         }
-
         if chunk_samples > self.capacity_samples {
-            return Err(DspError::BufferOverrun {
-                capacity: self.capacity_samples,
-                requested: chunk_samples,
-            });
+            return Err(DspError::BufferOverrun { capacity: self.capacity_samples, requested: chunk_samples });
         }
-
-        let w_pos = self.write_pos.load(Ordering::Relaxed);
-
-        // Copy channel by channel wrapping around capacity
-        for c in 0..self.channels {
-            let src_offset = c * chunk_samples;
-            let dst_channel_offset = c * self.capacity_samples;
-
-            let first_part = (self.capacity_samples - w_pos).min(chunk_samples);
-            let second_part = chunk_samples - first_part;
-
-            // First segment
-            self.buffer[dst_channel_offset + w_pos..dst_channel_offset + w_pos + first_part]
-                .copy_from_slice(&data[src_offset..src_offset + first_part]);
-
-            // Wrapped segment (if any)
-            if second_part > 0 {
-                self.buffer[dst_channel_offset..dst_channel_offset + second_part]
-                    .copy_from_slice(&data[src_offset + first_part..src_offset + chunk_samples]);
+        let overflow = chunk_samples.saturating_sub(self.free_samples());
+        if overflow > 0 {
+            match self.policy {
+                OverrunPolicy::Reject => {
+                    return Err(DspError::BufferOverrun { capacity: self.free_samples(), requested: chunk_samples });
+                }
+                OverrunPolicy::DropOldest => {
+                    self.read_pos = (self.read_pos + overflow) % self.capacity_samples;
+                    self.available_samples -= overflow;
+                    self.dropped_samples += overflow as u64;
+                }
             }
         }
 
-        let next_w = (w_pos + chunk_samples) % self.capacity_samples;
-        self.write_pos.store(next_w, Ordering::Release);
-
-        let current_avail = self.available_samples.load(Ordering::Relaxed);
-        let new_avail = (current_avail + chunk_samples).min(self.capacity_samples);
-        self.available_samples.store(new_avail, Ordering::Release);
-
+        let w_pos = self.write_pos;
+        for c in 0..self.channels {
+            let src = &data[c * chunk_samples..(c + 1) * chunk_samples];
+            let dst = c * self.capacity_samples;
+            let first = (self.capacity_samples - w_pos).min(chunk_samples);
+            self.buffer[dst + w_pos..dst + w_pos + first].copy_from_slice(&src[..first]);
+            self.buffer[dst..dst + chunk_samples - first].copy_from_slice(&src[first..]);
+        }
+        self.write_pos = (w_pos + chunk_samples) % self.capacity_samples;
+        self.available_samples += chunk_samples;
         Ok(())
     }
 
@@ -96,44 +113,27 @@ impl MultiChannelRingBuffer {
                 actual: vec![output.len()],
             });
         }
-
-        let current_avail = self.available_samples.load(Ordering::Acquire);
-        if chunk_samples > current_avail {
-            return Err(DspError::BufferUnderrun {
-                available: current_avail,
-                requested: chunk_samples,
-            });
+        if chunk_samples > self.available_samples {
+            return Err(DspError::BufferUnderrun { available: self.available_samples, requested: chunk_samples });
         }
 
-        let r_pos = self.read_pos.load(Ordering::Relaxed);
-
+        let r_pos = self.read_pos;
         for c in 0..self.channels {
-            let dst_offset = c * chunk_samples;
-            let src_channel_offset = c * self.capacity_samples;
-
-            let first_part = (self.capacity_samples - r_pos).min(chunk_samples);
-            let second_part = chunk_samples - first_part;
-
-            output[dst_offset..dst_offset + first_part]
-                .copy_from_slice(&self.buffer[src_channel_offset + r_pos..src_channel_offset + r_pos + first_part]);
-
-            if second_part > 0 {
-                output[dst_offset + first_part..dst_offset + chunk_samples]
-                    .copy_from_slice(&self.buffer[src_channel_offset..src_channel_offset + second_part]);
-            }
+            let dst = &mut output[c * chunk_samples..(c + 1) * chunk_samples];
+            let src = c * self.capacity_samples;
+            let first = (self.capacity_samples - r_pos).min(chunk_samples);
+            dst[..first].copy_from_slice(&self.buffer[src + r_pos..src + r_pos + first]);
+            dst[first..].copy_from_slice(&self.buffer[src..src + chunk_samples - first]);
         }
-
-        let next_r = (r_pos + chunk_samples) % self.capacity_samples;
-        self.read_pos.store(next_r, Ordering::Release);
-        self.available_samples.fetch_sub(chunk_samples, Ordering::Release);
-
+        self.read_pos = (r_pos + chunk_samples) % self.capacity_samples;
+        self.available_samples -= chunk_samples;
         Ok(())
     }
 
     pub fn clear(&mut self) {
-        self.write_pos.store(0, Ordering::Relaxed);
-        self.read_pos.store(0, Ordering::Relaxed);
-        self.available_samples.store(0, Ordering::Relaxed);
+        self.write_pos = 0;
+        self.read_pos = 0;
+        self.available_samples = 0;
     }
 }
 
@@ -175,5 +175,33 @@ mod tests {
         assert_eq!(out2[19], 1.0);
         assert_eq!(out2[20], 2.0);
         assert_eq!(out2[79], 2.0);
+    }
+
+    fn ramp(start: usize, n: usize) -> Vec<f32> {
+        // two channels: ch1 = -ch0
+        let c0: Vec<f32> = (start..start + n).map(|v| v as f32).collect();
+        c0.iter().copied().chain(c0.iter().map(|v| -v)).collect()
+    }
+
+    #[test]
+    fn reject_policy_never_overwrites_unread_samples() {
+        let mut ring = MultiChannelRingBuffer::new(2, 10);
+        ring.push_chunk(&ramp(0, 8), 8).unwrap();
+        assert!(matches!(ring.push_chunk(&ramp(8, 4), 4), Err(DspError::BufferOverrun { .. })));
+        let mut out = vec![0.0; 16];
+        ring.pop_chunk(&mut out, 8).unwrap();
+        assert_eq!(out, ramp(0, 8));
+    }
+
+    #[test]
+    fn drop_oldest_keeps_the_newest_samples_in_order() {
+        let mut ring = MultiChannelRingBuffer::with_policy(2, 10, OverrunPolicy::DropOldest);
+        ring.push_chunk(&ramp(0, 8), 8).unwrap();
+        ring.push_chunk(&ramp(8, 6), 6).unwrap(); // 4 oldest dropped
+        assert_eq!(ring.dropped_samples(), 4);
+        assert_eq!(ring.available_samples(), 10);
+        let mut out = vec![0.0; 20];
+        ring.pop_chunk(&mut out, 10).unwrap();
+        assert_eq!(out, ramp(4, 10));
     }
 }

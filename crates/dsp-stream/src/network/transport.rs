@@ -6,7 +6,7 @@
 use std::net::SocketAddr;
 use tokio::io::AsyncWriteExt;
 
-use super::frame::StreamFrame;
+use super::frame::{DEFAULT_MAX_FRAME_BYTES, FrameError, StreamFrame};
 use super::tls::{generate_self_signed_tls, QuicTlsBundle};
 
 /// High-throughput QUIC Streaming Server (Data Producer).
@@ -100,9 +100,18 @@ impl QuicStreamClient {
         connecting.await
     }
 
-    /// Receives a length-delimited `StreamFrame` from a QUIC receive stream.
+    /// Receives a length-delimited `StreamFrame` (at most [`DEFAULT_MAX_FRAME_BYTES`]).
     pub async fn recv_frame(
         stream: &mut quinn::RecvStream,
+    ) -> Result<Option<StreamFrame>, Box<dyn std::error::Error + Send + Sync>> {
+        Self::recv_frame_limited(stream, DEFAULT_MAX_FRAME_BYTES).await
+    }
+
+    /// Receives a length-delimited `StreamFrame`, rejecting length prefixes above `max_bytes` before
+    /// allocating and frames whose payload does not match their header.
+    pub async fn recv_frame_limited(
+        stream: &mut quinn::RecvStream,
+        max_bytes: usize,
     ) -> Result<Option<StreamFrame>, Box<dyn std::error::Error + Send + Sync>> {
         let mut len_buf = [0u8; 4];
         match stream.read_exact(&mut len_buf).await {
@@ -112,6 +121,9 @@ impl QuicStreamClient {
         }
 
         let msg_len = u32::from_be_bytes(len_buf) as usize;
+        if msg_len > max_bytes {
+            return Err(Box::new(FrameError::TooLarge { len: msg_len, max: max_bytes }));
+        }
         let mut msg_buf = vec![0u8; msg_len];
         match stream.read_exact(&mut msg_buf).await {
             Ok(_) => {}
@@ -120,6 +132,7 @@ impl QuicStreamClient {
         }
 
         let frame = StreamFrame::decode_from_slice(&msg_buf)?;
+        frame.validate()?;
         Ok(Some(frame))
     }
 }
@@ -325,6 +338,26 @@ mod tests {
         client_send.write_all(b"OK").await.unwrap();
         let _ = client_send.finish();
     }
+
+    #[tokio::test]
+    async fn oversized_length_prefix_is_rejected_before_allocating() {
+        let (server, client_config) =
+            QuicStreamServer::bind_self_signed("127.0.0.1:0".parse().unwrap(), vec!["localhost".to_string()]).unwrap();
+        let addr = server.local_addr().unwrap();
+        tokio::spawn(async move {
+            let conn = server.accept().await.unwrap();
+            let (mut send, mut recv) = conn.open_bi().await.unwrap();
+            // Claims a 3 GiB frame.
+            send.write_all(&(3u32 << 30).to_be_bytes()).await.unwrap();
+            let _ = send.finish();
+            let mut ack = [0u8; 2];
+            let _ = recv.read_exact(&mut ack).await;
+        });
+        let client = QuicStreamClient::bind(client_config).unwrap();
+        let conn = client.connect(addr, "localhost").await.unwrap();
+        let (mut send, mut recv) = conn.accept_bi().await.unwrap();
+        let err = QuicStreamClient::recv_frame(&mut recv).await.unwrap_err();
+        assert!(err.to_string().contains("exceeds"), "{err}");
+        send.write_all(b"OK").await.unwrap();
+    }
 }
-
-

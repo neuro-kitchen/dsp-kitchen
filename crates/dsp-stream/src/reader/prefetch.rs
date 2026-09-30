@@ -41,36 +41,59 @@ impl<'a> PrefetchReader<'a> {
 
     /// Streams all scheduled [`HaloWindow`]s with double-buffered background prefetching,
     /// invoking `f(&window, &channel_major_data)` for each window.
-    pub fn for_each_window<F>(&self, mut f: F) -> DspResult<()>
+    /// Calls `f` for every window with its channel-major µV samples, reading the next window on a
+    /// background thread meanwhile.
+    pub fn for_each_window<F>(&self, f: F) -> DspResult<()>
     where
         F: FnMut(&HaloWindow, &[f32]) -> DspResult<()>,
+    {
+        let source = self.source;
+        self.stream(1, |ch, range, buf: &mut [f32]| source.read(ch, range, buf), f)
+    }
+
+    /// Like [`Self::for_each_window`] with the stored values ([`RecordingSource::read_stored`]):
+    /// `info().format` little-endian, channel-major, before gain and offset.
+    pub fn for_each_window_stored<F>(&self, f: F) -> DspResult<()>
+    where
+        F: FnMut(&HaloWindow, &[u8]) -> DspResult<()>,
+    {
+        let source = self.source;
+        let bytes = source.info().format.bytes();
+        self.stream(bytes, |ch, range, buf: &mut [u8]| source.read_stored(ch, range, buf), f)
+    }
+
+    /// Double-buffered window loop over `per_sample` elements per channel sample.
+    fn stream<T, R, F>(&self, per_sample: usize, read: R, mut f: F) -> DspResult<()>
+    where
+        T: Copy + Default + Send,
+        R: Fn(&[usize], std::ops::Range<u64>, &mut [T]) -> DspResult<()> + Sync,
+        F: FnMut(&HaloWindow, &[T]) -> DspResult<()>,
     {
         if self.schedule.is_empty() || self.channels.is_empty() {
             return Ok(());
         }
 
         let n_ch = self.channels.len();
-        let max_len = n_ch * self.schedule.max_read_samples();
+        let max_len = n_ch * self.schedule.max_read_samples() * per_sample;
         let windows = self.schedule.windows();
-        let source = self.source;
         let channels = &self.channels;
+        let read = &read;
 
         std::thread::scope(|s| {
-            let (ready_tx, ready_rx) = sync_channel::<DspResult<(HaloWindow, Vec<f32>)>>(1);
-            let (recycle_tx, recycle_rx) = sync_channel::<Vec<f32>>(2);
+            let (ready_tx, ready_rx) = sync_channel::<DspResult<(HaloWindow, Vec<T>)>>(1);
+            let (recycle_tx, recycle_rx) = sync_channel::<Vec<T>>(2);
 
-            // Seed two reusable host buffers for ping-pong I/O prefetching
-            let _ = recycle_tx.send(vec![0.0f32; max_len]);
-            let _ = recycle_tx.send(vec![0.0f32; max_len]);
+            let _ = recycle_tx.send(vec![T::default(); max_len]);
+            let _ = recycle_tx.send(vec![T::default(); max_len]);
 
             s.spawn(move || {
                 for win in windows {
                     let Ok(mut buf) = recycle_rx.recv() else {
                         break;
                     };
-                    let len = n_ch * win.read_len();
-                    buf.resize(len, 0.0);
-                    match source.read(channels, win.read_global.clone(), &mut buf[..len]) {
+                    let len = n_ch * win.read_len() * per_sample;
+                    buf.resize(len, T::default());
+                    match read(channels, win.read_global.clone(), &mut buf[..len]) {
                         Ok(()) => {
                             if ready_tx.send(Ok((win.clone(), buf))).is_err() {
                                 break;
