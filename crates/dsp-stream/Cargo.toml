@@ -18,6 +18,6 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-rcgen = "0.14"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
-rustls-pki-types = "1.15"
+rcgen.workspace = true
+rustls.workspace = true
+rustls-pki-types.workspace = true
