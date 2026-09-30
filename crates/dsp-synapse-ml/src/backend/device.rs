@@ -26,6 +26,18 @@ impl Default for SynapseMlDevice {
     }
 }
 
+impl SynapseMlDevice {
+    /// The Burn device for a compute runtime chosen with [`dsp_base::ComputeTarget`]: WGPU runs on
+    /// `burn-wgpu`, every other runtime on the CPU backend until Burn runs on the CubeCL runtimes
+    /// directly (Task 23).
+    pub fn from_target(target: dsp_base::ComputeTarget) -> Self {
+        match target {
+            dsp_base::ComputeTarget::Wgpu if cfg!(feature = "wgpu") => Self::Wgpu(0),
+            _ => Self::Cpu,
+        }
+    }
+}
+
 /// Multi-dimensional contiguous `f32` Tensor of rank `D` (`D = 1, 2, 3`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tensor<const D: usize> {

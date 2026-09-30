@@ -133,6 +133,14 @@ impl RawRecording {
     fn data(&self) -> &[u8] {
         &self.map[self.header..]
     }
+
+    /// The stored samples exactly as mapped (after the header): `info().format` values in
+    /// `info().order`, before gain / offset. Lives as long as the recording.
+    pub fn stored_bytes(&self) -> &[u8] {
+        let info = &self.info;
+        let len = info.channels.len() * info.samples as usize * info.format.bytes();
+        &self.data()[..len]
+    }
 }
 
 impl RecordingSource for RawRecording {
