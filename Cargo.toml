@@ -6,6 +6,7 @@ members = [
     "crates/dsp-synapse",
     "crates/dsp-synapse-ml",
     "crates/dsp-stream",
+    "crates/dsp-io",
     "crates/dsp-bridge",
     "crates/dsp-cli",
     "crates/croc-app",
@@ -24,6 +25,7 @@ dsp-base = { path = "crates/dsp-base" }
 dsp-synapse = { path = "crates/dsp-synapse" }
 dsp-synapse-ml = { path = "crates/dsp-synapse-ml" }
 dsp-stream = { path = "crates/dsp-stream" }
+dsp-io = { path = "crates/dsp-io" }
 dsp-bridge = { path = "crates/dsp-bridge" }
 
 # Compute & Tensors
@@ -40,6 +42,7 @@ clap = { version = "4.6.7", features = ["derive", "cargo", "env"] }
 # IPC & Transport
 shared_memory = "0.12.4"
 memmap2 = "0.9.11"
+flate2 = "1.1.10"
 zarrs = { version = "0.23.14", default-features = false, features = ["filesystem", "blosc", "crc32c", "gzip", "sharding", "zstd"] }
 quinn = "0.11.12"
 tonic = "0.14.6"
