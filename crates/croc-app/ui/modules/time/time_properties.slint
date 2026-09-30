@@ -1,0 +1,125 @@
+import { SpinBox, ComboBox, CheckBox } from "std-widgets.slint";
+import { Theme } from "../../shell/theme.slint";
+import { TimeViewKind } from "time_types.slint";
+import { TimeState, TimeLogic } from "time_logic.slint";
+
+component SectionTitle inherits Text {
+    color: Theme.text-muted;
+    font-size: Theme.font-small;
+    font-weight: 700;
+}
+
+component Label inherits Text {
+    color: Theme.text-muted;
+    font-size: Theme.font-small;
+    vertical-alignment: center;
+    width: 64px;
+}
+
+// Right panel of the Time module: settings of the focused traces/heatmap view.
+export component TimeProperties inherits Rectangle {
+    background: Theme.surface;
+    clip: true;
+
+    Rectangle {
+        x: 0px;
+        width: 1px;
+        background: Theme.border;
+    }
+
+    VerticalLayout {
+        padding: 10px;
+        spacing: 10px;
+        alignment: start;
+
+        SectionTitle { text: "VIEW"; }
+
+        if !TimeState.focused.valid: Text {
+            text: "Select a view, or add one from the View menu.";
+            color: Theme.text-muted;
+            font-size: Theme.font-small;
+            wrap: word-wrap;
+        }
+
+        if TimeState.focused.valid: VerticalLayout {
+            spacing: 10px;
+
+            Text {
+                text: TimeState.focused.title;
+                color: Theme.text;
+                font-size: Theme.font-body;
+                font-weight: 600;
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                Label { text: "Type"; }
+                ComboBox {
+                    // Same order as TimeViewKind
+                    model: ["Traces", "Heatmap"];
+                    current-index: TimeState.focused.kind_index;
+                    selected => { TimeLogic.set_view_kind(TimeState.focused.view_id, self.current-index); }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                Label { text: "Channels"; }
+                Text {
+                    text: "\{TimeState.focused.selected} selected";
+                    color: Theme.text;
+                    font-size: Theme.font-small;
+                    vertical-alignment: center;
+                }
+            }
+
+            if TimeState.focused.kind == TimeViewKind.traces: HorizontalLayout {
+                spacing: 8px;
+                Label { text: "On screen"; }
+                SpinBox {
+                    minimum: 1;
+                    maximum: Math.max(1, TimeState.focused.lanes_max);
+                    value: TimeState.focused.lanes;
+                    edited(v) => { TimeLogic.set_lanes(TimeState.focused.view_id, v); }
+                }
+            }
+
+            if TimeState.focused.kind == TimeViewKind.traces: HorizontalLayout {
+                spacing: 8px;
+                Label { text: "Showing"; }
+                Text {
+                    text: TimeState.focused.range_label + "  (PgUp/PgDn)";
+                    color: Theme.link;
+                    font-size: Theme.font-small;
+                    vertical-alignment: center;
+                }
+            }
+
+            if TimeState.focused.kind == TimeViewKind.traces: HorizontalLayout {
+                spacing: 8px;
+                Label { text: "Gain"; }
+                Text {
+                    text: TimeState.focused.gain_label + "  ([ / ], Ctrl+wheel)";
+                    color: Theme.text;
+                    font-size: Theme.font-small;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        Rectangle { height: 1px; background: Theme.border; }
+
+        SectionTitle { text: "OVERLAY"; }
+        CheckBox {
+            text: "Show sorted spikes";
+            checked: TimeState.show_sorted_spikes;
+            toggled => { TimeLogic.set_show_sorted_spikes(self.checked); }
+        }
+        Text {
+            text: "Colors spikes of the clusters selected in the Spikes module.";
+            color: Theme.text-dim;
+            font-size: 10px;
+            wrap: word-wrap;
+        }
+    }
+}

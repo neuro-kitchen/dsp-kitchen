@@ -1,23 +1,28 @@
-mod controller;
-mod model;
-mod view;
-mod viewmodel;
+mod app;
+mod data;
+mod modules;
+mod shared;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use anyhow::Result;
 use clap::Parser;
+use slint::ComponentHandle;
 
-use controller::Controller;
-use model::{Dataset, SignalSource};
-use view::{ViewMode, WaveformRenderer};
-use viewmodel::AppViewModel;
+use app::controller::Controller;
+use app::model::AppModel;
+use data::{Dataset, SignalSource};
+use modules::time::module::TimeModule;
+use modules::time::renderer::{TimeViewKind, WaveformRenderer};
 
-slint::include_modules!();
+/// Generated Slint UI (window, globals, structs).
+mod ui {
+    slint::include_modules!();
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "croc-app")]
-#[command(about = "Croc: multi-view electrophysiology signal workbench (Slint, MVVM)")]
+#[command(about = "Croc: electrophysiology signal workbench — Time and Spikes modules (Slint, MVVM)")]
 struct Args {
     /// Path to recording dataset file (.bin)
     #[arg(short, long)]
@@ -47,6 +52,10 @@ struct Args {
     #[arg(long, default_value = "1280x800")]
     size: String,
 
+    /// Start in this module (0 = Time, 1 = Spikes)
+    #[arg(long)]
+    module: Option<usize>,
+
     /// Neither restore nor save the workspace layout (--screenshot restores but never saves)
     #[arg(long)]
     no_session: bool,
@@ -67,21 +76,22 @@ fn main() -> Result<()> {
         dataset.sample_rate / 1000.0
     );
     let path = args.file.clone().filter(|p| p.exists());
-    let mut vm = AppViewModel::new(dataset, path.clone());
+    let mut app = AppModel::new(dataset, path.clone());
     if let Some(p) = path {
-        vm.push_recent(p);
+        app.push_recent(p);
     }
-    println!("Detected {} timeline events across {} channels.", vm.events.len(), vm.dataset.total_channels);
+    println!("Detected {} timeline events across {} channels.", app.events.len(), app.dataset.total_channels);
 
     // 2. Optional headless snapshot of the default traces (or heatmap) view
     if let Some(snap_path) = args.snapshot {
         let (w, h) = (1200u32, 600u32);
-        vm.timeline.scrub_to(2.45);
-        let kind = if args.heatmap { ViewMode::Heatmap } else { ViewMode::Traces };
-        let mut view = vm.views.iter().find(|v| v.kind == kind).expect("default layout has both kinds").clone();
+        let mut time = TimeModule::new(&app.dataset);
+        time.timeline.scrub_to(2.45);
+        let kind = if args.heatmap { TimeViewKind::Heatmap } else { TimeViewKind::Traces };
+        let mut view = time.ws.views.iter().find(|v| v.kind == kind).expect("default layout has both kinds").clone();
         view.set_canvas(w, h, 1.0);
-        let source: Arc<dyn SignalSource> = vm.dataset.clone();
-        let req = view.render_request(&vm.timeline, source, vm.events.clone());
+        let source: Arc<dyn SignalSource> = app.dataset.clone();
+        let req = view.render_request(&time.timeline, source, app.events.clone(), Vec::new());
         let pixel_buf = WaveformRenderer::default().render(&req);
         image::save_buffer(&snap_path, pixel_buf.as_bytes(), w, h, image::ExtendedColorType::Rgba8)?;
         println!("Plot snapshot saved to {} ({w}x{h} px).", snap_path.display());
@@ -89,11 +99,14 @@ fn main() -> Result<()> {
     }
 
     // 3. Window + controller (restores the saved layout, wires intents, starts the frame timer)
-    let ui = AppWindow::new()?;
+    let ui = ui::AppWindow::new()?;
     // A screenshot restores the saved layout but never overwrites it
     let restore = !args.no_session;
     let save = restore && args.screenshot.is_none();
-    let _controller = Controller::install(&ui, vm, restore, save);
+    let _controller = Controller::install(&ui, app, restore, save);
+    if let Some(module) = args.module {
+        ui.global::<ui::AppLogic>().invoke_set_module(module as i32);
+    }
 
     let _capture = args.screenshot.map(|path| {
         let (w, h) = args.size.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?))).unwrap_or((1280.0, 800.0));
