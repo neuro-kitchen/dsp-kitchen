@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::data::{Dataset, SpikeEventStore};
+use crate::data::{Dataset, SourceSet, SpikeEventStore};
 use crate::modules::spikes::plots::selection_color;
 use crate::modules::spikes::sorting::Sorting;
 use crate::modules::time::module::SpikeMarks;
@@ -52,6 +52,9 @@ pub struct ClusterRow {
 }
 
 pub struct AppModel {
+    /// Every signal of the open file; views pick theirs.
+    pub sources: Arc<SourceSet>,
+    /// The default source (largest electrical signal): events and spike sorting use it.
     pub dataset: Arc<Dataset>,
     pub dataset_path: Option<PathBuf>,
     pub events: Arc<SpikeEventStore>,
@@ -68,10 +71,12 @@ pub struct AppModel {
 }
 
 impl AppModel {
-    pub fn new(dataset: Dataset, dataset_path: Option<PathBuf>) -> Self {
+    pub fn new(sources: SourceSet, dataset_path: Option<PathBuf>) -> Self {
+        let dataset = sources.default_dataset();
         let (events, events_detected) = detect_events(&dataset);
         Self {
-            dataset: Arc::new(dataset),
+            sources: Arc::new(sources),
+            dataset,
             dataset_path,
             events: Arc::new(events),
             events_detected,
@@ -84,11 +89,13 @@ impl AppModel {
         }
     }
 
-    pub fn load_dataset(&mut self, dataset: Dataset, path: Option<PathBuf>) {
+    pub fn load_dataset(&mut self, sources: SourceSet, path: Option<PathBuf>) {
+        let dataset = sources.default_dataset();
         let (events, detected) = detect_events(&dataset);
         self.events = Arc::new(events);
         self.events_detected = detected;
-        self.dataset = Arc::new(dataset);
+        self.dataset = dataset;
+        self.sources = Arc::new(sources);
         self.generation += 1;
         self.sorting = None;
         self.sort_status = SortStatus::Idle;
@@ -236,7 +243,7 @@ mod tests {
 
     #[test]
     fn test_sorting_selection_and_marks() {
-        let mut app = AppModel::new(Dataset::generate_synthetic(8, 30_000.0, 2.0), None);
+        let mut app = AppModel::new(SourceSet::single(Dataset::generate_synthetic(8, 30_000.0, 2.0)), None);
         app.sort_now(&synthetic_params(8));
         assert!(matches!(app.sort_status, SortStatus::Done { .. }));
         assert_eq!(app.selected_clusters.len(), 1);
@@ -258,9 +265,9 @@ mod tests {
 
     #[test]
     fn test_stale_sorting_is_ignored() {
-        let mut app = AppModel::new(Dataset::generate_synthetic(8, 30_000.0, 1.0), None);
+        let mut app = AppModel::new(SourceSet::single(Dataset::generate_synthetic(8, 30_000.0, 1.0)), None);
         let (ds, generation) = app.begin_sorting().unwrap();
-        app.load_dataset(Dataset::generate_synthetic(8, 30_000.0, 1.0), None);
+        app.load_dataset(SourceSet::single(Dataset::generate_synthetic(8, 30_000.0, 1.0)), None);
         assert!(!app.finish_sorting(generation, Sorting::run(&ds, &synthetic_params(8)), 1));
         assert!(app.sorting.is_none());
     }

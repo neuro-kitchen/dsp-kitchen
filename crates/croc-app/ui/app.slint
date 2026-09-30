@@ -76,6 +76,14 @@ export component AppWindow inherits Window {
                 activated => { TimeLogic.add_view(1); }
             }
             Menu {
+                title: "Add Traces for";
+                enabled: root.time-active;
+                for name[i] in TimeState.source-names: MenuItem {
+                    title: name;
+                    activated => { TimeLogic.add_view_for_source(i); }
+                }
+            }
+            Menu {
                 title: "Add Spike View";
                 enabled: root.spikes-active;
                 MenuItem { title: "Waveforms"; activated => { SpikeLogic.add_view(0); } }

@@ -59,4 +59,8 @@ export struct TimeFocused {
     gain_label: string,
     range_label: string,
     selected: int,
+    // Index into TimeState.source_names
+    source_index: int,
+    auto_scale: bool,
+    remove_dc: bool,
 }

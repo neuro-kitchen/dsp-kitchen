@@ -11,7 +11,7 @@ use slint::ComponentHandle;
 
 use app::controller::Controller;
 use app::model::AppModel;
-use data::Dataset;
+use data::{Dataset, SourceSet};
 use dsp_core::RecordingSource;
 use modules::time::module::TimeModule;
 use modules::time::renderer::{TimeViewKind, WaveformRenderer};
@@ -65,14 +65,23 @@ struct Args {
     /// Neither restore nor save the workspace layout (--screenshot restores but never saves)
     #[arg(long)]
     no_session: bool,
+
+    /// Source (signal) of the file to use for --snapshot, by name (e.g. EMG, Teme)
+    #[arg(long)]
+    source: Option<String>,
+
+    /// Where the --snapshot window starts (seconds)
+    #[arg(long, default_value_t = 2.45)]
+    at: f64,
 }
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
 
-    // 1. Load Model (Dataset) and initialize ViewModel
-    let (dataset, path) = initial_dataset(&args)?;
+    // 1. Load Model (the file's sources) and initialize ViewModel
+    let (sources, path) = initial_sources(&args)?;
+    let dataset = sources.default_dataset();
     println!(
         "Loaded dataset: {} ({} channels, {} samples, {:.2}s @ {:.1} kHz)",
         dataset.name,
@@ -81,7 +90,11 @@ fn main() -> Result<()> {
         dataset.total_duration_sec(),
         dataset.sample_rate / 1000.0
     );
-    let mut app = AppModel::new(dataset, path.clone());
+    if sources.entries().len() > 1 {
+        let names: Vec<String> = sources.entries().iter().map(|e| e.summary()).collect();
+        println!("Sources: {}", names.join(" | "));
+    }
+    let mut app = AppModel::new(sources, path.clone());
     if let Some(p) = path {
         app.push_recent(p);
     }
@@ -90,14 +103,23 @@ fn main() -> Result<()> {
     // 2. Optional headless snapshot of the default traces (or heatmap) view
     if let Some(snap_path) = args.snapshot {
         let (w, h) = (1200u32, 600u32);
-        let mut time = TimeModule::new(&app.dataset);
-        time.timeline.scrub_to(2.45);
+        let mut time = TimeModule::new(&app.sources);
+        time.timeline.scrub_to(args.at);
         let kind = if args.heatmap { TimeViewKind::Heatmap } else { TimeViewKind::Traces };
         let mut view = time.ws.views.iter().find(|v| v.kind == kind).expect("default layout has both kinds").clone();
+        if let Some(name) = &args.source {
+            let i = app.sources.entries().iter().position(|e| &e.name == name || &e.id == name);
+            let i = i.ok_or_else(|| anyhow::anyhow!("no source {name}"))?;
+            let e = &app.sources.entries()[i];
+            view.set_source(&e.id, &e.name, &e.unit, e.channels);
+        }
         view.set_canvas(w, h, 1.0);
-        let source: Arc<dyn RecordingSource> = app.dataset.clone();
+        let dataset = app.sources.get(&view.source);
+        let source: Arc<dyn RecordingSource> = dataset.clone();
         let req = view.render_request(&time.timeline, source, app.events.clone(), Vec::new());
-        let pixel_buf = WaveformRenderer::default().render(&req);
+        let (pixel_buf, scale) = WaveformRenderer::default().render_scaled(&req);
+        view.amp_scale = scale;
+        println!("Source {} · scale bar {}", dataset.name, view.scale_bar_label());
         image::save_buffer(&snap_path, pixel_buf.as_bytes(), w, h, image::ExtendedColorType::Rgba8)?;
         println!("Plot snapshot saved to {} ({w}x{h} px).", snap_path.display());
         return Ok(());
@@ -141,22 +163,22 @@ fn main() -> Result<()> {
 
 /// `--synthetic`, else `--file`, else the last opened recording, the bundled 10 s sample, or
 /// a minute of procedural data — whichever opens first.
-fn initial_dataset(args: &Args) -> Result<(Dataset, Option<PathBuf>)> {
+fn initial_sources(args: &Args) -> Result<(SourceSet, Option<PathBuf>)> {
     if let Some(d) = &args.synthetic {
-        return Ok((Dataset::procedural(args.channels, args.sample_rate, parse_duration(d)?)?, None));
+        return Ok((SourceSet::single(Dataset::procedural(args.channels, args.sample_rate, parse_duration(d)?)?), None));
     }
     if let Some(p) = &args.file {
-        return Ok((Dataset::open(p)?, Some(p.clone())));
+        return Ok((SourceSet::open(p)?, Some(p.clone())));
     }
     let last = app::session::Session::load().filter(|_| !args.no_session).and_then(|s| s.recent.into_iter().next());
     let bundled = PathBuf::from("playground/data/mearec_32ch_10s.bin");
     for p in last.into_iter().chain([bundled]) {
-        match Dataset::open(&p) {
-            Ok(ds) => return Ok((ds, Some(p))),
+        match SourceSet::open(&p) {
+            Ok(s) => return Ok((s, Some(p))),
             Err(e) => tracing::warn!("{e:#}"),
         }
     }
-    Ok((Dataset::procedural(32, 30_000.0, 60.0)?, None))
+    Ok((SourceSet::single(Dataset::procedural(32, 30_000.0, 60.0)?), None))
 }
 
 /// Parses `90`, `90s`, `10m`, `2h`, `1.5h` into seconds.

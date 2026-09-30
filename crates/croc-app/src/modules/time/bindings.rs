@@ -7,6 +7,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use dsp_core::RecordingSource;
 use slint::{ComponentHandle, Image, Model, ModelRc, SharedString, VecModel};
 
 use crate::app::controller::{from_side, rgb, sync_rows, Controller};
@@ -93,14 +94,13 @@ impl Controller {
             .collect();
         let ticks: Vec<ui::TimeTick> =
             v.time_ticks(&time.timeline).into_iter().map(|t| ui::TimeTick { frac: t.frac, label: t.label.into() }).collect();
-        let bar = v.scale_bar_uv();
         row.view_id = v.id as i32;
         row.kind = to_ui_kind(v.kind);
         row.focused = time.ws.focused == Some(v.id);
         row.image = self.time_ui.images.borrow().get(&v.id).cloned().unwrap_or_default();
         row.lanes = ModelRc::new(VecModel::from(lanes));
         row.ticks = ModelRc::new(VecModel::from(ticks));
-        row.scale_bar_label = if bar > 0.0 { format!("{bar} µV").into() } else { "".into() };
+        row.scale_bar_label = v.scale_bar_label().into();
         row.scale_bar_frac = v.scale_bar_center_frac();
         row.hover_readout = v.hover.clone().into();
         row.empty_message =
@@ -124,6 +124,9 @@ impl Controller {
 
     fn sync_time_focused(&self) {
         let Some(ui) = self.ui.upgrade() else { return };
+        let sources = self.app.borrow().sources.clone();
+        let names: Vec<SharedString> = sources.entries().iter().map(|e| e.summary().into()).collect();
+        ui.global::<ui::TimeState>().set_source_names(ModelRc::new(VecModel::from(names)));
         let time = self.time.borrow();
         let focused = match time.ws.focused_view() {
             Some(v) => ui::TimeFocused {
@@ -137,6 +140,9 @@ impl Controller {
                 gain_label: v.gain_label().into(),
                 range_label: v.range_label().into(),
                 selected: v.selection.len() as i32,
+                source_index: sources.index_of(&v.source) as i32,
+                auto_scale: v.auto_scale,
+                remove_dc: v.remove_dc,
             },
             None => ui::TimeFocused::default(),
         };
@@ -146,13 +152,19 @@ impl Controller {
     fn sync_time_channels(&self) {
         let rows: Vec<ui::ChannelRow> = {
             let app = self.app.borrow();
+            let source_id = self.time.borrow().focused_source();
+            let ds = app.sources.get(&source_id);
+            // Event counts belong to the default source
+            let no_events = crate::data::SpikeEventStore::default();
+            let events = if app.sources.index_of(&source_id) == app.sources.index_of("") { app.events.as_ref() } else { &no_events };
+            let info = ds.info();
             self.time
                 .borrow()
-                .channel_rows(app.dataset.total_channels, &app.events)
+                .channel_rows(ds.total_channels, events)
                 .into_iter()
                 .map(|r| ui::ChannelRow {
                     channel: r.channel as i32,
-                    label: format!("Ch {}", r.channel).into(),
+                    label: info.channels.get(r.channel).map_or_else(|| format!("Ch {}", r.channel), |c| c.name.clone()).into(),
                     color: rgb(CHANNEL_COLORS[r.channel % CHANNEL_COLORS.len()]),
                     checked: r.checked,
                     events: r.events as i32,
@@ -190,16 +202,31 @@ impl Controller {
     }
 
     /// A time view's frame arrived from the worker.
-    pub(crate) fn on_time_frame(&self, view: ViewId, image: Image) {
+    pub(crate) fn on_time_frame(&self, view: ViewId, image: Image, scale: Option<f32>) {
         self.time_ui.images.borrow_mut().insert(view, image.clone());
+        // The frame was drawn with this amplitude scale: the scale-bar label follows it
+        if let Some(s) = scale {
+            self.time.borrow_mut().frame_scale(view, s);
+        }
+        let label: SharedString = self.time.borrow().ws.view(view).map(|v| v.scale_bar_label()).unwrap_or_default().into();
+        let frac = self.time.borrow().ws.view(view).map_or(0.0, |v| v.scale_bar_center_frac());
         for i in 0..self.time_ui.seats.row_count() {
             if let Some(mut row) = self.time_ui.seats.row_data(i) {
                 if row.view_id == view as i32 {
                     row.image = image.clone();
+                    row.scale_bar_label = label.clone();
+                    row.scale_bar_frac = frac;
                     self.time_ui.seats.set_row_data(i, row);
                 }
             }
         }
+    }
+
+    /// Dataset of the focused view's source.
+    pub(crate) fn focused_source(&self) -> std::sync::Arc<crate::data::Dataset> {
+        let id = self.time.borrow().focused_source();
+        let sources = self.app.borrow().sources.clone();
+        sources.get(&id)
     }
 
     pub(crate) fn wire_time(self: &Rc<Self>, ui: &ui::AppWindow) {
@@ -295,7 +322,8 @@ impl Controller {
                 let weak = Rc::downgrade(self);
                 logic.$setter(move |$($arg),*| {
                     let Some(c) = weak.upgrade() else { return };
-                    let $total = c.app.borrow().dataset.total_channels;
+                    // Channel counts come from the focused view's source
+                    let $total = c.focused_source().total_channels;
                     {
                         let mut $m = c.time.borrow_mut();
                         $body;
@@ -304,11 +332,37 @@ impl Controller {
                 });
             }};
         }
-        with_data!(on_add_view, |m, total, index| {
-            if let Some(&kind) = KINDS.get(index.max(0) as usize) {
-                m.add_view(kind, total);
-            }
-        });
+        {
+            let weak = Rc::downgrade(self);
+            logic.on_add_view(move |index| {
+                let Some(c) = weak.upgrade() else { return };
+                let sources = c.app.borrow().sources.clone();
+                if let Some(&kind) = KINDS.get(index.max(0) as usize) {
+                    c.time.borrow_mut().add_view(kind, &sources);
+                }
+                c.sync_time();
+            });
+        }
+        {
+            let weak = Rc::downgrade(self);
+            logic.on_add_view_for_source(move |index| {
+                let Some(c) = weak.upgrade() else { return };
+                let sources = c.app.borrow().sources.clone();
+                c.time.borrow_mut().add_view_for(index.max(0) as usize, &sources);
+                c.sync_time();
+            });
+        }
+        {
+            let weak = Rc::downgrade(self);
+            logic.on_set_view_source(move |index| {
+                let Some(c) = weak.upgrade() else { return };
+                let sources = c.app.borrow().sources.clone();
+                c.time.borrow_mut().set_focused_source(index.max(0) as usize, &sources);
+                c.sync_time();
+            });
+        }
+        intent!(on_set_auto_scale, |m, on| m.set_focused_auto_scale(on));
+        intent!(on_set_remove_dc, |m, on| m.set_focused_remove_dc(on));
         with_data!(on_toggle_channel, |m, total, ch| m.toggle_channel(ch.max(0) as usize, total));
         with_data!(on_select_all, |m, total| m.select_all(total));
         with_data!(on_select_none, |m, total| m.select_none(total));
@@ -317,7 +371,7 @@ impl Controller {
             let weak = Rc::downgrade(self);
             logic.on_select_ranges(move |text| {
                 let Some(c) = weak.upgrade() else { return };
-                let total = c.app.borrow().dataset.total_channels;
+                let total = c.focused_source().total_channels;
                 let result = c.time.borrow_mut().select_ranges(&text, total);
                 if let Some(ui) = c.ui.upgrade() {
                     ui.global::<ui::TimeState>().set_range_error(result.err().unwrap_or_default().into());
@@ -341,8 +395,8 @@ impl Controller {
             let weak = Rc::downgrade(self);
             logic.on_hover_at(move |id, x, y| {
                 let Some(c) = weak.upgrade() else { return };
-                let ds = c.app.borrow().dataset.clone();
-                c.time.borrow_mut().hover(id as ViewId, x, y, &ds);
+                let sources = c.app.borrow().sources.clone();
+                c.time.borrow_mut().hover(id as ViewId, x, y, &sources);
                 let text: SharedString = c.time.borrow().ws.view(id as ViewId).map(|v| v.hover.clone()).unwrap_or_default().into();
                 for i in 0..c.time_ui.seats.row_count() {
                     if let Some(mut row) = c.time_ui.seats.row_data(i) {

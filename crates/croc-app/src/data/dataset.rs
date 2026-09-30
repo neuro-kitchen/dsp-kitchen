@@ -1,10 +1,9 @@
 //! The open recording: any `dsp-io` format behind [`RecordingSource`], read in chunks.
 
 use std::ops::Range;
-use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use dsp_core::{DspResult, RecordingInfo, RecordingSource};
 use dsp_io::{SyntheticParams, SyntheticRecording};
 
@@ -15,6 +14,10 @@ pub struct Dataset {
     pub total_samples: usize,
     pub sample_rate: f64,
     pub name: String,
+    /// Session time of sample 0 (sources of one file can start at different times).
+    pub start_time_sec: f64,
+    /// Unit of the values reads return (`µV` for electrical recordings).
+    pub unit: String,
 }
 
 impl Dataset {
@@ -25,12 +28,16 @@ impl Dataset {
             total_samples: info.samples as usize,
             sample_rate: info.sample_rate_hz(),
             name: info.name.clone(),
+            start_time_sec: info.start_time_sec,
+            unit: info.metadata.get("unit").map_or_else(|| "µV".into(), |u| u.replace("uV", "µV")),
             source,
         }
     }
 
     /// Opens any format `dsp-io` detects (SpikeGLX, IBL `.cbin`, raw binary + JSON sidecar, Zarr).
-    pub fn open(path: &Path) -> Result<Self> {
+    #[cfg(test)]
+    pub fn open(path: &std::path::Path) -> Result<Self> {
+        use anyhow::Context;
         let source = dsp_io::open(path).with_context(|| format!("Failed to open {}", path.display()))?;
         Ok(Self::new(Arc::from(source)))
     }

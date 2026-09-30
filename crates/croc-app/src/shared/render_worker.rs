@@ -16,11 +16,23 @@ pub type RenderKey = (u8, u32);
 
 pub type Frame = SharedPixelBuffer<Rgba8Pixel>;
 
+/// A rendered frame plus the amplitude scale it was drawn with (auto-scaled time plots).
+pub struct Rendered {
+    pub frame: Frame,
+    pub scale: Option<f32>,
+}
+
+impl From<Frame> for Rendered {
+    fn from(frame: Frame) -> Self {
+        Self { frame, scale: None }
+    }
+}
+
 pub struct RenderJob {
     pub key: RenderKey,
     /// Samples per pixel (time plots), for the status readout.
     pub samples_per_px: Option<f64>,
-    pub render: Box<dyn FnOnce() -> Frame + Send>,
+    pub render: Box<dyn FnOnce() -> Rendered + Send>,
 }
 
 /// A finished frame and what produced it.
@@ -28,6 +40,8 @@ pub struct FrameInfo {
     pub key: RenderKey,
     pub elapsed: Duration,
     pub samples_per_px: Option<f64>,
+    /// Amplitude scale chosen by the renderer (units that fill a lane at gain 1).
+    pub scale: Option<f32>,
 }
 
 pub struct RenderWorker {
@@ -54,8 +68,9 @@ impl RenderWorker {
                     }
                     for job in pending.into_values() {
                         let t0 = Instant::now();
-                        let frame = (job.render)();
-                        on_frame(frame, FrameInfo { key: job.key, elapsed: t0.elapsed(), samples_per_px: job.samples_per_px });
+                        let out = (job.render)();
+                        let info = FrameInfo { key: job.key, elapsed: t0.elapsed(), samples_per_px: job.samples_per_px, scale: out.scale };
+                        on_frame(out.frame, info);
                     }
                 }
             })
@@ -74,7 +89,7 @@ mod tests {
     use super::*;
 
     fn job(key: RenderKey, width: u32) -> RenderJob {
-        RenderJob { key, samples_per_px: None, render: Box::new(move || Frame::new(width, 1)) }
+        RenderJob { key, samples_per_px: None, render: Box::new(move || Frame::new(width, 1).into()) }
     }
 
     #[test]
