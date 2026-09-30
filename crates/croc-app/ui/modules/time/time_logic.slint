@@ -9,6 +9,9 @@ export global TimeState {
     in-out property <[DividerData]> dividers;
     in-out property <TimeFocused> focused;
 
+    // Signals of the open file ("HDEMG · 32 ch · 24.4 kHz · µV"); views pick one
+    in-out property <[string]> source_names;
+
     // Data panel
     in-out property <[ChannelRow]> channel_rows;
     in-out property <string> range_error;
@@ -67,6 +70,12 @@ export global TimeLogic {
     callback set_view_kind(int, int);
     // Index into TimeViewKind order
     callback add_view(int);
+    // Index into source_names: a traces view of that source
+    callback add_view_for_source(int);
+    // Focused view: show source (index into source_names)
+    callback set_view_source(int);
+    callback set_auto_scale(bool);
+    callback set_remove_dc(bool);
 
     // Dock
     callback workspace_resized(length, length);

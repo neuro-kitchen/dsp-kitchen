@@ -64,6 +64,16 @@ export component TimeProperties inherits Rectangle {
 
             HorizontalLayout {
                 spacing: 8px;
+                Label { text: "Source"; }
+                ComboBox {
+                    model: TimeState.source_names;
+                    current-index: TimeState.focused.source_index;
+                    selected => { TimeLogic.set_view_source(self.current-index); }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
                 Label { text: "Channels"; }
                 Text {
                     text: "\{TimeState.focused.selected} selected";
@@ -93,6 +103,17 @@ export component TimeProperties inherits Rectangle {
                     font-size: Theme.font-small;
                     vertical-alignment: center;
                 }
+            }
+
+            CheckBox {
+                text: "Auto-scale to visible data";
+                checked: TimeState.focused.auto_scale;
+                toggled => { TimeLogic.set_auto_scale(self.checked); }
+            }
+            CheckBox {
+                text: "Remove DC offset";
+                checked: TimeState.focused.remove_dc;
+                toggled => { TimeLogic.set_remove_dc(self.checked); }
             }
 
             if TimeState.focused.kind == TimeViewKind.traces: HorizontalLayout {

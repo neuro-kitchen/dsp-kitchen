@@ -1,5 +1,5 @@
-//! Time module view model: traces/heatmap views over the shared recording, the timeline,
-//! per-view channel selection, and the module's panels.
+//! Time module view model: traces/heatmap views, each on a source of the open file, the shared
+//! timeline, per-view channel selection, and the module's panels.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -8,14 +8,14 @@ use serde::{Deserialize, Serialize};
 use slint::Rgba8Pixel;
 use dsp_core::RecordingSource;
 
-use crate::data::{Dataset, SpikeEventStore};
+use crate::data::{SourceSet, SpikeEventStore};
 use crate::shared::dock::{Dock, DropSide, ViewId};
 use crate::shared::render_worker::RenderJob;
 use crate::shared::workspace::DockWorkspace;
 
 use super::renderer::{render_on_worker, TimeViewKind};
 use super::timeline::TimelineState;
-use super::view::{kind_name, parse_channel_ranges, TimeView};
+use super::view::{parse_channel_ranges, TimeView};
 
 /// Render key namespace of this module.
 pub const MODULE_ID: u8 = 0;
@@ -56,43 +56,100 @@ pub struct TimeModule {
 }
 
 impl TimeModule {
-    pub fn new(dataset: &Dataset) -> Self {
+    pub fn new(sources: &SourceSet) -> Self {
         let mut m = Self {
             ws: DockWorkspace::new(Vec::new(), Dock::empty(), None),
-            timeline: TimelineState::new(dataset.total_duration_sec()),
+            timeline: TimelineState::new(sources.extent_sec()),
             panels: TimePanels::default(),
             channel_filter: String::new(),
             show_sorted_spikes: true,
             last_frame_instant: Instant::now(),
         };
-        m.reset_layout(dataset.total_channels);
+        m.reset_layout(sources);
         m
     }
 
-    /// Default arrangement: traces over a heatmap, both showing every channel.
-    pub fn reset_layout(&mut self, channels: usize) {
-        let all: Vec<usize> = (0..channels).collect();
-        let views = vec![TimeView::new(1, TimeViewKind::Traces, all.clone()), TimeView::new(2, TimeViewKind::Heatmap, all)];
+    /// Default arrangement: traces over a heatmap of the default source, every channel.
+    pub fn reset_layout(&mut self, sources: &SourceSet) {
+        let e = sources.default_entry();
+        let mut views = vec![TimeView::new(1, TimeViewKind::Traces, Vec::new()), TimeView::new(2, TimeViewKind::Heatmap, Vec::new())];
+        for v in &mut views {
+            v.set_source(&e.id, &e.name, &e.unit, e.channels);
+        }
         self.ws.reset(views, Dock::stacked(1, 2, 0.65), Some(1));
     }
 
-    /// Adds a view of `kind` beside the focused one, copying its channel selection.
-    pub fn add_view(&mut self, kind: TimeViewKind, channels: usize) -> ViewId {
+    /// Adds a view of `kind` beside the focused one, on the same source with its selection.
+    pub fn add_view(&mut self, kind: TimeViewKind, sources: &SourceSet) -> ViewId {
         let src = self.ws.focused_view().cloned();
-        let mut v = TimeView::new(self.ws.next_id(), kind, src.as_ref().map_or_else(|| (0..channels).collect(), |s| s.selection.clone()));
-        if let Some(s) = src {
-            v.lanes = s.lanes;
-            v.gain = s.gain;
+        let mut v = TimeView::new(self.ws.next_id(), kind, Vec::new());
+        match src {
+            Some(s) => {
+                let e = sources.entry(&s.source);
+                v.set_source(&e.id, &e.name, &e.unit, e.channels);
+                v.selection = s.selection.clone();
+                v.lanes = s.lanes;
+                v.gain = s.gain;
+                v.auto_scale = s.auto_scale;
+                v.remove_dc = s.remove_dc;
+                v.amp_scale = s.amp_scale;
+            }
+            None => {
+                let e = sources.default_entry();
+                v.set_source(&e.id, &e.name, &e.unit, e.channels);
+            }
         }
         let side = if kind == TimeViewKind::Heatmap { DropSide::Bottom } else { DropSide::Right };
         self.ws.add(v, side)
+    }
+
+    /// Adds a traces view of source `index` (every channel), beside the focused view.
+    pub fn add_view_for(&mut self, index: usize, sources: &SourceSet) -> Option<ViewId> {
+        let e = sources.entries().get(index)?;
+        let mut v = TimeView::new(self.ws.next_id(), TimeViewKind::Traces, Vec::new());
+        v.set_source(&e.id, &e.name, &e.unit, e.channels);
+        Some(self.ws.add(v, DropSide::Right))
+    }
+
+    /// The focused view shows source `index` instead.
+    pub fn set_focused_source(&mut self, index: usize, sources: &SourceSet) {
+        let Some(e) = sources.entries().get(index) else { return };
+        if let Some(v) = self.ws.focused_view_mut() {
+            v.set_source(&e.id, &e.name, &e.unit, e.channels);
+        }
+    }
+
+    /// Source id of the focused view (empty when there is none: the default).
+    pub fn focused_source(&self) -> String {
+        self.ws.focused_view().map(|v| v.source.clone()).unwrap_or_default()
+    }
+
+    pub fn set_focused_auto_scale(&mut self, on: bool) {
+        if let Some(v) = self.ws.focused_view_mut() {
+            v.auto_scale = on;
+            v.needs_render = true;
+        }
+    }
+
+    pub fn set_focused_remove_dc(&mut self, on: bool) {
+        if let Some(v) = self.ws.focused_view_mut() {
+            v.remove_dc = on;
+            v.needs_render = true;
+        }
+    }
+
+    /// The renderer reports the amplitude scale it drew `id` with.
+    pub fn frame_scale(&mut self, id: ViewId, scale: f32) {
+        if let Some(v) = self.ws.view_mut(id) {
+            v.amp_scale = scale;
+        }
     }
 
     pub fn set_kind(&mut self, id: ViewId, kind: TimeViewKind) {
         if let Some(v) = self.ws.view_mut(id) {
             if v.kind != kind {
                 v.kind = kind;
-                v.title = format!("{} {}", kind_name(kind), v.id);
+                v.retitle();
                 v.needs_render = true;
             }
         }
@@ -109,15 +166,21 @@ impl TimeModule {
         }
     }
 
-    /// Render jobs for visible, stale views; clears their flags.
-    pub fn take_jobs(&mut self, dataset: &Arc<Dataset>, events: &Arc<SpikeEventStore>, marks: &SpikeMarks) -> Vec<RenderJob> {
+    /// Render jobs for visible, stale views; clears their flags. Events and spike marks belong
+    /// to the default source and are drawn only on its views.
+    pub fn take_jobs(&mut self, sources: &SourceSet, events: &Arc<SpikeEventStore>, marks: &SpikeMarks) -> Vec<RenderJob> {
         let visible = self.ws.visible();
-        let source: Arc<dyn RecordingSource> = dataset.clone();
         let marks = if self.show_sorted_spikes { marks.clone() } else { Vec::new() };
+        let default = sources.index_of("");
+        let no_events = Arc::new(SpikeEventStore::default());
         let mut out = Vec::new();
         for v in self.ws.views.iter_mut().filter(|v| v.needs_render && visible.contains(&v.id)) {
             v.needs_render = false;
-            let req = v.render_request(&self.timeline, source.clone(), events.clone(), marks.clone());
+            let dataset = sources.get(&v.source);
+            let on_default = sources.index_of(&v.source) == default;
+            let source: Arc<dyn RecordingSource> = dataset.clone();
+            let (ev, mk) = if on_default { (events.clone(), marks.clone()) } else { (no_events.clone(), Vec::new()) };
+            let req = v.render_request(&self.timeline, source, ev, mk);
             let per_px = req.window_sec * dataset.sample_rate / req.width.max(1) as f64;
             out.push(RenderJob {
                 key: (MODULE_ID, v.id),
@@ -164,11 +227,12 @@ impl TimeModule {
         }
     }
 
-    pub fn hover(&mut self, id: ViewId, x: f32, y: f32, dataset: &Dataset) {
+    pub fn hover(&mut self, id: ViewId, x: f32, y: f32, sources: &SourceSet) {
         let timeline = self.timeline.clone();
         if let Some(v) = self.ws.view_mut(id) {
             let s = v.scale_factor;
-            v.hover = v.hover_readout(x * s, y * s, dataset, &timeline);
+            let dataset = sources.get(&v.source);
+            v.hover = v.hover_readout(x * s, y * s, &dataset, &timeline);
         }
     }
 
@@ -328,17 +392,29 @@ impl TimeModule {
         }
     }
 
-    /// A new recording: fresh timeline, selections clipped to its channels (a view left with
-    /// nothing selected shows every channel).
-    pub fn dataset_changed(&mut self, dataset: &Dataset) {
-        self.timeline = TimelineState::new(dataset.total_duration_sec());
-        let total = dataset.total_channels;
-        for v in &mut self.ws.views {
-            let kept: Vec<usize> = v.selection.iter().copied().filter(|&c| c < total).collect();
-            let sel = if kept.is_empty() { (0..total).collect() } else { kept };
-            v.set_selection(sel, total);
-        }
+    /// A new file: fresh timeline and every view re-attached to its sources.
+    pub fn dataset_changed(&mut self, sources: &SourceSet) {
+        self.timeline = TimelineState::new(sources.extent_sec());
+        self.attach_sources(sources);
         self.ws.relayout();
+    }
+
+    /// Binds every view to a source of `sources`: views whose source is missing show the
+    /// default; selections are clipped to their source's channels (a view left with nothing
+    /// selected shows every channel).
+    pub fn attach_sources(&mut self, sources: &SourceSet) {
+        for v in &mut self.ws.views {
+            let e = sources.entry(&v.source);
+            let (id, name, unit, total) = (e.id.clone(), e.name.clone(), e.unit.clone(), e.channels);
+            if v.source != id {
+                v.source.clear(); // force the reset in set_source
+            } else {
+                let kept: Vec<usize> = v.selection.iter().copied().filter(|&c| c < total).collect();
+                let sel = if kept.is_empty() { (0..total).collect() } else { kept };
+                v.set_selection(sel, total);
+            }
+            v.set_source(&id, &name, &unit, total);
+        }
     }
 
     // ------------------------------------------------------------------------
@@ -354,15 +430,18 @@ impl TimeModule {
         }
     }
 
-    pub fn is_valid(session: &TimeSession, channels: usize) -> bool {
-        session.workspace.is_consistent() && session.workspace.views.iter().all(|v| v.selection.iter().all(|&c| c < channels))
+    pub fn is_valid(session: &TimeSession) -> bool {
+        session.workspace.is_consistent()
     }
 
-    pub fn restore(&mut self, session: TimeSession) {
+    /// Adopts a saved session, re-binding its views to `sources` (older sessions have no
+    /// sources: their views show the default source).
+    pub fn restore(&mut self, session: TimeSession, sources: &SourceSet) {
         self.ws.adopt(session.workspace);
         self.panels = session.panels;
         self.show_sorted_spikes = session.show_sorted_spikes;
         self.timeline.set_window_duration(session.window_sec);
+        self.attach_sources(sources);
     }
 }
 
@@ -377,39 +456,48 @@ pub struct TimeSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data::Dataset;
 
-    fn module(channels: usize) -> (TimeModule, Arc<Dataset>, Arc<SpikeEventStore>) {
-        let ds = Arc::new(Dataset::generate_synthetic(channels, 10_000.0, 1.0));
-        let ev = Arc::new(SpikeEventStore::detect(ds.as_ref()));
-        let mut m = TimeModule::new(&ds);
+    fn module(channels: usize) -> (TimeModule, SourceSet, Arc<SpikeEventStore>) {
+        let sources = SourceSet::single(Dataset::generate_synthetic(channels, 10_000.0, 1.0));
+        let ev = Arc::new(SpikeEventStore::detect(sources.default_dataset().as_ref()));
+        let mut m = TimeModule::new(&sources);
         m.ws.resized(1000.0, 600.0, 1.0);
-        (m, ds, ev)
+        (m, sources, ev)
+    }
+
+    /// EMG: 3 ch at 1 kHz from t = 0 (default); Temp: 1 ch at 100 Hz from t = 1 s, 5 s long.
+    fn two_sources() -> SourceSet {
+        let mut temp = Dataset::generate_synthetic(1, 100.0, 5.0);
+        temp.start_time_sec = 1.0;
+        temp.unit = "a.u.".into();
+        SourceSet::many(vec![("EMG", Dataset::generate_synthetic(3, 1000.0, 2.0), true), ("Temp", temp, false)])
     }
 
     #[test]
     fn test_default_layout_and_jobs() {
-        let (mut m, ds, ev) = module(8);
+        let (mut m, src, ev) = module(8);
         assert_eq!(m.ws.layout.seats.len(), 2);
         assert_eq!(m.ws.focused_view().unwrap().kind, TimeViewKind::Traces);
-        assert_eq!(m.take_jobs(&ds, &ev, &Vec::new()).len(), 2);
-        assert!(m.take_jobs(&ds, &ev, &Vec::new()).is_empty());
+        assert_eq!(m.take_jobs(&src, &ev, &Vec::new()).len(), 2);
+        assert!(m.take_jobs(&src, &ev, &Vec::new()).is_empty());
         m.pan_fraction(0.1);
-        let jobs = m.take_jobs(&ds, &ev, &Vec::new());
+        let jobs = m.take_jobs(&src, &ev, &Vec::new());
         assert_eq!(jobs.len(), 2);
         assert!(jobs.iter().all(|j| j.key.0 == MODULE_ID));
     }
 
     #[test]
     fn test_add_view_copies_selection_and_tabs_render_active_only() {
-        let (mut m, ds, ev) = module(8);
+        let (mut m, src, ev) = module(8);
         m.select_ranges("0-3", 8).unwrap();
-        let id = m.add_view(TimeViewKind::Traces, 8);
+        let id = m.add_view(TimeViewKind::Traces, &src);
         assert_eq!(m.ws.view(id).unwrap().selection, vec![0, 1, 2, 3]);
-        m.take_jobs(&ds, &ev, &Vec::new());
+        m.take_jobs(&src, &ev, &Vec::new());
         let ids = m.ws.dock.views();
         m.ws.drop_view(ids[1], ids[0], DropSide::Centre);
         m.pan_fraction(0.1);
-        assert_eq!(m.take_jobs(&ds, &ev, &Vec::new()).len(), 2);
+        assert_eq!(m.take_jobs(&src, &ev, &Vec::new()).len(), 2);
     }
 
     #[test]
@@ -447,19 +535,62 @@ mod tests {
     }
 
     #[test]
+    fn test_views_pick_sources() {
+        let src = two_sources();
+        let mut m = TimeModule::new(&src);
+        m.ws.resized(1000.0, 600.0, 1.0);
+        // Timeline covers both sources: Temp ends at 1 + 5 = 6 s
+        assert!((m.timeline.total_duration_sec - 6.0).abs() < 1e-9);
+        let focused = m.ws.focused_view().unwrap();
+        assert_eq!((focused.source.as_str(), focused.title.as_str(), focused.selection.len()), ("EMG", "Traces — EMG", 3));
+
+        // Switch the focused view to Temp: its channels, unit and title
+        m.set_focused_source(1, &src);
+        let v = m.ws.focused_view().unwrap();
+        assert_eq!((v.source.as_str(), v.selection.clone(), v.unit.as_str(), v.title.as_str()), ("Temp", vec![0], "a.u.", "Traces — Temp"));
+        assert_eq!(m.focused_source(), "Temp");
+
+        // A view for a chosen source, and a copy of the focused one
+        let emg = m.add_view_for(0, &src).unwrap();
+        assert_eq!(m.ws.view(emg).unwrap().selection.len(), 3);
+        m.ws.focus(emg);
+        let copy = m.add_view(TimeViewKind::Heatmap, &src);
+        assert_eq!(m.ws.view(copy).unwrap().source, "EMG");
+
+        // Events and marks only reach views of the default source (EMG)
+        let ev = Arc::new(SpikeEventStore::detect(src.default_dataset().as_ref()));
+        let jobs = m.take_jobs(&src, &ev, &Vec::new());
+        assert!(!jobs.is_empty());
+    }
+
+    #[test]
     fn test_session_round_trip_and_validation() {
-        let (mut a, _, _) = module(16);
-        a.select_ranges("2-5", 16).unwrap();
+        let src = two_sources();
+        let mut a = TimeModule::new(&src);
+        a.ws.resized(1000.0, 600.0, 1.0);
+        a.select_ranges("1-2", 3).unwrap();
         a.panels.data = false;
+        let other = a.ws.dock.views()[1];
+        a.ws.focus(other);
+        a.set_focused_source(1, &src);
+        a.set_focused_remove_dc(true);
         let json = serde_json::to_string(&a.session()).unwrap();
         let s: TimeSession = serde_json::from_str(&json).unwrap();
-        assert!(TimeModule::is_valid(&s, 16));
-        assert!(!TimeModule::is_valid(&s, 4));
+        assert!(TimeModule::is_valid(&s));
 
-        let (mut b, _, _) = module(16);
-        b.restore(s);
-        assert_eq!(b.ws.focused_view().unwrap().selection, vec![2, 3, 4, 5]);
+        let mut b = TimeModule::new(&src);
+        b.restore(s.clone(), &src);
+        let first = b.ws.dock.views()[0];
+        assert_eq!(b.ws.view(first).unwrap().selection, vec![1, 2]);
+        let second = b.ws.view(other).unwrap();
+        assert_eq!((second.source.as_str(), second.remove_dc, second.title.as_str()), ("Temp", true, "Heatmap — Temp"));
         assert!(!b.panels.data);
         assert_eq!(b.ws.dock, a.ws.dock);
+
+        // A file without the saved source: those views fall back to the default
+        let single = SourceSet::single(Dataset::generate_synthetic(16, 1000.0, 1.0));
+        let mut c = TimeModule::new(&single);
+        c.restore(s, &single);
+        assert!(c.ws.views.iter().all(|v| v.source == dsp_io::sources::MAIN && v.selection.iter().all(|&ch| ch < 16)));
     }
 }

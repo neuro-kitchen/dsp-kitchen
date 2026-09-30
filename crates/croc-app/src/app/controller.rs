@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use slint::{Color, ComponentHandle, Image, Model, SharedString, Timer, TimerMode, VecModel};
 
-use crate::data::Dataset;
+use crate::data::SourceSet;
 use crate::modules::spikes::bindings::SpikeUi;
 use crate::modules::spikes::module::{SpikeModule, MODULE_ID as SPIKES};
 use crate::modules::spikes::sorting::{SortParams, Sorting};
@@ -86,14 +86,14 @@ impl Controller {
     /// Builds the controller, restores the session, wires every callback and starts the timer.
     pub fn install(ui: &ui::AppWindow, app: AppModel, restore: bool, save_on_exit: bool) -> Rc<Controller> {
         let channels = app.dataset.total_channels;
-        let mut time = TimeModule::new(&app.dataset);
+        let mut time = TimeModule::new(&app.sources);
         let mut spikes = SpikeModule::new(channels);
         let mut app = app;
         if let Some(session) = Session::load().filter(|_| restore) {
             app.recent = session.recent;
             app.active = session.active;
-            if TimeModule::is_valid(&session.time, channels) {
-                time.restore(session.time);
+            if TimeModule::is_valid(&session.time) {
+                time.restore(session.time, &app.sources);
             }
             spikes.restore(session.spikes);
         }
@@ -186,7 +186,7 @@ impl Controller {
             Module::Time => {
                 let app = self.app.borrow();
                 let marks = app.spike_marks(self.time.borrow().window());
-                self.time.borrow_mut().take_jobs(&app.dataset, &app.events, &marks)
+                self.time.borrow_mut().take_jobs(&app.sources, &app.events, &marks)
             }
             Module::Spikes => {
                 let mut spikes = self.spikes.borrow_mut();
@@ -202,7 +202,7 @@ impl Controller {
         let image = Image::from_rgba8(frame);
         let (module, view) = info.key;
         match module {
-            TIME => self.on_time_frame(view, image),
+            TIME => self.on_time_frame(view, image, info.scale),
             SPIKES => self.on_spike_frame(view, image),
             _ => return,
         }
@@ -268,14 +268,14 @@ impl Controller {
     // ------------------------------------------------------------------------
 
     fn open_path(&self, path: PathBuf) {
-        match Dataset::open(&path) {
-            Ok(ds) => {
-                self.app.borrow_mut().load_dataset(ds, Some(path));
-                let (ds, channels) = {
+        match SourceSet::open(&path) {
+            Ok(sources) => {
+                self.app.borrow_mut().load_dataset(sources, Some(path));
+                let (sources, channels) = {
                     let app = self.app.borrow();
-                    (app.dataset.clone(), app.dataset.total_channels)
+                    (app.sources.clone(), app.dataset.total_channels)
                 };
-                self.time.borrow_mut().dataset_changed(&ds);
+                self.time.borrow_mut().dataset_changed(&sources);
                 {
                     let mut spikes = self.spikes.borrow_mut();
                     spikes.sort_params.num_clusters = SortParams::for_channels(channels).num_clusters;
@@ -346,9 +346,9 @@ impl Controller {
             let weak = Rc::downgrade(self);
             logic.on_reset_layout(move || {
                 let Some(c) = weak.upgrade() else { return };
-                let channels = c.app.borrow().dataset.total_channels;
+                let sources = c.app.borrow().sources.clone();
                 match c.app.borrow().active {
-                    Module::Time => c.time.borrow_mut().reset_layout(channels),
+                    Module::Time => c.time.borrow_mut().reset_layout(&sources),
                     Module::Spikes => c.spikes.borrow_mut().reset_layout(),
                 }
                 c.refresh();

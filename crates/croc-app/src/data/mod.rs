@@ -2,6 +2,8 @@
 
 pub mod dataset;
 pub mod events;
+pub mod sources;
 
 pub use dataset::Dataset;
 pub use events::SpikeEventStore;
+pub use sources::SourceSet;

@@ -1,4 +1,5 @@
-//! State of one time view (traces or heatmap): channel selection, lanes, gain, canvas.
+//! State of one time view (traces or heatmap): its source, channel selection, lanes, gain,
+//! amplitude scaling, canvas.
 
 use std::sync::Arc;
 
@@ -11,7 +12,7 @@ use crate::shared::axis::nice_step;
 use crate::shared::dock::ViewId;
 use crate::shared::workspace::DockView;
 
-use super::renderer::{px_per_uv, RenderRequest, TimeViewKind, CHANNEL_COLORS};
+use super::renderer::{px_per_unit, scale_bar_value, RenderRequest, TimeViewKind, CHANNEL_COLORS, NOMINAL_UV};
 use super::timeline::TimelineState;
 
 /// A labelled position on the time axis.
@@ -46,6 +47,25 @@ pub struct TimeView {
     /// Traces: index into `selection` of the top lane.
     pub scroll: usize,
     pub gain: f32,
+    /// Source id within the open file (empty = the file's default source).
+    #[serde(default)]
+    pub source: String,
+    /// Source display name, for the title.
+    #[serde(default)]
+    pub source_name: String,
+    /// Fit the amplitude to the visible data.
+    #[serde(default = "yes")]
+    pub auto_scale: bool,
+    /// Subtract each channel's offset over the window (default on: offsets such as a 36 °C
+    /// temperature or an electrode's DC level would otherwise dominate the auto-scale).
+    #[serde(default = "yes")]
+    pub remove_dc: bool,
+    /// Units that fill a lane at gain 1: reported by the renderer (auto-scale) or nominal.
+    #[serde(skip, default = "nominal")]
+    pub amp_scale: f32,
+    /// Unit of the source's values (for the scale bar and readout).
+    #[serde(skip, default = "micro")]
+    pub unit: String,
     /// Plot area in physical pixels, and physical px per logical px.
     #[serde(skip)]
     pub canvas_width: u32,
@@ -61,6 +81,15 @@ pub struct TimeView {
 
 fn one() -> f32 {
     1.0
+}
+fn yes() -> bool {
+    true
+}
+fn nominal() -> f32 {
+    NOMINAL_UV
+}
+fn micro() -> String {
+    "µV".into()
 }
 
 impl DockView for TimeView {
@@ -85,12 +114,42 @@ impl TimeView {
             lanes: 8,
             scroll: 0,
             gain: 1.0,
+            source: String::new(),
+            source_name: String::new(),
+            auto_scale: true,
+            remove_dc: true,
+            amp_scale: NOMINAL_UV,
+            unit: micro(),
             canvas_width: 0,
             canvas_height: 0,
             scale_factor: 1.0,
             needs_render: true,
             hover: String::new(),
         }
+    }
+
+    /// `Traces — EMG` (or `Traces 3` before a source is known).
+    pub fn retitle(&mut self) {
+        self.title = if self.source_name.is_empty() {
+            format!("{} {}", kind_name(self.kind), self.id)
+        } else {
+            format!("{} — {}", kind_name(self.kind), self.source_name)
+        };
+    }
+
+    /// Shows source `id` (all `channels` of it), resetting scroll and scale.
+    pub fn set_source(&mut self, id: &str, name: &str, unit: &str, channels: usize) {
+        let changed = self.source != id;
+        self.source = id.to_string();
+        self.source_name = name.to_string();
+        self.unit = unit.to_string();
+        if changed {
+            self.set_selection(0..channels, channels);
+            self.scroll = 0;
+            self.amp_scale = NOMINAL_UV;
+        }
+        self.retitle();
+        self.needs_render = true;
     }
 
     /// Lanes actually on screen (traces), at least 1.
@@ -256,17 +315,26 @@ impl TimeView {
         }
     }
 
-    /// Scale bar amplitude (1-2-5 µV) sized to about 45% of a lane; 0 in heatmap mode.
-    pub fn scale_bar_uv(&self) -> f32 {
+    /// Pixels per unit in a lane, with the current gain and amplitude scale.
+    fn px_per_unit(&self) -> (f32, f32) {
+        let lane_h = self.canvas_height as f32 / self.drawn_channels().len().max(1) as f32;
+        (lane_h, px_per_unit(lane_h, self.gain, self.amp_scale))
+    }
+
+    /// Scale bar amplitude (1-2-5 series, in the source unit), about 45% of a lane; 0 in
+    /// heatmap mode. Same formula as the renderer's bar.
+    pub fn scale_bar_value(&self) -> f32 {
         if self.kind != TimeViewKind::Traces || self.drawn_channels().is_empty() {
             return 0.0;
         }
-        let lane_h = self.canvas_height as f32 / self.drawn_channels().len() as f32;
-        let k = px_per_uv(lane_h, self.gain);
-        if k <= 0.0 {
-            return 0.0;
-        }
-        nice_step((0.45 * lane_h / k) as f64) as f32
+        let (lane_h, k) = self.px_per_unit();
+        scale_bar_value(lane_h, k)
+    }
+
+    /// e.g. `50 µV`, `0.2 a.u.`
+    pub fn scale_bar_label(&self) -> String {
+        let bar = self.scale_bar_value();
+        if bar > 0.0 { format!("{} {}", fmt_amount(bar), self.unit) } else { String::new() }
     }
 
     /// Vertical center of the scale bar as a fraction of the plot height (matches the raster:
@@ -274,7 +342,7 @@ impl TimeView {
     pub fn scale_bar_center_frac(&self) -> f32 {
         let h = self.canvas_height.max(1) as f32;
         let lanes = self.drawn_channels().len().max(1) as f32;
-        let bar_px = self.scale_bar_uv() * px_per_uv(h / lanes, self.gain);
+        let bar_px = self.scale_bar_value() * px_per_unit(h / lanes, self.gain, self.amp_scale);
         ((h - 6.0 * self.scale_factor - bar_px / 2.0) / h).clamp(0.0, 1.0)
     }
 
@@ -293,9 +361,12 @@ impl TimeView {
         let Some(ch) = self.channel_at(y_px) else { return String::new() };
         let w = self.canvas_width.max(1) as f32;
         let t = timeline.window_start_sec + (x_px / w).clamp(0.0, 1.0) as f64 * timeline.visible_window_sec;
-        let sample = ((t * dataset.sample_rate) as usize).min(dataset.total_samples.saturating_sub(1));
-        let value = dataset.sample(ch, sample);
-        format!("Ch {ch}  ·  {t:.4} s  ·  {value:.1} µV")
+        let rel = (t - dataset.start_time_sec) * dataset.sample_rate;
+        if rel < 0.0 || rel >= dataset.total_samples as f64 {
+            return format!("Ch {ch}  ·  {t:.4} s  ·  no data");
+        }
+        let value = dataset.sample(ch, rel as usize);
+        format!("Ch {ch}  ·  {t:.4} s  ·  {} {}", fmt_amount(value), self.unit)
     }
 
     pub fn render_request(
@@ -305,6 +376,7 @@ impl TimeView {
         events: Arc<SpikeEventStore>,
         highlights: Vec<(Rgba8Pixel, Vec<(f64, usize)>)>,
     ) -> RenderRequest {
+        let start_time_sec = source.info().start_time_sec;
         RenderRequest {
             source,
             events,
@@ -315,11 +387,32 @@ impl TimeView {
             channels: self.drawn_channels().to_vec(),
             window_start_sec: timeline.window_start_sec,
             window_sec: timeline.visible_window_sec,
+            start_time_sec,
             amplitude_scale: self.gain,
+            auto_scale: self.auto_scale,
+            remove_dc: self.remove_dc,
+            scale_hint: if self.auto_scale { self.amp_scale } else { 0.0 },
             grid_times: self.time_ticks(timeline).iter().map(|t| t.time_sec).collect(),
-            scale_bar_uv: self.scale_bar_uv(),
+            scale_bar: self.kind == TimeViewKind::Traces,
             highlights,
         }
+    }
+}
+
+/// Compact amount for labels: `50`, `0.2`, `1.5e-3`.
+pub fn fmt_amount(v: f32) -> String {
+    let a = v.abs();
+    if a == 0.0 {
+        "0".into()
+    } else if a >= 1e6 || a < 0.01 {
+        format!("{v:.2e}")
+    } else if a >= 1000.0 {
+        format!("{v:.0}")
+    } else if a >= 10.0 {
+        format!("{v:.1}").trim_end_matches(".0").to_string()
+    } else {
+        let t = format!("{v:.3}");
+        t.trim_end_matches('0').trim_end_matches('.').to_string()
     }
 }
 
