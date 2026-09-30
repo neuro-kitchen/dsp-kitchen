@@ -11,9 +11,8 @@ pub fn execute_fir<R: Runtime>(
     channels: usize,
     samples: usize,
     num_taps: usize,
-    is_cpu: bool,
 ) {
-    let geom = LaunchGeometry::for_channels_and_samples(channels, samples, is_cpu);
+    let geom = LaunchGeometry::channels_samples(client, channels, samples);
     let total_elements = channels * samples;
 
     unsafe {

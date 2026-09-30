@@ -16,4 +16,8 @@ hip = ["cubecl/hip"]
 dsp-core.workspace = true
 cubecl.workspace = true
 thiserror.workspace = true
+num-complex.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

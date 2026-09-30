@@ -10,9 +10,8 @@ pub fn execute_clamp<R: Runtime>(
     total_elements: usize,
     min_val: f32,
     max_val: f32,
-    is_cpu: bool,
 ) {
-    let geom = LaunchGeometry::for_1d(total_elements, is_cpu);
+    let geom = LaunchGeometry::elementwise(client, total_elements);
 
     unsafe {
         clamp_samples_kernel::launch::<R>(

@@ -115,7 +115,6 @@ impl PcaModel {
         output_handle: &cubecl::server::Handle,
         channels: usize,
         samples: usize,
-        is_cpu: bool,
     ) {
         assert_eq!(channels, self.num_channels);
 
@@ -125,7 +124,7 @@ impl PcaModel {
         let comp_handle = client.create_from_slice(comp_bytes);
         let mean_handle = client.create_from_slice(mean_bytes);
 
-        let geom = LaunchGeometry::for_channels_and_samples(self.num_components, samples, is_cpu);
+        let geom = LaunchGeometry::channels_samples(client, self.num_components, samples);
         let total_in = channels * samples;
         let total_out = self.num_components * samples;
 

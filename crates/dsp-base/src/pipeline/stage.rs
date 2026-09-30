@@ -1,3 +1,5 @@
+use crate::filter::design::{FilterError, FilterSpec, Sos};
+
 /// Individual processing stage within an in-VRAM DSP pipeline.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PipelineStage {
@@ -7,10 +9,9 @@ pub enum PipelineStage {
     SubtractBaseline { baseline_uv: f32 },
     /// Sample clamping / rectification: $\text{clamp}(x, \min, \max)$
     Clamp { min: f32, max: f32 },
-    /// 2nd-order narrow-band notch filter (e.g. 50 Hz or 60 Hz electrical hum)
-    Notch { freq_hz: f64, q: f64 },
-    /// 4th-order cascaded Butterworth bandpass filter
-    Bandpass { low_hz: f64, high_hz: f64 },
+    /// IIR filter (Butterworth of any order and band, notch, or explicit sections), run forward or
+    /// forward-backward. Build with [`PipelineStage::bandpass`], [`PipelineStage::highpass`], ….
+    Filter(FilterSpec),
     /// Common Average Referencing across all channels
     CommonAverageReference,
     /// 9-point branchless sorting network median filter
@@ -20,33 +21,52 @@ pub enum PipelineStage {
 }
 
 impl PipelineStage {
-    /// Returns the number of boundary settling / lookback samples required by this stage
-    /// at `sample_rate` Hz to prevent edge transients at chunk boundaries.
+    /// Butterworth band-pass, default order 5, zero phase.
+    pub fn bandpass(low_hz: f64, high_hz: f64) -> Self {
+        Self::Filter(FilterSpec::bandpass(low_hz, high_hz))
+    }
+
+    /// Butterworth high-pass, default order 5, zero phase (e.g. `highpass(300.0)` for spikes).
+    pub fn highpass(cutoff_hz: f64) -> Self {
+        Self::Filter(FilterSpec::highpass(cutoff_hz))
+    }
+
+    /// Butterworth low-pass, default order 5, zero phase (e.g. `lowpass(300.0)` for LFP).
+    pub fn lowpass(cutoff_hz: f64) -> Self {
+        Self::Filter(FilterSpec::lowpass(cutoff_hz))
+    }
+
+    /// Butterworth band-stop, default order 5, zero phase.
+    pub fn bandstop(low_hz: f64, high_hz: f64) -> Self {
+        Self::Filter(FilterSpec::bandstop(low_hz, high_hz))
+    }
+
+    /// Second-order notch (`iirnotch`), zero phase.
+    pub fn notch(freq_hz: f64, q: f64) -> Self {
+        Self::Filter(FilterSpec::notch(freq_hz, q))
+    }
+
+    /// Explicit second-order sections, zero phase.
+    pub fn sos(sos: Sos) -> Self {
+        Self::Filter(FilterSpec::sos(sos))
+    }
+
+    /// `(left, right)` samples of context this stage needs around a chunk at `sample_rate` Hz so
+    /// the chunk interior matches whole-recording processing.
     ///
-    /// - `Bandpass { low_hz, .. }`: 4 periods of the high-pass cutoff ($\lceil 4 \cdot f_s / f_{\text{low}} \rceil$),
-    ///   matching SpikeInterface's auto margin for 4th-order Butterworth transient decay ($< 0.1\%$).
-    /// - `Notch { freq_hz, .. }`: 3 periods of the notch center frequency ($\lceil 3 \cdot f_s / f_0 \rceil$).
-    /// - `Median9p`: 4 samples (half-stencil of 9-point window).
-    /// - `TeagerKaiser`: 1 sample ($\Psi[x_t] = x_t^2 - x_{t-1}x_{t+1}$).
-    /// - Pointwise / spatial stages (`Scale`, `SubtractBaseline`, `Clamp`, `CommonAverageReference`): 0 samples.
-    pub fn settling_samples(&self, sample_rate: f64) -> usize {
-        let fs = sample_rate.max(1.0);
-        match self {
-            PipelineStage::Bandpass { low_hz, .. } => {
-                let f_low = low_hz.max(0.5);
-                ((4.0 / f_low) * fs).ceil() as usize
-            }
-            PipelineStage::Notch { freq_hz, .. } => {
-                let f0 = freq_hz.max(1.0);
-                ((3.0 / f0) * fs).ceil() as usize
-            }
-            PipelineStage::Median9p => 4,
-            PipelineStage::TeagerKaiser => 1,
+    /// - `Filter`: from the designed filter's pole radii ([`FilterSpec::settling`]); forward-backward
+    ///   needs both sides.
+    /// - `Median9p`: 4 each side (half of the 9-point window); `TeagerKaiser`: 1 each side.
+    /// - Pointwise / spatial stages: none.
+    pub fn settling(&self, sample_rate: f64) -> Result<(usize, usize), FilterError> {
+        Ok(match self {
+            PipelineStage::Filter(spec) => spec.settling(sample_rate)?,
+            PipelineStage::Median9p => (4, 4),
+            PipelineStage::TeagerKaiser => (1, 1),
             PipelineStage::Scale { .. }
             | PipelineStage::SubtractBaseline { .. }
             | PipelineStage::Clamp { .. }
-            | PipelineStage::CommonAverageReference => 0,
-        }
+            | PipelineStage::CommonAverageReference => (0, 0),
+        })
     }
 }
-

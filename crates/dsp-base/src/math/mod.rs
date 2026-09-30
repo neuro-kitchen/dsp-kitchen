@@ -32,7 +32,6 @@ mod tests {
             total,
             2.5,
             10.0,
-            false,
         );
 
         let output_bytes = client.read_one_unchecked(output_handle);
@@ -63,7 +62,6 @@ mod tests {
             total,
             -2.0,
             10.0,
-            false,
         );
 
         let output_bytes = client.read_one_unchecked(output_handle);
