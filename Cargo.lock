@@ -1422,10 +1422,9 @@ dependencies = [
  "clap",
  "dsp-base",
  "dsp-core",
- "dsp-stream",
+ "dsp-io",
  "dsp-synapse",
  "image",
- "memmap2",
  "rfd",
  "serde",
  "serde_json",
@@ -2302,6 +2301,7 @@ dependencies = [
  "dsp-base",
  "dsp-bridge",
  "dsp-core",
+ "dsp-io",
  "dsp-stream",
  "dsp-synapse",
  "memmap2",
@@ -2311,7 +2311,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "zarrs",
 ]
 
 [[package]]
@@ -2323,6 +2322,18 @@ dependencies = [
  "serde",
  "thiserror 2.0.21",
  "tracing",
+]
+
+[[package]]
+name = "dsp-io"
+version = "0.1.0"
+dependencies = [
+ "dsp-core",
+ "flate2",
+ "memmap2",
+ "serde",
+ "serde_json",
+ "zarrs",
 ]
 
 [[package]]
@@ -2343,7 +2354,6 @@ dependencies = [
  "tokio",
  "tonic",
  "tracing",
- "zarrs",
 ]
 
 [[package]]
