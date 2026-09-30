@@ -42,6 +42,24 @@ impl Pipeline {
         self.stages.is_empty()
     }
 
+    /// Computes the total filter settling / boundary margin (in samples) required by all stages
+    /// in this pipeline at `sample_rate` Hz.
+    pub fn settling_samples(&self, sample_rate: f64) -> usize {
+        let mut max_iir = 0usize;
+        let mut fir_stencil = 0usize;
+        for stage in &self.stages {
+            match stage {
+                PipelineStage::Median9p | PipelineStage::TeagerKaiser => {
+                    fir_stencil += stage.settling_samples(sample_rate);
+                }
+                _ => {
+                    max_iir = max_iir.max(stage.settling_samples(sample_rate));
+                }
+            }
+        }
+        max_iir + fir_stencil
+    }
+
     /// Executes all configured stages in sequence on `input_handle` in VRAM.
     /// Uses two ping-pong buffers so memory overhead is strictly $2 \times$ the buffer size regardless of stage count.
     pub fn execute<R: Runtime>(
@@ -60,9 +78,37 @@ impl Pipeline {
         let buffer_bytes = channels * samples * std::mem::size_of::<f32>();
         let buf_ping = client.empty(buffer_bytes);
         let buf_pong = client.empty(buffer_bytes);
+        self.execute_with_buffers::<R>(
+            client,
+            input_handle,
+            &buf_ping,
+            &buf_pong,
+            channels,
+            samples,
+            sample_rate,
+            is_cpu,
+        )
+    }
+
+    /// Executes all configured stages using caller-provided persistent `buf_ping` and `buf_pong` VRAM handles.
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_with_buffers<R: Runtime>(
+        &self,
+        client: &ComputeClient<R>,
+        input_handle: &cubecl::server::Handle,
+        buf_ping: &cubecl::server::Handle,
+        buf_pong: &cubecl::server::Handle,
+        channels: usize,
+        samples: usize,
+        sample_rate: f64,
+        is_cpu: bool,
+    ) -> cubecl::server::Handle {
+        if self.stages.is_empty() {
+            return input_handle.clone();
+        }
 
         let mut current_in = input_handle;
-        let mut current_out = &buf_ping;
+        let mut current_out = buf_ping;
         let mut is_ping_out = true;
 
         for stage in &self.stages {
@@ -158,12 +204,12 @@ impl Pipeline {
 
             // Ping-pong buffer swap
             if is_ping_out {
-                current_in = &buf_ping;
-                current_out = &buf_pong;
+                current_in = buf_ping;
+                current_out = buf_pong;
                 is_ping_out = false;
             } else {
-                current_in = &buf_pong;
-                current_out = &buf_ping;
+                current_in = buf_pong;
+                current_out = buf_ping;
                 is_ping_out = true;
             }
         }
