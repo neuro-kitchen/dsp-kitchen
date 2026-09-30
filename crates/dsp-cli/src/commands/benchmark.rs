@@ -98,7 +98,8 @@ pub fn run_benchmark_pipeline(
                         out_bytes.len() / std::mem::size_of::<f32>(),
                     )
                 };
-                dsp_stream::create_zarr_recording(&zarr_path, channels, samples, 30000.0, out_slice)?;
+                let rec = dsp_core::MemoryRecording::new("pipeline_output", out_slice.to_vec(), channels, 30000.0)?;
+                dsp_io::write_zarr(&rec, &zarr_path, dsp_io::zarr::DEFAULT_CHUNK_SAMPLES, |_, _| {})?;
             } else {
                 if let Some(parent) = output_path.parent() {
                     fs::create_dir_all(parent)?;

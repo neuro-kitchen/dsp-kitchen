@@ -5,10 +5,12 @@
 
 use std::sync::Arc;
 
-use dsp_stream::min_max_decimate_into;
+use dsp_base::min_max_decimate_into;
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 
-use crate::data::{SignalSource, SpikeEventStore};
+use dsp_core::RecordingSource;
+
+use crate::data::SpikeEventStore;
 use crate::shared::canvas::{blend_color, Canvas};
 use crate::shared::render_worker::Frame;
 
@@ -34,6 +36,9 @@ const SPIKE_MARKER_COLOR: Rgba8Pixel = Rgba8Pixel { r: 250, g: 204, b: 21, a: 25
 pub const NOMINAL_UV: f32 = 80.0;
 /// Fraction of the lane half-height used by `NOMINAL_UV`.
 const LANE_FILL: f32 = 0.84;
+/// Most samples (channels × time) read for one frame. Wider windows draw a sampled preview
+/// (a short read per pixel column) until the multi-resolution cache (Task 26) replaces it.
+const FRAME_SAMPLE_BUDGET: usize = 16 << 20;
 
 /// Time-module view kinds: how the plot area visualizes channels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -48,7 +53,7 @@ pub enum TimeViewKind {
 /// Everything needed to draw one frame of one view. Sendable to the worker thread.
 #[derive(Clone)]
 pub struct RenderRequest {
-    pub source: Arc<dyn SignalSource>,
+    pub source: Arc<dyn RecordingSource>,
     pub events: Arc<SpikeEventStore>,
     /// Physical pixel size of the plot area.
     pub width: u32,
@@ -87,7 +92,15 @@ pub fn px_per_uv(lane_h: f32, amplitude_scale: f32) -> f32 {
 /// Rasterizer with reusable scratch buffers (no per-frame allocations besides the image).
 #[derive(Default)]
 pub struct WaveformRenderer {
-    buckets: Vec<[f32; 2]>,
+    /// `[min, max]` per (row, pixel column), row-major.
+    env: Vec<[f32; 2]>,
+    /// Whether each requested row is a real channel.
+    valid: Vec<bool>,
+    /// Channels actually read, and the row each one fills.
+    read_channels: Vec<usize>,
+    read_rows: Vec<usize>,
+    /// Raw samples of the read channels, channel-major.
+    block: Vec<f32>,
     heat: Vec<f32>,
 }
 
@@ -104,13 +117,14 @@ impl WaveformRenderer {
         };
         canvas.pixels.fill(BG_COLOR);
 
-        let samples = source.samples();
-        if samples == 0 || source.channels() == 0 || req.window_sec <= 0.0 {
+        let info = source.info();
+        let samples = info.samples as usize;
+        if samples == 0 || info.channel_count() == 0 || req.window_sec <= 0.0 {
             return pixel_buffer;
         }
 
         // Visible sample range
-        let sr = source.sample_rate();
+        let sr = info.sample_rate_hz();
         let start = ((req.window_start_sec * sr).round().max(0.0) as usize).min(samples);
         let end = (((req.window_start_sec + req.window_sec) * sr).round().max(0.0) as usize).min(samples);
 
@@ -123,24 +137,66 @@ impl WaveformRenderer {
             }
         }
 
-        self.buckets.resize(canvas.width, [0.0, 0.0]);
+        self.envelope(source, &req.channels, start, end, canvas.width);
+        let has_samples = end > start;
         match req.mode {
-            TimeViewKind::Traces => self.draw_traces(&mut canvas, source, &req.events, req, start, end),
-            TimeViewKind::Heatmap => self.draw_heatmap(&mut canvas, source, req, start, end),
+            TimeViewKind::Traces => self.draw_traces(&mut canvas, &req.events, req, has_samples),
+            TimeViewKind::Heatmap => self.draw_heatmap(&mut canvas, req, has_samples),
         }
 
         pixel_buffer
     }
 
-    fn draw_traces(
-        &mut self,
-        canvas: &mut Canvas,
-        source: &dyn SignalSource,
-        events: &SpikeEventStore,
-        req: &RenderRequest,
-        start: usize,
-        end: usize,
-    ) {
+    /// Fills `env` with the `[min, max]` of every requested row per pixel column over
+    /// `start..end`: exact when the window fits [`FRAME_SAMPLE_BUDGET`], else from a short read
+    /// at the start of each column.
+    fn envelope(&mut self, source: &dyn RecordingSource, rows: &[usize], start: usize, end: usize, width: usize) {
+        let total = source.info().channel_count();
+        self.env.clear();
+        self.env.resize(rows.len() * width, [0.0, 0.0]);
+        self.valid.clear();
+        self.valid.extend(rows.iter().map(|&c| c < total));
+        self.read_channels.clear();
+        self.read_rows.clear();
+        for (r, &c) in rows.iter().enumerate().filter(|&(_, &c)| c < total) {
+            self.read_channels.push(c);
+            self.read_rows.push(r);
+        }
+        let nch = self.read_channels.len();
+        if nch == 0 || end <= start || width == 0 {
+            return;
+        }
+
+        let n = end - start;
+        if n * nch <= FRAME_SAMPLE_BUDGET {
+            self.block.resize(n * nch, 0.0);
+            if source.read(&self.read_channels, start as u64..end as u64, &mut self.block).is_err() {
+                self.block.fill(0.0);
+            }
+            for (k, &r) in self.read_rows.iter().enumerate() {
+                min_max_decimate_into(&self.block[k * n..(k + 1) * n], &mut self.env[r * width..(r + 1) * width]);
+            }
+            return;
+        }
+
+        let per_col = (FRAME_SAMPLE_BUDGET / (nch * width)).max(16);
+        for x in 0..width {
+            let c0 = start + x * n / width;
+            let c1 = (start + (x + 1) * n / width).clamp(c0 + 1, end);
+            let len = (c1 - c0).min(per_col);
+            self.block.resize(len * nch, 0.0);
+            if source.read(&self.read_channels, c0 as u64..(c0 + len) as u64, &mut self.block).is_err() {
+                continue;
+            }
+            for (k, &r) in self.read_rows.iter().enumerate() {
+                let col = &self.block[k * len..(k + 1) * len];
+                let (mn, mx) = col.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), &v| (a.min(v), b.max(v)));
+                self.env[r * width + x] = [mn, mx];
+            }
+        }
+    }
+
+    fn draw_traces(&mut self, canvas: &mut Canvas, events: &SpikeEventStore, req: &RenderRequest, has_samples: bool) {
         let num_channels = req.channels.len();
         if num_channels == 0 {
             return;
@@ -151,9 +207,10 @@ impl WaveformRenderer {
         let thickness = req.scale.max(1.0);
         let t_end = req.window_start_sec + req.window_sec;
 
+        let w = canvas.width;
         for lane in 0..num_channels {
             let ch = req.channels[lane];
-            if ch >= source.channels() {
+            if !self.valid[lane] {
                 continue;
             }
             let color = CHANNEL_COLORS[ch % CHANNEL_COLORS.len()];
@@ -190,15 +247,14 @@ impl WaveformRenderer {
                 }
             }
 
-            if end <= start {
+            if !has_samples {
                 continue;
             }
-            min_max_decimate_into(&source.channel(ch)[start..end], &mut self.buckets);
 
             // Anti-aliased min/max envelope, joined to the previous column for continuity
             let (lo_clip, hi_clip) = (0.0, canvas.height as f32 - 1.0);
             let mut prev: Option<(f32, f32)> = None;
-            for (x, &[mn, mx]) in self.buckets.iter().enumerate() {
+            for (x, &[mn, mx]) in self.env[lane * w..(lane + 1) * w].iter().enumerate() {
                 let y_top = (center - mx * k).clamp(lo_clip, hi_clip);
                 let y_bot = (center - mn * k).clamp(lo_clip, hi_clip);
                 let (mut a, mut b) = (y_top, y_bot);
@@ -224,32 +280,23 @@ impl WaveformRenderer {
         }
     }
 
-    fn draw_heatmap(
-        &mut self,
-        canvas: &mut Canvas,
-        source: &dyn SignalSource,
-        req: &RenderRequest,
-        start: usize,
-        end: usize,
-    ) {
-        let rows = &req.channels;
-        let channels = rows.len();
+    fn draw_heatmap(&mut self, canvas: &mut Canvas, req: &RenderRequest, has_samples: bool) {
+        let channels = req.channels.len();
         let (w, h) = (canvas.width, canvas.height);
-        if end <= start || channels == 0 {
+        if !has_samples || channels == 0 {
             return;
         }
 
         // Peak |amplitude| per (row, column), normalized by the gain-scaled nominal range
         self.heat.resize(channels * w, 0.0);
         let norm = req.amplitude_scale / (NOMINAL_UV * 1.5);
-        for (r, &ch) in rows.iter().enumerate() {
+        for r in 0..channels {
             let row = &mut self.heat[r * w..(r + 1) * w];
-            if ch >= source.channels() {
+            if !self.valid[r] {
                 row.fill(0.0);
                 continue;
             }
-            min_max_decimate_into(&source.channel(ch)[start..end], &mut self.buckets);
-            for (v, &[mn, mx]) in row.iter_mut().zip(&self.buckets) {
+            for (v, &[mn, mx]) in row.iter_mut().zip(&self.env[r * w..(r + 1) * w]) {
                 // Squared for contrast: background noise stays dark, spikes stand out
                 let a = (mn.abs().max(mx.abs()) * norm).min(1.0);
                 *v = a * a;
@@ -387,7 +434,7 @@ mod tests {
             ("mock_signal_384ch.bin", TimeViewKind::Heatmap, 1.0),
         ];
         for (file, mode, window_sec) in cases {
-            let Ok(ds) = Dataset::load_from_file(&root.join(file), None, None) else {
+            let Ok(ds) = Dataset::open(&root.join(file)) else {
                 println!("skip {file} (not found)");
                 continue;
             };

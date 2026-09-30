@@ -42,7 +42,7 @@ pub fn run_components() {
 
     println!("\n[Storage & Memory Engines]");
     println!("  [+] memmap2:     INSTALLED (v0.9.11) - Zero-copy mmap for multi-GB binary ingest");
-    println!("  [+] zarrs:       INSTALLED (v0.23.14) - Chunked N-dimensional Zarr v3 storage");
+    println!("  [+] zarrs:       INSTALLED (via dsp-io) - Chunked N-dimensional Zarr v3 storage");
     println!("  [+] ring buffer: INSTALLED - Lock-free multi-channel continuous circular buffer");
 
     println!("\n[CubeCL Hardware Backends]");

@@ -55,6 +55,8 @@ pub struct AppModel {
     pub dataset: Arc<Dataset>,
     pub dataset_path: Option<PathBuf>,
     pub events: Arc<SpikeEventStore>,
+    /// False when the recording was too long to detect events at open time.
+    pub events_detected: bool,
     pub recent: Vec<PathBuf>,
     pub active: Module,
     pub sorting: Option<Arc<Sorting>>,
@@ -67,11 +69,12 @@ pub struct AppModel {
 
 impl AppModel {
     pub fn new(dataset: Dataset, dataset_path: Option<PathBuf>) -> Self {
-        let events = SpikeEventStore::detect(&dataset);
+        let (events, events_detected) = detect_events(&dataset);
         Self {
             dataset: Arc::new(dataset),
             dataset_path,
             events: Arc::new(events),
+            events_detected,
             recent: Vec::new(),
             active: Module::Time,
             sorting: None,
@@ -82,7 +85,9 @@ impl AppModel {
     }
 
     pub fn load_dataset(&mut self, dataset: Dataset, path: Option<PathBuf>) {
-        self.events = Arc::new(SpikeEventStore::detect(&dataset));
+        let (events, detected) = detect_events(&dataset);
+        self.events = Arc::new(events);
+        self.events_detected = detected;
         self.dataset = Arc::new(dataset);
         self.generation += 1;
         self.sorting = None;
@@ -134,7 +139,13 @@ impl AppModel {
         match &self.sort_status {
             SortStatus::Idle => "Not sorted yet".into(),
             SortStatus::Running => "Sorting…".into(),
-            SortStatus::Done { spikes, clusters, millis } => format!("{spikes} spikes · {clusters} clusters · {millis} ms"),
+            SortStatus::Done { spikes, clusters, millis } => {
+                let mut text = format!("{spikes} spikes · {clusters} clusters · {millis} ms");
+                if let Some(s) = self.sorting.as_ref().filter(|s| s.duration_sec + 1e-6 < self.dataset.total_duration_sec()) {
+                    text.push_str(&format!(" · first {:.1} s", s.duration_sec));
+                }
+                text
+            }
         }
     }
 
@@ -206,6 +217,15 @@ impl AppModel {
         let (ds, generation) = self.begin_sorting().expect("idle");
         let s = Sorting::run(&ds, params);
         self.finish_sorting(generation, s, 0);
+    }
+}
+
+/// Events for the timeline, detected now only when the recording fits the budget.
+fn detect_events(dataset: &Dataset) -> (SpikeEventStore, bool) {
+    if SpikeEventStore::fits_budget(dataset) {
+        (SpikeEventStore::detect(dataset), true)
+    } else {
+        (SpikeEventStore::default(), false)
     }
 }
 

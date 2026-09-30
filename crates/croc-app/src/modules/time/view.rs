@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use slint::Rgba8Pixel;
+use dsp_core::RecordingSource;
 
-use crate::data::{Dataset, SignalSource, SpikeEventStore};
+use crate::data::{Dataset, SpikeEventStore};
 use crate::shared::axis::nice_step;
 use crate::shared::dock::ViewId;
 use crate::shared::workspace::DockView;
@@ -293,14 +294,14 @@ impl TimeView {
         let w = self.canvas_width.max(1) as f32;
         let t = timeline.window_start_sec + (x_px / w).clamp(0.0, 1.0) as f64 * timeline.visible_window_sec;
         let sample = ((t * dataset.sample_rate) as usize).min(dataset.total_samples.saturating_sub(1));
-        let value = dataset.channel(ch).get(sample).copied().unwrap_or(0.0);
+        let value = dataset.sample(ch, sample);
         format!("Ch {ch}  ·  {t:.4} s  ·  {value:.1} µV")
     }
 
     pub fn render_request(
         &self,
         timeline: &TimelineState,
-        source: Arc<dyn SignalSource>,
+        source: Arc<dyn RecordingSource>,
         events: Arc<SpikeEventStore>,
         highlights: Vec<(Rgba8Pixel, Vec<(f64, usize)>)>,
     ) -> RenderRequest {

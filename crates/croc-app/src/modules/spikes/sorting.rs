@@ -41,6 +41,9 @@ impl SortParams {
 pub const NUM_PCS: usize = 3;
 /// Channels in each snippet (primary + nearest neighbours).
 const NEIGHBORS: usize = 5;
+/// Most samples (channels × time) sorted in one run, ~512 MB of f32: all of a 10 s sample,
+/// the first ~11 s of a 384-channel Neuropixels recording.
+pub const SORT_SAMPLE_BUDGET: usize = 128 << 20;
 /// Largest subsample handed to density-peaks clustering.
 const MAX_CLUSTER_POINTS: usize = 2500;
 
@@ -131,11 +134,15 @@ impl Sorting {
         hist
     }
 
-    /// Runs the pipeline over `dataset`.
+    /// Runs the pipeline over `dataset`, or over its first [`SORT_SAMPLE_BUDGET`] samples
+    /// (all channels) when it is longer; chunked full-length sorting is Task 30.
     pub fn run(dataset: &Dataset, params: &SortParams) -> Sorting {
         let sr = dataset.sample_rate;
-        let (channels, samples) = (dataset.total_channels, dataset.total_samples);
-        let data = dataset.data();
+        let channels = dataset.total_channels;
+        let samples = dataset.total_samples.min(SORT_SAMPLE_BUDGET / channels.max(1));
+        // An unreadable range sorts as silence (no spikes) rather than failing the UI
+        let data = dataset.read_all(0..samples).unwrap_or_else(|_| vec![0.0; channels * samples]);
+        let data = data.as_slice();
         let layout = linear_layout(channels, params.pitch_um);
 
         // 1. Detection, channel by channel (refractory state stays per channel)
@@ -189,7 +196,7 @@ impl Sorting {
 
         let mut sorting = Sorting {
             sample_rate: sr,
-            duration_sec: dataset.total_duration_sec(),
+            duration_sec: samples as f64 / sr,
             pre_samples: pre,
             batch,
             times_sec,
@@ -362,7 +369,7 @@ pub(crate) mod tests {
     #[ignore]
     fn ground_truth_agreement() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../playground/data");
-        let ds = Dataset::load_from_file(&root.join("mearec_32ch_10s.bin"), None, None).unwrap();
+        let ds = Dataset::open(&root.join("mearec_32ch_10s.bin")).unwrap();
         let gt: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(root.join("mearec_32ch_ground_truth.json")).unwrap()).unwrap();
         let t0 = std::time::Instant::now();

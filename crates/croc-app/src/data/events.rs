@@ -1,13 +1,15 @@
 //! Action potential / spike event detection for the timeline event track.
 
+use dsp_core::RecordingSource;
 use dsp_synapse::detect_spikes_multichannel;
-
-use super::source::SignalSource;
 
 /// Threshold in robust noise standard deviations (Quiroga MAD estimate in `dsp-synapse`).
 const THRESHOLD_FACTOR: f32 = 4.5;
 /// Refractory period after a detection.
 const REFRACTORY_SEC: f64 = 0.002;
+/// Largest recording (channels × samples) detected synchronously when it is opened. Longer
+/// recordings wait for chunked background detection (Task 27).
+pub const DETECT_SAMPLE_BUDGET: u64 = 64 << 20;
 
 /// Collection of detected spike events across channels.
 #[derive(Debug, Clone, Default)]
@@ -41,20 +43,33 @@ impl SpikeEventStore {
         &times[lo..hi.max(lo)]
     }
 
+    /// True when `source` is small enough for [`detect`](Self::detect) at open time.
+    pub fn fits_budget(source: &dyn RecordingSource) -> bool {
+        let info = source.info();
+        info.samples * info.channel_count() as u64 <= DETECT_SAMPLE_BUDGET
+    }
+
     /// Detects negative threshold crossings per channel with `dsp-synapse`
-    /// (`-4.5 * sigma_n`, local-minimum peak, 2 ms refractory).
-    pub fn detect(source: &dyn SignalSource) -> Self {
-        let sample_rate = source.sample_rate();
+    /// (`-4.5 * sigma_n`, local-minimum peak, 2 ms refractory). Reads one whole channel at a
+    /// time, so only call it on recordings that [`fit the budget`](Self::fits_budget).
+    pub fn detect(source: &dyn RecordingSource) -> Self {
+        let info = source.info();
+        let sample_rate = info.sample_rate_hz();
         let refractory_samples = (sample_rate * REFRACTORY_SEC) as usize;
-        let samples = source.samples();
+        let samples = info.samples as usize;
 
-        let mut by_channel = Vec::with_capacity(source.channels());
+        let mut by_channel = Vec::with_capacity(info.channel_count());
         let mut all: Vec<f64> = Vec::new();
+        let mut trace = vec![0.0f32; samples];
 
-        for ch in 0..source.channels() {
+        for ch in 0..info.channel_count() {
+            if source.read(&[ch], 0..samples as u64, &mut trace).is_err() {
+                by_channel.push(Vec::new());
+                continue;
+            }
             // Channels are detected independently so the refractory state never leaks across them
             let events = detect_spikes_multichannel(
-                source.channel(ch),
+                &trace,
                 1,
                 samples,
                 THRESHOLD_FACTOR,
