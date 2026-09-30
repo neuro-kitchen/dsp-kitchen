@@ -16,6 +16,10 @@ impl PyPipeline {
     pub fn from_stages(stages: Vec<PipelineStage>) -> Self {
         Self { stages }
     }
+
+    pub(crate) fn to_rust_pipeline(&self) -> Pipeline {
+        Pipeline::with_stages(self.stages.clone())
+    }
 }
 
 #[pymethods]
@@ -64,6 +68,12 @@ impl PyPipeline {
 
     pub fn __len__(&self) -> usize {
         self.stages.len()
+    }
+
+    /// Computes the required filter boundary settling length in samples at `fs` Hz.
+    #[pyo3(signature = (fs=30000.0))]
+    pub fn settling_samples(&self, fs: f64) -> usize {
+        self.to_rust_pipeline().settling_samples(fs)
     }
 
     /// Executes the pipeline across 2D array [channels, samples] directly inside GPU VRAM.
