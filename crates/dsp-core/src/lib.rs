@@ -7,6 +7,7 @@ pub mod mask;
 pub mod buffer;
 pub mod device;
 pub mod recording;
+pub mod window;
 
 // Backward-compatibility module
 pub mod probe;
@@ -16,4 +17,7 @@ pub use layout::{SensorLayout, SensorSite, Position3D, ProbeLayout};
 pub use mask::ChannelMask;
 pub use time::{RationalTime, SampleRate, TimeRange};
 pub use buffer::{BufferChunk, MemoryLayout, MemoryOrder, SignalChunk};
-pub use recording::{ChannelInfo, MemoryRecording, RecordingInfo, RecordingSource, SampleFormat};
+pub use recording::{
+    ChannelInfo, MemoryRecording, RecordingInfo, RecordingSource, SampleFormat, SlicedRecording,
+};
+pub use window::{ChunkSchedule, HaloWindow};
