@@ -2,36 +2,91 @@
 
 use dsp_core::SampleFormat;
 
-/// Stored value of sample `idx` in `bytes` (not scaled).
-#[inline(always)]
-pub(crate) fn decode(format: SampleFormat, bytes: &[u8], idx: usize) -> f32 {
-    match format {
-        SampleFormat::I16 => i16::from_le_bytes([bytes[2 * idx], bytes[2 * idx + 1]]) as f32,
-        SampleFormat::U16 => u16::from_le_bytes([bytes[2 * idx], bytes[2 * idx + 1]]) as f32,
-        SampleFormat::F32 => {
-            let b = &bytes[4 * idx..4 * idx + 4];
-            f32::from_le_bytes([b[0], b[1], b[2], b[3]])
+/// Calls `$f::<B, T>(… , value)` for the stored type of `$format` (`B` bytes, little-endian).
+macro_rules! with_format {
+    ($format:expr, $f:ident($($arg:expr),*)) => {
+        match $format {
+            SampleFormat::I8 => $f::<1>($($arg,)* |b| i8::from_le_bytes(b) as f32),
+            SampleFormat::I16 => $f::<2>($($arg,)* |b| i16::from_le_bytes(b) as f32),
+            SampleFormat::U16 => $f::<2>($($arg,)* |b| u16::from_le_bytes(b) as f32),
+            SampleFormat::I32 => $f::<4>($($arg,)* |b| i32::from_le_bytes(b) as f32),
+            SampleFormat::F32 => $f::<4>($($arg,)* f32::from_le_bytes),
+            SampleFormat::F64 => $f::<8>($($arg,)* |b| f64::from_le_bytes(b) as f32),
         }
-    }
+    };
 }
 
 /// Decodes `out.len()` contiguous samples from `bytes` into µV.
 pub(crate) fn decode_run(format: SampleFormat, bytes: &[u8], out: &mut [f32], gain: f32, offset: f32) {
-    match format {
-        SampleFormat::I16 => {
-            for (o, b) in out.iter_mut().zip(bytes.chunks_exact(2)) {
-                *o = i16::from_le_bytes([b[0], b[1]]) as f32 * gain + offset;
+    fn run<const B: usize>(bytes: &[u8], out: &mut [f32], gain: f32, offset: f32, value: impl Fn([u8; B]) -> f32) {
+        for (o, b) in out.iter_mut().zip(bytes.chunks_exact(B)) {
+            *o = value(b.try_into().expect("B bytes")) * gain + offset;
+        }
+    }
+    with_format!(format, run(bytes, out, gain, offset))
+}
+
+/// Decodes `channels` (`(stored channel, gain, offset)`) of `n` interleaved frames of `frame_bytes`
+/// each into channel-major µV rows of `out` (`out[i · n + s]`). Every frame is read once for all
+/// requested channels.
+pub(crate) fn decode_frames(
+    format: SampleFormat,
+    frames: &[u8],
+    frame_bytes: usize,
+    channels: &[(usize, f32, f32)],
+    n: usize,
+    out: &mut [f32],
+) {
+    fn run<const B: usize>(
+        frames: &[u8],
+        frame_bytes: usize,
+        channels: &[(usize, f32, f32)],
+        n: usize,
+        out: &mut [f32],
+        value: impl Fn([u8; B]) -> f32,
+    ) {
+        for (s, frame) in frames.chunks_exact(frame_bytes).take(n).enumerate() {
+            for (i, &(ch, gain, offset)) in channels.iter().enumerate() {
+                let b: [u8; B] = frame[ch * B..ch * B + B].try_into().expect("sample inside frame");
+                out[i * n + s] = value(b) * gain + offset;
             }
         }
-        SampleFormat::U16 => {
-            for (o, b) in out.iter_mut().zip(bytes.chunks_exact(2)) {
-                *o = u16::from_le_bytes([b[0], b[1]]) as f32 * gain + offset;
+    }
+    with_format!(format, run(frames, frame_bytes, channels, n, out))
+}
+
+/// Copies the stored values of block columns `cols` into channel-major `out` (`bytes` per value).
+/// The block is `[n][width]` values when `time_major`, else `[width][n]`.
+pub(crate) fn select_stored(block: &[u8], time_major: bool, width: usize, n: usize, cols: &[usize], bytes: usize, out: &mut [u8]) {
+    fn frames<const B: usize>(block: &[u8], width: usize, n: usize, cols: &[usize], out: &mut [u8]) {
+        let (block, _) = block.as_chunks::<B>();
+        let (out, _) = out.as_chunks_mut::<B>();
+        for (t, frame) in block.chunks_exact(width).take(n).enumerate() {
+            for (i, &c) in cols.iter().enumerate() {
+                out[i * n + t] = frame[c];
             }
         }
-        SampleFormat::F32 => {
-            for (o, b) in out.iter_mut().zip(bytes.chunks_exact(4)) {
-                *o = f32::from_le_bytes([b[0], b[1], b[2], b[3]]) * gain + offset;
-            }
+    }
+    if time_major {
+        match bytes {
+            1 => frames::<1>(block, width, n, cols, out),
+            2 => frames::<2>(block, width, n, cols, out),
+            4 => frames::<4>(block, width, n, cols, out),
+            8 => frames::<8>(block, width, n, cols, out),
+            other => unreachable!("{other}-byte samples"),
+        }
+    } else {
+        for (i, &c) in cols.iter().enumerate() {
+            out[i * n * bytes..(i + 1) * n * bytes].copy_from_slice(&block[c * n * bytes..(c + 1) * n * bytes]);
+        }
+    }
+}
+
+/// Decoded values in memory order to little-endian (a no-op on little-endian hosts).
+pub(crate) fn native_to_le(values: &mut [u8], bytes: usize) {
+    if cfg!(target_endian = "big") {
+        for v in values.chunks_exact_mut(bytes) {
+            v.reverse();
         }
     }
 }
@@ -41,9 +96,12 @@ pub(crate) fn decode_run(format: SampleFormat, bytes: &[u8], out: &mut [f32], ga
 pub(crate) fn encode(format: SampleFormat, value_uv: f32, gain: f32, offset: f32, dst: &mut Vec<u8>) {
     let stored = (value_uv - offset) / gain;
     match format {
+        SampleFormat::I8 => dst.extend_from_slice(&(stored.round() as i8).to_le_bytes()),
         SampleFormat::I16 => dst.extend_from_slice(&(stored.round() as i16).to_le_bytes()),
         SampleFormat::U16 => dst.extend_from_slice(&(stored.round() as u16).to_le_bytes()),
+        SampleFormat::I32 => dst.extend_from_slice(&(stored.round() as i32).to_le_bytes()),
         SampleFormat::F32 => dst.extend_from_slice(&stored.to_le_bytes()),
+        SampleFormat::F64 => dst.extend_from_slice(&(stored as f64).to_le_bytes()),
     }
 }
 
@@ -60,10 +118,32 @@ mod tests {
         let mut out = [0.0f32; 4];
         decode_run(SampleFormat::I16, &bytes, &mut out, 0.5, 0.0);
         assert_eq!(out, [-5.0, 0.0, 7.5, i16::MAX as f32 * 0.5]);
-        assert_eq!(decode(SampleFormat::I16, &bytes, 1), 0.0);
+
+        // Two interleaved frames of three channels; channels 2 and 0 requested.
+        let mut frames = Vec::new();
+        for v in [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0] {
+            encode(SampleFormat::I16, v, 1.0, 0.0, &mut frames);
+        }
+        let mut rows = [0.0f32; 4];
+        decode_frames(SampleFormat::I16, &frames, 6, &[(2, 2.0, 1.0), (0, 1.0, 0.0)], 2, &mut rows);
+        assert_eq!(rows, [7.0, 13.0, 1.0, 4.0]);
+
+        // Every format round-trips through encode / decode
+        for format in SampleFormat::ALL {
+            let mut b = Vec::new();
+            // Values every format holds (uint16 has no negatives, int8 stops at 127)
+            for v in [0.0f32, 42.0, 100.0] {
+                encode(format, v, 1.0, 0.0, &mut b);
+            }
+            let mut back = [0.0f32; 3];
+            decode_run(format, &b, &mut back, 1.0, 0.0);
+            assert_eq!(back, [0.0, 42.0, 100.0], "{format:?}");
+        }
 
         let mut f = Vec::new();
         encode(SampleFormat::F32, 3.25, 1.0, 0.0, &mut f);
-        assert_eq!(decode(SampleFormat::F32, &f, 0), 3.25);
+        let mut v = [0.0f32];
+        decode_run(SampleFormat::F32, &f, &mut v, 1.0, 0.0);
+        assert_eq!(v, [3.25]);
     }
 }

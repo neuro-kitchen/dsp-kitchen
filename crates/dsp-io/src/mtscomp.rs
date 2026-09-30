@@ -3,23 +3,21 @@
 //! The `.ch` JSON lists chunk boundaries (in samples) and byte offsets. Each chunk is an int16
 //! `[samples, channels]` block, differenced along time (and optionally channels), serialized in
 //! `chunk_order` (`F` = channel-major within the chunk) and zlib-compressed. Chunks decode
-//! independently, so reads touch only the chunks they overlap; recent chunks are cached.
+//! independently: a read decodes the chunks it overlaps in parallel and keeps them for the next
+//! read (sequential and overlapping reads share their boundary chunks).
 
-use std::collections::VecDeque;
 use std::fs::File;
 use std::io::Read;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use dsp_core::recording::check_read;
+use dsp_core::recording::{check_read, check_read_stored};
 use dsp_core::{DspError, DspResult, MemoryOrder, RecordingInfo, RecordingSource, SampleFormat, SampleRate};
 use flate2::read::ZlibDecoder;
 use memmap2::Mmap;
 use serde::Deserialize;
-
-/// Decoded chunks kept for repeated reads (a 1 s Neuropixels chunk is ~23 MB).
-const CACHE_CHUNKS: usize = 4;
 
 #[derive(Debug, Deserialize)]
 struct ChFile {
@@ -50,7 +48,8 @@ pub struct MtscompRecording {
     info: RecordingInfo,
     map: Mmap,
     ch: ChFile,
-    cache: Mutex<VecDeque<(usize, Chunk)>>,
+    /// Decoded chunks of the most recent read, as `(chunk index, samples)`.
+    cache: Mutex<Vec<(usize, Chunk)>>,
 }
 
 impl MtscompRecording {
@@ -79,7 +78,7 @@ impl MtscompRecording {
         let samples = *ch.chunk_bounds.last().unwrap();
         let mut info = RecordingInfo::new(name, ch.n_channels, samples, SampleRate::new(ch.sample_rate)?, SampleFormat::I16, MemoryOrder::TimeMajor);
         info.metadata.insert("compression".into(), "mtscomp".into());
-        Ok(Self { info, map, ch, cache: Mutex::new(VecDeque::new()) })
+        Ok(Self { info, map, ch, cache: Mutex::new(Vec::new()) })
     }
 
     /// Replaces the descriptor (SpikeGLX sets names, gains and geometry); keeps `samples`.
@@ -93,17 +92,34 @@ impl MtscompRecording {
         self.ch.chunk_bounds.len() - 1
     }
 
-    fn chunk(&self, idx: usize) -> DspResult<Chunk> {
-        if let Some((_, c)) = self.cache.lock().unwrap().iter().find(|(i, _)| *i == idx) {
-            return Ok(c.clone());
+    /// Decoded chunks `range`, reusing those of the previous read and decoding the rest in
+    /// parallel (at most `available_parallelism()` threads). The cache then holds `range`.
+    fn chunks(&self, range: Range<usize>) -> DspResult<Vec<Chunk>> {
+        let mut out: Vec<Option<Chunk>> = {
+            let cache = self.cache.lock().unwrap();
+            range.clone().map(|i| cache.iter().find(|(c, _)| *c == i).map(|(_, v)| v.clone())).collect()
+        };
+        let missing: Vec<usize> = out.iter().enumerate().filter(|(_, c)| c.is_none()).map(|(k, _)| k).collect();
+        if !missing.is_empty() {
+            let workers = std::thread::available_parallelism().map_or(1, |n| n.get()).min(missing.len());
+            let next = AtomicUsize::new(0);
+            let decoded: Vec<Mutex<Option<DspResult<Chunk>>>> = missing.iter().map(|_| Mutex::new(None)).collect();
+            std::thread::scope(|scope| {
+                for _ in 0..workers {
+                    scope.spawn(|| loop {
+                        let j = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(&k) = missing.get(j) else { break };
+                        *decoded[j].lock().unwrap() = Some(self.decode(range.start + k).map(Arc::new));
+                    });
+                }
+            });
+            for (&k, d) in missing.iter().zip(decoded) {
+                out[k] = Some(d.into_inner().unwrap().expect("every missing chunk decoded")?);
+            }
         }
-        let c = Arc::new(self.decode(idx)?);
-        let mut cache = self.cache.lock().unwrap();
-        if cache.len() >= CACHE_CHUNKS {
-            cache.pop_front();
-        }
-        cache.push_back((idx, c.clone()));
-        Ok(c)
+        let out: Vec<Chunk> = out.into_iter().map(|c| c.expect("filled")).collect();
+        *self.cache.lock().unwrap() = range.zip(out.iter().cloned()).collect();
+        Ok(out)
     }
 
     fn decode(&self, idx: usize) -> DspResult<Vec<i16>> {
@@ -158,6 +174,30 @@ impl RecordingSource for MtscompRecording {
         &self.info
     }
 
+    fn read_stored(&self, channels: &[usize], samples: Range<u64>, out: &mut [u8]) -> DspResult<()> {
+        let n = check_read_stored(&self.info, channels, &samples, out.len())?;
+        if n == 0 {
+            return Ok(());
+        }
+        let bounds = &self.ch.chunk_bounds;
+        let first = bounds.partition_point(|&b| b <= samples.start) - 1;
+        let last = bounds.partition_point(|&b| b < samples.end) - 1;
+        let chunks = self.chunks(first..last + 1)?;
+        for (idx, chunk) in (first..=last).zip(&chunks) {
+            let (b0, b1) = (bounds[idx], bounds[idx + 1]);
+            let ns = (b1 - b0) as usize;
+            let (s0, s1) = (samples.start.max(b0), samples.end.min(b1));
+            let (src0, len, dst0) = ((s0 - b0) as usize, (s1 - s0) as usize, (s0 - samples.start) as usize);
+            for (dst, &ch) in out.chunks_exact_mut(n * 2).zip(channels) {
+                let src = &chunk[ch * ns + src0..ch * ns + src0 + len];
+                for (o, &v) in dst[dst0 * 2..(dst0 + len) * 2].chunks_exact_mut(2).zip(src) {
+                    o.copy_from_slice(&v.to_le_bytes());
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn read(&self, channels: &[usize], samples: Range<u64>, out: &mut [f32]) -> DspResult<()> {
         let n = check_read(&self.info, channels, &samples, out.len())?;
         if n == 0 {
@@ -165,11 +205,11 @@ impl RecordingSource for MtscompRecording {
         }
         let bounds = &self.ch.chunk_bounds;
         let first = bounds.partition_point(|&b| b <= samples.start) - 1;
-        let mut idx = first;
-        while idx + 1 < bounds.len() && bounds[idx] < samples.end {
+        let last = bounds.partition_point(|&b| b < samples.end) - 1;
+        let chunks = self.chunks(first..last + 1)?;
+        for (idx, chunk) in (first..=last).zip(&chunks) {
             let (b0, b1) = (bounds[idx], bounds[idx + 1]);
             let ns = (b1 - b0) as usize;
-            let chunk = self.chunk(idx)?;
             let (s0, s1) = (samples.start.max(b0), samples.end.min(b1));
             let (src0, len, dst0) = ((s0 - b0) as usize, (s1 - s0) as usize, (s0 - samples.start) as usize);
             for (dst, &ch) in out.chunks_exact_mut(n).zip(channels) {
@@ -179,7 +219,6 @@ impl RecordingSource for MtscompRecording {
                     *o = v as f32 * c.gain_uv + c.offset_uv;
                 }
             }
-            idx += 1;
         }
         Ok(())
     }
@@ -250,6 +289,19 @@ mod tests {
             rec.read(&[2, 0], 250..650, &mut out).unwrap();
             let expect: Vec<f32> = [2usize, 0].iter().flat_map(|&c| data[c][250..650].iter().map(|&v| v as f32)).collect();
             assert_eq!(out, expect, "spatial diff {spatial}");
+
+            // Every chunk at once (parallel decode), then windows that reuse the previous read's
+            // chunks, and a read ending exactly on a chunk boundary
+            for (range, chans) in [(0u64..1000u64, vec![0usize, 1, 2]), (590..910, vec![1]), (600..900, vec![2, 1]), (0..300, vec![0])] {
+                let n = (range.end - range.start) as usize;
+                let mut out = vec![0.0; chans.len() * n];
+                rec.read(&chans, range.clone(), &mut out).unwrap();
+                let expect: Vec<f32> =
+                    chans.iter().flat_map(|&c| data[c][range.start as usize..range.end as usize].iter().map(|&v| v as f32)).collect();
+                assert_eq!(out, expect, "{range:?} spatial diff {spatial}");
+                crate::tests::assert_stored_matches(&rec, &chans, range.clone());
+            }
+            assert_eq!(rec.cache.lock().unwrap().iter().map(|(i, _)| *i).collect::<Vec<_>>(), vec![0], "cache holds the last window");
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }
