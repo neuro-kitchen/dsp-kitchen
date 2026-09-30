@@ -1,29 +1,16 @@
-//! Dataset loading and synthetic electrophysiology signal generation model.
+//! The open recording: any `dsp-io` format behind [`RecordingSource`], read in chunks.
 
-use std::fs::File;
-use std::path::{Path, PathBuf};
-use anyhow::{bail, Context, Result};
-use memmap2::Mmap;
-use serde::Deserialize;
+use std::ops::Range;
+use std::path::Path;
+use std::sync::Arc;
 
-use super::source::SignalSource;
+use anyhow::{Context, Result};
+use dsp_core::{DspResult, RecordingInfo, RecordingSource};
+use dsp_io::{SyntheticParams, SyntheticRecording};
 
-#[derive(Deserialize, Debug)]
-struct SidecarMetadata {
-    channels: Option<usize>,
-    samples: Option<usize>,
-    sample_rate_hz: Option<f64>,
-}
-
-/// Backing storage: memory-mapped file (zero-copy) or an owned buffer (synthetic data).
-enum Storage {
-    Mapped(Mmap),
-    Owned(Vec<f32>),
-}
-
-/// Multi-channel continuous recording dataset (channel-major: `[ch][sample]`).
+/// A recording plus the summary fields the UI reads every frame.
 pub struct Dataset {
-    storage: Storage,
+    source: Arc<dyn RecordingSource>,
     pub total_channels: usize,
     pub total_samples: usize,
     pub sample_rate: f64,
@@ -31,15 +18,34 @@ pub struct Dataset {
 }
 
 impl Dataset {
-    /// All samples, channel-major. For mapped files this reads the OS page cache directly.
-    pub fn data(&self) -> &[f32] {
-        let len = self.total_channels * self.total_samples;
-        match &self.storage {
-            Storage::Owned(v) => &v[..len],
-            // SAFETY: `load_from_file` verified the map holds at least `len` f32s, and mmap
-            // bases are page-aligned so the pointer is aligned for f32.
-            Storage::Mapped(m) => unsafe { std::slice::from_raw_parts(m.as_ptr() as *const f32, len) },
+    pub fn new(source: Arc<dyn RecordingSource>) -> Self {
+        let info = source.info();
+        Self {
+            total_channels: info.channel_count(),
+            total_samples: info.samples as usize,
+            sample_rate: info.sample_rate_hz(),
+            name: info.name.clone(),
+            source,
         }
+    }
+
+    /// Opens any format `dsp-io` detects (SpikeGLX, IBL `.cbin`, raw binary + JSON sidecar, Zarr).
+    pub fn open(path: &Path) -> Result<Self> {
+        let source = dsp_io::open(path).with_context(|| format!("Failed to open {}", path.display()))?;
+        Ok(Self::new(Arc::from(source)))
+    }
+
+    /// Procedural recording of any length (noise, hum, drifting units), computed on demand.
+    pub fn procedural(channels: usize, sample_rate: f64, duration_sec: f64) -> Result<Self> {
+        let units = (channels / 4).clamp(1, 64);
+        let rec = SyntheticRecording::new(SyntheticParams { channels, sample_rate_hz: sample_rate, duration_sec, units, ..Default::default() })?;
+        Ok(Self::new(Arc::new(rec)))
+    }
+
+    /// Wraps an in-memory channel-major buffer.
+    #[cfg(test)]
+    pub fn from_samples(name: &str, data: Vec<f32>, total_channels: usize, sample_rate: f64) -> Self {
+        Self::new(Arc::new(dsp_core::MemoryRecording::new(name, data, total_channels, sample_rate).expect("valid shape")))
     }
 
     pub fn total_duration_sec(&self) -> f64 {
@@ -50,101 +56,28 @@ impl Dataset {
         }
     }
 
-    /// Loads dataset from a binary file (and optional `.meta` JSON sidecar) or generates
-    /// a synthetic 32-channel electrophysiology signal if no file is available.
-    pub fn load_or_synthetic(
-        file_arg: Option<PathBuf>,
-        channels_arg: Option<usize>,
-        sample_rate_arg: Option<f64>,
-    ) -> Result<Self> {
-        let default_bin = PathBuf::from("playground/data/mearec_32ch_10s.bin");
-        let target_file = file_arg.or_else(|| {
-            if default_bin.exists() {
-                Some(default_bin)
-            } else {
-                None
-            }
-        });
-
-        match target_file {
-            Some(path) => Self::load_from_file(&path, channels_arg, sample_rate_arg),
-            None => {
-                let ch = channels_arg.unwrap_or(32);
-                let sr = sample_rate_arg.unwrap_or(30_000.0);
-                Ok(Self::generate_synthetic(ch, sr, 5.0))
-            }
+    /// One sample in µV (0 when out of range or unreadable).
+    pub fn sample(&self, channel: usize, sample: usize) -> f32 {
+        let mut v = [0.0f32];
+        let s = sample as u64;
+        match self.source.read(&[channel], s..s + 1, &mut v) {
+            Ok(()) => v[0],
+            Err(_) => 0.0,
         }
     }
 
-    pub fn load_from_file(
-        path: &Path,
-        channels_override: Option<usize>,
-        sample_rate_override: Option<f64>,
-    ) -> Result<Self> {
-        let meta_path = path.with_extension("meta");
-        let mut detected_ch = channels_override;
-        let mut detected_s = None;
-        let mut detected_sr = sample_rate_override;
-
-        if meta_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&meta_path) {
-                if let Ok(meta) = serde_json::from_str::<SidecarMetadata>(&content) {
-                    if detected_ch.is_none() { detected_ch = meta.channels; }
-                    if detected_s.is_none() { detected_s = meta.samples; }
-                    if detected_sr.is_none() { detected_sr = meta.sample_rate_hz; }
-                }
-            }
-        }
-
-        let total_channels = detected_ch.unwrap_or(32);
-        let sample_rate = detected_sr.unwrap_or(32_000.0);
-
-        let file = File::open(path)
-            .with_context(|| format!("Failed to open dataset: {}", path.display()))?;
-        let mmap = unsafe { Mmap::map(&file)? };
-
-        if total_channels == 0 {
-            bail!("Channel count must be at least 1");
-        }
-        let total_floats = mmap.len() / std::mem::size_of::<f32>();
-        let total_samples = detected_s.unwrap_or(total_floats / total_channels);
-        if total_channels * total_samples > total_floats {
-            bail!(
-                "{} holds {} f32 values but {} channels x {} samples were requested",
-                path.display(),
-                total_floats,
-                total_channels,
-                total_samples
-            );
-        }
-
-        let name = path
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "dataset.bin".to_string());
-
-        Ok(Self {
-            storage: Storage::Mapped(mmap),
-            total_channels,
-            total_samples,
-            sample_rate,
-            name,
-        })
+    /// Every channel over `samples`, channel-major. Callers bound the range (whole-recording
+    /// passes belong in chunked background jobs).
+    pub fn read_all(&self, samples: Range<usize>) -> DspResult<Vec<f32>> {
+        let channels: Vec<usize> = (0..self.total_channels).collect();
+        let mut out = vec![0.0f32; channels.len() * samples.len()];
+        self.source.read(&channels, samples.start as u64..samples.end as u64, &mut out)?;
+        Ok(out)
     }
 
-    /// Wraps an in-memory channel-major buffer.
+    /// Synthetic 32-channel-style signal (hum, noise, a spike every ~300 ms per channel) held in
+    /// memory; tests rely on its exact content.
     #[cfg(test)]
-    pub fn from_samples(name: &str, data: Vec<f32>, total_channels: usize, sample_rate: f64) -> Self {
-        let total_samples = if total_channels == 0 { 0 } else { data.len() / total_channels };
-        Self {
-            storage: Storage::Owned(data),
-            total_channels,
-            total_samples,
-            sample_rate,
-            name: name.to_string(),
-        }
-    }
-
     pub fn generate_synthetic(total_channels: usize, sample_rate: f64, duration_sec: f64) -> Self {
         let total_samples = (sample_rate * duration_sec) as usize;
         let mut raw_data = vec![0.0f32; total_channels * total_samples];
@@ -175,29 +108,20 @@ impl Dataset {
             }
         }
 
-        Self {
-            storage: Storage::Owned(raw_data),
-            total_channels,
-            total_samples,
-            sample_rate,
-            name: format!("synthetic_{total_channels}ch"),
-        }
+        let rec = dsp_core::MemoryRecording::new(format!("synthetic_{total_channels}ch"), raw_data, total_channels.max(1), sample_rate)
+            .expect("valid synthetic shape");
+        Self::new(Arc::new(rec))
     }
 }
 
-impl SignalSource for Dataset {
-    fn channels(&self) -> usize {
-        self.total_channels
+/// Views and workers hold `Arc<Dataset>` as a plain `RecordingSource`.
+impl RecordingSource for Dataset {
+    fn info(&self) -> &RecordingInfo {
+        self.source.info()
     }
-    fn samples(&self) -> usize {
-        self.total_samples
-    }
-    fn sample_rate(&self) -> f64 {
-        self.sample_rate
-    }
-    fn channel(&self, ch: usize) -> &[f32] {
-        let n = self.total_samples;
-        &self.data()[ch * n..(ch + 1) * n]
+
+    fn read(&self, channels: &[usize], samples: Range<u64>, out: &mut [f32]) -> DspResult<()> {
+        self.source.read(channels, samples, out)
     }
 }
 
@@ -206,21 +130,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_mapped_file_zero_copy_and_size_check() {
+    fn test_opens_raw_file_through_dsp_io() {
         let dir = std::env::temp_dir().join(format!("croc_ds_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("rec.bin");
         let values: Vec<f32> = (0..12).map(|v| v as f32).collect();
         let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
         std::fs::write(&path, bytes).unwrap();
+        std::fs::write(path.with_extension("meta"), r#"{"channels": 3, "sample_rate_hz": 1000.0}"#).unwrap();
 
-        let ds = Dataset::load_from_file(&path, Some(3), Some(1000.0)).unwrap();
+        let ds = Dataset::open(&path).unwrap();
         assert_eq!(ds.total_samples, 4);
-        assert_eq!(ds.channel(1), &[4.0, 5.0, 6.0, 7.0]);
-
-        // Asking for more channels than the file holds is an error, not an out-of-bounds read
-        std::fs::write(path.with_extension("meta"), r#"{"samples": 100}"#).unwrap();
-        assert!(Dataset::load_from_file(&path, Some(3), None).is_err());
+        assert_eq!(ds.sample(1, 2), 6.0);
+        assert_eq!(ds.read_all(1..3).unwrap(), vec![1.0, 2.0, 5.0, 6.0, 9.0, 10.0]);
+        // Out of range reads are zero, not a panic
+        assert_eq!(ds.sample(7, 0), 0.0);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -229,8 +153,9 @@ mod tests {
         let ds = Dataset::generate_synthetic(8, 10_000.0, 1.0);
         assert_eq!(ds.total_channels, 8);
         assert_eq!(ds.total_samples, 10_000);
-        assert_eq!(ds.data().len(), 80_000);
-        assert_eq!(ds.channel(7).len(), 10_000);
         assert!((ds.total_duration_sec() - 1.0).abs() < 1e-6);
+
+        let long = Dataset::procedural(384, 30_000.0, 4.0 * 3600.0).unwrap();
+        assert_eq!(long.total_samples, 432_000_000);
     }
 }

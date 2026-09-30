@@ -1,210 +1,175 @@
-use memmap2::Mmap;
-use serde::Serialize;
-use std::fs::{self, File};
-use std::io::Write;
-use std::path::Path;
+use std::path::PathBuf;
+use std::time::Instant;
 
-#[derive(Serialize)]
-struct RecordingMetadata {
+use clap::Args;
+use dsp_core::{MemoryOrder, RecordingSource, SampleFormat};
+use dsp_io::{SyntheticParams, SyntheticRecording};
+
+#[derive(Args, Debug)]
+pub struct GenerateArgs {
+    /// Number of sensor channels (e.g. 1, 4, 32, 64, 384, 1024)
+    #[arg(short, long, default_value_t = 384)]
     channels: usize,
-    samples: usize,
-    sample_rate_hz: f64,
-    duration_seconds: f64,
-    noise_rms_uv: f32,
+
+    /// Number of time samples per channel (e.g. 30,000 = 1 sec @ 30kHz); ignored with --duration
+    #[arg(short, long, default_value_t = 30000)]
+    samples: u64,
+
+    /// Recording length, e.g. 90s, 10m, 2h (overrides --samples)
+    #[arg(short, long)]
+    duration: Option<String>,
+
+    /// Sampling rate in Hz
+    #[arg(short = 'r', long, default_value_t = 30000.0)]
+    sample_rate: f64,
+
+    /// Amplitude of white Gaussian noise (microvolts RMS)
+    #[arg(short, long, default_value_t = 15.0)]
+    noise_uv: f32,
+
+    /// Amplitude of 60 Hz power-line interference (microvolts)
+    #[arg(short, long, default_value_t = 25.0)]
     line_noise_uv: f32,
-    spikes_injected: usize,
-    format: &'static str,
-    byte_order: &'static str,
-    bytes_per_sample: usize,
-    total_data_bytes: usize,
+
+    /// Inject biological action potentials (spikes) across channels
+    #[arg(long, default_value_t = true)]
+    spikes: bool,
+
+    /// Number of simulated units (default: one per 4 channels, 1..=64)
+    #[arg(long)]
+    units: Option<usize>,
+
+    /// Storage format: 'bin' (flat binary + JSON .meta) or 'zarr' (chunked Zarr v3)
+    #[arg(short = 'f', long, default_value = "bin")]
+    format: String,
+
+    /// Sample type for 'bin': float32 or int16
+    #[arg(long, default_value = "float32")]
+    dtype: String,
+
+    /// Memory order for 'bin': channel-major or time-major (interleaved, as acquisition systems write)
+    #[arg(long, default_value = "channel-major")]
+    order: String,
+
+    /// µV per stored integer step for int16 output
+    #[arg(long, default_value_t = 0.195)]
+    gain_uv: f32,
+
+    /// Output file/directory path
+    #[arg(short, long, default_value = "playground/data/mock_signal_384ch.bin")]
+    output: PathBuf,
 }
 
-pub fn run_generate(
-    channels: usize,
-    samples: usize,
-    sample_rate: f64,
-    noise_uv: f32,
-    line_noise_uv: f32,
-    spikes: bool,
-    format: &str,
-    output_path: &Path,
-) -> anyhow::Result<()> {
-    println!("=== Synthetic Multi-Channel Signal Generator ===");
-    println!("Channels:            {}", channels);
-    println!("Samples per channel: {}", samples);
-    println!("Sample Rate:         {:.1} Hz", sample_rate);
-    println!("Duration:            {:.3} seconds", samples as f64 / sample_rate);
-    println!("Gaussian Noise RMS:  {:.1} uV", noise_uv);
-    println!("60 Hz Line Noise:    {:.1} uV", line_noise_uv);
-    println!("Injecting Spikes:    {}", spikes);
-    println!("Storage Format:      {}", format);
-    println!("Destination:         {}", output_path.display());
+/// Parses `90`, `90s`, `10m`, `2h`, `1.5h` into seconds.
+fn parse_duration(s: &str) -> anyhow::Result<f64> {
+    let s = s.trim();
+    let (num, mult) = match s.chars().last() {
+        Some('h') => (&s[..s.len() - 1], 3600.0),
+        Some('m') => (&s[..s.len() - 1], 60.0),
+        Some('s') => (&s[..s.len() - 1], 1.0),
+        _ => (s, 1.0),
+    };
+    Ok(num.parse::<f64>()? * mult)
+}
 
-    if let Some(parent) = output_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
+pub fn run_generate(a: &GenerateArgs) -> anyhow::Result<()> {
+    let duration_sec = match &a.duration {
+        Some(d) => parse_duration(d)?,
+        None => a.samples as f64 / a.sample_rate,
+    };
+    let units = if a.spikes { a.units.unwrap_or((a.channels / 4).clamp(1, 64)) } else { 0 };
+    let source = SyntheticRecording::new(SyntheticParams {
+        channels: a.channels,
+        sample_rate_hz: a.sample_rate,
+        duration_sec,
+        noise_uv: a.noise_uv,
+        line_noise_uv: a.line_noise_uv,
+        units,
+        ..Default::default()
+    })?;
+    let info = source.info();
 
-    let total_elements = channels * samples;
-    let mut buffer = vec![0.0f32; total_elements];
-
-    // Deterministic pseudo-random generator (Xorshift64 + Box-Muller transform)
-    let mut rng_state: u64 = 0x853c49e6748fea9b;
-    let mut next_uniform = || -> f32 {
-        rng_state ^= rng_state << 13;
-        rng_state ^= rng_state >> 7;
-        rng_state ^= rng_state << 17;
-        (rng_state as f64 / u64::MAX as f64) as f32
+    let dtype = SampleFormat::parse(&a.dtype).ok_or_else(|| anyhow::anyhow!("unknown --dtype {}", a.dtype))?;
+    let order = match a.order.as_str() {
+        "channel-major" => MemoryOrder::ChannelMajor,
+        "time-major" | "interleaved" => MemoryOrder::TimeMajor,
+        other => anyhow::bail!("unknown --order {other} (channel-major or time-major)"),
+    };
+    let zarr = a.format == "zarr";
+    let (gain, bytes) = if zarr {
+        (1.0, info.samples * a.channels as u64 * 4)
+    } else {
+        let gain = if dtype == SampleFormat::F32 { 1.0 } else { a.gain_uv };
+        (gain, info.samples * a.channels as u64 * dtype.bytes() as u64)
     };
 
-    let dt = 1.0 / sample_rate;
-    let omega_60hz = 2.0 * std::f64::consts::PI * 60.0;
-
-    // 1. Generate baseline + 60Hz line interference + Gaussian noise
-    for ch in 0..channels {
-        let channel_offset = ch * samples;
-        let ch_phase = (ch as f64 * 0.05).fract() * 2.0 * std::f64::consts::PI;
-
-        for s in 0..samples {
-            let t = s as f64 * dt;
-            let line_val = (line_noise_uv as f64 * (omega_60hz * t + ch_phase).sin()) as f32;
-
-            let u1 = next_uniform().max(1e-7);
-            let u2 = next_uniform();
-            let z0 = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f32::consts::PI * u2).cos();
-            let noise_val = z0 * noise_uv;
-
-            buffer[channel_offset + s] = line_val + noise_val;
-        }
+    println!("=== Synthetic Multi-Channel Signal Generator (dsp-io) ===");
+    println!("Channels:            {}", a.channels);
+    println!("Samples per channel: {}", info.samples);
+    println!("Sample Rate:         {:.1} Hz", a.sample_rate);
+    println!("Duration:            {:.3} seconds", info.duration_sec());
+    println!("Gaussian Noise RMS:  {:.1} uV", a.noise_uv);
+    println!("60 Hz Line Noise:    {:.1} uV", a.line_noise_uv);
+    println!("Units (drifting):    {units}");
+    if zarr {
+        println!("Storage Format:      zarr (float32, [channels, samples])");
+    } else {
+        println!("Storage Format:      bin ({dtype:?}, {order:?}, gain {gain} uV)");
     }
+    println!("Size:                {:.2} GB", bytes as f64 / 1e9);
+    println!("Destination:         {}", a.output.display());
 
-    // 2. Inject action potentials (spikes) if requested
-    let mut spikes_injected = 0usize;
-    if spikes && samples > 100 {
-        let spike_len = 60usize;
-        let mut spike_shape = vec![0.0f32; spike_len];
-        for i in 0..spike_len {
-            let t_rel = (i as f32 - 15.0) / 8.0;
-            spike_shape[i] =
-                -120.0 * (-0.5 * t_rel * t_rel).exp() + 35.0 * (-0.5 * (t_rel - 1.8).powi(2)).exp();
+    let started = Instant::now();
+    let mut last_pct = u64::MAX;
+    let progress = |done: u64, total: u64| {
+        let pct = done * 100 / total.max(1);
+        if pct / 5 != last_pct / 5 || done == total {
+            last_pct = pct;
+            let mbps = (bytes as f64 * done as f64 / total.max(1) as f64) / 1e6 / started.elapsed().as_secs_f64().max(1e-9);
+            println!("  {pct:3}%  ({mbps:.0} MB/s)");
         }
+    };
 
-        let num_spike_times = (samples / 600).max(1);
-        for st in 1..num_spike_times {
-            let center_sample = st * 500;
-            if center_sample + spike_len >= samples {
-                break;
-            }
-
-            let span = channels.min(5);
-            let primary_ch = if channels > span {
-                (st * 37) % (channels - span)
-            } else {
-                0
-            };
-
-            for d_ch in 0..span {
-                let ch = primary_ch + d_ch;
-                let ch_offset = ch * samples;
-                let attenuation = 1.0 / (1.0 + (d_ch as f32 * 0.8).powi(2));
-
-                for i in 0..spike_len {
-                    buffer[ch_offset + center_sample + i] += spike_shape[i] * attenuation;
-                }
-            }
-            spikes_injected += 1;
-        }
-    }
-
-    // Storage formatting
-    if format == "zarr" {
-        let zarr_path = if output_path.extension().map_or(false, |ext| ext == "bin") {
-            output_path.with_extension("zarr")
-        } else {
-            output_path.to_path_buf()
-        };
-
-        println!("\n[Storing via zarrs Engine (Zarr v3 Format)]");
-        dsp_stream::create_zarr_recording(
-            &zarr_path,
-            channels,
-            samples,
-            sample_rate,
-            &buffer,
-        )?;
-
-        let total_bytes = channels * samples * std::mem::size_of::<f32>();
-        println!("\n[Zarr Dataset Generation Complete]");
-        println!("  Store Directory: {}", zarr_path.display());
-        println!("  Array Path:      /traces");
-        println!("  Array Shape:     [{} channels, {} samples]", channels, samples);
-        println!("  Chunking Grid:   [{} channels, {} samples]", channels, 5000.min(samples));
+    // Bounded chunks (~1 s of data) so hours-long files never sit in memory
+    let chunk = (a.sample_rate as usize).max(1);
+    if zarr {
+        let path = if a.output.extension().is_some_and(|e| e == "bin") { a.output.with_extension("zarr") } else { a.output.clone() };
+        dsp_io::write_zarr(&source, &path, chunk, progress)?;
+        println!("\n[Zarr store written] {} in {:.1}s", path.display(), started.elapsed().as_secs_f64());
+    } else {
+        dsp_io::write_raw(&source, &a.output, dtype, order, gain, chunk, progress)?;
         println!(
-            "  Total Size:      {:.2} MB ({} floats)",
-            total_bytes as f64 / (1024.0 * 1024.0),
-            total_elements
+            "\n[Binary written] {} + {} in {:.1}s",
+            a.output.display(),
+            dsp_io::RawParams::sidecar_path(&a.output).display(),
+            started.elapsed().as_secs_f64()
         );
-        println!("  Spikes Injected: {}", spikes_injected);
-
-        // Verification Readback
-        println!("\n[zarrs Verification Read]");
-        let (read_data, r_ch, r_s, r_sr) = dsp_stream::read_zarr_recording(&zarr_path)?;
-        println!(
-            "  Zarr Readback:   SUCCESS (retrieved {} channels, {} samples @ {:.1} Hz)",
-            r_ch, r_s, r_sr
-        );
-        println!("  Sample (ch0, s0): {:.2} uV", read_data[0]);
-        return Ok(());
     }
 
-    // Write flat binary data
-    let mut file = File::create(output_path)?;
-    let byte_slice = unsafe {
-        std::slice::from_raw_parts(
-            buffer.as_ptr() as *const u8,
-            buffer.len() * std::mem::size_of::<f32>(),
-        )
-    };
-    file.write_all(byte_slice)?;
-    file.flush()?;
-
-    let total_bytes = byte_slice.len();
-
-    // Write JSON metadata sidecar
-    let meta_path = output_path.with_extension("meta");
-    let metadata = RecordingMetadata {
-        channels,
-        samples,
-        sample_rate_hz: sample_rate,
-        duration_seconds: samples as f64 / sample_rate,
-        noise_rms_uv: noise_uv,
-        line_noise_uv: line_noise_uv,
-        spikes_injected,
-        format: "float32-le",
-        byte_order: "little-endian",
-        bytes_per_sample: std::mem::size_of::<f32>(),
-        total_data_bytes: total_bytes,
-    };
-    let meta_json = serde_json::to_string_pretty(&metadata)?;
-    fs::write(&meta_path, meta_json)?;
-
-    println!("\n[Generation Complete]");
+    // Verify by reopening through format detection
+    let path = if zarr && a.output.extension().is_some_and(|e| e == "bin") { a.output.with_extension("zarr") } else { a.output.clone() };
+    let reopened = dsp_io::open(&path)?;
+    let mut first = [0.0f32; 1];
+    reopened.read(&[0], 0..1.min(reopened.info().samples), &mut first[..1.min(reopened.info().samples as usize)])?;
     println!(
-        "  Data File:      {} ({:.2} MB)",
-        output_path.display(),
-        total_bytes as f64 / (1024.0 * 1024.0)
+        "[Verified] {} channels x {} samples @ {:.1} Hz, ch0[0] = {:.2} uV",
+        reopened.info().channel_count(),
+        reopened.info().samples,
+        reopened.info().sample_rate_hz(),
+        first[0]
     );
-    println!("  Metadata File:  {}", meta_path.display());
-    println!("  Spikes Injected: {}", spikes_injected);
-
-    // Verify mmap
-    println!("\n[Zero-Copy mmap2 Verification]");
-    let verify_file = File::open(output_path)?;
-    let mmap = unsafe { Mmap::map(&verify_file)? };
-    println!(
-        "  Memory Mapped:  SUCCESS ({} bytes mapped to host address {:p})",
-        mmap.len(),
-        mmap.as_ptr()
-    );
-
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_duration;
+
+    #[test]
+    fn test_parse_duration() {
+        assert_eq!(parse_duration("90").unwrap(), 90.0);
+        assert_eq!(parse_duration("10m").unwrap(), 600.0);
+        assert_eq!(parse_duration("1.5h").unwrap(), 5400.0);
+        assert!(parse_duration("abc").is_err());
+    }
 }

@@ -245,11 +245,11 @@ impl Controller {
             state.set_dataset_name(ds.name.clone().into());
             state.set_dataset_info(
                 format!(
-                    "{} ch · {:.1} kHz · {:.2} s · {} events",
+                    "{} ch · {:.1} kHz · {} · {}",
                     ds.total_channels,
                     ds.sample_rate / 1000.0,
-                    ds.total_duration_sec(),
-                    app.events.len()
+                    format_duration(ds.total_duration_sec()),
+                    if app.events_detected { format!("{} events", app.events.len()) } else { "events not detected (long recording)".into() }
                 )
                 .into(),
             );
@@ -268,7 +268,7 @@ impl Controller {
     // ------------------------------------------------------------------------
 
     fn open_path(&self, path: PathBuf) {
-        match Dataset::load_from_file(&path, None, None) {
+        match Dataset::open(&path) {
             Ok(ds) => {
                 self.app.borrow_mut().load_dataset(ds, Some(path));
                 let (ds, channels) = {
@@ -411,4 +411,14 @@ impl Controller {
             });
         }
     }
+}
+
+/// `9.87 s`, `12:34` (m:ss) or `1:42:47` (h:mm:ss).
+fn format_duration(sec: f64) -> String {
+    if sec < 60.0 {
+        return format!("{sec:.2} s");
+    }
+    let total = sec.round() as u64;
+    let (h, m, s) = (total / 3600, total / 60 % 60, total % 60);
+    if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
 }

@@ -6,8 +6,9 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use slint::Rgba8Pixel;
+use dsp_core::RecordingSource;
 
-use crate::data::{Dataset, SignalSource, SpikeEventStore};
+use crate::data::{Dataset, SpikeEventStore};
 use crate::shared::dock::{Dock, DropSide, ViewId};
 use crate::shared::render_worker::RenderJob;
 use crate::shared::workspace::DockWorkspace;
@@ -111,7 +112,7 @@ impl TimeModule {
     /// Render jobs for visible, stale views; clears their flags.
     pub fn take_jobs(&mut self, dataset: &Arc<Dataset>, events: &Arc<SpikeEventStore>, marks: &SpikeMarks) -> Vec<RenderJob> {
         let visible = self.ws.visible();
-        let source: Arc<dyn SignalSource> = dataset.clone();
+        let source: Arc<dyn RecordingSource> = dataset.clone();
         let marks = if self.show_sorted_spikes { marks.clone() } else { Vec::new() };
         let mut out = Vec::new();
         for v in self.ws.views.iter_mut().filter(|v| v.needs_render && visible.contains(&v.id)) {

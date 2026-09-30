@@ -29,6 +29,16 @@ enum Commands {
         model: String,
     },
 
+    /// Open any recording dsp-io understands and print its layout, probe, and read throughput
+    Open {
+        /// Recording path (SpikeGLX .bin/.cbin, raw .bin + JSON .meta, Zarr store)
+        path: PathBuf,
+
+        /// Seconds of data to read for the throughput test
+        #[arg(long, default_value_t = 10.0)]
+        read_sec: f64,
+    },
+
     /// Inspect hardware topology, core counts, and dynamic launch geometry
     Inspect {
         /// Number of virtual signal channels
@@ -61,39 +71,7 @@ enum Commands {
 
     /// Generate a synthetic multi-channel recording with configurable noise and optional spikes
     #[command(alias = "mock-signal")]
-    Generate {
-        /// Number of sensor channels (e.g. 1, 4, 32, 64, 384, 1024)
-        #[arg(short, long, default_value_t = 384)]
-        channels: usize,
-
-        /// Number of time samples per channel (e.g. 30,000 = 1 sec @ 30kHz)
-        #[arg(short, long, default_value_t = 30000)]
-        samples: usize,
-
-        /// Sampling rate in Hz
-        #[arg(short = 'r', long, default_value_t = 30000.0)]
-        sample_rate: f64,
-
-        /// Amplitude of white Gaussian noise (microvolts RMS)
-        #[arg(short, long, default_value_t = 15.0)]
-        noise_uv: f32,
-
-        /// Amplitude of 60 Hz power-line interference (microvolts)
-        #[arg(short, long, default_value_t = 25.0)]
-        line_noise_uv: f32,
-
-        /// Inject biological action potentials (spikes) across channels
-        #[arg(long, default_value_t = true)]
-        spikes: bool,
-
-        /// Storage format: 'bin' (flat binary + .meta) or 'zarr' (chunked Zarr v3)
-        #[arg(short = 'f', long, default_value = "bin")]
-        format: String,
-
-        /// Output file/directory path
-        #[arg(short, long, default_value = "playground/data/mock_signal_384ch.bin")]
-        output: PathBuf,
-    },
+    Generate(commands::generate::GenerateArgs),
 
     /// Benchmark real-time DSP pipeline performance across channels
     Benchmark {
@@ -215,26 +193,11 @@ async fn main() -> anyhow::Result<()> {
         } => {
             commands::stream::run_stream(&mode, buckets, channels, sample_rate)?;
         }
-        Commands::Generate {
-            channels,
-            samples,
-            sample_rate,
-            noise_uv,
-            line_noise_uv,
-            spikes,
-            format,
-            output,
-        } => {
-            commands::generate::run_generate(
-                channels,
-                samples,
-                sample_rate,
-                noise_uv,
-                line_noise_uv,
-                spikes,
-                &format,
-                &output,
-            )?;
+        Commands::Open { path, read_sec } => {
+            commands::info::run_info(&path, read_sec)?;
+        }
+        Commands::Generate(args) => {
+            commands::generate::run_generate(&args)?;
         }
         Commands::Benchmark {
             channels,
