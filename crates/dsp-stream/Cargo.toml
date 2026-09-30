@@ -9,7 +9,6 @@ license.workspace = true
 dsp-core.workspace = true
 shared_memory.workspace = true
 memmap2.workspace = true
-zarrs.workspace = true
 quinn.workspace = true
 tonic.workspace = true
 prost.workspace = true

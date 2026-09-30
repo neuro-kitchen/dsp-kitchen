@@ -24,4 +24,19 @@ pub enum DspError {
 
     #[error("Invalid configuration: {0}")]
     InvalidConfig(String),
+
+    #[error("Sample range {start}..{end} is outside 0..{total}")]
+    SampleRange { start: u64, end: u64, total: u64 },
+
+    #[error("I/O error: {0}")]
+    Io(String),
+
+    #[error("Unsupported format: {0}")]
+    UnsupportedFormat(String),
+}
+
+impl From<std::io::Error> for DspError {
+    fn from(e: std::io::Error) -> Self {
+        DspError::Io(e.to_string())
+    }
 }
