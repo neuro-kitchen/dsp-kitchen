@@ -205,7 +205,12 @@ pub fn open_block(path: &Path, options: &OpenOptions) -> Result<Session> {
     m.devices = listing
         .hardware
         .iter()
-        .map(|(name, ty)| Device { name: name.clone(), description: ty.clone(), manufacturer: Some("Tucker-Davis Technologies".into()) })
+        .map(|(name, ty)| Device {
+            name: name.clone(),
+            description: ty.clone(),
+            manufacturer: Some("Tucker-Davis Technologies".into()),
+            model: hardware_model(name),
+        })
         .collect();
     m.notes.extend(synapse_notes.iter().flat_map(|n| n.notes.clone()));
     m.notes.extend(tnt.iter().flat_map(|t| t.notes.clone()));
@@ -235,6 +240,14 @@ pub fn open_block(path: &Path, options: &OpenOptions) -> Result<Session> {
     prov.warnings = warnings;
     session.provenance = prov;
     Ok(session)
+}
+
+/// Model of a Synapse hardware object from its id: Synapse names instances `MODEL(n)`
+/// (`RZ2(1)`, `IZV10(1)`, `PZ5(2)`).
+fn hardware_model(object: &str) -> Option<String> {
+    let (model, rest) = object.split_once('(')?;
+    let index = rest.strip_suffix(')')?;
+    (!model.is_empty() && !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit())).then(|| model.to_string())
 }
 
 #[cfg(test)]
@@ -399,5 +412,13 @@ mod tests {
         let only = open_block(&dir, &OpenOptions { only: Some(vec!["Tick".into()]), ..Default::default() }).unwrap();
         assert!(only.recordings.is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn hardware_models_come_from_synapse_object_ids() {
+        assert_eq!(hardware_model("RZ2(1)").as_deref(), Some("RZ2"));
+        assert_eq!(hardware_model("IZV10(1)").as_deref(), Some("IZV10"));
+        assert_eq!(hardware_model("bpPressure"), None);
+        assert_eq!(hardware_model("Odd(x)"), None);
     }
 }

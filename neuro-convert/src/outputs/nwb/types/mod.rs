@@ -5,6 +5,7 @@ pub mod electrodes;
 pub mod events;
 pub mod nwbfile;
 pub mod series;
+pub mod snippets;
 pub mod subject;
 pub mod tables;
 

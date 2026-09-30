@@ -129,23 +129,22 @@ impl Backend for ZarrBackend {
             SampleType::F32 => self.array(path, shape.clone(), chunks, data_type::float32(), 0.0f32, name, dims, attrs)?,
             SampleType::F64 => self.array(path, shape.clone(), chunks, data_type::float64(), 0.0f64, name, dims, attrs)?,
         };
-        Ok(Box::new(ZarrRows { array, ty, cols: shape.get(1).copied(), path: path.to_string() }))
+        Ok(Box::new(ZarrRows { array, ty, rest: shape[1..].to_vec(), path: path.to_string() }))
     }
 }
 
 struct ZarrRows {
     array: Array<dyn ReadableWritableListableStorageTraits>,
     ty: SampleType,
-    cols: Option<u64>,
+    /// Sizes of the dimensions after the first (written whole).
+    rest: Vec<u64>,
     path: String,
 }
 
 impl ZarrRows {
     fn store<T: zarrs::array::Element>(&self, rows: std::ops::Range<u64>, values: Vec<T>) -> Result<()> {
-        let res = match self.cols {
-            Some(c) => self.array.store_array_subset(&[rows, 0..c], values),
-            None => self.array.store_array_subset(&[rows], values),
-        };
+        let subset: Vec<std::ops::Range<u64>> = std::iter::once(rows).chain(self.rest.iter().map(|&d| 0..d)).collect();
+        let res = self.array.store_array_subset(&zarrs::array::ArraySubset::new_with_ranges(&subset), values);
         res.map_err(|e| err(&self.path, e))
     }
 }

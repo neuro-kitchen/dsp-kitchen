@@ -55,6 +55,23 @@ def main(path: str, small: bool) -> None:
             assert nwb.acquisition["eS1p"].data.shape == (1, 2)
             assert list(nwb.analysis["Z_EMG"]["note"][:]) == ["ok", "n/a"]
             assert str(nwb.session_start_time) == "2025-02-26 15:25:56-05:00"
+            # Snippets: one SpikeEventSeries per channel, on that channel's electrode
+            ch1 = nwb.acquisition["eNe1_ch1"]
+            assert type(ch1).__name__ == "SpikeEventSeries", type(ch1)
+            assert ch1.data.shape == (2, 1, 4) and list(ch1.timestamps[:]) == [0.1, 0.3]
+            assert np.array_equal(ch1.data[1, 0], [8, 9, 10, 11]), ch1.data[1]
+            assert list(ch1.electrodes.data[:]) == [0]
+            assert list(nwb.acquisition["eNe1_ch3"].electrodes.data[:]) == [2]
+            # Sorted snippets: channel 2 code 1, channel 1 code 1, channel 3 code 2
+            units = nwb.units.to_dataframe()
+            assert len(units) == 3, units
+            got = sorted((int(c), int(s), list(t)) for c, s, t in zip(units["source_channel"], units["sort_code"], units["spike_times"]))
+            assert got == [(1, 1, [0.3]), (2, 1, [0.2]), (3, 2, [0.4])], got
+            row = units[units["source_channel"] == 1].iloc[0]
+            assert np.array_equal(row["waveform_mean"], [8, 9, 10, 11]), row["waveform_mean"]
+            # NWB 2.9+ device model
+            dev = nwb.devices["RZ2(1)"]
+            assert dev.model is not None and dev.model.manufacturer == "TDT", dev
             print("exact values: OK")
 
     # Best-practice checks used by DANDI

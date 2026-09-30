@@ -1,4 +1,4 @@
-//! `/events/<name>` (`EventsTable`, NWB 2.9+): one row per event with its timestamp, duration
+//! `/events/<name>` (`EventsTable`, NWB 2.10+): one row per event with its timestamp, duration
 //! (offset − onset, NaN when the event has no offset), recorded value and annotation (label).
 
 use serde_json::json;
