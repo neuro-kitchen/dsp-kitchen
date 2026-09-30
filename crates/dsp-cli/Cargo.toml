@@ -16,7 +16,7 @@ cuda = ["dsp-base/cuda", "dsp-synapse/cuda"]
 hip = ["dsp-base/hip", "dsp-synapse/hip"]
 
 [dependencies]
-dsp-core.workspace = true
+dsp-core = { workspace = true, features = ["compute"] }
 dsp-base.workspace = true
 dsp-synapse.workspace = true
 dsp-stream.workspace = true

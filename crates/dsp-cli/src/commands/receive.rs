@@ -75,6 +75,7 @@ pub async fn run_receive(
     server_addr: SocketAddr,
     server_name: String,
     cert_path: Option<PathBuf>,
+    insecure: bool,
     duration_secs: f64,
     max_frames: u64,
     save_path: Option<PathBuf>,
@@ -109,8 +110,14 @@ pub async fn run_receive(
             make_client_config_with_cert(&cert_der)
                 .map_err(|e| anyhow::anyhow!("Failed to build TLS client config from cert: {e}"))?
         }
+        None if !insecure => {
+            anyhow::bail!(
+                "no server certificate given: pass --cert <server.der> (from `serve --cert-out`), \
+                 or --insecure to skip verification on a trusted network"
+            );
+        }
         None => {
-            println!("  [TLS]         Insecure mode: Accepting server self-signed certificate");
+            println!("  [TLS]         INSECURE: server certificate is not verified (--insecure)");
             make_insecure_client_config()
                 .map_err(|e| anyhow::anyhow!("Failed to build insecure TLS client config: {e}"))?
         }
@@ -217,7 +224,7 @@ pub async fn run_receive(
                         total_samples_per_ch += frame.samples as u64;
 
                         if save_path.is_some() {
-                            saved_chunks.push(frame.data);
+                            saved_chunks.push(frame.values());
                         }
 
                         // Periodic live report every ~1.0 second

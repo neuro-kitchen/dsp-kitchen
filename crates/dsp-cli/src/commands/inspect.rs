@@ -1,5 +1,5 @@
 use cubecl::prelude::*;
-use dsp_base::{ComputeTarget, ComputeTask, LaunchGeometry};
+use dsp_core::compute::{ComputeTarget, ComputeTask, LaunchGeometry};
 
 struct Inspect {
     channels: usize,
@@ -25,7 +25,7 @@ impl ComputeTask for Inspect {
         show("elementwise (scale / clamp)", LaunchGeometry::elementwise(&client, channels * samples));
         show("channels × samples (median / TKEO)", LaunchGeometry::channels_samples(&client, channels, samples));
         show("per sample (CAR)", LaunchGeometry::per_sample(&client, samples));
-        show("per channel (IIR / threshold)", LaunchGeometry::per_channel(channels));
+        show("per channel (IIR / threshold)", LaunchGeometry::per_channel(&client, channels));
     }
 }
 

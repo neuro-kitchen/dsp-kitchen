@@ -1,10 +1,41 @@
-use cubecl::prelude::*;
-use dsp_base::{ComputeTarget, ComputeTask};
-use dsp_base::filter::{DeviceFilter, FilterMode, FilterSpec, execute_teager_kaiser};
-use dsp_base::math::execute_scaling;
+//! Device benchmarks. Every timed region is synchronised with the compute client
+//! (`dsp_core::compute::bench`), so kernel time is execution time, not enqueueing.
+
 use std::fs;
-use std::path::Path;
-use std::time::Instant;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use cubecl::prelude::*;
+use cubecl::server::Handle;
+use dsp_base::filter::{DeviceFilter, FilterMode, FilterSpec, execute_fir, execute_median_9p, execute_teager_kaiser};
+use dsp_base::math::{execute_clamp, execute_scaling, execute_unpack_stored, stored_words};
+use dsp_base::pipeline::{Pipeline, PipelineStage};
+use dsp_base::spatial::execute_direct_car;
+use dsp_core::compute::bench::{sync, time_device};
+use dsp_core::compute::{ComputeTarget, ComputeTask};
+use dsp_core::layout::{Position3D, SensorLayout, SensorSite};
+use dsp_core::{RecordingSource, SampleFormat};
+use dsp_synapse::detection::deduplicate_spikes_spatial;
+use dsp_synapse::{
+    StreamingSortConfig, StreamingSpikeRunner, WaveformTemplate, execute_detect_spikes_in_vram,
+    execute_extract_sinc_in_vram, execute_reduce_templates_in_vram, match_spikes_omp_on, precompute_knn_table,
+};
+use serde::Serialize;
+
+const FS: f64 = 30_000.0;
+
+fn ms(d: Duration) -> f64 {
+    d.as_secs_f64() * 1e3
+}
+
+fn median(mut v: Vec<Duration>) -> Duration {
+    v.sort();
+    v[v.len() / 2]
+}
+
+// ------------------------------------------------------------------------------------------------
+// Pipeline: upload → kernels → download, each region synchronised
+// ------------------------------------------------------------------------------------------------
 
 pub fn run_benchmark_pipeline(
     target: ComputeTarget,
@@ -25,6 +56,13 @@ pub fn run_benchmark_pipeline(
     target.run(Task(channels, samples, iterations, save, format, output_path))?
 }
 
+/// Scale → 60 Hz notch → TKEO on `[channels, samples]`, the live-pipeline chain.
+fn chain<R: Runtime>(client: &ComputeClient<R>, notch: &DeviceFilter, state: &Handle, a: &Handle, b: &Handle, channels: usize, samples: usize) {
+    execute_scaling::<R>(client, a, b, channels * samples, 0.195, 0.0);
+    notch.apply(client, b, a, state, state, channels, samples);
+    execute_teager_kaiser::<R>(client, a, b, channels, samples);
+}
+
 fn benchmark_pipeline_on<R: Runtime>(
     client: ComputeClient<R>,
     channels: usize,
@@ -34,141 +72,70 @@ fn benchmark_pipeline_on<R: Runtime>(
     format: &str,
     output_path: &Path,
 ) -> anyhow::Result<()> {
-    println!("============================================================");
-    println!("       dsp-kitchen Real-Time Pipeline Benchmark             ");
-    println!("============================================================");
-    let total_elements = channels * samples;
-    let data_bytes = total_elements * std::mem::size_of::<f32>();
-    println!("Workload:           {} channels × {} samples", channels, samples);
-    println!(
-        "Buffer Size:        {:.2} MB ({} float32 samples)",
-        data_bytes as f64 / (1024.0 * 1024.0),
-        total_elements
-    );
-    println!(
-        "Persistence Mode:   {}",
-        if save {
-            format!("ENABLED ({format})")
-        } else {
-            "DISABLED (Pure In-VRAM Chaining)".into()
-        }
-    );
-    println!("Iterations:         {}", iterations);
+    let total = channels * samples;
+    println!("Pipeline benchmark: {channels} ch × {samples} samples, {iterations} iterations, {}", R::name(&client));
+    println!("Chain: scale → 60 Hz notch (forward) → TKEO; every region is device-synchronised");
 
-    println!("Compute Runtime:    {}", R::name(&client));
-
-    let input_host = vec![10.0f32; total_elements];
-    let input_bytes = unsafe {
-        std::slice::from_raw_parts(
-            input_host.as_ptr() as *const u8,
-            input_host.len() * std::mem::size_of::<f32>(),
-        )
-    };
-
-    let buf_a = client.create_from_slice(input_bytes);
-    let buf_b = client.empty(data_bytes);
+    let input = vec![10.0f32; total];
     let notch = notch_filter(&client)?;
-    let notch_state = client.empty(channels * notch.state_len() * 4);
+    let state = client.empty(channels * notch.state_len() * 4);
+    let scratch = client.empty(total * 4);
 
-    // Warmup JIT compilation
-    execute_scaling::<R>(&client, &buf_a, &buf_b, total_elements, 1.0, 0.0);
-    notch.apply(&client, &buf_b, &buf_a, &notch_state, &notch_state, channels, samples);
-    execute_teager_kaiser::<R>(&client, &buf_a, &buf_b, channels, samples);
+    // Warm-up: kernel compilation and autotuning, then drain the queue
+    let warm = client.create_from_slice(f32::as_bytes(&input));
+    chain(&client, &notch, &state, &warm, &scratch, channels, samples);
+    sync(&client);
 
-    let mut kernel_durations = Vec::with_capacity(iterations);
-    let mut total_durations = Vec::with_capacity(iterations);
-    let mut upload_durations = Vec::with_capacity(iterations);
-    let mut download_durations = Vec::with_capacity(iterations);
-    let mut save_durations = Vec::with_capacity(iterations);
-
-    for _ in 0..iterations {
-        let total_start = Instant::now();
-
-        // Upload
-        let t_upload_start = Instant::now();
-        let in_buf = client.create_from_slice(input_bytes);
-        upload_durations.push(t_upload_start.elapsed());
-
-        // Chained In-VRAM Kernels (Zero Host Roundtrips)
-        let t_kernel_start = Instant::now();
-        execute_scaling::<R>(&client, &in_buf, &buf_b, total_elements, 0.195, 0.0);
-        notch.apply(&client, &buf_b, &in_buf, &notch_state, &notch_state, channels, samples);
-        execute_teager_kaiser::<R>(&client, &in_buf, &buf_b, channels, samples);
-        kernel_durations.push(t_kernel_start.elapsed());
-
-        // Download
-        let t_down_start = Instant::now();
-        let out_bytes = client.read_one_unchecked(buf_b.clone());
-        download_durations.push(t_down_start.elapsed());
-
-        // Optional Persistence
-        let mut save_elapsed = std::time::Duration::ZERO;
+    let (mut up, mut kern, mut down, mut store, mut end_to_end) = (vec![], vec![], vec![], vec![], vec![]);
+    for _ in 0..iterations.max(1) {
+        let t0 = Instant::now();
+        let buf = client.create_from_slice(f32::as_bytes(&input));
+        sync(&client);
+        let t1 = Instant::now();
+        chain(&client, &notch, &state, &buf, &scratch, channels, samples);
+        sync(&client);
+        let t2 = Instant::now();
+        let out = client.read_one_unchecked(scratch.clone());
+        let t3 = Instant::now();
         if save {
-            let t_save_start = Instant::now();
-            if format == "zarr" {
-                let zarr_path = if output_path.extension().map_or(false, |ext| ext == "bin") {
-                    output_path.with_extension("zarr")
-                } else {
-                    output_path.to_path_buf()
-                };
-                let out_slice = unsafe {
-                    std::slice::from_raw_parts(
-                        out_bytes.as_ptr() as *const f32,
-                        out_bytes.len() / std::mem::size_of::<f32>(),
-                    )
-                };
-                let rec = dsp_core::MemoryRecording::new("pipeline_output", out_slice.to_vec(), channels, 30000.0)?;
-                dsp_io::write_zarr(&rec, &zarr_path, dsp_io::zarr::DEFAULT_CHUNK_SAMPLES, |_, _| {})?;
-            } else {
-                if let Some(parent) = output_path.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-                fs::write(output_path, &*out_bytes)?;
-            }
-            save_elapsed = t_save_start.elapsed();
+            persist(&out, channels, format, output_path)?;
         }
-        save_durations.push(save_elapsed);
-        total_durations.push(total_start.elapsed());
+        let t4 = Instant::now();
+        up.push(t1 - t0);
+        kern.push(t2 - t1);
+        down.push(t3 - t2);
+        store.push(t4 - t3);
+        end_to_end.push(t4 - t0);
     }
-
-    let avg_kernel_ms = kernel_durations.iter().map(|d| d.as_secs_f64() * 1000.0).sum::<f64>() / iterations as f64;
-    let avg_upload_ms = upload_durations.iter().map(|d| d.as_secs_f64() * 1000.0).sum::<f64>() / iterations as f64;
-    let avg_download_ms = download_durations.iter().map(|d| d.as_secs_f64() * 1000.0).sum::<f64>() / iterations as f64;
-    let avg_save_ms = save_durations.iter().map(|d| d.as_secs_f64() * 1000.0).sum::<f64>() / iterations as f64;
-    let avg_total_ms = total_durations.iter().map(|d| d.as_secs_f64() * 1000.0).sum::<f64>() / iterations as f64;
-
-    let compute_throughput_msamples = (total_elements as f64 / 1_000_000.0) / (avg_kernel_ms / 1000.0);
-    let sample_duration_sec = samples as f64 / 30000.0;
-    let real_time_factor = (sample_duration_sec * 1000.0) / avg_kernel_ms;
-
-    println!("\n[Benchmark Results Summary]");
-    println!("  In-VRAM Kernel Time:   {:.3} ms  (Scaling -> Notch -> TKEO)", avg_kernel_ms);
-    println!(
-        "  Compute Throughput:    {:.1} MSamples/sec ({:.2} GB/s)",
-        compute_throughput_msamples,
-        compute_throughput_msamples * 4.0 / 1024.0
-    );
-    println!("  Real-Time Multiplier:  {:.1}x realtime factor", real_time_factor);
-
+    let kernel = median(kern);
+    let msamples = total as f64 / kernel.as_secs_f64() / 1e6;
+    println!("  upload       {:>9.3} ms", ms(median(up)));
+    println!("  kernels      {:>9.3} ms   {msamples:.0} Msamples/s, {:.1}× real time", ms(kernel), samples as f64 / FS / kernel.as_secs_f64());
+    println!("  download     {:>9.3} ms", ms(median(down)));
     if save {
-        let bus_io_time = avg_upload_ms + avg_download_ms + avg_save_ms;
-        let bus_overhead_pct = (bus_io_time / avg_total_ms) * 100.0;
-
-        println!("\n[Data Movement & Persistence Overhead]");
-        println!("  Host -> Device Upload: {:.3} ms", avg_upload_ms);
-        println!("  Device -> Host Down:   {:.3} ms", avg_download_ms);
-        println!("  Storage Write Time:    {:.3} ms", avg_save_ms);
-        println!("  Total End-to-End:      {:.3} ms", avg_total_ms);
-        println!("  I/O & Bus Penalty:     {:.1}% of runtime spent moving data!", bus_overhead_pct);
-    } else {
-        println!("\n[Pipeline Efficiency]");
-        println!("  Host Roundtrips:       0 (Zero PCIe downloads between stages)");
-        println!("  VRAM Data Movement:    Chained directly in persistent device buffers");
+        println!("  storage      {:>9.3} ms ({format})", ms(median(store)));
     }
-
-    println!("============================================================");
+    println!("  end to end   {:>9.3} ms (medians)", ms(median(end_to_end)));
     Ok(())
 }
+
+fn persist(bytes: &[u8], channels: usize, format: &str, output_path: &Path) -> anyhow::Result<()> {
+    if format == "zarr" {
+        let path = if output_path.extension().is_some_and(|e| e == "bin") { output_path.with_extension("zarr") } else { output_path.to_path_buf() };
+        let rec = dsp_core::MemoryRecording::new("pipeline_output", f32::from_bytes(bytes).to_vec(), channels, FS)?;
+        dsp_io::write_zarr(&rec, &path, dsp_io::zarr::DEFAULT_CHUNK_SAMPLES, |_, _| {})?;
+    } else {
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(output_path, bytes)?;
+    }
+    Ok(())
+}
+
+// ------------------------------------------------------------------------------------------------
+// Channel sweep
+// ------------------------------------------------------------------------------------------------
 
 pub fn run_benchmark_sweep(target: ComputeTarget, samples_per_channel: usize, iterations: usize) -> anyhow::Result<()> {
     struct Task(usize, usize);
@@ -181,74 +148,251 @@ pub fn run_benchmark_sweep(target: ComputeTarget, samples_per_channel: usize, it
     target.run(Task(samples_per_channel, iterations))?
 }
 
-fn benchmark_sweep_on<R: Runtime>(client: ComputeClient<R>, samples_per_channel: usize, iterations: usize) -> anyhow::Result<()> {
-    println!("=========================================================================================");
-    println!("             dsp-kitchen Dynamic Channel Scaling Sweep Benchmark                         ");
-    println!("=========================================================================================");
-    println!("Samples per channel: {}", samples_per_channel);
-    println!("Benchmark iterations: {}", iterations);
-    println!("Pipeline: Scale (ADC) -> Notch (60 Hz) -> Teager-Kaiser Energy Operator (TKEO)");
-    println!("-----------------------------------------------------------------------------------------");
-    println!(
-        "{:<10} | {:<12} | {:<14} | {:<18} | {:<14} | {:<10}",
-        "Channels", "Elements", "Kernel Time", "Throughput", "Bandwidth", "Realtime"
-    );
-    println!("-----------------------------------------------------------------------------------------");
-
+fn benchmark_sweep_on<R: Runtime>(client: ComputeClient<R>, samples: usize, iterations: usize) -> anyhow::Result<()> {
+    println!("Channel sweep: scale → notch → TKEO, {samples} samples per channel, {}", R::name(&client));
+    println!("{:>8} | {:>12} | {:>10} | {:>12} | {:>9}", "channels", "elements", "kernel ms", "Msamples/s", "realtime");
     let notch = notch_filter(&client)?;
-
-    let channel_counts = [1, 4, 16, 32, 64, 128, 384, 1024];
-
-    for &channels in &channel_counts {
-        let total_elements = channels * samples_per_channel;
-        let data_bytes = total_elements * std::mem::size_of::<f32>();
-
-        let input_host = vec![1.0f32; total_elements];
-        let input_bytes = unsafe {
-            std::slice::from_raw_parts(
-                input_host.as_ptr() as *const u8,
-                input_host.len() * std::mem::size_of::<f32>(),
-            )
-        };
-
-        let buf_a = client.create_from_slice(input_bytes);
-        let buf_b = client.empty(data_bytes);
-        let notch_state = client.empty(channels * notch.state_len() * 4);
-
-        // Warmup
-        execute_scaling::<R>(&client, &buf_a, &buf_b, total_elements, 1.0, 0.0);
-        notch.apply(&client, &buf_b, &buf_a, &notch_state, &notch_state, channels, samples_per_channel);
-        execute_teager_kaiser::<R>(&client, &buf_a, &buf_b, channels, samples_per_channel);
-
-        let mut durations = Vec::with_capacity(iterations);
-        for _ in 0..iterations {
-            let start = Instant::now();
-            execute_scaling::<R>(&client, &buf_a, &buf_b, total_elements, 0.195, 0.0);
-            notch.apply(&client, &buf_b, &buf_a, &notch_state, &notch_state, channels, samples_per_channel);
-            execute_teager_kaiser::<R>(&client, &buf_a, &buf_b, channels, samples_per_channel);
-            durations.push(start.elapsed());
-        }
-
-        let avg_ms = durations.iter().map(|d| d.as_secs_f64() * 1000.0).sum::<f64>() / iterations as f64;
-        let throughput_msamples = (total_elements as f64 / 1_000_000.0) / (avg_ms / 1000.0);
-        let bandwidth_gbs = (throughput_msamples * 4.0) / 1024.0;
-        let stream_duration_ms = (samples_per_channel as f64 / 30000.0) * 1000.0;
-        let realtime_factor = stream_duration_ms / avg_ms;
-
+    for channels in [1usize, 4, 16, 32, 64, 128, 384, 1024] {
+        let total = channels * samples;
+        let a = client.create_from_slice(f32::as_bytes(&vec![1.0f32; total]));
+        let b = client.empty(total * 4);
+        let state = client.empty(channels * notch.state_len() * 4);
+        let t = time_device(&client, iterations, || chain(&client, &notch, &state, &a, &b, channels, samples));
         println!(
-            "{:<10} | {:<12} | {:<11.3} ms | {:<13.1} MS/s | {:<10.2} GB/s | {:<8.1}x",
-            channels, total_elements, avg_ms, throughput_msamples, bandwidth_gbs, realtime_factor
+            "{channels:>8} | {total:>12} | {:>10.3} | {:>12.0} | {:>8.1}×",
+            ms(t),
+            total as f64 / t.as_secs_f64() / 1e6,
+            samples as f64 / FS / t.as_secs_f64()
         );
     }
-
-    println!("-----------------------------------------------------------------------------------------");
-    println!("Dynamic channel scaling benchmark completed successfully.");
-    println!("=========================================================================================");
     Ok(())
 }
 
 /// Causal 60 Hz notch (Q 30) at 30 kHz, as used in live pipelines.
 fn notch_filter<R: Runtime>(client: &ComputeClient<R>) -> anyhow::Result<DeviceFilter> {
     let spec = FilterSpec::notch(60.0, 30.0).with_mode(FilterMode::Forward);
-    Ok(DeviceFilter::new(client, &spec, 30000.0)?)
+    Ok(DeviceFilter::new(client, &spec, FS)?)
+}
+
+// ------------------------------------------------------------------------------------------------
+// Kernel suite
+// ------------------------------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct SuiteRow {
+    kernel: String,
+    ms: f64,
+    /// Input samples processed per second (channels × samples / time), when meaningful.
+    msamples_per_s: Option<f64>,
+    note: String,
+}
+
+#[derive(Serialize)]
+struct Hardware {
+    runtime: String,
+    plane_size_max: u32,
+    max_units_per_cube: u32,
+    num_cpu_cores: Option<u32>,
+    num_streaming_multiprocessors: Option<u32>,
+}
+
+#[derive(Serialize)]
+struct SortRow {
+    channels: usize,
+    seconds: f64,
+    /// First run, including kernel compilation and autotuning.
+    cold_wall_s: f64,
+    /// Second run on the same client (steady state).
+    wall_s: f64,
+    msamples_per_s: f64,
+    real_time_factor: f64,
+    spikes: u64,
+}
+
+#[derive(Serialize)]
+struct SuiteReport {
+    unix_time: u64,
+    hardware: Hardware,
+    channels: usize,
+    samples: usize,
+    iterations: usize,
+    kernels: Vec<SuiteRow>,
+    sorter: SortRow,
+}
+
+/// Times each kernel family and the streaming sorter on `target`, prints a table and writes the
+/// report as JSON into `out_dir` (`<unix time>-<runtime>.json`).
+pub fn run_benchmark_suite(target: ComputeTarget, channels: usize, samples: usize, iterations: usize, out_dir: &Path) -> anyhow::Result<PathBuf> {
+    struct Task(usize, usize, usize);
+    impl ComputeTask for Task {
+        type Output = anyhow::Result<SuiteReport>;
+        fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
+            suite_on(client, self.0, self.1, self.2)
+        }
+    }
+    let report = target.run(Task(channels, samples, iterations))??;
+    fs::create_dir_all(out_dir)?;
+    let file = out_dir.join(format!("{}-{}.json", report.unix_time, target.name()));
+    fs::write(&file, serde_json::to_string_pretty(&report)?)?;
+    println!("Report written to {}", file.display());
+    Ok(file)
+}
+
+/// Two-column layout with 20 µm row pitch for any channel count.
+fn linear_probe(channels: usize) -> SensorLayout {
+    let sites = (0..channels).map(|c| SensorSite::new(c, Position3D::new((c % 2) as f32 * 32.0, (c / 2) as f32 * 20.0, 0.0), 0)).collect();
+    SensorLayout::new("benchmark", sites)
+}
+
+fn suite_on<R: Runtime>(client: ComputeClient<R>, channels: usize, samples: usize, iterations: usize) -> anyhow::Result<SuiteReport> {
+    let hw = &client.properties().hardware;
+    let hardware = Hardware {
+        runtime: R::name(&client).to_string(),
+        plane_size_max: hw.plane_size_max,
+        max_units_per_cube: hw.max_units_per_cube,
+        num_cpu_cores: hw.num_cpu_cores,
+        num_streaming_multiprocessors: hw.num_streaming_multiprocessors,
+    };
+    println!("Kernel suite: {channels} ch × {samples} samples ({:.1} s at 30 kHz), median of {iterations}, {}", samples as f64 / FS, hardware.runtime);
+    let total = channels * samples;
+    let mut rows: Vec<SuiteRow> = Vec::new();
+    let mut add = |kernel: &str, t: Duration, elements: Option<usize>, note: String| {
+        let row = SuiteRow { kernel: kernel.into(), ms: ms(t), msamples_per_s: elements.map(|n| n as f64 / t.as_secs_f64() / 1e6), note };
+        match row.msamples_per_s {
+            Some(r) => println!("  {:<30} {:>10.3} ms  {:>9.0} Msamples/s  {}", row.kernel, row.ms, r, row.note),
+            None => println!("  {:<30} {:>10.3} ms  {:>20}  {}", row.kernel, row.ms, "", row.note),
+        }
+        rows.push(row);
+    };
+
+    // Deterministic noise with sparse negative spikes
+    let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+    let mut rnd = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed >> 11) as f32 / (1u64 << 53) as f32 * 2.0 - 1.0
+    };
+    let host: Vec<f32> = (0..total).map(|i| rnd() * 20.0 + if i % 997 == 0 { -150.0 } else { 0.0 }).collect();
+    let input = client.create_from_slice(f32::as_bytes(&host));
+    let output = client.empty(total * 4);
+
+    add("scale", time_device(&client, iterations, || execute_scaling::<R>(&client, &input, &output, total, 0.5, 1.0)), Some(total), String::new());
+    add("clamp", time_device(&client, iterations, || execute_clamp::<R>(&client, &input, &output, total, -50.0, 50.0)), Some(total), String::new());
+    add("CAR (direct)", time_device(&client, iterations, || execute_direct_car::<R>(&client, &input, &output, channels, samples)), Some(total), String::new());
+    add("median 9-point", time_device(&client, iterations, || execute_median_9p::<R>(&client, &input, &output, channels, samples)), Some(total), String::new());
+    add("TKEO", time_device(&client, iterations, || execute_teager_kaiser::<R>(&client, &input, &output, channels, samples)), Some(total), String::new());
+    let taps = client.create_from_slice(f32::as_bytes(&[1.0f32 / 32.0; 32]));
+    add("FIR 32 taps", time_device(&client, iterations, || execute_fir::<R>(&client, &input, &output, &taps, channels, samples, 32)), Some(total), String::new());
+
+    for (name, mode) in [("bandpass o5 forward", FilterMode::Forward), ("bandpass o5 filtfilt", FilterMode::ForwardBackward)] {
+        let filter = DeviceFilter::new(&client, &FilterSpec::bandpass(300.0, 6000.0).with_mode(mode), FS)?;
+        let scratch = client.empty((filter.scratch_len(channels, samples) * 4).max(4));
+        let state = client.empty(channels * filter.state_len() * 4);
+        let t = time_device(&client, iterations, || filter.apply(&client, &input, &output, &scratch, &state, channels, samples));
+        add(name, t, Some(total), "autotuned time blocks".into());
+    }
+
+    // int16 stored samples → µV (half the upload of f32)
+    let stored: Vec<u8> = host.iter().flat_map(|v| ((v * 4.0) as i16).to_le_bytes()).collect();
+    let words = client.create_from_slice(u32::as_bytes(&stored_words(&stored)));
+    let gains = client.create_from_slice(f32::as_bytes(&vec![0.25f32; channels]));
+    let offsets = client.create_from_slice(f32::as_bytes(&vec![0.0f32; channels]));
+    let t = time_device(&client, iterations, || {
+        execute_unpack_stored::<R>(&client, &words, SampleFormat::I16, &gains, &offsets, &output, channels, samples).expect("int16 unpack")
+    });
+    add("unpack int16 → µV", t, Some(total), String::new());
+
+    let sigmas = client.create_from_slice(f32::as_bytes(&vec![12.0f32; channels]));
+    let mut events = Vec::new();
+    let t = time_device(&client, iterations, || {
+        events = execute_detect_spikes_in_vram::<R>(&client, &input, &sigmas, channels, samples, 10, samples - 10, 0, 5.0, 30, None);
+    });
+    add("threshold detection", t, Some(total), format!("{} crossings", events.len()));
+
+    let probe = linear_probe(channels);
+    let (k, pre, post) = (4usize.min(channels), 30usize, 60usize);
+    let spikes = deduplicate_spikes_spatial(&events, &probe, 40.0, 30);
+    let knn = client.create_from_slice(u32::as_bytes(&precompute_knn_table(&probe, channels, k)));
+    let mut extracted = None;
+    let t = time_device(&client, iterations, || {
+        extracted = execute_extract_sinc_in_vram::<R>(&client, &input, &knn, channels, samples, &spikes, k, pre, post, true);
+    });
+    add("sinc snippet extraction", t, None, format!("{} spikes × {k} ch × {} samples", spikes.len(), pre + post));
+    if let Some(ex) = &extracted {
+        let t = time_device(&client, iterations, || {
+            execute_reduce_templates_in_vram::<R>(&client, &ex.snippets, &ex.primaries, channels, k, pre + post);
+        });
+        add("template reduction", t, None, format!("{} spikes", ex.num_spikes()));
+    }
+
+    // OMP on one second of the first channels against a small dictionary
+    let (omp_ch, omp_len, units, t_len) = (channels.min(32), samples.min(30_000), 16usize, 60usize);
+    let omp_data: Vec<f32> = (0..omp_ch).flat_map(|c| host[c * samples..c * samples + omp_len].to_vec()).collect();
+    let templates: Vec<WaveformTemplate> = (0..units)
+        .map(|u| {
+            let ids: Vec<usize> = (0..4).map(|r| (u * 2 + r) % omp_ch).collect();
+            let mean: Vec<f32> = (0..4 * t_len).map(|i| -100.0 * (-((i % t_len) as f32 - 20.0).powi(2) / 20.0).exp() * (1.0 - 0.2 * (i / t_len) as f32)).collect();
+            WaveformTemplate::new(ids, t_len, mean, vec![1.0; 4 * t_len])
+        })
+        .collect();
+    let mut matched = 0;
+    let t = time_device(&client, iterations, || {
+        matched = match_spikes_omp_on::<R>(&client, &omp_data, omp_ch, omp_len, &templates, 0.65, 1.45, 500.0, 4).len();
+    });
+    add("OMP matching", t, Some(omp_ch * omp_len), format!("{omp_ch} ch × {omp_len} samples, {units} templates, {matched} matches"));
+
+    // Streaming sorter end to end on a synthetic recording
+    let sort_secs = (samples as f64 / FS).min(10.0);
+    let source = dsp_io::SyntheticRecording::new(dsp_io::SyntheticParams {
+        channels,
+        sample_rate_hz: FS,
+        duration_sec: sort_secs,
+        units: (channels / 4).clamp(1, 64),
+        ..Default::default()
+    })?;
+    // Reading the source alone, to separate its cost from the sorter's
+    let all: Vec<usize> = (0..channels).collect();
+    let n_src = source.info().samples;
+    let mut buf = vec![0.0f32; channels * FS as usize];
+    let start = Instant::now();
+    let mut s0 = 0u64;
+    while s0 < n_src {
+        let s1 = (s0 + FS as u64).min(n_src);
+        source.read(&all, s0..s1, &mut buf[..channels * (s1 - s0) as usize])?;
+        s0 = s1;
+    }
+    let read = start.elapsed();
+    add("source read (synthetic)", read, Some(channels * n_src as usize), "host-side sample generation, no processing".into());
+
+    let pipeline = Pipeline::with_stages(vec![PipelineStage::bandpass(300.0, 6000.0)]);
+    let runner = StreamingSpikeRunner::new(StreamingSortConfig::default());
+    let start = Instant::now();
+    runner.run_on::<R>(client.clone(), &source, &pipeline, &probe)?;
+    let cold = start.elapsed().as_secs_f64();
+    let start = Instant::now();
+    let result = runner.run_on::<R>(client.clone(), &source, &pipeline, &probe)?;
+    let wall = start.elapsed().as_secs_f64();
+    let sorted_samples = source.info().samples as f64 * channels as f64;
+    let sorter = SortRow {
+        channels,
+        seconds: sort_secs,
+        cold_wall_s: cold,
+        wall_s: wall,
+        msamples_per_s: sorted_samples / wall / 1e6,
+        real_time_factor: sort_secs / wall,
+        spikes: result.total_dedup_spikes,
+    };
+    println!(
+        "  {:<30} {:>10.3} s   {:>9.0} Msamples/s  {:.1}× real time, {} spikes (first run {:.2} s with compilation)",
+        "streaming sorter",
+        sorter.wall_s,
+        sorter.msamples_per_s,
+        sorter.real_time_factor,
+        sorter.spikes,
+        sorter.cold_wall_s
+    );
+
+    let unix_time = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    Ok(SuiteReport { unix_time, hardware, channels, samples, iterations, kernels: rows, sorter })
 }
