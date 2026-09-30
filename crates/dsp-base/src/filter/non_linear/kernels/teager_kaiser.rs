@@ -1,4 +1,5 @@
 use cubecl::prelude::*;
+use dsp_core::compute::{channel_position, sample_position};
 
 /// CubeCL kernel for the discrete Teager-Kaiser Energy Operator (TKEO):
 /// `psi[n] = x[n]^2 - x[n-1] * x[n+1]`
@@ -10,8 +11,8 @@ pub fn teager_kaiser_kernel(
     num_channels: u32,
     num_samples: u32,
 ) {
-    let sample_idx = ABSOLUTE_POS_X;
-    let channel_idx = ABSOLUTE_POS_Y;
+    let sample_idx = sample_position();
+    let channel_idx = channel_position();
 
     if sample_idx < num_samples && channel_idx < num_channels {
         let channel_offset = channel_idx * num_samples;

@@ -1,5 +1,5 @@
 use cubecl::prelude::*;
-use crate::geometry::LaunchGeometry;
+use dsp_core::compute::LaunchGeometry;
 use super::kernels::median_filter_9p_kernel;
 
 /// High-level host dispatcher for 9-point temporal median filter across all channels.

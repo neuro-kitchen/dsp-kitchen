@@ -1,5 +1,5 @@
 use cubecl::prelude::*;
-use crate::geometry::LaunchGeometry;
+use dsp_core::compute::LaunchGeometry;
 use super::kernels::clamp_samples_kernel;
 
 /// High-level host dispatcher for elementwise sample clamping.

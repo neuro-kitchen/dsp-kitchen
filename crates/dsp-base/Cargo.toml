@@ -7,13 +7,13 @@ license.workspace = true
 
 [features]
 default = ["wgpu"]
-wgpu = ["cubecl/wgpu"]
-cpu = ["cubecl/cpu"]
-cuda = ["cubecl/cuda"]
-hip = ["cubecl/hip"]
+wgpu = ["dsp-core/wgpu"]
+cpu = ["dsp-core/cpu"]
+cuda = ["dsp-core/cuda"]
+hip = ["dsp-core/hip"]
 
 [dependencies]
-dsp-core.workspace = true
+dsp-core = { workspace = true, features = ["compute"] }
 cubecl.workspace = true
 thiserror.workspace = true
 num-complex.workspace = true

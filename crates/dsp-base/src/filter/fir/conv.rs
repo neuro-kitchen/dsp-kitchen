@@ -1,5 +1,5 @@
 use cubecl::prelude::*;
-use crate::geometry::LaunchGeometry;
+use dsp_core::compute::LaunchGeometry;
 use super::kernels::fir_filter_kernel;
 
 /// High-level host dispatcher for multi-channel temporal FIR filtering.
