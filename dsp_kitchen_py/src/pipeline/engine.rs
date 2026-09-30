@@ -2,7 +2,7 @@ use pyo3::prelude::*;
 use dsp_base::pipeline::{Pipeline, PipelineStage};
 use cubecl::prelude::ComputeClient;
 use cubecl::{CubeElement, Runtime};
-use dsp_base::{ComputeTarget, ComputeTask};
+use dsp_core::compute::{ComputeTarget, ComputeTask};
 
 use crate::array::{to_numpy, value_error, F32Array};
 

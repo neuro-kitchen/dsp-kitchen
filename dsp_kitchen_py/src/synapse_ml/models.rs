@@ -8,7 +8,7 @@ use dsp_synapse_ml::{
     ContrastiveWaveformEmbedder, DartsortVaeEmbedder, SafetensorsMap, SingleChannelDenoiser,
     SpatiotemporalUnetDenoiser, SynapseMlDevice, UnitQualityClassifier, UnitQualityFeatures,
 };
-use crate::array::{to_numpy, F32Array};
+use crate::array::{runtime_error, to_numpy, F32Array};
 
 /// Packs a 3D float32 numpy array `[N, K, T]` into a `SnippetBatch` (one copy: the batch owns its data).
 pub(crate) fn numpy_3d_to_snippet_batch(data: &Bound<'_, PyAny>) -> PyResult<SnippetBatch> {
@@ -73,7 +73,7 @@ impl PySpatiotemporalUnetDenoiser {
     ) -> PyResult<Bound<'py, PyAny>> {
         let batch = numpy_3d_to_snippet_batch(&snippets)?;
         let model = &self.inner;
-        let out = py.detach(|| model.denoise(&batch));
+        let out = py.detach(|| model.denoise(&batch)).map_err(runtime_error)?;
         snippet_batch_to_numpy_3d(py, out)
     }
 
@@ -117,7 +117,7 @@ impl PySingleChannelDenoiser {
     ) -> PyResult<Bound<'py, PyAny>> {
         let batch = numpy_3d_to_snippet_batch(&snippets)?;
         let model = &self.inner;
-        let out = py.detach(|| model.denoise(&batch));
+        let out = py.detach(|| model.denoise(&batch)).map_err(runtime_error)?;
         snippet_batch_to_numpy_3d(py, out)
     }
 }
@@ -158,7 +158,7 @@ impl PyDartsortVaeEmbedder {
     ) -> PyResult<Bound<'py, PyAny>> {
         let batch = numpy_3d_to_snippet_batch(&snippets)?;
         let model = &self.inner;
-        let (flat, dim) = py.detach(|| model.embed(&batch));
+        let (flat, dim) = py.detach(|| model.embed(&batch)).map_err(runtime_error)?;
         to_numpy(py, flat, &[batch.num_spikes, dim])
     }
 }
@@ -187,7 +187,7 @@ impl PyContrastiveWaveformEmbedder {
     ) -> PyResult<Bound<'py, PyAny>> {
         let batch = numpy_3d_to_snippet_batch(&snippets)?;
         let model = &self.inner;
-        let (flat, dim) = py.detach(|| model.embed(&batch));
+        let (flat, dim) = py.detach(|| model.embed(&batch)).map_err(runtime_error)?;
         to_numpy(py, flat, &[batch.num_spikes, dim])
     }
 }

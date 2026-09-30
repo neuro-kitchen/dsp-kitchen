@@ -71,3 +71,8 @@ pub fn to_numpy<'py>(py: Python<'py>, data: Vec<f32>, shape: &[usize]) -> PyResu
 pub fn value_error(e: impl std::fmt::Display) -> PyErr {
     PyValueError::new_err(e.to_string())
 }
+
+/// A failure while running a model or kernel (not a bad argument).
+pub fn runtime_error(e: impl std::fmt::Display) -> PyErr {
+    pyo3::exceptions::PyRuntimeError::new_err(e.to_string())
+}
