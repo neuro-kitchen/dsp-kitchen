@@ -6,6 +6,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use slint::Rgba8Pixel;
 use dsp_core::RecordingSource;
+use dsp_io::MinMaxCache;
 
 use crate::data::{Dataset, SpikeEventStore};
 use crate::shared::axis::nice_step;
@@ -77,6 +78,9 @@ pub struct TimeView {
     pub needs_render: bool,
     #[serde(skip)]
     pub hover: String,
+    /// Samples of the min/max cache built when this view last rendered (redraw as it grows).
+    #[serde(skip)]
+    pub lod_ready: u64,
 }
 
 fn one() -> f32 {
@@ -125,6 +129,7 @@ impl TimeView {
             scale_factor: 1.0,
             needs_render: true,
             hover: String::new(),
+            lod_ready: 0,
         }
     }
 
@@ -373,12 +378,14 @@ impl TimeView {
         &self,
         timeline: &TimelineState,
         source: Arc<dyn RecordingSource>,
+        lod: Option<Arc<MinMaxCache>>,
         events: Arc<SpikeEventStore>,
         highlights: Vec<(Rgba8Pixel, Vec<(f64, usize)>)>,
     ) -> RenderRequest {
         let start_time_sec = source.info().start_time_sec;
         RenderRequest {
             source,
+            lod,
             events,
             width: self.canvas_width.max(1),
             height: self.canvas_height.max(1),

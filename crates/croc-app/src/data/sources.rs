@@ -39,6 +39,7 @@ impl SourceSet {
             start_time_sec: dataset.start_time_sec,
             unit: dataset.unit.clone(),
         };
+        dataset.start_lod(None);
         Self { path: None, entries: vec![entry], default: 0, opened: Mutex::new(vec![Some(Arc::new(dataset))]) }
     }
 
@@ -103,6 +104,7 @@ impl SourceSet {
         let rec = dsp_io::open_source(path, &self.entries[i].id).with_context(|| format!("Failed to open source {}", self.entries[i].name))?;
         let mut ds = Dataset::new(Arc::from(rec));
         ds.unit = self.entries[i].unit.clone();
+        ds.start_lod(Some((path.to_path_buf(), self.entries[i].id.clone())));
         let ds = Arc::new(ds);
         self.opened.lock().unwrap()[i] = Some(ds.clone());
         Ok(ds)

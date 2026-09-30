@@ -1,11 +1,14 @@
 //! The open recording: any `dsp-io` format behind [`RecordingSource`], read in chunks.
 
 use std::ops::Range;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use anyhow::Result;
 use dsp_core::{DspResult, RecordingInfo, RecordingSource};
-use dsp_io::{SyntheticParams, SyntheticRecording};
+use dsp_io::cache::DEFAULT_BASE;
+use dsp_io::{cache_path, CacheIdentity, MinMaxCache, SyntheticParams, SyntheticRecording};
 
 /// A recording plus the summary fields the UI reads every frame.
 pub struct Dataset {
@@ -18,6 +21,10 @@ pub struct Dataset {
     pub start_time_sec: f64,
     /// Unit of the values reads return (`µV` for electrical recordings).
     pub unit: String,
+    /// Min/max levels for zoomed-out drawing, set once the background build has opened them.
+    lod: Arc<OnceLock<Arc<MinMaxCache>>>,
+    /// Stops the background build when the dataset is dropped.
+    cancel: Arc<AtomicBool>,
 }
 
 impl Dataset {
@@ -31,7 +38,34 @@ impl Dataset {
             start_time_sec: info.start_time_sec,
             unit: info.metadata.get("unit").map_or_else(|| "µV".into(), |u| u.replace("uV", "µV")),
             source,
+            lod: Arc::new(OnceLock::new()),
+            cancel: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Opens or builds the min/max cache on a background thread: next to the recording file for
+    /// `Some((path, source id))` (a temporary file when that folder is not writable), else a
+    /// temporary file. Call once.
+    pub fn start_lod(&self, recording: Option<(PathBuf, String)>) {
+        let (source, slot, cancel) = (self.source.clone(), self.lod.clone(), self.cancel.clone());
+        let spawned = std::thread::Builder::new().name("minmax-cache".into()).spawn(move || {
+            if let Err(e) = build_lod(source.as_ref(), recording.as_ref().map(|(p, id)| (p.as_path(), id.as_str())), &slot, &cancel) {
+                tracing::warn!("min/max cache unavailable, zoomed-out views read raw samples: {e}");
+            }
+        });
+        if let Err(e) = spawned {
+            tracing::warn!("could not start the min/max cache build: {e}");
+        }
+    }
+
+    /// The min/max cache once opened (possibly still filling).
+    pub fn lod(&self) -> Option<Arc<MinMaxCache>> {
+        self.lod.get().cloned()
+    }
+
+    /// Samples from the start covered by the cache so far (0 without a cache).
+    pub fn lod_ready_samples(&self) -> u64 {
+        self.lod.get().map_or(0, |c| c.ready_samples())
     }
 
     /// Opens any format `dsp-io` detects (SpikeGLX, IBL `.cbin`, raw binary + JSON sidecar, Zarr).
@@ -121,6 +155,41 @@ impl Dataset {
     }
 }
 
+impl Drop for Dataset {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+fn build_lod(source: &dyn RecordingSource, recording: Option<(&Path, &str)>, slot: &OnceLock<Arc<MinMaxCache>>, cancel: &AtomicBool) -> DspResult<()> {
+    let transient = || MinMaxCache::temporary(&CacheIdentity::transient(source), DEFAULT_BASE);
+    let (cache, complete) = match recording {
+        Some((path, id)) => {
+            let identity = CacheIdentity::of(path, id, source)?;
+            let file = cache_path(path, id);
+            match MinMaxCache::open(&file, &identity, DEFAULT_BASE)? {
+                Some(cache) => (cache, true),
+                None => match MinMaxCache::create(&file, &identity, DEFAULT_BASE) {
+                    Ok(cache) => (cache, false),
+                    Err(e) => {
+                        tracing::warn!("cannot write {}: {e}; using a temporary min/max cache", file.display());
+                        (transient()?, false)
+                    }
+                },
+            }
+        }
+        None => (transient()?, false),
+    };
+    let cache = Arc::new(cache);
+    let _ = slot.set(cache.clone());
+    if !complete {
+        // One second of data per read
+        let chunk = source.info().sample_rate_hz().ceil().max(1.0) as u64;
+        cache.build(source, chunk, cancel, |_, _| {})?;
+    }
+    Ok(())
+}
+
 /// Views and workers hold `Arc<Dataset>` as a plain `RecordingSource`.
 impl RecordingSource for Dataset {
     fn info(&self) -> &RecordingInfo {
@@ -129,6 +198,10 @@ impl RecordingSource for Dataset {
 
     fn read(&self, channels: &[usize], samples: Range<u64>, out: &mut [f32]) -> DspResult<()> {
         self.source.read(channels, samples, out)
+    }
+
+    fn read_stored(&self, channels: &[usize], samples: Range<u64>, out: &mut [u8]) -> DspResult<()> {
+        self.source.read_stored(channels, samples, out)
     }
 }
 
