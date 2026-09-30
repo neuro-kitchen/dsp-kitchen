@@ -14,6 +14,7 @@ pub mod detectors;
 pub mod embedders;
 pub mod hub;
 pub mod localizers;
+pub mod onnx;
 
 pub use backbones::{
     BatchNorm1dLayer, Conv1dLayer, CrossElectrodeAttention, LayerNorm1D, LinearLayer, MlpBackbone,
@@ -32,8 +33,17 @@ pub use detectors::{EnsorArtifactRejector, SpikeClassProbabilities, SpikeDeeptec
 pub use embedders::{
     ContrastiveWaveformEmbedder, ConvAutoencoderEmbedder, DartsortVaeEmbedder, VaePosterior,
 };
-pub use hub::{ModelPresetConfig, ProbePreset, SafetensorEntryHeader, SafetensorsMap};
+pub use hub::{
+    ModelPresetConfig, ProbePreset, PyTorchRemapRule, PyTorchWeightAdapter,
+    SafetensorEntryHeader, SafetensorsMap, WeightTransform, transpose_2d_slice,
+};
 pub use localizers::{DipoleMlpLocalizer, DipoleSourceEstimate, MonopolarMlpLocalizer};
+pub use onnx::{
+    BombcellProfile, CebraProfile, DartsortProfile, DynTensor, ExternalSorterFamily,
+    ExternalSorterProfile, Kilosort4Profile, OnnxFeatureEmbedder, OnnxGraphRunner,
+    OnnxNormalization, OnnxPeakLocalizer, OnnxPortSpec, OnnxSnippetLayout, OnnxSpikeDetector,
+    OnnxUnitCurator, OnnxWaveformDenoiser, onnx_proto_builder,
+};
 
 #[cfg(test)]
 mod tests {
@@ -224,5 +234,117 @@ mod tests {
         assert_eq!(preds.len(), 2);
         assert_eq!(preds[0].label, UnitQualityLabel::SingleUnit);
         assert_eq!(preds[1].label, UnitQualityLabel::Noise);
+    }
+
+    #[test]
+    fn test_onnx_external_sorter_profiles_and_adapters() {
+        let (_raw, batch, layout) = make_synthetic_tetrode_batch();
+        let dev = SynapseMlDevice::Cpu;
+        let [_, k, t] = batch.shape(); // k = 4, t = 40
+
+        // 1. CEBRA Contrastive Embedder via ONNX (Flatten + Gemm -> L2 hypersphere)
+        let out_dim = 6;
+        let w_cebra: Vec<f32> = (0..(out_dim * k * t))
+            .map(|i| (((i * 13 + 7) % 19) as f32 - 9.0) * 0.02)
+            .collect();
+        let b_cebra = vec![0.1f32; out_dim];
+        let cebra_onnx = onnx_proto_builder::encode_flatten_gemm_onnx_bytes(
+            "snippets",
+            "embeddings",
+            k,
+            t,
+            out_dim,
+            &w_cebra,
+            &b_cebra,
+        );
+        let cebra_runner = OnnxGraphRunner::from_bytes(&cebra_onnx, dev).unwrap();
+        let cebra_profile = CebraProfile::new(k, t, out_dim);
+        let cebra_embedder = cebra_profile.wrap_embedder(cebra_runner);
+        let (emb_cebra, d_cebra) = cebra_embedder.embed(&batch);
+        assert_eq!(d_cebra, out_dim);
+        assert_eq!(emb_cebra.len(), 2 * out_dim);
+        let norm_s0: f32 = emb_cebra[0..out_dim].iter().map(|v| v * v).sum::<f32>().sqrt();
+        assert!((norm_s0 - 1.0).abs() < 1e-4);
+
+        // 2. DARTsort Conv1d Waveform Denoiser via ONNX
+        let kernel = 3;
+        let w_conv: Vec<f32> = (0..(k * k * kernel))
+            .map(|i| if i % (k + 1) == 0 { 0.25 } else { 0.02 })
+            .collect();
+        let b_conv = vec![0.0f32; k];
+        let dart_denoiser_onnx = onnx_proto_builder::encode_conv1d_relu_onnx_bytes(
+            "noisy",
+            "clean",
+            k,
+            t,
+            kernel,
+            1,
+            &w_conv,
+            &b_conv,
+        );
+        let dart_runner = OnnxGraphRunner::from_bytes(&dart_denoiser_onnx, dev).unwrap();
+        let dart_profile = DartsortProfile::new(k, t, 8);
+        let dart_denoiser = dart_profile.wrap_denoiser(dart_runner);
+        let denoised = dart_denoiser.denoise(&batch);
+        assert_eq!(denoised.shape(), batch.shape());
+
+        // 3. DARTsort 3D Peak Localizer via ONNX
+        let w_loc: Vec<f32> = (0..(3 * k * t))
+            .map(|i| (((i * 7 + 3) % 11) as f32 - 5.0) * 0.05)
+            .collect();
+        let b_loc = vec![2.5f32, -1.5, 18.0];
+        let loc_onnx = onnx_proto_builder::encode_flatten_gemm_onnx_bytes(
+            "snippets",
+            "xyz",
+            k,
+            t,
+            3,
+            &w_loc,
+            &b_loc,
+        );
+        let loc_runner = OnnxGraphRunner::from_bytes(&loc_onnx, dev).unwrap();
+        let dart_loc = dart_profile.wrap_localizer(loc_runner);
+        let coords = dart_loc.localize(&batch, &layout);
+        assert_eq!(coords.len(), 2);
+        assert!(coords[0][2] >= 1.0);
+
+        // 4. Bombcell / UnitMatch Quality Curator via ONNX
+        // 8 input features -> 3 output logits [SUA, MUA, Noise]
+        let mut w_bc = vec![0.0f32; 3 * 8];
+        // Class 0 (SUA) strongly weights feature 0 (SNR) and feature 4 (presence_ratio)
+        w_bc[0] = 6.0;
+        w_bc[4] = 4.0;
+        // Class 2 (Noise) strongly weights feature 3 (amplitude_cutoff)
+        w_bc[2 * 8 + 3] = 8.0;
+        let b_bc = vec![0.0f32, 0.0, 0.0];
+        let bc_onnx = onnx_proto_builder::encode_linear_relu_onnx_bytes(
+            "metrics",
+            "logits",
+            8,
+            3,
+            &w_bc,
+            &b_bc,
+            false,
+        );
+        let bc_runner = OnnxGraphRunner::from_bytes(&bc_onnx, dev).unwrap();
+        let bc_curator = BombcellProfile::new().wrap_curator(bc_runner);
+        let sua_unit = UnitQualityFeatures {
+            snr: 10.0,
+            isi_violation_rate_pct: 0.0,
+            firing_rate_hz: 15.0,
+            amplitude_cutoff: 0.001,
+            presence_ratio: 0.99,
+            half_width_ms: 0.19,
+            trough_to_peak_ms: 0.48,
+            repolarization_slope: 80.0,
+        };
+        let bc_preds = bc_curator.classify_units(&[sua_unit]);
+        assert_eq!(bc_preds.len(), 1);
+        assert_eq!(bc_preds[0].label, UnitQualityLabel::SingleUnit);
+
+        // 5. Kilosort4 Embedder Profile check
+        let ks4 = Kilosort4Profile::neuropixels_default(k, t);
+        assert_eq!(ks4.profile.family, ExternalSorterFamily::Kilosort4);
+        assert_eq!(ks4.profile.embedding_dim, k * 6);
     }
 }
