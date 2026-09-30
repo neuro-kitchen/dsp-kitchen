@@ -138,8 +138,8 @@ pub fn regular_rate(times: &[f64]) -> Option<(f64, f64)> {
     regular.then(|| (times[0], 1.0 / mean))
 }
 
-/// Events without offsets and multi-channel scalars: a `TimeSeries` with explicit timestamps,
-/// or `starting_time` + `rate` when the events are evenly spaced (e.g. 1 s ticks).
+/// Multi-channel scalars: a `TimeSeries` (`[event, channel]`) with explicit timestamps, or
+/// `starting_time` + `rate` when the events are evenly spaced.
 pub fn write_events(b: &dyn Backend, plan: &EventPlan, e: &EventSeries) -> Result<()> {
     let path = format!("/acquisition/{}", plan.name);
     b.group(&path, typed_with("core", "TimeSeries", &[("description", json!(plan.description)), ("comments", json!("no comments"))]))?;

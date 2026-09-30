@@ -24,6 +24,14 @@ fn session() -> Session {
 
     s.events.push(EventSeries { name: "MET/".into(), onsets: vec![0.5, 1.5], offsets: Some(vec![0.6, 1.6]), values: vec![1.0, 2.0], channels: 1, ..Default::default() });
     s.events.push(EventSeries { name: "Tick".into(), onsets: vec![0.0, 1.0, 2.0], values: vec![0.0, 1.0, 2.0], channels: 1, ..Default::default() });
+    s.events.push(EventSeries {
+        name: "Note".into(),
+        onsets: vec![0.2, 0.9],
+        values: vec![1.0, 2.0],
+        channels: 1,
+        labels: vec!["sleep".into(), "Bottle In".into()],
+        ..Default::default()
+    });
     s.events.push(EventSeries { name: "eS1p".into(), onsets: vec![0.25], values: vec![0.5, -750.0], channels: 2, ..Default::default() });
     s.tables.push(Table {
         name: "Z_EMG".into(),
@@ -73,16 +81,22 @@ fn writes_small_nwb_zarr() {
     assert_eq!(data["shape"], serde_json::json!([1000, 3]));
     assert_eq!(data["attributes"]["unit"], "volts");
     assert!(dest.join("specifications/core/2.11.0/nwb.ecephys/zarr.json").exists());
-    assert!(dest.join("intervals/MET/start_time").exists());
+    assert!(dest.join("events/MET/timestamp").exists());
+    assert!(dest.join("events/MET/duration").exists());
     assert!(dest.join("general/extracellular_ephys/electrodes/imp").exists());
-    // Evenly spaced ticks are stored as starting_time + rate
-    assert!(dest.join("acquisition/Tick/starting_time").exists());
-    assert!(!dest.join("acquisition/Tick/timestamps").exists());
+    // Events without offsets: no duration column
+    assert!(dest.join("events/Tick/timestamp").exists());
+    assert!(!dest.join("events/Tick/duration").exists());
 
     let issues = nwb::validate::validate(&dest).unwrap();
     assert!(issues.is_empty(), "{issues:?}");
 
-    // Damage: point the series at a wrong table and drop an electrodes column
+    // Damage a copy (the intact store stays for tests/validate_nwb.py): point the series at a
+    // wrong table and drop an electrodes column
+    let damaged = dest.with_file_name("damaged.nwb.zarr");
+    let _ = std::fs::remove_dir_all(&damaged);
+    copy_dir(&dest, &damaged);
+    let dest = damaged;
     let region_meta = dest.join("acquisition/EMG/electrodes/zarr.json");
     let text = std::fs::read_to_string(&region_meta).unwrap().replace("/general/extracellular_ephys/electrodes", "/general/nowhere");
     std::fs::write(&region_meta, text).unwrap();
@@ -91,4 +105,16 @@ fn writes_small_nwb_zarr() {
     let text: Vec<&str> = issues.iter().map(|i| i.message.as_str()).collect();
     assert!(text.iter().any(|m| m.contains("does not reference")), "{text:?}");
     assert!(text.iter().any(|m| m.contains("column channel_name listed but missing")), "{text:?}");
+}
+
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for e in std::fs::read_dir(from).unwrap().flatten() {
+        let target = to.join(e.file_name());
+        if e.file_type().unwrap().is_dir() {
+            copy_dir(&e.path(), &target);
+        } else {
+            std::fs::copy(e.path(), target).unwrap();
+        }
+    }
 }

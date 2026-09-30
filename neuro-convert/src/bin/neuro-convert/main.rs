@@ -27,6 +27,8 @@ enum Command {
         /// Print a machine-readable summary (JSON) instead
         #[arg(long)]
         json: bool,
+        #[command(flatten)]
+        open: commands::OpenArgs,
     },
     /// Convert a recording to NWB (Zarr), using a metadata file for what the source lacks
     #[cfg(feature = "nwb")]
@@ -42,8 +44,8 @@ enum Command {
 fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
         Command::Formats => commands::formats::run(),
-        Command::Inspect { path, read_sec, json: true } => commands::inspect::json(&path, read_sec),
-        Command::Inspect { path, read_sec, json: false } => commands::inspect::run(&path, read_sec),
+        Command::Inspect { path, read_sec, json: true, open } => commands::inspect::json(&path, read_sec, &open.options()),
+        Command::Inspect { path, read_sec, json: false, open } => commands::inspect::run(&path, read_sec, &open.options()),
         #[cfg(feature = "nwb")]
         Command::Convert(args) => commands::convert::run(&args),
         #[cfg(feature = "nwb")]

@@ -13,8 +13,9 @@ The schema is cached under `/specifications` (vendored in `specs/`).
 | Recording, `include: false` | — | listed under "skipped" in the plan |
 | Electrode groups (metadata) | `/general/extracellular_ephys/<group>` | linked to a device |
 | Electrical channels | `/general/extracellular_ephys/electrodes` | columns `location, group, group_name, channel_name`, plus `imp` (ohms) when a group names an impedance table |
-| Events with offsets | `/intervals/<name>` `TimeIntervals` | `start_time, stop_time, value` |
-| Events without offsets, scalars | `/acquisition/<name>` `TimeSeries` | timestamps, or `starting_time` + `rate` when evenly spaced (±0.01 %); multi-channel scalars → `[event, channel]` |
+| Events (epocs, marks, notes) | `/events/<name>` `EventsTable` (NWB 2.9+) | `timestamp`, `duration` (offset − onset, when offsets exist), `value`, `annotation` (labels such as notes) |
+| Multi-channel scalars | `/acquisition/<name>` `TimeSeries` `[event, channel]` | timestamps, or `starting_time` + `rate` when evenly spaced (±0.01 %) |
+| Snippets | — | not exported yet (plan warning); `SpikeEventSeries` mapping pending |
 | Tables (e.g. impedance CSVs) | `/analysis/<name>` `DynamicTable` | numeric columns float64, others text |
 | Devices | `/general/devices/<name>` | from the source + metadata |
 | Session metadata | root + `/general` | description, identifier (UUID if absent), start time with zone, lab, … |

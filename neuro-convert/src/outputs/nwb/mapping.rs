@@ -55,7 +55,8 @@ pub struct SeriesPlan {
     pub conversion: f64,
 }
 
-/// One event series to write: intervals (with offsets) or a timestamped `TimeSeries`.
+/// One event series to write: an `EventsTable` in `/events`, or (multi-channel scalars) a
+/// `TimeSeries` in `/acquisition`.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct EventPlan {
     /// Index into `Session::events`.
@@ -63,7 +64,8 @@ pub struct EventPlan {
     pub source: String,
     pub name: String,
     pub description: String,
-    pub intervals: bool,
+    /// `EventsTable` (single-value events) vs `TimeSeries` (one row of values per event).
+    pub table: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -269,7 +271,7 @@ pub fn resolve(session: &Session, meta: &MetadataFile, new_identifier: impl FnOn
             description: spec.description.unwrap_or_else(|| {
                 if e.description.is_empty() { format!("{} events from the {} recording", e.name, session.provenance.format) } else { e.description.clone() }
             }),
-            intervals: e.offsets.is_some() && e.channels == 1,
+            table: e.channels == 1,
         });
     }
     for (i, t) in session.tables.iter().enumerate() {
@@ -279,6 +281,14 @@ pub fn resolve(session: &Session, meta: &MetadataFile, new_identifier: impl FnOn
             continue;
         }
         plan.tables.push(TablePlan { table: i, name: spec.name.unwrap_or_else(|| safe_name(&t.name)), description: spec.description.unwrap_or_else(|| t.description.clone()) });
+    }
+
+    for sn in &session.snippets {
+        plan.issues.push(Issue::warning(format!(
+            "snippets {} ({} waveforms) are not exported yet (NWB SpikeEventSeries mapping pending)",
+            sn.name,
+            sn.len()
+        )));
     }
 
     // Electrode impedances, one per electrodes-table row
@@ -302,7 +312,7 @@ pub fn resolve(session: &Session, meta: &MetadataFile, new_identifier: impl FnOn
 
     // Names must be unique within their NWB group
     let mut seen = std::collections::BTreeSet::new();
-    for n in plan.series.iter().map(|s| &s.name).chain(plan.events.iter().filter(|e| !e.intervals).map(|e| &e.name)) {
+    for n in plan.series.iter().map(|s| &s.name).chain(plan.events.iter().filter(|e| !e.table).map(|e| &e.name)) {
         if !seen.insert(n.clone()) {
             plan.issues.push(Issue::error(format!("two acquisition items are named {n:?}: rename one in the metadata file")));
         }

@@ -8,7 +8,9 @@ neo `tdtrawio.py`.
 |---|---|---|
 | `.tsq` | 40-byte event index (authoritative list of what was recorded) | `tsq.rs` |
 | `.tev` | packet data for streams and snips | `streams.rs`, `snips.rs` |
-| `.sev` | one file per channel (RS4 / Synapse "discrete files"); header v0–v4 | not yet |
+| `.sev` | one file per channel (RS4 / Synapse "discrete files"), hour splits `-<n>h`; header v0–v3 | `sev/` |
+| `*_log.txt` | SEV start sample and gaps (reported as warnings) | `sev/log.rs` |
+| `sort/<id>/<store>.SortResult` | offline sort codes for snips (`--sort <id>`) | `sort.rs` |
 | `.Tbk` | cp437 store settings; can list stores that never recorded | `tbk.rs` |
 | `.tnt` | OpenEx notes (`NOTEFILE_VERSION[x]`) | `notes/openex.rs` |
 | `Notes.txt` | Synapse notes (Experiment, Subject, User, Start, Stop, runtime notes) | `notes/synapse.rs` |
@@ -30,3 +32,31 @@ timestamp f64 (Unix s) · offset/value u64 · format i32 · frequency f32`
 - Scalars (`0x201`): one record per channel sharing a timestamp; value as f64.
 - Data formats: 0 f32, 1 i32, 2 i16, 3 i8, 4 f64, 5 i64, 8 rawpacked (not supported).
 - Times are snapped to the 195312.5 Hz device clock, as TDT's reader does.
+
+## SEV header (40 bytes)
+`u64 size · "SEV" · u8 version · [4] name · u16 channel · u16 total channels · u16 sample width ·
+u16 reserved · u8 format (low 3 bits) · u8 decimate · u16 rate · padding`
+
+| Version | Handling |
+|---|---|
+| 0 | empty header: float32 at 24414.0625 Hz, store and channel from the file name (warning) |
+| 1, 2 | header name unreliable (OpenEx and RS4 disagreed): name from the file name |
+| 3 | header name trusted |
+| > 3 | rejected (TDT's reader: `file_version < 4`) |
+
+- Sample rate `2^(rate − 12) × 25 MHz / decimate`; the Tbk `SampleFreq` wins when they differ > 1 Hz.
+- SEV files are preferred over TEV packets of the same store; SEV-only stores (RS4) are added.
+- Rawpacked (int32 words: single-unit = high 16 bits, LFP = low 16 bits) becomes `<store>_SU` and
+  `<store>_LFP`. The header's 3-bit format field cannot encode it, so it is taken from the Tbk
+  (`DataFormat=8`). Not yet verified against a real RS4 recording.
+
+## Notes and sorts
+- `Notes.txt` runtime notes (`Note-<n>: <clock> [<button>] "<text>"`) label the `Note` epoc in
+  order; without a `Note` store one is built from the clock times (1 s resolution), as TDT does.
+- `.SortResult`: 1024 bytes of channel flags, then one `u8` code per TSQ record counted among
+  records with a non-empty name field (cross-checked with `read_block(sortname=...)`).
+- A tank folder (sub-folders with a `.tsq`) opens one block: `--block <name>`, or its only block.
+
+## Verification
+`tests/compare_tdt.py` compares every stream, epoc, scalar and snip store with `tdt.read_block`;
+0 mismatches on the TDT example data (5 blocks, Synapse 37761–48218) and `15-25-33_meps`.

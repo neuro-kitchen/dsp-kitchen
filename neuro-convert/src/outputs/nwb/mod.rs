@@ -80,13 +80,13 @@ pub fn write(
     for t in &plan.tables {
         types::tables::write(b, t, &session.tables[t.table])?;
     }
-    if plan.events.iter().any(|e| e.intervals) {
-        types::intervals::write_group(b)?;
+    if plan.events.iter().any(|e| e.table) {
+        types::events::write_group(b)?;
     }
     for e in &plan.events {
         let ev = &session.events[e.event];
-        if e.intervals {
-            types::intervals::write(b, e, ev)?;
+        if e.table {
+            types::events::write(b, e, ev)?;
         } else {
             types::series::write_events(b, e, ev)?;
         }

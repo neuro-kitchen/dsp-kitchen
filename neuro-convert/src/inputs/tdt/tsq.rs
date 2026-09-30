@@ -27,6 +27,9 @@ pub struct Record {
     pub offset: u64,
     pub format: u32,
     pub frequency: f32,
+    /// Position among records with a non-empty name field (TDT drops the others as bad
+    /// headers); `.SortResult` files are indexed by it.
+    pub seq: u64,
 }
 
 impl Record {
@@ -42,6 +45,7 @@ impl Record {
             offset: u64::from_le_bytes(b[24..32].try_into().unwrap()),
             format: u32_at(32),
             frequency: f32::from_le_bytes(b[36..40].try_into().unwrap()),
+            seq: 0,
         }
     }
 
@@ -109,10 +113,15 @@ impl TsqIndex {
         idx.record_count = whole;
         let mut invalid = 0usize;
         let mut start_seen = false;
+        let mut seq = 0u64;
 
         for i in 0..whole {
-            let r = Record::parse(&bytes[i * RECORD_BYTES..(i + 1) * RECORD_BYTES]);
+            let mut r = Record::parse(&bytes[i * RECORD_BYTES..(i + 1) * RECORD_BYTES]);
             let code = u32::from_le_bytes(r.name);
+            if code != 0 {
+                r.seq = seq;
+                seq += 1;
+            }
             if r.evtype == codes::EVTYPE_MARK && code == codes::EVMARK_STARTBLOCK {
                 idx.start = r.timestamp;
                 start_seen = true;

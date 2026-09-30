@@ -60,6 +60,7 @@ impl TdtStream {
         let first = store.first_timestamp.values().copied().fold(f64::INFINITY, f64::min);
         let mut metadata = BTreeMap::new();
         metadata.insert("tdt_store".into(), store.name.clone());
+        metadata.insert("tdt_storage".into(), "tev".into());
         metadata.insert("tdt_evtype".into(), format!("{:#x}", store.evtype));
         if store.evtype & codes::EVTYPE_UCF != 0 {
             metadata.insert("tdt_unscaled".into(), "true".into());
