@@ -2276,22 +2276,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dsp-bridge"
-version = "0.1.0"
-dependencies = [
- "cubecl",
- "dsp-base",
- "dsp-core",
- "dsp-stream",
- "dsp-synapse",
- "memmap2",
- "pyo3",
- "serde",
- "thiserror 2.0.21",
- "tracing",
-]
-
-[[package]]
 name = "dsp-cli"
 version = "0.1.0"
 dependencies = [
@@ -2299,7 +2283,6 @@ dependencies = [
  "clap",
  "cubecl",
  "dsp-base",
- "dsp-bridge",
  "dsp-core",
  "dsp-io",
  "dsp-stream",
@@ -2385,6 +2368,24 @@ dependencies = [
  "safetensors",
  "serde",
  "serde_json",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
+name = "dsp_kitchen_py"
+version = "0.1.0"
+dependencies = [
+ "cubecl",
+ "dsp-base",
+ "dsp-core",
+ "dsp-io",
+ "dsp-stream",
+ "dsp-synapse",
+ "dsp-synapse-ml",
+ "memmap2",
+ "pyo3",
+ "serde",
  "thiserror 2.0.21",
  "tracing",
 ]

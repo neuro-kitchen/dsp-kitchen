@@ -1,5 +1,7 @@
 [workspace]
 resolver = "2"
+# Standalone projects with their own workspace
+exclude = ["neuro-convert"]
 members = [
     "crates/dsp-core",
     "crates/dsp-base",
@@ -7,9 +9,9 @@ members = [
     "crates/dsp-synapse-ml",
     "crates/dsp-stream",
     "crates/dsp-io",
-    "crates/dsp-bridge",
     "crates/dsp-cli",
     "crates/croc-app",
+    "dsp_kitchen_py",
 ]
 
 
@@ -26,7 +28,7 @@ dsp-synapse = { path = "crates/dsp-synapse" }
 dsp-synapse-ml = { path = "crates/dsp-synapse-ml" }
 dsp-stream = { path = "crates/dsp-stream" }
 dsp-io = { path = "crates/dsp-io" }
-dsp-bridge = { path = "crates/dsp-bridge" }
+dsp_kitchen_py = { path = "dsp_kitchen_py" }
 
 # Compute & Tensors
 cubecl = { version = "0.10.0", default-features = false }
@@ -59,7 +61,7 @@ image = { version = "0.25.10", default-features = false, features = ["png"] }
 rfd = "0.17.2"
 
 # Python Interop
-pyo3 = { version = "0.29.2", features = ["extension-module"] }
+pyo3 = { version = "0.29.2" }
 
 # Concurrency & Async
 tokio = { version = "1.53.1", features = ["full"] }

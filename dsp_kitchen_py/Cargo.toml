@@ -1,0 +1,32 @@
+[package]
+name = "dsp_kitchen_py"
+description = "The dsp-kitchen Python SDK & PyO3 native bindings"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "dsp_kitchen_bindings"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+## Enable `pyo3/extension-module` when building the Python wheel via Maturin,
+## while keeping it off during `cargo test --workspace` to avoid linker errors.
+extension-module = ["pyo3/extension-module"]
+
+[dependencies]
+dsp-core.workspace = true
+dsp-base.workspace = true
+dsp-io.workspace = true
+dsp-stream.workspace = true
+dsp-synapse.workspace = true
+dsp-synapse-ml.workspace = true
+cubecl = { workspace = true, features = ["wgpu"] }
+pyo3.workspace = true
+memmap2.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

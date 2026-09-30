@@ -18,13 +18,10 @@ dependencies = [
 ]
 
 [tool.maturin]
-manifest-path = "dsp_kitchen_py/Cargo.toml"
+manifest-path = "Cargo.toml"
 module-name = "dsp_kitchen_bindings.dsp_kitchen_bindings"
-python-source = "dsp_kitchen_py/dsp_kitchen_sdk"
+python-source = "dsp_kitchen_sdk"
 features = ["extension-module"]
 
 [tool.ruff]
-src = ["dsp_kitchen_py/dsp_kitchen_bindings", "dsp_kitchen_py/dsp_kitchen_sdk"]
-
-[dependency-groups]
-dev = ["ipykernel>=7.3.0", "ipywidgets>=8.1.9", "ruff>=0.16.9"]
+src = ["dsp_kitchen_bindings", "dsp_kitchen_sdk"]
