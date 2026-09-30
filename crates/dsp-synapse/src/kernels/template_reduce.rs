@@ -18,7 +18,7 @@ pub fn reduce_channel_templates_kernel(
     num_spikes: u32,
     elems_per_spike: u32,
 ) {
-    let tid = ABSOLUTE_POS_X;
+    let tid = ABSOLUTE_POS as u32;
     let total_slots = num_channels * elems_per_spike;
 
     if tid < total_slots {
@@ -66,7 +66,6 @@ pub fn execute_reduce_templates_in_vram<R: Runtime>(
     num_spikes: usize,
     k_neighbors: usize,
     snippet_len: usize,
-    is_cpu: bool,
 ) -> BatchTemplateStats {
     let elems_per_spike = k_neighbors * snippet_len;
     let total_slots = channels * elems_per_spike;
@@ -75,7 +74,7 @@ pub fn execute_reduce_templates_in_vram<R: Runtime>(
     let out_sum_sq_handle = client.empty(total_slots * std::mem::size_of::<f32>());
     let out_counts_handle = client.empty(channels * std::mem::size_of::<u32>());
 
-    let geom = LaunchGeometry::for_1d(total_slots, is_cpu);
+    let geom = LaunchGeometry::elementwise(client, total_slots);
 
     unsafe {
         reduce_channel_templates_kernel::launch::<R>(

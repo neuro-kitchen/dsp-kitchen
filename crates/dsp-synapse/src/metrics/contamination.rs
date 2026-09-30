@@ -1,60 +1,49 @@
-//! Analytical Refractory Period Contamination Metrics (`contamination.rs`).
+//! Refractory-period contamination (Llobet et al. 2022, SpikeInterface `rp_contamination`).
 //!
-//! Implements the Hill et al. (2011) and Llobet et al. (2022) false-positive
-//! contamination estimators used in `spikeinterface.qualitymetrics.compute_refrac_period_violations`.
+//! The Hill et al. (2011) estimate is [`super::IsiMetrics::isi_violations_ratio`].
 
-/// Computes the Hill et al. (2011) false-positive contamination rate $C \in [0.0, 1.0]$:
-/// $$n_v = 2 (\tau_r - \tau_c) N^2 \frac{C (1 - C/2)}{T}$$
-/// where $n_v$ is the number of refractory violations, $N$ is total spikes,
-/// $T$ is recording duration in seconds, $\tau_r$ is refractory period, and $\tau_c$ is censored period.
-pub fn compute_hill_contamination(
-    num_spikes: usize,
-    num_violations: usize,
-    total_duration_sec: f64,
-    refractory_period_ms: f64,
-    censored_period_ms: f64,
-) -> f32 {
-    if num_spikes < 2 || num_violations == 0 || total_duration_sec <= 0.0 {
-        return 0.0;
-    }
-
-    let effective_tau_sec = ((refractory_period_ms - censored_period_ms).max(1e-4)) * 1e-3;
-    let n_f = num_spikes as f64;
-    let denom = 2.0 * effective_tau_sec * n_f * n_f;
-    let r = (num_violations as f64) * total_duration_sec / denom.max(1e-12);
-
-    // Solve C - 0.5 C^2 = r  =>  C = 1 - sqrt(1 - 2r)
-    let disc = 1.0 - 2.0 * r;
-    if disc <= 0.0 {
-        1.0
-    } else {
-        (1.0 - disc.sqrt()).clamp(0.0, 1.0) as f32
-    }
+/// Python-style `int(round(x))` (ties to even), as SpikeInterface converts ms to samples.
+fn ms_to_samples(ms: f64, sample_rate_hz: f64) -> u64 {
+    (ms * sample_rate_hz * 1e-3).round_ties_even().max(0.0) as u64
 }
 
-/// Computes the Llobet et al. (2022) false-positive contamination rate $C \in [0.0, 1.0]$:
-/// $$C = 1 - \sqrt{1 - \frac{n_v \cdot T}{N^2 (\tau_r - \tau_c)}}$$
+/// Number of spike pairs (not only consecutive ones) closer than or equal to `t_r` samples in a
+/// sorted train (SpikeInterface `_compute_nb_violations_numba`).
+pub fn count_refractory_violations(sorted_samples: &[u64], t_r: u64) -> u64 {
+    let mut n_v = 0u64;
+    for (i, &a) in sorted_samples.iter().enumerate() {
+        for &b in &sorted_samples[i + 1..] {
+            if b - a > t_r {
+                break;
+            }
+            n_v += 1;
+        }
+    }
+    n_v
+}
+
+/// Refractory-period contamination of a unit (spike sample indices, any order) in a recording of
+/// `total_samples` (Llobet et al. 2022; matches SpikeInterface `compute_refrac_period_violations`,
+/// defaults 1 ms refractory and 0 ms censored). NaN for fewer than two spikes.
 pub fn compute_llobet_contamination(
-    num_spikes: usize,
-    num_violations: usize,
-    total_duration_sec: f64,
+    spike_samples: &[u64],
+    total_samples: u64,
+    sample_rate_hz: f64,
     refractory_period_ms: f64,
     censored_period_ms: f64,
-) -> f32 {
-    if num_spikes < 2 || num_violations == 0 || total_duration_sec <= 0.0 {
-        return 0.0;
+) -> f64 {
+    let n = spike_samples.len();
+    if n <= 1 {
+        return f64::NAN;
     }
-
-    let effective_tau_sec = ((refractory_period_ms - censored_period_ms).max(1e-4)) * 1e-3;
-    let n_f = num_spikes as f64;
-    let ratio = (num_violations as f64 * total_duration_sec)
-        / (n_f * n_f * effective_tau_sec).max(1e-12);
-
-    if ratio >= 1.0 {
-        1.0
-    } else {
-        (1.0 - (1.0 - ratio).sqrt()).clamp(0.0, 1.0) as f32
-    }
+    let mut sorted = spike_samples.to_vec();
+    sorted.sort_unstable();
+    let t_c = ms_to_samples(censored_period_ms, sample_rate_hz) as f64;
+    let t_r = ms_to_samples(refractory_period_ms, sample_rate_hz);
+    let n_v = count_refractory_violations(&sorted, t_r) as f64;
+    let n = n as f64;
+    let denom = 1.0 - n_v * (total_samples as f64 - 2.0 * n * t_c) / (n * n * (t_r as f64 - t_c));
+    if denom < 0.0 { 1.0 } else { 1.0 - denom.sqrt() }
 }
 
 #[cfg(test)]
@@ -62,13 +51,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_hill_and_llobet_contamination_estimators() {
-        assert_eq!(compute_hill_contamination(1000, 0, 100.0, 1.5, 0.2), 0.0);
-        assert_eq!(compute_llobet_contamination(1000, 0, 100.0, 1.5, 0.2), 0.0);
-
-        let c_hill = compute_hill_contamination(1000, 1, 100.0, 1.5, 0.2);
-        let c_llobet = compute_llobet_contamination(1000, 1, 100.0, 1.5, 0.2);
-        assert!(c_hill > 0.01 && c_hill < 0.15, "c_hill = {}", c_hill);
-        assert!(c_llobet > 0.01 && c_llobet < 0.15, "c_llobet = {}", c_llobet);
+    fn violations_count_all_close_pairs() {
+        // 0-10-20 are all within 25 samples of each other: 3 pairs; 100 is alone.
+        assert_eq!(count_refractory_violations(&[0, 10, 20, 100], 25), 3);
+        assert_eq!(compute_llobet_contamination(&[5], 1000, 30_000.0, 1.0, 0.0).is_nan(), true);
+        assert_eq!(compute_llobet_contamination(&[0, 1_000, 2_000], 30_000, 30_000.0, 1.0, 0.0), 0.0);
     }
 }

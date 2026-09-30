@@ -7,15 +7,21 @@
 use crate::metrics::WaveformTemplate;
 
 /// Computes the lag-maximized cosine similarity in `[-1.0, 1.0]` and best sample shift
-/// between two multi-channel `WaveformTemplate`s.
+/// between two multi-channel `WaveformTemplate`s. Rows are paired by recording channel; channels
+/// covered by only one template contribute to its norm but not to the dot product.
 pub fn template_max_cosine_similarity(
     a: &WaveformTemplate,
     b: &WaveformTemplate,
     max_lag_samples: usize,
 ) -> (f32, isize) {
-    let ch = a.num_channels.min(b.num_channels);
     let len = a.num_samples.min(b.num_samples);
-    if ch == 0 || len == 0 {
+    let pairs: Vec<(&[f32], &[f32])> = a
+        .channel_ids
+        .iter()
+        .enumerate()
+        .filter_map(|(r, &c)| b.channel_row(c).map(|rb| (a.row(r), rb)))
+        .collect();
+    if pairs.is_empty() || len == 0 {
         return (0.0, 0);
     }
 
@@ -29,13 +35,11 @@ pub fn template_max_cosine_similarity(
 
     for lag in -max_lag..=max_lag {
         let mut dot = 0.0f32;
-        for c in 0..ch {
-            let off_a = c * a.num_samples;
-            let off_b = c * b.num_samples;
+        for (ra, rb) in &pairs {
             for t in 0..len {
                 let tb = t as isize + lag;
                 if tb >= 0 && (tb as usize) < len {
-                    dot += a.mean[off_a + t] * b.mean[off_b + (tb as usize)];
+                    dot += ra[t] * rb[tb as usize];
                 }
             }
         }

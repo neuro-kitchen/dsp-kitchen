@@ -18,7 +18,7 @@ pub mod streaming;
 pub mod traits;
 
 pub use bands::NeuralBand;
-pub use clustering::{DensityPeaksResult, cluster_density_peaks};
+pub use clustering::{DensityPeaksResult, cluster_density_peaks, cluster_density_peaks_capped};
 pub use correlogram::{Correlogram, compute_autocorrelogram, compute_crosscorrelogram};
 pub use detection::{
     SpikeEvent, DeduplicatedSpike, ThresholdSpikeDetector, NeoSpikeDetector,
@@ -47,13 +47,13 @@ pub use matching::{
 };
 pub use metrics::{
     IsiMetrics, WaveformTemplate, compute_isi_violations, compute_snr, compute_mean_template,
-    compute_amplitude_cutoff, compute_presence_ratio, compute_hill_contamination,
+    compute_amplitude_cutoff, compute_amplitude_cutoff_with, compute_presence_ratio, count_refractory_violations,
     compute_llobet_contamination, compute_d_prime, compute_silhouette_score,
     compute_isolation_distance,
 };
 pub use motion::{
     DriftEstimate, estimate_rigid_drift,
-    compute_kriging_weight_matrix, correct_snippet_batch_drift_kriging,
+    compute_kriging_weight_matrix, correct_snippet_batch_drift_kriging, correct_traces_drift_kriging,
 };
 pub use probe::{
     neuropixels_1_0, neuropixels_2_0, tetrode, utah_array, find_k_nearest_neighbors,

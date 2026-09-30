@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use dsp_base::filter::iir::{BandpassCoeffs, design_butterworth_bandpass_4th};
+use dsp_base::filter::FilterSpec;
 
 /// Standard electrophysiology frequency bands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -29,9 +29,9 @@ impl NeuralBand {
         }
     }
 
-    /// Designs 4th-order cascaded Butterworth bandpass coefficients for this band.
-    pub fn bandpass_coeffs(&self, sample_rate_hz: f64) -> BandpassCoeffs {
-        design_butterworth_bandpass_4th(self.low_hz(), self.high_hz(), sample_rate_hz)
+    /// Zero-phase Butterworth band-pass (order 5) for this band.
+    pub fn filter_spec(&self) -> FilterSpec {
+        FilterSpec::bandpass(self.low_hz(), self.high_hz())
     }
 }
 
@@ -43,7 +43,8 @@ mod tests {
     fn test_neural_bands() {
         assert_eq!(NeuralBand::Ap.low_hz(), 300.0);
         assert_eq!(NeuralBand::Ap.high_hz(), 6000.0);
-        let coeffs = NeuralBand::Ap.bandpass_coeffs(30000.0);
-        assert!(coeffs.hp_sec.b0 > 0.0);
+        let sos = NeuralBand::Ap.filter_spec().design(30000.0).unwrap();
+        assert_eq!(sos.len(), 5);
+        assert!(NeuralBand::Lfp.filter_spec().design(2500.0).is_ok());
     }
 }

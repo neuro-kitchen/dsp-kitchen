@@ -25,10 +25,42 @@ pub fn blackman_window(x: f32, half_width: f32) -> f32 {
     a0 - a1 * two_pi_u.cos() + a2 * (2.0 * two_pi_u).cos() - a3 * (3.0 * two_pi_u).cos()
 }
 
-/// Applies sub-sample fractional temporal realignment to a 1D waveform snippet using windowed sinc interpolation.
+/// Half-width of the windowed-sinc kernel used for snippet realignment (taps `−5..=5`).
+pub const SINC_KERNEL_RADIUS: usize = 5;
+
+/// Windowed-sinc tap weight for source offset `k` when evaluating at fractional `shift`.
+#[inline]
+pub fn sinc_tap(k: isize, shift: f32, radius: usize) -> f32 {
+    let tau = k as f32 - shift;
+    sinc(tau) * blackman_window(tau, radius as f32)
+}
+
+/// Writes `out[i] = x(start + i + shift)` interpolated from `row` with the full `2·radius + 1`
+/// windowed-sinc taps read from `row` itself (weights normalized to sum to 1).
+///
+/// Realignment convention: a trough found at `center + δ` ([`super::parabolic_subsample_offset`])
+/// lands on `center` with `shift = +δ`.
+///
+/// # Panics
+/// If `start < radius` or `start + out.len() + radius > row.len()`.
+pub fn interpolate_window(row: &[f32], start: usize, shift: f32, radius: usize, out: &mut [f32]) {
+    assert!(start >= radius && start + out.len() + radius <= row.len(), "sinc taps leave the row");
+    let r = radius as isize;
+    let weights: Vec<f32> = (-r..=r).map(|k| sinc_tap(k, shift, radius)).collect();
+    let norm: f32 = weights.iter().sum();
+    for (i, o) in out.iter_mut().enumerate() {
+        let base = start + i - radius;
+        let sum: f32 = weights.iter().zip(&row[base..]).map(|(w, x)| w * x).sum();
+        *o = sum / norm;
+    }
+}
+
+/// Applies sub-sample fractional temporal realignment to a 1D waveform using windowed sinc
+/// interpolation: `out[i] = x(i + shift_samples)`. Near the ends the kernel is truncated and
+/// renormalized; for snippets cut from a longer trace prefer [`interpolate_window`].
 ///
 /// - `waveform`: Input samples
-/// - `shift_samples`: Shift amount in samples (e.g. $-\Delta t \in [-0.5, +0.5]$ to shift peak onto integer grid)
+/// - `shift_samples`: Shift in samples (`+δ` moves a trough at `i + δ` onto `i`)
 /// - `kernel_radius`: Window half-width (default: 4 to 6 samples)
 pub fn resample_sinc_1d(waveform: &[f32], shift_samples: f32, kernel_radius: usize) -> Vec<f32> {
     if waveform.is_empty() || shift_samples.abs() < 1e-5 {

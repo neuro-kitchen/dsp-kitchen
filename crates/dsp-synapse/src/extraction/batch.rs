@@ -2,9 +2,7 @@ use serde::{Deserialize, Serialize};
 use dsp_core::SensorLayout;
 use crate::detection::DeduplicatedSpike;
 use crate::probe::find_k_nearest_neighbors;
-use super::alignment::parabolic_subsample_offset;
-use super::resample::resample_sinc_multichannel;
-use super::snippet::WaveformSnippet;
+use super::snippet::{WaveformSnippet, cut_row, snippet_fits, trough_offset};
 
 /// Contiguous 3D batch of multi-channel waveform snippets with shape `[num_spikes, num_channels, num_samples]`.
 ///
@@ -160,7 +158,9 @@ impl SnippetBatch {
     }
 }
 
-/// Extracts a contiguous `SnippetBatch` directly from multi-channel raw data without intermediate per-spike heap allocations.
+/// Extracts a contiguous `SnippetBatch` directly from multi-channel raw data without intermediate
+/// per-spike heap allocations. Same realignment and edge rules as
+/// [`super::extract_snippets_multichannel`].
 pub fn extract_snippet_batch_multichannel(
     data: &[f32],
     _channels: usize,
@@ -182,13 +182,11 @@ pub fn extract_snippet_batch_multichannel(
     let mut subsample_offsets = Vec::with_capacity(spikes.len());
     let mut channel_ids = Vec::with_capacity(spikes.len() * k);
 
-    let mut raw_scratch = vec![0.0f32; stride];
-
     for spike in spikes {
         let center = spike.sample_index as usize;
         let primary_ch = spike.primary_channel;
 
-        if center < pre_samples + 1 || center + post_samples + 1 >= samples {
+        if !snippet_fits(center, pre_samples, post_samples, samples, apply_sinc_shift) {
             continue;
         }
 
@@ -197,25 +195,15 @@ pub fn extract_snippet_batch_multichannel(
             continue;
         }
 
-        let prim_offset = primary_ch * samples;
-        let y_prev = data[prim_offset + center - 1];
-        let y_peak = data[prim_offset + center];
-        let y_next = data[prim_offset + center + 1];
-        let sub_offset = parabolic_subsample_offset(y_prev, y_peak, y_next);
+        let sub_offset = trough_offset(&data[primary_ch * samples..(primary_ch + 1) * samples], center);
+        let shift = apply_sinc_shift.then_some(sub_offset);
 
+        let dest = flat_data.len();
+        flat_data.resize(dest + stride, 0.0);
         for (row_idx, &ch) in neighbor_channels.iter().enumerate() {
-            let ch_offset = ch * samples;
-            let start = ch_offset + center - pre_samples;
-            let row_dest = row_idx * snippet_len;
-            raw_scratch[row_dest..row_dest + snippet_len]
-                .copy_from_slice(&data[start..start + snippet_len]);
-        }
-
-        if apply_sinc_shift && sub_offset.abs() > 1e-4 {
-            let aligned = resample_sinc_multichannel(&raw_scratch, k, snippet_len, -sub_offset, 5);
-            flat_data.extend_from_slice(&aligned);
-        } else {
-            flat_data.extend_from_slice(&raw_scratch);
+            let row = &data[ch * samples..(ch + 1) * samples];
+            let out = &mut flat_data[dest + row_idx * snippet_len..dest + (row_idx + 1) * snippet_len];
+            cut_row(row, center, pre_samples, shift, out);
         }
 
         primary_channels.push(primary_ch);
