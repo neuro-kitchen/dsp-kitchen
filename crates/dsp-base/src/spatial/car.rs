@@ -64,9 +64,8 @@ pub fn execute_car<R: Runtime>(
     common_average: &cubecl::server::Handle,
     channels: usize,
     samples: usize,
-    is_cpu: bool,
 ) {
-    let geom = LaunchGeometry::for_channels_and_samples(channels, samples, is_cpu);
+    let geom = LaunchGeometry::channels_samples(client, channels, samples);
     let total_elements = channels * samples;
 
     unsafe {
@@ -91,9 +90,8 @@ pub fn execute_direct_car<R: Runtime>(
     output: &cubecl::server::Handle,
     channels: usize,
     samples: usize,
-    is_cpu: bool,
 ) {
-    let geom = LaunchGeometry::for_1d(samples, is_cpu);
+    let geom = LaunchGeometry::per_sample(client, samples);
     let total_elements = channels * samples;
 
     unsafe {

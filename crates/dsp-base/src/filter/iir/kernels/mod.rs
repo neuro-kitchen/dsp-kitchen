@@ -1,5 +1,3 @@
-pub mod biquad;
-pub mod notch;
+pub mod sos;
 
-pub use biquad::{biquad_filter_kernel, cascaded_biquad_4th_kernel};
-pub use notch::notch_filter_kernel;
+pub use sos::sos_cascade_kernel;

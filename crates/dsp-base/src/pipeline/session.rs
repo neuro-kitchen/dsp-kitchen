@@ -1,46 +1,117 @@
 //! Persistent VRAM workspace for streaming multi-chunk execution without repeated GPU allocations.
 
 use cubecl::prelude::*;
-use super::engine::Pipeline;
+use cubecl::server::Handle;
 
-/// Pre-allocated VRAM ping-pong workspace for streaming chunks through a [`Pipeline`].
+use super::engine::Pipeline;
+use super::stage::PipelineStage;
+use crate::filter::design::FilterError;
+use crate::filter::iir::DeviceFilter;
+use crate::filter::{execute_median_9p, execute_teager_kaiser};
+use crate::math::{execute_clamp, execute_scaling};
+use crate::spatial::execute_direct_car;
+
+/// How consecutive chunks relate to each other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChunkMode {
+    /// Every chunk is processed on its own (halo windows, random access). Filters start from the
+    /// steady state of the chunk's first sample; forward-backward filters odd-pad both edges. The
+    /// caller supplies halos of at least [`Pipeline::settling`].
+    Independent,
+    /// Chunks are consecutive pieces of one stream (live input, sequential reads). Filter section
+    /// state is carried from chunk to chunk, so the output is exact with no halo. Only forward
+    /// filters are allowed. Stencil stages (`Median9p`, `TeagerKaiser`) still see each chunk's
+    /// edges on their own.
+    Stateful,
+}
+
+enum Planned {
+    Stage(PipelineStage),
+    Filter { filter: DeviceFilter, state: Handle },
+}
+
+/// Pre-allocated VRAM workspace for running a [`Pipeline`] over many chunks.
 ///
-/// Reuses the same `buf_ping` and `buf_pong` device handles across all chunks of identical
-/// shape `(channels, samples)`, only reallocating if the tail chunk has a different length.
+/// Filter designs are made and uploaded once. Buffers only grow: a shorter tail chunk reuses them.
 pub struct PipelineWorkspace<R: Runtime> {
     client: ComputeClient<R>,
     pipeline: Pipeline,
+    plan: Vec<Planned>,
+    mode: ChunkMode,
+    started: bool,
     channels: usize,
-    allocated_samples: usize,
-    sample_rate: f64,
-    is_cpu: bool,
-    buf_ping: cubecl::server::Handle,
-    buf_pong: cubecl::server::Handle,
+    capacity_samples: usize,
+    buf_ping: Handle,
+    buf_pong: Handle,
+    scratch: Handle,
+    scratch_floats: usize,
 }
 
 impl<R: Runtime> PipelineWorkspace<R> {
-    /// Creates a new persistent VRAM workspace pre-allocated for `(channels, initial_samples)`.
+    /// Workspace for independent chunks (see [`ChunkMode::Independent`]).
     pub fn new(
         client: ComputeClient<R>,
         pipeline: Pipeline,
         channels: usize,
         initial_samples: usize,
         sample_rate: f64,
-        is_cpu: bool,
-    ) -> Self {
-        let bytes = (channels * initial_samples * std::mem::size_of::<f32>()).max(4);
+    ) -> Result<Self, FilterError> {
+        Self::with_mode(client, pipeline, channels, initial_samples, sample_rate, ChunkMode::Independent)
+    }
+
+    /// Workspace for a continuous stream (see [`ChunkMode::Stateful`]); rejects forward-backward
+    /// filters.
+    pub fn new_stateful(
+        client: ComputeClient<R>,
+        pipeline: Pipeline,
+        channels: usize,
+        initial_samples: usize,
+        sample_rate: f64,
+    ) -> Result<Self, FilterError> {
+        Self::with_mode(client, pipeline, channels, initial_samples, sample_rate, ChunkMode::Stateful)
+    }
+
+    fn with_mode(
+        client: ComputeClient<R>,
+        pipeline: Pipeline,
+        channels: usize,
+        initial_samples: usize,
+        sample_rate: f64,
+        mode: ChunkMode,
+    ) -> Result<Self, FilterError> {
+        let mut plan = Vec::with_capacity(pipeline.len());
+        for stage in pipeline.stages() {
+            match stage {
+                PipelineStage::Filter(spec) => {
+                    let filter = DeviceFilter::new(&client, spec, sample_rate)?;
+                    if mode == ChunkMode::Stateful && filter.mode() != crate::filter::FilterMode::Forward {
+                        return Err(FilterError::ForwardBackwardOnLiveStream);
+                    }
+                    let state = client.empty((channels * filter.state_len() * 4).max(4));
+                    plan.push(Planned::Filter { filter, state });
+                }
+                other => plan.push(Planned::Stage(other.clone())),
+            }
+        }
+        let bytes = (channels * initial_samples * 4).max(4);
         let buf_ping = client.empty(bytes);
         let buf_pong = client.empty(bytes);
-        Self {
+        let scratch = client.empty(4);
+        let mut workspace = Self {
             client,
             pipeline,
+            plan,
+            mode,
+            started: false,
             channels,
-            allocated_samples: initial_samples,
-            sample_rate,
-            is_cpu,
+            capacity_samples: initial_samples,
             buf_ping,
             buf_pong,
-        }
+            scratch,
+            scratch_floats: 1,
+        };
+        workspace.reserve(initial_samples);
+        Ok(workspace)
     }
 
     /// Reference to the underlying [`ComputeClient`].
@@ -55,44 +126,107 @@ impl<R: Runtime> PipelineWorkspace<R> {
         &self.pipeline
     }
 
-    /// Processes a `[channels, samples]` chunk in-VRAM using the pre-allocated ping-pong buffers
-    /// and returns the resulting GPU [`cubecl::server::Handle`] **without** downloading it to host RAM.
-    pub fn process_chunk_in_vram(&mut self, input: &[f32], samples: usize) -> cubecl::server::Handle {
-        assert_eq!(input.len(), self.channels * samples);
-
-        let in_bytes = f32::as_bytes(input);
-        let in_handle = self.client.create_from_slice(in_bytes);
-
-        if self.pipeline.is_empty() {
-            return in_handle;
-        }
-
-        if samples != self.allocated_samples {
-            let bytes = (self.channels * samples * std::mem::size_of::<f32>()).max(4);
-            self.buf_ping = self.client.empty(bytes);
-            self.buf_pong = self.client.empty(bytes);
-            self.allocated_samples = samples;
-        }
-
-        self.pipeline.execute_with_buffers::<R>(
-            &self.client,
-            &in_handle,
-            &self.buf_ping,
-            &self.buf_pong,
-            self.channels,
-            samples,
-            self.sample_rate,
-            self.is_cpu,
-        )
+    #[inline]
+    pub fn mode(&self) -> ChunkMode {
+        self.mode
     }
 
-    /// Processes a `[channels, samples]` chunk in-VRAM using the pre-allocated ping-pong buffers
-    /// and writes the filtered output into `output` (length `channels * samples`).
+    /// Forgets carried filter state; the next stateful chunk starts from its own steady state.
+    pub fn reset(&mut self) {
+        self.started = false;
+    }
+
+    fn reserve(&mut self, samples: usize) {
+        if samples > self.capacity_samples {
+            let bytes = (self.channels * samples * 4).max(4);
+            self.buf_ping = self.client.empty(bytes);
+            self.buf_pong = self.client.empty(bytes);
+            self.capacity_samples = samples;
+        }
+        let need = self
+            .plan
+            .iter()
+            .map(|p| match p {
+                Planned::Filter { filter, .. } => filter.scratch_len(self.channels, samples),
+                Planned::Stage(_) => 0,
+            })
+            .max()
+            .unwrap_or(0);
+        if need > self.scratch_floats {
+            self.scratch = self.client.empty(need * 4);
+            self.scratch_floats = need;
+        }
+    }
+
+    /// Runs the pipeline on a `[channels, samples]` device buffer and returns a handle to the
+    /// result. The handle views one of the workspace's buffers: read it before the next call.
+    pub fn process_handle(&mut self, input: &Handle, samples: usize) -> Handle {
+        if self.plan.is_empty() {
+            return input.clone();
+        }
+        self.reserve(samples);
+        let (channels, total) = (self.channels, self.channels * samples);
+        let first = !self.started;
+        self.started = true;
+
+        let mut current_in = input.clone();
+        let mut use_ping = true;
+        for planned in &self.plan {
+            let out = if use_ping { self.buf_ping.clone() } else { self.buf_pong.clone() };
+            let client = &self.client;
+            match planned {
+                Planned::Filter { filter, state } => match self.mode {
+                    ChunkMode::Independent => {
+                        filter.apply(client, &current_in, &out, &self.scratch, state, channels, samples)
+                    }
+                    ChunkMode::Stateful => filter
+                        .apply_stateful(client, &current_in, &out, state, channels, samples, first)
+                        .expect("stateful workspaces only hold forward filters"),
+                },
+                Planned::Stage(stage) => match stage {
+                    PipelineStage::Scale { alpha, beta } => {
+                        execute_scaling::<R>(client, &current_in, &out, total, *alpha, *beta)
+                    }
+                    PipelineStage::SubtractBaseline { baseline_uv } => {
+                        execute_scaling::<R>(client, &current_in, &out, total, 1.0, -*baseline_uv)
+                    }
+                    PipelineStage::Clamp { min, max } => {
+                        execute_clamp::<R>(client, &current_in, &out, total, *min, *max)
+                    }
+                    PipelineStage::CommonAverageReference => {
+                        execute_direct_car::<R>(client, &current_in, &out, channels, samples)
+                    }
+                    PipelineStage::Median9p => {
+                        execute_median_9p::<R>(client, &current_in, &out, channels, samples)
+                    }
+                    PipelineStage::TeagerKaiser => {
+                        execute_teager_kaiser::<R>(client, &current_in, &out, channels, samples)
+                    }
+                    PipelineStage::Filter(_) => unreachable!("filters are planned as DeviceFilter"),
+                },
+            }
+            current_in = out;
+            use_ping = !use_ping;
+        }
+
+        let unused = ((self.capacity_samples - samples) * channels * 4) as u64;
+        current_in.offset_end(unused)
+    }
+
+    /// Uploads a `[channels, samples]` host chunk, runs the pipeline and returns the device result
+    /// **without** downloading it (see [`Self::process_handle`]).
+    pub fn process_chunk_in_vram(&mut self, input: &[f32], samples: usize) -> Handle {
+        assert_eq!(input.len(), self.channels * samples);
+        let in_handle = self.client.create_from_slice(f32::as_bytes(input));
+        self.process_handle(&in_handle, samples)
+    }
+
+    /// Runs the pipeline on a `[channels, samples]` host chunk and writes the result to `output`.
     pub fn process_chunk(&mut self, input: &[f32], samples: usize, output: &mut [f32]) {
         assert_eq!(input.len(), self.channels * samples);
         assert_eq!(output.len(), self.channels * samples);
 
-        if self.pipeline.is_empty() {
+        if self.plan.is_empty() {
             output.copy_from_slice(input);
             return;
         }

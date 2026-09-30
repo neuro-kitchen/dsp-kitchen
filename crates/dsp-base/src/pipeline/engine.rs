@@ -1,12 +1,7 @@
 use cubecl::prelude::*;
+use super::session::PipelineWorkspace;
 use super::stage::PipelineStage;
-use crate::filter::{
-    design_notch_coeffs, execute_notch,
-    design_butterworth_bandpass_4th, execute_bandpass,
-    execute_median_9p, execute_teager_kaiser,
-};
-use crate::spatial::execute_direct_car;
-use crate::math::{execute_scaling, execute_clamp};
+use crate::filter::design::FilterError;
 
 /// In-VRAM DSP Pipeline Engine.
 /// Chains an arbitrary sequence of filter and math stages directly in device memory
@@ -42,26 +37,24 @@ impl Pipeline {
         self.stages.is_empty()
     }
 
-    /// Computes the total filter settling / boundary margin (in samples) required by all stages
-    /// in this pipeline at `sample_rate` Hz.
-    pub fn settling_samples(&self, sample_rate: f64) -> usize {
-        let mut max_iir = 0usize;
-        let mut fir_stencil = 0usize;
-        for stage in &self.stages {
-            match stage {
-                PipelineStage::Median9p | PipelineStage::TeagerKaiser => {
-                    fir_stencil += stage.settling_samples(sample_rate);
-                }
-                _ => {
-                    max_iir = max_iir.max(stage.settling_samples(sample_rate));
-                }
-            }
-        }
-        max_iir + fir_stencil
+    /// `(left, right)` context in samples a chunk needs at `sample_rate` Hz so that its interior
+    /// equals whole-recording processing. Transients of cascaded stages add, so both sides are
+    /// summed over stages.
+    pub fn settling(&self, sample_rate: f64) -> Result<(usize, usize), FilterError> {
+        self.stages.iter().try_fold((0, 0), |(l, r), stage| {
+            let (sl, sr) = stage.settling(sample_rate)?;
+            Ok((l + sl, r + sr))
+        })
     }
 
-    /// Executes all configured stages in sequence on `input_handle` in VRAM.
-    /// Uses two ping-pong buffers so memory overhead is strictly $2 \times$ the buffer size regardless of stage count.
+    /// Checks every stage's parameters at `sample_rate` Hz (filter designs, cutoffs, orders).
+    pub fn validate(&self, sample_rate: f64) -> Result<(), FilterError> {
+        self.settling(sample_rate).map(|_| ())
+    }
+
+    /// Executes all stages on a `[channels, samples]` device buffer as one independent chunk and
+    /// returns a handle to the result. For repeated chunks use [`PipelineWorkspace`], which keeps
+    /// designs and buffers alive.
     pub fn execute<R: Runtime>(
         &self,
         client: &ComputeClient<R>,
@@ -69,152 +62,18 @@ impl Pipeline {
         channels: usize,
         samples: usize,
         sample_rate: f64,
-        is_cpu: bool,
-    ) -> cubecl::server::Handle {
+    ) -> Result<cubecl::server::Handle, FilterError> {
         if self.stages.is_empty() {
-            return input_handle.clone();
+            return Ok(input_handle.clone());
         }
-
-        let buffer_bytes = channels * samples * std::mem::size_of::<f32>();
-        let buf_ping = client.empty(buffer_bytes);
-        let buf_pong = client.empty(buffer_bytes);
-        self.execute_with_buffers::<R>(
-            client,
-            input_handle,
-            &buf_ping,
-            &buf_pong,
+        let mut workspace = PipelineWorkspace::new(
+            client.clone(),
+            self.clone(),
             channels,
             samples,
             sample_rate,
-            is_cpu,
-        )
-    }
-
-    /// Executes all configured stages using caller-provided persistent `buf_ping` and `buf_pong` VRAM handles.
-    #[allow(clippy::too_many_arguments)]
-    pub fn execute_with_buffers<R: Runtime>(
-        &self,
-        client: &ComputeClient<R>,
-        input_handle: &cubecl::server::Handle,
-        buf_ping: &cubecl::server::Handle,
-        buf_pong: &cubecl::server::Handle,
-        channels: usize,
-        samples: usize,
-        sample_rate: f64,
-        is_cpu: bool,
-    ) -> cubecl::server::Handle {
-        if self.stages.is_empty() {
-            return input_handle.clone();
-        }
-
-        let mut current_in = input_handle;
-        let mut current_out = buf_ping;
-        let mut is_ping_out = true;
-
-        for stage in &self.stages {
-            match stage {
-                PipelineStage::Scale { alpha, beta } => {
-                    execute_scaling::<R>(
-                        client,
-                        current_in,
-                        current_out,
-                        channels * samples,
-                        *alpha,
-                        *beta,
-                        is_cpu,
-                    );
-                }
-                PipelineStage::SubtractBaseline { baseline_uv } => {
-                    execute_scaling::<R>(
-                        client,
-                        current_in,
-                        current_out,
-                        channels * samples,
-                        1.0,
-                        -*baseline_uv,
-                        is_cpu,
-                    );
-                }
-                PipelineStage::Notch { freq_hz, q } => {
-                    let coeffs = design_notch_coeffs(*freq_hz, sample_rate, *q);
-                    execute_notch::<R>(
-                        client,
-                        current_in,
-                        current_out,
-                        coeffs,
-                        channels,
-                        samples,
-                        is_cpu,
-                    );
-                }
-                PipelineStage::Bandpass { low_hz, high_hz } => {
-                    let coeffs = design_butterworth_bandpass_4th(*low_hz, *high_hz, sample_rate);
-                    execute_bandpass::<R>(
-                        client,
-                        current_in,
-                        current_out,
-                        coeffs,
-                        channels,
-                        samples,
-                        is_cpu,
-                    );
-                }
-                PipelineStage::CommonAverageReference => {
-                    execute_direct_car::<R>(
-                        client,
-                        current_in,
-                        current_out,
-                        channels,
-                        samples,
-                        is_cpu,
-                    );
-                }
-                PipelineStage::Clamp { min, max } => {
-                    execute_clamp::<R>(
-                        client,
-                        current_in,
-                        current_out,
-                        channels * samples,
-                        *min,
-                        *max,
-                        is_cpu,
-                    );
-                }
-                PipelineStage::Median9p => {
-                    execute_median_9p::<R>(
-                        client,
-                        current_in,
-                        current_out,
-                        channels,
-                        samples,
-                        is_cpu,
-                    );
-                }
-                PipelineStage::TeagerKaiser => {
-                    execute_teager_kaiser::<R>(
-                        client,
-                        current_in,
-                        current_out,
-                        channels,
-                        samples,
-                        is_cpu,
-                    );
-                }
-            }
-
-            // Ping-pong buffer swap
-            if is_ping_out {
-                current_in = buf_ping;
-                current_out = buf_pong;
-                is_ping_out = false;
-            } else {
-                current_in = buf_pong;
-                current_out = buf_ping;
-                is_ping_out = true;
-            }
-        }
-
-        current_in.clone()
+        )?;
+        Ok(workspace.process_handle(input_handle, samples))
     }
 }
 
@@ -241,23 +100,37 @@ mod tests {
         pipeline
             .add(PipelineStage::Scale { alpha: 0.195, beta: 0.0 })
             .add(PipelineStage::CommonAverageReference)
-            .add(PipelineStage::Notch { freq_hz: 60.0, q: 30.0 });
+            .add(PipelineStage::notch(60.0, 30.0));
 
         assert_eq!(pipeline.len(), 3);
 
-        let out_handle = pipeline.execute::<WgpuRuntime>(
-            &client,
-            &in_handle,
-            channels,
-            samples,
-            30000.0,
-            false,
-        );
+        let out_handle = pipeline
+            .execute::<WgpuRuntime>(&client, &in_handle, channels, samples, 30000.0)
+            .unwrap();
 
         let out_bytes = client.read_one_unchecked(out_handle);
         let out_slice = f32::from_bytes(&out_bytes);
 
         assert_eq!(out_slice.len(), total);
         assert!(!out_slice[0].is_nan());
+    }
+
+    #[test]
+    fn test_settling_sums_both_sides() {
+        let fs = 30_000.0;
+        let mut pipeline = Pipeline::new();
+        pipeline.add(PipelineStage::bandpass(300.0, 6000.0)).add(PipelineStage::Median9p);
+        let (l, r) = pipeline.settling(fs).unwrap();
+        let (bl, br) = PipelineStage::bandpass(300.0, 6000.0).settling(fs).unwrap();
+        assert_eq!((l, r), (bl + 4, br + 4));
+        assert_eq!(bl, br);
+    }
+
+    #[test]
+    fn test_invalid_cutoff_is_an_error() {
+        let pipeline = Pipeline::with_stages(vec![PipelineStage::bandpass(6000.0, 300.0)]);
+        assert!(pipeline.validate(30_000.0).is_err());
+        let pipeline = Pipeline::with_stages(vec![PipelineStage::lowpass(20_000.0)]);
+        assert!(pipeline.validate(30_000.0).is_err());
     }
 }

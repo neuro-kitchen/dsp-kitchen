@@ -10,9 +10,8 @@ pub fn execute_scaling<R: Runtime>(
     total_elements: usize,
     scale_factor: f32,
     offset: f32,
-    is_cpu: bool,
 ) {
-    let geom = LaunchGeometry::for_1d(total_elements, is_cpu);
+    let geom = LaunchGeometry::elementwise(client, total_elements);
 
     unsafe {
         scale_samples_kernel::launch::<R>(

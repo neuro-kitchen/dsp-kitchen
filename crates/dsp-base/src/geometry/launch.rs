@@ -1,126 +1,71 @@
 use cubecl::prelude::*;
 
-/// Hardware-aware kernel launch geometry configuration.
-/// Ensures zero cache-line false sharing on CPU and optimal warp coalescing on GPU.
+/// Kernel launch geometry for the three access patterns used by the DSP kernels.
+///
+/// There is one geometry per pattern and no device-specific layout: CubeCL maps cubes and units to
+/// whatever runtime executes the kernel (CPU threads, GPU workgroups).
 #[derive(Debug, Clone)]
 pub struct LaunchGeometry {
     pub cube_dim: CubeDim,
     pub cube_count: CubeCount,
-    pub chunk_size: u32,
-    pub is_cpu: bool,
 }
 
+/// Units per cube for elementwise kernels.
+const ELEMENTWISE_UNITS: u32 = 256;
+/// Tile of the channels × samples pattern: 64 samples (x) × 4 channels (y).
+const TILE_SAMPLES: u32 = 64;
+const TILE_CHANNELS: u32 = 4;
+/// Units per cube for one-unit-per-channel kernels.
+const CHANNEL_UNITS: u32 = 64;
+
 impl LaunchGeometry {
-    /// Computes hardware-aware 1D launch geometry for elementwise / channel operations.
+    /// One unit per element, indexed with the linear `ABSOLUTE_POS`. The cubes are spread over the
+    /// runtime's cube-count dimensions, so kernels must bound-check `ABSOLUTE_POS`.
+    pub fn elementwise<R: Runtime>(client: &ComputeClient<R>, num_elements: usize) -> Self {
+        let cube_dim = CubeDim::new_1d(ELEMENTWISE_UNITS);
+        let cube_count = cubecl::calculate_cube_count_elemwise(client, num_elements.max(1), cube_dim);
+        Self { cube_dim, cube_count }
+    }
+
+    /// One unit per `(channel, sample)` of a `[channels, samples]` buffer: `ABSOLUTE_POS_X` = sample,
+    /// `ABSOLUTE_POS_Y` = channel. Kernels bound-check both.
     ///
-    /// On CPU:
-    /// - Thread count is dynamically resolved via `std::thread::available_parallelism()`.
-    /// - Memory is partitioned into contiguous chunks per worker thread.
-    /// - Eliminates the 256-thread context-switch trap and prevents L1/L2 cache-line false sharing.
-    ///
-    /// On GPU:
-    /// - Uses workgroup sizing appropriate for SIMT execution (e.g. 256 or tuned).
-    pub fn for_1d(num_elements: usize, is_cpu: bool) -> Self {
-        if is_cpu {
-            let available_threads = std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(4);
-
-            let num_threads = available_threads
-                .min(num_elements)
-                .max(1) as u32;
-
-            let chunk_size = ((num_elements as u32) + num_threads - 1) / num_threads;
-
-            Self {
-                cube_dim: CubeDim::new_2d(1, num_threads),
-                cube_count: CubeCount::Static(chunk_size, 1, 1),
-                chunk_size,
-                is_cpu: true,
-            }
-        } else {
-            let workgroup_size = 256u32;
-            let num_cubes = ((num_elements as u32) + workgroup_size - 1) / workgroup_size;
-
-            Self {
-                cube_dim: CubeDim::new_1d(workgroup_size),
-                cube_count: CubeCount::Static(num_cubes, 1, 1),
-                chunk_size: 1,
-                is_cpu: false,
-            }
+    /// # Panics
+    /// If `samples` needs more cubes along x than the runtime allows (≥ 4 M samples on WGPU).
+    pub fn channels_samples<R: Runtime>(client: &ComputeClient<R>, channels: usize, samples: usize) -> Self {
+        let count_x = (samples.max(1) as u32).div_ceil(TILE_SAMPLES);
+        let count_y = (channels.max(1) as u32).div_ceil(TILE_CHANNELS);
+        let max = client.properties().hardware.max_cube_count;
+        assert!(
+            count_x <= max.0 && count_y <= max.1,
+            "{channels} channels × {samples} samples exceed the runtime's cube grid; process shorter chunks"
+        );
+        Self {
+            cube_dim: CubeDim::new_2d(TILE_SAMPLES, TILE_CHANNELS),
+            cube_count: CubeCount::Static(count_x, count_y, 1),
         }
     }
 
-    /// Computes hardware-aware 2D launch geometry for multi-channel temporal matrices (Channels × Samples).
+    /// One unit per sample for kernels that walk all channels of a sample (`ABSOLUTE_POS_X` =
+    /// sample, bound-checked by the kernel).
     ///
-    /// On CPU:
-    /// - Partitions whole channels or contiguous sample blocks across available worker threads.
-    /// - Avoids threads stepping on adjacent channel cache lines.
-    pub fn for_channels_and_samples(channels: usize, samples: usize, is_cpu: bool) -> Self {
-        if is_cpu {
-            let available_threads = std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(4);
-
-            let num_threads = available_threads
-                .min(channels.max(1))
-                .max(1) as u32;
-
-            let channels_per_thread = ((channels as u32) + num_threads - 1) / num_threads;
-
-            Self {
-                cube_dim: CubeDim::new_2d(1, num_threads),
-                cube_count: CubeCount::Static(samples as u32, channels_per_thread, 1),
-                chunk_size: channels_per_thread,
-                is_cpu: true,
-            }
-        } else {
-            let tile_x = 16u32;
-            let tile_y = 16u32;
-            let count_x = ((samples as u32) + tile_x - 1) / tile_x;
-            let count_y = ((channels as u32) + tile_y - 1) / tile_y;
-
-            Self {
-                cube_dim: CubeDim::new_2d(tile_x, tile_y),
-                cube_count: CubeCount::Static(count_x, count_y, 1),
-                chunk_size: 1,
-                is_cpu: false,
-            }
-        }
+    /// # Panics
+    /// If `samples` needs more cubes along x than the runtime allows (≥ 16 M samples on WGPU).
+    pub fn per_sample<R: Runtime>(client: &ComputeClient<R>, samples: usize) -> Self {
+        let count_x = (samples.max(1) as u32).div_ceil(ELEMENTWISE_UNITS);
+        assert!(
+            count_x <= client.properties().hardware.max_cube_count.0,
+            "{samples} samples exceed the runtime's cube grid; process shorter chunks"
+        );
+        Self { cube_dim: CubeDim::new_1d(ELEMENTWISE_UNITS), cube_count: CubeCount::Static(count_x, 1, 1) }
     }
 
-    /// Computes hardware launch geometry when parallelizing along channels for sequential temporal loops.
-    /// Dynamically tunes workgroup sizing for 32-channel vs 384+ channel recordings.
-    pub fn for_channel_sequence(channels: usize, is_cpu: bool) -> Self {
-        if is_cpu {
-            let available_threads = std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(4);
-
-            let num_threads = available_threads.min(channels.max(1)).max(1) as u32;
-            let channels_per_thread = ((channels as u32) + num_threads - 1) / num_threads;
-
-            Self {
-                cube_dim: CubeDim::new_2d(1, num_threads),
-                cube_count: CubeCount::Static(channels_per_thread, 1, 1),
-                chunk_size: channels_per_thread,
-                is_cpu: true,
-            }
-        } else {
-            let warp_size = 32u32;
-            let min_wg = warp_size;
-            let max_wg = 256u32;
-            // Align to nearest hardware warp multiple, smoothly scaling from 32 to 256
-            let desired = ((channels as u32 + warp_size - 1) / warp_size) * warp_size;
-            let workgroup_size = desired.clamp(min_wg, max_wg);
-            let num_cubes = ((channels as u32) + workgroup_size - 1) / workgroup_size;
-
-            Self {
-                cube_dim: CubeDim::new_1d(workgroup_size),
-                cube_count: CubeCount::Static(num_cubes, 1, 1),
-                chunk_size: 1,
-                is_cpu: false,
-            }
+    /// One unit per channel for kernels that walk each channel sequentially in time:
+    /// `ABSOLUTE_POS_X` = channel, bound-checked by the kernel.
+    pub fn per_channel(channels: usize) -> Self {
+        Self {
+            cube_dim: CubeDim::new_1d(CHANNEL_UNITS),
+            cube_count: CubeCount::Static((channels.max(1) as u32).div_ceil(CHANNEL_UNITS), 1, 1),
         }
     }
 }
@@ -128,24 +73,34 @@ impl LaunchGeometry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
 
-    #[test]
-    fn test_cpu_launch_geometry_adapts_to_parallelism() {
-        let total_samples = 30_000;
-        let geom = LaunchGeometry::for_1d(total_samples, true);
-        assert!(geom.is_cpu);
-        assert!(geom.chunk_size > 0);
-        assert!(geom.cube_dim.y > 0);
-        let covered = geom.cube_dim.y * geom.chunk_size;
-        assert!(covered >= total_samples as u32);
+    fn cubes(count: &CubeCount) -> u64 {
+        match count {
+            CubeCount::Static(x, y, z) => *x as u64 * *y as u64 * *z as u64,
+            _ => unreachable!(),
+        }
     }
 
     #[test]
-    fn test_gpu_launch_geometry() {
-        let total_samples = 30_000;
-        let geom = LaunchGeometry::for_1d(total_samples, false);
-        assert!(!geom.is_cpu);
-        assert_eq!(geom.cube_dim.x, 256);
-        assert_eq!(geom.chunk_size, 1);
+    fn elementwise_covers_large_buffers_within_limits() {
+        let client = WgpuRuntime::client(&WgpuDevice::default());
+        let max = client.properties().hardware.max_cube_count;
+        // 384 channels × 10 s at 30 kHz: more cubes than one dimension allows.
+        let n = 384 * 330_000;
+        let geom = LaunchGeometry::elementwise(&client, n);
+        let CubeCount::Static(x, y, z) = geom.cube_count else { unreachable!() };
+        assert!(x <= max.0 && y <= max.1 && z <= max.2);
+        assert!(cubes(&geom.cube_count) * ELEMENTWISE_UNITS as u64 >= n as u64);
+    }
+
+    #[test]
+    fn tiles_and_channels_cover_their_ranges() {
+        let client = WgpuRuntime::client(&WgpuDevice::default());
+        let geom = LaunchGeometry::channels_samples(&client, 385, 30_001);
+        let CubeCount::Static(x, y, _) = geom.cube_count else { unreachable!() };
+        assert!(x * TILE_SAMPLES >= 30_001 && y * TILE_CHANNELS >= 385);
+        let geom = LaunchGeometry::per_channel(385);
+        assert!(cubes(&geom.cube_count) * CHANNEL_UNITS as u64 >= 385);
     }
 }
