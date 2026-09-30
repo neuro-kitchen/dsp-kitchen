@@ -8,11 +8,13 @@ pub mod correlogram;
 pub mod detection;
 pub mod extraction;
 pub mod features;
+pub mod kernels;
 pub mod localization;
 pub mod matching;
 pub mod metrics;
 pub mod motion;
 pub mod probe;
+pub mod streaming;
 pub mod traits;
 
 pub use bands::NeuralBand;
@@ -20,9 +22,9 @@ pub use clustering::{DensityPeaksResult, cluster_density_peaks};
 pub use correlogram::{Correlogram, compute_autocorrelogram, compute_crosscorrelogram};
 pub use detection::{
     SpikeEvent, DeduplicatedSpike, ThresholdSpikeDetector, NeoSpikeDetector,
-    MatchedFilterSpikeDetector, detect_spikes_multichannel, detect_spikes_neo,
-    detect_spikes_matched_filter, compute_neo_energy_1d, canonical_biphasic_prototype,
-    estimate_noise_std, deduplicate_spikes_spatial,
+    MatchedFilterSpikeDetector, detect_spikes_multichannel, detect_spikes_with_sigma,
+    detect_spikes_neo, detect_spikes_matched_filter, compute_neo_energy_1d,
+    canonical_biphasic_prototype, estimate_noise_std, deduplicate_spikes_spatial,
 };
 pub use extraction::{
     WaveformSnippet, SnippetBatch, extract_snippets_multichannel, extract_snippets_single_channel,
@@ -30,6 +32,11 @@ pub use extraction::{
     resample_sinc_multichannel,
 };
 pub use features::{SpikeMorphology, PcaFeatureEmbedder, compute_morphology, extract_waveform_pca};
+pub use kernels::{
+    BatchTemplateStats, detect_channel_troughs_kernel, execute_detect_spikes_in_vram,
+    extract_sinc_snippets_kernel, execute_extract_sinc_in_vram, reduce_channel_templates_kernel,
+    execute_reduce_templates_in_vram,
+};
 pub use localization::{
     CenterOfMassLocalizer, MonopolarTriangulator, GridConvolutionLocalizer,
     localize_spike_center_of_mass, localize_spike_monopolar, localize_spike_grid_convolution,
@@ -48,7 +55,14 @@ pub use motion::{
     DriftEstimate, estimate_rigid_drift,
     compute_kriging_weight_matrix, correct_snippet_batch_drift_kriging,
 };
-pub use probe::{neuropixels_1_0, neuropixels_2_0, tetrode, utah_array, find_k_nearest_neighbors};
+pub use probe::{
+    neuropixels_1_0, neuropixels_2_0, tetrode, utah_array, find_k_nearest_neighbors,
+    precompute_knn_table,
+};
+pub use streaming::{
+    SINC_RESAMPLE_MARGIN, StreamingSortConfig, StreamingSortResult, StreamingSpikeRunner,
+    TemplateAccumulator,
+};
 pub use traits::{
     SpikeDetector, WaveformDenoiser, FeatureEmbedder, PeakLocalizer, SpikeMatcher,
     MatchedSpike, UnitQualityLabel,

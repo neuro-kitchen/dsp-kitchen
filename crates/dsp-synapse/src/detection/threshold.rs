@@ -18,31 +18,61 @@ pub fn detect_spikes_multichannel(
     refractory_samples: usize,
 ) -> Vec<SpikeEvent> {
     assert_eq!(data.len(), channels * samples);
+    let sigmas: Vec<f32> = (0..channels)
+        .map(|ch| {
+            let offset = ch * samples;
+            estimate_noise_std(&data[offset..offset + samples])
+        })
+        .collect();
+    detect_spikes_with_sigma(
+        data,
+        channels,
+        samples,
+        &sigmas,
+        threshold_factor,
+        refractory_samples,
+    )
+}
+
+/// Detects multi-channel action potential threshold crossings using pre-calibrated per-channel
+/// noise standard deviations `channel_sigmas` ($\sigma_n$ in $\mu\text{V}$).
+pub fn detect_spikes_with_sigma(
+    data: &[f32],
+    channels: usize,
+    samples: usize,
+    channel_sigmas: &[f32],
+    threshold_factor: f32,
+    refractory_samples: usize,
+) -> Vec<SpikeEvent> {
+    assert_eq!(data.len(), channels * samples);
+    assert_eq!(channel_sigmas.len(), channels);
     let mut all_spikes = Vec::new();
 
-    for ch in 0..channels {
-        let offset = ch * samples;
-        let ch_slice = &data[offset..offset + samples];
-
-        let sigma = estimate_noise_std(ch_slice);
+    for (ch, &sigma) in channel_sigmas.iter().enumerate() {
         if sigma <= 0.0 || sigma.is_nan() {
             continue;
         }
 
+        let offset = ch * samples;
+        let ch_slice = &data[offset..offset + samples];
         let thresh = -threshold_factor * sigma;
-        let mut last_spike_sample = 0usize;
+        let mut last_spike_sample: Option<usize> = None;
 
         for t in 1..samples.saturating_sub(1) {
             let val = ch_slice[t];
             // Negative peak detection: strictly below threshold AND lower than immediate neighbors
             if val < thresh && val < ch_slice[t - 1] && val <= ch_slice[t + 1] {
-                if all_spikes.is_empty() || t > last_spike_sample + refractory_samples {
+                let past_refractory = match last_spike_sample {
+                    None => true,
+                    Some(prev) => t > prev + refractory_samples,
+                };
+                if past_refractory {
                     all_spikes.push(SpikeEvent {
                         channel_id: ch,
                         sample_index: t as u64,
                         peak_amplitude_uv: val,
                     });
-                    last_spike_sample = t;
+                    last_spike_sample = Some(t);
                 }
             }
         }

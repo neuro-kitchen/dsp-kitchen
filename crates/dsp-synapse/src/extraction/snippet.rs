@@ -38,6 +38,10 @@ pub fn extract_snippets_multichannel(
     apply_sinc_shift: bool,
 ) -> Vec<WaveformSnippet> {
     let snippet_len = pre_samples + post_samples;
+    let total_ch = layout.total_channels();
+    let knn_per_ch: Vec<Vec<usize>> = (0..total_ch)
+        .map(|ch| find_k_nearest_neighbors(layout, ch, k_neighbors))
+        .collect();
     let mut snippets = Vec::with_capacity(spikes.len());
 
     for spike in spikes {
@@ -48,8 +52,11 @@ pub fn extract_snippets_multichannel(
             continue;
         }
 
-        // 1. Identify K-nearest neighbor channels around primary channel
-        let neighbor_channels = find_k_nearest_neighbors(layout, primary_ch, k_neighbors);
+        // 1. Lookup precomputed K-nearest neighbor channels around primary channel
+        let neighbor_channels = knn_per_ch
+            .get(primary_ch)
+            .cloned()
+            .unwrap_or_else(|| find_k_nearest_neighbors(layout, primary_ch, k_neighbors));
         let k = neighbor_channels.len();
 
         // 2. Compute parabolic sub-sample offset on primary channel
