@@ -12,6 +12,10 @@ use std::path::PathBuf;
     long_about = None
 )]
 struct Cli {
+    /// Compute runtime: wgpu, cpu, cuda or hip (default: first compiled-in, GPU first)
+    #[arg(long, global = true, env = "DSP_KITCHEN_RUNTIME")]
+    runtime: Option<String>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -174,6 +178,10 @@ enum Commands {
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     let cli = Cli::parse();
+    let target = match &cli.runtime {
+        Some(name) => dsp_base::ComputeTarget::parse(name)?.checked()?,
+        None => dsp_base::ComputeTarget::from_env()?,
+    };
 
     match cli.command {
         Commands::Components => {
@@ -183,7 +191,7 @@ async fn main() -> anyhow::Result<()> {
             commands::probe::run_probe(&model);
         }
         Commands::Inspect { channels, samples } => {
-            commands::inspect::run_inspect(channels, samples);
+            commands::inspect::run_inspect(target, channels, samples)?;
         }
         Commands::Stream {
             mode,
@@ -209,9 +217,10 @@ async fn main() -> anyhow::Result<()> {
             sweep,
         } => {
             if sweep {
-                commands::benchmark::run_benchmark_sweep(samples, iterations)?;
+                commands::benchmark::run_benchmark_sweep(target, samples, iterations)?;
             } else {
                 commands::benchmark::run_benchmark_pipeline(
+                    target,
                     channels,
                     samples,
                     iterations,

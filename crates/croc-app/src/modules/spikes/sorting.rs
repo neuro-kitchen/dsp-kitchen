@@ -244,7 +244,7 @@ impl Sorting {
             let trough = template.get(pre).copied().unwrap_or(amplitude);
             let snr = trough.abs() / noise.get(peak_channel).copied().unwrap_or(1.0).max(1e-6);
             let samples: Vec<u64> = spikes.iter().map(|&i| (self.times_sec[i] * self.sample_rate).round() as u64).collect();
-            let isi = compute_isi_violations(&samples, self.sample_rate, 1.5);
+            let isi = compute_isi_violations(&samples, self.sample_rate, self.duration_sec, 1.5, 0.0);
             for &i in &spikes {
                 self.labels[i] = id as u32;
             }

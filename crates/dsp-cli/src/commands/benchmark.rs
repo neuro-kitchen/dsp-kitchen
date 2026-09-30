@@ -1,12 +1,32 @@
 use cubecl::prelude::*;
-use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
-use dsp_base::filter::{design_notch_coeffs, execute_notch, execute_teager_kaiser};
+use dsp_base::{ComputeTarget, ComputeTask};
+use dsp_base::filter::{DeviceFilter, FilterMode, FilterSpec, execute_teager_kaiser};
 use dsp_base::math::execute_scaling;
 use std::fs;
 use std::path::Path;
 use std::time::Instant;
 
 pub fn run_benchmark_pipeline(
+    target: ComputeTarget,
+    channels: usize,
+    samples: usize,
+    iterations: usize,
+    save: bool,
+    format: &str,
+    output_path: &Path,
+) -> anyhow::Result<()> {
+    struct Task<'a>(usize, usize, usize, bool, &'a str, &'a Path);
+    impl ComputeTask for Task<'_> {
+        type Output = anyhow::Result<()>;
+        fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
+            benchmark_pipeline_on(client, self.0, self.1, self.2, self.3, self.4, self.5)
+        }
+    }
+    target.run(Task(channels, samples, iterations, save, format, output_path))?
+}
+
+fn benchmark_pipeline_on<R: Runtime>(
+    client: ComputeClient<R>,
     channels: usize,
     samples: usize,
     iterations: usize,
@@ -35,9 +55,7 @@ pub fn run_benchmark_pipeline(
     );
     println!("Iterations:         {}", iterations);
 
-    let device = WgpuDevice::default();
-    let client = WgpuRuntime::client(&device);
-    println!("Compute Runtime:    {}", WgpuRuntime::name(&client));
+    println!("Compute Runtime:    {}", R::name(&client));
 
     let input_host = vec![10.0f32; total_elements];
     let input_bytes = unsafe {
@@ -49,12 +67,13 @@ pub fn run_benchmark_pipeline(
 
     let buf_a = client.create_from_slice(input_bytes);
     let buf_b = client.empty(data_bytes);
-    let notch_coeffs = design_notch_coeffs(60.0, 30000.0, 30.0);
+    let notch = notch_filter(&client)?;
+    let notch_state = client.empty(channels * notch.state_len() * 4);
 
     // Warmup JIT compilation
-    execute_scaling::<WgpuRuntime>(&client, &buf_a, &buf_b, total_elements, 1.0, 0.0, false);
-    execute_notch::<WgpuRuntime>(&client, &buf_b, &buf_a, notch_coeffs, channels, samples, false);
-    execute_teager_kaiser::<WgpuRuntime>(&client, &buf_a, &buf_b, channels, samples, false);
+    execute_scaling::<R>(&client, &buf_a, &buf_b, total_elements, 1.0, 0.0);
+    notch.apply(&client, &buf_b, &buf_a, &notch_state, &notch_state, channels, samples);
+    execute_teager_kaiser::<R>(&client, &buf_a, &buf_b, channels, samples);
 
     let mut kernel_durations = Vec::with_capacity(iterations);
     let mut total_durations = Vec::with_capacity(iterations);
@@ -72,9 +91,9 @@ pub fn run_benchmark_pipeline(
 
         // Chained In-VRAM Kernels (Zero Host Roundtrips)
         let t_kernel_start = Instant::now();
-        execute_scaling::<WgpuRuntime>(&client, &in_buf, &buf_b, total_elements, 0.195, 0.0, false);
-        execute_notch::<WgpuRuntime>(&client, &buf_b, &in_buf, notch_coeffs, channels, samples, false);
-        execute_teager_kaiser::<WgpuRuntime>(&client, &in_buf, &buf_b, channels, samples, false);
+        execute_scaling::<R>(&client, &in_buf, &buf_b, total_elements, 0.195, 0.0);
+        notch.apply(&client, &buf_b, &in_buf, &notch_state, &notch_state, channels, samples);
+        execute_teager_kaiser::<R>(&client, &in_buf, &buf_b, channels, samples);
         kernel_durations.push(t_kernel_start.elapsed());
 
         // Download
@@ -151,7 +170,18 @@ pub fn run_benchmark_pipeline(
     Ok(())
 }
 
-pub fn run_benchmark_sweep(samples_per_channel: usize, iterations: usize) -> anyhow::Result<()> {
+pub fn run_benchmark_sweep(target: ComputeTarget, samples_per_channel: usize, iterations: usize) -> anyhow::Result<()> {
+    struct Task(usize, usize);
+    impl ComputeTask for Task {
+        type Output = anyhow::Result<()>;
+        fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
+            benchmark_sweep_on(client, self.0, self.1)
+        }
+    }
+    target.run(Task(samples_per_channel, iterations))?
+}
+
+fn benchmark_sweep_on<R: Runtime>(client: ComputeClient<R>, samples_per_channel: usize, iterations: usize) -> anyhow::Result<()> {
     println!("=========================================================================================");
     println!("             dsp-kitchen Dynamic Channel Scaling Sweep Benchmark                         ");
     println!("=========================================================================================");
@@ -165,9 +195,7 @@ pub fn run_benchmark_sweep(samples_per_channel: usize, iterations: usize) -> any
     );
     println!("-----------------------------------------------------------------------------------------");
 
-    let device = WgpuDevice::default();
-    let client = WgpuRuntime::client(&device);
-    let notch_coeffs = design_notch_coeffs(60.0, 30000.0, 30.0);
+    let notch = notch_filter(&client)?;
 
     let channel_counts = [1, 4, 16, 32, 64, 128, 384, 1024];
 
@@ -185,18 +213,19 @@ pub fn run_benchmark_sweep(samples_per_channel: usize, iterations: usize) -> any
 
         let buf_a = client.create_from_slice(input_bytes);
         let buf_b = client.empty(data_bytes);
+        let notch_state = client.empty(channels * notch.state_len() * 4);
 
         // Warmup
-        execute_scaling::<WgpuRuntime>(&client, &buf_a, &buf_b, total_elements, 1.0, 0.0, false);
-        execute_notch::<WgpuRuntime>(&client, &buf_b, &buf_a, notch_coeffs, channels, samples_per_channel, false);
-        execute_teager_kaiser::<WgpuRuntime>(&client, &buf_a, &buf_b, channels, samples_per_channel, false);
+        execute_scaling::<R>(&client, &buf_a, &buf_b, total_elements, 1.0, 0.0);
+        notch.apply(&client, &buf_b, &buf_a, &notch_state, &notch_state, channels, samples_per_channel);
+        execute_teager_kaiser::<R>(&client, &buf_a, &buf_b, channels, samples_per_channel);
 
         let mut durations = Vec::with_capacity(iterations);
         for _ in 0..iterations {
             let start = Instant::now();
-            execute_scaling::<WgpuRuntime>(&client, &buf_a, &buf_b, total_elements, 0.195, 0.0, false);
-            execute_notch::<WgpuRuntime>(&client, &buf_b, &buf_a, notch_coeffs, channels, samples_per_channel, false);
-            execute_teager_kaiser::<WgpuRuntime>(&client, &buf_a, &buf_b, channels, samples_per_channel, false);
+            execute_scaling::<R>(&client, &buf_a, &buf_b, total_elements, 0.195, 0.0);
+            notch.apply(&client, &buf_b, &buf_a, &notch_state, &notch_state, channels, samples_per_channel);
+            execute_teager_kaiser::<R>(&client, &buf_a, &buf_b, channels, samples_per_channel);
             durations.push(start.elapsed());
         }
 
@@ -216,4 +245,10 @@ pub fn run_benchmark_sweep(samples_per_channel: usize, iterations: usize) -> any
     println!("Dynamic channel scaling benchmark completed successfully.");
     println!("=========================================================================================");
     Ok(())
+}
+
+/// Causal 60 Hz notch (Q 30) at 30 kHz, as used in live pipelines.
+fn notch_filter<R: Runtime>(client: &ComputeClient<R>) -> anyhow::Result<DeviceFilter> {
+    let spec = FilterSpec::notch(60.0, 30.0).with_mode(FilterMode::Forward);
+    Ok(DeviceFilter::new(client, &spec, 30000.0)?)
 }

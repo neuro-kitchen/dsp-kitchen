@@ -9,6 +9,12 @@ license.workspace = true
 name = "dsp-cli"
 path = "src/main.rs"
 
+[features]
+default = []
+cpu = ["dsp-base/cpu", "dsp-synapse/cpu"]
+cuda = ["dsp-base/cuda", "dsp-synapse/cuda"]
+hip = ["dsp-base/hip", "dsp-synapse/hip"]
+
 [dependencies]
 dsp-core.workspace = true
 dsp-base.workspace = true
