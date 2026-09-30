@@ -8,6 +8,8 @@ license.workspace = true
 [dependencies]
 dsp-core.workspace = true
 dsp-base.workspace = true
+dsp-stream.workspace = true
+cubecl = { workspace = true, features = ["wgpu"] }
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

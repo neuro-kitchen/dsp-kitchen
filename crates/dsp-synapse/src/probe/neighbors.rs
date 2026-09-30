@@ -33,6 +33,22 @@ pub fn find_k_nearest_neighbors(
     dists.iter().take(k).map(|(ch, _)| *ch).collect()
 }
 
+/// Precomputes a flat `[total_channels * k]` lookup table of $K$-nearest neighbor channel IDs
+/// (`u32`) for every channel in `layout`.
+pub fn precompute_knn_table(layout: &SensorLayout, k: usize) -> Vec<u32> {
+    let total_ch = layout.total_channels();
+    let k = k.max(1);
+    let mut table = vec![0u32; total_ch * k];
+    for ch in 0..total_ch {
+        let nbrs = find_k_nearest_neighbors(layout, ch, k);
+        let row = &mut table[ch * k..(ch + 1) * k];
+        for (idx, slot) in row.iter_mut().enumerate() {
+            *slot = nbrs.get(idx).copied().unwrap_or(ch) as u32;
+        }
+    }
+    table
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -45,5 +61,9 @@ mod tests {
 
         assert_eq!(neighbors.len(), 4);
         assert_eq!(neighbors[0], 0); // Nearest is always self (dist 0)
+
+        let table = precompute_knn_table(&probe, 4);
+        assert_eq!(table.len(), 384 * 4);
+        assert_eq!(table[0], 0);
     }
 }

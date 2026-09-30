@@ -10,4 +10,6 @@ pub use matched_filter::{
 };
 pub use neo::{NeoSpikeDetector, compute_neo_energy_1d, detect_spikes_neo};
 pub use noise::estimate_noise_std;
-pub use threshold::{SpikeEvent, ThresholdSpikeDetector, detect_spikes_multichannel};
+pub use threshold::{
+    SpikeEvent, ThresholdSpikeDetector, detect_spikes_multichannel, detect_spikes_with_sigma,
+};
