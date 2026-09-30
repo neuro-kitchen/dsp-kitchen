@@ -174,7 +174,12 @@ impl Sorting {
         let amplitudes: Vec<f32> = (0..n).map(|i| batch.channel_slice(i, 0)[pre.min(batch.num_samples - 1)]).collect();
 
         // 4. Features: PCA of the multichannel snippet + center-of-mass depth
-        let (pcs, dim) = if n > NUM_PCS { PcaFeatureEmbedder { num_components: NUM_PCS }.embed(&batch) } else { (Vec::new(), NUM_PCS) };
+        // Too few spikes for PCA, or a failed projection: no PCA features (dim 0), cluster on depth
+        let pca = if n > NUM_PCS { PcaFeatureEmbedder { num_components: NUM_PCS }.embed(&batch) } else { Ok((Vec::new(), 0)) };
+        let (pcs, dim) = pca.unwrap_or_else(|e| {
+            tracing::warn!("PCA features unavailable: {e}");
+            (Vec::new(), 0)
+        });
         let mut features = vec![0.0f32; n * NUM_PCS];
         for i in 0..n {
             for c in 0..NUM_PCS.min(dim) {

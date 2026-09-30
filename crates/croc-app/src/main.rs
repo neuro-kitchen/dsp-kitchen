@@ -116,7 +116,8 @@ fn main() -> Result<()> {
         view.set_canvas(w, h, 1.0);
         let dataset = app.sources.get(&view.source);
         let source: Arc<dyn RecordingSource> = dataset.clone();
-        let req = view.render_request(&time.timeline, source, app.events.clone(), Vec::new());
+        // Snapshots read raw samples (exact at any zoom) rather than wait for the min/max cache
+        let req = view.render_request(&time.timeline, source, None, app.events.clone(), Vec::new());
         let (pixel_buf, scale) = WaveformRenderer::default().render_scaled(&req);
         view.amp_scale = scale;
         println!("Source {} · scale bar {}", dataset.name, view.scale_bar_label());

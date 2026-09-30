@@ -9,6 +9,8 @@ use dsp_base::min_max_decimate_into;
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 
 use dsp_core::RecordingSource;
+use dsp_io::cache::DEFAULT_BASE;
+use dsp_io::MinMaxCache;
 
 use crate::data::SpikeEventStore;
 use crate::shared::canvas::{blend_color, Canvas};
@@ -38,9 +40,6 @@ const SPIKE_MARKER_COLOR: Rgba8Pixel = Rgba8Pixel { r: 250, g: 204, b: 21, a: 25
 pub const NOMINAL_UV: f32 = 80.0;
 /// Fraction of the lane half-height used by `NOMINAL_UV`.
 const LANE_FILL: f32 = 0.84;
-/// Most samples (channels × time) read for one frame. Wider windows draw a sampled preview
-/// (a short read per pixel column) until the multi-resolution cache (Task 26) replaces it.
-const FRAME_SAMPLE_BUDGET: usize = 16 << 20;
 
 /// Time-module view kinds: how the plot area visualizes channels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -56,6 +55,8 @@ pub enum TimeViewKind {
 #[derive(Clone)]
 pub struct RenderRequest {
     pub source: Arc<dyn RecordingSource>,
+    /// Min/max levels of `source` for zoomed-out windows (raw reads without).
+    pub lod: Option<Arc<MinMaxCache>>,
     pub events: Arc<SpikeEventStore>,
     /// Physical pixel size of the plot area.
     pub width: u32,
@@ -132,6 +133,8 @@ pub struct WaveformRenderer {
     read_rows: Vec<usize>,
     /// Raw samples of the read channels, channel-major.
     block: Vec<f32>,
+    /// Cache envelope of the read channels, row-major.
+    cached: Vec<[f32; 2]>,
     heat: Vec<f32>,
     /// Scratch for medians and percentiles.
     stats: Vec<f32>,
@@ -182,7 +185,7 @@ impl WaveformRenderer {
         }
 
         let x1 = x1.min(canvas.width);
-        self.envelope(source, &req.channels, start, end, x1.saturating_sub(x0));
+        self.envelope(source, req.lod.as_deref(), &req.channels, start, end, x1.saturating_sub(x0));
         self.place_columns(req.channels.len(), x0, x1, canvas.width);
         let scale = self.adjust(req, canvas.width);
         let has_samples = end > start;
@@ -250,9 +253,10 @@ impl WaveformRenderer {
     }
 
     /// Fills `env` with the `[min, max]` of every requested row per pixel column over
-    /// `start..end`: exact when the window fits [`FRAME_SAMPLE_BUDGET`], else from a short read
-    /// at the start of each column.
-    fn envelope(&mut self, source: &dyn RecordingSource, rows: &[usize], start: usize, end: usize, width: usize) {
+    /// `start..end`. Zoomed out, the min/max cache supplies bucket-aligned columns (columns it has
+    /// not built yet are NaN, drawn empty); zoomed in, or without a cache, raw samples are read.
+    /// Every sample of the window lands in exactly one column, so no peak is dropped.
+    fn envelope(&mut self, source: &dyn RecordingSource, lod: Option<&MinMaxCache>, rows: &[usize], start: usize, end: usize, width: usize) {
         let total = source.info().channel_count();
         self.env.clear();
         self.env.resize(rows.len() * width, [0.0, 0.0]);
@@ -269,8 +273,25 @@ impl WaveformRenderer {
             return;
         }
 
+        if let Some(cache) = lod {
+            self.cached.resize(nch * width, [0.0, 0.0]);
+            match cache.envelope(&self.read_channels, start as u64, end as u64, width, &mut self.cached) {
+                Ok(true) => {
+                    for (k, &r) in self.read_rows.iter().enumerate() {
+                        self.env[r * width..(r + 1) * width].copy_from_slice(&self.cached[k * width..(k + 1) * width]);
+                    }
+                    return;
+                }
+                Ok(false) => {}
+                Err(e) => tracing::warn!("min/max cache read failed, reading raw samples: {e}"),
+            }
+        }
+
+        // Up to one cache bucket per column is read in one piece; longer windows (no cache
+        // available) are read column by column so memory stays bounded.
         let n = end - start;
-        if n * nch <= FRAME_SAMPLE_BUDGET {
+        let base = lod.map_or(DEFAULT_BASE, |c| c.base()) as usize;
+        if n <= base * width {
             self.block.resize(n * nch, 0.0);
             if source.read(&self.read_channels, start as u64..end as u64, &mut self.block).is_err() {
                 self.block.fill(0.0);
@@ -280,18 +301,15 @@ impl WaveformRenderer {
             }
             return;
         }
-
-        let per_col = (FRAME_SAMPLE_BUDGET / (nch * width)).max(16);
         for x in 0..width {
             let c0 = start + x * n / width;
-            let c1 = (start + (x + 1) * n / width).clamp(c0 + 1, end);
-            let len = (c1 - c0).min(per_col);
-            self.block.resize(len * nch, 0.0);
-            if source.read(&self.read_channels, c0 as u64..(c0 + len) as u64, &mut self.block).is_err() {
+            let c1 = start + (x + 1) * n / width;
+            self.block.resize((c1 - c0) * nch, 0.0);
+            if source.read(&self.read_channels, c0 as u64..c1 as u64, &mut self.block).is_err() {
                 continue;
             }
             for (k, &r) in self.read_rows.iter().enumerate() {
-                let col = &self.block[k * len..(k + 1) * len];
+                let col = &self.block[k * (c1 - c0)..(k + 1) * (c1 - c0)];
                 let (mn, mx) = col.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), &v| (a.min(v), b.max(v)));
                 self.env[r * width + x] = [mn, mx];
             }
@@ -483,6 +501,7 @@ mod tests {
             TimeViewKind::Heatmap => (0..ds.total_channels).collect(),
         };
         RenderRequest {
+            lod: None,
             source: Arc::new(ds),
             events,
             width: 800,

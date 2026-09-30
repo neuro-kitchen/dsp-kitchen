@@ -174,13 +174,22 @@ impl TimeModule {
         let default = sources.index_of("");
         let no_events = Arc::new(SpikeEventStore::default());
         let mut out = Vec::new();
-        for v in self.ws.views.iter_mut().filter(|v| v.needs_render && visible.contains(&v.id)) {
-            v.needs_render = false;
+        for v in self.ws.views.iter_mut().filter(|v| visible.contains(&v.id)) {
             let dataset = sources.get(&v.source);
+            // Redraw while the min/max cache fills in
+            let lod_ready = dataset.lod_ready_samples();
+            if lod_ready != v.lod_ready {
+                v.lod_ready = lod_ready;
+                v.needs_render = true;
+            }
+            if !v.needs_render {
+                continue;
+            }
+            v.needs_render = false;
             let on_default = sources.index_of(&v.source) == default;
             let source: Arc<dyn RecordingSource> = dataset.clone();
             let (ev, mk) = if on_default { (events.clone(), marks.clone()) } else { (no_events.clone(), Vec::new()) };
-            let req = v.render_request(&self.timeline, source, ev, mk);
+            let req = v.render_request(&self.timeline, source, dataset.lod(), ev, mk);
             let per_px = req.window_sec * dataset.sample_rate / req.width.max(1) as f64;
             out.push(RenderJob {
                 key: (MODULE_ID, v.id),
