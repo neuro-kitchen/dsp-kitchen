@@ -5,7 +5,17 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
+[features]
+default = []
+# The compute layer (CubeCL); off for crates that only need the core types (e.g. dsp-io).
+compute = ["dep:cubecl"]
+wgpu = ["compute", "cubecl/wgpu"]
+cpu = ["compute", "cubecl/cpu"]
+cuda = ["compute", "cubecl/cuda"]
+hip = ["compute", "cubecl/hip"]
+
 [dependencies]
+cubecl = { workspace = true, optional = true }
 num-traits.workspace = true
 num-rational.workspace = true
 serde.workspace = true

@@ -80,26 +80,30 @@ impl SignalChunk {
         &mut self.data
     }
 
-    #[inline(always)]
-    pub fn get(&self, channel: usize, sample: usize) -> DspResult<f32> {
-        if channel >= self.layout.channels || sample >= self.layout.samples {
-            return Err(DspError::InvalidChannel {
-                channel,
-                total: self.layout.channels,
+    fn check(&self, channel: usize, sample: usize) -> DspResult<()> {
+        if channel >= self.layout.channels {
+            return Err(DspError::InvalidChannel { channel, total: self.layout.channels });
+        }
+        if sample >= self.layout.samples {
+            return Err(DspError::SampleRange {
+                start: sample as u64,
+                end: sample as u64 + 1,
+                total: self.layout.samples as u64,
             });
         }
+        Ok(())
+    }
+
+    #[inline(always)]
+    pub fn get(&self, channel: usize, sample: usize) -> DspResult<f32> {
+        self.check(channel, sample)?;
         let idx = self.layout.linear_index(channel, sample);
         Ok(self.data[idx])
     }
 
     #[inline(always)]
     pub fn set(&mut self, channel: usize, sample: usize, value: f32) -> DspResult<()> {
-        if channel >= self.layout.channels || sample >= self.layout.samples {
-            return Err(DspError::InvalidChannel {
-                channel,
-                total: self.layout.channels,
-            });
-        }
+        self.check(channel, sample)?;
         let idx = self.layout.linear_index(channel, sample);
         self.data[idx] = value;
         Ok(())

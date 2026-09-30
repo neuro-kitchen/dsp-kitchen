@@ -5,6 +5,8 @@ pub mod time;
 pub mod layout;
 pub mod mask;
 pub mod buffer;
+#[cfg(feature = "compute")]
+pub mod compute;
 pub mod device;
 pub mod recording;
 pub mod window;
@@ -12,6 +14,7 @@ pub mod window;
 // Backward-compatibility module
 pub mod probe;
 
+pub use device::{ComputeError, ComputeTarget};
 pub use error::{DspError, DspResult};
 pub use layout::{SensorLayout, SensorSite, Position3D, ProbeLayout};
 pub use mask::ChannelMask;

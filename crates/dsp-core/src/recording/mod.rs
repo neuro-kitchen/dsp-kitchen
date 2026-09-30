@@ -13,4 +13,4 @@ pub use format::SampleFormat;
 pub use info::{ChannelInfo, RecordingInfo};
 pub use memory::MemoryRecording;
 pub use slice::SlicedRecording;
-pub use source::{check_read, RecordingSource};
+pub use source::{check_read, check_read_stored, RecordingSource};

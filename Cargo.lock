@@ -2302,6 +2302,7 @@ dependencies = [
 name = "dsp-core"
 version = "0.1.0"
 dependencies = [
+ "cubecl",
  "num-rational",
  "num-traits",
  "serde",
