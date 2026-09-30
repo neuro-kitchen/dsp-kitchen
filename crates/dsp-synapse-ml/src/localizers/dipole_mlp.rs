@@ -116,10 +116,7 @@ impl DipoleMlpLocalizer {
 }
 
 impl PeakLocalizer for DipoleMlpLocalizer {
-    fn localize(&self, batch: &SnippetBatch, layout: &SensorLayout) -> Vec<[f32; 3]> {
-        self.localize_dipoles(batch, layout)
-            .into_iter()
-            .map(|d| d.position_um)
-            .collect()
+    fn localize(&self, batch: &SnippetBatch, layout: &SensorLayout) -> dsp_core::DspResult<Vec<[f32; 3]>> {
+        Ok(self.localize_dipoles(batch, layout).into_iter().map(|d| d.position_um).collect())
     }
 }

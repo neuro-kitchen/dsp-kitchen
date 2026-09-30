@@ -41,10 +41,10 @@ impl MonopolarMlpLocalizer {
 }
 
 impl PeakLocalizer for MonopolarMlpLocalizer {
-    fn localize(&self, batch: &SnippetBatch, layout: &SensorLayout) -> Vec<[f32; 3]> {
+    fn localize(&self, batch: &SnippetBatch, layout: &SensorLayout) -> dsp_core::DspResult<Vec<[f32; 3]>> {
         let n = batch.num_spikes;
         if n == 0 {
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
         let k_model = self.k_neighbors;
@@ -131,6 +131,6 @@ impl PeakLocalizer for MonopolarMlpLocalizer {
             let z = (15.0 + delta.data[i * 3 + 2] * 10.0).max(1.0);
             coords.push([x, y, z]);
         }
-        coords
+        Ok(coords)
     }
 }

@@ -5,7 +5,7 @@
 //! pipeline as a [`SpikeDetector`], [`WaveformDenoiser`], [`FeatureEmbedder`],
 //! [`PeakLocalizer`], or automated unit curator.
 
-use dsp_core::SensorLayout;
+use dsp_core::{DspError, DspResult, SensorLayout};
 use dsp_synapse::{
     FeatureEmbedder, PeakLocalizer, SnippetBatch, SpikeDetector, SpikeEvent, UnitQualityLabel,
     WaveformDenoiser,
@@ -14,6 +14,11 @@ use serde::{Deserialize, Serialize};
 use crate::backend::{Tensor2D, Tensor3D, snippet_batch_to_tensor, tensor_to_snippet_batch};
 use crate::curation::{UnitCurationPrediction, UnitQualityFeatures};
 use super::ir_runner::OnnxGraphRunner;
+
+/// An ONNX run failure as a [`DspError`], with its full context chain.
+fn model_error(stage: &str, e: anyhow::Error) -> DspError {
+    DspError::Model(format!("{stage}: {e:#}"))
+}
 
 /// Tensor memory layout expected by an external `.onnx` model operating on multi-channel snippets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,9 +149,9 @@ impl SpikeDetector for OnnxSpikeDetector {
         channels: usize,
         samples: usize,
         _sample_rate_hz: f64,
-    ) -> Vec<SpikeEvent> {
+    ) -> DspResult<Vec<SpikeEvent>> {
         if channels == 0 || samples < self.window_samples {
-            return Vec::new();
+            return Ok(Vec::new());
         }
         let w = self.window_samples;
         let stride = self.stride_samples.max(1);
@@ -175,10 +180,13 @@ impl SpikeDetector for OnnxSpikeDetector {
         }
 
         let input_3d = Tensor3D::from_floats(batch_data, [total_windows, 1, w], self.runner.device);
-        let out_2d = match self.runner.run_3d_to_2d(&input_3d) {
-            Ok(t) => t,
-            Err(_) => return Vec::new(),
-        };
+        let out_2d = self.runner.run_3d_to_2d(&input_3d).map_err(|e| model_error("OnnxSpikeDetector", e))?;
+        if out_2d.shape[0] != total_windows {
+            return Err(DspError::Model(format!(
+                "OnnxSpikeDetector: {} output rows for {total_windows} windows",
+                out_2d.shape[0]
+            )));
+        }
 
         let probs = if out_2d.shape[1] > 1 && self.apply_softmax {
             out_2d.softmax()
@@ -211,7 +219,7 @@ impl SpikeDetector for OnnxSpikeDetector {
         }
 
         events.sort_by_key(|e| (e.sample_index, e.channel_id));
-        events
+        Ok(events)
     }
 }
 
@@ -249,18 +257,22 @@ impl OnnxWaveformDenoiser {
 }
 
 impl WaveformDenoiser for OnnxWaveformDenoiser {
-    fn denoise(&self, batch: &SnippetBatch) -> SnippetBatch {
+    fn denoise(&self, batch: &SnippetBatch) -> DspResult<SnippetBatch> {
         if batch.num_spikes == 0 {
-            return batch.clone();
+            return Ok(batch.clone());
         }
         let [n, k, t] = batch.shape();
         let (in_tensor, scales) =
             prepare_snippet_tensor(batch, self.layout, self.normalization, self.runner.device);
 
-        let raw_out = match self.runner.run_3d(&in_tensor) {
-            Ok(out) => out,
-            Err(_) => return batch.clone(),
-        };
+        let raw_out = self.runner.run_3d(&in_tensor).map_err(|e| model_error("OnnxWaveformDenoiser", e))?;
+        if raw_out.data.len() != n * k * t {
+            return Err(DspError::Model(format!(
+                "OnnxWaveformDenoiser: output shape {:?} does not match the input snippets {:?}",
+                raw_out.shape,
+                [n, k, t]
+            )));
+        }
 
         // Convert back to [N, K, T] if the ONNX graph operated in [N, T, K]
         let mut nkt_out = match self.layout {
@@ -289,7 +301,7 @@ impl WaveformDenoiser for OnnxWaveformDenoiser {
         }
 
         let out_3d = Tensor3D::from_floats(nkt_out, [n, k, t], self.runner.device);
-        tensor_to_snippet_batch(out_3d, batch)
+        Ok(tensor_to_snippet_batch(out_3d, batch))
     }
 }
 
@@ -334,24 +346,21 @@ impl OnnxFeatureEmbedder {
 }
 
 impl FeatureEmbedder for OnnxFeatureEmbedder {
-    fn embed(&self, batch: &SnippetBatch) -> (Vec<f32>, usize) {
+    fn embed(&self, batch: &SnippetBatch) -> DspResult<(Vec<f32>, usize)> {
         if batch.num_spikes == 0 {
-            return (Vec::new(), self.embedding_dim);
+            return Ok((Vec::new(), self.embedding_dim));
         }
         let (in_tensor, _scales) =
             prepare_snippet_tensor(batch, self.layout, self.normalization, self.runner.device);
 
-        let out_2d = self
-            .runner
-            .run_3d_to_2d(&in_tensor)
-            .expect("OnnxFeatureEmbedder forward pass failed");
+        let out_2d = self.runner.run_3d_to_2d(&in_tensor).map_err(|e| model_error("OnnxFeatureEmbedder", e))?;
         let actual_dim = out_2d.shape[1];
         let final_2d = if self.l2_normalize_output {
             out_2d.l2_normalize(1e-6)
         } else {
             out_2d
         };
-        (final_2d.into_vec(), actual_dim)
+        Ok((final_2d.into_vec(), actual_dim))
     }
 }
 
@@ -377,29 +386,30 @@ impl OnnxPeakLocalizer {
 }
 
 impl PeakLocalizer for OnnxPeakLocalizer {
-    fn localize(&self, batch: &SnippetBatch, sensor_layout: &SensorLayout) -> Vec<[f32; 3]> {
+    fn localize(&self, batch: &SnippetBatch, sensor_layout: &SensorLayout) -> DspResult<Vec<[f32; 3]>> {
         if batch.num_spikes == 0 {
-            return Vec::new();
+            return Ok(Vec::new());
         }
         let (in_tensor, _scales) =
             prepare_snippet_tensor(batch, self.layout, self.normalization, self.runner.device);
         let raw_2d = match self.runner.run_3d_to_2d(&in_tensor) {
             Ok(t) => t,
-            Err(_) => {
+            Err(e3) => {
                 // Fallback if the ONNX localizer expects a pre-flattened 2D input [N, K * T]
                 let flat = snippet_batch_to_tensor(batch, self.runner.device).flatten_channels_time();
-                self.runner
-                    .run_2d(&flat)
-                    .expect("OnnxPeakLocalizer forward pass failed")
+                self.runner.run_2d(&flat).map_err(|e2| {
+                    DspError::Model(format!("OnnxPeakLocalizer: [N, K, T] input failed ({e3:#}); [N, K·T] input failed ({e2:#})"))
+                })?
             }
         };
 
         let cols = raw_2d.shape[1];
-        assert!(
-            cols >= 3,
-            "OnnxPeakLocalizer output must have at least 3 columns [x, y, z], got {}",
-            cols
-        );
+        if cols < 3 || raw_2d.shape[0] != batch.num_spikes {
+            return Err(DspError::Model(format!(
+                "OnnxPeakLocalizer: output {:?}, expected [{}, ≥3] ([x, y, z] per spike)",
+                raw_2d.shape, batch.num_spikes
+            )));
+        }
 
         let mut coords = Vec::with_capacity(batch.num_spikes);
         for s in 0..batch.num_spikes {
@@ -413,7 +423,7 @@ impl PeakLocalizer for OnnxPeakLocalizer {
             let z = raw_2d.data[s * cols + 2].abs().max(1.0);
             coords.push([base_x + dx, base_y + dy, z]);
         }
-        coords
+        Ok(coords)
     }
 }
 
@@ -431,27 +441,25 @@ impl OnnxUnitCurator {
 
     /// Evaluates `[N, 8]` normalized [`UnitQualityFeatures`] through the ONNX classifier
     /// and returns `[P(SUA), P(MUA), P(Noise)]` predictions.
-    pub fn classify_units(&self, units: &[UnitQualityFeatures]) -> Vec<UnitCurationPrediction> {
+    pub fn classify_units(&self, units: &[UnitQualityFeatures]) -> DspResult<Vec<UnitCurationPrediction>> {
         let n = units.len();
         if n == 0 {
-            return Vec::new();
+            return Ok(Vec::new());
         }
         let mut flat = Vec::with_capacity(n * 8);
         for u in units {
             flat.extend_from_slice(&u.to_normalized_array());
         }
         let input = Tensor2D::from_floats(flat, [n, 8], self.runner.device);
-        let logits = self
-            .runner
-            .run_2d(&input)
-            .expect("OnnxUnitCurator forward pass failed");
+        let logits = self.runner.run_2d(&input).map_err(|e| model_error("OnnxUnitCurator", e))?;
         let probs = logits.softmax();
         let cols = probs.shape[1];
-        assert!(
-            cols >= 3,
-            "OnnxUnitCurator expects 3 output classes [SUA, MUA, Noise], got {}",
-            cols
-        );
+        if cols < 3 || probs.shape[0] != n {
+            return Err(DspError::Model(format!(
+                "OnnxUnitCurator: output {:?}, expected [{n}, 3] classes [SUA, MUA, Noise]",
+                probs.shape
+            )));
+        }
 
         let mut out = Vec::with_capacity(n);
         for i in 0..n {
@@ -472,6 +480,6 @@ impl OnnxUnitCurator {
                 p_noise,
             });
         }
-        out
+        Ok(out)
     }
 }

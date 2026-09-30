@@ -61,9 +61,9 @@ impl SingleChannelDenoiser {
 }
 
 impl WaveformDenoiser for SingleChannelDenoiser {
-    fn denoise(&self, batch: &SnippetBatch) -> SnippetBatch {
+    fn denoise(&self, batch: &SnippetBatch) -> dsp_core::DspResult<SnippetBatch> {
         if batch.num_spikes == 0 {
-            return batch.clone();
+            return Ok(batch.clone());
         }
         let n = batch.num_spikes;
         let k = batch.num_channels;
@@ -73,7 +73,7 @@ impl WaveformDenoiser for SingleChannelDenoiser {
         let flat_in = Tensor3D::from_floats(batch.data.clone(), [n * k, 1, t], self.device);
         let denoised = self.forward_single_channel(&flat_in);
 
-        SnippetBatch::from_raw_parts(
+        Ok(SnippetBatch::from_raw_parts(
             denoised.into_vec(),
             n,
             k,
@@ -82,6 +82,6 @@ impl WaveformDenoiser for SingleChannelDenoiser {
             batch.center_samples.clone(),
             batch.subsample_offsets.clone(),
             batch.channel_ids.clone(),
-        )
+        ))
     }
 }
