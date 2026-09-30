@@ -33,7 +33,7 @@ pub use extraction::{
 };
 pub use features::{SpikeMorphology, PcaFeatureEmbedder, compute_morphology, extract_waveform_pca};
 pub use kernels::{
-    BatchTemplateStats, detect_channel_troughs_kernel, execute_detect_spikes_in_vram,
+    BatchTemplateStats, count_trough_candidates_kernel, execute_detect_spikes_in_vram,
     extract_sinc_snippets_kernel, execute_extract_sinc_in_vram, reduce_channel_templates_kernel,
     execute_reduce_templates_in_vram,
 };
@@ -42,7 +42,7 @@ pub use localization::{
     localize_spike_center_of_mass, localize_spike_monopolar, localize_spike_grid_convolution,
 };
 pub use matching::{
-    OmpSpikeMatcher, match_spikes_omp, template_max_cosine_similarity,
+    OmpSpikeMatcher, match_spikes_omp, match_spikes_omp_on, template_max_cosine_similarity,
     compute_template_similarity_matrix, suggest_template_merges,
 };
 pub use metrics::{

@@ -4,9 +4,14 @@
 pub mod threshold;
 pub mod extract_sinc;
 pub mod template_reduce;
+pub mod omp;
 
-pub use threshold::{DetectionCarry, NO_SPIKE, detect_channel_troughs_kernel, execute_detect_spikes_in_vram};
+pub use threshold::{
+    DetectionCarry, count_trough_candidates_kernel, execute_detect_spikes_in_vram, scan_candidate_counts_kernel,
+    write_trough_candidates_kernel,
+};
 pub use extract_sinc::{VramSnippets, extract_sinc_snippets_kernel, execute_extract_sinc_in_vram};
+pub use omp::{omp_score_kernel, omp_subtract_kernel};
 pub use template_reduce::{
     BatchTemplateStats, reduce_channel_templates_kernel, execute_reduce_templates_in_vram,
 };
@@ -121,7 +126,6 @@ mod tests {
             0,
             threshold_factor,
             refrac,
-            256,
             None,
         );
         assert_eq!(gpu_spikes, cpu_spikes);
@@ -145,9 +149,8 @@ mod tests {
         let batch_stats = execute_reduce_templates_in_vram::<WgpuRuntime>(
             &client,
             &extracted.snippets,
-            &extracted.primary_channels,
+            &extracted.primaries,
             channels,
-            extracted.num_spikes(),
             k_neighbors,
             snippet_len,
         );
@@ -161,7 +164,7 @@ mod tests {
             if cnt > 0 {
                 let s = ch * elems_per_spike;
                 let e = s + elems_per_spike;
-                gpu_accs[ch].merge_batch(cnt, &batch_stats.sum[s..e], &batch_stats.sum_sq[s..e]);
+                gpu_accs[ch].merge_batch(cnt, &batch_stats.mean[s..e], &batch_stats.m2[s..e]);
             }
         }
 
@@ -179,24 +182,68 @@ mod tests {
     }
 
     #[test]
-    fn detection_overflow_retries_without_losing_crossings() {
-        let (channels, samples) = (2usize, 3_000usize);
+    fn dense_crossings_are_all_found_across_blocks_and_windows() {
+        let (channels, samples, refrac) = (3usize, 3_001usize, 10usize);
         let mut trace = vec![0.0f32; channels * samples];
         for ch in 0..channels {
-            for t in (50..samples - 50).step_by(40) {
+            for t in (50 + ch..samples - 50).step_by(40) {
                 trace[ch * samples + t] = -100.0;
             }
+            // An earlier trough within the refractory period of the one at 1_010 + ch suppresses it.
+            trace[ch * samples + 1_003] = -90.0;
         }
         let client = WgpuRuntime::client(&WgpuDevice::default());
         let trace_h = client.create_from_slice(f32::as_bytes(&trace));
-        let sig_h = client.create_from_slice(f32::as_bytes(&[5.0f32, 5.0]));
-        let run = |cap: usize| {
+        let sig_h = client.create_from_slice(f32::as_bytes(&[5.0f32; 3]));
+        let detect = |start: usize, end: usize, carry: Option<&mut DetectionCarry>| {
             execute_detect_spikes_in_vram::<WgpuRuntime>(
-                &client, &trace_h, &sig_h, channels, samples, 1, samples - 1, 0, 5.0, 10, cap, None,
+                &client, &trace_h, &sig_h, channels, samples, start, end, 0, 5.0, refrac, carry,
             )
         };
-        let full = run(10_000);
-        assert_eq!(full.len(), 2 * ((samples - 100) / 40 + 1));
-        assert_eq!(run(3), full);
+        let full = detect(1, samples - 1, None);
+        let expected: Vec<(usize, u64)> = {
+            let mut v: Vec<(usize, u64)> = (0..channels)
+                .flat_map(|ch| {
+                    (50 + ch..samples - 50).step_by(40).map(move |t| (ch, if t == 1_010 + ch { 1_003 } else { t } as u64))
+                })
+                .collect();
+            v.sort_by_key(|&(ch, t)| (t, ch));
+            v
+        };
+        assert_eq!(full.iter().map(|e| (e.channel_id, e.sample_index)).collect::<Vec<_>>(), expected);
+
+        let mut carry = DetectionCarry::new(channels);
+        let mut split = Vec::new();
+        for w in [1usize, 700, 1_005, 1_900, samples - 1].windows(2) {
+            split.extend(detect(w[0], w[1], Some(&mut carry)));
+        }
+        assert_eq!(split, full);
+    }
+
+    #[test]
+    fn template_reduction_is_segmented_and_free_of_f32_cancellation() {
+        // Two channels, spikes interleaved and one on an out-of-range channel; a DC offset of 1e4
+        // with unit-scale variation destroys sum / sum-of-squares moments in f32.
+        let (channels, k, len) = (2usize, 1usize, 3usize);
+        let primaries = [1u32, 0, 1, 7, 0, 1];
+        let snippets: Vec<f32> = primaries
+            .iter()
+            .enumerate()
+            .flat_map(|(i, _)| (0..len).map(move |t| 10_000.0 + (i as f32) + t as f32 * 0.5))
+            .collect();
+        let client = WgpuRuntime::client(&WgpuDevice::default());
+        let snip_h = client.create_from_slice(f32::as_bytes(&snippets));
+        let stats = execute_reduce_templates_in_vram::<WgpuRuntime>(&client, &snip_h, &primaries, channels, k, len);
+        assert_eq!(stats.counts, vec![2, 3]);
+        for ch in 0..channels {
+            let members: Vec<usize> = (0..primaries.len()).filter(|&i| primaries[i] == ch as u32).collect();
+            for t in 0..len {
+                let vals: Vec<f64> = members.iter().map(|&i| snippets[i * len + t] as f64).collect();
+                let mean = vals.iter().sum::<f64>() / vals.len() as f64;
+                let m2: f64 = vals.iter().map(|v| (v - mean).powi(2)).sum();
+                assert!((stats.mean[ch * len + t] as f64 - mean).abs() < 1e-3, "mean ch {ch} t {t}");
+                assert!((stats.m2[ch * len + t] as f64 - m2).abs() < 1e-2, "m2 ch {ch} t {t}: {} vs {m2}", stats.m2[ch * len + t]);
+            }
+        }
     }
 }

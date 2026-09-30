@@ -12,7 +12,7 @@ cuda = ["dsp-base/cuda"]
 hip = ["dsp-base/hip"]
 
 [dependencies]
-dsp-core.workspace = true
+dsp-core = { workspace = true, features = ["compute"] }
 dsp-base.workspace = true
 dsp-stream.workspace = true
 cubecl = { workspace = true, features = ["wgpu"] }

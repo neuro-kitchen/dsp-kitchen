@@ -180,11 +180,94 @@ fn spikes_are_identical_for_any_batch_size_and_whole_recording() {
 
 #[test]
 fn every_runtime_returns_the_same_spikes() {
-    use dsp_base::ComputeTarget;
+    use dsp_core::ComputeTarget;
     let rec = recording();
     let reference = whole_recording(&rec, &config(10.0));
     for target in ComputeTarget::available() {
         let result = StreamingSpikeRunner::new(config(3.7)).run_with(target, &rec, &pipeline(), &probe()).unwrap();
         assert_eq!(key(&result.spikes), key(&reference), "{target}");
+    }
+}
+
+/// int16 recording (0.25 µV per unit, per-channel offsets) with native stored reads.
+struct I16Recording {
+    info: dsp_core::RecordingInfo,
+    data: Vec<i16>,
+}
+
+impl I16Recording {
+    fn from(rec: &MemoryRecording) -> Self {
+        let n = rec.info().samples as usize;
+        let mut values = vec![0.0f32; CHANNELS * n];
+        rec.read(&(0..CHANNELS).collect::<Vec<_>>(), 0..n as u64, &mut values).unwrap();
+        let offsets: Vec<f32> = (0..CHANNELS).map(|c| -300.0 + 20.0 * c as f32).collect();
+        let data = values.iter().enumerate().map(|(i, v)| ((v - offsets[i / n]) / 0.25).round() as i16).collect();
+        let mut info = dsp_core::RecordingInfo::new(
+            "i16",
+            CHANNELS,
+            n as u64,
+            dsp_core::SampleRate::new(FS).unwrap(),
+            dsp_core::SampleFormat::I16,
+            dsp_core::MemoryOrder::ChannelMajor,
+        )
+        .with_gain_uv(0.25);
+        for (c, ch) in info.channels.iter_mut().enumerate() {
+            ch.offset_uv = offsets[c];
+        }
+        Self { info, data }
+    }
+}
+
+impl RecordingSource for I16Recording {
+    fn info(&self) -> &dsp_core::RecordingInfo {
+        &self.info
+    }
+    fn read(&self, channels: &[usize], samples: std::ops::Range<u64>, out: &mut [f32]) -> dsp_core::DspResult<()> {
+        let n = dsp_core::recording::check_read(&self.info, channels, &samples, out.len())?;
+        let total = self.info.samples as usize;
+        for (dst, &c) in out.chunks_exact_mut(n.max(1)).zip(channels) {
+            let row = &self.data[c * total + samples.start as usize..c * total + samples.end as usize];
+            for (o, &v) in dst.iter_mut().zip(row) {
+                *o = v as f32 * 0.25 + self.info.channels[c].offset_uv;
+            }
+        }
+        Ok(())
+    }
+    fn read_stored(&self, channels: &[usize], samples: std::ops::Range<u64>, out: &mut [u8]) -> dsp_core::DspResult<()> {
+        let n = dsp_core::recording::check_read_stored(&self.info, channels, &samples, out.len())?;
+        let total = self.info.samples as usize;
+        for (dst, &c) in out.chunks_exact_mut((2 * n).max(1)).zip(channels) {
+            let row = &self.data[c * total + samples.start as usize..c * total + samples.end as usize];
+            for (o, &v) in dst.chunks_exact_mut(2).zip(row) {
+                o.copy_from_slice(&v.to_le_bytes());
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The same recording without stored reads (forces the f32 upload path).
+struct F32Only<'a>(&'a I16Recording);
+
+impl RecordingSource for F32Only<'_> {
+    fn info(&self) -> &dsp_core::RecordingInfo {
+        self.0.info()
+    }
+    fn read(&self, channels: &[usize], samples: std::ops::Range<u64>, out: &mut [f32]) -> dsp_core::DspResult<()> {
+        self.0.read(channels, samples, out)
+    }
+}
+
+#[test]
+fn stored_int16_upload_gives_the_same_spikes_as_f32_upload() {
+    use dsp_core::ComputeTarget;
+    let rec = I16Recording::from(&recording());
+    assert!(F32Only(&rec).read_stored(&[0], 0..1, &mut [0u8; 2]).is_err(), "wrapper has no stored reads");
+    for target in ComputeTarget::available() {
+        let runner = StreamingSpikeRunner::new(config(3.7));
+        let stored = runner.run_with(target, &rec, &pipeline(), &probe()).unwrap();
+        let f32_path = runner.run_with(target, &F32Only(&rec), &pipeline(), &probe()).unwrap();
+        assert!(!stored.spikes.is_empty());
+        assert_eq!(key(&stored.spikes), key(&f32_path.spikes), "{target}");
     }
 }

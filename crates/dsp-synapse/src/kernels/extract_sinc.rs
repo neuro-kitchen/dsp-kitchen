@@ -1,5 +1,5 @@
 use cubecl::prelude::*;
-use dsp_base::geometry::LaunchGeometry;
+use dsp_core::compute::LaunchGeometry;
 use crate::detection::DeduplicatedSpike;
 use crate::extraction::{SINC_KERNEL_RADIUS, snippet_fits};
 
@@ -119,6 +119,8 @@ pub struct VramSnippets {
     pub snippets: cubecl::server::Handle,
     /// Primary channel per extracted spike (`u32`, `len == num_spikes`).
     pub primary_channels: cubecl::server::Handle,
+    /// The same primary channels on the host.
+    pub primaries: Vec<u32>,
     /// Indices into the input `spikes` of the extracted spikes, in tensor order.
     pub kept: Vec<usize>,
     /// Spikes skipped because their window leaves the trace or their channel is invalid.
@@ -200,5 +202,5 @@ pub fn execute_extract_sinc_in_vram<R: Runtime>(
         );
     }
 
-    Some(VramSnippets { snippets: out_snippets_handle, primary_channels: prim_handle, kept, dropped })
+    Some(VramSnippets { snippets: out_snippets_handle, primary_channels: prim_handle, primaries: primary_channels, kept, dropped })
 }

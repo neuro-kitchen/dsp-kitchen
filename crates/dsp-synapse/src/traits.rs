@@ -1,8 +1,11 @@
 //! Unified polymorphic trait contracts for classical DSP (`dsp-synapse`) and
 //! neural network inference (`dsp-synapse-ml`).
+//!
+//! Every stage returns a [`DspResult`]: learned models can fail at run time (an ONNX graph with an
+//! unexpected input shape, an unsupported operator) and callers, including Python, get the error.
 
 use serde::{Deserialize, Serialize};
-use dsp_core::SensorLayout;
+use dsp_core::{DspResult, SensorLayout};
 use crate::detection::SpikeEvent;
 use crate::extraction::SnippetBatch;
 use crate::metrics::WaveformTemplate;
@@ -36,24 +39,24 @@ pub trait SpikeDetector: Send + Sync {
         channels: usize,
         samples: usize,
         sample_rate_hz: f64,
-    ) -> Vec<SpikeEvent>;
+    ) -> DspResult<Vec<SpikeEvent>>;
 }
 
 /// Polymorphic contract for Stage 2: Waveform Denoising (Identity/Filter vs. 1D-UNet/Autoencoder).
 pub trait WaveformDenoiser: Send + Sync {
-    fn denoise(&self, batch: &SnippetBatch) -> SnippetBatch;
+    fn denoise(&self, batch: &SnippetBatch) -> DspResult<SnippetBatch>;
 }
 
 /// Polymorphic contract for Stage 3: Dimensionality Reduction & Latent Embedding (PCA vs. Conv-AE/VAE/SimCLR).
 pub trait FeatureEmbedder: Send + Sync {
     /// Projects `[N, K, T]` snippets into a flat `[N, D]` embedding matrix and returns `(flat_embeddings, embedding_dim)`.
-    fn embed(&self, batch: &SnippetBatch) -> (Vec<f32>, usize);
+    fn embed(&self, batch: &SnippetBatch) -> DspResult<(Vec<f32>, usize)>;
 }
 
 /// Polymorphic contract for Stage 4: 3D Physical Source Localization (CoM/Monopolar vs. Dipole MLP).
 pub trait PeakLocalizer: Send + Sync {
     /// Estimates 3D physical coordinates `[x_um, y_um, z_um]` for each spike in `batch`.
-    fn localize(&self, batch: &SnippetBatch, layout: &SensorLayout) -> Vec<[f32; 3]>;
+    fn localize(&self, batch: &SnippetBatch, layout: &SensorLayout) -> DspResult<Vec<[f32; 3]>>;
 }
 
 /// Polymorphic contract for Stage 5: Template Matching & Collision Deconvolution (OMP vs. Deep Separator).
@@ -64,5 +67,5 @@ pub trait SpikeMatcher: Send + Sync {
         channels: usize,
         samples: usize,
         templates: &[WaveformTemplate],
-    ) -> Vec<MatchedSpike>;
+    ) -> DspResult<Vec<MatchedSpike>>;
 }

@@ -52,10 +52,10 @@ impl Default for PcaFeatureEmbedder {
 }
 
 impl crate::traits::FeatureEmbedder for PcaFeatureEmbedder {
-    fn embed(&self, batch: &crate::extraction::SnippetBatch) -> (Vec<f32>, usize) {
+    fn embed(&self, batch: &crate::extraction::SnippetBatch) -> dsp_core::DspResult<(Vec<f32>, usize)> {
         let d = self.num_components.max(1);
         if batch.num_spikes == 0 {
-            return (Vec::new(), d);
+            return Ok((Vec::new(), d));
         }
 
         let feat_len = batch.num_channels * batch.num_samples;
@@ -80,7 +80,7 @@ impl crate::traits::FeatureEmbedder for PcaFeatureEmbedder {
                 out[s_idx * actual_d + k] = projected_flat[k * num_spikes + s_idx];
             }
         }
-        (out, actual_d)
+        Ok((out, actual_d))
     }
 }
 
