@@ -41,6 +41,10 @@ pub struct SeriesEntry {
     pub neurodata_type: String,
     pub channels: usize,
     pub samples: u64,
+    pub rate: f64,
+    pub start_time: f64,
+    /// Unit of the stored data (`volts`, `a.u.`, …).
+    pub unit: String,
 }
 
 /// Continuous series under `/acquisition` that have a regular rate (irregular, timestamped
@@ -53,16 +57,22 @@ pub fn list_series(store: &Path) -> Vec<SeriesEntry> {
             let path = format!("/acquisition/{}", e.file_name().to_string_lossy());
             let meta = node_meta(store, &path)?;
             let kind = meta["attributes"]["neurodata_type"].as_str()?.to_string();
-            if !matches!(kind.as_str(), "ElectricalSeries" | "TimeSeries") || node_meta(store, &format!("{path}/starting_time")).is_none() {
+            if !matches!(kind.as_str(), "ElectricalSeries" | "TimeSeries") {
                 return None;
             }
-            let shape: Vec<u64> = node_meta(store, &format!("{path}/data"))?["shape"].as_array()?.iter().filter_map(Value::as_u64).collect();
+            let start_meta = node_meta(store, &format!("{path}/starting_time"))?;
+            let rate = start_meta["attributes"]["rate"].as_f64()?;
+            let data_meta = node_meta(store, &format!("{path}/data"))?;
+            let unit = data_meta["attributes"]["unit"].as_str().unwrap_or("a.u.").to_string();
+            let shape: Vec<u64> = data_meta["shape"].as_array()?.iter().filter_map(Value::as_u64).collect();
             let (samples, channels) = match shape[..] {
                 [t] => (t, 1),
                 [t, c] => (t, c as usize),
                 _ => return None,
             };
-            Some(SeriesEntry { path, neurodata_type: kind, channels, samples })
+            let fs: Arc<Storage> = Arc::new(FilesystemStore::new(store).ok()?);
+            let start_time = read_all::<f64>(&fs, &format!("{path}/starting_time")).and_then(|v| v.first().copied()).unwrap_or(0.0);
+            Some(SeriesEntry { path, neurodata_type: kind, channels, samples, rate, start_time, unit })
         })
         .collect();
     out.sort_by(|a, b| a.path.cmp(&b.path));
@@ -196,11 +206,29 @@ impl RecordingSource for NwbZarrRecording {
         let hi = *channels.iter().max().unwrap() + 1;
         let width = hi - lo;
         let block = self.retrieve(lo as u64..hi as u64, samples)?;
-        for (dst, &ch) in out.chunks_exact_mut(n).zip(channels) {
-            let c = &self.info.channels[ch];
-            let col = ch - lo;
-            for (t, o) in dst.iter_mut().enumerate() {
-                *o = block[t * width + col] * c.gain_uv + c.offset_uv;
+        if channels.len() >= 4 && n >= 16_384 {
+            let block_ref = &block;
+            let ch_info = &self.info.channels;
+            std::thread::scope(|s| {
+                for (dst, &ch) in out.chunks_exact_mut(n).zip(channels) {
+                    let c = &ch_info[ch];
+                    let col = ch - lo;
+                    s.spawn(move || {
+                        let gain = c.gain_uv;
+                        let offset = c.offset_uv;
+                        for (t, o) in dst.iter_mut().enumerate() {
+                            *o = block_ref[t * width + col] * gain + offset;
+                        }
+                    });
+                }
+            });
+        } else {
+            for (dst, &ch) in out.chunks_exact_mut(n).zip(channels) {
+                let c = &self.info.channels[ch];
+                let col = ch - lo;
+                for (t, o) in dst.iter_mut().enumerate() {
+                    *o = block[t * width + col] * c.gain_uv + c.offset_uv;
+                }
             }
         }
         Ok(())
@@ -279,6 +307,11 @@ mod tests {
         let mut out = vec![0.0; 2 * 3];
         rec.read(&[2, 0], 1..4, &mut out).unwrap();
         assert_eq!(out, vec![12.0, 22.0, 32.0, 10.0, 20.0, 30.0]);
+
+        let listed: Vec<(String, String, f64, f64)> =
+            crate::sources(&path).unwrap().into_iter().map(|s| (s.name, s.unit, s.sample_rate, s.start_time_sec)).collect();
+        assert_eq!(listed, vec![("ES".into(), "µV".into(), 1000.0, 0.5), ("Temp".into(), "a.u.".into(), 10.0, 0.0)]);
+        assert_eq!(crate::open_source(&path, "/acquisition/Temp").unwrap().info().channel_count(), 1);
 
         let temp = NwbZarrRecording::open_series(&path, "/acquisition/Temp").unwrap();
         let mut out = vec![0.0; 2];
