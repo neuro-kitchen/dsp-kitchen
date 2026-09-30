@@ -3,7 +3,7 @@ dsp-kitchen: High-throughput real-time digital signal processing library in Rust
 """
 
 from pathlib import Path
-from typing import Tuple, Union
+from typing import Optional, Tuple, Union
 import os
 import sys
 import numpy as np
@@ -28,6 +28,7 @@ from ._bindings import (
     MedianFilter,
     MmapRecording,
     NotchFilter,
+    NwbZarrRecording,
     OnnxModelRunner,
     Pipeline,
     ProbeLayout,
@@ -35,6 +36,7 @@ from ._bindings import (
     SingleChannelDenoiser,
     SpatiotemporalUnetDenoiser,
     SpikeEvent,
+    StreamingSortResult,
     SubtractBaseline,
     TeagerKaiser,
     TemplateFilter,
@@ -50,9 +52,11 @@ from ._bindings import (
     detect_spikes,
     estimate_noise,
     extract_snippets,
+    list_nwb_series,
     median_filter_9p,
     notch_filter,
     scale_samples,
+    sort_recording,
     subtract_template,
     teager_kaiser_filter,
 )
@@ -87,7 +91,9 @@ __all__ = [
     "SpikeEvent",
     "DeduplicatedSpike",
     "WaveformSnippet",
+    "StreamingSortResult",
     "MmapRecording",
+    "NwbZarrRecording",
     "DspSession",
     "PCA",
     # Deep Learning & Burn-ONNX
@@ -108,6 +114,8 @@ __all__ = [
     "TeagerKaiser",
     "TemplateFilter",
     # Direct Functions
+    "list_nwb_series",
+    "sort_recording",
     "notch_filter",
     "bandpass_filter",
     "common_average_reference",
@@ -126,6 +134,7 @@ __all__ = [
     "get_local_path",
     "resolve_data_path",
     "load_recording",
+    "open_nwb_zarr",
     "neuropixels_1_0_layout",
     "neuropixels_2_0_layout",
     "tetrode_layout",
@@ -153,6 +162,18 @@ def resolve_data_path(rel_or_abs_path: Union[str, Path]) -> Path:
     if p.is_absolute():
         return p
     return get_local_path() / p
+
+
+def open_nwb_zarr(
+    path: Union[str, Path],
+    series: Optional[str] = None,
+) -> NwbZarrRecording:
+    """
+    Opens an NWB Zarr v3 store (`.nwb.zarr`) or general `dsp-io` recording.
+    If `series` is omitted, opens the largest `ElectricalSeries` in `/acquisition`.
+    """
+    resolved_path = resolve_data_path(path)
+    return NwbZarrRecording(str(resolved_path), series=series)
 
 
 def load_recording(

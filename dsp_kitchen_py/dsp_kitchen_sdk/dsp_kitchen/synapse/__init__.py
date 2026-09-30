@@ -1,8 +1,9 @@
 """
 Neuroscience-specific algorithms: probe layouts, neural spike detection,
 spatial deduplication, sub-sample sinc realignment, multi-channel snippet extraction,
-electrophysiology metrics (ISI violations, SNR, templates), and `dsp-synapse-ml`
-deep learning / Burn-ONNX external sorter bridges (`synapse.ml`, `synapse.onnx`).
+out-of-core streaming spike sorting (`sort_recording`), electrophysiology metrics
+(ISI violations, SNR, templates), and `dsp-synapse-ml` deep learning / Burn-ONNX
+external sorter bridges (`synapse.ml`, `synapse.onnx`).
 """
 
 from typing import List, Optional, Tuple
@@ -15,6 +16,7 @@ from .._bindings import (
     SingleChannelDenoiser,
     SpatiotemporalUnetDenoiser,
     SpikeEvent,
+    StreamingSortResult,
     UnitQualityClassifier,
     WaveformSnippet,
     compute_isi,
@@ -24,6 +26,7 @@ from .._bindings import (
     detect_spikes,
     estimate_noise,
     extract_snippets,
+    sort_recording,
 )
 from . import ml, onnx
 
@@ -64,6 +67,7 @@ __all__ = [
     "SpikeEvent",
     "DeduplicatedSpike",
     "WaveformSnippet",
+    "StreamingSortResult",
     "SpatiotemporalUnetDenoiser",
     "SingleChannelDenoiser",
     "DartsortVaeEmbedder",
@@ -77,6 +81,7 @@ __all__ = [
     "compute_isi",
     "compute_snr",
     "compute_template",
+    "sort_recording",
     "neuropixels_1_0_layout",
     "neuropixels_2_0_layout",
     "tetrode_layout",

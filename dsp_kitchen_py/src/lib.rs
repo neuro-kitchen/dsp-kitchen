@@ -12,7 +12,7 @@ pub use buffer as mmap;
 
 use pyo3::prelude::*;
 
-use crate::buffer::PyMmapRecording;
+use crate::buffer::{list_nwb_series, PyMmapRecording, PyNwbZarrRecording};
 use crate::filter::{
     bandpass_filter, median_filter_9p, notch_filter, subtract_template, teager_kaiser_filter,
     PyBandpassFilter, PyMedianFilter, PyNotchFilter, PyTeagerKaiser, PyTemplateFilter,
@@ -23,8 +23,8 @@ use crate::pipeline::{PyDspSession, PyPipeline};
 use crate::spatial::{common_average_reference, PyCommonAverageReference};
 use crate::synapse::{
     compute_isi, compute_snr, compute_template, deduplicate_spikes, detect_spikes,
-    estimate_noise, extract_snippets, PyDeduplicatedSpike, PyProbeLayout, PySpikeEvent,
-    PyWaveformSnippet,
+    estimate_noise, extract_snippets, sort_recording, PyDeduplicatedSpike, PyProbeLayout,
+    PySpikeEvent, PyStreamingSortResult, PyWaveformSnippet,
 };
 use crate::synapse_ml::{
     PyContrastiveWaveformEmbedder, PyDartsortVaeEmbedder, PyOnnxModelRunner,
@@ -37,7 +37,9 @@ fn register_bindings(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySpikeEvent>()?;
     m.add_class::<PyDeduplicatedSpike>()?;
     m.add_class::<PyWaveformSnippet>()?;
+    m.add_class::<PyStreamingSortResult>()?;
     m.add_class::<PyMmapRecording>()?;
+    m.add_class::<PyNwbZarrRecording>()?;
     m.add_class::<PyScale>()?;
     m.add_class::<PySubtractBaseline>()?;
     m.add_class::<PyClamp>()?;
@@ -60,6 +62,8 @@ fn register_bindings(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyOnnxModelRunner>()?;
 
     // Direct Functions
+    m.add_function(wrap_pyfunction!(list_nwb_series, m)?)?;
+    m.add_function(wrap_pyfunction!(sort_recording, m)?)?;
     m.add_function(wrap_pyfunction!(notch_filter, m)?)?;
     m.add_function(wrap_pyfunction!(bandpass_filter, m)?)?;
     m.add_function(wrap_pyfunction!(common_average_reference, m)?)?;
