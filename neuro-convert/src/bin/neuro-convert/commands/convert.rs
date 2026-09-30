@@ -4,7 +4,6 @@ use std::path::PathBuf;
 use clap::Args;
 use neuro_convert::metadata::{Level, MetadataFile};
 use neuro_convert::outputs::nwb::{self, NwbOptions, NwbPlan};
-use neuro_convert::OpenOptions;
 
 #[derive(Args)]
 pub struct ConvertArgs {
@@ -31,10 +30,12 @@ pub struct ConvertArgs {
     /// Print the plan and exit without writing
     #[arg(long)]
     dry_run: bool,
+    #[command(flatten)]
+    open: super::OpenArgs,
 }
 
 pub fn run(a: &ConvertArgs) -> anyhow::Result<()> {
-    let session = neuro_convert::open(&a.input, &OpenOptions::default())?;
+    let session = neuro_convert::open(&a.input, &a.open.options())?;
     let meta = match &a.metadata {
         Some(p) => MetadataFile::load(p)?,
         None => MetadataFile::default(),
@@ -86,7 +87,7 @@ fn print_plan(plan: &NwbPlan, session: &neuro_convert::Session) {
         println!("acquisition/{:8} ← {:6} {kind:16} {:>3} ch  {:>10.1} Hz  {}", s.name, s.source, i.channel_count(), i.sample_rate, s.unit);
     }
     for e in &plan.events {
-        let place = if e.intervals { "intervals" } else { "acquisition" };
+        let place = if e.table { "events" } else { "acquisition" };
         println!("{place}/{:8} ← {:6} ({} events)", e.name, e.source, session.events[e.event].len());
     }
     for t in &plan.tables {

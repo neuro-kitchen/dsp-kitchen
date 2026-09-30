@@ -66,3 +66,16 @@ impl BlockFiles {
         v
     }
 }
+
+/// Blocks of a tank: its sub-folders that contain a `.tsq`, sorted by name.
+pub fn tank_blocks(tank: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(tank) else { return Vec::new() };
+    let mut blocks: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .filter(|p| std::fs::read_dir(p).into_iter().flatten().flatten().any(|e| e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("tsq"))))
+        .collect();
+    blocks.sort();
+    blocks
+}

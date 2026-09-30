@@ -187,9 +187,12 @@ pub fn validate(path: &Path) -> Result<Vec<Issue>> {
     }
 
     // Tables
-    for p in s.children("/intervals").chain(s.children("/analysis")).collect::<Vec<_>>() {
-        if matches!(s.kind(p), Some("TimeIntervals" | "DynamicTable")) {
+    for p in s.children("/intervals").chain(s.children("/analysis")).chain(s.children("/events")).collect::<Vec<_>>() {
+        if matches!(s.kind(p), Some("TimeIntervals" | "DynamicTable" | "EventsTable")) {
             check_table(&s, p, &mut issues);
+        }
+        if s.kind(p) == Some("EventsTable") && s.kind(&format!("{p}/timestamp")) != Some("TimestampVectorData") {
+            issues.push(Issue::error(format!("{p}: EventsTable without a TimestampVectorData timestamp column")));
         }
         if s.kind(p) == Some("TimeIntervals") {
             if let (Some(a), Some(b)) = (s.read::<f64>(&format!("{p}/start_time")), s.read::<f64>(&format!("{p}/stop_time"))) {

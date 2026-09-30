@@ -13,6 +13,7 @@ pub mod impedance;
 pub mod notes;
 pub mod sev;
 pub mod snips;
+pub mod sort;
 pub mod streams;
 pub mod tbk;
 pub mod tsq;
@@ -52,11 +53,34 @@ impl InputFormat for Tdt {
     }
 
     fn detect(&self, path: &Path) -> Option<Detection> {
-        BlockFiles::find(path).map(|_| Detection { format: "tdt", version: None, confidence: 0.95 })
+        if BlockFiles::find(path).is_some() {
+            return Some(Detection { format: "tdt", version: None, confidence: 0.95 });
+        }
+        let blocks = block::tank_blocks(path);
+        (!blocks.is_empty()).then(|| Detection { format: "tdt", version: Some(format!("tank, {} blocks", blocks.len())), confidence: 0.9 })
     }
 
     fn open(&self, path: &Path, options: &OpenOptions) -> Result<Session> {
-        open_block(path, options)
+        if BlockFiles::find(path).is_some() {
+            return open_block(path, options);
+        }
+        // A tank: one of its blocks
+        let blocks = block::tank_blocks(path);
+        let names: Vec<String> = blocks.iter().filter_map(|b| Some(b.file_name()?.to_string_lossy().into_owned())).collect();
+        let chosen = match (&options.block, blocks.len()) {
+            (Some(name), _) => blocks.iter().find(|b| b.file_name().is_some_and(|n| n.to_string_lossy() == *name)),
+            (None, 1) => blocks.first(),
+            _ => None,
+        };
+        match chosen {
+            Some(b) => open_block(b, options),
+            None => Err(Error::Unsupported(format!(
+                "{} is a TDT tank with {} blocks; choose one with --block <name>: {}",
+                path.display(),
+                blocks.len(),
+                names.join(", ")
+            ))),
+        }
     }
 }
 
@@ -104,6 +128,16 @@ pub fn open_block(path: &Path, options: &OpenOptions) -> Result<Session> {
     let needs_tev = index.stores.values().any(|s| {
         options.wants(&s.name) && (s.kind == StoreKind::Snip || (s.kind == StoreKind::Stream && !sev_stores.contains_key(&s.name)))
     });
+    // Offline sorts under sort/<id>/<store>.SortResult
+    let sorts = sort::available(&files.dir);
+    if let Some(id) = options.sort.as_deref().filter(|id| !sorts.contains_key(*id)) {
+        warnings.push(format!("sort {id:?} not found (available: {:?}); online sort codes kept", sorts.keys().collect::<Vec<_>>()));
+    }
+    let chosen_sort = |store: &str| -> Option<(String, Vec<u8>)> {
+        let id = options.sort.as_ref()?;
+        let file = sorts.get(id)?.get(store)?;
+        sort::load(file).ok().map(|codes| (id.clone(), codes))
+    };
     let tev = match (&files.tev, needs_tev) {
         (Some(p), true) => Some(Arc::new(MappedFile::open(p)?)),
         (None, true) => {
@@ -122,7 +156,7 @@ pub fn open_block(path: &Path, options: &OpenOptions) -> Result<Session> {
                     Err(e) => warnings.push(format!("{}: skipped ({e})", store.name)),
                 }
             }
-            (StoreKind::Snip, Some(tev)) => match snips::build(store, tev, index.start, &mut warnings) {
+            (StoreKind::Snip, Some(tev)) => match snips::build(store, tev, index.start, chosen_sort(&store.name).as_ref().map(|(id, c)| (id.as_str(), c.as_slice())), &mut warnings) {
                 Ok(s) => session.snippets.push(s),
                 Err(e) => warnings.push(format!("{}: skipped ({e})", store.name)),
             },
@@ -147,6 +181,9 @@ pub fn open_block(path: &Path, options: &OpenOptions) -> Result<Session> {
     let wanted: BTreeMap<String, tsq::StoreIndex> =
         index.stores.iter().filter(|(n, _)| options.wants(n) || options.wants(&n.replace('\\', "/"))).map(|(n, s)| (n.clone(), s.clone())).collect();
     session.events = epocs::build(&wanted, index.start, block_end, &listing.stores, &mut warnings);
+    if let Some(n) = synapse_notes.as_ref().filter(|_| options.wants("Note")) {
+        epocs::attach_notes(&mut session.events, n, &mut warnings);
+    }
     session.tables = files.csv.iter().filter_map(|p| impedance::read_csv_table(p)).collect();
 
     // Metadata: .tin summary first (exact ISO start), then Notes.txt, then the TSQ clock
@@ -173,6 +210,12 @@ pub fn open_block(path: &Path, options: &OpenOptions) -> Result<Session> {
     m.notes.extend(synapse_notes.iter().flat_map(|n| n.notes.clone()));
     m.notes.extend(tnt.iter().flat_map(|t| t.notes.clone()));
     m.extra.insert("tdt_block".into(), files.name.clone());
+    if !sorts.is_empty() {
+        m.extra.insert("tdt_sorts".into(), sorts.keys().cloned().collect::<Vec<_>>().join(", "));
+    }
+    if let Some(id) = options.sort.as_ref().filter(|id| sorts.contains_key(*id)) {
+        m.extra.insert("tdt_sort_applied".into(), id.clone());
+    }
     m.extra.insert("tdt_software".into(), version.to_string());
     m.extra.insert("tdt_start_unix".into(), format!("{:.6}", index.start));
     if let Some(stop) = index.stop {
@@ -197,7 +240,6 @@ pub fn open_block(path: &Path, options: &OpenOptions) -> Result<Session> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Recording;
     use tsq::tests::record;
 
     /// A tiny Synapse-like block: one 2-channel float stream (4 samples per packet), one epoc.
@@ -281,6 +323,58 @@ mod tests {
         assert!(w.iter().any(|m| m.contains("differs from the block notes")), "{w:?}");
     }
 
+    /// A tank with two blocks; block `b1` has 3 snippets (4 float samples each) and an offline
+    /// sort `Mine` giving them codes 5, 6, 7. Kept in `target/tdt-tank-fixture` so TDT's reader
+    /// can cross-check the sort-code indexing.
+    #[test]
+    fn test_sort_result_and_tank() {
+        let tank = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/tdt-tank-fixture");
+        let _ = std::fs::remove_dir_all(&tank);
+        let b1 = tank.join("b1");
+        std::fs::create_dir_all(&b1).unwrap();
+        write_block(&tank.join("b2"));
+
+        let mut tev = Vec::new();
+        let mut tsq = record(0, 0, &[0; 4], 0, 0, 0.0, 0, 0, 0.0);
+        tsq.extend(record(10, codes::EVTYPE_MARK, &1u32.to_le_bytes(), 0, 0, 1000.0, 0, 0, 0.0)); // seq 0
+        tsq.extend(record(10, codes::EVTYPE_STRON, b"Tick", 0, 0, 1000.1, 0, 4, 0.0)); // seq 1
+        for k in 0..3u16 {
+            let off = tev.len() as u64;
+            for v in 0..4 {
+                tev.extend((k as f32 * 10.0 + v as f32).to_le_bytes());
+            }
+            // seqs 2, 3, 4; online sort code 1
+            tsq.extend(record(14, codes::EVTYPE_SNIP, b"eNe1", k + 1, 1, 1000.2 + k as f64 * 0.1, off, 0, 24414.0625));
+        }
+        tsq.extend(record(10, codes::EVTYPE_MARK, &2u32.to_le_bytes(), 0, 0, 1001.0, 0, 0, 0.0));
+        std::fs::write(b1.join("t_b1.tsq"), tsq).unwrap();
+        std::fs::write(b1.join("t_b1.tev"), tev).unwrap();
+        std::fs::create_dir_all(b1.join("sort/Mine")).unwrap();
+        let mut sort = vec![0u8; 1024];
+        sort[..3].fill(1);
+        sort.extend([0, 0, 5, 6, 7, 0]);
+        std::fs::write(b1.join("sort/Mine/eNe1.SortResult"), sort).unwrap();
+
+        // Tank: detected, and several blocks need a choice
+        assert_eq!(Tdt.detect(&tank).unwrap().version.as_deref(), Some("tank, 2 blocks"));
+        let err = Tdt.open(&tank, &OpenOptions::default()).err().unwrap().to_string();
+        assert!(err.contains("--block") && err.contains("b1, b2"), "{err}");
+
+        let online = Tdt.open(&tank, &OpenOptions { block: Some("b1".into()), ..Default::default() }).unwrap();
+        let sn = &online.snippets[0];
+        assert_eq!((sn.len(), sn.samples_per_snippet, sn.channels.clone()), (3, 4, vec![1, 2, 3]));
+        assert_eq!(&sn.data[4..8], &[10.0, 11.0, 12.0, 13.0]);
+        assert_eq!(sn.sort_codes, vec![1, 1, 1]);
+        assert_eq!(online.metadata.extra["tdt_sorts"], "Mine");
+
+        let sorted = Tdt.open(&b1, &OpenOptions { sort: Some("Mine".into()), ..Default::default() }).unwrap();
+        assert_eq!(sorted.snippets[0].sort_codes, vec![5, 6, 7]);
+        assert_eq!(sorted.metadata.extra["tdt_sort_applied"], "Mine");
+
+        let missing = Tdt.open(&b1, &OpenOptions { sort: Some("Nope".into()), ..Default::default() }).unwrap();
+        assert!(missing.provenance.warnings.iter().any(|w| w.contains("\"Nope\" not found")));
+    }
+
     #[test]
     fn test_open_block_end_to_end() {
         let dir = std::env::temp_dir().join(format!("nc_tdt_{}", std::process::id()));
@@ -302,7 +396,7 @@ mod tests {
         assert_eq!(s.provenance.version.as_deref(), Some("OpenEx"));
         assert!(s.provenance.warnings.is_empty(), "{:?}", s.provenance.warnings);
 
-        let only = open_block(&dir, &OpenOptions { only: Some(vec!["Tick".into()]) }).unwrap();
+        let only = open_block(&dir, &OpenOptions { only: Some(vec!["Tick".into()]), ..Default::default() }).unwrap();
         assert!(only.recordings.is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
     }

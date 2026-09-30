@@ -3,10 +3,10 @@ use std::time::Instant;
 
 use neuro_convert::OpenOptions;
 
-pub fn run(path: &Path, read_sec: Option<f64>) -> anyhow::Result<()> {
+pub fn run(path: &Path, read_sec: Option<f64>, options: &OpenOptions) -> anyhow::Result<()> {
     let detections = neuro_convert::detect(path);
     let t = Instant::now();
-    let s = neuro_convert::open(path, &OpenOptions::default())?;
+    let s = neuro_convert::open(path, options)?;
     let opened = t.elapsed();
 
     let p = &s.provenance;
@@ -40,11 +40,17 @@ pub fn run(path: &Path, read_sec: Option<f64>) -> anyhow::Result<()> {
     }
 
     println!("\n-- Streams ({})", s.recordings.len());
-    println!("  {:6} {:>4} {:>11} {:>12} {:>9} {:>8} {:>6}  description", "name", "ch", "rate (Hz)", "samples", "duration", "stored", "unit");
+    println!("  {:6} {:>4} {:>11} {:>12} {:>9} {:>8} {:>6} {:8}  description", "name", "ch", "rate (Hz)", "samples", "duration", "stored", "unit", "storage");
     for r in &s.recordings {
         let i = r.info();
+        // Source-specific storage tag (e.g. TDT `tev` / `sev v3`), when the input records one
+        let storage = match (i.metadata.get("tdt_storage"), i.metadata.get("sev_version")) {
+            (Some(s), Some(v)) => format!("{s} v{v}"),
+            (Some(s), None) => s.clone(),
+            _ => String::new(),
+        };
         println!(
-            "  {:6} {:>4} {:>11.4} {:>12} {:>8.1}s {:>8} {:>6}  {}",
+            "  {:6} {:>4} {:>11.4} {:>12} {:>8.1}s {:>8} {:>6} {storage:8}  {}",
             i.name,
             i.channel_count(),
             i.sample_rate,
@@ -122,8 +128,8 @@ pub fn run(path: &Path, read_sec: Option<f64>) -> anyhow::Result<()> {
 
 /// JSON summary: per store the shape and the first values (for comparisons with other readers).
 /// `at_sec` picks where stream samples are taken (default: the start).
-pub fn json(path: &Path, at_sec: Option<f64>) -> anyhow::Result<()> {
-    let s = neuro_convert::open(path, &OpenOptions::default())?;
+pub fn json(path: &Path, at_sec: Option<f64>, options: &OpenOptions) -> anyhow::Result<()> {
+    let s = neuro_convert::open(path, options)?;
     let recordings: Vec<serde_json::Value> = s
         .recordings
         .iter()
@@ -142,7 +148,8 @@ pub fn json(path: &Path, at_sec: Option<f64>) -> anyhow::Result<()> {
         .iter()
         .map(|e| serde_json::json!({ "name": e.name, "count": e.len(), "channels": e.channels,
             "onsets": &e.onsets[..3.min(e.len())], "values": &e.values[..3.min(e.values.len())],
-            "offsets": e.offsets.as_ref().map(|o| o[..3.min(o.len())].to_vec()) }))
+            "offsets": e.offsets.as_ref().map(|o| o[..3.min(o.len())].to_vec()),
+            "labels": &e.labels[..3.min(e.labels.len())] }))
         .collect();
     let snippets: Vec<serde_json::Value> = s
         .snippets

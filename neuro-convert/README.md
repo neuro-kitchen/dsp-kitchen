@@ -5,7 +5,7 @@ Pure Rust, streaming (multi-hour recordings never sit in memory), standalone (no
 
 ```
 neuro-convert formats                         # inputs / outputs this build supports
-neuro-convert inspect <recording>             # streams, events, tables, metadata, warnings
+neuro-convert inspect <recording> [--json]    # streams, events, tables, metadata, warnings
 neuro-convert convert <recording> -m meta.yaml -o out.nwb.zarr [--dry-run] [--gzip 1]
 neuro-convert validate out.nwb.zarr           # structural checks of the NWB store
 ```
@@ -13,13 +13,13 @@ neuro-convert validate out.nwb.zarr           # structural checks of the NWB sto
 ## Supported
 | Input | Versions |
 |---|---|
-| TDT block (`.tsq` + `.tev`) | Synapse (Notes.txt, StoresListing.txt, .tin), OpenEx (.tnt); streams, snips, epocs (+ offsets), scalars, impedance CSVs |
+| TDT block or tank | Synapse / OpenEx; TEV and SEV (v0–v3, hour files) streams, rawpacked, snips (+ `--sort` offline sorts), epocs, scalars, runtime notes, impedance CSVs; `--block` for tanks |
 
 | Output | Format |
 |---|---|
 | NWB 2.11.0 | Zarr v3 store in hdmf-zarr's layout (readable by pynwb / hdmf-zarr, DANDI), schema cached |
 
-Not yet: TDT SEV files and rawpacked data, SpikeGLX, Open Ephys, Intan, NWB/HDF5.
+Not yet: snippets → NWB, SpikeGLX, Open Ephys, Intan, NWB/HDF5.
 
 ## Metadata file
 The source files never say everything NWB needs (session description, subject species/age, time

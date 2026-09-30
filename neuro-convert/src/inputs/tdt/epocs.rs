@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 
 use super::codes::StoreKind;
-use super::notes::synapse::StoreDescription;
+use super::notes::synapse::{clock_seconds, StoreDescription, SynapseNotes};
 use super::tsq::{session_time, store_name, StoreIndex};
 use crate::model::EventSeries;
 
@@ -80,6 +80,48 @@ pub fn build(
         warnings.push(format!("offset store for {orphan} has no onset store"));
     }
     out
+}
+
+/// Attaches `Notes.txt` runtime notes as labels of the `Note` epoc (the n-th note belongs to
+/// the n-th event). Without a `Note` store, one is built from the notes' wall-clock times
+/// relative to `Start` (1 s resolution), as TDT's reader does.
+pub fn attach_notes(events: &mut Vec<EventSeries>, notes: &SynapseNotes, warnings: &mut Vec<String>) {
+    if notes.entries.is_empty() {
+        return;
+    }
+    let labels: Vec<String> = notes.entries.iter().map(|n| n.label()).collect();
+    if let Some(e) = events.iter_mut().find(|e| e.name == "Note") {
+        if e.len() != labels.len() {
+            warnings.push(format!("Note store has {} events but Notes.txt has {} notes; matched in order", e.len(), labels.len()));
+        }
+        e.labels = labels.into_iter().chain(std::iter::repeat(String::new())).take(e.len()).collect();
+        e.description = "Synapse runtime notes".into();
+        return;
+    }
+    let start = notes.fields.get("Start").and_then(|s| s.split_whitespace().next()).and_then(clock_seconds);
+    let Some(start) = start else {
+        warnings.push("Notes.txt has notes but no Start time; notes not added as events".into());
+        return;
+    };
+    let onsets: Vec<f64> = notes
+        .entries
+        .iter()
+        .filter_map(|n| clock_seconds(&n.clock))
+        .map(|t| if t < start { t + 86_400.0 } else { t } - start)
+        .collect();
+    if onsets.len() != labels.len() {
+        warnings.push("some Notes.txt notes have unreadable times; notes not added as events".into());
+        return;
+    }
+    events.push(EventSeries {
+        name: "Note".into(),
+        description: "Synapse runtime notes (times from Notes.txt, 1 s resolution)".into(),
+        values: (1..=onsets.len()).map(|v| v as f64).collect(),
+        onsets,
+        offsets: None,
+        channels: 1,
+        labels,
+    });
 }
 
 /// Groups a scalar store's per-channel records into events (one row of channel values each).

@@ -2,7 +2,7 @@
 
 pub mod devices;
 pub mod electrodes;
-pub mod intervals;
+pub mod events;
 pub mod nwbfile;
 pub mod series;
 pub mod subject;

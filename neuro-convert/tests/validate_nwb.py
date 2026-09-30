@@ -27,8 +27,8 @@ def main(path: str, small: bool) -> None:
             rate = getattr(obj, "rate", None)
             first = np.asarray(obj.data[:2]).ravel()[:3]
             print(f"acquisition/{name:8} {type(obj).__name__:16} {shape} rate={rate} unit={obj.unit} first={first}")
-        for name, t in nwb.intervals.items():
-            print(f"intervals/{name:10} {len(t)} rows, columns {list(t.colnames)}")
+        for name, t in nwb.events.items():
+            print(f"events/{name:13} {len(t)} rows, columns {list(t.colnames)}")
         for name, t in nwb.analysis.items():
             print(f"analysis/{name:11} {len(t)} rows, columns {list(t.colnames)}")
 
@@ -43,10 +43,13 @@ def main(path: str, small: bool) -> None:
             assert nwb.electrodes["group"][0].device.name == "RZ2(1)"
             temp = nwb.acquisition["Temp"]
             assert temp.data.shape == (1000,) and temp.data[10] == 5.0
-            met = nwb.intervals["MET"]
-            assert list(met["start_time"][:]) == [0.5, 1.5] and list(met["value"][:]) == [1.0, 2.0]
-            tick = nwb.acquisition["Tick"]
-            assert tick.rate == 1.0 and tick.starting_time == 0.0 and tick.timestamps is None
+            met = nwb.events["MET"]
+            assert list(met["timestamp"][:]) == [0.5, 1.5] and list(met["value"][:]) == [1.0, 2.0]
+            assert np.allclose(met["duration"][:], [0.1, 0.1])
+            tick = nwb.events["Tick"]
+            assert list(tick["timestamp"][:]) == [0.0, 1.0, 2.0] and "duration" not in tick.colnames
+            note = nwb.events["Note"]
+            assert list(note["annotation"][:]) == ["sleep", "Bottle In"]
             imp = list(nwb.electrodes["imp"][:])
             assert imp[0] == 960.0 and np.isnan(imp[1]) and np.isnan(imp[2]), imp
             assert nwb.acquisition["eS1p"].data.shape == (1, 2)

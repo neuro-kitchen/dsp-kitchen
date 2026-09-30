@@ -2343,8 +2343,10 @@ dependencies = [
 name = "dsp-synapse"
 version = "0.1.0"
 dependencies = [
+ "cubecl",
  "dsp-base",
  "dsp-core",
+ "dsp-stream",
  "serde",
  "thiserror 2.0.21",
  "tracing",
