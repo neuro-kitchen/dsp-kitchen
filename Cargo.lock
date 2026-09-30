@@ -2019,6 +2019,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsp-synapse-ml"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "cubecl",
+ "dsp-base",
+ "dsp-core",
+ "dsp-synapse",
+ "ndarray",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
 name = "dtor"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
