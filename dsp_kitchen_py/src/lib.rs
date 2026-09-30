@@ -1,3 +1,4 @@
+pub mod array;
 pub mod buffer;
 pub mod filter;
 pub mod linalg;
@@ -14,8 +15,10 @@ use pyo3::prelude::*;
 
 use crate::buffer::{list_nwb_series, PyMmapRecording, PyNwbZarrRecording};
 use crate::filter::{
-    bandpass_filter, median_filter_9p, notch_filter, subtract_template, teager_kaiser_filter,
-    PyBandpassFilter, PyMedianFilter, PyNotchFilter, PyTeagerKaiser, PyTemplateFilter,
+    bandpass_filter, highpass_filter, lowpass_filter, median_filter_9p, notch_filter,
+    subtract_template, teager_kaiser_filter, PyBandpassFilter, PyBandstopFilter,
+    PyHighpassFilter, PyLowpassFilter, PyMedianFilter, PyNotchFilter, PyTeagerKaiser,
+    PyTemplateFilter,
 };
 use crate::linalg::PyPca;
 use crate::math::{scale_samples, PyClamp, PyScale, PySubtractBaseline};
@@ -45,6 +48,9 @@ fn register_bindings(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyClamp>()?;
     m.add_class::<PyNotchFilter>()?;
     m.add_class::<PyBandpassFilter>()?;
+    m.add_class::<PyHighpassFilter>()?;
+    m.add_class::<PyLowpassFilter>()?;
+    m.add_class::<PyBandstopFilter>()?;
     m.add_class::<PyCommonAverageReference>()?;
     m.add_class::<PyMedianFilter>()?;
     m.add_class::<PyTeagerKaiser>()?;
@@ -66,6 +72,8 @@ fn register_bindings(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sort_recording, m)?)?;
     m.add_function(wrap_pyfunction!(notch_filter, m)?)?;
     m.add_function(wrap_pyfunction!(bandpass_filter, m)?)?;
+    m.add_function(wrap_pyfunction!(highpass_filter, m)?)?;
+    m.add_function(wrap_pyfunction!(lowpass_filter, m)?)?;
     m.add_function(wrap_pyfunction!(common_average_reference, m)?)?;
     m.add_function(wrap_pyfunction!(scale_samples, m)?)?;
     m.add_function(wrap_pyfunction!(median_filter_9p, m)?)?;

@@ -3,45 +3,25 @@
 //! `UnitQualityClassifier`) and `.safetensors` serialization.
 
 use pyo3::prelude::*;
-use pyo3::types::PyBytes;
 use dsp_synapse::{FeatureEmbedder, SnippetBatch, WaveformDenoiser};
 use dsp_synapse_ml::{
     ContrastiveWaveformEmbedder, DartsortVaeEmbedder, SafetensorsMap, SingleChannelDenoiser,
     SpatiotemporalUnetDenoiser, SynapseMlDevice, UnitQualityClassifier, UnitQualityFeatures,
 };
-use crate::synapse::PyWaveformSnippet;
+use crate::array::{to_numpy, F32Array};
 
-/// Helper to pack a slice of `PyWaveformSnippet` or a 3D float32 numpy array `[N, K, T]` into a `SnippetBatch`.
-pub(crate) fn numpy_3d_to_snippet_batch<'py>(
-    py: Python<'py>,
-    data: Bound<'py, PyAny>,
-) -> PyResult<SnippetBatch> {
-    let np = py.import("numpy")?;
-    let arr = np.call_method1("ascontiguousarray", (data, "float32"))?;
-    let shape: Vec<usize> = arr.getattr("shape")?.extract()?;
-    if shape.len() != 3 {
+/// Packs a 3D float32 numpy array `[N, K, T]` into a `SnippetBatch` (one copy: the batch owns its data).
+pub(crate) fn numpy_3d_to_snippet_batch(data: &Bound<'_, PyAny>) -> PyResult<SnippetBatch> {
+    let input = F32Array::new(data)?;
+    let [n, k, t] = input.shape()[..] else {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
             "Expected 3D float32 array [num_spikes, num_channels, num_samples], got shape {:?}",
-            shape
+            input.shape()
         )));
-    }
-    let [n, k, t] = [shape[0], shape[1], shape[2]];
-    let py_bytes = arr.call_method0("tobytes")?;
-    let raw_bytes: &[u8] = py_bytes.extract()?;
-    let float_slice: &[f32] = unsafe {
-        std::slice::from_raw_parts(
-            raw_bytes.as_ptr() as *const f32,
-            raw_bytes.len() / std::mem::size_of::<f32>(),
-        )
     };
-    let mut channel_ids = Vec::with_capacity(n * k);
-    for _ in 0..n {
-        for ch in 0..k {
-            channel_ids.push(ch);
-        }
-    }
+    let channel_ids = (0..n).flat_map(|_| 0..k).collect();
     Ok(SnippetBatch::from_raw_parts(
-        float_slice.to_vec(),
+        input.slice().to_vec(),
         n,
         k,
         t,
@@ -52,39 +32,9 @@ pub(crate) fn numpy_3d_to_snippet_batch<'py>(
     ))
 }
 
-pub(crate) fn snippet_batch_to_numpy_3d<'py>(
-    py: Python<'py>,
-    batch: &SnippetBatch,
-) -> PyResult<Bound<'py, PyAny>> {
-    let np = py.import("numpy")?;
-    let [n, k, t] = batch.shape();
-    let bytes: &[u8] = unsafe {
-        std::slice::from_raw_parts(
-            batch.data.as_ptr() as *const u8,
-            batch.data.len() * std::mem::size_of::<f32>(),
-        )
-    };
-    let py_bytes = PyBytes::new(py, bytes);
-    let flat = np.call_method1("frombuffer", (py_bytes, "float32"))?;
-    flat.call_method1("reshape", ((n, k, t),))
-}
-
-pub(crate) fn vec_f32_to_numpy_2d<'py>(
-    py: Python<'py>,
-    data: &[f32],
-    rows: usize,
-    cols: usize,
-) -> PyResult<Bound<'py, PyAny>> {
-    let np = py.import("numpy")?;
-    let bytes: &[u8] = unsafe {
-        std::slice::from_raw_parts(
-            data.as_ptr() as *const u8,
-            data.len() * std::mem::size_of::<f32>(),
-        )
-    };
-    let py_bytes = PyBytes::new(py, bytes);
-    let flat = np.call_method1("frombuffer", (py_bytes, "float32"))?;
-    flat.call_method1("reshape", ((rows, cols),))
+pub(crate) fn snippet_batch_to_numpy_3d<'py>(py: Python<'py>, batch: SnippetBatch) -> PyResult<Bound<'py, PyAny>> {
+    let shape = batch.shape();
+    to_numpy(py, batch.data, &shape)
 }
 
 /// Native 1D Spatio-Temporal UNet Waveform Denoiser (`[N, K, T] -> [N, K, T]`).
@@ -121,9 +71,10 @@ impl PySpatiotemporalUnetDenoiser {
         py: Python<'py>,
         snippets: Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let batch = numpy_3d_to_snippet_batch(py, snippets)?;
-        let out = self.inner.denoise(&batch);
-        snippet_batch_to_numpy_3d(py, &out)
+        let batch = numpy_3d_to_snippet_batch(&snippets)?;
+        let model = &self.inner;
+        let out = py.detach(|| model.denoise(&batch));
+        snippet_batch_to_numpy_3d(py, out)
     }
 
     pub fn save_safetensors(&self, path: &str) -> PyResult<()> {
@@ -164,9 +115,10 @@ impl PySingleChannelDenoiser {
         py: Python<'py>,
         snippets: Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let batch = numpy_3d_to_snippet_batch(py, snippets)?;
-        let out = self.inner.denoise(&batch);
-        snippet_batch_to_numpy_3d(py, &out)
+        let batch = numpy_3d_to_snippet_batch(&snippets)?;
+        let model = &self.inner;
+        let out = py.detach(|| model.denoise(&batch));
+        snippet_batch_to_numpy_3d(py, out)
     }
 }
 
@@ -204,9 +156,10 @@ impl PyDartsortVaeEmbedder {
         py: Python<'py>,
         snippets: Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let batch = numpy_3d_to_snippet_batch(py, snippets)?;
-        let (flat, dim) = self.inner.embed(&batch);
-        vec_f32_to_numpy_2d(py, &flat, batch.num_spikes, dim)
+        let batch = numpy_3d_to_snippet_batch(&snippets)?;
+        let model = &self.inner;
+        let (flat, dim) = py.detach(|| model.embed(&batch));
+        to_numpy(py, flat, &[batch.num_spikes, dim])
     }
 }
 
@@ -232,9 +185,10 @@ impl PyContrastiveWaveformEmbedder {
         py: Python<'py>,
         snippets: Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let batch = numpy_3d_to_snippet_batch(py, snippets)?;
-        let (flat, dim) = self.inner.embed(&batch);
-        vec_f32_to_numpy_2d(py, &flat, batch.num_spikes, dim)
+        let batch = numpy_3d_to_snippet_batch(&snippets)?;
+        let model = &self.inner;
+        let (flat, dim) = py.detach(|| model.embed(&batch));
+        to_numpy(py, flat, &[batch.num_spikes, dim])
     }
 }
 
@@ -262,23 +216,13 @@ impl PyUnitQualityClassifier {
         py: Python<'py>,
         features: Bound<'py, PyAny>,
     ) -> PyResult<Vec<(String, f32, f32, f32)>> {
-        let np = py.import("numpy")?;
-        let arr = np.call_method1("ascontiguousarray", (features, "float32"))?;
-        let shape: Vec<usize> = arr.getattr("shape")?.extract()?;
-        if shape.len() != 2 || shape[1] != 8 {
+        let input = F32Array::new(&features)?;
+        let [n, 8] = input.shape()[..] else {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "Expected [N, 8] float32 array of UnitQualityFeatures",
             ));
-        }
-        let n = shape[0];
-        let py_bytes = arr.call_method0("tobytes")?;
-        let raw_bytes: &[u8] = py_bytes.extract()?;
-        let s: &[f32] = unsafe {
-            std::slice::from_raw_parts(
-                raw_bytes.as_ptr() as *const f32,
-                raw_bytes.len() / std::mem::size_of::<f32>(),
-            )
         };
+        let s = input.slice();
         let mut units = Vec::with_capacity(n);
         for i in 0..n {
             let r = &s[i * 8..(i + 1) * 8];
@@ -293,8 +237,8 @@ impl PyUnitQualityClassifier {
                 repolarization_slope: r[7],
             });
         }
-        let preds = self.inner.classify_units(&units);
-        let _ = PyWaveformSnippet::primary_channel; // keep import alive
+        let model = &self.inner;
+        let preds = py.detach(|| model.classify_units(&units));
         Ok(preds
             .into_iter()
             .map(|p| {

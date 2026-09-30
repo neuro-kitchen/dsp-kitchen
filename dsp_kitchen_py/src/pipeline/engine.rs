@@ -1,10 +1,13 @@
 use pyo3::prelude::*;
 use dsp_base::pipeline::{Pipeline, PipelineStage};
-use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
-use cubecl::Runtime;
+use cubecl::prelude::ComputeClient;
+use cubecl::{CubeElement, Runtime};
+use dsp_base::{ComputeTarget, ComputeTask};
+
+use crate::array::{to_numpy, value_error, F32Array};
 
 use crate::math::{PyScale, PySubtractBaseline, PyClamp};
-use crate::filter::{PyNotchFilter, PyBandpassFilter, PyMedianFilter, PyTeagerKaiser};
+use crate::filter::{extract_filter_spec, PyMedianFilter, PyTeagerKaiser};
 use crate::spatial::PyCommonAverageReference;
 
 #[pyclass(name = "Pipeline")]
@@ -43,10 +46,8 @@ impl PyPipeline {
             self.stages.push(PipelineStage::SubtractBaseline { baseline_uv: base.baseline_uv });
         } else if let Ok(clamp) = item.extract::<PyRef<PyClamp>>() {
             self.stages.push(PipelineStage::Clamp { min: clamp.min_val, max: clamp.max_val });
-        } else if let Ok(notch) = item.extract::<PyRef<PyNotchFilter>>() {
-            self.stages.push(PipelineStage::Notch { freq_hz: notch.freq_hz, q: notch.q });
-        } else if let Ok(bp) = item.extract::<PyRef<PyBandpassFilter>>() {
-            self.stages.push(PipelineStage::Bandpass { low_hz: bp.low_hz, high_hz: bp.high_hz });
+        } else if let Some(spec) = extract_filter_spec(&item) {
+            self.stages.push(PipelineStage::Filter(spec));
         } else if item.is_instance_of::<PyCommonAverageReference>() {
             self.stages.push(PipelineStage::CommonAverageReference);
         } else if item.is_instance_of::<PyMedianFilter>() {
@@ -70,10 +71,13 @@ impl PyPipeline {
         self.stages.len()
     }
 
-    /// Computes the required filter boundary settling length in samples at `fs` Hz.
+    /// `(left, right)` context in samples a chunk needs at `fs` Hz so its interior matches
+    /// whole-recording filtering (forward-backward filters need both sides).
     #[pyo3(signature = (fs=30000.0))]
-    pub fn settling_samples(&self, fs: f64) -> usize {
-        self.to_rust_pipeline().settling_samples(fs)
+    pub fn settling(&self, fs: f64) -> PyResult<(usize, usize)> {
+        self.to_rust_pipeline()
+            .settling(fs)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
     }
 
     /// Executes the pipeline across 2D array [channels, samples] directly inside GPU VRAM.
@@ -85,55 +89,52 @@ impl PyPipeline {
         fs: f64,
         channels: Option<usize>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let np = py.import("numpy")?;
-        let arr = np.call_method1("ascontiguousarray", (data, "float32"))?;
-
-        let shape: Vec<usize> = arr.getattr("shape")?.extract()?;
-        let (ch, samples) = match shape.len() {
-            1 => {
-                let c = channels.unwrap_or(1);
-                let s = shape[0] / c;
-                (c, s)
-            }
-            2 => (shape[0], shape[1]),
-            _ => {
-                return Err(pyo3::exceptions::PyValueError::new_err(
-                    "Data must be a 1D or 2D float32 array [channels, samples]"
-                ));
-            }
-        };
-
-        let py_bytes = arr.call_method0("tobytes")?;
-        let raw_bytes: &[u8] = py_bytes.extract()?;
-
-        let rust_pipeline = Pipeline::with_stages(self.stages.clone());
-
-        let out_bytes = {
-            let device = WgpuDevice::default();
-            let client = WgpuRuntime::client(&device);
-
-            let in_handle = client.create_from_slice(raw_bytes);
-            let out_handle = rust_pipeline.execute::<WgpuRuntime>(
-                &client,
-                &in_handle,
-                ch,
-                samples,
-                fs,
-                false,
-            );
-
-            client.read_one_unchecked(out_handle)
-        };
-
-        let out_py_bytes = pyo3::types::PyBytes::new(py, &out_bytes);
-        let flat_arr = np.call_method1("frombuffer", (out_py_bytes, "float32"))?;
-        let reshaped = flat_arr.call_method1("reshape", ((ch, samples),))?;
-        Ok(reshaped)
+        run_pipeline(py, Pipeline::with_stages(self.stages.clone()), &data, fs, channels)
     }
 
     fn __repr__(&self) -> String {
         format!("Pipeline(stages={:?})", self.stages)
     }
+}
+
+/// Runs `pipeline` on a `[channels, samples]` array (or 1-D with `channels`) with the GIL released,
+/// on the runtime selected by `DSP_KITCHEN_RUNTIME` (default: first compiled-in).
+pub(crate) fn run_pipeline<'py>(
+    py: Python<'py>,
+    pipeline: Pipeline,
+    data: &Bound<'py, PyAny>,
+    fs: f64,
+    channels: Option<usize>,
+) -> PyResult<Bound<'py, PyAny>> {
+    struct Task<'a> {
+        pipeline: Pipeline,
+        x: &'a [f32],
+        channels: usize,
+        samples: usize,
+        fs: f64,
+    }
+    impl ComputeTask for Task<'_> {
+        type Output = Result<Vec<f32>, dsp_base::filter::FilterError>;
+        fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
+            let in_handle = client.create_from_slice(f32::as_bytes(self.x));
+            self.pipeline
+                .execute::<R>(&client, &in_handle, self.channels, self.samples, self.fs)
+                .map(|h| f32::from_bytes(&client.read_one_unchecked(h)).to_vec())
+        }
+    }
+
+    let input = F32Array::new(data)?;
+    let (ch, samples) = input.channels_samples(channels)?;
+    pipeline.validate(fs).map_err(value_error)?;
+    let target = compute_target()?;
+    let task = Task { pipeline, x: input.slice(), channels: ch, samples, fs };
+    let out = py.detach(|| target.run(task)).map_err(value_error)?;
+    to_numpy(py, out.map_err(value_error)?, &[ch, samples])
+}
+
+/// The compute runtime for native calls (`DSP_KITCHEN_RUNTIME`, default: first compiled-in).
+pub(crate) fn compute_target() -> PyResult<ComputeTarget> {
+    ComputeTarget::from_env().map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
 }
 
 // ============================================================================
@@ -179,44 +180,13 @@ impl PyDspSession {
             alpha: alpha.unwrap_or(0.195),
             beta: beta.unwrap_or(0.0),
         });
-        pipe.add(PipelineStage::Notch {
-            freq_hz: notch_freq.unwrap_or(60.0) as f64,
-            q: notch_q.unwrap_or(30.0) as f64,
-        });
+        pipe.add(PipelineStage::notch(
+            notch_freq.unwrap_or(60.0) as f64,
+            notch_q.unwrap_or(30.0) as f64,
+        ));
 
-        let np = py.import("numpy")?;
-        let arr = np.call_method1("ascontiguousarray", (input_data, "float32"))?;
-        let shape: Vec<usize> = arr.getattr("shape")?.extract()?;
-        let (ch, samples) = match shape.len() {
-            1 => (self.channels, shape[0] / self.channels),
-            2 => (shape[0], shape[1]),
-            _ => (self.channels, 0),
-        };
-
-        let py_bytes = arr.call_method0("tobytes")?;
-        let raw_bytes: &[u8] = py_bytes.extract()?;
-
-        let out_bytes = {
-            let device = WgpuDevice::default();
-            let client = WgpuRuntime::client(&device);
-
-            let in_handle = client.create_from_slice(raw_bytes);
-            let out_handle = pipe.execute::<WgpuRuntime>(
-                &client,
-                &in_handle,
-                ch,
-                samples,
-                self.sample_rate,
-                false,
-            );
-
-            client.read_one_unchecked(out_handle)
-        };
-
-        let out_py_bytes = pyo3::types::PyBytes::new(py, &out_bytes);
-        let flat_arr = np.call_method1("frombuffer", (out_py_bytes, "float32"))?;
-        let reshaped = flat_arr.call_method1("reshape", ((ch, samples),))?;
-        Ok(reshaped)
+        let flat = F32Array::new(&input_data)?.ndim() == 1;
+        run_pipeline(py, pipe, &input_data, self.sample_rate, flat.then_some(self.channels))
     }
 
     pub fn info(&self) -> String {

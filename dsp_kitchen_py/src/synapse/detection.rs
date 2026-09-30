@@ -4,6 +4,7 @@ use dsp_synapse::detection::{
     SpikeEvent, DeduplicatedSpike,
 };
 use super::probe::PyProbeLayout;
+use crate::array::F32Array;
 
 /// Detected spike event.
 #[pyclass(name = "SpikeEvent", skip_from_py_object)]
@@ -69,34 +70,10 @@ pub fn detect_spikes<'py>(
     threshold_factor: f32,
     refractory_samples: usize,
 ) -> PyResult<Vec<PySpikeEvent>> {
-    let np = py.import("numpy")?;
-    let arr = np.call_method1("ascontiguousarray", (data, "float32"))?;
-    let shape: Vec<usize> = arr.getattr("shape")?.extract()?;
-    let (ch, samples) = match shape.len() {
-        1 => {
-            let c = channels.ok_or_else(|| {
-                pyo3::exceptions::PyValueError::new_err("channels must be specified for 1D arrays")
-            })?;
-            (c, shape[0] / c)
-        }
-        2 => (shape[0], shape[1]),
-        _ => {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "Data must be a 1D or 2D float32 array [channels, samples]",
-            ));
-        }
-    };
-
-    let py_bytes = arr.call_method0("tobytes")?;
-    let raw_bytes: &[u8] = py_bytes.extract()?;
-    let float_slice: &[f32] = unsafe {
-        std::slice::from_raw_parts(
-            raw_bytes.as_ptr() as *const f32,
-            raw_bytes.len() / std::mem::size_of::<f32>(),
-        )
-    };
-
-    let spikes = detect_spikes_multichannel(float_slice, ch, samples, threshold_factor, refractory_samples);
+    let input = F32Array::new(&data)?;
+    let (ch, samples) = input.channels_samples(channels)?;
+    let x = input.slice();
+    let spikes = py.detach(|| detect_spikes_multichannel(x, ch, samples, threshold_factor, refractory_samples));
     let py_spikes = spikes
         .into_iter()
         .map(|s: SpikeEvent| PySpikeEvent {
@@ -112,6 +89,7 @@ pub fn detect_spikes<'py>(
 #[pyfunction]
 #[pyo3(signature = (spikes, probe, radius_um=50.0, window_samples=15))]
 pub fn deduplicate_spikes(
+    py: Python<'_>,
     spikes: Vec<PyRef<PySpikeEvent>>,
     probe: PyRef<PyProbeLayout>,
     radius_um: f32,
@@ -126,7 +104,8 @@ pub fn deduplicate_spikes(
         })
         .collect();
 
-    let deduped = deduplicate_spikes_spatial(&rust_spikes, &probe.inner, radius_um, window_samples);
+    let layout = &probe.inner;
+    let deduped = py.detach(|| deduplicate_spikes_spatial(&rust_spikes, layout, radius_um, window_samples));
 
     deduped
         .into_iter()
@@ -145,16 +124,8 @@ pub fn estimate_noise<'py>(
     py: Python<'py>,
     data: Bound<'py, PyAny>,
 ) -> PyResult<f32> {
-    let np = py.import("numpy")?;
-    let arr = np.call_method1("ascontiguousarray", (data, "float32"))?;
-    let py_bytes = arr.call_method0("tobytes")?;
-    let raw_bytes: &[u8] = py_bytes.extract()?;
-    let float_slice: &[f32] = unsafe {
-        std::slice::from_raw_parts(
-            raw_bytes.as_ptr() as *const f32,
-            raw_bytes.len() / std::mem::size_of::<f32>(),
-        )
-    };
-
-    Ok(estimate_noise_std(float_slice))
+    let input = F32Array::new(&data)?;
+    let x = input.slice();
+    Ok(py.detach(|| estimate_noise_std(x)))
 }
+
