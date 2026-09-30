@@ -64,12 +64,12 @@ impl SpatiotemporalUnetDenoiser {
 }
 
 impl WaveformDenoiser for SpatiotemporalUnetDenoiser {
-    fn denoise(&self, batch: &SnippetBatch) -> SnippetBatch {
+    fn denoise(&self, batch: &SnippetBatch) -> dsp_core::DspResult<SnippetBatch> {
         if batch.num_spikes == 0 {
-            return batch.clone();
+            return Ok(batch.clone());
         }
         let x = snippet_batch_to_tensor(batch, self.device);
         let y = self.forward(&x);
-        tensor_to_snippet_batch(y, batch)
+        Ok(tensor_to_snippet_batch(y, batch))
     }
 }

@@ -72,11 +72,13 @@ impl SpikeDetector for YassNeuralDetector {
         channels: usize,
         samples: usize,
         sample_rate_hz: f64,
-    ) -> Vec<SpikeEvent> {
+    ) -> dsp_core::DspResult<Vec<SpikeEvent>> {
         if channels == 0 || samples < 8 {
-            return Vec::new();
+            return Ok(Vec::new());
         }
-        assert_eq!(data.len(), channels * samples);
+        if data.len() != channels * samples {
+            return Err(dsp_core::DspError::ShapeMismatch { expected: vec![channels, samples], actual: vec![data.len()] });
+        }
 
         // Normalize input voltage by 50 uV scale into [channels, 1, samples]
         let scaled: Vec<f32> = data.iter().map(|&v| v / 50.0).collect();
@@ -112,6 +114,6 @@ impl SpikeDetector for YassNeuralDetector {
         }
 
         events.sort_by_key(|e| e.sample_index);
-        events
+        Ok(events)
     }
 }

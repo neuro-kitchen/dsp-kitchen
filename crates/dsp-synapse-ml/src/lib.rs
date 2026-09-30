@@ -113,12 +113,12 @@ mod tests {
 
         let mut deeptector = SpikeDeeptector::new(1, 40, 42, dev);
         deeptector.spike_prob_threshold = 0.20;
-        let detected = deeptector.detect(&raw, 4, 2_000, 30_000.0);
+        let detected = deeptector.detect(&raw, 4, 2_000, 30_000.0).unwrap();
         assert!(!detected.is_empty());
 
         let mut yass = YassNeuralDetector::new(8, 42, dev);
         yass.probability_threshold = 0.25;
-        let yass_events = yass.detect(&raw, 4, 2_000, 30_000.0);
+        let yass_events = yass.detect(&raw, 4, 2_000, 30_000.0).unwrap();
         assert!(!yass_events.is_empty());
 
         let ensor = EnsorArtifactRejector::new(4, 42, dev);
@@ -134,11 +134,11 @@ mod tests {
         let dev = SynapseMlDevice::Cpu;
 
         let sc_denoiser = SingleChannelDenoiser::new(8, 101, dev);
-        let d1 = sc_denoiser.denoise(&batch);
+        let d1 = sc_denoiser.denoise(&batch).unwrap();
         assert_eq!(d1.shape(), batch.shape());
 
         let st_unet = SpatiotemporalUnetDenoiser::new(4, 40, 8, 202, dev);
-        let d2 = st_unet.denoise(&batch);
+        let d2 = st_unet.denoise(&batch).unwrap();
         assert_eq!(d2.shape(), batch.shape());
 
         // Verify Safetensors weight save/load roundtrip on SpatiotemporalUnetDenoiser
@@ -148,7 +148,7 @@ mod tests {
         let loaded_map = SafetensorsMap::from_bytes(&bytes).unwrap();
         let mut st_unet_reloaded = SpatiotemporalUnetDenoiser::new(4, 40, 8, 999, dev);
         st_unet_reloaded.load_weights(&loaded_map).unwrap();
-        let d2_reloaded = st_unet_reloaded.denoise(&batch);
+        let d2_reloaded = st_unet_reloaded.denoise(&batch).unwrap();
         assert_eq!(d2.data, d2_reloaded.data);
 
         let sep = CollisionSeparatorNet::new(4, 8, 303, dev);
@@ -164,13 +164,13 @@ mod tests {
 
         // 1. Conv Autoencoder
         let ae = ConvAutoencoderEmbedder::new(4, 40, 6, 42, dev);
-        let (emb_ae, dim_ae) = ae.embed(&batch);
+        let (emb_ae, dim_ae) = ae.embed(&batch).unwrap();
         assert_eq!(dim_ae, 6);
         assert_eq!(emb_ae.len(), 2 * 6);
 
         // 2. Dartsort Variational Autoencoder
         let vae = DartsortVaeEmbedder::new(4, 40, 6, 42, dev);
-        let (emb_vae, dim_vae) = vae.embed(&batch);
+        let (emb_vae, dim_vae) = vae.embed(&batch).unwrap();
         assert_eq!(dim_vae, 6);
         assert_eq!(emb_vae.len(), 2 * 6);
         let post = vae.encode_posterior(&snippet_batch_to_tensor(&batch, dev));
@@ -180,7 +180,7 @@ mod tests {
 
         // 3. Contrastive SimCLR Embedder (verify unit-norm vectors ||z||_2 == 1.0)
         let simclr = ContrastiveWaveformEmbedder::new(4, 8, 42, dev);
-        let (emb_con, dim_con) = simclr.embed(&batch);
+        let (emb_con, dim_con) = simclr.embed(&batch).unwrap();
         assert_eq!(dim_con, 8);
         let norm0: f32 = emb_con[0..8].iter().map(|v| v * v).sum::<f32>().sqrt();
         assert!((norm0 - 1.0).abs() < 1e-4);
@@ -192,7 +192,7 @@ mod tests {
         let dev = SynapseMlDevice::Cpu;
 
         let mono = MonopolarMlpLocalizer::new(4, 42, dev);
-        let coords = mono.localize(&batch, &layout);
+        let coords = mono.localize(&batch, &layout).unwrap();
         assert_eq!(coords.len(), 2);
         assert!(coords[0][2] >= 1.0); // Positive z-distance
 
@@ -260,7 +260,7 @@ mod tests {
         let cebra_runner = OnnxGraphRunner::from_bytes(&cebra_onnx, dev).unwrap();
         let cebra_profile = CebraProfile::new(k, t, out_dim);
         let cebra_embedder = cebra_profile.wrap_embedder(cebra_runner);
-        let (emb_cebra, d_cebra) = cebra_embedder.embed(&batch);
+        let (emb_cebra, d_cebra) = cebra_embedder.embed(&batch).unwrap();
         assert_eq!(d_cebra, out_dim);
         assert_eq!(emb_cebra.len(), 2 * out_dim);
         let norm_s0: f32 = emb_cebra[0..out_dim].iter().map(|v| v * v).sum::<f32>().sqrt();
@@ -285,7 +285,7 @@ mod tests {
         let dart_runner = OnnxGraphRunner::from_bytes(&dart_denoiser_onnx, dev).unwrap();
         let dart_profile = DartsortProfile::new(k, t, 8);
         let dart_denoiser = dart_profile.wrap_denoiser(dart_runner);
-        let denoised = dart_denoiser.denoise(&batch);
+        let denoised = dart_denoiser.denoise(&batch).unwrap();
         assert_eq!(denoised.shape(), batch.shape());
 
         // 3. DARTsort 3D Peak Localizer via ONNX
@@ -304,7 +304,7 @@ mod tests {
         );
         let loc_runner = OnnxGraphRunner::from_bytes(&loc_onnx, dev).unwrap();
         let dart_loc = dart_profile.wrap_localizer(loc_runner);
-        let coords = dart_loc.localize(&batch, &layout);
+        let coords = dart_loc.localize(&batch, &layout).unwrap();
         assert_eq!(coords.len(), 2);
         assert!(coords[0][2] >= 1.0);
 
@@ -338,7 +338,7 @@ mod tests {
             trough_to_peak_ms: 0.48,
             repolarization_slope: 80.0,
         };
-        let bc_preds = bc_curator.classify_units(&[sua_unit]);
+        let bc_preds = bc_curator.classify_units(&[sua_unit]).unwrap();
         assert_eq!(bc_preds.len(), 1);
         assert_eq!(bc_preds[0].label, UnitQualityLabel::SingleUnit);
 
@@ -346,5 +346,29 @@ mod tests {
         let ks4 = Kilosort4Profile::neuropixels_default(k, t);
         assert_eq!(ks4.profile.family, ExternalSorterFamily::Kilosort4);
         assert_eq!(ks4.profile.embedding_dim, k * 6);
+    }
+
+    #[test]
+    fn test_onnx_adapters_report_shape_mismatches_as_errors() {
+        use dsp_core::DspError;
+        let (_raw, batch, layout) = make_synthetic_tetrode_batch();
+        let dev = SynapseMlDevice::Cpu;
+        let [_, k, t] = batch.shape();
+
+        // A Flatten + Gemm model built for one more channel than the snippets have
+        let (wrong_k, out_dim) = (k + 1, 3);
+        let weights = vec![0.01f32; out_dim * wrong_k * t];
+        let model = onnx_proto_builder::encode_flatten_gemm_onnx_bytes("x", "y", wrong_k, t, out_dim, &weights, &[0.0; 3]);
+        let runner = || OnnxGraphRunner::from_bytes(&model, dev).unwrap();
+
+        let embedded = OnnxFeatureEmbedder::new(runner(), out_dim).embed(&batch);
+        assert!(matches!(embedded, Err(DspError::Model(_))), "{embedded:?}");
+        let located = OnnxPeakLocalizer::new(runner()).localize(&batch, &layout);
+        assert!(matches!(located, Err(DspError::Model(_))), "{located:?}");
+
+        // A matching model whose output is too narrow for [x, y, z]
+        let narrow = onnx_proto_builder::encode_flatten_gemm_onnx_bytes("x", "y", k, t, 2, &vec![0.01f32; 2 * k * t], &[0.0; 2]);
+        let located = OnnxPeakLocalizer::new(OnnxGraphRunner::from_bytes(&narrow, dev).unwrap()).localize(&batch, &layout);
+        assert!(matches!(&located, Err(DspError::Model(m)) if m.contains("expected")), "{located:?}");
     }
 }

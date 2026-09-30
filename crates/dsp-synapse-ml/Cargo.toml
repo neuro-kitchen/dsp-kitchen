@@ -14,7 +14,7 @@ cpu = ["cubecl/cpu", "dsp-base/cpu"]
 cuda = ["cubecl/cuda", "dsp-base/cuda"]
 
 [dependencies]
-dsp-core.workspace = true
+dsp-core = { workspace = true, features = ["compute"] }
 dsp-base.workspace = true
 dsp-synapse.workspace = true
 burn-tensor.workspace = true

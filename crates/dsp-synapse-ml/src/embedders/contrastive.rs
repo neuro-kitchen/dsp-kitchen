@@ -60,12 +60,12 @@ impl ContrastiveWaveformEmbedder {
 }
 
 impl FeatureEmbedder for ContrastiveWaveformEmbedder {
-    fn embed(&self, batch: &SnippetBatch) -> (Vec<f32>, usize) {
+    fn embed(&self, batch: &SnippetBatch) -> dsp_core::DspResult<(Vec<f32>, usize)> {
         if batch.num_spikes == 0 {
-            return (Vec::new(), self.latent_dim);
+            return Ok((Vec::new(), self.latent_dim));
         }
         let x = snippet_batch_to_tensor(batch, self.device).mul_scalar(0.01);
         let z = self.encode_normalized(&x);
-        (z.into_vec(), self.latent_dim)
+        Ok((z.into_vec(), self.latent_dim))
     }
 }

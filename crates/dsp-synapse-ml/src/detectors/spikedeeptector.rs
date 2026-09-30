@@ -102,7 +102,7 @@ impl SpikeDetector for SpikeDeeptector {
         channels: usize,
         samples: usize,
         sample_rate_hz: f64,
-    ) -> Vec<SpikeEvent> {
+    ) -> dsp_core::DspResult<Vec<SpikeEvent>> {
         let refractory_samples = ((sample_rate_hz * 0.001) as usize).max(10);
         // 1. Propose candidates via fast threshold crossing
         let candidates = detect_spikes_multichannel(
@@ -113,7 +113,7 @@ impl SpikeDetector for SpikeDeeptector {
             refractory_samples,
         );
         if candidates.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
         let post_samples = self.snippet_samples.saturating_sub(self.pre_samples);
@@ -135,7 +135,7 @@ impl SpikeDetector for SpikeDeeptector {
         }
 
         if valid_candidates.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
 
         let n = valid_candidates.len();
@@ -143,7 +143,7 @@ impl SpikeDetector for SpikeDeeptector {
             Tensor3D::from_floats(flat_snippets, [n, 1, self.snippet_samples], self.device);
         let probs = self.predict_proba_tensor(&input_tensor);
 
-        valid_candidates
+        Ok(valid_candidates
             .into_iter()
             .enumerate()
             .filter_map(|(i, ev)| {
@@ -154,6 +154,6 @@ impl SpikeDetector for SpikeDeeptector {
                     None
                 }
             })
-            .collect()
+            .collect())
     }
 }
