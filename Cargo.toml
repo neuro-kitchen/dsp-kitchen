@@ -28,7 +28,10 @@ dsp-bridge = { path = "crates/dsp-bridge" }
 
 # Compute & Tensors
 cubecl = { version = "0.10.0", default-features = false }
-ndarray = "0.17.2"
+burn-tensor = "0.21.0"
+burn-flex = "0.21.0"
+burn-wgpu = "0.21.0"
+safetensors = "0.8.0"
 bytemuck = { version = "1.25.2", features = ["derive"] }
 
 # CLI & Configuration
@@ -37,7 +40,7 @@ clap = { version = "4.6.7", features = ["derive", "cargo", "env"] }
 # IPC & Transport
 shared_memory = "0.12.4"
 memmap2 = "0.9.11"
-zarrs = "0.23.14"
+zarrs = { version = "0.23.14", default-features = false, features = ["filesystem", "blosc", "crc32c", "gzip", "sharding", "zstd"] }
 quinn = "0.11.12"
 tonic = "0.14.6"
 prost = "0.14.4"
@@ -46,8 +49,8 @@ rustls = { version = "0.23.45", default-features = false, features = ["ring", "s
 rustls-pki-types = "1.15.1"
 
 # UI & Graphics
-slint = "1.18.0"
-slint-build = "1.18.0"
+slint = "1.18.1"
+slint-build = "1.18.1"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 rfd = "0.17.2"
 

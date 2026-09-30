@@ -1,4 +1,4 @@
-//! Native zero-dependency parser and serializer for the HuggingFace `.safetensors` binary format.
+//! Parser and serializer for the HuggingFace `.safetensors` binary format powered by `safetensors` (`0.8.0`).
 //!
 //! Binary layout specification:
 //! - Bytes `0..8`: `u64` little-endian header byte length $N$.
@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 use anyhow::{Context, Result, bail};
+use safetensors::tensor::{Dtype, SafeTensors, TensorView};
 use serde::{Deserialize, Serialize};
 use crate::backend::{SynapseMlDevice, Tensor};
 
@@ -76,110 +77,40 @@ impl SafetensorsMap {
         Ok(Tensor::from_floats(data.clone(), shape, device))
     }
 
-    /// Serializes all stored tensors into the standard `.safetensors` binary format.
+    /// Serializes all stored tensors into the standard `.safetensors` binary format via `safetensors::serialize`.
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
-        let mut header_map: BTreeMap<String, SafetensorEntryHeader> = BTreeMap::new();
-        let mut current_offset = 0usize;
-
+        let mut views = Vec::with_capacity(self.tensors.len());
         for (name, (shape, data)) in &self.tensors {
-            let byte_len = data.len() * std::mem::size_of::<f32>();
-            header_map.insert(
-                name.clone(),
-                SafetensorEntryHeader {
-                    dtype: "F32".to_string(),
-                    shape: shape.clone(),
-                    data_offsets: [current_offset, current_offset + byte_len],
-                },
-            );
-            current_offset += byte_len;
+            let raw_bytes: &[u8] = bytemuck::cast_slice(data.as_slice());
+            let view = TensorView::new(Dtype::F32, shape.clone(), raw_bytes)
+                .with_context(|| format!("Failed to construct TensorView for '{}'", name))?;
+            views.push((name.as_str(), view));
         }
-
-        let mut json_bytes = serde_json::to_vec(&header_map)?;
-        // Pad JSON header to 8-byte alignment with spaces per safetensors spec
-        while json_bytes.len() % 8 != 0 {
-            json_bytes.push(b' ');
-        }
-
-        let header_len = json_bytes.len() as u64;
-        let mut out = Vec::with_capacity(8 + json_bytes.len() + current_offset);
-        out.extend_from_slice(&header_len.to_le_bytes());
-        out.extend_from_slice(&json_bytes);
-
-        for (_name, (_shape, data)) in &self.tensors {
-            for &val in data {
-                out.extend_from_slice(&val.to_le_bytes());
-            }
-        }
-
-        Ok(out)
+        let encoded = safetensors::serialize(views, None)
+            .context("Failed to serialize SafetensorsMap")?;
+        Ok(encoded)
     }
 
-    /// Parses a `.safetensors` byte buffer into a `SafetensorsMap`.
+    /// Parses a `.safetensors` byte buffer into a `SafetensorsMap` via `safetensors::SafeTensors::deserialize`.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() < 8 {
-            bail!("Invalid safetensors buffer: shorter than 8-byte header length");
-        }
-
-        let mut len_bytes = [0u8; 8];
-        len_bytes.copy_from_slice(&bytes[0..8]);
-        let header_len = u64::from_le_bytes(len_bytes) as usize;
-
-        if bytes.len() < 8 + header_len {
-            bail!(
-                "Invalid safetensors buffer: header_len {} exceeds buffer size {}",
-                header_len,
-                bytes.len()
-            );
-        }
-
-        let header_slice = &bytes[8..8 + header_len];
-        let raw_body = &bytes[8 + header_len..];
-
-        let raw_json: serde_json::Value = serde_json::from_slice(header_slice)
-            .context("Failed to parse safetensors JSON header")?;
-        let obj = raw_json
-            .as_object()
-            .context("Safetensors header must be a JSON object")?;
+        let st = SafeTensors::deserialize(bytes)
+            .context("Failed to deserialize .safetensors buffer")?;
 
         let mut tensors = BTreeMap::new();
-        for (key, val) in obj {
-            if key == "__metadata__" {
-                continue;
-            }
-            let entry: SafetensorEntryHeader = serde_json::from_value(val.clone())
-                .with_context(|| format!("Invalid tensor entry header for '{}'", key))?;
-
-            if entry.dtype != "F32" {
+        for (key, view) in st.tensors() {
+            if view.dtype() != Dtype::F32 {
                 bail!(
-                    "Unsupported dtype '{}' for tensor '{}', only F32 is supported",
-                    entry.dtype,
+                    "Unsupported dtype {:?} for tensor '{}', only F32 is supported",
+                    view.dtype(),
                     key
                 );
             }
-
-            let [start, end] = entry.data_offsets;
-            if end > raw_body.len() || start > end || (end - start) % 4 != 0 {
-                bail!("Invalid data_offsets {:?} for tensor '{}'", entry.data_offsets, key);
-            }
-
-            let num_floats = (end - start) / 4;
-            let expected_numel: usize = entry.shape.iter().product();
-            if num_floats != expected_numel {
-                bail!(
-                    "Shape {:?} mismatch with byte length {} for tensor '{}'",
-                    entry.shape,
-                    end - start,
-                    key
-                );
-            }
-
-            let mut vec = Vec::with_capacity(num_floats);
-            let slice = &raw_body[start..end];
-            for chunk in slice.chunks_exact(4) {
+            let raw_slice = view.data();
+            let mut vec = Vec::with_capacity(raw_slice.len() / 4);
+            for chunk in raw_slice.chunks_exact(4) {
                 vec.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
             }
-
-            tensors.insert(key.clone(), (entry.shape, vec));
+            tensors.insert(key, (view.shape().to_vec(), vec));
         }
 
         Ok(Self { tensors })
