@@ -1,11 +1,48 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use pyo3::exceptions::{PyIOError, PyIndexError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PySlice, PyTuple};
 
+use crate::array::to_numpy;
+
 use dsp_core::{RecordingSource, SlicedRecording};
 use dsp_io::nwb::{list_series, NwbZarrRecording};
+
+/// Reads `[start_sample, end_sample)` (default: 1 s at the recording rate) of `channels` (default:
+/// all) as a µV `float32` `[channels, samples]` NumPy array, with the GIL released during the read.
+pub(crate) fn read_to_numpy<'py>(
+    py: Python<'py>,
+    source: &dyn RecordingSource,
+    start_sample: u64,
+    end_sample: Option<u64>,
+    channels: Option<Vec<usize>>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let info = source.info();
+    let (total_samples, total_channels) = (info.samples, info.channel_count());
+    let one_second = info.sample_rate_hz().round().max(1.0) as u64;
+    let end = end_sample.unwrap_or_else(|| start_sample.saturating_add(one_second).min(total_samples));
+    if start_sample > end || end > total_samples {
+        return Err(PyValueError::new_err(format!(
+            "sample range {start_sample}..{end} is outside 0..{total_samples}"
+        )));
+    }
+    let ch_indices: Vec<usize> = channels.unwrap_or_else(|| (0..total_channels).collect());
+    if let Some(&bad) = ch_indices.iter().find(|&&c| c >= total_channels) {
+        return Err(PyIndexError::new_err(format!(
+            "channel {bad} out of range for a recording with {total_channels} channels"
+        )));
+    }
+    let n_ch = ch_indices.len();
+    let n_samp = (end - start_sample) as usize;
+    let buf = py.detach(|| {
+        let mut buf = vec![0.0f32; n_ch * n_samp];
+        source.read(&ch_indices, start_sample..end, &mut buf).map(|_| buf)
+    });
+    let buf = buf.map_err(|e| PyIOError::new_err(format!("read error: {e}")))?;
+    to_numpy(py, buf, &[n_ch, n_samp])
+}
 
 /// Lists continuous series (`ElectricalSeries` and `TimeSeries` with regular rate)
 /// inside an NWB Zarr v3 store (`/acquisition/*`).
@@ -242,8 +279,8 @@ impl PyNwbZarrRecording {
         ))
     }
 
-    /// Reads a slice `[start_sample..end_sample]` across the specified `channels` (default: all channels)
-    /// and returns a 2D NumPy `float32` array of shape `(n_channels, n_samples)`.
+    /// Reads µV `float32` `[channels, samples]` for `[start_sample, end_sample)` across `channels`
+    /// (default: all channels, 1 s from `start_sample`).
     #[pyo3(signature = (start_sample=0, end_sample=None, channels=None))]
     pub fn read<'py>(
         &self,
@@ -252,37 +289,7 @@ impl PyNwbZarrRecording {
         end_sample: Option<u64>,
         channels: Option<Vec<usize>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let total_samples = self.inner.info().samples;
-        let total_channels = self.inner.info().channel_count();
-        let end = end_sample.unwrap_or_else(|| (start_sample + 24414).min(total_samples));
-        if start_sample > end || end > total_samples {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "Invalid sample range {}..{} for recording with {} samples",
-                start_sample, end, total_samples
-            )));
-        }
-
-        let ch_indices: Vec<usize> = channels.unwrap_or_else(|| (0..total_channels).collect());
-        let n_ch = ch_indices.len();
-        let n_samp = (end - start_sample) as usize;
-
-        let mut buf = vec![0.0f32; n_ch * n_samp];
-        self.inner
-            .read(&ch_indices, start_sample..end, &mut buf)
-            .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("Read error: {e}")))?;
-
-        let np = py.import("numpy")?;
-        let bytes = unsafe {
-            std::slice::from_raw_parts(
-                buf.as_ptr() as *const u8,
-                buf.len() * std::mem::size_of::<f32>(),
-            )
-        };
-        let py_bytes = pyo3::types::PyBytes::new(py, bytes);
-        let flat = np.call_method1("frombuffer", (py_bytes, "float32"))?;
-        let copied = flat.call_method0("copy")?;
-        let reshaped = copied.call_method1("reshape", ((n_ch, n_samp),))?;
-        Ok(reshaped)
+        read_to_numpy(py, self.inner.as_ref(), start_sample, end_sample, channels)
     }
 
     /// Reads a time window `[start_sec, start_sec + duration_sec]` and returns `(time_sec_array, data_2d_array)`.

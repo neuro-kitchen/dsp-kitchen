@@ -1,5 +1,6 @@
 use pyo3::prelude::*;
-use pyo3::types::PyBytes;
+
+use crate::array::{to_numpy, F32Array};
 use dsp_synapse::detection::DeduplicatedSpike;
 use dsp_synapse::extraction::{extract_snippets_multichannel, WaveformSnippet};
 use super::detection::PyDeduplicatedSpike;
@@ -46,19 +47,8 @@ impl PyWaveformSnippet {
 
     /// Returns the 2D waveform as a numpy array of shape [num_channels, num_samples].
     pub fn waveform<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let np = py.import("numpy")?;
-        let bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(
-                self.inner.waveform.as_ptr() as *const u8,
-                self.inner.waveform.len() * std::mem::size_of::<f32>(),
-            )
-        };
-        let py_bytes = PyBytes::new(py, bytes);
-        let flat = np.call_method1("frombuffer", (py_bytes, "float32"))?;
-        let k = self.inner.num_channels();
-        let samples = self.inner.num_samples;
-        let arr = flat.call_method1("reshape", ((k, samples),))?;
-        Ok(arr)
+        let shape = [self.inner.num_channels(), self.inner.num_samples];
+        to_numpy(py, self.inner.waveform.clone(), &shape)
     }
 
     fn __repr__(&self) -> String {
@@ -86,32 +76,9 @@ pub fn extract_snippets<'py>(
     post_samples: usize,
     apply_sinc_shift: bool,
 ) -> PyResult<Vec<PyWaveformSnippet>> {
-    let np = py.import("numpy")?;
-    let arr = np.call_method1("ascontiguousarray", (data, "float32"))?;
-    let shape: Vec<usize> = arr.getattr("shape")?.extract()?;
-    let (ch, samples) = match shape.len() {
-        1 => {
-            let c = channels.ok_or_else(|| {
-                pyo3::exceptions::PyValueError::new_err("channels must be specified for 1D arrays")
-            })?;
-            (c, shape[0] / c)
-        }
-        2 => (shape[0], shape[1]),
-        _ => {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "Data must be a 1D or 2D float32 array [channels, samples]",
-            ));
-        }
-    };
-
-    let py_bytes = arr.call_method0("tobytes")?;
-    let raw_bytes: &[u8] = py_bytes.extract()?;
-    let float_slice: &[f32] = unsafe {
-        std::slice::from_raw_parts(
-            raw_bytes.as_ptr() as *const f32,
-            raw_bytes.len() / std::mem::size_of::<f32>(),
-        )
-    };
+    let input = F32Array::new(&data)?;
+    let (ch, samples) = input.channels_samples(channels)?;
+    let float_slice = input.slice();
 
     let rust_spikes: Vec<DeduplicatedSpike> = spikes
         .iter()
@@ -123,17 +90,20 @@ pub fn extract_snippets<'py>(
         })
         .collect();
 
-    let snippets = extract_snippets_multichannel(
-        float_slice,
-        ch,
-        samples,
-        &rust_spikes,
-        &probe.inner,
-        k_neighbors,
-        pre_samples,
-        post_samples,
-        apply_sinc_shift,
-    );
+    let layout = &probe.inner;
+    let snippets = py.detach(|| {
+        extract_snippets_multichannel(
+            float_slice,
+            ch,
+            samples,
+            &rust_spikes,
+            layout,
+            k_neighbors,
+            pre_samples,
+            post_samples,
+            apply_sinc_shift,
+        )
+    });
 
     Ok(snippets
         .into_iter()

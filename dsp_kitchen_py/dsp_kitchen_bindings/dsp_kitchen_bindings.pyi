@@ -2,7 +2,7 @@
 PEP 484 type stubs for the compiled Rust `dsp_kitchen_bindings` PyO3 extension module.
 """
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 import numpy as np
 import numpy.typing as npt
 
@@ -62,12 +62,19 @@ class WaveformSnippet:
     def waveform(self) -> npt.NDArray[np.float32]: ...
 
 class MmapRecording:
+    """Memory-mapped raw binary recording. Layout from the JSON sidecar (`rec.bin` -> `rec.meta`)
+    or from `channels` + `sample_rate` (+ dtype / order / gain)."""
     def __init__(
         self,
         path: str,
-        channels: int = 384,
-        samples: int = 0,
-        sample_rate: float = 30000.0,
+        channels: Optional[int] = None,
+        sample_rate: Optional[float] = None,
+        dtype: Literal["float32", "int16", "uint16"] = "float32",
+        order: Literal["channel_major", "time_major"] = "channel_major",
+        gain_uv: float = 1.0,
+        offset_uv: float = 0.0,
+        header_bytes: int = 0,
+        samples: Optional[int] = None,
     ) -> None: ...
     @property
     def path(self) -> str: ...
@@ -80,9 +87,20 @@ class MmapRecording:
     @property
     def shape(self) -> Tuple[int, int]: ...
     @property
+    def dtype(self) -> str: ...
+    @property
     def total_bytes(self) -> int: ...
-    def memoryview(self) -> memoryview: ...
-    def to_numpy(self) -> npt.NDArray[np.float32]: ...
+    def read(
+        self,
+        start_sample: int = 0,
+        end_sample: Optional[int] = None,
+        channels: Optional[List[int]] = None,
+    ) -> npt.NDArray[np.float32]:
+        """µV float32 copy [channels, samples]; default window 1 s."""
+    def memoryview(self) -> memoryview:
+        """Zero-copy read-only view of the stored bytes; keeps the recording alive."""
+    def to_numpy(self) -> npt.NDArray[Any]:
+        """Zero-copy read-only [channels, samples] view in the stored dtype; keeps the recording alive."""
 
 class NwbZarrRecording:
     def __init__(self, path: str, series: Optional[str] = None) -> None: ...
@@ -129,7 +147,8 @@ class NwbZarrRecording:
         start_sample: int = 0,
         end_sample: Optional[int] = None,
         channels: Optional[List[int]] = None,
-    ) -> npt.NDArray[np.float32]: ...
+    ) -> npt.NDArray[np.float32]:
+        """µV float32 [channels, samples]; default window 1 s. IndexError / ValueError on bad input."""
     def read_window(
         self,
         start_sec: float = 0.0,
@@ -148,15 +167,37 @@ class SubtractBaseline:
 class Clamp:
     def __init__(self, min_val: float, max_val: float) -> None: ...
 
+Direction = Literal["forward-backward", "forward"]
+
 class NotchFilter:
-    def __init__(self, freq_hz: float, sample_rate: float = 30000.0, q: float = 30.0) -> None: ...
+    """Second-order notch (scipy `iirnotch`)."""
+    def __init__(
+        self, freq_hz: float = 60.0, q: float = 30.0, direction: Direction = "forward-backward"
+    ) -> None: ...
 
 class BandpassFilter:
+    """Butterworth band-pass; `order` per edge (scipy / SpikeInterface convention)."""
     def __init__(
         self,
         low_hz: float = 300.0,
         high_hz: float = 6000.0,
-        sample_rate: float = 30000.0,
+        order: int = 5,
+        direction: Direction = "forward-backward",
+    ) -> None: ...
+
+class HighpassFilter:
+    def __init__(
+        self, cutoff_hz: float = 300.0, order: int = 5, direction: Direction = "forward-backward"
+    ) -> None: ...
+
+class LowpassFilter:
+    def __init__(
+        self, cutoff_hz: float = 300.0, order: int = 5, direction: Direction = "forward-backward"
+    ) -> None: ...
+
+class BandstopFilter:
+    def __init__(
+        self, low_hz: float, high_hz: float, order: int = 5, direction: Direction = "forward-backward"
     ) -> None: ...
 
 class CommonAverageReference:
@@ -177,7 +218,8 @@ class Pipeline:
     @property
     def stages(self) -> List[str]: ...
     def __len__(self) -> int: ...
-    def settling_samples(self, fs: float = 30000.0) -> int: ...
+    def settling(self, fs: float = 30000.0) -> Tuple[int, int]:
+        """(left, right) samples of context a chunk needs to match whole-recording filtering."""
     def run(
         self,
         data: npt.NDArray[np.float32],
@@ -218,6 +260,7 @@ def sort_recording(
     post_ms: float = 2.0,
     batch_duration_sec: float = 10.0,
     calibration_duration_sec: float = 5.0,
+    calibration_chunks: int = 5,
     apply_sinc_shift: bool = True,
     start_sec: Optional[float] = None,
     duration_sec: Optional[float] = None,
@@ -285,19 +328,32 @@ class OnnxModelRunner:
 
 def notch_filter(
     data: npt.NDArray[np.float32],
-    freq_hz: float = 60.0,
-    sample_rate: float = 30000.0,
+    freq: float = 60.0,
     q: float = 30.0,
-    channels: Optional[int] = None,
-    backend: str = "cpu",
+    fs: float = 30000.0,
+    direction: Direction = "forward-backward",
 ) -> npt.NDArray[np.float32]: ...
 def bandpass_filter(
     data: npt.NDArray[np.float32],
-    low_hz: float = 300.0,
-    high_hz: float = 6000.0,
-    sample_rate: float = 30000.0,
-    channels: Optional[int] = None,
-    backend: str = "cpu",
+    low: float = 300.0,
+    high: float = 6000.0,
+    fs: float = 30000.0,
+    order: int = 5,
+    direction: Direction = "forward-backward",
+) -> npt.NDArray[np.float32]: ...
+def highpass_filter(
+    data: npt.NDArray[np.float32],
+    cutoff: float = 300.0,
+    fs: float = 30000.0,
+    order: int = 5,
+    direction: Direction = "forward-backward",
+) -> npt.NDArray[np.float32]: ...
+def lowpass_filter(
+    data: npt.NDArray[np.float32],
+    cutoff: float = 300.0,
+    fs: float = 30000.0,
+    order: int = 5,
+    direction: Direction = "forward-backward",
 ) -> npt.NDArray[np.float32]: ...
 def common_average_reference(
     data: npt.NDArray[np.float32],
@@ -354,9 +410,13 @@ def extract_snippets(
 ) -> List[WaveformSnippet]: ...
 def compute_isi(
     spike_samples: List[int],
-    sample_rate: float = 30000.0,
+    sample_rate_hz: float = 30000.0,
     refractory_ms: float = 1.5,
-) -> Tuple[int, float]: ...
+    total_duration_sec: Optional[float] = None,
+    min_isi_ms: float = 0.0,
+) -> Dict[str, float]:
+    """ISI violations (SpikeInterface `isi_violations`): total_spikes, violation_count,
+    violation_rate_pct, isi_violations_ratio (Hill), violations_per_sec, firing_rate_hz."""
 def compute_snr(
     snippets: List[WaveformSnippet],
     baseline_noise_uv: float,

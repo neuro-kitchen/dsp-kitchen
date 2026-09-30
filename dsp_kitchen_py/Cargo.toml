@@ -26,6 +26,7 @@ dsp-synapse.workspace = true
 dsp-synapse-ml.workspace = true
 cubecl = { workspace = true, features = ["wgpu"] }
 pyo3.workspace = true
+numpy.workspace = true
 memmap2.workspace = true
 serde.workspace = true
 thiserror.workspace = true

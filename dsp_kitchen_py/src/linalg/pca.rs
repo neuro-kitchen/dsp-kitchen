@@ -1,8 +1,12 @@
 use pyo3::prelude::*;
-use pyo3::types::PyBytes;
 use dsp_base::linalg::PcaModel;
-use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
-use cubecl::Runtime;
+use cubecl::prelude::ComputeClient;
+use cubecl::{CubeElement, Runtime};
+use dsp_base::ComputeTask;
+
+use crate::pipeline::compute_target;
+
+use crate::array::{to_numpy, F32Array};
 
 #[pyclass(name = "PCA")]
 pub struct PyPca {
@@ -29,34 +33,10 @@ impl PyPca {
     /// Fits the PCA model to the input array of shape [channels, samples].
     #[pyo3(signature = (data, channels=None))]
     pub fn fit<'py>(&mut self, py: Python<'py>, data: Bound<'py, PyAny>, channels: Option<usize>) -> PyResult<()> {
-        let np = py.import("numpy")?;
-        let arr = np.call_method1("ascontiguousarray", (data, "float32"))?;
-        let shape: Vec<usize> = arr.getattr("shape")?.extract()?;
-        let (ch, samples) = match shape.len() {
-            1 => {
-                let c = channels.ok_or_else(|| {
-                    pyo3::exceptions::PyValueError::new_err("channels must be specified for 1D arrays")
-                })?;
-                (c, shape[0] / c)
-            }
-            2 => (shape[0], shape[1]),
-            _ => {
-                return Err(pyo3::exceptions::PyValueError::new_err(
-                    "Data must be a 1D or 2D float32 array [channels, samples]",
-                ));
-            }
-        };
-
-        let py_bytes = arr.call_method0("tobytes")?;
-        let raw_bytes: &[u8] = py_bytes.extract()?;
-        let float_slice: &[f32] = unsafe {
-            std::slice::from_raw_parts(
-                raw_bytes.as_ptr() as *const f32,
-                raw_bytes.len() / std::mem::size_of::<f32>(),
-            )
-        };
-
-        self.inner = Some(PcaModel::fit(float_slice, ch, samples, self.n_components));
+        let input = F32Array::new(&data)?;
+        let (ch, samples) = input.channels_samples(channels)?;
+        let (x, k) = (input.slice(), self.n_components);
+        self.inner = Some(py.detach(|| PcaModel::fit(x, ch, samples, k)));
         Ok(())
     }
 
@@ -72,70 +52,50 @@ impl PyPca {
         let model = self.inner.as_ref().ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err("PCA model must be fitted before calling transform")
         })?;
-
-        let np = py.import("numpy")?;
-        let arr = np.call_method1("ascontiguousarray", (data, "float32"))?;
-        let shape: Vec<usize> = arr.getattr("shape")?.extract()?;
-        let (ch, samples) = match shape.len() {
-            1 => {
-                let c = channels.unwrap_or(model.num_channels);
-                (c, shape[0] / c)
-            }
-            2 => (shape[0], shape[1]),
-            _ => {
-                return Err(pyo3::exceptions::PyValueError::new_err(
-                    "Data must be a 1D or 2D float32 array [channels, samples]",
-                ));
-            }
-        };
-
+        let input = F32Array::new(&data)?;
+        let flat = input.ndim() == 1;
+        let (ch, samples) = input.channels_samples(channels.or(flat.then_some(model.num_channels)))?;
         if ch != model.num_channels {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "Channel count mismatch: model expects {}, got {}",
                 model.num_channels, ch
             )));
         }
-
-        let py_bytes = arr.call_method0("tobytes")?;
-        let raw_bytes: &[u8] = py_bytes.extract()?;
-
-        let out_bytes: Vec<u8> = if use_gpu {
-            let device = WgpuDevice::default();
-            let client = WgpuRuntime::client(&device);
-            let in_handle = client.create_from_slice(raw_bytes);
-            let out_handle = client.empty(model.num_components * samples * std::mem::size_of::<f32>());
-            model.project_gpu::<WgpuRuntime>(&client, &in_handle, &out_handle, ch, samples, false);
-            client.read_one_unchecked(out_handle).to_vec()
-        } else {
-            let float_slice: &[f32] = unsafe {
-                std::slice::from_raw_parts(
-                    raw_bytes.as_ptr() as *const f32,
-                    raw_bytes.len() / std::mem::size_of::<f32>(),
-                )
-            };
-            let projected = model.project_cpu(float_slice, ch, samples);
-            let projected_bytes: &[u8] = unsafe {
-                std::slice::from_raw_parts(
-                    projected.as_ptr() as *const u8,
-                    projected.len() * std::mem::size_of::<f32>(),
-                )
-            };
-            projected_bytes.to_vec()
-        };
-
-        let out_py_bytes = PyBytes::new(py, &out_bytes);
-        let flat_arr = np.call_method1("frombuffer", (out_py_bytes, "float32"))?;
-        let reshaped = flat_arr.call_method1("reshape", ((model.num_components, samples),))?;
-        Ok(reshaped)
+        struct Project<'a> {
+            model: &'a PcaModel,
+            x: &'a [f32],
+            channels: usize,
+            samples: usize,
+        }
+        impl ComputeTask for Project<'_> {
+            type Output = Vec<f32>;
+            fn run<R: Runtime>(self, client: ComputeClient<R>) -> Vec<f32> {
+                let in_handle = client.create_from_slice(f32::as_bytes(self.x));
+                let out_handle = client.empty(self.model.num_components * self.samples * std::mem::size_of::<f32>());
+                self.model.project_gpu::<R>(&client, &in_handle, &out_handle, self.channels, self.samples);
+                f32::from_bytes(&client.read_one_unchecked(out_handle)).to_vec()
+            }
+        }
+        let x = input.slice();
+        let target = compute_target()?;
+        let projected = py.detach(|| {
+            if use_gpu {
+                target.run(Project { model, x, channels: ch, samples })
+            } else {
+                Ok(model.project_cpu(x, ch, samples))
+            }
+        });
+        let projected = projected.map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        to_numpy(py, projected, &[model.num_components, samples])
     }
 
     #[getter]
     pub fn explained_variance_ratio<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
         match &self.inner {
             Some(model) => {
-                let np = py.import("numpy")?;
-                let arr = np.call_method1("array", (model.explained_variance_ratio.clone(),))?;
-                Ok(Some(arr))
+                let v = model.explained_variance_ratio.clone();
+                let n = v.len();
+                Ok(Some(to_numpy(py, v, &[n])?))
             }
             None => Ok(None),
         }
@@ -145,9 +105,9 @@ impl PyPca {
     pub fn explained_variance<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
         match &self.inner {
             Some(model) => {
-                let np = py.import("numpy")?;
-                let arr = np.call_method1("array", (model.explained_variance.clone(),))?;
-                Ok(Some(arr))
+                let v = model.explained_variance.clone();
+                let n = v.len();
+                Ok(Some(to_numpy(py, v, &[n])?))
             }
             None => Ok(None),
         }

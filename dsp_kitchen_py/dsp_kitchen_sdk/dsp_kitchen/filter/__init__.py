@@ -1,14 +1,24 @@
 """
 Filter module for dsp-kitchen.
 Subdivided into:
-  - iir: Infinite Impulse Response filters (Notch, Bandpass)
+  - iir: Infinite Impulse Response filters (Butterworth band/high/low/stop, Notch)
   - fir: Finite Impulse Response filters
   - non_linear: Non-linear filters (Median, TeagerKaiser)
   - template: Template alignment, scaling, and subtraction
 """
 
 from . import fir, iir, non_linear, template
-from .iir import BandpassFilter, NotchFilter, bandpass_filter, notch_filter
+from .iir import (
+    BandpassFilter,
+    BandstopFilter,
+    HighpassFilter,
+    LowpassFilter,
+    NotchFilter,
+    bandpass_filter,
+    highpass_filter,
+    lowpass_filter,
+    notch_filter,
+)
 from .non_linear import (
     MedianFilter,
     TeagerKaiser,
@@ -24,11 +34,16 @@ __all__ = [
     "template",
     "NotchFilter",
     "BandpassFilter",
+    "HighpassFilter",
+    "LowpassFilter",
+    "BandstopFilter",
     "MedianFilter",
     "TeagerKaiser",
     "TemplateFilter",
     "notch_filter",
     "bandpass_filter",
+    "highpass_filter",
+    "lowpass_filter",
     "median_filter_9p",
     "teager_kaiser_filter",
     "subtract_template",

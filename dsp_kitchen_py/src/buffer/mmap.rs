@@ -1,67 +1,103 @@
-use std::fs::File;
+use std::path::Path;
 use std::sync::Arc;
-use memmap2::Mmap;
-use pyo3::prelude::*;
-use pyo3::types::PyMemoryView;
 
-/// Zero-copy Memory-Mapped Raw Binary Recording.
-#[pyclass(name = "MmapRecording", skip_from_py_object)]
+use dsp_core::{MemoryOrder, RecordingSource, SampleFormat};
+use dsp_io::raw::{RawParams, RawRecording};
+use numpy::ndarray::{ArrayView1, ArrayView2, ShapeBuilder};
+use numpy::{Element, PyArray};
+use pyo3::exceptions::PyValueError;
+use pyo3::prelude::*;
+use pyo3::types::IntoPyDict;
+
+use super::recording::read_to_numpy;
+
+/// Memory-mapped raw binary recording (dsp-io `RawRecording`).
+///
+/// The layout comes from the JSON sidecar next to the file (`rec.bin` → `rec.meta`) or from the
+/// arguments. `read()` returns µV `float32` copies; `to_numpy()` is a zero-copy, read-only view of
+/// the stored samples that keeps this recording (and its mapping) alive.
+#[pyclass(name = "MmapRecording", frozen, skip_from_py_object)]
 pub struct PyMmapRecording {
     path: String,
-    mmap: Arc<Mmap>,
-    channels: usize,
-    samples: usize,
-    sample_rate: f64,
+    inner: Arc<RawRecording>,
+}
+
+fn parse_order(order: &str) -> PyResult<MemoryOrder> {
+    match order {
+        "channel_major" | "C" => Ok(MemoryOrder::ChannelMajor),
+        "time_major" | "F" => Ok(MemoryOrder::TimeMajor),
+        other => Err(PyValueError::new_err(format!(
+            "order must be 'channel_major' or 'time_major', got '{other}'"
+        ))),
+    }
+}
+
+impl PyMmapRecording {
+    /// Zero-copy `(channels, samples)` view of the stored values with this object as the base.
+    fn stored_view<'py, T: Element>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+        let this = slf.get();
+        let info = this.inner.info();
+        let (nch, ns) = (info.channels.len(), info.samples as usize);
+        let bytes = this.inner.stored_bytes();
+        if !bytes.as_ptr().cast::<T>().is_aligned() {
+            return Err(PyValueError::new_err(
+                "stored samples are not aligned for a zero-copy view (header_bytes); use read()",
+            ));
+        }
+        // SAFETY: the bytes hold `nch * ns` values of T (checked by RawRecording::open_with) and are
+        // aligned (checked above); they live in the mapping owned by `slf`, which becomes the
+        // array's base object and is immutable (`frozen`).
+        let values: &[T] = unsafe { std::slice::from_raw_parts(bytes.as_ptr().cast::<T>(), nch * ns) };
+        let view = match info.order {
+            MemoryOrder::ChannelMajor => ArrayView2::from_shape((nch, ns), values),
+            MemoryOrder::TimeMajor => ArrayView2::from_shape((nch, ns).strides((1, nch)), values),
+        }
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let py = slf.py();
+        let arr = unsafe { PyArray::borrow_from_array(&view, slf.clone().into_any()) };
+        arr.call_method("setflags", (), Some(&[("write", false)].into_py_dict(py)?))?;
+        Ok(arr.into_any())
+    }
 }
 
 #[pymethods]
 impl PyMmapRecording {
+    /// Opens `path`. Without `channels` / `sample_rate` the JSON sidecar describes the layout.
     #[new]
-    #[pyo3(signature = (path, channels=384, samples=0, sample_rate=30000.0))]
-    pub fn new(path: &str, channels: usize, mut samples: usize, sample_rate: f64) -> PyResult<Self> {
-        let file = File::open(path).map_err(|e| {
-            pyo3::exceptions::PyFileNotFoundError::new_err(format!(
-                "Failed to open recording file '{}': {}",
-                path, e
-            ))
-        })?;
-
-        let mmap = unsafe {
-            Mmap::map(&file).map_err(|e| {
-                pyo3::exceptions::PyIOError::new_err(format!(
-                    "Failed to memory-map file '{}': {}",
-                    path, e
-                ))
-            })?
-        };
-
-        let total_bytes = mmap.len();
-        let bytes_per_sample = std::mem::size_of::<f32>();
-
-        if samples == 0 {
-            if channels == 0 {
-                return Err(pyo3::exceptions::PyValueError::new_err(
-                    "channels must be > 0",
+    #[pyo3(signature = (path, channels=None, sample_rate=None, dtype="float32", order="channel_major", gain_uv=1.0, offset_uv=0.0, header_bytes=0, samples=None))]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        path: &str,
+        channels: Option<usize>,
+        sample_rate: Option<f64>,
+        dtype: &str,
+        order: &str,
+        gain_uv: f32,
+        offset_uv: f32,
+        header_bytes: u64,
+        samples: Option<u64>,
+    ) -> PyResult<Self> {
+        let p = Path::new(path);
+        let inner = match (channels, sample_rate) {
+            (None, None) => RawRecording::open(p),
+            (Some(channels), Some(rate)) => {
+                let format = SampleFormat::parse(dtype)
+                    .ok_or_else(|| PyValueError::new_err(format!("unsupported dtype '{dtype}'")))?;
+                let mut params = RawParams::new(channels, rate, format, parse_order(order)?);
+                params.gain_uv = gain_uv;
+                params.offset_uv = offset_uv;
+                params.header_bytes = header_bytes;
+                params.samples = samples;
+                RawRecording::open_with(p, &params)
+            }
+            _ => {
+                return Err(PyValueError::new_err(
+                    "give both channels and sample_rate, or neither to use the JSON sidecar",
                 ));
             }
-            samples = total_bytes / (channels * bytes_per_sample);
         }
-
-        let expected_bytes = channels * samples * bytes_per_sample;
-        if total_bytes < expected_bytes {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "File size ({} bytes) is smaller than required ({} bytes for {} ch x {} samples of float32)",
-                total_bytes, expected_bytes, channels, samples
-            )));
-        }
-
-        Ok(Self {
-            path: path.to_string(),
-            mmap: Arc::new(mmap),
-            channels,
-            samples,
-            sample_rate,
-        })
+        .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("{path}: {e}")))?;
+        Ok(Self { path: path.to_string(), inner: Arc::new(inner) })
     }
 
     #[getter]
@@ -71,66 +107,81 @@ impl PyMmapRecording {
 
     #[getter]
     pub fn channels(&self) -> usize {
-        self.channels
+        self.inner.info().channels.len()
     }
 
     #[getter]
-    pub fn samples(&self) -> usize {
-        self.samples
+    pub fn samples(&self) -> u64 {
+        self.inner.info().samples
     }
 
     #[getter]
     pub fn sample_rate(&self) -> f64 {
-        self.sample_rate
+        self.inner.info().sample_rate_hz()
     }
 
     #[getter]
-    pub fn shape(&self) -> (usize, usize) {
-        (self.channels, self.samples)
+    pub fn shape(&self) -> (usize, u64) {
+        (self.channels(), self.samples())
+    }
+
+    /// NumPy dtype name of the stored samples.
+    #[getter]
+    pub fn dtype(&self) -> &'static str {
+        match self.inner.info().format {
+            SampleFormat::I16 => "int16",
+            SampleFormat::U16 => "uint16",
+            SampleFormat::F32 => "float32",
+        }
     }
 
     #[getter]
     pub fn total_bytes(&self) -> usize {
-        self.channels * self.samples * std::mem::size_of::<f32>()
+        self.inner.stored_bytes().len()
     }
 
-    pub fn memoryview<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyMemoryView>> {
-        let expected_bytes = self.channels * self.samples * std::mem::size_of::<f32>();
-        let slice = &self.mmap[..expected_bytes];
+    /// Reads µV `float32` `[channels, samples]` for `[start_sample, end_sample)` (default: 1 s).
+    #[pyo3(signature = (start_sample=0, end_sample=None, channels=None))]
+    pub fn read<'py>(
+        &self,
+        py: Python<'py>,
+        start_sample: u64,
+        end_sample: Option<u64>,
+        channels: Option<Vec<usize>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        read_to_numpy(py, self.inner.as_ref(), start_sample, end_sample, channels)
+    }
 
-        unsafe {
-            let ptr = pyo3::ffi::PyMemoryView_FromMemory(
-                slice.as_ptr() as *mut std::ffi::c_char,
-                slice.len() as isize,
-                pyo3::ffi::PyBUF_READ,
-            );
-            if ptr.is_null() {
-                return Err(PyErr::fetch(py));
-            }
-            Ok(Bound::from_owned_ptr(py, ptr).cast_into_unchecked())
+    /// Zero-copy read-only view `[channels, samples]` of the stored values (stored dtype, before
+    /// gain). Keeps this recording alive while the array exists.
+    pub fn to_numpy<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+        match slf.get().inner.info().format {
+            SampleFormat::I16 => Self::stored_view::<i16>(slf),
+            SampleFormat::U16 => Self::stored_view::<u16>(slf),
+            SampleFormat::F32 => Self::stored_view::<f32>(slf),
         }
     }
 
-    pub fn to_numpy<'py>(self_: Bound<'py, Self>, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let np = py.import("numpy")?;
-        let (channels, samples) = {
-            let inner = self_.borrow();
-            (inner.channels, inner.samples)
-        };
-        let memview = self_.borrow().memoryview(py)?;
-        let flat_arr = np.call_method1("frombuffer", (memview, "float32"))?;
-        let reshaped = flat_arr.call_method1("reshape", ((channels, samples),))?;
-        Ok(reshaped)
+    /// Zero-copy read-only memoryview of the stored bytes. Keeps this recording alive.
+    pub fn memoryview<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+        let bytes = slf.get().inner.stored_bytes();
+        let view = ArrayView1::from(bytes);
+        // SAFETY: as in `stored_view`: the bytes live in the mapping owned by the base object.
+        let arr = unsafe { PyArray::borrow_from_array(&view, slf.clone().into_any()) };
+        let py = slf.py();
+        arr.call_method("setflags", (), Some(&[("write", false)].into_py_dict(py)?))?;
+        py.import("builtins")?.getattr("memoryview")?.call1((arr,))
     }
 
     fn __repr__(&self) -> String {
         format!(
-            "MmapRecording(path='{}', shape=({}, {}), sample_rate={:.1}Hz, size={:.2}MB)",
+            "MmapRecording(path='{}', shape=({}, {}), dtype={}, sample_rate={:.1}Hz, size={:.2}MB)",
             self.path,
-            self.channels,
-            self.samples,
-            self.sample_rate,
-            self.mmap.len() as f64 / 1_048_576.0
+            self.channels(),
+            self.samples(),
+            self.dtype(),
+            self.sample_rate(),
+            self.total_bytes() as f64 / 1_048_576.0
         )
     }
 }

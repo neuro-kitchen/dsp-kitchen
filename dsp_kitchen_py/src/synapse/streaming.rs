@@ -1,7 +1,9 @@
 //! PyO3 bindings for out-of-core streaming spike sorting (`StreamingSpikeRunner`).
 
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict};
+use pyo3::types::PyDict;
+
+use crate::array::to_numpy;
 
 use dsp_synapse::streaming::{StreamingSortConfig, StreamingSortResult, StreamingSpikeRunner};
 
@@ -83,33 +85,9 @@ impl PyStreamingSortResult {
             return Ok(None);
         };
 
-        let np = py.import("numpy")?;
-        let k = t.num_channels;
-        let s = t.num_samples;
-
-        let mean_bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(
-                t.mean.as_ptr() as *const u8,
-                t.mean.len() * std::mem::size_of::<f32>(),
-            )
-        };
-        let mean_py = PyBytes::new(py, mean_bytes);
-        let mean_arr = np
-            .call_method1("frombuffer", (mean_py, "float32"))?
-            .call_method0("copy")?
-            .call_method1("reshape", ((k, s),))?;
-
-        let std_bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(
-                t.std.as_ptr() as *const u8,
-                t.std.len() * std::mem::size_of::<f32>(),
-            )
-        };
-        let std_py = PyBytes::new(py, std_bytes);
-        let std_arr = np
-            .call_method1("frombuffer", (std_py, "float32"))?
-            .call_method0("copy")?
-            .call_method1("reshape", ((k, s),))?;
+        let (k, s) = (t.num_channels, t.num_samples);
+        let mean_arr = to_numpy(py, t.mean.clone(), &[k, s])?;
+        let std_arr = to_numpy(py, t.std.clone(), &[k, s])?;
 
         let d = PyDict::new(py);
         d.set_item("mean", mean_arr)?;
@@ -165,6 +143,7 @@ impl PyStreamingSortResult {
     post_ms=2.0,
     batch_duration_sec=10.0,
     calibration_duration_sec=5.0,
+    calibration_chunks=5,
     apply_sinc_shift=true,
     start_sec=None,
     duration_sec=None
@@ -183,6 +162,7 @@ pub fn sort_recording(
     post_ms: f64,
     batch_duration_sec: f64,
     calibration_duration_sec: f64,
+    calibration_chunks: usize,
     apply_sinc_shift: bool,
     start_sec: Option<f64>,
     duration_sec: Option<f64>,
@@ -200,6 +180,7 @@ pub fn sort_recording(
     let config = StreamingSortConfig {
         batch_duration_sec,
         calibration_duration_sec,
+        calibration_chunks,
         threshold_factor,
         refractory_ms,
         spatial_radius_um,
