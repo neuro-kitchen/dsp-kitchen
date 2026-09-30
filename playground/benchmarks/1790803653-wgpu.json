@@ -1,0 +1,108 @@
+{
+  "unix_time": 1790803653,
+  "hardware": {
+    "runtime": "wgpu<wgsl>",
+    "plane_size_max": 32,
+    "max_units_per_cube": 1024,
+    "num_cpu_cores": null,
+    "num_streaming_multiprocessors": null
+  },
+  "channels": 384,
+  "samples": 300000,
+  "iterations": 3,
+  "kernels": [
+    {
+      "kernel": "scale",
+      "ms": 4.833812,
+      "msamples_per_s": 23832.12255669025,
+      "note": ""
+    },
+    {
+      "kernel": "clamp",
+      "ms": 4.571498999999999,
+      "msamples_per_s": 25199.611768481194,
+      "note": ""
+    },
+    {
+      "kernel": "CAR (direct)",
+      "ms": 9.202186,
+      "msamples_per_s": 12518.764563115765,
+      "note": ""
+    },
+    {
+      "kernel": "median 9-point",
+      "ms": 7.098205,
+      "msamples_per_s": 16229.455193249561,
+      "note": ""
+    },
+    {
+      "kernel": "TKEO",
+      "ms": 5.086471,
+      "msamples_per_s": 22648.31550204454,
+      "note": ""
+    },
+    {
+      "kernel": "FIR 32 taps",
+      "ms": 41.303011,
+      "msamples_per_s": 2789.1429029229857,
+      "note": ""
+    },
+    {
+      "kernel": "bandpass o5 forward",
+      "ms": 103.90427600000001,
+      "msamples_per_s": 1108.7127925322343,
+      "note": "autotuned time blocks"
+    },
+    {
+      "kernel": "bandpass o5 filtfilt",
+      "ms": 200.314981,
+      "msamples_per_s": 575.0942811411594,
+      "note": "autotuned time blocks"
+    },
+    {
+      "kernel": "unpack int16 → µV",
+      "ms": 3.250298,
+      "msamples_per_s": 35442.904004494354,
+      "note": ""
+    },
+    {
+      "kernel": "threshold detection",
+      "ms": 17.866816,
+      "msamples_per_s": 6447.707302744932,
+      "note": "115539 crossings"
+    },
+    {
+      "kernel": "sinc snippet extraction",
+      "ms": 5.511877999999999,
+      "msamples_per_s": null,
+      "note": "115539 spikes × 4 ch × 90 samples"
+    },
+    {
+      "kernel": "template reduction",
+      "ms": 2.728981,
+      "msamples_per_s": null,
+      "note": "115509 spikes"
+    },
+    {
+      "kernel": "OMP matching",
+      "ms": 7.619212999999999,
+      "msamples_per_s": 125.99726507186503,
+      "note": "32 ch × 30000 samples, 16 templates, 0 matches"
+    },
+    {
+      "kernel": "source read (synthetic)",
+      "ms": 1681.65898,
+      "msamples_per_s": 68.50378190232125,
+      "note": "host-side sample generation, no processing"
+    }
+  ],
+  "sorter": {
+    "channels": 384,
+    "seconds": 10.0,
+    "cold_wall_s": 5.342114886,
+    "wall_s": 5.432962814,
+    "msamples_per_s": 21.203899961020422,
+    "real_time_factor": 1.8406163160608007,
+    "spikes": 6658
+  }
+}

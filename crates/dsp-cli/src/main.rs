@@ -106,6 +106,14 @@ enum Commands {
         /// Run automated multi-channel sweep (1, 4, 16, 32, 64, 128, 384, 1024 channels)
         #[arg(long, default_value_t = false)]
         sweep: bool,
+
+        /// Time every kernel family and the streaming sorter; write a JSON report to --report-dir
+        #[arg(long, default_value_t = false)]
+        suite: bool,
+
+        /// Where --suite writes its report (`<unix time>-<runtime>.json`)
+        #[arg(long, default_value = "playground/benchmarks")]
+        report_dir: PathBuf,
     },
 
     /// Serve a dataset (.bin) or continuous synthetic signal over high-throughput QUIC
@@ -142,6 +150,10 @@ enum Commands {
         /// Optional path to export the server TLS certificate DER
         #[arg(long)]
         cert_out: Option<PathBuf>,
+
+        /// Send int16 payloads (half the bandwidth) with this many µV per step
+        #[arg(long)]
+        int16_gain_uv: Option<f32>,
     },
 
     /// Connect to a QUIC stream server and benchmark transmission speed, latency, jitter, and packet loss
@@ -156,9 +168,13 @@ enum Commands {
         #[arg(long, default_value = "localhost")]
         server_name: String,
 
-        /// Path to custom server TLS certificate DER (if omitted, accepts self-signed cert)
+        /// Server TLS certificate DER (written by `serve --cert-out`)
         #[arg(long)]
         cert: Option<PathBuf>,
+
+        /// Skip server certificate verification (trusted networks only)
+        #[arg(long, default_value_t = false)]
+        insecure: bool,
 
         /// Benchmark test duration in seconds (0 for unlimited / until Ctrl+C)
         #[arg(short, long, default_value_t = 5.0)]
@@ -179,8 +195,8 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     let cli = Cli::parse();
     let target = match &cli.runtime {
-        Some(name) => dsp_base::ComputeTarget::parse(name)?.checked()?,
-        None => dsp_base::ComputeTarget::from_env()?,
+        Some(name) => dsp_core::ComputeTarget::parse(name)?.checked()?,
+        None => dsp_core::ComputeTarget::from_env()?,
     };
 
     match cli.command {
@@ -215,8 +231,12 @@ async fn main() -> anyhow::Result<()> {
             format,
             output,
             sweep,
+            suite,
+            report_dir,
         } => {
-            if sweep {
+            if suite {
+                commands::benchmark::run_benchmark_suite(target, channels, samples, iterations, &report_dir)?;
+            } else if sweep {
                 commands::benchmark::run_benchmark_sweep(target, samples, iterations)?;
             } else {
                 commands::benchmark::run_benchmark_pipeline(
@@ -239,6 +259,7 @@ async fn main() -> anyhow::Result<()> {
             no_loop,
             no_realtime,
             cert_out,
+            int16_gain_uv,
         } => {
             let loop_stream = !no_loop;
             let realtime = !no_realtime;
@@ -251,6 +272,7 @@ async fn main() -> anyhow::Result<()> {
                 loop_stream,
                 realtime,
                 cert_out,
+                int16_gain_uv,
             )
             .await?;
         }
@@ -258,6 +280,7 @@ async fn main() -> anyhow::Result<()> {
             addr,
             server_name,
             cert,
+            insecure,
             duration,
             max_frames,
             save,
@@ -266,6 +289,7 @@ async fn main() -> anyhow::Result<()> {
                 addr,
                 server_name,
                 cert,
+                insecure,
                 duration,
                 max_frames,
                 save,

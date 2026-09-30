@@ -57,5 +57,33 @@ pub fn run_info(path: &Path, read_sec: f64) -> anyhow::Result<()> {
         (s0 - start) as f64 / sr / secs
     );
     println!("{} range:     {lo:.1} .. {hi:.1} uV", info.channels[0].name);
+
+    // The same window as stored values (what pipelines upload for integer recordings)
+    let bytes = info.format.bytes();
+    let mut stored = vec![0u8; channels.len() * n as usize * bytes];
+    let t = Instant::now();
+    let mut s0 = start;
+    let mut supported = true;
+    for _ in 0..chunks {
+        let s1 = (s0 + n).min(info.samples);
+        let len = channels.len() * (s1 - s0) as usize * bytes;
+        if rec.read_stored(&channels, s0..s1, &mut stored[..len]).is_err() {
+            supported = false;
+            break;
+        }
+        s0 = s1;
+    }
+    if supported {
+        let secs = t.elapsed().as_secs_f64();
+        println!(
+            "Read stored:   {:.0} Msamples/s as {} ({:.2} GB moved instead of {:.2} GB as f32)",
+            samples / secs / 1e6,
+            info.format.name(),
+            samples * bytes as f64 / 1e9,
+            samples * 4.0 / 1e9
+        );
+    } else {
+        println!("Read stored:   not supported by this reader");
+    }
     Ok(())
 }

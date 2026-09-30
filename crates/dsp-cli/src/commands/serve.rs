@@ -1,25 +1,23 @@
-use std::fs::File;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use memmap2::Mmap;
-use serde::Deserialize;
 use tokio::time::{interval, MissedTickBehavior};
 
+use dsp_core::{ChunkSchedule, DspError, RecordingSource};
+use dsp_io::synthetic::{SyntheticParams, SyntheticRecording};
 use dsp_stream::network::{generate_server_config, QuicStreamServer, StreamFrame};
 use dsp_stream::purpose::StreamPurpose;
+use dsp_stream::PrefetchReader;
 
-#[derive(Deserialize, Debug)]
-struct SidecarMetadata {
-    channels: Option<usize>,
-    samples: Option<usize>,
-    sample_rate_hz: Option<f64>,
-}
+/// Chunks read ahead per client (bounds memory to a few frames regardless of recording length).
+const CLIENT_QUEUE_CHUNKS: usize = 8;
 
-/// Serve a dataset or continuous synthetic signal over high-throughput QUIC transport.
+/// Serve a recording (any format dsp-io opens) or a procedural synthetic signal over QUIC.
+/// Data is read chunk by chunk, so recordings larger than memory stream with bounded memory.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_serve(
     bind_addr: SocketAddr,
     file_path: Option<PathBuf>,
@@ -29,101 +27,36 @@ pub async fn run_serve(
     loop_stream: bool,
     realtime: bool,
     cert_out: Option<PathBuf>,
+    int16_gain_uv: Option<f32>,
 ) -> Result<()> {
     println!("============================================================");
     println!("         DSP-KITCHEN QUIC SIGNAL STREAMING SERVER           ");
     println!("============================================================");
+    if chunk_size == 0 {
+        bail!("chunk size must be at least 1 sample");
+    }
 
-    // 1. Resolve dataset / synthetic stream parameters
-    let (data_buffer, channels, total_samples, sample_rate) = match &file_path {
+    let source: Arc<dyn RecordingSource> = match &file_path {
         Some(path) => {
-            if !path.exists() {
-                bail!("Specified dataset file does not exist: {}", path.display());
-            }
-
             println!("  [Mode]        Serving File: {}", path.display());
-
-            // Check for sidecar metadata (.meta or .json)
-            let mut detected_channels = cli_channels;
-            let mut detected_samples = None;
-            let mut detected_sr = cli_sample_rate;
-
-            let meta_path = path.with_extension("meta");
-            if meta_path.exists() {
-                if let Ok(content) = std::fs::read_to_string(&meta_path) {
-                    if let Ok(meta) = serde_json::from_str::<SidecarMetadata>(&content) {
-                        println!("  [Metadata]    Loaded sidecar: {}", meta_path.display());
-                        if detected_channels.is_none() {
-                            detected_channels = meta.channels;
-                        }
-                        if detected_samples.is_none() {
-                            detected_samples = meta.samples;
-                        }
-                        if detected_sr.is_none() {
-                            detected_sr = meta.sample_rate_hz;
-                        }
-                    }
-                }
+            if cli_channels.is_some() || cli_sample_rate.is_some() {
+                println!("  [Note]        --channels / --sample-rate apply to the synthetic source only; file layout comes from dsp-io");
             }
-
-            let channels = detected_channels.unwrap_or(384);
-            let sample_rate = detected_sr.unwrap_or(30000.0);
-
-            // Memory-map the file
-            let file = File::open(path)
-                .with_context(|| format!("Failed to open dataset file: {}", path.display()))?;
-            let mmap = unsafe { Mmap::map(&file)? };
-
-            let total_floats = mmap.len() / std::mem::size_of::<f32>();
-            if total_floats == 0 {
-                bail!("Dataset file is empty: {}", path.display());
-            }
-
-            let computed_samples = detected_samples.unwrap_or(total_floats / channels);
-            if channels * computed_samples > total_floats {
-                bail!(
-                    "File size ({} floats) is smaller than channels ({}) * samples ({})",
-                    total_floats,
-                    channels,
-                    computed_samples
-                );
-            }
-
-            // Copy mapped floats into an Arc buffer for zero-overhead multi-client sharing
-            let float_slice = unsafe {
-                std::slice::from_raw_parts(mmap.as_ptr() as *const f32, channels * computed_samples)
-            };
-            let buffer = Arc::new(float_slice.to_vec());
-
-            (buffer, channels, computed_samples, sample_rate)
+            Arc::from(dsp_io::open(path).with_context(|| format!("Failed to open {}", path.display()))?)
         }
         None => {
-            println!("  [Mode]        Serving Live Synthetic Multi-Channel Signal");
-            let channels = cli_channels.unwrap_or(384);
-            let sample_rate = cli_sample_rate.unwrap_or(30000.0);
-            let samples = (sample_rate * 2.0) as usize; // 2 seconds continuous buffer
-
-            println!("  [Synthesizer] Pre-generating 2.0s multi-channel test pattern...");
-            let mut buffer = vec![0.0f32; channels * samples];
-
-            // Generate deterministic 60Hz hum + noise + spikes pattern
-            let dt = 1.0 / sample_rate;
-            let omega_60 = 2.0 * std::f64::consts::PI * 60.0;
-            for ch in 0..channels {
-                let ch_offset = ch * samples;
-                let phase = (ch as f64 * 0.1).fract() * 2.0 * std::f64::consts::PI;
-                for s in 0..samples {
-                    let t = s as f64 * dt;
-                    let hum = (25.0 * (omega_60 * t + phase).sin()) as f32;
-                    let pseudo_noise = ((s * 37 + ch * 101) % 1000) as f32 / 1000.0 * 15.0;
-                    buffer[ch_offset + s] = hum + pseudo_noise;
-                }
-            }
-
-            (Arc::new(buffer), channels, samples, sample_rate)
+            println!("  [Mode]        Serving Procedural Synthetic Signal (1 h, generated on the fly)");
+            let params = SyntheticParams {
+                channels: cli_channels.unwrap_or(384),
+                sample_rate_hz: cli_sample_rate.unwrap_or(30_000.0),
+                duration_sec: 3600.0,
+                ..Default::default()
+            };
+            Arc::new(SyntheticRecording::new(params)?)
         }
     };
-
+    let info = source.info();
+    let (channels, total_samples, sample_rate) = (info.channel_count(), info.samples as usize, info.sample_rate_hz());
     let duration_sec = total_samples as f64 / sample_rate;
     let chunk_duration_ms = (chunk_size as f64 / sample_rate) * 1000.0;
 
@@ -174,18 +107,16 @@ pub async fn run_serve(
                 let remote_addr = conn.remote_address();
                 println!("[QUIC Server] [Client #{}] Connected from {}", client_id, remote_addr);
 
-                let buffer_clone = Arc::clone(&data_buffer);
+                let source = Arc::clone(&source);
                 tokio::spawn(async move {
                     if let Err(e) = handle_client_stream(
                         client_id,
                         conn,
-                        buffer_clone,
-                        channels,
-                        total_samples,
-                        sample_rate,
+                        source,
                         chunk_size,
                         loop_stream,
                         realtime,
+                        int16_gain_uv,
                     ).await {
                         println!("[QUIC Server] [Client #{}] Stream closed: {}", client_id, e);
                     }
@@ -200,73 +131,67 @@ pub async fn run_serve(
 async fn handle_client_stream(
     client_id: u64,
     conn: quinn::Connection,
-    buffer: Arc<Vec<f32>>,
-    channels: usize,
-    total_samples: usize,
-    sample_rate: f64,
+    source: Arc<dyn RecordingSource>,
     chunk_size: usize,
     loop_stream: bool,
     realtime: bool,
+    int16_gain_uv: Option<f32>,
 ) -> Result<()> {
     let (mut send_stream, mut recv_stream) = conn
         .open_bi()
         .await
         .context("Failed to open bidirectional QUIC stream")?;
 
+    let info = source.info().clone();
+    let (channels, total, sample_rate) = (info.channel_count(), info.samples, info.sample_rate_hz());
+
+    // Producer thread: sequential prefetching reads into a bounded queue.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<(u64, Vec<f32>)>(CLIENT_QUEUE_CHUNKS);
+    let producer = std::thread::spawn(move || {
+        loop {
+            let schedule = ChunkSchedule::full_recording(total, chunk_size as u64, 0, 0);
+            let reader = PrefetchReader::new(source.as_ref(), schedule);
+            let result = reader.for_each_window(|win, data| {
+                tx.blocking_send((win.valid_global.start, data.to_vec()))
+                    .map_err(|_| DspError::Io("client disconnected".into()))
+            });
+            if result.is_err() || !loop_stream {
+                break;
+            }
+        }
+    });
+
     let chunk_interval = Duration::from_secs_f64(chunk_size as f64 / sample_rate);
     let mut ticker = interval(chunk_interval);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     let mut seq = 0u64;
-    let mut current_sample = 0usize;
     let mut total_bytes_sent = 0usize;
     let t0 = std::time::Instant::now();
 
-    loop {
+    while let Some((start, data)) = rx.recv().await {
         if realtime {
             ticker.tick().await;
         }
-
-        // Check if we need to wrap around or terminate
-        if current_sample + chunk_size > total_samples {
-            if loop_stream {
-                current_sample = 0;
-            } else {
-                break;
+        let samples = (data.len() / channels) as u32;
+        let frame = match int16_gain_uv {
+            Some(gain) => {
+                let raw: Vec<i16> = data
+                    .iter()
+                    .map(|v| (v / gain).round().clamp(i16::MIN as f32, i16::MAX as f32) as i16)
+                    .collect();
+                StreamFrame::new_i16(seq, start, channels as u32, samples, sample_rate, &raw, gain, StreamPurpose::Processing)
             }
+            None => StreamFrame::new(seq, start, channels as u32, samples, sample_rate, data, StreamPurpose::Processing),
+        };
+        total_bytes_sent += frame.total_wire_bytes();
+        if QuicStreamServer::send_frame(&mut send_stream, &frame).await.is_err() {
+            break; // client closed or connection lost
         }
-
-        // Extract chunk in channel-major layout [channels x chunk_size]
-        let mut frame_data = Vec::with_capacity(channels * chunk_size);
-        for ch in 0..channels {
-            let start = ch * total_samples + current_sample;
-            let end = start + chunk_size;
-            frame_data.extend_from_slice(&buffer[start..end]);
-        }
-
-        let frame = StreamFrame::new(
-            seq,
-            current_sample as u64,
-            channels as u32,
-            chunk_size as u32,
-            sample_rate,
-            frame_data,
-            StreamPurpose::Processing,
-        );
-
-        let encoded_len = frame.total_wire_bytes();
-        total_bytes_sent += encoded_len;
-
-
-        if let Err(_e) = QuicStreamServer::send_frame(&mut send_stream, &frame).await {
-            // Client closed or connection lost
-            break;
-        }
-
-
         seq += 1;
-        current_sample += chunk_size;
     }
+    drop(rx);
+    let _ = producer.join();
 
     let _ = send_stream.finish();
 
