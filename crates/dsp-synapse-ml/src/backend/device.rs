@@ -1,15 +1,22 @@
 //! Burn-idiomatic compute device and multi-dimensional `Tensor<const D: usize>` backend
-//! powered by `ndarray` (matrixmultiply BLAS) and `cubecl` (WGPU/CPU).
+//! powered by `burn` (`burn-flex` SIMD CPU & `burn-wgpu` WebGPU) and `cubecl`.
 
-use ndarray::ArrayView2;
+use burn_tensor::backend::Backend as BurnBackend;
+use burn_tensor::{Tensor as BurnTensor, TensorData};
 use serde::{Deserialize, Serialize};
+
+#[cfg(feature = "flex")]
+pub type CpuBurnBackend = burn_flex::Flex;
+
+#[cfg(feature = "wgpu")]
+pub type WgpuBurnBackend = burn_wgpu::Wgpu;
 
 /// Target execution device for `dsp-synapse-ml` neural inference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SynapseMlDevice {
-    /// Cross-platform GPU execution via WebGPU / Vulkan / Metal (`cubecl-wgpu`).
+    /// Cross-platform GPU execution via WebGPU / Vulkan / Metal (`burn-wgpu` / `cubecl-wgpu`).
     Wgpu(usize),
-    /// Portable multi-threaded CPU execution via `ndarray` / `matrixmultiply`.
+    /// Portable multi-threaded SIMD CPU execution via `burn-flex`.
     Cpu,
 }
 
@@ -197,10 +204,27 @@ impl<const D: usize> Tensor<D> {
             device: self.device,
         }
     }
+
+    /// Converts this contiguous `Tensor<D>` into a `burn::tensor::Tensor<B, D>`.
+    pub fn to_burn_tensor<B: BurnBackend>(&self, device: &B::Device) -> BurnTensor<B, D> {
+        let td = TensorData::new(self.data.clone(), self.shape);
+        BurnTensor::<B, D>::from_data(td, device)
+    }
+
+    /// Materializes a `burn::tensor::Tensor<B, D>` back into a contiguous `Tensor<D>`.
+    pub fn from_burn_tensor<B: BurnBackend>(
+        burn_tensor: BurnTensor<B, D>,
+        device: SynapseMlDevice,
+    ) -> Self {
+        let dims = burn_tensor.dims();
+        let td = burn_tensor.into_data();
+        let vec = td.to_vec::<f32>().expect("f32 tensor data conversion");
+        Self::from_floats(vec, dims, device)
+    }
 }
 
 impl Tensor2D {
-    /// Matrix multiplication `[M, K] x [K, N] -> [M, N]` accelerated by `ndarray` (`matrixmultiply`).
+    /// Matrix multiplication `[M, K] x [K, N] -> [M, N]` accelerated by `burn` (`burn-flex` SIMD).
     pub fn matmul(&self, rhs: &Tensor2D) -> Tensor2D {
         let [m, k1] = self.shape;
         let [k2, n] = rhs.shape;
@@ -210,11 +234,31 @@ impl Tensor2D {
             return Tensor2D::zeros([m, n], self.device);
         }
 
-        let a = ArrayView2::from_shape((m, k1), &self.data).expect("Valid LHS shape");
-        let b = ArrayView2::from_shape((k2, n), &rhs.data).expect("Valid RHS shape");
-        let c = a.dot(&b);
-        let (vec, _offset) = c.into_raw_vec_and_offset();
-        Tensor2D::from_floats(vec, [m, n], self.device)
+        #[cfg(feature = "flex")]
+        {
+            let dev = Default::default();
+            let a = self.to_burn_tensor::<CpuBurnBackend>(&dev);
+            let b = rhs.to_burn_tensor::<CpuBurnBackend>(&dev);
+            let c = a.matmul(b);
+            return Tensor2D::from_burn_tensor(c, self.device);
+        }
+
+        #[cfg(not(feature = "flex"))]
+        {
+            let mut out = vec![0.0f32; m * n];
+            for i in 0..m {
+                let a_row = &self.data[i * k1..(i + 1) * k1];
+                let out_row = &mut out[i * n..(i + 1) * n];
+                for p in 0..k1 {
+                    let a_ip = a_row[p];
+                    let b_row = &rhs.data[p * n..(p + 1) * n];
+                    for j in 0..n {
+                        out_row[j] += a_ip * b_row[j];
+                    }
+                }
+            }
+            Tensor2D::from_floats(out, [m, n], self.device)
+        }
     }
 
     /// Adds a 1D bias `[N]` across rows of `[M, N]`.
