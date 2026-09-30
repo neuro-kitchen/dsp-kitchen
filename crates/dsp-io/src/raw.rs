@@ -14,12 +14,12 @@ use std::io::{BufWriter, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use dsp_core::recording::check_read;
+use dsp_core::recording::{check_read, check_read_stored};
 use dsp_core::{DspError, DspResult, MemoryOrder, RecordingInfo, RecordingSource, SampleFormat, SampleRate};
 use memmap2::Mmap;
 use serde::{Deserialize, Serialize};
 
-use crate::codec::{decode, decode_run, encode};
+use crate::codec::{decode_frames, decode_run, encode, select_stored};
 
 /// Layout of a raw binary file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -148,6 +148,29 @@ impl RecordingSource for RawRecording {
         &self.info
     }
 
+    fn read_stored(&self, channels: &[usize], samples: Range<u64>, out: &mut [u8]) -> DspResult<()> {
+        let n = check_read_stored(&self.info, channels, &samples, out.len())?;
+        if n == 0 {
+            return Ok(());
+        }
+        let (bps, nch, start) = (self.info.format.bytes(), self.info.channels.len(), samples.start as usize);
+        let data = self.data();
+        match self.info.order {
+            MemoryOrder::ChannelMajor => {
+                let total = self.info.samples as usize;
+                for (dst, &ch) in out.chunks_exact_mut(n * bps).zip(channels) {
+                    let base = (ch * total + start) * bps;
+                    dst.copy_from_slice(&data[base..base + n * bps]);
+                }
+            }
+            MemoryOrder::TimeMajor => {
+                let frame = nch * bps;
+                select_stored(&data[start * frame..(start + n) * frame], true, nch, n, channels, bps, out);
+            }
+        }
+        Ok(())
+    }
+
     fn read(&self, channels: &[usize], samples: Range<u64>, out: &mut [f32]) -> DspResult<()> {
         let n = check_read(&self.info, channels, &samples, out.len())?;
         if n == 0 {
@@ -169,14 +192,11 @@ impl RecordingSource for RawRecording {
             }
             MemoryOrder::TimeMajor => {
                 let frame = nch * bps;
-                let rows = &data[start * frame..(start + n) * frame];
-                for (i, &ch) in channels.iter().enumerate() {
-                    let c = &self.info.channels[ch];
-                    let dst = &mut out[i * n..(i + 1) * n];
-                    for (s, o) in dst.iter_mut().enumerate() {
-                        *o = decode(fmt, &rows[s * frame..], ch) * c.gain_uv + c.offset_uv;
-                    }
-                }
+                let selected: Vec<(usize, f32, f32)> = channels
+                    .iter()
+                    .map(|&ch| (ch, self.info.channels[ch].gain_uv, self.info.channels[ch].offset_uv))
+                    .collect();
+                decode_frames(fmt, &data[start * frame..(start + n) * frame], frame, &selected, n, out);
             }
         }
         Ok(())
@@ -260,11 +280,7 @@ mod format_name {
     use serde::{Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S: Serializer>(f: &SampleFormat, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(match f {
-            SampleFormat::I16 => "int16",
-            SampleFormat::U16 => "uint16",
-            SampleFormat::F32 => "float32",
-        })
+        s.serialize_str(f.name())
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<SampleFormat, D::Error> {

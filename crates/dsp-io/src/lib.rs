@@ -4,6 +4,7 @@
 //! recording without knowing how it is stored. [`open`] picks the reader from the path.
 
 mod codec;
+pub mod cache;
 pub mod mtscomp;
 #[cfg(feature = "zarr")]
 pub mod nwb;
@@ -18,6 +19,7 @@ use std::path::Path;
 
 use dsp_core::{DspError, DspResult, RecordingSource};
 
+pub use cache::{cache_path, CacheIdentity, MinMaxCache};
 pub use mtscomp::MtscompRecording;
 pub use raw::{write_raw, RawParams, RawRecording};
 pub use sources::{default_source, open_source, sources, SourceEntry, SourceKind};
@@ -96,6 +98,58 @@ mod tests {
         std::fs::write(dir.join("other.dat"), [0u8; 8]).unwrap();
         assert!(matches!(open(&dir.join("other.dat")), Err(DspError::UnsupportedFormat(_))));
         assert!(open(&dir.join("missing.bin")).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `read_stored` decoded with each channel's gain and offset equals `read`.
+    pub(crate) fn assert_stored_matches(rec: &dyn RecordingSource, channels: &[usize], samples: std::ops::Range<u64>) {
+        let info = rec.info();
+        let n = (samples.end - samples.start) as usize;
+        let mut values = vec![0.0f32; channels.len() * n];
+        rec.read(channels, samples.clone(), &mut values).unwrap();
+        let mut bytes = vec![0u8; channels.len() * n * info.format.bytes()];
+        rec.read_stored(channels, samples, &mut bytes).unwrap();
+        let mut decoded = vec![0.0f32; values.len()];
+        for (i, &c) in channels.iter().enumerate() {
+            let ch = &info.channels[c];
+            let b = info.format.bytes();
+            crate::codec::decode_run(info.format, &bytes[i * n * b..(i + 1) * n * b], &mut decoded[i * n..(i + 1) * n], ch.gain_uv, ch.offset_uv);
+        }
+        assert_eq!(decoded, values, "{}", info.name);
+    }
+
+    #[test]
+    fn stored_reads_match_scaled_reads() {
+        let dir = std::env::temp_dir().join(format!("dsp_io_stored_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let src = SyntheticRecording::new(SyntheticParams { channels: 5, duration_sec: 0.1, ..Default::default() }).unwrap();
+        let channels = [4usize, 0, 2];
+
+        for (name, format, order, gain) in [
+            ("tm_i16.bin", SampleFormat::I16, MemoryOrder::TimeMajor, 0.25),
+            ("cm_i16.bin", SampleFormat::I16, MemoryOrder::ChannelMajor, 0.5),
+            ("cm_f32.bin", SampleFormat::F32, MemoryOrder::ChannelMajor, 1.0),
+            ("tm_i32.bin", SampleFormat::I32, MemoryOrder::TimeMajor, 0.01),
+        ] {
+            let bin = dir.join(name);
+            write_raw(&src, &bin, format, order, gain, 700, |_, _| {}).unwrap();
+            let rec = open(&bin).unwrap();
+            assert_stored_matches(rec.as_ref(), &channels, 100..1_900);
+            // A sliced view maps channels and samples onto its parent
+            let parent: std::sync::Arc<dyn RecordingSource> = std::sync::Arc::from(rec);
+            let sliced = dsp_core::SlicedRecording::new(parent, 50..2_000, Some(vec![3, 1, 4])).unwrap();
+            assert_stored_matches(&sliced, &[2, 0], 10..900);
+        }
+
+        // Synthetic f32 µV with unit gain: the default implementation
+        assert_stored_matches(&src, &channels, 0..500);
+
+        #[cfg(feature = "zarr")]
+        {
+            let z = dir.join("rec.zarr");
+            write_zarr(&src, &z, 700, |_, _| {}).unwrap();
+            assert_stored_matches(open(&z).unwrap().as_ref(), &channels, 100..1_900);
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

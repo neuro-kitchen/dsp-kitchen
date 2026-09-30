@@ -10,10 +10,12 @@ use std::ops::Range;
 use std::path::Path;
 use std::sync::Arc;
 
-use dsp_core::recording::check_read;
+use dsp_core::recording::{check_read, check_read_stored};
 use dsp_core::{DspError, DspResult, MemoryOrder, RecordingInfo, RecordingSource, SampleFormat, SampleRate};
 use serde_json::Value;
-use zarrs::array::Array;
+use zarrs::array::{Array, ArrayBytes};
+
+use crate::codec::{native_to_le, select_stored};
 use zarrs::filesystem::FilesystemStore;
 use zarrs::storage::ReadableStorageTraits;
 
@@ -108,12 +110,10 @@ impl NwbZarrRecording {
         let group = node_meta(path, series).unwrap_or(Value::Null);
         let kind = group["attributes"]["neurodata_type"].as_str().unwrap_or("TimeSeries").to_string();
 
-        let format = match meta["data_type"].as_str() {
-            Some("float32") => SampleFormat::F32,
-            Some("int16") => SampleFormat::I16,
-            Some("uint16") => SampleFormat::U16,
-            other => return Err(DspError::UnsupportedFormat(format!("{data_path}: data type {other:?}"))),
-        };
+        let data_type = meta["data_type"].as_str();
+        let format = data_type
+            .and_then(SampleFormat::parse)
+            .ok_or_else(|| DspError::UnsupportedFormat(format!("{data_path}: data type {data_type:?}")))?;
         let shape = data.shape().to_vec();
         let (samples, channels, two_d) = match shape[..] {
             [t] => (t, 1, false),
@@ -180,8 +180,11 @@ impl NwbZarrRecording {
         }
         Ok(match self.info.format {
             SampleFormat::F32 => get!(f32),
+            SampleFormat::I8 => get!(i8).into_iter().map(f32::from).collect(),
             SampleFormat::I16 => get!(i16).into_iter().map(f32::from).collect(),
             SampleFormat::U16 => get!(u16).into_iter().map(f32::from).collect(),
+            SampleFormat::I32 => get!(i32).into_iter().map(|v| v as f32).collect(),
+            SampleFormat::F64 => get!(f64).into_iter().map(|v| v as f32).collect(),
         })
     }
 }
@@ -196,6 +199,26 @@ impl RecordingSource for NwbZarrRecording {
         &self.info
     }
 
+    fn read_stored(&self, channels: &[usize], samples: Range<u64>, out: &mut [u8]) -> DspResult<()> {
+        let n = check_read_stored(&self.info, channels, &samples, out.len())?;
+        if n == 0 || channels.is_empty() {
+            return Ok(());
+        }
+        let lo = *channels.iter().min().unwrap();
+        let hi = *channels.iter().max().unwrap() + 1;
+        let bytes = self.info.format.bytes();
+        let fetched = if self.two_d {
+            self.data.retrieve_array_subset::<ArrayBytes<'static>>(&[samples.clone(), lo as u64..hi as u64])
+        } else {
+            self.data.retrieve_array_subset::<ArrayBytes<'static>>(&[samples.clone()])
+        };
+        let mut block = fetched.map_err(err)?.into_fixed().map_err(|e| err(e.to_string()))?.into_owned();
+        native_to_le(&mut block, bytes);
+        let cols: Vec<usize> = channels.iter().map(|&c| c - lo).collect();
+        select_stored(&block, true, hi - lo, n, &cols, bytes, out);
+        Ok(())
+    }
+
     fn read(&self, channels: &[usize], samples: Range<u64>, out: &mut [f32]) -> DspResult<()> {
         let n = check_read(&self.info, channels, &samples, out.len())?;
         if n == 0 || channels.is_empty() {
@@ -206,29 +229,12 @@ impl RecordingSource for NwbZarrRecording {
         let hi = *channels.iter().max().unwrap() + 1;
         let width = hi - lo;
         let block = self.retrieve(lo as u64..hi as u64, samples)?;
-        if channels.len() >= 4 && n >= 16_384 {
-            let block_ref = &block;
-            let ch_info = &self.info.channels;
-            std::thread::scope(|s| {
-                for (dst, &ch) in out.chunks_exact_mut(n).zip(channels) {
-                    let c = &ch_info[ch];
-                    let col = ch - lo;
-                    s.spawn(move || {
-                        let gain = c.gain_uv;
-                        let offset = c.offset_uv;
-                        for (t, o) in dst.iter_mut().enumerate() {
-                            *o = block_ref[t * width + col] * gain + offset;
-                        }
-                    });
-                }
-            });
-        } else {
-            for (dst, &ch) in out.chunks_exact_mut(n).zip(channels) {
-                let c = &self.info.channels[ch];
-                let col = ch - lo;
-                for (t, o) in dst.iter_mut().enumerate() {
-                    *o = block[t * width + col] * c.gain_uv + c.offset_uv;
-                }
+        // [time, channel] block to channel-major rows: one pass over the block, each row read once
+        let selected: Vec<(usize, f32, f32)> =
+            channels.iter().map(|&ch| (ch - lo, self.info.channels[ch].gain_uv, self.info.channels[ch].offset_uv)).collect();
+        for (t, frame) in block.chunks_exact(width).enumerate() {
+            for (i, &(col, gain, offset)) in selected.iter().enumerate() {
+                out[i * n + t] = frame[col] * gain + offset;
             }
         }
         Ok(())
@@ -307,6 +313,7 @@ mod tests {
         let mut out = vec![0.0; 2 * 3];
         rec.read(&[2, 0], 1..4, &mut out).unwrap();
         assert_eq!(out, vec![12.0, 22.0, 32.0, 10.0, 20.0, 30.0]);
+        crate::tests::assert_stored_matches(rec.as_ref(), &[2, 0], 1..4);
 
         let listed: Vec<(String, String, f64, f64)> =
             crate::sources(&path).unwrap().into_iter().map(|s| (s.name, s.unit, s.sample_rate, s.start_time_sec)).collect();
@@ -317,6 +324,50 @@ mod tests {
         let mut out = vec![0.0; 2];
         temp.read(&[0], 3..5, &mut out).unwrap();
         assert_eq!(out, vec![8.0, 10.0]);
+        std::fs::remove_dir_all(&path).unwrap();
+    }
+
+    #[test]
+    fn test_reads_int8_int32_and_float64_series() {
+        let path = std::env::temp_dir().join(format!("dsp_io_nwb_types_{}.nwb.zarr", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).unwrap();
+        let s: ReadableWritableListableStorage = Arc::new(FilesystemStore::new(&path).unwrap());
+        let group = |p: &str, attrs: Value| {
+            let mut g = GroupBuilder::new().build(s.clone(), p).unwrap();
+            *g.attributes_mut() = attrs.as_object().unwrap().clone();
+            g.store_metadata().unwrap();
+        };
+        group("/", json!({ "neurodata_type": "NWBFile", "namespace": "core" }));
+        group("/acquisition", json!({}));
+        // 4 samples x 3 channels, value = t * 10 − c (negative values exercise signed types)
+        let values: Vec<i32> = (0..4).flat_map(|t| (0..3).map(move |c| t * 10 - c)).collect();
+        macro_rules! series {
+            ($name:expr, $dt:expr, $t:ty) => {{
+                group(&format!("/acquisition/{}", $name), json!({ "neurodata_type": "TimeSeries" }));
+                let b = ArrayBuilder::new(vec![4u64, 3], vec![4u64, 3], $dt, 0 as $t);
+                let a = b.build(s.clone(), &format!("/acquisition/{}/data", $name)).unwrap();
+                a.store_metadata().unwrap();
+                a.store_array_subset(&a.subset_all(), values.iter().map(|&v| v as $t).collect::<Vec<$t>>()).unwrap();
+                let mut b = ArrayBuilder::new(Vec::<u64>::new(), Vec::<u64>::new(), data_type::float64(), 0.0f64);
+                b.attributes(json!({ "rate": 100.0 }).as_object().unwrap().clone());
+                let st = b.build(s.clone(), &format!("/acquisition/{}/starting_time", $name)).unwrap();
+                st.store_metadata().unwrap();
+                st.store_array_subset(&st.subset_all(), vec![0.0f64]).unwrap();
+            }};
+        }
+        series!("I8", data_type::int8(), i8);
+        series!("I32", data_type::int32(), i32);
+        series!("F64", data_type::float64(), f64);
+
+        for (name, format) in [("I8", SampleFormat::I8), ("I32", SampleFormat::I32), ("F64", SampleFormat::F64)] {
+            let rec = NwbZarrRecording::open_series(&path, &format!("/acquisition/{name}")).unwrap();
+            assert_eq!(rec.info().format, format);
+            let mut out = vec![0.0; 2 * 3];
+            rec.read(&[2, 0], 1..4, &mut out).unwrap();
+            assert_eq!(out, vec![8.0, 18.0, 28.0, 10.0, 20.0, 30.0], "{name}");
+            crate::tests::assert_stored_matches(&rec, &[2, 0], 1..4);
+        }
         std::fs::remove_dir_all(&path).unwrap();
     }
 }

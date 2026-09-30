@@ -10,10 +10,12 @@ use std::ops::Range;
 use std::path::Path;
 use std::sync::Arc;
 
-use dsp_core::recording::check_read;
+use dsp_core::recording::{check_read, check_read_stored};
 use dsp_core::{DspError, DspResult, MemoryOrder, RecordingInfo, RecordingSource, SampleFormat, SampleRate};
 use serde_json::{json, Value};
-use zarrs::array::{Array, ArrayBuilder, data_type};
+use zarrs::array::{Array, ArrayBuilder, ArrayBytes, data_type};
+
+use crate::codec::{native_to_le, select_stored};
 use zarrs::filesystem::FilesystemStore;
 use zarrs::group::{Group, GroupBuilder};
 use zarrs::storage::ReadableWritableListableStorage;
@@ -48,10 +50,8 @@ impl ZarrRecording {
             .and_then(|t| serde_json::from_str(&t).ok())
             .unwrap_or(Value::Null);
         let format = match meta["data_type"].as_str() {
-            Some("int16") => SampleFormat::I16,
-            Some("uint16") => SampleFormat::U16,
-            Some("float32") | None => SampleFormat::F32,
-            Some(other) => return Err(DspError::UnsupportedFormat(format!("zarr data type {other}"))),
+            None => SampleFormat::F32,
+            Some(name) => SampleFormat::parse(name).ok_or_else(|| DspError::UnsupportedFormat(format!("zarr data type {name}")))?,
         };
         let first_dim = meta["dimension_names"][0].as_str().unwrap_or("channels");
         let order = if matches!(first_dim, "samples" | "time" | "frames") { MemoryOrder::TimeMajor } else { MemoryOrder::ChannelMajor };
@@ -85,22 +85,19 @@ impl ZarrRecording {
             MemoryOrder::ChannelMajor => [ch.clone(), samples.clone()],
             MemoryOrder::TimeMajor => [samples.clone(), ch.clone()],
         };
+        let read = |e: zarrs::array::ArrayError| err("read")(e.to_string());
+        macro_rules! get {
+            ($t:ty) => {
+                self.array.retrieve_array_subset::<Vec<$t>>(&subset).map_err(read)?.into_iter().map(|v| v as f32).collect()
+            };
+        }
         let values: Vec<f32> = match self.info.format {
-            SampleFormat::F32 => self.array.retrieve_array_subset::<Vec<f32>>(&subset).map_err(|e| err("read")(e.to_string()))?,
-            SampleFormat::I16 => self
-                .array
-                .retrieve_array_subset::<Vec<i16>>(&subset)
-                .map_err(|e| err("read")(e.to_string()))?
-                .into_iter()
-                .map(f32::from)
-                .collect(),
-            SampleFormat::U16 => self
-                .array
-                .retrieve_array_subset::<Vec<u16>>(&subset)
-                .map_err(|e| err("read")(e.to_string()))?
-                .into_iter()
-                .map(f32::from)
-                .collect(),
+            SampleFormat::F32 => self.array.retrieve_array_subset::<Vec<f32>>(&subset).map_err(read)?,
+            SampleFormat::I8 => get!(i8),
+            SampleFormat::I16 => get!(i16),
+            SampleFormat::U16 => get!(u16),
+            SampleFormat::I32 => get!(i32),
+            SampleFormat::F64 => get!(f64),
         };
         if self.info.order == MemoryOrder::ChannelMajor {
             return Ok(values);
@@ -120,6 +117,29 @@ impl ZarrRecording {
 impl RecordingSource for ZarrRecording {
     fn info(&self) -> &RecordingInfo {
         &self.info
+    }
+
+    fn read_stored(&self, channels: &[usize], samples: Range<u64>, out: &mut [u8]) -> DspResult<()> {
+        let n = check_read_stored(&self.info, channels, &samples, out.len())?;
+        if n == 0 || channels.is_empty() {
+            return Ok(());
+        }
+        let lo = *channels.iter().min().unwrap();
+        let hi = *channels.iter().max().unwrap() + 1;
+        let time_major = self.info.order == MemoryOrder::TimeMajor;
+        let subset = if time_major { [samples.clone(), lo as u64..hi as u64] } else { [lo as u64..hi as u64, samples.clone()] };
+        let bytes = self.info.format.bytes();
+        let mut block = self
+            .array
+            .retrieve_array_subset::<ArrayBytes<'static>>(&subset)
+            .map_err(|e| err("read")(e.to_string()))?
+            .into_fixed()
+            .map_err(|e| err("read")(e.to_string()))?
+            .into_owned();
+        native_to_le(&mut block, bytes);
+        let cols: Vec<usize> = channels.iter().map(|&c| c - lo).collect();
+        select_stored(&block, time_major, hi - lo, n, &cols, bytes, out);
+        Ok(())
     }
 
     fn read(&self, channels: &[usize], samples: Range<u64>, out: &mut [f32]) -> DspResult<()> {
