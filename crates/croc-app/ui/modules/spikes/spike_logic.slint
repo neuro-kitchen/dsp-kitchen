@@ -1,0 +1,47 @@
+// Spike module state (Rust → UI) and intents (UI → Rust).
+
+import { DropSide, DividerData } from "../../shell/types.slint";
+import { SpikeSeat, ClusterRow, SpikeFocused } from "spike_types.slint";
+
+export global SpikeState {
+    // Workspace
+    in-out property <[SpikeSeat]> seats;
+    in-out property <[DividerData]> dividers;
+    in-out property <SpikeFocused> focused;
+
+    // Clusters & sorting
+    in-out property <[ClusterRow]> cluster_rows;
+    in-out property <int> sort_k: 10;
+
+    // Panels
+    in-out property <bool> show_clusters: true;
+    in-out property <bool> show_properties: true;
+}
+
+export global SpikeLogic {
+    // Cluster id, additive (Ctrl/Shift click)
+    callback select_cluster(int, bool);
+    callback step_cluster(int);
+    callback set_num_clusters(int);
+
+    // Views
+    callback focus_view(int);
+    callback activate_view(int);
+    callback close_view(int);
+    // View id, index into SpikeViewKind order
+    callback set_view_kind(int, int);
+    // View id, index into the feature axes choices
+    callback set_feature_axes(int, int);
+    // Index into SpikeViewKind order
+    callback add_view(int);
+
+    // Dock
+    callback workspace_resized(length, length);
+    callback divider_pressed(int);
+    callback divider_dragged(int, length);
+    // (dragged view, target seat's view, side)
+    callback dock_drop(int, int, DropSide);
+
+    // 0 = clusters, 1 = properties
+    callback toggle_panel(int);
+}

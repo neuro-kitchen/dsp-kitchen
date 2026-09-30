@@ -1,0 +1,89 @@
+// Time module state (Rust → UI) and intents (UI → Rust).
+
+import { DropSide, DividerData } from "../../shell/types.slint";
+import { TimeSeat, ChannelRow, TimeFocused } from "time_types.slint";
+
+export global TimeState {
+    // Workspace
+    in-out property <[TimeSeat]> seats;
+    in-out property <[DividerData]> dividers;
+    in-out property <TimeFocused> focused;
+
+    // Data panel
+    in-out property <[ChannelRow]> channel_rows;
+    in-out property <string> range_error;
+
+    // Timeline
+    in-out property <float> total_duration_sec: 1.0;
+    in-out property <float> current_time_sec: 0;
+    in-out property <float> visible_window_sec: 0.100;
+    in-out property <float> window_start_sec: 0;
+    in-out property <bool> is_playing: false;
+    in-out property <bool> loop_playback: true;
+    in-out property <float> playback_speed: 1.0;
+    in-out property <string> time_readout;
+    in-out property <image> overview_image;
+
+    // Panels & overlay
+    in-out property <bool> show_data: true;
+    in-out property <bool> show_properties: true;
+    in-out property <bool> show_timeline: true;
+    in-out property <bool> show_sorted_spikes: true;
+}
+
+export global TimeLogic {
+    // Timeline
+    callback toggle_play_pause();
+    callback step_forward();
+    callback step_backward();
+    callback jump_to_start();
+    callback jump_to_end();
+    callback toggle_loop();
+    callback set_playback_speed(float);
+    callback scrub_to_ratio(float);
+    callback pan_overview(float);
+    callback set_window_edges(float, float);
+    callback overview_resized(length, length);
+
+    // Keyboard (focused view / timeline)
+    callback pan_fraction(float);
+    callback zoom_center(float);
+    callback focused_gain(float);
+    callback focused_scroll(int);
+    callback focused_page(bool);
+
+    // Per view (pointer positions are logical px inside the plot)
+    callback zoom_at(int, float, length);
+    callback pan_pixels(int, length);
+    callback zoom_gain(int, float);
+    callback scroll_channels(int, int);
+    callback set_lanes(int, int);
+    callback hover_at(int, length, length);
+    callback plot_double_clicked(int, length);
+    callback focus_view(int);
+    callback activate_view(int);
+    callback close_view(int);
+    // View id, index into TimeViewKind order
+    callback set_view_kind(int, int);
+    // Index into TimeViewKind order
+    callback add_view(int);
+
+    // Dock
+    callback workspace_resized(length, length);
+    callback divider_pressed(int);
+    callback divider_dragged(int, length);
+    // (dragged view, target seat's view, side)
+    callback dock_drop(int, int, DropSide);
+
+    // Data panel (focused view's selection)
+    callback toggle_channel(int);
+    callback select_all();
+    callback select_none();
+    callback select_invert();
+    callback select_ranges(string);
+    callback set_channel_filter(string);
+
+    // 0 = data, 1 = properties, 2 = timeline
+    callback toggle_panel(int);
+    callback set_show_sorted_spikes(bool);
+}

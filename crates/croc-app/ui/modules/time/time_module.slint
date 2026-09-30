@@ -1,0 +1,51 @@
+import { AppState } from "../../shell/app_logic.slint";
+import { TimeState, TimeLogic } from "time_logic.slint";
+import { DataPanel } from "data_panel.slint";
+import { TimeWorkspace } from "time_workspace.slint";
+import { TimeProperties } from "time_properties.slint";
+import { TimelinePanel } from "timeline_panel.slint";
+
+// Time module: channels · traces/heatmap dock · view properties · timeline.
+export component TimeModule inherits VerticalLayout {
+    HorizontalLayout {
+        vertical-stretch: 1;
+
+        if TimeState.show_data: DataPanel {
+            width: 230px;
+        }
+        TimeWorkspace {
+            horizontal-stretch: 1;
+        }
+        if TimeState.show_properties: TimeProperties {
+            width: 264px;
+        }
+    }
+
+    if TimeState.show_timeline: TimelinePanel {
+        total_duration_sec: TimeState.total_duration_sec;
+        current_time_sec: TimeState.current_time_sec;
+        visible_window_sec: TimeState.visible_window_sec;
+        window_start_sec: TimeState.window_start_sec;
+        is_playing: TimeState.is_playing;
+        loop_playback: TimeState.loop_playback;
+        playback_speed: TimeState.playback_speed;
+        time_readout: TimeState.time_readout;
+        total_spikes_detected: AppState.total_spikes_detected;
+        status_message: AppState.status_message;
+        overview_image: TimeState.overview_image;
+        channel_count: AppState.channel_count;
+        sample_rate: AppState.sample_rate;
+
+        toggle_play_pause() => { TimeLogic.toggle_play_pause(); }
+        step_forward() => { TimeLogic.step_forward(); }
+        step_backward() => { TimeLogic.step_backward(); }
+        jump_to_start() => { TimeLogic.jump_to_start(); }
+        jump_to_end() => { TimeLogic.jump_to_end(); }
+        toggle_loop() => { TimeLogic.toggle_loop(); }
+        set_playback_speed(s) => { TimeLogic.set_playback_speed(s); }
+        scrub_to_ratio(r) => { TimeLogic.scrub_to_ratio(r); }
+        pan_overview(r) => { TimeLogic.pan_overview(r); }
+        set_window_edges(a, b) => { TimeLogic.set_window_edges(a, b); }
+        overview_resized(w, h) => { TimeLogic.overview_resized(w, h); }
+    }
+}

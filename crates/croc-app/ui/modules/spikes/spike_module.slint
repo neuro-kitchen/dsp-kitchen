@@ -1,0 +1,17 @@
+import { SpikeState } from "spike_logic.slint";
+import { ClusterPanel } from "cluster_panel.slint";
+import { SpikeWorkspace } from "spike_workspace.slint";
+import { SortingProperties } from "sorting_properties.slint";
+
+// Spike module: clusters · sorting widgets dock · sorting properties.
+export component SpikeModule inherits HorizontalLayout {
+    if SpikeState.show_clusters: ClusterPanel {
+        width: 320px;
+    }
+    SpikeWorkspace {
+        horizontal-stretch: 1;
+    }
+    if SpikeState.show_properties: SortingProperties {
+        width: 264px;
+    }
+}

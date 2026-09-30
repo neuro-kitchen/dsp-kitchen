@@ -1,0 +1,63 @@
+import { Theme } from "../../shell/theme.slint";
+import { SeatFrame, EmptyHint } from "../../shell/seat_frame.slint";
+import { Splitter } from "../../shell/splitter.slint";
+import { TimeViewKind } from "time_types.slint";
+import { TimeState, TimeLogic } from "time_logic.slint";
+import { TimeSeriesView } from "time_series_view.slint";
+
+// Dock of the Time module: seats and gutters placed by Rust.
+export component TimeWorkspace inherits Rectangle {
+    background: Theme.window-bg;
+
+    init => { TimeLogic.workspace_resized(self.width, self.height); }
+    changed width => { TimeLogic.workspace_resized(self.width, self.height); }
+    changed height => { TimeLogic.workspace_resized(self.width, self.height); }
+
+    for seat in TimeState.seats: SeatFrame {
+        x: seat.x;
+        y: seat.y;
+        width: seat.width;
+        height: seat.height;
+        module: 0;
+        tabs: seat.tabs;
+        active: seat.active;
+        focused: seat.focused;
+        view_id: seat.view_id;
+
+        activate(v) => { TimeLogic.activate_view(v); }
+        close(v) => { TimeLogic.close_view(v); }
+        dropped(v, side) => { TimeLogic.dock_drop(v, seat.view_id, side); }
+
+        if seat.empty_message == "": TimeSeriesView {
+            waveform_image: seat.image;
+            lanes: seat.lanes;
+            ticks: seat.ticks;
+            hover_readout: seat.hover_readout;
+            scale_bar_label: seat.scale_bar_label;
+            scale_bar_frac: seat.scale_bar_frac;
+            is_heatmap: seat.kind == TimeViewKind.heatmap;
+
+            zoom_at(f, x) => { TimeLogic.zoom_at(seat.view_id, f, x); }
+            pan_pixels(dx) => { TimeLogic.pan_pixels(seat.view_id, dx); }
+            zoom_amplitude(f) => { TimeLogic.zoom_gain(seat.view_id, f); }
+            scroll_channels(d) => { TimeLogic.scroll_channels(seat.view_id, d); }
+            hover_at(x, y) => { TimeLogic.hover_at(seat.view_id, x, y); }
+            plot_double_clicked(y) => { TimeLogic.plot_double_clicked(seat.view_id, y); }
+            pressed => { TimeLogic.focus_view(seat.view_id); }
+        }
+        if seat.empty_message != "": EmptyHint {
+            text: seat.empty_message;
+        }
+    }
+
+    // After the seats so a gutter is hit before the seats beside it
+    for divider in TimeState.dividers: Splitter {
+        x: divider.x;
+        y: divider.y;
+        width: divider.width;
+        height: divider.height;
+        columns: divider.columns;
+        pressed => { TimeLogic.divider_pressed(divider.index); }
+        moved(delta) => { TimeLogic.divider_dragged(divider.index, delta); }
+    }
+}

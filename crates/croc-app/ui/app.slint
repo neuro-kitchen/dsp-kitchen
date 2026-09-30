@@ -1,16 +1,20 @@
-// Croc-App: Electrophysiology & Signal Workbench in Slint
-// Android-style MVVM Architecture: View Layer Assembly
+// Croc: signal workbench. Parent app shell hosting the Time and Spikes modules.
 
-import { Theme, Metrics } from "theme.slint";
-import { ViewKind, DropSide, LaneLabel, TimeTick, TabData, SeatData, DividerData, ChannelRow, FocusedView } from "types.slint";
-import { AppState, AppLogic } from "logic.slint";
-import { Workspace } from "components/workspace.slint";
-import { DataPanel } from "components/data_panel.slint";
-import { PropertiesPanel } from "components/properties_panel.slint";
-import { TimelinePanel } from "components/timeline_panel.slint";
-import { Overlay, ShortcutList } from "components/overlays.slint";
+import { Theme, Metrics } from "shell/theme.slint";
+import { DropSide, TabData, DividerData } from "shell/types.slint";
+import { AppState, AppLogic } from "shell/app_logic.slint";
+import { ModuleTabs } from "shell/module_tabs.slint";
+import { Overlay, ShortcutList } from "shell/overlays.slint";
+import { TimeViewKind, LaneLabel, TimeTick, TimeSeat, ChannelRow, TimeFocused } from "modules/time/time_types.slint";
+import { TimeState, TimeLogic } from "modules/time/time_logic.slint";
+import { TimeModule } from "modules/time/time_module.slint";
+import { SpikeViewKind, AxisLabel, SpikeSeat, ClusterRow, SpikeFocused } from "modules/spikes/spike_types.slint";
+import { SpikeState, SpikeLogic } from "modules/spikes/spike_logic.slint";
+import { SpikeModule } from "modules/spikes/spike_module.slint";
 
-export { Theme, Metrics, AppState, AppLogic, ViewKind, DropSide, LaneLabel, TimeTick, TabData, SeatData, DividerData, ChannelRow, FocusedView }
+export { Theme, Metrics, AppState, AppLogic, DropSide, TabData, DividerData }
+export { TimeViewKind, LaneLabel, TimeTick, TimeSeat, ChannelRow, TimeFocused, TimeState, TimeLogic }
+export { SpikeViewKind, AxisLabel, SpikeSeat, ClusterRow, SpikeFocused, SpikeState, SpikeLogic }
 
 export component AppWindow inherits Window {
     title: AppState.dataset_name == "" ? "Croc" : AppState.dataset_name + " — Croc";
@@ -20,6 +24,9 @@ export component AppWindow inherits Window {
     preferred-height: 800px;
     background: Theme.window-bg;
     forward-focus: shortcuts;
+
+    property <bool> time-active: AppState.active_module == 0;
+    property <bool> spikes-active: AppState.active_module == 1;
 
     MenuBar {
         Menu {
@@ -46,36 +53,103 @@ export component AppWindow inherits Window {
         Menu {
             title: "View";
             MenuItem {
+                title: "Time Module";
+                checked: root.time-active;
+                activated => { AppLogic.set_module(0); }
+            }
+            MenuItem {
+                title: "Spikes Module";
+                checked: root.spikes-active;
+                activated => { AppLogic.set_module(1); }
+            }
+            MenuSeparator { }
+            MenuItem {
                 title: "Add Traces View";
                 shortcut: @keys(Control + T);
-                activated => { AppLogic.add_view(ViewKind.traces); }
+                enabled: root.time-active;
+                activated => { TimeLogic.add_view(0); }
             }
             MenuItem {
                 title: "Add Heatmap View";
                 shortcut: @keys(Control + H);
-                activated => { AppLogic.add_view(ViewKind.heatmap); }
+                enabled: root.time-active;
+                activated => { TimeLogic.add_view(1); }
+            }
+            Menu {
+                title: "Add Spike View";
+                enabled: root.spikes-active;
+                MenuItem { title: "Waveforms"; activated => { SpikeLogic.add_view(0); } }
+                MenuItem { title: "Features (PCA)"; activated => { SpikeLogic.add_view(1); } }
+                MenuItem { title: "Correlograms"; activated => { SpikeLogic.add_view(2); } }
+                MenuItem { title: "ISI"; activated => { SpikeLogic.add_view(3); } }
+                MenuItem { title: "Amplitudes"; activated => { SpikeLogic.add_view(4); } }
             }
             MenuSeparator { }
             MenuItem {
-                title: "Data Panel";
-                checked: AppState.show_data;
-                activated => { AppLogic.toggle_panel(0); }
+                title: "Channels Panel";
+                enabled: root.time-active;
+                checked: TimeState.show_data;
+                activated => { TimeLogic.toggle_panel(0); }
+            }
+            MenuItem {
+                title: "Timeline";
+                enabled: root.time-active;
+                checked: TimeState.show_timeline;
+                activated => { TimeLogic.toggle_panel(2); }
+            }
+            MenuItem {
+                title: "Clusters Panel";
+                enabled: root.spikes-active;
+                checked: SpikeState.show_clusters;
+                activated => { SpikeLogic.toggle_panel(0); }
             }
             MenuItem {
                 title: "Properties Panel";
-                checked: AppState.show_properties;
-                activated => { AppLogic.toggle_panel(1); }
+                checked: root.time-active ? TimeState.show_properties : SpikeState.show_properties;
+                activated => {
+                    if (root.time-active) {
+                        TimeLogic.toggle_panel(1);
+                    } else {
+                        SpikeLogic.toggle_panel(1);
+                    }
+                }
+            }
+        }
+        Menu {
+            title: "Time";
+            enabled: root.time-active;
+            MenuItem {
+                title: "Play / Pause";
+                activated => { TimeLogic.toggle_play_pause(); }
             }
             MenuItem {
-                title: "Time Panel";
-                checked: AppState.show_timeline;
-                activated => { AppLogic.toggle_panel(2); }
+                title: "Show Sorted Spikes";
+                checked: TimeState.show_sorted_spikes;
+                activated => { TimeLogic.set_show_sorted_spikes(!TimeState.show_sorted_spikes); }
+            }
+        }
+        Menu {
+            title: "Spikes";
+            enabled: root.spikes-active;
+            MenuItem {
+                title: "Run Sorting";
+                shortcut: @keys(Control + R);
+                enabled: !AppState.sort_running;
+                activated => { AppLogic.run_sorting(); }
+            }
+            MenuItem {
+                title: "Next Cluster";
+                activated => { SpikeLogic.step_cluster(1); }
+            }
+            MenuItem {
+                title: "Previous Cluster";
+                activated => { SpikeLogic.step_cluster(-1); }
             }
         }
         Menu {
             title: "Layout";
             MenuItem {
-                title: "Reset to Default";
+                title: "Reset Module Layout";
                 activated => { AppLogic.reset_layout(); }
             }
             MenuItem {
@@ -101,40 +175,56 @@ export component AppWindow inherits Window {
     property <int> focus-request: AppState.focus_request;
     changed focus-request => { shortcuts.focus(); }
 
-    // Keyboard shortcuts act on the focused view and the shared timeline
+    // Shortcuts are routed to the active module
     shortcuts := FocusScope {
         key-pressed(event) => {
-            if (event.text == " ") {
-                AppLogic.toggle_play_pause();
-            } else if (event.text == Key.LeftArrow) {
-                AppLogic.pan_fraction(event.modifiers.shift ? -1.0 : -0.1);
-            } else if (event.text == Key.RightArrow) {
-                AppLogic.pan_fraction(event.modifiers.shift ? 1.0 : 0.1);
-            } else if (event.text == Key.UpArrow) {
-                AppLogic.focused_scroll(-1);
-            } else if (event.text == Key.DownArrow) {
-                AppLogic.focused_scroll(1);
-            } else if (event.text == Key.PageUp) {
-                AppLogic.focused_page(false);
-            } else if (event.text == Key.PageDown) {
-                AppLogic.focused_page(true);
-            } else if (event.text == Key.Home) {
-                AppLogic.jump_to_start();
-            } else if (event.text == Key.End) {
-                AppLogic.jump_to_end();
-            } else if (event.text == "+" || event.text == "=") {
-                AppLogic.zoom_center(0.8);
-            } else if (event.text == "-") {
-                AppLogic.zoom_center(1.25);
-            } else if (event.text == "]") {
-                AppLogic.focused_gain(1.0 / 0.75);
-            } else if (event.text == "[") {
-                AppLogic.focused_gain(0.75);
-            } else if (event.text == "l") {
-                AppLogic.toggle_loop();
-            } else if (event.text == Key.Escape) {
+            if (event.text == "1" || event.text == "2") {
+                AppLogic.set_module(event.text == "1" ? 0 : 1);
+                return accept;
+            }
+            if (event.text == Key.Escape) {
                 AppState.show_help = false;
                 AppState.show_about = false;
+                return accept;
+            }
+            if (root.spikes-active) {
+                if (event.text == "j" || event.text == Key.DownArrow) {
+                    SpikeLogic.step_cluster(1);
+                } else if (event.text == "k" || event.text == Key.UpArrow) {
+                    SpikeLogic.step_cluster(-1);
+                } else {
+                    return reject;
+                }
+                return accept;
+            }
+            if (event.text == " ") {
+                TimeLogic.toggle_play_pause();
+            } else if (event.text == Key.LeftArrow) {
+                TimeLogic.pan_fraction(event.modifiers.shift ? -1.0 : -0.1);
+            } else if (event.text == Key.RightArrow) {
+                TimeLogic.pan_fraction(event.modifiers.shift ? 1.0 : 0.1);
+            } else if (event.text == Key.UpArrow) {
+                TimeLogic.focused_scroll(-1);
+            } else if (event.text == Key.DownArrow) {
+                TimeLogic.focused_scroll(1);
+            } else if (event.text == Key.PageUp) {
+                TimeLogic.focused_page(false);
+            } else if (event.text == Key.PageDown) {
+                TimeLogic.focused_page(true);
+            } else if (event.text == Key.Home) {
+                TimeLogic.jump_to_start();
+            } else if (event.text == Key.End) {
+                TimeLogic.jump_to_end();
+            } else if (event.text == "+" || event.text == "=") {
+                TimeLogic.zoom_center(0.8);
+            } else if (event.text == "-") {
+                TimeLogic.zoom_center(1.25);
+            } else if (event.text == "]") {
+                TimeLogic.focused_gain(1.0 / 0.75);
+            } else if (event.text == "[") {
+                TimeLogic.focused_gain(0.75);
+            } else if (event.text == "l") {
+                TimeLogic.toggle_loop();
             } else {
                 return reject;
             }
@@ -142,48 +232,13 @@ export component AppWindow inherits Window {
         }
 
         VerticalLayout {
-            HorizontalLayout {
+            ModuleTabs { }
+
+            if root.time-active: TimeModule {
                 vertical-stretch: 1;
-
-                if AppState.show_data: DataPanel {
-                    width: 230px;
-                }
-
-                Workspace {
-                    horizontal-stretch: 1;
-                }
-
-                if AppState.show_properties: PropertiesPanel {
-                    width: 264px;
-                }
             }
-
-            if AppState.show_timeline: TimelinePanel {
-                total_duration_sec: AppState.total_duration_sec;
-                current_time_sec: AppState.current_time_sec;
-                visible_window_sec: AppState.visible_window_sec;
-                window_start_sec: AppState.window_start_sec;
-                is_playing: AppState.is_playing;
-                loop_playback: AppState.loop_playback;
-                playback_speed: AppState.playback_speed;
-                time_readout: AppState.time_readout;
-                total_spikes_detected: AppState.total_spikes_detected;
-                status_message: AppState.status_message;
-                overview_image: AppState.overview_image;
-                channel_count: AppState.channel_count;
-                sample_rate: AppState.sample_rate;
-
-                toggle_play_pause() => { AppLogic.toggle_play_pause(); }
-                step_forward() => { AppLogic.step_forward(); }
-                step_backward() => { AppLogic.step_backward(); }
-                jump_to_start() => { AppLogic.jump_to_start(); }
-                jump_to_end() => { AppLogic.jump_to_end(); }
-                toggle_loop() => { AppLogic.toggle_loop(); }
-                set_playback_speed(s) => { AppLogic.set_playback_speed(s); }
-                scrub_to_ratio(r) => { AppLogic.scrub_to_ratio(r); }
-                pan_overview(r) => { AppLogic.pan_overview(r); }
-                set_window_edges(a, b) => { AppLogic.set_window_edges(a, b); }
-                overview_resized(w, h) => { AppLogic.overview_resized(w, h); }
+            if root.spikes-active: SpikeModule {
+                vertical-stretch: 1;
             }
         }
 
@@ -197,7 +252,7 @@ export component AppWindow inherits Window {
             title: "About Croc";
             close => { AppState.show_about = false; }
             Text {
-                text: "Croc — a signal-processing workbench built on dsp-kitchen.\nViews dock like Rerun: drag tabs to split or stack them.";
+                text: "Croc — a signal-processing workbench built on dsp-kitchen.\nTime: browse channels and traces. Spikes: sort and inspect clusters.";
                 color: Theme.text;
                 font-size: Theme.font-small;
                 wrap: word-wrap;

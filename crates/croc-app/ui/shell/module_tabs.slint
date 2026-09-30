@@ -1,0 +1,64 @@
+import { Theme } from "theme.slint";
+import { AppState, AppLogic } from "app_logic.slint";
+
+// Parent tabs: the child modules. Each module owns everything shown below this bar.
+export component ModuleTabs inherits Rectangle {
+    height: 36px;
+    background: Theme.surface;
+
+    Rectangle { y: parent.height - 1px; height: 1px; background: Theme.border; }
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 12px;
+        spacing: 2px;
+
+        for module[i] in [{ name: "Time", hint: "channels · traces · timeline" }, { name: "Spikes", hint: "clusters · waveforms · features" }]: Rectangle {
+            width: label.preferred-width + 32px;
+            background: AppState.active_module == i ? Theme.window-bg : (touch.has-hover ? Theme.surface-raised : transparent);
+
+            label := Text {
+                text: module.name;
+                color: AppState.active_module == i ? Theme.text-strong : Theme.text-muted;
+                font-size: Theme.font-body;
+                font-weight: AppState.active_module == i ? 700 : 500;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            Rectangle {
+                y: parent.height - 2px;
+                height: 2px;
+                background: AppState.active_module == i ? Theme.accent : transparent;
+            }
+            touch := TouchArea {
+                mouse-cursor: MouseCursor.pointer;
+                clicked => { AppLogic.set_module(i); }
+            }
+        }
+
+        Rectangle { horizontal-stretch: 1; }
+
+        HorizontalLayout {
+            spacing: 14px;
+            Text {
+                text: AppState.dataset_name;
+                color: Theme.text;
+                font-size: Theme.font-small;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+            Text {
+                text: AppState.sort_status;
+                color: AppState.sort_running ? Theme.accent : Theme.text-muted;
+                font-size: Theme.font-small;
+                vertical-alignment: center;
+            }
+            Text {
+                text: AppState.status_message;
+                color: Theme.text-dim;
+                font-size: Theme.font-small;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
