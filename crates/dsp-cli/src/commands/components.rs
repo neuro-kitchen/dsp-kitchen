@@ -32,7 +32,11 @@ pub fn run_components() {
         env!("CARGO_PKG_VERSION")
     );
     println!(
-        "  [+] dsp-bridge:  INSTALLED (v{}) - Modular PyO3 C-ABI Bindings & NumPy Views",
+        "  [+] dsp-synapse-ml: INSTALLED (v{}) - Deep Learning Zoo & Burn-ONNX External Sorter Bridge",
+        env!("CARGO_PKG_VERSION")
+    );
+    println!(
+        "  [+] dsp_kitchen_py: INSTALLED (v{}) - Modular PyO3 C-ABI Bindings (`dsp_kitchen_bindings`) & Python SDK",
         env!("CARGO_PKG_VERSION")
     );
     println!(
