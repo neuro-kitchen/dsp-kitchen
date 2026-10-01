@@ -46,7 +46,11 @@ pub use extraction::{
     extract_snippets_single_channel, parabolic_subsample_offset, resample_sinc_1d,
     resample_sinc_multichannel,
 };
-pub use features::{PcaFeatureEmbedder, SpikeMorphology, compute_morphology, extract_waveform_pca};
+pub use features::{
+    ConductionVelocityEstimate, PcaFeatureEmbedder, PpcaFeatureEmbedder, SpikeMorphology,
+    WaveletFeatureEmbedder, compute_morphology, estimate_hdemg_conduction_velocity,
+    extract_waveform_pca, haar_dwt_multilevel_1d,
+};
 pub use metrics::{
     Correlogram, IsiMetrics, compute_amplitude_cutoff, compute_amplitude_cutoff_with,
     compute_autocorrelogram, compute_crosscorrelogram, compute_d_prime,
@@ -58,7 +62,9 @@ pub use probe::{
     precompute_knn_table, tetrode, utah_array,
 };
 pub use sorting::{
-    DensityPeaksResult, OmpSpikeMatcher, cluster_density_peaks, cluster_density_peaks_capped,
+    ConvolutiveBssDecomposer, DensityPeaksResult, GmmClusterer, GmmCovarianceKind, GmmResult,
+    IsoSplitResult, MotorUnitPulseTrain, OmpSpikeMatcher, cluster_density_peaks,
+    cluster_density_peaks_capped, cluster_gmm_bic, cluster_isosplit,
     compute_template_similarity_matrix, match_spikes_omp, match_spikes_omp_on,
     suggest_template_merges, template_max_cosine_similarity,
 };
