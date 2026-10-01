@@ -19,7 +19,7 @@ use dsp_core::{DspError, DspResult, MemoryOrder, RecordingInfo, RecordingSource,
 use memmap2::Mmap;
 use serde::{Deserialize, Serialize};
 
-use crate::codec::{decode_frames, decode_run, encode, select_stored};
+use crate::codec::{decode_frames, decode_run, encode, scale_frames, select_stored};
 
 /// Layout of a raw binary file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -169,6 +169,22 @@ impl RecordingSource for RawRecording {
             }
         }
         Ok(())
+    }
+
+    fn read_native(&self, samples: Range<u64>, out: &mut [f32]) -> DspResult<MemoryOrder> {
+        let nch = self.info.channels.len();
+        if self.info.order == MemoryOrder::ChannelMajor {
+            let all: Vec<usize> = (0..nch).collect();
+            self.read(&all, samples, out)?;
+            return Ok(MemoryOrder::ChannelMajor);
+        }
+        let all: Vec<usize> = (0..nch).collect();
+        let n = check_read(&self.info, &all, &samples, out.len())?;
+        let (fmt, frame) = (self.info.format, nch * self.info.format.bytes());
+        let start = samples.start as usize;
+        decode_run(fmt, &self.data()[start * frame..(start + n) * frame], out, 1.0, 0.0);
+        scale_frames(&self.info, out);
+        Ok(MemoryOrder::TimeMajor)
     }
 
     fn read(&self, channels: &[usize], samples: Range<u64>, out: &mut [f32]) -> DspResult<()> {

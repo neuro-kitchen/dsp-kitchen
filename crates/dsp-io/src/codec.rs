@@ -1,6 +1,6 @@
 //! Little-endian sample decoding / encoding shared by the binary formats.
 
-use dsp_core::SampleFormat;
+use dsp_core::{RecordingInfo, SampleFormat};
 
 /// Calls `$f::<B, T>(… , value)` for the stored type of `$format` (`B` bytes, little-endian).
 macro_rules! with_format {
@@ -24,6 +24,28 @@ pub(crate) fn decode_run(format: SampleFormat, bytes: &[u8], out: &mut [f32], ga
         }
     }
     with_format!(format, run(bytes, out, gain, offset))
+}
+
+/// Applies each channel's gain and offset to time-major stored values (`out[t · channels + c]`)
+/// of `info`'s channels, giving µV.
+pub(crate) fn scale_frames(info: &RecordingInfo, out: &mut [f32]) {
+    let ch = &info.channels;
+    if ch.is_empty() {
+        return;
+    }
+    let (g, o) = (ch[0].gain_uv, ch[0].offset_uv);
+    if ch.iter().all(|c| c.gain_uv == g && c.offset_uv == o) {
+        if (g, o) != (1.0, 0.0) {
+            out.iter_mut().for_each(|v| *v = *v * g + o);
+        }
+        return;
+    }
+    let (gains, offsets): (Vec<f32>, Vec<f32>) = ch.iter().map(|c| (c.gain_uv, c.offset_uv)).unzip();
+    for frame in out.chunks_exact_mut(ch.len()) {
+        for ((v, g), o) in frame.iter_mut().zip(&gains).zip(&offsets) {
+            *v = *v * g + o;
+        }
+    }
 }
 
 /// Decodes `channels` (`(stored channel, gain, offset)`) of `n` interleaved frames of `frame_bytes`
