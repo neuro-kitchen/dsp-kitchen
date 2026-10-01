@@ -28,6 +28,8 @@ export global AppLogic {
     callback quit();
     callback set_module(int);
     callback run_sorting();
+    // Build the min/max cache of the open file (zoomed-out drawing)
+    callback build_cache();
     // Act on the active module
     callback reset_layout();
     callback compact_layout();

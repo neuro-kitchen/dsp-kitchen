@@ -13,9 +13,10 @@ use crate::shared::dock::{Dock, DropSide, ViewId};
 use crate::shared::render_worker::RenderJob;
 use crate::shared::workspace::DockWorkspace;
 
+use super::hover::HoverRequest;
 use super::renderer::{render_on_worker, TimeViewKind};
 use super::timeline::TimelineState;
-use super::view::{parse_channel_ranges, TimeView};
+use super::view::{parse_channel_ranges, HoverTarget, TimeView};
 
 /// Render key namespace of this module.
 pub const MODULE_ID: u8 = 0;
@@ -176,10 +177,10 @@ impl TimeModule {
         let mut out = Vec::new();
         for v in self.ws.views.iter_mut().filter(|v| visible.contains(&v.id)) {
             let dataset = sources.get(&v.source);
-            // Redraw while the min/max cache fills in
-            let lod_ready = dataset.lod_ready_samples();
-            if lod_ready != v.lod_ready {
-                v.lod_ready = lod_ready;
+            // Redraw once the min/max cache file completes
+            let lod = dataset.lod();
+            if lod.is_some() != v.has_lod {
+                v.has_lod = lod.is_some();
                 v.needs_render = true;
             }
             if !v.needs_render {
@@ -189,12 +190,12 @@ impl TimeModule {
             let on_default = sources.index_of(&v.source) == default;
             let source: Arc<dyn RecordingSource> = dataset.clone();
             let (ev, mk) = if on_default { (events.clone(), marks.clone()) } else { (no_events.clone(), Vec::new()) };
-            let req = v.render_request(&self.timeline, source, dataset.lod(), ev, mk);
+            let req = v.render_request(&self.timeline, source, lod, Some(dataset.summary()), ev, mk);
             let per_px = req.window_sec * dataset.sample_rate / req.width.max(1) as f64;
             out.push(RenderJob {
                 key: (MODULE_ID, v.id),
                 samples_per_px: Some(per_px),
-                render: Box::new(move || render_on_worker(&req)),
+                render: Box::new(move |ctx| render_on_worker(&req, ctx)),
             });
         }
         out
@@ -236,12 +237,33 @@ impl TimeModule {
         }
     }
 
-    pub fn hover(&mut self, id: ViewId, x: f32, y: f32, sources: &SourceSet) {
+    /// Pointer at logical (x, y) in view `id`: sets a readout that needs no data now, or returns
+    /// the sample read to request (the view keeps its previous readout until the answer).
+    pub fn hover(&mut self, id: ViewId, x: f32, y: f32, sources: &SourceSet) -> Option<HoverRequest> {
         let timeline = self.timeline.clone();
-        if let Some(v) = self.ws.view_mut(id) {
-            let s = v.scale_factor;
-            let dataset = sources.get(&v.source);
-            v.hover = v.hover_readout(x * s, y * s, &dataset, &timeline);
+        let v = self.ws.view_mut(id)?;
+        let s = v.scale_factor;
+        let dataset = sources.get(&v.source);
+        v.hover_seq += 1;
+        match v.hover_target(x * s, y * s, &dataset, &timeline) {
+            HoverTarget::Text(text) => {
+                v.hover = text;
+                None
+            }
+            HoverTarget::Sample { channel, sample, prefix, unit } => {
+                Some(HoverRequest { view: id, seq: v.hover_seq, dataset, channel, sample, prefix, unit })
+            }
+        }
+    }
+
+    /// A readout arrived; returns whether it is the view's latest (and was applied).
+    pub fn hover_answered(&mut self, id: ViewId, seq: u64, text: String) -> bool {
+        match self.ws.view_mut(id) {
+            Some(v) if v.hover_seq == seq => {
+                v.hover = text;
+                true
+            }
+            _ => false,
         }
     }
 

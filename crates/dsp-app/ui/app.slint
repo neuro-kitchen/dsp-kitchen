@@ -1,4 +1,4 @@
-// Croc: signal workbench. Parent app shell hosting the Time and Spikes modules.
+// DSP App: signal workbench. Parent app shell hosting the Time and Spikes modules.
 
 import { Theme, Metrics } from "shell/theme.slint";
 import { DropSide, TabData, DividerData } from "shell/types.slint";
@@ -17,7 +17,7 @@ export { TimeViewKind, LaneLabel, TimeTick, TimeSeat, ChannelRow, TimeFocused, T
 export { SpikeViewKind, AxisLabel, SpikeSeat, ClusterRow, SpikeFocused, SpikeState, SpikeLogic }
 
 export component AppWindow inherits Window {
-    title: AppState.dataset_name == "" ? "Croc" : AppState.dataset_name + " — Croc";
+    title: AppState.dataset_name == "" ? "DSP App" : AppState.dataset_name + " — DSP App";
     min-width: 900px;
     min-height: 600px;
     preferred-width: 1280px;
@@ -135,6 +135,11 @@ export component AppWindow inherits Window {
                 checked: TimeState.show_sorted_spikes;
                 activated => { TimeLogic.set_show_sorted_spikes(!TimeState.show_sorted_spikes); }
             }
+            MenuSeparator { }
+            MenuItem {
+                title: "Build Min/Max Cache";
+                activated => { AppLogic.build_cache(); }
+            }
         }
         Menu {
             title: "Spikes";
@@ -173,7 +178,7 @@ export component AppWindow inherits Window {
                 activated => { AppState.show_help = true; }
             }
             MenuItem {
-                title: "About Croc";
+                title: "About DSP App";
                 activated => { AppState.show_about = true; }
             }
         }
@@ -257,10 +262,10 @@ export component AppWindow inherits Window {
         }
 
         if AppState.show_about: Overlay {
-            title: "About Croc";
+            title: "About DSP App";
             close => { AppState.show_about = false; }
             Text {
-                text: "Croc — a signal-processing workbench built on dsp-kitchen.\nTime: browse channels and traces. Spikes: sort and inspect clusters.";
+                text: "DSP App — a signal-processing workbench built on dsp-kitchen.\nTime: browse channels and traces. Spikes: sort and inspect clusters.";
                 color: Theme.text;
                 font-size: Theme.font-small;
                 wrap: word-wrap;

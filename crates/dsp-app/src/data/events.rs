@@ -1,17 +1,9 @@
-//! Action potential / spike event detection for the timeline event track.
+//! Spike events for the timeline event track.
+//!
+//! Events come only from a spike extraction the user runs with their own parameters; nothing
+//! is detected when a recording opens. Until then the store is empty.
 
-use dsp_core::RecordingSource;
-use dsp_synapse::detect_spikes_multichannel;
-
-/// Threshold in robust noise standard deviations (Quiroga MAD estimate in `dsp-synapse`).
-const THRESHOLD_FACTOR: f32 = 4.5;
-/// Refractory period after a detection.
-const REFRACTORY_SEC: f64 = 0.002;
-/// Largest recording (channels × samples) detected synchronously when it is opened. Longer
-/// recordings wait for chunked background detection (Task 27).
-pub const DETECT_SAMPLE_BUDGET: u64 = 64 << 20;
-
-/// Collection of detected spike events across channels.
+/// Collection of spike events across channels.
 #[derive(Debug, Clone, Default)]
 pub struct SpikeEventStore {
     /// All event times, sorted ascending (for the overview track).
@@ -25,7 +17,6 @@ impl SpikeEventStore {
         self.times_sec.len()
     }
 
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.times_sec.is_empty()
     }
@@ -43,16 +34,14 @@ impl SpikeEventStore {
         &times[lo..hi.max(lo)]
     }
 
-    /// True when `source` is small enough for [`detect`](Self::detect) at open time.
-    pub fn fits_budget(source: &dyn RecordingSource) -> bool {
-        let info = source.info();
-        info.samples * info.channel_count() as u64 <= DETECT_SAMPLE_BUDGET
-    }
-
-    /// Detects negative threshold crossings per channel with `dsp-synapse`
-    /// (`-4.5 * sigma_n`, local-minimum peak, 2 ms refractory). Reads one whole channel at a
-    /// time, so only call it on recordings that [`fit the budget`](Self::fits_budget).
-    pub fn detect(source: &dyn RecordingSource) -> Self {
+    /// Negative threshold crossings per channel with `dsp-synapse` (`-4.5 * sigma_n`,
+    /// local-minimum peak, 2 ms refractory), reading whole channels. Test fixture only: the app
+    /// never detects on its own; user-run extraction replaces it.
+    #[cfg(test)]
+    pub fn detect(source: &dyn dsp_core::RecordingSource) -> Self {
+        use dsp_synapse::detect_spikes_multichannel;
+        const THRESHOLD_FACTOR: f32 = 4.5;
+        const REFRACTORY_SEC: f64 = 0.002;
         let info = source.info();
         let sample_rate = info.sample_rate_hz();
         let refractory_samples = (sample_rate * REFRACTORY_SEC) as usize;

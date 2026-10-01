@@ -135,7 +135,7 @@ impl SpikeModule {
         for id in stale {
             let Some(req) = self.plot_request(id, ctx) else { continue };
             self.ws.view_mut(id).expect("listed").needs_render = false;
-            out.push(RenderJob { key: (MODULE_ID, id), samples_per_px: None, render: Box::new(move || plots::render(&req).into()) });
+            out.push(RenderJob { key: (MODULE_ID, id), samples_per_px: None, render: Box::new(move |_| Some(plots::render(&req).into())) });
         }
         out
     }

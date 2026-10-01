@@ -7,8 +7,9 @@ use std::sync::{Arc, OnceLock};
 
 use anyhow::Result;
 use dsp_core::{DspResult, RecordingInfo, RecordingSource};
-use dsp_io::cache::DEFAULT_BASE;
-use dsp_io::{cache_path, CacheIdentity, MinMaxCache, SyntheticParams, SyntheticRecording};
+use dsp_base::resampler::cache::DEFAULT_BASE;
+use dsp_base::resampler::{cache_path, CacheIdentity, MinMaxCache, MinMaxSummary};
+use dsp_io::{SyntheticParams, SyntheticRecording};
 
 /// A recording plus the summary fields the UI reads every frame.
 pub struct Dataset {
@@ -21,8 +22,12 @@ pub struct Dataset {
     pub start_time_sec: f64,
     /// Unit of the values reads return (`µV` for electrical recordings).
     pub unit: String,
-    /// Min/max levels for zoomed-out drawing, set once the background build has opened them.
+    /// Min/max of the regions views have shown this session (zoomed-out drawing).
+    summary: Arc<MinMaxSummary>,
+    /// Min/max levels for zoomed-out drawing: an existing cache file, or one the user asked to build.
     lod: Arc<OnceLock<Arc<MinMaxCache>>>,
+    /// Set once a build has been started (builds run at most once).
+    lod_building: AtomicBool,
     /// Stops the background build when the dataset is dropped.
     cancel: Arc<AtomicBool>,
 }
@@ -37,19 +42,37 @@ impl Dataset {
             name: info.name.clone(),
             start_time_sec: info.start_time_sec,
             unit: info.metadata.get("unit").map_or_else(|| "µV".into(), |u| u.replace("uV", "µV")),
+            summary: Arc::new(MinMaxSummary::new(source.as_ref())),
             source,
             lod: Arc::new(OnceLock::new()),
+            lod_building: AtomicBool::new(false),
             cancel: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    /// Opens or builds the min/max cache on a background thread: next to the recording file for
-    /// `Some((path, source id))` (a temporary file when that folder is not writable), else a
-    /// temporary file. Call once.
-    pub fn start_lod(&self, recording: Option<(PathBuf, String)>) {
+    /// Uses the complete min/max cache already next to `path` for source `id`, if there is one
+    /// (nothing is built).
+    pub fn open_lod(&self, path: &Path, id: &str) {
+        let found = CacheIdentity::of(path, id, self.source.as_ref()).and_then(|identity| MinMaxCache::open(&cache_path(path, id), &identity, DEFAULT_BASE));
+        match found {
+            Ok(Some(cache)) => {
+                let _ = self.lod.set(Arc::new(cache));
+            }
+            Ok(None) => {}
+            Err(e) => tracing::warn!("could not open the min/max cache of {}: {e}", path.display()),
+        }
+    }
+
+    /// Builds the min/max cache on a background thread (user request): next to the recording file
+    /// for `Some((path, source id))` (a temporary file when that folder is not writable), else a
+    /// temporary file. A no-op once a build started or a complete cache is open.
+    pub fn build_lod(&self, recording: Option<(PathBuf, String)>) {
+        if self.lod.get().is_some_and(|c| c.is_complete()) || self.lod_building.swap(true, Ordering::Relaxed) {
+            return;
+        }
         let (source, slot, cancel) = (self.source.clone(), self.lod.clone(), self.cancel.clone());
         let spawned = std::thread::Builder::new().name("minmax-cache".into()).spawn(move || {
-            if let Err(e) = build_lod(source.as_ref(), recording.as_ref().map(|(p, id)| (p.as_path(), id.as_str())), &slot, &cancel) {
+            if let Err(e) = fill_lod(source.as_ref(), recording.as_ref().map(|(p, id)| (p.as_path(), id.as_str())), &slot, &cancel) {
                 tracing::warn!("min/max cache unavailable, zoomed-out views read raw samples: {e}");
             }
         });
@@ -58,14 +81,13 @@ impl Dataset {
         }
     }
 
-    /// The min/max cache once opened (possibly still filling).
+    /// The min/max cache file once complete (while it builds, views use the session summary).
     pub fn lod(&self) -> Option<Arc<MinMaxCache>> {
-        self.lod.get().cloned()
+        self.lod.get().filter(|c| c.is_complete()).cloned()
     }
 
-    /// Samples from the start covered by the cache so far (0 without a cache).
-    pub fn lod_ready_samples(&self) -> u64 {
-        self.lod.get().map_or(0, |c| c.ready_samples())
+    pub fn summary(&self) -> Arc<MinMaxSummary> {
+        self.summary.clone()
     }
 
     /// Opens any format `dsp-io` detects (SpikeGLX, IBL `.cbin`, raw binary + JSON sidecar, Zarr).
@@ -98,6 +120,7 @@ impl Dataset {
     }
 
     /// One sample in µV (0 when out of range or unreadable).
+    #[cfg(test)]
     pub fn sample(&self, channel: usize, sample: usize) -> f32 {
         let mut v = [0.0f32];
         let s = sample as u64;
@@ -161,7 +184,7 @@ impl Drop for Dataset {
     }
 }
 
-fn build_lod(source: &dyn RecordingSource, recording: Option<(&Path, &str)>, slot: &OnceLock<Arc<MinMaxCache>>, cancel: &AtomicBool) -> DspResult<()> {
+fn fill_lod(source: &dyn RecordingSource, recording: Option<(&Path, &str)>, slot: &OnceLock<Arc<MinMaxCache>>, cancel: &AtomicBool) -> DspResult<()> {
     let transient = || MinMaxCache::temporary(&CacheIdentity::transient(source), DEFAULT_BASE);
     let (cache, complete) = match recording {
         Some((path, id)) => {
@@ -196,6 +219,10 @@ impl RecordingSource for Dataset {
         self.source.info()
     }
 
+    fn chunk_samples(&self) -> Option<u64> {
+        self.source.chunk_samples()
+    }
+
     fn read(&self, channels: &[usize], samples: Range<u64>, out: &mut [f32]) -> DspResult<()> {
         self.source.read(channels, samples, out)
     }
@@ -211,7 +238,7 @@ mod tests {
 
     #[test]
     fn test_opens_raw_file_through_dsp_io() {
-        let dir = std::env::temp_dir().join(format!("croc_ds_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("dsp_app_ds_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("rec.bin");
         let values: Vec<f32> = (0..12).map(|v| v as f32).collect();

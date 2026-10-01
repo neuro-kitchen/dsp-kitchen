@@ -1,4 +1,4 @@
-//! Shared data used by every module: the open recording and its detected events.
+//! Shared data used by every module: the open recording and its spike events.
 
 pub mod dataset;
 pub mod events;

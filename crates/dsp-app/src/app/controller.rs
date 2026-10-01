@@ -14,6 +14,7 @@ use crate::modules::spikes::bindings::SpikeUi;
 use crate::modules::spikes::module::{SpikeModule, MODULE_ID as SPIKES};
 use crate::modules::spikes::sorting::{SortParams, Sorting};
 use crate::modules::time::bindings::TimeUi;
+use crate::modules::time::hover::HoverReader;
 use crate::modules::time::module::{TimeModule, MODULE_ID as TIME};
 use crate::shared::dock::{DividerBox, DropSide};
 use crate::shared::render_worker::{Frame, FrameInfo, RenderWorker};
@@ -67,7 +68,7 @@ pub(crate) fn sync_rows<T: Clone + PartialEq + 'static>(model: &VecModel<T>, row
     }
 }
 
-const DRAG_PREFIX: &str = "croc-view:";
+const DRAG_PREFIX: &str = "dsp-app-view:";
 
 pub struct Controller {
     pub(crate) ui: slint::Weak<ui::AppWindow>,
@@ -77,6 +78,7 @@ pub struct Controller {
     pub(crate) time_ui: TimeUi,
     pub(crate) spike_ui: SpikeUi,
     worker: RenderWorker,
+    pub(crate) hover: HoverReader,
     recent: Rc<VecModel<SharedString>>,
     timer: Timer,
     save_on_exit: bool,
@@ -102,6 +104,10 @@ impl Controller {
             let _ = slint::invoke_from_event_loop(move || with_controller(|c| c.on_frame(frame, info)));
         });
 
+        let hover = HoverReader::spawn(|view, seq, text| {
+            let _ = slint::invoke_from_event_loop(move || with_controller(|c| c.on_hover_text(view, seq, text)));
+        });
+
         let c = Rc::new(Controller {
             ui: ui.as_weak(),
             app: RefCell::new(app),
@@ -110,6 +116,7 @@ impl Controller {
             time_ui: TimeUi::default(),
             spike_ui: SpikeUi::default(),
             worker,
+            hover,
             recent: Rc::new(VecModel::default()),
             timer: Timer::default(),
             save_on_exit,
@@ -129,7 +136,6 @@ impl Controller {
         c.wire_spikes(ui);
         c.sync_dataset();
         c.refresh();
-        c.start_sorting();
 
         c.timer.start(TimerMode::Repeated, Duration::from_millis(16), || {
             with_controller(|c| c.tick());
@@ -245,11 +251,11 @@ impl Controller {
             state.set_dataset_name(ds.name.clone().into());
             state.set_dataset_info(
                 format!(
-                    "{} ch · {:.1} kHz · {} · {}",
+                    "{} ch · {:.1} kHz · {}{}",
                     ds.total_channels,
                     ds.sample_rate / 1000.0,
                     format_duration(ds.total_duration_sec()),
-                    if app.events_detected { format!("{} events", app.events.len()) } else { "events not detected (long recording)".into() }
+                    if app.events.is_empty() { String::new() } else { format!(" · {} events", app.events.len()) }
                 )
                 .into(),
             );
@@ -284,7 +290,6 @@ impl Controller {
                 self.sync_dataset();
                 self.refresh();
                 self.save_session();
-                self.start_sorting();
             }
             Err(e) => {
                 if let Some(ui) = self.ui.upgrade() {
@@ -294,13 +299,13 @@ impl Controller {
         }
     }
 
-    /// Runs the spike sorting on a background thread; results come back to the UI thread.
+    /// Runs the spike sorting on a background thread (user request); results come back to the UI thread.
     fn start_sorting(&self) {
         let Some((dataset, generation)) = self.app.borrow_mut().begin_sorting() else { return };
         let params = self.spikes.borrow().sort_params.clone();
         self.sync_shell();
         std::thread::Builder::new()
-            .name("croc-sort".into())
+            .name("dsp-app-sort".into())
             .spawn(move || {
                 let t0 = std::time::Instant::now();
                 let sorting = Sorting::run(&dataset, &params);
@@ -339,6 +344,16 @@ impl Controller {
             logic.on_run_sorting(move || {
                 if let Some(c) = weak.upgrade() {
                     c.start_sorting();
+                }
+            });
+        }
+        {
+            let weak = Rc::downgrade(self);
+            logic.on_build_cache(move || {
+                let Some(c) = weak.upgrade() else { return };
+                c.app.borrow().sources.build_caches();
+                if let Some(ui) = c.ui.upgrade() {
+                    ui.global::<ui::AppState>().set_status_message("Building min/max cache…".into());
                 }
             });
         }

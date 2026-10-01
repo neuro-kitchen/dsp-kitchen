@@ -22,8 +22,8 @@ mod ui {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "croc-app")]
-#[command(about = "Croc: electrophysiology signal workbench — Time and Spikes modules (Slint, MVVM)")]
+#[command(name = "dsp-app")]
+#[command(about = "DSP App: electrophysiology signal workbench — Time and Spikes modules (Slint, MVVM)")]
 struct Args {
     /// Recording to open: SpikeGLX .bin/.cbin, raw .bin with a JSON .meta, or a Zarr store.
     /// Without it (and without --synthetic) the last opened recording is reopened.
@@ -98,7 +98,6 @@ fn main() -> Result<()> {
     if let Some(p) = path {
         app.push_recent(p);
     }
-    println!("Detected {} timeline events across {} channels.", app.events.len(), app.dataset.total_channels);
 
     // 2. Optional headless snapshot of the default traces (or heatmap) view
     if let Some(snap_path) = args.snapshot {
@@ -117,7 +116,7 @@ fn main() -> Result<()> {
         let dataset = app.sources.get(&view.source);
         let source: Arc<dyn RecordingSource> = dataset.clone();
         // Snapshots read raw samples (exact at any zoom) rather than wait for the min/max cache
-        let req = view.render_request(&time.timeline, source, None, app.events.clone(), Vec::new());
+        let req = view.render_request(&time.timeline, source, None, None, app.events.clone(), Vec::new());
         let (pixel_buf, scale) = WaveformRenderer::default().render_scaled(&req);
         view.amp_scale = scale;
         println!("Source {} · scale bar {}", dataset.name, view.scale_bar_label());
