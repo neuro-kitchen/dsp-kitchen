@@ -80,6 +80,10 @@ impl RecordingSource for SlicedRecording {
         &self.info
     }
 
+    fn chunk_samples(&self) -> Option<u64> {
+        self.parent.chunk_samples()
+    }
+
     fn read(&self, channels: &[usize], samples: Range<u64>, out: &mut [f32]) -> DspResult<()> {
         let _ = check_read(&self.info, channels, &samples, out.len())?;
         let mapped_ch: Vec<usize> = channels.iter().map(|&c| self.channel_map[c]).collect();

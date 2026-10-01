@@ -40,6 +40,25 @@ pub trait RecordingSource: Send + Sync {
         Ok(())
     }
 
+    /// Reads `samples` of every channel in µV, in the order the source stores them, and returns
+    /// that order: [`MemoryOrder::ChannelMajor`] fills `out` as [`Self::read`] of all channels;
+    /// [`MemoryOrder::TimeMajor`] fills `out[t * channels + c]`. Whole-recording passes (min/max
+    /// summaries) use it to skip the transposition `read` does for time-major sources.
+    ///
+    /// The default reads every channel through [`Self::read`] (channel-major).
+    fn read_native(&self, samples: Range<u64>, out: &mut [f32]) -> DspResult<MemoryOrder> {
+        let all: Vec<usize> = (0..self.info().channel_count()).collect();
+        self.read(&all, samples, out)?;
+        Ok(MemoryOrder::ChannelMajor)
+    }
+
+    /// Samples per storage chunk along time, for formats stored in independently decoded chunks
+    /// (Zarr, NWB, mtscomp). Reads covering whole multiples of it, aligned to it, decode each
+    /// chunk once; `None` when every range costs the same (memory-mapped, in-memory, procedural).
+    fn chunk_samples(&self) -> Option<u64> {
+        None
+    }
+
     fn read_channel(&self, channel: usize, samples: Range<u64>, out: &mut [f32]) -> DspResult<()> {
         self.read(&[channel], samples, out)
     }
