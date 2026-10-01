@@ -159,23 +159,28 @@ print("  " + "-" * 80)
 
 for ch in top_channels:
     mask = primary_channels == ch
-    ch_times = np.array(
-        [dedup_events[i].sample_index for i in np.flatnonzero(mask)], dtype=np.uint64
+    ch_times = sorted(
+        int(snippets_list[i].center_sample) for i in np.flatnonzero(mask)
     )
     raw_primary = snippets_nkt[mask, 0, :]
     den_primary = denoised_snippets_nkt[mask, 0, :]
 
-    raw_tmpl = syn.compute_template(raw_primary)
-    den_tmpl = syn.compute_template(den_primary)
-    noise_floor = float(np.std(raw_primary[:, :10])) + 1e-4
+    raw_noise = float(np.std(raw_primary[:, :10])) + 1e-4
+    den_noise = float(np.std(den_primary[:, :10])) + 1e-4
+    raw_peak = float(np.min(raw_primary.mean(axis=0)))
+    den_peak = float(np.min(den_primary.mean(axis=0)))
 
-    snr_raw = syn.compute_snr(raw_tmpl, noise_floor)
-    snr_den = syn.compute_snr(den_tmpl, noise_floor)
-    _, isi_viol_rate = syn.compute_isi(ch_times, fs, refractory_ms=1.5)
-    rate_hz = float(mask.sum()) / eval_duration_sec
+    snr_raw = syn.compute_snr(raw_peak, raw_noise)
+    snr_den = syn.compute_snr(den_peak, den_noise)
+    isi_stats = syn.compute_isi(
+        ch_times,
+        sample_rate_hz=fs,
+        refractory_ms=1.5,
+        total_duration_sec=eval_duration_sec,
+    )
 
     print(
-        f"  Ch {ch:<9d} | {int(mask.sum()):8d} | {rate_hz:9.1f} | {snr_raw:9.2f} | {snr_den:17.2f} | {isi_viol_rate * 100.0:11.2f}%"
+        f"  Ch {int(ch):<9d} | {int(mask.sum()):8d} | {isi_stats['firing_rate_hz']:9.1f} | {snr_raw:9.2f} | {snr_den:17.2f} | {isi_stats['violation_rate_pct']:11.2f}%"
     )
 
 # %% [6] Visualize `wTEMP` & `wPCA` Weights, `wPCA` Subspace Denoising, and 48-D Feature Space
