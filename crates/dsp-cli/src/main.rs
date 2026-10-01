@@ -188,6 +188,10 @@ enum Commands {
         #[arg(short = 'o', long)]
         save: Option<PathBuf>,
     },
+
+    /// Manage the dsp-synapse-ml Pretrained Electrophysiology Model Hub (list, info, pull, verify, rm, clean)
+    #[command(alias = "models")]
+    Hub(commands::hub::HubArgs),
 }
 
 #[tokio::main]
@@ -222,6 +226,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Generate(args) => {
             commands::generate::run_generate(&args)?;
+        }
+        Commands::Hub(args) => {
+            commands::hub::run_hub(&args)?;
         }
         Commands::Benchmark {
             channels,
