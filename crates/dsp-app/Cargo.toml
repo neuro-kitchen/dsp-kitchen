@@ -1,12 +1,12 @@
 [package]
-name = "croc-app"
+name = "dsp-app"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "croc-app"
+name = "dsp-app"
 path = "src/main.rs"
 
 [dependencies]

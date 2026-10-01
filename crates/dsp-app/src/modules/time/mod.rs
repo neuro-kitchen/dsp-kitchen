@@ -1,6 +1,7 @@
 //! Time module: traces/heatmap views of the recording, timeline, channel selection.
 
 pub mod bindings;
+pub mod hover;
 pub mod module;
 pub mod renderer;
 pub mod timeline;

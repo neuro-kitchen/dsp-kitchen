@@ -2,18 +2,25 @@
 //! metadata when the file opens; each is opened the first time a view shows it, then cached.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
-use dsp_io::{SourceEntry, SourceKind};
+use dsp_io::{CachedRecording, SourceEntry, SourceKind};
 
 use super::dataset::Dataset;
+
+/// Decoded chunks kept per opened source (memory bound): views, hover readouts and repeated
+/// frames over the same region decode each chunk once.
+const CHUNK_CACHE_BYTES: usize = 128 << 20;
 
 pub struct SourceSet {
     path: Option<PathBuf>,
     entries: Vec<SourceEntry>,
     default: usize,
     opened: Mutex<Vec<Option<Arc<Dataset>>>>,
+    /// The user asked for min/max caches: sources opened later build theirs too.
+    build_caches: AtomicBool,
 }
 
 impl SourceSet {
@@ -22,7 +29,7 @@ impl SourceSet {
         let entries = dsp_io::sources(path).with_context(|| format!("Failed to open {}", path.display()))?;
         let default_id = dsp_io::default_source(&entries).map(|e| e.id.clone()).unwrap_or_default();
         let default = entries.iter().position(|e| e.id == default_id).unwrap_or(0);
-        let set = Self { path: Some(path.to_path_buf()), opened: Mutex::new(vec![None; entries.len()]), entries, default };
+        let set = Self { path: Some(path.to_path_buf()), opened: Mutex::new(vec![None; entries.len()]), entries, default, build_caches: AtomicBool::new(false) };
         set.load(default)?;
         Ok(set)
     }
@@ -39,8 +46,7 @@ impl SourceSet {
             start_time_sec: dataset.start_time_sec,
             unit: dataset.unit.clone(),
         };
-        dataset.start_lod(None);
-        Self { path: None, entries: vec![entry], default: 0, opened: Mutex::new(vec![Some(Arc::new(dataset))]) }
+        Self { path: None, entries: vec![entry], default: 0, opened: Mutex::new(vec![Some(Arc::new(dataset))]), build_caches: AtomicBool::new(false) }
     }
 
     /// Several in-memory sources (tests): `(id, dataset, electrical)`; the first is the default.
@@ -60,7 +66,7 @@ impl SourceSet {
             })
             .collect();
         let opened = list.into_iter().map(|(_, d, _)| Some(Arc::new(d))).collect();
-        Self { path: None, entries, default: 0, opened: Mutex::new(opened) }
+        Self { path: None, entries, default: 0, opened: Mutex::new(opened), build_caches: AtomicBool::new(false) }
     }
 
     pub fn entries(&self) -> &[SourceEntry] {
@@ -102,12 +108,32 @@ impl SourceSet {
         }
         let path = self.path.as_deref().context("in-memory source set has one source")?;
         let rec = dsp_io::open_source(path, &self.entries[i].id).with_context(|| format!("Failed to open source {}", self.entries[i].name))?;
-        let mut ds = Dataset::new(Arc::from(rec));
+        let mut ds = Dataset::new(Arc::from(CachedRecording::wrap(rec, CHUNK_CACHE_BYTES)));
         ds.unit = self.entries[i].unit.clone();
-        ds.start_lod(Some((path.to_path_buf(), self.entries[i].id.clone())));
+        ds.open_lod(path, &self.entries[i].id);
+        if self.build_caches.load(Ordering::Relaxed) {
+            ds.build_lod(self.recording(i));
+        }
         let ds = Arc::new(ds);
         self.opened.lock().unwrap()[i] = Some(ds.clone());
         Ok(ds)
+    }
+
+    /// Builds the min/max cache of every source (user request): the opened ones now, the others
+    /// when first shown.
+    pub fn build_caches(&self) {
+        self.build_caches.store(true, Ordering::Relaxed);
+        let opened = self.opened.lock().unwrap().clone();
+        for (i, ds) in opened.iter().enumerate() {
+            if let Some(ds) = ds {
+                ds.build_lod(self.recording(i));
+            }
+        }
+    }
+
+    /// The file and source id of source `i` (`None` for in-memory sets).
+    fn recording(&self, i: usize) -> Option<(PathBuf, String)> {
+        self.path.clone().map(|p| (p, self.entries[i].id.clone()))
     }
 
     /// Latest end time over all sources (the shared timeline's length).

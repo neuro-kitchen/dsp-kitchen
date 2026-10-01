@@ -3,19 +3,20 @@
 //! Draws only the plot itself (traces or heatmap, grid, spike ticks, scale bar); all text
 //! (channel labels, time axis, readouts) is laid out by Slint around and over the image.
 
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use dsp_base::min_max_decimate_into;
+use dsp_base::resampler::minmax::{finish, fold_block, Block, Columns, EMPTY};
+use dsp_base::resampler::summary::BASE as SUMMARY_BASE;
+use dsp_base::resampler::{min_max_decimate_into, MinMaxCache, MinMaxSummary};
+use dsp_core::{MemoryOrder, RecordingSource};
 use slint::{Rgba8Pixel, SharedPixelBuffer};
-
-use dsp_core::RecordingSource;
-use dsp_io::cache::DEFAULT_BASE;
-use dsp_io::MinMaxCache;
 
 use crate::data::SpikeEventStore;
 use crate::shared::canvas::{blend_color, Canvas};
 use crate::shared::axis::nice_step;
-use crate::shared::render_worker::Rendered;
+use crate::shared::render_worker::{RenderContext, Rendered};
 
 /// Palette for multi-channel visualization (vibrant, modern dark-theme colors)
 pub const CHANNEL_COLORS: [Rgba8Pixel; 8] = [
@@ -40,6 +41,11 @@ const SPIKE_MARKER_COLOR: Rgba8Pixel = Rgba8Pixel { r: 250, g: 204, b: 21, a: 25
 pub const NOMINAL_UV: f32 = 80.0;
 /// Fraction of the lane half-height used by `NOMINAL_UV`.
 const LANE_FILL: f32 = 0.84;
+/// Most values (channels × samples) held by one raw read while streaming a window: bounds the
+/// scratch memory, not the work (every sample of the window is still read once).
+const BLOCK_VALUES: usize = 1 << 22;
+/// How often a frame waiting on the min/max summary shows what is summarized so far.
+const PREVIEW_EVERY: Duration = Duration::from_millis(100);
 
 /// Time-module view kinds: how the plot area visualizes channels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -55,8 +61,11 @@ pub enum TimeViewKind {
 #[derive(Clone)]
 pub struct RenderRequest {
     pub source: Arc<dyn RecordingSource>,
-    /// Min/max levels of `source` for zoomed-out windows (raw reads without).
+    /// Complete min/max cache file of `source` for zoomed-out windows.
     pub lod: Option<Arc<MinMaxCache>>,
+    /// Session min/max summary of `source`, filled as needed for zoomed-out windows (raw reads
+    /// without either).
+    pub summary: Option<Arc<MinMaxSummary>>,
     pub events: Arc<SpikeEventStore>,
     /// Physical pixel size of the plot area.
     pub width: u32,
@@ -90,12 +99,64 @@ thread_local! {
     static RENDERER: std::cell::RefCell<WaveformRenderer> = std::cell::RefCell::new(WaveformRenderer::default());
 }
 
-/// Renders `req` with this thread's reusable renderer (call from the render worker).
-pub fn render_on_worker(req: &RenderRequest) -> Rendered {
+/// Renders `req` with this thread's reusable renderer (call from the render worker). A window
+/// the min/max summary does not cover yet is summarized first, with preview frames of the part
+/// done; `None` when a newer frame cancelled it (the pages read are kept).
+pub fn render_on_worker(req: &RenderRequest, ctx: &RenderContext) -> Option<Rendered> {
     RENDERER.with(|r| {
-        let (frame, scale) = r.borrow_mut().render_scaled(req);
-        Rendered { frame, scale: Some(scale) }
+        let mut r = r.borrow_mut();
+        let rendered = |r: &mut WaveformRenderer| {
+            let (frame, scale) = r.render_scaled(req);
+            Rendered { frame, scale: Some(scale) }
+        };
+        if let Some((summary, start, end)) = summary_fill(req) {
+            let mut deadline = Instant::now() + PREVIEW_EVERY;
+            loop {
+                let stop = || ctx.cancel.load(Ordering::Relaxed) || Instant::now() >= deadline;
+                match summary.fill(req.source.as_ref(), start, end, BLOCK_VALUES, stop) {
+                    Ok(true) => break,
+                    Ok(false) if ctx.cancel.load(Ordering::Relaxed) => return None,
+                    Ok(false) => {
+                        (ctx.preview)(rendered(&mut r));
+                        deadline = Instant::now() + PREVIEW_EVERY;
+                    }
+                    Err(e) => {
+                        tracing::warn!("min/max summary read failed: {e}");
+                        break;
+                    }
+                }
+            }
+        }
+        Some(rendered(&mut r))
     })
+}
+
+/// Visible sample range of `req`'s source and the pixel columns `x0..x1` it covers (sources can
+/// start later or end earlier than the window); `None` when nothing is visible.
+fn visible(req: &RenderRequest) -> Option<(usize, usize, usize, usize)> {
+    let info = req.source.info();
+    let samples = info.samples as usize;
+    if samples == 0 || info.channel_count() == 0 || req.window_sec <= 0.0 {
+        return None;
+    }
+    let sr = info.sample_rate_hz();
+    let s0 = (req.window_start_sec - req.start_time_sec) * sr;
+    let s1 = s0 + req.window_sec * sr;
+    let (a, b) = (s0.max(0.0), s1.min(samples as f64));
+    let w_px = req.width.max(1) as f64;
+    let (x0, x1) = if b > a { (((a - s0) / (s1 - s0) * w_px).round() as usize, ((b - s0) / (s1 - s0) * w_px).round() as usize) } else { (0, 0) };
+    let (start, end) = (a.round() as usize, (b.round() as usize).max(a.round() as usize));
+    Some((start, end, x0, x1.min(req.width.max(1) as usize)))
+}
+
+/// The summary and sample range to fill before drawing `req`: zoomed out past the summary's
+/// buckets, without a complete cache file, and not summarized yet.
+fn summary_fill(req: &RenderRequest) -> Option<(&MinMaxSummary, u64, u64)> {
+    let summary = req.summary.as_deref().filter(|_| req.lod.is_none())?;
+    let (start, end, x0, x1) = visible(req)?;
+    let (start, end) = (start as u64, end as u64);
+    let zoomed_out = x1 > x0 && end - start >= SUMMARY_BASE * (x1 - x0) as u64;
+    (zoomed_out && !summary.covers(start, end)).then_some((summary, start, end))
 }
 
 /// Pixels per unit for a lane of `lane_h` pixels, where `nominal` units fill `LANE_FILL` of
@@ -146,7 +207,8 @@ impl WaveformRenderer {
         self.render_scaled(req).0
     }
 
-    /// Renders and returns the amplitude scale used (units filling a lane at gain 1).
+    /// Renders and returns the amplitude scale used (units filling a lane at gain 1). Zoomed out,
+    /// columns come from the cache file or the summary (pages not summarized draw empty).
     pub fn render_scaled(&mut self, req: &RenderRequest) -> (SharedPixelBuffer<Rgba8Pixel>, f32) {
         let source = req.source.as_ref();
         let width = req.width.max(1);
@@ -159,21 +221,9 @@ impl WaveformRenderer {
         };
         canvas.pixels.fill(BG_COLOR);
 
-        let info = source.info();
-        let samples = info.samples as usize;
-        if samples == 0 || info.channel_count() == 0 || req.window_sec <= 0.0 {
+        let Some((start, end, x0, x1)) = visible(req) else {
             return (pixel_buffer, req.scale_hint.max(0.0));
-        }
-
-        // Visible sample range of this source, and the pixel columns it covers (sources can
-        // start later or end earlier than the window)
-        let sr = info.sample_rate_hz();
-        let s0 = (req.window_start_sec - req.start_time_sec) * sr;
-        let s1 = s0 + req.window_sec * sr;
-        let (a, b) = (s0.max(0.0), s1.min(samples as f64));
-        let w_px = canvas.width as f64;
-        let (x0, x1) = if b > a { (((a - s0) / (s1 - s0) * w_px).round() as usize, ((b - s0) / (s1 - s0) * w_px).round() as usize) } else { (0, 0) };
-        let (start, end) = (a.round() as usize, (b.round() as usize).max(a.round() as usize));
+        };
 
         // Time grid aligned with the axis ticks
         let w = canvas.width as f64;
@@ -184,8 +234,7 @@ impl WaveformRenderer {
             }
         }
 
-        let x1 = x1.min(canvas.width);
-        self.envelope(source, req.lod.as_deref(), &req.channels, start, end, x1.saturating_sub(x0));
+        self.envelope(source, req.lod.as_deref(), req.summary.as_deref(), &req.channels, start, end, x1.saturating_sub(x0));
         self.place_columns(req.channels.len(), x0, x1, canvas.width);
         let scale = self.adjust(req, canvas.width);
         let has_samples = end > start;
@@ -253,10 +302,21 @@ impl WaveformRenderer {
     }
 
     /// Fills `env` with the `[min, max]` of every requested row per pixel column over
-    /// `start..end`. Zoomed out, the min/max cache supplies bucket-aligned columns (columns it has
-    /// not built yet are NaN, drawn empty); zoomed in, or without a cache, raw samples are read.
-    /// Every sample of the window lands in exactly one column, so no peak is dropped.
-    fn envelope(&mut self, source: &dyn RecordingSource, lod: Option<&MinMaxCache>, rows: &[usize], start: usize, end: usize, width: usize) {
+    /// `start..end`. Zoomed out, the complete min/max cache file, else the session summary
+    /// (filled beforehand by [`render_on_worker`]), supplies bucket-aligned columns; zoomed in, or
+    /// without either, raw samples are read (see [`Self::stream_raw`]). Every sample of the
+    /// window lands in a column, so no peak is dropped.
+    #[allow(clippy::too_many_arguments)]
+    fn envelope(
+        &mut self,
+        source: &dyn RecordingSource,
+        lod: Option<&MinMaxCache>,
+        summary: Option<&MinMaxSummary>,
+        rows: &[usize],
+        start: usize,
+        end: usize,
+        width: usize,
+    ) {
         let total = source.info().channel_count();
         self.env.clear();
         self.env.resize(rows.len() * width, [0.0, 0.0]);
@@ -287,11 +347,25 @@ impl WaveformRenderer {
             }
         }
 
-        // Up to one cache bucket per column is read in one piece; longer windows (no cache
-        // available) are read column by column so memory stays bounded.
-        let n = end - start;
-        let base = lod.map_or(DEFAULT_BASE, |c| c.base()) as usize;
-        if n <= base * width {
+        if let Some(summary) = summary.filter(|_| (end - start) as u64 >= SUMMARY_BASE * width as u64) {
+            self.cached.resize(nch * width, [0.0, 0.0]);
+            summary.envelope(&self.read_channels, start as u64, end as u64, width, &mut self.cached);
+            for (k, &r) in self.read_rows.iter().enumerate() {
+                self.env[r * width..(r + 1) * width].copy_from_slice(&self.cached[k * width..(k + 1) * width]);
+            }
+            return;
+        }
+
+        self.stream_raw(source, start, end, width, BLOCK_VALUES);
+    }
+
+    /// Raw-sample envelope of `start..end` (the read channels into their rows of `env`). A window
+    /// of at most `block_values` values is read at once; a longer one is streamed in blocks aligned
+    /// to the source's storage chunks, so each chunk is read and decoded once per frame, and every
+    /// block is folded into the columns it overlaps. Columns no read reached stay NaN (empty).
+    fn stream_raw(&mut self, source: &dyn RecordingSource, start: usize, end: usize, width: usize, block_values: usize) {
+        let (n, nch) = (end - start, self.read_channels.len());
+        if n * nch <= block_values || n <= width {
             self.block.resize(n * nch, 0.0);
             if source.read(&self.read_channels, start as u64..end as u64, &mut self.block).is_err() {
                 self.block.fill(0.0);
@@ -301,18 +375,28 @@ impl WaveformRenderer {
             }
             return;
         }
-        for x in 0..width {
-            let c0 = start + x * n / width;
-            let c1 = start + (x + 1) * n / width;
-            self.block.resize((c1 - c0) * nch, 0.0);
-            if source.read(&self.read_channels, c0 as u64..c1 as u64, &mut self.block).is_err() {
-                continue;
+
+        // Here n > width, so every column holds at least one sample
+        let columns = Columns::Even { start: start as u64, len: n as u64, width };
+        self.cached.clear();
+        self.cached.resize(nch * width, EMPTY);
+        let chunk = source.chunk_samples().filter(|&c| c > 0).map_or(1, |c| c as usize);
+        let step = ((block_values / nch) / chunk).max(1) * chunk;
+        let mut b0 = start;
+        while b0 < end {
+            // Blocks end on chunk boundaries (the first one may start inside a chunk)
+            let b1 = (b0 / chunk * chunk + step).min(end);
+            let len = b1 - b0;
+            self.block.resize(len * nch, 0.0);
+            if source.read(&self.read_channels, b0 as u64..b1 as u64, &mut self.block).is_ok() {
+                let block = Block { data: &self.block, order: MemoryOrder::ChannelMajor, channels: nch, samples: len, first: b0 as u64 };
+                fold_block(&block, 0..len, columns, &mut self.cached);
             }
-            for (k, &r) in self.read_rows.iter().enumerate() {
-                let col = &self.block[k * (c1 - c0)..(k + 1) * (c1 - c0)];
-                let (mn, mx) = col.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), &v| (a.min(v), b.max(v)));
-                self.env[r * width + x] = [mn, mx];
-            }
+            b0 = b1;
+        }
+        finish(&mut self.cached);
+        for (k, &r) in self.read_rows.iter().enumerate() {
+            self.env[r * width..(r + 1) * width].copy_from_slice(&self.cached[k * width..(k + 1) * width]);
         }
     }
 
@@ -502,6 +586,7 @@ mod tests {
         };
         RenderRequest {
             lod: None,
+            summary: None,
             source: Arc::new(ds),
             events,
             width: 800,
@@ -592,6 +677,60 @@ mod tests {
         assert!(drawn(w / 2 + 2, w - 20), "data after it starts");
     }
 
+    /// In-memory source that reports a storage chunk size and records every read range.
+    struct Chunked {
+        inner: Dataset,
+        chunk: u64,
+        reads: std::sync::Mutex<Vec<std::ops::Range<u64>>>,
+    }
+
+    impl RecordingSource for Chunked {
+        fn info(&self) -> &dsp_core::RecordingInfo {
+            self.inner.info()
+        }
+        fn chunk_samples(&self) -> Option<u64> {
+            Some(self.chunk)
+        }
+        fn read(&self, channels: &[usize], samples: std::ops::Range<u64>, out: &mut [f32]) -> dsp_core::DspResult<()> {
+            self.reads.lock().unwrap().push(samples.clone());
+            self.inner.read(channels, samples, out)
+        }
+    }
+
+    #[test]
+    fn test_streamed_envelope_is_exact_and_reads_each_chunk_once() {
+        let (nch, total, width) = (3usize, 10_000usize, 37usize);
+        let data: Vec<f32> = (0..nch * total).map(|i| ((i * 7919) % 1013) as f32 - 500.0).collect();
+        let src = Chunked { inner: Dataset::from_samples("chunked", data.clone(), nch, 1000.0), chunk: 300, reads: Default::default() };
+        let (start, end) = (1_234usize, 9_876usize);
+
+        let mut r = WaveformRenderer::default();
+        let rows = [2usize, 0];
+        r.env.resize(rows.len() * width, [0.0, 0.0]);
+        r.read_channels = rows.to_vec();
+        r.read_rows = vec![0, 1];
+        // Room for 4 chunks of 2 channels per read
+        r.stream_raw(&src, start, end, width, 2 * 4 * 300 + 17);
+
+        let n = end - start;
+        for (k, &ch) in rows.iter().enumerate() {
+            for x in 0..width {
+                let (c0, c1) = (start + x * n / width, start + (x + 1) * n / width);
+                let col = &data[ch * total + c0..ch * total + c1];
+                let exact = col.iter().fold([f32::INFINITY, f32::NEG_INFINITY], |[a, b], &v| [a.min(v), b.max(v)]);
+                assert_eq!(r.env[k * width + x], exact, "row {k} column {x}");
+            }
+        }
+        let reads = src.reads.lock().unwrap();
+        assert!(reads.len() > 1, "the window is streamed");
+        assert_eq!(reads.first().unwrap().start, start as u64);
+        assert_eq!(reads.last().unwrap().end, end as u64);
+        for w in reads.windows(2) {
+            assert_eq!(w[0].end, w[1].start, "contiguous, no sample read twice");
+            assert_eq!(w[0].end % 300, 0, "blocks end on chunk boundaries");
+        }
+    }
+
     #[test]
     fn test_heat_color_endpoints() {
         assert_eq!(heat_color(0.0), BG_COLOR);
@@ -600,7 +739,7 @@ mod tests {
     }
 
     /// Per-frame render cost on the local datasets. Run with:
-    /// `cargo test -p croc-app --release bench_render -- --ignored --nocapture`
+    /// `cargo test -p dsp-app --release bench_render -- --ignored --nocapture`
     #[test]
     #[ignore]
     fn bench_render() {

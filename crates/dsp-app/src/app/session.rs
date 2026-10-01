@@ -22,17 +22,27 @@ impl Session {
     /// 3: split into Time / Spikes modules. Older files fail to parse and fall back to defaults.
     pub const VERSION: u32 = 3;
 
-    /// `$XDG_CONFIG_HOME/croc-app/session.json` (or `~/.config/…`; `%APPDATA%` on Windows).
+    /// `$XDG_CONFIG_HOME/dsp-app/session.json` (or `~/.config/…`; `%APPDATA%` on Windows).
     pub fn path() -> Option<PathBuf> {
-        let base = std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("APPDATA").map(PathBuf::from))
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-        Some(base.join("croc-app").join("session.json"))
+        Some(Self::config_dir()?.join("dsp-app").join("session.json"))
     }
 
+    /// Where the app saved its session before it was renamed from croc-app.
+    fn legacy_path() -> Option<PathBuf> {
+        Some(Self::config_dir()?.join("croc-app").join("session.json"))
+    }
+
+    fn config_dir() -> Option<PathBuf> {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("APPDATA").map(PathBuf::from))
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+    }
+
+    /// The saved session, falling back once to the pre-rename croc-app file (the next save
+    /// writes the new location).
     pub fn load() -> Option<Session> {
-        let text = std::fs::read_to_string(Self::path()?).ok()?;
+        let text = std::fs::read_to_string(Self::path()?).ok().or_else(|| std::fs::read_to_string(Self::legacy_path()?).ok())?;
         serde_json::from_str::<Session>(&text).ok().filter(|s| s.version == Self::VERSION)
     }
 

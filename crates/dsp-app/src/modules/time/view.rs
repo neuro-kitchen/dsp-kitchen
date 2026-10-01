@@ -6,7 +6,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use slint::Rgba8Pixel;
 use dsp_core::RecordingSource;
-use dsp_io::MinMaxCache;
+use dsp_base::resampler::{MinMaxCache, MinMaxSummary};
 
 use crate::data::{Dataset, SpikeEventStore};
 use crate::shared::axis::nice_step;
@@ -35,6 +35,13 @@ pub struct LaneLabel {
 }
 
 const LABEL_GRAY: Rgba8Pixel = Rgba8Pixel { r: 139, g: 148, b: 158, a: 255 };
+
+/// See [`TimeView::hover_target`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum HoverTarget {
+    Text(String),
+    Sample { channel: usize, sample: u64, prefix: String, unit: String },
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TimeView {
@@ -78,9 +85,12 @@ pub struct TimeView {
     pub needs_render: bool,
     #[serde(skip)]
     pub hover: String,
-    /// Samples of the min/max cache built when this view last rendered (redraw as it grows).
+    /// Latest hover request of this view (older readouts arriving late are dropped).
     #[serde(skip)]
-    pub lod_ready: u64,
+    pub hover_seq: u64,
+    /// Whether the last frame had the complete min/max cache file (redraw once it completes).
+    #[serde(skip)]
+    pub has_lod: bool,
 }
 
 fn one() -> f32 {
@@ -129,7 +139,8 @@ impl TimeView {
             scale_factor: 1.0,
             needs_render: true,
             hover: String::new(),
-            lod_ready: 0,
+            hover_seq: 0,
+            has_lod: false,
         }
     }
 
@@ -361,17 +372,17 @@ impl TimeView {
         drawn.get((y_frac * drawn.len() as f32) as usize).copied()
     }
 
-    /// Readout for the cursor at physical pixel (x, y) in the plot.
-    pub fn hover_readout(&self, x_px: f32, y_px: f32, dataset: &Dataset, timeline: &TimelineState) -> String {
-        let Some(ch) = self.channel_at(y_px) else { return String::new() };
+    /// What the cursor at physical pixel (x, y) in the plot points at: a readout that needs no
+    /// data (`Text`), or the sample whose value completes it (`Sample`, read off the UI thread).
+    pub fn hover_target(&self, x_px: f32, y_px: f32, dataset: &Dataset, timeline: &TimelineState) -> HoverTarget {
+        let Some(ch) = self.channel_at(y_px) else { return HoverTarget::Text(String::new()) };
         let w = self.canvas_width.max(1) as f32;
         let t = timeline.window_start_sec + (x_px / w).clamp(0.0, 1.0) as f64 * timeline.visible_window_sec;
         let rel = (t - dataset.start_time_sec) * dataset.sample_rate;
         if rel < 0.0 || rel >= dataset.total_samples as f64 {
-            return format!("Ch {ch}  ·  {t:.4} s  ·  no data");
+            return HoverTarget::Text(format!("Ch {ch}  ·  {t:.4} s  ·  no data"));
         }
-        let value = dataset.sample(ch, rel as usize);
-        format!("Ch {ch}  ·  {t:.4} s  ·  {} {}", fmt_amount(value), self.unit)
+        HoverTarget::Sample { channel: ch, sample: rel as u64, prefix: format!("Ch {ch}  ·  {t:.4} s  ·  "), unit: self.unit.clone() }
     }
 
     pub fn render_request(
@@ -379,6 +390,7 @@ impl TimeView {
         timeline: &TimelineState,
         source: Arc<dyn RecordingSource>,
         lod: Option<Arc<MinMaxCache>>,
+        summary: Option<Arc<MinMaxSummary>>,
         events: Arc<SpikeEventStore>,
         highlights: Vec<(Rgba8Pixel, Vec<(f64, usize)>)>,
     ) -> RenderRequest {
@@ -386,6 +398,7 @@ impl TimeView {
         RenderRequest {
             source,
             lod,
+            summary,
             events,
             width: self.canvas_width.max(1),
             height: self.canvas_height.max(1),

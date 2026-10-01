@@ -201,6 +201,26 @@ impl Controller {
         ui.global::<ui::TimeState>().set_overview_image(Image::from_rgba8(render_overview(w, h, &density)));
     }
 
+    /// A hover readout arrived from the hover thread.
+    pub(crate) fn on_hover_text(&self, view: ViewId, seq: u64, text: String) {
+        if self.time.borrow_mut().hover_answered(view, seq, text) {
+            self.show_hover(view);
+        }
+    }
+
+    /// Pushes view `id`'s hover readout to its seat.
+    fn show_hover(&self, id: ViewId) {
+        let text: SharedString = self.time.borrow().ws.view(id).map(|v| v.hover.clone()).unwrap_or_default().into();
+        for i in 0..self.time_ui.seats.row_count() {
+            if let Some(mut row) = self.time_ui.seats.row_data(i) {
+                if row.view_id == id as i32 && row.hover_readout != text {
+                    row.hover_readout = text.clone();
+                    self.time_ui.seats.set_row_data(i, row);
+                }
+            }
+        }
+    }
+
     /// A time view's frame arrived from the worker.
     pub(crate) fn on_time_frame(&self, view: ViewId, image: Image, scale: Option<f32>) {
         self.time_ui.images.borrow_mut().insert(view, image.clone());
@@ -396,15 +416,11 @@ impl Controller {
             logic.on_hover_at(move |id, x, y| {
                 let Some(c) = weak.upgrade() else { return };
                 let sources = c.app.borrow().sources.clone();
-                c.time.borrow_mut().hover(id as ViewId, x, y, &sources);
-                let text: SharedString = c.time.borrow().ws.view(id as ViewId).map(|v| v.hover.clone()).unwrap_or_default().into();
-                for i in 0..c.time_ui.seats.row_count() {
-                    if let Some(mut row) = c.time_ui.seats.row_data(i) {
-                        if row.view_id == id && row.hover_readout != text {
-                            row.hover_readout = text.clone();
-                            c.time_ui.seats.set_row_data(i, row);
-                        }
-                    }
+                // The value is read on the hover thread; readouts without one show now
+                let request = c.time.borrow_mut().hover(id as ViewId, x, y, &sources);
+                match request {
+                    Some(req) => c.hover.request(req),
+                    None => c.show_hover(id as ViewId),
                 }
             });
         }

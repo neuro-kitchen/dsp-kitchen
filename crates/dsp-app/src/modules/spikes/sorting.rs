@@ -369,7 +369,7 @@ pub(crate) mod tests {
     }
 
     /// Agreement with MEArec ground truth. Run with:
-    /// `cargo test -p croc-app --release ground_truth -- --ignored --nocapture`
+    /// `cargo test -p dsp-app --release ground_truth -- --ignored --nocapture`
     #[test]
     #[ignore]
     fn ground_truth_agreement() {
