@@ -1,35 +1,27 @@
 //! PyTorch `state_dict` / `.safetensors` key remapping and tensor layout transposition
 //! utilities for importing weights from external Python spike sorters (Kilosort4, DARTsort,
-//! CEBRA, Bombcell/UnitMatch) into native `dsp-synapse-ml` backbones.
-//!
-//! ### Weight Layout Differences:
-//! - **PyTorch `nn.Linear(in_features, out_features)`**: stores `.weight` as `[out_features, in_features]`.
-//! - **`dsp-synapse-ml` `LinearLayer`**: stores `.weight` as `[in_features, out_features]` (`y = x W + b`).
-//! - **PyTorch `nn.Conv1d(in_channels, out_channels, kernel_size)`**: stores `.weight` as
-//!   `[out_channels, in_channels, kernel_size]`, matching `dsp-synapse-ml` `Conv1dLayer`.
+//! CEBRA, Bombcell/UnitMatch).
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use crate::backend::{SynapseMlDevice, Tensor};
 use super::safetensors::SafetensorsMap;
 
-/// Transformation applied to a tensor during PyTorch -> `dsp-synapse-ml` weight import.
+/// Transformation applied to a tensor during PyTorch weight import.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WeightTransform {
     /// Keep shape and element order unchanged.
     Identity,
     /// Transpose a 2D weight matrix `[out_features, in_features] -> [in_features, out_features]`.
     Transpose2D,
-    /// Flip the temporal kernel axis (dim 2) of a 3D `Conv1d` weight `[out_ch, in_ch, K]`
-    /// (for converting true convolution kernels to cross-correlation kernels).
+    /// Flip the temporal kernel axis (dim 2) of a 3D `Conv1d` weight `[out_ch, in_ch, K]`.
     FlipConv1dKernel,
-    /// Permute 3D `Conv1d` weight from `[kernel_size, in_channels, out_channels]` (TF/Keras)
+    /// Permute 3D `Conv1d` weight from `[kernel_size, in_channels, out_channels]`
     /// to `[out_channels, in_channels, kernel_size]`.
     PermuteConv1dKioToOik,
 }
 
 /// Rule mapping a source key (or prefix) in an external PyTorch `.safetensors` file
-/// to a target key in `dsp-synapse-ml`, with an optional tensor layout transform.
+/// to a target key, with an optional tensor layout transform.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PyTorchRemapRule {
     pub source_key: String,
@@ -158,7 +150,7 @@ pub fn permute_kio_to_oik(data: &[f32], k: usize, c_in: usize, c_out: usize) -> 
 }
 
 /// Configurable adapter that converts a raw PyTorch `.safetensors` checkpoint into a
-/// `SafetensorsMap` ready for `dsp-synapse-ml` `.load_weights(...)`.
+/// remapped `SafetensorsMap`.
 #[derive(Debug, Clone, Default)]
 pub struct PyTorchWeightAdapter {
     pub rules: Vec<PyTorchRemapRule>,
@@ -207,8 +199,7 @@ impl PyTorchWeightAdapter {
         key
     }
 
-    /// Applies all remap and transposition rules to `source`, returning a new `SafetensorsMap`
-    /// with `dsp-synapse-ml` key names and tensor layouts.
+    /// Applies all remap and transposition rules to `source`, returning a new `SafetensorsMap`.
     pub fn adapt(&self, source: &SafetensorsMap) -> Result<SafetensorsMap> {
         let mut out = SafetensorsMap::new();
 
@@ -236,19 +227,6 @@ impl PyTorchWeightAdapter {
         let raw_map = SafetensorsMap::from_bytes(bytes)
             .context("Failed to parse source PyTorch .safetensors bytes")?;
         self.adapt(&raw_map)
-    }
-
-    /// Helper to directly fetch a 2D PyTorch `nn.Linear` weight `[out, in]` from `source`
-    /// and transpose it into a `dsp-synapse-ml` `Tensor<2>` `[in, out]`.
-    pub fn load_pytorch_linear_weight(
-        source: &SafetensorsMap,
-        key: &str,
-        device: SynapseMlDevice,
-    ) -> Result<Tensor<2>> {
-        let t_out_in: Tensor<2> = source.get_tensor(key, device)?;
-        let [out_f, in_f] = t_out_in.shape;
-        let transposed = transpose_2d_slice(t_out_in.as_slice(), out_f, in_f);
-        Ok(Tensor::from_floats(transposed, [in_f, out_f], device))
     }
 }
 
@@ -305,34 +283,27 @@ fn apply_transform(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backbones::LinearLayer;
 
     #[test]
     fn test_pytorch_linear_transpose_and_key_remap() {
-        let dev = SynapseMlDevice::Cpu;
-        // Suppose PyTorch nn.Linear(in=3, out=2) has weight shape [2, 3]:
-        // row 0 (out 0): [1.0, 2.0, 3.0]
-        // row 1 (out 1): [4.0, 5.0, 6.0]
         let mut pt_map = SafetensorsMap::new();
-        let pt_w = Tensor::<2>::from_floats(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [2, 3], dev);
-        let pt_b = Tensor::<1>::from_floats(vec![0.5, -0.5], [2], dev);
-        pt_map.insert_tensor("module.encoder.fc1.weight", &pt_w);
-        pt_map.insert_tensor("module.encoder.fc1.bias", &pt_b);
+        pt_map.insert_raw(
+            "module.encoder.fc1.weight",
+            vec![2, 3],
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        );
+        pt_map.insert_raw("module.encoder.fc1.bias", vec![2], vec![0.5, -0.5]);
 
         let adapter = PyTorchWeightAdapter::new()
             .add_rules(PyTorchRemapRule::linear_pair("encoder.fc1", "fc1"));
 
         let adapted = adapter.adapt(&pt_map).unwrap();
-        let mut layer = LinearLayer::new_initialized(3, 2, 42, dev);
-        layer.load_weights("fc1", &adapted, dev).unwrap();
+        let (w_shape, w_data) = adapted.get_raw("fc1.weight").unwrap();
+        assert_eq!(w_shape, &[3, 2]);
+        assert_eq!(w_data, &[1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
 
-        assert_eq!(layer.weight.shape, [3, 2]);
-        // Input [1, 3] = [1.0, 1.0, 1.0]
-        // out 0 = 1+2+3 + 0.5 = 6.5
-        // out 1 = 4+5+6 - 0.5 = 14.5
-        let x = Tensor::<2>::from_floats(vec![1.0, 1.0, 1.0], [1, 3], dev);
-        let y = layer.forward(&x);
-        assert!((y.data[0] - 6.5).abs() < 1e-5);
-        assert!((y.data[1] - 14.5).abs() < 1e-5);
+        let (b_shape, b_data) = adapted.get_raw("fc1.bias").unwrap();
+        assert_eq!(b_shape, &[2]);
+        assert_eq!(b_data, &[0.5, -0.5]);
     }
 }
