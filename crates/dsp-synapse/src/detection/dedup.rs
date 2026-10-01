@@ -160,6 +160,111 @@ fn locally_exclusive(
     out
 }
 
+/// Dispatches CubeCL parallel locally-exclusive spatial deduplication in VRAM (`LaunchGeometry::elementwise`).
+pub fn deduplicate_spikes_spatial_gpu<R: cubecl::prelude::Runtime>(
+    client: &cubecl::prelude::ComputeClient<R>,
+    spikes: &[SpikeEvent],
+    layout: &SensorLayout,
+    radius_um: f32,
+    window_samples: u64,
+) -> Vec<DeduplicatedSpike> {
+    use cubecl::prelude::*;
+    use dsp_core::compute::LaunchGeometry;
+    use super::kernels::spatial_dedup_survival_kernel;
+
+    if spikes.is_empty() {
+        return Vec::new();
+    }
+
+    let positions = SitePositions::new(layout);
+    let mut sorted: Vec<SpikeEvent> = spikes
+        .iter()
+        .filter(|e| positions.get(e.channel_id).is_some())
+        .cloned()
+        .collect();
+    if sorted.is_empty() {
+        return Vec::new();
+    }
+    sort_events(&mut sorted);
+
+    let num_channels = positions.0.len().max(1);
+    let mut dist_matrix = vec![f32::INFINITY; num_channels * num_channels];
+    for i in 0..num_channels {
+        if let Some(pi) = positions.get(i) {
+            for j in 0..num_channels {
+                if let Some(pj) = positions.get(j) {
+                    dist_matrix[i * num_channels + j] = pi.distance_to(pj);
+                }
+            }
+        }
+    }
+
+    let n = sorted.len();
+    let base_sample = sorted[0].sample_index;
+    let sample_indices: Vec<u32> = sorted
+        .iter()
+        .map(|e| (e.sample_index - base_sample) as u32)
+        .collect();
+    let channel_ids: Vec<u32> = sorted.iter().map(|e| e.channel_id as u32).collect();
+    let peak_amplitudes: Vec<f32> = sorted.iter().map(|e| e.peak_amplitude_uv).collect();
+
+    let t_handle = client.create_from_slice(u32::as_bytes(&sample_indices));
+    let ch_handle = client.create_from_slice(u32::as_bytes(&channel_ids));
+    let amp_handle = client.create_from_slice(f32::as_bytes(&peak_amplitudes));
+    let dist_handle = client.create_from_slice(f32::as_bytes(&dist_matrix));
+    let surv_handle = client.empty(n * 4);
+
+    let geom = LaunchGeometry::elementwise(client, n);
+    unsafe {
+        spatial_dedup_survival_kernel::launch::<R>(
+            client,
+            geom.cube_count,
+            geom.cube_dim,
+            ArrayArg::from_raw_parts(t_handle, n),
+            ArrayArg::from_raw_parts(ch_handle, n),
+            ArrayArg::from_raw_parts(amp_handle, n),
+            ArrayArg::from_raw_parts(dist_handle, num_channels * num_channels),
+            ArrayArg::from_raw_parts(surv_handle.clone(), n),
+            n,
+            num_channels as u32,
+            radius_um,
+            window_samples as u32,
+        );
+    }
+
+    let surv_bytes = client.read_one_unchecked(surv_handle);
+    let survives = u32::from_bytes(&surv_bytes);
+
+    let mut out = Vec::new();
+    let mut lo = 0usize;
+    for (i, cand) in sorted.iter().enumerate() {
+        while sorted[lo].sample_index + window_samples < cand.sample_index {
+            lo += 1;
+        }
+        if survives[i] == 0 {
+            continue;
+        }
+        let mut participating = Vec::new();
+        for other in &sorted[lo..] {
+            if other.sample_index > cand.sample_index + window_samples {
+                break;
+            }
+            if dist_matrix[cand.channel_id * num_channels + other.channel_id] <= radius_um {
+                participating.push(other.channel_id);
+            }
+        }
+        participating.sort_unstable();
+        participating.dedup();
+        out.push(DeduplicatedSpike {
+            primary_channel: cand.channel_id,
+            sample_index: cand.sample_index,
+            peak_amplitude_uv: cand.peak_amplitude_uv,
+            participating_channels: participating,
+        });
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,5 +366,26 @@ mod tests {
             out.extend(stream.finish());
             assert_eq!(out, whole, "window {window}");
         }
+    }
+
+    #[test]
+    fn gpu_spatial_dedup_matches_cpu_exactly() {
+        use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
+        use cubecl::prelude::*;
+
+        let device = WgpuDevice::default();
+        let client = WgpuRuntime::client(&device);
+        let layout = line_layout(8, 20.0);
+        let spikes: Vec<SpikeEvent> = (0..120)
+            .map(|i| SpikeEvent {
+                channel_id: (i * 5) % 8,
+                sample_index: 50 + (i as u64 * 9) % 500,
+                peak_amplitude_uv: -45.0 - ((i * 31) % 40) as f32,
+            })
+            .collect();
+
+        let cpu_out = deduplicate_spikes_spatial(&spikes, &layout, 35.0, 10);
+        let gpu_out = deduplicate_spikes_spatial_gpu::<WgpuRuntime>(&client, &spikes, &layout, 35.0, 10);
+        assert_eq!(gpu_out, cpu_out);
     }
 }
