@@ -33,14 +33,15 @@ pub use core::{
     WaveformTemplate, compute_mean_template,
 };
 pub use detection::{
-    MatchedFilterSpikeDetector, NeoSpikeDetector, ThresholdSpikeDetector,
-    canonical_biphasic_prototype, compute_neo_energy_1d, count_trough_candidates_kernel,
-    deduplicate_spikes_spatial, detect_spikes_matched_filter, detect_spikes_multichannel,
-    detect_spikes_neo, detect_spikes_with_sigma, estimate_noise_std,
-    execute_detect_spikes_in_vram,
+    AdaptiveThresholdDetector, MatchedFilterSpikeDetector, NeoSpikeDetector, SpikePolarity,
+    ThresholdSpikeDetector, canonical_biphasic_prototype, compute_neo_energy_1d,
+    count_trough_candidates_kernel, deduplicate_spikes_spatial, deduplicate_spikes_spatial_gpu,
+    detect_spikes_matched_filter, detect_spikes_multichannel, detect_spikes_multichannel_polarity,
+    detect_spikes_neo, detect_spikes_with_sigma, detect_spikes_with_sigma_polarity,
+    estimate_noise_std, execute_detect_spikes_in_vram,
 };
 pub use extraction::{
-     execute_extract_sinc_in_vram, extract_sinc_snippets_kernel,
+    execute_extract_sinc_in_vram, extract_sinc_snippets_kernel,
     extract_snippet_batch_multichannel, extract_snippets_multichannel,
     extract_snippets_single_channel, parabolic_subsample_offset, resample_sinc_1d,
     resample_sinc_multichannel,
@@ -62,9 +63,10 @@ pub use sorting::{
     suggest_template_merges, template_max_cosine_similarity,
 };
 pub use spatial::{
-    CenterOfMassLocalizer, DriftEstimate, GridConvolutionLocalizer, MonopolarTriangulator,
-    compute_kriging_weight_matrix, correct_snippet_batch_drift_kriging,
-    correct_traces_drift_kriging, estimate_rigid_drift, localize_spike_center_of_mass,
+    CenterOfMassLocalizer, DipoleEstimate, DipoleLocalizer, DriftEstimate, GridConvolutionLocalizer,
+    MonopolarTriangulator, NonRigidDriftEstimate, compute_kriging_weight_matrix,
+    correct_snippet_batch_drift_kriging, correct_traces_drift_kriging, estimate_nonrigid_drift,
+    estimate_rigid_drift, localize_spike_center_of_mass, localize_spike_dipole,
     localize_spike_grid_convolution, localize_spike_monopolar,
 };
 pub use streaming::{
