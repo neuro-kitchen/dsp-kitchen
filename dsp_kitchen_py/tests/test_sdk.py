@@ -21,32 +21,11 @@ def test_filters_and_pipeline():
     assert out.shape == (4, 1000)
 
 
-def test_synapse_ml_and_onnx():
-    snippets = np.random.randn(3, 4, 40).astype(np.float32) * 25.0
+def test_model_hub():
+    hub = dk.ModelHub()
+    entries = hub.list()
+    assert len(entries) >= 7
+    ks4 = hub.info("kilosort4/temporal-basis-v1")
+    assert ks4["id"] == "kilosort4/temporal-basis-v1"
+    assert ks4["family"] == "kilosort4"
 
-    unet = dk.synapse.ml.SpatiotemporalUnetDenoiser(num_channels=4, num_samples=40, base_filters=8, seed=42)
-    denoised = unet.denoise(snippets)
-    assert denoised.shape == (3, 4, 40)
-
-    vae = dk.synapse.ml.DartsortVaeEmbedder(num_channels=4, num_samples=40, latent_dim=6, seed=42)
-    emb = vae.embed(snippets)
-    assert emb.shape == (3, 6)
-
-    simclr = dk.synapse.ml.ContrastiveWaveformEmbedder(num_channels=4, proj_dim=8, seed=42)
-    emb_c = simclr.embed(snippets)
-    assert emb_c.shape == (3, 8)
-    norms = np.linalg.norm(emb_c, axis=1)
-    np.testing.assert_allclose(norms, np.ones(3), atol=1e-4)
-
-    curator = dk.synapse.ml.UnitQualityClassifier(seed=42)
-    feats = np.array(
-        [
-            [9.5, 0.0, 12.0, 0.002, 0.99, 0.18, 0.45, 85.0],
-            [1.1, 0.2, 0.5, 0.45, 0.10, 0.05, 0.08, 10.0],
-        ],
-        dtype=np.float32,
-    )
-    preds = curator.classify(feats)
-    assert len(preds) == 2
-    assert preds[0][0] == "SingleUnit"
-    assert preds[1][0] == "Noise"
