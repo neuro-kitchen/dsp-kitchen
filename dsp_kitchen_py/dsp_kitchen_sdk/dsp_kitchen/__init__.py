@@ -22,28 +22,23 @@ from ._bindings import (
     BandstopFilter,
     Clamp,
     CommonAverageReference,
-    ContrastiveWaveformEmbedder,
-    DartsortVaeEmbedder,
     DeduplicatedSpike,
     DspSession,
     HighpassFilter,
     LowpassFilter,
     MedianFilter,
     MmapRecording,
+    ModelHub,
     NotchFilter,
     NwbZarrRecording,
-    OnnxModelRunner,
     Pipeline,
     ProbeLayout,
     Scale,
-    SingleChannelDenoiser,
-    SpatiotemporalUnetDenoiser,
     SpikeEvent,
     StreamingSortResult,
     SubtractBaseline,
     TeagerKaiser,
     TemplateFilter,
-    UnitQualityClassifier,
     WaveformSnippet,
     __version__,
     bandpass_filter,
@@ -101,15 +96,11 @@ __all__ = [
     "NwbZarrRecording",
     "DspSession",
     "PCA",
-    # Deep Learning & Burn-ONNX
-    "SpatiotemporalUnetDenoiser",
-    "SingleChannelDenoiser",
-    "DartsortVaeEmbedder",
-    "ContrastiveWaveformEmbedder",
-    "UnitQualityClassifier",
-    "OnnxModelRunner",
+    # Pretrained Model Hub
+    "ModelHub",
     # Stage Classes
     "Scale",
+
     "SubtractBaseline",
     "Clamp",
     "NotchFilter",
@@ -155,12 +146,8 @@ __all__ = [
 
 def get_local_path() -> Path:
     """
-    Returns the base path defined by LOCAL_PATH in .env or environment variables.
+    Returns the dsp-kitchen workspace root directory.
     """
-    val = os.getenv("LOCAL_PATH")
-    if val and val.strip():
-        return Path(val.strip().strip('"').strip("'"))
-
     return Path(__file__).resolve().parent.parent.parent.parent
 
 

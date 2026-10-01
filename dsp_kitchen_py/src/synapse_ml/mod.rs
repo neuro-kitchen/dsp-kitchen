@@ -1,8 +1,4 @@
-pub mod models;
-pub mod onnx;
+pub mod hub;
 
-pub use models::{
-    PyContrastiveWaveformEmbedder, PyDartsortVaeEmbedder, PySingleChannelDenoiser,
-    PySpatiotemporalUnetDenoiser, PyUnitQualityClassifier,
-};
-pub use onnx::PyOnnxModelRunner;
+pub use hub::PyModelHub;
+
