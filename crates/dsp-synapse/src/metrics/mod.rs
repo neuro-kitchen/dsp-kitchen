@@ -1,17 +1,14 @@
-pub mod amplitude_cutoff;
-pub mod contamination;
-pub mod isi;
+pub mod correlogram;
+pub mod firing;
 pub mod isolation;
-pub mod presence_ratio;
-pub mod snr;
-pub mod template;
 
-pub use amplitude_cutoff::{compute_amplitude_cutoff, compute_amplitude_cutoff_with};
-pub use contamination::{compute_llobet_contamination, count_refractory_violations};
-pub use isi::{IsiMetrics, compute_isi_violations};
-pub use isolation::{
-    compute_d_prime, compute_isolation_distance, compute_silhouette_score,
+pub use crate::core::{WaveformTemplate, compute_mean_template};
+pub use correlogram::{Correlogram, compute_autocorrelogram, compute_crosscorrelogram};
+pub use firing::{
+    AMPLITUDE_CUTOFF_BINS, AMPLITUDE_CUTOFF_MIN_RATIO, AMPLITUDE_CUTOFF_SMOOTHING, IsiMetrics,
+    compute_amplitude_cutoff, compute_amplitude_cutoff_with, compute_isi_violations,
+    compute_llobet_contamination, compute_presence_ratio, count_refractory_violations,
 };
-pub use presence_ratio::compute_presence_ratio;
-pub use snr::compute_snr;
-pub use template::{WaveformTemplate, compute_mean_template};
+pub use isolation::{
+    compute_d_prime, compute_isolation_distance, compute_silhouette_score, compute_snr,
+};

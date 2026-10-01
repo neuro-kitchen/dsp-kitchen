@@ -1,13 +1,5 @@
-use serde::{Deserialize, Serialize};
+pub use crate::core::SpikeEvent;
 use super::noise::estimate_noise_std;
-
-/// Detected action potential event (spike).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SpikeEvent {
-    pub channel_id: usize,
-    pub sample_index: u64,
-    pub peak_amplitude_uv: f32,
-}
 
 /// Detects multi-channel action potential threshold crossings with adaptive noise estimation.
 pub fn detect_spikes_multichannel(
@@ -82,7 +74,7 @@ pub fn detect_spikes_with_sigma(
     all_spikes
 }
 
-/// Polymorphic MAD threshold detector implementing [`crate::traits::SpikeDetector`].
+/// Polymorphic MAD threshold detector implementing [`crate::core::SpikeDetector`].
 #[derive(Debug, Clone)]
 pub struct ThresholdSpikeDetector {
     pub threshold_factor: f32,
@@ -98,7 +90,7 @@ impl Default for ThresholdSpikeDetector {
     }
 }
 
-impl crate::traits::SpikeDetector for ThresholdSpikeDetector {
+impl crate::core::SpikeDetector for ThresholdSpikeDetector {
     fn detect(
         &self,
         data: &[f32],

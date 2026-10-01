@@ -1,19 +1,6 @@
 use dsp_core::SensorLayout;
 use dsp_core::layout::Position3D;
-use super::threshold::SpikeEvent;
-
-/// Deduplicated multi-channel spike event.
-#[derive(Debug, Clone, PartialEq)]
-pub struct DeduplicatedSpike {
-    /// The primary channel with the deepest negative trough.
-    pub primary_channel: usize,
-    /// Sample index of the peak on the primary channel.
-    pub sample_index: u64,
-    /// Peak amplitude in microvolts on the primary channel.
-    pub peak_amplitude_uv: f32,
-    /// Neighboring channels that also co-detected this action potential.
-    pub participating_channels: Vec<usize>,
-}
+pub use crate::core::{DeduplicatedSpike, SpikeEvent};
 
 /// Deduplicates multi-channel spike events across space and time ("locally exclusive" rule, as
 /// SpikeInterface's `locally_exclusive` peak detection).

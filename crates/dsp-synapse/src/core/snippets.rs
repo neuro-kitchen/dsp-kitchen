@@ -1,8 +1,24 @@
 use serde::{Deserialize, Serialize};
-use dsp_core::SensorLayout;
-use crate::detection::DeduplicatedSpike;
-use crate::probe::find_k_nearest_neighbors;
-use super::snippet::{WaveformSnippet, cut_row, snippet_fits, trough_offset};
+
+/// Extracted spike waveform snippet across one or multiple local channels.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WaveformSnippet {
+    pub primary_channel: usize,
+    pub center_sample: u64,
+    /// Sub-sample offset in samples [-0.5, +0.5] derived via parabolic interpolation.
+    pub subsample_offset: f32,
+    /// Channel IDs corresponding to rows of the 2D waveform.
+    pub channel_ids: Vec<usize>,
+    pub num_samples: usize,
+    /// Flat array of shape [num_channels, num_samples].
+    pub waveform: Vec<f32>,
+}
+
+impl WaveformSnippet {
+    pub fn num_channels(&self) -> usize {
+        self.channel_ids.len()
+    }
+}
 
 /// Contiguous 3D batch of multi-channel waveform snippets with shape `[num_spikes, num_channels, num_samples]`.
 ///
@@ -40,6 +56,7 @@ impl SnippetBatch {
     }
 
     /// Creates a `SnippetBatch` from a pre-allocated flat tensor buffer `[N, K, T]`.
+    #[allow(clippy::too_many_arguments)]
     pub fn from_raw_parts(
         data: Vec<f32>,
         num_spikes: usize,
@@ -155,117 +172,5 @@ impl SnippetBatch {
             });
         }
         out
-    }
-}
-
-/// Extracts a contiguous `SnippetBatch` directly from multi-channel raw data without intermediate
-/// per-spike heap allocations. Same realignment and edge rules as
-/// [`super::extract_snippets_multichannel`].
-pub fn extract_snippet_batch_multichannel(
-    data: &[f32],
-    _channels: usize,
-    samples: usize,
-    spikes: &[DeduplicatedSpike],
-    layout: &SensorLayout,
-    k_neighbors: usize,
-    pre_samples: usize,
-    post_samples: usize,
-    apply_sinc_shift: bool,
-) -> SnippetBatch {
-    let snippet_len = pre_samples + post_samples;
-    let k = k_neighbors.min(layout.total_channels()).max(1);
-    let stride = k * snippet_len;
-
-    let mut flat_data = Vec::with_capacity(spikes.len() * stride);
-    let mut primary_channels = Vec::with_capacity(spikes.len());
-    let mut center_samples = Vec::with_capacity(spikes.len());
-    let mut subsample_offsets = Vec::with_capacity(spikes.len());
-    let mut channel_ids = Vec::with_capacity(spikes.len() * k);
-
-    for spike in spikes {
-        let center = spike.sample_index as usize;
-        let primary_ch = spike.primary_channel;
-
-        if !snippet_fits(center, pre_samples, post_samples, samples, apply_sinc_shift) {
-            continue;
-        }
-
-        let neighbor_channels = find_k_nearest_neighbors(layout, primary_ch, k);
-        if neighbor_channels.len() != k {
-            continue;
-        }
-
-        let sub_offset = trough_offset(&data[primary_ch * samples..(primary_ch + 1) * samples], center);
-        let shift = apply_sinc_shift.then_some(sub_offset);
-
-        let dest = flat_data.len();
-        flat_data.resize(dest + stride, 0.0);
-        for (row_idx, &ch) in neighbor_channels.iter().enumerate() {
-            let row = &data[ch * samples..(ch + 1) * samples];
-            let out = &mut flat_data[dest + row_idx * snippet_len..dest + (row_idx + 1) * snippet_len];
-            cut_row(row, center, pre_samples, shift, out);
-        }
-
-        primary_channels.push(primary_ch);
-        center_samples.push(spike.sample_index);
-        subsample_offsets.push(sub_offset);
-        channel_ids.extend_from_slice(&neighbor_channels);
-    }
-
-    let num_spikes = primary_channels.len();
-    SnippetBatch {
-        data: flat_data,
-        num_spikes,
-        num_channels: k,
-        num_samples: snippet_len,
-        primary_channels,
-        center_samples,
-        subsample_offsets,
-        channel_ids,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::probe::tetrode;
-
-    #[test]
-    fn test_snippet_batch_extraction_and_indexing() {
-        let layout = tetrode();
-        let samples = 500;
-        let channels = 4;
-        let mut data = vec![0.0f32; channels * samples];
-
-        // Inject synthetic spike at sample 200 on channel 1
-        for ch in 0..channels {
-            data[ch * samples + 200] = -100.0 / (1.0 + ch as f32);
-        }
-
-        let spikes = vec![DeduplicatedSpike {
-            primary_channel: 1,
-            sample_index: 200,
-            peak_amplitude_uv: -50.0,
-            participating_channels: vec![0, 1, 2, 3],
-        }];
-
-        let batch = extract_snippet_batch_multichannel(
-            &data,
-            channels,
-            samples,
-            &spikes,
-            &layout,
-            4,
-            10,
-            20,
-            false,
-        );
-
-        assert_eq!(batch.shape(), [1, 4, 30]);
-        assert_eq!(batch.snippet_slice(0).len(), 120);
-        assert_eq!(batch.channel_slice(0, 0).len(), 30);
-
-        let roundtrip = SnippetBatch::from_snippets(&batch.to_snippets()).unwrap();
-        assert_eq!(roundtrip, batch);
     }
 }

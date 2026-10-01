@@ -1,9 +1,20 @@
 //! Feature-Space Cluster Separation & Isolation Metrics (`isolation.rs`).
 //!
-//! Provides the standard PCA/latent feature space cluster isolation metrics:
+//! Provides the standard SNR and PCA/latent feature space cluster isolation metrics:
+//! - **SNR**: Signal-to-noise ratio (`|peak_amplitude| / noise_std`).
 //! - **$d'$ (Linear Discriminant Sensitivity)**: Hill et al. (2011) Fisher LDA separation.
 //! - **Silhouette Score**: Rousseeuw (1987) intra- vs. inter-cluster distance ratio in `[-1.0, 1.0]`.
 //! - **Isolation Distance**: Schmitzer-Torbert et al. (2005) $N_C$-th closest outside spike Mahalanobis distance.
+
+/// Computes the signal-to-noise ratio (SNR) of an action potential against background noise:
+/// `SNR = |peak_amplitude| / noise_std`
+pub fn compute_snr(peak_amplitude_uv: f32, noise_std_uv: f32) -> f32 {
+    if noise_std_uv <= 1e-6 {
+        0.0
+    } else {
+        peak_amplitude_uv.abs() / noise_std_uv
+    }
+}
 
 /// Computes Fisher's Linear Discriminant sensitivity $d'$ between `cluster_a` (`[N_a, D]`)
 /// and `cluster_b` (`[N_b, D]`).

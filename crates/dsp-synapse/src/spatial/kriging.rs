@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use dsp_core::{DspError, DspResult, SensorLayout};
 use crate::extraction::SnippetBatch;
-use super::drift_map::DriftEstimate;
+use super::drift::DriftEstimate;
 
 /// Solves a symmetric positive-definite linear system $A X = B$ where $A$ is `[k, k]` and $B$ is `[k, m]`
 /// using Gauss-Jordan elimination with partial pivoting.
