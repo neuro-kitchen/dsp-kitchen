@@ -1,7 +1,5 @@
 [workspace]
 resolver = "2"
-# Standalone projects with their own workspace
-exclude = ["neuro-convert"]
 members = [
     "crates/dsp-core",
     "crates/dsp-base",
