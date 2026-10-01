@@ -1,4 +1,5 @@
 use crate::filter::design::{FilterError, FilterSpec, Sos};
+use crate::spatial::{SpatialWhitening, SurfaceLaplacian};
 
 /// Individual processing stage within an in-VRAM DSP pipeline.
 #[derive(Debug, Clone, PartialEq)]
@@ -14,6 +15,12 @@ pub enum PipelineStage {
     Filter(FilterSpec),
     /// Common Average Referencing across all channels
     CommonAverageReference,
+    /// Spatial whitening ($\mathbf{W}_{\text{ZCA}}$ or Local $K$-NN) across channels
+    SpatialWhitening(SpatialWhitening),
+    /// 2D Surface Laplacian (double-differential spatial filter) across channels
+    SurfaceLaplacian(SurfaceLaplacian),
+    /// Zero-phase 1D Gaussian temporal smoothing with standard deviation `sigma_samples`
+    GaussianSmooth { sigma_samples: f32 },
     /// 9-point branchless sorting network median filter
     Median9p,
     /// Discrete Teager-Kaiser Energy Operator: $\Psi[x_t] = x_t^2 - x_{t-1}x_{t+1}$
@@ -51,22 +58,34 @@ impl PipelineStage {
         Self::Filter(FilterSpec::sos(sos))
     }
 
+    /// Zero-phase 1D Gaussian temporal smoothing filter.
+    pub fn gaussian_smooth(sigma_samples: f32) -> Self {
+        Self::GaussianSmooth { sigma_samples }
+    }
+
     /// `(left, right)` samples of context this stage needs around a chunk at `sample_rate` Hz so
     /// the chunk interior matches whole-recording processing.
     ///
     /// - `Filter`: from the designed filter's pole radii ([`FilterSpec::settling`]); forward-backward
     ///   needs both sides.
+    /// - `GaussianSmooth`: `ceil(3 * sigma_samples)` on each side.
     /// - `Median9p`: 4 each side (half of the 9-point window); `TeagerKaiser`: 1 each side.
     /// - Pointwise / spatial stages: none.
     pub fn settling(&self, sample_rate: f64) -> Result<(usize, usize), FilterError> {
         Ok(match self {
             PipelineStage::Filter(spec) => spec.settling(sample_rate)?,
+            PipelineStage::GaussianSmooth { sigma_samples } => {
+                let r = (3.0 * sigma_samples.max(0.0)).ceil() as usize;
+                (r, r)
+            }
             PipelineStage::Median9p => (4, 4),
             PipelineStage::TeagerKaiser => (1, 1),
             PipelineStage::Scale { .. }
             | PipelineStage::SubtractBaseline { .. }
             | PipelineStage::Clamp { .. }
-            | PipelineStage::CommonAverageReference => (0, 0),
+            | PipelineStage::CommonAverageReference
+            | PipelineStage::SpatialWhitening(_)
+            | PipelineStage::SurfaceLaplacian(_) => (0, 0),
         })
     }
 }

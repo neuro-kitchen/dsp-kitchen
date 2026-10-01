@@ -8,5 +8,6 @@ pub mod pipeline;
 pub mod resampler;
 
 pub use pipeline::{Pipeline, PipelineStage};
-pub use linalg::PcaModel;
+pub use linalg::{FastIcaModel, IcaContrast, PcaModel, PpcaModel};
+pub use spatial::{SpatialWhitening, SurfaceLaplacian};
 pub use resampler::{min_max_decimate, min_max_decimate_into};

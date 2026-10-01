@@ -3,11 +3,18 @@ pub mod scaling;
 pub mod baseline;
 pub mod clamp;
 pub mod unpack;
+pub mod stats;
+pub mod windows;
 
 pub use scaling::execute_scaling;
 pub use baseline::execute_baseline_subtract;
 pub use clamp::execute_clamp;
 pub use unpack::{execute_unpack_stored, stored_words};
+pub use stats::{
+    estimate_noise_rms, estimate_noise_std, estimate_noise_trimmed, execute_channel_mean_std,
+    interquartile_range, standard_error,
+};
+pub use windows::{blackman_window, gaussian_window, hamming_window, hann_window, sinc};
 
 #[cfg(test)]
 mod tests {

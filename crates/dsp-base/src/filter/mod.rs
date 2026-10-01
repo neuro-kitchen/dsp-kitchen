@@ -7,7 +7,10 @@ pub mod template;
 // Convenient flat re-exports for common workflows
 pub use design::{FilterBand, FilterDesign, FilterError, FilterMode, FilterSpec, Section, Sos};
 pub use iir::{DeviceFilter, execute_filter};
-pub use fir::execute_fir;
+pub use fir::{
+    causal_alpha_kernel_1d, causal_exponential_kernel_1d, execute_fir, execute_fir_centered,
+    execute_gaussian_smooth, gaussian_kernel_1d, gaussian_smooth_1d,
+};
 pub use non_linear::{execute_median_9p, execute_teager_kaiser};
 pub use template::{TemplateFilter, subtract_template_1d, subtract_template_multichannel};
 
