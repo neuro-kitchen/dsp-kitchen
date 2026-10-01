@@ -99,7 +99,13 @@ impl TemplateAccumulator {
             .map(|&m2| ((m2 / n).max(0.0).sqrt()) as f32)
             .collect();
 
-        Some(WaveformTemplate::new(self.channel_ids.clone(), self.num_samples, mean, std))
+        Some(WaveformTemplate::with_count(
+            self.channel_ids.clone(),
+            self.num_samples,
+            self.count as usize,
+            mean,
+            std,
+        ))
     }
 }
 

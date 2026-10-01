@@ -9,10 +9,9 @@ use cubecl::prelude::*;
 use dsp_core::compute::{ComputeTarget, ComputeTask, LaunchGeometry};
 use dsp_core::{DspError, DspResult};
 
+use crate::core::{MatchedSpike, SpikeMatcher, WaveformTemplate};
 use crate::extraction::parabolic_subsample_offset;
-use crate::kernels::{omp_score_kernel, omp_subtract_kernel};
-use crate::metrics::WaveformTemplate;
-use crate::traits::{MatchedSpike, SpikeMatcher};
+use super::kernels::{omp_score_kernel, omp_subtract_kernel};
 
 /// OMP settings shared by the host entry points.
 #[derive(Debug, Clone, Copy)]

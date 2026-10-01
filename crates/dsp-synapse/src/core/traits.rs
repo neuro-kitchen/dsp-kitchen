@@ -4,32 +4,10 @@
 //! Every stage returns a [`DspResult`]: learned models can fail at run time (an ONNX graph with an
 //! unexpected input shape, an unsupported operator) and callers, including Python, get the error.
 
-use serde::{Deserialize, Serialize};
 use dsp_core::{DspResult, SensorLayout};
-use crate::detection::SpikeEvent;
-use crate::extraction::SnippetBatch;
-use crate::metrics::WaveformTemplate;
-
-/// Result of template matching / collision deconvolution for a single resolved spike.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct MatchedSpike {
-    pub unit_id: usize,
-    pub sample_index: u64,
-    pub subsample_lag: f32,
-    pub amplitude_scale: f32,
-    pub score: f32,
-}
-
-/// Automated single-unit curation classification labels (Allen / IBL standard).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum UnitQualityLabel {
-    /// Well-isolated single biological neuron (SUA)
-    SingleUnit,
-    /// Multi-unit activity or overlapping cluster (MUA)
-    MultiUnit,
-    /// Non-biological electrical/motion artifact or thermal noise
-    Noise,
-}
+use super::events::{MatchedSpike, SpikeEvent};
+use super::snippets::SnippetBatch;
+use super::template::WaveformTemplate;
 
 /// Polymorphic contract for Stage 1: Spike Detection (Classical Threshold/NEO vs. 1D-CNN/YASS).
 pub trait SpikeDetector: Send + Sync {

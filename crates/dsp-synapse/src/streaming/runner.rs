@@ -9,16 +9,15 @@ use dsp_base::pipeline::{Pipeline, PipelineWorkspace};
 use dsp_core::{ChunkSchedule, DspError, DspResult, HaloWindow, ProbeLayout, RecordingSource, SampleFormat};
 use dsp_stream::PrefetchReader;
 
-use crate::detection::{DeduplicatedSpike, StreamingDedup, estimate_noise_std};
-use crate::extraction::extraction_margin;
-use crate::kernels::{
-    DetectionCarry, execute_detect_spikes_in_vram, execute_extract_sinc_in_vram,
-    execute_reduce_templates_in_vram,
+use crate::core::{DeduplicatedSpike, WaveformTemplate};
+use crate::detection::{
+    DetectionCarry, StreamingDedup, estimate_noise_std, execute_detect_spikes_in_vram,
 };
-use crate::metrics::WaveformTemplate;
+use crate::extraction::{execute_extract_sinc_in_vram, extraction_margin};
 use crate::probe::precompute_knn_table;
 use super::accumulator::TemplateAccumulator;
 use super::config::StreamingSortConfig;
+use super::kernels::execute_reduce_templates_in_vram;
 
 /// Result of running out-of-core threshold spike sorting over a recording.
 #[derive(Debug, Clone)]
