@@ -148,7 +148,8 @@ def get_local_path() -> Path:
     """
     Returns the dsp-kitchen workspace root directory.
     """
-    return Path(__file__).resolve().parent.parent.parent.parent
+    return Path(__file__).resolve().parent.parent.parent
+
 
 
 def resolve_data_path(rel_or_abs_path: Union[str, Path]) -> Path:
