@@ -19,6 +19,7 @@ hip = ["dsp-base/hip", "dsp-synapse/hip"]
 dsp-core = { workspace = true, features = ["compute"] }
 dsp-base.workspace = true
 dsp-synapse.workspace = true
+dsp-synapse-ml.workspace = true
 dsp-stream.workspace = true
 dsp-io.workspace = true
 memmap2.workspace = true
