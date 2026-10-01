@@ -8,16 +8,11 @@ external sorter bridges (`synapse.ml`, `synapse.onnx`).
 
 from typing import List, Optional, Tuple
 from .._bindings import (
-    ContrastiveWaveformEmbedder,
-    DartsortVaeEmbedder,
     DeduplicatedSpike,
-    OnnxModelRunner,
+    ModelHub,
     ProbeLayout,
-    SingleChannelDenoiser,
-    SpatiotemporalUnetDenoiser,
     SpikeEvent,
     StreamingSortResult,
-    UnitQualityClassifier,
     WaveformSnippet,
     compute_isi,
     compute_snr,
@@ -28,7 +23,7 @@ from .._bindings import (
     extract_snippets,
     sort_recording,
 )
-from . import ml, onnx
+from . import ml
 
 
 def neuropixels_1_0_layout() -> ProbeLayout:
@@ -62,18 +57,12 @@ def custom_layout(
 
 __all__ = [
     "ml",
-    "onnx",
+    "ModelHub",
     "ProbeLayout",
     "SpikeEvent",
     "DeduplicatedSpike",
     "WaveformSnippet",
     "StreamingSortResult",
-    "SpatiotemporalUnetDenoiser",
-    "SingleChannelDenoiser",
-    "DartsortVaeEmbedder",
-    "ContrastiveWaveformEmbedder",
-    "UnitQualityClassifier",
-    "OnnxModelRunner",
     "detect_spikes",
     "deduplicate_spikes",
     "estimate_noise",
@@ -88,3 +77,4 @@ __all__ = [
     "utah_array_layout",
     "custom_layout",
 ]
+

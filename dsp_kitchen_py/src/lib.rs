@@ -29,10 +29,7 @@ use crate::synapse::{
     estimate_noise, extract_snippets, sort_recording, PyDeduplicatedSpike, PyProbeLayout,
     PySpikeEvent, PyStreamingSortResult, PyWaveformSnippet,
 };
-use crate::synapse_ml::{
-    PyContrastiveWaveformEmbedder, PyDartsortVaeEmbedder, PyOnnxModelRunner,
-    PySingleChannelDenoiser, PySpatiotemporalUnetDenoiser, PyUnitQualityClassifier,
-};
+use crate::synapse_ml::PyModelHub;
 
 fn register_bindings(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Core & Classical Classes
@@ -59,13 +56,8 @@ fn register_bindings(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDspSession>()?;
     m.add_class::<PyPca>()?;
 
-    // Deep Learning (`dsp-synapse-ml`) & Burn-ONNX (`onnx-ir`) Classes
-    m.add_class::<PySpatiotemporalUnetDenoiser>()?;
-    m.add_class::<PySingleChannelDenoiser>()?;
-    m.add_class::<PyDartsortVaeEmbedder>()?;
-    m.add_class::<PyContrastiveWaveformEmbedder>()?;
-    m.add_class::<PyUnitQualityClassifier>()?;
-    m.add_class::<PyOnnxModelRunner>()?;
+    // Pretrained Model Hub (`dsp-synapse-ml`)
+    m.add_class::<PyModelHub>()?;
 
     // Direct Functions
     m.add_function(wrap_pyfunction!(list_nwb_series, m)?)?;
