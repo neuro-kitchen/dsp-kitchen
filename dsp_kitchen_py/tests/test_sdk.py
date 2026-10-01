@@ -29,3 +29,30 @@ def test_model_hub():
     assert ks4["id"] == "kilosort4/temporal-basis-v1"
     assert ks4["family"] == "kilosort4"
 
+    embedder = dk.Kilosort4BasisEmbedder.from_hub()
+    assert embedder.num_components == 6
+    assert embedder.window_len == 61
+    basis = embedder.basis_matrix()
+    assert basis.shape == (6, 61)
+
+    recon_basis = embedder.reconstruct(basis)
+    assert np.allclose(recon_basis, basis, atol=1e-4)
+
+    snippets = np.stack([basis[:4], basis[1:5]], axis=0).astype(np.float32)
+    embedded = embedder.embed(snippets)
+    assert embedded.shape == (2, 24)
+    denoised = embedder.denoise(snippets)
+    assert denoised.shape == (2, 4, 61)
+    assert np.allclose(denoised, snippets, atol=1e-4)
+
+    detector = dk.Kilosort4Detector.from_hub(threshold_sigma=4.5, refractory_samples=30)
+    assert detector.num_templates == 6
+    assert detector.window_len == 61
+    templates = detector.templates_matrix()
+    assert templates.shape == (6, 61)
+
+
+if __name__ == "__main__":
+    test_filters_and_pipeline()
+    test_model_hub()
+    print("All dsp_kitchen_py SDK tests passed!")

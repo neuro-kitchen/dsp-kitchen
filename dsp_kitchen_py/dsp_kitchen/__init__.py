@@ -25,6 +25,8 @@ from ._bindings import (
     DeduplicatedSpike,
     DspSession,
     HighpassFilter,
+    Kilosort4BasisEmbedder,
+    Kilosort4Detector,
     LowpassFilter,
     MedianFilter,
     MmapRecording,
@@ -96,8 +98,10 @@ __all__ = [
     "NwbZarrRecording",
     "DspSession",
     "PCA",
-    # Pretrained Model Hub
+    # Pretrained Model Hub & Models
     "ModelHub",
+    "Kilosort4BasisEmbedder",
+    "Kilosort4Detector",
     # Stage Classes
     "Scale",
 

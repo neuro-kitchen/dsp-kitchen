@@ -3,9 +3,16 @@ Deep learning spike-sorting models (`dsp-synapse-ml`): Pretrained Model Hub (`Mo
 waveform denoisers, variational & contrastive latent embedders, and automated unit curation.
 """
 
-from .._bindings import ModelHub
+from .._bindings import (
+    Kilosort4BasisEmbedder,
+    Kilosort4Detector,
+    ModelHub,
+)
 
 __all__ = [
     "ModelHub",
+    "Kilosort4BasisEmbedder",
+    "Kilosort4Detector",
 ]
+
 
