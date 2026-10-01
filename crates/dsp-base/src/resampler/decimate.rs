@@ -1,3 +1,5 @@
+use super::minmax::{fold, EMPTY};
+
 /// Fast min-max envelope decimation for real-time visualization.
 /// For each bucket of samples, emits `[min, max]` to preserve high-frequency spike peaks.
 pub fn min_max_decimate(
@@ -19,18 +21,7 @@ pub fn min_max_decimate(
         let start = (i as f64 * bucket_size).floor() as usize;
         let end = (((i + 1) as f64 * bucket_size).ceil() as usize).min(input_samples.len());
 
-        let mut min_val = f32::INFINITY;
-        let mut max_val = f32::NEG_INFINITY;
-
-        for &val in &input_samples[start..end] {
-            if val < min_val {
-                min_val = val;
-            }
-            if val > max_val {
-                max_val = val;
-            }
-        }
-
+        let [min_val, max_val] = fold(&input_samples[start..end], EMPTY);
         output.push(min_val);
         output.push(max_val);
     }
@@ -58,14 +49,7 @@ pub fn min_max_decimate_into(input_samples: &[f32], output: &mut [[f32; 2]]) {
             .max(start + 1)
             .min(n);
         let start = start.min(n - 1);
-
-        let mut min_val = f32::INFINITY;
-        let mut max_val = f32::NEG_INFINITY;
-        for &val in &input_samples[start..end] {
-            min_val = min_val.min(val);
-            max_val = max_val.max(val);
-        }
-        *bucket = [min_val, max_val];
+        *bucket = fold(&input_samples[start..end], EMPTY);
     }
 }
 
