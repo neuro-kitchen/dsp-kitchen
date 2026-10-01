@@ -15,7 +15,7 @@ use dsp_core::{DspError, DspResult, MemoryOrder, RecordingInfo, RecordingSource,
 use serde_json::{json, Value};
 use zarrs::array::{Array, ArrayBuilder, ArrayBytes, data_type};
 
-use crate::codec::{native_to_le, select_stored};
+use crate::codec::{native_to_le, scale_frames, select_stored};
 use zarrs::filesystem::FilesystemStore;
 use zarrs::group::{Group, GroupBuilder};
 use zarrs::storage::ReadableWritableListableStorage;
@@ -36,6 +36,8 @@ fn open_store(path: &Path) -> DspResult<ReadableWritableListableStorage> {
 pub struct ZarrRecording {
     info: RecordingInfo,
     array: Array<dyn zarrs::storage::ReadableWritableListableStorageTraits>,
+    /// Samples per chunk along time (the first chunk's).
+    chunk_samples: Option<u64>,
 }
 
 impl ZarrRecording {
@@ -76,11 +78,30 @@ impl ZarrRecording {
         let name = path.file_name().map_or_else(|| "recording.zarr".into(), |n| n.to_string_lossy().into_owned());
         let mut info = RecordingInfo::new(name, channels, samples, SampleRate::new(rate)?, format, order).with_gain_uv(gain);
         info.metadata.insert("format".into(), "zarr v3".into());
-        Ok(Self { info, array })
+        let time_axis = if order == MemoryOrder::TimeMajor { 0 } else { 1 };
+        let chunk_samples = array.chunk_shape(&[0, 0]).ok().map(|c| c[time_axis].get());
+        Ok(Self { info, array, chunk_samples })
     }
 
     /// Stored values of channels `ch` × `samples`, channel-major.
     fn retrieve(&self, ch: Range<u64>, samples: Range<u64>) -> DspResult<Vec<f32>> {
+        let values = self.retrieve_native(ch.clone(), samples.clone())?;
+        if self.info.order == MemoryOrder::ChannelMajor {
+            return Ok(values);
+        }
+        // [samples, channels] → [channels, samples]
+        let (nc, ns) = ((ch.end - ch.start) as usize, (samples.end - samples.start) as usize);
+        let mut t = vec![0.0f32; values.len()];
+        for s in 0..ns {
+            for c in 0..nc {
+                t[c * ns + s] = values[s * nc + c];
+            }
+        }
+        Ok(t)
+    }
+
+    /// Stored values of channels `ch` × `samples` in the array's order.
+    fn retrieve_native(&self, ch: Range<u64>, samples: Range<u64>) -> DspResult<Vec<f32>> {
         let subset = match self.info.order {
             MemoryOrder::ChannelMajor => [ch.clone(), samples.clone()],
             MemoryOrder::TimeMajor => [samples.clone(), ch.clone()],
@@ -99,24 +120,37 @@ impl ZarrRecording {
             SampleFormat::I32 => get!(i32),
             SampleFormat::F64 => get!(f64),
         };
-        if self.info.order == MemoryOrder::ChannelMajor {
-            return Ok(values);
-        }
-        // [samples, channels] → [channels, samples]
-        let (nc, ns) = ((ch.end - ch.start) as usize, (samples.end - samples.start) as usize);
-        let mut t = vec![0.0f32; values.len()];
-        for s in 0..ns {
-            for c in 0..nc {
-                t[c * ns + s] = values[s * nc + c];
-            }
-        }
-        Ok(t)
+        Ok(values)
     }
 }
 
 impl RecordingSource for ZarrRecording {
     fn info(&self) -> &RecordingInfo {
         &self.info
+    }
+
+    fn chunk_samples(&self) -> Option<u64> {
+        self.chunk_samples
+    }
+
+    fn read_native(&self, samples: Range<u64>, out: &mut [f32]) -> DspResult<MemoryOrder> {
+        let nch = self.info.channels.len();
+        let all: Vec<usize> = (0..nch).collect();
+        let n = check_read(&self.info, &all, &samples, out.len())?;
+        if n == 0 || nch == 0 {
+            return Ok(self.info.order);
+        }
+        let block = self.retrieve_native(0..nch as u64, samples)?;
+        out.copy_from_slice(&block);
+        match self.info.order {
+            MemoryOrder::TimeMajor => scale_frames(&self.info, out),
+            MemoryOrder::ChannelMajor => {
+                for (row, c) in out.chunks_exact_mut(n).zip(&self.info.channels) {
+                    row.iter_mut().for_each(|v| *v = *v * c.gain_uv + c.offset_uv);
+                }
+            }
+        }
+        Ok(self.info.order)
     }
 
     fn read_stored(&self, channels: &[usize], samples: Range<u64>, out: &mut [u8]) -> DspResult<()> {

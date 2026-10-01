@@ -15,7 +15,7 @@ use dsp_core::{DspError, DspResult, MemoryOrder, RecordingInfo, RecordingSource,
 use serde_json::Value;
 use zarrs::array::{Array, ArrayBytes};
 
-use crate::codec::{native_to_le, select_stored};
+use crate::codec::{native_to_le, scale_frames, select_stored};
 use zarrs::filesystem::FilesystemStore;
 use zarrs::storage::ReadableStorageTraits;
 
@@ -85,6 +85,8 @@ pub struct NwbZarrRecording {
     info: RecordingInfo,
     data: Array<Storage>,
     two_d: bool,
+    /// Samples per chunk along time (the first chunk's).
+    chunk_samples: Option<u64>,
 }
 
 impl NwbZarrRecording {
@@ -164,7 +166,9 @@ impl NwbZarrRecording {
         if !others.is_empty() {
             info.metadata.insert("nwb_other_series".into(), others.join(", "));
         }
-        Ok(Self { info, data, two_d })
+        let origin = vec![0; data.shape().len()];
+        let chunk_samples = data.chunk_shape(&origin).ok().map(|c| c[0].get());
+        Ok(Self { info, data, two_d, chunk_samples })
     }
 
     fn retrieve(&self, ch: Range<u64>, samples: Range<u64>) -> DspResult<Vec<f32>> {
@@ -197,6 +201,24 @@ fn read_all<T: zarrs::array::ElementOwned>(store: &Arc<Storage>, path: &str) -> 
 impl RecordingSource for NwbZarrRecording {
     fn info(&self) -> &RecordingInfo {
         &self.info
+    }
+
+    fn chunk_samples(&self) -> Option<u64> {
+        self.chunk_samples
+    }
+
+    fn read_native(&self, samples: Range<u64>, out: &mut [f32]) -> DspResult<MemoryOrder> {
+        let nch = self.info.channels.len();
+        let all: Vec<usize> = (0..nch).collect();
+        let n = check_read(&self.info, &all, &samples, out.len())?;
+        if n == 0 || nch == 0 {
+            return Ok(MemoryOrder::TimeMajor);
+        }
+        // Stored [time, channel]: kept as is
+        let block = self.retrieve(0..nch as u64, samples)?;
+        out.copy_from_slice(&block);
+        scale_frames(&self.info, out);
+        Ok(MemoryOrder::TimeMajor)
     }
 
     fn read_stored(&self, channels: &[usize], samples: Range<u64>, out: &mut [u8]) -> DspResult<()> {
@@ -314,6 +336,7 @@ mod tests {
         rec.read(&[2, 0], 1..4, &mut out).unwrap();
         assert_eq!(out, vec![12.0, 22.0, 32.0, 10.0, 20.0, 30.0]);
         crate::tests::assert_stored_matches(rec.as_ref(), &[2, 0], 1..4);
+        crate::tests::assert_native_matches(rec.as_ref(), 1..4);
 
         let listed: Vec<(String, String, f64, f64)> =
             crate::sources(&path).unwrap().into_iter().map(|s| (s.name, s.unit, s.sample_rate, s.start_time_sec)).collect();

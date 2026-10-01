@@ -3,8 +3,8 @@
 //! Every format implements [`dsp_core::RecordingSource`], so callers read bounded chunks of any
 //! recording without knowing how it is stored. [`open`] picks the reader from the path.
 
+mod cached;
 mod codec;
-pub mod cache;
 pub mod mtscomp;
 #[cfg(feature = "zarr")]
 pub mod nwb;
@@ -19,7 +19,7 @@ use std::path::Path;
 
 use dsp_core::{DspError, DspResult, RecordingSource};
 
-pub use cache::{cache_path, CacheIdentity, MinMaxCache};
+pub use cached::CachedRecording;
 pub use mtscomp::MtscompRecording;
 pub use raw::{write_raw, RawParams, RawRecording};
 pub use sources::{default_source, open_source, sources, SourceEntry, SourceKind};
@@ -118,6 +118,20 @@ mod tests {
         assert_eq!(decoded, values, "{}", info.name);
     }
 
+    /// `read_native`, put back in channel-major order, equals `read` of every channel.
+    pub(crate) fn assert_native_matches(rec: &dyn RecordingSource, samples: std::ops::Range<u64>) {
+        let (nch, n) = (rec.info().channel_count(), (samples.end - samples.start) as usize);
+        let all: Vec<usize> = (0..nch).collect();
+        let mut values = vec![0.0f32; nch * n];
+        rec.read(&all, samples.clone(), &mut values).unwrap();
+        let mut native = vec![0.0f32; nch * n];
+        let order = rec.read_native(samples, &mut native).unwrap();
+        if order == MemoryOrder::TimeMajor {
+            native = (0..nch).flat_map(|c| (0..n).map(move |t| (c, t))).map(|(c, t)| native[t * nch + c]).collect();
+        }
+        assert_eq!(native, values, "{} {order:?}", rec.info().name);
+    }
+
     #[test]
     fn stored_reads_match_scaled_reads() {
         let dir = std::env::temp_dir().join(format!("dsp_io_stored_{}", std::process::id()));
@@ -135,6 +149,7 @@ mod tests {
             write_raw(&src, &bin, format, order, gain, 700, |_, _| {}).unwrap();
             let rec = open(&bin).unwrap();
             assert_stored_matches(rec.as_ref(), &channels, 100..1_900);
+            assert_native_matches(rec.as_ref(), 100..1_900);
             // A sliced view maps channels and samples onto its parent
             let parent: std::sync::Arc<dyn RecordingSource> = std::sync::Arc::from(rec);
             let sliced = dsp_core::SlicedRecording::new(parent, 50..2_000, Some(vec![3, 1, 4])).unwrap();
@@ -149,6 +164,10 @@ mod tests {
             let z = dir.join("rec.zarr");
             write_zarr(&src, &z, 700, |_, _| {}).unwrap();
             assert_stored_matches(open(&z).unwrap().as_ref(), &channels, 100..1_900);
+            assert_native_matches(open(&z).unwrap().as_ref(), 100..1_900);
+            let cached = CachedRecording::wrap(open(&z).unwrap(), 1 << 20);
+            assert_native_matches(cached.as_ref(), 100..1_900);
+            assert_stored_matches(cached.as_ref(), &channels, 100..1_900);
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }

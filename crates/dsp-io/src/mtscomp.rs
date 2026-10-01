@@ -174,6 +174,11 @@ impl RecordingSource for MtscompRecording {
         &self.info
     }
 
+    /// The first chunk's length (mtscomp chunks are equal except the last).
+    fn chunk_samples(&self) -> Option<u64> {
+        Some(self.ch.chunk_bounds[1] - self.ch.chunk_bounds[0])
+    }
+
     fn read_stored(&self, channels: &[usize], samples: Range<u64>, out: &mut [u8]) -> DspResult<()> {
         let n = check_read_stored(&self.info, channels, &samples, out.len())?;
         if n == 0 {
