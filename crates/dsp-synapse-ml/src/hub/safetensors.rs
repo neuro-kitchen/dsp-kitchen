@@ -10,7 +10,6 @@ use std::path::Path;
 use anyhow::{Context, Result, bail};
 use safetensors::tensor::{Dtype, SafeTensors, TensorView};
 use serde::{Deserialize, Serialize};
-use crate::backend::{SynapseMlDevice, Tensor};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SafetensorEntryHeader {
@@ -19,8 +18,8 @@ pub struct SafetensorEntryHeader {
     pub data_offsets: [usize; 2],
 }
 
-/// In-memory collection of named tensors compatible with PyTorch / HuggingFace `.safetensors`.
-#[derive(Debug, Clone, Default)]
+/// In-memory collection of named `(shape, Vec<f32>)` tensors compatible with PyTorch / HuggingFace `.safetensors`.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct SafetensorsMap {
     tensors: BTreeMap<String, (Vec<usize>, Vec<f32>)>,
 }
@@ -49,7 +48,7 @@ impl SafetensorsMap {
         self.tensors.iter()
     }
 
-    /// Inserts a raw dynamic shape + `Vec<f32>` buffer into the map.
+    /// Inserts a dynamic shape + `Vec<f32>` buffer into the map.
     pub fn insert_raw(&mut self, name: impl Into<String>, shape: Vec<usize>, data: Vec<f32>) {
         let expected: usize = shape.iter().product();
         assert_eq!(
@@ -63,37 +62,13 @@ impl SafetensorsMap {
         self.tensors.insert(name.into(), (shape, data));
     }
 
-    /// Inserts a rank-`D` `Tensor` into the map.
-    pub fn insert_tensor<const D: usize>(&mut self, name: impl Into<String>, tensor: &Tensor<D>) {
-        self.tensors.insert(
-            name.into(),
-            (tensor.shape.to_vec(), tensor.as_slice().to_vec()),
-        );
-    }
-
-    /// Retrieves a rank-`D` `Tensor` by name, validating its rank and shape.
-    pub fn get_tensor<const D: usize>(
-        &self,
-        name: &str,
-        device: SynapseMlDevice,
-    ) -> Result<Tensor<D>> {
-        let (shape_vec, data) = self
+    /// Retrieves a `(shape, data)` slice entry by name.
+    pub fn get_raw(&self, name: &str) -> Result<(&[usize], &[f32])> {
+        let (shape, data) = self
             .tensors
             .get(name)
             .with_context(|| format!("Tensor '{}' not found in safetensors map", name))?;
-
-        if shape_vec.len() != D {
-            bail!(
-                "Tensor '{}' has rank {}, expected rank {}",
-                name,
-                shape_vec.len(),
-                D
-            );
-        }
-
-        let mut shape = [0usize; D];
-        shape.copy_from_slice(shape_vec);
-        Ok(Tensor::from_floats(data.clone(), shape, device))
+        Ok((shape.as_slice(), data.as_slice()))
     }
 
     /// Serializes all stored tensors into the standard `.safetensors` binary format via `safetensors::serialize`.
@@ -154,19 +129,18 @@ mod tests {
     #[test]
     fn test_safetensors_binary_roundtrip() {
         let mut map = SafetensorsMap::new();
-        let w = Tensor::<2>::from_floats(vec![1.0, -2.0, 3.5, 4.25], [2, 2], SynapseMlDevice::Cpu);
-        let b = Tensor::<1>::from_floats(vec![0.5, -0.5], [2], SynapseMlDevice::Cpu);
-
-        map.insert_tensor("linear.weight", &w);
-        map.insert_tensor("linear.bias", &b);
+        map.insert_raw("linear.weight", vec![2, 2], vec![1.0, -2.0, 3.5, 4.25]);
+        map.insert_raw("linear.bias", vec![2], vec![0.5, -0.5]);
 
         let encoded = map.to_bytes().unwrap();
         let decoded = SafetensorsMap::from_bytes(&encoded).unwrap();
 
-        let w_loaded: Tensor<2> = decoded.get_tensor("linear.weight", SynapseMlDevice::Cpu).unwrap();
-        let b_loaded: Tensor<1> = decoded.get_tensor("linear.bias", SynapseMlDevice::Cpu).unwrap();
+        let (w_shape, w_data) = decoded.get_raw("linear.weight").unwrap();
+        assert_eq!(w_shape, &[2, 2]);
+        assert_eq!(w_data, &[1.0, -2.0, 3.5, 4.25]);
 
-        assert_eq!(w_loaded, w);
-        assert_eq!(b_loaded, b);
+        let (b_shape, b_data) = decoded.get_raw("linear.bias").unwrap();
+        assert_eq!(b_shape, &[2]);
+        assert_eq!(b_data, &[0.5, -0.5]);
     }
 }
