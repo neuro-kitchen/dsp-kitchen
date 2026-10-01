@@ -7,10 +7,10 @@ use super::engine::Pipeline;
 use super::stage::PipelineStage;
 use crate::filter::design::FilterError;
 use crate::filter::iir::DeviceFilter;
-use crate::filter::{execute_median_9p, execute_teager_kaiser};
+use crate::filter::{execute_fir_centered, execute_median_9p, execute_teager_kaiser, gaussian_kernel_1d};
 use crate::math::{execute_clamp, execute_scaling, execute_unpack_stored, stored_words};
 use dsp_core::{DspError, DspResult, SampleFormat};
-use crate::spatial::execute_direct_car;
+use crate::spatial::{execute_direct_car, execute_spatial_matrix_multiply};
 
 /// How consecutive chunks relate to each other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +29,8 @@ pub enum ChunkMode {
 enum Planned {
     Stage(PipelineStage),
     Filter { filter: DeviceFilter, state: Handle },
+    SpatialMatrix { weights: Handle },
+    CenteredFir { taps: Handle, radius: usize },
 }
 
 /// Pre-allocated VRAM workspace for running a [`Pipeline`] over many chunks.
@@ -94,6 +96,21 @@ impl<R: Runtime> PipelineWorkspace<R> {
                     let state = client.empty((channels * filter.state_len() * 4).max(4));
                     plan.push(Planned::Filter { filter, state });
                 }
+                PipelineStage::SpatialWhitening(w) => {
+                    assert_eq!(w.num_channels, channels, "SpatialWhitening channel mismatch");
+                    let weights = client.create_from_slice(f32::as_bytes(&w.matrix));
+                    plan.push(Planned::SpatialMatrix { weights });
+                }
+                PipelineStage::SurfaceLaplacian(lap) => {
+                    assert_eq!(lap.num_channels, channels, "SurfaceLaplacian channel mismatch");
+                    let weights = client.create_from_slice(f32::as_bytes(&lap.matrix));
+                    plan.push(Planned::SpatialMatrix { weights });
+                }
+                PipelineStage::GaussianSmooth { sigma_samples } => {
+                    let (taps_vec, radius) = gaussian_kernel_1d(*sigma_samples, 3.0);
+                    let taps = client.create_from_slice(f32::as_bytes(&taps_vec));
+                    plan.push(Planned::CenteredFir { taps, radius });
+                }
                 other => plan.push(Planned::Stage(other.clone())),
             }
         }
@@ -155,7 +172,7 @@ impl<R: Runtime> PipelineWorkspace<R> {
             .iter()
             .map(|p| match p {
                 Planned::Filter { filter, .. } => filter.scratch_len(self.channels, samples),
-                Planned::Stage(_) => 0,
+                Planned::Stage(_) | Planned::SpatialMatrix { .. } | Planned::CenteredFir { .. } => 0,
             })
             .max()
             .unwrap_or(0);
@@ -190,6 +207,12 @@ impl<R: Runtime> PipelineWorkspace<R> {
                         .apply_stateful(client, &current_in, &out, state, channels, samples, first)
                         .expect("stateful workspaces only hold forward filters"),
                 },
+                Planned::SpatialMatrix { weights } => {
+                    execute_spatial_matrix_multiply::<R>(client, &current_in, weights, &out, channels, samples);
+                }
+                Planned::CenteredFir { taps, radius } => {
+                    execute_fir_centered::<R>(client, &current_in, &out, taps, channels, samples, *radius);
+                }
                 Planned::Stage(stage) => match stage {
                     PipelineStage::Scale { alpha, beta } => {
                         execute_scaling::<R>(client, &current_in, &out, total, *alpha, *beta)
@@ -209,7 +232,12 @@ impl<R: Runtime> PipelineWorkspace<R> {
                     PipelineStage::TeagerKaiser => {
                         execute_teager_kaiser::<R>(client, &current_in, &out, channels, samples)
                     }
-                    PipelineStage::Filter(_) => unreachable!("filters are planned as DeviceFilter"),
+                    PipelineStage::Filter(_)
+                    | PipelineStage::SpatialWhitening(_)
+                    | PipelineStage::SurfaceLaplacian(_)
+                    | PipelineStage::GaussianSmooth { .. } => {
+                        unreachable!("pre-planned stage")
+                    }
                 },
             }
             current_in = out;

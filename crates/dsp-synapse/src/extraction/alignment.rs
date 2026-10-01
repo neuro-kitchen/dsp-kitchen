@@ -1,4 +1,4 @@
-use std::f32::consts::PI;
+pub use dsp_base::math::windows::{blackman_window, sinc};
 
 /// Half-width of the windowed-sinc kernel used for snippet realignment (taps `−5..=5`).
 pub const SINC_KERNEL_RADIUS: usize = 5;
@@ -11,31 +11,6 @@ pub fn parabolic_subsample_offset(y_prev: f32, y_peak: f32, y_next: f32) -> f32 
         return 0.0;
     }
     ((y_prev - y_next) / denom).clamp(-0.5, 0.5)
-}
-
-/// Computes normalized sinc: sinc(x) = sin(pi * x) / (pi * x), sinc(0) = 1.
-#[inline]
-pub fn sinc(x: f32) -> f32 {
-    if x.abs() < 1e-7 {
-        1.0
-    } else {
-        let pix = PI * x;
-        pix.sin() / pix
-    }
-}
-
-/// Blackman-Harris 4-term apodization window to prevent spectral leakage in sinc resampling.
-#[inline]
-pub fn blackman_window(x: f32, half_width: f32) -> f32 {
-    let norm = (x / half_width).clamp(-1.0, 1.0);
-    let u = (norm + 1.0) * 0.5;
-    let a0 = 0.35875;
-    let a1 = 0.48829;
-    let a2 = 0.14128;
-    let a3 = 0.01168;
-
-    let two_pi_u = 2.0 * PI * u;
-    a0 - a1 * two_pi_u.cos() + a2 * (2.0 * two_pi_u).cos() - a3 * (3.0 * two_pi_u).cos()
 }
 
 /// Windowed-sinc tap weight for source offset `k` when evaluating at fractional `shift`.
