@@ -11,6 +11,8 @@ from dsp_kitchen_bindings import (
     DeduplicatedSpike,
     DspSession,
     HighpassFilter,
+    Kilosort4BasisEmbedder,
+    Kilosort4Detector,
     LowpassFilter,
     MedianFilter,
     MmapRecording,
@@ -50,6 +52,8 @@ from dsp_kitchen_bindings import (
 __all__ = [
     "PCA",
     "ModelHub",
+    "Kilosort4BasisEmbedder",
+    "Kilosort4Detector",
     "BandpassFilter",
     "BandstopFilter",
     "HighpassFilter",

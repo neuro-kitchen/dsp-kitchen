@@ -29,7 +29,7 @@ use crate::synapse::{
     estimate_noise, extract_snippets, sort_recording, PyDeduplicatedSpike, PyProbeLayout,
     PySpikeEvent, PyStreamingSortResult, PyWaveformSnippet,
 };
-use crate::synapse_ml::PyModelHub;
+use crate::synapse_ml::{PyKilosort4BasisEmbedder, PyKilosort4Detector, PyModelHub};
 
 fn register_bindings(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Core & Classical Classes
@@ -56,8 +56,10 @@ fn register_bindings(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDspSession>()?;
     m.add_class::<PyPca>()?;
 
-    // Pretrained Model Hub (`dsp-synapse-ml`)
+    // Pretrained Model Hub & Models (`dsp-synapse-ml`)
     m.add_class::<PyModelHub>()?;
+    m.add_class::<PyKilosort4BasisEmbedder>()?;
+    m.add_class::<PyKilosort4Detector>()?;
 
     // Direct Functions
     m.add_function(wrap_pyfunction!(list_nwb_series, m)?)?;

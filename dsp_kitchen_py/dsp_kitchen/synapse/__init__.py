@@ -9,6 +9,8 @@ external sorter bridges (`synapse.ml`, `synapse.onnx`).
 from typing import List, Optional, Tuple
 from .._bindings import (
     DeduplicatedSpike,
+    Kilosort4BasisEmbedder,
+    Kilosort4Detector,
     ModelHub,
     ProbeLayout,
     SpikeEvent,
@@ -58,6 +60,8 @@ def custom_layout(
 __all__ = [
     "ml",
     "ModelHub",
+    "Kilosort4BasisEmbedder",
+    "Kilosort4Detector",
     "ProbeLayout",
     "SpikeEvent",
     "DeduplicatedSpike",
