@@ -52,10 +52,13 @@ pub use features::{
     extract_waveform_pca, haar_dwt_multilevel_1d,
 };
 pub use metrics::{
-    Correlogram, IsiMetrics, compute_amplitude_cutoff, compute_amplitude_cutoff_with,
+    BurstEpoch, Correlogram, FiringRateCurve, IsiMetrics, MepMetrics, PsthResult,
+    StimulusTriggeredAverage, compute_amplitude_cutoff, compute_amplitude_cutoff_with,
     compute_autocorrelogram, compute_crosscorrelogram, compute_d_prime,
-    compute_isi_violations, compute_isolation_distance, compute_llobet_contamination,
-    compute_presence_ratio, compute_silhouette_score, compute_snr, count_refractory_violations,
+    compute_instantaneous_firing_rate, compute_isi_violations, compute_isolation_distance,
+    compute_llobet_contamination, compute_presence_ratio, compute_psth, compute_silhouette_score,
+    compute_snr, compute_stimulus_triggered_average, count_refractory_violations,
+    detect_burst_epochs, quantify_mep,
 };
 pub use probe::{
     find_k_nearest_neighbors, hdemg_4x8, hdemg_8x8, hdemg_grid, neuropixels_1_0, neuropixels_2_0,
