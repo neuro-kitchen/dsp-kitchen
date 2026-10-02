@@ -138,7 +138,7 @@ fn snapshot(args: &Args, path: &std::path::Path) -> Result<()> {
     view.set_canvas(w, h, 1.0);
     let dataset = sources.get(&entry.id);
     let source: Arc<dyn RecordingSource> = dataset.clone();
-    let req = view.render_request(&timeline, source, None, None, Arc::new(SpikeEventStore::default()), Vec::new());
+    let req = view.render_request(&timeline, source, None, None, Arc::new(SpikeEventStore::default()), engine::palette::Palette::DARK);
     let (frame, scale) = WaveformRenderer::default().render_scaled(&req);
     view.amp_scale = scale;
     println!("Source {} · scale bar {}", dataset.name, view.scale_bar_label());

@@ -11,7 +11,8 @@ use crate::engine::axis::nice_step;
 use crate::engine::canvas::Pixel;
 use crate::engine::data::{Dataset, SpikeEventStore};
 
-use super::renderer::{px_per_unit, scale_bar_value, RenderRequest, TimeViewKind, CHANNEL_COLORS, NOMINAL_UV};
+use super::renderer::{px_per_unit, scale_bar_value, RenderRequest, TimeViewKind, NOMINAL_UV};
+use crate::engine::palette::Palette;
 use super::timeline::TimelineState;
 
 /// Identifies a view for as long as the app runs (also its render key).
@@ -35,7 +36,6 @@ pub struct LaneLabel {
     pub y_frac: f32,
 }
 
-const LABEL_GRAY: Pixel = Pixel::rgb(139, 148, 158);
 
 /// See [`TimeView::hover_target`].
 #[derive(Debug, Clone, PartialEq)]
@@ -133,12 +133,12 @@ impl TimeView {
         }
     }
 
-    /// `Traces — EMG` (or `Traces 3` before a source is known).
+    /// `Traces · EMG` (or `Traces 3` before a source is known).
     pub fn retitle(&mut self) {
         self.title = if self.source_name.is_empty() {
             format!("{} {}", kind_name(self.kind), self.id)
         } else {
-            format!("{} — {}", kind_name(self.kind), self.source_name)
+            format!("{} · {}", kind_name(self.kind), self.source_name)
         };
     }
 
@@ -292,7 +292,7 @@ impl TimeView {
     }
 
     /// Channel labels for the left gutter (every lane for traces, sparse rows for heatmap).
-    pub fn lane_labels(&self) -> Vec<LaneLabel> {
+    pub fn lane_labels(&self, palette: &Palette) -> Vec<LaneLabel> {
         let drawn = self.drawn_channels();
         let n = drawn.len().max(1) as f32;
         match self.kind {
@@ -301,7 +301,7 @@ impl TimeView {
                 .enumerate()
                 .map(|(lane, &ch)| LaneLabel {
                     label: format!("Ch {ch}"),
-                    color: CHANNEL_COLORS[ch % CHANNEL_COLORS.len()],
+                    color: palette.channel(ch),
                     y_frac: (lane as f32 + 0.5) / n,
                 })
                 .collect(),
@@ -313,7 +313,7 @@ impl TimeView {
                     .step_by(step)
                     .map(|(row, &ch)| LaneLabel {
                         label: format!("{ch}"),
-                        color: LABEL_GRAY,
+                        color: palette.text,
                         y_frac: (row as f32 + 0.5) / n,
                     })
                     .collect()
@@ -382,7 +382,7 @@ impl TimeView {
         lod: Option<Arc<MinMaxCache>>,
         summary: Option<Arc<MinMaxSummary>>,
         events: Arc<SpikeEventStore>,
-        highlights: Vec<(Pixel, Vec<(f64, usize)>)>,
+        palette: Palette,
     ) -> RenderRequest {
         let start_time_sec = source.info().start_time_sec;
         RenderRequest {
@@ -404,7 +404,9 @@ impl TimeView {
             scale_hint: if self.auto_scale { self.amp_scale } else { 0.0 },
             grid_times: self.time_ticks(timeline).iter().map(|t| t.time_sec).collect(),
             scale_bar: self.kind == TimeViewKind::Traces,
-            highlights,
+            // Sorted-spike marks come with curation (set on the request by the caller)
+            highlights: Vec::new(),
+            palette,
         }
     }
 }
