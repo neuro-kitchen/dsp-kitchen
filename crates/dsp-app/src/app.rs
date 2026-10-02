@@ -36,9 +36,16 @@ pub struct DspApp {
 
 impl DspApp {
     pub fn new(store: Entity<Store>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        Theme::change(ThemeMode::Dark, Some(window), cx);
+        let choice = store.read(cx).session.dark;
+        Self::apply_theme(&store, choice, window, cx);
         let explore = cx.new(|cx| ExploreView::new(store.clone(), window, cx));
         let subs = vec![
+            // Follow the system's light / dark until the user picks one
+            cx.observe_window_appearance(window, |this, window, cx| {
+                if this.store.read(cx).session.dark.is_none() {
+                    Self::apply_theme(&this.store, None, window, cx);
+                }
+            }),
             cx.subscribe(&store, |_, _, e: &AppEvent, cx| {
                 if matches!(e, AppEvent::RecordingChanged | AppEvent::WorkspaceChanged | AppEvent::Status) {
                     cx.notify();
@@ -49,6 +56,24 @@ impl DspApp {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         Self { store, explore, show_help: false, focus, _subs: subs }
+    }
+
+    /// Light, dark, or the system's (`None`); the store learns which, for the plot colours.
+    fn apply_theme(store: &Entity<Store>, dark: Option<bool>, window: &mut Window, cx: &mut App) {
+        match dark {
+            Some(true) => Theme::change(ThemeMode::Dark, Some(window), cx),
+            Some(false) => Theme::change(ThemeMode::Light, Some(window), cx),
+            None => Theme::sync_system_appearance(Some(window), cx),
+        }
+        let is_dark = cx.theme().is_dark();
+        store.update(cx, |s, cx| s.set_dark(is_dark, cx));
+    }
+
+    fn toggle_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let dark = !cx.theme().is_dark();
+        self.store.update(cx, |s, cx| s.set_theme_choice(Some(dark), cx));
+        Self::apply_theme(&self.store, Some(dark), window, cx);
+        cx.notify();
     }
 
     fn prompt_open(&mut self, cx: &mut Context<Self>) {
@@ -92,6 +117,7 @@ impl DspApp {
         let this = cx.entity();
         let recent = self.store.read(cx).session.recent.clone();
         let open = self.store.read(cx).recording.is_some();
+        let (dark_plots, follow) = (self.store.read(cx).session.dark_plots, self.store.read(cx).session.dark.is_none());
         let file = {
             let this = this.clone();
             Button::new("menu-file").ghost().small().label("File").dropdown_menu(move |menu: PopupMenu, _, _| {
@@ -126,6 +152,23 @@ impl DspApp {
                     .item(item("Channels", |a, w, cx| a.toggle_dock(DockPlacement::Left, w, cx)))
                     .item(item("View settings", |a, w, cx| a.toggle_dock(DockPlacement::Right, w, cx)))
                     .item(item("Timeline", |a, w, cx| a.toggle_dock(DockPlacement::Bottom, w, cx)))
+                    .separator()
+                    .item({
+                        let t = this.clone();
+                        PopupMenuItem::new("Dark plots in the light theme").checked(dark_plots).on_click(move |_, _, cx| {
+                            t.update(cx, |a, cx| a.store.update(cx, |s, cx| s.set_dark_plots(!dark_plots, cx)))
+                        })
+                    })
+                    .item({
+                        let t = this.clone();
+                        PopupMenuItem::new("Follow the system theme").checked(follow).on_click(move |_, window, cx| {
+                            t.update(cx, |a, cx| {
+                                let choice = if follow { Some(cx.theme().is_dark()) } else { None };
+                                a.store.update(cx, |s, cx| s.set_theme_choice(choice, cx));
+                                Self::apply_theme(&a.store, choice, window, cx);
+                            })
+                        })
+                    })
             })
         };
         let help = {
@@ -178,7 +221,16 @@ impl DspApp {
                 .child(self.workspaces(cx))
                 .child(div().flex_1())
                 .children(opening)
-                .children(recording),
+                .children(recording)
+                .child({
+                    let dark = cx.theme().is_dark();
+                    Button::new("theme")
+                        .ghost()
+                        .small()
+                        .icon(if dark { IconName::Sun } else { IconName::Moon })
+                        .tooltip(if dark { "Light theme" } else { "Dark theme" })
+                        .on_click(cx.listener(|this, _, window, cx| this.toggle_theme(window, cx)))
+                }),
         )
     }
 
@@ -338,6 +390,8 @@ mod tests {
     use crate::workspace::Workspace;
 
     fn open(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Store>, Entity<DspApp>) {
+        // Frames come back from real render threads: allow their wake-ups from the start
+        cx.executor().allow_parking();
         cx.update(|cx| {
             gpui_kit::init(cx);
             crate::actions::bind_keys(cx);
@@ -479,7 +533,74 @@ mod tests {
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
             assert!(window.try_find("channels-panel").is_none(), "closed dock hides its panel");
+            // The rail at the left edge shows it again
+            let rail = window.find("show-channels").bounds();
+            assert!(rail.origin.x < px(40.), "rail at the window's left edge: {rail:?}");
+            window.click("show-channels", cx);
         })
         .unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| assert!(dock.read(cx).is_dock_open(DockPlacement::Left)));
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("show-channels").is_none());
+            // The hide button sits at the panel's outer (left) edge
+            let hide = window.find("dsp-app.channels.toggle").bounds();
+            assert!(hide.origin.x < px(40.), "{hide:?}");
+            window.click("dsp-app.channels.toggle", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| assert!(!dock.read(cx).is_dock_open(DockPlacement::Left)));
+    }
+
+    /// Second pixel of the top row of the traces view's frame (BGRA): background (the first column
+    /// can hold the grid line of the 0 s tick; a heatmap's pixels are all data).
+    fn corner_pixels(cx: &mut TestAppContext, app: &Entity<DspApp>) -> Vec<Option<[u8; 4]>> {
+        let vs = views(cx, app);
+        cx.update(|cx| vs.iter().take(1).map(|v| v.read(cx).shown.as_ref().and_then(|s| s.image.as_bytes(0)).map(|b| [b[4], b[5], b[6], b[7]])).collect())
+    }
+
+    #[gpui_kit::test]
+    fn theme_switch_redraws_plots(cx: &mut TestAppContext) {
+        let (window, store, app) = open(cx);
+        install(cx, &store);
+        // Start dark, whatever the test platform's appearance
+        cx.update_window(window, |_, window, cx| app.update(cx, |a, cx| DspApp::apply_theme(&a.store, Some(true), window, cx))).unwrap();
+        let dark = crate::engine::palette::Palette::DARK.background;
+        wait_until(cx, window, |cx| corner_pixels(cx, &app).iter().all(|p| *p == Some([dark.b, dark.g, dark.r, 255])));
+
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("theme", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(store.read(cx).session.dark, Some(false), "the choice is saved");
+            assert!(!store.read(cx).palette().dark);
+        });
+        wait_until(cx, window, |cx| corner_pixels(cx, &app).iter().all(|p| *p == Some([255, 255, 255, 255])));
+
+        // Dark plots in the light theme
+        cx.update(|cx| store.update(cx, |s, cx| s.set_dark_plots(true, cx)));
+        wait_until(cx, window, |cx| corner_pixels(cx, &app).iter().all(|p| *p == Some([dark.b, dark.g, dark.r, 255])));
+    }
+
+    #[gpui_kit::test]
+    fn zoomed_out_views_fill_from_one_background_summary(cx: &mut TestAppContext) {
+        let (window, store, app) = open(cx);
+        install(cx, &store);
+        wait_until(cx, window, |cx| all_drawn_for_window(cx, &store, &app));
+        // The whole 10 s recording in one window: far more samples than pixels
+        cx.update(|cx| store.update(cx, |s, cx| s.set_window(0.0, 10.0, cx)));
+        wait_until(cx, window, |cx| cx.update(|cx| store.read(cx).summaries.get("main").is_some_and(|&(done, total)| done == total)));
+        cx.update(|cx| {
+            assert_eq!(store.read(cx).summaries.len(), 1, "one summary for the source both views show");
+            assert!(store.read(cx).summary_label().is_none(), "nothing left to summarize");
+            let ds = store.read(cx).sources().unwrap().get("main");
+            assert!(ds.summary().covers(0, ds.total_samples as u64));
+        });
+        wait_until(cx, window, |cx| all_drawn_for_window(cx, &store, &app));
     }
 }

@@ -5,7 +5,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use gpui_kit::base::dock::{Panel as BasePanel, PanelEvent};
+use gpui_kit::base::dock::{DockArea, DockPlacement, Panel as BasePanel, PanelEvent};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::dock::Panel;
@@ -15,16 +15,16 @@ use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, IconName, Selectable
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
-    canvas, div, px, relative, rgb, uniform_list, App, AppContext as _, Bounds, Context, CursorStyle, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
+    canvas, div, px, relative, uniform_list, App, AppContext as _, Bounds, Context, CursorStyle, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
-    Window,
+    WeakEntity, Window,
 };
 
-use crate::engine::time::renderer::{TimeViewKind, CHANNEL_COLORS};
+use crate::engine::time::renderer::TimeViewKind;
 use crate::store::{AppEvent, Store};
 use crate::viewmodels::{ExploreEvent, ExploreVm};
 use crate::views::trace::color;
-use crate::widgets::{icon_button, row, MenuSelect, Section};
+use crate::widgets::{icon_button, row, Edge, MenuSelect, PanelHeader, Section};
 
 /// The focused view's source id (else the recording's default source).
 fn focused_source(explore: &Entity<ExploreVm>, cx: &App) -> Option<String> {
@@ -35,8 +35,52 @@ fn focused_source(explore: &Entity<ExploreVm>, cx: &App) -> Option<String> {
     }
 }
 
+/// Opens and closes the dock a side panel lives in.
+#[derive(Clone)]
+pub struct DockToggle {
+    pub dock: WeakEntity<DockArea>,
+    pub placement: DockPlacement,
+}
+
+impl DockToggle {
+    pub fn is_open(&self, cx: &App) -> bool {
+        self.dock.upgrade().is_some_and(|d| d.read(cx).is_dock_open(self.placement))
+    }
+
+    pub fn toggle(&self, window: &mut Window, cx: &mut App) {
+        let placement = self.placement;
+        if let Some(dock) = self.dock.upgrade() {
+            dock.update(cx, |d, cx| d.toggle_dock(placement, window, cx));
+        }
+    }
+
+    fn edge(&self) -> Edge {
+        match self.placement {
+            DockPlacement::Left => Edge::Left,
+            DockPlacement::Right => Edge::Right,
+            _ => Edge::Bottom,
+        }
+    }
+}
+
+/// A side panel: its own header (title and the hide button at the window edge), its body, no tab
+/// bar (and so no tab menu) while it is alone in its dock.
 macro_rules! side_panel {
     ($ty:ty, $name:literal, $title:literal) => {
+        impl Render for $ty {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let toggle = self.dock.clone();
+                let open = toggle.is_open(cx);
+                let header = PanelHeader::new(concat!($name, ".toggle"), $title, toggle.edge(), move |window, cx| toggle.toggle(window, cx)).open(open);
+                let header = match self.header_extra(cx) {
+                    Some(extra) => header.extra(extra),
+                    None => header,
+                };
+                let body = self.body(window, cx);
+                v_flex().size_full().child(header).child(div().flex_1().min_h_0().child(body))
+            }
+        }
+
         impl EventEmitter<PanelEvent> for $ty {}
 
         impl Focusable for $ty {
@@ -67,6 +111,14 @@ macro_rules! side_panel {
             fn zoom_control(&self, _: &App) -> Option<gpui_kit::component::dock::PanelControl> {
                 None
             }
+
+            fn title_bar(&self, _: &App) -> bool {
+                false
+            }
+
+            fn inner_padding(&self, _: &App) -> bool {
+                false
+            }
         }
     };
 }
@@ -77,6 +129,7 @@ macro_rules! side_panel {
 
 pub struct ChannelsPanel {
     explore: Entity<ExploreVm>,
+    dock: DockToggle,
     focus: FocusHandle,
     filter: Entity<InputState>,
     ranges: Entity<InputState>,
@@ -87,7 +140,7 @@ pub struct ChannelsPanel {
 side_panel!(ChannelsPanel, "dsp-app.channels", "Channels");
 
 impl ChannelsPanel {
-    pub fn new(explore: Entity<ExploreVm>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(explore: Entity<ExploreVm>, dock: DockToggle, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter, e.g. 12"));
         let ranges = cx.new(|cx| InputState::new(window, cx).placeholder("Show only, e.g. 0-31, 40"));
         let store = explore.read(cx).store().clone();
@@ -111,7 +164,7 @@ impl ChannelsPanel {
                 }
             }),
         ];
-        Self { explore, focus: cx.focus_handle(), filter, ranges, range_error: None, _subs: subs }
+        Self { explore, dock, focus: cx.focus_handle(), filter, ranges, range_error: None, _subs: subs }
     }
 
     fn store(&self, cx: &App) -> Entity<Store> {
@@ -132,8 +185,17 @@ impl ChannelsPanel {
     }
 }
 
-impl Render for ChannelsPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl ChannelsPanel {
+    /// `12 of 385`
+    fn header_extra(&self, cx: &App) -> Option<gpui_kit::AnyElement> {
+        let source = focused_source(&self.explore, cx)?;
+        let s = self.store(cx);
+        let s = s.read(cx);
+        let total = s.sources()?.entry(&source).channels;
+        Some(div().text_xs().text_color(cx.theme().muted_foreground).child(format!("{} of {total}", s.selection(&source).len())).into_any_element())
+    }
+
+    fn body(&mut self, _: &mut Window, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         let store = self.store(cx);
         let Some(source) = focused_source(&self.explore, cx) else {
             return v_flex().size_full().p_3().text_sm().text_color(cx.theme().muted_foreground).child("No recording open.").into_any_element();
@@ -154,6 +216,7 @@ impl Render for ChannelsPanel {
             }
             v
         });
+        let palette = store.read(cx).palette();
         let t = cx.theme();
         let (muted, danger) = (t.muted_foreground, t.danger);
         let store_for_rows = store.clone();
@@ -174,7 +237,7 @@ impl Render for ChannelsPanel {
                         .px_2()
                         .gap_2()
                         .child(Checkbox::new(("channel-check", ch)).checked(on).on_click(move |_, _, cx| store.update(cx, |s, cx| s.toggle_channel(&source, ch, cx))))
-                        .child(div().size(px(8.)).rounded_full().bg(color(CHANNEL_COLORS[ch % CHANNEL_COLORS.len()])))
+                        .child(div().size(px(8.)).rounded_full().bg(color(palette.channel(ch))))
                         .child(div().flex_1().text_sm().when(!on, |d| d.text_color(muted)).child(format!("Ch {ch}")))
                         .when(count > 0, |d| d.child(div().text_xs().text_color(muted).child(count.to_string())))
                 })
@@ -189,7 +252,7 @@ impl Render for ChannelsPanel {
             .child(Button::new("select-none").ghost().xsmall().label("None").on_click(cx.listener(|this, _, _, cx| this.with_store(cx, |s, src, cx| s.select_none(src, cx)))))
             .child(Button::new("select-invert").ghost().xsmall().label("Invert").on_click(cx.listener(|this, _, _, cx| this.with_store(cx, |s, src, cx| s.select_invert(src, cx)))))
             .child(div().flex_1())
-            .child(div().text_xs().text_color(muted).child(format!("{} of {total}", selected.len())));
+            .child(div().text_xs().text_color(muted).truncate().child(name));
 
         v_flex()
             .id("channels-panel")
@@ -197,7 +260,6 @@ impl Render for ChannelsPanel {
             .size_full()
             .gap_2()
             .p_2()
-            .child(div().text_xs().text_color(muted).child(format!("Shown in every view of {name}")))
             .child(actions)
             .child(Input::new(&self.ranges).small())
             .when_some(self.range_error.clone(), |d, e| d.child(div().text_xs().text_color(danger).child(e)))
@@ -213,6 +275,7 @@ impl Render for ChannelsPanel {
 
 pub struct SettingsPanel {
     explore: Entity<ExploreVm>,
+    dock: DockToggle,
     focus: FocusHandle,
     _focused: Option<Subscription>,
     _subs: Vec<Subscription>,
@@ -221,13 +284,13 @@ pub struct SettingsPanel {
 side_panel!(SettingsPanel, "dsp-app.view-settings", "View settings");
 
 impl SettingsPanel {
-    pub fn new(explore: Entity<ExploreVm>, cx: &mut Context<Self>) -> Self {
+    pub fn new(explore: Entity<ExploreVm>, dock: DockToggle, cx: &mut Context<Self>) -> Self {
         let subs = vec![cx.subscribe(&explore, |this, _, e: &ExploreEvent, cx| {
             if matches!(e, ExploreEvent::Focus | ExploreEvent::Reset(_)) {
                 this.follow(cx);
             }
         })];
-        let mut this = Self { explore, focus: cx.focus_handle(), _focused: None, _subs: subs };
+        let mut this = Self { explore, dock, focus: cx.focus_handle(), _focused: None, _subs: subs };
         this.follow(cx);
         this
     }
@@ -239,8 +302,12 @@ impl SettingsPanel {
     }
 }
 
-impl Render for SettingsPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl SettingsPanel {
+    fn header_extra(&self, _: &App) -> Option<gpui_kit::AnyElement> {
+        None
+    }
+
+    fn body(&mut self, _: &mut Window, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         let muted = cx.theme().muted_foreground;
         let Some(vm) = self.explore.read(cx).focused.clone() else {
             return v_flex().size_full().p_3().text_sm().text_color(muted).child("Click a view to see its settings here.").into_any_element();
@@ -340,6 +407,11 @@ impl Render for SettingsPanel {
     }
 }
 
+/// The open recording's default source.
+fn s_sources_default(store: &Entity<Store>, cx: &App) -> Option<std::sync::Arc<crate::engine::data::Dataset>> {
+    Some(store.read(cx).sources()?.default_dataset())
+}
+
 // ----------------------------------------------------------------------------
 // Timeline
 // ----------------------------------------------------------------------------
@@ -358,6 +430,10 @@ enum TrackDrag {
 
 pub struct TimelinePanel {
     store: Entity<Store>,
+    dock: DockToggle,
+    /// Activity per overview column (and the width it was computed for); dropped when more of
+    /// the recording is summarized.
+    activity: Option<(usize, Rc<Vec<f32>>)>,
     focus: FocusHandle,
     track: Rc<Cell<Bounds<Pixels>>>,
     drag: Option<TrackDrag>,
@@ -367,13 +443,16 @@ pub struct TimelinePanel {
 side_panel!(TimelinePanel, "dsp-app.timeline", "Timeline");
 
 impl TimelinePanel {
-    pub fn new(store: Entity<Store>, cx: &mut Context<Self>) -> Self {
-        let sub = cx.subscribe(&store, |_, _, e: &AppEvent, cx| {
-            if matches!(e, AppEvent::WindowMoved | AppEvent::PlaybackChanged | AppEvent::RecordingChanged) {
+    pub fn new(store: Entity<Store>, dock: DockToggle, cx: &mut Context<Self>) -> Self {
+        let sub = cx.subscribe(&store, |this, _, e: &AppEvent, cx| {
+            if matches!(e, AppEvent::RecordingChanged | AppEvent::SummaryProgress(_) | AppEvent::PaletteChanged) {
+                this.activity = None;
+            }
+            if matches!(e, AppEvent::WindowMoved | AppEvent::PlaybackChanged | AppEvent::RecordingChanged | AppEvent::SummaryProgress(_) | AppEvent::PaletteChanged) {
                 cx.notify();
             }
         });
-        Self { store, focus: cx.focus_handle(), track: Rc::new(Cell::new(Bounds::default())), drag: None, _sub: sub }
+        Self { store, dock, activity: None, focus: cx.focus_handle(), track: Rc::new(Cell::new(Bounds::default())), drag: None, _sub: sub }
     }
 
     /// Time under `x` of the track.
@@ -430,13 +509,21 @@ impl TimelinePanel {
     }
 }
 
-impl Render for TimelinePanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+impl TimelinePanel {
+    /// The time readout, also visible while the timeline is folded down to its header.
+    fn header_extra(&self, cx: &App) -> Option<gpui_kit::AnyElement> {
+        let s = self.store.read(cx);
+        let muted = cx.theme().muted_foreground;
+        let summarizing = s.summary_label().map(|l| div().id("summarizing").text_xs().text_color(cx.theme().primary).child(l));
+        Some(h_flex().gap_3().child(div().text_xs().text_color(muted).child(s.timeline.format_time_readout())).children(summarizing).into_any_element())
+    }
+
+    fn body(&mut self, _: &mut Window, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         let s = self.store.read(cx);
         let tl = s.timeline.clone();
         let open = s.recording.is_some();
         let t = cx.theme();
-        let (muted, border, accent) = (t.muted_foreground, t.border, t.primary);
+        let (muted, border, accent, fg) = (t.muted_foreground, t.border, t.primary, t.foreground);
         let store = self.store.clone();
         let act = move |f: fn(&mut Store, &mut Context<Store>)| {
             let store = store.clone();
@@ -468,8 +555,15 @@ impl Render for TimelinePanel {
                     .on_click(act(Store::toggle_loop)),
             )
             .child(speed);
-        let readout = div().text_sm().font_weight(gpui_kit::FontWeight::SEMIBOLD).child(tl.format_time_readout());
-        let window_label = div().text_xs().text_color(muted).child(format!("Window {}", crate::store::duration(tl.visible_window_sec)));
+        // Activity of the whole recording behind the window box (columns of ~2 px)
+        let columns = (self.track.get().size.width.as_f32() / 2.0).round().max(1.0) as usize;
+        if self.activity.as_ref().is_none_or(|(w, _)| *w != columns) {
+            let values = s_sources_default(&self.store, cx).map(|ds| crate::engine::data::dataset::activity(&ds, columns)).unwrap_or_default();
+            self.activity = Some((columns, Rc::new(values)));
+        }
+        let activity = self.activity.as_ref().map(|(_, v)| v.clone()).unwrap_or_default();
+        let palette = self.store.read(cx).palette();
+        let bar = color(palette.text).opacity(0.55);
 
         let total = tl.total_duration_sec.max(1e-9);
         let (a, b) = ((tl.window_start_sec / total) as f32, ((tl.window_start_sec + tl.visible_window_sec) / total) as f32);
@@ -483,13 +577,34 @@ impl Render for TimelinePanel {
             .rounded_md()
             .border_1()
             .border_color(border)
-            .bg(rgb(crate::views::trace::PLOT_BG))
+            .bg(color(self.store.read(cx).palette().background))
             .overflow_hidden()
             .cursor(CursorStyle::PointingHand)
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_down))
             .on_mouse_move(cx.listener(Self::on_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_up))
-            .child(canvas(move |bounds, _, _| cell.set(bounds), |_, _, _, _| {}).absolute().size_full())
+            .child(
+                canvas(
+                    move |bounds, _, _| cell.set(bounds),
+                    move |bounds, _, window, _| {
+                        let n = activity.len();
+                        if n == 0 {
+                            return;
+                        }
+                        let w = bounds.size.width / n as f32;
+                        for (i, v) in activity.iter().enumerate() {
+                            if !v.is_finite() || *v <= 0.0 {
+                                continue;
+                            }
+                            let h = bounds.size.height * v.min(1.0);
+                            let origin = gpui_kit::point(bounds.origin.x + w * i as f32, bounds.origin.y + bounds.size.height - h);
+                            window.paint_quad(gpui_kit::fill(Bounds { origin, size: gpui_kit::size(w, h) }, bar));
+                        }
+                    },
+                )
+                .absolute()
+                .size_full(),
+            )
             .child(
                 div()
                     .id("overview-window")
@@ -502,9 +617,16 @@ impl Render for TimelinePanel {
                     .bg(accent.opacity(0.22))
                     .border_x_2()
                     .border_color(accent)
-                    .cursor(CursorStyle::ResizeLeftRight),
+                    .cursor(CursorStyle::ResizeLeftRight)
+                    .overflow_hidden()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_xs()
+                    .text_color(fg)
+                    .child(crate::store::duration(tl.visible_window_sec)),
             )
-            .child(div().absolute().top_0().bottom_0().left(relative(p)).w(px(2.)).bg(rgb(0xf43f5e)));
+            .child(div().absolute().top_0().bottom_0().left(relative(p)).w(px(2.)).bg(color(self.store.read(cx).palette().playhead)));
         let ruler = h_flex().justify_between().children((0..=4).map(|q| div().text_xs().text_color(muted).child(crate::store::duration(total * q as f64 / 4.0))));
 
         v_flex()
@@ -515,8 +637,9 @@ impl Render for TimelinePanel {
             .px_3()
             .py_2()
             .when(!open, |d| d.opacity(0.5))
-            .child(h_flex().gap_3().child(transport).child(div().flex_1()).child(readout).child(div().flex_1()).child(window_label))
+            .child(h_flex().gap_3().child(transport))
             .child(track)
             .child(ruler)
+            .into_any_element()
     }
 }

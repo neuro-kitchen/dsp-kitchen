@@ -1,20 +1,24 @@
 //! The Explore workspace: a dock with the time views in the centre (tabs and splits the user
 //! rearranges by dragging tabs), Channels on the left, View settings on the right and the Timeline
-//! at the bottom, each dock opened and closed by the toggle beside the views' tabs.
+//! at the bottom. Each side panel hides with the button at its window edge; a hidden one leaves a
+//! rail at that edge to show it again (the timeline folds down to its header).
 
 use std::collections::HashMap;
 
-use gpui_kit::base::dock::{DockArea, DockLayout, DockPlacement, InsertTarget};
+use gpui_kit::base::dock::{DockArea, DockEvent, DockLayout, DockPlacement, InsertTarget};
 use gpui_kit::base::Placement;
 use gpui_kit::component::dock::{panel_handle, DockSkin};
-use gpui_kit::{px, AppContext as _, Context, Entity, IntoElement, Render, Subscription, Window};
+use gpui_kit::component::h_flex;
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::{div, px, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, Styled as _, Subscription, Window};
 
 use crate::engine::time::renderer::TimeViewKind;
 use crate::engine::time::view::ViewId;
 use crate::store::Store;
 use crate::viewmodels::{ExploreEvent, ExploreVm, TraceVm};
 
-use super::panels::{ChannelsPanel, SettingsPanel, TimelinePanel};
+use super::panels::{ChannelsPanel, DockToggle, SettingsPanel, TimelinePanel};
+use crate::widgets::{rail, Edge};
 use super::trace::TracePanel;
 
 pub struct ExploreView {
@@ -27,13 +31,21 @@ pub struct ExploreView {
 impl ExploreView {
     pub fn new(store: Entity<Store>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let vm = cx.new(|cx| ExploreVm::new(store.clone(), cx));
+        let mut skin = None;
         let dock = cx.new(|cx| {
-            let skin = DockSkin::new(cx);
-            DockArea::new("explore", Some(1), window, cx).with_renderer(skin)
+            let s = DockSkin::new(cx);
+            skin = Some(s.clone());
+            DockArea::new("explore", Some(1), window, cx).with_renderer(s)
         });
-        let channels = cx.new(|cx| ChannelsPanel::new(vm.clone(), window, cx));
-        let settings = cx.new(|cx| SettingsPanel::new(vm.clone(), cx));
-        let timeline = cx.new(|cx| TimelinePanel::new(store, cx));
+        // Side panels carry their own hide button at the window edge (set once the area exists:
+        // the skin redraws it)
+        if let Some(skin) = skin {
+            skin.set_toggle_button_visible(false, cx);
+        }
+        let toggle = |placement| DockToggle { dock: dock.downgrade(), placement };
+        let channels = cx.new(|cx| ChannelsPanel::new(vm.clone(), toggle(DockPlacement::Left), window, cx));
+        let settings = cx.new(|cx| SettingsPanel::new(vm.clone(), toggle(DockPlacement::Right), cx));
+        let timeline = cx.new(|cx| TimelinePanel::new(store, toggle(DockPlacement::Bottom), cx));
         dock.update(cx, |d, cx| {
             // Panels go in through `panel_handle` so the skin draws their titles and controls
             d.set_dock(DockPlacement::Left, DockLayout::tabs().panel_view(panel_handle(channels), cx), window, cx);
@@ -48,7 +60,12 @@ impl ExploreView {
             ExploreEvent::Added { vm, below } => this.add(vm.clone(), *below, window, cx),
             ExploreEvent::Focus => {}
         });
-        let mut this = Self { vm, dock, panels: HashMap::new(), _subs: vec![sub] };
+        let layout = cx.subscribe(&dock, |_, _, e: &DockEvent, cx| {
+            if matches!(e, DockEvent::LayoutChanged) {
+                cx.notify();
+            }
+        });
+        let mut this = Self { vm, dock, panels: HashMap::new(), _subs: vec![sub, layout] };
         let views = this.vm.read(cx).views.clone();
         if !views.is_empty() {
             this.reset(views, window, cx);
@@ -104,7 +121,21 @@ impl ExploreView {
 }
 
 impl Render for ExploreView {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        self.dock.clone()
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let d = self.dock.read(cx);
+        let (left, right) = (d.is_dock_open(DockPlacement::Left), d.is_dock_open(DockPlacement::Right));
+        let show = |placement| {
+            let dock = self.dock.downgrade();
+            move |window: &mut Window, cx: &mut gpui_kit::App| {
+                if let Some(dock) = dock.upgrade() {
+                    dock.update(cx, |d, cx| d.toggle_dock(placement, window, cx));
+                }
+            }
+        };
+        h_flex()
+            .size_full()
+            .when(!left, |d| d.child(rail("show-channels", "Channels", Edge::Left, show(DockPlacement::Left), cx)))
+            .child(div().flex_1().min_w_0().h_full().child(self.dock.clone()))
+            .when(!right, |d| d.child(rail("show-settings", "View settings", Edge::Right, show(DockPlacement::Right), cx)))
     }
 }

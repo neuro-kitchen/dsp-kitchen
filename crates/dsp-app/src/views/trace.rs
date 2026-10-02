@@ -10,8 +10,8 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui_kit::base::dock::{Panel as BasePanel, PanelEvent};
-use gpui_kit::component::dock::Panel;
-use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::dock::{Panel, PanelControl};
+use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
@@ -28,9 +28,6 @@ use crate::viewmodels::{ExploreVm, TraceVm};
 /// Channel label column and time axis heights (logical px).
 pub const GUTTER: f32 = 64.;
 pub const AXIS: f32 = 22.;
-/// Plot background (the renderer's).
-pub const PLOT_BG: u32 = 0x090d13;
-const PLAYHEAD: u32 = 0xf43f5e;
 
 pub fn color(p: Pixel) -> gpui_kit::Hsla {
     rgb(((p.r as u32) << 16) | ((p.g as u32) << 8) | p.b as u32).into()
@@ -148,16 +145,19 @@ impl TracePanel {
 
     fn overlays(&self, cx: &mut Context<Self>) -> Vec<gpui_kit::AnyElement> {
         let vm = self.vm.read(cx);
+        let palette = vm.store().read(cx).palette();
         let tl = &vm.store().read(cx).timeline;
+        // Overlays drawn over the plot: light on dark plots, dark on light ones
+        let ink = |a: f32| if palette.dark { gpui_kit::hsla(0., 0., 1., a) } else { gpui_kit::hsla(0., 0., 0., a) };
         let mut out = Vec::new();
         // Playhead
         let t = (tl.current_time_sec - tl.window_start_sec) / tl.visible_window_sec.max(1e-12);
         if (0.0..=1.0).contains(&t) {
-            out.push(div().absolute().top_0().bottom_0().left(relative(t as f32)).w(px(1.5)).bg(rgb(PLAYHEAD)).into_any_element());
+            out.push(div().absolute().top_0().bottom_0().left(relative(t as f32)).w(px(1.5)).bg(color(palette.playhead)).into_any_element());
         }
         // Crosshair
         if let Some((fx, _)) = self.pointer {
-            out.push(div().absolute().top_0().bottom_0().left(relative(fx)).w(px(1.)).bg(gpui_kit::hsla(0., 0., 1., 0.19)).into_any_element());
+            out.push(div().absolute().top_0().bottom_0().left(relative(fx)).w(px(1.)).bg(ink(0.22)).into_any_element());
         }
         // Scale bar label beside the raster's bar (bottom right)
         let label = vm.view.scale_bar_label();
@@ -170,25 +170,8 @@ impl TracePanel {
                     .top(relative(y))
                     .mt(px(-7.))
                     .text_xs()
-                    .text_color(gpui_kit::hsla(0., 0., 0.75, 1.))
+                    .text_color(color(palette.text))
                     .child(label)
-                    .into_any_element(),
-            );
-        }
-        // Hover readout
-        if !vm.hover.is_empty() && self.pointer.is_some() {
-            out.push(
-                div()
-                    .absolute()
-                    .top(px(6.))
-                    .left(px(8.))
-                    .px_2()
-                    .py_0p5()
-                    .rounded_md()
-                    .bg(gpui_kit::hsla(0., 0., 0., 0.6))
-                    .text_xs()
-                    .text_color(gpui_kit::white())
-                    .child(vm.hover.clone())
                     .into_any_element(),
             );
         }
@@ -203,22 +186,25 @@ impl Render for TracePanel {
         let tl = vm.store().read(cx).timeline.clone();
         let heatmap = view.kind == TimeViewKind::Heatmap;
         let hovered_lane = self.pointer.map(|(_, fy)| (fy * view.drawn_channels().len() as f32) as usize);
-        let lanes = view.lane_labels();
+        let palette = vm.store().read(cx).palette();
+        let lanes = view.lane_labels(&palette);
         let ticks = view.time_ticks(&tl);
         let shown = vm.shown.clone();
         let (canvas_w, canvas_h, canvas_scale) = (view.canvas_width, view.canvas_height, view.scale_factor);
         let empty = view.selection.is_empty();
         let view_id = view.id as usize;
-        let muted = cx.theme().muted_foreground;
+        let muted = color(palette.text);
         let _ = window;
 
         let gutter = div().w(px(GUTTER)).h_full().relative().overflow_hidden().children(lanes.into_iter().enumerate().map(|(i, l)| {
             let strong = !heatmap && hovered_lane == Some(i);
+            // Labels at the very top or bottom stay inside the gutter
+            let nudge = if l.y_frac < 0.03 { 0. } else if l.y_frac > 0.97 { -16. } else { -8. };
             div()
                 .absolute()
                 .left(px(10.))
                 .top(relative(l.y_frac))
-                .mt(px(-8.))
+                .mt(px(nudge))
                 .text_xs()
                 .text_color(color(l.color))
                 .when(strong, |d| d.font_weight(FontWeight::BOLD))
@@ -276,9 +262,28 @@ impl Render for TracePanel {
                 d.child(div().absolute().size_full().flex().items_center().justify_center().text_sm().text_color(muted).child("No channels selected: pick some in Channels"))
             });
 
-        let axis = div().h(px(AXIS)).flex().child(div().w(px(GUTTER))).child(div().flex_1().h_full().relative().children(ticks.into_iter().map(|t| {
-            div().absolute().left(relative(t.frac)).top(px(3.)).ml(px(-20.)).w(px(40.)).flex().justify_center().text_xs().text_color(muted).child(t.label)
-        })));
+        // Ticks at the ends align inward so they are never cut off; the hover readout sits at the
+        // right of the axis (off the traces)
+        let readout = (!self.vm.read(cx).hover.is_empty() && self.pointer.is_some()).then(|| {
+            div().absolute().right_0().top_0().h_full().pl_3().pr_1().flex().items_center().bg(color(palette.background)).text_xs().text_color(color(palette.text)).child(self.vm.read(cx).hover.clone())
+        });
+        let axis = div().h(px(AXIS)).flex().child(div().w(px(GUTTER))).child(
+            div()
+                .flex_1()
+                .h_full()
+                .relative()
+                .children(ticks.into_iter().map(|t| {
+                    let tick = div().absolute().left(relative(t.frac)).top(px(3.)).w(px(48.)).flex().text_xs().text_color(muted).child(t.label);
+                    if t.frac < 0.04 {
+                        tick.justify_start()
+                    } else if t.frac > 0.96 {
+                        tick.ml(px(-48.)).justify_end()
+                    } else {
+                        tick.ml(px(-24.)).justify_center()
+                    }
+                }))
+                .children(readout),
+        );
 
         div()
             .id(("time-view", view_id))
@@ -288,7 +293,7 @@ impl Render for TracePanel {
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(PLOT_BG))
+            .bg(color(palette.background))
             .on_action(cx.listener(|this, _: &PlayPause, _, cx| this.store_update(cx, |s, cx| s.toggle_play(cx))))
             .on_action(cx.listener(|this, _: &PanBack, _, cx| this.store_update(cx, |s, cx| s.pan_fraction(-0.1, cx))))
             .on_action(cx.listener(|this, _: &PanForward, _, cx| this.store_update(cx, |s, cx| s.pan_fraction(0.1, cx))))
@@ -336,8 +341,31 @@ impl BasePanel for TracePanel {
 }
 
 impl Panel for TracePanel {
+    /// The kind and the source, cut to fit; the whole title in the tooltip.
     fn title(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from(self.vm.read(cx).view.title.clone())
+        let view = &self.vm.read(cx).view;
+        let full = SharedString::from(view.title.clone());
+        div().id(("view-title", view.id as usize)).max_w(px(280.)).truncate().child(full.clone()).tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(full.clone()).build(window, cx))
+    }
+
+    /// Maximise / restore as a button in the view's toolbar.
+    fn zoom_control(&self, _: &App) -> Option<PanelControl> {
+        Some(PanelControl::Toolbar)
+    }
+
+    fn dropdown_menu(&mut self, menu: PopupMenu, _: &mut Window, _: &mut Context<Self>) -> PopupMenu {
+        let explore = self.explore.clone();
+        let add = move |kind: TimeViewKind| {
+            let explore = explore.clone();
+            move |_: &gpui_kit::ClickEvent, _: &mut Window, cx: &mut App| {
+                if let Some(ex) = explore.upgrade() {
+                    ex.update(cx, |ex, cx| {
+                        ex.add(kind, cx);
+                    });
+                }
+            }
+        };
+        menu.item(PopupMenuItem::new("Add traces view").on_click(add(TimeViewKind::Traces))).item(PopupMenuItem::new("Add heatmap view").on_click(add(TimeViewKind::Heatmap)))
     }
 
     fn inner_padding(&self, _: &App) -> bool {
