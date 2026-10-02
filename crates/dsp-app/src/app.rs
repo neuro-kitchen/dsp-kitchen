@@ -1,0 +1,485 @@
+//! The root view: a title bar with the menus, the workspaces (Explore · Sorting · Pipeline ·
+//! Curation) and the open recording; the workspace shown; a status bar. Without a recording the
+//! body is a start screen (open a file, a recent one, or a synthetic recording).
+
+use std::path::PathBuf;
+
+use gpui_kit::base::dock::DockPlacement;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
+use gpui_kit::component::status_bar::StatusBar;
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, IconName, Selectable as _, Sizable as _, Theme, ThemeMode, TitleBar};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::TestSupportExt as _;
+use gpui_kit::{
+    div, px, AnyElement, App, AppContext as _, Context, Entity, ExternalPaths, FocusHandle, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
+    PathPromptOptions, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
+};
+
+use crate::actions::*;
+use crate::engine::time::renderer::TimeViewKind;
+use crate::store::{file_label, AppEvent, Store};
+use crate::views::ExploreView;
+use crate::widgets::EmptyState;
+use crate::workspace::Workspace;
+
+/// The synthetic recording of the start screen and the File menu.
+pub const SYNTHETIC: (usize, f64, f64) = (32, 30_000.0, 300.0);
+
+pub struct DspApp {
+    store: Entity<Store>,
+    pub explore: Entity<ExploreView>,
+    show_help: bool,
+    focus: FocusHandle,
+    _subs: Vec<Subscription>,
+}
+
+impl DspApp {
+    pub fn new(store: Entity<Store>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Theme::change(ThemeMode::Dark, Some(window), cx);
+        let explore = cx.new(|cx| ExploreView::new(store.clone(), window, cx));
+        let subs = vec![
+            cx.subscribe(&store, |_, _, e: &AppEvent, cx| {
+                if matches!(e, AppEvent::RecordingChanged | AppEvent::WorkspaceChanged | AppEvent::Status) {
+                    cx.notify();
+                }
+            }),
+            cx.observe(&store, |_, _, cx| cx.notify()),
+        ];
+        let focus = cx.focus_handle();
+        window.focus(&focus, cx);
+        Self { store, explore, show_help: false, focus, _subs: subs }
+    }
+
+    fn prompt_open(&mut self, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(PathPromptOptions { files: true, directories: true, multiple: false, prompt: Some("Open recording".into()) });
+        let store = self.store.clone();
+        cx.spawn(async move |_, cx| match rx.await {
+            Ok(Ok(Some(paths))) => {
+                if let Some(path) = paths.into_iter().next() {
+                    store.update(cx, |s, cx| s.open(path, cx));
+                }
+            }
+            Ok(Err(e)) => store.update(cx, |s, cx| s.set_status(format!("File dialog failed: {e}"), cx)),
+            _ => {}
+        })
+        .detach();
+    }
+
+    fn open_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.store.update(cx, |s, cx| s.open(path, cx));
+    }
+
+    fn open_synthetic(&mut self, cx: &mut Context<Self>) {
+        let (ch, rate, dur) = SYNTHETIC;
+        self.store.update(cx, |s, cx| s.open_synthetic(ch, rate, dur, cx));
+    }
+
+    fn add_view(&mut self, kind: TimeViewKind, cx: &mut Context<Self>) {
+        self.store.update(cx, |s, cx| s.set_workspace(Workspace::Explore, cx));
+        self.explore.update(cx, |e, cx| e.add_view(kind, cx));
+    }
+
+    fn toggle_dock(&mut self, placement: DockPlacement, window: &mut Window, cx: &mut Context<Self>) {
+        self.explore.update(cx, |e, cx| e.toggle_dock(placement, window, cx));
+    }
+
+    // ------------------------------------------------------------------------
+    // Title bar
+    // ------------------------------------------------------------------------
+
+    fn menus(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let this = cx.entity();
+        let recent = self.store.read(cx).session.recent.clone();
+        let open = self.store.read(cx).recording.is_some();
+        let file = {
+            let this = this.clone();
+            Button::new("menu-file").ghost().small().label("File").dropdown_menu(move |menu: PopupMenu, _, _| {
+                let t = this.clone();
+                let mut menu = menu.item(PopupMenuItem::new("Open recording…").on_click(move |_, _, cx| t.update(cx, |a, cx| a.prompt_open(cx))));
+                let t = this.clone();
+                menu = menu.item(PopupMenuItem::new("Synthetic recording (32 ch, 5 min)").on_click(move |_, _, cx| t.update(cx, |a, cx| a.open_synthetic(cx))));
+                if !recent.is_empty() {
+                    menu = menu.separator().label("Recent");
+                    for p in &recent {
+                        let (t, p) = (this.clone(), p.clone());
+                        menu = menu.item(PopupMenuItem::new(file_label(&p)).on_click(move |_, _, cx| t.update(cx, |a, cx| a.open_path(p.clone(), cx))));
+                    }
+                }
+                let t = this.clone();
+                menu.separator()
+                    .item(PopupMenuItem::new("Build min/max caches").disabled(!open).on_click(move |_, _, cx| t.update(cx, |a, cx| a.store.update(cx, |s, cx| s.build_caches(cx)))))
+                    .separator()
+                    .item(PopupMenuItem::new("Quit").on_click(|_, _, cx| cx.quit()))
+            })
+        };
+        let view = {
+            let this = this.clone();
+            Button::new("menu-view").ghost().small().label("View").dropdown_menu(move |menu: PopupMenu, _, _| {
+                let item = |label: &'static str, f: fn(&mut DspApp, &mut Window, &mut Context<DspApp>)| {
+                    let t = this.clone();
+                    PopupMenuItem::new(label).disabled(!open).on_click(move |_, window, cx| t.update(cx, |a, cx| f(a, window, cx)))
+                };
+                menu.item(item("Add traces view", |a, _, cx| a.add_view(TimeViewKind::Traces, cx)))
+                    .item(item("Add heatmap view", |a, _, cx| a.add_view(TimeViewKind::Heatmap, cx)))
+                    .separator()
+                    .item(item("Channels", |a, w, cx| a.toggle_dock(DockPlacement::Left, w, cx)))
+                    .item(item("View settings", |a, w, cx| a.toggle_dock(DockPlacement::Right, w, cx)))
+                    .item(item("Timeline", |a, w, cx| a.toggle_dock(DockPlacement::Bottom, w, cx)))
+            })
+        };
+        let help = {
+            let this = this.clone();
+            Button::new("menu-help").ghost().small().label("Help").dropdown_menu(move |menu: PopupMenu, _, _| {
+                let t = this.clone();
+                menu.item(PopupMenuItem::new("Keyboard & mouse").on_click(move |_, _, cx| {
+                    t.update(cx, |a, cx| {
+                        a.show_help = true;
+                        cx.notify();
+                    })
+                }))
+            })
+        };
+        h_flex().gap_0p5().child(file).child(view).child(help)
+    }
+
+    fn workspaces(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let current = self.store.read(cx).workspace;
+        h_flex().gap_0p5().children(Workspace::ALL.into_iter().map(|w| {
+            let store = self.store.clone();
+            Button::new(SharedString::from(format!("workspace-{}", w.title().to_lowercase())))
+                .small()
+                .ghost()
+                .icon(w.icon())
+                .label(w.title())
+                .tooltip(w.hint())
+                .selected(w == current)
+                .on_click(move |_, _, cx| store.update(cx, |s, cx| s.set_workspace(w, cx)))
+        }))
+    }
+
+    fn title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let s = self.store.read(cx);
+        let t = cx.theme();
+        let recording = s.recording.as_ref().map(|r| {
+            h_flex()
+                .gap_2()
+                .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(t.foreground).child(r.name.clone()))
+                .child(div().text_xs().text_color(t.muted_foreground).child(r.summary()))
+        });
+        let opening = s.opening.clone().map(|n| div().text_xs().text_color(t.muted_foreground).child(format!("Opening {n}…")));
+        TitleBar::new().child(
+            h_flex()
+                .w_full()
+                .gap_3()
+                .pr_2()
+                .child(self.menus(cx))
+                .child(div().h(px(18.)).w(px(1.)).bg(cx.theme().border))
+                .child(self.workspaces(cx))
+                .child(div().flex_1())
+                .children(opening)
+                .children(recording),
+        )
+    }
+
+    // ------------------------------------------------------------------------
+    // Body
+    // ------------------------------------------------------------------------
+
+    fn start_screen(&self, cx: &mut Context<Self>) -> AnyElement {
+        let recent = self.store.read(cx).session.recent.clone();
+        let muted = cx.theme().muted_foreground;
+        let mut screen = EmptyState::new(
+            gpui_kit::assets::IconName::AudioWaveform,
+            "Open a recording",
+            "SpikeGLX (.bin / .cbin), raw binary with a JSON .meta, or an NWB Zarr store. Or try a synthetic recording: no file needed.",
+        )
+        .child(
+            h_flex()
+                .gap_2()
+                .child(Button::new("start-open").primary().icon(IconName::FolderOpen).label("Open recording…").on_click(cx.listener(|this, _, _, cx| this.prompt_open(cx))))
+                .child(Button::new("start-synthetic").outline().label("Synthetic recording").on_click(cx.listener(|this, _, _, cx| this.open_synthetic(cx)))),
+        );
+        if !recent.is_empty() {
+            screen = screen.child(
+                v_flex()
+                    .mt_4()
+                    .w(px(420.))
+                    .gap_1()
+                    .child(div().text_xs().text_color(muted).child("Recent"))
+                    .children(recent.into_iter().take(6).enumerate().map(|(i, p)| {
+                        let label = file_label(&p);
+                        let dir = p.parent().map(|d| d.display().to_string()).unwrap_or_default();
+                        Button::new(("recent", i))
+                            .ghost()
+                            .w_full()
+                            .child(h_flex().w_full().gap_2().child(div().text_sm().child(label)).child(div().flex_1().text_xs().text_color(muted).truncate().child(dir)))
+                            .on_click(cx.listener(move |this, _, _, cx| this.open_path(p.clone(), cx)))
+                    })),
+            );
+        }
+        div().id("start-screen").test_support().size_full().child(screen).into_any_element()
+    }
+
+    fn body(&self, cx: &mut Context<Self>) -> AnyElement {
+        let s = self.store.read(cx);
+        let workspace = s.workspace;
+        if let Some(text) = workspace.planned() {
+            return div()
+                .id("planned-workspace")
+                .test_support()
+                .size_full()
+                .child(EmptyState::new(workspace.icon(), format!("{} is on its way", workspace.title()), text))
+                .into_any_element();
+        }
+        if s.recording.is_none() {
+            return self.start_screen(cx);
+        }
+        self.explore.clone().into_any_element()
+    }
+
+    fn status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let s = self.store.read(cx);
+        let muted = cx.theme().muted_foreground;
+        StatusBar::new().left(div().text_xs().child(s.status.clone())).right(div().text_xs().text_color(muted).child(s.render_info.clone()))
+    }
+
+    fn help(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = cx.theme();
+        let (muted, bg, border) = (t.muted_foreground, t.popover, t.border);
+        div()
+            .id("help-overlay")
+            .absolute()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(gpui_kit::hsla(0., 0., 0., 0.5))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.show_help = false;
+                cx.notify();
+            }))
+            .child(
+                v_flex()
+                    .id("help")
+                    .w(px(560.))
+                    .p_4()
+                    .gap_3()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(border)
+                    .bg(bg)
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Keyboard & mouse"))
+                    .children(HELP.iter().map(|(group, rows)| {
+                        v_flex().gap_1().child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(muted).child(*group)).children(
+                            rows.iter().map(|(keys, what)| h_flex().gap_3().child(div().w(px(230.)).text_sm().font_weight(FontWeight::MEDIUM).child(*keys)).child(div().text_sm().child(*what))),
+                        )
+                    }))
+                    .child(h_flex().justify_end().child(Button::new("help-close").outline().small().label("Close").on_click(cx.listener(|this, _, _, cx| {
+                        this.show_help = false;
+                        cx.notify();
+                    })))),
+            )
+    }
+}
+
+impl Render for DspApp {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let store = self.store.clone();
+        v_flex()
+            .id("dsp-app")
+            .track_focus(&self.focus)
+            .size_full()
+            .relative()
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
+            .on_action(cx.listener(|this, _: &OpenRecording, _, cx| this.prompt_open(cx)))
+            .on_action(cx.listener(|this, _: &OpenSynthetic, _, cx| this.open_synthetic(cx)))
+            .on_action(cx.listener(|this, _: &AddTraces, _, cx| this.add_view(TimeViewKind::Traces, cx)))
+            .on_action(cx.listener(|this, _: &AddHeatmap, _, cx| this.add_view(TimeViewKind::Heatmap, cx)))
+            .on_action(cx.listener(|this, _: &ToggleChannels, w, cx| this.toggle_dock(DockPlacement::Left, w, cx)))
+            .on_action(cx.listener(|this, _: &ToggleSettings, w, cx| this.toggle_dock(DockPlacement::Right, w, cx)))
+            .on_action(cx.listener(|this, _: &ToggleTimeline, w, cx| this.toggle_dock(DockPlacement::Bottom, w, cx)))
+            .on_action(cx.listener(|this, _: &ShowHelp, _, cx| {
+                this.show_help = !this.show_help;
+                cx.notify();
+            }))
+            .on_action(|_: &Quit, _, cx: &mut App| cx.quit())
+            // A file or folder dropped anywhere opens it
+            .on_drop(move |paths: &ExternalPaths, _, cx| {
+                if let Some(p) = paths.paths().first().cloned() {
+                    store.update(cx, |s, cx| s.open(p, cx));
+                }
+            })
+            .child(self.title_bar(cx))
+            .child(div().flex_1().min_h_0().child(self.body(cx)))
+            .child(self.status_bar(cx))
+            .when(self.show_help, |d| d.child(self.help(cx)))
+    }
+}
+
+/// Headless UI tests: real windows, layout and hit testing, no pixels; rendering runs on the real
+/// render threads.
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use gpui_kit::base::dock::DockPlacement;
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{px, size, AnyWindowHandle, AppContext as _, Bounds, Entity, Point, TestAppContext, WindowBounds, WindowOptions};
+
+    use super::DspApp;
+    use crate::engine::data::{Dataset, SourceSet};
+    use crate::engine::time::renderer::TimeViewKind;
+    use crate::session::Session;
+    use crate::store::{Recording, Store};
+    use crate::viewmodels::{ExploreVm, TraceVm};
+    use crate::workspace::Workspace;
+
+    fn open(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Store>, Entity<DspApp>) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::actions::bind_keys(cx);
+            crate::viewmodels::Services::install(cx);
+            let store = cx.new(|_| Store::new(Session::new(), None));
+            let bounds = Bounds { origin: Point::default(), size: size(px(1400.), px(900.)) };
+            let options = WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), ..Default::default() };
+            let s = store.clone();
+            let (window, app) = gpui_kit::open_window(options, cx, move |window, cx| cx.new(|cx| DspApp::new(s, window, cx))).expect("open test window");
+            (window, store, app)
+        })
+    }
+
+    /// Waits (real time) for work on the render threads to come back to the UI.
+    fn wait_until(cx: &mut TestAppContext, window: AnyWindowHandle, mut done: impl FnMut(&mut TestAppContext) -> bool) {
+        cx.executor().allow_parking();
+        for _ in 0..500 {
+            cx.update_window(window, |_, window, cx| window.render_frame(cx)).unwrap();
+            cx.run_until_parked();
+            if done(cx) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("timed out");
+    }
+
+    fn explore(cx: &mut TestAppContext, app: &Entity<DspApp>) -> Entity<ExploreVm> {
+        cx.update(|cx| app.read(cx).explore.read(cx).vm.clone())
+    }
+
+    fn views(cx: &mut TestAppContext, app: &Entity<DspApp>) -> Vec<Entity<TraceVm>> {
+        let ex = explore(cx, app);
+        cx.update(|cx| ex.read(cx).views.clone())
+    }
+
+    /// Installs a synthetic 16-channel, 10 s recording.
+    fn install(cx: &mut TestAppContext, store: &Entity<Store>) {
+        cx.update(|cx| {
+            let ds = Dataset::generate_synthetic(16, 10_000.0, 10.0);
+            store.update(cx, |s, cx| s.install(Recording::new(SourceSet::single(ds), None), cx));
+        });
+        cx.run_until_parked();
+    }
+
+    /// Every view shows a frame drawn for the current window.
+    fn all_drawn_for_window(cx: &mut TestAppContext, store: &Entity<Store>, app: &Entity<DspApp>) -> bool {
+        let vs = views(cx, app);
+        cx.update(|cx| {
+            let start = store.read(cx).timeline.window_start_sec;
+            vs.iter().all(|v| v.read(cx).shown.as_ref().is_some_and(|s| (s.start - start).abs() < 1e-9))
+        })
+    }
+
+    #[gpui_kit::test]
+    fn start_screen_then_workspaces(cx: &mut TestAppContext) {
+        let (window, store, _) = open(cx);
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("start-screen").is_some(), "no recording: the start screen");
+            window.click("workspace-curation", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| assert_eq!(store.read(cx).workspace, Workspace::Curation));
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("planned-workspace").is_some(), "a workspace still to come says what it will hold");
+            assert!(window.try_find("start-screen").is_none());
+            window.click("workspace-explore", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| assert_eq!(store.read(cx).workspace, Workspace::Explore));
+    }
+
+    #[gpui_kit::test]
+    fn views_render_and_follow_one_timeline(cx: &mut TestAppContext) {
+        let (window, store, app) = open(cx);
+        install(cx, &store);
+        assert_eq!(views(cx, &app).len(), 2, "default layout: traces over heatmap");
+        let vs = views(cx, &app);
+        let kinds: Vec<TimeViewKind> = cx.update(|cx| vs.iter().map(|v| v.read(cx).view.kind).collect());
+        assert_eq!(kinds, vec![TimeViewKind::Traces, TimeViewKind::Heatmap]);
+        // Both are laid out side by side in the dock and get a frame
+        wait_until(cx, window, |cx| all_drawn_for_window(cx, &store, &app));
+        cx.update_window(window, |_, window, _| {
+            for id in [1usize, 2] {
+                let b = window.find(("time-view", id)).bounds().size;
+                assert!(b.width > px(300.) && b.height > px(100.), "view {id}: {b:?}");
+            }
+            assert!(window.try_find("channels-panel").is_some() && window.try_find("settings-panel").is_some() && window.try_find("timeline-panel").is_some());
+        })
+        .unwrap();
+
+        // Moving the shared window redraws every view for it
+        cx.update(|cx| store.update(cx, |s, cx| s.pan_time(1.0, cx)));
+        cx.update(|cx| assert!((store.read(cx).timeline.window_start_sec - 1.0).abs() < 1e-9));
+        wait_until(cx, window, |cx| all_drawn_for_window(cx, &store, &app));
+
+        // Zooming keeps the time under the anchor
+        cx.update(|cx| store.update(cx, |s, cx| s.zoom_at(0.5, 0.5, cx)));
+        cx.update(|cx| {
+            let tl = &store.read(cx).timeline;
+            assert!((tl.visible_window_sec - 0.05).abs() < 1e-9 && (tl.window_start_sec - 1.025).abs() < 1e-9, "{tl:?}");
+        });
+        wait_until(cx, window, |cx| all_drawn_for_window(cx, &store, &app));
+    }
+
+    #[gpui_kit::test]
+    fn add_view_selection_and_docks(cx: &mut TestAppContext) {
+        let (window, store, app) = open(cx);
+        install(cx, &store);
+        wait_until(cx, window, |cx| all_drawn_for_window(cx, &store, &app));
+
+        // A third view joins the dock beside the focused one and renders too
+        cx.update(|cx| app.update(cx, |a, cx| a.add_view(TimeViewKind::Traces, cx)));
+        cx.run_until_parked();
+        assert_eq!(views(cx, &app).len(), 3);
+        wait_until(cx, window, |cx| all_drawn_for_window(cx, &store, &app));
+        cx.update_window(window, |_, window, _| assert!(window.try_find(("time-view", 3usize)).is_some())).unwrap();
+
+        // One selection per source: every view of it follows
+        cx.update(|cx| store.update(cx, |s, cx| s.select_ranges("main", "2-5, 9", cx).unwrap()));
+        cx.run_until_parked();
+        let vs = views(cx, &app);
+        cx.update(|cx| {
+            for v in &vs {
+                assert_eq!(v.read(cx).view.selection, vec![2, 3, 4, 5, 9]);
+            }
+        });
+        assert!(cx.update(|cx| store.update(cx, |s, cx| s.select_ranges("main", "40", cx))).is_err(), "out of range");
+
+        // The docks open and close
+        let dock = cx.update(|cx| app.read(cx).explore.read(cx).dock.clone());
+        cx.update_window(window, |_, window, cx| app.update(cx, |a, cx| a.toggle_dock(DockPlacement::Left, window, cx))).unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| assert!(!dock.read(cx).is_dock_open(DockPlacement::Left)));
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("channels-panel").is_none(), "closed dock hides its panel");
+        })
+        .unwrap();
+    }
+}

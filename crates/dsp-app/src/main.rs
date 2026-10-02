@@ -1,29 +1,39 @@
+//! DSP App: an electrophysiology workbench (GPUI + gpui-kit). Workspaces (Explore · Sorting ·
+//! Pipeline · Curation) of docked views on one timeline; see `.tasks/slint-gpui-migration/`.
+//!
+//! Layers: `engine` (no UI type: data, timeline, renderers, render threads) → `store` (shared state
+//! and its events) → `viewmodels` → `views` / `app` (GPUI). `--snapshot` uses the engine alone.
+
+mod actions;
 mod app;
-mod data;
-mod modules;
-mod shared;
+mod assets;
+mod engine;
+mod session;
+mod store;
+mod viewmodels;
+mod views;
+mod widgets;
+mod workspace;
 
 use std::path::PathBuf;
 use std::sync::Arc;
+
 use anyhow::Result;
 use clap::Parser;
-use slint::ComponentHandle;
-
-use app::controller::Controller;
-use app::model::AppModel;
-use data::{Dataset, SourceSet};
 use dsp_core::RecordingSource;
-use modules::time::module::TimeModule;
-use modules::time::renderer::{TimeViewKind, WaveformRenderer};
+use gpui_kit::component::TitleBar;
+use gpui_kit::{px, size, App, AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOptions};
 
-/// Generated Slint UI (window, globals, structs).
-mod ui {
-    slint::include_modules!();
-}
+use engine::data::{Dataset, SourceSet, SpikeEventStore};
+use engine::time::renderer::{TimeViewKind, WaveformRenderer};
+use engine::time::timeline::TimelineState;
+use engine::time::view::TimeView;
+use session::Session;
+use store::Store;
 
 #[derive(Parser, Debug)]
 #[command(name = "dsp-app")]
-#[command(about = "DSP App: electrophysiology signal workbench — Time and Spikes modules (Slint, MVVM)")]
+#[command(about = "DSP App: electrophysiology workbench (GPUI): docked time views on one timeline")]
 struct Args {
     /// Recording to open: SpikeGLX .bin/.cbin, raw .bin with a JSON .meta, or a Zarr store.
     /// Without it (and without --synthetic) the last opened recording is reopened.
@@ -42,143 +52,99 @@ struct Args {
     #[arg(short = 'r', long, default_value_t = 30_000.0)]
     sample_rate: f64,
 
-    /// Optional path to export a rendered plot snapshot PNG and exit
+    /// Render one view to this PNG (no window) and exit
     #[arg(long)]
     snapshot: Option<PathBuf>,
 
-    /// Render the snapshot in heatmap mode
+    /// Render the snapshot as a heatmap
     #[arg(long)]
     heatmap: bool,
 
-    /// Open the window, capture it to this PNG once views have rendered, and exit
-    #[arg(long)]
-    screenshot: Option<PathBuf>,
-
-    /// Window size for --screenshot, e.g. 1280x800 (logical px)
-    #[arg(long, default_value = "1280x800")]
-    size: String,
-
-    /// Start in this module (0 = Time, 1 = Spikes)
-    #[arg(long)]
-    module: Option<usize>,
-
-    /// Neither restore nor save the workspace layout (--screenshot restores but never saves)
-    #[arg(long)]
-    no_session: bool,
-
-    /// Source (signal) of the file to use for --snapshot, by name (e.g. EMG, Teme)
+    /// Source (signal) of the file for --snapshot, by name or id (e.g. EMG)
     #[arg(long)]
     source: Option<String>,
 
-    /// Where the --snapshot window starts (seconds)
+    /// Where the --snapshot window is centred (seconds)
     #[arg(long, default_value_t = 2.45)]
     at: f64,
+
+    /// Neither read nor write the saved session (recent files, workspace)
+    #[arg(long)]
+    no_session: bool,
 }
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
 
-    // 1. Load Model (the file's sources) and initialize ViewModel
-    let (sources, path) = initial_sources(&args)?;
-    let dataset = sources.default_dataset();
-    println!(
-        "Loaded dataset: {} ({} channels, {} samples, {:.2}s @ {:.1} kHz)",
-        dataset.name,
-        dataset.total_channels,
-        dataset.total_samples,
-        dataset.total_duration_sec(),
-        dataset.sample_rate / 1000.0
-    );
-    if sources.entries().len() > 1 {
-        let names: Vec<String> = sources.entries().iter().map(|e| e.summary()).collect();
-        println!("Sources: {}", names.join(" | "));
-    }
-    let mut app = AppModel::new(sources, path.clone());
-    if let Some(p) = path {
-        app.push_recent(p);
+    if let Some(path) = &args.snapshot {
+        return snapshot(&args, path);
     }
 
-    // 2. Optional headless snapshot of the default traces (or heatmap) view
-    if let Some(snap_path) = args.snapshot {
-        let (w, h) = (1200u32, 600u32);
-        let mut time = TimeModule::new(&app.sources);
-        time.timeline.scrub_to(args.at);
-        let kind = if args.heatmap { TimeViewKind::Heatmap } else { TimeViewKind::Traces };
-        let mut view = time.ws.views.iter().find(|v| v.kind == kind).expect("default layout has both kinds").clone();
-        if let Some(name) = &args.source {
-            let i = app.sources.entries().iter().position(|e| &e.name == name || &e.id == name);
-            let i = i.ok_or_else(|| anyhow::anyhow!("no source {name}"))?;
-            let e = &app.sources.entries()[i];
-            view.set_source(&e.id, &e.name, &e.unit, e.channels);
-        }
-        view.set_canvas(w, h, 1.0);
-        let dataset = app.sources.get(&view.source);
-        let source: Arc<dyn RecordingSource> = dataset.clone();
-        // Snapshots read raw samples (exact at any zoom) rather than wait for the min/max cache
-        let req = view.render_request(&time.timeline, source, None, None, app.events.clone(), Vec::new());
-        let (pixel_buf, scale) = WaveformRenderer::default().render_scaled(&req);
-        view.amp_scale = scale;
-        println!("Source {} · scale bar {}", dataset.name, view.scale_bar_label());
-        image::save_buffer(&snap_path, pixel_buf.as_bytes(), w, h, image::ExtendedColorType::Rgba8)?;
-        println!("Plot snapshot saved to {} ({w}x{h} px).", snap_path.display());
-        return Ok(());
-    }
+    let session_path = if args.no_session { None } else { Session::path() };
+    let session = Session::load(session_path.as_deref());
+    // What to open at start: --synthetic, --file, else the last recording
+    let synthetic = args.synthetic.as_deref().map(parse_duration).transpose()?;
+    let file = args.file.clone().map(|p| std::fs::canonicalize(&p).unwrap_or(p)).or_else(|| session.recent.first().cloned().filter(|p| p.exists()));
+    let (channels, rate) = (args.channels, args.sample_rate);
 
-    // 3. Window + controller (restores the saved layout, wires intents, starts the frame timer)
-    let ui = ui::AppWindow::new()?;
-    // A screenshot restores the saved layout but never overwrites it
-    let restore = !args.no_session;
-    let save = restore && args.screenshot.is_none();
-    let _controller = Controller::install(&ui, app, restore, save);
-    if let Some(module) = args.module {
-        ui.global::<ui::AppLogic>().invoke_set_module(module as i32);
-    }
+    gpui_kit::application().with_assets(assets::AppAssets).run(move |cx: &mut App| {
+        gpui_kit::init(cx);
+        actions::bind_keys(cx);
+        viewmodels::Services::install(cx);
+        cx.on_action(|_: &actions::Quit, cx| cx.quit());
+        // One main window: closing it ends the app (Linux / Windows convention)
+        cx.on_window_closed(|cx, _| cx.quit()).detach();
 
-    let _capture = args.screenshot.map(|path| {
-        let (w, h) = args.size.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?))).unwrap_or((1280.0, 800.0));
-        ui.window().set_size(slint::LogicalSize::new(w, h));
-        let weak = ui.as_weak();
-        let timer = slint::Timer::default();
-        // Enough time for the first layout pass and the worker's first frames
-        timer.start(slint::TimerMode::SingleShot, std::time::Duration::from_millis(1500), move || {
-            if let Some(ui) = weak.upgrade() {
-                match ui.window().take_snapshot() {
-                    Ok(buf) => {
-                        let saved = image::save_buffer(&path, buf.as_bytes(), buf.width(), buf.height(), image::ExtendedColorType::Rgba8);
-                        println!("Screenshot {} ({}x{} px): {saved:?}", path.display(), buf.width(), buf.height());
-                    }
-                    Err(e) => eprintln!("Screenshot failed: {e}"),
-                }
-            }
-            let _ = slint::quit_event_loop();
+        let store = cx.new(|_| Store::new(session, session_path));
+        let options = WindowOptions {
+            titlebar: Some(TitlebarOptions { title: Some("DSP App".into()), ..TitleBar::title_bar_options() }),
+            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(1400.), px(880.)), cx))),
+            window_min_size: Some(size(px(760.), px(520.))),
+            app_id: Some("org.dsp-kitchen.dsp-app".into()),
+            ..TitleBar::window_options()
+        };
+        let s = store.clone();
+        gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| app::DspApp::new(s, window, cx))).expect("failed to open the main window");
+        cx.activate(true);
+
+        store.update(cx, |s, cx| match (synthetic, file) {
+            (Some(d), _) => s.open_synthetic(channels, rate, d, cx),
+            (None, Some(p)) => s.open(p, cx),
+            (None, None) => {}
         });
-        timer
     });
-
-    ui.run()?;
-    Controller::shutdown();
     Ok(())
 }
 
-/// `--synthetic`, else `--file`, else the last opened recording, the bundled 10 s sample, or
-/// a minute of procedural data — whichever opens first.
-fn initial_sources(args: &Args) -> Result<(SourceSet, Option<PathBuf>)> {
-    if let Some(d) = &args.synthetic {
-        return Ok((SourceSet::single(Dataset::procedural(args.channels, args.sample_rate, parse_duration(d)?)?), None));
-    }
-    if let Some(p) = &args.file {
-        return Ok((SourceSet::open(p)?, Some(p.clone())));
-    }
-    let last = app::session::Session::load().filter(|_| !args.no_session).and_then(|s| s.recent.into_iter().next());
-    let bundled = PathBuf::from("playground/data/mearec_32ch_10s.bin");
-    for p in last.into_iter().chain([bundled]) {
-        match SourceSet::open(&p) {
-            Ok(s) => return Ok((s, Some(p))),
-            Err(e) => tracing::warn!("{e:#}"),
-        }
-    }
-    Ok((SourceSet::single(Dataset::procedural(32, 30_000.0, 60.0)?), None))
+/// Renders the default traces (or heatmap) view of the recording around `--at` to a PNG,
+/// reading raw samples (exact at any zoom) rather than waiting for a min/max cache.
+fn snapshot(args: &Args, path: &std::path::Path) -> Result<()> {
+    let sources = match (&args.synthetic, &args.file) {
+        (Some(d), _) => SourceSet::single(Dataset::procedural(args.channels, args.sample_rate, parse_duration(d)?)?),
+        (None, Some(p)) => SourceSet::open(p)?,
+        (None, None) => anyhow::bail!("--snapshot needs --file or --synthetic"),
+    };
+    let entry = match &args.source {
+        Some(name) => sources.entries().iter().find(|e| &e.name == name || &e.id == name).ok_or_else(|| anyhow::anyhow!("no source {name}"))?.clone(),
+        None => sources.default_entry().clone(),
+    };
+    let (w, h) = (1200u32, 600u32);
+    let mut timeline = TimelineState::new(sources.extent_sec());
+    timeline.scrub_to(args.at);
+    let kind = if args.heatmap { TimeViewKind::Heatmap } else { TimeViewKind::Traces };
+    let mut view = TimeView::new(1, kind, Vec::new());
+    view.set_source(&entry.id, &entry.name, &entry.unit, entry.channels);
+    view.set_canvas(w, h, 1.0);
+    let dataset = sources.get(&entry.id);
+    let source: Arc<dyn RecordingSource> = dataset.clone();
+    let req = view.render_request(&timeline, source, None, None, Arc::new(SpikeEventStore::default()), Vec::new());
+    let (frame, scale) = WaveformRenderer::default().render_scaled(&req);
+    view.amp_scale = scale;
+    println!("Source {} · scale bar {}", dataset.name, view.scale_bar_label());
+    image::save_buffer(path, &frame.to_rgba(), w, h, image::ExtendedColorType::Rgba8)?;
+    println!("Plot snapshot saved to {} ({w}x{h} px).", path.display());
+    Ok(())
 }
 
 /// Parses `90`, `90s`, `10m`, `2h`, `1.5h` into seconds.
