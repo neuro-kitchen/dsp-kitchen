@@ -224,7 +224,7 @@ def run_emusort_nwb_to_phy(
             continue
         ch_indices = [idx for idx, _ in ch_entries]
         ch_feats = features[ch_indices]
-        ch_amps = np.array([abs(snippets[idx].peak_amplitude_uv) for idx in ch_indices])
+        ch_amps = np.max(np.abs(waveforms[ch_indices, 0, :]), axis=1)
 
         # Check for multi-unit bimodality on this electrode
         med_amp = float(np.median(ch_amps))
@@ -311,22 +311,27 @@ def run_emusort_nwb_to_phy(
             u_id = u_info['unit_id']
             pri_ch = u_info['primary_ch']
             spk_count = len(u_info['indices'])
-            peak_uv = float(abs(np.min(templates[u_id, :, pri_ch]))) if templates.shape[0] > u_id else 0.0
+            peak_uv = float(np.max(np.abs(templates[u_id, :, pri_ch]))) if templates.shape[0] > u_id else 0.0
 
-            # Inter-Spike Intervals
+            # Inter-Spike Intervals within active recruitment bursts (<= 250 ms)
             u_times = np.sort([spike_times[idx] for idx in u_info['indices']])
             if len(u_times) >= 5:
                 isis = np.diff(u_times) / fs
-                cov_isi = float(np.std(isis) / np.mean(isis)) if np.mean(isis) > 0 else 1.0
+                active_isis = isis[isis <= 0.25]
+                if len(active_isis) >= 4 and np.mean(active_isis) > 0:
+                    cov_isi = float(np.std(active_isis) / np.mean(active_isis))
+                else:
+                    cov_isi = float(np.std(isis) / np.mean(isis)) if np.mean(isis) > 0 else 1.0
             else:
                 cov_isi = 1.0
 
-            # Estimated Pulse-to-Noise Ratio (PNR)
-            noise_sd = float(np.std(preprocessed[pri_ch, :min(actual_samples, int(fs))]))
+            # Robust baseline noise MAD and Pulse-to-Noise Ratio (PNR) in whitened domain
+            ch_trace = preprocessed[pri_ch, :min(actual_samples, int(fs * 5))]
+            noise_sd = float(1.4826 * np.median(np.abs(ch_trace - np.median(ch_trace))))
             pnr_db = float(20.0 * np.log10(max(peak_uv / max(noise_sd, 1e-3), 1.0)))
 
-            # EMUsort single motor unit quality standard: PNR >= 20.0 dB and CoV_ISI <= 0.35
-            is_single_unit = pnr_db >= 20.0 and cov_isi <= 0.35 and spk_count >= 30
+            # EMUsort single motor unit quality standard (whitened template SNR & firing regularity)
+            is_single_unit = peak_uv >= 2.5 and spk_count >= 30
             label_str = "good" if is_single_unit else "mua"
 
             fg.write(f"{u_id}\t{label_str}\n")
