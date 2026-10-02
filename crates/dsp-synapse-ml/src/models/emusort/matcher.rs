@@ -1,4 +1,4 @@
-//! Myomatrix universal Motor Unit Action Potential (MUAP) matched-filter template matcher.
+//! EMUsort / Myomatrix universal Motor Unit Action Potential (MUAP) matched-filter template matcher.
 
 use std::path::{Path, PathBuf};
 
@@ -10,12 +10,13 @@ use crate::runtime::{
     TemplateFilterTask, default_compute_target, run_on_target,
 };
 
-pub const MYOMATRIX_TEMPLATES_MODEL_ID: &str = "myomatrix/universal-muap-templates-v1";
+pub const EMUSORT_TEMPLATES_MODEL_ID: &str = "emusort/universal-muap-templates-v1";
+pub const MYOMATRIX_TEMPLATES_MODEL_ID: &str = EMUSORT_TEMPLATES_MODEL_ID;
 pub const DEFAULT_MUAP_WINDOW_LEN: usize = 150;
 
-/// Pretrained or canonical Myomatrix universal MUAP template matcher executing on [`ComputeTarget`].
+/// Pretrained or canonical EMUsort universal MUAP template matcher executing on [`ComputeTarget`].
 #[derive(Debug, Clone)]
-pub struct MyomatrixTemplateMatcher {
+pub struct EmusortTemplateMatcher {
     /// Row-major `[num_templates, window_len]` L2-normalized universal MUAP templates.
     templates: Vec<f32>,
     num_templates: usize,
@@ -28,7 +29,7 @@ pub struct MyomatrixTemplateMatcher {
     target: ComputeTarget,
 }
 
-impl MyomatrixTemplateMatcher {
+impl EmusortTemplateMatcher {
     /// Creates a canonical 150-sample universal MUAP template matcher with zero external disk dependencies.
     pub fn from_canonical(
         threshold_sigma: f32,
@@ -247,7 +248,7 @@ fn normalize_muap(row: &mut [f32]) {
     }
 }
 
-impl SpikeDetector for MyomatrixTemplateMatcher {
+impl SpikeDetector for EmusortTemplateMatcher {
     fn detect(
         &self,
         data: &[f32],
@@ -306,5 +307,10 @@ impl SpikeDetector for MyomatrixTemplateMatcher {
     }
 }
 
-/// Type alias for [`MyomatrixTemplateMatcher`].
-pub type MyomatrixDetector = MyomatrixTemplateMatcher;
+/// Type alias for [`EmusortTemplateMatcher`].
+pub type EmusortDetector = EmusortTemplateMatcher;
+
+/// Backward-compatible type alias for [`EmusortTemplateMatcher`].
+pub type MyomatrixTemplateMatcher = EmusortTemplateMatcher;
+/// Backward-compatible type alias for [`EmusortDetector`].
+pub type MyomatrixDetector = EmusortDetector;

@@ -2,13 +2,13 @@
 
 /// Cross-channel conduction latency aligner for Motor Unit Action Potentials (MUAPs).
 #[derive(Debug, Clone)]
-pub struct MyomatrixLatencyAligner {
+pub struct EmusortLatencyAligner {
     pub max_lag_samples: usize,
     pub min_conduction_velocity: f32,
     pub max_conduction_velocity: f32,
 }
 
-impl Default for MyomatrixLatencyAligner {
+impl Default for EmusortLatencyAligner {
     fn default() -> Self {
         Self {
             max_lag_samples: 25,
@@ -18,7 +18,7 @@ impl Default for MyomatrixLatencyAligner {
     }
 }
 
-impl MyomatrixLatencyAligner {
+impl EmusortLatencyAligner {
     /// Creates a new latency aligner with the specified maximum lag in samples.
     pub fn new(max_lag_samples: usize) -> Self {
         Self {
@@ -111,13 +111,16 @@ impl MyomatrixLatencyAligner {
     }
 }
 
+/// Backward-compatible type alias for [`EmusortLatencyAligner`].
+pub type MyomatrixLatencyAligner = EmusortLatencyAligner;
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_latency_aligner_recovers_and_compensates_delay() {
-        let aligner = MyomatrixLatencyAligner::new(10);
+        let aligner = EmusortLatencyAligner::new(10);
         let channels = 3usize;
         let samples = 60usize;
         let mut snippet = vec![0.0f32; channels * samples];

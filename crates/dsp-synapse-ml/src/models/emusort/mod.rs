@@ -1,10 +1,10 @@
-//! Myomatrix and EMUsort specialized spike-sorting engines for muscle electrophysiology.
+//! EMUsort and Myomatrix specialized spike-sorting engines for muscle electrophysiology.
 //!
 //! Provides:
-//! - [`MyomatrixSortConfig`]: Presets for 8-channel threads, 32-channel, and 64-channel arrays.
-//! - [`MyomatrixTemplateMatcher`] / [`MyomatrixDetector`]: 150-sample universal MUAP matched filtering.
-//! - [`MyomatrixBasisEmbedder`]: 150-sample, 12-component spatiotemporal muscle basis projection.
-//! - [`MyomatrixLatencyAligner`]: Cross-channel conduction velocity delay estimation and alignment.
+//! - [`EmusortSortConfig`]: Presets for 8-channel threads, 32-channel, and 64-channel arrays.
+//! - [`EmusortTemplateMatcher`] / [`EmusortDetector`]: 150-sample universal MUAP matched filtering.
+//! - [`EmusortBasisEmbedder`]: 150-sample, 12-component spatiotemporal muscle basis projection.
+//! - [`EmusortLatencyAligner`]: Cross-channel conduction velocity delay estimation and alignment.
 
 pub mod basis;
 pub mod config;
@@ -12,28 +12,31 @@ pub mod latency;
 pub mod matcher;
 
 pub use basis::{
-    DEFAULT_MUAP_BASIS_COMPONENTS, DEFAULT_MUAP_BASIS_WINDOW_LEN, MYOMATRIX_BASIS_MODEL_ID,
-    MyomatrixBasisEmbedder,
+    DEFAULT_MUAP_BASIS_COMPONENTS, DEFAULT_MUAP_BASIS_WINDOW_LEN, EMUSORT_BASIS_MODEL_ID,
+    EmusortBasisEmbedder, MYOMATRIX_BASIS_MODEL_ID, MyomatrixBasisEmbedder,
 };
-pub use config::{MyomatrixProbeKind, MyomatrixSortConfig};
-pub use latency::MyomatrixLatencyAligner;
+pub use config::{EmusortProbeKind, EmusortSortConfig, MyomatrixProbeKind, MyomatrixSortConfig};
+pub use latency::{EmusortLatencyAligner, MyomatrixLatencyAligner};
 pub use matcher::{
-    DEFAULT_MUAP_WINDOW_LEN, MYOMATRIX_TEMPLATES_MODEL_ID, MyomatrixDetector,
-    MyomatrixTemplateMatcher,
+    DEFAULT_MUAP_WINDOW_LEN, EMUSORT_TEMPLATES_MODEL_ID, EmusortDetector, EmusortTemplateMatcher,
+    MYOMATRIX_TEMPLATES_MODEL_ID, MyomatrixDetector, MyomatrixTemplateMatcher,
 };
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dsp_synapse::{DeduplicatedSpike, FeatureEmbedder, SpikeDetector, extract_snippet_batch_multichannel, tetrode};
+    use dsp_synapse::{
+        DeduplicatedSpike, FeatureEmbedder, SpikeDetector, extract_snippet_batch_multichannel,
+        tetrode,
+    };
 
     #[test]
-    fn test_canonical_myomatrix_detector_and_embedder() {
-        let detector = MyomatrixDetector::from_canonical(5.0, 40, None).unwrap();
+    fn test_canonical_emusort_detector_and_embedder() {
+        let detector = EmusortDetector::from_canonical(5.0, 40, None).unwrap();
         assert_eq!(detector.num_templates(), 6);
         assert_eq!(detector.window_len(), 150);
 
-        let embedder = MyomatrixBasisEmbedder::from_canonical(None).unwrap();
+        let embedder = EmusortBasisEmbedder::from_canonical(None).unwrap();
         assert_eq!(embedder.num_components(), 12);
         assert_eq!(embedder.window_len(), 150);
 
@@ -68,7 +71,7 @@ mod tests {
         }
 
         let events = detector.detect(&trace, channels, samples, 24414.0).unwrap();
-        assert!(!events.is_empty(), "expected MyomatrixDetector to detect MUAP");
+        assert!(!events.is_empty(), "expected EmusortDetector to detect MUAP");
         assert!(
             events.iter().any(|e| e.channel_id == 0 && (e.sample_index as isize - center as isize).abs() <= 3),
             "events: {events:?}"
