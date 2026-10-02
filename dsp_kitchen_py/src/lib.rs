@@ -40,8 +40,8 @@ use crate::synapse::{
     PyStreamingSortResult, PyWaveformSnippet,
 };
 use crate::synapse_ml::{
-    PyKilosort4BasisEmbedder, PyKilosort4Detector, PyModelHub, PyMyomatrixBasisEmbedder,
-    PyMyomatrixDetector, PyMyomatrixLatencyAligner, PyMyomatrixSortConfig,
+    PyEmusortBasisEmbedder, PyEmusortDetector, PyEmusortLatencyAligner, PyEmusortSortConfig,
+    PyKilosort4BasisEmbedder, PyKilosort4Detector, PyModelHub,
 };
 
 fn register_bindings(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -78,10 +78,14 @@ fn register_bindings(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyModelHub>()?;
     m.add_class::<PyKilosort4BasisEmbedder>()?;
     m.add_class::<PyKilosort4Detector>()?;
-    m.add_class::<PyMyomatrixSortConfig>()?;
-    m.add_class::<PyMyomatrixDetector>()?;
-    m.add_class::<PyMyomatrixBasisEmbedder>()?;
-    m.add_class::<PyMyomatrixLatencyAligner>()?;
+    m.add_class::<PyEmusortSortConfig>()?;
+    m.add_class::<PyEmusortDetector>()?;
+    m.add_class::<PyEmusortBasisEmbedder>()?;
+    m.add_class::<PyEmusortLatencyAligner>()?;
+    m.add("MyomatrixSortConfig", m.getattr("EmusortSortConfig")?)?;
+    m.add("MyomatrixDetector", m.getattr("EmusortDetector")?)?;
+    m.add("MyomatrixBasisEmbedder", m.getattr("EmusortBasisEmbedder")?)?;
+    m.add("MyomatrixLatencyAligner", m.getattr("EmusortLatencyAligner")?)?;
 
     // Direct Functions
     m.add_function(wrap_pyfunction!(list_nwb_series, m)?)?;

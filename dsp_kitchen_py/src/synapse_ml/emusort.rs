@@ -8,8 +8,8 @@ use pyo3::prelude::*;
 use dsp_core::ComputeTarget;
 use dsp_synapse::SpikeDetector;
 use dsp_synapse_ml::{
-    MyomatrixBasisEmbedder, MyomatrixDetector, MyomatrixLatencyAligner, MyomatrixProbeKind,
-    MyomatrixSortConfig,
+    EmusortBasisEmbedder, EmusortDetector, EmusortLatencyAligner, EmusortProbeKind,
+    EmusortSortConfig,
 };
 
 use crate::array::runtime_error;
@@ -24,15 +24,15 @@ fn parse_optional_target(backend: Option<&str>) -> PyResult<Option<ComputeTarget
     }
 }
 
-/// Specialized configuration parameters for Myomatrix / EMUsort spike sorting.
-#[pyclass(name = "MyomatrixSortConfig", skip_from_py_object)]
+/// Specialized configuration parameters for EMUsort / Myomatrix spike sorting.
+#[pyclass(name = "EmusortSortConfig", skip_from_py_object)]
 #[derive(Clone)]
-pub struct PyMyomatrixSortConfig {
-    pub inner: MyomatrixSortConfig,
+pub struct PyEmusortSortConfig {
+    pub inner: EmusortSortConfig,
 }
 
 #[pymethods]
-impl PyMyomatrixSortConfig {
+impl PyEmusortSortConfig {
     #[new]
     #[pyo3(signature = (
         template_samples=150,
@@ -59,7 +59,7 @@ impl PyMyomatrixSortConfig {
         max_clusters: usize,
     ) -> Self {
         Self {
-            inner: MyomatrixSortConfig {
+            inner: EmusortSortConfig {
                 template_samples,
                 threshold_sigma,
                 refractory_samples,
@@ -70,7 +70,7 @@ impl PyMyomatrixSortConfig {
                 num_temporal_pcs,
                 min_clusters,
                 max_clusters,
-                probe_kind: MyomatrixProbeKind::Grid32,
+                probe_kind: EmusortProbeKind::Grid32,
             },
         }
     }
@@ -78,21 +78,21 @@ impl PyMyomatrixSortConfig {
     #[staticmethod]
     pub fn preset_32ch_grid() -> Self {
         Self {
-            inner: MyomatrixSortConfig::preset_32ch_grid(),
+            inner: EmusortSortConfig::preset_32ch_grid(),
         }
     }
 
     #[staticmethod]
     pub fn preset_64ch_grid() -> Self {
         Self {
-            inner: MyomatrixSortConfig::preset_64ch_grid(),
+            inner: EmusortSortConfig::preset_64ch_grid(),
         }
     }
 
     #[staticmethod]
     pub fn preset_8ch_thread() -> Self {
         Self {
-            inner: MyomatrixSortConfig::preset_8ch_thread(),
+            inner: EmusortSortConfig::preset_8ch_thread(),
         }
     }
 
@@ -148,21 +148,21 @@ impl PyMyomatrixSortConfig {
 }
 
 /// 150-sample, 12-component spatiotemporal muscle basis embedder.
-#[pyclass(name = "MyomatrixBasisEmbedder", skip_from_py_object)]
+#[pyclass(name = "EmusortBasisEmbedder", skip_from_py_object)]
 #[derive(Clone)]
-pub struct PyMyomatrixBasisEmbedder {
-    pub inner: MyomatrixBasisEmbedder,
+pub struct PyEmusortBasisEmbedder {
+    pub inner: EmusortBasisEmbedder,
 }
 
 #[pymethods]
-impl PyMyomatrixBasisEmbedder {
+impl PyEmusortBasisEmbedder {
     #[new]
     #[pyo3(signature = (path=None, backend=None))]
     pub fn new(path: Option<&str>, backend: Option<&str>) -> PyResult<Self> {
         let target = parse_optional_target(backend)?;
         let inner = match path {
-            Some(p) => MyomatrixBasisEmbedder::from_npy(p, target).map_err(runtime_error)?,
-            None => MyomatrixBasisEmbedder::from_canonical(target).map_err(runtime_error)?,
+            Some(p) => EmusortBasisEmbedder::from_npy(p, target).map_err(runtime_error)?,
+            None => EmusortBasisEmbedder::from_canonical(target).map_err(runtime_error)?,
         };
         Ok(Self { inner })
     }
@@ -347,14 +347,14 @@ impl PyMyomatrixBasisEmbedder {
 }
 
 /// 150-sample universal MUAP matched-filter template detector.
-#[pyclass(name = "MyomatrixDetector", skip_from_py_object)]
+#[pyclass(name = "EmusortDetector", skip_from_py_object)]
 #[derive(Clone)]
-pub struct PyMyomatrixDetector {
-    pub inner: MyomatrixDetector,
+pub struct PyEmusortDetector {
+    pub inner: EmusortDetector,
 }
 
 #[pymethods]
-impl PyMyomatrixDetector {
+impl PyEmusortDetector {
     #[new]
     #[pyo3(signature = (threshold_sigma=6.5, refractory_samples=60, path=None, backend=None))]
     pub fn new(
@@ -365,9 +365,9 @@ impl PyMyomatrixDetector {
     ) -> PyResult<Self> {
         let target = parse_optional_target(backend)?;
         let inner = match path {
-            Some(p) => MyomatrixDetector::from_npy(p, threshold_sigma, refractory_samples, target)
+            Some(p) => EmusortDetector::from_npy(p, threshold_sigma, refractory_samples, target)
                 .map_err(runtime_error)?,
-            None => MyomatrixDetector::from_canonical(
+            None => EmusortDetector::from_canonical(
                 threshold_sigma,
                 refractory_samples,
                 target,
@@ -497,19 +497,19 @@ impl PyMyomatrixDetector {
 }
 
 /// Cross-channel conduction latency aligner for Motor Unit Action Potentials.
-#[pyclass(name = "MyomatrixLatencyAligner", skip_from_py_object)]
+#[pyclass(name = "EmusortLatencyAligner", skip_from_py_object)]
 #[derive(Clone)]
-pub struct PyMyomatrixLatencyAligner {
-    pub inner: MyomatrixLatencyAligner,
+pub struct PyEmusortLatencyAligner {
+    pub inner: EmusortLatencyAligner,
 }
 
 #[pymethods]
-impl PyMyomatrixLatencyAligner {
+impl PyEmusortLatencyAligner {
     #[new]
     #[pyo3(signature = (max_lag_samples=25))]
     pub fn new(max_lag_samples: usize) -> Self {
         Self {
-            inner: MyomatrixLatencyAligner::new(max_lag_samples),
+            inner: EmusortLatencyAligner::new(max_lag_samples),
         }
     }
 
@@ -559,3 +559,9 @@ impl PyMyomatrixLatencyAligner {
             .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 }
+
+// Backward-compatible type aliases for Python bindings
+pub type PyMyomatrixSortConfig = PyEmusortSortConfig;
+pub type PyMyomatrixBasisEmbedder = PyEmusortBasisEmbedder;
+pub type PyMyomatrixDetector = PyEmusortDetector;
+pub type PyMyomatrixLatencyAligner = PyEmusortLatencyAligner;

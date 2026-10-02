@@ -1,15 +1,19 @@
 """
-Unit tests for Myomatrix / EMUsort Python bindings:
-- MyomatrixSortConfig (presets & properties)
-- MyomatrixBasisEmbedder (12-PC temporal subspace & projections)
-- MyomatrixDetector (150-sample template matched filtering & detection)
-- MyomatrixLatencyAligner (cross-channel conduction latency estimation & alignment)
+Unit tests for EMUsort / Myomatrix Python bindings:
+- EmusortSortConfig (presets & properties)
+- EmusortBasisEmbedder (12-PC temporal subspace & projections)
+- EmusortDetector (150-sample template matched filtering & detection)
+- EmusortLatencyAligner (cross-channel conduction latency estimation & alignment)
 """
 
 import numpy as np
 import pytest
 
 from dsp_kitchen.synapse.ml import (
+    EmusortSortConfig,
+    EmusortBasisEmbedder,
+    EmusortDetector,
+    EmusortLatencyAligner,
     MyomatrixSortConfig,
     MyomatrixBasisEmbedder,
     MyomatrixDetector,
@@ -17,9 +21,12 @@ from dsp_kitchen.synapse.ml import (
 )
 
 
-def test_myomatrix_sort_config():
+def test_emusort_sort_config():
+    # Test canonical and alias equality
+    assert EmusortSortConfig is MyomatrixSortConfig
+
     # Defaults
-    cfg = MyomatrixSortConfig()
+    cfg = EmusortSortConfig()
     assert cfg.template_samples == 150
     assert cfg.threshold_sigma == 6.5
     assert cfg.refractory_samples == 60
@@ -27,24 +34,25 @@ def test_myomatrix_sort_config():
     assert cfg.num_temporal_pcs == 12
 
     # 32ch grid preset
-    p32 = MyomatrixSortConfig.preset_32ch_grid()
+    p32 = EmusortSortConfig.preset_32ch_grid()
     assert p32.template_samples == 150
     assert p32.num_temporal_pcs == 12
     assert p32.spatial_radius_um == 6000.0
 
     # 64ch grid preset
-    p64 = MyomatrixSortConfig.preset_64ch_grid()
+    p64 = EmusortSortConfig.preset_64ch_grid()
     assert p64.spatial_radius_um == 6000.0
     assert p64.max_clusters == 16
 
     # 8ch thread preset
-    p8 = MyomatrixSortConfig.preset_8ch_thread()
+    p8 = EmusortSortConfig.preset_8ch_thread()
     assert p8.spatial_radius_um == 1500.0
     assert p8.max_clusters == 6
 
 
-def test_myomatrix_basis_embedder():
-    embedder = MyomatrixBasisEmbedder.from_hub()
+def test_emusort_basis_embedder():
+    assert EmusortBasisEmbedder is MyomatrixBasisEmbedder
+    embedder = EmusortBasisEmbedder.from_hub()
     assert embedder.num_components == 12
     assert embedder.window_len == 150
 
@@ -79,9 +87,10 @@ def test_myomatrix_basis_embedder():
     assert np.all(np.isfinite(features))
 
 
-def test_myomatrix_detector():
+def test_emusort_detector():
+    assert EmusortDetector is MyomatrixDetector
     fs = 24414.0625
-    detector = MyomatrixDetector.from_hub(threshold_sigma=5.0, refractory_samples=60)
+    detector = EmusortDetector.from_hub(threshold_sigma=5.0, refractory_samples=60)
     assert detector.num_templates == 6
     assert detector.window_len == 150
     assert detector.center_offset == 70
@@ -113,8 +122,9 @@ def test_myomatrix_detector():
     assert abs(ch4_events[0].sample_index - peak_sample) <= 5
 
 
-def test_myomatrix_latency_aligner():
-    aligner = MyomatrixLatencyAligner(max_lag_samples=20)
+def test_emusort_latency_aligner():
+    assert EmusortLatencyAligner is MyomatrixLatencyAligner
+    aligner = EmusortLatencyAligner(max_lag_samples=20)
     n_channels = 4
     n_samples = 150
     snippet = np.zeros((n_channels, n_samples), dtype=np.float32)
