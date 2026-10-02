@@ -1,3 +1,4 @@
+pub mod comparison;
 pub mod correlogram;
 pub mod evoked;
 pub mod firing;
@@ -5,6 +6,10 @@ pub mod isolation;
 pub mod rate;
 
 pub use crate::core::template::{UnitQualityLabel, WaveformTemplate, compute_mean_template};
+pub use comparison::{
+    PairwiseTrainMatch, SortingComparison, UnitMatchSummary, compare_sortings,
+    compare_spike_trains,
+};
 pub use correlogram::{Correlogram, compute_autocorrelogram, compute_crosscorrelogram};
 pub use evoked::{
     MepMetrics, PsthResult, StimulusTriggeredAverage, compute_psth,

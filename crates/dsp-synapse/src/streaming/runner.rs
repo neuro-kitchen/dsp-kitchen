@@ -9,7 +9,7 @@ use dsp_base::pipeline::{Pipeline, PipelineWorkspace};
 use dsp_core::{ChunkSchedule, DspError, DspResult, HaloWindow, ProbeLayout, RecordingSource, SampleFormat};
 use dsp_stream::PrefetchReader;
 
-use crate::core::{DeduplicatedSpike, WaveformTemplate};
+use crate::core::{DeduplicatedSpike, SortedUnit, SortingOutput, WaveformTemplate};
 use crate::detection::{
     DetectionCarry, StreamingDedup, estimate_noise_std, execute_detect_spikes_in_vram,
 };
@@ -42,6 +42,54 @@ pub struct StreamingSortResult {
     pub channel_templates: Vec<Option<WaveformTemplate>>,
     /// Deduplicated spike events with global `sample_index` across the recording.
     pub spikes: Vec<DeduplicatedSpike>,
+}
+
+impl StreamingSortResult {
+    /// Converts this channel-grouped streaming sort result into a canonical [`SortingOutput`]
+    /// where each active primary channel with $\ge 1$ spike becomes a [`SortedUnit`].
+    pub fn to_sorting_output(
+        &self,
+        sorter_name: impl Into<String>,
+        probe: Option<ProbeLayout>,
+    ) -> SortingOutput {
+        let mut per_ch_samples: Vec<Vec<u64>> = vec![Vec::new(); self.channels];
+        let mut per_ch_amps: Vec<Vec<f32>> = vec![Vec::new(); self.channels];
+        for s in &self.spikes {
+            if s.primary_channel < self.channels {
+                per_ch_samples[s.primary_channel].push(s.sample_index);
+                per_ch_amps[s.primary_channel].push(s.peak_amplitude_uv);
+            }
+        }
+
+        let mut units = Vec::new();
+        for ch in 0..self.channels {
+            if per_ch_samples[ch].is_empty() {
+                continue;
+            }
+            let template = self.channel_templates.get(ch).and_then(|t| t.clone());
+            let noise_sd = self.channel_sigmas_uv.get(ch).copied().unwrap_or(10.0);
+            units.push(SortedUnit::from_spikes(
+                ch,
+                ch,
+                std::mem::take(&mut per_ch_samples[ch]),
+                std::mem::take(&mut per_ch_amps[ch]),
+                Vec::new(),
+                template,
+                self.sample_rate_hz,
+                self.total_samples,
+                noise_sd,
+            ));
+        }
+
+        SortingOutput::new(
+            sorter_name,
+            self.sample_rate_hz,
+            self.total_samples,
+            probe,
+            units,
+            None,
+        )
+    }
 }
 
 /// Out-of-core streaming spike sorter.
