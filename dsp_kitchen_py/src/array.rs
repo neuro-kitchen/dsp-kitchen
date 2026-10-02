@@ -68,6 +68,18 @@ pub fn to_numpy<'py>(py: Python<'py>, data: Vec<f32>, shape: &[usize]) -> PyResu
     Ok(data.into_pyarray(py).reshape(shape)?.into_any())
 }
 
+/// Moves `u64` data into a NumPy array of `shape` (no copy).
+pub fn to_numpy_u64<'py>(py: Python<'py>, data: Vec<u64>, shape: &[usize]) -> PyResult<Bound<'py, PyAny>> {
+    debug_assert_eq!(data.len(), shape.iter().product::<usize>());
+    Ok(data.into_pyarray(py).reshape(shape)?.into_any())
+}
+
+/// Moves `f64` data into a NumPy array of `shape` (no copy).
+pub fn to_numpy_f64<'py>(py: Python<'py>, data: Vec<f64>, shape: &[usize]) -> PyResult<Bound<'py, PyAny>> {
+    debug_assert_eq!(data.len(), shape.iter().product::<usize>());
+    Ok(data.into_pyarray(py).reshape(shape)?.into_any())
+}
+
 pub fn value_error(e: impl std::fmt::Display) -> PyErr {
     PyValueError::new_err(e.to_string())
 }

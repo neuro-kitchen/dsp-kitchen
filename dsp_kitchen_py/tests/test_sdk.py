@@ -113,9 +113,125 @@ def test_model_hub():
     assert templates.shape == (6, 61)
 
 
+def test_sorting_output_storage_and_comparison():
+    import tempfile
+    import shutil
+    from pathlib import Path
+
+    # 1. Build SortingOutput from clusters
+    times = [100, 150, 200, 250, 300, 350, 400, 450]
+    labels = [0, 1, 0, 1, 0, 1, 0, 1]
+    amps = [80.0, 60.0, 85.0, 65.0, 90.0, 70.0, 82.0, 62.0]
+    locs = [[0.0, 10.0, 0.0] if l == 0 else [0.0, 20.0, 0.0] for l in labels]
+
+    sorting = dk.SortingOutput.from_clusters(
+        sorter_name="test_sorter",
+        spike_samples=times,
+        labels=labels,
+        sample_rate_hz=30000.0,
+        total_samples=1000,
+        amplitudes=amps,
+        locations=locs,
+    )
+
+    assert sorting.sorter_name == "test_sorter"
+    assert sorting.sample_rate == 30000.0
+    assert sorting.num_units == 2
+    assert sorting.total_spikes == 8
+    assert sorting.unit_ids() == [0, 1]
+
+    # Verify spike trains and metrics
+    u0_train = sorting.spike_train(0)
+    assert len(u0_train) == 4
+    assert list(u0_train) == [100, 200, 300, 400]
+
+    u0_amps = sorting.spike_amplitudes(0)
+    assert len(u0_amps) == 4
+
+    metrics = sorting.unit_metrics(0)
+    assert metrics["unit_id"] == 0
+    assert metrics["num_spikes"] == 4
+    assert metrics["quality_label"] in ["good", "mua", "noise"]
+
+    summary = sorting.summary_table()
+    assert len(summary) == 2
+
+    # 2. Pairwise spike train matching and sorting comparison
+    train_a = [100, 200, 300, 400]
+    train_b = [100, 201, 300, 900]
+    pw = dk.compare_spike_trains(train_a, train_b, sample_rate_hz=30000.0, delta_time_ms=0.4)
+    assert pw["num_matches"] == 3
+    assert pw["precision"] == 0.75
+    assert pw["recall"] == 0.75
+
+    comp = dk.compare_sortings(sorting, sorting, delta_time_ms=0.4, agreement_threshold=0.5)
+    assert comp["agreement_matrix"].shape == (2, 2)
+    assert np.allclose(np.diag(comp["agreement_matrix"]), [1.0, 1.0])
+    assert comp["mean_agreement"] == 1.0
+    assert len(comp["matches"]) == 2
+
+    # 3. CBSS constructor
+    cbss_units = [
+        {
+            "unit_id": 0,
+            "spike_samples": [50, 150, 250],
+            "pnr_db": 22.5,
+            "cov_isi": 0.15,
+            "ipt": np.zeros(300, dtype=np.float32),
+        }
+    ]
+    cbss_sort = dk.SortingOutput.from_cbss(
+        sorter_name="cbss_mu",
+        cbss_units=cbss_units,
+        sample_rate_hz=2048.0,
+        total_samples=500,
+    )
+    assert cbss_sort.num_units == 1
+    assert cbss_sort.total_spikes == 3
+
+    # 4. Storage Round-trips
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+
+        # A. Phy format
+        phy_dir = str(tmp / "phy_export")
+        dk.save_sorting(sorting, phy_dir, format="phy")
+        assert (tmp / "phy_export" / "spike_times.npy").exists()
+        assert (tmp / "phy_export" / "spike_clusters.npy").exists()
+        assert (tmp / "phy_export" / "params.py").exists()
+
+        loaded_phy = dk.load_sorting(phy_dir)
+        assert loaded_phy.num_units == 2
+        assert loaded_phy.total_spikes == 8
+        assert list(loaded_phy.spike_train(0)) == [100, 200, 300, 400]
+
+        # B. Zarr SortingAnalyzer format
+        zarr_dir = str(tmp / "test.sorting.zarr")
+        dk.save_sorting(sorting, zarr_dir)
+        assert (tmp / "test.sorting.zarr" / "zarr.json").exists()
+        assert (tmp / "test.sorting.zarr" / "spikes" / "times.npy").exists()
+
+        loaded_zarr = dk.load_sorting(zarr_dir)
+        assert loaded_zarr.num_units == 2
+        assert loaded_zarr.total_spikes == 8
+        assert list(loaded_zarr.spike_train(1)) == [150, 250, 350, 450]
+
+        # C. NWB /units format
+        nwb_dir = str(tmp / "test.nwb.zarr")
+        dk.save_nwb_units(sorting, nwb_dir)
+        assert (tmp / "test.nwb.zarr" / "units" / "zarr.json").exists()
+
+        loaded_nwb = dk.load_nwb_units(nwb_dir, sample_rate_hz=30000.0)
+        assert loaded_nwb.num_units == 2
+        assert loaded_nwb.total_spikes == 8
+        assert list(loaded_nwb.spike_train(0)) == [100, 200, 300, 400]
+
+
 if __name__ == "__main__":
     test_filters_and_pipeline()
     test_whitening_ppca_and_clustering()
     test_evoked_and_rate_metrics()
     test_model_hub()
+    test_sorting_output_storage_and_comparison()
     print("All dsp_kitchen_py SDK tests passed!")
+
