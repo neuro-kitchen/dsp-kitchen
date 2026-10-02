@@ -199,7 +199,7 @@ impl Render for TracePanel {
         let gutter = div().w(px(GUTTER)).h_full().relative().overflow_hidden().children(lanes.into_iter().enumerate().map(|(i, l)| {
             let strong = !heatmap && hovered_lane == Some(i);
             // Labels at the very top or bottom stay inside the gutter
-            let nudge = if l.y_frac < 0.03 { 0. } else if l.y_frac > 0.97 { -16. } else { -8. };
+            let nudge = if l.y_frac <= 0.04 { 0. } else if l.y_frac >= 0.96 { -16. } else { -8. };
             div()
                 .absolute()
                 .left(px(10.))

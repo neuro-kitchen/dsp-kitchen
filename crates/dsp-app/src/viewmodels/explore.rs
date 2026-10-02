@@ -48,15 +48,23 @@ impl ExploreVm {
         &self.store
     }
 
-    fn make(&mut self, kind: TimeViewKind, source: &str, cx: &mut Context<Self>) -> Entity<TraceVm> {
+    fn make(&mut self, kind: TimeViewKind, source: &str, saved: Option<&crate::session::SavedTimeView>, cx: &mut Context<Self>) -> Entity<TraceVm> {
         let id = self.next_id;
         self.next_id += 1;
         let store = self.store.clone();
         let source = source.to_string();
-        let vm = cx.new(|cx| TraceVm::new(store, id, kind, &source, cx));
+        let saved = saved.cloned();
+        let vm = cx.new(|cx| {
+            let mut vm = TraceVm::new(store, id, kind, &source, cx);
+            if let Some(s) = saved {
+                s.apply(&mut vm.view);
+            }
+            vm
+        });
         let sub = cx.subscribe(&vm, |this, vm, event, cx| match event {
             TraceEvent::Pressed => this.focus(vm, cx),
             TraceEvent::Changed => {
+                this.persist_views(cx);
                 if this.focused.as_ref() == Some(&vm) {
                     cx.emit(ExploreEvent::Focus);
                 }
@@ -67,17 +75,33 @@ impl ExploreVm {
         vm
     }
 
-    /// Default views on the default source: traces over a heatmap.
+    fn persist_views(&self, cx: &mut Context<Self>) {
+        let saved: Vec<crate::session::SavedTimeView> = self.views.iter().map(|v| crate::session::SavedTimeView::from_view(&v.read(cx).view)).collect();
+        self.store.update(cx, |s, _| s.set_explore_views(saved));
+    }
+
+    /// Default views on the default source: saved views from session, or traces over a heatmap.
     fn reset(&mut self, cx: &mut Context<Self>) {
         for vm in std::mem::take(&mut self.views) {
             vm.update(cx, |vm, cx| vm.close(cx));
         }
         self.subs.clear();
-        let source = self.store.read(cx).sources().map(|s| s.default_entry().id.clone()).unwrap_or_default();
-        let traces = self.make(TimeViewKind::Traces, &source, cx);
-        let heatmap = self.make(TimeViewKind::Heatmap, &source, cx);
-        self.focused = Some(traces.clone());
-        cx.emit(ExploreEvent::Reset(vec![traces, heatmap]));
+        let default_source = self.store.read(cx).sources().map(|s| s.default_entry().id.clone()).unwrap_or_default();
+        let saved = self.store.read(cx).session.explore.views.clone();
+        let created: Vec<Entity<TraceVm>> = if saved.is_empty() {
+            vec![self.make(TimeViewKind::Traces, &default_source, None, cx), self.make(TimeViewKind::Heatmap, &default_source, None, cx)]
+        } else {
+            saved
+                .iter()
+                .map(|s| {
+                    let src = if s.source.is_empty() { &default_source } else { &s.source };
+                    self.make(s.kind, src, Some(s), cx)
+                })
+                .collect()
+        };
+        self.focused = created.first().cloned();
+        self.persist_views(cx);
+        cx.emit(ExploreEvent::Reset(created));
         cx.emit(ExploreEvent::Focus);
     }
 
@@ -90,7 +114,8 @@ impl ExploreVm {
 
     /// A new view of `kind` on `source`, beside the focused one.
     pub fn add_on(&mut self, kind: TimeViewKind, source: &str, cx: &mut Context<Self>) -> Entity<TraceVm> {
-        let vm = self.make(kind, source, cx);
+        let vm = self.make(kind, source, None, cx);
+        self.persist_views(cx);
         cx.emit(ExploreEvent::Added { vm: vm.clone(), below: kind == TimeViewKind::Heatmap });
         self.focus(vm.clone(), cx);
         vm
@@ -114,6 +139,7 @@ impl ExploreVm {
             self.focused = self.views.first().cloned();
             cx.emit(ExploreEvent::Focus);
         }
+        self.persist_views(cx);
         cx.notify();
     }
 

@@ -134,6 +134,7 @@ pub struct ChannelsPanel {
     filter: Entity<InputState>,
     ranges: Entity<InputState>,
     range_error: Option<String>,
+    shank_filter: Option<usize>,
     _subs: Vec<Subscription>,
 }
 
@@ -147,7 +148,10 @@ impl ChannelsPanel {
         let subs = vec![
             cx.observe(&explore, |_, _, cx| cx.notify()),
             cx.subscribe(&explore, |_, _, _: &ExploreEvent, cx| cx.notify()),
-            cx.subscribe(&store, |_, _, e: &AppEvent, cx| {
+            cx.subscribe(&store, |this, _, e: &AppEvent, cx| {
+                if matches!(e, AppEvent::RecordingChanged) {
+                    this.shank_filter = None;
+                }
                 if matches!(e, AppEvent::SelectionChanged(_) | AppEvent::RecordingChanged) {
                     cx.notify();
                 }
@@ -164,23 +168,50 @@ impl ChannelsPanel {
                 }
             }),
         ];
-        Self { explore, dock, focus: cx.focus_handle(), filter, ranges, range_error: None, _subs: subs }
+        Self { explore, dock, focus: cx.focus_handle(), filter, ranges, range_error: None, shank_filter: None, _subs: subs }
     }
 
     fn store(&self, cx: &App) -> Entity<Store> {
         self.explore.read(cx).store().clone()
     }
 
+    fn pinned_vm(&self, cx: &App) -> Option<Entity<crate::viewmodels::TraceVm>> {
+        self.explore.read(cx).focused.clone().filter(|vm| vm.read(cx).view.pinned_selection)
+    }
+
     fn apply_ranges(&mut self, text: &str, cx: &mut Context<Self>) {
+        if let Some(vm) = self.pinned_vm(cx) {
+            self.range_error = vm.update(cx, |vm, cx| vm.select_ranges(text, cx)).err();
+            cx.notify();
+            return;
+        }
         let Some(source) = focused_source(&self.explore, cx) else { return };
         let result = self.store(cx).update(cx, |s, cx| s.select_ranges(&source, text, cx));
         self.range_error = result.err();
         cx.notify();
     }
 
-    fn with_store(&self, cx: &mut Context<Self>, f: impl FnOnce(&mut Store, &str, &mut Context<Store>)) {
-        if let Some(source) = focused_source(&self.explore, cx) {
-            self.store(cx).update(cx, |s, cx| f(s, &source, cx));
+    fn select_all(&self, cx: &mut Context<Self>) {
+        if let Some(vm) = self.pinned_vm(cx) {
+            vm.update(cx, |vm, cx| vm.select_all(cx));
+        } else if let Some(source) = focused_source(&self.explore, cx) {
+            self.store(cx).update(cx, |s, cx| s.select_all(&source, cx));
+        }
+    }
+
+    fn select_none(&self, cx: &mut Context<Self>) {
+        if let Some(vm) = self.pinned_vm(cx) {
+            vm.update(cx, |vm, cx| vm.select_none(cx));
+        } else if let Some(source) = focused_source(&self.explore, cx) {
+            self.store(cx).update(cx, |s, cx| s.select_none(&source, cx));
+        }
+    }
+
+    fn select_invert(&self, cx: &mut Context<Self>) {
+        if let Some(vm) = self.pinned_vm(cx) {
+            vm.update(cx, |vm, cx| vm.select_invert(cx));
+        } else if let Some(source) = focused_source(&self.explore, cx) {
+            self.store(cx).update(cx, |s, cx| s.select_invert(&source, cx));
         }
     }
 }
@@ -192,7 +223,11 @@ impl ChannelsPanel {
         let s = self.store(cx);
         let s = s.read(cx);
         let total = s.sources()?.entry(&source).channels;
-        Some(div().text_xs().text_color(cx.theme().muted_foreground).child(format!("{} of {total}", s.selection(&source).len())).into_any_element())
+        let count = match self.pinned_vm(cx) {
+            Some(vm) => vm.read(cx).view.selection.len(),
+            None => s.selection(&source).len(),
+        };
+        Some(div().text_xs().text_color(cx.theme().muted_foreground).child(format!("{count} of {total}")).into_any_element())
     }
 
     fn body(&mut self, _: &mut Window, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
@@ -200,19 +235,52 @@ impl ChannelsPanel {
         let Some(source) = focused_source(&self.explore, cx) else {
             return v_flex().size_full().p_3().text_sm().text_color(cx.theme().muted_foreground).child("No recording open.").into_any_element();
         };
-        let (name, total, selected, events) = {
+        let focused_vm = self.explore.read(cx).focused.clone();
+        let pinned_vm = self.pinned_vm(cx);
+        let (name, total, selected, events, ds) = {
             let s = store.read(cx);
             let sources = s.sources().cloned();
             let entry = sources.as_ref().map(|ss| ss.entry(&source).clone());
+            let ds = sources.as_ref().map(|ss| ss.get(&source));
             let events = s.recording.as_ref().map(|r| r.events.clone()).unwrap_or_default();
-            (entry.as_ref().map_or_else(String::new, |e| e.name.clone()), entry.map_or(0, |e| e.channels), s.selection(&source).to_vec(), events)
+            let sel = match &pinned_vm {
+                Some(vm) => vm.read(cx).view.selection.clone(),
+                None => s.selection(&source).to_vec(),
+            };
+            (entry.as_ref().map_or_else(String::new, |e| e.name.clone()), entry.map_or(0, |e| e.channels), sel, events, ds)
         };
-        let filter = self.filter.read(cx).value().trim().to_string();
-        let rows: Vec<usize> = (0..total).filter(|c| filter.is_empty() || c.to_string().contains(&filter)).collect();
+        let shanks = ds.as_ref().map(|d| d.shanks()).unwrap_or_default();
+        let multi_shank = shanks.len() > 1;
+        let filter = self.filter.read(cx).value().trim().to_lowercase();
+        let shank_filter = self.shank_filter;
+        let sites: Rc<Vec<Option<String>>> = Rc::new(
+            (0..total)
+                .map(|c| {
+                    let site = ds.as_ref()?.site(c)?;
+                    Some(if multi_shank {
+                        format!("S{} · {:.0},{:.0} µm", site.shank_id, site.position.x_um, site.position.y_um)
+                    } else {
+                        format!("{:.0},{:.0} µm", site.position.x_um, site.position.y_um)
+                    })
+                })
+                .collect(),
+        );
+        let rows: Vec<usize> = (0..total)
+            .filter(|&c| {
+                if let Some(sh) = shank_filter {
+                    if ds.as_ref().and_then(|d| d.site(c)).is_none_or(|s| s.shank_id != sh) {
+                        return false;
+                    }
+                }
+                filter.is_empty() || c.to_string().contains(&filter) || sites[c].as_ref().is_some_and(|s| s.to_lowercase().contains(&filter))
+            })
+            .collect();
         let checked: Rc<Vec<bool>> = Rc::new({
             let mut v = vec![false; total];
             for &c in &selected {
-                v[c] = true;
+                if c < total {
+                    v[c] = true;
+                }
             }
             v
         });
@@ -221,24 +289,31 @@ impl ChannelsPanel {
         let (muted, danger) = (t.muted_foreground, t.danger);
         let store_for_rows = store.clone();
         let source_for_rows = source.clone();
+        let pinned_for_rows = pinned_vm.clone();
         let rows = Rc::new(rows);
         let list_rows = rows.clone();
+        let list_sites = sites.clone();
 
         let list = uniform_list("channel-rows", rows.len(), move |range, _, _| {
             range
                 .map(|i| {
                     let ch = list_rows[i];
                     let on = checked[ch];
-                    let (store, source) = (store_for_rows.clone(), source_for_rows.clone());
+                    let (store, source, pinned) = (store_for_rows.clone(), source_for_rows.clone(), pinned_for_rows.clone());
                     let count = events.count(ch);
+                    let site_label = list_sites[ch].clone();
                     h_flex()
                         .id(("channel", ch))
                         .h(px(26.))
                         .px_2()
                         .gap_2()
-                        .child(Checkbox::new(("channel-check", ch)).checked(on).on_click(move |_, _, cx| store.update(cx, |s, cx| s.toggle_channel(&source, ch, cx))))
+                        .child(Checkbox::new(("channel-check", ch)).checked(on).on_click(move |_, _, cx| match &pinned {
+                            Some(vm) => vm.update(cx, |vm, cx| vm.toggle_channel(ch, cx)),
+                            None => store.update(cx, |s, cx| s.toggle_channel(&source, ch, cx)),
+                        }))
                         .child(div().size(px(8.)).rounded_full().bg(color(palette.channel(ch))))
                         .child(div().flex_1().text_sm().when(!on, |d| d.text_color(muted)).child(format!("Ch {ch}")))
+                        .when_some(site_label, |d, s| d.child(div().text_xs().text_color(muted).child(s)))
                         .when(count > 0, |d| d.child(div().text_xs().text_color(muted).child(count.to_string())))
                 })
                 .collect()
@@ -248,11 +323,48 @@ impl ChannelsPanel {
 
         let actions = h_flex()
             .gap_1()
-            .child(Button::new("select-all").ghost().xsmall().label("All").on_click(cx.listener(|this, _, _, cx| this.with_store(cx, |s, src, cx| s.select_all(src, cx)))))
-            .child(Button::new("select-none").ghost().xsmall().label("None").on_click(cx.listener(|this, _, _, cx| this.with_store(cx, |s, src, cx| s.select_none(src, cx)))))
-            .child(Button::new("select-invert").ghost().xsmall().label("Invert").on_click(cx.listener(|this, _, _, cx| this.with_store(cx, |s, src, cx| s.select_invert(src, cx)))))
+            .child(Button::new("select-all").ghost().xsmall().label("All").on_click(cx.listener(|this, _, _, cx| this.select_all(cx))))
+            .child(Button::new("select-none").ghost().xsmall().label("None").on_click(cx.listener(|this, _, _, cx| this.select_none(cx))))
+            .child(Button::new("select-invert").ghost().xsmall().label("Invert").on_click(cx.listener(|this, _, _, cx| this.select_invert(cx))))
+            .when_some(focused_vm, |d, vm| {
+                let pinned = pinned_vm.is_some();
+                d.child(
+                    Button::new("pin-view-channels")
+                        .xsmall()
+                        .map(|b| if pinned { b.primary() } else { b.ghost() })
+                        .label(if pinned { "Pinned" } else { "Pin" })
+                        .tooltip("Keep this view's channel selection independent of other views")
+                        .on_click(move |_, _, cx| vm.update(cx, |vm, cx| vm.set_pinned_selection(!pinned, cx))),
+                )
+            })
             .child(div().flex_1())
             .child(div().text_xs().text_color(muted).truncate().child(name));
+
+        let shank_bar = multi_shank.then(|| {
+            h_flex()
+                .gap_1()
+                .flex_wrap()
+                .child(
+                    Button::new("shank-all")
+                        .xsmall()
+                        .map(|b| if shank_filter.is_none() { b.primary() } else { b.ghost() })
+                        .label("All shanks")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.shank_filter = None;
+                            cx.notify();
+                        })),
+                )
+                .children(shanks.into_iter().map(|sh| {
+                    Button::new(("shank", sh))
+                        .xsmall()
+                        .map(|b| if shank_filter == Some(sh) { b.primary() } else { b.ghost() })
+                        .label(format!("Shank {sh}"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.shank_filter = Some(sh);
+                            cx.notify();
+                        }))
+                }))
+        });
 
         v_flex()
             .id("channels-panel")
@@ -261,6 +373,7 @@ impl ChannelsPanel {
             .gap_2()
             .p_2()
             .child(actions)
+            .children(shank_bar)
             .child(Input::new(&self.ranges).small())
             .when_some(self.range_error.clone(), |d, e| d.child(div().text_xs().text_color(danger).child(e)))
             .child(Input::new(&self.filter).small().prefix(gpui_kit::component::Icon::new(IconName::Search).small()))
@@ -383,6 +496,13 @@ impl SettingsPanel {
                 Rc::new(move |cx| b.update(cx, |vm, cx| vm.zoom_gain(1.0 / 0.75, cx))),
             )
         };
+        let pin = {
+            let vm = vm.clone();
+            Switch::new("pin-selection")
+                .checked(v.pinned_selection)
+                .label("Pin channels to this view")
+                .on_click(move |on, _, cx| vm.update(cx, |vm, cx| vm.set_pinned_selection(*on, cx)))
+        };
         let auto = {
             let vm = vm.clone();
             Switch::new("auto-scale").checked(v.auto_scale).label("Fit amplitude to what is shown").on_click(move |on, _, cx| vm.update(cx, |vm, cx| vm.set_auto_scale(*on, cx)))
@@ -400,7 +520,7 @@ impl SettingsPanel {
             .p_3()
             .overflow_y_scroll()
             .child(div().text_base().font_weight(gpui_kit::FontWeight::SEMIBOLD).child(v.title.clone()))
-            .child(Section::new("Display").child(kind).children(source).child(row("Range", div().text_sm().child(v.range_label()), cx)))
+            .child(Section::new("Display").child(kind).children(source).child(row("Range", div().text_sm().child(v.range_label()), cx)).child(pin))
             .when(traces, |d| d.child(Section::new("Traces").child(row("On screen", lanes_row, cx)).child(row("Gain", gain_row, cx))))
             .child(Section::new("Scaling").child(auto).child(dc))
             .into_any_element()
