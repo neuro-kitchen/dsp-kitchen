@@ -16,7 +16,7 @@ Pipeline:
 Usage:
   python playground/sorters/07_kilosort4_nwb_to_phy.py
   python playground/sorters/07_kilosort4_nwb_to_phy.py --duration-sec 30.0 --threshold-sigma 4.5
-  phy template-gui playground/sorters/phy_kilosort4_output/params.py
+  phy template-gui data/sorters/phy_kilosort4_output/params.py
 """
 
 import argparse
@@ -38,7 +38,7 @@ from dsp_kitchen.synapse.ml import Kilosort4BasisEmbedder, Kilosort4Detector
 def run_kilosort4_nwb_to_phy(
     nwb_path: str = "data/nwb/15-25-33_meps.nwb.zarr",
     series: str = "/acquisition/HDEMG",
-    output_dir: str = "playground/sorters/phy_kilosort4_output",
+    output_dir: str = "data/sorters/phy_kilosort4_output",
     start_sec: float = 0.0,
     duration_sec: float = 5.0,
     threshold_sigma: float = 4.5,
@@ -258,7 +258,7 @@ def main():
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="playground/sorters/phy_kilosort4_output",
+        default="data/sorters/phy_kilosort4_output",
         help="Target folder for Phy2 export.",
     )
     parser.add_argument(
