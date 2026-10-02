@@ -112,12 +112,14 @@ def test_kilosort4_nwb_to_phy_roundtrip():
             "params.py",
             "spike_times.npy",
             "spike_clusters.npy",
+            "spike_templates.npy",
             "amplitudes.npy",
             "templates.npy",
             "templates_std.npy",
             "templates_se.npy",
             "channel_map.npy",
             "channel_positions.npy",
+            "channel_shanks.npy",
             "cluster_group.tsv",
             "cluster_info.tsv",
             "similar_templates.npy",
@@ -147,6 +149,16 @@ def test_kilosort4_nwb_to_phy_roundtrip():
         assert reloaded.num_units == sorting.num_units
         assert reloaded.total_spikes == sorting.total_spikes
         assert list(reloaded.spike_train(0)) == list(sorting.spike_train(0))
+
+        # Verify phylib TemplateModel can load the dataset directly if phylib is available
+        try:
+            from phylib.io.model import load_model
+            model = load_model(str(phy_dir / "params.py"))
+            assert model.n_spikes == sorting.total_spikes
+            assert model.n_clusters == sorting.num_units
+            assert model.n_channels == 32
+        except ImportError:
+            pass
 
 
 if __name__ == "__main__":

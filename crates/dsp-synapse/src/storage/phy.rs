@@ -31,6 +31,7 @@ pub fn save_phy_folder(sorting: &SortingOutput, dir: &Path) -> DspResult<()> {
     let (samples, clusters, amps, locs) = sorting.flattened_spikes();
     write_npy_u64_1d(&dir.join("spike_times.npy"), &samples)?;
     write_npy_i32_1d(&dir.join("spike_clusters.npy"), &clusters)?;
+    write_npy_i32_1d(&dir.join("spike_templates.npy"), &clusters)?;
     write_npy_f32_1d(&dir.join("amplitudes.npy"), &amps)?;
 
     if !locs.is_empty() {
@@ -88,12 +89,33 @@ pub fn save_phy_folder(sorting: &SortingOutput, dir: &Path) -> DspResult<()> {
         write_npy_f32_3d(&dir.join("templates.npy"), &t_mean, shape)?;
         write_npy_f32_3d(&dir.join("templates_std.npy"), &t_std, shape)?;
         write_npy_f32_3d(&dir.join("templates_se.npy"), &t_se, shape)?;
+
+        // Compute and write similar_templates.npy [num_units, num_units]
+        let mut sim_matrix = vec![0.0f32; num_units * num_units];
+        let t_len = template_samples * num_channels;
+        let mut norms = vec![0.0f32; num_units];
+        for u in 0..num_units {
+            let u_slice = &t_mean[u * t_len..(u + 1) * t_len];
+            let norm = u_slice.iter().map(|&x| x * x).sum::<f32>().sqrt();
+            norms[u] = if norm > 1e-9 { norm } else { 1.0 };
+        }
+        for u1 in 0..num_units {
+            let s1 = &t_mean[u1 * t_len..(u1 + 1) * t_len];
+            for u2 in 0..num_units {
+                let s2 = &t_mean[u2 * t_len..(u2 + 1) * t_len];
+                let dot: f32 = s1.iter().zip(s2).map(|(&a, &b)| a * b).sum();
+                sim_matrix[u1 * num_units + u2] = dot / (norms[u1] * norms[u2]);
+            }
+        }
+        write_npy_f32_2d(&dir.join("similar_templates.npy"), &sim_matrix, [num_units, num_units])?;
     }
 
-    // Probe geometry: channel_map.npy & channel_positions.npy
+    // Probe geometry: channel_map.npy, channel_positions.npy, and channel_shanks.npy
     if let Some(probe) = &sorting.probe {
         let ch_ids: Vec<i32> = probe.contacts.iter().map(|c| c.channel_id as i32).collect();
         write_npy_i32_1d(&dir.join("channel_map.npy"), &ch_ids)?;
+        let shanks: Vec<i32> = probe.contacts.iter().map(|c| c.shank_id as i32).collect();
+        write_npy_i32_1d(&dir.join("channel_shanks.npy"), &shanks)?;
         let mut pos = Vec::with_capacity(probe.contacts.len() * 2);
         for c in &probe.contacts {
             pos.push(c.position.x_um);
