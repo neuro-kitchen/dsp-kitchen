@@ -18,6 +18,12 @@ class ProbeLayout:
     @staticmethod
     def utah_array() -> "ProbeLayout": ...
     @staticmethod
+    def hdemg_4x8(ied_mm: float = 4.0) -> "ProbeLayout": ...
+    @staticmethod
+    def hdemg_8x8(ied_mm: float = 4.0) -> "ProbeLayout": ...
+    @staticmethod
+    def hdemg_grid(rows: int, cols: int, ied_mm: float = 4.0) -> "ProbeLayout": ...
+    @staticmethod
     def from_positions(
         name: str,
         positions: List[Tuple[float, float]],
@@ -95,12 +101,9 @@ class MmapRecording:
         start_sample: int = 0,
         end_sample: Optional[int] = None,
         channels: Optional[List[int]] = None,
-    ) -> npt.NDArray[np.float32]:
-        """µV float32 copy [channels, samples]; default window 1 s."""
-    def memoryview(self) -> memoryview:
-        """Zero-copy read-only view of the stored bytes; keeps the recording alive."""
-    def to_numpy(self) -> npt.NDArray[Any]:
-        """Zero-copy read-only [channels, samples] view in the stored dtype; keeps the recording alive."""
+    ) -> npt.NDArray[np.float32]: ...
+    def memoryview(self) -> memoryview: ...
+    def to_numpy(self) -> npt.NDArray[Any]: ...
 
 class NwbZarrRecording:
     def __init__(self, path: str, series: Optional[str] = None) -> None: ...
@@ -147,8 +150,7 @@ class NwbZarrRecording:
         start_sample: int = 0,
         end_sample: Optional[int] = None,
         channels: Optional[List[int]] = None,
-    ) -> npt.NDArray[np.float32]:
-        """µV float32 [channels, samples]; default window 1 s. IndexError / ValueError on bad input."""
+    ) -> npt.NDArray[np.float32]: ...
     def read_window(
         self,
         start_sec: float = 0.0,
@@ -170,13 +172,11 @@ class Clamp:
 Direction = Literal["forward-backward", "forward"]
 
 class NotchFilter:
-    """Second-order notch (scipy `iirnotch`)."""
     def __init__(
         self, freq_hz: float = 60.0, q: float = 30.0, direction: Direction = "forward-backward"
     ) -> None: ...
 
 class BandpassFilter:
-    """Butterworth band-pass; `order` per edge (scipy / SpikeInterface convention)."""
     def __init__(
         self,
         low_hz: float = 300.0,
@@ -203,6 +203,40 @@ class BandstopFilter:
 class CommonAverageReference:
     def __init__(self) -> None: ...
 
+class SpatialWhitening:
+    def __init__(self, matrix: npt.NDArray[np.float32]) -> None: ...
+    @staticmethod
+    def fit_zca(
+        data: npt.NDArray[np.float32],
+        epsilon: float = 1e-4,
+        channels: Optional[int] = None,
+    ) -> "SpatialWhitening": ...
+    @staticmethod
+    def fit_local_knn(
+        data: npt.NDArray[np.float32],
+        probe: ProbeLayout,
+        k_neighbors: int = 8,
+        epsilon: float = 1e-4,
+        channels: Optional[int] = None,
+    ) -> "SpatialWhitening": ...
+    @property
+    def channels(self) -> int: ...
+    def matrix(self) -> npt.NDArray[np.float32]: ...
+    def run(
+        self, data: npt.NDArray[np.float32], channels: Optional[int] = None
+    ) -> npt.NDArray[np.float32]: ...
+
+class SurfaceLaplacian:
+    def __init__(
+        self,
+        probe: ProbeLayout,
+        radius_um: float = 6000.0,
+        max_neighbors: int = 4,
+    ) -> None: ...
+    def run(
+        self, data: npt.NDArray[np.float32], channels: Optional[int] = None
+    ) -> npt.NDArray[np.float32]: ...
+
 class MedianFilter:
     def __init__(self) -> None: ...
 
@@ -218,8 +252,7 @@ class Pipeline:
     @property
     def stages(self) -> List[str]: ...
     def __len__(self) -> int: ...
-    def settling(self, fs: float = 30000.0) -> Tuple[int, int]:
-        """(left, right) samples of context a chunk needs to match whole-recording filtering."""
+    def settling(self, fs: float = 30000.0) -> Tuple[int, int]: ...
     def run(
         self,
         data: npt.NDArray[np.float32],
@@ -272,6 +305,24 @@ class DspSession:
 class PCA:
     def __init__(self, n_components: int = 3) -> None: ...
     def fit_transform(self, data: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]: ...
+
+class PPCA:
+    def __init__(
+        self,
+        n_components: int = 3,
+        max_iters: int = 100,
+        tol: float = 1e-5,
+    ) -> None: ...
+    def fit_transform(self, data: npt.NDArray[np.float32]) -> Dict[str, Any]: ...
+
+class FastICA:
+    def __init__(
+        self,
+        n_components: int = 4,
+        max_iters: int = 200,
+        tol: float = 1e-5,
+    ) -> None: ...
+    def fit_transform(self, data: npt.NDArray[np.float32]) -> Dict[str, Any]: ...
 
 class ModelHub:
     def __init__(self, cache_dir: Optional[str] = None) -> None: ...
@@ -340,8 +391,6 @@ class Kilosort4Detector:
         self, data: npt.NDArray[np.float32], sample_rate_hz: float = 30000.0
     ) -> List[SpikeEvent]: ...
 
-
-
 def notch_filter(
     data: npt.NDArray[np.float32],
     freq: float = 60.0,
@@ -403,6 +452,7 @@ def detect_spikes(
     channels: Optional[int] = None,
     threshold_multiplier: float = 4.5,
     refractory_samples: int = 30,
+    polarity: Literal["negative", "positive", "both"] = "negative",
 ) -> List[SpikeEvent]: ...
 def deduplicate_spikes(
     events: List[SpikeEvent],
@@ -413,6 +463,7 @@ def deduplicate_spikes(
 def estimate_noise(
     data: npt.NDArray[np.float32],
     channels: Optional[int] = None,
+    method: Literal["mad", "rms"] = "mad",
 ) -> List[float]: ...
 def extract_snippets(
     data: npt.NDArray[np.float32],
@@ -424,19 +475,155 @@ def extract_snippets(
     post_samples: int = 40,
     apply_sinc_shift: bool = True,
 ) -> List[WaveformSnippet]: ...
+def localize_spikes(
+    snippets: List[WaveformSnippet],
+    probe: ProbeLayout,
+    method: Literal["center_of_mass", "monopolar", "dipole", "grid_convolution"] = "center_of_mass",
+    max_iterations: int = 35,
+) -> npt.NDArray[np.float32]: ...
+def estimate_rigid_drift(
+    spike_samples: List[int],
+    spike_depths_um: List[float],
+    sample_rate_hz: float = 30000.0,
+    time_bin_sec: float = 2.0,
+    depth_bin_um: float = 5.0,
+    max_drift_um: float = 100.0,
+) -> Dict[str, Any]: ...
+def estimate_nonrigid_drift(
+    spike_samples: List[int],
+    spike_depths_um: List[float],
+    sample_rate_hz: float = 30000.0,
+    num_depth_blocks: int = 4,
+    time_bin_sec: float = 2.0,
+    depth_bin_um: float = 5.0,
+    max_drift_um: float = 100.0,
+) -> Dict[str, Any]: ...
+def correct_drift_kriging(
+    data: npt.NDArray[np.float32],
+    probe: ProbeLayout,
+    time_bin_centers_sec: List[float],
+    drift_um: List[float],
+    sample_rate_hz: float = 30000.0,
+    start_sample: int = 0,
+    sigma_um: float = 20.0,
+    radius_um: float = 60.0,
+    channels: Optional[int] = None,
+) -> npt.NDArray[np.float32]: ...
+def cluster_gmm(
+    features: npt.NDArray[np.float32],
+    min_clusters: int = 1,
+    max_clusters: int = 8,
+    covariance_type: Literal["diagonal", "full", "masked"] = "diagonal",
+    max_iters: int = 100,
+    reg_covar: float = 1e-3,
+    channel_masks: Optional[npt.NDArray[np.float32]] = None,
+) -> Dict[str, Any]: ...
+def cluster_density_peaks(
+    features: npt.NDArray[np.float32],
+    dc: float = 1.5,
+    min_cluster_size: int = 5,
+) -> Dict[str, Any]: ...
+def cluster_isosplit(
+    features: npt.NDArray[np.float32],
+    initial_k: int = 10,
+    dip_threshold: float = 2.0,
+    min_cluster_size: int = 10,
+) -> Dict[str, Any]: ...
+def match_spikes_omp(
+    data: npt.NDArray[np.float32],
+    templates: List[Any],
+    min_amplitude_scale: float = 0.65,
+    max_amplitude_scale: float = 1.45,
+    min_explained_energy: float = 500.0,
+    max_passes: int = 4,
+    channels: Optional[int] = None,
+) -> List[Dict[str, Any]]: ...
+def decompose_hdemg_cbss(
+    data: npt.NDArray[np.float32],
+    sample_rate_hz: float = 2048.0,
+    extension_factor: int = 8,
+    num_units: int = 4,
+    min_pnr_db: float = 15.0,
+    min_distance_ms: float = 20.0,
+    channels: Optional[int] = None,
+) -> List[Dict[str, Any]]: ...
 def compute_isi(
     spike_samples: List[int],
     sample_rate_hz: float = 30000.0,
     refractory_ms: float = 1.5,
     total_duration_sec: Optional[float] = None,
     min_isi_ms: float = 0.0,
-) -> Dict[str, float]:
-    """ISI violations (SpikeInterface `isi_violations`): total_spikes, violation_count,
-    violation_rate_pct, isi_violations_ratio (Hill), violations_per_sec, firing_rate_hz."""
+) -> Dict[str, float]: ...
 def compute_snr(
-    snippets: List[WaveformSnippet],
-    baseline_noise_uv: float,
+    peak_amplitude_uv: float,
+    noise_std_uv: float,
 ) -> float: ...
 def compute_template(
     snippets: List[WaveformSnippet],
-) -> npt.NDArray[np.float32]: ...
+) -> Optional[Dict[str, Any]]: ...
+def compute_autocorrelogram(
+    spike_samples: List[int],
+    sample_rate_hz: float = 30000.0,
+    bin_size_ms: float = 1.0,
+    window_ms: float = 50.0,
+) -> Dict[str, Any]: ...
+def compute_crosscorrelogram(
+    spike_samples_a: List[int],
+    spike_samples_b: List[int],
+    sample_rate_hz: float = 30000.0,
+    bin_size_ms: float = 1.0,
+    window_ms: float = 50.0,
+) -> Dict[str, Any]: ...
+def compute_firing_rate(
+    spike_samples: List[int],
+    total_duration_sec: float,
+    sample_rate_hz: float = 30000.0,
+    bin_dt_sec: float = 0.01,
+    sigma_ms: float = 25.0,
+) -> Dict[str, Any]: ...
+def compute_psth(
+    spike_samples: List[int],
+    trigger_samples: List[int],
+    sample_rate_hz: float = 30000.0,
+    pre_ms: float = 50.0,
+    post_ms: float = 100.0,
+    bin_ms: float = 2.0,
+    smooth_sigma_ms: float = 0.0,
+) -> Dict[str, Any]: ...
+def compute_sta(
+    data: npt.NDArray[np.float32],
+    trigger_samples: List[int],
+    sample_rate_hz: float = 30000.0,
+    pre_ms: float = 10.0,
+    post_ms: float = 50.0,
+    channels: Optional[int] = None,
+) -> Dict[str, Any]: ...
+def quantify_mep(
+    waveform: npt.NDArray[np.float32],
+    time_ms: List[float],
+    baseline_window_ms: Tuple[float, float] = (-10.0, -1.0),
+    response_window_ms: Tuple[float, float] = (2.0, 45.0),
+    threshold_sd: float = 3.0,
+) -> Dict[str, float]: ...
+def compute_d_prime(
+    cluster_a: npt.NDArray[np.float32],
+    cluster_b: npt.NDArray[np.float32],
+) -> float: ...
+def compute_isolation_distance(
+    features: npt.NDArray[np.float32],
+    labels: List[int],
+    target_unit: int,
+) -> float: ...
+def compute_silhouette_score(
+    features: npt.NDArray[np.float32],
+    labels: List[int],
+    target_unit: int,
+) -> float: ...
+def compute_amplitude_cutoff(amplitudes: List[float]) -> float: ...
+def compute_presence_ratio(
+    spike_samples: List[int],
+    total_samples: int,
+    sample_rate_hz: float = 30000.0,
+    bin_duration_s: float = 60.0,
+    mean_fr_ratio_thresh: float = 0.0,
+) -> float: ...

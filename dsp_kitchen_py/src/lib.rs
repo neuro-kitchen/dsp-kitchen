@@ -20,13 +20,20 @@ use crate::filter::{
     PyHighpassFilter, PyLowpassFilter, PyMedianFilter, PyNotchFilter, PyTeagerKaiser,
     PyTemplateFilter,
 };
-use crate::linalg::PyPca;
+use crate::linalg::{PyFastIca, PyPca, PyPpca};
 use crate::math::{scale_samples, PyClamp, PyScale, PySubtractBaseline};
 use crate::pipeline::{PyDspSession, PyPipeline};
-use crate::spatial::{common_average_reference, PyCommonAverageReference};
+use crate::spatial::{
+    common_average_reference, PyCommonAverageReference, PySpatialWhitening, PySurfaceLaplacian,
+};
 use crate::synapse::{
-    compute_isi, compute_snr, compute_template, deduplicate_spikes, detect_spikes,
-    estimate_noise, extract_snippets, sort_recording, PyDeduplicatedSpike, PyProbeLayout,
+    cluster_density_peaks, cluster_gmm, cluster_isosplit, compute_amplitude_cutoff,
+    compute_autocorrelogram, compute_crosscorrelogram, compute_d_prime, compute_firing_rate,
+    compute_isi, compute_isolation_distance, compute_presence_ratio, compute_psth,
+    compute_silhouette_score, compute_snr, compute_sta, compute_template, correct_drift_kriging,
+    decompose_hdemg_cbss, deduplicate_spikes, detect_spikes, estimate_noise,
+    estimate_nonrigid_drift, estimate_rigid_drift, extract_snippets, localize_spikes,
+    match_spikes_omp, quantify_mep, sort_recording, PyDeduplicatedSpike, PyProbeLayout,
     PySpikeEvent, PyStreamingSortResult, PyWaveformSnippet,
 };
 use crate::synapse_ml::{PyKilosort4BasisEmbedder, PyKilosort4Detector, PyModelHub};
@@ -49,12 +56,16 @@ fn register_bindings(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyLowpassFilter>()?;
     m.add_class::<PyBandstopFilter>()?;
     m.add_class::<PyCommonAverageReference>()?;
+    m.add_class::<PySpatialWhitening>()?;
+    m.add_class::<PySurfaceLaplacian>()?;
     m.add_class::<PyMedianFilter>()?;
     m.add_class::<PyTeagerKaiser>()?;
     m.add_class::<PyTemplateFilter>()?;
     m.add_class::<PyPipeline>()?;
     m.add_class::<PyDspSession>()?;
     m.add_class::<PyPca>()?;
+    m.add_class::<PyPpca>()?;
+    m.add_class::<PyFastIca>()?;
 
     // Pretrained Model Hub & Models (`dsp-synapse-ml`)
     m.add_class::<PyModelHub>()?;
@@ -77,9 +88,29 @@ fn register_bindings(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(deduplicate_spikes, m)?)?;
     m.add_function(wrap_pyfunction!(estimate_noise, m)?)?;
     m.add_function(wrap_pyfunction!(extract_snippets, m)?)?;
+    m.add_function(wrap_pyfunction!(localize_spikes, m)?)?;
+    m.add_function(wrap_pyfunction!(estimate_rigid_drift, m)?)?;
+    m.add_function(wrap_pyfunction!(estimate_nonrigid_drift, m)?)?;
+    m.add_function(wrap_pyfunction!(correct_drift_kriging, m)?)?;
+    m.add_function(wrap_pyfunction!(cluster_gmm, m)?)?;
+    m.add_function(wrap_pyfunction!(cluster_density_peaks, m)?)?;
+    m.add_function(wrap_pyfunction!(cluster_isosplit, m)?)?;
+    m.add_function(wrap_pyfunction!(match_spikes_omp, m)?)?;
+    m.add_function(wrap_pyfunction!(decompose_hdemg_cbss, m)?)?;
     m.add_function(wrap_pyfunction!(compute_isi, m)?)?;
     m.add_function(wrap_pyfunction!(compute_snr, m)?)?;
     m.add_function(wrap_pyfunction!(compute_template, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_autocorrelogram, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_crosscorrelogram, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_firing_rate, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_psth, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_sta, m)?)?;
+    m.add_function(wrap_pyfunction!(quantify_mep, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_d_prime, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_isolation_distance, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_silhouette_score, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_amplitude_cutoff, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_presence_ratio, m)?)?;
 
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())

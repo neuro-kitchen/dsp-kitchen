@@ -1,7 +1,10 @@
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use dsp_core::SensorLayout;
-use dsp_synapse::probe::{neuropixels_1_0, neuropixels_2_0, tetrode, utah_array, find_k_nearest_neighbors};
+use dsp_synapse::probe::{
+    find_k_nearest_neighbors, hdemg_4x8, hdemg_8x8, hdemg_grid, neuropixels_1_0, neuropixels_2_0,
+    tetrode, utah_array,
+};
 
 /// Neural Probe Layout representation for Python (SpikeInterface compatible).
 #[pyclass(name = "ProbeLayout", skip_from_py_object)]
@@ -41,6 +44,30 @@ impl PyProbeLayout {
     }
 
     #[staticmethod]
+    #[pyo3(signature = (pitch_um=8000.0))]
+    pub fn hdemg_4x8(pitch_um: f32) -> Self {
+        Self {
+            inner: hdemg_4x8(pitch_um),
+        }
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (pitch_um=8000.0))]
+    pub fn hdemg_8x8(pitch_um: f32) -> Self {
+        Self {
+            inner: hdemg_8x8(pitch_um),
+        }
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (name, rows, cols, pitch_um=8000.0))]
+    pub fn hdemg_grid(name: &str, rows: usize, cols: usize, pitch_um: f32) -> Self {
+        Self {
+            inner: hdemg_grid(name, rows, cols, pitch_um),
+        }
+    }
+
+    #[staticmethod]
     #[pyo3(signature = (name, positions, shank_ids=None))]
     pub fn from_positions(name: &str, positions: Vec<(f32, f32)>, shank_ids: Option<Vec<usize>>) -> Self {
         let contacts = positions
@@ -66,6 +93,11 @@ impl PyProbeLayout {
     #[getter]
     pub fn name(&self) -> String {
         self.inner.name.clone()
+    }
+
+    #[getter]
+    pub fn num_channels(&self) -> usize {
+        self.inner.total_channels()
     }
 
     #[getter]

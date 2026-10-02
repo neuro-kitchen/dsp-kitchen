@@ -8,7 +8,7 @@ use crate::array::{to_numpy, value_error, F32Array};
 
 use crate::math::{PyScale, PySubtractBaseline, PyClamp};
 use crate::filter::{extract_filter_spec, PyMedianFilter, PyTeagerKaiser};
-use crate::spatial::PyCommonAverageReference;
+use crate::spatial::{PyCommonAverageReference, PySpatialWhitening, PySurfaceLaplacian};
 
 #[pyclass(name = "Pipeline")]
 pub struct PyPipeline {
@@ -50,6 +50,10 @@ impl PyPipeline {
             self.stages.push(PipelineStage::Filter(spec));
         } else if item.is_instance_of::<PyCommonAverageReference>() {
             self.stages.push(PipelineStage::CommonAverageReference);
+        } else if let Ok(whiten) = item.extract::<PyRef<PySpatialWhitening>>() {
+            self.stages.push(PipelineStage::SpatialWhitening(whiten.inner.clone()));
+        } else if let Ok(lap) = item.extract::<PyRef<PySurfaceLaplacian>>() {
+            self.stages.push(PipelineStage::SurfaceLaplacian(lap.inner.clone()));
         } else if item.is_instance_of::<PyMedianFilter>() {
             self.stages.push(PipelineStage::Median9p);
         } else if item.is_instance_of::<PyTeagerKaiser>() {
