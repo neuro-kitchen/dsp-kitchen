@@ -230,26 +230,52 @@ fn fit_gmm_single_k(
     // Precompute precision matrices (Sigma_k^-1) and log determinants
     let mut precisions = vec![0.0f32; k * d * d];
     let mut log_dets = vec![0.0f64; k];
+    let mut log_probs = vec![0.0f64; k];
+    let mut new_mean = vec![0.0f32; d];
+    let mut mask_sum = vec![0.0f32; d];
 
     for _iter in 0..max_iters.max(1) {
-        for c in 0..k {
-            let cov_c = &covariances[c * d * d..(c + 1) * d * d];
-            let (inv_c, ldet) = invert_spd_and_logdet(cov_c, d, reg);
-            precisions[c * d * d..(c + 1) * d * d].copy_from_slice(&inv_c);
-            log_dets[c] = ldet;
+        if cov_kind == GmmCovarianceKind::Diagonal {
+            for c in 0..k {
+                let cov_c = &covariances[c * d * d..(c + 1) * d * d];
+                let prec_c = &mut precisions[c * d * d..(c + 1) * d * d];
+                prec_c.fill(0.0);
+                let mut ldet = 0.0f64;
+                for f in 0..d {
+                    let v = (cov_c[f * d + f]).max(reg);
+                    ldet += (v as f64).ln();
+                    prec_c[f * d + f] = 1.0 / v;
+                }
+                log_dets[c] = ldet;
+            }
+        } else {
+            for c in 0..k {
+                let cov_c = &covariances[c * d * d..(c + 1) * d * d];
+                let (inv_c, ldet) = invert_spd_and_logdet(cov_c, d, reg);
+                precisions[c * d * d..(c + 1) * d * d].copy_from_slice(&inv_c);
+                log_dets[c] = ldet;
+            }
         }
 
         // E-step: evaluate log responsibilities
         let mut total_ll = 0.0f64;
         for i in 0..n {
             let xi = &features[i * d..(i + 1) * d];
-            let mut log_probs = vec![0.0f64; k];
             let mut max_lp = f64::NEG_INFINITY;
 
             for c in 0..k {
                 let mc = &means[c * d..(c + 1) * d];
                 let prec_c = &precisions[c * d * d..(c + 1) * d * d];
-                let d_m2 = quad_form_mahalanobis(xi, mc, prec_c, d);
+                let d_m2 = if cov_kind == GmmCovarianceKind::Diagonal {
+                    let mut sum = 0.0f32;
+                    for f in 0..d {
+                        let diff = xi[f] - mc[f];
+                        sum += diff * diff * prec_c[f * d + f];
+                    }
+                    sum
+                } else {
+                    quad_form_mahalanobis(xi, mc, prec_c, d)
+                };
                 let lp = (weights[c].max(1e-12) as f64).ln() - 0.5 * (ln_2pi_d + log_dets[c] + d_m2 as f64);
                 log_probs[c] = lp;
                 if lp > max_lp {
@@ -285,10 +311,13 @@ fn fit_gmm_single_k(
             let nk_safe = nk.max(1e-8) as f32;
             weights[c] = ((nk / (n as f64)) as f32).clamp(1e-5, 1.0);
 
-            let mut new_mean = vec![0.0f32; d];
-            let mut mask_sum = vec![0.0f32; d];
+            new_mean.fill(0.0);
+            mask_sum.fill(0.0);
             for i in 0..n {
                 let r_ic = responsibilities[i * k + c];
+                if r_ic < 1e-9 {
+                    continue;
+                }
                 let xi = &features[i * d..(i + 1) * d];
                 for f in 0..d {
                     let m_if = if cov_kind == GmmCovarianceKind::Masked {
@@ -303,7 +332,6 @@ fn fit_gmm_single_k(
                 }
             }
             for f in 0..d {
-                // Masked EM shrinks uninformative dimensions toward the zero-mean noise prior
                 means[c * d + f] = new_mean[f] / nk_safe;
             }
 
@@ -311,17 +339,27 @@ fn fit_gmm_single_k(
             let cov_c = &mut covariances[c * d * d..(c + 1) * d * d];
             cov_c.fill(0.0);
 
-            for i in 0..n {
-                let r_ic = responsibilities[i * k + c];
-                if r_ic < 1e-9 {
-                    continue;
-                }
-                let xi = &features[i * d..(i + 1) * d];
-                for r in 0..d {
-                    let dr = xi[r] - mc[r];
-                    if cov_kind == GmmCovarianceKind::Diagonal {
+            if cov_kind == GmmCovarianceKind::Diagonal {
+                for i in 0..n {
+                    let r_ic = responsibilities[i * k + c];
+                    if r_ic < 1e-9 {
+                        continue;
+                    }
+                    let xi = &features[i * d..(i + 1) * d];
+                    for r in 0..d {
+                        let dr = xi[r] - mc[r];
                         cov_c[r * d + r] += r_ic * dr * dr;
-                    } else {
+                    }
+                }
+            } else {
+                for i in 0..n {
+                    let r_ic = responsibilities[i * k + c];
+                    if r_ic < 1e-9 {
+                        continue;
+                    }
+                    let xi = &features[i * d..(i + 1) * d];
+                    for r in 0..d {
+                        let dr = xi[r] - mc[r];
                         for col in r..d {
                             let dc = xi[col] - mc[col];
                             let v = r_ic * dr * dc;
@@ -339,7 +377,6 @@ fn fit_gmm_single_k(
             }
             for f in 0..d {
                 if cov_kind == GmmCovarianceKind::Masked {
-                    // Blend masked dimensions toward unit noise variance 1.0
                     let obs_frac = (mask_sum[f] / nk_safe).clamp(0.0, 1.0);
                     cov_c[f * d + f] = obs_frac * cov_c[f * d + f] + (1.0 - obs_frac) * 1.0 + reg;
                 } else {
@@ -350,11 +387,26 @@ fn fit_gmm_single_k(
     }
 
     // Final hard labels and Mahalanobis distances
-    for c in 0..k {
-        let cov_c = &covariances[c * d * d..(c + 1) * d * d];
-        let (inv_c, ldet) = invert_spd_and_logdet(cov_c, d, reg);
-        precisions[c * d * d..(c + 1) * d * d].copy_from_slice(&inv_c);
-        log_dets[c] = ldet;
+    if cov_kind == GmmCovarianceKind::Diagonal {
+        for c in 0..k {
+            let cov_c = &covariances[c * d * d..(c + 1) * d * d];
+            let prec_c = &mut precisions[c * d * d..(c + 1) * d * d];
+            prec_c.fill(0.0);
+            let mut ldet = 0.0f64;
+            for f in 0..d {
+                let v = cov_c[f * d + f].max(reg);
+                ldet += (v as f64).ln();
+                prec_c[f * d + f] = 1.0 / v;
+            }
+            log_dets[c] = ldet;
+        }
+    } else {
+        for c in 0..k {
+            let cov_c = &covariances[c * d * d..(c + 1) * d * d];
+            let (inv_c, ldet) = invert_spd_and_logdet(cov_c, d, reg);
+            precisions[c * d * d..(c + 1) * d * d].copy_from_slice(&inv_c);
+            log_dets[c] = ldet;
+        }
     }
 
     let mut labels = vec![0i32; n];
@@ -371,7 +423,16 @@ fn fit_gmm_single_k(
         let xi = &features[i * d..(i + 1) * d];
         let mc = &means[best_c * d..(best_c + 1) * d];
         let prec_c = &precisions[best_c * d * d..(best_c + 1) * d * d];
-        let d_m2 = quad_form_mahalanobis(xi, mc, prec_c, d);
+        let d_m2 = if cov_kind == GmmCovarianceKind::Diagonal {
+            let mut sum = 0.0f32;
+            for f in 0..d {
+                let diff = xi[f] - mc[f];
+                sum += diff * diff * prec_c[f * d + f];
+            }
+            sum
+        } else {
+            quad_form_mahalanobis(xi, mc, prec_c, d)
+        };
         mahalanobis_sq[i] = d_m2;
         labels[i] = if let Some(max_d2) = outlier_mahal_sq {
             if d_m2 > max_d2 { -1 } else { best_c as i32 }

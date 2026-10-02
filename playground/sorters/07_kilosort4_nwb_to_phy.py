@@ -40,8 +40,10 @@ def run_kilosort4_nwb_to_phy(
     series: str = "/acquisition/HDEMG",
     output_dir: str = "data/sorters/phy_kilosort4_output",
     start_sec: float = 0.0,
-    duration_sec: float = 5.0,
-    threshold_sigma: float = 4.5,
+    duration_sec: float = 600.0,
+    threshold_sigma: float = 6.5,
+    refractory_ms: float = 2.5,
+    dedup_window_ms: float = 1.5,
     min_clusters: int = 3,
     max_clusters: int = 10,
     ied_mm: float = 4.0,
@@ -60,8 +62,10 @@ def run_kilosort4_nwb_to_phy(
     print(f"  Input NWB Store:    {resolved_nwb}")
     print(f"  Electrical Series:  {series}")
     print(f"  Output Phy2 Folder: {out_path}")
-    print(f"  Window:             [{start_sec:.2f}s .. {start_sec + duration_sec:.2f}s] ({duration_sec:.2f} s)")
+    print(f"  Window:             [{start_sec:.2f}s .. {start_sec + duration_sec:.2f}s] ({duration_sec:.2f} s / {duration_sec/60.0:.1f} min)")
     print(f"  Detection Sigma:    {threshold_sigma:.1f} σ")
+    print(f"  Refractory Period:  {refractory_ms:.1f} ms")
+    print(f"  Dedup Time Window:  {dedup_window_ms:.1f} ms")
     print("-" * 80)
 
     # 1. Open NWB recording
@@ -76,11 +80,14 @@ def run_kilosort4_nwb_to_phy(
     actual_samples = end_sample - start_sample
 
     print(f"[1/8] Opened NWB stream: {n_ch} channels @ {fs:,.2f} Hz ({rec.duration_sec:.1f}s total)")
-    print(f"      Reading slice [{start_sample:,} .. {end_sample:,}] ({actual_samples:,} samples)...")
+    print(f"      Reading slice [{start_sample:,} .. {end_sample:,}] ({actual_samples:,} samples, {actual_samples/fs:.1f}s)...")
 
+    t_read_start = time.perf_counter()
     raw = rec.read(start_sample, end_sample)
     if rec.unit.lower() in ("v", "volts", "volt"):
         raw = raw * 1e6  # Convert to microvolts
+    t_read = time.perf_counter() - t_read_start
+    print(f"      Read complete in {t_read:.2f} s")
 
     # 2. Configure Probe Layout
     if n_ch == 32:
@@ -93,27 +100,48 @@ def run_kilosort4_nwb_to_phy(
         probe = syn.neuropixels_1_0_layout()
         print("[2/8] Configured Neuropixels 1.0 probe layout (384 ch)")
     else:
-        # Linear or 2D fallback probe layout
         coords = [(0.0, float(i) * 50.0) for i in range(n_ch)]
         probe = syn.custom_layout(f"Probe-{n_ch}ch", coords)
         print(f"[2/8] Configured custom {n_ch}-channel probe layout")
 
-    # 3. Filter Recording (Pipeline)
-    print("[3/8] Running pre-processing pipeline (Bandpass 100-2000 Hz + CAR)...")
+    # 3 & 4. Chunked Pre-processing (Pipeline) + Kilosort4 Matched-Filter Detection
+    print(f"[3/8] Running chunked GPU filtering (Bandpass 100-2000 Hz + CAR) & Kilosort4 template matching ({threshold_sigma}σ, refractory={refractory_ms}ms)...")
+    t_pipe_start = time.perf_counter()
     pipe = Pipeline([
         BandpassFilter(low_hz=100.0, high_hz=2000.0, order=4, direction="forward-backward"),
         CommonAverageReference(),
     ])
-    filtered = pipe.run(np.ascontiguousarray(raw, dtype=np.float32), fs=fs)
-
-    # 4. Kilosort4 Matched-Filter Detection
-    print(f"[4/8] Running Kilosort4 universal template matcher (`wTEMP.npy`, threshold = {threshold_sigma}σ)...")
-    refractory_samples = max(int(0.001 * fs), 10)
+    refractory_samples = max(int(refractory_ms * 1e-3 * fs), 10)
     ks4_detector = Kilosort4Detector.from_hub(
         threshold_sigma=float(threshold_sigma),
         refractory_samples=refractory_samples,
     )
-    raw_events = ks4_detector.detect(filtered, sample_rate_hz=fs)
+
+    chunk_sec = 10.0
+    chunk_samples = int(chunk_sec * fs)
+    overlap_samples = 1024
+    filtered = np.empty_like(raw)
+    raw_events = []
+
+    num_chunks = int(np.ceil(actual_samples / chunk_samples))
+    for chunk_idx, start in enumerate(range(0, actual_samples, chunk_samples)):
+        end = min(start + chunk_samples, actual_samples)
+        c_start = max(0, start - overlap_samples)
+        c_end = min(actual_samples, end + overlap_samples)
+        chunk = np.ascontiguousarray(raw[:, c_start:c_end], dtype=np.float32)
+        f_chunk = pipe.run(chunk, fs=fs)
+
+        l_trim = start - c_start
+        r_len = end - start
+        filtered[:, start:end] = f_chunk[:, l_trim:l_trim + r_len]
+
+        trimmed_chunk = np.ascontiguousarray(f_chunk[:, l_trim:l_trim + r_len])
+        evs = ks4_detector.detect(trimmed_chunk, sample_rate_hz=fs)
+        for e in evs:
+            raw_events.append(syn.SpikeEvent(channel_id=e.channel_id, sample_index=e.sample_index + start, peak_amplitude_uv=e.peak_amplitude_uv))
+
+    t_pipe = time.perf_counter() - t_pipe_start
+    print(f"      Processed {num_chunks} chunks ({actual_samples:,} samples) in {t_pipe:.2f} s ({actual_samples / fs / t_pipe:.1f}x real-time)")
     print(f"      Detected {len(raw_events):,} raw template crossings across {n_ch} channels")
 
     if not raw_events:
@@ -121,17 +149,20 @@ def run_kilosort4_nwb_to_phy(
         return out_path
 
     # 5. Spatial Deduplication & Snippet Extraction
-    print("[5/8] Deduplicating events spatially & extracting sinc-aligned waveforms...")
+    print(f"[5/8] Deduplicating events spatially (radius = {ied_mm * 1.5:.1f}mm, window = {dedup_window_ms}ms)...")
+    t_dedup_start = time.perf_counter()
     spatial_radius = max(float(ied_mm * 1500.0), 150.0)
-    window_samples = max(int(0.0008 * fs), 10)
+    window_samples = max(int(dedup_window_ms * 1e-3 * fs), 10)
     dedup_events = syn.deduplicate_spikes(
         raw_events,
         probe,
         radius_um=spatial_radius,
         window_samples=window_samples,
     )
-    print(f"      Retained {len(dedup_events):,} deduplicated spikes")
+    t_dedup = time.perf_counter() - t_dedup_start
+    print(f"      Retained {len(dedup_events):,} deduplicated spikes in {t_dedup:.2f} s")
 
+    t_snip_start = time.perf_counter()
     k_neighbors = min(8, n_ch)
     snippets = syn.extract_snippets(
         filtered,
@@ -142,17 +173,21 @@ def run_kilosort4_nwb_to_phy(
         post_samples=41,
         apply_sinc_shift=True,
     )
-    print(f"      Extracted {len(snippets):,} multi-channel snippets (K={k_neighbors}, T=61 samples)")
+    t_snip = time.perf_counter() - t_snip_start
+    print(f"      Extracted {len(snippets):,} multi-channel snippets (K={k_neighbors}, T=61 samples) in {t_snip:.2f} s")
 
     # 6. Kilosort4 Basis Projection (wPCA)
     print("[6/8] Projecting snippets onto Kilosort4 temporal basis (`wPCA.npy`)...")
+    t_emb_start = time.perf_counter()
     ks4_embedder = Kilosort4BasisEmbedder.from_hub()
     waveforms = np.stack([s.waveform() for s in snippets], axis=0).astype(np.float32)
     features = ks4_embedder.embed(waveforms)
-    print(f"      Feature embedding matrix: {features.shape} [spikes x (K*6)]")
+    t_emb = time.perf_counter() - t_emb_start
+    print(f"      Feature embedding matrix: {features.shape} [spikes x (K*6)] in {t_emb:.2f} s")
 
     # 7. Cluster into Units
     print(f"[7/8] Clustering features via GMM (min_k={min_clusters}, max_k={max_clusters})...")
+    t_clust_start = time.perf_counter()
     cluster_res = dk.cluster_gmm(
         features,
         min_clusters=min_clusters,
@@ -161,7 +196,8 @@ def run_kilosort4_nwb_to_phy(
     )
     labels = cluster_res["labels"]
     num_units = cluster_res["num_clusters"]
-    print(f"      Identified {num_units} distinct units (BIC = {cluster_res['bic']:.1f})")
+    t_clust = time.perf_counter() - t_clust_start
+    print(f"      Identified {num_units} distinct units (BIC = {cluster_res['bic']:.1f}) in {t_clust:.2f} s")
 
     # 8. Build SortingOutput Container
     spike_times = [int(s.center_sample) + start_sample for s in snippets]
@@ -177,6 +213,7 @@ def run_kilosort4_nwb_to_phy(
 
     # 9. Export to Phy2
     print(f"[8/8] Exporting to Phy2 folder at: {out_path}...")
+    t_exp_start = time.perf_counter()
     sorting.export_to_phy(str(out_path))
 
     # Compute unit similarity matrix for Phy2 SimilarityView
@@ -208,6 +245,9 @@ def run_kilosort4_nwb_to_phy(
         int16_dat = np.clip(filtered, -32768, 32767).astype(np.int16)
         # Phy expects column-major / interleaved: [samples, channels]
         int16_dat.T.tofile(dat_file)
+
+    t_exp = time.perf_counter() - t_exp_start
+    print(f"      Export completed in {t_exp:.2f} s")
 
     elapsed = time.perf_counter() - t0
     speedup = duration_sec / elapsed
@@ -270,14 +310,26 @@ def main():
     parser.add_argument(
         "--duration-sec",
         type=float,
-        default=5.0,
-        help="Duration in seconds to sort.",
+        default=600.0,
+        help="Duration in seconds to sort (default: 600.0s = 10 minutes).",
     )
     parser.add_argument(
         "--threshold-sigma",
         type=float,
-        default=4.5,
-        help="Matched-filter detection threshold multiplier.",
+        default=6.5,
+        help="Matched-filter detection threshold multiplier (default: 6.5).",
+    )
+    parser.add_argument(
+        "--refractory-ms",
+        type=float,
+        default=2.5,
+        help="Refractory period in milliseconds for detection (default: 2.5 ms).",
+    )
+    parser.add_argument(
+        "--dedup-window-ms",
+        type=float,
+        default=1.5,
+        help="Temporal window in milliseconds for spatial deduplication (default: 1.5 ms).",
     )
     parser.add_argument(
         "--min-clusters",
@@ -311,6 +363,8 @@ def main():
         start_sec=args.start_sec,
         duration_sec=args.duration_sec,
         threshold_sigma=args.threshold_sigma,
+        refractory_ms=args.refractory_ms,
+        dedup_window_ms=args.dedup_window_ms,
         min_clusters=args.min_clusters,
         max_clusters=args.max_clusters,
         ied_mm=args.ied_mm,
