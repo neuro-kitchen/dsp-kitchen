@@ -17,8 +17,7 @@ dsp-base.workspace = true
 dsp-stream.workspace = true
 cubecl = { workspace = true, features = ["wgpu"] }
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
-[dev-dependencies]
-serde_json.workspace = true
