@@ -10,7 +10,9 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::{AppContext as _, Context, EventEmitter, Task};
 
+use crate::engine::data::summarize::Progress;
 use crate::engine::data::{Dataset, SourceSet, SpikeEventStore};
+use crate::engine::palette::Palette;
 use crate::engine::time::timeline::TimelineState;
 use crate::engine::time::view::parse_channel_ranges;
 use crate::session::Session;
@@ -30,6 +32,10 @@ pub enum AppEvent {
     /// The channel selection of a source changed.
     SelectionChanged(String),
     WorkspaceChanged,
+    /// Plot colours changed (theme or "dark plots"): views redraw.
+    PaletteChanged,
+    /// More of a source's min/max summary is ready (zoomed-out views of it redraw).
+    SummaryProgress(String),
     /// The status line or the recent list changed.
     Status,
 }
@@ -74,6 +80,10 @@ pub struct Store {
     pub render_info: String,
     /// The playback clock while playing.
     clock: Option<Task<()>>,
+    /// The app is drawn dark (the user's choice or the system's).
+    dark: bool,
+    /// Summary progress per source id: (samples summarized, of all).
+    pub summaries: HashMap<String, (u64, u64)>,
 }
 
 impl EventEmitter<AppEvent> for Store {}
@@ -91,7 +101,44 @@ impl Store {
             status: String::new(),
             render_info: String::new(),
             clock: None,
+            dark: true,
+            summaries: HashMap::new(),
         }
+    }
+
+    // ------------------------------------------------------------------------
+    // Theme
+    // ------------------------------------------------------------------------
+
+    /// Plot colours: dark with the dark theme, or when the user keeps plots dark.
+    pub fn palette(&self) -> Palette {
+        Palette::of(self.dark || self.session.dark_plots)
+    }
+
+    /// The theme the app is drawn with now.
+    pub fn set_dark(&mut self, dark: bool, cx: &mut Context<Self>) {
+        let before = self.palette();
+        self.dark = dark;
+        if self.palette() != before {
+            cx.emit(AppEvent::PaletteChanged);
+        }
+    }
+
+    /// The user's theme choice (`None`: follow the system), saved.
+    pub fn set_theme_choice(&mut self, dark: Option<bool>, cx: &mut Context<Self>) {
+        self.session.dark = dark;
+        self.save_session();
+        cx.notify();
+    }
+
+    pub fn set_dark_plots(&mut self, on: bool, cx: &mut Context<Self>) {
+        let before = self.palette();
+        self.session.dark_plots = on;
+        self.save_session();
+        if self.palette() != before {
+            cx.emit(AppEvent::PaletteChanged);
+        }
+        cx.notify();
     }
 
     pub fn sources(&self) -> Option<&Arc<SourceSet>> {
@@ -160,6 +207,7 @@ impl Store {
         self.stop_clock();
         self.timeline = TimelineState::new(recording.sources.extent_sec());
         self.selection = recording.sources.entries().iter().map(|e| (e.id.clone(), (0..e.channels).collect())).collect();
+        self.summaries.clear();
         self.status = format!("Opened {} ({})", recording.name, recording.summary());
         self.recording = Some(recording);
         self.save_session();
@@ -173,6 +221,52 @@ impl Store {
             self.save_session();
             cx.emit(AppEvent::WorkspaceChanged);
         }
+    }
+
+    /// Summarizes `source` in the background (once per recording), nearest `focus_sec` first;
+    /// later calls move the focus to where the views look now.
+    pub fn summarize(&mut self, source: &str, focus_sec: f64, cx: &mut Context<Self>) {
+        let Some(sources) = self.sources().cloned() else { return };
+        let ds = sources.get(source);
+        let focus = ((focus_sec - ds.start_time_sec) * ds.sample_rate).max(0.0) as u64;
+        if self.summaries.contains_key(source) {
+            ds.summarize(focus, Arc::new(|_| {}));
+            return;
+        }
+        if ds.lod().is_some() {
+            return;
+        }
+        self.summaries.insert(source.to_string(), (0, ds.total_samples as u64));
+        let (tx, rx) = async_channel::unbounded::<Progress>();
+        let id = source.to_string();
+        cx.spawn(async move |this, cx| {
+            while let Ok(p) = rx.recv().await {
+                let alive = this.update(cx, |s, cx| {
+                    if let Some(entry) = s.summaries.get_mut(&id) {
+                        *entry = (p.done, p.total);
+                        cx.emit(AppEvent::SummaryProgress(id.clone()));
+                    }
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+        ds.summarize(
+            focus,
+            Arc::new(move |p| {
+                let _ = tx.try_send(p);
+            }),
+        );
+    }
+
+    /// `Summarizing 12 / 45 s` while the default source's summary fills.
+    pub fn summary_label(&self) -> Option<String> {
+        let sources = self.sources()?;
+        let e = sources.default_entry();
+        let &(done, total) = self.summaries.get(&e.id)?;
+        (done < total && e.sample_rate > 0.0).then(|| format!("Summarizing {:.0} / {:.0} s", done as f64 / e.sample_rate, total as f64 / e.sample_rate))
     }
 
     /// Builds the min/max cache files of the recording's sources on background threads; views
