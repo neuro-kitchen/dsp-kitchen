@@ -4,6 +4,8 @@
 
 pub mod axis;
 pub mod canvas;
+pub mod compute;
+pub mod curation;
 pub mod data;
 pub mod palette;
 pub mod render_pool;
