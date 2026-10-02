@@ -1,7 +1,8 @@
 use pyo3::prelude::*;
 use dsp_synapse::detection::{
-    detect_spikes_multichannel, estimate_noise_std, deduplicate_spikes_spatial,
-    SpikeEvent, DeduplicatedSpike,
+    DeduplicatedSpike, SpikeEvent, SpikePolarity, deduplicate_spikes_spatial,
+    detect_spikes_multichannel_polarity, estimate_noise_rms, estimate_noise_std,
+    estimate_noise_trimmed,
 };
 use super::probe::PyProbeLayout;
 use crate::array::F32Array;
@@ -62,18 +63,31 @@ impl PyDeduplicatedSpike {
 }
 
 #[pyfunction]
-#[pyo3(signature = (data, channels=None, threshold_factor=5.0, refractory_samples=30))]
+#[pyo3(signature = (data, channels=None, threshold_factor=5.0, refractory_samples=30, polarity="negative"))]
 pub fn detect_spikes<'py>(
     py: Python<'py>,
     data: Bound<'py, PyAny>,
     channels: Option<usize>,
     threshold_factor: f32,
     refractory_samples: usize,
+    polarity: &str,
 ) -> PyResult<Vec<PySpikeEvent>> {
+    let pol = match polarity.to_ascii_lowercase().as_str() {
+        "negative" | "neg" => SpikePolarity::Negative,
+        "positive" | "pos" => SpikePolarity::Positive,
+        "both" => SpikePolarity::Both,
+        other => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Invalid polarity '{other}'; expected 'negative', 'positive', or 'both'"
+            )))
+        }
+    };
     let input = F32Array::new(&data)?;
     let (ch, samples) = input.channels_samples(channels)?;
     let x = input.slice();
-    let spikes = py.detach(|| detect_spikes_multichannel(x, ch, samples, threshold_factor, refractory_samples));
+    let spikes = py.detach(|| {
+        detect_spikes_multichannel_polarity(x, ch, samples, threshold_factor, refractory_samples, pol)
+    });
     let py_spikes = spikes
         .into_iter()
         .map(|s: SpikeEvent| PySpikeEvent {
@@ -119,13 +133,20 @@ pub fn deduplicate_spikes(
 }
 
 #[pyfunction]
-#[pyo3(signature = (data))]
+#[pyo3(signature = (data, method="mad"))]
 pub fn estimate_noise<'py>(
     py: Python<'py>,
     data: Bound<'py, PyAny>,
+    method: &str,
 ) -> PyResult<f32> {
     let input = F32Array::new(&data)?;
     let x = input.slice();
-    Ok(py.detach(|| estimate_noise_std(x)))
+    match method.to_ascii_lowercase().as_str() {
+        "mad" => Ok(py.detach(|| estimate_noise_std(x))),
+        "rms" => Ok(py.detach(|| estimate_noise_rms(x))),
+        "trimmed" => Ok(py.detach(|| estimate_noise_trimmed(x, 3.0, 3))),
+        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Unknown noise estimation method '{other}'; expected 'mad', 'rms', or 'trimmed'"
+        ))),
+    }
 }
-

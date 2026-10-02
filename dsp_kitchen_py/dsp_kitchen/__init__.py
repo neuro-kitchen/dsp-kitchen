@@ -17,7 +17,9 @@ except ImportError:
 
 from . import _bindings as _dsp_kitchen
 from ._bindings import (
+    FastICA,
     PCA,
+    PPCA,
     BandpassFilter,
     BandstopFilter,
     Clamp,
@@ -36,27 +38,49 @@ from ._bindings import (
     Pipeline,
     ProbeLayout,
     Scale,
+    SpatialWhitening,
     SpikeEvent,
     StreamingSortResult,
     SubtractBaseline,
+    SurfaceLaplacian,
     TeagerKaiser,
     TemplateFilter,
     WaveformSnippet,
     __version__,
     bandpass_filter,
+    cluster_density_peaks,
+    cluster_gmm,
+    cluster_isosplit,
     common_average_reference,
+    compute_amplitude_cutoff,
+    compute_autocorrelogram,
+    compute_crosscorrelogram,
+    compute_d_prime,
+    compute_firing_rate,
     compute_isi,
+    compute_isolation_distance,
+    compute_presence_ratio,
+    compute_psth,
+    compute_silhouette_score,
     compute_snr,
+    compute_sta,
     compute_template,
+    correct_drift_kriging,
+    decompose_hdemg_cbss,
     deduplicate_spikes,
     detect_spikes,
     estimate_noise,
+    estimate_nonrigid_drift,
+    estimate_rigid_drift,
     extract_snippets,
     highpass_filter,
     list_nwb_series,
+    localize_spikes,
     lowpass_filter,
+    match_spikes_omp,
     median_filter_9p,
     notch_filter,
+    quantify_mep,
     scale_samples,
     sort_recording,
     subtract_template,
@@ -75,6 +99,8 @@ neuropixels_1_0_layout = synapse.neuropixels_1_0_layout
 neuropixels_2_0_layout = synapse.neuropixels_2_0_layout
 tetrode_layout = synapse.tetrode_layout
 utah_array_layout = synapse.utah_array_layout
+hdemg_4x8_layout = synapse.hdemg_4x8_layout
+hdemg_8x8_layout = synapse.hdemg_8x8_layout
 
 __all__ = [
     # Submodules
@@ -98,13 +124,14 @@ __all__ = [
     "NwbZarrRecording",
     "DspSession",
     "PCA",
+    "PPCA",
+    "FastICA",
     # Pretrained Model Hub & Models
     "ModelHub",
     "Kilosort4BasisEmbedder",
     "Kilosort4Detector",
     # Stage Classes
     "Scale",
-
     "SubtractBaseline",
     "Clamp",
     "NotchFilter",
@@ -113,6 +140,8 @@ __all__ = [
     "LowpassFilter",
     "BandstopFilter",
     "CommonAverageReference",
+    "SpatialWhitening",
+    "SurfaceLaplacian",
     "MedianFilter",
     "TeagerKaiser",
     "TemplateFilter",
@@ -132,9 +161,29 @@ __all__ = [
     "deduplicate_spikes",
     "estimate_noise",
     "extract_snippets",
+    "localize_spikes",
+    "estimate_rigid_drift",
+    "estimate_nonrigid_drift",
+    "correct_drift_kriging",
+    "cluster_gmm",
+    "cluster_density_peaks",
+    "cluster_isosplit",
+    "match_spikes_omp",
+    "decompose_hdemg_cbss",
     "compute_isi",
     "compute_snr",
     "compute_template",
+    "compute_autocorrelogram",
+    "compute_crosscorrelogram",
+    "compute_firing_rate",
+    "compute_psth",
+    "compute_sta",
+    "quantify_mep",
+    "compute_d_prime",
+    "compute_isolation_distance",
+    "compute_silhouette_score",
+    "compute_amplitude_cutoff",
+    "compute_presence_ratio",
     # Helpers
     "get_local_path",
     "resolve_data_path",
@@ -144,6 +193,8 @@ __all__ = [
     "neuropixels_2_0_layout",
     "tetrode_layout",
     "utah_array_layout",
+    "hdemg_4x8_layout",
+    "hdemg_8x8_layout",
     "__version__",
 ]
 
@@ -153,7 +204,6 @@ def get_local_path() -> Path:
     Returns the dsp-kitchen workspace root directory.
     """
     return Path(__file__).resolve().parent.parent.parent
-
 
 
 def resolve_data_path(rel_or_abs_path: Union[str, Path]) -> Path:

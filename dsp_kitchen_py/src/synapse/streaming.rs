@@ -88,10 +88,12 @@ impl PyStreamingSortResult {
         let (k, s) = (t.num_channels, t.num_samples);
         let mean_arr = to_numpy(py, t.mean.clone(), &[k, s])?;
         let std_arr = to_numpy(py, t.std.clone(), &[k, s])?;
+        let se_arr = to_numpy(py, t.se.clone(), &[k, s])?;
 
         let d = PyDict::new(py);
         d.set_item("mean", mean_arr)?;
         d.set_item("std", std_arr)?;
+        d.set_item("se", se_arr)?;
         d.set_item("num_channels", k)?;
         d.set_item("num_samples", s)?;
         d.set_item(

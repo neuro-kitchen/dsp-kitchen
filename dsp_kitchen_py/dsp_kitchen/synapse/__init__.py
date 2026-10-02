@@ -1,9 +1,11 @@
 """
 Neuroscience-specific algorithms: probe layouts, neural spike detection,
 spatial deduplication, sub-sample sinc realignment, multi-channel snippet extraction,
-out-of-core streaming spike sorting (`sort_recording`), electrophysiology metrics
-(ISI violations, SNR, templates), and `dsp-synapse-ml` deep learning / Burn-ONNX
-external sorter bridges (`synapse.ml`, `synapse.onnx`).
+3D localization, drift estimation & kriging, clustering (GMM, IsoSplit, Density Peaks),
+OMP template deconvolution, HD-EMG cBSS decomposition, out-of-core streaming spike sorting
+(`sort_recording`), electrophysiology metrics (ISI violations, SNR, templates with SE,
+ACG/CCG, Gaussian firing rates, PSTH, STA, MEP), and `dsp-synapse-ml` deep learning /
+Burn-ONNX external sorter bridges (`synapse.ml`, `synapse.onnx`).
 """
 
 from typing import List, Optional, Tuple
@@ -16,13 +18,33 @@ from .._bindings import (
     SpikeEvent,
     StreamingSortResult,
     WaveformSnippet,
+    cluster_density_peaks,
+    cluster_gmm,
+    cluster_isosplit,
+    compute_amplitude_cutoff,
+    compute_autocorrelogram,
+    compute_crosscorrelogram,
+    compute_d_prime,
+    compute_firing_rate,
     compute_isi,
+    compute_isolation_distance,
+    compute_presence_ratio,
+    compute_psth,
+    compute_silhouette_score,
     compute_snr,
+    compute_sta,
     compute_template,
+    correct_drift_kriging,
+    decompose_hdemg_cbss,
     deduplicate_spikes,
     detect_spikes,
     estimate_noise,
+    estimate_nonrigid_drift,
+    estimate_rigid_drift,
     extract_snippets,
+    localize_spikes,
+    match_spikes_omp,
+    quantify_mep,
     sort_recording,
 )
 from . import ml
@@ -48,6 +70,16 @@ def utah_array_layout() -> ProbeLayout:
     return ProbeLayout.utah_array()
 
 
+def hdemg_4x8_layout(ied_mm: float = 4.0) -> ProbeLayout:
+    """Returns a 32-channel (4x8) High-Density Surface EMG grid layout."""
+    return ProbeLayout.hdemg_4x8(ied_mm)
+
+
+def hdemg_8x8_layout(ied_mm: float = 4.0) -> ProbeLayout:
+    """Returns a 64-channel (8x8) High-Density Surface EMG grid layout."""
+    return ProbeLayout.hdemg_8x8(ied_mm)
+
+
 def custom_layout(
     name: str,
     positions: List[Tuple[float, float]],
@@ -71,14 +103,35 @@ __all__ = [
     "deduplicate_spikes",
     "estimate_noise",
     "extract_snippets",
+    "localize_spikes",
+    "estimate_rigid_drift",
+    "estimate_nonrigid_drift",
+    "correct_drift_kriging",
+    "cluster_gmm",
+    "cluster_density_peaks",
+    "cluster_isosplit",
+    "match_spikes_omp",
+    "decompose_hdemg_cbss",
     "compute_isi",
     "compute_snr",
     "compute_template",
+    "compute_autocorrelogram",
+    "compute_crosscorrelogram",
+    "compute_firing_rate",
+    "compute_psth",
+    "compute_sta",
+    "quantify_mep",
+    "compute_d_prime",
+    "compute_isolation_distance",
+    "compute_silhouette_score",
+    "compute_amplitude_cutoff",
+    "compute_presence_ratio",
     "sort_recording",
     "neuropixels_1_0_layout",
     "neuropixels_2_0_layout",
     "tetrode_layout",
     "utah_array_layout",
+    "hdemg_4x8_layout",
+    "hdemg_8x8_layout",
     "custom_layout",
 ]
-
