@@ -103,6 +103,20 @@ impl Dataset {
         self.summary.clone()
     }
 
+    /// Physical sensor site of `channel` when the recording has a probe layout.
+    pub fn site(&self, channel: usize) -> Option<&dsp_core::SensorSite> {
+        self.source.info().layout.as_ref()?.get_site(channel).ok()
+    }
+
+    /// Distinct shank ids in ascending order when the recording has a probe layout.
+    pub fn shanks(&self) -> Vec<usize> {
+        let Some(layout) = &self.source.info().layout else { return Vec::new() };
+        let mut shanks: Vec<usize> = layout.contacts.iter().map(|s| s.shank_id).collect();
+        shanks.sort_unstable();
+        shanks.dedup();
+        shanks
+    }
+
     /// Opens any format `dsp-io` detects (SpikeGLX, IBL `.cbin`, raw binary + JSON sidecar, Zarr).
     #[cfg(test)]
     pub fn open(path: &std::path::Path) -> Result<Self> {
