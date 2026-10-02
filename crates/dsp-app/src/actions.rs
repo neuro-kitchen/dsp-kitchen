@@ -21,6 +21,7 @@ actions!(
         ToggleSettings,
         ToggleTimeline,
         ShowHelp,
+        ShowAbout,
         Quit,
         PlayPause,
         PanBack,

@@ -30,6 +30,7 @@ pub struct DspApp {
     store: Entity<Store>,
     pub explore: Entity<ExploreView>,
     show_help: bool,
+    show_about: bool,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
 }
@@ -55,7 +56,7 @@ impl DspApp {
         ];
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
-        Self { store, explore, show_help: false, focus, _subs: subs }
+        Self { store, explore, show_help: false, show_about: false, focus, _subs: subs }
     }
 
     /// Light, dark, or the system's (`None`); the store learns which, for the plot colours.
@@ -174,10 +175,17 @@ impl DspApp {
         let help = {
             let this = this.clone();
             Button::new("menu-help").ghost().small().label("Help").dropdown_menu(move |menu: PopupMenu, _, _| {
-                let t = this.clone();
+                let (t1, t2) = (this.clone(), this.clone());
                 menu.item(PopupMenuItem::new("Keyboard & mouse").on_click(move |_, _, cx| {
-                    t.update(cx, |a, cx| {
+                    t1.update(cx, |a, cx| {
                         a.show_help = true;
+                        cx.notify();
+                    })
+                }))
+                .separator()
+                .item(PopupMenuItem::new("About DSP App").on_click(move |_, _, cx| {
+                    t2.update(cx, |a, cx| {
+                        a.show_about = true;
                         cx.notify();
                     })
                 }))
@@ -334,6 +342,54 @@ impl DspApp {
                     })))),
             )
     }
+
+    fn about(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = cx.theme();
+        let (muted, bg, border) = (t.muted_foreground, t.popover, t.border);
+        div()
+            .id("about-overlay")
+            .test_support()
+            .absolute()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(gpui_kit::hsla(0., 0., 0., 0.5))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.show_about = false;
+                cx.notify();
+            }))
+            .child(
+                v_flex()
+                    .id("about")
+                    .w(px(440.))
+                    .p_4()
+                    .gap_3()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(border)
+                    .bg(bg)
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("DSP App"))
+                            .child(div().text_xs().text_color(muted).child(format!("v{}", env!("CARGO_PKG_VERSION")))),
+                    )
+                    .child(div().text_sm().text_color(muted).child(
+                        "Electrophysiology workbench built with GPUI and gpui-kit. Explore multi-channel recordings across docked time views and curate spike-sorting results.",
+                    ))
+                    .child(
+                        h_flex()
+                            .justify_end()
+                            .child(Button::new("about-close").outline().small().label("Close").on_click(cx.listener(|this, _, _, cx| {
+                                this.show_about = false;
+                                cx.notify();
+                            }))),
+                    ),
+            )
+    }
 }
 
 impl Render for DspApp {
@@ -357,6 +413,10 @@ impl Render for DspApp {
                 this.show_help = !this.show_help;
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &ShowAbout, _, cx| {
+                this.show_about = !this.show_about;
+                cx.notify();
+            }))
             .on_action(|_: &Quit, _, cx: &mut App| cx.quit())
             // A file or folder dropped anywhere opens it
             .on_drop(move |paths: &ExternalPaths, _, cx| {
@@ -368,6 +428,7 @@ impl Render for DspApp {
             .child(div().flex_1().min_h_0().child(self.body(cx)))
             .child(self.status_bar(cx))
             .when(self.show_help, |d| d.child(self.help(cx)))
+            .when(self.show_about, |d| d.child(self.about(cx)))
     }
 }
 
