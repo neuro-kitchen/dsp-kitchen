@@ -27,14 +27,17 @@ use crate::spatial::{
     common_average_reference, PyCommonAverageReference, PySpatialWhitening, PySurfaceLaplacian,
 };
 use crate::synapse::{
-    cluster_density_peaks, cluster_gmm, cluster_isosplit, compute_amplitude_cutoff,
-    compute_autocorrelogram, compute_crosscorrelogram, compute_d_prime, compute_firing_rate,
-    compute_isi, compute_isolation_distance, compute_presence_ratio, compute_psth,
-    compute_silhouette_score, compute_snr, compute_sta, compute_template, correct_drift_kriging,
-    decompose_hdemg_cbss, deduplicate_spikes, detect_spikes, estimate_noise,
-    estimate_nonrigid_drift, estimate_rigid_drift, extract_snippets, localize_spikes,
-    match_spikes_omp, quantify_mep, sort_recording, PyDeduplicatedSpike, PyProbeLayout,
-    PySpikeEvent, PyStreamingSortResult, PyWaveformSnippet,
+    cluster_density_peaks, cluster_gmm, cluster_isosplit, compare_sortings,
+    compare_spike_trains, compute_amplitude_cutoff, compute_autocorrelogram,
+    compute_crosscorrelogram, compute_d_prime, compute_firing_rate, compute_isi,
+    compute_isolation_distance, compute_presence_ratio, compute_psth,
+    compute_silhouette_score, compute_snr, compute_sta, compute_template,
+    correct_drift_kriging, decompose_hdemg_cbss, deduplicate_spikes, detect_spikes,
+    estimate_noise, estimate_nonrigid_drift, estimate_rigid_drift, export_to_phy,
+    extract_snippets, load_nwb_units, load_sorting, localize_spikes, match_spikes_omp,
+    quantify_mep, read_kilosort, save_nwb_units, save_sorting, sort_recording,
+    PyDeduplicatedSpike, PyProbeLayout, PySortingOutput, PySpikeEvent,
+    PyStreamingSortResult, PyWaveformSnippet,
 };
 use crate::synapse_ml::{PyKilosort4BasisEmbedder, PyKilosort4Detector, PyModelHub};
 
@@ -45,6 +48,7 @@ fn register_bindings(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDeduplicatedSpike>()?;
     m.add_class::<PyWaveformSnippet>()?;
     m.add_class::<PyStreamingSortResult>()?;
+    m.add_class::<PySortingOutput>()?;
     m.add_class::<PyMmapRecording>()?;
     m.add_class::<PyNwbZarrRecording>()?;
     m.add_class::<PyScale>()?;
@@ -111,6 +115,14 @@ fn register_bindings(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compute_silhouette_score, m)?)?;
     m.add_function(wrap_pyfunction!(compute_amplitude_cutoff, m)?)?;
     m.add_function(wrap_pyfunction!(compute_presence_ratio, m)?)?;
+    m.add_function(wrap_pyfunction!(save_sorting, m)?)?;
+    m.add_function(wrap_pyfunction!(load_sorting, m)?)?;
+    m.add_function(wrap_pyfunction!(export_to_phy, m)?)?;
+    m.add_function(wrap_pyfunction!(read_kilosort, m)?)?;
+    m.add_function(wrap_pyfunction!(save_nwb_units, m)?)?;
+    m.add_function(wrap_pyfunction!(load_nwb_units, m)?)?;
+    m.add_function(wrap_pyfunction!(compare_sortings, m)?)?;
+    m.add_function(wrap_pyfunction!(compare_spike_trains, m)?)?;
 
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())

@@ -115,6 +115,19 @@ impl PyStreamingSortResult {
         Ok(out)
     }
 
+    /// Converts the streaming result into a format-agnostic `SortingOutput` container.
+    #[pyo3(signature = (sorter_name=None, probe=None))]
+    pub fn to_sorting_output(
+        &self,
+        sorter_name: Option<String>,
+        probe: Option<PyRef<'_, PyProbeLayout>>,
+    ) -> super::storage::PySortingOutput {
+        let name = sorter_name.unwrap_or_else(|| "synapse_streaming".to_string());
+        let probe_inner = probe.map(|p| p.inner.clone());
+        let sorting = self.inner.to_sorting_output(name, probe_inner);
+        super::storage::PySortingOutput::new(sorting)
+    }
+
     fn __repr__(&self) -> String {
         let active = self
             .inner

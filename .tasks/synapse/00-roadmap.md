@@ -159,7 +159,7 @@ crates/dsp-synapse/src/
 - [x] **[Task 06: `dsp_kitchen_py` Bindings Expansion & End-to-End Benchmarks](06-python-bindings-and-validation.md)**
 - [x] **[Task 07: `SortingOutput` Container & Sorter-to-Sorter Comparison Metrics](07-sorting-output-and-comparison.md)**
 - [x] **[Task 08: Sorter Output Persistence — Phy/Kilosort (`.npy`/`.tsv`), Zarr Analyzer (`.sorting.zarr`), and NWB `/units`](08-sorting-storage-phy-zarr-nwb.md)**
-- [ ] **[Task 09: `dsp_kitchen_py` Storage & Sorter Comparison Bindings](09-python-storage-and-comparison-bindings.md)**
+- [x] **[Task 09: `dsp_kitchen_py` Storage & Sorter Comparison Bindings](09-python-storage-and-comparison-bindings.md)**
 
 Order: 02 → 01 → 03 → 04 → 05 → 06 → 07 → 08 → 09.
 

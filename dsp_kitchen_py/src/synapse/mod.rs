@@ -1,11 +1,14 @@
+pub mod comparison;
 pub mod detection;
 pub mod extraction;
 pub mod metrics;
 pub mod probe;
 pub mod sorting;
 pub mod spatial;
+pub mod storage;
 pub mod streaming;
 
+pub use comparison::{compare_sortings, compare_spike_trains};
 pub use detection::{
     deduplicate_spikes, detect_spikes, estimate_noise, PyDeduplicatedSpike, PySpikeEvent,
 };
@@ -23,4 +26,9 @@ pub use sorting::{
 pub use spatial::{
     correct_drift_kriging, estimate_nonrigid_drift, estimate_rigid_drift, localize_spikes,
 };
+pub use storage::{
+    export_to_phy, load_nwb_units, load_sorting, read_kilosort, save_nwb_units, save_sorting,
+    PySortingOutput,
+};
 pub use streaming::{sort_recording, PyStreamingSortResult};
+
