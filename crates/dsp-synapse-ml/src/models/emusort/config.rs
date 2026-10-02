@@ -1,10 +1,10 @@
-//! Myomatrix and EMUsort configuration presets and parameters.
+//! EMUsort and Myomatrix configuration presets and parameters.
 
 use serde::{Deserialize, Serialize};
 
-/// Supported Myomatrix electrode array geometries.
+/// Supported EMUsort / Myomatrix electrode array geometries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MyomatrixProbeKind {
+pub enum EmusortProbeKind {
     /// 8-channel flexible intramuscular thread (e.g. 1 shank, 8 contacts).
     Thread8,
     /// 32-channel high-density surface/intramuscular grid (e.g. 4x8 array, 4.0 mm pitch).
@@ -15,9 +15,9 @@ pub enum MyomatrixProbeKind {
     Custom,
 }
 
-/// Specialized configuration parameters for Myomatrix / EMUsort spike sorting.
+/// Specialized configuration parameters for EMUsort / Myomatrix spike sorting.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MyomatrixSortConfig {
+pub struct EmusortSortConfig {
     /// Number of temporal samples per template/snippet (typically 128..151 samples, default 150).
     pub template_samples: usize,
     /// Detection threshold in units of estimated noise standard deviations (default: 6.5σ).
@@ -39,10 +39,10 @@ pub struct MyomatrixSortConfig {
     /// Maximum number of clusters to evaluate for GMM/decomposition (default: 10).
     pub max_clusters: usize,
     /// Electrode probe geometry category.
-    pub probe_kind: MyomatrixProbeKind,
+    pub probe_kind: EmusortProbeKind,
 }
 
-impl Default for MyomatrixSortConfig {
+impl Default for EmusortSortConfig {
     fn default() -> Self {
         Self {
             template_samples: 150,
@@ -55,16 +55,16 @@ impl Default for MyomatrixSortConfig {
             num_temporal_pcs: 12,
             min_clusters: 3,
             max_clusters: 10,
-            probe_kind: MyomatrixProbeKind::Grid32,
+            probe_kind: EmusortProbeKind::Grid32,
         }
     }
 }
 
-impl MyomatrixSortConfig {
+impl EmusortSortConfig {
     /// Preset configuration optimized for 32-channel Myomatrix / HD-EMG grids (4x8, pitch 4.0 mm).
     pub fn preset_32ch_grid() -> Self {
         Self {
-            probe_kind: MyomatrixProbeKind::Grid32,
+            probe_kind: EmusortProbeKind::Grid32,
             spatial_radius_um: 6000.0,
             ..Self::default()
         }
@@ -73,7 +73,7 @@ impl MyomatrixSortConfig {
     /// Preset configuration optimized for 64-channel Myomatrix grids (8x8).
     pub fn preset_64ch_grid() -> Self {
         Self {
-            probe_kind: MyomatrixProbeKind::Grid64,
+            probe_kind: EmusortProbeKind::Grid64,
             spatial_radius_um: 6000.0,
             max_clusters: 16,
             ..Self::default()
@@ -83,10 +83,15 @@ impl MyomatrixSortConfig {
     /// Preset configuration optimized for 8-channel Myomatrix single-thread intramuscular arrays.
     pub fn preset_8ch_thread() -> Self {
         Self {
-            probe_kind: MyomatrixProbeKind::Thread8,
+            probe_kind: EmusortProbeKind::Thread8,
             spatial_radius_um: 1500.0,
             max_clusters: 6,
             ..Self::default()
         }
     }
 }
+
+/// Backward-compatible type alias for [`EmusortProbeKind`].
+pub type MyomatrixProbeKind = EmusortProbeKind;
+/// Backward-compatible type alias for [`EmusortSortConfig`].
+pub type MyomatrixSortConfig = EmusortSortConfig;

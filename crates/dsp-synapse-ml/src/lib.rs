@@ -14,11 +14,13 @@ pub use hub::{
 pub use models::{
     DARTSORT_DENOISER_MODEL_ID, DARTSORT_VAE_MODEL_ID, DartsortVaeEmbedder,
     DartsortWaveformDenoiser, DEFAULT_MUAP_BASIS_COMPONENTS, DEFAULT_MUAP_BASIS_WINDOW_LEN,
-    DEFAULT_MUAP_WINDOW_LEN, KILOSORT4_BASIS_MODEL_ID, KILOSORT4_TEMPLATES_MODEL_ID,
-    Kilosort4BasisEmbedder, Kilosort4Detector, Kilosort4TemplateMatcher,
-    MYOMATRIX_BASIS_MODEL_ID, MYOMATRIX_TEMPLATES_MODEL_ID, MyomatrixBasisEmbedder,
-    MyomatrixDetector, MyomatrixLatencyAligner, MyomatrixProbeKind, MyomatrixSortConfig,
-    MyomatrixTemplateMatcher, SPIKENET2_IED_MODEL_ID, SpikeNet2Detector,
+    DEFAULT_MUAP_WINDOW_LEN, EMUSORT_BASIS_MODEL_ID, EMUSORT_TEMPLATES_MODEL_ID,
+    EmusortBasisEmbedder, EmusortDetector, EmusortLatencyAligner, EmusortProbeKind,
+    EmusortSortConfig, EmusortTemplateMatcher, KILOSORT4_BASIS_MODEL_ID,
+    KILOSORT4_TEMPLATES_MODEL_ID, Kilosort4BasisEmbedder, Kilosort4Detector,
+    Kilosort4TemplateMatcher, MYOMATRIX_BASIS_MODEL_ID, MYOMATRIX_TEMPLATES_MODEL_ID,
+    MyomatrixBasisEmbedder, MyomatrixDetector, MyomatrixLatencyAligner, MyomatrixProbeKind,
+    MyomatrixSortConfig, MyomatrixTemplateMatcher, SPIKENET2_IED_MODEL_ID, SpikeNet2Detector,
     UNITREFINE_BOMBCELL_MODEL_ID, UNITREFINE_CURATION_MODEL_ID, UnitCurationResult,
     UnitRefineClassifier,
 };

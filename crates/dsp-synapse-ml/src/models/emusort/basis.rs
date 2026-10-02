@@ -1,4 +1,4 @@
-//! Myomatrix 12-PC spatiotemporal muscle basis embedder (`wPCA_EMG`).
+//! EMUsort / Myomatrix 12-PC spatiotemporal muscle basis embedder (`wPCA_EMG`).
 
 use std::path::{Path, PathBuf};
 
@@ -10,13 +10,14 @@ use crate::runtime::{
     ProjectBasisTask, ReconstructBasisTask, default_compute_target, run_on_target,
 };
 
-pub const MYOMATRIX_BASIS_MODEL_ID: &str = "myomatrix/temporal-basis-150-12pc-v1";
+pub const EMUSORT_BASIS_MODEL_ID: &str = "emusort/temporal-basis-150-12pc-v1";
+pub const MYOMATRIX_BASIS_MODEL_ID: &str = EMUSORT_BASIS_MODEL_ID;
 pub const DEFAULT_MUAP_BASIS_COMPONENTS: usize = 12;
 pub const DEFAULT_MUAP_BASIS_WINDOW_LEN: usize = 150;
 
-/// Pretrained or canonical Myomatrix 12-component orthonormal temporal muscle basis.
+/// Pretrained or canonical EMUsort 12-component orthonormal temporal muscle basis.
 #[derive(Debug, Clone)]
-pub struct MyomatrixBasisEmbedder {
+pub struct EmusortBasisEmbedder {
     /// Row-major `[num_components, window_len]` orthonormal temporal basis.
     basis: Vec<f32>,
     num_components: usize,
@@ -25,7 +26,7 @@ pub struct MyomatrixBasisEmbedder {
     target: ComputeTarget,
 }
 
-impl MyomatrixBasisEmbedder {
+impl EmusortBasisEmbedder {
     /// Creates a canonical 150-sample, 12-component orthonormal muscle basis without disk dependencies.
     pub fn from_canonical(target: Option<ComputeTarget>) -> DspResult<Self> {
         let num_components = DEFAULT_MUAP_BASIS_COMPONENTS;
@@ -221,12 +222,12 @@ impl MyomatrixBasisEmbedder {
     }
 }
 
-impl FeatureEmbedder for MyomatrixBasisEmbedder {
+impl FeatureEmbedder for EmusortBasisEmbedder {
     fn embed(&self, batch: &SnippetBatch) -> DspResult<(Vec<f32>, usize)> {
         let [n, k, t] = batch.shape();
         if t != self.window_len {
             return Err(DspError::Model(format!(
-                "MyomatrixBasisEmbedder expects snippet window_len {}, got {}",
+                "EmusortBasisEmbedder expects snippet window_len {}, got {}",
                 self.window_len, t
             )));
         }
@@ -250,3 +251,6 @@ impl FeatureEmbedder for MyomatrixBasisEmbedder {
         Ok((coeffs, embed_dim))
     }
 }
+
+/// Backward-compatible type alias for [`EmusortBasisEmbedder`].
+pub type MyomatrixBasisEmbedder = EmusortBasisEmbedder;
