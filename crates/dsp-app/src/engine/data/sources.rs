@@ -14,6 +14,10 @@ use super::dataset::Dataset;
 /// frames over the same region decode each chunk once.
 const CHUNK_CACHE_BYTES: usize = 128 << 20;
 
+/// Recordings at least this large automatically build their persistent min/max cache file in the
+/// background when opened.
+const AUTO_LOD_BYTES: u64 = 64 << 20;
+
 pub struct SourceSet {
     path: Option<PathBuf>,
     entries: Vec<SourceEntry>,
@@ -32,6 +36,10 @@ impl SourceSet {
         let set = Self { path: Some(path.to_path_buf()), opened: Mutex::new(vec![None; entries.len()]), entries, default, build_caches: AtomicBool::new(false) };
         set.load(default)?;
         Ok(set)
+    }
+
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
     }
 
     /// A single in-memory or procedural recording.
@@ -88,10 +96,11 @@ impl SourceSet {
         }
         let path = self.path.as_deref().context("in-memory source set has one source")?;
         let rec = dsp_io::open_source(path, &self.entries[i].id).with_context(|| format!("Failed to open source {}", self.entries[i].name))?;
+        let large = rec.info().data_bytes() >= AUTO_LOD_BYTES;
         let mut ds = Dataset::new(Arc::from(CachedRecording::wrap(rec, CHUNK_CACHE_BYTES)));
         ds.unit = self.entries[i].unit.clone();
         ds.open_lod(path, &self.entries[i].id);
-        if self.build_caches.load(Ordering::Relaxed) {
+        if self.build_caches.load(Ordering::Relaxed) || large {
             ds.build_lod(self.recording(i));
         }
         let ds = Arc::new(ds);

@@ -69,6 +69,9 @@ pub struct TimeView {
     /// temperature or an electrode's DC level would otherwise dominate the auto-scale).
     #[serde(default = "yes")]
     pub remove_dc: bool,
+    /// Keep this view's own channel selection instead of following the source's shared selection.
+    #[serde(default)]
+    pub pinned_selection: bool,
     /// Units that fill a lane at gain 1: reported by the renderer (auto-scale) or nominal.
     #[serde(skip, default = "nominal")]
     pub amp_scale: f32,
@@ -121,6 +124,7 @@ impl TimeView {
             source_name: String::new(),
             auto_scale: true,
             remove_dc: true,
+            pinned_selection: false,
             amp_scale: NOMINAL_UV,
             unit: micro(),
             canvas_width: 0,
@@ -241,7 +245,6 @@ impl TimeView {
     }
 
     /// Toggles one channel; added channels keep ascending channel order.
-    #[cfg(test)]
     pub fn toggle_channel(&mut self, ch: usize, total: usize) {
         if let Some(i) = self.selection.iter().position(|&c| c == ch) {
             self.selection.remove(i);
@@ -314,7 +317,7 @@ impl TimeView {
                     .map(|(row, &ch)| LaneLabel {
                         label: format!("{ch}"),
                         color: palette.text,
-                        y_frac: (row as f32 + 0.5) / n,
+                        y_frac: ((row as f32 + 0.5) / n).clamp(0.03, 0.97),
                     })
                     .collect()
             }
