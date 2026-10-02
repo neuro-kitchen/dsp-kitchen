@@ -4,17 +4,18 @@
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use slint::Rgba8Pixel;
 use dsp_core::RecordingSource;
 use dsp_base::resampler::{MinMaxCache, MinMaxSummary};
 
-use crate::data::{Dataset, SpikeEventStore};
-use crate::shared::axis::nice_step;
-use crate::shared::dock::ViewId;
-use crate::shared::workspace::DockView;
+use crate::engine::axis::nice_step;
+use crate::engine::canvas::Pixel;
+use crate::engine::data::{Dataset, SpikeEventStore};
 
 use super::renderer::{px_per_unit, scale_bar_value, RenderRequest, TimeViewKind, CHANNEL_COLORS, NOMINAL_UV};
 use super::timeline::TimelineState;
+
+/// Identifies a view for as long as the app runs (also its render key).
+pub type ViewId = u64;
 
 /// A labelled position on the time axis.
 #[derive(Debug, Clone, PartialEq)]
@@ -29,12 +30,12 @@ pub struct AxisTick {
 #[derive(Debug, Clone, PartialEq)]
 pub struct LaneLabel {
     pub label: String,
-    pub color: Rgba8Pixel,
+    pub color: Pixel,
     /// Vertical center as a fraction of the plot height.
     pub y_frac: f32,
 }
 
-const LABEL_GRAY: Rgba8Pixel = Rgba8Pixel { r: 139, g: 148, b: 158, a: 255 };
+const LABEL_GRAY: Pixel = Pixel::rgb(139, 148, 158);
 
 /// See [`TimeView::hover_target`].
 #[derive(Debug, Clone, PartialEq)]
@@ -104,18 +105,6 @@ fn nominal() -> f32 {
 }
 fn micro() -> String {
     "µV".into()
-}
-
-impl DockView for TimeView {
-    fn id(&self) -> ViewId {
-        self.id
-    }
-    fn set_canvas(&mut self, width: u32, height: u32, scale: f32) {
-        TimeView::set_canvas(self, width, height, scale);
-    }
-    fn mark_dirty(&mut self) {
-        self.needs_render = true;
-    }
 }
 
 impl TimeView {
@@ -252,6 +241,7 @@ impl TimeView {
     }
 
     /// Toggles one channel; added channels keep ascending channel order.
+    #[cfg(test)]
     pub fn toggle_channel(&mut self, ch: usize, total: usize) {
         if let Some(i) = self.selection.iter().position(|&c| c == ch) {
             self.selection.remove(i);
@@ -392,7 +382,7 @@ impl TimeView {
         lod: Option<Arc<MinMaxCache>>,
         summary: Option<Arc<MinMaxSummary>>,
         events: Arc<SpikeEventStore>,
-        highlights: Vec<(Rgba8Pixel, Vec<(f64, usize)>)>,
+        highlights: Vec<(Pixel, Vec<(f64, usize)>)>,
     ) -> RenderRequest {
         let start_time_sec = source.info().start_time_sec;
         RenderRequest {

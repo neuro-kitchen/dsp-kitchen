@@ -57,6 +57,7 @@ impl TimelineState {
     }
 
     /// Scrubs to a normalized ratio [0.0, 1.0] along the timeline ruler.
+    #[cfg(test)]
     pub fn scrub_ratio(&mut self, ratio: f64) {
         let t = ratio.clamp(0.0, 1.0) * self.total_duration_sec;
         self.scrub_to(t);
@@ -85,6 +86,7 @@ impl TimelineState {
     }
 
     /// Adjusts visible window duration (zoom in / out in time).
+    #[cfg(test)]
     pub fn set_window_duration(&mut self, dur_sec: f64) {
         self.visible_window_sec = dur_sec.clamp(0.005, self.total_duration_sec);
         self.follow_playhead();

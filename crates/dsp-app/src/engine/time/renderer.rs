@@ -1,7 +1,8 @@
 //! Waveform rasterizer for the plot area.
 //!
 //! Draws only the plot itself (traces or heatmap, grid, spike ticks, scale bar); all text
-//! (channel labels, time axis, readouts) is laid out by Slint around and over the image.
+//! (channel labels, time axis, readouts), the playhead and the cursor are elements the view lays
+//! out around and over the image.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -11,30 +12,29 @@ use dsp_base::resampler::minmax::{finish, fold_block, Block, Columns, EMPTY};
 use dsp_base::resampler::summary::BASE as SUMMARY_BASE;
 use dsp_base::resampler::{min_max_decimate_into, MinMaxCache, MinMaxSummary};
 use dsp_core::{MemoryOrder, RecordingSource};
-use slint::{Rgba8Pixel, SharedPixelBuffer};
 
-use crate::data::SpikeEventStore;
-use crate::shared::canvas::{blend_color, Canvas};
-use crate::shared::axis::nice_step;
-use crate::shared::render_worker::{RenderContext, Rendered};
+use crate::engine::axis::nice_step;
+use crate::engine::canvas::{Canvas, Frame, Pixel};
+use crate::engine::data::SpikeEventStore;
+use crate::engine::render_pool::{RenderContext, Rendered};
 
 /// Palette for multi-channel visualization (vibrant, modern dark-theme colors)
-pub const CHANNEL_COLORS: [Rgba8Pixel; 8] = [
-    Rgba8Pixel { r: 56,  g: 189, b: 248, a: 255 }, // Cyan #38bdf8
-    Rgba8Pixel { r: 52,  g: 211, b: 153, a: 255 }, // Emerald #34d399
-    Rgba8Pixel { r: 168, g: 85,  b: 247, a: 255 }, // Purple #a855f7
-    Rgba8Pixel { r: 251, g: 191, b: 36,  a: 255 }, // Amber #fbbf24
-    Rgba8Pixel { r: 244, g: 63,  b: 94,  a: 255 }, // Rose #f43f5e
-    Rgba8Pixel { r: 96,  g: 165, b: 250, a: 255 }, // Blue #60a5fa
-    Rgba8Pixel { r: 249, g: 115, b: 22,  a: 255 }, // Orange #f97316
-    Rgba8Pixel { r: 45,  g: 212, b: 191, a: 255 }, // Teal #2dd4bf
+pub const CHANNEL_COLORS: [Pixel; 8] = [
+    Pixel::rgb(56, 189, 248), // Cyan #38bdf8
+    Pixel::rgb(52, 211, 153), // Emerald #34d399
+    Pixel::rgb(168, 85, 247), // Purple #a855f7
+    Pixel::rgb(251, 191, 36), // Amber #fbbf24
+    Pixel::rgb(244, 63, 94), // Rose #f43f5e
+    Pixel::rgb(96, 165, 250), // Blue #60a5fa
+    Pixel::rgb(249, 115, 22), // Orange #f97316
+    Pixel::rgb(45, 212, 191), // Teal #2dd4bf
 ];
 
-const BG_COLOR: Rgba8Pixel = Rgba8Pixel { r: 9,  g: 13, b: 19, a: 255 }; // Deep dark #090d13
-const GRID_COLOR: Rgba8Pixel = Rgba8Pixel { r: 22, g: 27, b: 34, a: 255 }; // Grid line #161b22
-const BASELINE_COLOR: Rgba8Pixel = Rgba8Pixel { r: 33, g: 38, b: 45, a: 255 }; // Baseline #21262d
-const TEXT_COLOR: Rgba8Pixel = Rgba8Pixel { r: 139, g: 148, b: 158, a: 255 }; // Gray text #8b949e
-const SPIKE_MARKER_COLOR: Rgba8Pixel = Rgba8Pixel { r: 250, g: 204, b: 21, a: 255 }; // Gold #facc15
+const BG_COLOR: Pixel = Pixel::rgb(9, 13, 19); // Deep dark #090d13
+const GRID_COLOR: Pixel = Pixel::rgb(22, 27, 34); // Grid line #161b22
+const BASELINE_COLOR: Pixel = Pixel::rgb(33, 38, 45); // Baseline #21262d
+const TEXT_COLOR: Pixel = Pixel::rgb(139, 148, 158); // Gray text #8b949e
+const SPIKE_MARKER_COLOR: Pixel = Pixel::rgb(250, 204, 21); // Gold #facc15
 
 /// Amplitude (µV) that maps to `LANE_FILL` of a lane's half-height at gain 1x, when a view is
 /// not auto-scaled.
@@ -91,7 +91,7 @@ pub struct RenderRequest {
     /// Draw the amplitude scale bar (traces).
     pub scale_bar: bool,
     /// Sorted spikes to mark in a cluster color: (color, [(time_sec, channel)]).
-    pub highlights: Vec<(Rgba8Pixel, Vec<(f64, usize)>)>,
+    pub highlights: Vec<(Pixel, Vec<(f64, usize)>)>,
 }
 
 thread_local! {
@@ -176,7 +176,7 @@ pub fn scale_bar_value(lane_h: f32, k: f32) -> f32 {
 /// Auto-scale: the previous scale while the visible amplitude stays within 50–125 % of it,
 /// else the new amplitude.
 fn choose_scale(amplitude: f32, hint: f32) -> f32 {
-    if !(amplitude > 0.0) || !amplitude.is_finite() {
+    if amplitude.is_nan() || amplitude <= 0.0 || !amplitude.is_finite() {
         return if hint > 0.0 { hint } else { NOMINAL_UV };
     }
     if hint > 0.0 && amplitude >= 0.5 * hint && amplitude <= 1.25 * hint { hint } else { amplitude }
@@ -203,22 +203,18 @@ pub struct WaveformRenderer {
 
 impl WaveformRenderer {
     #[cfg(test)]
-    pub fn render(&mut self, req: &RenderRequest) -> SharedPixelBuffer<Rgba8Pixel> {
+    pub fn render(&mut self, req: &RenderRequest) -> Frame {
         self.render_scaled(req).0
     }
 
     /// Renders and returns the amplitude scale used (units filling a lane at gain 1). Zoomed out,
     /// columns come from the cache file or the summary (pages not summarized draw empty).
-    pub fn render_scaled(&mut self, req: &RenderRequest) -> (SharedPixelBuffer<Rgba8Pixel>, f32) {
+    pub fn render_scaled(&mut self, req: &RenderRequest) -> (Frame, f32) {
         let source = req.source.as_ref();
         let width = req.width.max(1);
         let height = req.height.max(1);
-        let mut pixel_buffer = SharedPixelBuffer::<Rgba8Pixel>::new(width, height);
-        let mut canvas = Canvas {
-            pixels: pixel_buffer.make_mut_slice(),
-            width: width as usize,
-            height: height as usize,
-        };
+        let mut pixel_buffer = Frame::new(width, height);
+        let mut canvas = pixel_buffer.canvas();
         canvas.pixels.fill(BG_COLOR);
 
         let Some((start, end, x0, x1)) = visible(req) else {
@@ -528,34 +524,8 @@ impl WaveformRenderer {
     }
 }
 
-/// Draws the timeline overview strip: one bar per column, height = normalized spike density.
-pub fn render_overview(width: u32, height: u32, density: &[f32]) -> SharedPixelBuffer<Rgba8Pixel> {
-    const STRIP_BG: Rgba8Pixel = Rgba8Pixel { r: 13, g: 17, b: 23, a: 255 }; // #0d1117
-    const BAR: Rgba8Pixel = Rgba8Pixel { r: 121, g: 192, b: 255, a: 255 }; // #79c0ff
-    let (w, h) = (width.max(1), height.max(1));
-    let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(w, h);
-    let mut canvas = Canvas { pixels: buffer.make_mut_slice(), width: w as usize, height: h as usize };
-    canvas.pixels.fill(STRIP_BG);
-
-    let bins = density.len();
-    if bins == 0 {
-        return buffer;
-    }
-    for x in 0..canvas.width {
-        let d = density[(x * bins / canvas.width).min(bins - 1)];
-        if d <= 0.0 {
-            continue;
-        }
-        let bar = d * canvas.height as f32;
-        let top = canvas.height as f32 - bar;
-        // Brighter where denser, anti-aliased top edge
-        canvas.span_aa(x, top, canvas.height as f32, blend_color(STRIP_BG, BAR, 0.35 + 0.45 * d));
-    }
-    buffer
-}
-
 /// Dark-to-bright sequential colormap (navy → violet → orange → yellow).
-fn heat_color(v: f32) -> Rgba8Pixel {
+fn heat_color(v: f32) -> Pixel {
     const STOPS: [(f32, [f32; 3]); 5] = [
         (0.00, [9.0, 13.0, 19.0]),
         (0.25, [49.0, 36.0, 110.0]),
@@ -569,13 +539,13 @@ fn heat_color(v: f32) -> Rgba8Pixel {
     let (t1, c1) = STOPS[i];
     let f = (v - t0) / (t1 - t0);
     let mix = |j: usize| (c0[j] + (c1[j] - c0[j]) * f) as u8;
-    Rgba8Pixel { r: mix(0), g: mix(1), b: mix(2), a: 255 }
+    Pixel::rgb(mix(0), mix(1), mix(2))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::Dataset;
+    use crate::engine::data::Dataset;
 
     /// Request for `mode` over `ds`: traces show the first 4 channels, heatmap every channel.
     fn request(ds: Dataset, mode: TimeViewKind) -> RenderRequest {
@@ -603,7 +573,7 @@ mod tests {
             scale_hint: 0.0,
             grid_times: vec![0.05],
             scale_bar: true,
-            highlights: vec![(Rgba8Pixel { r: 255, g: 0, b: 0, a: 255 }, vec![(0.05, 0)])],
+            highlights: vec![(Pixel::rgb(255, 0, 0), vec![(0.05, 0)])],
         }
     }
 
@@ -613,9 +583,9 @@ mod tests {
         for mode in [TimeViewKind::Traces, TimeViewKind::Heatmap] {
             let req = request(Dataset::generate_synthetic(8, 30_000.0, 0.5), mode);
             let buf = r.render(&req);
-            assert_eq!((buf.width(), buf.height()), (800, 400));
+            assert_eq!((buf.width, buf.height), (800, 400));
             // Something other than background was drawn
-            assert!(buf.as_slice().iter().any(|p| *p != BG_COLOR));
+            assert!(buf.pixels().iter().any(|p| *p != BG_COLOR));
         }
     }
 
@@ -624,9 +594,9 @@ mod tests {
         let mut req = request(Dataset::generate_synthetic(2, 10_000.0, 0.2), TimeViewKind::Traces);
         req.channels = vec![0, 99];
         let mut r = WaveformRenderer::default();
-        assert_eq!(r.render(&req).width(), 800);
+        assert_eq!(r.render(&req).width, 800);
         req.mode = TimeViewKind::Heatmap;
-        assert_eq!(r.render(&req).width(), 800);
+        assert_eq!(r.render(&req).width, 800);
     }
 
     /// One channel: a 1000 µV offset plus a ±100 µV square wave (100 Hz at 10 kHz).
@@ -670,8 +640,8 @@ mod tests {
             ..request(ds, TimeViewKind::Traces)
         };
         let buf = WaveformRenderer::default().render(&req);
-        let (w, h) = (buf.width() as usize, buf.height() as usize);
-        let px = buf.as_slice();
+        let (w, h) = (buf.width as usize, buf.height as usize);
+        let px = buf.pixels();
         let drawn = |x0: usize, x1: usize| (0..h).any(|y| (x0..x1).any(|x| px[y * w + x] != BG_COLOR && px[y * w + x] != BASELINE_COLOR));
         assert!(!drawn(0, w / 2 - 2), "no data before the source starts");
         assert!(drawn(w / 2 + 2, w - 20), "data after it starts");
@@ -734,7 +704,7 @@ mod tests {
     #[test]
     fn test_heat_color_endpoints() {
         assert_eq!(heat_color(0.0), BG_COLOR);
-        assert_eq!(heat_color(1.0), Rgba8Pixel { r: 252, g: 230, b: 90, a: 255 });
+        assert_eq!(heat_color(1.0), Pixel::rgb(252, 230, 90));
         assert_eq!(heat_color(2.0), heat_color(1.0));
     }
 
