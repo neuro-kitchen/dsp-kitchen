@@ -39,7 +39,10 @@ use crate::synapse::{
     PyDeduplicatedSpike, PyProbeLayout, PySortingOutput, PySpikeEvent,
     PyStreamingSortResult, PyWaveformSnippet,
 };
-use crate::synapse_ml::{PyKilosort4BasisEmbedder, PyKilosort4Detector, PyModelHub};
+use crate::synapse_ml::{
+    PyKilosort4BasisEmbedder, PyKilosort4Detector, PyModelHub, PyMyomatrixBasisEmbedder,
+    PyMyomatrixDetector, PyMyomatrixLatencyAligner, PyMyomatrixSortConfig,
+};
 
 fn register_bindings(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Core & Classical Classes
@@ -75,6 +78,10 @@ fn register_bindings(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyModelHub>()?;
     m.add_class::<PyKilosort4BasisEmbedder>()?;
     m.add_class::<PyKilosort4Detector>()?;
+    m.add_class::<PyMyomatrixSortConfig>()?;
+    m.add_class::<PyMyomatrixDetector>()?;
+    m.add_class::<PyMyomatrixBasisEmbedder>()?;
+    m.add_class::<PyMyomatrixLatencyAligner>()?;
 
     // Direct Functions
     m.add_function(wrap_pyfunction!(list_nwb_series, m)?)?;
