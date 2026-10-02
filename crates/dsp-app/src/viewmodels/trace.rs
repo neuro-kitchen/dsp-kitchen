@@ -17,6 +17,7 @@ use crate::engine::time::hover::{HoverReader, HoverReply, HoverRequest};
 use crate::engine::time::renderer::{render_on_worker, TimeViewKind};
 use crate::engine::time::view::{HoverTarget, TimeView, ViewId};
 use crate::store::{AppEvent, Store};
+use dsp_base::resampler::summary::BASE as SUMMARY_BASE;
 
 /// The background threads every view shares.
 pub struct Services {
@@ -45,7 +46,6 @@ struct Delivered {
     shown: Shown,
     scale: Option<f32>,
     elapsed: Duration,
-    preview: bool,
     samples_per_px: f64,
 }
 
@@ -105,8 +105,9 @@ impl TraceVm {
             }
         });
         let sub = cx.subscribe(&store, |vm, store, event, cx| match event {
-            AppEvent::WindowMoved => vm.request_render(cx),
+            AppEvent::WindowMoved | AppEvent::PaletteChanged => vm.request_render(cx),
             AppEvent::PlaybackChanged => cx.notify(),
+            AppEvent::SummaryProgress(source) if *source == vm.view.source && vm.zoomed_out(store.read(cx).timeline.visible_window_sec, cx) => vm.request_render(cx),
             AppEvent::SelectionChanged(source) if *source == vm.view.source => {
                 let channels = store.read(cx).selection(source).to_vec();
                 let total = store.read(cx).sources().map_or(0, |s| s.entry(source).channels);
@@ -172,12 +173,23 @@ impl TraceVm {
         });
     }
 
+    /// Whether a window of `window_sec` draws from the min/max summary (more samples per pixel
+    /// column than its finest bucket) rather than raw samples.
+    fn zoomed_out(&self, window_sec: f64, cx: &App) -> bool {
+        let Some(sources) = self.sources(cx) else { return false };
+        let rate = sources.entry(&self.view.source).sample_rate;
+        window_sec * rate >= SUMMARY_BASE as f64 * self.view.canvas_width.max(1) as f64
+    }
+
     fn submit(&mut self, cx: &mut Context<Self>) {
         if !self.active || !self.view.needs_render || self.view.canvas_width == 0 || self.view.canvas_height == 0 {
             return;
         }
         let Some(sources) = self.sources(cx) else { return };
         self.view.needs_render = false;
+        // The summary fills in the background, nearest what this view shows first
+        let (source_id, focus) = (self.view.source.clone(), self.store.read(cx).timeline.window_start_sec);
+        self.store.update(cx, |s, cx| s.summarize(&source_id, focus, cx));
         let store = self.store.read(cx);
         let dataset = sources.get(&self.view.source);
         let lod = dataset.lod();
@@ -188,7 +200,7 @@ impl TraceVm {
             _ => Default::default(),
         };
         let source: Arc<dyn dsp_core::RecordingSource> = dataset.clone();
-        let req = self.view.render_request(&store.timeline, source, lod, Some(dataset.summary()), events, Vec::new());
+        let req = self.view.render_request(&store.timeline, source, lod, Some(dataset.summary()), events, store.palette());
         let samples_per_px = req.window_sec * dataset.sample_rate / req.width.max(1) as f64;
         let (start, window) = (req.window_start_sec, req.window_sec);
         let tx = self.frames.clone();
@@ -197,13 +209,13 @@ impl TraceVm {
             let Some(buffer) = image::RgbaImage::from_raw(w, h, out.frame.into_bgra()) else { return };
             let image = Arc::new(RenderImage::new(vec![image::Frame::new(buffer)]));
             let shown = Shown { image, start, window };
-            let _ = tx.try_send(Delivered { shown, scale: out.scale, elapsed: info.elapsed, preview: info.preview, samples_per_px });
+            let _ = tx.try_send(Delivered { shown, scale: out.scale, elapsed: info.elapsed, samples_per_px });
         });
         cx.global::<Services>().pool.request(RenderJob { key: self.view.id, render: Box::new(move |ctx| render_on_worker(&req, ctx)), deliver });
     }
 
     fn on_frame(&mut self, d: Delivered, cx: &mut Context<Self>) {
-        if let Some(scale) = d.scale.filter(|_| !d.preview) {
+        if let Some(scale) = d.scale {
             // The scale bar follows the scale the frame was drawn with
             self.view.amp_scale = scale;
         }
@@ -211,10 +223,8 @@ impl TraceVm {
             cx.drop_image(old, None);
         }
         self.retired = self.shown.replace(d.shown).map(|s| s.image);
-        if !d.preview {
-            let info = format!("Render {:.1} ms · {:.1} samples/px", d.elapsed.as_secs_f64() * 1e3, d.samples_per_px);
-            self.store.update(cx, |s, cx| s.set_render_info(info, cx));
-        }
+        let info = format!("Render {:.1} ms · {:.1} samples/px", d.elapsed.as_secs_f64() * 1e3, d.samples_per_px);
+        self.store.update(cx, |s, cx| s.set_render_info(info, cx));
         cx.notify();
     }
 

@@ -20,6 +20,12 @@ pub struct Session {
     pub recent: Vec<PathBuf>,
     #[serde(default)]
     pub workspace: Workspace,
+    /// `Some(true)`: dark, `Some(false)`: light, `None`: follow the system.
+    #[serde(default)]
+    pub dark: Option<bool>,
+    /// Keep plots dark in the light theme.
+    #[serde(default)]
+    pub dark_plots: bool,
 }
 
 impl Session {
