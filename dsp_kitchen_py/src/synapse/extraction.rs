@@ -7,7 +7,7 @@ use super::detection::PyDeduplicatedSpike;
 use super::probe::PyProbeLayout;
 
 /// Extracted multi-channel waveform snippet.
-#[pyclass(name = "WaveformSnippet", skip_from_py_object)]
+#[pyclass(name = "WaveformSnippet")]
 #[derive(Clone)]
 pub struct PyWaveformSnippet {
     pub inner: WaveformSnippet,

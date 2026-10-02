@@ -210,7 +210,7 @@ impl PySortingOutput {
 
     /// Constructs a `SortingOutput` from clustered spike timestamps and cluster labels.
     #[staticmethod]
-    #[pyo3(signature = (sorter_name, spike_samples, labels, sample_rate_hz, total_samples=None, amplitudes=None, locations=None, probe=None))]
+    #[pyo3(signature = (sorter_name, spike_samples, labels, sample_rate_hz, total_samples=None, amplitudes=None, locations=None, probe=None, snippets=None))]
     pub fn from_clusters(
         sorter_name: &str,
         spike_samples: Vec<u64>,
@@ -220,25 +220,53 @@ impl PySortingOutput {
         amplitudes: Option<Vec<f32>>,
         locations: Option<Vec<[f32; 3]>>,
         probe: Option<PyRef<'_, PyProbeLayout>>,
+        snippets: Option<Vec<PyRef<'_, super::extraction::PyWaveformSnippet>>>,
     ) -> PyResult<Self> {
         let tot = total_samples.unwrap_or_else(|| {
             spike_samples.iter().copied().max().unwrap_or(0) + 1
         });
         let probe_inner = probe.map(|p| p.inner.clone());
 
-        let dedup: Vec<dsp_synapse::core::DeduplicatedSpike> = spike_samples
-            .iter()
-            .enumerate()
-            .map(|(i, &s)| {
-                let amp = amplitudes.as_ref().and_then(|a| a.get(i).copied()).unwrap_or(50.0);
-                dsp_synapse::core::DeduplicatedSpike {
-                    sample_index: s,
-                    primary_channel: 0,
-                    peak_amplitude_uv: amp,
-                    participating_channels: vec![0],
-                }
-            })
-            .collect();
+        let rust_snippets: Option<Vec<dsp_synapse::core::WaveformSnippet>> = snippets.map(|snips| {
+            snips.iter().map(|s| s.inner.clone()).collect()
+        });
+
+        let dedup: Vec<dsp_synapse::core::DeduplicatedSpike> = if let Some(snips) = &rust_snippets {
+            snips
+                .iter()
+                .enumerate()
+                .map(|(i, s)| {
+                    let amp = amplitudes.as_ref().and_then(|a| a.get(i).copied()).unwrap_or_else(|| {
+                        s.waveform
+                            .iter()
+                            .copied()
+                            .map(f32::abs)
+                            .max_by(|a, b| a.total_cmp(b))
+                            .unwrap_or(50.0)
+                    });
+                    dsp_synapse::core::DeduplicatedSpike {
+                        sample_index: s.center_sample,
+                        primary_channel: s.primary_channel,
+                        peak_amplitude_uv: amp,
+                        participating_channels: s.channel_ids.clone(),
+                    }
+                })
+                .collect()
+        } else {
+            spike_samples
+                .iter()
+                .enumerate()
+                .map(|(i, &s)| {
+                    let amp = amplitudes.as_ref().and_then(|a| a.get(i).copied()).unwrap_or(50.0);
+                    dsp_synapse::core::DeduplicatedSpike {
+                        sample_index: s,
+                        primary_channel: 0,
+                        peak_amplitude_uv: amp,
+                        participating_channels: vec![0],
+                    }
+                })
+                .collect()
+        };
 
         let inner = SortingOutput::from_clustered_spikes(
             sorter_name,
@@ -247,7 +275,7 @@ impl PySortingOutput {
             probe_inner,
             &dedup,
             &labels,
-            None,
+            rust_snippets.as_deref(),
             locations.as_deref(),
             &[],
             None,
