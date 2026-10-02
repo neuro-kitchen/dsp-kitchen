@@ -5,5 +5,6 @@
 pub mod axis;
 pub mod canvas;
 pub mod data;
+pub mod palette;
 pub mod render_pool;
 pub mod time;

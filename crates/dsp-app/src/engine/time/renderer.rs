@@ -6,7 +6,6 @@
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use dsp_base::resampler::minmax::{finish, fold_block, Block, Columns, EMPTY};
 use dsp_base::resampler::summary::BASE as SUMMARY_BASE;
@@ -14,27 +13,10 @@ use dsp_base::resampler::{min_max_decimate_into, MinMaxCache, MinMaxSummary};
 use dsp_core::{MemoryOrder, RecordingSource};
 
 use crate::engine::axis::nice_step;
-use crate::engine::canvas::{Canvas, Frame, Pixel};
+use crate::engine::canvas::{Canvas, Frame};
+use crate::engine::palette::Palette;
 use crate::engine::data::SpikeEventStore;
 use crate::engine::render_pool::{RenderContext, Rendered};
-
-/// Palette for multi-channel visualization (vibrant, modern dark-theme colors)
-pub const CHANNEL_COLORS: [Pixel; 8] = [
-    Pixel::rgb(56, 189, 248), // Cyan #38bdf8
-    Pixel::rgb(52, 211, 153), // Emerald #34d399
-    Pixel::rgb(168, 85, 247), // Purple #a855f7
-    Pixel::rgb(251, 191, 36), // Amber #fbbf24
-    Pixel::rgb(244, 63, 94), // Rose #f43f5e
-    Pixel::rgb(96, 165, 250), // Blue #60a5fa
-    Pixel::rgb(249, 115, 22), // Orange #f97316
-    Pixel::rgb(45, 212, 191), // Teal #2dd4bf
-];
-
-const BG_COLOR: Pixel = Pixel::rgb(9, 13, 19); // Deep dark #090d13
-const GRID_COLOR: Pixel = Pixel::rgb(22, 27, 34); // Grid line #161b22
-const BASELINE_COLOR: Pixel = Pixel::rgb(33, 38, 45); // Baseline #21262d
-const TEXT_COLOR: Pixel = Pixel::rgb(139, 148, 158); // Gray text #8b949e
-const SPIKE_MARKER_COLOR: Pixel = Pixel::rgb(250, 204, 21); // Gold #facc15
 
 /// Amplitude (µV) that maps to `LANE_FILL` of a lane's half-height at gain 1x, when a view is
 /// not auto-scaled.
@@ -44,8 +26,6 @@ const LANE_FILL: f32 = 0.84;
 /// Most values (channels × samples) held by one raw read while streaming a window: bounds the
 /// scratch memory, not the work (every sample of the window is still read once).
 const BLOCK_VALUES: usize = 1 << 22;
-/// How often a frame waiting on the min/max summary shows what is summarized so far.
-const PREVIEW_EVERY: Duration = Duration::from_millis(100);
 
 /// Time-module view kinds: how the plot area visualizes channels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -91,7 +71,8 @@ pub struct RenderRequest {
     /// Draw the amplitude scale bar (traces).
     pub scale_bar: bool,
     /// Sorted spikes to mark in a cluster color: (color, [(time_sec, channel)]).
-    pub highlights: Vec<(Pixel, Vec<(f64, usize)>)>,
+    pub highlights: Vec<(crate::engine::canvas::Pixel, Vec<(f64, usize)>)>,
+    pub palette: Palette,
 }
 
 thread_local! {
@@ -99,35 +80,16 @@ thread_local! {
     static RENDERER: std::cell::RefCell<WaveformRenderer> = std::cell::RefCell::new(WaveformRenderer::default());
 }
 
-/// Renders `req` with this thread's reusable renderer (call from the render worker). A window
-/// the min/max summary does not cover yet is summarized first, with preview frames of the part
-/// done; `None` when a newer frame cancelled it (the pages read are kept).
+/// Renders `req` with this thread's reusable renderer (call from a render thread). Zoomed-out
+/// windows draw from the min/max summary as far as it is filled (the rest stays empty until the
+/// background summarizer reaches it); `None` when a newer frame for the view cancelled this one.
 pub fn render_on_worker(req: &RenderRequest, ctx: &RenderContext) -> Option<Rendered> {
+    if ctx.cancel.load(Ordering::Relaxed) {
+        return None;
+    }
     RENDERER.with(|r| {
-        let mut r = r.borrow_mut();
-        let rendered = |r: &mut WaveformRenderer| {
-            let (frame, scale) = r.render_scaled(req);
-            Rendered { frame, scale: Some(scale) }
-        };
-        if let Some((summary, start, end)) = summary_fill(req) {
-            let mut deadline = Instant::now() + PREVIEW_EVERY;
-            loop {
-                let stop = || ctx.cancel.load(Ordering::Relaxed) || Instant::now() >= deadline;
-                match summary.fill(req.source.as_ref(), start, end, BLOCK_VALUES, stop) {
-                    Ok(true) => break,
-                    Ok(false) if ctx.cancel.load(Ordering::Relaxed) => return None,
-                    Ok(false) => {
-                        (ctx.preview)(rendered(&mut r));
-                        deadline = Instant::now() + PREVIEW_EVERY;
-                    }
-                    Err(e) => {
-                        tracing::warn!("min/max summary read failed: {e}");
-                        break;
-                    }
-                }
-            }
-        }
-        Some(rendered(&mut r))
+        let (frame, scale) = r.borrow_mut().render_scaled(req);
+        Some(Rendered { frame, scale: Some(scale) })
     })
 }
 
@@ -147,16 +109,6 @@ fn visible(req: &RenderRequest) -> Option<(usize, usize, usize, usize)> {
     let (x0, x1) = if b > a { (((a - s0) / (s1 - s0) * w_px).round() as usize, ((b - s0) / (s1 - s0) * w_px).round() as usize) } else { (0, 0) };
     let (start, end) = (a.round() as usize, (b.round() as usize).max(a.round() as usize));
     Some((start, end, x0, x1.min(req.width.max(1) as usize)))
-}
-
-/// The summary and sample range to fill before drawing `req`: zoomed out past the summary's
-/// buckets, without a complete cache file, and not summarized yet.
-fn summary_fill(req: &RenderRequest) -> Option<(&MinMaxSummary, u64, u64)> {
-    let summary = req.summary.as_deref().filter(|_| req.lod.is_none())?;
-    let (start, end, x0, x1) = visible(req)?;
-    let (start, end) = (start as u64, end as u64);
-    let zoomed_out = x1 > x0 && end - start >= SUMMARY_BASE * (x1 - x0) as u64;
-    (zoomed_out && !summary.covers(start, end)).then_some((summary, start, end))
 }
 
 /// Pixels per unit for a lane of `lane_h` pixels, where `nominal` units fill `LANE_FILL` of
@@ -215,7 +167,7 @@ impl WaveformRenderer {
         let height = req.height.max(1);
         let mut pixel_buffer = Frame::new(width, height);
         let mut canvas = pixel_buffer.canvas();
-        canvas.pixels.fill(BG_COLOR);
+        canvas.pixels.fill(req.palette.background);
 
         let Some((start, end, x0, x1)) = visible(req) else {
             return (pixel_buffer, req.scale_hint.max(0.0));
@@ -226,7 +178,7 @@ impl WaveformRenderer {
         for &t in &req.grid_times {
             let x = ((t - req.window_start_sec) / req.window_sec * w).round();
             if x >= 0.0 && x < w {
-                canvas.vline(x as usize, 0, canvas.height, GRID_COLOR);
+                canvas.vline(x as usize, 0, canvas.height, req.palette.grid);
             }
         }
 
@@ -413,13 +365,13 @@ impl WaveformRenderer {
             if !self.valid[lane] {
                 continue;
             }
-            let color = CHANNEL_COLORS[ch % CHANNEL_COLORS.len()];
+            let color = req.palette.channel(ch);
             let center = (lane as f32 + 0.5) * lane_h;
 
             // Dashed baseline
             let by = center.round() as usize;
             for x in (0..canvas.width).filter(|x| x % 4 != 0) {
-                canvas.set(x, by, BASELINE_COLOR);
+                canvas.set(x, by, req.palette.baseline);
             }
 
             // Spikes of selected clusters: colored band + thick tick
@@ -440,10 +392,10 @@ impl WaveformRenderer {
                 let x = ((t - req.window_start_sec) / req.window_sec * canvas.width as f64) as usize;
                 let top = (lane as f32 * lane_h) as usize;
                 let bottom = ((lane + 1) as f32 * lane_h) as usize;
-                canvas.vline_alpha(x, top, bottom, SPIKE_MARKER_COLOR, 0.18);
+                canvas.vline_alpha(x, top, bottom, req.palette.marker, 0.18);
                 let tick = (6.0 * req.scale) as usize;
                 for dx in 0..(thickness as usize).max(1) {
-                    canvas.vline(x + dx, top + 1, top + 1 + tick, SPIKE_MARKER_COLOR);
+                    canvas.vline(x + dx, top + 1, top + 1 + tick, req.palette.marker);
                 }
             }
 
@@ -481,7 +433,7 @@ impl WaveformRenderer {
             let bottom = canvas.height as f32 - 6.0 * req.scale;
             let top = (bottom - bar_h).max(0.0);
             for dx in 0..(thickness as usize).max(1) {
-                canvas.vline(x + dx, top as usize, bottom as usize, TEXT_COLOR);
+                canvas.vline(x + dx, top as usize, bottom as usize, req.palette.text);
             }
         }
     }
@@ -518,28 +470,10 @@ impl WaveformRenderer {
                 for ch in c0..c1 {
                     v = v.max(self.heat[ch * w + x]);
                 }
-                canvas.set(x, y, heat_color(v));
+                canvas.set(x, y, req.palette.heat(v));
             }
         }
     }
-}
-
-/// Dark-to-bright sequential colormap (navy → violet → orange → yellow).
-fn heat_color(v: f32) -> Pixel {
-    const STOPS: [(f32, [f32; 3]); 5] = [
-        (0.00, [9.0, 13.0, 19.0]),
-        (0.25, [49.0, 36.0, 110.0]),
-        (0.50, [150.0, 45.0, 120.0]),
-        (0.75, [240.0, 110.0, 50.0]),
-        (1.00, [252.0, 230.0, 90.0]),
-    ];
-    let v = v.clamp(0.0, 1.0);
-    let i = STOPS.iter().position(|s| s.0 >= v).unwrap_or(4).max(1);
-    let (t0, c0) = STOPS[i - 1];
-    let (t1, c1) = STOPS[i];
-    let f = (v - t0) / (t1 - t0);
-    let mix = |j: usize| (c0[j] + (c1[j] - c0[j]) * f) as u8;
-    Pixel::rgb(mix(0), mix(1), mix(2))
 }
 
 #[cfg(test)]
@@ -573,7 +507,8 @@ mod tests {
             scale_hint: 0.0,
             grid_times: vec![0.05],
             scale_bar: true,
-            highlights: vec![(Pixel::rgb(255, 0, 0), vec![(0.05, 0)])],
+            highlights: vec![(crate::engine::canvas::Pixel::rgb(255, 0, 0), vec![(0.05, 0)])],
+            palette: Palette::DARK,
         }
     }
 
@@ -585,7 +520,7 @@ mod tests {
             let buf = r.render(&req);
             assert_eq!((buf.width, buf.height), (800, 400));
             // Something other than background was drawn
-            assert!(buf.pixels().iter().any(|p| *p != BG_COLOR));
+            assert!(buf.pixels().iter().any(|p| *p != Palette::DARK.background));
         }
     }
 
@@ -642,7 +577,7 @@ mod tests {
         let buf = WaveformRenderer::default().render(&req);
         let (w, h) = (buf.width as usize, buf.height as usize);
         let px = buf.pixels();
-        let drawn = |x0: usize, x1: usize| (0..h).any(|y| (x0..x1).any(|x| px[y * w + x] != BG_COLOR && px[y * w + x] != BASELINE_COLOR));
+        let drawn = |x0: usize, x1: usize| (0..h).any(|y| (x0..x1).any(|x| px[y * w + x] != Palette::DARK.background && px[y * w + x] != Palette::DARK.baseline));
         assert!(!drawn(0, w / 2 - 2), "no data before the source starts");
         assert!(drawn(w / 2 + 2, w - 20), "data after it starts");
     }
@@ -699,13 +634,6 @@ mod tests {
             assert_eq!(w[0].end, w[1].start, "contiguous, no sample read twice");
             assert_eq!(w[0].end % 300, 0, "blocks end on chunk boundaries");
         }
-    }
-
-    #[test]
-    fn test_heat_color_endpoints() {
-        assert_eq!(heat_color(0.0), BG_COLOR);
-        assert_eq!(heat_color(1.0), Pixel::rgb(252, 230, 90));
-        assert_eq!(heat_color(2.0), heat_color(1.0));
     }
 
     /// Per-frame render cost on the local datasets. Run with:

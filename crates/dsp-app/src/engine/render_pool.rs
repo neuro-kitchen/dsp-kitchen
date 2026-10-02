@@ -4,7 +4,7 @@
 //! newest job waiting is kept (a burst of input costs at most one frame per view), and a new job
 //! flags the one in progress for its key as cancelled (jobs that can stop early, such as filling
 //! the min/max summary, give up). One key renders on one thread at a time, so its frames arrive in
-//! order; different keys render in parallel. Long jobs can show preview frames while they work.
+//! order; different keys render in parallel.
 //! Each job carries its own `deliver` callback: a view receives only its own frames.
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -30,20 +30,16 @@ impl From<Frame> for Rendered {
     }
 }
 
-/// What a running job can use: its cancel flag and a way to show preview frames.
+/// What a running job can use: its cancel flag.
 pub struct RenderContext<'a> {
     /// Set when a newer job for the same key was requested.
     pub cancel: &'a AtomicBool,
-    /// Shows an intermediate frame (delivered like a finished one, with `preview` set).
-    pub preview: &'a dyn Fn(Rendered),
 }
 
 /// A delivered frame and what produced it.
 pub struct FrameInfo {
-    /// Time from the job's start to this frame.
+    /// Time the job took.
     pub elapsed: Duration,
-    /// An intermediate frame of a job still working.
-    pub preview: bool,
 }
 
 pub type Deliver = Arc<dyn Fn(Rendered, FrameInfo) + Send + Sync>;
@@ -162,10 +158,8 @@ fn work(shared: &Shared) {
         };
         if !cancel.load(Ordering::Relaxed) {
             let t0 = Instant::now();
-            let deliver = job.deliver.clone();
-            let preview = |out: Rendered| deliver(out, FrameInfo { elapsed: t0.elapsed(), preview: true });
-            if let Some(out) = (job.render)(&RenderContext { cancel: &cancel, preview: &preview }) {
-                (job.deliver)(out, FrameInfo { elapsed: t0.elapsed(), preview: false });
+            if let Some(out) = (job.render)(&RenderContext { cancel: &cancel }) {
+                (job.deliver)(out, FrameInfo { elapsed: t0.elapsed() });
             }
         }
         let mut q = shared.queue.lock().expect("render pool lock");
