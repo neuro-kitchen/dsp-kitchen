@@ -152,6 +152,35 @@ impl Store {
         }
     }
 
+    pub fn set_explore_docks(&mut self, left: bool, right: bool, bottom: bool) {
+        let ex = &mut self.session.explore;
+        if (ex.left_open, ex.right_open, ex.bottom_open) != (left, right, bottom) {
+            ex.left_open = left;
+            ex.right_open = right;
+            ex.bottom_open = bottom;
+            self.save_session();
+        }
+    }
+
+    pub fn set_explore_views(&mut self, views: Vec<crate::session::SavedTimeView>) {
+        if self.session.explore.views != views {
+            self.session.explore.views = views;
+            self.save_session();
+        }
+    }
+
+    pub fn push_recent_sorting(&mut self, path: &Path) {
+        self.session.push_recent_sorting(path);
+        self.save_session();
+    }
+
+    pub fn set_events(&mut self, events: Arc<SpikeEventStore>, cx: &mut Context<Self>) {
+        if let Some(rec) = &mut self.recording {
+            rec.events = events;
+            cx.emit(AppEvent::WindowMoved);
+        }
+    }
+
     pub fn set_status(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
         self.status = text.into();
         cx.emit(AppEvent::Status);

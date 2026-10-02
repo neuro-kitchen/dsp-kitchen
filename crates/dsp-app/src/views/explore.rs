@@ -45,7 +45,8 @@ impl ExploreView {
         let toggle = |placement| DockToggle { dock: dock.downgrade(), placement };
         let channels = cx.new(|cx| ChannelsPanel::new(vm.clone(), toggle(DockPlacement::Left), window, cx));
         let settings = cx.new(|cx| SettingsPanel::new(vm.clone(), toggle(DockPlacement::Right), cx));
-        let timeline = cx.new(|cx| TimelinePanel::new(store, toggle(DockPlacement::Bottom), cx));
+        let timeline = cx.new(|cx| TimelinePanel::new(store.clone(), toggle(DockPlacement::Bottom), cx));
+        let saved_docks = store.read(cx).session.explore.clone();
         dock.update(cx, |d, cx| {
             // Panels go in through `panel_handle` so the skin draws their titles and controls
             d.set_dock(DockPlacement::Left, DockLayout::tabs().panel_view(panel_handle(channels), cx), window, cx);
@@ -54,14 +55,26 @@ impl ExploreView {
             d.set_dock_size(DockPlacement::Left, px(230.), window, cx);
             d.set_dock_size(DockPlacement::Right, px(280.), window, cx);
             d.set_dock_size(DockPlacement::Bottom, px(140.), window, cx);
+            if !saved_docks.left_open && d.is_dock_open(DockPlacement::Left) {
+                d.toggle_dock(DockPlacement::Left, window, cx);
+            }
+            if !saved_docks.right_open && d.is_dock_open(DockPlacement::Right) {
+                d.toggle_dock(DockPlacement::Right, window, cx);
+            }
+            if !saved_docks.bottom_open && d.is_dock_open(DockPlacement::Bottom) {
+                d.toggle_dock(DockPlacement::Bottom, window, cx);
+            }
         });
         let sub = cx.subscribe_in(&vm, window, |this, _, event, window, cx| match event {
             ExploreEvent::Reset(views) => this.reset(views.clone(), window, cx),
             ExploreEvent::Added { vm, below } => this.add(vm.clone(), *below, window, cx),
             ExploreEvent::Focus => {}
         });
-        let layout = cx.subscribe(&dock, |_, _, e: &DockEvent, cx| {
+        let layout = cx.subscribe(&dock, move |_, dock, e: &DockEvent, cx| {
             if matches!(e, DockEvent::LayoutChanged) {
+                let d = dock.read(cx);
+                let (l, r, b) = (d.is_dock_open(DockPlacement::Left), d.is_dock_open(DockPlacement::Right), d.is_dock_open(DockPlacement::Bottom));
+                store.update(cx, |s, _| s.set_explore_docks(l, r, b));
                 cx.notify();
             }
         });

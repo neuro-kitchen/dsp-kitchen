@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use gpui_kit::{App, Context, Entity, EventEmitter, Global, RenderImage, Subscription, Task};
 
+use crate::engine::compute::ComputeService;
 use crate::engine::data::SourceSet;
 use crate::engine::render_pool::{FrameInfo, RenderJob, RenderPool, Rendered};
 use crate::engine::time::hover::{HoverReader, HoverReply, HoverRequest};
@@ -23,13 +24,18 @@ use dsp_base::resampler::summary::BASE as SUMMARY_BASE;
 pub struct Services {
     pub pool: RenderPool,
     pub hover: HoverReader,
+    pub compute: ComputeService,
 }
 
 impl Global for Services {}
 
 impl Services {
     pub fn install(cx: &mut App) {
-        cx.set_global(Services { pool: RenderPool::new(RenderPool::default_threads()), hover: HoverReader::spawn() });
+        cx.set_global(Services {
+            pool: RenderPool::new(RenderPool::default_threads()),
+            hover: HoverReader::spawn(),
+            compute: ComputeService::new(2),
+        });
     }
 }
 
@@ -108,7 +114,7 @@ impl TraceVm {
             AppEvent::WindowMoved | AppEvent::PaletteChanged => vm.request_render(cx),
             AppEvent::PlaybackChanged => cx.notify(),
             AppEvent::SummaryProgress(source) if *source == vm.view.source && vm.zoomed_out(store.read(cx).timeline.visible_window_sec, cx) => vm.request_render(cx),
-            AppEvent::SelectionChanged(source) if *source == vm.view.source => {
+            AppEvent::SelectionChanged(source) if *source == vm.view.source && !vm.view.pinned_selection => {
                 let channels = store.read(cx).selection(source).to_vec();
                 let total = store.read(cx).sources().map_or(0, |s| s.entry(source).channels);
                 vm.view.set_selection(channels, total);
@@ -278,6 +284,7 @@ impl TraceVm {
 
     pub fn set_lanes(&mut self, lanes: usize, cx: &mut Context<Self>) {
         self.view.set_lanes(lanes);
+        cx.emit(TraceEvent::Changed);
         self.request_render(cx);
     }
 
@@ -299,17 +306,75 @@ impl TraceVm {
 
     pub fn zoom_gain(&mut self, factor: f32, cx: &mut Context<Self>) {
         self.view.zoom_gain(factor);
+        cx.emit(TraceEvent::Changed);
         self.request_render(cx);
     }
 
     pub fn set_auto_scale(&mut self, on: bool, cx: &mut Context<Self>) {
         self.view.auto_scale = on;
+        cx.emit(TraceEvent::Changed);
         self.request_render(cx);
     }
 
     pub fn set_remove_dc(&mut self, on: bool, cx: &mut Context<Self>) {
         self.view.remove_dc = on;
+        cx.emit(TraceEvent::Changed);
         self.request_render(cx);
+    }
+
+    /// Pins (or unpins) this view's channel selection from the source's shared selection.
+    pub fn set_pinned_selection(&mut self, pinned: bool, cx: &mut Context<Self>) {
+        if self.view.pinned_selection == pinned {
+            return;
+        }
+        self.view.pinned_selection = pinned;
+        if !pinned {
+            let s = self.store.read(cx);
+            let channels = s.selection(&self.view.source).to_vec();
+            let total = s.sources().map_or(0, |ss| ss.entry(&self.view.source).channels);
+            self.view.set_selection(channels, total);
+        }
+        cx.emit(TraceEvent::Changed);
+        self.request_render(cx);
+    }
+
+    fn total_channels(&self, cx: &App) -> usize {
+        self.store.read(cx).sources().map_or(0, |s| s.entry(&self.view.source).channels)
+    }
+
+    pub fn set_selection(&mut self, channels: impl IntoIterator<Item = usize>, cx: &mut Context<Self>) {
+        let total = self.total_channels(cx);
+        self.view.set_selection(channels, total);
+        cx.emit(TraceEvent::Changed);
+        self.request_render(cx);
+    }
+
+    pub fn toggle_channel(&mut self, channel: usize, cx: &mut Context<Self>) {
+        let total = self.total_channels(cx);
+        self.view.toggle_channel(channel, total);
+        cx.emit(TraceEvent::Changed);
+        self.request_render(cx);
+    }
+
+    pub fn select_all(&mut self, cx: &mut Context<Self>) {
+        let total = self.total_channels(cx);
+        self.set_selection(0..total, cx);
+    }
+
+    pub fn select_none(&mut self, cx: &mut Context<Self>) {
+        self.set_selection([], cx);
+    }
+
+    pub fn select_invert(&mut self, cx: &mut Context<Self>) {
+        let total = self.total_channels(cx);
+        let keep: Vec<usize> = (0..total).filter(|c| !self.view.selection.contains(c)).collect();
+        self.set_selection(keep, cx);
+    }
+
+    pub fn select_ranges(&mut self, text: &str, cx: &mut Context<Self>) -> Result<(), String> {
+        let channels = crate::engine::time::view::parse_channel_ranges(text, self.total_channels(cx))?;
+        self.set_selection(channels, cx);
+        Ok(())
     }
 
     /// Scrolls so `channel` is on screen; false when this view does not show it.

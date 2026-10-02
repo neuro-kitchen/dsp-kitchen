@@ -8,16 +8,90 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::engine::time::renderer::TimeViewKind;
+use crate::engine::time::view::TimeView;
 use crate::workspace::Workspace;
 
 /// Recent recordings kept.
 const RECENT: usize = 10;
+
+/// Saved per-view settings in the Explore workspace.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SavedTimeView {
+    pub kind: TimeViewKind,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default = "default_lanes")]
+    pub lanes: usize,
+    #[serde(default = "default_gain")]
+    pub gain: f32,
+    #[serde(default = "yes")]
+    pub auto_scale: bool,
+    #[serde(default = "yes")]
+    pub remove_dc: bool,
+    #[serde(default)]
+    pub pinned_selection: bool,
+}
+
+impl SavedTimeView {
+    pub fn from_view(v: &TimeView) -> Self {
+        Self {
+            kind: v.kind,
+            source: v.source.clone(),
+            lanes: v.lanes,
+            gain: v.gain,
+            auto_scale: v.auto_scale,
+            remove_dc: v.remove_dc,
+            pinned_selection: v.pinned_selection,
+        }
+    }
+
+    pub fn apply(&self, v: &mut TimeView) {
+        v.lanes = self.lanes.max(1);
+        v.gain = self.gain.clamp(0.1, 20.0);
+        v.auto_scale = self.auto_scale;
+        v.remove_dc = self.remove_dc;
+        v.pinned_selection = self.pinned_selection;
+        v.needs_render = true;
+    }
+}
+
+fn default_lanes() -> usize {
+    8
+}
+fn default_gain() -> f32 {
+    1.0
+}
+fn yes() -> bool {
+    true
+}
+
+/// Saved Explore workspace layout (side-dock states and open views).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExploreSession {
+    #[serde(default = "yes")]
+    pub left_open: bool,
+    #[serde(default = "yes")]
+    pub right_open: bool,
+    #[serde(default = "yes")]
+    pub bottom_open: bool,
+    #[serde(default)]
+    pub views: Vec<SavedTimeView>,
+}
+
+impl Default for ExploreSession {
+    fn default() -> Self {
+        Self { left_open: true, right_open: true, bottom_open: true, views: Vec::new() }
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Session {
     pub version: u32,
     #[serde(default)]
     pub recent: Vec<PathBuf>,
+    #[serde(default)]
+    pub recent_sortings: Vec<PathBuf>,
     #[serde(default)]
     pub workspace: Workspace,
     /// `Some(true)`: dark, `Some(false)`: light, `None`: follow the system.
@@ -26,6 +100,8 @@ pub struct Session {
     /// Keep plots dark in the light theme.
     #[serde(default)]
     pub dark_plots: bool,
+    #[serde(default)]
+    pub explore: ExploreSession,
 }
 
 impl Session {
@@ -75,6 +151,13 @@ impl Session {
         self.recent.retain(|p| p != path);
         self.recent.insert(0, path.to_path_buf());
         self.recent.truncate(RECENT);
+    }
+
+    /// `path` becomes the newest recent sorting folder.
+    pub fn push_recent_sorting(&mut self, path: &Path) {
+        self.recent_sortings.retain(|p| p != path);
+        self.recent_sortings.insert(0, path.to_path_buf());
+        self.recent_sortings.truncate(RECENT);
     }
 }
 
