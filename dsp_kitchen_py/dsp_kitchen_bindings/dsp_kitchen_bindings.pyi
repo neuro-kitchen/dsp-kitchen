@@ -440,7 +440,7 @@ class Kilosort4Detector:
         self, data: npt.NDArray[np.float32], sample_rate_hz: float = 30000.0
     ) -> List[SpikeEvent]: ...
 
-class MyomatrixSortConfig:
+class EmusortSortConfig:
     def __init__(
         self,
         template_samples: int = 150,
@@ -455,11 +455,11 @@ class MyomatrixSortConfig:
         max_clusters: int = 10,
     ) -> None: ...
     @staticmethod
-    def preset_32ch_grid() -> "MyomatrixSortConfig": ...
+    def preset_32ch_grid() -> "EmusortSortConfig": ...
     @staticmethod
-    def preset_64ch_grid() -> "MyomatrixSortConfig": ...
+    def preset_64ch_grid() -> "EmusortSortConfig": ...
     @staticmethod
-    def preset_8ch_thread() -> "MyomatrixSortConfig": ...
+    def preset_8ch_thread() -> "EmusortSortConfig": ...
     @property
     def template_samples(self) -> int: ...
     @property
@@ -481,16 +481,16 @@ class MyomatrixSortConfig:
     @property
     def max_clusters(self) -> int: ...
 
-class MyomatrixBasisEmbedder:
+class EmusortBasisEmbedder:
     def __init__(
         self, path: Optional[str] = None, backend: Optional[str] = None
     ) -> None: ...
     @staticmethod
-    def from_hub(backend: Optional[str] = None) -> "MyomatrixBasisEmbedder": ...
+    def from_hub(backend: Optional[str] = None) -> "EmusortBasisEmbedder": ...
     @staticmethod
     def from_npy(
         path: str, backend: Optional[str] = None
-    ) -> "MyomatrixBasisEmbedder": ...
+    ) -> "EmusortBasisEmbedder": ...
     @property
     def num_components(self) -> int: ...
     @property
@@ -502,7 +502,7 @@ class MyomatrixBasisEmbedder:
     def embed(self, snippets: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]: ...
     def reconstruct(self, input: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]: ...
 
-class MyomatrixDetector:
+class EmusortDetector:
     def __init__(
         self,
         threshold_sigma: float = 6.5,
@@ -515,14 +515,14 @@ class MyomatrixDetector:
         threshold_sigma: float = 6.5,
         refractory_samples: int = 60,
         backend: Optional[str] = None,
-    ) -> "MyomatrixDetector": ...
+    ) -> "EmusortDetector": ...
     @staticmethod
     def from_npy(
         path: str,
         threshold_sigma: float = 6.5,
         refractory_samples: int = 60,
         backend: Optional[str] = None,
-    ) -> "MyomatrixDetector": ...
+    ) -> "EmusortDetector": ...
     @property
     def num_templates(self) -> int: ...
     @property
@@ -537,7 +537,7 @@ class MyomatrixDetector:
         self, data: npt.NDArray[np.float32], sample_rate_hz: float = 24414.0625
     ) -> List[SpikeEvent]: ...
 
-class MyomatrixLatencyAligner:
+class EmusortLatencyAligner:
     def __init__(self, max_lag_samples: int = 25) -> None: ...
     def estimate_channel_lags(
         self, snippet: npt.NDArray[np.float32], ref_ch: int = 0
@@ -545,6 +545,12 @@ class MyomatrixLatencyAligner:
     def align_snippet(
         self, snippet: npt.NDArray[np.float32], lags: List[int]
     ) -> npt.NDArray[np.float32]: ...
+
+# Backward-compatible type aliases
+MyomatrixSortConfig = EmusortSortConfig
+MyomatrixBasisEmbedder = EmusortBasisEmbedder
+MyomatrixDetector = EmusortDetector
+MyomatrixLatencyAligner = EmusortLatencyAligner
 
 def notch_filter(
     data: npt.NDArray[np.float32],

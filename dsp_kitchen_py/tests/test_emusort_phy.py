@@ -1,5 +1,5 @@
 """
-End-to-end integration test running Myomatrix spike sorting on an NWB Zarr recording
+End-to-end integration test running EMUsort spike sorting on an NWB Zarr recording
 and exporting full spiking data to Phy2 format.
 """
 
@@ -14,14 +14,14 @@ from dsp_kitchen.pipeline import Pipeline
 from dsp_kitchen.filter.iir import BandpassFilter
 from dsp_kitchen.spatial import CommonAverageReference
 from dsp_kitchen.synapse.ml import (
-    MyomatrixBasisEmbedder,
-    MyomatrixDetector,
-    MyomatrixLatencyAligner,
-    MyomatrixSortConfig,
+    EmusortBasisEmbedder,
+    EmusortDetector,
+    EmusortLatencyAligner,
+    EmusortSortConfig,
 )
 
 
-def test_myomatrix_nwb_to_phy_roundtrip():
+def test_emusort_nwb_to_phy_roundtrip():
     nwb_file = dk.resolve_data_path("data/nwb/15-25-33_meps.nwb.zarr")
     if not nwb_file.exists():
         pytest.skip(f"Test NWB file not found at: {nwb_file}")
@@ -48,15 +48,15 @@ def test_myomatrix_nwb_to_phy_roundtrip():
     filtered = pipe.run(np.ascontiguousarray(raw, dtype=np.float32), fs=fs)
     assert filtered.shape == raw.shape
 
-    # 4. Myomatrix Matched-Filter Detection
-    config = MyomatrixSortConfig.preset_32ch_grid()
+    # 4. EMUsort Matched-Filter Detection
+    config = EmusortSortConfig.preset_32ch_grid()
     refractory_samples = max(int(0.0025 * fs), 10)
-    detector = MyomatrixDetector.from_hub(
+    detector = EmusortDetector.from_hub(
         threshold_sigma=5.0,
         refractory_samples=refractory_samples,
     )
     events = detector.detect(filtered, sample_rate_hz=fs)
-    assert len(events) > 0, "Expected non-zero Myomatrix template crossings"
+    assert len(events) > 0, "Expected non-zero EMUsort template crossings"
 
     # 5. Spatial Deduplication & 150-sample Snippet Extraction
     dedup = syn.deduplicate_spikes(
@@ -82,13 +82,13 @@ def test_myomatrix_nwb_to_phy_roundtrip():
 
     # 6. Conduction Latency Cross-Channel Alignment
     waveforms = np.stack([s.waveform() for s in snippets], axis=0).astype(np.float32)
-    aligner = MyomatrixLatencyAligner(max_lag_samples=25)
+    aligner = EmusortLatencyAligner(max_lag_samples=25)
     for i in range(waveforms.shape[0]):
         lags = aligner.estimate_channel_lags(waveforms[i], ref_ch=0)
         waveforms[i] = aligner.align_snippet(waveforms[i], lags)
 
     # 7. Project onto 12-PC Temporal Muscle Basis
-    embedder = MyomatrixBasisEmbedder.from_hub()
+    embedder = EmusortBasisEmbedder.from_hub()
     features = embedder.embed(waveforms)
     assert features.shape == (len(snippets), k_neighbors * 12)
     assert np.all(np.isfinite(features))
@@ -106,7 +106,7 @@ def test_myomatrix_nwb_to_phy_roundtrip():
     # 9. Build SortingOutput Container
     spike_times = [int(s.center_sample) for s in snippets]
     sorting = dk.SortingOutput.from_clusters(
-        sorter_name="myomatrix",
+        sorter_name="emusort",
         spike_samples=spike_times,
         labels=labels,
         sample_rate_hz=fs,
