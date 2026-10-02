@@ -1,5 +1,6 @@
 .worktrees
 playground/data/
+playground/sorters/phy_*
 data/
 .env
 .knowledge
