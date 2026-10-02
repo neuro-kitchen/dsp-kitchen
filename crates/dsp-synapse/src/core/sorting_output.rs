@@ -20,8 +20,28 @@ use super::events::DeduplicatedSpike;
 use super::snippets::WaveformSnippet;
 use super::template::{compute_mean_template, UnitQualityLabel, WaveformTemplate};
 
+pub mod serde_nan {
+    use serde::{Deserialize, Deserializer};
+
+    pub fn deserialize_f64<'de, D>(deserializer: D) -> Result<f64, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let opt = Option::<f64>::deserialize(deserializer)?;
+        Ok(opt.unwrap_or(f64::NAN))
+    }
+
+    pub fn deserialize_f32<'de, D>(deserializer: D) -> Result<f32, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let opt = Option::<f32>::deserialize(deserializer)?;
+        Ok(opt.unwrap_or(f32::NAN))
+    }
+}
+
 /// A single sorted unit (neuron or motor unit) with its spike train, template, and quality metrics.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SortedUnit {
     /// Non-negative integer unit/cluster ID.
     pub unit_id: usize,
@@ -38,15 +58,40 @@ pub struct SortedUnit {
     /// Automated or curated quality classification (`SingleUnit`, `MultiUnit`, `Noise`).
     pub quality_label: UnitQualityLabel,
     /// Peak-to-noise ratio (`|peak_uv| / sigma_noise_uv`).
+    #[serde(default, deserialize_with = "serde_nan::deserialize_f32")]
     pub snr: f32,
     /// Mean firing rate in Hz across the recording duration.
+    #[serde(default, deserialize_with = "serde_nan::deserialize_f64")]
     pub firing_rate_hz: f64,
     /// Hill et al. (2011) refractory ISI violation ratio (`isi_violations_ratio`).
+    #[serde(default, deserialize_with = "serde_nan::deserialize_f64")]
     pub isi_violation_ratio: f64,
     /// Fraction of time bins in which the unit is present (`[0.0, 1.0]`).
+    #[serde(default, deserialize_with = "serde_nan::deserialize_f64")]
     pub presence_ratio: f64,
     /// Estimated fraction of missing spikes below detection threshold (`[0.0, 0.5]`).
+    #[serde(default, deserialize_with = "serde_nan::deserialize_f64")]
     pub amplitude_cutoff: f64,
+}
+
+impl PartialEq for SortedUnit {
+    fn eq(&self, other: &Self) -> bool {
+        let f32_eq = |a: f32, b: f32| a == b || (a.is_nan() && b.is_nan());
+        let f64_eq = |a: f64, b: f64| a == b || (a.is_nan() && b.is_nan());
+
+        self.unit_id == other.unit_id
+            && self.primary_channel == other.primary_channel
+            && self.spike_samples == other.spike_samples
+            && self.amplitudes_uv == other.amplitudes_uv
+            && self.locations_um == other.locations_um
+            && self.template == other.template
+            && self.quality_label == other.quality_label
+            && f32_eq(self.snr, other.snr)
+            && f64_eq(self.firing_rate_hz, other.firing_rate_hz)
+            && f64_eq(self.isi_violation_ratio, other.isi_violation_ratio)
+            && f64_eq(self.presence_ratio, other.presence_ratio)
+            && f64_eq(self.amplitude_cutoff, other.amplitude_cutoff)
+    }
 }
 
 impl SortedUnit {

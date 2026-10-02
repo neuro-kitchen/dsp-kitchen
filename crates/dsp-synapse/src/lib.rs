@@ -10,6 +10,7 @@ pub mod metrics;
 pub mod probe;
 pub mod sorting;
 pub mod spatial;
+pub mod storage;
 pub mod streaming;
 
 // Compatibility module aliases so downstream callers referencing `dsp_synapse::{bands, clustering, correlogram, kernels, localization, matching, motion, traits}` continue to work seamlessly.
@@ -83,4 +84,8 @@ pub use streaming::{
     BatchTemplateStats, SINC_RESAMPLE_MARGIN, StreamingSortConfig, StreamingSortResult,
     StreamingSpikeRunner, TemplateAccumulator, execute_reduce_templates_in_vram,
     reduce_channel_templates_kernel,
+};
+pub use storage::{
+    SortingFormat, load_nwb_units, load_phy_folder, load_sorting, load_sorting_zarr,
+    save_nwb_units, save_phy_folder, save_sorting, save_sorting_zarr,
 };
