@@ -5,6 +5,7 @@
 
 pub mod dartsort;
 pub mod kilosort4;
+pub mod myomatrix;
 pub mod spikenet2;
 pub mod unitrefine;
 
@@ -15,6 +16,12 @@ pub use dartsort::{
 pub use kilosort4::{
     KILOSORT4_BASIS_MODEL_ID, KILOSORT4_TEMPLATES_MODEL_ID, Kilosort4BasisEmbedder,
     Kilosort4Detector, Kilosort4TemplateMatcher,
+};
+pub use myomatrix::{
+    DEFAULT_MUAP_BASIS_COMPONENTS, DEFAULT_MUAP_BASIS_WINDOW_LEN, DEFAULT_MUAP_WINDOW_LEN,
+    MYOMATRIX_BASIS_MODEL_ID, MYOMATRIX_TEMPLATES_MODEL_ID, MyomatrixBasisEmbedder,
+    MyomatrixDetector, MyomatrixLatencyAligner, MyomatrixProbeKind, MyomatrixSortConfig,
+    MyomatrixTemplateMatcher,
 };
 pub use spikenet2::{SPIKENET2_IED_MODEL_ID, SpikeNet2Detector};
 pub use unitrefine::{

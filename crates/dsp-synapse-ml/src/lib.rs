@@ -13,10 +13,14 @@ pub use hub::{
 };
 pub use models::{
     DARTSORT_DENOISER_MODEL_ID, DARTSORT_VAE_MODEL_ID, DartsortVaeEmbedder,
-    DartsortWaveformDenoiser, KILOSORT4_BASIS_MODEL_ID, KILOSORT4_TEMPLATES_MODEL_ID,
-    Kilosort4BasisEmbedder, Kilosort4Detector, Kilosort4TemplateMatcher, SPIKENET2_IED_MODEL_ID,
-    SpikeNet2Detector, UNITREFINE_BOMBCELL_MODEL_ID, UNITREFINE_CURATION_MODEL_ID,
-    UnitCurationResult, UnitRefineClassifier,
+    DartsortWaveformDenoiser, DEFAULT_MUAP_BASIS_COMPONENTS, DEFAULT_MUAP_BASIS_WINDOW_LEN,
+    DEFAULT_MUAP_WINDOW_LEN, KILOSORT4_BASIS_MODEL_ID, KILOSORT4_TEMPLATES_MODEL_ID,
+    Kilosort4BasisEmbedder, Kilosort4Detector, Kilosort4TemplateMatcher,
+    MYOMATRIX_BASIS_MODEL_ID, MYOMATRIX_TEMPLATES_MODEL_ID, MyomatrixBasisEmbedder,
+    MyomatrixDetector, MyomatrixLatencyAligner, MyomatrixProbeKind, MyomatrixSortConfig,
+    MyomatrixTemplateMatcher, SPIKENET2_IED_MODEL_ID, SpikeNet2Detector,
+    UNITREFINE_BOMBCELL_MODEL_ID, UNITREFINE_CURATION_MODEL_ID, UnitCurationResult,
+    UnitRefineClassifier,
 };
 pub use runtime::{
     ComputeError, ComputeTarget, ComputeTask, LaunchGeometry, OnnxRuntimeSession, RuntimeTensor,
