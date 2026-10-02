@@ -2,7 +2,7 @@
 
 /// Smallest value from the 1-2-5 series (× 10^k) that is ≥ `raw`.
 pub fn nice_step(raw: f64) -> f64 {
-    if !(raw > 0.0) || !raw.is_finite() {
+    if raw.is_nan() || raw <= 0.0 || !raw.is_finite() {
         return 1.0;
     }
     let mag = 10f64.powf(raw.log10().floor());
