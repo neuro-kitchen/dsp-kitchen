@@ -5,6 +5,7 @@
 //! - [`decimate`]: min/max of a slice into a fixed number of buckets.
 //! - [`cache`]: a min/max pyramid of a whole recording in a file next to it (built on request).
 //! - [`summary`]: an in-memory pyramid of the regions a session has shown, filled on demand.
+//! - [`summarize`]: fills a summary in the background, nearest what is being looked at first.
 
 use std::ops::Range;
 
@@ -13,11 +14,13 @@ use dsp_core::{DspResult, MemoryOrder, RecordingSource};
 pub mod cache;
 pub mod decimate;
 pub mod minmax;
+pub mod summarize;
 pub mod summary;
 
 pub use cache::{cache_path, CacheIdentity, MinMaxCache};
 pub use decimate::{min_max_decimate, min_max_decimate_into};
 pub use minmax::{Block, Columns};
+pub use summarize::{OnProgress, Progress, Summarizer};
 pub use summary::MinMaxSummary;
 
 /// Reads `ranges` of every channel of `source` in its native order and hands each block to

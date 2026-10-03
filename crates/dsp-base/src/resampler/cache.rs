@@ -153,6 +153,26 @@ impl MinMaxCache {
         Ok(Some(Self { map: ManuallyDrop::new(map), path: path.to_path_buf(), temporary: false, channels: identity.channels, samples: identity.samples, base, levels, ready }))
     }
 
+    /// The cache of source `source_id` of the file at `recording`: the complete one next to it,
+    /// else a new one there to [`build`](Self::build), else (folder not writable, or no file) a
+    /// temporary one. Returns the cache and whether it is already complete.
+    pub fn open_or_create(source: &dyn RecordingSource, recording: Option<(&Path, &str)>, base: u64) -> DspResult<(Self, bool)> {
+        let transient = || Self::temporary(&CacheIdentity::transient(source), base);
+        let Some((path, id)) = recording else { return Ok((transient()?, false)) };
+        let identity = CacheIdentity::of(path, id, source)?;
+        let file = cache_path(path, id);
+        if let Some(cache) = Self::open(&file, &identity, base)? {
+            return Ok((cache, true));
+        }
+        match Self::create(&file, &identity, base) {
+            Ok(cache) => Ok((cache, false)),
+            Err(e) => {
+                tracing::warn!("cannot write {}: {e}; using a temporary min/max cache", file.display());
+                Ok((transient()?, false))
+            }
+        }
+    }
+
     /// Creates an empty cache file at `path` (replacing any other); fill it with
     /// [`build`](Self::build).
     pub fn create(path: &Path, identity: &CacheIdentity, base: u64) -> DspResult<Self> {
