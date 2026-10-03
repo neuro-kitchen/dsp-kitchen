@@ -62,12 +62,13 @@ def run_emusort_nwb_to_phy(
     ied_mm: float = 4.0,
     align_conduction_latency: bool = True,
     export_raw_dat: bool = True,
+    output_format: str = "nwb",
 ) -> Path:
     resolved_nwb = dk.resolve_data_path(nwb_path)
     if not resolved_nwb.exists():
         raise FileNotFoundError(f"NWB Zarr file not found at: {resolved_nwb}")
 
-    out_path = Path(output_dir).resolve()
+    out_path = resolved_nwb if output_format == "nwb" else Path(output_dir).resolve()
     out_path.mkdir(parents=True, exist_ok=True)
 
     print("=" * 80)
@@ -283,6 +284,22 @@ def run_emusort_nwb_to_phy(
         snippets=snippets,
     )
 
+    if output_format in ("nwb", "zarr"):
+        sorting.save(str(out_path), format=output_format)
+        num_good = sum(
+            1 for u_info in units
+            if len(u_info["indices"]) >= 30
+            and float(np.max(np.abs(templates[u_info["unit_id"], :, u_info["primary_ch"]]))) >= 2.5
+        )
+        num_mua = num_units - num_good
+        total_time = time.perf_counter() - t0
+        print("-" * 80)
+        print(f"  EMUSORT SPIKE SORTING COMPLETE IN {total_time:.2f} s")
+        print(f"  Total Motor Units:      {num_units} ({num_good} good, {num_mua} mua)")
+        print(f"  Zarr Output Store:      {out_path} (format={output_format})")
+        print("=" * 80)
+        return out_path
+
     # Export to Phy2
     sorting.export_to_phy(str(out_path))
 
@@ -414,10 +431,11 @@ def run_emusort_nwb_to_phy(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run EMUsort on NWB Zarr recording and export to Phy2")
+    parser = argparse.ArgumentParser(description="Run EMUsort on NWB Zarr recording and export to NWB /units, Zarr, or Phy2")
     parser.add_argument("--nwb-path", type=str, default="data/nwb/15-25-33_meps.nwb.zarr")
     parser.add_argument("--series", type=str, default="/acquisition/HDEMG")
     parser.add_argument("--output-dir", type=str, default="data/sorters/phy_emusort_output")
+    parser.add_argument("--format", type=str, default="nwb", choices=["nwb", "zarr", "phy"])
     parser.add_argument("--start-sec", type=float, default=0.0)
     parser.add_argument("--duration-sec", type=float, default=600.0)
     parser.add_argument("--threshold-sigma", type=float, default=6.5)
@@ -438,6 +456,7 @@ def main():
         ied_mm=args.ied_mm,
         align_conduction_latency=not args.no_align_conduction,
         export_raw_dat=not args.no_dat,
+        output_format=args.format,
     )
 
 

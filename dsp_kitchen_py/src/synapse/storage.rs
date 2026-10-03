@@ -6,7 +6,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
 use crate::array::{to_numpy, to_numpy_u64, F32Array};
-use dsp_synapse::core::{SortingOutput, UnitQualityLabel};
+use dsp_synapse::core::SortingOutput;
 use dsp_synapse::sorting::MotorUnitPulseTrain;
 use dsp_synapse::storage::{
     load_nwb_units as rust_load_nwb, load_phy_folder as rust_load_phy,
@@ -162,12 +162,7 @@ impl PySortingOutput {
         let dict = PyDict::new(py);
         dict.set_item("unit_id", unit.unit_id)?;
         dict.set_item("primary_channel", unit.primary_channel)?;
-        let label_str = match unit.quality_label {
-            UnitQualityLabel::SingleUnit => "good",
-            UnitQualityLabel::MultiUnit => "mua",
-            UnitQualityLabel::Noise => "noise",
-        };
-        dict.set_item("quality_label", label_str)?;
+        dict.set_item("quality_label", unit.quality_label.as_str())?;
         dict.set_item("snr", unit.snr)?;
         dict.set_item("firing_rate_hz", unit.firing_rate_hz)?;
         dict.set_item("isi_violation_ratio", unit.isi_violation_ratio)?;
@@ -404,8 +399,8 @@ pub fn save_nwb_units(sorting: &PySortingOutput, nwb_zarr_path: &str) -> PyResul
 
 /// Loads a `SortingOutput` from the `/units` DynamicTable of an NWB Zarr store.
 #[pyfunction]
-#[pyo3(signature = (nwb_zarr_path, sample_rate_hz=30000.0))]
-pub fn load_nwb_units(nwb_zarr_path: &str, sample_rate_hz: f64) -> PyResult<PySortingOutput> {
+#[pyo3(signature = (nwb_zarr_path, sample_rate_hz=None))]
+pub fn load_nwb_units(nwb_zarr_path: &str, sample_rate_hz: Option<f64>) -> PyResult<PySortingOutput> {
     let inner = rust_load_nwb(Path::new(nwb_zarr_path), sample_rate_hz)
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
     Ok(PySortingOutput { inner })
