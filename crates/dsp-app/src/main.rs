@@ -111,14 +111,15 @@ fn main() -> Result<()> {
             ..TitleBar::window_options()
         };
         let s = store.clone();
-        gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| app::DspApp::new(s, window, cx))).expect("failed to open the main window");
+        let (_, root) = gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| app::DspApp::new(s, window, cx))).expect("failed to open the main window");
         cx.activate(true);
 
-        store.update(cx, |s, cx| match (synthetic, file) {
-            (Some(d), _) => s.open_synthetic(channels, rate, d, cx),
-            (None, Some(p)) => s.open(p, cx),
+        match (synthetic, file) {
+            (Some(d), _) => store.update(cx, |s, cx| s.open_synthetic(channels, rate, d, cx)),
+            // A phy / Kilosort folder opens in Curation (and its recording in Explore)
+            (None, Some(p)) => root.update(cx, |a, cx| a.open_any(p, cx)),
             (None, None) => {}
-        });
+        }
     });
     Ok(())
 }
