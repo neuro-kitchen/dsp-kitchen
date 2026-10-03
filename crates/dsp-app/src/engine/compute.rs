@@ -1,14 +1,17 @@
-//! Background compute service and invalidation cache for derived curation data (Step 5d).
+//! Cache of derived curation data, and background requests for it.
 //!
-//! Newest request per `(view, kind)` wins (unstarted requests for the same view and kind are
-//! replaced); computed values are cached by `(clusters, kind, params)` and invalidated per cluster
-//! when a cluster is merged or split.
+//! Requests run on the shared [`WorkPool`] (the newest per `(view, kind)` wins); computed values
+//! are cached by `(clusters, kind, params)` and dropped per cluster when a cluster is merged or
+//! split.
 
 use std::any::Any;
-use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Condvar, Mutex};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
-pub type ClusterId = u32;
+use super::curation::ClusterId;
+use super::work_pool::{JobKey, WorkPool};
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ComputeKind {
@@ -18,6 +21,13 @@ pub enum ComputeKind {
     Amplitudes,
     Isi,
     FiringRate,
+}
+
+impl ComputeKind {
+    /// Work-pool slot (0 is a view's frame renders).
+    pub fn slot(self) -> u32 {
+        1 + self as u32
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -96,105 +106,25 @@ impl ComputeCache {
     }
 }
 
-struct PendingJob {
-    slot: (u64, ComputeKind),
-    seq: u64,
-    work: Box<dyn FnOnce() + Send + 'static>,
-}
-
-struct Queue {
-    waiting: VecDeque<PendingJob>,
-    latest_seq: HashMap<(u64, ComputeKind), u64>,
-    next_seq: u64,
-    closed: bool,
-}
-
-/// Background worker pool where the newest request per `(view_id, ComputeKind)` replaces any
-/// unstarted request for that same slot.
-#[derive(Clone)]
-pub struct ComputeService {
-    pub cache: ComputeCache,
-    inner: Arc<(Mutex<Queue>, Condvar)>,
-}
-
-impl Default for ComputeService {
-    fn default() -> Self {
-        Self::new(2)
-    }
-}
-
-impl ComputeService {
-    pub fn new(threads: usize) -> Self {
-        let inner = Arc::new((
-            Mutex::new(Queue { waiting: VecDeque::new(), latest_seq: HashMap::new(), next_seq: 1, closed: false }),
-            Condvar::new(),
-        ));
-        for i in 0..threads.max(1) {
-            let shared = inner.clone();
-            let _ = std::thread::Builder::new().name(format!("dsp-compute-{i}")).spawn(move || worker(shared));
-        }
-        Self { cache: ComputeCache::new(), inner }
-    }
-
-    /// Submits a background computation for `(view_id, kind)`. If an older job for the same
-    /// `(view_id, kind)` is still waiting in the queue, it is replaced; if it is already running,
-    /// its result is discarded when a newer job has been submitted.
-    pub fn request<T, F, D>(&self, view_id: u64, kind: ComputeKind, compute: F, deliver: D)
+impl ComputeCache {
+    /// Computes in the background on `pool` (the newest request per `(owner, kind)` wins) and
+    /// hands the result to `deliver`, unless a newer request replaced it meanwhile.
+    pub fn request<T, F, D>(&self, pool: &WorkPool, owner: u64, kind: ComputeKind, compute: F, deliver: D)
     where
         T: Send + 'static,
         F: FnOnce(&ComputeCache) -> T + Send + 'static,
         D: FnOnce(T) + Send + 'static,
     {
-        let (lock, cvar) = &*self.inner;
-        let mut q = lock.lock().unwrap();
-        let seq = q.next_seq;
-        q.next_seq += 1;
-        let slot = (view_id, kind);
-        q.latest_seq.insert(slot, seq);
-        q.waiting.retain(|j| j.slot != slot);
-
-        let cache = self.cache.clone();
-        let inner_check = self.inner.clone();
-        let work = Box::new(move || {
-            let out = compute(&cache);
-            let still_latest = inner_check.0.lock().unwrap().latest_seq.get(&slot).copied() == Some(seq);
-            if still_latest {
-                deliver(out);
-            }
-        });
-        q.waiting.push_back(PendingJob { slot, seq, work });
-        cvar.notify_one();
-    }
-
-    pub fn invalidate_cluster(&self, cluster: ClusterId) {
-        self.cache.invalidate_cluster(cluster);
-    }
-
-    pub fn invalidate_clusters(&self, clusters: &[ClusterId]) {
-        self.cache.invalidate_clusters(clusters);
-    }
-
-    pub fn clear(&self) {
-        self.cache.clear();
-    }
-}
-
-fn worker(shared: Arc<(Mutex<Queue>, Condvar)>) {
-    let (lock, cvar) = &*shared;
-    loop {
-        let job = {
-            let mut q = lock.lock().unwrap();
-            loop {
-                if q.closed {
-                    return;
+        let cache = self.clone();
+        pool.request(
+            JobKey::new(owner, kind.slot()),
+            Box::new(move |cancel: &AtomicBool| {
+                let out = compute(&cache);
+                if !cancel.load(Ordering::Relaxed) {
+                    deliver(out);
                 }
-                if let Some(j) = q.waiting.pop_front() {
-                    break j;
-                }
-                q = cvar.wait(q).unwrap();
-            }
-        };
-        (job.work)();
+            }),
+        );
     }
 }
 
@@ -222,19 +152,12 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_service_delivers_latest_per_slot() {
-        let svc = ComputeService::new(1);
+    fn test_requests_run_on_the_pool_and_fill_the_cache() {
+        let pool = WorkPool::new(1);
+        let cache = ComputeCache::new();
         let (tx, rx) = mpsc::channel();
-        let tx2 = tx.clone();
-        svc.request(
-            10,
-            ComputeKind::Isi,
-            |cache| *cache.get_or_compute(CacheKey::single(5, ComputeKind::Isi, 1), || 42usize),
-            move |val| {
-                let _ = tx2.send(val);
-            },
-        );
+        cache.request(&pool, 10, ComputeKind::Isi, |c| *c.get_or_compute(CacheKey::single(5, ComputeKind::Isi, 1), || 42usize), move |v| tx.send(v).unwrap());
         assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), 42);
-        assert_eq!(*svc.cache.get::<usize>(&CacheKey::single(5, ComputeKind::Isi, 1)).unwrap(), 42);
+        assert_eq!(*cache.get::<usize>(&CacheKey::single(5, ComputeKind::Isi, 1)).unwrap(), 42);
     }
 }

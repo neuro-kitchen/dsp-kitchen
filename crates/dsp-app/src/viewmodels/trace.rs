@@ -7,37 +7,19 @@
 //! the image they replace is released one frame later (it may still be on screen).
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use gpui_kit::{App, Context, Entity, EventEmitter, Global, RenderImage, Subscription, Task};
+use gpui_kit::{App, Context, Entity, EventEmitter, RenderImage, Subscription, Task};
 
-use crate::engine::compute::ComputeService;
 use crate::engine::data::SourceSet;
-use crate::engine::render_pool::{FrameInfo, RenderJob, RenderPool, Rendered};
-use crate::engine::time::hover::{HoverReader, HoverReply, HoverRequest};
+use crate::engine::work_pool::JobKey;
+use crate::engine::time::hover::{HoverReply, HoverRequest};
 use crate::engine::time::renderer::{render_on_worker, TimeViewKind};
 use crate::engine::time::view::{HoverTarget, TimeView, ViewId};
 use crate::store::{AppEvent, Store};
 use dsp_base::resampler::summary::BASE as SUMMARY_BASE;
 
-/// The background threads every view shares.
-pub struct Services {
-    pub pool: RenderPool,
-    pub hover: HoverReader,
-    pub compute: ComputeService,
-}
-
-impl Global for Services {}
-
-impl Services {
-    pub fn install(cx: &mut App) {
-        cx.set_global(Services {
-            pool: RenderPool::new(RenderPool::default_threads()),
-            hover: HoverReader::spawn(),
-            compute: ComputeService::new(2),
-        });
-    }
-}
+use super::services::{Services, RENDER_SLOT};
 
 /// The frame on screen and what it shows.
 #[derive(Clone)]
@@ -210,14 +192,17 @@ impl TraceVm {
         let samples_per_px = req.window_sec * dataset.sample_rate / req.width.max(1) as f64;
         let (start, window) = (req.window_start_sec, req.window_sec);
         let tx = self.frames.clone();
-        let deliver = Arc::new(move |out: Rendered, info: FrameInfo| {
-            let (w, h) = (out.frame.width, out.frame.height);
-            let Some(buffer) = image::RgbaImage::from_raw(w, h, out.frame.into_bgra()) else { return };
+        let work = Box::new(move |cancel: &std::sync::atomic::AtomicBool| {
+            let t0 = Instant::now();
+            let Some((frame, scale)) = render_on_worker(&req, cancel) else { return };
+            let (w, h) = (frame.width, frame.height);
+            let Some(buffer) = image::RgbaImage::from_raw(w, h, frame.into_bgra()) else { return };
+            // Converted here, on the work thread: the UI thread only shows it
             let image = Arc::new(RenderImage::new(vec![image::Frame::new(buffer)]));
             let shown = Shown { image, start, window };
-            let _ = tx.try_send(Delivered { shown, scale: out.scale, elapsed: info.elapsed, samples_per_px });
+            let _ = tx.try_send(Delivered { shown, scale: Some(scale), elapsed: t0.elapsed(), samples_per_px });
         });
-        cx.global::<Services>().pool.request(RenderJob { key: self.view.id, render: Box::new(move |ctx| render_on_worker(&req, ctx)), deliver });
+        cx.global::<Services>().pool.request(JobKey::new(self.view.id, RENDER_SLOT), work);
     }
 
     fn on_frame(&mut self, d: Delivered, cx: &mut Context<Self>) {

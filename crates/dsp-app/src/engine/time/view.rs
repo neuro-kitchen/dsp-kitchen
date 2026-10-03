@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use dsp_core::RecordingSource;
 use dsp_base::resampler::{MinMaxCache, MinMaxSummary};
 
-use crate::engine::axis::nice_step;
+use dsp_base::math::{nice_step, ticks};
 use crate::engine::canvas::Pixel;
 use crate::engine::data::{Dataset, SpikeEventStore};
 
@@ -273,25 +273,9 @@ impl TimeView {
         let t0 = timeline.window_start_sec;
         let win = timeline.visible_window_sec;
         let logical_w = self.canvas_width as f32 / self.scale_factor.max(0.1);
-        let target = (logical_w / 110.0).clamp(2.0, 12.0) as f64;
-        let step = nice_step(win / target);
-        let decimals = (-step.log10().floor()).max(0.0) as usize;
-
-        let mut ticks = Vec::new();
-        let mut i = (t0 / step).ceil() as i64;
-        loop {
-            let t = i as f64 * step;
-            if t > t0 + win + 1e-12 {
-                break;
-            }
-            ticks.push(AxisTick {
-                time_sec: t,
-                frac: ((t - t0) / win) as f32,
-                label: format!("{t:.decimals$} s"),
-            });
-            i += 1;
-        }
-        ticks
+        let target = (logical_w / 110.0).clamp(2.0, 12.0) as usize;
+        let (values, decimals) = ticks(t0, t0 + win, target);
+        values.into_iter().map(|t| AxisTick { time_sec: t, frac: ((t - t0) / win) as f32, label: format!("{t:.decimals$} s") }).collect()
     }
 
     /// Channel labels for the left gutter (every lane for traces, sparse rows for heatmap).

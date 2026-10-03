@@ -42,8 +42,8 @@ fn eval_clause(clause: &str, c: &ClusterMeta) -> bool {
         if let Some((lhs, rhs)) = clause.split_once(op) {
             let field = lhs.trim().to_lowercase();
             let raw_rhs = rhs.trim().trim_matches(|ch| ch == '\'' || ch == '"');
-            if let Some(num_lhs) = numeric_field(&field, c) {
-                if let Ok(num_rhs) = raw_rhs.parse::<f64>() {
+            if let Some(num_lhs) = numeric_field(&field, c)
+                && let Ok(num_rhs) = raw_rhs.parse::<f64>() {
                     return match op {
                         "==" => (num_lhs - num_rhs).abs() < 1e-6,
                         "!=" => (num_lhs - num_rhs).abs() >= 1e-6,
@@ -54,7 +54,6 @@ fn eval_clause(clause: &str, c: &ClusterMeta) -> bool {
                         _ => false,
                     };
                 }
-            }
             if let Some(str_lhs) = string_field(&field, c) {
                 let a = str_lhs.to_lowercase();
                 let b = raw_rhs.to_lowercase();

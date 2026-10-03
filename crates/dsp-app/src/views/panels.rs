@@ -267,11 +267,10 @@ impl ChannelsPanel {
         );
         let rows: Vec<usize> = (0..total)
             .filter(|&c| {
-                if let Some(sh) = shank_filter {
-                    if ds.as_ref().and_then(|d| d.site(c)).is_none_or(|s| s.shank_id != sh) {
+                if let Some(sh) = shank_filter
+                    && ds.as_ref().and_then(|d| d.site(c)).is_none_or(|s| s.shank_id != sh) {
                         return false;
                     }
-                }
                 filter.is_empty() || c.to_string().contains(&filter) || sites[c].as_ref().is_some_and(|s| s.to_lowercase().contains(&filter))
             })
             .collect();

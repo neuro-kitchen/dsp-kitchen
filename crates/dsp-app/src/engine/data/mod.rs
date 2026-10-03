@@ -3,7 +3,6 @@
 pub mod dataset;
 pub mod events;
 pub mod sources;
-pub mod summarize;
 
 pub use dataset::Dataset;
 pub use events::SpikeEventStore;
