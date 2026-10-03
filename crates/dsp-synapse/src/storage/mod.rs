@@ -12,6 +12,7 @@ pub mod nwb_units;
 pub mod phy;
 pub mod phy_sorting;
 pub mod zarr_analyzer;
+pub mod zarr_store;
 
 use std::path::Path;
 use dsp_core::{DspError, DspResult};
@@ -62,16 +63,19 @@ pub fn load_sorting(path: &Path) -> DspResult<SortingOutput> {
     if path.join("spike_times.npy").exists() {
         return load_phy_folder(path);
     }
-    if path.join("units").join("spike_times.npy").exists() || path.join("units").join("spike_times_index.npy").exists() {
-        return load_nwb_units(path, 30_000.0);
+    if zarr_store::has_array(path, "/units/spike_times")
+        || zarr_store::has_array(path, "/units/spike_times_index")
+        || (zarr_store::has_array(path, "/spike_times") && zarr_store::has_array(path, "/spike_times_index"))
+    {
+        return load_nwb_units(path, None);
     }
-    if path.join("spikes").join("times.npy").exists() && path.join("zarr.json").exists() {
+    if zarr_store::has_array(path, "/spikes/times") && path.join("zarr.json").exists() {
         return load_sorting_zarr(path);
     }
 
     let p_str = path.to_string_lossy();
     if p_str.ends_with(".nwb.zarr") {
-        return load_nwb_units(path, 30_000.0);
+        return load_nwb_units(path, None);
     }
     if p_str.ends_with(".sorting.zarr") || p_str.ends_with(".zarr") {
         return load_sorting_zarr(path);

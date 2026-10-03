@@ -12,13 +12,26 @@ use dsp_core::SensorLayout;
 use serde::{Deserialize, Serialize};
 
 use crate::metrics::{
-    compute_amplitude_cutoff, compute_isi_violations, compute_presence_ratio, compute_snr,
+    QualityCriteria, compute_amplitude_cutoff, compute_isi_violations, compute_presence_ratio,
+    compute_snr,
 };
 use crate::sorting::MotorUnitPulseTrain;
 use crate::spatial::DriftEstimate;
 use super::events::DeduplicatedSpike;
 use super::snippets::WaveformSnippet;
 use super::template::{compute_mean_template, UnitQualityLabel, WaveformTemplate};
+
+/// Optional source recording provenance associated with a [`SortingOutput`] (e.g., from `params.py`
+/// or the recording source that was sorted). Avoids hardcoding dummy `recording.dat` / `int16`
+/// values when exporting to Phy.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct RecordingMeta {
+    pub dat_path: Option<String>,
+    pub dtype: Option<String>,
+    pub offset: u64,
+    pub hp_filtered: bool,
+    pub n_channels_dat: Option<usize>,
+}
 
 pub mod serde_nan {
     use serde::{Deserialize, Deserializer};
@@ -55,7 +68,7 @@ pub struct SortedUnit {
     pub locations_um: Vec<[f32; 3]>,
     /// Multi-channel waveform template (`mean`, `std`, and `se = std / sqrt(n)`).
     pub template: Option<WaveformTemplate>,
-    /// Automated or curated quality classification (`SingleUnit`, `MultiUnit`, `Noise`).
+    /// Automated or curated quality classification (`SingleUnit`, `MultiUnit`, `Noise`, `Unsorted`).
     pub quality_label: UnitQualityLabel,
     /// Peak-to-noise ratio (`|peak_uv| / sigma_noise_uv`).
     #[serde(default, deserialize_with = "serde_nan::deserialize_f32")]
@@ -95,17 +108,49 @@ impl PartialEq for SortedUnit {
 }
 
 impl SortedUnit {
-    /// Creates a `SortedUnit` and computes standard firing & IBL quality metrics automatically.
+    /// Creates a `SortedUnit` and computes standard firing & IBL quality metrics using default
+    /// [`QualityCriteria`] and a known `channel_noise_std_uv`.
+    #[allow(clippy::too_many_arguments)]
     pub fn from_spikes(
         unit_id: usize,
         primary_channel: usize,
+        spike_samples: Vec<u64>,
+        amplitudes_uv: Vec<f32>,
+        locations_um: Vec<[f32; 3]>,
+        template: Option<WaveformTemplate>,
+        sample_rate_hz: f64,
+        total_samples: u64,
+        channel_noise_std_uv: f32,
+    ) -> Self {
+        Self::from_spikes_with(
+            unit_id,
+            Some(primary_channel),
+            spike_samples,
+            amplitudes_uv,
+            locations_um,
+            template,
+            sample_rate_hz,
+            total_samples,
+            Some(channel_noise_std_uv),
+            QualityCriteria::default(),
+        )
+    }
+
+    /// Creates a `SortedUnit` with configurable [`QualityCriteria`], optional `primary_channel`
+    /// (inferred from `template.best_channel()` when `None`), and optional `channel_noise_std_uv`
+    /// (leaving `snr` as `NaN` rather than fabricating a dummy noise floor when `None`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_spikes_with(
+        unit_id: usize,
+        primary_channel: Option<usize>,
         mut spike_samples: Vec<u64>,
         mut amplitudes_uv: Vec<f32>,
         mut locations_um: Vec<[f32; 3]>,
         template: Option<WaveformTemplate>,
         sample_rate_hz: f64,
         total_samples: u64,
-        channel_noise_std_uv: f32,
+        channel_noise_std_uv: Option<f32>,
+        criteria: QualityCriteria,
     ) -> Self {
         // Ensure spikes (and parallel per-spike vectors) are sorted chronologically
         if !spike_samples.windows(2).all(|w| w[0] <= w[1]) {
@@ -128,7 +173,13 @@ impl SortedUnit {
                 .map_or(1.0, |&last| ((last + 1) as f64) / sample_rate_hz.max(1.0))
         };
 
-        let isi = compute_isi_violations(&spike_samples, sample_rate_hz, duration_sec, 1.5, 0.0);
+        let isi = compute_isi_violations(
+            &spike_samples,
+            sample_rate_hz,
+            duration_sec,
+            criteria.refractory_ms,
+            criteria.censored_ms,
+        );
         let presence_bin_s = (duration_sec / 10.0).clamp(0.5, 60.0);
         let presence = compute_presence_ratio(
             &spike_samples,
@@ -160,22 +211,18 @@ impl SortedUnit {
                     .max_by(|a, b| a.total_cmp(b))
             })
             .unwrap_or(0.0);
-        let snr = compute_snr(peak_uv, channel_noise_std_uv.max(1e-3));
-
-        // Automated IBL / Allen quality label heuristic
-        let quality_label = if snr < 1.5 || spike_samples.len() < 3 {
-            UnitQualityLabel::Noise
-        } else if (isi.isi_violations_ratio.is_nan() || isi.isi_violations_ratio < 0.5)
-            && snr >= 3.0
-        {
-            UnitQualityLabel::SingleUnit
-        } else {
-            UnitQualityLabel::MultiUnit
+        let snr = match channel_noise_std_uv {
+            Some(sd) => compute_snr(peak_uv, sd.max(1e-3)),
+            None => f32::NAN,
         };
+        let resolved_primary = primary_channel
+            .or_else(|| template.as_ref().and_then(|t| t.best_channel()))
+            .unwrap_or(0);
+        let quality_label = criteria.classify(spike_samples.len(), snr, isi.isi_violations_ratio);
 
         Self {
             unit_id,
-            primary_channel,
+            primary_channel: resolved_primary,
             spike_samples,
             amplitudes_uv,
             locations_um,
@@ -210,6 +257,9 @@ pub struct SortingOutput {
     pub units: Vec<SortedUnit>,
     /// Optional rigid vertical probe drift estimate.
     pub drift: Option<DriftEstimate>,
+    /// Optional recording provenance (e.g. `dat_path`, `dtype`, `offset`, `hp_filtered`).
+    #[serde(default)]
+    pub recording_meta: RecordingMeta,
 }
 
 impl SortingOutput {
@@ -230,7 +280,14 @@ impl SortingOutput {
             probe,
             units,
             drift,
+            recording_meta: RecordingMeta::default(),
         }
+    }
+
+    /// Attaches recording provenance metadata (`dat_path`, `dtype`, `offset`, `hp_filtered`).
+    pub fn with_recording_meta(mut self, recording_meta: RecordingMeta) -> Self {
+        self.recording_meta = recording_meta;
+        self
     }
 
     /// Builds a `SortingOutput` from deduplicated spikes, cluster `labels` (`-1` = noise/unassigned),
@@ -389,4 +446,71 @@ impl SortingOutput {
         }
         (samples, clusters, amps, locs)
     }
+
+    /// Groups flat per-spike arrays `(times, clusters, amplitudes, locations)` by non-negative
+    /// cluster ID, returning `(spike_samples, amplitudes_uv, locations_um)` per cluster.
+    pub fn group_spikes_by_cluster(
+        times: &[u64],
+        clusters: &[i32],
+        amplitudes: &[f32],
+        locations: &[[f32; 3]],
+    ) -> BTreeMap<usize, (Vec<u64>, Vec<f32>, Vec<[f32; 3]>)> {
+        let n = times.len().min(clusters.len());
+        let mut groups: BTreeMap<usize, (Vec<u64>, Vec<f32>, Vec<[f32; 3]>)> = BTreeMap::new();
+        for i in 0..n {
+            let c = clusters[i];
+            if c >= 0 {
+                let entry = groups.entry(c as usize).or_default();
+                entry.0.push(times[i]);
+                if let Some(&amp) = amplitudes.get(i) {
+                    entry.1.push(amp);
+                }
+                if let Some(&loc) = locations.get(i) {
+                    entry.2.push(loc);
+                }
+            }
+        }
+        groups
+    }
+
+    /// Packs unit spike trains into NWB's ragged `(unit_ids, spike_times_sec, spike_times_index)`
+    /// representation with full `f64` timestamp precision.
+    pub fn to_ragged_spikes(&self) -> (Vec<i64>, Vec<f64>, Vec<u64>) {
+        let fs = self.sample_rate_hz.max(f64::MIN_POSITIVE);
+        let mut unit_ids = Vec::with_capacity(self.units.len());
+        let mut spike_times_sec = Vec::with_capacity(self.total_spikes());
+        let mut spike_times_index = Vec::with_capacity(self.units.len());
+        let mut cum = 0u64;
+        for u in &self.units {
+            unit_ids.push(u.unit_id as i64);
+            for &s in &u.spike_samples {
+                spike_times_sec.push((s as f64) / fs);
+            }
+            cum += u.spike_samples.len() as u64;
+            spike_times_index.push(cum);
+        }
+        (unit_ids, spike_times_sec, spike_times_index)
+    }
+
+    /// Unpacks NWB's ragged `(unit_ids, spike_times_sec, spike_times_index)` arrays into
+    /// `(unit_id, spike_samples)` pairs at `sample_rate_hz`.
+    pub fn unpack_ragged_spikes(
+        unit_ids: &[i64],
+        spike_times_sec: &[f64],
+        spike_times_index: &[u64],
+        sample_rate_hz: f64,
+    ) -> Vec<(usize, Vec<u64>)> {
+        let fs = sample_rate_hz.max(f64::MIN_POSITIVE);
+        let mut prev = 0usize;
+        let mut out = Vec::with_capacity(unit_ids.len());
+        for (pos, &uid) in unit_ids.iter().enumerate() {
+            let end = spike_times_index.get(pos).copied().unwrap_or(0) as usize;
+            let slice = &spike_times_sec[prev.min(spike_times_sec.len())..end.min(spike_times_sec.len())];
+            let samples: Vec<u64> = slice.iter().map(|&t| (t * fs).round().max(0.0) as u64).collect();
+            prev = end;
+            out.push((uid.max(0) as usize, samples));
+        }
+        out
+    }
 }
+

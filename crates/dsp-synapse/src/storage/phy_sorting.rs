@@ -13,12 +13,18 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-use dsp_base::resampler::minmax::peak_to_peak;
-use dsp_core::{DspError, DspResult, Position3D, SensorLayout, SensorSite};
+use dsp_core::{DspError, DspResult, SensorLayout};
 
 use super::npy::{read_npy, write_npy, NpyArray, NpyElement};
-use crate::core::{SortedUnit, SortingOutput, UnitQualityLabel, WaveformTemplate};
+use crate::core::{
+    DenseTemplates, RecordingMeta, SortedUnit, SortingOutput, TemplateAxisOrder, UnitQualityLabel,
+    WaveformTemplate,
+};
+use crate::metrics::QualityCriteria;
 use crate::sorting::similarity::compute_template_similarity_matrix;
+
+/// Dense templates `[count, samples, channels]` (C order), as `templates.npy`.
+pub use crate::core::DenseTemplates as PhyTemplates;
 
 /// Cluster (and template) ids as phy stores them.
 pub type ClusterId = u32;
@@ -62,70 +68,27 @@ impl PhyParams {
     }
 }
 
-/// The recording `dat_path` names: as written, relative to the folder, else a file of that name in
-/// the folder or up to three folders above it (paths written on another machine, e.g. Windows).
+fn is_recording_target(p: &Path) -> bool {
+    p.is_file() || (p.is_dir() && (p.join("acquisition").is_dir() || p.join("zarr.json").is_file()))
+}
+
+/// The recording `dat_path` names: as written, relative to the folder, else a file/store of that
+/// name in the folder or up to three folders above it (paths written on another machine).
 pub fn resolve_dat_path(sorting_dir: &Path, dat_path: &str) -> Option<PathBuf> {
     let direct = PathBuf::from(dat_path);
-    if direct.is_file() {
+    if is_recording_target(&direct) {
         return Some(direct);
     }
     let relative = sorting_dir.join(dat_path);
-    if relative.is_file() {
+    if is_recording_target(&relative) {
         return Some(relative);
     }
     let name = dat_path.rsplit(['/', '\\']).next().filter(|n| !n.is_empty())?;
-    sorting_dir.ancestors().take(4).map(|d| d.join(name)).find(|p| p.is_file())
-}
-
-/// Dense templates `[count, samples, channels]` (C order), as `templates.npy`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PhyTemplates {
-    pub data: Vec<f32>,
-    pub count: usize,
-    pub samples: usize,
-    pub channels: usize,
-}
-
-impl PhyTemplates {
-    /// Template `t` on `channel` over time.
-    pub fn trace(&self, t: usize, channel: usize) -> Vec<f32> {
-        (0..self.samples).map(|s| self.data[(t * self.samples + s) * self.channels + channel]).collect()
-    }
-
-    /// Peak-to-peak of template `t` on each channel.
-    pub fn peak_to_peak(&self, t: usize) -> Vec<f32> {
-        if t >= self.count {
-            return vec![0.0; self.channels];
-        }
-        (0..self.channels).map(|c| peak_to_peak(&self.trace(t, c))).collect()
-    }
-
-    /// Channel where template `t` is largest (peak-to-peak).
-    pub fn best_channel(&self, t: usize) -> usize {
-        self.top_channels(t, 1).first().copied().unwrap_or(0)
-    }
-
-    /// The `k` channels where template `t` is largest, largest first.
-    pub fn top_channels(&self, t: usize, k: usize) -> Vec<usize> {
-        let ptp = self.peak_to_peak(t);
-        let mut order: Vec<usize> = (0..self.channels).collect();
-        order.sort_by(|&a, &b| ptp[b].total_cmp(&ptp[a]).then(a.cmp(&b)));
-        order.truncate(k.min(self.channels));
-        order
-    }
-
-    /// Largest peak-to-peak of template `t` over its channels.
-    pub fn amplitude(&self, t: usize) -> f32 {
-        self.peak_to_peak(t).into_iter().fold(0.0, f32::max)
-    }
-
-    /// Template `t` as a [`WaveformTemplate`] on the channels where it is not zero.
-    pub fn waveform(&self, t: usize) -> WaveformTemplate {
-        let channels: Vec<usize> = (0..self.channels).filter(|&c| self.trace(t, c).iter().any(|v| *v != 0.0)).collect();
-        let mean: Vec<f32> = channels.iter().flat_map(|&c| self.trace(t, c)).collect();
-        let std = vec![0.0; mean.len()];
-        WaveformTemplate::new(channels, self.samples, mean, std)
-    }
+    sorting_dir
+        .ancestors()
+        .take(4)
+        .map(|d| d.join(name))
+        .find(|p| is_recording_target(p))
 }
 
 /// The cluster tables of a phy folder, by cluster id (values as written).
@@ -269,21 +232,8 @@ impl PhySorting {
             // Sparse templates (Kilosort 1–3): `templates_ind.npy` names each stored column's channel
             let ind = optional::<usize>(dir, "templates_ind.npy").filter(|i| i.shape == [count, stored]);
             match ind {
-                Some(ind) if stored < channels => {
-                    let mut dense = vec![0.0f32; count * samples * channels];
-                    for t in 0..count {
-                        for k in 0..stored {
-                            let ch = ind.data[t * stored + k];
-                            if ch < channels {
-                                for s in 0..samples {
-                                    dense[(t * samples + s) * channels + ch] = a.data[(t * samples + s) * stored + k];
-                                }
-                            }
-                        }
-                    }
-                    PhyTemplates { data: dense, count, samples, channels }
-                }
-                _ => PhyTemplates { data: a.data, count, samples, channels: stored },
+                Some(ind) if stored < channels => DenseTemplates::from_sparse(&a.data, count, samples, stored, &ind.data, channels),
+                _ => DenseTemplates { data: a.data, count, samples, channels: stored },
             }
         });
         let same_shape = |name: &str| optional::<f32>(dir, name).filter(|a| templates.as_ref().is_some_and(|t| a.data.len() == t.data.len())).map(|a| a.data);
@@ -328,38 +278,54 @@ impl PhySorting {
         let channels = so.probe.as_ref().map(|p| p.total_channels()).unwrap_or_else(|| {
             so.units.iter().filter_map(|u| u.template.as_ref()).flat_map(|t| t.channel_ids.iter().copied()).max().map_or(0, |c| c + 1)
         });
-        let samples = so.units.iter().filter_map(|u| u.template.as_ref()).map(|t| t.num_samples).max().unwrap_or(0);
-        let count = so.units.iter().map(|u| u.unit_id + 1).max().unwrap_or(0);
-        let templates = (samples > 0 && channels > 0).then(|| {
-            let mut data = vec![0.0f32; count * samples * channels];
-            for u in &so.units {
-                let Some(t) = &u.template else { continue };
-                for (r, &ch) in t.channel_ids.iter().enumerate().filter(|(_, c)| **c < channels) {
-                    for (s, &v) in t.row(r).iter().enumerate().take(samples) {
-                        data[(u.unit_id * samples + s) * channels + ch] = v;
-                    }
-                }
-            }
-            PhyTemplates { data, count, samples, channels }
-        });
-        let label = |q: UnitQualityLabel| match q {
-            UnitQualityLabel::SingleUnit => "good",
-            UnitQualityLabel::MultiUnit => "mua",
-            UnitQualityLabel::Noise => "noise",
+        let (templates, templates_std, templates_se) = match DenseTemplates::pack_units(
+            so.units.iter().map(|u| (u.unit_id, u.template.as_ref())),
+            channels,
+            TemplateAxisOrder::SamplesChannels,
+        ) {
+            Some(([count, samples, ch], t_mean, t_std, t_se)) => (
+                Some(DenseTemplates { data: t_mean, count, samples, channels: ch }),
+                Some(t_std),
+                Some(t_se),
+            ),
+            None => (None, None, None),
         };
-        let group: BTreeMap<ClusterId, String> = so.units.iter().map(|u| (u.unit_id as ClusterId, label(u.quality_label).to_string())).collect();
-        let sites = so.probe.as_ref().map(|p| p.sites().to_vec()).unwrap_or_default();
+
+        let group: BTreeMap<ClusterId, String> = so
+            .units
+            .iter()
+            .map(|u| (u.unit_id as ClusterId, u.quality_label.as_str().to_string()))
+            .collect();
+
+        let (channel_map, channel_positions, channel_shanks) = so
+            .probe
+            .as_ref()
+            .map(SensorLayout::to_channel_arrays)
+            .unwrap_or_default();
+
+        let m = &so.recording_meta;
+        let params = PhyParams {
+            sample_rate: so.sample_rate_hz,
+            dat_path: m.dat_path.clone(),
+            n_channels_dat: m.n_channels_dat.unwrap_or(channels),
+            dtype: m.dtype.clone(),
+            offset: m.offset,
+            hp_filtered: m.hp_filtered,
+        };
+
         let mut sorting = Self {
-            params: PhyParams { sample_rate: so.sample_rate_hz, ..Default::default() },
+            params,
             spike_templates: spike_clusters.clone(),
             spike_clusters,
             spike_times,
             amplitudes,
             spike_positions: locations.iter().map(|l| [l[0], l[1]]).collect(),
-            channel_map: sites.iter().map(|s| s.channel_id).collect(),
-            channel_positions: sites.iter().map(|s| [s.position.x_um, s.position.y_um]).collect(),
-            channel_shanks: sites.iter().map(|s| s.shank_id).collect(),
+            channel_map,
+            channel_positions,
+            channel_shanks,
             templates,
+            templates_std,
+            templates_se,
             tables: ClusterTables { ks_label: group.clone(), group, ..Default::default() },
             ..Default::default()
         };
@@ -408,8 +374,7 @@ impl PhySorting {
         }
     }
 
-    /// Back to a unit-by-unit [`SortingOutput`] (`unsorted` and unknown groups become noise, as
-    /// before).
+    /// Back to a unit-by-unit [`SortingOutput`].
     pub fn to_sorting_output(&self) -> SortingOutput {
         let rate = self.params.sample_rate;
         let total_samples = self.spike_times.iter().copied().max().unwrap_or(0);
@@ -420,45 +385,99 @@ impl PhySorting {
         let units = by_cluster
             .into_iter()
             .map(|(id, idx)| {
-                let template = self.templates.as_ref().filter(|t| (id as usize) < t.count).map(|t| {
-                    let tid = id as usize;
-                    let channels: Vec<usize> = (0..t.channels).collect();
-                    let at = |data: &[f32], c: usize, s: usize| data[(tid * t.samples + s) * t.channels + c];
-                    let mean: Vec<f32> = channels.iter().flat_map(|&c| (0..t.samples).map(move |s| (c, s))).map(|(c, s)| at(&t.data, c, s)).collect();
-                    let std = match &self.templates_std {
-                        Some(sd) => channels.iter().flat_map(|&c| (0..t.samples).map(move |s| (c, s))).map(|(c, s)| at(sd, c, s)).collect(),
-                        None => vec![1.0; mean.len()],
+                let rep_tid = idx
+                    .first()
+                    .and_then(|&i| self.spike_templates.get(i).copied())
+                    .unwrap_or(id) as usize;
+                let template = self.templates.as_ref().and_then(|t| {
+                    let tid = if (id as usize) < t.count {
+                        id as usize
+                    } else if rep_tid < t.count {
+                        rep_tid
+                    } else {
+                        return None;
                     };
-                    let mut w = WaveformTemplate::with_count(channels.clone(), t.samples, idx.len(), mean, std);
-                    if let Some(se) = &self.templates_se {
-                        w.se = channels.iter().flat_map(|&c| (0..t.samples).map(move |s| (c, s))).map(|(c, s)| at(se, c, s)).collect();
-                    }
-                    w
+                    DenseTemplates::unpack_unit(
+                        tid,
+                        [t.count, t.samples, t.channels],
+                        TemplateAxisOrder::SamplesChannels,
+                        &t.data,
+                        self.templates_std.as_deref(),
+                        self.templates_se.as_deref(),
+                        idx.len(),
+                    )
                 });
+
+                let info_row = self.tables.info.get(&id);
+                let primary_channel = info_row
+                    .and_then(|r| r.get("ch").or_else(|| r.get("chan")))
+                    .and_then(|v| v.parse::<usize>().ok());
+
                 let times = idx.iter().map(|&i| self.spike_times[i]).collect();
                 let amps = idx.iter().filter_map(|&i| self.amplitudes.get(i).copied()).collect();
                 let locs = idx.iter().filter_map(|&i| self.spike_positions.get(i)).map(|p| [p[0], p[1], 0.0]).collect();
-                let mut unit = SortedUnit::from_spikes(id as usize, 0, times, amps, locs, template, rate, total_samples, 10.0);
-                if let Some(g) = self.tables.group.get(&id).or_else(|| self.tables.ks_label.get(&id)) {
-                    unit.quality_label = match g.to_ascii_lowercase().as_str() {
-                        "good" => UnitQualityLabel::SingleUnit,
-                        "mua" => UnitQualityLabel::MultiUnit,
-                        _ => UnitQualityLabel::Noise,
-                    };
+
+                let mut unit = SortedUnit::from_spikes_with(
+                    id as usize,
+                    primary_channel,
+                    times,
+                    amps,
+                    locs,
+                    template,
+                    rate,
+                    total_samples,
+                    None,
+                    QualityCriteria::PHY,
+                );
+
+                if let Some(row) = info_row {
+                    if let Some(snr) = row.get("snr").and_then(|v| v.parse::<f32>().ok()) {
+                        unit.snr = snr;
+                    }
+                    if let Some(fr) = row.get("firing_rate").or_else(|| row.get("fr")).and_then(|v| v.parse::<f64>().ok()) {
+                        unit.firing_rate_hz = fr;
+                    }
+                    if let Some(isi) = row.get("isi_viol").and_then(|v| v.parse::<f64>().ok()) {
+                        unit.isi_violation_ratio = isi;
+                    }
+                    if let Some(pr) = row.get("presence_ratio").and_then(|v| v.parse::<f64>().ok()) {
+                        unit.presence_ratio = pr;
+                    }
+                    if let Some(ac) = row.get("amplitude_cutoff").and_then(|v| v.parse::<f64>().ok()) {
+                        unit.amplitude_cutoff = ac;
+                    }
+                }
+
+                if let Some(g) = self
+                    .tables
+                    .group
+                    .get(&id)
+                    .or_else(|| info_row.and_then(|r| r.get("group")))
+                    .or_else(|| self.tables.ks_label.get(&id))
+                {
+                    unit.quality_label = UnitQualityLabel::parse(g);
                 }
                 unit
             })
             .collect();
-        let probe = (!self.channel_positions.is_empty()).then(|| {
-            let contacts = self
-                .channel_positions
-                .iter()
-                .enumerate()
-                .map(|(i, p)| SensorSite::new(self.channel_map.get(i).copied().unwrap_or(i), Position3D::new(p[0], p[1], 0.0), self.channel_shanks.get(i).copied().unwrap_or(0)))
-                .collect();
-            SensorLayout::new("phy_probe", contacts)
-        });
+
+        let probe = SensorLayout::from_channel_arrays(
+            "phy_probe",
+            &self.channel_map,
+            &self.channel_positions,
+            &self.channel_shanks,
+        );
+
+        let recording_meta = RecordingMeta {
+            dat_path: self.params.dat_path.clone(),
+            dtype: self.params.dtype.clone(),
+            offset: self.params.offset,
+            hp_filtered: self.params.hp_filtered,
+            n_channels_dat: (self.params.n_channels_dat > 0).then_some(self.params.n_channels_dat),
+        };
+
         SortingOutput::new("kilosort_phy", rate, total_samples, probe, units, None)
+            .with_recording_meta(recording_meta)
     }
 
     /// Writes curation results into `dir`: `spike_clusters.npy` (from `spike_clusters`),
@@ -509,7 +528,9 @@ pub fn load_spikes(path: &Path) -> DspResult<PhySorting> {
     if let Some(dir) = folder.filter(|d| d.join("spike_times.npy").exists()) {
         return PhySorting::load(dir);
     }
-    Ok(PhySorting::from_sorting_output(&super::load_sorting(path)?))
+    let mut sorting = PhySorting::from_sorting_output(&super::load_sorting(path)?);
+    sorting.folder = folder.map(Path::to_path_buf);
+    Ok(sorting)
 }
 
 #[cfg(test)]

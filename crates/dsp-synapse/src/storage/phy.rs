@@ -17,7 +17,8 @@ use std::io::Write;
 use std::path::Path;
 
 use dsp_core::{DspError, DspResult};
-use crate::core::{SortingOutput, UnitQualityLabel};
+use crate::core::{DenseTemplates, SortingOutput, TemplateAxisOrder, WaveformTemplate};
+use crate::sorting::similarity::compute_template_similarity_matrix;
 use super::npy::{write_npy_f32_1d, write_npy_f32_2d, write_npy_f32_3d, write_npy_i32_1d, write_npy_u64_1d};
 use super::phy_sorting::PhySorting;
 
@@ -36,8 +37,6 @@ pub fn save_phy_folder(sorting: &SortingOutput, dir: &Path) -> DspResult<()> {
         write_npy_f32_2d(&dir.join("spike_positions.npy"), &flat_locs, [locs.len(), 3])?;
     }
 
-    // Determine common template shape [N_units, N_samples, N_channels]
-    let num_units = sorting.units.len();
     let num_channels = sorting
         .probe
         .as_ref()
@@ -47,90 +46,48 @@ pub fn save_phy_folder(sorting: &SortingOutput, dir: &Path) -> DspResult<()> {
                 .units
                 .iter()
                 .filter_map(|u| u.template.as_ref())
-                .map(|t| t.num_channels)
+                .flat_map(|t| t.channel_ids.iter().copied())
                 .max()
-                .unwrap_or(1)
+                .map_or(1, |c| c + 1)
         });
 
-    let template_samples = sorting
-        .units
-        .iter()
-        .filter_map(|u| u.template.as_ref())
-        .map(|t| t.num_samples)
-        .max()
-        .unwrap_or(0);
-
-    if num_units > 0 && template_samples > 0 && num_channels > 0 {
-        let total_t_elems = num_units * template_samples * num_channels;
-        let mut t_mean = vec![0.0f32; total_t_elems];
-        let mut t_std = vec![0.0f32; total_t_elems];
-        let mut t_se = vec![0.0f32; total_t_elems];
-
-        for (u_idx, unit) in sorting.units.iter().enumerate() {
-            if let Some(t) = &unit.template {
-                let off = u_idx * template_samples * num_channels;
-                for (r, &ch) in t.channel_ids.iter().enumerate() {
-                    if ch < num_channels {
-                        for s in 0..t.num_samples.min(template_samples) {
-                            let idx = off + s * num_channels + ch;
-                            t_mean[idx] = t.row(r)[s];
-                            t_std[idx] = t.std[r * t.num_samples + s];
-                            t_se[idx] = t.se[r * t.num_samples + s];
-                        }
-                    }
-                }
-            }
-        }
-
-        let shape = [num_units, template_samples, num_channels];
+    if let Some((shape, t_mean, t_std, t_se)) = DenseTemplates::pack_units(
+        sorting.units.iter().map(|u| (u.unit_id, u.template.as_ref())),
+        num_channels,
+        TemplateAxisOrder::SamplesChannels,
+    ) {
+        let [count, template_samples, channels] = shape;
         write_npy_f32_3d(&dir.join("templates.npy"), &t_mean, shape)?;
         write_npy_f32_3d(&dir.join("templates_std.npy"), &t_std, shape)?;
         write_npy_f32_3d(&dir.join("templates_se.npy"), &t_se, shape)?;
 
-        // Compute and write similar_templates.npy [num_units, num_units]
-        let mut sim_matrix = vec![0.0f32; num_units * num_units];
-        let t_len = template_samples * num_channels;
-        let mut norms = vec![0.0f32; num_units];
-        for u in 0..num_units {
-            let u_slice = &t_mean[u * t_len..(u + 1) * t_len];
-            let norm = u_slice.iter().map(|&x| x * x).sum::<f32>().sqrt();
-            norms[u] = if norm > 1e-9 { norm } else { 1.0 };
-        }
-        for u1 in 0..num_units {
-            let s1 = &t_mean[u1 * t_len..(u1 + 1) * t_len];
-            for u2 in 0..num_units {
-                let s2 = &t_mean[u2 * t_len..(u2 + 1) * t_len];
-                let dot: f32 = s1.iter().zip(s2).map(|(&a, &b)| a * b).sum();
-                sim_matrix[u1 * num_units + u2] = dot / (norms[u1] * norms[u2]);
-            }
-        }
-        write_npy_f32_2d(&dir.join("similar_templates.npy"), &sim_matrix, [num_units, num_units])?;
+        let dense = DenseTemplates {
+            data: t_mean,
+            count,
+            samples: template_samples,
+            channels,
+        };
+        let waveforms: Vec<WaveformTemplate> = (0..count).map(|i| dense.waveform(i)).collect();
+        let sim_matrix = compute_template_similarity_matrix(&waveforms, 5);
+        write_npy_f32_2d(&dir.join("similar_templates.npy"), &sim_matrix, [count, count])?;
     }
 
     // Probe geometry: channel_map.npy, channel_positions.npy, and channel_shanks.npy
     if let Some(probe) = &sorting.probe {
-        let ch_ids: Vec<i32> = probe.contacts.iter().map(|c| c.channel_id as i32).collect();
+        let (ch_map, ch_pos, ch_shanks) = probe.to_channel_arrays();
+        let ch_ids: Vec<i32> = ch_map.into_iter().map(|c| c as i32).collect();
         write_npy_i32_1d(&dir.join("channel_map.npy"), &ch_ids)?;
-        let shanks: Vec<i32> = probe.contacts.iter().map(|c| c.shank_id as i32).collect();
+        let shanks: Vec<i32> = ch_shanks.into_iter().map(|s| s as i32).collect();
         write_npy_i32_1d(&dir.join("channel_shanks.npy"), &shanks)?;
-        let mut pos = Vec::with_capacity(probe.contacts.len() * 2);
-        for c in &probe.contacts {
-            pos.push(c.position.x_um);
-            pos.push(c.position.y_um);
-        }
-        write_npy_f32_2d(&dir.join("channel_positions.npy"), &pos, [probe.contacts.len(), 2])?;
+        let pos: Vec<f32> = ch_pos.iter().flatten().copied().collect();
+        write_npy_f32_2d(&dir.join("channel_positions.npy"), &pos, [ch_pos.len(), 2])?;
     }
 
     // cluster_group.tsv and cluster_info.tsv
     let mut grp_file = File::create(dir.join("cluster_group.tsv")).map_err(|e| DspError::Io(e.to_string()))?;
     writeln!(grp_file, "cluster_id\tgroup").map_err(|e| DspError::Io(e.to_string()))?;
     for u in &sorting.units {
-        let label_str = match u.quality_label {
-            UnitQualityLabel::SingleUnit => "good",
-            UnitQualityLabel::MultiUnit => "mua",
-            UnitQualityLabel::Noise => "noise",
-        };
-        writeln!(grp_file, "{}\t{}", u.unit_id, label_str).map_err(|e| DspError::Io(e.to_string()))?;
+        writeln!(grp_file, "{}\t{}", u.unit_id, u.quality_label.as_str()).map_err(|e| DspError::Io(e.to_string()))?;
     }
 
     let mut info_file = File::create(dir.join("cluster_info.tsv")).map_err(|e| DspError::Io(e.to_string()))?;
@@ -140,11 +97,6 @@ pub fn save_phy_folder(sorting: &SortingOutput, dir: &Path) -> DspResult<()> {
     )
     .map_err(|e| DspError::Io(e.to_string()))?;
     for u in &sorting.units {
-        let label_str = match u.quality_label {
-            UnitQualityLabel::SingleUnit => "good",
-            UnitQualityLabel::MultiUnit => "mua",
-            UnitQualityLabel::Noise => "noise",
-        };
         writeln!(
             info_file,
             "{}\t{}\t{:.2}\t{:.2}\t{:.4}\t{:.3}\t{:.3}\t{}",
@@ -155,7 +107,7 @@ pub fn save_phy_folder(sorting: &SortingOutput, dir: &Path) -> DspResult<()> {
             u.isi_violation_ratio,
             u.presence_ratio,
             u.amplitude_cutoff,
-            label_str
+            u.quality_label.as_str()
         )
         .map_err(|e| DspError::Io(e.to_string()))?;
     }
@@ -163,12 +115,18 @@ pub fn save_phy_folder(sorting: &SortingOutput, dir: &Path) -> DspResult<()> {
     // params.py
     let mut params_file = File::create(dir.join("params.py")).map_err(|e| DspError::Io(e.to_string()))?;
     writeln!(params_file, "# Generated by dsp-kitchen").map_err(|e| DspError::Io(e.to_string()))?;
-    writeln!(params_file, "dat_path = 'recording.dat'").map_err(|e| DspError::Io(e.to_string()))?;
-    writeln!(params_file, "n_channels_dat = {}", num_channels).map_err(|e| DspError::Io(e.to_string()))?;
-    writeln!(params_file, "dtype = 'int16'").map_err(|e| DspError::Io(e.to_string()))?;
-    writeln!(params_file, "offset = 0").map_err(|e| DspError::Io(e.to_string()))?;
+    let meta = &sorting.recording_meta;
+    if let Some(dat_path) = meta.dat_path.as_deref() {
+        writeln!(params_file, "dat_path = '{dat_path}'").map_err(|e| DspError::Io(e.to_string()))?;
+    }
+    let n_ch_dat = meta.n_channels_dat.unwrap_or(num_channels);
+    writeln!(params_file, "n_channels_dat = {n_ch_dat}").map_err(|e| DspError::Io(e.to_string()))?;
+    let dtype = meta.dtype.as_deref().unwrap_or("int16");
+    writeln!(params_file, "dtype = '{dtype}'").map_err(|e| DspError::Io(e.to_string()))?;
+    writeln!(params_file, "offset = {}", meta.offset).map_err(|e| DspError::Io(e.to_string()))?;
     writeln!(params_file, "sample_rate = {}", sorting.sample_rate_hz).map_err(|e| DspError::Io(e.to_string()))?;
-    writeln!(params_file, "hp_filtered = True").map_err(|e| DspError::Io(e.to_string()))?;
+    let hp_str = if meta.hp_filtered { "True" } else { "False" };
+    writeln!(params_file, "hp_filtered = {hp_str}").map_err(|e| DspError::Io(e.to_string()))?;
 
     Ok(())
 }

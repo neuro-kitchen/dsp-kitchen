@@ -29,9 +29,10 @@ pub mod kernels {
 }
 
 pub use core::{
-    DeduplicatedSpike, FeatureEmbedder, MatchedSpike, NeuralBand, PeakLocalizer, SnippetBatch,
-    SortedUnit, SortingOutput, SpikeDetector, SpikeEvent, SpikeMatcher, UnitQualityLabel,
-    WaveformDenoiser, WaveformSnippet, WaveformTemplate, compute_mean_template,
+    DeduplicatedSpike, DenseTemplates, FeatureEmbedder, MatchedSpike, NeuralBand, PeakLocalizer,
+    RecordingMeta, SnippetBatch, SortedUnit, SortingOutput, SpikeDetector, SpikeEvent,
+    SpikeMatcher, TemplateAxisOrder, UnitQualityLabel, WaveformDenoiser, WaveformSnippet,
+    WaveformTemplate, compute_mean_template,
 };
 pub use detection::{
     AdaptiveThresholdDetector, MatchedFilterSpikeDetector, NeoSpikeDetector, SpikePolarity,
@@ -54,7 +55,7 @@ pub use features::{
 };
 pub use metrics::{
     BurstEpoch, Correlogram, FiringRateCurve, IsiMetrics, MepMetrics, PairwiseTrainMatch,
-    PsthResult, SortingComparison, StimulusTriggeredAverage, UnitMatchSummary,
+    PsthResult, QualityCriteria, SortingComparison, StimulusTriggeredAverage, UnitMatchSummary,
     compare_sortings, compare_spike_trains, compute_amplitude_cutoff,
     compute_amplitude_cutoff_with, compute_autocorrelogram, compute_crosscorrelogram,
     compute_d_prime, compute_instantaneous_firing_rate, compute_isi_violations,
