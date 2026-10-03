@@ -2,7 +2,9 @@
 //! them and forward input.
 
 pub mod explore;
+pub mod services;
 pub mod trace;
 
 pub use explore::{ExploreEvent, ExploreVm};
-pub use trace::{Services, TraceVm};
+pub use services::Services;
+pub use trace::TraceVm;

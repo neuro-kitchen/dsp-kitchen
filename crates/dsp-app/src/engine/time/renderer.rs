@@ -4,19 +4,19 @@
 //! (channel labels, time axis, readouts), the playhead and the cursor are elements the view lays
 //! out around and over the image.
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use dsp_base::resampler::minmax::{finish, fold_block, Block, Columns, EMPTY};
+use dsp_base::math::percentile;
 use dsp_base::resampler::summary::BASE as SUMMARY_BASE;
 use dsp_base::resampler::{min_max_decimate_into, MinMaxCache, MinMaxSummary};
 use dsp_core::{MemoryOrder, RecordingSource};
 
-use crate::engine::axis::nice_step;
+use dsp_base::math::nice_step;
 use crate::engine::canvas::{Canvas, Frame};
 use crate::engine::palette::Palette;
 use crate::engine::data::SpikeEventStore;
-use crate::engine::render_pool::{RenderContext, Rendered};
 
 /// Amplitude (µV) that maps to `LANE_FILL` of a lane's half-height at gain 1x, when a view is
 /// not auto-scaled.
@@ -80,17 +80,15 @@ thread_local! {
     static RENDERER: std::cell::RefCell<WaveformRenderer> = std::cell::RefCell::new(WaveformRenderer::default());
 }
 
-/// Renders `req` with this thread's reusable renderer (call from a render thread). Zoomed-out
-/// windows draw from the min/max summary as far as it is filled (the rest stays empty until the
-/// background summarizer reaches it); `None` when a newer frame for the view cancelled this one.
-pub fn render_on_worker(req: &RenderRequest, ctx: &RenderContext) -> Option<Rendered> {
-    if ctx.cancel.load(Ordering::Relaxed) {
+/// Renders `req` with this thread's reusable renderer (call from a work thread): the frame and
+/// the amplitude scale it was drawn with. Zoomed-out windows draw from the min/max summary as far
+/// as it is filled (the rest stays empty until the background summarizer reaches it); `None` when
+/// a newer frame for the view cancelled this one.
+pub fn render_on_worker(req: &RenderRequest, cancel: &AtomicBool) -> Option<(Frame, f32)> {
+    if cancel.load(Ordering::Relaxed) {
         return None;
     }
-    RENDERER.with(|r| {
-        let (frame, scale) = r.borrow_mut().render_scaled(req);
-        Some(Rendered { frame, scale: Some(scale) })
-    })
+    Some(RENDERER.with(|r| r.borrow_mut().render_scaled(req)))
 }
 
 /// Visible sample range of `req`'s source and the pixel columns `x0..x1` it covers (sources can
@@ -221,12 +219,7 @@ impl WaveformRenderer {
                 let row = &mut self.env[r * width..(r + 1) * width];
                 self.stats.clear();
                 self.stats.extend(row.iter().filter(|v| v[0].is_finite()).map(|v| 0.5 * (v[0] + v[1])));
-                if self.stats.is_empty() {
-                    continue;
-                }
-                let n = self.stats.len();
-                let q1 = *self.stats.select_nth_unstable_by(n / 4, f32::total_cmp).1;
-                let q3 = *self.stats.select_nth_unstable_by((3 * n / 4).min(n - 1), f32::total_cmp).1;
+                let (Some(q1), Some(q3)) = (percentile(&mut self.stats, 25.0), percentile(&mut self.stats, 75.0)) else { continue };
                 let offset = 0.5 * (q1 + q3);
                 for v in row.iter_mut() {
                     v[0] -= offset;
@@ -241,17 +234,12 @@ impl WaveformRenderer {
         for r in (0..rows).filter(|&r| self.valid[r]) {
             self.stats.extend(self.env[r * width..(r + 1) * width].iter().filter(|v| v[0].is_finite()).map(|v| v[0].abs().max(v[1].abs())));
         }
-        if self.stats.is_empty() {
-            return choose_scale(0.0, req.scale_hint);
-        }
-        let at = ((self.stats.len() - 1) as f32 * 0.99) as usize;
-        let (_, &mut p99, _) = self.stats.select_nth_unstable_by(at, f32::total_cmp);
-        choose_scale(p99, req.scale_hint)
+        choose_scale(percentile(&mut self.stats, 99.0).unwrap_or(0.0), req.scale_hint)
     }
 
     /// Fills `env` with the `[min, max]` of every requested row per pixel column over
     /// `start..end`. Zoomed out, the complete min/max cache file, else the session summary
-    /// (filled beforehand by [`render_on_worker`]), supplies bucket-aligned columns; zoomed in, or
+    /// (filled in the background by its `Summarizer`), supplies bucket-aligned columns; zoomed in, or
     /// without either, raw samples are read (see [`Self::stream_raw`]). Every sample of the
     /// window lands in a column, so no peak is dropped.
     #[allow(clippy::too_many_arguments)]

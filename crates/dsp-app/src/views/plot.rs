@@ -4,7 +4,7 @@
 
 use gpui_kit::{fill, point, px, size, Bounds, Hsla, PathBuilder, Pixels, Point, Window};
 
-use crate::engine::axis::nice_step;
+use dsp_base::math::{point_in_polygon, ticks};
 use crate::engine::canvas::Pixel;
 use crate::views::trace::color;
 
@@ -145,22 +145,15 @@ impl PlotTransform {
 
 fn ticks_in_range(min: f64, max: f64, target_count: usize, unit: &str, invert_frac: bool) -> Vec<PlotTick> {
     let span = (max - min).max(1e-12);
-    let step = nice_step(span / target_count.max(2) as f64);
-    let decimals = (-step.log10().floor()).max(0.0) as usize;
-    let mut out = Vec::new();
-    let mut i = (min / step).ceil() as i64;
+    let (values, decimals) = ticks(min, max, target_count);
     let suffix = if unit.is_empty() { String::new() } else { format!(" {unit}") };
-    for _ in 0..32 {
-        let v = i as f64 * step;
-        if v > max + 1e-12 {
-            break;
-        }
-        let raw_frac = ((v - min) / span) as f32;
-        let frac = if invert_frac { 1.0 - raw_frac } else { raw_frac };
-        out.push(PlotTick { value: v, frac, label: format!("{v:.decimals$}{suffix}") });
-        i += 1;
-    }
-    out
+    values
+        .into_iter()
+        .map(|v| {
+            let raw = ((v - min) / span) as f32;
+            PlotTick { value: v, frac: if invert_frac { 1.0 - raw } else { raw }, label: format!("{v:.decimals$}{suffix}") }
+        })
+        .collect()
 }
 
 /// Polygon lasso in data coordinates (Step 5c / Step 9):
@@ -199,24 +192,10 @@ impl Lasso {
         self.closed && self.vertices.len() >= 3
     }
 
-    /// Ray-casting point-in-polygon test in data coordinates.
+    /// Whether `(x, y)` (data coordinates) is inside the polygon.
     pub fn contains(&self, x: f32, y: f32) -> bool {
-        if self.vertices.len() < 3 {
-            return false;
-        }
-        let mut inside = false;
-        let n = self.vertices.len();
-        let mut j = n - 1;
-        for i in 0..n {
-            let [xi, yi] = self.vertices[i];
-            let [xj, yj] = self.vertices[j];
-            let intersects = ((yi > y) != (yj > y)) && (x < (xj - xi) * (y - yi) / ((yj - yi) + 1e-12) + xi);
-            if intersects {
-                inside = !inside;
-            }
-            j = i;
-        }
-        inside
+        let vertices: Vec<(f64, f64)> = self.vertices.iter().map(|v| (v[0] as f64, v[1] as f64)).collect();
+        point_in_polygon(x as f64, y as f64, &vertices)
     }
 }
 

@@ -38,10 +38,6 @@ impl SourceSet {
         Ok(set)
     }
 
-    pub fn path(&self) -> Option<&Path> {
-        self.path.as_deref()
-    }
-
     /// A single in-memory or procedural recording.
     pub fn single(dataset: Dataset) -> Self {
         let entry = SourceEntry {
@@ -100,8 +96,11 @@ impl SourceSet {
         let mut ds = Dataset::new(Arc::from(CachedRecording::wrap(rec, CHUNK_CACHE_BYTES)));
         ds.unit = self.entries[i].unit.clone();
         ds.open_lod(path, &self.entries[i].id);
-        if self.build_caches.load(Ordering::Relaxed) || large {
+        if self.build_caches.load(Ordering::Relaxed) {
             ds.build_lod(self.recording(i));
+        } else if large {
+            // Large recordings get a cache file for next time, written after the summary
+            ds.cache_after_summary(self.recording(i));
         }
         let ds = Arc::new(ds);
         self.opened.lock().unwrap()[i] = Some(ds.clone());

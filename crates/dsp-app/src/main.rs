@@ -35,8 +35,13 @@ use store::Store;
 #[command(name = "dsp-app")]
 #[command(about = "DSP App: electrophysiology workbench (GPUI): docked time views on one timeline")]
 struct Args {
-    /// Recording to open: SpikeGLX .bin/.cbin, raw .bin with a JSON .meta, or a Zarr store.
-    /// Without it (and without --synthetic) the last opened recording is reopened.
+    /// Recording to open: SpikeGLX .bin/.cbin, raw .bin with a JSON .meta, or a Zarr store
+    /// (`dsp-app <path>`, or `--file <path>`). Without it (and without --synthetic) the last
+    /// opened recording is reopened.
+    #[arg(value_name = "PATH", conflicts_with = "file")]
+    path: Option<PathBuf>,
+
+    /// Same as PATH.
     #[arg(short, long)]
     file: Option<PathBuf>,
 
@@ -75,7 +80,8 @@ struct Args {
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
-    let args = Args::parse();
+    let mut args = Args::parse();
+    args.file = args.file.take().or(args.path.take());
 
     if let Some(path) = &args.snapshot {
         return snapshot(&args, path);

@@ -8,10 +8,11 @@ use std::sync::{Arc, OnceLock};
 use anyhow::Result;
 use dsp_core::{DspResult, RecordingInfo, RecordingSource};
 use dsp_base::resampler::cache::DEFAULT_BASE;
-use dsp_base::resampler::{cache_path, CacheIdentity, MinMaxCache, MinMaxSummary};
+use dsp_base::resampler::minmax::mean_range;
+use dsp_base::resampler::{cache_path, CacheIdentity, MinMaxCache, MinMaxSummary, OnProgress, Summarizer};
 use dsp_io::{SyntheticParams, SyntheticRecording};
 
-use super::summarize::{OnProgress, Summarizer};
+
 
 /// A recording plus the summary fields the UI reads every frame.
 pub struct Dataset {
@@ -29,7 +30,10 @@ pub struct Dataset {
     /// Min/max levels for zoomed-out drawing: an existing cache file, or one the user asked to build.
     lod: Arc<OnceLock<Arc<MinMaxCache>>>,
     /// Set once a build has been started (builds run at most once).
-    lod_building: AtomicBool,
+    lod_building: Arc<AtomicBool>,
+    /// Where to write a cache once the summary is complete (large recordings; see
+    /// [`Self::cache_after_summary`]).
+    cache_later: std::sync::Mutex<Option<Option<(PathBuf, String)>>>,
     /// Stops the background build when the dataset is dropped.
     cancel: Arc<AtomicBool>,
     /// Fills `summary` in the background (once, for every view).
@@ -49,18 +53,38 @@ impl Dataset {
             summary: Arc::new(MinMaxSummary::new(source.as_ref())),
             source,
             lod: Arc::new(OnceLock::new()),
-            lod_building: AtomicBool::new(false),
+            lod_building: Arc::new(AtomicBool::new(false)),
+            cache_later: std::sync::Mutex::new(None),
             cancel: Arc::new(AtomicBool::new(false)),
             summarizer: Summarizer::default(),
         }
     }
 
     /// Summarizes the whole recording in the background, nearest sample `focus` first (later
-    /// calls only move the focus). Not needed once a complete min/max cache file is open.
+    /// calls only move the focus). Not needed once a complete min/max cache file is open. When the
+    /// summary completes, the cache asked for by [`Self::cache_after_summary`] is written.
     pub fn summarize(&self, focus: u64, on_progress: OnProgress) {
-        if self.lod().is_none() {
-            self.summarizer.run(self.source.clone(), self.summary.clone(), focus, self.cancel.clone(), on_progress);
+        if self.lod().is_some() {
+            return;
         }
+        let later = self.cache_later.lock().expect("dataset lock").take();
+        let build = later.map(|recording| (recording, self.source.clone(), self.lod.clone(), self.cancel.clone(), self.lod_building.clone()));
+        let build = std::sync::Mutex::new(build);
+        let on_progress: OnProgress = Arc::new(move |p| {
+            let complete = p.done >= p.total;
+            on_progress(p);
+            // The file is read once for the summary, then once more for the cache, never both at once
+            if complete && let Some((recording, source, slot, cancel, building)) = build.lock().expect("dataset lock").take() {
+                spawn_lod_build(source, slot, cancel, &building, recording);
+            }
+        });
+        self.summarizer.run(self.source.clone(), self.summary.clone(), focus, self.cancel.clone(), on_progress);
+    }
+
+    /// Writes the min/max cache (next to `recording`) once the background summary is complete,
+    /// so the two never read the file at the same time; the next open then zooms out at once.
+    pub fn cache_after_summary(&self, recording: Option<(PathBuf, String)>) {
+        *self.cache_later.lock().expect("dataset lock") = Some(recording);
     }
 
     /// Uses the complete min/max cache already next to `path` for source `id`, if there is one
@@ -80,18 +104,10 @@ impl Dataset {
     /// for `Some((path, source id))` (a temporary file when that folder is not writable), else a
     /// temporary file. A no-op once a build started or a complete cache is open.
     pub fn build_lod(&self, recording: Option<(PathBuf, String)>) {
-        if self.lod.get().is_some_and(|c| c.is_complete()) || self.lod_building.swap(true, Ordering::Relaxed) {
+        if self.lod.get().is_some_and(|c| c.is_complete()) {
             return;
         }
-        let (source, slot, cancel) = (self.source.clone(), self.lod.clone(), self.cancel.clone());
-        let spawned = std::thread::Builder::new().name("minmax-cache".into()).spawn(move || {
-            if let Err(e) = fill_lod(source.as_ref(), recording.as_ref().map(|(p, id)| (p.as_path(), id.as_str())), &slot, &cancel) {
-                tracing::warn!("min/max cache unavailable, zoomed-out views read raw samples: {e}");
-            }
-        });
-        if let Err(e) = spawned {
-            tracing::warn!("could not start the min/max cache build: {e}");
-        }
+        spawn_lod_build(self.source.clone(), self.lod.clone(), self.cancel.clone(), &self.lod_building, recording);
     }
 
     /// The min/max cache file once complete (while it builds, views use the session summary).
@@ -212,25 +228,23 @@ impl Drop for Dataset {
     }
 }
 
-fn fill_lod(source: &dyn RecordingSource, recording: Option<(&Path, &str)>, slot: &OnceLock<Arc<MinMaxCache>>, cancel: &AtomicBool) -> DspResult<()> {
-    let transient = || MinMaxCache::temporary(&CacheIdentity::transient(source), DEFAULT_BASE);
-    let (cache, complete) = match recording {
-        Some((path, id)) => {
-            let identity = CacheIdentity::of(path, id, source)?;
-            let file = cache_path(path, id);
-            match MinMaxCache::open(&file, &identity, DEFAULT_BASE)? {
-                Some(cache) => (cache, true),
-                None => match MinMaxCache::create(&file, &identity, DEFAULT_BASE) {
-                    Ok(cache) => (cache, false),
-                    Err(e) => {
-                        tracing::warn!("cannot write {}: {e}; using a temporary min/max cache", file.display());
-                        (transient()?, false)
-                    }
-                },
-            }
+/// Starts the cache build on its own thread, once (`building` is set by the first call).
+fn spawn_lod_build(source: Arc<dyn RecordingSource>, slot: Arc<OnceLock<Arc<MinMaxCache>>>, cancel: Arc<AtomicBool>, building: &AtomicBool, recording: Option<(PathBuf, String)>) {
+    if building.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    let spawned = std::thread::Builder::new().name("minmax-cache".into()).spawn(move || {
+        if let Err(e) = fill_lod(source.as_ref(), recording.as_ref().map(|(p, id)| (p.as_path(), id.as_str())), &slot, &cancel) {
+            tracing::warn!("min/max cache unavailable, zoomed-out views read raw samples: {e}");
         }
-        None => (transient()?, false),
-    };
+    });
+    if let Err(e) = spawned {
+        tracing::warn!("could not start the min/max cache build: {e}");
+    }
+}
+
+fn fill_lod(source: &dyn RecordingSource, recording: Option<(&Path, &str)>, slot: &OnceLock<Arc<MinMaxCache>>, cancel: &AtomicBool) -> DspResult<()> {
+    let (cache, complete) = MinMaxCache::open_or_create(source, recording, DEFAULT_BASE)?;
     let cache = Arc::new(cache);
     let _ = slot.set(cache.clone());
     if !complete {
@@ -258,6 +272,28 @@ impl RecordingSource for Dataset {
     fn read_stored(&self, channels: &[usize], samples: Range<u64>, out: &mut [u8]) -> DspResult<()> {
         self.source.read_stored(channels, samples, out)
     }
+}
+
+/// Activity of the whole recording in `width` columns, for the timeline overview: the mean
+/// min-to-max range over channels per column (from the cache file, else the summary), scaled so
+/// the busiest column is 1. Columns not summarized yet are NaN.
+pub fn activity(ds: &Dataset, width: usize) -> Vec<f32> {
+    let channels: Vec<usize> = (0..ds.total_channels).collect();
+    let total = ds.total_samples as u64;
+    if width == 0 || channels.is_empty() || total == 0 {
+        return Vec::new();
+    }
+    let mut env = vec![[f32::NAN, f32::NAN]; channels.len() * width];
+    let from_cache = ds.lod().is_some_and(|c| matches!(c.envelope(&channels, 0, total, width, &mut env), Ok(true)));
+    if !from_cache {
+        ds.summary().envelope(&channels, 0, total, width, &mut env);
+    }
+    let mut out = mean_range(&env, channels.len(), width);
+    let max = out.iter().copied().filter(|v| v.is_finite()).fold(0.0f32, f32::max);
+    if max > 0.0 {
+        out.iter_mut().for_each(|v| *v /= max);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -293,31 +329,24 @@ mod tests {
         let long = Dataset::procedural(384, 30_000.0, 4.0 * 3600.0).unwrap();
         assert_eq!(long.total_samples, 432_000_000);
     }
-}
 
-/// Activity of the whole recording in `width` columns, for the timeline overview: the mean
-/// min-to-max range over channels per column, scaled so the busiest column is 1. Columns not
-/// summarized yet are NaN.
-pub fn activity(ds: &Dataset, width: usize) -> Vec<f32> {
-    let channels: Vec<usize> = (0..ds.total_channels).collect();
-    let (total, n) = (ds.total_samples as u64, channels.len());
-    if width == 0 || n == 0 || total == 0 {
-        return Vec::new();
+    /// Time to summarize a whole recording in the background. Run with:
+    /// `DSP_APP_BENCH_FILE=<recording> cargo test -p dsp-app --release bench_summarize -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bench_summarize() {
+        let Some(path) = std::env::var_os("DSP_APP_BENCH_FILE") else { return };
+        let sources = crate::engine::data::SourceSet::open(Path::new(&path)).unwrap();
+        let ds = sources.default_dataset();
+        let done = Arc::new(AtomicBool::new(false));
+        let d = done.clone();
+        let t0 = std::time::Instant::now();
+        ds.summarize(0, Arc::new(move |p| d.store(p.done >= p.total, Ordering::Relaxed)));
+        while !done.load(Ordering::Relaxed) {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let mb = ds.total_samples as f64 * ds.total_channels as f64 * 2.0 / 1e6;
+        let secs = t0.elapsed().as_secs_f64();
+        println!("{} ch × {} samples ({mb:.0} MB int16): {secs:.2} s ({:.0} MB/s)", ds.total_channels, ds.total_samples, mb / secs);
     }
-    let mut env = vec![[f32::NAN, f32::NAN]; n * width];
-    let from_cache = ds.lod().is_some_and(|c| matches!(c.envelope(&channels, 0, total, width, &mut env), Ok(true)));
-    if !from_cache {
-        ds.summary().envelope(&channels, 0, total, width, &mut env);
-    }
-    let mut out: Vec<f32> = (0..width)
-        .map(|x| {
-            let (sum, count) = (0..n).map(|c| env[c * width + x]).filter(|v| v[0].is_finite()).fold((0.0f32, 0usize), |(s, k), v| (s + (v[1] - v[0]), k + 1));
-            if count == 0 { f32::NAN } else { sum / count as f32 }
-        })
-        .collect();
-    let max = out.iter().copied().filter(|v| v.is_finite()).fold(0.0f32, f32::max);
-    if max > 0.0 {
-        out.iter_mut().for_each(|v| *v /= max);
-    }
-    out
 }

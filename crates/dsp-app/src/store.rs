@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::{AppContext as _, Context, EventEmitter, Task};
 
-use crate::engine::data::summarize::Progress;
+use dsp_base::resampler::Progress;
 use crate::engine::data::{Dataset, SourceSet, SpikeEventStore};
 use crate::engine::palette::Palette;
 use crate::engine::time::timeline::TimelineState;
@@ -169,11 +169,13 @@ impl Store {
         }
     }
 
+    #[allow(dead_code)] // Curation opens sortings (step 7)
     pub fn push_recent_sorting(&mut self, path: &Path) {
         self.session.push_recent_sorting(path);
         self.save_session();
     }
 
+    #[allow(dead_code)] // set by spike extraction, which this branch does not run yet
     pub fn set_events(&mut self, events: Arc<SpikeEventStore>, cx: &mut Context<Self>) {
         if let Some(rec) = &mut self.recording {
             rec.events = events;

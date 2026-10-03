@@ -1,48 +1,52 @@
-# `dsp-app` — Electrophysiology Workbench (GPUI)
+# `dsp-app`: electrophysiology workbench (GPUI)
 
-`dsp-app` is the interactive desktop workbench for `dsp-kitchen`, built on `gpui` and `gpui-kit`. It provides docked workspaces for exploring multi-channel recordings (`Explore`) and curating spike-sorting output (`Curation`).
+Desktop app of `dsp-kitchen`, built on GPUI and gpui-kit: workspaces (Explore · Sorting ·
+Pipeline · Curation) of docked views on one shared timeline. Explore is built; Curation's data
+layer is built and tested, its views come next; Sorting and Pipeline show what they will hold.
 
-## Architecture
+## What lives where
 
-`dsp-app` is structured into four strict layers:
+The app keeps UI, state and orchestration. Signal maths and sorting I/O live in the library
+crates, so other tools (CLI, Python bindings) share them:
 
-1. **`engine/` (UI-agnostic)**:
-   - Holds zero GPUI types and can run headlessly (`--snapshot` CLI mode and unit tests).
-   - `engine/axis.rs`: 1–2–5 nice-step tick calculation.
-   - `engine/canvas.rs` & `engine/palette.rs`: BGRA pixel buffer (`Frame`), primitives, and dark/light plot `Palette`.
-   - `engine/render_pool.rs`: Worker pool where each view has a `u64` key; a newer request for the same key replaces any unstarted request so panning/zooming never builds a backlog.
-   - `engine/data/`: `Dataset`, `SourceSet`, background `Summarizer` (fills `MinMaxSummary` nearest the visible window first), and `SpikeEventStore`.
-   - `engine/time/`: `TimelineState`, `TimeView`, `WaveformRenderer` (traces & viridis heatmap), and background `HoverReader`.
-   - `engine/compute.rs`: Background compute service and invalidation cache for derived curation data (waveforms, PCA features, correlograms, ISIs, firing rates).
-   - `engine/curation/`: Phy / Kilosort / Zarr / NWB sorting loader, cluster metrics, command history (`Undo` / `Redo`), and safe partial saver (`spike_clusters.npy`, `cluster_group.tsv`, `cluster_info.tsv` with `.bak` backups).
+| Crate | What the app uses from it |
+|---|---|
+| `dsp-base` | min/max envelopes, the background `Summarizer` and `MinMaxCache` (`resampler`); percentiles, histograms, axis ticks, point-in-polygon (`math`) |
+| `dsp-synapse` | `PhySorting` / `load_spikes` (phy / Kilosort folders, `.sorting.zarr`, NWB `/units`, curation save); `.npy` I/O; correlograms, ISI histograms, firing rates, ISI violations; PCA; `read_snippets` |
+| `dsp-io` | recording sources (SpikeGLX, raw + JSON sidecar, NWB Zarr) |
 
-2. **`store.rs` & `session.rs` (Application State)**:
-   - `Store` is a single GPUI `Entity<Store>` holding the open recording, shared `TimelineState`, per-source channel selections, active `Workspace`, theme preferences, and `CurationStore`.
-   - Mutations emit fine-grained `AppEvent`s (`RecordingChanged`, `WindowMoved`, `PlaybackChanged`, `SelectionChanged`, `WorkspaceChanged`, `PaletteChanged`, `SummaryProgress`, `CurationChanged`, `Status`) rather than blanket notifications.
-   - `Session` persists recent recordings, recent sorting folders, theme preferences, and workspace layouts to `$XDG_CONFIG_HOME/dsp-app/workbench.json`.
+## Layers
 
-3. **`viewmodels/` (Per-View Reactive State)**:
-   - `ExploreVm` and `TraceVm` subscribe to `Store` events, coalesce render requests via `cx.defer`, receive rendered `RenderImage` frames over `async_channel`, and retire replaced textures one frame later via `cx.drop_image`.
+1. **`engine/`** (no GPUI type; runs headless, e.g. `--snapshot` and unit tests)
+   - `canvas.rs`, `palette.rs`: BGRA frames (uploaded to GPUI as is) and light / dark plot palettes.
+   - `work_pool.rs`: shared background threads; jobs keyed by `(view, kind)`, newest wins, stale
+     ones cancelled. Renders and curation computations both run here.
+   - `data/`: `Dataset` (a recording with its summary and cache), `SourceSet` (the sources of a
+     file), `SpikeEventStore`, the timeline overview's `activity`.
+   - `time/`: `TimelineState`, `TimeView`, the trace / heatmap rasterizer, hover readouts.
+   - `curation/`: the curation state over a `PhySorting` (`mod.rs`: cluster table, open / save),
+     its edit history (`history.rs`: merge, split, labels, undo / redo), the data each view draws
+     (`derived.rs`: waveforms, features, correlograms, amplitudes, ISI, firing rate; from real
+     samples only), the cluster filter (`filter.rs`).
+   - `compute.rs`: cache of derived curation data, invalidated per cluster.
+2. **`store.rs`, `session.rs`**: the shared state (recording, timeline, per-source channel
+   selection, workspace, theme) as one entity emitting fine-grained `AppEvent`s; what is
+   remembered between runs (`$XDG_CONFIG_HOME/dsp-app/workbench.json`).
+3. **`viewmodels/`**: `ExploreVm`, `TraceVm` (render on change, frames over the view's own
+   channel, replaced images released a frame later), `Services` (work pool, hover reader, cache).
+4. **`views/`, `app.rs`, `widgets.rs`**: the shell (title bar, workspaces, start screen, status
+   bar, help / about), the Explore dock (`TracePanel`, Channels, View settings, Timeline), the plot
+   kit (`plot.rs`) for Curation, small widgets.
 
-4. **`views/` & `widgets.rs` (GPUI Elements & Dock Panels)**:
-   - `app.rs`: Title bar menus, workspace switcher, start screen, status bar, and help/about modals.
-   - `views/explore.rs`, `views/trace.rs`, `views/panels.rs`: `DockArea` with center `TracePanel`s and collapsible `ChannelsPanel`, `SettingsPanel`, and `TimelinePanel`.
-   - `views/plot/`: Reusable plot kit (axes, ticks, pan/zoom, polygon lasso selection, small-multiple grids).
-   - `views/curation/`: Spike-sorting curation workspace (Clusters & Similar tables, Waveforms, Features, Correlograms, Amplitudes, ISI, Firing Rate, Templates, Raster, Cluster Map, Template Features, and Probe views).
-   - `widgets.rs`: Stateless reusable UI building blocks (`MenuSelect`, `Section`, `EmptyState`, `PanelHeader`, `rail`).
-
-## Running & Testing
+## Running and testing
 
 ```bash
-# Launch the workbench
-cargo run -p dsp-app
+cargo run -p dsp-app                                    # reopens the last recording
+cargo run -p dsp-app -- --synthetic 5m --channels 32    # a procedural recording
+cargo run -p dsp-app -- --synthetic 10s --snapshot /tmp/traces.png   # headless PNG
+cargo test -p dsp-app                                   # unit and headless GPUI tests
 
-# Open a synthetic 32-channel recording
-cargo run -p dsp-app -- --synthetic 5m --channels 32
-
-# Render a headless PNG snapshot
-cargo run -p dsp-app -- --synthetic 10s --snapshot /tmp/traces.png
-
-# Run all unit and headless GPUI tests
-cargo test -p dsp-app
+# With local data (ignored by default)
+DSP_KS4_FOLDER=<kilosort4 saved_results> cargo test -p dsp-app --release -- --ignored
+DSP_APP_BENCH_FILE=<recording> cargo test -p dsp-app --release bench -- --ignored --nocapture
 ```
