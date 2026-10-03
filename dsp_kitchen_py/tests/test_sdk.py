@@ -209,7 +209,7 @@ def test_sorting_output_storage_and_comparison():
         zarr_dir = str(tmp / "test.sorting.zarr")
         dk.save_sorting(sorting, zarr_dir)
         assert (tmp / "test.sorting.zarr" / "zarr.json").exists()
-        assert (tmp / "test.sorting.zarr" / "spikes" / "times.npy").exists()
+        assert (tmp / "test.sorting.zarr" / "spikes" / "times" / "zarr.json").exists()
 
         loaded_zarr = dk.load_sorting(zarr_dir)
         assert loaded_zarr.num_units == 2
