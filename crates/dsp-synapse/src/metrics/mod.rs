@@ -17,7 +17,7 @@ pub use evoked::{
 };
 pub use firing::{
     IsiMetrics, compute_amplitude_cutoff, compute_amplitude_cutoff_with, compute_isi_violations,
-    compute_llobet_contamination, compute_presence_ratio, count_refractory_violations,
+    compute_llobet_contamination, compute_presence_ratio, count_refractory_violations, isi_histogram,
 };
 pub use isolation::{
     compute_d_prime, compute_isolation_distance, compute_silhouette_score, compute_snr,
