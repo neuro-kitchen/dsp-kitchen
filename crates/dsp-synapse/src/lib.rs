@@ -44,7 +44,7 @@ pub use detection::{
 pub use extraction::{
     execute_extract_sinc_in_vram, extract_sinc_snippets_kernel,
     extract_snippet_batch_multichannel, extract_snippets_multichannel,
-    extract_snippets_single_channel, parabolic_subsample_offset, resample_sinc_1d,
+    extract_snippets_single_channel, parabolic_subsample_offset, read_snippets, resample_sinc_1d,
     resample_sinc_multichannel,
 };
 pub use features::{
@@ -60,7 +60,7 @@ pub use metrics::{
     compute_d_prime, compute_instantaneous_firing_rate, compute_isi_violations,
     compute_isolation_distance, compute_llobet_contamination, compute_presence_ratio,
     compute_psth, compute_silhouette_score, compute_snr, compute_stimulus_triggered_average,
-    count_refractory_violations, detect_burst_epochs, quantify_mep,
+    count_refractory_violations, detect_burst_epochs, isi_histogram, quantify_mep,
 };
 pub use probe::{
     find_k_nearest_neighbors, hdemg_4x8, hdemg_8x8, hdemg_grid, neuropixels_1_0, neuropixels_2_0,
@@ -86,6 +86,7 @@ pub use streaming::{
     reduce_channel_templates_kernel,
 };
 pub use storage::{
-    SortingFormat, load_nwb_units, load_phy_folder, load_sorting, load_sorting_zarr,
+    ClusterTables, PhyParams, PhySorting, PhyTemplates, SortingFormat, load_nwb_units,
+    load_phy_folder, load_sorting, load_sorting_zarr, load_spikes, resolve_dat_path,
     save_nwb_units, save_phy_folder, save_sorting, save_sorting_zarr,
 };

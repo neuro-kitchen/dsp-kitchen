@@ -68,6 +68,20 @@ pub fn compute_isi_violations(
     }
 }
 
+/// Inter-spike-interval histogram of a spike train (sample indices, any order): counts of the
+/// intervals in `bin_ms` bins over `[0, max_ms)`, and the bin centres in ms.
+pub fn isi_histogram(spike_samples: &[u64], sample_rate_hz: f64, bin_ms: f64, max_ms: f64) -> (Vec<f64>, Vec<u64>) {
+    let bin_ms = bin_ms.max(1e-3);
+    let bins = ((max_ms.max(bin_ms) / bin_ms).round() as usize).max(1);
+    let hi = bins as f64 * bin_ms;
+    let mut sorted = spike_samples.to_vec();
+    sorted.sort_unstable();
+    let ms = 1e3 / sample_rate_hz.max(f64::MIN_POSITIVE);
+    // Intervals of exactly `hi` belong to the next bin, not the last one
+    let intervals = sorted.windows(2).map(|w| (w[1] - w[0]) as f64 * ms).filter(|&d| d < hi);
+    (dsp_base::math::bin_centers(0.0, hi, bins), dsp_base::math::histogram(intervals, 0.0, hi, bins))
+}
+
 /// Fraction of `bin_duration_s` bins in which the unit fires more than `mean_fr_ratio_thresh` × its mean rate.
 pub fn compute_presence_ratio(
     spike_samples: &[u64],
@@ -224,6 +238,18 @@ pub fn compute_llobet_contamination(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn test_isi_histogram() {
+        // 1 kHz: intervals of 1, 2, 2 and 10 ms (10 ms is outside [0, 10))
+        let (centers, counts) = isi_histogram(&[0, 1, 3, 5, 15], 1000.0, 1.0, 10.0);
+        assert_eq!(centers.len(), 10);
+        assert_eq!(centers[0], 0.5);
+        assert_eq!(counts[1], 1);
+        assert_eq!(counts[2], 2);
+        assert_eq!(counts.iter().sum::<u64>(), 3);
+    }
+
     use super::*;
 
     #[test]

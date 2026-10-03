@@ -12,17 +12,14 @@
 //! - `cluster_info.tsv` (full quality metrics table)
 //! - `params.py` (`sample_rate`, `n_channels_dat`, `dtype`, `hp_filtered`)
 
-use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::path::Path;
 
-use dsp_core::{DspError, DspResult, SensorLayout, SensorSite};
-use crate::core::{SortedUnit, SortingOutput, UnitQualityLabel, WaveformTemplate};
-use super::npy::{
-    read_npy_f32_1d, read_npy_f32_2d, read_npy_f32_3d, read_npy_i32_1d, read_npy_u64_1d,
-    write_npy_f32_1d, write_npy_f32_2d, write_npy_f32_3d, write_npy_i32_1d, write_npy_u64_1d,
-};
+use dsp_core::{DspError, DspResult};
+use crate::core::{SortingOutput, UnitQualityLabel};
+use super::npy::{write_npy_f32_1d, write_npy_f32_2d, write_npy_f32_3d, write_npy_i32_1d, write_npy_u64_1d};
+use super::phy_sorting::PhySorting;
 
 /// Saves a [`SortingOutput`] to a Phy/Kilosort directory.
 pub fn save_phy_folder(sorting: &SortingOutput, dir: &Path) -> DspResult<()> {
@@ -176,207 +173,20 @@ pub fn save_phy_folder(sorting: &SortingOutput, dir: &Path) -> DspResult<()> {
     Ok(())
 }
 
-/// Loads a Phy / Kilosort folder into a [`SortingOutput`].
+/// Loads a Phy / Kilosort folder into a [`SortingOutput`] (through [`PhySorting::load`], which
+/// reads every array and table; see there).
 pub fn load_phy_folder(dir: &Path) -> DspResult<SortingOutput> {
     if !dir.is_dir() {
         return Err(DspError::Io(format!("{} is not a directory", dir.display())));
     }
-
-    let spike_times_path = dir.join("spike_times.npy");
-    let spike_clusters_path = dir.join("spike_clusters.npy");
-    if !spike_times_path.exists() || !spike_clusters_path.exists() {
-        return Err(DspError::UnsupportedFormat(format!(
-            "Phy folder {} missing spike_times.npy or spike_clusters.npy",
-            dir.display()
-        )));
-    }
-
-    let spike_times = read_npy_u64_1d(&spike_times_path)?;
-    let spike_clusters = read_npy_i32_1d(&spike_clusters_path)?;
-    let amplitudes = dir
-        .join("amplitudes.npy")
-        .exists()
-        .then(|| read_npy_f32_1d(&dir.join("amplitudes.npy")).ok())
-        .flatten()
-        .unwrap_or_default();
-
-    let spike_positions = dir
-        .join("spike_positions.npy")
-        .exists()
-        .then(|| read_npy_f32_2d(&dir.join("spike_positions.npy")).ok())
-        .flatten()
-        .and_then(|(data, shape)| {
-            if shape[1] == 3 {
-                Some(
-                    data.chunks_exact(3)
-                        .map(|c| [c[0], c[1], c[2]])
-                        .collect::<Vec<[f32; 3]>>(),
-                )
-            } else {
-                None
-            }
-        })
-        .unwrap_or_default();
-
-    // Parse params.py for sample_rate
-    let mut sample_rate_hz = 30000.0f64;
-    if let Ok(params_file) = File::open(dir.join("params.py")) {
-        for line in BufReader::new(params_file).lines().map_while(Result::ok) {
-            let trimmed = line.trim();
-            if trimmed.starts_with("sample_rate") {
-                if let Some(val_str) = trimmed.split('=').nth(1) {
-                    if let Ok(v) = val_str.trim().parse::<f64>() {
-                        sample_rate_hz = v;
-                    }
-                }
-            }
-        }
-    }
-
-    // Optional cluster_group labels
-    let mut labels: BTreeMap<usize, UnitQualityLabel> = BTreeMap::new();
-    let group_path = if dir.join("cluster_group.tsv").exists() {
-        dir.join("cluster_group.tsv")
-    } else {
-        dir.join("cluster_KSLabel.tsv")
-    };
-    if let Ok(f) = File::open(group_path) {
-        for line in BufReader::new(f).lines().map_while(Result::ok) {
-            let mut parts = line.split('\t');
-            if let (Some(id_str), Some(grp)) = (parts.next(), parts.next()) {
-                if let Ok(id) = id_str.trim().parse::<usize>() {
-                    let q = match grp.trim().to_ascii_lowercase().as_str() {
-                        "good" => UnitQualityLabel::SingleUnit,
-                        "mua" => UnitQualityLabel::MultiUnit,
-                        _ => UnitQualityLabel::Noise,
-                    };
-                    labels.insert(id, q);
-                }
-            }
-        }
-    }
-
-    // Optional templates [num_units, num_samples, num_channels]
-    let loaded_templates = dir
-        .join("templates.npy")
-        .exists()
-        .then(|| read_npy_f32_3d(&dir.join("templates.npy")).ok())
-        .flatten();
-    let loaded_std = dir
-        .join("templates_std.npy")
-        .exists()
-        .then(|| read_npy_f32_3d(&dir.join("templates_std.npy")).ok())
-        .flatten();
-    let loaded_se = dir
-        .join("templates_se.npy")
-        .exists()
-        .then(|| read_npy_f32_3d(&dir.join("templates_se.npy")).ok())
-        .flatten();
-
-    // Optional probe geometry
-    let probe = if dir.join("channel_positions.npy").exists() {
-        let (pos, shape) = read_npy_f32_2d(&dir.join("channel_positions.npy"))?;
-        let contacts = (0..shape[0])
-            .map(|ch| {
-                let x = pos[ch * 2];
-                let y = pos[ch * 2 + 1];
-                SensorSite::new(ch, dsp_core::Position3D::new(x, y, 0.0), 0)
-            })
-            .collect();
-        Some(SensorLayout::new("phy_probe", contacts))
-    } else {
-        None
-    };
-
-    let total_samples = spike_times.last().copied().unwrap_or(0);
-
-    // Group spikes by cluster ID
-    let mut groups: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-    let n = spike_times.len().min(spike_clusters.len());
-    for i in 0..n {
-        let cl = spike_clusters[i];
-        if cl >= 0 {
-            groups.entry(cl as usize).or_default().push(i);
-        }
-    }
-
-    let mut units = Vec::with_capacity(groups.len());
-    for (unit_id, indices) in groups {
-        let mut u_times = Vec::with_capacity(indices.len());
-        let mut u_amps = Vec::with_capacity(indices.len());
-        let mut u_locs = Vec::new();
-        for &idx in &indices {
-            u_times.push(spike_times[idx]);
-            if let Some(&a) = amplitudes.get(idx) {
-                u_amps.push(a);
-            }
-            if let Some(&l) = spike_positions.get(idx) {
-                u_locs.push(l);
-            }
-        }
-
-        // Reconstruct template if present
-        let template = if let Some((t_data, [n_u, t_samples, n_c])) = &loaded_templates {
-            if unit_id < *n_u {
-                let off = unit_id * t_samples * n_c;
-                let mut mean = vec![0.0f32; n_c * t_samples];
-                let mut std = vec![1.0f32; n_c * t_samples];
-                let mut se = vec![0.0f32; n_c * t_samples];
-                for s in 0..*t_samples {
-                    for c in 0..*n_c {
-                        let src_idx = off + s * n_c + c;
-                        let dst_idx = c * t_samples + s;
-                        mean[dst_idx] = t_data[src_idx];
-                        if let Some((std_data, _)) = &loaded_std {
-                            std[dst_idx] = std_data[src_idx];
-                        }
-                        if let Some((se_data, _)) = &loaded_se {
-                            se[dst_idx] = se_data[src_idx];
-                        }
-                    }
-                }
-                let mut t = WaveformTemplate::with_count((0..*n_c).collect(), *t_samples, indices.len(), mean, std);
-                if loaded_se.is_some() {
-                    t.se = se;
-                }
-                Some(t)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        let mut unit = SortedUnit::from_spikes(
-            unit_id,
-            0,
-            u_times,
-            u_amps,
-            u_locs,
-            template,
-            sample_rate_hz,
-            total_samples,
-            10.0,
-        );
-        if let Some(&q) = labels.get(&unit_id) {
-            unit.quality_label = q;
-        }
-        units.push(unit);
-    }
-
-    Ok(SortingOutput::new(
-        "kilosort_phy",
-        sample_rate_hz,
-        total_samples,
-        probe,
-        units,
-        None,
-    ))
+    Ok(PhySorting::load(dir)?.to_sorting_output())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::{SortedUnit, WaveformTemplate};
+    use dsp_core::{SensorLayout, SensorSite};
 
     #[test]
     fn test_phy_folder_save_and_load_roundtrip() {

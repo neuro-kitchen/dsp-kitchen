@@ -4,10 +4,13 @@
 //! - **Phy / Kilosort Flat Folder** (`.phy`, or directory with `spike_times.npy` / `params.py`)
 //! - **Self-Contained Zarr Sorting Analyzer Store** (`.sorting.zarr`, `.zarr`)
 //! - **NWB `/units` DynamicTable Group** inside `.nwb.zarr`
+//!
+//! [`load_spikes`] reads any of them spike by spike ([`PhySorting`]: what curation works on).
 
 pub mod npy;
 pub mod nwb_units;
 pub mod phy;
+pub mod phy_sorting;
 pub mod zarr_analyzer;
 
 use std::path::Path;
@@ -16,6 +19,7 @@ use crate::core::SortingOutput;
 
 pub use nwb_units::{load_nwb_units, save_nwb_units};
 pub use phy::{load_phy_folder, save_phy_folder};
+pub use phy_sorting::{load_spikes, resolve_dat_path, ClusterTables, PhyParams, PhySorting, PhyTemplates};
 pub use zarr_analyzer::{load_sorting_zarr, save_sorting_zarr};
 
 /// Supported persistent disk formats for spike sorting outputs.
