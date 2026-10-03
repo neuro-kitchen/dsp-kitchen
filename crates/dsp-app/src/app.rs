@@ -19,7 +19,7 @@ use gpui_kit::{
 use crate::actions::*;
 use crate::engine::time::renderer::TimeViewKind;
 use crate::store::{file_label, AppEvent, Store};
-use crate::views::ExploreView;
+use crate::views::{CurationView, ExploreView};
 use crate::widgets::EmptyState;
 use crate::workspace::Workspace;
 
@@ -29,6 +29,7 @@ pub const SYNTHETIC: (usize, f64, f64) = (32, 30_000.0, 300.0);
 pub struct DspApp {
     store: Entity<Store>,
     pub explore: Entity<ExploreView>,
+    pub curation: Entity<CurationView>,
     show_help: bool,
     show_about: bool,
     focus: FocusHandle,
@@ -40,6 +41,7 @@ impl DspApp {
         let choice = store.read(cx).session.dark;
         Self::apply_theme(&store, choice, window, cx);
         let explore = cx.new(|cx| ExploreView::new(store.clone(), window, cx));
+        let curation = cx.new(|cx| CurationView::new(store.clone(), window, cx));
         let subs = vec![
             // Follow the system's light / dark until the user picks one
             cx.observe_window_appearance(window, |this, window, cx| {
@@ -56,7 +58,7 @@ impl DspApp {
         ];
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
-        Self { store, explore, show_help: false, show_about: false, focus, _subs: subs }
+        Self { store, explore, curation, show_help: false, show_about: false, focus, _subs: subs }
     }
 
     /// Light, dark, or the system's (`None`); the store learns which, for the plot colours.
@@ -75,6 +77,22 @@ impl DspApp {
         self.store.update(cx, |s, cx| s.set_theme_choice(Some(dark), cx));
         Self::apply_theme(&self.store, Some(dark), window, cx);
         cx.notify();
+    }
+
+    /// Asks for a sorting folder and opens it in Curation.
+    fn open_sorting(&mut self, cx: &mut Context<Self>) {
+        self.store.update(cx, |s, cx| s.set_workspace(Workspace::Curation, cx));
+        self.curation.update(cx, |c, cx| c.prompt_open(cx));
+    }
+
+    /// Opens `path`: a sorting folder in Curation, else a recording in Explore.
+    pub fn open_any(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if crate::viewmodels::curation::is_sorting(&path) {
+            let vm = self.curation.read(cx).vm.clone();
+            vm.update(cx, |vm, cx| vm.open(path, cx));
+        } else {
+            self.store.update(cx, |s, cx| s.open(path, cx));
+        }
     }
 
     fn prompt_open(&mut self, cx: &mut Context<Self>) {
@@ -124,6 +142,8 @@ impl DspApp {
             Button::new("menu-file").ghost().small().label("File").dropdown_menu(move |menu: PopupMenu, _, _| {
                 let t = this.clone();
                 let mut menu = menu.item(PopupMenuItem::new("Open recording…").on_click(move |_, _, cx| t.update(cx, |a, cx| a.prompt_open(cx))));
+                let t = this.clone();
+                menu = menu.item(PopupMenuItem::new("Open sorting…").on_click(move |_, _, cx| t.update(cx, |a, cx| a.open_sorting(cx))));
                 let t = this.clone();
                 menu = menu.item(PopupMenuItem::new("Synthetic recording (32 ch, 5 min)").on_click(move |_, _, cx| t.update(cx, |a, cx| a.open_synthetic(cx))));
                 if !recent.is_empty() {
@@ -292,6 +312,9 @@ impl DspApp {
                 .child(EmptyState::new(workspace.icon(), format!("{} is on its way", workspace.title()), text))
                 .into_any_element();
         }
+        if workspace == Workspace::Curation {
+            return self.curation.clone().into_any_element();
+        }
         if s.recording.is_none() {
             return self.start_screen(cx);
         }
@@ -394,7 +417,6 @@ impl DspApp {
 
 impl Render for DspApp {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let store = self.store.clone();
         v_flex()
             .id("dsp-app")
             .track_focus(&self.focus)
@@ -419,11 +441,11 @@ impl Render for DspApp {
             }))
             .on_action(|_: &Quit, _, cx: &mut App| cx.quit())
             // A file or folder dropped anywhere opens it
-            .on_drop(move |paths: &ExternalPaths, _, cx| {
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                 if let Some(p) = paths.paths().first().cloned() {
-                    store.update(cx, |s, cx| s.open(p, cx));
+                    this.open_any(p, cx);
                 }
-            })
+            }))
             .child(self.title_bar(cx))
             .child(div().flex_1().min_h_0().child(self.body(cx)))
             .child(self.status_bar(cx))
@@ -513,11 +535,11 @@ mod tests {
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
             assert!(window.try_find("start-screen").is_some(), "no recording: the start screen");
-            window.click("workspace-curation", cx);
+            window.click("workspace-pipeline", cx);
         })
         .unwrap();
         cx.run_until_parked();
-        cx.update(|cx| assert_eq!(store.read(cx).workspace, Workspace::Curation));
+        cx.update(|cx| assert_eq!(store.read(cx).workspace, Workspace::Pipeline));
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
             assert!(window.try_find("planned-workspace").is_some(), "a workspace still to come says what it will hold");
@@ -663,5 +685,37 @@ mod tests {
             assert!(ds.summary().covers(0, ds.total_samples as u64));
         });
         wait_until(cx, window, |cx| all_drawn_for_window(cx, &store, &app));
+    }
+
+    #[gpui_kit::test]
+    fn a_phy_folder_opens_in_curation(cx: &mut TestAppContext) {
+        let (window, store, app) = open(cx);
+        let dir = crate::engine::curation::tests::synthetic_folder("ui-open");
+        // As `dsp-app <path>`: a file inside the folder is enough
+        cx.update(|cx| app.update(cx, |a, cx| a.open_any(dir.join("params.py"), cx)));
+        let vm = cx.update(|cx| app.read(cx).curation.read(cx).vm.clone());
+        wait_until(cx, window, |cx| cx.update(|cx| vm.read(cx).correlograms.is_some() && !vm.read(cx).waveforms.is_empty()));
+        cx.update(|cx| {
+            assert_eq!(store.read(cx).workspace, Workspace::Curation);
+            let v = vm.read(cx);
+            assert_eq!(v.rows().len(), 6);
+            assert_eq!(v.selected, vec![0], "the first cluster is selected");
+            assert_eq!(v.waveforms[0].template.len(), v.waveforms[0].channels.len() * v.waveforms[0].num_samples);
+            assert!(v.waveforms[0].sampled.is_empty(), "no recording: no spikes invented");
+            assert_eq!(v.similar().len(), 5);
+        });
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            for id in ["clusters-panel", "similar-panel", "waveforms-panel", "correlograms-panel"] {
+                assert!(window.try_find(id).is_some(), "{id}");
+            }
+            // Pick a second cluster from the Similar list: compared with the first
+            window.click(("similar", 3usize), cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| assert_eq!(vm.read(cx).selected, vec![0, 3]));
+        wait_until(cx, window, |cx| cx.update(|cx| vm.read(cx).correlograms.as_ref().is_some_and(|m| m.clusters == vec![0, 3])));
+        cx.update(|cx| assert_eq!(vm.read(cx).waveforms.len(), 2));
     }
 }

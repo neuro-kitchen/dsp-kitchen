@@ -140,8 +140,13 @@ impl SortingData {
     /// Up to `max_spikes` waveforms of `cid` on its `max_channels` best channels, their mean and
     /// the sorter's template there.
     pub fn compute_waveforms(&self, cid: ClusterId, recording: Option<&dyn RecordingSource>, max_spikes: usize, max_channels: usize) -> ClusterWaveforms {
+        self.waveforms_on(cid, self.top_channels(cid, max_channels), recording, max_spikes)
+    }
+
+    /// Waveforms of `cid` on the given sorted channels (to overlay several clusters on the first
+    /// one's channels, as phy does).
+    pub fn waveforms_on(&self, cid: ClusterId, channels: Vec<usize>, recording: Option<&dyn RecordingSource>, max_spikes: usize) -> ClusterWaveforms {
         let s = &self.sorting;
-        let channels = self.top_channels(cid, max_channels);
         let positions = channels.iter().map(|&c| s.channel_positions.get(c).copied().unwrap_or([0.0, c as f32])).collect();
         let num_samples = self.window_samples();
         let template = match (self.representative_template(cid), s.templates.as_ref()) {

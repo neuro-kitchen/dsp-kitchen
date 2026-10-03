@@ -49,10 +49,7 @@ impl Workspace {
                 "Build a processing pipeline as a graph: filters, re-referencing, detection and sorting \
                  steps snap together, and each step's output can be shown in a view.",
             ),
-            Workspace::Curation => Some(
-                "A template GUI in honour of phy: units with their waveforms, features, correlograms and \
-                 amplitudes, to inspect, merge, split and label sorting results.",
-            ),
+            Workspace::Curation => None,
         }
     }
 
