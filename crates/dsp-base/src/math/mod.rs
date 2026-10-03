@@ -2,6 +2,9 @@ pub mod kernels;
 pub mod scaling;
 pub mod baseline;
 pub mod clamp;
+pub mod geometry;
+pub mod histogram;
+pub mod ticks;
 pub mod unpack;
 pub mod stats;
 pub mod windows;
@@ -14,6 +17,9 @@ pub use stats::{
     estimate_noise_rms, estimate_noise_std, estimate_noise_trimmed, execute_channel_mean_std,
     interquartile_range, standard_error,
 };
+pub use geometry::point_in_polygon;
+pub use histogram::{bin_centers, histogram, percentile};
+pub use ticks::{nice_step, ticks};
 pub use windows::{blackman_window, gaussian_window, hamming_window, hann_window, sinc};
 
 #[cfg(test)]

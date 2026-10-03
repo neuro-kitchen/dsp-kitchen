@@ -52,6 +52,23 @@ pub fn finish(acc: &mut [[f32; 2]]) {
     }
 }
 
+/// `max − min` of `samples` (NaN skipped; 0 when there is nothing to measure).
+pub fn peak_to_peak(samples: &[f32]) -> f32 {
+    let [lo, hi] = fold(samples, EMPTY);
+    if hi >= lo { hi - lo } else { 0.0 }
+}
+
+/// Mean `max − min` per column over `rows` envelope rows of `width` columns (row-major), the
+/// activity of each column across channels. Columns no row covers (NaN) are NaN.
+pub fn mean_range(env: &[[f32; 2]], rows: usize, width: usize) -> Vec<f32> {
+    (0..width)
+        .map(|x| {
+            let (sum, n) = (0..rows).map(|r| env[r * width + x]).filter(|v| v[0].is_finite() && v[1].is_finite()).fold((0.0f64, 0usize), |(s, n), v| (s + (v[1] - v[0]) as f64, n + 1));
+            if n == 0 { f32::NAN } else { (sum / n as f64) as f32 }
+        })
+        .collect()
+}
+
 /// How samples map to output columns (pixel columns or pyramid buckets).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Columns {
@@ -192,6 +209,20 @@ fn fold_frames(frames: &[f32], channels: usize, first: u64, columns: Columns, ac
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn test_peak_to_peak_and_mean_range() {
+        assert_eq!(peak_to_peak(&[1.0, -2.0, f32::NAN, 3.5]), 5.5);
+        assert_eq!(peak_to_peak(&[]), 0.0);
+        // 2 rows × 3 columns; the last column is uncovered
+        let nan = [f32::NAN, f32::NAN];
+        let env = [[0.0, 2.0], [1.0, 2.0], nan, [0.0, 4.0], nan, nan];
+        let m = mean_range(&env, 2, 3);
+        assert_eq!(m[0], 3.0);
+        assert_eq!(m[1], 1.0);
+        assert!(m[2].is_nan());
+    }
+
     use super::*;
 
     fn brute(row: &[f32]) -> [f32; 2] {

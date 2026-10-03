@@ -1,16 +1,17 @@
-//! Fills a source's min/max summary in the background, once, for every view.
+//! Fills a source's [`MinMaxSummary`] in the background, once, for every reader of it.
 //!
 //! One thread per source reads the recording a chunk at a time, nearest the window being looked
 //! at first and then outward (a new focus re-orders what is left), and reports each chunk done.
-//! Renderers only draw from the summary, never fill it, so two views of one source never read the
+//! Readers only draw from the summary, never fill it, so two views of one source never read the
 //! same samples twice, and a zoomed-out view fills in as the reading advances.
 
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
-use dsp_base::resampler::MinMaxSummary;
 use dsp_core::RecordingSource;
+
+use super::summary::MinMaxSummary;
 
 /// Most values (channels × samples) one read holds.
 const BLOCK_VALUES: usize = 1 << 22;
@@ -104,7 +105,6 @@ fn fill(source: &dyn RecordingSource, summary: &MinMaxSummary, focus: &AtomicU64
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::data::Dataset;
     use std::sync::Mutex;
     use std::time::Duration;
 
@@ -118,8 +118,9 @@ mod tests {
 
     #[test]
     fn test_fills_everything_once_and_reports_progress() {
-        let ds = Dataset::generate_synthetic(4, 1000.0, 9.0);
-        let source: Arc<dyn RecordingSource> = Arc::new(ds);
+        // 4 channels, 9 s at 1 kHz
+        let data: Vec<f32> = (0..4 * 9000).map(|i| ((i * 31) % 97) as f32).collect();
+        let source: Arc<dyn RecordingSource> = Arc::new(dsp_core::MemoryRecording::new("t", data, 4, 1000.0).unwrap());
         let summary = Arc::new(MinMaxSummary::new(source.as_ref()));
         let reports = Arc::new(Mutex::new(Vec::new()));
         let r = reports.clone();
@@ -136,29 +137,5 @@ mod tests {
         assert_eq!(reports.first().unwrap().filled, 4000..6000, "the focus first");
         assert_eq!(reports.last().unwrap().done, 9000);
         assert_eq!(reports.len(), 5, "each chunk once");
-    }
-
-    /// Time to summarize a whole recording. Run with:
-    /// `DSP_APP_BENCH_FILE=<recording> cargo test -p dsp-app [--release] bench_summarize -- --ignored --nocapture`
-    #[test]
-    #[ignore]
-    fn bench_summarize() {
-        let Some(path) = std::env::var_os("DSP_APP_BENCH_FILE") else {
-            println!("set DSP_APP_BENCH_FILE");
-            return;
-        };
-        let sources = crate::engine::data::SourceSet::open(std::path::Path::new(&path)).unwrap();
-        let ds = sources.default_dataset();
-        let total = ds.total_samples as u64;
-        let done = Arc::new(AtomicBool::new(false));
-        let d = done.clone();
-        let t0 = std::time::Instant::now();
-        ds.summarize(0, Arc::new(move |p| if p.done == p.total { d.store(true, Ordering::Relaxed) }));
-        while !done.load(Ordering::Relaxed) {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        let secs = t0.elapsed().as_secs_f64();
-        let mb = (total as f64 * ds.total_channels as f64 * 2.0) / 1e6;
-        println!("{} ch × {total} samples ({mb:.0} MB int16): {secs:.2} s ({:.0} MB/s)", ds.total_channels, mb / secs);
     }
 }
