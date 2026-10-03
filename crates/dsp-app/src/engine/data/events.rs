@@ -32,6 +32,36 @@ impl SpikeEventStore {
         &times[lo..hi.max(lo)]
     }
 
+    /// Builds a [`SpikeEventStore`] from a loaded sorting, assigning each spike to its unit's
+    /// peak channel (`ClusterMeta::ch`).
+    pub fn from_sorting(data: &crate::engine::curation::SortingData) -> Self {
+        let sr = data.sample_rate().max(1.0);
+        let n_ch = data
+            .sorting
+            .channel_map
+            .iter()
+            .copied()
+            .max()
+            .map_or(0, |c| c + 1)
+            .max(data.clusters.values().map(|c| c.ch + 1).max().unwrap_or(0));
+        let mut by_channel = vec![Vec::new(); n_ch];
+        let mut all = Vec::with_capacity(data.sorting.spike_times.len());
+        for (&sample, &cid) in data.sorting.spike_times.iter().zip(&data.sorting.spike_clusters) {
+            let t = sample as f64 / sr;
+            all.push(t);
+            let ch = data.clusters.get(&cid).map_or(0, |m| m.ch);
+            if ch >= by_channel.len() {
+                by_channel.resize(ch + 1, Vec::new());
+            }
+            by_channel[ch].push(t);
+        }
+        all.sort_by(f64::total_cmp);
+        for ch_times in &mut by_channel {
+            ch_times.sort_by(f64::total_cmp);
+        }
+        Self { times_sec: all, by_channel }
+    }
+
     /// Negative threshold crossings per channel with `dsp-synapse` (`-4.5 * sigma_n`,
     /// local-minimum peak, 2 ms refractory), reading whole channels. Test fixture only: the app
     /// never detects on its own; user-run extraction replaces it.

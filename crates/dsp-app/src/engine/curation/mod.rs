@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use dsp_synapse::{compute_isi_violations, load_spikes, PhySorting};
+use dsp_synapse::{compute_isi_violations, load_spikes, save_sorting, PhySorting, QualityCriteria};
 use serde::{Deserialize, Serialize};
 
 pub use derived::{AmplitudeMode, AmplitudePlotData, ClusterWaveforms, CorrelogramMatrix, FeatureGridData, FeatureSource, SpikePoint};
@@ -24,38 +24,8 @@ pub use dsp_synapse::storage::phy_sorting::ClusterId;
 pub use filter::matches_filter;
 pub use history::CurationCommand;
 
-/// Refractory period for the contamination estimate when the sorter saved none (ms).
-const REFRACTORY_MS: f64 = 2.0;
-
 /// Quality group assigned during curation (phy's `cluster_group.tsv` values).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default)]
-pub enum ClusterGroup {
-    Good,
-    Mua,
-    Noise,
-    #[default]
-    Unsorted,
-}
-
-impl ClusterGroup {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Good => "good",
-            Self::Mua => "mua",
-            Self::Noise => "noise",
-            Self::Unsorted => "unsorted",
-        }
-    }
-
-    pub fn parse(s: &str) -> Self {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "good" | "singleunit" => Self::Good,
-            "mua" | "multiunit" => Self::Mua,
-            "noise" => Self::Noise,
-            _ => Self::Unsorted,
-        }
-    }
-}
+pub type ClusterGroup = dsp_synapse::UnitQualityLabel;
 
 /// Sortable columns of the Clusters table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,7 +86,10 @@ impl SortingData {
         Ok(Self::from_sorting(sorting, path))
     }
 
-    pub fn from_sorting(sorting: PhySorting, path: &Path) -> Self {
+    pub fn from_sorting(mut sorting: PhySorting, path: &Path) -> Self {
+        if sorting.folder.is_none() && path.is_dir() {
+            sorting.folder = Some(path.to_path_buf());
+        }
         let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
         let rate = sorting.sample_rate().max(f64::MIN_POSITIVE);
         let duration_sec = (sorting.spike_times.iter().copied().max().unwrap_or(0) + 1) as f64 / rate;
@@ -189,7 +162,8 @@ impl SortingData {
             None => mean_amp as f32,
         };
         let samples: Vec<u64> = indices.iter().map(|&i| s.spike_times[i]).collect();
-        let contam_pct = compute_isi_violations(&samples, self.sample_rate(), self.duration_sec, REFRACTORY_MS, 0.0).violation_rate_pct;
+        let criteria = QualityCriteria::PHY;
+        let contam_pct = compute_isi_violations(&samples, self.sample_rate(), self.duration_sec, criteria.refractory_ms, criteria.censored_ms).violation_rate_pct;
         ClusterMeta {
             id: cid,
             ch,
@@ -276,13 +250,13 @@ impl SortingData {
         out
     }
 
-    /// Writes the curation into `dir` (what phy reads back: `spike_clusters.npy`,
-    /// `cluster_group.tsv`, `cluster_info.tsv`; originals kept as `.bak`).
+    /// Writes the curation into `dir` (for phy folders: `spike_clusters.npy`, `cluster_group.tsv`,
+    /// `cluster_info.tsv` with `.bak` originals; for `.sorting.zarr` / `.nwb.zarr`: Zarr store).
     pub fn save_to(&mut self, dir: &Path) -> Result<()> {
         let groups: BTreeMap<ClusterId, String> = self.clusters.iter().map(|(&id, m)| (id, m.group.as_str().to_string())).collect();
         let mut columns: Vec<String> = ["cluster_id", "ch", "depth", "sh", "n_spikes", "fr", "amp", "contam_pct", "KSLabel", "group"].map(String::from).to_vec();
         columns.extend(self.custom_keys.iter().cloned());
-        let rows = self
+        let rows: BTreeMap<ClusterId, BTreeMap<String, String>> = self
             .clusters
             .iter()
             .map(|(&id, m)| {
@@ -304,7 +278,18 @@ impl SortingData {
                 (id, row)
             })
             .collect();
-        PhySorting::save_curation(dir, &self.sorting.spike_clusters, &groups, &columns, &rows).with_context(|| format!("Could not save the curation in {}", dir.display()))?;
+
+        self.sorting.tables.group = groups.clone();
+        self.sorting.tables.info_columns = columns.clone();
+        self.sorting.tables.info = rows.clone();
+
+        let dir_str = dir.to_string_lossy();
+        if dir_str.ends_with(".zarr") {
+            let so = self.sorting.to_sorting_output();
+            save_sorting(&so, dir, None).with_context(|| format!("Could not save the curation in {}", dir.display()))?;
+        } else {
+            PhySorting::save_curation(dir, &self.sorting.spike_clusters, &groups, &columns, &rows).with_context(|| format!("Could not save the curation in {}", dir.display()))?;
+        }
         self.sorting.folder = Some(dir.to_path_buf());
         self.saved_depth = self.undo_stack.len();
         Ok(())
