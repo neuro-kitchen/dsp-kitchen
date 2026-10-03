@@ -2711,6 +2711,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tracing",
+ "zarrs",
 ]
 
 [[package]]
@@ -2726,6 +2727,7 @@ dependencies = [
  "dirs 6.0.0",
  "dsp-base",
  "dsp-core",
+ "dsp-io",
  "dsp-synapse",
  "hex",
  "memmap2",

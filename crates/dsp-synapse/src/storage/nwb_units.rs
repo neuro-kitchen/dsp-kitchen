@@ -1,260 +1,386 @@
-//! NWB `/units` DynamicTable Zarr Persistence (`nwb_units.rs`).
+//! NWB `/units` DynamicTable Zarr v3 Persistence (`nwb_units.rs`).
 //!
-//! Stores [`SortingOutput`] within the standard NWB `/units` group inside a `.nwb.zarr` directory:
-//! - `units/id`: `[0..K]`
-//! - `units/spike_times`: concatenated `f64` spike timestamps in seconds
-//! - `units/spike_times_index`: `[K]` ragged cumulative spike counts
-//! - `units/waveform_mean`: `[K, C, T]`
-//! - `units/waveform_sd`: `[K, C, T]`
-//! - `units/waveform_se`: `[K, C, T]`
-//! - `units/snr`, `units/firing_rate`, `units/quality`
+//! Stores and loads [`SortingOutput`] within the standard NWB `/units` group inside a `.nwb.zarr`
+//! store (compatible with `neuro-convert` and `hdmf-zarr`):
+//! - `/units/id`: `[K]` (`int64`)
+//! - `/units/spike_times`: concatenated `float64` spike timestamps in seconds (with `resolution = 1 / fs`)
+//! - `/units/spike_times_index`: `[K]` (`uint64`) ragged cumulative spike counts
+//! - `/units/waveform_mean`, `/units/waveform_sd`, `/units/waveform_se`: `[K, C, T]` (or `[K, T]`)
+//! - `/units/snr`, `/units/firing_rate`, `/units/primary_channel`
 
-use std::fs::File;
-use std::io::Write;
 use std::path::Path;
 
-use dsp_core::{DspError, DspResult};
-use serde::{Deserialize, Serialize};
+use dsp_core::{DspError, DspResult, SensorLayout};
+use serde_json::{Map, Value, json};
 
-use crate::core::{SortedUnit, SortingOutput, UnitQualityLabel, WaveformTemplate};
-use super::npy::{
-    read_npy_f32_1d, read_npy_f32_3d, read_npy_i32_1d, read_npy_u64_1d, write_npy_f32_1d,
-    write_npy_f32_3d, write_npy_i32_1d, write_npy_u64_1d,
+use crate::core::{
+    DenseTemplates, RecordingMeta, SortedUnit, SortingOutput, TemplateAxisOrder, UnitQualityLabel,
+    WaveformTemplate,
+};
+use crate::metrics::QualityCriteria;
+use super::zarr_store::{
+    has_array, infer_nwb_sample_rate, open_rw_store, read_array, read_node_attributes,
+    read_optional_array, write_array_f32, write_array_f64, write_array_i64, write_array_u64,
+    write_group,
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct NwbUnitsZarrJson {
-    zarr_format: u32,
-    node_type: String,
-    attributes: NwbUnitsAttributes,
+fn col_attrs(description: &str) -> Map<String, Value> {
+    let mut m = Map::new();
+    m.insert("neurodata_type".into(), json!("VectorData"));
+    m.insert("namespace".into(), json!("hdmf-common"));
+    m.insert("description".into(), json!(description));
+    m
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct NwbUnitsAttributes {
-    neurodata_type: String,
-    namespace: String,
-    description: String,
-    colnames: Vec<String>,
-}
-
-/// Saves [`SortingOutput`] into the `units/` group inside `nwb_zarr_dir`.
+/// Saves [`SortingOutput`] into the `/units` Zarr v3 group inside `nwb_zarr_dir`.
 pub fn save_nwb_units(sorting: &SortingOutput, nwb_zarr_dir: &Path) -> DspResult<()> {
-    let units_dir = nwb_zarr_dir.join("units");
-    std::fs::create_dir_all(&units_dir).map_err(|e| DspError::Io(e.to_string()))?;
-
-    let num_units = sorting.units.len();
-    let mut unit_ids = Vec::with_capacity(num_units);
-    let mut spike_times_sec = Vec::new();
-    let mut spike_times_index = Vec::with_capacity(num_units);
-    let mut snr_vec = Vec::with_capacity(num_units);
-    let mut fr_vec = Vec::with_capacity(num_units);
-
+    let store = open_rw_store(nwb_zarr_dir)?;
     let fs = sorting.sample_rate_hz.max(1.0);
-    let mut cum_spikes = 0u64;
 
-    for u in &sorting.units {
-        unit_ids.push(u.unit_id as i32);
-        for &s in &u.spike_samples {
-            spike_times_sec.push((s as f64) / fs);
-        }
-        cum_spikes += u.spike_samples.len() as u64;
-        spike_times_index.push(cum_spikes);
-        snr_vec.push(u.snr);
-        fr_vec.push(u.firing_rate_hz as f32);
+    let (unit_ids, spike_times_sec, spike_times_index) = sorting.to_ragged_spikes();
+    let num_units = sorting.units.len();
+    let snr_vec: Vec<f32> = sorting.units.iter().map(|u| u.snr).collect();
+    let fr_vec: Vec<f32> = sorting.units.iter().map(|u| u.firing_rate_hz as f32).collect();
+    let ch_vec: Vec<i64> = sorting.units.iter().map(|u| u.primary_channel as i64).collect();
+    let quality_labels: Vec<&str> = sorting.units.iter().map(|u| u.quality_label.as_str()).collect();
+
+    let total_spikes = spike_times_sec.len();
+    let has_all_amps = total_spikes > 0
+        && sorting
+            .units
+            .iter()
+            .all(|u| u.amplitudes_uv.len() == u.spike_samples.len());
+    let has_all_locs = total_spikes > 0
+        && sorting
+            .units
+            .iter()
+            .all(|u| u.locations_um.len() == u.spike_samples.len());
+
+    let probe_channels = sorting.probe.as_ref().map_or(0, |p| p.total_channels());
+    let packed_templates = DenseTemplates::pack_units(
+        sorting.units.iter().enumerate().map(|(slot, u)| (slot, u.template.as_ref())),
+        probe_channels,
+        TemplateAxisOrder::ChannelsSamples,
+    );
+
+    let mut colnames = vec![
+        "spike_times",
+        "snr",
+        "firing_rate",
+        "primary_channel",
+    ];
+    if packed_templates.is_some() {
+        colnames.push("waveform_mean");
+        colnames.push("waveform_sd");
+        colnames.push("waveform_se");
+    }
+    if has_all_amps {
+        colnames.push("spike_amplitudes");
+    }
+    if has_all_locs {
+        colnames.push("spike_locations");
     }
 
-    write_npy_i32_1d(&units_dir.join("id.npy"), &unit_ids)?;
-    write_npy_u64_1d(&units_dir.join("spike_times_index.npy"), &spike_times_index)?;
-    let spike_times_f32: Vec<f32> = spike_times_sec.iter().map(|&t| t as f32).collect();
-    write_npy_f32_1d(&units_dir.join("spike_times.npy"), &spike_times_f32)?;
-    write_npy_f32_1d(&units_dir.join("snr.npy"), &snr_vec)?;
-    write_npy_f32_1d(&units_dir.join("firing_rate.npy"), &fr_vec)?;
+    let mut group_attrs = Map::new();
+    group_attrs.insert("neurodata_type".into(), json!("Units"));
+    group_attrs.insert("namespace".into(), json!("core"));
+    group_attrs.insert(
+        "description".into(),
+        json!(format!("Sorted neural units extracted by {}", sorting.sorter_name)),
+    );
+    group_attrs.insert("colnames".into(), json!(colnames));
+    group_attrs.insert("sample_rate_hz".into(), json!(fs));
+    group_attrs.insert("total_samples".into(), json!(sorting.total_samples));
+    group_attrs.insert("sorter_name".into(), json!(sorting.sorter_name));
+    group_attrs.insert("quality_labels".into(), json!(quality_labels));
+    if let Some(probe) = &sorting.probe
+        && let Ok(val) = serde_json::to_value(probe)
+    {
+        group_attrs.insert("probe".into(), val);
+    }
+    write_group(&store, nwb_zarr_dir, "/units", group_attrs)?;
 
-    // Templates [num_units, num_channels, num_samples]
-    let num_channels = sorting
-        .probe
-        .as_ref()
-        .map(|p| p.total_channels())
-        .unwrap_or_else(|| {
-            sorting
-                .units
-                .iter()
-                .filter_map(|u| u.template.as_ref())
-                .map(|t| t.num_channels)
-                .max()
-                .unwrap_or(1)
-        });
+    let mut id_attrs = Map::new();
+    id_attrs.insert("neurodata_type".into(), json!("ElementIdentifiers"));
+    id_attrs.insert("namespace".into(), json!("hdmf-common"));
+    write_array_i64(&store, nwb_zarr_dir, "/units/id", &unit_ids, &[num_units], &["num_rows"], id_attrs)?;
 
-    let template_samples = sorting
-        .units
-        .iter()
-        .filter_map(|u| u.template.as_ref())
-        .map(|t| t.num_samples)
-        .max()
-        .unwrap_or(0);
+    let mut st_attrs = col_attrs("the spike times for each unit in seconds");
+    st_attrs.insert("resolution".into(), json!(1.0 / fs));
+    st_attrs.insert("unit".into(), json!("seconds"));
+    write_array_f64(
+        &store,
+        nwb_zarr_dir,
+        "/units/spike_times",
+        &spike_times_sec,
+        &[spike_times_sec.len()],
+        &["num_spikes"],
+        st_attrs,
+    )?;
 
-    if num_units > 0 && template_samples > 0 && num_channels > 0 {
-        let total_t = num_units * num_channels * template_samples;
-        let mut t_mean = vec![0.0f32; total_t];
-        let mut t_std = vec![0.0f32; total_t];
-        let mut t_se = vec![0.0f32; total_t];
+    let mut idx_attrs = Map::new();
+    idx_attrs.insert("neurodata_type".into(), json!("VectorIndex"));
+    idx_attrs.insert("namespace".into(), json!("hdmf-common"));
+    idx_attrs.insert("description".into(), json!("Index for VectorData 'spike_times'"));
+    idx_attrs.insert(
+        "target".into(),
+        json!({ "_REFERENCE": { "source": ".", "path": "/units/spike_times" } }),
+    );
+    write_array_u64(
+        &store,
+        nwb_zarr_dir,
+        "/units/spike_times_index",
+        &spike_times_index,
+        &[num_units],
+        &["num_rows"],
+        idx_attrs,
+    )?;
 
-        for (u_idx, unit) in sorting.units.iter().enumerate() {
-            if let Some(t) = &unit.template {
-                let off = u_idx * num_channels * template_samples;
-                for (r, &ch) in t.channel_ids.iter().enumerate() {
-                    if ch < num_channels {
-                        let dst_off = off + ch * template_samples;
-                        let src_slice = t.row(r);
-                        let n_s = src_slice.len().min(template_samples);
-                        t_mean[dst_off..dst_off + n_s].copy_from_slice(&src_slice[..n_s]);
-                        t_std[dst_off..dst_off + n_s].copy_from_slice(&t.std[r * t.num_samples..r * t.num_samples + n_s]);
-                        t_se[dst_off..dst_off + n_s].copy_from_slice(&t.se[r * t.num_samples..r * t.num_samples + n_s]);
-                    }
-                }
-            }
-        }
-        let shape = [num_units, num_channels, template_samples];
-        write_npy_f32_3d(&units_dir.join("waveform_mean.npy"), &t_mean, shape)?;
-        write_npy_f32_3d(&units_dir.join("waveform_sd.npy"), &t_std, shape)?;
-        write_npy_f32_3d(&units_dir.join("waveform_se.npy"), &t_se, shape)?;
+    if has_all_amps {
+        let ragged_amps: Vec<f32> = sorting
+            .units
+            .iter()
+            .flat_map(|u| u.amplitudes_uv.iter().copied())
+            .collect();
+        write_array_f32(
+            &store,
+            nwb_zarr_dir,
+            "/units/spike_amplitudes",
+            &ragged_amps,
+            &[ragged_amps.len()],
+            &["num_spikes"],
+            col_attrs("per-spike peak amplitudes in microvolts"),
+        )?;
     }
 
-    let manifest = NwbUnitsZarrJson {
-        zarr_format: 3,
-        node_type: "group".into(),
-        attributes: NwbUnitsAttributes {
-            neurodata_type: "Units".into(),
-            namespace: "core".into(),
-            description: format!("Sorted neural units extracted by {}", sorting.sorter_name),
-            colnames: vec![
-                "id".into(),
-                "spike_times".into(),
-                "spike_times_index".into(),
-                "waveform_mean".into(),
-                "snr".into(),
-                "firing_rate".into(),
-            ],
-        },
-    };
-    let json_bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| DspError::Io(e.to_string()))?;
-    let mut zarr_file = File::create(units_dir.join("zarr.json")).map_err(|e| DspError::Io(e.to_string()))?;
-    zarr_file.write_all(&json_bytes).map_err(|e| DspError::Io(e.to_string()))?;
+    if has_all_locs {
+        let ragged_locs: Vec<f32> = sorting
+            .units
+            .iter()
+            .flat_map(|u| u.locations_um.iter().flatten().copied())
+            .collect();
+        write_array_f32(
+            &store,
+            nwb_zarr_dir,
+            "/units/spike_locations",
+            &ragged_locs,
+            &[total_spikes, 3],
+            &["num_spikes", "xyz"],
+            col_attrs("per-spike 3D coordinates in micrometers"),
+        )?;
+    }
+
+    write_array_f32(&store, nwb_zarr_dir, "/units/snr", &snr_vec, &[num_units], &["num_rows"], col_attrs("unit peak-to-noise ratio"))?;
+    write_array_f32(&store, nwb_zarr_dir, "/units/firing_rate", &fr_vec, &[num_units], &["num_rows"], col_attrs("mean firing rate in Hz"))?;
+    write_array_i64(&store, nwb_zarr_dir, "/units/primary_channel", &ch_vec, &[num_units], &["num_rows"], col_attrs("primary recording channel"))?;
+
+    if let Some((shape, t_mean, t_std, t_se)) = packed_templates {
+        let mut wm_attrs = col_attrs("the spike waveform mean for each spike unit");
+        wm_attrs.insert("sampling_rate".into(), json!(fs));
+        wm_attrs.insert("unit".into(), json!("microvolts"));
+        let dims = ["num_units", "num_channels", "num_samples"];
+        write_array_f32(&store, nwb_zarr_dir, "/units/waveform_mean", &t_mean, &shape, &dims, wm_attrs)?;
+        write_array_f32(&store, nwb_zarr_dir, "/units/waveform_sd", &t_std, &shape, &dims, col_attrs("spike waveform standard deviation"))?;
+        write_array_f32(&store, nwb_zarr_dir, "/units/waveform_se", &t_se, &shape, &dims, col_attrs("spike waveform standard error"))?;
+    }
 
     Ok(())
 }
 
-/// Loads a `SortingOutput` from the `units/` group inside `nwb_zarr_dir`.
-pub fn load_nwb_units(nwb_zarr_dir: &Path, sample_rate_hz: f64) -> DspResult<SortingOutput> {
-    let units_dir = if nwb_zarr_dir.join("units").exists() {
-        nwb_zarr_dir.join("units")
+/// Loads a [`SortingOutput`] from the `/units` group inside `nwb_zarr_dir`.
+///
+/// `sample_rate_hz` may be passed explicitly (`Some(rate)` or `rate`) or omitted (`None`), in
+/// which case the sample rate is inferred from `/units` metadata (`sample_rate_hz`,
+/// `waveform_mean.sampling_rate`, `1.0 / spike_times.resolution`, or `/acquisition` series rate).
+pub fn load_nwb_units(
+    nwb_zarr_dir: &Path,
+    sample_rate_hz: impl Into<Option<f64>>,
+) -> DspResult<SortingOutput> {
+    let (base_dir, prefix) = if nwb_zarr_dir.join("units").exists() {
+        (nwb_zarr_dir, "/units")
     } else {
-        nwb_zarr_dir.to_path_buf()
+        (nwb_zarr_dir, "")
+    };
+    let node = |name: &str| {
+        if prefix.is_empty() {
+            format!("/{name}")
+        } else {
+            format!("{prefix}/{name}")
+        }
     };
 
-    let id_path = units_dir.join("id.npy");
-    let times_path = units_dir.join("spike_times.npy");
-    let index_path = units_dir.join("spike_times_index.npy");
-    if !id_path.exists() || !times_path.exists() || !index_path.exists() {
+    if !has_array(base_dir, &node("id"))
+        || !has_array(base_dir, &node("spike_times"))
+        || !has_array(base_dir, &node("spike_times_index"))
+    {
         return Err(DspError::UnsupportedFormat(format!(
-            "NWB units group in {} missing id.npy, spike_times.npy, or spike_times_index.npy",
-            units_dir.display()
+            "NWB units group in {} missing id, spike_times, or spike_times_index",
+            nwb_zarr_dir.display()
         )));
     }
 
-    let unit_ids = read_npy_i32_1d(&id_path)?;
-    let spike_times_sec = read_npy_f32_1d(&times_path)?;
-    let spike_times_index = read_npy_u64_1d(&index_path)?;
+    let root_nwb = if nwb_zarr_dir.join("acquisition").is_dir() {
+        Some(nwb_zarr_dir)
+    } else {
+        nwb_zarr_dir.parent().filter(|p| p.join("acquisition").is_dir())
+    };
 
-    let snrs = units_dir
-        .join("snr.npy")
-        .exists()
-        .then(|| read_npy_f32_1d(&units_dir.join("snr.npy")).ok())
-        .flatten()
+    let explicit_sr = sample_rate_hz.into().filter(|&r| r > 0.0);
+    let inferred_sr = infer_nwb_sample_rate(root_nwb.unwrap_or(nwb_zarr_dir));
+    let fs = explicit_sr
+        .or(inferred_sr)
+        .ok_or_else(|| {
+            DspError::InvalidConfig(format!(
+                "{}: sample_rate_hz not found in NWB metadata and none was provided",
+                nwb_zarr_dir.display()
+            ))
+        })?;
+
+    let group_attrs = read_node_attributes(base_dir, prefix);
+    let sorter_name = group_attrs
+        .as_ref()
+        .and_then(|a| a.get("sorter_name"))
+        .and_then(Value::as_str)
+        .unwrap_or("nwb_units")
+        .to_string();
+    let stored_total_samples = group_attrs
+        .as_ref()
+        .and_then(|a| a.get("total_samples"))
+        .and_then(Value::as_u64);
+    let probe: Option<SensorLayout> = group_attrs
+        .as_ref()
+        .and_then(|a| a.get("probe"))
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
+    let quality_labels: Vec<String> = group_attrs
+        .as_ref()
+        .and_then(|a| a.get("quality_labels"))
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
         .unwrap_or_default();
 
-    let loaded_t = units_dir
-        .join("waveform_mean.npy")
-        .exists()
-        .then(|| read_npy_f32_3d(&units_dir.join("waveform_mean.npy")).ok())
-        .flatten();
-    let loaded_se = units_dir
-        .join("waveform_se.npy")
-        .exists()
-        .then(|| read_npy_f32_3d(&units_dir.join("waveform_se.npy")).ok())
-        .flatten();
+    let unit_ids = read_array::<i64>(base_dir, &node("id"))?.data;
+    let spike_times_sec = read_array::<f64>(base_dir, &node("spike_times"))?.data;
+    let spike_times_index = read_array::<u64>(base_dir, &node("spike_times_index"))?.data;
 
-    let fs = sample_rate_hz.max(1.0);
+    let ragged_amps = read_optional_array::<f32>(base_dir, &node("spike_amplitudes")).map(|a| a.data);
+    let ragged_locs = read_optional_array::<f32>(base_dir, &node("spike_locations"))
+        .filter(|a| a.shape.len() == 2 && a.shape[1] >= 3)
+        .map(|a| {
+            let cols = a.shape[1];
+            a.data
+                .chunks_exact(cols)
+                .map(|r| [r[0], r[1], r[2]])
+                .collect::<Vec<[f32; 3]>>()
+        });
+
+    let snrs = read_optional_array::<f32>(base_dir, &node("snr"))
+        .map(|a| a.data)
+        .unwrap_or_default();
+    let primary_channels = read_optional_array::<usize>(base_dir, &node("primary_channel"))
+        .or_else(|| read_optional_array::<usize>(base_dir, &node("source_channel")))
+        .or_else(|| read_optional_array::<usize>(base_dir, &node("electrodes")))
+        .map(|a| a.data)
+        .unwrap_or_default();
+
+    let loaded_t = read_optional_array::<f32>(base_dir, &node("waveform_mean"));
+    let loaded_sd = read_optional_array::<f32>(base_dir, &node("waveform_sd")).map(|a| a.data);
+    let loaded_se = read_optional_array::<f32>(base_dir, &node("waveform_se")).map(|a| a.data);
+
+    let unpacked = SortingOutput::unpack_ragged_spikes(&unit_ids, &spike_times_sec, &spike_times_index, fs);
+    let total_samples = stored_total_samples.unwrap_or_else(|| {
+        unpacked
+            .iter()
+            .filter_map(|(_, s)| s.last().copied())
+            .max()
+            .unwrap_or(0)
+    });
+
+    let criteria = QualityCriteria::default();
+    let mut units = Vec::with_capacity(unpacked.len());
     let mut prev_idx = 0usize;
-    let mut units = Vec::with_capacity(unit_ids.len());
 
-    for (u_pos, &uid) in unit_ids.iter().enumerate() {
+    for (u_pos, (uid, spike_samples)) in unpacked.into_iter().enumerate() {
         let end_idx = spike_times_index
             .get(u_pos)
             .copied()
-            .unwrap_or(0) as usize;
-        let u_sec = &spike_times_sec[prev_idx.min(spike_times_sec.len())..end_idx.min(spike_times_sec.len())];
-        let spike_samples: Vec<u64> = u_sec.iter().map(|&t| (t as f64 * fs).round() as u64).collect();
+            .unwrap_or(prev_idx as u64) as usize;
+        let start_idx = prev_idx.min(end_idx);
         prev_idx = end_idx;
 
-        let template = if let Some((t_mean, [n_u, n_c, n_s])) = &loaded_t {
-            if u_pos < *n_u {
-                let off = u_pos * n_c * n_s;
-                let mean = t_mean[off..off + n_c * n_s].to_vec();
-                let se = loaded_se
-                    .as_ref()
-                    .map(|(s, _)| s[off..off + n_c * n_s].to_vec())
-                    .unwrap_or_else(|| vec![0.0; n_c * n_s]);
-                let mut t = WaveformTemplate::with_count(
-                    (0..*n_c).collect(),
-                    *n_s,
-                    spike_samples.len(),
-                    mean,
-                    vec![1.0; n_c * n_s],
-                );
-                t.se = se;
-                Some(t)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+        let u_amps = ragged_amps
+            .as_ref()
+            .filter(|a| end_idx <= a.len())
+            .map(|a| a[start_idx..end_idx].to_vec())
+            .unwrap_or_default();
+        let u_locs = ragged_locs
+            .as_ref()
+            .filter(|l| end_idx <= l.len())
+            .map(|l| l[start_idx..end_idx].to_vec())
+            .unwrap_or_default();
 
-        let mut unit = SortedUnit::from_spikes(
-            uid as usize,
-            0,
+        let primary_ch = primary_channels.get(u_pos).copied();
+        let template = loaded_t.as_ref().and_then(|arr| match arr.shape.as_slice() {
+            // 3D: [num_units, num_channels, num_samples]
+            &[n_u, n_c, n_s] => DenseTemplates::unpack_unit(
+                u_pos,
+                [n_u, n_c, n_s],
+                TemplateAxisOrder::ChannelsSamples,
+                &arr.data,
+                loaded_sd.as_deref(),
+                loaded_se.as_deref(),
+                spike_samples.len(),
+            ),
+            // 2D (neuro-convert single-channel snippet units): [num_units, num_samples]
+            &[n_u, n_s] if u_pos < n_u && n_s > 0 => {
+                let off = u_pos * n_s;
+                let mean = arr.data[off..off + n_s].to_vec();
+                let std = loaded_sd
+                    .as_ref()
+                    .filter(|s| s.len() == arr.data.len())
+                    .map(|s| s[off..off + n_s].to_vec())
+                    .unwrap_or_else(|| vec![1.0; n_s]);
+                let ch = primary_ch.unwrap_or(0);
+                Some(WaveformTemplate::with_count(vec![ch], n_s, spike_samples.len(), mean, std))
+            }
+            _ => None,
+        });
+
+        let mut unit = SortedUnit::from_spikes_with(
+            uid,
+            primary_ch,
             spike_samples,
-            Vec::new(),
-            Vec::new(),
+            u_amps,
+            u_locs,
             template,
             fs,
-            0,
-            10.0,
+            total_samples,
+            None,
+            criteria,
         );
         if let Some(&snr) = snrs.get(u_pos) {
             unit.snr = snr;
-            if snr >= 3.0 {
-                unit.quality_label = UnitQualityLabel::SingleUnit;
-            }
+            unit.quality_label = criteria.classify(unit.num_spikes(), snr, unit.isi_violation_ratio);
+        }
+        if let Some(q_str) = quality_labels.get(u_pos) {
+            unit.quality_label = UnitQualityLabel::parse(q_str);
         }
         units.push(unit);
     }
 
-    let total_samples = units
-        .iter()
-        .filter_map(|u| u.spike_samples.last().copied())
-        .max()
-        .unwrap_or(0);
-
-    Ok(SortingOutput::new(
-        "nwb_units",
+    let mut out = SortingOutput::new(
+        sorter_name,
         fs,
         total_samples,
-        None,
+        probe,
         units,
         None,
-    ))
+    );
+    if let Some(root) = root_nwb {
+        out = out.with_recording_meta(RecordingMeta {
+            dat_path: Some(root.to_string_lossy().into_owned()),
+            ..Default::default()
+        });
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -262,25 +388,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_nwb_units_roundtrip() {
+    fn test_nwb_units_roundtrip_and_inferred_rate() {
         let dir = std::env::temp_dir().join(format!("dsp_nwb_units_test_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
-        let times = vec![300u64, 1500, 3000];
+        // Include a timestamp past 2^24 samples to verify f64 precision is preserved
+        let times = vec![300u64, 1500, 20_000_003];
         let t_mean = vec![0.0f32; 2 * 25];
         let template = WaveformTemplate::with_count(vec![0, 1], 25, 3, t_mean, vec![1.0; 50]);
 
-        let unit0 = SortedUnit::from_spikes(0, 0, times, Vec::new(), Vec::new(), Some(template), 30_000.0, 4000, 8.0);
-        let orig = SortingOutput::new("nwb_sorter", 30_000.0, 4000, None, vec![unit0], None);
+        let unit0 = SortedUnit::from_spikes(0, 1, times.clone(), Vec::new(), Vec::new(), Some(template), 20_000.0, 20_001_000, 8.0);
+        let orig = SortingOutput::new("nwb_sorter", 20_000.0, 20_001_000, None, vec![unit0], None);
 
         save_nwb_units(&orig, &dir).unwrap();
-        assert!(dir.join("units").join("id.npy").exists());
-        assert!(dir.join("units").join("spike_times.npy").exists());
-        assert!(dir.join("units").join("spike_times_index.npy").exists());
+        assert!(dir.join("units").join("zarr.json").exists());
+        assert!(dir.join("units").join("id").join("zarr.json").exists());
+        assert!(dir.join("units").join("spike_times").join("zarr.json").exists());
+        assert!(dir.join("units").join("spike_times_index").join("zarr.json").exists());
 
-        let loaded = load_nwb_units(&dir, 30_000.0).unwrap();
+        // Load with None: sample rate (20_000.0 Hz) is inferred from Zarr metadata
+        let loaded = load_nwb_units(&dir, None).unwrap();
+        assert_eq!(loaded.sample_rate_hz, 20_000.0);
         assert_eq!(loaded.units.len(), 1);
-        assert_eq!(loaded.units[0].spike_samples, orig.units[0].spike_samples);
+        assert_eq!(loaded.units[0].primary_channel, 1);
+        assert_eq!(loaded.units[0].spike_samples, times);
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

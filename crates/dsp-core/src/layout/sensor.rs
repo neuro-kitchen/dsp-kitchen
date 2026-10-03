@@ -59,6 +59,41 @@ impl SensorLayout {
         Self { name: self.name.clone(), contacts }
     }
 
+    /// Flat `(channel_map, channel_positions_xy, channel_shanks)` arrays as used by Phy / Kilosort
+    /// and Zarr stores.
+    pub fn to_channel_arrays(&self) -> (Vec<usize>, Vec<[f32; 2]>, Vec<usize>) {
+        let map = self.contacts.iter().map(|c| c.channel_id).collect();
+        let pos = self.contacts.iter().map(|c| [c.position.x_um, c.position.y_um]).collect();
+        let shanks = self.contacts.iter().map(|c| c.shank_id).collect();
+        (map, pos, shanks)
+    }
+
+    /// Reconstructs a `SensorLayout` from flat `(channel_map, channel_positions_xy, channel_shanks)`
+    /// arrays (`None` when `positions` is empty). Missing `channel_map` or `shanks` entries fall back
+    /// to identity (`i`) and shank `0`.
+    pub fn from_channel_arrays(
+        name: impl Into<String>,
+        channel_map: &[usize],
+        positions: &[[f32; 2]],
+        shanks: &[usize],
+    ) -> Option<Self> {
+        if positions.is_empty() {
+            return None;
+        }
+        let contacts = positions
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                SensorSite::new(
+                    channel_map.get(i).copied().unwrap_or(i),
+                    Position3D::new(p[0], p[1], 0.0),
+                    shanks.get(i).copied().unwrap_or(0),
+                )
+            })
+            .collect();
+        Some(Self::new(name, contacts))
+    }
+
     /// Neuropixels 1.0 (384 channels, one shank): 20 µm rows, staggered columns at x = 43 / 11 µm on
     /// even rows and 59 / 27 µm on odd rows (probeinterface `NP1010`).
     pub fn neuropixels_1_0_standard() -> Self {
