@@ -32,10 +32,22 @@ pub const CCG_BIN_MS: f32 = 0.5;
 pub const CCG_WINDOW_MS: f32 = 50.0;
 pub const REFRACTORY_MS: f32 = 2.0;
 
-/// Whether `path` is a phy / Kilosort folder (or a file in one).
+/// Whether `path` is a standalone sorting folder (Phy/Kilosort, `.sorting.zarr`, or NWB `/units`).
 pub fn is_sorting(path: &Path) -> bool {
     let dir = if path.is_dir() { Some(path) } else { path.parent() };
-    dir.is_some_and(|d| d.join("spike_times.npy").is_file())
+    dir.is_some_and(|d| {
+        d.join("spike_times.npy").is_file()
+            || dsp_synapse::storage::zarr_store::has_array(d, "/spikes/times")
+            || (dsp_synapse::storage::zarr_store::has_array(d, "/spike_times")
+                && dsp_synapse::storage::zarr_store::has_array(d, "/spike_times_index"))
+            || (dsp_synapse::storage::zarr_store::has_array(d, "/units/spike_times")
+                && !d.join("acquisition").is_dir())
+    })
+}
+
+/// Whether `path` is a recording container (e.g. `.nwb.zarr`) that also has an embedded sorting.
+pub fn has_embedded_sorting(path: &Path) -> bool {
+    path.is_dir() && dsp_synapse::storage::zarr_store::has_array(path, "/units/spike_times")
 }
 
 enum Computed {
@@ -83,11 +95,27 @@ impl CurationVm {
                 }
             }
         });
-        // The recording arriving (or changing) makes raw waveforms possible
-        let sub = cx.subscribe(&store, |vm, _, e: &AppEvent, cx| {
+        // The recording arriving (or changing) makes raw waveforms possible, or loads its embedded sorting
+        let sub = cx.subscribe(&store, |vm, s, e: &AppEvent, cx| {
             if *e == AppEvent::RecordingChanged {
-                vm.attach_recording(cx);
-                vm.compute(cx);
+                let embedded_path = s
+                    .read(cx)
+                    .recording
+                    .as_ref()
+                    .and_then(|r| r.path.clone())
+                    .filter(|p| has_embedded_sorting(p));
+                let already_open = embedded_path.as_ref().is_some_and(|p| {
+                    vm.data.as_ref().is_some_and(|d| d.sorting.folder.as_deref() == Some(p.as_path()))
+                });
+                if let Some(p) = embedded_path
+                    && !already_open
+                    && vm.opening.is_none()
+                {
+                    vm.open_with_mode(p, false, cx);
+                } else {
+                    vm.attach_recording(cx);
+                    vm.compute(cx);
+                }
             }
         });
         Self {
@@ -120,20 +148,28 @@ impl CurationVm {
         let duration = self.recording(cx).map(|ds| ds.total_samples as f64 / ds.sample_rate);
         if let (Some(d), Some(data)) = (duration, self.data.as_mut()) {
             Arc::make_mut(data).set_recording_duration(d);
+            let events = Arc::new(crate::engine::data::SpikeEventStore::from_sorting(data));
+            self.store.update(cx, |s, cx| s.set_events(events, cx));
             cx.notify();
         }
     }
 
     /// Reads the sorting at `path` in the background; on success shows it in Curation and opens
-    /// its recording in Explore (from `params.py`) when none is open.
+    /// its recording in Explore (from `params.py` or Zarr metadata) when none is open.
     pub fn open(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.open_with_mode(path, true, cx);
+    }
+
+    fn open_with_mode(&mut self, path: PathBuf, switch_workspace: bool, cx: &mut Context<Self>) {
         let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
         self.opening = Some(name.clone());
         self.error = None;
-        self.store.update(cx, |s, cx| {
-            s.set_workspace(Workspace::Curation, cx);
-            s.set_status(format!("Opening the sorting {name}…"), cx);
-        });
+        if switch_workspace {
+            self.store.update(cx, |s, cx| {
+                s.set_workspace(Workspace::Curation, cx);
+                s.set_status(format!("Opening the sorting {name}…"), cx);
+            });
+        }
         cx.notify();
         let task = cx.background_spawn({
             let path = path.clone();
@@ -141,12 +177,12 @@ impl CurationVm {
         });
         cx.spawn(async move |this, cx| {
             let result = task.await;
-            let _ = this.update(cx, |vm, cx| vm.opened(path, result, cx));
+            let _ = this.update(cx, |vm, cx| vm.opened(path, result, switch_workspace, cx));
         })
         .detach();
     }
 
-    fn opened(&mut self, path: PathBuf, result: anyhow::Result<SortingData>, cx: &mut Context<Self>) {
+    fn opened(&mut self, path: PathBuf, result: anyhow::Result<SortingData>, switch_workspace: bool, cx: &mut Context<Self>) {
         self.opening = None;
         match result {
             Ok(data) => {
@@ -156,7 +192,11 @@ impl CurationVm {
                 self.data = Some(Arc::new(data));
                 self.store.update(cx, |s, cx| {
                     s.push_recent_sorting(&path);
-                    s.set_status(format!("Opened the sorting {} ({summary})", path.display()), cx);
+                    if switch_workspace {
+                        s.set_status(format!("Opened the sorting {} ({summary})", path.display()), cx);
+                    } else if let Some(rec) = &s.recording {
+                        s.set_status(format!("Opened {} ({}) · {summary}", rec.name, rec.summary()), cx);
+                    }
                     if s.recording.is_none()
                         && let Some(rec) = recording
                     {
@@ -169,7 +209,9 @@ impl CurationVm {
             }
             Err(e) => {
                 self.error = Some(format!("{e:#}"));
-                self.store.update(cx, |s, cx| s.set_status(format!("Could not open the sorting: {e:#}"), cx));
+                if switch_workspace {
+                    self.store.update(cx, |s, cx| s.set_status(format!("Could not open the sorting: {e:#}"), cx));
+                }
             }
         }
         cx.emit(CurationEvent::Opened);

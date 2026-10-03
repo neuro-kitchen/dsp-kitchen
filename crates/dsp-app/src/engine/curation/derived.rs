@@ -401,4 +401,35 @@ mod tests {
         let (_, _, rates) = &data.compute_firing_rate(&[0], 1.0)[0];
         assert!((rates[3] - 8.0).abs() <= 1.0, "{}", rates[3]);
     }
+
+    #[test]
+    fn test_zarr_and_embedded_nwb_sorting() {
+        let phy_dir = synthetic_folder("zarr-source");
+        let sorting_out = dsp_synapse::storage::load_phy_folder(&phy_dir).unwrap();
+
+        let zarr_dir = std::env::temp_dir().join(format!("dsp-app-test-{}.sorting.zarr", std::process::id()));
+        let _ = std::fs::remove_dir_all(&zarr_dir);
+        dsp_synapse::storage::save_sorting_zarr(&sorting_out, &zarr_dir).unwrap();
+        assert!(crate::viewmodels::curation::is_sorting(&zarr_dir));
+        let zarr_data = SortingData::open(&zarr_dir).unwrap();
+        assert_eq!(zarr_data.clusters.len(), 6);
+        let events = crate::engine::data::SpikeEventStore::from_sorting(&zarr_data);
+        assert_eq!(events.len(), zarr_data.sorting.spike_times.len());
+        let _ = std::fs::remove_dir_all(&zarr_dir);
+
+        // If the real NWB dataset with embedded EMUsort /units is present, verify full roundtrip with recording
+        let nwb_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/nwb/15-25-33_meps.nwb.zarr");
+        if crate::viewmodels::curation::has_embedded_sorting(&nwb_path) {
+            let sources = crate::engine::data::SourceSet::open(&nwb_path).unwrap();
+            let ds = sources.default_dataset();
+            let nwb_sorting = SortingData::open(&nwb_path).unwrap();
+            assert!(!nwb_sorting.clusters.is_empty());
+            assert!((nwb_sorting.sample_rate() - ds.sample_rate).abs() < 1e-6);
+            assert_eq!(nwb_sorting.sorting.channel_positions.len(), 32);
+            let first_cid = *nwb_sorting.clusters.keys().next().unwrap();
+            let wf = nwb_sorting.compute_waveforms(first_cid, Some(ds.as_ref()), 25, 4);
+            assert!(!wf.sampled.is_empty(), "expected raw waveforms from attached NWB recording");
+            assert_eq!(wf.template.len(), 4 * wf.num_samples);
+        }
+    }
 }

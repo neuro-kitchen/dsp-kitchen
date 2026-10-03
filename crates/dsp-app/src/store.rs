@@ -44,6 +44,7 @@ pub enum AppEvent {
 pub struct Recording {
     pub sources: Arc<SourceSet>,
     pub name: String,
+    pub path: Option<PathBuf>,
     /// Spike events shown on traces and in the timeline overview (empty until an extraction runs).
     pub events: Arc<SpikeEventStore>,
 }
@@ -54,7 +55,7 @@ impl Recording {
             Some(p) => p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned()),
             None => sources.default_entry().name.clone(),
         };
-        Self { sources: Arc::new(sources), name, events: Arc::new(SpikeEventStore::default()) }
+        Self { sources: Arc::new(sources), name, path, events: Arc::new(SpikeEventStore::default()) }
     }
 
     /// `32 ch · 30.0 kHz · 5 min 00 s` of the default source.
