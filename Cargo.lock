@@ -2667,6 +2667,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsp-synapse-hub"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dirs 6.0.0",
+ "hex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "dsp-synapse-ml"
 version = "0.1.0"
 dependencies = [
@@ -2676,21 +2689,15 @@ dependencies = [
  "burn-wgpu",
  "bytemuck",
  "cubecl",
- "dirs 6.0.0",
  "dsp-base",
  "dsp-core",
  "dsp-io",
  "dsp-synapse",
- "hex",
- "memmap2",
+ "dsp-synapse-hub",
  "onnx-ir",
- "reqwest",
  "safetensors",
  "serde",
  "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.21",
- "tracing",
 ]
 
 [[package]]
