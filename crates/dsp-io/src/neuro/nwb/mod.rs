@@ -6,4 +6,4 @@ pub mod units;
 
 pub use acquisition::{is_nwb_zarr, list_series, NwbZarrRecording, SeriesEntry};
 pub use format::Nwb;
-pub use units::infer_nwb_sample_rate;
+pub use units::{infer_nwb_sample_rate, NwbUnitsTable};

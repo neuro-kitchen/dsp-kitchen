@@ -93,23 +93,6 @@ impl SensorLayout {
             .collect();
         Some(Self::new(name, contacts))
     }
-
-    /// Neuropixels 1.0 (384 channels, one shank): 20 µm rows, staggered columns at x = 43 / 11 µm on
-    /// even rows and 59 / 27 µm on odd rows (probeinterface `NP1010`).
-    pub fn neuropixels_1_0_standard() -> Self {
-        const X: [f32; 4] = [43.0, 11.0, 59.0, 27.0];
-        let contacts = (0..384)
-            .map(|i| SensorSite {
-                channel_id: i,
-                device_index: i,
-                group_id: 0,
-                shank_id: 0,
-                position: Position3D::new(X[i % 4], (i / 2) as f32 * 20.0, 0.0),
-                enabled: true,
-            })
-            .collect();
-        Self { name: "Neuropixels 1.0 (Standard 384)".into(), contacts }
-    }
 }
 
 #[cfg(test)]
@@ -118,7 +101,7 @@ mod tests {
 
     #[test]
     fn neuropixels_1_0_matches_probeinterface() {
-        let np = SensorLayout::neuropixels_1_0_standard();
+        let np = crate::neuro::probe::neuropixels_1_0();
         let xy: Vec<(f32, f32)> = np.contacts[..6].iter().map(|c| (c.position.x_um, c.position.y_um)).collect();
         assert_eq!(xy, vec![(43.0, 0.0), (11.0, 0.0), (59.0, 20.0), (27.0, 20.0), (43.0, 40.0), (11.0, 40.0)]);
         assert_eq!(np.get_site(383).unwrap().position.y_um, 3820.0);
@@ -126,7 +109,7 @@ mod tests {
 
     #[test]
     fn select_channels_renumbers_sites() {
-        let np = SensorLayout::neuropixels_1_0_standard();
+        let np = crate::neuro::probe::neuropixels_1_0();
         let sub = np.select_channels(&[10, 3, 200]);
         assert_eq!(sub.contacts.len(), 3);
         assert_eq!(sub.get_site(1).unwrap().position, np.get_site(3).unwrap().position);
