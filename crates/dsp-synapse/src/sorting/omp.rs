@@ -3,14 +3,14 @@
 //! Resolves colliding/overlapping action potentials by iteratively matching unit
 //! templates against the multi-channel residual, fitting amplitude scaling
 //! $a \in [a_{\min}, a_{\max}]$, and subtracting the fitted waveform.
-//! Implements `crate::traits::SpikeMatcher`.
+//! Implements `crate::core::SpikeMatcher`.
 
 use cubecl::prelude::*;
 use dsp_core::compute::{ComputeTarget, ComputeTask, LaunchGeometry};
 use dsp_core::{DspError, DspResult};
 
 use crate::core::{MatchedSpike, SpikeMatcher, WaveformTemplate};
-use crate::extraction::parabolic_subsample_offset;
+use dsp_base::math::parabolic_vertex_offset;
 use super::kernels::{omp_score_kernel, omp_subtract_kernel};
 
 /// OMP settings shared by the host entry points.
@@ -170,7 +170,7 @@ fn omp_on<R: Runtime>(
             if g >= params.min_explained_energy && g >= best_gain_at[s - 1] && g >= best_gain_at[s + 1] {
                 let u = best_unit_at[s] as usize;
                 let scale = best_scale_at[s];
-                let sub_lag = parabolic_subsample_offset(-best_gain_at[s - 1], -best_gain_at[s], -best_gain_at[s + 1]);
+                let sub_lag = parabolic_vertex_offset(-best_gain_at[s - 1], -best_gain_at[s], -best_gain_at[s + 1]);
                 pick_units.push(u as u32);
                 pick_starts.push(s as u32);
                 pick_scales.push(scale);

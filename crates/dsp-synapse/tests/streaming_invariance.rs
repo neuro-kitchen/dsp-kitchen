@@ -4,9 +4,9 @@
 use cubecl::Runtime;
 use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
 use dsp_base::pipeline::{Pipeline, PipelineStage, PipelineWorkspace};
-use dsp_core::layout::{Position3D, SensorLayout, SensorSite};
+use dsp_io::neuro::probe::{Position3D, SensorLayout, SensorSite};
 use dsp_core::{MemoryRecording, RecordingSource};
-use dsp_synapse::detection::{DeduplicatedSpike, deduplicate_spikes_spatial, detect_spikes_with_sigma};
+use dsp_synapse::detection::{DeduplicatedSpike, SpikeSpacing, deduplicate_spikes_spatial, detect_spikes_with_sigma};
 use dsp_synapse::streaming::{StreamingSortConfig, StreamingSpikeRunner, calibrate_noise};
 
 const FS: f64 = 30_000.0;
@@ -85,9 +85,9 @@ fn recording() -> MemoryRecording {
             }
         }
     }
-    // Bursts on channel 3 straddling 1 s boundaries: troughs 20 and 35 samples apart, the middle one
-    // deepest. One pass keeps the first and third (refractory greedy); a window split between the
-    // first two without carried refractory state keeps only the middle one.
+    // Bursts on channel 3 straddling 1 s boundaries: troughs at −10, +10 and +25 samples, the middle
+    // one deepest. Within the refractory period the deepest wins (locally exclusive), so only the
+    // middle one stays — and a window split anywhere in the burst must decide the same.
     for edge in burst_edges() {
         for (dt, amp) in [(-10isize, -110.0f32), (10, -160.0), (25, -100.0)] {
             let t = (edge as isize + dt) as usize;
@@ -122,7 +122,8 @@ fn whole_recording(rec: &MemoryRecording, cfg: &StreamingSortConfig) -> Vec<Dedu
     let mut filtered = vec![0.0; rec.data().len()];
     ws.process_chunk(rec.data(), n, &mut filtered);
     let range = cfg.detection_range(FS, n as u64);
-    let crossings: Vec<_> = detect_spikes_with_sigma(&filtered, CHANNELS, n, &sigmas, cfg.threshold_factor, cfg.refractory_samples(FS))
+    let spacing = SpikeSpacing { refractory_samples: cfg.refractory_samples(FS), rule: cfg.distance_rule };
+    let crossings: Vec<_> = detect_spikes_with_sigma(&filtered, CHANNELS, n, &sigmas, cfg.threshold_factor, cfg.polarity, spacing)
         .into_iter()
         .filter(|s| range.contains(&s.sample_index))
         .collect();
@@ -160,14 +161,14 @@ fn spikes_are_identical_for_any_batch_size_and_whole_recording() {
         }
     }
 
-    // Bursts: the refractory chain is decided as in one pass, whatever the window split.
+    // Bursts: decided as in one pass, whatever the window split (compared above); the deepest wins.
     for edge in burst_edges() {
         let hits: Vec<i64> = reference
             .iter()
             .filter(|s| s.primary_channel == 3 && s.sample_index.abs_diff(edge as u64) < 60)
             .map(|s| s.sample_index as i64 - edge as i64)
             .collect();
-        assert_eq!(hits.len(), 2, "burst at {edge}: {hits:?}");
+        assert!(hits.len() == 1 && (hits[0] - 10).abs() <= 3, "burst at {edge}: {hits:?}");
     }
 
     // Every injected spike is found once, on its own channel.

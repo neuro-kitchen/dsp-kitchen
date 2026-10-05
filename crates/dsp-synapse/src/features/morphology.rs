@@ -10,13 +10,14 @@ pub struct SpikeMorphology {
     pub repolarization_slope: f32,
 }
 
-/// Computes morphological waveform features from a single-channel snippet.
+/// Computes morphological waveform features on the snippet's primary channel
+/// ([`WaveformSnippet::primary_trace`]).
 pub fn compute_morphology(snippet: &WaveformSnippet) -> Option<SpikeMorphology> {
-    if snippet.waveform.is_empty() {
+    let w = snippet.primary_trace();
+    if w.is_empty() {
         return None;
     }
 
-    let w = &snippet.waveform;
     // 1. Trough (minimum value)
     let (trough_idx, &trough_val) = w
         .iter()
@@ -67,4 +68,25 @@ pub fn compute_morphology(snippet: &WaveformSnippet) -> Option<SpikeMorphology> 
         half_width_samples: half_width,
         repolarization_slope: repol_slope,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn measures_the_primary_channel_only() {
+        // Row 0 (channel 4) has a deeper trough than the primary (channel 7, row 1)
+        let snippet = WaveformSnippet {
+            primary_channel: 7,
+            center_sample: 0,
+            subsample_offset: 0.0,
+            channel_ids: vec![4, 7],
+            num_samples: 5,
+            waveform: vec![0.0, -200.0, 0.0, 0.0, 0.0, 0.0, -50.0, -20.0, 30.0, 0.0],
+        };
+        let m = compute_morphology(&snippet).unwrap();
+        assert_eq!(m.peak_amplitude_uv, -50.0);
+        assert_eq!(m.trough_to_peak_samples, 2.0);
+    }
 }

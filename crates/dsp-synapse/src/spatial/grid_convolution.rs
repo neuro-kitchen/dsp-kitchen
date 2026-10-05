@@ -4,10 +4,10 @@
 //! and computes an exponentially weighted soft-argmax over cosine similarity scores
 //! (matching `spikeinterface.sortingcomponents.peak_localization.GridConvolution`).
 
-use dsp_core::SensorLayout;
+use dsp_io::neuro::probe::SensorLayout;
 use crate::extraction::SnippetBatch;
-use crate::traits::PeakLocalizer;
-use super::center_of_mass::waveform_peak_to_peak;
+use crate::core::PeakLocalizer;
+use dsp_base::math::peak_to_peak;
 
 /// Localizes a single spike via Grid Convolution soft-argmax over a local 3D grid.
 pub fn localize_spike_grid_convolution(
@@ -118,7 +118,7 @@ impl PeakLocalizer for GridConvolutionLocalizer {
 
         for i in 0..batch.num_spikes {
             for k in 0..batch.num_channels {
-                ptp_buf[k] = waveform_peak_to_peak(batch.channel_slice(i, k));
+                ptp_buf[k] = peak_to_peak(batch.channel_slice(i, k));
             }
             let ch_ids = batch.spike_channel_ids(i);
             out.push(localize_spike_grid_convolution(

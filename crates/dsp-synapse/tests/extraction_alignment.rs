@@ -5,11 +5,11 @@ use cubecl::prelude::*;
 use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
 use dsp_synapse::detection::DeduplicatedSpike;
 use dsp_synapse::extraction::{
-    extract_snippet_batch_multichannel, extract_snippets_multichannel, parabolic_subsample_offset,
-    snippet_fits,
+    extract_snippet_batch_multichannel, extract_snippets_multichannel, snippet_fits,
 };
-use dsp_synapse::kernels::execute_extract_sinc_in_vram;
-use dsp_synapse::probe::{precompute_knn_table, tetrode};
+use dsp_base::math::parabolic_vertex_offset;
+use dsp_synapse::extraction::execute_extract_sinc_in_vram;
+use dsp_io::neuro::probe::{precompute_knn_table, tetrode};
 
 const CHANNELS: usize = 4;
 const SAMPLES: usize = 4_000;
@@ -48,7 +48,7 @@ fn spike(center: usize) -> DeduplicatedSpike {
 /// Sub-sample trough position in a snippet row relative to the centre sample `PRE`.
 fn residual(row: &[f32]) -> f32 {
     let (i, _) = row.iter().enumerate().min_by(|a, b| a.1.total_cmp(b.1)).unwrap();
-    i as f32 + parabolic_subsample_offset(row[i - 1], row[i], row[i + 1]) - PRE as f32
+    i as f32 + parabolic_vertex_offset(row[i - 1], row[i], row[i + 1]) - PRE as f32
 }
 
 fn fractions() -> Vec<f32> {
@@ -86,7 +86,7 @@ fn gpu_extract(trace: &[f32], spikes: &[DeduplicatedSpike]) -> Option<(Vec<f32>,
     let client = WgpuRuntime::client(&WgpuDevice::default());
     let trace_h = client.create_from_slice(f32::as_bytes(trace));
     let knn_h = client.create_from_slice(u32::as_bytes(&precompute_knn_table(&tetrode(), CHANNELS, K)));
-    let out = execute_extract_sinc_in_vram::<WgpuRuntime>(
+    let out = execute_extract_sinc_in_vram::<WgpuRuntime, f32>(
         &client, &trace_h, &knn_h, CHANNELS, SAMPLES, spikes, K, PRE, POST, true,
     )?;
     let data = f32::from_bytes(&client.read_one_unchecked(out.snippets.clone())).to_vec();
@@ -148,7 +148,7 @@ fn every_snippet_sample_uses_full_sinc_taps() {
     trace[center - 1] = a;
     trace[center] = b;
     trace[center + 1] = c;
-    let delta = parabolic_subsample_offset(a, b, c);
+    let delta = parabolic_vertex_offset(a, b, c);
 
     let snip = &extract_snippets_multichannel(&trace, CHANNELS, SAMPLES, &[spike(center)], &tetrode(), K, PRE, POST, true)[0];
     // Rows 1.. are other channels (untouched by the forced parabola).

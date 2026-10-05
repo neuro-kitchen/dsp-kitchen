@@ -4,10 +4,11 @@
 //! $$\hat{V}_k(x, y, z, \alpha) = \frac{\alpha}{\sqrt{(x - x_k)^2 + (y - y_k)^2 + (z - z_k)^2}}$$
 //! using damped Gauss-Newton (Levenberg-Marquardt) iterations initialized at the Center-of-Mass.
 
-use dsp_core::SensorLayout;
+use dsp_io::neuro::probe::SensorLayout;
 use crate::extraction::SnippetBatch;
-use crate::traits::PeakLocalizer;
-use super::center_of_mass::{localize_spike_center_of_mass, waveform_peak_to_peak};
+use crate::core::PeakLocalizer;
+use dsp_base::math::peak_to_peak;
+use super::center_of_mass::localize_spike_center_of_mass;
 
 /// Solves a $4 \times 4$ linear system $A \mathbf{x} = \mathbf{b}$ via Gaussian elimination with partial pivoting.
 fn solve_4x4(mut a: [[f64; 4]; 4], mut b: [f64; 4]) -> Option<[f64; 4]> {
@@ -196,7 +197,7 @@ impl PeakLocalizer for MonopolarTriangulator {
 
         for i in 0..batch.num_spikes {
             for k in 0..batch.num_channels {
-                ptp_buf[k] = waveform_peak_to_peak(batch.channel_slice(i, k));
+                ptp_buf[k] = peak_to_peak(batch.channel_slice(i, k));
             }
             let ch_ids = batch.spike_channel_ids(i);
             let (coords, _alpha) =
@@ -210,7 +211,7 @@ impl PeakLocalizer for MonopolarTriangulator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::probe::neuropixels_2_0;
+    use dsp_io::neuro::probe::neuropixels_2_0;
 
     #[test]
     fn test_monopolar_triangulation_recovers_3d_source() {

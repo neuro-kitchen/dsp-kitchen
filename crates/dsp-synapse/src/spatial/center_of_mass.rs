@@ -3,27 +3,11 @@
 //! Computes the amplitude-weighted centroid of $K$-nearest neighbor electrode positions:
 //! $$\mathbf{r}_{\text{CoM}} = \frac{\sum_{k=1}^K a_k^p \mathbf{r}_k}{\sum_{k=1}^K a_k^p}$$
 
-use dsp_core::SensorLayout;
+use dsp_io::neuro::probe::SensorLayout;
 use crate::extraction::SnippetBatch;
-use crate::traits::PeakLocalizer;
+use dsp_base::math::peak_to_peak;
 
-/// Computes the peak-to-peak amplitude of a 1D waveform slice.
-pub fn waveform_peak_to_peak(wave: &[f32]) -> f32 {
-    if wave.is_empty() {
-        return 0.0;
-    }
-    let mut min_v = f32::INFINITY;
-    let mut max_v = f32::NEG_INFINITY;
-    for &v in wave {
-        if v < min_v {
-            min_v = v;
-        }
-        if v > max_v {
-            max_v = v;
-        }
-    }
-    (max_v - min_v).max(0.0)
-}
+use crate::core::PeakLocalizer;
 
 /// Localizes a single spike's `[x_um, y_um, z_um]` coordinate via Center-of-Mass.
 pub fn localize_spike_center_of_mass(
@@ -81,7 +65,7 @@ impl PeakLocalizer for CenterOfMassLocalizer {
 
         for i in 0..batch.num_spikes {
             for k in 0..batch.num_channels {
-                ptp_buf[k] = waveform_peak_to_peak(batch.channel_slice(i, k));
+                ptp_buf[k] = peak_to_peak(batch.channel_slice(i, k));
             }
             let ch_ids = batch.spike_channel_ids(i);
             out.push(localize_spike_center_of_mass(

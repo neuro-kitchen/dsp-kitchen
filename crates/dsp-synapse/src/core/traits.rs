@@ -4,7 +4,8 @@
 //! Every stage returns a [`DspResult`]: learned models can fail at run time (an ONNX graph with an
 //! unexpected input shape, an unsupported operator) and callers, including Python, get the error.
 
-use dsp_core::{DspResult, SensorLayout};
+use dsp_core::DspResult;
+use dsp_io::neuro::probe::SensorLayout;
 use super::events::{MatchedSpike, SpikeEvent};
 use super::snippets::SnippetBatch;
 use super::template::WaveformTemplate;

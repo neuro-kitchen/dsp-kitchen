@@ -1,12 +1,12 @@
-use dsp_core::SensorLayout;
-use dsp_core::layout::Position3D;
+use dsp_io::neuro::probe::{Position3D, SensorLayout};
 pub use crate::core::{DeduplicatedSpike, SpikeEvent};
 
 /// Deduplicates multi-channel spike events across space and time ("locally exclusive" rule, as
 /// SpikeInterface's `locally_exclusive` peak detection).
 ///
-/// A crossing survives if no *deeper* crossing lies within `radius_um` (site distance) and
-/// `window_samples` (time) of it; ties go to the earlier sample, then the lower channel. The result
+/// A crossing survives if no *stronger* crossing (larger `|peak amplitude|`, so negative troughs
+/// and positive peaks alike) lies within `radius_um` (site distance) and `window_samples` (time) of
+/// it; ties go to the earlier sample, then the lower channel. The result
 /// does not depend on input order. Each survivor lists the channels of all crossings within the
 /// radius and window of it as `participating_channels`. Crossings on channels missing from `layout`
 /// are ignored.
@@ -107,9 +107,13 @@ impl SitePositions {
     }
 }
 
-/// `true` when crossing `a` beats `b`: deeper, then earlier, then lower channel.
-fn deeper(a: &SpikeEvent, b: &SpikeEvent) -> bool {
-    (a.peak_amplitude_uv, a.sample_index, a.channel_id) < (b.peak_amplitude_uv, b.sample_index, b.channel_id)
+/// `true` when crossing `a` beats `b`: larger magnitude, then earlier, then lower channel.
+fn stronger(a: &SpikeEvent, b: &SpikeEvent) -> bool {
+    b.peak_amplitude_uv
+        .abs()
+        .total_cmp(&a.peak_amplitude_uv.abs())
+        .then((a.sample_index, a.channel_id).cmp(&(b.sample_index, b.channel_id)))
+        .is_lt()
 }
 
 /// Survivors among `sorted` crossings with `sample_index` in `emit`, judged against all of `sorted`.
@@ -140,7 +144,7 @@ fn locally_exclusive(
             if pos.distance_to(other_pos) > radius_um {
                 continue;
             }
-            if lo + j != i && deeper(other, cand) {
+            if lo + j != i && stronger(other, cand) {
                 survives = false;
                 break;
             }
@@ -206,11 +210,11 @@ pub fn deduplicate_spikes_spatial_gpu<R: cubecl::prelude::Runtime>(
         .map(|e| (e.sample_index - base_sample) as u32)
         .collect();
     let channel_ids: Vec<u32> = sorted.iter().map(|e| e.channel_id as u32).collect();
-    let peak_amplitudes: Vec<f32> = sorted.iter().map(|e| e.peak_amplitude_uv).collect();
+    let peak_magnitudes: Vec<f32> = sorted.iter().map(|e| e.peak_amplitude_uv.abs()).collect();
 
     let t_handle = client.create_from_slice(u32::as_bytes(&sample_indices));
     let ch_handle = client.create_from_slice(u32::as_bytes(&channel_ids));
-    let amp_handle = client.create_from_slice(f32::as_bytes(&peak_amplitudes));
+    let amp_handle = client.create_from_slice(f32::as_bytes(&peak_magnitudes));
     let dist_handle = client.create_from_slice(f32::as_bytes(&dist_matrix));
     let surv_handle = client.empty(n * 4);
 
@@ -268,7 +272,7 @@ pub fn deduplicate_spikes_spatial_gpu<R: cubecl::prelude::Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dsp_core::layout::{Position3D, SensorSite};
+    use dsp_io::neuro::probe::SensorSite;
 
     #[test]
     fn test_spatial_deduplication() {
@@ -300,6 +304,23 @@ mod tests {
         let ev1 = &deduped[1];
         assert_eq!(ev1.primary_channel, 2);
         assert_eq!(ev1.peak_amplitude_uv, -80.0);
+    }
+
+    #[test]
+    fn test_strongest_crossing_wins_for_either_polarity() {
+        let layout = line_layout(2, 20.0);
+        let positive = [
+            SpikeEvent { channel_id: 0, sample_index: 100, peak_amplitude_uv: 60.0 },
+            SpikeEvent { channel_id: 1, sample_index: 101, peak_amplitude_uv: 140.0 },
+        ];
+        let kept = deduplicate_spikes_spatial(&positive, &layout, 50.0, 5);
+        assert_eq!((kept.len(), kept[0].peak_amplitude_uv), (1, 140.0));
+        let mixed = [
+            SpikeEvent { channel_id: 0, sample_index: 100, peak_amplitude_uv: -90.0 },
+            SpikeEvent { channel_id: 1, sample_index: 101, peak_amplitude_uv: 70.0 },
+        ];
+        let kept = deduplicate_spikes_spatial(&mixed, &layout, 50.0, 5);
+        assert_eq!((kept.len(), kept[0].peak_amplitude_uv), (1, -90.0));
     }
 
     fn line_layout(n: usize, pitch: f32) -> SensorLayout {

@@ -1,6 +1,9 @@
 pub use crate::core::SpikeEvent;
-use super::noise::estimate_noise_std;
+use dsp_base::peaks::{find_peaks, DistanceRule, Interval, PeakOptions};
 use serde::{Deserialize, Serialize};
+
+use super::noise::estimate_noise_std;
+use super::spacing::SpikeSpacing;
 
 /// Polarity mode for action potential peak detection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -14,130 +17,60 @@ pub enum SpikePolarity {
     Both,
 }
 
-/// Detects multi-channel negative action potential threshold crossings with adaptive noise estimation.
+/// Detection height per channel: `threshold_factor · σ`, `+∞` (no detection) where `σ` is not a
+/// positive number.
+pub fn detection_heights(channel_sigmas: &[f32], threshold_factor: f32) -> Vec<f32> {
+    channel_sigmas
+        .iter()
+        .map(|&sigma| if sigma > 0.0 { threshold_factor * sigma } else { f32::INFINITY })
+        .collect()
+}
+
+/// Threshold crossings of every channel of `[channels, samples]` `data`: local extrema of
+/// `polarity` reaching `threshold_factor · σ` (σ per channel by [`estimate_noise_std`]), spaced by
+/// `spacing`; sorted by sample.
 pub fn detect_spikes_multichannel(
     data: &[f32],
     channels: usize,
     samples: usize,
     threshold_factor: f32,
-    refractory_samples: usize,
-) -> Vec<SpikeEvent> {
-    detect_spikes_multichannel_polarity(
-        data,
-        channels,
-        samples,
-        threshold_factor,
-        refractory_samples,
-        SpikePolarity::Negative,
-    )
-}
-
-/// Detects multi-channel action potential threshold crossings with configurable [`SpikePolarity`].
-pub fn detect_spikes_multichannel_polarity(
-    data: &[f32],
-    channels: usize,
-    samples: usize,
-    threshold_factor: f32,
-    refractory_samples: usize,
     polarity: SpikePolarity,
+    spacing: SpikeSpacing,
 ) -> Vec<SpikeEvent> {
     assert_eq!(data.len(), channels * samples);
-    let sigmas: Vec<f32> = (0..channels)
-        .map(|ch| {
-            let offset = ch * samples;
-            estimate_noise_std(&data[offset..offset + samples])
-        })
-        .collect();
-    detect_spikes_with_sigma_polarity(
-        data,
-        channels,
-        samples,
-        &sigmas,
-        threshold_factor,
-        refractory_samples,
-        polarity,
-    )
+    let sigmas: Vec<f32> = data.chunks_exact(samples.max(1)).take(channels).map(estimate_noise_std).collect();
+    detect_spikes_with_sigma(data, channels, samples, &sigmas, threshold_factor, polarity, spacing)
 }
 
-/// Detects multi-channel negative action potential threshold crossings using pre-calibrated per-channel
-/// noise standard deviations `channel_sigmas` ($\sigma_n$ in $\mu\text{V}$).
+/// [`detect_spikes_multichannel`] with pre-calibrated per-channel noise `channel_sigmas` (µV).
 pub fn detect_spikes_with_sigma(
     data: &[f32],
     channels: usize,
     samples: usize,
     channel_sigmas: &[f32],
     threshold_factor: f32,
-    refractory_samples: usize,
-) -> Vec<SpikeEvent> {
-    detect_spikes_with_sigma_polarity(
-        data,
-        channels,
-        samples,
-        channel_sigmas,
-        threshold_factor,
-        refractory_samples,
-        SpikePolarity::Negative,
-    )
-}
-
-/// Detects multi-channel action potential threshold crossings using pre-calibrated per-channel
-/// noise standard deviations `channel_sigmas` ($\sigma_n$ in $\mu\text{V}$) and [`SpikePolarity`].
-pub fn detect_spikes_with_sigma_polarity(
-    data: &[f32],
-    channels: usize,
-    samples: usize,
-    channel_sigmas: &[f32],
-    threshold_factor: f32,
-    refractory_samples: usize,
     polarity: SpikePolarity,
+    spacing: SpikeSpacing,
 ) -> Vec<SpikeEvent> {
     assert_eq!(data.len(), channels * samples);
     assert_eq!(channel_sigmas.len(), channels);
+    let heights = detection_heights(channel_sigmas, threshold_factor);
     let mut all_spikes = Vec::new();
-
-    for (ch, &sigma) in channel_sigmas.iter().enumerate() {
-        if sigma <= 0.0 || sigma.is_nan() {
+    for (ch, &height) in heights.iter().enumerate() {
+        if !height.is_finite() {
             continue;
         }
-
-        let offset = ch * samples;
-        let ch_slice = &data[offset..offset + samples];
-        let pos_thresh = threshold_factor * sigma;
-        let neg_thresh = -pos_thresh;
-        let mut last_spike_sample: Option<usize> = None;
-
-        for t in 1..samples.saturating_sub(1) {
-            let val = ch_slice[t];
-            let prev = ch_slice[t - 1];
-            let next = ch_slice[t + 1];
-
-            let is_neg_peak = val < neg_thresh && val < prev && val <= next;
-            let is_pos_peak = val > pos_thresh && val > prev && val >= next;
-
-            let triggered = match polarity {
-                SpikePolarity::Negative => is_neg_peak,
-                SpikePolarity::Positive => is_pos_peak,
-                SpikePolarity::Both => is_neg_peak || is_pos_peak,
-            };
-
-            if triggered {
-                let past_refractory = match last_spike_sample {
-                    None => true,
-                    Some(prev_t) => t > prev_t + refractory_samples,
-                };
-                if past_refractory {
-                    all_spikes.push(SpikeEvent {
-                        channel_id: ch,
-                        sample_index: t as u64,
-                        peak_amplitude_uv: val,
-                    });
-                    last_spike_sample = Some(t);
-                }
-            }
-        }
+        let row = &data[ch * samples..(ch + 1) * samples];
+        let options = PeakOptions {
+            height: Interval::at_least(height),
+            distance: Some(spacing.distance()),
+            distance_rule: spacing.rule,
+            ..Default::default()
+        };
+        let peaks = find_peaks(row, polarity.into(), &options);
+        all_spikes.extend(peaks.indices.into_iter().map(|t| SpikeEvent { channel_id: ch, sample_index: t as u64, peak_amplitude_uv: row[t] }));
     }
-
-    all_spikes.sort_by_key(|s| s.sample_index);
+    all_spikes.sort_by_key(|s| (s.sample_index, s.channel_id));
     all_spikes
 }
 
@@ -147,6 +80,8 @@ pub struct ThresholdSpikeDetector {
     pub threshold_factor: f32,
     pub refractory_ms: f64,
     pub polarity: SpikePolarity,
+    /// How spikes nearer than the refractory period are resolved (see [`SpikeSpacing`]).
+    pub distance_rule: DistanceRule,
 }
 
 impl Default for ThresholdSpikeDetector {
@@ -155,17 +90,14 @@ impl Default for ThresholdSpikeDetector {
             threshold_factor: 4.5,
             refractory_ms: 1.0,
             polarity: SpikePolarity::Negative,
+            distance_rule: DistanceRule::LocallyExclusive,
         }
     }
 }
 
 impl ThresholdSpikeDetector {
     pub fn new(threshold_factor: f32, refractory_ms: f64, polarity: SpikePolarity) -> Self {
-        Self {
-            threshold_factor,
-            refractory_ms,
-            polarity,
-        }
+        Self { threshold_factor, refractory_ms, polarity, ..Self::default() }
     }
 }
 
@@ -177,15 +109,8 @@ impl crate::core::SpikeDetector for ThresholdSpikeDetector {
         samples: usize,
         sample_rate_hz: f64,
     ) -> dsp_core::DspResult<Vec<SpikeEvent>> {
-        let ref_samples = ((sample_rate_hz * self.refractory_ms * 1e-3).round() as usize).max(1);
-        Ok(detect_spikes_multichannel_polarity(
-            data,
-            channels,
-            samples,
-            self.threshold_factor,
-            ref_samples,
-            self.polarity,
-        ))
+        let spacing = SpikeSpacing::from_ms(self.refractory_ms, sample_rate_hz, self.distance_rule);
+        Ok(detect_spikes_multichannel(data, channels, samples, self.threshold_factor, self.polarity, spacing))
     }
 }
 
@@ -203,11 +128,21 @@ mod tests {
         signal[300] = -120.0;
         signal[301] = -40.0;
 
-        let spikes = detect_spikes_multichannel(&signal, 1, 1000, 4.0, 30);
+        let spikes = detect_spikes_multichannel(&signal, 1, 1000, 4.0, SpikePolarity::Negative, SpikeSpacing::new(30));
         assert_eq!(spikes.len(), 1);
         assert_eq!(spikes[0].channel_id, 0);
         assert_eq!(spikes[0].sample_index, 300);
         assert_eq!(spikes[0].peak_amplitude_uv, -120.0);
+    }
+
+    #[test]
+    fn test_larger_spike_wins_within_refractory() {
+        // A small early crossing must not hide the real spike 5 samples later
+        let mut signal: Vec<f32> = (0..1000).map(|i| ((i % 5) as f32 - 2.0) * 3.0).collect();
+        signal[400] = -60.0;
+        signal[405] = -150.0;
+        let spikes = detect_spikes_multichannel(&signal, 1, 1000, 4.5, SpikePolarity::Negative, SpikeSpacing::new(20));
+        assert_eq!(spikes.iter().map(|s| s.sample_index).collect::<Vec<_>>(), vec![405]);
     }
 
     #[test]
@@ -219,12 +154,12 @@ mod tests {
         signal[200] = -95.0;
         signal[600] = 110.0;
 
-        let pos = detect_spikes_multichannel_polarity(&signal, 1, 1000, 4.5, 20, SpikePolarity::Positive);
+        let pos = detect_spikes_multichannel(&signal, 1, 1000, 4.5, SpikePolarity::Positive, SpikeSpacing::new(20));
         assert_eq!(pos.len(), 1);
         assert_eq!(pos[0].sample_index, 600);
         assert_eq!(pos[0].peak_amplitude_uv, 110.0);
 
-        let both = detect_spikes_multichannel_polarity(&signal, 1, 1000, 4.5, 20, SpikePolarity::Both);
+        let both = detect_spikes_multichannel(&signal, 1, 1000, 4.5, SpikePolarity::Both, SpikeSpacing::new(20));
         assert_eq!(both.len(), 2);
         assert_eq!(both[0].sample_index, 200);
         assert_eq!(both[1].sample_index, 600);

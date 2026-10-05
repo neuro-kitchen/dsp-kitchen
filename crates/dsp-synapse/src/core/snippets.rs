@@ -18,6 +18,13 @@ impl WaveformSnippet {
     pub fn num_channels(&self) -> usize {
         self.channel_ids.len()
     }
+
+    /// Samples of the primary channel (its row of `waveform`; the first row when the primary
+    /// channel is not among `channel_ids`).
+    pub fn primary_trace(&self) -> &[f32] {
+        let row = self.channel_ids.iter().position(|&c| c == self.primary_channel).unwrap_or(0);
+        self.waveform.get(row * self.num_samples..(row + 1) * self.num_samples).unwrap_or(&[])
+    }
 }
 
 /// Contiguous 3D batch of multi-channel waveform snippets with shape `[num_spikes, num_channels, num_samples]`.
@@ -30,6 +37,9 @@ pub struct SnippetBatch {
     pub num_spikes: usize,
     pub num_channels: usize,
     pub num_samples: usize,
+    /// Sample of the spike peak (the detected sample) within every snippet, i.e. the samples cut
+    /// before it.
+    pub peak_index: usize,
     /// Primary electrode channel index for each spike (`len == num_spikes`).
     pub primary_channels: Vec<usize>,
     /// Sample timestamp at peak center for each spike (`len == num_spikes`).
@@ -41,13 +51,15 @@ pub struct SnippetBatch {
 }
 
 impl SnippetBatch {
-    /// Creates an empty `SnippetBatch` with specified channel and sample dimensions.
-    pub fn new(num_channels: usize, num_samples: usize) -> Self {
+    /// Creates an empty `SnippetBatch` with specified channel and sample dimensions and the peak at
+    /// sample `peak_index`.
+    pub fn new(num_channels: usize, num_samples: usize, peak_index: usize) -> Self {
         Self {
             data: Vec::new(),
             num_spikes: 0,
             num_channels,
             num_samples,
+            peak_index,
             primary_channels: Vec::new(),
             center_samples: Vec::new(),
             subsample_offsets: Vec::new(),
@@ -62,11 +74,13 @@ impl SnippetBatch {
         num_spikes: usize,
         num_channels: usize,
         num_samples: usize,
+        peak_index: usize,
         primary_channels: Vec<usize>,
         center_samples: Vec<u64>,
         subsample_offsets: Vec<f32>,
         channel_ids: Vec<usize>,
     ) -> Self {
+        assert!(peak_index < num_samples.max(1), "peak index outside the snippet");
         assert_eq!(data.len(), num_spikes * num_channels * num_samples);
         assert_eq!(primary_channels.len(), num_spikes);
         assert_eq!(center_samples.len(), num_spikes);
@@ -77,6 +91,7 @@ impl SnippetBatch {
             num_spikes,
             num_channels,
             num_samples,
+            peak_index,
             primary_channels,
             center_samples,
             subsample_offsets,

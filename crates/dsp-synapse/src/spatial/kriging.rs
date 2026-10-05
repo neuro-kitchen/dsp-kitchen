@@ -5,72 +5,25 @@
 
 use std::collections::HashMap;
 
-use dsp_core::{DspError, DspResult, SensorLayout};
+use dsp_base::linalg::cholesky_solve;
+use dsp_core::{DspError, DspResult};
+use dsp_io::neuro::probe::SensorLayout;
 use crate::extraction::SnippetBatch;
 use super::drift::DriftEstimate;
 
-/// Solves a symmetric positive-definite linear system $A X = B$ where $A$ is `[k, k]` and $B$ is `[k, m]`
-/// using Gauss-Jordan elimination with partial pivoting.
-fn solve_linear_system(mut a: Vec<f64>, b: &[f64], k: usize, m: usize) -> Vec<f64> {
-    let mut x = b.to_vec();
-
-    for col in 0..k {
-        let mut pivot = col;
-        let mut max_v = a[col * k + col].abs();
-        for row in (col + 1)..k {
-            let v = a[row * k + col].abs();
-            if v > max_v {
-                max_v = v;
-                pivot = row;
-            }
-        }
-        if max_v < 1e-12 {
-            continue;
-        }
-        if pivot != col {
-            for c in 0..k {
-                a.swap(col * k + c, pivot * k + c);
-            }
-            for c in 0..m {
-                x.swap(col * m + c, pivot * m + c);
-            }
-        }
-
-        let diag = a[col * k + col];
-        for c in col..k {
-            a[col * k + c] /= diag;
-        }
-        for c in 0..m {
-            x[col * m + c] /= diag;
-        }
-
-        for row in 0..k {
-            if row != col {
-                let factor = a[row * k + col];
-                for c in col..k {
-                    a[row * k + c] -= factor * a[col * k + c];
-                }
-                for c in 0..m {
-                    x[row * m + c] -= factor * x[col * m + c];
-                }
-            }
-        }
-    }
-    x
-}
-
-/// Computes the $[K \times K]$ spatial Kriging weight matrix mapping observed channels
-/// at `source_xy` to drift-shifted target positions `target_xy`.
+/// Computes the $[M \times K]$ spatial Kriging weight matrix mapping observed channels
+/// at `source_xy` to drift-shifted target positions `target_xy`. Fails when the regularized kernel
+/// matrix is not positive definite (e.g. non-finite positions).
 pub fn compute_kriging_weight_matrix(
     source_xy: &[[f32; 2]],
     target_xy: &[[f32; 2]],
     sigma_um: f32,
     regularization: f32,
-) -> Vec<f32> {
+) -> DspResult<Vec<f32>> {
     let k = source_xy.len();
     let m = target_xy.len();
     if k == 0 || m == 0 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     let two_sigma_sq = (2.0 * (sigma_um as f64) * (sigma_um as f64)).max(1.0);
@@ -100,14 +53,16 @@ pub fn compute_kriging_weight_matrix(
     }
 
     // Solve K_ss * W^T = K_st -> W^T is [k, m], transpose to W of shape [m, k]
-    let wt = solve_linear_system(k_ss, &k_st, k, m);
+    let wt = cholesky_solve(&k_ss, &k_st, k, m).ok_or_else(|| {
+        DspError::InvalidConfig(format!("kriging kernel of {k} sites is not positive definite (non-finite site positions?)"))
+    })?;
     let mut w = vec![0.0f32; m * k];
     for r in 0..m {
         for c in 0..k {
             w[r * k + c] = wt[c * m + r] as f32;
         }
     }
-    w
+    Ok(w)
 }
 
 /// Drift quantization for weight caching (µm).
@@ -159,7 +114,7 @@ pub fn correct_snippet_batch_drift_kriging(
                 let source_xy = ch_ids.iter().map(|&c| site_xy(layout, c)).collect::<DspResult<Vec<_>>>()?;
                 let dy = key as f32 * DRIFT_QUANTUM_UM;
                 let target_xy: Vec<[f32; 2]> = source_xy.iter().map(|&[x, y]| [x, y + dy]).collect();
-                let w = compute_kriging_weight_matrix(&source_xy, &target_xy, sigma_um, 1e-2);
+                let w = compute_kriging_weight_matrix(&source_xy, &target_xy, sigma_um, 1e-2)?;
                 cache.entry((ch_ids.to_vec(), key)).or_insert(w)
             }
         };
@@ -183,6 +138,7 @@ pub fn correct_snippet_batch_drift_kriging(
         n,
         k,
         t,
+        batch.peak_index,
         batch.primary_channels.clone(),
         batch.center_samples.clone(),
         batch.subsample_offsets.clone(),
@@ -220,7 +176,7 @@ pub fn correct_traces_drift_kriging(
 
     // Per drift step: for each site, (source rows, weights).
     let mut cache: HashMap<i64, Vec<(Vec<usize>, Vec<f32>)>> = HashMap::new();
-    let weights_for = |key: i64| -> Vec<(Vec<usize>, Vec<f32>)> {
+    let weights_for = |key: i64| -> DspResult<Vec<(Vec<usize>, Vec<f32>)>> {
         let dy = key as f32 * DRIFT_QUANTUM_UM;
         sites
             .iter()
@@ -231,8 +187,8 @@ pub fn correct_traces_drift_kriging(
                     .filter(|(_, p)| ((p[0] - target[0]).powi(2) + (p[1] - target[1]).powi(2)).sqrt() <= radius_um)
                     .collect();
                 let src: Vec<[f32; 2]> = near.iter().map(|(_, p)| *p).collect();
-                let w = compute_kriging_weight_matrix(&src, &[target], sigma_um, 1e-2);
-                (near.iter().map(|(c, _)| *c).collect(), w)
+                let w = compute_kriging_weight_matrix(&src, &[target], sigma_um, 1e-2)?;
+                Ok((near.iter().map(|(c, _)| *c).collect(), w))
             })
             .collect()
     };
@@ -246,7 +202,10 @@ pub fn correct_traces_drift_kriging(
         while s1 < samples && key_at(s1) == key {
             s1 += 1;
         }
-        let weights = cache.entry(key).or_insert_with(|| weights_for(key));
+        let weights = match cache.entry(key) {
+            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::hash_map::Entry::Vacant(e) => e.insert(weights_for(key)?),
+        };
         for ((ch, _), (src, w)) in sites.iter().zip(weights.iter()) {
             let dst = &mut out[ch * samples + s0..ch * samples + s1];
             dst.fill(0.0);
@@ -268,7 +227,7 @@ mod tests {
     #[test]
     fn test_kriging_identity_at_zero_drift() {
         let coords = vec![[0.0, 0.0], [0.0, 20.0], [16.0, 10.0], [16.0, 30.0]];
-        let w = compute_kriging_weight_matrix(&coords, &coords, 25.0, 1e-4);
+        let w = compute_kriging_weight_matrix(&coords, &coords, 25.0, 1e-4).unwrap();
         assert_eq!(w.len(), 16);
         for i in 0..4 {
             for j in 0..4 {
@@ -279,7 +238,7 @@ mod tests {
     }
 
     fn linear_probe(n: usize, pitch: f32) -> SensorLayout {
-        use dsp_core::layout::{Position3D, SensorSite};
+        use dsp_io::neuro::probe::{Position3D, SensorSite};
         SensorLayout::new("line", (0..n).map(|c| SensorSite::new(c, Position3D::new(0.0, c as f32 * pitch, 0.0), 0)).collect())
     }
 
@@ -324,7 +283,7 @@ mod tests {
     #[test]
     fn missing_site_is_an_error() {
         let layout = linear_probe(4, 20.0);
-        let batch = SnippetBatch::from_raw_parts(vec![0.0; 6], 1, 2, 3, vec![0], vec![0], vec![0.0], vec![0, 9]);
+        let batch = SnippetBatch::from_raw_parts(vec![0.0; 6], 1, 2, 3, 1, vec![0], vec![0], vec![0.0], vec![0, 9]);
         assert!(correct_snippet_batch_drift_kriging(&batch, &layout, &constant_drift(1.0), 30_000.0, 20.0).is_err());
     }
 }
