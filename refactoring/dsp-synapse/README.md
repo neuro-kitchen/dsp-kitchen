@@ -6,7 +6,7 @@ Changes to `crates/dsp-synapse` (review findings in `REVIEW.md`).
 - Build state: **intentionally broken** until the final fix-up pass (dsp-synapse is not compiled
   during the cleanup; only core / io / base are checked).
 
-## To do when the synapse cleanup ends (user, 2026-10-05)
+## To do when the synapse cleanup ends (user, 2026-10-05) — done 2026-10-05
 
 1. Root `README.md`: a warning **at the top** — the code is under development; fixes to
    dsp-synapse-ml, dsp-stream and dsp-app are coming soon.
