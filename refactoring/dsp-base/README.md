@@ -120,3 +120,23 @@ check was removed).
 Exports removed: `math::execute_baseline_subtract`, `math::kernels::baseline_subtract_kernel`,
 `spatial::{execute_car, subtract_common_average_kernel, SpatialReferenceConfig}`,
 `filter::{causal_alpha_kernel_1d, causal_exponential_kernel_1d}`.
+
+## Addition — host Cholesky (2026-10-05, dsp-synapse step 2)
+
+`src/linalg/cholesky.rs`: `cholesky`, `spd_inverse_logdet`, `cholesky_solve` (host, f64, exact).
+Used by dsp-synapse GMM (covariance inverse / log-det) and kriging (kernel solve), replacing the
+parked 80-rotation `SymmetricEig` and a hand-written Gauss–Jordan solver. Exported from `linalg`.
+
+## Addition — `peaks/` (2026-10-05, dsp-synapse step 3a)
+
+`src/peaks/{mod, host, device, kernels}.rs`: scipy `find_peaks` (host), `local_extrema`,
+`select_by_distance`, `DistanceRule { Scipy, LocallyExclusive }`, device `find_peak_candidates`
+(from dsp-synapse `detection/kernels/threshold.rs`, made generic over `F`, both polarities,
+per-channel heights). Exported as `dsp_base::peaks`.
+
+## Additions — synapse step 3b (2026-10-05)
+
+`math/xcorr.rs` (lagged cross-correlation, `peak_lag`, `parabolic_vertex_offset`),
+`math/moments.rs` (`RunningMoments`), `math/stats.rs::peak_to_peak`, `resampler/fractional.rs`
+(fractional-delay windowed sinc, host + device taps kernel); `math/windows.rs` Blackman-Harris
+coefficients and `SINC_ZERO` made public named constants.

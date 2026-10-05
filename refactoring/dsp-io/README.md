@@ -84,4 +84,33 @@ Root re-exports kept (neuro ones only with `neuro`): `open`, `sources`, `open_so
 | synapse-ml `hub/npy.rs` | parked in `refactoring/dsp-synapse-ml/`. |
 
 Remaining duplicates: none of `.npy`; Zarr store-opening now has one implementation.
-## Phase 3 — sorting formats (pending, with dsp-synapse review)
+## Addition — out-of-core reader (2026-10-05)
+
+`PrefetchReader` moved here from dsp-stream (`src/core/prefetch.rs`, `dsp_io::PrefetchReader`): it reads
+local recording windows on a background thread; it never belonged to the network crate.
+
+## Addition — probe presets and neighbours (2026-10-05, synapse step 1a)
+
+- `src/neuro/probe/presets.rs`: `neuropixels_1_0` (moved out of `SensorLayout::neuropixels_1_0_standard`,
+  method removed), `neuropixels_2_0`, `hdemg_grid` / `hdemg_4x8` / `hdemg_8x8`, `tetrode`,
+  `utah_array` (from dsp-synapse `probe/`; nominal geometry, spacings named).
+- `src/neuro/probe/neighbors.rs`: `find_k_nearest_neighbors`, `precompute_knn_table` (from
+  dsp-synapse `probe/neighbors.rs`).
+
+## Phase 3 — sorting formats (in progress, 2026-10-05)
+
+Design agreed: dsp-io owns the sorting **files** (plain structs mirroring them, read / write,
+detection); dsp-synapse converts them to / from `SortingOutput`.
+
+- Done — Phy / Kilosort: `src/neuro/phy/mod.rs` (`PhyFolder`, `PhyParams`, `ClusterTables`,
+  `resolve_dat_path`, `ClusterId`) and `src/neuro/templates.rs` (`DenseTemplates`,
+  `TemplateAxisOrder`), from dsp-synapse `storage/phy_sorting.rs`, `storage/phy.rs`,
+  `core/template.rs`. New dependency: `tracing` (warning on unreadable optional arrays).
+- Done — NWB `/units`: `src/neuro/nwb/units.rs` `NwbUnitsTable` (read / write; joins
+  `infer_nwb_sample_rate`), from dsp-synapse `storage/nwb_units.rs`.
+- Done — `.sorting.zarr` (dsp-kitchen's own format): `src/neuro/sorting_zarr/mod.rs`
+  `SortingZarr` (+ manifest types), from dsp-synapse `storage/zarr_analyzer.rs` (feature `zarr`).
+- Done — detection: `src/neuro/sorting_format.rs` `SortingFormat`, `detect_sorting`
+  (zarr-based checks only with feature `zarr`).
+
+### Earlier notes
