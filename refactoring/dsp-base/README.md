@@ -140,3 +140,10 @@ per-channel heights). Exported as `dsp_base::peaks`.
 `math/moments.rs` (`RunningMoments`), `math/stats.rs::peak_to_peak`, `resampler/fractional.rs`
 (fractional-delay windowed sinc, host + device taps kernel); `math/windows.rs` Blackman-Harris
 coefficients and `SINC_ZERO` made public named constants.
+
+## Additions — synapse step 4 (2026-10-05)
+
+`core/reduce.rs`: `row_abs_kth` / `row_abs_kth_kernel` (per-row k-th smallest `|x|` by value
+bisection, exact sample value; `ROW_SELECT_ITERATIONS = 64`). `math/stats.rs`:
+`execute_channel_noise_std` (device MAD noise per channel). Closes the "median-based noise
+estimators on the host" open item for the MAD estimator.

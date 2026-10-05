@@ -1,11 +1,25 @@
 //! Muscle Fiber Conduction Velocity (MFCV) estimation for planar HD-EMG grids (`conduction.rs`).
 //!
-//! Estimates action potential propagation speed $v \in [2.0, 7.0]\,\text{m/s}$ along longitudinal
+//! Estimates action potential propagation speed $v$ (physiologically 2–7 m/s) along longitudinal
 //! muscle fiber columns of a 2D HD-EMG array using sub-sample parabolic cross-correlation between
 //! adjacent single-differential channels.
 
 use serde::{Deserialize, Serialize};
 use dsp_base::math::{cross_correlation, peak_lag};
+
+/// Largest delay searched between adjacent channels, as a fraction of the snippet length.
+const MAX_LAG_FRACTION: usize = 3;
+/// Channel pairs with less energy product than this are skipped (flat signals).
+const MIN_PAIR_ENERGY: f32 = 1e-8;
+/// Normalized correlation a channel pair needs to count.
+const MIN_PAIR_CORRELATION: f32 = 0.2;
+/// Delays below this (samples) carry no direction and are skipped.
+const MIN_DELAY_SAMPLES: f32 = 1e-3;
+
+impl ConductionVelocityEstimate {
+    /// No estimate (too few channels or samples, or no correlated pair): every field NaN.
+    pub const UNDEFINED: Self = Self { velocity_m_per_s: f32::NAN, mean_delay_ms: f32::NAN, correlation_r: f32::NAN };
+}
 
 /// Estimated Muscle Fiber Conduction Velocity (MFCV) along a longitudinal HD-EMG electrode column.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -31,11 +45,7 @@ pub fn estimate_hdemg_conduction_velocity(
 ) -> ConductionVelocityEstimate {
     assert_eq!(waveform.len(), rows * cols * samples);
     if rows == 0 || cols < 3 || samples < 5 {
-        return ConductionVelocityEstimate {
-            velocity_m_per_s: 0.0,
-            mean_delay_ms: 0.0,
-            correlation_r: 0.0,
-        };
+        return ConductionVelocityEstimate::UNDEFINED;
     }
 
     // 1. Find the row with maximal RMS energy
@@ -66,7 +76,7 @@ pub fn estimate_hdemg_conduction_velocity(
     }
 
     // 3. Cross-correlate adjacent single-differential channels with sub-sample parabolic refinement
-    let max_lag = (samples / 3).max(2);
+    let max_lag = (samples / MAX_LAG_FRACTION).max(2);
     let mut weighted_delay_samples = 0.0f32;
     let mut weight_sum = 0.0f32;
     let mut corr_sum = 0.0f32;
@@ -78,7 +88,7 @@ pub fn estimate_hdemg_conduction_velocity(
         let ex: f32 = x.iter().map(|v| v * v).sum();
         let ey: f32 = y.iter().map(|v| v * v).sum();
         let denom = (ex * ey).sqrt();
-        if denom < 1e-8 {
+        if denom < MIN_PAIR_ENERGY {
             continue;
         }
 
@@ -86,7 +96,7 @@ pub fn estimate_hdemg_conduction_velocity(
         let Some(peak) = peak_lag(&corrs, max_lag) else { continue };
         let best_r = peak.value;
         let lag_samples = peak.fractional_lag().abs();
-        if best_r > 0.2 && lag_samples > 1e-3 {
+        if best_r > MIN_PAIR_CORRELATION && lag_samples > MIN_DELAY_SAMPLES {
             let w = best_r * denom;
             weighted_delay_samples += w * lag_samples;
             weight_sum += w;
@@ -95,22 +105,15 @@ pub fn estimate_hdemg_conduction_velocity(
         }
     }
 
-    if weight_sum <= 1e-8 || pair_count == 0 {
-        return ConductionVelocityEstimate {
-            velocity_m_per_s: 0.0,
-            mean_delay_ms: 0.0,
-            correlation_r: 0.0,
-        };
+    if weight_sum <= MIN_PAIR_ENERGY || pair_count == 0 {
+        return ConductionVelocityEstimate::UNDEFINED;
     }
 
     let mean_lag_samples = weighted_delay_samples / weight_sum;
     let delay_sec = (mean_lag_samples as f64) / sample_rate_hz.max(1.0);
     let pitch_m = (pitch_um as f64) * 1e-6;
-    let velocity_m_per_s = if delay_sec > 1e-9 {
-        (pitch_m / delay_sec) as f32
-    } else {
-        0.0
-    };
+    // Delays are at least MIN_DELAY_SAMPLES, so the velocity is finite
+    let velocity_m_per_s = (pitch_m / delay_sec) as f32;
 
     ConductionVelocityEstimate {
         velocity_m_per_s,

@@ -5,6 +5,12 @@ use super::noise::estimate_noise_std;
 use super::spacing::SpikeSpacing;
 use super::threshold::SpikePolarity;
 
+/// Shortest noise block (samples) and smallest EMA weight of a new block's σ.
+const MIN_BLOCK_SAMPLES: usize = 32;
+const MIN_SMOOTHING_ALPHA: f32 = 0.01;
+/// σ floor of the first block (a constant block would otherwise give a zero threshold).
+const MIN_SIGMA: f32 = 1e-6;
+
 /// Adaptive Exponential-Moving-Average (EMA) MAD threshold detector for non-stationary recordings
 /// (e.g., respiratory bursts, posture shifts, or dynamic isometric/isotonic HD-EMG contractions).
 ///
@@ -47,7 +53,7 @@ impl AdaptiveThresholdDetector {
             threshold_factor,
             refractory_ms,
             block_duration_ms,
-            smoothing_alpha: smoothing_alpha.clamp(0.01, 1.0),
+            smoothing_alpha: smoothing_alpha.clamp(MIN_SMOOTHING_ALPHA, 1.0),
             polarity,
             ..Self::default()
         }
@@ -65,8 +71,8 @@ impl SpikeDetector for AdaptiveThresholdDetector {
         assert_eq!(data.len(), channels * samples);
         let spacing = SpikeSpacing::from_ms(self.refractory_ms, sample_rate_hz, self.distance_rule);
         let block_samples = ((sample_rate_hz * self.block_duration_ms * 1e-3).round() as usize)
-            .clamp(32, samples.max(32));
-        let alpha = self.smoothing_alpha.clamp(0.01, 1.0);
+            .clamp(MIN_BLOCK_SAMPLES, samples.max(MIN_BLOCK_SAMPLES));
+        let alpha = self.smoothing_alpha.clamp(MIN_SMOOTHING_ALPHA, 1.0);
 
         let mut all_spikes = Vec::new();
         for ch in 0..channels {
@@ -75,7 +81,7 @@ impl SpikeDetector for AdaptiveThresholdDetector {
                 continue;
             }
             // Threshold of each block: σ smoothed across blocks
-            let mut running_sigma = estimate_noise_std(&row[..block_samples.min(samples)]).max(1e-6);
+            let mut running_sigma = estimate_noise_std(&row[..block_samples.min(samples)]).max(MIN_SIGMA);
             let thresholds: Vec<f32> = row
                 .chunks(block_samples)
                 .map(|block| {

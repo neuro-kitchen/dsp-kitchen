@@ -6,7 +6,7 @@
 //! 2. **Agreement Score (IoU)**:
 //!    $$\text{Agreement}(A, B) = \frac{N_{\text{match}}}{N_A + N_B - N_{\text{match}}}$$
 //! 3. **Confusion & Agreement Matrix**: Full $[K_A \times K_B]$ matrix across all unit pairs in
-//!    two [`SortingOutput`]s, plus greedy/Hungarian best-match assignment and per-unit
+//!    two [`SortingOutput`]s, plus greedy best-match assignment (not Hungarian: a unit can lose a better global pairing) and per-unit
 //!    Accuracy, Precision, Recall, False Positive Rate, and False Negative Rate.
 
 use serde::{Deserialize, Serialize};
@@ -93,12 +93,13 @@ pub fn compare_spike_trains(
             num_matches: 0,
             false_negatives: 0,
             false_positives: 0,
-            agreement_score: 1.0,
-            precision: 1.0,
-            recall: 1.0,
-            accuracy: 1.0,
-            false_negative_rate: 0.0,
-            false_positive_rate: 0.0,
+            // Two empty trains: every score is undefined
+            agreement_score: f32::NAN,
+            precision: f32::NAN,
+            recall: f32::NAN,
+            accuracy: f32::NAN,
+            false_negative_rate: f32::NAN,
+            false_positive_rate: f32::NAN,
         };
     }
 

@@ -1,13 +1,5 @@
 # dsp-base
 
-> **Status:** cleaned on 2026-10-05 (`versions/v0.14`) in six steps: visualization code parked,
-> `core/` and named constants, generic kernels with scipy edge modes, missing kernels, device
-> eigensolver, autotuned optimizations. Extended the same day with the generic primitives the
-> dsp-synapse review found re-implemented there: peak finding, lag cross-correlation, fractional
-> delay, running moments, Cholesky. `cargo check -p dsp-base --tests` passes; **only the Cholesky
-> tests have been run** (tests and benchmarks wait for the final pass). Changes are tracked in
-> `refactoring/dsp-base/README.md`.
-
 ## Intent
 
 Deterministic signal-processing primitives for multi-channel signals, running on any CubeCL runtime:
@@ -129,6 +121,7 @@ dsp-base/src/
 | `EdgeMode`, `read_extended(_strided)` | One edge policy for every stencil. |
 | `layout::transpose` | `[rows, cols]` → `[cols, rows]`. |
 | `reduce::row_mean_std`, `row_min_max` | Parallel per-row reductions (Welford + Chan merge in shared memory). |
+| `reduce::row_abs_kth` | Per-row k-th smallest `|x|` over a column range (value bisection, exact sample value). |
 
 ### `filter`
 | Item | Purpose |
@@ -178,7 +171,8 @@ dsp-base/src/
 
 ### `math`
 `execute_scaling`, `execute_clamp`, `execute_unpack_stored` +
-`upload_stored`, `execute_channel_mean_std`; host: `estimate_noise_std` / `_rms` / `_trimmed`,
+`upload_stored`, `execute_channel_mean_std`, `execute_channel_noise_std` (MAD σ per channel on the
+device, only the σ downloaded); host: `estimate_noise_std` / `_rms` / `_trimmed`,
 `interquartile_range`, `peak_to_peak`, `standard_error`, `percentile`, `histogram`, `bin_centers`,
 windows (`hann`, `hamming`, `blackman`, `gaussian`, `kaiser`, `sinc`, `bessel_i0`; Blackman-Harris
 coefficients are public constants shared with device code), `cross_correlation` / `lagged_dot` /
@@ -192,19 +186,10 @@ coefficients are public constants shared with device code), `cross_correlation` 
 | `Pipeline` | Stage list; `settling`, `validate`, one-off `execute`. |
 | `PipelineWorkspace<R, F>` | Designs, weights and ping-pong buffers kept on the device; `process_handle`, `process_chunk(_in_vram)`, `process_stored_chunk_in_vram`; `ChunkMode::{Independent, Stateful}`. |
 
-## Open items
+## Limitations
 
-- **Run everything**: unit and integration tests on every available runtime; first autotune runs
-  decide the IIR layout / block count and FIR kernel per device.
-- **Regenerate the scipy fixture** (`tests/scipy_reference.py`, now also writes `forward_rest`);
-  needs scipy in the venv.
-- **Downstream fixes** (`dsp-synapse`, `dsp-synapse-ml`, `dsp-cli`, `dsp_kitchen_py`, `dsp-app`): see
-  `refactoring/dsp-base/README.md`.
-- **Still on the host**: FastICA iterations, PPCA EM projection / reconstruction, ZCA assembly from
-  eigenpairs, median-based noise estimators.
-- Parked (no users): per-channel baseline kernel, precomputed-average CAR, causal exponential /
-  alpha kernels, `SpatialReferenceConfig` — see `refactoring/dsp-base/README.md`.
-- `filter/template/subtraction.rs` keeps its own full-overlap lag search (a different operation
-  from `math::cross_correlation`).
-- `butterworth.rs` now holds the shared IIR design path (Butterworth and Chebyshev I); a rename to
-  `iir_design.rs` would read better.
+- Still on the host: FastICA iterations, PPCA EM projection / reconstruction, ZCA assembly from
+  eigenpairs, the trimmed / IQR noise estimators, Cholesky (small systems by design).
+- `filter/template/subtraction.rs` searches full-overlap lags only (a different operation from
+  `math::cross_correlation`).
+- `butterworth.rs` holds the shared IIR design path (Butterworth and Chebyshev I).

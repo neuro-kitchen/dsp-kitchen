@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::time::Duration;
 
-use super::providers::{ProviderKind, resolve_weights_uri};
+use crate::providers::{ProviderKind, resolve_weights_uri};
 
 /// Summary returned after downloading and verifying a model artifact.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,12 +27,17 @@ pub struct RemoteLinkCheck {
 }
 
 /// Downloads a model artifact from `weights_url` into `dest_path`, computing its SHA-256 digest
-/// on the fly and verifying it against `expected_sha256` before committing the file.
+/// on the fly and verifying it and its size against `expected_sha256` / `expected_size` before
+/// committing the file. An empty expected hash is refused.
 pub fn download_and_verify(
     weights_url: &str,
     dest_path: &Path,
     expected_sha256: &str,
+    expected_size: u64,
 ) -> Result<DownloadOutcome> {
+    if expected_sha256.trim().is_empty() {
+        bail!("refusing to download {weights_url}: the catalog entry has no SHA-256 to verify it");
+    }
     let (provider, resolved_url) = resolve_weights_uri(weights_url)?;
     if let Some(parent) = dest_path.parent() {
         std::fs::create_dir_all(parent).with_context(|| {
@@ -75,7 +80,11 @@ pub fn download_and_verify(
     drop(out_file);
 
     let actual_sha256 = hex::encode(hasher.finalize());
-    if !expected_sha256.is_empty() && !actual_sha256.eq_ignore_ascii_case(expected_sha256) {
+    if bytes_written != expected_size {
+        let _ = std::fs::remove_file(&tmp_path);
+        bail!("size mismatch for {resolved_url}: expected {expected_size} bytes, got {bytes_written}");
+    }
+    if !actual_sha256.eq_ignore_ascii_case(expected_sha256) {
         let _ = std::fs::remove_file(&tmp_path);
         bail!(
             "SHA-256 mismatch for {}: expected {}, got {}",

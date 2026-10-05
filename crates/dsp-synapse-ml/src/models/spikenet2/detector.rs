@@ -6,7 +6,7 @@ use dsp_core::{ComputeTarget, DspError, DspResult};
 
 use crate::hub::TensorIoSpec;
 use crate::runtime::{
-    OnnxRuntimeSession, RuntimeTensor, default_compute_target, pull_model, validate_tensor_port,
+    OnnxRuntimeSession, RuntimeTensor, validate_tensor_port,
 };
 
 pub const SPIKENET2_IED_MODEL_ID: &str = "spikenet2/ieeg-detector-v1";
@@ -20,19 +20,17 @@ pub struct SpikeNet2Detector {
 
 impl SpikeNet2Detector {
     /// Pulls and initializes `spikenet2/ieeg-detector-v1` from [`crate::hub::ModelHub`].
+    #[cfg(feature = "hub")]
     pub fn from_hub(
         probability_threshold: f32,
-        target: Option<ComputeTarget>,
+        target: ComputeTarget,
     ) -> DspResult<Self> {
-        let (manifest, path) = pull_model(SPIKENET2_IED_MODEL_ID)?;
-        let compute_target = match target {
-            Some(t) => t.checked().map_err(|e| DspError::Model(e.to_string()))?,
-            None => default_compute_target()?,
-        };
+        let (manifest, path) = crate::runtime::pull_model(SPIKENET2_IED_MODEL_ID)?;
+        let compute_target = target.checked().map_err(|e| DspError::ComputeError(e.to_string()))?;
         let session = OnnxRuntimeSession::from_file(&path, compute_target)?;
         Ok(Self {
             session,
-            io_spec: Some(manifest.io_spec),
+            io_spec: manifest.io_spec,
             probability_threshold,
         })
     }
@@ -41,12 +39,9 @@ impl SpikeNet2Detector {
     pub fn from_onnx_file(
         path: impl AsRef<Path>,
         probability_threshold: f32,
-        target: Option<ComputeTarget>,
+        target: ComputeTarget,
     ) -> DspResult<Self> {
-        let compute_target = match target {
-            Some(t) => t.checked().map_err(|e| DspError::Model(e.to_string()))?,
-            None => default_compute_target()?,
-        };
+        let compute_target = target.checked().map_err(|e| DspError::ComputeError(e.to_string()))?;
         let session = OnnxRuntimeSession::from_file(path, compute_target)?;
         Ok(Self {
             session,

@@ -7,7 +7,7 @@ name: docs
 
 on:
   push:
-    branches: [main]
+    branches: [main, "versions/**"]
     paths: ["docs/book/**", ".github/workflows/docs.yml"]
   pull_request:
     paths: ["docs/book/**", ".github/workflows/docs.yml"]

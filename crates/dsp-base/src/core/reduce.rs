@@ -132,6 +132,121 @@ pub fn row_min_max_kernel<F: Float>(
     }
 }
 
+/// Halvings of the value range `[−1, max |x|]` in [`row_abs_kth_kernel`]. The final bracket is
+/// `(max |x| + 1) · 2⁻⁶⁴` wide: one distinct f32 value except for values within ~1e-9 · max of zero;
+/// otherwise (f64, near-zero values) the result is off by at most the bracket width.
+pub const ROW_SELECT_ITERATIONS: u32 = 64;
+
+/// Sum of `values[0..units]` into `values[0]` (pairwise, in shared memory).
+#[cube]
+fn shared_sum_u32(values: &mut SharedMemory<u32>, unit: u32, #[comptime] units: u32) {
+    let mut stride = comptime!(units / 2);
+    while stride > 0u32 {
+        if unit < stride {
+            let other = values[(unit + stride) as usize];
+            values[unit as usize] += other;
+        }
+        sync_cube();
+        stride /= 2u32;
+    }
+}
+
+/// One cube per row: the `k`-th smallest (0-based) `|x|` among columns `col_start..col_start + cols`
+/// of row `row` (rows `row_stride` apart). The value range is halved [`ROW_SELECT_ITERATIONS`]
+/// times keeping `#(|x| ≤ lo) ≤ k < #(|x| ≤ hi)`, then the smallest `|x|` above `lo` is the answer
+/// (a sample value, not an interpolation).
+#[cube(launch)]
+pub fn row_abs_kth_kernel<F: Float>(
+    input: &Array<F>,
+    out: &mut Array<F>,
+    rows: u32,
+    row_stride: u32,
+    col_start: u32,
+    cols: u32,
+    k: u32,
+    #[comptime] units: u32,
+    #[comptime] iterations: u32,
+) {
+    let row = row_position();
+    if row < rows {
+        let unit = UNIT_POS_X;
+        let base = (row * row_stride + col_start) as usize;
+        let mut vals = SharedMemory::<F>::new(comptime!(units as usize));
+        let mut counts = SharedMemory::<u32>::new(comptime!(units as usize));
+
+        // Bracket: lo below every |x|, hi = max |x|
+        let mut hi_u = F::new(0.0f32);
+        let mut col = unit;
+        while col < cols {
+            hi_u = F::max(hi_u, F::abs(input[base + col as usize]));
+            col += units;
+        }
+        vals[unit as usize] = hi_u;
+        sync_cube();
+        let mut stride = comptime!(units / 2);
+        while stride > 0u32 {
+            if unit < stride {
+                let other = vals[(unit + stride) as usize];
+                vals[unit as usize] = F::max(vals[unit as usize], other);
+            }
+            sync_cube();
+            stride /= 2u32;
+        }
+        let mut lo = F::new(-1.0f32);
+        let mut hi = vals[0];
+        sync_cube();
+
+        // Runtime loop (a comptime range would unroll every halving into the kernel)
+        let mut it: u32 = 0u32;
+        while it < iterations {
+            let mid = (lo + hi) / F::new(2.0f32);
+            let mut n = 0u32;
+            let mut col = unit;
+            while col < cols {
+                if F::abs(input[base + col as usize]) <= mid {
+                    n += 1u32;
+                }
+                col += units;
+            }
+            counts[unit as usize] = n;
+            sync_cube();
+            shared_sum_u32(&mut counts, unit, units);
+            if counts[0] > k {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+            sync_cube();
+            it += 1u32;
+        }
+
+        // Smallest |x| above lo
+        let mut best = F::new(f32::INFINITY);
+        let mut col = unit;
+        while col < cols {
+            let a = F::abs(input[base + col as usize]);
+            if a > lo {
+                best = F::min(best, a);
+            }
+            col += units;
+        }
+        vals[unit as usize] = best;
+        sync_cube();
+        let mut stride = comptime!(units / 2);
+        while stride > 0u32 {
+            if unit < stride {
+                let other = vals[(unit + stride) as usize];
+                vals[unit as usize] = F::min(vals[unit as usize], other);
+            }
+            sync_cube();
+            stride /= 2u32;
+        }
+        if unit == 0u32 {
+            out[row as usize] = vals[0];
+        }
+    }
+}
+
 /// Per-row mean and population standard deviation of a `[rows, cols]` buffer of `F` into `out_mean`
 /// and `out_std` (`rows` values each).
 pub fn row_mean_std<R: Runtime, F: DspFloat>(
@@ -220,4 +335,56 @@ mod tests {
         }
     }
     runtime_test!(test_row_reductions_match_host, reductions);
+
+    fn abs_kth<R: Runtime>(client: &ComputeClient<R>) {
+        // Odd / even lengths, repeated values, a column sub-range of a longer row
+        let (rows, stride) = (3usize, 2_003usize);
+        let data: Vec<f32> = (0..rows * stride).map(|i| ((i * 7919) % 211) as f32 * 0.25 - 26.0).collect();
+        let input = buffer::upload(client, &data);
+        for cols in [0..1usize, 0..2, 5..1_006, 0..stride] {
+            for k in [0, cols.len() / 2, cols.len() - 1] {
+                let out = buffer::empty::<R, f32>(client, rows);
+                row_abs_kth::<R, f32>(client, &input, &out, rows, stride, cols.clone(), k);
+                let got = buffer::download::<R, f32>(client, out);
+                for r in 0..rows {
+                    let mut abs: Vec<f32> = data[r * stride + cols.start..r * stride + cols.end].iter().map(|v| v.abs()).collect();
+                    abs.select_nth_unstable_by(k, |a, b| a.total_cmp(b));
+                    assert_eq!(got[r], abs[k], "{} cols {cols:?} k {k} row {r}", R::name(client));
+                }
+            }
+        }
+    }
+    runtime_test!(test_row_abs_kth_matches_host, abs_kth);
+}
+
+/// Per-row `k`-th smallest `|x|` (0-based, a sample value) over columns `cols` of a buffer of
+/// `rows` rows `row_stride` apart, into `out` (`rows` values of `F`). `k < cols.len()`.
+pub fn row_abs_kth<R: Runtime, F: DspFloat>(
+    client: &ComputeClient<R>,
+    input: &Handle,
+    out: &Handle,
+    rows: usize,
+    row_stride: usize,
+    cols: std::ops::Range<usize>,
+    k: usize,
+) {
+    assert!(k < cols.len() && cols.end <= row_stride, "selection outside the rows");
+    let geom = LaunchGeometry::per_row(client, rows, cols.len());
+    // SAFETY: `input` holds `rows · row_stride` and `out` `rows` values of `F`
+    unsafe {
+        row_abs_kth_kernel::launch::<F, R>(
+            client,
+            geom.cube_count,
+            geom.cube_dim.clone(),
+            ArrayArg::from_raw_parts(input.clone(), rows * row_stride),
+            ArrayArg::from_raw_parts(out.clone(), rows),
+            rows as u32,
+            row_stride as u32,
+            cols.start as u32,
+            cols.len() as u32,
+            k as u32,
+            geom.cube_dim.x,
+            ROW_SELECT_ITERATIONS,
+        );
+    }
 }

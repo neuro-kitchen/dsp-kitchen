@@ -10,11 +10,10 @@ use crate::runtime::{
     TemplateFilterTask, default_compute_target, run_on_target,
 };
 
-pub const EMUSORT_TEMPLATES_MODEL_ID: &str = "emusort/universal-muap-templates-v1";
-pub const MYOMATRIX_TEMPLATES_MODEL_ID: &str = EMUSORT_TEMPLATES_MODEL_ID;
 pub const DEFAULT_MUAP_WINDOW_LEN: usize = 150;
 
-/// Pretrained or canonical EMUsort universal MUAP template matcher executing on [`ComputeTarget`].
+/// EMUsort universal MUAP template matcher loaded from a `.npy` file (EMUsort learns its templates
+/// per recording).
 #[derive(Debug, Clone)]
 pub struct EmusortTemplateMatcher {
     /// Row-major `[num_templates, window_len]` L2-normalized universal MUAP templates.
@@ -30,97 +29,7 @@ pub struct EmusortTemplateMatcher {
 }
 
 impl EmusortTemplateMatcher {
-    /// Creates a canonical 150-sample universal MUAP template matcher with zero external disk dependencies.
-    pub fn from_canonical(
-        threshold_sigma: f32,
-        refractory_samples: usize,
-        target: Option<ComputeTarget>,
-    ) -> DspResult<Self> {
-        let window_len = DEFAULT_MUAP_WINDOW_LEN;
-        let num_templates = 6;
-        let mut templates = Vec::with_capacity(num_templates * window_len);
-
-        // Generate 6 canonical physiological MUAP shapes (triphasic, fast biphasic, polyphasic, etc.)
-        let center = window_len / 2;
-        let t_axis: Vec<f32> = (0..window_len)
-            .map(|i| (i as f32 - center as f32) / (window_len as f32 * 0.1))
-            .collect();
-
-        // 1. Classic triphasic MUAP: initial small positive wave, sharp negative trough, positive recovery
-        let mut t1 = vec![0.0f32; window_len];
-        for (i, &t) in t_axis.iter().enumerate() {
-            t1[i] = -(-0.5 * t * t).exp() * (1.0 - 0.4 * t) + 0.15 * (-(t - 1.8).powi(2)).exp();
-        }
-        normalize_muap(&mut t1);
-        templates.extend_from_slice(&t1);
-
-        // 2. Fast biphasic MUAP (near motor point / innervation zone)
-        let mut t2 = vec![0.0f32; window_len];
-        for (i, &t) in t_axis.iter().enumerate() {
-            t2[i] = -(-t * t).exp() + 0.3 * (-(t - 1.2).powi(2)).exp();
-        }
-        normalize_muap(&mut t2);
-        templates.extend_from_slice(&t2);
-
-        // 3. Broad slow-twitch MUAP (Type I muscle fiber)
-        let mut t3 = vec![0.0f32; window_len];
-        for (i, &t) in t_axis.iter().enumerate() {
-            let ts = t * 0.6;
-            t3[i] = -(-0.5 * ts * ts).exp() + 0.25 * (-(ts - 1.5).powi(2)).exp();
-        }
-        normalize_muap(&mut t3);
-        templates.extend_from_slice(&t3);
-
-        // 4. Polyphasic MUAP (desynchronized fiber arrivals)
-        let mut t4 = vec![0.0f32; window_len];
-        for (i, &t) in t_axis.iter().enumerate() {
-            t4[i] = -(-t * t).exp() * 0.7 - (-(t + 1.2).powi(2)).exp() * 0.4 + (-(t - 1.5).powi(2)).exp() * 0.35;
-        }
-        normalize_muap(&mut t4);
-        templates.extend_from_slice(&t4);
-
-        // 5. High-amplitude compound MUAP
-        let mut t5 = vec![0.0f32; window_len];
-        for (i, &t) in t_axis.iter().enumerate() {
-            t5[i] = -(-1.5 * t * t).exp() * 1.2 + 0.2 * (-(t - 1.0).powi(2)).exp();
-        }
-        normalize_muap(&mut t5);
-        templates.extend_from_slice(&t5);
-
-        // 6. Asymmetric propagating terminal MUAP
-        let mut t6 = vec![0.0f32; window_len];
-        for (i, &t) in t_axis.iter().enumerate() {
-            t6[i] = -(-0.8 * (t + 0.2).powi(2)).exp() + 0.4 * (-(0.5 * (t - 1.6)).powi(2)).exp();
-        }
-        normalize_muap(&mut t6);
-        templates.extend_from_slice(&t6);
-
-        let compute_target = match target {
-            Some(t) => t.checked().map_err(|e| DspError::Model(e.to_string()))?,
-            None => default_compute_target()?,
-        };
-
-        // Center offset from trough of primary template
-        let center_offset = templates[..window_len]
-            .iter()
-            .enumerate()
-            .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-            .map(|(idx, _)| idx)
-            .unwrap_or(center);
-
-        Ok(Self {
-            templates,
-            num_templates,
-            window_len,
-            center_offset,
-            threshold_sigma,
-            refractory_samples: refractory_samples.max(1),
-            source_path: None,
-            target: compute_target,
-        })
-    }
-
-    /// Loads Myomatrix universal templates directly from a `.npy` file on disk.
+    /// Loads `[num_templates, window_len]` MUAP templates from a `.npy` file on disk.
     pub fn from_npy(
         path: impl AsRef<Path>,
         threshold_sigma: f32,

@@ -164,7 +164,142 @@ fn locally_exclusive(
     out
 }
 
-/// Dispatches CubeCL parallel locally-exclusive spatial deduplication in VRAM (`LaunchGeometry::elementwise`).
+/// Channels within a radius of each channel (itself included), ascending, as CSR rows; the
+/// device form of the neighbourhood test in [`deduplicate_spikes_spatial`]. Build once per probe
+/// and radius, then [`Self::deduplicate`] every batch.
+#[derive(Debug, Clone)]
+pub struct DedupNeighbours {
+    positions: SitePositions,
+    offsets: Vec<u32>,
+    channels: Vec<u32>,
+    /// `u32` words per crossing in the participating-channel bitmask.
+    mask_words: usize,
+    offsets_h: cubecl::server::Handle,
+    channels_h: cubecl::server::Handle,
+}
+
+impl DedupNeighbours {
+    pub fn new<R: cubecl::prelude::Runtime>(
+        client: &cubecl::prelude::ComputeClient<R>,
+        layout: &SensorLayout,
+        radius_um: f32,
+    ) -> Self {
+        use dsp_base::core::buffer;
+        let positions = SitePositions::new(layout);
+        let mut offsets = vec![0u32];
+        let mut channels = Vec::new();
+        let mut widest = 1usize;
+        for a in 0..positions.0.len() {
+            let row_start = channels.len();
+            if let Some(pa) = positions.get(a) {
+                for b in 0..positions.0.len() {
+                    if positions.get(b).is_some_and(|pb| pa.distance_to(pb) <= radius_um) {
+                        channels.push(b as u32);
+                    }
+                }
+            }
+            widest = widest.max(channels.len() - row_start);
+            offsets.push(channels.len() as u32);
+        }
+        // Kernels never read an empty buffer
+        let channels_h = buffer::upload(client, if channels.is_empty() { &[0u32][..] } else { &channels });
+        Self {
+            offsets_h: buffer::upload(client, &offsets),
+            channels_h,
+            positions,
+            offsets,
+            channels,
+            mask_words: widest.div_ceil(32),
+        }
+    }
+
+    /// Radius neighbours of `channel` (ascending; empty for channels missing from the layout).
+    pub fn of(&self, channel: usize) -> &[u32] {
+        match (self.offsets.get(channel), self.offsets.get(channel + 1)) {
+            (Some(&a), Some(&b)) => &self.channels[a as usize..b as usize],
+            _ => &[],
+        }
+    }
+
+    /// [`deduplicate_spikes_spatial`] on the device. Only the survival flags and participating
+    /// bitmasks (`1 + mask_words` words per crossing) are downloaded.
+    pub fn deduplicate<R: cubecl::prelude::Runtime>(
+        &self,
+        client: &cubecl::prelude::ComputeClient<R>,
+        spikes: &[SpikeEvent],
+        window_samples: u64,
+    ) -> Vec<DeduplicatedSpike> {
+        use cubecl::prelude::*;
+        use dsp_base::core::buffer;
+        use dsp_core::compute::LaunchGeometry;
+        use super::kernels::spatial_dedup_survival_kernel;
+
+        let mut sorted: Vec<SpikeEvent> =
+            spikes.iter().filter(|e| self.positions.get(e.channel_id).is_some()).cloned().collect();
+        if sorted.is_empty() {
+            return Vec::new();
+        }
+        sort_events(&mut sorted);
+
+        let n = sorted.len();
+        let base_sample = sorted[0].sample_index;
+        let span = sorted[n - 1].sample_index - base_sample;
+        assert!(span + window_samples < u32::MAX as u64, "dedup batch spans more than u32 samples");
+        let sample_indices: Vec<u32> = sorted.iter().map(|e| (e.sample_index - base_sample) as u32).collect();
+        let channel_ids: Vec<u32> = sorted.iter().map(|e| e.channel_id as u32).collect();
+        let magnitudes: Vec<f32> = sorted.iter().map(|e| e.peak_amplitude_uv.abs()).collect();
+
+        let surv_h = buffer::empty::<R, u32>(client, n);
+        let mask_h = buffer::empty::<R, u32>(client, n * self.mask_words);
+        let geom = LaunchGeometry::elementwise(client, n);
+        // SAFETY: every array is passed with the length it was created with
+        unsafe {
+            spatial_dedup_survival_kernel::launch::<R>(
+                client,
+                geom.cube_count,
+                geom.cube_dim,
+                ArrayArg::from_raw_parts(buffer::upload(client, &sample_indices), n),
+                ArrayArg::from_raw_parts(buffer::upload(client, &channel_ids), n),
+                ArrayArg::from_raw_parts(buffer::upload(client, &magnitudes), n),
+                ArrayArg::from_raw_parts(self.offsets_h.clone(), self.offsets.len()),
+                ArrayArg::from_raw_parts(self.channels_h.clone(), self.channels.len().max(1)),
+                ArrayArg::from_raw_parts(surv_h.clone(), n),
+                ArrayArg::from_raw_parts(mask_h.clone(), n * self.mask_words),
+                n as u32,
+                self.mask_words as u32,
+                window_samples as u32,
+            );
+        }
+        let survives = buffer::download::<R, u32>(client, surv_h);
+        let masks = buffer::download::<R, u32>(client, mask_h);
+
+        sorted
+            .iter()
+            .enumerate()
+            .filter(|&(i, _)| survives[i] != 0)
+            .map(|(i, cand)| {
+                let mask = &masks[i * self.mask_words..(i + 1) * self.mask_words];
+                // Neighbour rows are ascending, so the channels come out sorted and unique
+                let participating_channels = self
+                    .of(cand.channel_id)
+                    .iter()
+                    .enumerate()
+                    .filter(|&(slot, _)| mask[slot / 32] & (1 << (slot % 32)) != 0)
+                    .map(|(_, &ch)| ch as usize)
+                    .collect();
+                DeduplicatedSpike {
+                    primary_channel: cand.channel_id,
+                    sample_index: cand.sample_index,
+                    peak_amplitude_uv: cand.peak_amplitude_uv,
+                    participating_channels,
+                }
+            })
+            .collect()
+    }
+}
+
+/// One-off [`DedupNeighbours::deduplicate`]: builds the neighbour table for this call. Reuse a
+/// [`DedupNeighbours`] when deduplicating more than one batch.
 pub fn deduplicate_spikes_spatial_gpu<R: cubecl::prelude::Runtime>(
     client: &cubecl::prelude::ComputeClient<R>,
     spikes: &[SpikeEvent],
@@ -172,101 +307,10 @@ pub fn deduplicate_spikes_spatial_gpu<R: cubecl::prelude::Runtime>(
     radius_um: f32,
     window_samples: u64,
 ) -> Vec<DeduplicatedSpike> {
-    use cubecl::prelude::*;
-    use dsp_core::compute::LaunchGeometry;
-    use super::kernels::spatial_dedup_survival_kernel;
-
     if spikes.is_empty() {
         return Vec::new();
     }
-
-    let positions = SitePositions::new(layout);
-    let mut sorted: Vec<SpikeEvent> = spikes
-        .iter()
-        .filter(|e| positions.get(e.channel_id).is_some())
-        .cloned()
-        .collect();
-    if sorted.is_empty() {
-        return Vec::new();
-    }
-    sort_events(&mut sorted);
-
-    let num_channels = positions.0.len().max(1);
-    let mut dist_matrix = vec![f32::INFINITY; num_channels * num_channels];
-    for i in 0..num_channels {
-        if let Some(pi) = positions.get(i) {
-            for j in 0..num_channels {
-                if let Some(pj) = positions.get(j) {
-                    dist_matrix[i * num_channels + j] = pi.distance_to(pj);
-                }
-            }
-        }
-    }
-
-    let n = sorted.len();
-    let base_sample = sorted[0].sample_index;
-    let sample_indices: Vec<u32> = sorted
-        .iter()
-        .map(|e| (e.sample_index - base_sample) as u32)
-        .collect();
-    let channel_ids: Vec<u32> = sorted.iter().map(|e| e.channel_id as u32).collect();
-    let peak_magnitudes: Vec<f32> = sorted.iter().map(|e| e.peak_amplitude_uv.abs()).collect();
-
-    let t_handle = client.create_from_slice(u32::as_bytes(&sample_indices));
-    let ch_handle = client.create_from_slice(u32::as_bytes(&channel_ids));
-    let amp_handle = client.create_from_slice(f32::as_bytes(&peak_magnitudes));
-    let dist_handle = client.create_from_slice(f32::as_bytes(&dist_matrix));
-    let surv_handle = client.empty(n * 4);
-
-    let geom = LaunchGeometry::elementwise(client, n);
-    unsafe {
-        spatial_dedup_survival_kernel::launch::<R>(
-            client,
-            geom.cube_count,
-            geom.cube_dim,
-            ArrayArg::from_raw_parts(t_handle, n),
-            ArrayArg::from_raw_parts(ch_handle, n),
-            ArrayArg::from_raw_parts(amp_handle, n),
-            ArrayArg::from_raw_parts(dist_handle, num_channels * num_channels),
-            ArrayArg::from_raw_parts(surv_handle.clone(), n),
-            n,
-            num_channels as u32,
-            radius_um,
-            window_samples as u32,
-        );
-    }
-
-    let surv_bytes = client.read_one_unchecked(surv_handle);
-    let survives = u32::from_bytes(&surv_bytes);
-
-    let mut out = Vec::new();
-    let mut lo = 0usize;
-    for (i, cand) in sorted.iter().enumerate() {
-        while sorted[lo].sample_index + window_samples < cand.sample_index {
-            lo += 1;
-        }
-        if survives[i] == 0 {
-            continue;
-        }
-        let mut participating = Vec::new();
-        for other in &sorted[lo..] {
-            if other.sample_index > cand.sample_index + window_samples {
-                break;
-            }
-            if dist_matrix[cand.channel_id * num_channels + other.channel_id] <= radius_um {
-                participating.push(other.channel_id);
-            }
-        }
-        participating.sort_unstable();
-        participating.dedup();
-        out.push(DeduplicatedSpike {
-            primary_channel: cand.channel_id,
-            sample_index: cand.sample_index,
-            peak_amplitude_uv: cand.peak_amplitude_uv,
-            participating_channels: participating,
-        });
-    }
-    out
+    DedupNeighbours::new(client, layout, radius_um).deduplicate(client, spikes, window_samples)
 }
 
 #[cfg(test)]
@@ -391,22 +435,34 @@ mod tests {
 
     #[test]
     fn gpu_spatial_dedup_matches_cpu_exactly() {
-        use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
         use cubecl::prelude::*;
+        use dsp_core::compute::{ComputeTarget, ComputeTask};
 
-        let device = WgpuDevice::default();
-        let client = WgpuRuntime::client(&device);
-        let layout = line_layout(8, 20.0);
-        let spikes: Vec<SpikeEvent> = (0..120)
-            .map(|i| SpikeEvent {
-                channel_id: (i * 5) % 8,
-                sample_index: 50 + (i as u64 * 9) % 500,
-                peak_amplitude_uv: -45.0 - ((i * 31) % 40) as f32,
-            })
-            .collect();
+        struct Task<'a>(&'a [SpikeEvent], &'a SensorLayout, f32, u64);
+        impl ComputeTask for Task<'_> {
+            type Output = Vec<DeduplicatedSpike>;
+            fn run<R: Runtime>(self, client: ComputeClient<R>) -> Vec<DeduplicatedSpike> {
+                deduplicate_spikes_spatial_gpu::<R>(&client, self.0, self.1, self.2, self.3)
+            }
+        }
 
-        let cpu_out = deduplicate_spikes_spatial(&spikes, &layout, 35.0, 10);
-        let gpu_out = deduplicate_spikes_spatial_gpu::<WgpuRuntime>(&client, &spikes, &layout, 35.0, 10);
-        assert_eq!(gpu_out, cpu_out);
+        // 8 sites (one mask word) and 48 sites within one radius (two words)
+        for (sites, pitch, radius) in [(8usize, 20.0f32, 35.0f32), (48, 1.0, 100.0)] {
+            let layout = line_layout(sites, pitch);
+            let spikes: Vec<SpikeEvent> = (0..120)
+                .map(|i| SpikeEvent {
+                    channel_id: (i * 5) % sites,
+                    sample_index: 50 + (i as u64 * 9) % 500,
+                    peak_amplitude_uv: -45.0 - ((i * 31) % 40) as f32,
+                })
+                .collect();
+            let cpu_out = deduplicate_spikes_spatial(&spikes, &layout, radius, 10);
+            let targets = ComputeTarget::available();
+            assert!(!targets.is_empty(), "no CubeCL runtime compiled in");
+            for target in targets {
+                let gpu_out = target.run(Task(&spikes, &layout, radius, 10)).expect("runtime");
+                assert_eq!(gpu_out, cpu_out, "{sites} sites");
+            }
+        }
     }
 }

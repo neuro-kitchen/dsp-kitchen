@@ -10,12 +10,11 @@ use crate::runtime::{
     ProjectBasisTask, ReconstructBasisTask, default_compute_target, run_on_target,
 };
 
-pub const EMUSORT_BASIS_MODEL_ID: &str = "emusort/temporal-basis-150-12pc-v1";
-pub const MYOMATRIX_BASIS_MODEL_ID: &str = EMUSORT_BASIS_MODEL_ID;
 pub const DEFAULT_MUAP_BASIS_COMPONENTS: usize = 12;
 pub const DEFAULT_MUAP_BASIS_WINDOW_LEN: usize = 150;
 
-/// Pretrained or canonical EMUsort 12-component orthonormal temporal muscle basis.
+/// EMUsort temporal muscle basis loaded from a `.npy` file (EMUsort learns it per recording; see
+/// `refactoring/dsp-synapse-ml/REVIEW.md`).
 #[derive(Debug, Clone)]
 pub struct EmusortBasisEmbedder {
     /// Row-major `[num_components, window_len]` orthonormal temporal basis.
@@ -27,75 +26,6 @@ pub struct EmusortBasisEmbedder {
 }
 
 impl EmusortBasisEmbedder {
-    /// Creates a canonical 150-sample, 12-component orthonormal muscle basis without disk dependencies.
-    pub fn from_canonical(target: Option<ComputeTarget>) -> DspResult<Self> {
-        let num_components = DEFAULT_MUAP_BASIS_COMPONENTS;
-        let window_len = DEFAULT_MUAP_BASIS_WINDOW_LEN;
-        let mut basis = vec![0.0f32; num_components * window_len];
-
-        // Construct 12 smooth spatiotemporal Hermite-Gaussian orthogonal functions
-        let center = (window_len as f32) / 2.0;
-        let sigma = (window_len as f32) * 0.18;
-
-        for c in 0..num_components {
-            let row = &mut basis[c * window_len..(c + 1) * window_len];
-            for i in 0..window_len {
-                let x = (i as f32 - center) / sigma;
-                let envelope = (-0.5 * x * x).exp();
-                // Hermite-like polynomial terms
-                let poly = match c {
-                    0 => 1.0,
-                    1 => x,
-                    2 => x * x - 1.0,
-                    3 => x * x * x - 3.0 * x,
-                    4 => x.powi(4) - 6.0 * x * x + 3.0,
-                    5 => x.powi(5) - 10.0 * x.powi(3) + 15.0 * x,
-                    6 => (2.0 * x).sin(),
-                    7 => (2.0 * x).cos(),
-                    8 => (3.0 * x).sin() * envelope,
-                    9 => (3.0 * x).cos() * envelope,
-                    10 => x.powi(6) - 15.0 * x.powi(4) + 45.0 * x * x - 15.0,
-                    _ => (4.0 * x).sin(),
-                };
-                row[i] = poly * envelope;
-            }
-        }
-
-        // Gram-Schmidt orthonormalization
-        for i in 0..num_components {
-            for j in 0..i {
-                let dot: f32 = (0..window_len)
-                    .map(|k| basis[i * window_len + k] * basis[j * window_len + k])
-                    .sum();
-                for k in 0..window_len {
-                    let sub = dot * basis[j * window_len + k];
-                    basis[i * window_len + k] -= sub;
-                }
-            }
-            let norm: f32 = (0..window_len)
-                .map(|k| basis[i * window_len + k].powi(2))
-                .sum::<f32>()
-                .sqrt();
-            let inv_norm = if norm > 1e-9 { 1.0 / norm } else { 1.0 };
-            for k in 0..window_len {
-                basis[i * window_len + k] *= inv_norm;
-            }
-        }
-
-        let compute_target = match target {
-            Some(t) => t.checked().map_err(|e| DspError::Model(e.to_string()))?,
-            None => default_compute_target()?,
-        };
-
-        Ok(Self {
-            basis,
-            num_components,
-            window_len,
-            source_path: None,
-            target: compute_target,
-        })
-    }
-
     /// Loads a Myomatrix basis directly from a `.npy` file on disk.
     pub fn from_npy(path: impl AsRef<Path>, target: Option<ComputeTarget>) -> DspResult<Self> {
         let path_buf = path.as_ref().to_path_buf();
