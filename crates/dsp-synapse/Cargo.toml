@@ -1,0 +1,24 @@
+[package]
+name = "dsp-synapse"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[features]
+default = []
+cpu = ["dsp-base/cpu"]
+cuda = ["dsp-base/cuda"]
+hip = ["dsp-base/hip"]
+
+[dependencies]
+dsp-core = { workspace = true, features = ["compute"] }
+dsp-base.workspace = true
+dsp-io = { workspace = true, features = ["zarr", "neuro"] }
+cubecl = { workspace = true, features = ["wgpu"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+zarrs.workspace = true
+

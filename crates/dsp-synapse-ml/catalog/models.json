@@ -1,0 +1,355 @@
+{
+  "schema_version": 1,
+  "models": [
+    {
+      "id": "spikenet2/ieeg-detector-v1",
+      "name": "SpikeNet2 Epileptiform IED Detector",
+      "family": "spikenet2",
+      "task": "detection",
+      "version": "1.0.0",
+      "format": "onnx",
+      "description": "Deep residual CNN for automated interictal epileptiform discharge (IED) and spike detection in multi-channel EEG/iEEG.",
+      "upstream_repo": "https://github.com/bdsp-core/SpikeNet2",
+      "paper_url": "https://doi.org/10.1001/jamaneurol.2019.3542",
+      "license": "BSD-3-Clause",
+      "weights_url": "hf://bdsp-core/spikenet2-onnx@main/spikenet2_ied_128hz.onnx",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 14820352,
+      "io_spec": {
+        "inputs": [
+          {
+            "name": "input_waveforms",
+            "dtype": "float32",
+            "shape": [-1, 37, 128],
+            "description": "1-second multi-channel bipolar/monopolar EEG windows at 128 Hz"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "ied_probabilities",
+            "dtype": "float32",
+            "shape": [-1, 2],
+            "description": "Binary classification probabilities [non_ied, ied_spike]"
+          }
+        ],
+        "sample_rate_hz": 128.0,
+        "normalization": "z_score_per_channel"
+      }
+    },
+    {
+      "id": "unitrefine/curation-v1",
+      "name": "UnitRefine Automated Spike Sorting Curator",
+      "family": "unitrefine",
+      "task": "curation",
+      "version": "1.0.0",
+      "format": "onnx",
+      "description": "SpikeInterface / Allen Institute pretrained gradient-boosted & MLP classifier for automated SUA / MUA / Noise unit curation from quality metrics.",
+      "upstream_repo": "https://github.com/SpikeInterface/UnitRefine",
+      "paper_url": "https://doi.org/10.1101/2025.03.30.645770",
+      "license": "MIT",
+      "weights_url": "hf://SpikeInterface/UnitRefine@main/models/unitrefine_sua_mua_noise_v1.onnx",
+      "sha256": "a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a",
+      "size_bytes": 245760,
+      "io_spec": {
+        "inputs": [
+          {
+            "name": "unit_quality_metrics",
+            "dtype": "float32",
+            "shape": [-1, 8],
+            "description": "Normalized unit quality metrics [snr, isi_violations, firing_rate, amplitude_cutoff, presence_ratio, half_width, trough_to_peak, repolarization_slope]"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "class_logits",
+            "dtype": "float32",
+            "shape": [-1, 3],
+            "description": "Class logits for [SingleUnit, MultiUnit, Noise]"
+          }
+        ],
+        "sample_rate_hz": 30000.0,
+        "normalization": "unit_quality_standard"
+      }
+    },
+    {
+      "id": "unitrefine/bombcell-metrics-v1",
+      "name": "Bombcell / UnitRefine Neuropixels Quality Classifier",
+      "family": "unitrefine",
+      "task": "curation",
+      "version": "1.1.0",
+      "format": "safetensors",
+      "description": "Pretrained MLP curation weights compatible with Bombcell and IBL Neuropixels single-unit quality thresholds.",
+      "upstream_repo": "https://github.com/Julie-Fabre/bombcell",
+      "paper_url": "https://doi.org/10.5281/zenodo.8172821",
+      "license": "MIT",
+      "weights_url": "zenodo://8172821/bombcell_unitrefine_v1.safetensors",
+      "sha256": "3f79bb7b435b05321651daefd374cdc681dc06faa65e374e38337b88ca046dea",
+      "size_bytes": 131072,
+      "io_spec": {
+        "inputs": [
+          {
+            "name": "metrics",
+            "dtype": "float32",
+            "shape": [-1, 8],
+            "description": "8-dimensional unit quality feature vector"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "probabilities",
+            "dtype": "float32",
+            "shape": [-1, 3],
+            "description": "Softmax probabilities [SUA, MUA, Noise]"
+          }
+        ],
+        "sample_rate_hz": 30000.0,
+        "normalization": "unit_quality_standard"
+      }
+    },
+    {
+      "id": "dartsort/singlechan-denoiser-v1",
+      "name": "DARTsort Single-Channel Waveform Denoiser",
+      "family": "dartsort",
+      "task": "denoising",
+      "version": "1.0.0",
+      "format": "safetensors",
+      "description": "Pretrained single-channel Conv1d + MLP waveform denoiser used in DARTsort and YASS for high-density Neuropixels recordings.",
+      "upstream_repo": "https://github.com/cwindolf/dartsort",
+      "paper_url": "https://doi.org/10.1101/2023.08.11.553023",
+      "license": "MIT",
+      "weights_url": "gh://cwindolf/dartsort@main/src/dartsort/pretrained/single_chan_denoiser.safetensors",
+      "sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+      "size_bytes": 589824,
+      "io_spec": {
+        "inputs": [
+          {
+            "name": "noisy_waveforms",
+            "dtype": "float32",
+            "shape": [-1, 1, 121],
+            "description": "Single-channel spike waveforms of 121 samples (4.03 ms at 30 kHz) centered on trough"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "denoised_waveforms",
+            "dtype": "float32",
+            "shape": [-1, 1, 121],
+            "description": "Denoised single-channel spike waveforms"
+          }
+        ],
+        "sample_rate_hz": 30000.0,
+        "normalization": "peak_abs_normalized"
+      }
+    },
+    {
+      "id": "dartsort/spatiotemporal-vae-v1",
+      "name": "DARTsort Spatiotemporal VAE Feature Embedder",
+      "family": "dartsort",
+      "task": "embedding",
+      "version": "1.0.0",
+      "format": "onnx",
+      "description": "Variational autoencoder producing drift-aware low-dimensional latent embeddings and 3D point-source localization priors from multi-channel Neuropixels snippets.",
+      "upstream_repo": "https://github.com/cwindolf/dartsort",
+      "paper_url": "https://doi.org/10.1101/2023.08.11.553023",
+      "license": "MIT",
+      "weights_url": "hf://cwindolf/dartsort-models@main/dartsort_vae_np1_8ch_121t.onnx",
+      "sha256": "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a",
+      "size_bytes": 3145728,
+      "io_spec": {
+        "inputs": [
+          {
+            "name": "snippets",
+            "dtype": "float32",
+            "shape": [-1, 8, 121],
+            "description": "Multi-channel neighborhood snippets [batch, k_neighbors=8, samples=121]"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "latent_mu",
+            "dtype": "float32",
+            "shape": [-1, 8],
+            "description": "8-dimensional posterior mean latent embedding per spike"
+          }
+        ],
+        "sample_rate_hz": 30000.0,
+        "normalization": "raw_microvolts"
+      }
+    },
+    {
+      "id": "kilosort4/temporal-basis-v1",
+      "name": "Kilosort4 Pretrained Temporal Basis & PC Projector",
+      "family": "kilosort4",
+      "task": "embedding",
+      "version": "4.0.0",
+      "format": "npy",
+      "description": "Universal 30 kHz spike waveform temporal basis vectors (wPCA) shipped with Kilosort4 for matched-filter template projection and feature extraction.",
+      "upstream_repo": "https://github.com/MouseLand/Kilosort",
+      "paper_url": "https://doi.org/10.1038/s41592-024-02232-7",
+      "license": "BSD-3-Clause",
+      "weights_url": "gh://MouseLand/Kilosort@main/kilosort/models/wPCA.npy",
+      "sha256": "7f562db86f3fbf63fc704f3f775d66794e086372ebb85d6962fc15048e4cee49",
+      "size_bytes": 1592,
+      "io_spec": {
+        "inputs": [
+          {
+            "name": "waveforms_ntk",
+            "dtype": "float32",
+            "shape": [-1, 61, 8],
+            "description": "Time-first spike snippets [batch, samples=61, channels=8] at 30 kHz"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "pc_features",
+            "dtype": "float32",
+            "shape": [-1, 48],
+            "description": "Projected principal component features (6 PCs x 8 channels)"
+          }
+        ],
+        "sample_rate_hz": 30000.0,
+        "normalization": "z_score_per_channel"
+      }
+    },
+    {
+      "id": "kilosort4/universal-templates-v1",
+      "name": "Kilosort4 Universal Matched-Filter Spike Templates",
+      "family": "kilosort4",
+      "task": "detection",
+      "version": "4.0.0",
+      "format": "npy",
+      "description": "6 universal 61-sample spike waveform templates (wTEMP) shipped with Kilosort4 for matched-filter threshold-crossing spike detection across arbitrary probe geometries.",
+      "upstream_repo": "https://github.com/MouseLand/Kilosort",
+      "paper_url": "https://doi.org/10.1038/s41592-024-02232-7",
+      "license": "BSD-3-Clause",
+      "weights_url": "gh://MouseLand/Kilosort@main/kilosort/models/wTEMP.npy",
+      "sha256": "bd70bf6f4c667872e66c647c7a0f41ebeaf7deb797fb6fab3a985a3556379aaa",
+      "size_bytes": 1592,
+      "io_spec": {
+        "inputs": [
+          {
+            "name": "whitened_traces",
+            "dtype": "float32",
+            "shape": [-1, 61],
+            "description": "Continuous multi-channel extracellular traces at 30 kHz"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "template_projections",
+            "dtype": "float32",
+            "shape": [-1, 6],
+            "description": "Matched-filter projection scores against the 6 universal templates"
+          }
+        ],
+        "sample_rate_hz": 30000.0,
+        "normalization": "z_score_per_channel"
+      }
+    },
+    {
+      "id": "cebra/time-offset10-v1",
+      "name": "CEBRA-Time Contrastive Neural Population Encoder",
+      "family": "cebra",
+      "task": "embedding",
+      "version": "1.0.0",
+      "format": "onnx",
+      "description": "Contrastive learning encoder (offset10-model) mapping multi-channel spike snippets or binned firing rates onto an L2-normalized latent hypersphere.",
+      "upstream_repo": "https://github.com/AdaptiveMotorControlLab/CEBRA",
+      "paper_url": "https://doi.org/10.1038/s41586-023-06031-6",
+      "license": "Apache-2.0",
+      "weights_url": "hf://AdaptiveMotorControlLab/cebra-models@main/offset10_model_v1.onnx",
+      "sha256": "e7f6c011776e8db7cd330b54174fd76f7d0216b612387a5ffcfb81e6f0919683",
+      "size_bytes": 1835008,
+      "io_spec": {
+        "inputs": [
+          {
+            "name": "neural_window",
+            "dtype": "float32",
+            "shape": [-1, 10, 64],
+            "description": "Temporal window of neural activity [batch, time_bins=10, channels=64]"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "hypersphere_embedding",
+            "dtype": "float32",
+            "shape": [-1, 8],
+            "description": "Unit-norm 8D contrastive embedding on S^7"
+          }
+        ],
+        "sample_rate_hz": 30000.0,
+        "normalization": "z_score_per_channel"
+      }
+    },
+    {
+      "id": "cascade/global-exc-30hz-v1",
+      "name": "CASCADE Calcium-to-Spike Inference Network (30 Hz)",
+      "family": "cascade",
+      "task": "detection",
+      "version": "1.0.0",
+      "format": "onnx",
+      "description": "Calibrated deep network translating ΔF/F calcium imaging fluorescence traces into inferred instantaneous action potential probabilities.",
+      "upstream_repo": "https://github.com/HelmchenLabSoftware/Cascade",
+      "paper_url": "https://doi.org/10.1038/s41593-021-00895-5",
+      "license": "MIT",
+      "weights_url": "gh://HelmchenLabSoftware/Cascade@master/Pretrained_models/Global_EXC_30Hz_smoothing50ms/model.onnx",
+      "sha256": "7902699be42c8a8e46fbbb4501726517e86b22c56a189f7625a6da49081b2451",
+      "size_bytes": 942080,
+      "io_spec": {
+        "inputs": [
+          {
+            "name": "dff_trace",
+            "dtype": "float32",
+            "shape": [-1, 1, 64],
+            "description": "Sliding window of ΔF/F calcium trace at 30 Hz"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "spike_rate_prob",
+            "dtype": "float32",
+            "shape": [-1, 1],
+            "description": "Inferred spike probability per frame"
+          }
+        ],
+        "sample_rate_hz": 30.0,
+        "normalization": "z_score_per_channel"
+      }
+    },
+    {
+      "id": "deepinterpolation/neuropixels-ephys-v1",
+      "name": "DeepInterpolation Neuropixels Extracellular Denoiser",
+      "family": "deepinterpolation",
+      "task": "denoising",
+      "version": "1.0.0",
+      "format": "onnx",
+      "description": "Allen Institute spatiotemporal UNet trained via self-supervised blind-spot interpolation to remove independent thermal and shot noise from Neuropixels AP band.",
+      "upstream_repo": "https://github.com/AllenInstitute/deepinterpolation",
+      "paper_url": "https://doi.org/10.1038/s41592-021-01225-0",
+      "license": "Allen-Institute-Software-License",
+      "weights_url": "zenodo://5163414/2020_02_29_15_28_unet_single_ephys_1024_mean_squared_error-1050.onnx",
+      "sha256": "2c624232cdd221771294dfbb310aca000a0df6ac8b66b696d90ef06fdefb64a3",
+      "size_bytes": 184549376,
+      "io_spec": {
+        "inputs": [
+          {
+            "name": "spatiotemporal_context",
+            "dtype": "float32",
+            "shape": [-1, 384, 61],
+            "description": "Neuropixels probe context window (30 pre + 30 post frames around masked center frame)"
+          }
+        ],
+        "outputs": [
+          {
+            "name": "denoised_frame",
+            "dtype": "float32",
+            "shape": [-1, 384, 1],
+            "description": "Denoised center AP band voltage across all 384 channels"
+          }
+        ],
+        "sample_rate_hz": 30000.0,
+        "normalization": "z_score_per_channel"
+      }
+    }
+  ]
+}

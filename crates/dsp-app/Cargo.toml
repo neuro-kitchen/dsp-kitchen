@@ -1,0 +1,33 @@
+[package]
+name = "dsp-app"
+description = "DSP App: electrophysiology workbench (GPUI + gpui-kit): workspaces of docked views on one timeline"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "dsp-app"
+path = "src/main.rs"
+
+[dependencies]
+dsp-core.workspace = true
+dsp-base.workspace = true
+dsp-synapse.workspace = true
+dsp-io.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+image.workspace = true
+bytemuck.workspace = true
+# Declared here, not in the root manifest: the GPUI port changes nothing outside this crate.
+# Pinned exactly: gpui-kit pins a weekly GPUI snapshot (gpui-pre); update deliberately.
+gpui-kit = "=0.7.0"
+async-channel = "2.5.0"
+
+[dev-dependencies]
+# Headless UI tests (`#[gpui_kit::test]`, `gpui_kit::test::TestWindowExt`)
+gpui-kit = { version = "=0.7.0", features = ["test-support"] }

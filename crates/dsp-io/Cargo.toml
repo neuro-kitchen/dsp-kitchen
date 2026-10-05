@@ -1,0 +1,21 @@
+[package]
+name = "dsp-io"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[features]
+default = ["zarr"]
+zarr = ["dep:zarrs"]
+# Neural-recording formats (NWB, SpikeGLX, mtscomp), probe geometry, synthetic recordings.
+neuro = []
+
+[dependencies]
+dsp-core.workspace = true
+memmap2.workspace = true
+flate2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+zarrs = { workspace = true, optional = true }
