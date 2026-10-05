@@ -1,9 +1,5 @@
 # dsp-core
 
-> **Status:** cleaned on 2026-10-05 (`versions/v0.14`). Not yet compiled; downstream crates are
-> intentionally broken until the final fix-up pass. Removed items are tracked in
-> `refactoring/dsp-core/README.md`.
-
 ## Intent
 
 Domain-agnostic building blocks for sampled multi-channel signals: exact time, buffers, errors,
@@ -135,9 +131,6 @@ dsp-core/src/
 `dsp-base`, `dsp-synapse`, `dsp-synapse-ml`, `dsp-stream`, `dsp-io`, `dsp-cli`, `dsp-app`,
 `dsp_kitchen_py`.
 
-## Open items
+## Limitations
 
-- Whether `compute/` + `device.rs` should become a separate `dsp-compute` crate (revisit after
-  reviewing `dsp-base`).
-- ~~Destination of parked `layout/`~~: moved to `dsp-io/neuro/probe` (see [dsp-io](dsp-io.md)).
-- `TimeRange` has no users.
+- `TimeRange` is defined but not used by any crate yet.
