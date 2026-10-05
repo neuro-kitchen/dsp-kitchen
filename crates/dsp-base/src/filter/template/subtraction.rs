@@ -3,6 +3,12 @@
 //! Removes recurring stereotypical waveforms (e.g. ECG cardiac artifacts in EMG,
 //! electrical stimulation pulses, or optical transient artifacts) from continuous signals.
 
+/// Default search radius (samples, each side) for aligning a template to an event.
+pub const DEFAULT_MAX_LAG: usize = 8;
+
+/// Templates with less energy (sum of squares) than this are treated as empty and not subtracted.
+pub const MIN_TEMPLATE_ENERGY: f32 = 1e-12;
+
 /// Configurable template subtraction filter.
 #[derive(Debug, Clone)]
 pub struct TemplateFilter {
@@ -30,7 +36,7 @@ impl TemplateFilter {
             template_channels: 1,
             template_samples: len,
             center_offset,
-            max_lag: 8,
+            max_lag: DEFAULT_MAX_LAG,
             dynamic_scaling: true,
         }
     }
@@ -48,7 +54,7 @@ impl TemplateFilter {
             template_channels: channels,
             template_samples: samples,
             center_offset,
-            max_lag: 8,
+            max_lag: DEFAULT_MAX_LAG,
             dynamic_scaling: true,
         }
     }
@@ -119,7 +125,7 @@ pub fn subtract_template_1d(
     }
 
     let t_energy: f32 = template.iter().map(|&v| v * v).sum();
-    if t_energy <= 1e-12 {
+    if t_energy <= MIN_TEMPLATE_ENERGY {
         return;
     }
 
@@ -250,7 +256,7 @@ pub fn subtract_template_multichannel(
         // Step 2 & 3: Scale and subtract on each channel
         for ch in 0..channels {
             let energy = t_energies[ch];
-            if energy <= 1e-12 {
+            if energy <= MIN_TEMPLATE_ENERGY {
                 continue;
             }
 

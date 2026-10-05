@@ -1,6 +1,11 @@
 use cubecl::prelude::*;
 use dsp_core::compute::LaunchGeometry;
-use crate::linalg::SymmetricEig;
+
+use crate::core::{buffer, cast, to_f64, DspFloat};
+use crate::linalg::{covariance_of_host, symmetric_eigen, symmetric_eigen_batched, EigenOptions, SymmetricEigen};
+
+/// Floor of the whitening regularization `ε` added to every eigenvalue.
+pub const MIN_WHITENING_EPSILON: f32 = 1e-12;
 use super::kernels::spatial_matrix_multiply_kernel;
 
 /// Spatial whitening transformation across an electrode array (`[channels, channels]` row-major).
@@ -24,29 +29,28 @@ impl SpatialWhitening {
         Self { num_channels, matrix }
     }
 
-    /// Fits a Global Zero-Phase Component Analysis (ZCA) whitening matrix on `data` (`[channels, samples]`).
+    /// Fits a global ZCA whitening matrix on host `data` (`[channels, samples]`): covariance and
+    /// eigendecomposition on the device in `F`.
     ///
-    /// Regularization parameter `epsilon` prevents numerical blow-up on rank-deficient or flat channels.
-    pub fn fit_zca(data: &[f32], channels: usize, samples: usize, epsilon: f32) -> Self {
-        assert_eq!(data.len(), channels * samples, "Data size mismatch");
+    /// Regularization `epsilon` (at least [`MIN_WHITENING_EPSILON`]) prevents blow-up on rank-deficient
+    /// or flat channels.
+    pub fn fit_zca<R: Runtime, F: DspFloat>(client: &ComputeClient<R>, data: &[f32], channels: usize, samples: usize, epsilon: f32) -> Self {
         assert!(channels > 0 && samples > 0);
-
-        let cov = compute_sample_covariance(data, channels, samples);
-        let matrix = zca_from_covariance(&cov, channels, epsilon.max(1e-12));
-
-        Self {
-            num_channels: channels,
-            matrix,
-        }
+        let (cov, _) = covariance_of_host::<R, F>(client, data, channels, samples);
+        let eig = symmetric_eigen::<R, F>(client, &cov, channels, EigenOptions::default());
+        let matrix = zca_from_eigen(&eig, epsilon.max(MIN_WHITENING_EPSILON) as f64);
+        Self { num_channels: channels, matrix: matrix.iter().map(|&w| w as f32).collect() }
     }
 
-    /// Fits a Local $K$-Nearest-Neighbor ZCA whitening matrix (Kilosort4 style) given sensor
-    /// `positions` (`[channels, 2]` or `(x, y)` pairs) and `data` (`[channels, samples]`).
+    /// Fits a local `K`-nearest-neighbour ZCA whitening matrix (Kilosort4 style) given sensor
+    /// `positions` (`(x, y)` per channel) and host `data` (`[channels, samples]`).
     ///
-    /// For each channel $c$, selects the `k_neighbors` closest channels (including $c$ itself),
-    /// computes the $[K, K]$ local covariance matrix and its ZCA inverse square root, and scatters
-    /// the row corresponding to $c$ into row $c$ of the global $[C, C]$ sparse-structured matrix.
-    pub fn fit_local_knn(
+    /// For each channel `c`, the `k_neighbors` closest channels (including `c`) give a `[K, K]` local
+    /// covariance whose ZCA row for `c` is scattered into row `c` of the `[C, C]` matrix. The full
+    /// covariance is computed once on the device and every local eigendecomposition runs in one
+    /// batched solve.
+    pub fn fit_local_knn<R: Runtime, F: DspFloat>(
+        client: &ComputeClient<R>,
         data: &[f32],
         channels: usize,
         samples: usize,
@@ -54,43 +58,42 @@ impl SpatialWhitening {
         k_neighbors: usize,
         epsilon: f32,
     ) -> Self {
-        assert_eq!(data.len(), channels * samples, "Data size mismatch");
         assert_eq!(positions.len(), channels, "Positions length must equal channels");
         let k = k_neighbors.clamp(1, channels);
-        let eps = epsilon.max(1e-12);
+        let eps = epsilon.max(MIN_WHITENING_EPSILON) as f64;
 
-        let full_cov = compute_sample_covariance(data, channels, samples);
+        let (cov, _) = covariance_of_host::<R, F>(client, data, channels, samples);
+        let full_cov: Vec<f64> = buffer::download::<R, F>(client, cov).into_iter().map(to_f64).collect();
+
+        let neighbourhoods: Vec<Vec<usize>> = (0..channels)
+            .map(|c| {
+                let mut by_distance: Vec<(usize, f32)> = (0..channels)
+                    .map(|j| {
+                        let (dx, dy) = (positions[c][0] - positions[j][0], positions[c][1] - positions[j][1]);
+                        (j, dx * dx + dy * dy)
+                    })
+                    .collect();
+                by_distance.sort_by(|a, b| a.1.total_cmp(&b.1));
+                by_distance.into_iter().take(k).map(|(j, _)| j).collect()
+            })
+            .collect();
+        let local: Vec<F> = neighbourhoods
+            .iter()
+            .flat_map(|nb| nb.iter().flat_map(|&gi| nb.iter().map(move |&gj| (gi, gj))).collect::<Vec<_>>())
+            .map(|(gi, gj)| cast::<F>(full_cov[gi * channels + gj]))
+            .collect();
+        let local = buffer::upload(client, &local);
+        let eigs = symmetric_eigen_batched::<R, F>(client, &local, channels, k, EigenOptions::default());
+
         let mut matrix = vec![0.0f32; channels * channels];
-
-        for c in 0..channels {
-            let mut dists: Vec<(usize, f32)> = (0..channels)
-                .map(|j| {
-                    let dx = positions[c][0] - positions[j][0];
-                    let dy = positions[c][1] - positions[j][1];
-                    (j, dx * dx + dy * dy)
-                })
-                .collect();
-            dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-            let neighbors: Vec<usize> = dists.iter().take(k).map(|&(idx, _)| idx).collect();
-            let self_local_idx = neighbors.iter().position(|&idx| idx == c).unwrap_or(0);
-
-            let mut local_cov = vec![0.0f32; k * k];
-            for (li, &gi) in neighbors.iter().enumerate() {
-                for (lj, &gj) in neighbors.iter().enumerate() {
-                    local_cov[li * k + lj] = full_cov[gi * channels + gj];
-                }
-            }
-
-            let local_zca = zca_from_covariance(&local_cov, k, eps);
-            for (lj, &gj) in neighbors.iter().enumerate() {
-                matrix[c * channels + gj] = local_zca[self_local_idx * k + lj];
+        for (c, (nb, eig)) in neighbourhoods.iter().zip(&eigs).enumerate() {
+            let zca = zca_from_eigen(eig, eps);
+            let own = nb.iter().position(|&j| j == c).unwrap_or(0);
+            for (lj, &gj) in nb.iter().enumerate() {
+                matrix[c * channels + gj] = zca[own * k + lj] as f32;
             }
         }
-
-        Self {
-            num_channels: channels,
-            matrix,
-        }
+        Self { num_channels: channels, matrix }
     }
 
     /// Applies the spatial whitening matrix `[C, C]` to `data` (`[C, S]`) on the CPU.
@@ -115,8 +118,14 @@ impl SpatialWhitening {
         out
     }
 
-    /// Applies the spatial whitening matrix `[C, C]` to `input` (`[C, S]`) in VRAM using CubeCL.
-    pub fn apply_gpu<R: Runtime>(
+    /// The operator uploaded once as `F` (dense or sparse rows), for repeated calls.
+    pub fn to_device<R: Runtime, F: DspFloat>(&self, client: &ComputeClient<R>) -> super::DeviceSpatialMatrix {
+        super::DeviceSpatialMatrix::upload::<R, F>(client, &self.matrix, self.num_channels)
+    }
+
+    /// One-off: applies the whitening matrix `[C, C]` to `input` (`[C, S]`) on the device (uploads the
+    /// matrix; use [`Self::to_device`] for repeated calls).
+    pub fn apply_gpu<R: Runtime, F: DspFloat>(
         &self,
         client: &ComputeClient<R>,
         input: &cubecl::server::Handle,
@@ -125,20 +134,12 @@ impl SpatialWhitening {
         samples: usize,
     ) {
         assert_eq!(channels, self.num_channels);
-        let weights_handle = client.create_from_slice(f32::as_bytes(&self.matrix));
-        execute_spatial_matrix_multiply::<R>(
-            client,
-            input,
-            &weights_handle,
-            output,
-            channels,
-            samples,
-        );
+        self.to_device::<R, F>(client).apply::<R, F>(client, input, output, channels, samples);
     }
 }
 
 /// Dispatches the CubeCL `[C, C] x [C, S]` spatial linear projection kernel with pre-uploaded weights.
-pub fn execute_spatial_matrix_multiply<R: Runtime>(
+pub fn execute_spatial_matrix_multiply<R: Runtime, F: DspFloat>(
     client: &ComputeClient<R>,
     input: &cubecl::server::Handle,
     weights: &cubecl::server::Handle,
@@ -150,7 +151,7 @@ pub fn execute_spatial_matrix_multiply<R: Runtime>(
     let total = channels * samples;
 
     unsafe {
-        spatial_matrix_multiply_kernel::launch::<R>(
+        spatial_matrix_multiply_kernel::launch::<F, R>(
             client,
             geom.cube_count,
             geom.cube_dim,
@@ -163,51 +164,14 @@ pub fn execute_spatial_matrix_multiply<R: Runtime>(
     }
 }
 
-fn compute_sample_covariance(data: &[f32], channels: usize, samples: usize) -> Vec<f32> {
-    let mut means = vec![0.0f32; channels];
-    let inv_s = 1.0 / (samples as f32).max(1.0);
-    for c in 0..channels {
-        let row = &data[c * samples..(c + 1) * samples];
-        means[c] = row.iter().sum::<f32>() * inv_s;
-    }
-
-    let mut cov = vec![0.0f32; channels * channels];
-    for i in 0..channels {
-        let row_i = &data[i * samples..(i + 1) * samples];
-        let mi = means[i];
-        for j in i..channels {
-            let row_j = &data[j * samples..(j + 1) * samples];
-            let mj = means[j];
-            let mut acc = 0.0f64;
-            for t in 0..samples {
-                acc += ((row_i[t] - mi) as f64) * ((row_j[t] - mj) as f64);
-            }
-            let c_ij = (acc * (inv_s as f64)) as f32;
-            cov[i * channels + j] = c_ij;
-            cov[j * channels + i] = c_ij;
-        }
-    }
-    cov
-}
-
-fn zca_from_covariance(cov: &[f32], n: usize, epsilon: f32) -> Vec<f32> {
-    let eig = SymmetricEig::decompose(cov, n, 120);
-    let inv_scales: Vec<f32> = eig
-        .eigenvalues
-        .iter()
-        .map(|&lam| 1.0 / (lam.max(0.0) + epsilon).sqrt())
-        .collect();
-
-    // W_ZCA = U * diag(inv_scales) * U^T
-    let mut w = vec![0.0f32; n * n];
+/// `W_ZCA = U · diag(1 / √(λ + ε)) · Uᵀ` from an eigendecomposition (negative eigenvalues clamp to 0).
+fn zca_from_eigen(eig: &SymmetricEigen, epsilon: f64) -> Vec<f64> {
+    let n = eig.n;
+    let inv: Vec<f64> = eig.values.iter().map(|&lam| 1.0 / (lam.max(0.0) + epsilon).sqrt()).collect();
+    let mut w = vec![0.0f64; n * n];
     for i in 0..n {
         for j in i..n {
-            let mut sum = 0.0f32;
-            for k in 0..n {
-                let u_ik = eig.eigenvectors[i * n + k];
-                let u_jk = eig.eigenvectors[j * n + k];
-                sum += u_ik * inv_scales[k] * u_jk;
-            }
+            let sum: f64 = (0..n).map(|k| eig.vectors[i * n + k] * inv[k] * eig.vectors[j * n + k]).sum();
             w[i * n + j] = sum;
             w[j * n + i] = sum;
         }
@@ -218,10 +182,19 @@ fn zca_from_covariance(cov: &[f32], n: usize, epsilon: f32) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
 
-    #[test]
-    fn test_zca_whitening_produces_identity_covariance() {
+    /// Host covariance (`/ samples`), the reference for the whitened output.
+    fn host_covariance(data: &[f32], channels: usize, samples: usize) -> Vec<f64> {
+        let means: Vec<f64> = (0..channels).map(|c| data[c * samples..(c + 1) * samples].iter().map(|v| *v as f64).sum::<f64>() / samples as f64).collect();
+        (0..channels * channels)
+            .map(|e| {
+                let (i, j) = (e / channels, e % channels);
+                (0..samples).map(|t| (data[i * samples + t] as f64 - means[i]) * (data[j * samples + t] as f64 - means[j])).sum::<f64>() / samples as f64
+            })
+            .collect()
+    }
+
+    fn zca_whitens<R: Runtime>(client: &ComputeClient<R>) {
         let channels = 4;
         let samples = 2000;
         let mut z = vec![0.0f32; channels * samples];
@@ -255,11 +228,11 @@ mod tests {
             }
         }
 
-        let whiten = SpatialWhitening::fit_zca(&x, channels, samples, 1e-5);
+        let whiten = SpatialWhitening::fit_zca::<R, f32>(client, &x, channels, samples, 1e-5);
         let y_cpu = whiten.apply_cpu(&x, channels, samples);
 
         // Verify sample covariance of whitened signal is identity I_4
-        let cov_y = compute_sample_covariance(&y_cpu, channels, samples);
+        let cov_y = host_covariance(&y_cpu, channels, samples);
         for i in 0..channels {
             for j in 0..channels {
                 let target = if i == j { 1.0 } else { 0.0 };
@@ -271,16 +244,14 @@ mod tests {
             }
         }
 
-        // Verify GPU kernel matches CPU
-        let device = WgpuDevice::default();
-        let client = WgpuRuntime::client(&device);
-        let in_handle = client.create_from_slice(f32::as_bytes(&x));
-        let out_handle = client.empty(channels * samples * 4);
-        whiten.apply_gpu::<WgpuRuntime>(&client, &in_handle, &out_handle, channels, samples);
-        let y_gpu_bytes = client.read_one_unchecked(out_handle);
-        let y_gpu = f32::from_bytes(&y_gpu_bytes);
-        for idx in 0..(channels * samples) {
-            assert!((y_cpu[idx] - y_gpu[idx]).abs() < 1e-4);
+        // The device projection matches the host product
+        let input = buffer::upload(client, &x);
+        let output = buffer::empty::<R, f32>(client, x.len());
+        whiten.apply_gpu::<R, f32>(client, &input, &output, channels, samples);
+        let y_dev = buffer::download::<R, f32>(client, output);
+        for (a, b) in y_cpu.iter().zip(&y_dev) {
+            assert!((a - b).abs() < 1e-4, "{}: {a} vs {b}", R::name(client));
         }
     }
+    runtime_test!(test_zca_whitening_produces_identity_covariance, zca_whitens);
 }

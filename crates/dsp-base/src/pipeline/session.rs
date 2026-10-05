@@ -1,45 +1,48 @@
-//! Persistent VRAM workspace for streaming multi-chunk execution without repeated GPU allocations.
+//! Persistent device workspace for streaming multi-chunk execution without repeated allocations.
 
 use cubecl::prelude::*;
 use cubecl::server::Handle;
 
 use super::engine::Pipeline;
 use super::stage::PipelineStage;
+use crate::core::{buffer, cast, cast_f32, DspFloat, EdgeMode};
 use crate::filter::design::FilterError;
+use crate::filter::fir::gaussian::GAUSSIAN_TRUNCATE;
 use crate::filter::iir::DeviceFilter;
-use crate::filter::{execute_fir_centered, execute_median_9p, execute_teager_kaiser, gaussian_kernel_1d};
-use crate::math::{execute_clamp, execute_scaling, execute_unpack_stored, stored_words};
+use crate::filter::{execute_fir_centered, execute_median, execute_teager_kaiser, gaussian_kernel_1d, FilterMode};
+use crate::math::{execute_clamp, execute_scaling, execute_unpack_stored, upload_stored};
+use crate::spatial::{execute_direct_car, DeviceSpatialMatrix};
 use dsp_core::{DspError, DspResult, SampleFormat};
-use crate::spatial::{execute_direct_car, execute_spatial_matrix_multiply};
 
 /// How consecutive chunks relate to each other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChunkMode {
-    /// Every chunk is processed on its own (halo windows, random access). Filters start from the
-    /// steady state of the chunk's first sample; forward-backward filters odd-pad both edges. The
-    /// caller supplies halos of at least [`Pipeline::settling`].
+    /// Every chunk is processed on its own (halo windows, random access). Forward filters start per
+    /// their `FilterStart` (default at rest), forward-backward filters odd-pad both edges and start from the steady state of their
+    /// first sample (scipy `sosfilt` / `sosfiltfilt`). The caller supplies halos of at least
+    /// [`Pipeline::settling`].
     Independent,
     /// Chunks are consecutive pieces of one stream (live input, sequential reads). Filter section
-    /// state is carried from chunk to chunk, so the output is exact with no halo. Only forward
-    /// filters are allowed. Stencil stages (`Median9p`, `TeagerKaiser`) still see each chunk's
-    /// edges on their own.
+    /// state is carried from chunk to chunk (the first chunk starts per `FilterStart`), so the output is exact
+    /// with no halo. Only forward filters are allowed. Stencil stages (`Median`, `TeagerKaiser`,
+    /// `GaussianSmooth`) still see each chunk's edges on their own.
     Stateful,
 }
 
-enum Planned {
+enum Planned<F: DspFloat> {
     Stage(PipelineStage),
-    Filter { filter: DeviceFilter, state: Handle },
-    SpatialMatrix { weights: Handle },
-    CenteredFir { taps: Handle, radius: usize },
+    Filter { filter: DeviceFilter<F>, state: Handle },
+    SpatialMatrix(DeviceSpatialMatrix),
+    CenteredFir { taps: Handle, radius: usize, edge: EdgeMode },
 }
 
-/// Pre-allocated VRAM workspace for running a [`Pipeline`] over many chunks.
+/// Pre-allocated device workspace for running a [`Pipeline`] over many chunks of `F` values.
 ///
 /// Filter designs are made and uploaded once. Buffers only grow: a shorter tail chunk reuses them.
-pub struct PipelineWorkspace<R: Runtime> {
+pub struct PipelineWorkspace<R: Runtime, F: DspFloat = f32> {
     client: ComputeClient<R>,
     pipeline: Pipeline,
-    plan: Vec<Planned>,
+    plan: Vec<Planned<F>>,
     mode: ChunkMode,
     started: bool,
     channels: usize,
@@ -47,13 +50,13 @@ pub struct PipelineWorkspace<R: Runtime> {
     buf_ping: Handle,
     buf_pong: Handle,
     scratch: Handle,
-    scratch_floats: usize,
+    scratch_len: usize,
     /// Per-channel gain and offset for stored chunks, and the buffer they are unpacked into.
     stored_scaling: Option<(Handle, Handle)>,
     unpacked: Option<Handle>,
 }
 
-impl<R: Runtime> PipelineWorkspace<R> {
+impl<R: Runtime, F: DspFloat> PipelineWorkspace<R, F> {
     /// Workspace for independent chunks (see [`ChunkMode::Independent`]).
     pub fn new(
         client: ComputeClient<R>,
@@ -89,36 +92,32 @@ impl<R: Runtime> PipelineWorkspace<R> {
         for stage in pipeline.stages() {
             match stage {
                 PipelineStage::Filter(spec) => {
-                    let filter = DeviceFilter::new(&client, spec, sample_rate)?;
-                    if mode == ChunkMode::Stateful && filter.mode() != crate::filter::FilterMode::Forward {
+                    let filter = DeviceFilter::<F>::new(&client, spec, sample_rate)?;
+                    if mode == ChunkMode::Stateful && filter.mode() != FilterMode::Forward {
                         return Err(FilterError::ForwardBackwardOnLiveStream);
                     }
-                    let state = client.empty((channels * filter.state_len() * 4).max(4));
+                    let state = buffer::empty::<R, F>(&client, channels * filter.state_len());
                     plan.push(Planned::Filter { filter, state });
                 }
                 PipelineStage::SpatialWhitening(w) => {
                     assert_eq!(w.num_channels, channels, "SpatialWhitening channel mismatch");
-                    let weights = client.create_from_slice(f32::as_bytes(&w.matrix));
-                    plan.push(Planned::SpatialMatrix { weights });
+                    plan.push(Planned::SpatialMatrix(DeviceSpatialMatrix::upload::<R, F>(&client, &w.matrix, channels)));
                 }
                 PipelineStage::SurfaceLaplacian(lap) => {
                     assert_eq!(lap.num_channels, channels, "SurfaceLaplacian channel mismatch");
-                    let weights = client.create_from_slice(f32::as_bytes(&lap.matrix));
-                    plan.push(Planned::SpatialMatrix { weights });
+                    plan.push(Planned::SpatialMatrix(DeviceSpatialMatrix::upload::<R, F>(&client, &lap.matrix, channels)));
                 }
-                PipelineStage::GaussianSmooth { sigma_samples } => {
-                    let (taps_vec, radius) = gaussian_kernel_1d(*sigma_samples, 3.0);
-                    let taps = client.create_from_slice(f32::as_bytes(&taps_vec));
-                    plan.push(Planned::CenteredFir { taps, radius });
+                PipelineStage::GaussianSmooth { sigma_samples, edge } => {
+                    let (taps, radius) = gaussian_kernel_1d(*sigma_samples, GAUSSIAN_TRUNCATE);
+                    plan.push(Planned::CenteredFir { taps: buffer::upload(&client, &cast_f32::<F>(&taps)), radius, edge: *edge });
                 }
                 other => plan.push(Planned::Stage(other.clone())),
             }
         }
-        let bytes = (channels * initial_samples * 4).max(4);
-        let buf_ping = client.empty(bytes);
-        let buf_pong = client.empty(bytes);
-        let scratch = client.empty(4);
         let mut workspace = Self {
+            buf_ping: buffer::empty::<R, F>(&client, channels * initial_samples),
+            buf_pong: buffer::empty::<R, F>(&client, channels * initial_samples),
+            scratch: buffer::empty::<R, F>(&client, 1),
             client,
             pipeline,
             plan,
@@ -126,10 +125,7 @@ impl<R: Runtime> PipelineWorkspace<R> {
             started: false,
             channels,
             capacity_samples: initial_samples,
-            buf_ping,
-            buf_pong,
-            scratch,
-            scratch_floats: 1,
+            scratch_len: 1,
             stored_scaling: None,
             unpacked: None,
         };
@@ -154,16 +150,15 @@ impl<R: Runtime> PipelineWorkspace<R> {
         self.mode
     }
 
-    /// Forgets carried filter state; the next stateful chunk starts from its own steady state.
+    /// Forgets carried filter state; the next stateful chunk starts per its `FilterStart`.
     pub fn reset(&mut self) {
         self.started = false;
     }
 
     fn reserve(&mut self, samples: usize) {
         if samples > self.capacity_samples {
-            let bytes = (self.channels * samples * 4).max(4);
-            self.buf_ping = self.client.empty(bytes);
-            self.buf_pong = self.client.empty(bytes);
+            self.buf_ping = buffer::empty::<R, F>(&self.client, self.channels * samples);
+            self.buf_pong = buffer::empty::<R, F>(&self.client, self.channels * samples);
             self.unpacked = None;
             self.capacity_samples = samples;
         }
@@ -172,13 +167,13 @@ impl<R: Runtime> PipelineWorkspace<R> {
             .iter()
             .map(|p| match p {
                 Planned::Filter { filter, .. } => filter.scratch_len(self.channels, samples),
-                Planned::Stage(_) | Planned::SpatialMatrix { .. } | Planned::CenteredFir { .. } => 0,
+                Planned::Stage(_) | Planned::SpatialMatrix(_) | Planned::CenteredFir { .. } => 0,
             })
             .max()
             .unwrap_or(0);
-        if need > self.scratch_floats {
-            self.scratch = self.client.empty(need * 4);
-            self.scratch_floats = need;
+        if need > self.scratch_len {
+            self.scratch = buffer::empty::<R, F>(&self.client, need);
+            self.scratch_len = need;
         }
     }
 
@@ -207,30 +202,28 @@ impl<R: Runtime> PipelineWorkspace<R> {
                         .apply_stateful(client, &current_in, &out, state, channels, samples, first)
                         .expect("stateful workspaces only hold forward filters"),
                 },
-                Planned::SpatialMatrix { weights } => {
-                    execute_spatial_matrix_multiply::<R>(client, &current_in, weights, &out, channels, samples);
-                }
-                Planned::CenteredFir { taps, radius } => {
-                    execute_fir_centered::<R>(client, &current_in, &out, taps, channels, samples, *radius);
+                Planned::SpatialMatrix(matrix) => matrix.apply::<R, F>(client, &current_in, &out, channels, samples),
+                Planned::CenteredFir { taps, radius, edge } => {
+                    execute_fir_centered::<R, F>(client, &current_in, &out, taps, channels, samples, *radius, *edge);
                 }
                 Planned::Stage(stage) => match stage {
                     PipelineStage::Scale { alpha, beta } => {
-                        execute_scaling::<R>(client, &current_in, &out, total, *alpha, *beta)
+                        execute_scaling::<R, F>(client, &current_in, &out, total, cast(*alpha as f64), cast(*beta as f64))
                     }
-                    PipelineStage::SubtractBaseline { baseline_uv } => {
-                        execute_scaling::<R>(client, &current_in, &out, total, 1.0, -*baseline_uv)
+                    PipelineStage::SubtractBaseline { baseline } => {
+                        execute_scaling::<R, F>(client, &current_in, &out, total, cast(1.0), cast(-*baseline as f64))
                     }
                     PipelineStage::Clamp { min, max } => {
-                        execute_clamp::<R>(client, &current_in, &out, total, *min, *max)
+                        execute_clamp::<R, F>(client, &current_in, &out, total, cast(*min as f64), cast(*max as f64))
                     }
                     PipelineStage::CommonAverageReference => {
-                        execute_direct_car::<R>(client, &current_in, &out, channels, samples)
+                        execute_direct_car::<R, F>(client, &current_in, &out, channels, samples)
                     }
-                    PipelineStage::Median9p => {
-                        execute_median_9p::<R>(client, &current_in, &out, channels, samples)
+                    PipelineStage::Median { width, edge } => {
+                        execute_median::<R, F>(client, &current_in, &out, channels, samples, *width, *edge)
                     }
-                    PipelineStage::TeagerKaiser => {
-                        execute_teager_kaiser::<R>(client, &current_in, &out, channels, samples)
+                    PipelineStage::TeagerKaiser { edge } => {
+                        execute_teager_kaiser::<R, F>(client, &current_in, &out, channels, samples, *edge)
                     }
                     PipelineStage::Filter(_)
                     | PipelineStage::SpatialWhitening(_)
@@ -244,31 +237,30 @@ impl<R: Runtime> PipelineWorkspace<R> {
             use_ping = !use_ping;
         }
 
-        let unused = ((self.capacity_samples - samples) * channels * 4) as u64;
-        current_in.offset_end(unused)
+        buffer::truncate::<F>(current_in, (self.capacity_samples - samples) * channels)
     }
 
     /// Uploads a `[channels, samples]` host chunk, runs the pipeline and returns the device result
     /// **without** downloading it (see [`Self::process_handle`]).
-    pub fn process_chunk_in_vram(&mut self, input: &[f32], samples: usize) -> Handle {
+    pub fn process_chunk_in_vram(&mut self, input: &[F], samples: usize) -> Handle {
         assert_eq!(input.len(), self.channels * samples);
-        let in_handle = self.client.create_from_slice(f32::as_bytes(input));
+        let in_handle = buffer::upload(&self.client, input);
         self.process_handle(&in_handle, samples)
     }
 
-    /// Sets the per-channel gain and offset (µV per stored unit) used by
+    /// Sets the per-channel gain and offset (scaled unit per stored unit) used by
     /// [`Self::process_stored_chunk_in_vram`].
     pub fn set_stored_scaling(&mut self, gains: &[f32], offsets: &[f32]) {
         assert_eq!(gains.len(), self.channels);
         assert_eq!(offsets.len(), self.channels);
         self.stored_scaling =
-            Some((self.client.create_from_slice(f32::as_bytes(gains)), self.client.create_from_slice(f32::as_bytes(offsets))));
+            Some((buffer::upload(&self.client, &cast_f32::<F>(gains)), buffer::upload(&self.client, &cast_f32::<F>(offsets))));
     }
 
     /// Uploads a `[channels, samples]` chunk of stored values (`format`, little-endian, as
-    /// [`dsp_core::RecordingSource::read_stored`] returns it), scales it to µV on the device and
-    /// runs the pipeline. Integer recordings move `format.bytes()` per sample instead of 4. Needs
-    /// [`Self::set_stored_scaling`]; see [`Self::process_handle`] for the returned handle.
+    /// [`dsp_core::RecordingSource::read_stored`] returns it), scales it on the device and runs the
+    /// pipeline. Integer recordings move `format.bytes()` per sample instead of `size_of::<F>()`.
+    /// Needs [`Self::set_stored_scaling`]; see [`Self::process_handle`] for the returned handle.
     pub fn process_stored_chunk_in_vram(&mut self, stored: &[u8], format: SampleFormat, samples: usize) -> DspResult<Handle> {
         if stored.len() != self.channels * samples * format.bytes() {
             return Err(DspError::ShapeMismatch { expected: vec![self.channels, samples, format.bytes()], actual: vec![stored.len()] });
@@ -280,16 +272,16 @@ impl<R: Runtime> PipelineWorkspace<R> {
         self.reserve(samples);
         let unpacked = self
             .unpacked
-            .get_or_insert_with(|| self.client.empty((self.channels * self.capacity_samples * 4).max(4)))
+            .get_or_insert_with(|| buffer::empty::<R, F>(&self.client, self.channels * self.capacity_samples))
             .clone();
-        let words = self.client.create_from_slice(u32::as_bytes(&stored_words(stored)));
-        execute_unpack_stored::<R>(&self.client, &words, format, &gains, &offsets, &unpacked, self.channels, samples)?;
-        let unused = ((self.capacity_samples - samples) * self.channels * 4) as u64;
-        Ok(self.process_handle(&unpacked.offset_end(unused), samples))
+        let words = upload_stored(&self.client, stored);
+        execute_unpack_stored::<R, F>(&self.client, &words, format, &gains, &offsets, &unpacked, self.channels, samples)?;
+        let unpacked = buffer::truncate::<F>(unpacked, (self.capacity_samples - samples) * self.channels);
+        Ok(self.process_handle(&unpacked, samples))
     }
 
     /// Runs the pipeline on a `[channels, samples]` host chunk and writes the result to `output`.
-    pub fn process_chunk(&mut self, input: &[f32], samples: usize, output: &mut [f32]) {
+    pub fn process_chunk(&mut self, input: &[F], samples: usize, output: &mut [F]) {
         assert_eq!(input.len(), self.channels * samples);
         assert_eq!(output.len(), self.channels * samples);
 
@@ -299,8 +291,7 @@ impl<R: Runtime> PipelineWorkspace<R> {
         }
 
         let out_handle = self.process_chunk_in_vram(input, samples);
-        let out_bytes = self.client.read_one_unchecked(out_handle);
-        let out_slice = f32::from_bytes(&out_bytes);
-        output.copy_from_slice(&out_slice[..output.len()]);
+        let out = buffer::download::<R, F>(&self.client, out_handle);
+        output.copy_from_slice(&out[..output.len()]);
     }
 }

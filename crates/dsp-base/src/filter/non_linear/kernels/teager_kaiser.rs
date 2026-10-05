@@ -1,34 +1,29 @@
 use cubecl::prelude::*;
 use dsp_core::compute::{channel_position, sample_position};
 
-/// CubeCL kernel for the discrete Teager-Kaiser Energy Operator (TKEO):
-/// `psi[n] = x[n]^2 - x[n-1] * x[n+1]`
-/// Accentuates high-frequency instantaneous energy transitions and transient bursts.
+use crate::core::read_extended;
+
+/// Discrete Teager-Kaiser energy operator `ψ[t] = x[t]² − x[t−1] · x[t+1]` on a channel-major
+/// `[channels, samples]` buffer. The neighbours of the end samples come from `edge` (an `EdgeMode`
+/// id). Negative values (energy decreasing) are kept.
 #[cube(launch)]
-pub fn teager_kaiser_kernel(
-    input: &Array<f32>,
-    output: &mut Array<f32>,
+pub fn teager_kaiser_kernel<F: Float>(
+    input: &Array<F>,
+    output: &mut Array<F>,
     num_channels: u32,
     num_samples: u32,
+    #[comptime] edge: u32,
 ) {
-    let sample_idx = sample_position();
-    let channel_idx = channel_position();
+    let t = sample_position();
+    let ch = channel_position();
 
-    if sample_idx < num_samples && channel_idx < num_channels {
-        let channel_offset = channel_idx * num_samples;
-        let linear_idx = channel_offset + sample_idx;
-
-        if sample_idx == 0u32 || sample_idx == num_samples - 1u32 {
-            let val = input[linear_idx as usize];
-            output[linear_idx as usize] = val * val;
-        } else {
-            let curr = input[linear_idx as usize];
-            let prev = input[(linear_idx - 1u32) as usize];
-            let next = input[(linear_idx + 1u32) as usize];
-
-            let energy = curr * curr - prev * next;
-            // Floor negative noise artifacts to zero
-            output[linear_idx as usize] = f32::max(energy, 0.0f32);
-        }
+    if t < num_samples && ch < num_channels {
+        let base = (ch * num_samples) as usize;
+        let curr = input[base + t as usize];
+        let interior = t >= 1u32 && t + 1u32 < num_samples;
+        // Extended positions with one sample of padding: t − 1 → t, t + 1 → t + 2
+        let prev = if interior { input[base + (t - 1u32) as usize] } else { read_extended::<F>(input, base, num_samples, 1u32, t, edge) };
+        let next = if interior { input[base + (t + 1u32) as usize] } else { read_extended::<F>(input, base, num_samples, 1u32, t + 2u32, edge) };
+        output[base + t as usize] = curr * curr - prev * next;
     }
 }

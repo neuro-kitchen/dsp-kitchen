@@ -1,17 +1,17 @@
 use cubecl::prelude::*;
 use dsp_core::compute::{channel_position, sample_position};
 
-/// CubeCL kernel for matrix projection: `Y = W^T * (X - mean)`.
-/// - `input_x`: Flat 2D matrix [channels, samples]
-/// - `weights_w`: Flat matrix of top-k principal components [channels, k]
-/// - `mean`: Channel mean vector [channels]
-/// - `output_y`: Flat projection matrix [k, samples]
+/// Projection `Y = Wᵀ (X − mean)`:
+/// - `input_x`: `[channels, samples]`
+/// - `weights_w`: `[channels, components]`
+/// - `mean`: `[channels]`
+/// - `output_y`: `[components, samples]`
 #[cube(launch)]
-pub fn pca_project_kernel(
-    input_x: &Array<f32>,
-    weights_w: &Array<f32>,
-    mean: &Array<f32>,
-    output_y: &mut Array<f32>,
+pub fn pca_project_kernel<F: Float>(
+    input_x: &Array<F>,
+    weights_w: &Array<F>,
+    mean: &Array<F>,
+    output_y: &mut Array<F>,
     num_channels: u32,
     num_samples: u32,
     num_components: u32,
@@ -20,17 +20,13 @@ pub fn pca_project_kernel(
     let comp_idx = channel_position();
 
     if sample_idx < num_samples && comp_idx < num_components {
-        let mut sum = 0.0f32;
-
-        for c in 0u32..num_channels {
-            let x_val = input_x[(c * num_samples + sample_idx) as usize];
-            let mean_val = mean[c as usize];
-            let centered = x_val - mean_val;
-
-            let w_val = weights_w[(c * num_components + comp_idx) as usize];
-            sum += centered * w_val;
+        let mut sum = F::new(0.0f32);
+        let mut c = 0u32;
+        while c < num_channels {
+            let centered = input_x[(c * num_samples + sample_idx) as usize] - mean[c as usize];
+            sum += centered * weights_w[(c * num_components + comp_idx) as usize];
+            c += 1u32;
         }
-
         output_y[(comp_idx * num_samples + sample_idx) as usize] = sum;
     }
 }

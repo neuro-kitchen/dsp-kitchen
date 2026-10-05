@@ -12,7 +12,7 @@ fn run<R: Runtime>(client: &ComputeClient<R>, spec: &FilterSpec, x: &[f64], chan
     let data: Vec<f32> = (0..channels).flat_map(|_| x.iter().map(|v| *v as f32)).collect();
     let input = client.create_from_slice(f32::as_bytes(&data));
     let output = client.empty(data.len() * 4);
-    let filter = DeviceFilter::new(client, spec, 30_000.0).unwrap();
+    let filter = DeviceFilter::<f32>::new(client, spec, 30_000.0).unwrap();
     let scratch = client.empty((filter.scratch_len(channels, n) * 4).max(4));
     let state = client.empty(channels * filter.state_len() * 4);
     filter.apply(client, &input, &output, &scratch, &state, channels, n);
@@ -32,7 +32,8 @@ fn check<R: Runtime>(client: &ComputeClient<R>) {
             let spec = spec.with_mode(mode);
             let sos = spec.design(30_000.0).unwrap();
             let expected = match mode {
-                FilterMode::Forward => sos.filter(&x, true),
+                // Default FilterStart::Rest: sosfilt without zi
+                FilterMode::Forward => sos.filter(&x, false),
                 FilterMode::ForwardBackward => sos.filtfilt(&x, sos.settling_samples(1e-3).min(x.len() - 1)),
             };
             let got = run(client, &spec, &x, channels);

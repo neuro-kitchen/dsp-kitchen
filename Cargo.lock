@@ -2625,9 +2625,8 @@ version = "0.1.0"
 dependencies = [
  "cubecl",
  "dsp-core",
- "memmap2",
  "num-complex",
- "rayon",
+ "num-traits",
  "serde_json",
  "thiserror 2.0.21",
  "tracing",

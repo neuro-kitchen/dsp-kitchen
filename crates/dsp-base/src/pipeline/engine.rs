@@ -1,5 +1,6 @@
 use cubecl::prelude::*;
 use super::session::PipelineWorkspace;
+use crate::core::DspFloat;
 use super::stage::PipelineStage;
 use crate::filter::design::FilterError;
 
@@ -52,10 +53,13 @@ impl Pipeline {
         self.settling(sample_rate).map(|_| ())
     }
 
-    /// Executes all stages on a `[channels, samples]` device buffer as one independent chunk and
-    /// returns a handle to the result. For repeated chunks use [`PipelineWorkspace`], which keeps
-    /// designs and buffers alive.
-    pub fn execute<R: Runtime>(
+    /// Executes all stages on a `[channels, samples]` device buffer of `F` as one independent chunk
+    /// and returns a handle to the result.
+    ///
+    /// One-off: every call designs and uploads the filters and allocates the buffers again. For more
+    /// than one chunk, create a [`PipelineWorkspace`] once and call
+    /// [`PipelineWorkspace::process_handle`]; it keeps designs, weights and buffers on its device.
+    pub fn execute<R: Runtime, F: DspFloat>(
         &self,
         client: &ComputeClient<R>,
         input_handle: &cubecl::server::Handle,
@@ -66,7 +70,7 @@ impl Pipeline {
         if self.stages.is_empty() {
             return Ok(input_handle.clone());
         }
-        let mut workspace = PipelineWorkspace::new(
+        let mut workspace = PipelineWorkspace::<R, F>::new(
             client.clone(),
             self.clone(),
             channels,
@@ -80,20 +84,14 @@ impl Pipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
+    use crate::core::buffer;
 
-    #[test]
-    fn test_pipeline_chained_wgpu() {
-        let device = WgpuDevice::default();
-        let client = WgpuRuntime::client(&device);
-
+    fn chained<R: Runtime>(client: &ComputeClient<R>) {
         let channels = 32;
         let samples = 500;
         let total = channels * samples;
 
-        let input_data = vec![100.0f32; total];
-        let input_bytes = f32::as_bytes(&input_data);
-        let in_handle = client.create_from_slice(input_bytes);
+        let in_handle = buffer::upload(client, &vec![100.0f32; total]);
 
         // Build a 3-stage pipeline: Scale -> CAR -> Notch
         let mut pipeline = Pipeline::new();
@@ -104,22 +102,20 @@ mod tests {
 
         assert_eq!(pipeline.len(), 3);
 
-        let out_handle = pipeline
-            .execute::<WgpuRuntime>(&client, &in_handle, channels, samples, 30000.0)
-            .unwrap();
+        let out_handle = pipeline.execute::<R, f32>(client, &in_handle, channels, samples, 30000.0).unwrap();
+        let out = buffer::download::<R, f32>(client, out_handle);
 
-        let out_bytes = client.read_one_unchecked(out_handle);
-        let out_slice = f32::from_bytes(&out_bytes);
-
-        assert_eq!(out_slice.len(), total);
-        assert!(!out_slice[0].is_nan());
+        assert_eq!(out.len(), total);
+        // A constant input is removed by CAR (every channel equals the average)
+        assert!(out.iter().all(|v| v.abs() < 1e-3), "{}", R::name(client));
     }
+    runtime_test!(test_pipeline_chained, chained);
 
     #[test]
     fn test_settling_sums_both_sides() {
         let fs = 30_000.0;
         let mut pipeline = Pipeline::new();
-        pipeline.add(PipelineStage::bandpass(300.0, 6000.0)).add(PipelineStage::Median9p);
+        pipeline.add(PipelineStage::bandpass(300.0, 6000.0)).add(PipelineStage::median9());
         let (l, r) = pipeline.settling(fs).unwrap();
         let (bl, br) = PipelineStage::bandpass(300.0, 6000.0).settling(fs).unwrap();
         assert_eq!((l, r), (bl + 4, br + 4));

@@ -76,6 +76,7 @@ def main() -> None:
         if run_signal:
             zi = signal.sosfilt_zi(sos) * x[0]
             case["forward"] = rounded(signal.sosfilt(sos, x, zi=zi)[0])
+            case["forward_rest"] = rounded(signal.sosfilt(sos, x))
             pad = min(case["settling"], N - 1)
             case["padlen"] = pad
             case["forward_backward"] = rounded(signal.sosfiltfilt(sos, x, padtype="odd", padlen=pad))

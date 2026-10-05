@@ -1,5 +1,9 @@
 use cubecl::prelude::*;
-use super::whitening::execute_spatial_matrix_multiply;
+use crate::core::DspFloat;
+
+/// Distances below this (in the units of the positions) are raised to it, so coincident electrodes
+/// do not get infinite inverse-distance weights.
+pub const MIN_NEIGHBOR_DISTANCE: f32 = 1e-3;
 
 /// 2D Surface Laplacian (Hjorth / Double-Differential) spatial filter for planar electrode grids
 /// (e.g., 4x8 or 8x8 HD-EMG arrays and ECoG grids).
@@ -72,7 +76,7 @@ impl SurfaceLaplacian {
                 .map(|j| {
                     let dx = positions[i][0] - positions[j][0];
                     let dy = positions[i][1] - positions[j][1];
-                    (j, (dx * dx + dy * dy).sqrt().max(1e-3))
+                    (j, (dx * dx + dy * dy).sqrt().max(MIN_NEIGHBOR_DISTANCE))
                 })
                 .collect();
             dists.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -112,8 +116,14 @@ impl SurfaceLaplacian {
         out
     }
 
-    /// Applies the Surface Laplacian in VRAM using CubeCL.
-    pub fn apply_gpu<R: Runtime>(
+    /// The operator uploaded once as `F` (dense or sparse rows), for repeated calls.
+    pub fn to_device<R: Runtime, F: DspFloat>(&self, client: &ComputeClient<R>) -> super::DeviceSpatialMatrix {
+        super::DeviceSpatialMatrix::upload::<R, F>(client, &self.matrix, self.num_channels)
+    }
+
+    /// One-off: applies the Surface Laplacian on the device (uploads the matrix; use
+    /// [`Self::to_device`] for repeated calls).
+    pub fn apply_gpu<R: Runtime, F: DspFloat>(
         &self,
         client: &ComputeClient<R>,
         input: &cubecl::server::Handle,
@@ -122,15 +132,7 @@ impl SurfaceLaplacian {
         samples: usize,
     ) {
         assert_eq!(channels, self.num_channels);
-        let weights_handle = client.create_from_slice(f32::as_bytes(&self.matrix));
-        execute_spatial_matrix_multiply::<R>(
-            client,
-            input,
-            &weights_handle,
-            output,
-            channels,
-            samples,
-        );
+        self.to_device::<R, F>(client).apply::<R, F>(client, input, output, channels, samples);
     }
 }
 

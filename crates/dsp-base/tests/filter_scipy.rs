@@ -1,11 +1,15 @@
 //! Filter designs and filtering against `scipy.signal` (fixtures from `scipy_reference.py`).
 
+// Runs on the WGPU runtime (default feature); every-runtime coverage lives in filter_runtimes,
+// filter_blocks and kernel_runtimes.
+#![cfg(feature = "wgpu")]
+
 mod common;
 
 use common::*;
 use cubecl::prelude::*;
 use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
-use dsp_base::filter::{DeviceFilter, FilterBand, FilterMode, FilterSpec, Sos};
+use dsp_base::filter::{DeviceFilter, FilterBand, FilterMode, FilterSpec, FilterStart, Sos};
 
 #[test]
 fn designs_match_scipy() {
@@ -43,21 +47,23 @@ fn host_reference_matches_sosfilt_and_sosfiltfilt() {
         let name = case["name"].as_str().unwrap();
         let sos = sos_from(&case["sos"]);
         let fwd = floats(&case["forward"]);
+        let fwd_rest = floats(&case["forward_rest"]);
         let fb = floats(&case["forward_backward"]);
         let pad = case["padlen"].as_u64().unwrap() as usize;
         let scale = max_abs(&x);
-        assert!(max_abs_diff(&sos.filter(&x, true), &fwd) < 1e-8 * scale, "{name}: sosfilt");
+        assert!(max_abs_diff(&sos.filter(&x, true), &fwd) < 1e-8 * scale, "{name}: sosfilt zi");
+        assert!(max_abs_diff(&sos.filter(&x, false), &fwd_rest) < 1e-8 * scale, "{name}: sosfilt at rest");
         assert!(max_abs_diff(&sos.filtfilt(&x, pad), &fb) < 1e-8 * scale, "{name}: sosfiltfilt");
     }
 }
 
-fn run_device(sos: &Sos, mode: FilterMode, x: &[f64], channels: usize) -> Vec<Vec<f64>> {
+fn run_device(sos: &Sos, mode: FilterMode, start: FilterStart, x: &[f64], channels: usize) -> Vec<Vec<f64>> {
     let client = WgpuRuntime::client(&WgpuDevice::default());
     let n = x.len();
     let data: Vec<f32> = (0..channels).flat_map(|c| x.iter().map(move |v| (*v as f32) * (1.0 + c as f32))).collect();
     let input = client.create_from_slice(f32::as_bytes(&data));
     let output = client.empty(data.len() * 4);
-    let filter = DeviceFilter::from_sos(&client, sos.clone(), mode);
+    let filter = DeviceFilter::<f32>::from_sos(&client, sos.clone(), mode).with_start(start);
     let scratch = client.empty((filter.scratch_len(channels, n) * 4).max(4));
     let state = client.empty(channels * filter.state_len() * 4);
     filter.apply(&client, &input, &output, &scratch, &state, channels, n);
@@ -78,9 +84,13 @@ fn device_kernel_matches_scipy() {
         let name = case["name"].as_str().unwrap();
         let sos = sos_from(&case["sos"]);
         assert_eq!(sos.settling_samples(1e-3).min(n - 1), case["padlen"].as_u64().unwrap() as usize);
-        for (mode, key) in [(FilterMode::Forward, "forward"), (FilterMode::ForwardBackward, "forward_backward")] {
+        for (mode, start, key) in [
+            (FilterMode::Forward, FilterStart::Rest, "forward_rest"),
+            (FilterMode::Forward, FilterStart::SteadyState, "forward"),
+            (FilterMode::ForwardBackward, FilterStart::Rest, "forward_backward"),
+        ] {
             let expected = floats(&case[key]);
-            for (c, got) in run_device(&sos, mode, &x, 3).iter().enumerate() {
+            for (c, got) in run_device(&sos, mode, start, &x, 3).iter().enumerate() {
                 let err = max_abs_diff(got, &expected);
                 // f32 data and state: error relative to the input amplitude (500 µV DC + signal).
                 assert!(err < 2e-5 * scale, "{name} {key} channel {c}: max error {err}");
@@ -103,15 +113,20 @@ fn device_low_cutoffs_match_f64_reference() {
     for (name, spec) in specs {
         let sos = spec.design(fs).unwrap();
         let pad = sos.settling_samples(1e-3).min(x.len() - 1);
-        let expected_fwd = sos.filter(&x, true);
+        let expected_rest = sos.filter(&x, false);
+        let expected_steady = sos.filter(&x, true);
         let expected_fb = sos.filtfilt(&x, pad);
-        for (mode, expected) in [(FilterMode::Forward, &expected_fwd), (FilterMode::ForwardBackward, &expected_fb)] {
-            let got = &run_device(&sos, mode, &x, 1)[0];
+        for (mode, start, expected) in [
+            (FilterMode::Forward, FilterStart::Rest, &expected_rest),
+            (FilterMode::Forward, FilterStart::SteadyState, &expected_steady),
+            (FilterMode::ForwardBackward, FilterStart::Rest, &expected_fb),
+        ] {
+            let got = &run_device(&sos, mode, start, &x, 1)[0];
             let err = max_abs_diff(got, expected);
             // The 0.5 Hz high-pass sits at the f32 rounding floor: measured 1.89e-5–1.97e-5 of the
             // amplitude across time-block splits (one block 1.95e-5), so the limit leaves margin
             // for summation order. Plain f32 direct form II is ~1e-2 here.
-            assert!(err < 2.5e-5 * scale, "{name} {mode:?}: max error {err}");
+            assert!(err < 2.5e-5 * scale, "{name} {mode:?} {start:?}: max error {err}");
         }
     }
 }
