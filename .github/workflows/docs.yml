@@ -1,6 +1,6 @@
-# Builds the mdBook in docs/ and publishes it to https://neuro-kitchen.github.io/neuro-convert/.
+# Builds the mdBook in docs/book and publishes it to https://neuro-kitchen.github.io/dsp-kitchen/.
 # Prerequisite (one-time repo setting):
-#   https://github.com/neuro-kitchen/neuro-convert/settings/pages
+#   https://github.com/neuro-kitchen/dsp-kitchen/settings/pages
 #   -> Build and deployment -> Source: "GitHub Actions"
 # Pull requests only build (catches broken links/SUMMARY); pushes to main also deploy.
 name: docs
@@ -8,9 +8,9 @@ name: docs
 on:
   push:
     branches: [main]
-    paths: ["docs/**", ".github/workflows/docs.yml"]
+    paths: ["docs/book/**", ".github/workflows/docs.yml"]
   pull_request:
-    paths: ["docs/**", ".github/workflows/docs.yml"]
+    paths: ["docs/book/**", ".github/workflows/docs.yml"]
   workflow_dispatch:
 
 permissions:
@@ -43,9 +43,9 @@ jobs:
         id: pages
         uses: actions/configure-pages@v6
 
-      # book.toml sets build-dir = "../target/book"
+      # book.toml sets build-dir = "../../target/book"
       - name: Build book
-        run: mdbook build docs
+        run: mdbook build docs/book
 
       - name: Upload Pages artifact
         if: github.event_name != 'pull_request'
