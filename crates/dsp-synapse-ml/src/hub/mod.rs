@@ -8,7 +8,6 @@ pub mod cache;
 pub mod catalog;
 pub mod downloader;
 pub mod manifest;
-pub mod npy;
 pub mod providers;
 pub mod pytorch_remap;
 pub mod registry;
@@ -20,7 +19,6 @@ pub use downloader::{DownloadOutcome, RemoteLinkCheck, check_remote_link, downlo
 pub use manifest::{
     ModelFormat, ModelHubEntry, ModelManifest, ModelStatus, TensorIoSpec, TensorPortSpec,
 };
-pub use npy::NpyTensorF32;
 pub use providers::{
     ProviderKind, resolve_gh_uri, resolve_hf_uri, resolve_weights_uri, resolve_zenodo_uri,
 };

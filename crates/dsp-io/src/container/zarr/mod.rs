@@ -1,8 +1,7 @@
-//! Shared Zarr v3 group and array persistence helpers (`storage/zarr_store.rs`).
+//! Zarr v3 groups and arrays on the filesystem (`zarrs`), shared by every Zarr-based format.
 //!
-//! Uses `zarrs` to write and read standard Zarr v3 groups and arrays (matching `dsp-io` and
-//! `neuro-convert`'s `hdmf-zarr` layout with `_DTYPE` and `_ARRAY_DIMENSIONS` attributes), while
-//! transparently falling back to legacy `<node>.npy` files when reading older directories.
+//! Writes arrays with `_DTYPE` and `_ARRAY_DIMENSIONS` attributes (the hdmf-zarr convention), and
+//! [`read_array`] falls back to legacy `<node>.npy` files when reading older directories.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -14,17 +13,28 @@ use zarrs::filesystem::FilesystemStore;
 use zarrs::group::GroupBuilder;
 use zarrs::storage::{ReadableStorageTraits, ReadableWritableListableStorage};
 
-use super::npy::{NpyArray, NpyElement, read_npy};
+use crate::container::npy::{NpyArray, NpyElement, read_npy};
 
 fn zarr_err(path: &Path, context: &str, err: impl std::fmt::Display) -> DspError {
     DspError::Io(format!("zarr {} ({context}): {err}", path.display()))
 }
 
-/// Opens a read-write Zarr v3 filesystem store at `dir` (creating directories if needed).
-pub fn open_rw_store(dir: &Path) -> DspResult<ReadableWritableListableStorage> {
-    std::fs::create_dir_all(dir).map_err(|e| zarr_err(dir, "mkdir", e))?;
+/// Opens the Zarr v3 filesystem store at `dir`.
+pub fn open_store(dir: &Path) -> DspResult<ReadableWritableListableStorage> {
     let store = FilesystemStore::new(dir).map_err(|e| zarr_err(dir, "open store", e))?;
     Ok(Arc::new(store))
+}
+
+/// Opens a read-write Zarr v3 filesystem store at `dir`, creating directories if needed.
+pub fn open_rw_store(dir: &Path) -> DspResult<ReadableWritableListableStorage> {
+    std::fs::create_dir_all(dir).map_err(|e| zarr_err(dir, "mkdir", e))?;
+    open_store(dir)
+}
+
+/// Every element of the array at `path` in `store`; `None` when it is missing or unreadable as `T`.
+pub fn read_all<T: zarrs::array::ElementOwned>(store: &Arc<dyn ReadableStorageTraits>, path: &str) -> Option<Vec<T>> {
+    let a = Array::open(store.clone(), path).ok()?;
+    a.retrieve_array_subset::<Vec<T>>(&a.subset_all()).ok()
 }
 
 /// Writes a Zarr v3 group at `node_path` (e.g. `"/"`, `"/units"`, `"/spikes"`) with `attributes`.
@@ -238,47 +248,4 @@ pub fn read_array<T: NpyElement>(dir: &Path, node_path: &str) -> DspResult<NpyAr
 /// Reads an optional array from `dir` at `node_path`.
 pub fn read_optional_array<T: NpyElement>(dir: &Path, node_path: &str) -> Option<NpyArray<T>> {
     has_array(dir, node_path).then(|| read_array::<T>(dir, node_path).ok()).flatten()
-}
-
-/// Infers the recording sample rate (Hz) from an NWB Zarr store without hardcoding 30 kHz:
-/// 1. `/units` `sample_rate_hz` or `sampling_rate` attribute
-/// 2. `/units/waveform_mean` `sampling_rate` attribute
-/// 3. `1.0 / resolution` on `/units/spike_times` (written by `neuro-convert`)
-/// 4. Any `/acquisition/<series>/starting_time` `rate` attribute in the parent NWB store
-pub fn infer_nwb_sample_rate(nwb_or_units_dir: &Path) -> Option<f64> {
-    let (root_dir, units_prefix) = if nwb_or_units_dir.join("units").is_dir() {
-        (nwb_or_units_dir, "/units")
-    } else {
-        (nwb_or_units_dir.parent().unwrap_or(nwb_or_units_dir), "")
-    };
-    let base = if units_prefix.is_empty() { nwb_or_units_dir } else { root_dir };
-
-    if let Some(attrs) = read_node_attributes(base, units_prefix) {
-        if let Some(sr) = attrs.get("sample_rate_hz").or_else(|| attrs.get("sampling_rate")).and_then(Value::as_f64).filter(|&r| r > 0.0) {
-            return Some(sr);
-        }
-    }
-    let wm_path = format!("{units_prefix}/waveform_mean");
-    if let Some(attrs) = read_node_attributes(base, &wm_path) {
-        if let Some(sr) = attrs.get("sampling_rate").and_then(Value::as_f64).filter(|&r| r > 0.0) {
-            return Some(sr);
-        }
-    }
-    let st_path = format!("{units_prefix}/spike_times");
-    if let Some(attrs) = read_node_attributes(base, &st_path) {
-        if let Some(res) = attrs.get("resolution").and_then(Value::as_f64).filter(|&r| r > 0.0) {
-            return Some((1.0 / res).round());
-        }
-    }
-    if let Ok(entries) = std::fs::read_dir(root_dir.join("acquisition")) {
-        for entry in entries.flatten() {
-            let st = format!("/acquisition/{}/starting_time", entry.file_name().to_string_lossy());
-            if let Some(attrs) = read_node_attributes(root_dir, &st) {
-                if let Some(rate) = attrs.get("rate").and_then(Value::as_f64).filter(|&r| r > 0.0) {
-                    return Some(rate);
-                }
-            }
-        }
-    }
-    None
 }

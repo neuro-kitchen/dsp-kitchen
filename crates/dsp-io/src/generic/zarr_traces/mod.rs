@@ -8,17 +8,18 @@
 
 use std::ops::Range;
 use std::path::Path;
-use std::sync::Arc;
 
 use dsp_core::recording::{check_read, check_read_stored};
 use dsp_core::{DspError, DspResult, MemoryOrder, RecordingInfo, RecordingSource, SampleFormat, SampleRate};
 use serde_json::{json, Value};
 use zarrs::array::{Array, ArrayBuilder, ArrayBytes, data_type};
 
-use crate::codec::{native_to_le, scale_frames, select_stored};
-use zarrs::filesystem::FilesystemStore;
+use crate::container::binary::codec::{native_to_le, scale_frames, select_stored};
+use crate::container::zarr::open_store;
 use zarrs::group::{Group, GroupBuilder};
-use zarrs::storage::ReadableWritableListableStorage;
+
+mod format;
+pub use format::ZarrTraces;
 
 const ARRAY_PATH: &str = "/traces";
 /// Default chunk length: ~0.17 s at 30 kHz.
@@ -26,10 +27,6 @@ pub const DEFAULT_CHUNK_SAMPLES: usize = 5000;
 
 fn err(what: &str) -> impl Fn(String) -> DspError + '_ {
     move |e| DspError::Io(format!("zarr {what}: {e}"))
-}
-
-fn open_store(path: &Path) -> DspResult<ReadableWritableListableStorage> {
-    Ok(Arc::new(FilesystemStore::new(path).map_err(|e| err("store")(e.to_string()))?))
 }
 
 /// Chunked Zarr v3 recording.

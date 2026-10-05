@@ -7,7 +7,7 @@ pub mod runtime;
 
 pub use hub::{
     HubCache, ModelCatalog, ModelFormat, ModelHub, ModelHubEntry, ModelManifest, ModelPresetConfig,
-    ModelStatus, ModelVerifyReport, NpyTensorF32, ProbePreset, PyTorchRemapRule,
+    ModelStatus, ModelVerifyReport, ProbePreset, PyTorchRemapRule,
     PyTorchWeightAdapter, SafetensorEntryHeader, SafetensorsMap, TensorIoSpec, TensorPortSpec,
     WeightTransform, transpose_2d_slice,
 };

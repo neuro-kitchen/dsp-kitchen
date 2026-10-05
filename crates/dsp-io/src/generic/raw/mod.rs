@@ -19,7 +19,10 @@ use dsp_core::{DspError, DspResult, MemoryOrder, RecordingInfo, RecordingSource,
 use memmap2::Mmap;
 use serde::{Deserialize, Serialize};
 
-use crate::codec::{decode_frames, decode_run, encode, scale_frames, select_stored};
+use crate::container::binary::codec::{decode_frames, decode_run, encode, scale_frames, select_stored};
+
+mod format;
+pub use format::Raw;
 
 /// Layout of a raw binary file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

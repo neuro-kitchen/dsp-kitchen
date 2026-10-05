@@ -8,6 +8,8 @@ license.workspace = true
 [features]
 default = ["zarr"]
 zarr = ["dep:zarrs"]
+# Neural-recording formats (NWB, SpikeGLX, mtscomp), probe geometry, synthetic recordings.
+neuro = []
 
 [dependencies]
 dsp-core.workspace = true
