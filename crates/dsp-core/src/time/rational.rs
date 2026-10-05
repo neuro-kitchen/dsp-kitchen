@@ -1,9 +1,10 @@
 use num_rational::Ratio;
+use num_traits::CheckedAdd;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::time::Duration;
 use crate::error::{DspError, DspResult};
-use super::rate::SampleRate;
+use super::rate::{decimal_ratio, SampleRate};
 
 fn gcd(mut a: u128, mut b: u128) -> u128 {
     while b != 0 {
@@ -13,7 +14,7 @@ fn gcd(mut a: u128, mut b: u128) -> u128 {
 }
 
 /// Exact rational representation of time (seconds as numerator/denominator).
-/// Prevents floating-point accumulation drift over long electrophysiology recordings.
+/// Prevents floating-point accumulation drift over long recordings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct RationalTime {
     seconds: Ratio<u64>,
@@ -31,6 +32,19 @@ impl RationalTime {
         Ok(Self {
             seconds: Ratio::new(numerator, denominator),
         })
+    }
+
+    /// Time from a decimal number of seconds, exact for its shortest decimal form (`12.5` → `25/2`).
+    pub fn from_seconds_f64(seconds: f64) -> DspResult<Self> {
+        if seconds < 0.0 || !seconds.is_finite() {
+            return Err(DspError::InvalidConfig(format!("time {seconds} s must be finite and non-negative")));
+        }
+        Ok(Self { seconds: decimal_ratio(seconds) })
+    }
+
+    /// `self + other`, or `None` on `u64` overflow.
+    pub fn checked_add(&self, other: &Self) -> Option<Self> {
+        self.seconds.checked_add(&other.seconds).map(|seconds| Self { seconds })
     }
 
     /// Exact time of `sample_index` at `rate` (fractional rates included, no drift).

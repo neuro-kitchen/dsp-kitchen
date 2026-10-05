@@ -1,9 +1,8 @@
 //! Boundary-safe halo window scheduling for out-of-core chunked streaming.
 //!
-//! When streaming a large recording through causal/non-causal filters and waveform extractors,
-//! each non-overlapping valid window `[s0 .. s1)` is padded with a `left_halo` (filter settling +
-//! pre-spike lookback) and a `right_halo` (post-spike lookahead + refractory window), clamped to
-//! `[0 .. total_samples)`.
+//! When streaming a large recording through causal/non-causal processing, each non-overlapping
+//! valid window `[s0 .. s1)` is padded with a `left_halo` (e.g. filter settling, lookback) and a
+//! `right_halo` (e.g. lookahead), clamped to `[0 .. total_samples)`.
 
 use std::ops::Range;
 

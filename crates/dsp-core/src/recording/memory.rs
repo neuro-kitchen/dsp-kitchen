@@ -7,7 +7,7 @@ use crate::buffer::MemoryOrder;
 use crate::error::{DspError, DspResult};
 use crate::time::SampleRate;
 
-/// Recording held in memory as channel-major µV samples (tests, small derived signals).
+/// Recording held in memory as channel-major scaled samples (tests, small derived signals).
 #[derive(Debug, Clone)]
 pub struct MemoryRecording {
     info: RecordingInfo,

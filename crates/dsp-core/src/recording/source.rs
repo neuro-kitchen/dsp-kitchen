@@ -13,7 +13,8 @@ use crate::time::RationalTime;
 pub trait RecordingSource: Send + Sync {
     fn info(&self) -> &RecordingInfo;
 
-    /// Reads `samples` of every channel in `channels` into `out`, channel-major and in µV:
+    /// Reads `samples` of every channel in `channels` into `out`, channel-major and scaled to each
+    /// channel's unit ([`ChannelInfo`](super::ChannelInfo)):
     /// `out[i * n..(i + 1) * n]` holds `channels[i]`, where `n = samples.end - samples.start`.
     fn read(&self, channels: &[usize], samples: Range<u64>, out: &mut [f32]) -> DspResult<()>;
 
@@ -27,7 +28,7 @@ pub trait RecordingSource: Send + Sync {
     /// [`DspError::UnsupportedFormat`].
     fn read_stored(&self, channels: &[usize], samples: Range<u64>, out: &mut [u8]) -> DspResult<()> {
         let info = self.info();
-        let identity = channels.iter().all(|&c| info.channels.get(c).is_some_and(|ch| ch.gain_uv == 1.0 && ch.offset_uv == 0.0));
+        let identity = channels.iter().all(|&c| info.channels.get(c).is_some_and(|ch| ch.gain == 1.0 && ch.offset == 0.0));
         if info.format != SampleFormat::F32 || !identity {
             return Err(DspError::UnsupportedFormat(format!("{}: stored {} reads", info.name, info.format.name())));
         }
@@ -40,7 +41,7 @@ pub trait RecordingSource: Send + Sync {
         Ok(())
     }
 
-    /// Reads `samples` of every channel in µV, in the order the source stores them, and returns
+    /// Reads `samples` of every channel, scaled, in the order the source stores them, and returns
     /// that order: [`MemoryOrder::ChannelMajor`] fills `out` as [`Self::read`] of all channels;
     /// [`MemoryOrder::TimeMajor`] fills `out[t * channels + c]`. Whole-recording passes (min/max
     /// summaries) use it to skip the transposition `read` does for time-major sources.

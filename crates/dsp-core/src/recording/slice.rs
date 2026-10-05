@@ -6,6 +6,7 @@ use std::sync::Arc;
 use super::info::RecordingInfo;
 use super::source::{check_read, check_read_stored, RecordingSource};
 use crate::error::{DspError, DspResult};
+use crate::time::RationalTime;
 
 /// Zero-copy lazy slice of a [`RecordingSource`] across a sample range `[start..end)`
 /// and an optional subset of channels.
@@ -46,13 +47,13 @@ impl SlicedRecording {
 
         let mut info = p_info.clone();
         info.samples = sample_range.end - sample_range.start;
-        info.start_time_sec =
-            p_info.start_time_sec + (sample_range.start as f64) / p_info.sample_rate_hz();
+        info.start_time = RationalTime::from_samples(sample_range.start, p_info.sample_rate)?
+            .checked_add(&p_info.start_time)
+            .ok_or_else(|| DspError::InvalidConfig(format!("start time of slice at sample {} overflows", sample_range.start)))?;
         info.channels = channel_map
             .iter()
             .map(|&c| p_info.channels[c].clone())
             .collect();
-        info.layout = p_info.layout.as_ref().map(|l| l.select_channels(&channel_map));
 
         Ok(Self {
             parent,
@@ -120,7 +121,7 @@ mod tests {
         let sliced = SlicedRecording::new(parent, 20..50, Some(vec![2, 0])).unwrap();
         assert_eq!(sliced.info().channel_count(), 2);
         assert_eq!(sliced.info().samples, 30);
-        assert!((sliced.info().start_time_sec - 0.020).abs() < 1e-9);
+        assert_eq!(sliced.info().start_time, RationalTime::new(1, 50).unwrap());
 
         let mut out = vec![0.0f32; 2 * 5];
         sliced.read(&[0, 1], 10..15, &mut out).unwrap();

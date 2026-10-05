@@ -3,7 +3,3 @@ pub mod chunk;
 
 pub use layout::{BufferLayout, MemoryOrder};
 pub use chunk::SignalChunk;
-
-// Aliases
-pub type BufferChunk = SignalChunk;
-pub type MemoryLayout = BufferLayout;

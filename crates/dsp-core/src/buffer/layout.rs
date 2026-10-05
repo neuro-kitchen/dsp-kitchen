@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// Memory ordering convention for multi-channel neural signal data.
+/// Memory ordering convention for multi-channel signal data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MemoryOrder {
     /// Channel-major: [channel_0_samples..., channel_1_samples...]
@@ -8,7 +8,7 @@ pub enum MemoryOrder {
     ChannelMajor,
 
     /// Time-major (Interleaved): [c0_t0, c1_t0, ..., cN_t0, c0_t1, c1_t1, ...]
-    /// Standard format written by acquisition hardware (SpikeGLX, Open Ephys, Intan).
+    /// The usual order written by multi-channel acquisition hardware.
     TimeMajor,
 }
 

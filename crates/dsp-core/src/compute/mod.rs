@@ -16,5 +16,5 @@ mod target;
 pub mod tune;
 
 pub use crate::device::{ComputeError, ComputeTarget, RUNTIME_ENV};
-pub use launch::{LaunchGeometry, channel_position, sample_position};
+pub use launch::{LaunchGeometry, channel_position, row_position, sample_position};
 pub use target::ComputeTask;
