@@ -13,6 +13,7 @@ pub use clamp::execute_clamp;
 pub use unpack::{execute_unpack_stored, stored_words, upload_stored};
 pub use stats::{
     estimate_noise_rms, estimate_noise_std, estimate_noise_trimmed, execute_channel_mean_std,
+    execute_channel_noise_std,
     interquartile_range, peak_to_peak, standard_error,
 };
 pub use histogram::{bin_centers, histogram, percentile};

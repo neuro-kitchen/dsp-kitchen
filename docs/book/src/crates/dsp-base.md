@@ -129,6 +129,7 @@ dsp-base/src/
 | `EdgeMode`, `read_extended(_strided)` | One edge policy for every stencil. |
 | `layout::transpose` | `[rows, cols]` → `[cols, rows]`. |
 | `reduce::row_mean_std`, `row_min_max` | Parallel per-row reductions (Welford + Chan merge in shared memory). |
+| `reduce::row_abs_kth` | Per-row k-th smallest `|x|` over a column range (value bisection, exact sample value). |
 
 ### `filter`
 | Item | Purpose |
@@ -178,7 +179,8 @@ dsp-base/src/
 
 ### `math`
 `execute_scaling`, `execute_clamp`, `execute_unpack_stored` +
-`upload_stored`, `execute_channel_mean_std`; host: `estimate_noise_std` / `_rms` / `_trimmed`,
+`upload_stored`, `execute_channel_mean_std`, `execute_channel_noise_std` (MAD σ per channel on the
+device, only the σ downloaded); host: `estimate_noise_std` / `_rms` / `_trimmed`,
 `interquartile_range`, `peak_to_peak`, `standard_error`, `percentile`, `histogram`, `bin_centers`,
 windows (`hann`, `hamming`, `blackman`, `gaussian`, `kaiser`, `sinc`, `bessel_i0`; Blackman-Harris
 coefficients are public constants shared with device code), `cross_correlation` / `lagged_dot` /
@@ -201,7 +203,7 @@ coefficients are public constants shared with device code), `cross_correlation` 
 - **Downstream fixes** (`dsp-synapse`, `dsp-synapse-ml`, `dsp-cli`, `dsp_kitchen_py`, `dsp-app`): see
   `refactoring/dsp-base/README.md`.
 - **Still on the host**: FastICA iterations, PPCA EM projection / reconstruction, ZCA assembly from
-  eigenpairs, median-based noise estimators.
+  eigenpairs, the trimmed / IQR noise estimators (the MAD estimator has a device form).
 - Parked (no users): per-channel baseline kernel, precomputed-average CAR, causal exponential /
   alpha kernels, `SpatialReferenceConfig` — see `refactoring/dsp-base/README.md`.
 - `filter/template/subtraction.rs` keeps its own full-overlap lag search (a different operation
