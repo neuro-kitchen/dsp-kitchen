@@ -2,8 +2,10 @@
 
 > **Status:** cleaned on 2026-10-05 (`versions/v0.14`) in six steps: visualization code parked,
 > `core/` and named constants, generic kernels with scipy edge modes, missing kernels, device
-> eigensolver, autotuned optimizations. `cargo check -p dsp-base --tests` passes; **nothing has been
-> run yet** (tests and benchmarks wait for the final pass). Changes are tracked in
+> eigensolver, autotuned optimizations. Extended the same day with the generic primitives the
+> dsp-synapse review found re-implemented there: peak finding, lag cross-correlation, fractional
+> delay, running moments, Cholesky. `cargo check -p dsp-base --tests` passes; **only the Cholesky
+> tests have been run** (tests and benchmarks wait for the final pass). Changes are tracked in
 > `refactoring/dsp-base/README.md`.
 
 ## Intent
@@ -14,11 +16,14 @@ them on the device without host round-trips between steps.
 
 ### Owns
 - Filter design (host, f64) and filtering kernels (IIR, FIR, non-linear, template subtraction).
-- Sample-rate conversion (`resample_poly`, `decimate`).
+- Sample-rate conversion (`resample_poly`, `decimate`) and fractional-delay interpolation.
+- Peak finding (`scipy.signal.find_peaks` semantics) on the host and candidate compaction on the
+  device.
 - Spatial operators (CAR, whitening, Laplacian; dense or sparse rows).
 - Linear algebra on the device (covariance, symmetric eigendecomposition, PCA / PPCA / ICA fits and
   projections).
-- Reductions and statistics.
+- Reductions and statistics (noise estimators, running moments, lag cross-correlation); small
+  dense SPD solves on the host (Cholesky).
 - The device pipeline (`Pipeline`, `PipelineWorkspace`).
 
 ### Must not contain
@@ -78,6 +83,10 @@ Every device algorithm in this crate follows the same rules:
 | `resample_poly` (`Zeros`, Kaiser β = 5) | `resample_poly` | Same filter length, scaling and output alignment. |
 | `decimate` (`DECIMATE_DEFAULT`: Chebyshev I, order 8, 0.05 dB) | `decimate(ftype="iir", zero_phase=True)` | FIR option = `decimate(ftype="fir")`. |
 | `estimate_noise_std` | `median(|x|) / Φ⁻¹(0.75)` | |
+| `peaks::find_peaks` (`DistanceRule::Scipy`) | `signal.find_peaks` | `height`, `threshold`, `distance`, `prominence` (`wlen`), `width` (`rel_height`); plateaus → middle sample; extra: `Polarity::{Negative, Both}`, `DistanceRule::LocallyExclusive`. |
+| `math::cross_correlation(x, y, L)` | `signal.correlate(y, x, "full")` at lags `−L..=L` | |
+| `RunningMoments::variance(ddof)` | `numpy.var(..., ddof)` | |
+| `math::peak_to_peak` | `numpy.ptp` | 0 for an empty slice. |
 
 ## Module map
 
@@ -97,12 +106,15 @@ dsp-base/src/
 │   ├── fir/              execute_fir(_centered)(_with), FirKernel, Gaussian kernels; direct + tiled kernels
 │   ├── non_linear/       execute_median, execute_median_9p, execute_teager_kaiser
 │   └── template/         TemplateFilter (host) + apply_device (layered device kernels)
-├── resampler/            firwin, FirWindow, resample_poly, decimate; upfirdn + downsample kernels
+├── resampler/            firwin, FirWindow, resample_poly, decimate; upfirdn + downsample kernels;
+│                         fractional.rs (fractional delay, host + device taps)
+├── peaks/                find_peaks, local_extrema, select_by_distance, DistanceRule (host);
+│                         find_peak_candidates + count / scan / write kernels (device)
 ├── spatial/              CAR, SpatialWhitening, SurfaceLaplacian, SparseRows, DeviceSpatialMatrix
-├── linalg/               covariance, eigen (parallel Jacobi), PcaModel, PpcaModel, FastIcaModel,
-│                         DeviceProjection
+├── linalg/               covariance, eigen (parallel Jacobi), cholesky (host), PcaModel, PpcaModel,
+│                         FastIcaModel, DeviceProjection
 ├── math/                 scaling, clamp, unpack (stored → scaled), stats, histogram,
-│                         windows (incl. Kaiser, bessel_i0)
+│                         windows (incl. Kaiser, bessel_i0), xcorr, moments
 └── pipeline/             PipelineStage, Pipeline, PipelineWorkspace, ChunkMode
 ```
 
@@ -136,6 +148,17 @@ dsp-base/src/
 | `firwin`, `FirWindow` | Windowed-sinc low-pass design. |
 | `resample_poly`, `resample_poly_len`, `ResampleFilter` | Rational resampling. |
 | `decimate`, `decimate_len`, `DecimateFilter`, `DECIMATE_DEFAULT` | Integer down-sampling. Not a pipeline stage (changes the sample count). |
+| `fractional_delay`, `fractional_delay_taps` | `x(t + shift)` for `|shift| ≤ ½` with a Blackman-Harris windowed sinc normalized to sum 1 (taps at shift 0 are the identity). |
+| `fractional_delay_taps_device`, `windowed_sinc_weight` | The same taps computed on the device, once per shift (e.g. once per spike). |
+
+### `peaks`
+| Item | Purpose |
+|---|---|
+| `find_peaks(x, polarity, &PeakOptions)` → `Peaks` | scipy `find_peaks`, conditions applied in scipy's order (height, threshold, distance, prominence, width); properties returned for the conditions used. |
+| `PeakOptions`, `Interval`, `Polarity` | Conditions as `min` / `max` intervals; maxima, minima (maxima of `−x`) or both (conditions on magnitude). |
+| `DistanceRule` | `Scipy` (default): largest first, removed peaks remove nothing — a chain can reach beyond `distance`. `LocallyExclusive`: kept unless a larger peak is nearer than `distance` — depends only on neighbours, so chunked processing with `distance` of context equals the whole-signal result. |
+| `local_extrema`, `select_by_distance` | The building blocks, for detectors that score candidates differently. |
+| `find_peak_candidates::<R, F>` → `PeakCandidates` | Device: local extrema above a per-channel height, counted, scanned and compacted on the device (autotuned block length) so only candidates are downloaded; plateaus → first sample. |
 
 ### `spatial`
 | Item | Purpose |
@@ -151,12 +174,16 @@ dsp-base/src/
 | `covariance`, `covariance_of_host` | Device covariance (`/ samples`) and means, sample-split for parallelism. |
 | `symmetric_eigen(_batched / _host)`, `EigenOptions`, `SymmetricEigen` | Parallel cyclic Jacobi; relative tolerance; shared-memory or global path by size. |
 | `PcaModel`, `PpcaModel`, `FastIcaModel` | Fits take a client (device covariance + eigensolver); `to_device` → `DeviceProjection`. |
+| `cholesky`, `spd_inverse_logdet`, `cholesky_solve` | Host, f64, exact: SPD factor, inverse with `ln det`, multi-RHS solve (`None` when not positive definite). |
 
 ### `math`
 `execute_scaling`, `execute_clamp`, `execute_unpack_stored` +
 `upload_stored`, `execute_channel_mean_std`; host: `estimate_noise_std` / `_rms` / `_trimmed`,
-`interquartile_range`, `standard_error`, `percentile`, `histogram`, `bin_centers`, windows (`hann`,
-`hamming`, `blackman`, `gaussian`, `kaiser`, `sinc`, `bessel_i0`).
+`interquartile_range`, `peak_to_peak`, `standard_error`, `percentile`, `histogram`, `bin_centers`,
+windows (`hann`, `hamming`, `blackman`, `gaussian`, `kaiser`, `sinc`, `bessel_i0`; Blackman-Harris
+coefficients are public constants shared with device code), `cross_correlation` / `lagged_dot` /
+`peak_lag` / `parabolic_vertex_offset`, `RunningMoments` (f64 Welford push, Chan merge,
+`variance(ddof)` / `std(ddof)`).
 
 ### `pipeline`
 | Item | Purpose |
@@ -177,5 +204,7 @@ dsp-base/src/
   eigenpairs, median-based noise estimators.
 - Parked (no users): per-channel baseline kernel, precomputed-average CAR, causal exponential /
   alpha kernels, `SpatialReferenceConfig` — see `refactoring/dsp-base/README.md`.
+- `filter/template/subtraction.rs` keeps its own full-overlap lag search (a different operation
+  from `math::cross_correlation`).
 - `butterworth.rs` now holds the shared IIR design path (Butterworth and Chebyshev I); a rename to
   `iir_design.rs` would read better.

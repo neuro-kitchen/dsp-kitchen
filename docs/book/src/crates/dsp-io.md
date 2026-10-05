@@ -1,9 +1,10 @@
 # dsp-io
 
 > **Status:** restructured on 2026-10-05 (`versions/v0.14`): phase 1 (layered tree), phase 1b
-> (format registry) and phase 2 (shared containers) done; phase 3 (sorting formats) pending with
-> the dsp-synapse review. Not yet compiled; downstream crates are intentionally broken until the
-> final fix-up pass. Moves are tracked in `refactoring/dsp-io/README.md`.
+> (format registry), phase 2 (shared containers) and phase 3 (sorting files, from the dsp-synapse
+> review) done; probe presets and the out-of-core prefetch reader moved in. Does not compile yet
+> (it still uses core's pre-cleanup `ChannelInfo` fields); downstream crates are intentionally
+> broken until the final fix-up pass. Moves are tracked in `refactoring/dsp-io/README.md`.
 
 ## Intent
 
@@ -16,7 +17,12 @@ data is stored.
   for the whole workspace.
 - **Format schemas**: conventions on top of a container (raw + sidecar, Zarr `/traces`, NWB,
   SpikeGLX, mtscomp), and detection of which one a path is.
-- **Neural file metadata** (feature `neuro`): probe geometry as stored by acquisition formats.
+- **Out-of-core reading**: `PrefetchReader` streams halo windows of any `RecordingSource` with the
+  next window read on a background thread, so disk and decompression overlap device work.
+- **Neural file metadata** (feature `neuro`): probe geometry as stored by acquisition formats,
+  nominal probe presets and nearest-site queries.
+- **Spike-sorting files** (feature `neuro`): Phy / Kilosort folders, NWB `/units` tables and
+  dsp-kitchen's `.sorting.zarr`, as plain structs shaped like the files, plus format detection.
 
 ### Must not contain
 - Algorithms (filtering, detection, sorting): those consume `RecordingSource`.
@@ -55,7 +61,8 @@ dsp-io/src/
 │   ├── format.rs            Format trait
 │   ├── open.rs              detect, open, sources, open_source
 │   ├── sources.rs           SourceEntry, SourceKind, MAIN, single_source, require_main, default_source
-│   └── cached.rs            CachedRecording
+│   ├── cached.rs            CachedRecording
+│   └── prefetch.rs          PrefetchReader (double-buffered background window reads)
 ├── container/
 │   ├── binary/codec.rs      little-endian decode/encode, frame scaling (crate-internal)
 │   ├── npy/                 .npy read/write
@@ -64,10 +71,16 @@ dsp-io/src/
 │   ├── raw/                 RawRecording, RawParams, write_raw, Raw
 │   └── zarr_traces/         ZarrRecording, write_zarr, ZarrTraces    (feature zarr)
 └── neuro/                                                            (feature neuro)
-    ├── nwb/                 acquisition.rs (NwbZarrRecording), units.rs, Nwb   (+ zarr)
+    ├── nwb/                 acquisition.rs (NwbZarrRecording), units.rs (NwbUnitsTable), Nwb   (+ zarr)
     ├── spikeglx/            SpikeGlxMeta, apply_meta, probe_layout, SpikeGlx
     ├── mtscomp/             MtscompRecording, Mtscomp
-    ├── probe/               SensorLayout, SensorSite, Position3D, ProbeSource, probe_of
+    ├── probe/               SensorLayout, SensorSite, Position3D, ProbeSource, probe_of,
+    │                        presets.rs (Neuropixels 1.0 / 2.0, HD-EMG grids, tetrode, Utah),
+    │                        neighbors.rs (find_k_nearest_neighbors, precompute_knn_table)
+    ├── phy/                 PhyFolder, PhyParams, ClusterTables, resolve_dat_path
+    ├── sorting_zarr/        SortingZarr (+ manifest types)                     (+ zarr)
+    ├── sorting_format.rs    SortingFormat, detect_sorting
+    ├── templates.rs         DenseTemplates, TemplateAxisOrder
     └── synthetic/           SyntheticRecording, SyntheticParams
 ```
 
@@ -89,6 +102,7 @@ and `format.rs` (a unit struct implementing `Format`). See
 | `MAIN`, `single_source`, `require_main` | Helpers for single-recording formats. |
 | `default_source` | Largest electrical source, else largest. |
 | `CachedRecording` | Wraps a chunked source; keeps recently decoded chunks within a memory budget. |
+| `PrefetchReader` | `new(source, ChunkSchedule)`, `with_channels`; `for_each_window(f)` (scaled values) / `for_each_window_stored(f)` (stored bytes) call `f` per halo window while the next is read on a background thread. Host memory stays at two windows whatever the recording length. |
 
 ### `registry`
 | Item | Purpose |
@@ -117,11 +131,26 @@ and `format.rs` (a unit struct implementing `Format`). See
 
 | Item | Purpose |
 |---|---|
-| `probe::SensorLayout` / `SensorSite` / `Position3D` | Probe geometry (µm positions, shanks); `select_channels`, `to_channel_arrays` / `from_channel_arrays` (Phy/Kilosort arrays), `neuropixels_1_0_standard`. |
+| `probe::SensorLayout` / `SensorSite` / `Position3D` | Probe geometry (µm positions, shanks); `select_channels`, `to_channel_arrays` / `from_channel_arrays` (Phy/Kilosort arrays). |
+| `probe::{neuropixels_1_0, neuropixels_2_0, hdemg_grid, hdemg_4x8, hdemg_8x8, tetrode, utah_array}` | Nominal geometries (spacings named); files carrying their own geometry take precedence. |
+| `probe::{find_k_nearest_neighbors, precompute_knn_table}` | Nearest sites of a channel / the flattened `[channels, k]` table device kernels index. |
 | `probe::ProbeSource` | Optional capability of a `Format`: `probe(path, id) -> Option<SensorLayout>`. |
 | `probe::probe_of(path, id)` | Geometry of a source, kept **beside** the recording (core's `RecordingInfo` carries none). Apply `select_channels` when slicing channels. |
 | `spikeglx::probe_layout(meta)` | Geometry from `snsGeomMap`, else `snsShankMap` + probe pitch. |
 | `synthetic::SyntheticRecording` | Deterministic procedural recording (noise, hum, drifting spike trains) with ground truth, for tests and demos. |
+
+### Sorting files (feature `neuro`)
+Each format is a struct mirroring the files (read and write, nothing computed); `dsp-synapse`
+converts them to and from its `SortingOutput`.
+
+| Item | Purpose |
+|---|---|
+| `phy::PhyFolder` | Phy / Kilosort 1–4 folder: per-spike arrays, dense templates (Kilosort 1–3 sparse templates densified), similarity, PC / template features, cluster tables, `params.py`. `read`, `write` (whole folder), `write_curation` (`spike_clusters.npy`, `cluster_group.tsv`, `cluster_info.tsv`, with a `.bak` of each original), `recording_path`, `recording_samples`, `similarity`. |
+| `phy::{PhyParams, ClusterTables, resolve_dat_path, ClusterId}` | `params.py` and the `.tsv` tables (read / write); finding a recording whose `dat_path` was written on another machine. |
+| `nwb::NwbUnitsTable` | NWB `/units` columns (ragged spike times, optional per-spike amplitudes / locations, SNR, firing rate, primary channel, `waveform_mean/sd/se`) and group attributes; `read(dir, rate)` (rate inferred when `None`), `write`, `spikes_of`. |
+| `sorting_zarr::SortingZarr` | dsp-kitchen's own `.sorting.zarr` (not a SpikeInterface layout): manifest (unit metrics, probe, drift, provenance) + `/spikes` + `/templates`. |
+| `templates::{DenseTemplates, TemplateAxisOrder}` | `[count, samples, channels]` template arrays; `from_sparse`, `from_channels_samples`, `trace`, `peak_to_peak`, `best_channel`, `top_channels`, `amplitude`. |
+| `SortingFormat`, `detect_sorting(path)`, `SortingFormat::from_path_name` | Which format a path holds (contents first, then name). |
 
 ## Design rules
 
@@ -133,13 +162,12 @@ and `format.rs` (a unit struct implementing `Format`). See
 
 ## Consumers
 
-`dsp-app`, `dsp-cli`, `dsp-synapse-ml`; `dsp-synapse` after the fix-up pass (it currently uses
-`zarrs` directly).
+`dsp-synapse` (probe geometry, prefetch, sorting files), `dsp-app`, `dsp-cli`, `dsp-synapse-ml`.
 
 ## Open items
 
-- **Phase 3**: Phy (`phy.rs`, `phy_sorting.rs`), NWB `/units` (`nwb_units.rs`) and
-  `.sorting.zarr` (`zarr_analyzer.rs`) from `dsp-synapse/storage` → `neuro/phy/`,
-  `neuro/nwb/units.rs`, `neuro/sorting_zarr/`, split from synapse's `SortingOutput`.
+- **Compile**: update the readers to core's `ChannelInfo { gain, offset, unit }` and
+  `RecordingInfo.start_time` (the remaining `cargo check` errors).
+- Whether `.sorting.zarr` should become SpikeInterface-compatible is undecided.
 - NWB does not yet implement `ProbeSource` (the electrodes table holds positions).
 - `core/` tests still use `SyntheticRecording` and so only run with `neuro`.
