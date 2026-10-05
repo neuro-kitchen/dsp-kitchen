@@ -26,6 +26,12 @@ pub fn channel_position() -> u32 {
     ABSOLUTE_POS_Y
 }
 
+/// Row reduced by the cube in a [`LaunchGeometry::per_row`] launch (uniform across the cube).
+#[cube]
+pub fn row_position() -> u32 {
+    CUBE_POS_Y * CUBE_COUNT_X + CUBE_POS_X
+}
+
 impl LaunchGeometry {
     /// One unit per element, indexed with the linear `ABSOLUTE_POS`. The cubes are spread over the
     /// runtime's cube-count dimensions, so kernels must bound-check `ABSOLUTE_POS`.
@@ -67,6 +73,22 @@ impl LaunchGeometry {
         Self { cube_dim, cube_count: CubeCount::Static((channels.max(1) as u32).div_ceil(cube_dim.x), 1, 1) }
     }
 
+    /// One cube per row of a `[rows, cols]` buffer, for cube-wide reductions: [`row_position`] is the
+    /// row (cubes along x, continuing along y past the grid's x limit) and `UNIT_POS_X` strides along
+    /// it. The cube is the runtime's cube for `cols` units flattened onto x and rounded down to a
+    /// power of two, so tree reductions can halve it; kernels size shared memory with
+    /// `cube_dim.x` (passed as a comptime value). Kernels bound-check the row.
+    ///
+    /// # Panics
+    /// If the rows need more cubes than the runtime's whole grid holds.
+    pub fn per_row<R: Runtime>(client: &ComputeClient<R>, rows: usize, cols: usize) -> Self {
+        let units = Self::flat(client, cols).x;
+        let cube_dim = CubeDim::new_1d(1 << (u32::BITS - 1 - units.max(1).leading_zeros()));
+        let (x, y) = Self::spill(client, rows, 1);
+        assert!(y <= client.properties().hardware.max_cube_count.1, "{rows} rows exceed the runtime's cube grid");
+        Self { cube_dim, cube_count: CubeCount::Static(x, y, 1) }
+    }
+
     /// Units that execute in lock-step (the runtime's plane / warp / subgroup size; 1 where every
     /// unit runs on its own, as on the CPU runtime). It is the x size of
     /// [`Self::channels_samples`] cubes, so consecutive `sample_position`s of a plane share a cube.
@@ -79,15 +101,15 @@ impl LaunchGeometry {
         CubeDim::new_1d(CubeDim::new(client, work.max(1)).num_elems())
     }
 
-    /// Cube counts `(x, z)` covering `units` along x with `per_cube` units per cube, continuing
-    /// along z past the grid's x limit.
+    /// Cube counts `(x, overflow)` covering `units` along x with `per_cube` units per cube; the
+    /// overflow count continues past the grid's x limit (along z for samples, y for rows).
     fn spill<R: Runtime>(client: &ComputeClient<R>, units: usize, per_cube: u32) -> (u32, u32) {
         let max = client.properties().hardware.max_cube_count;
         let cubes = (units.max(1) as u64).div_ceil(per_cube as u64);
         let x = cubes.min(max.0 as u64);
-        let z = cubes.div_ceil(x);
-        assert!(z <= max.2 as u64, "{units} samples exceed the runtime's cube grid");
-        (x as u32, z as u32)
+        let overflow = cubes.div_ceil(x);
+        assert!(overflow <= max.2.min(max.1) as u64, "{units} units exceed the runtime's cube grid");
+        (x as u32, overflow as u32)
     }
 }
 

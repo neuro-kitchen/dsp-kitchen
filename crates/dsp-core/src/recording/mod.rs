@@ -8,9 +8,11 @@ pub mod info;
 pub mod memory;
 pub mod slice;
 pub mod source;
+pub mod unit;
 
 pub use format::SampleFormat;
 pub use info::{ChannelInfo, RecordingInfo};
 pub use memory::MemoryRecording;
 pub use slice::SlicedRecording;
 pub use source::{check_read, check_read_stored, RecordingSource};
+pub use unit::SignalUnit;

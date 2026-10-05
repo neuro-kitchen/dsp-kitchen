@@ -33,9 +33,6 @@ pub enum DspError {
 
     #[error("Unsupported format: {0}")]
     UnsupportedFormat(String),
-
-    #[error("Model inference failed: {0}")]
-    Model(String),
 }
 
 impl From<std::io::Error> for DspError {

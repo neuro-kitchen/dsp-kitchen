@@ -2,16 +2,17 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use super::format::SampleFormat;
+use super::unit::SignalUnit;
 use crate::buffer::MemoryOrder;
-use crate::layout::SensorLayout;
-use crate::time::SampleRate;
+use crate::time::{RationalTime, SampleRate};
 
-/// Name and scaling of one stored channel: `value_uv = stored * gain_uv + offset_uv`.
+/// Name and scaling of one stored channel: `value = stored * gain + offset`, in `unit`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChannelInfo {
     pub name: String,
-    pub gain_uv: f32,
-    pub offset_uv: f32,
+    pub gain: f32,
+    pub offset: f32,
+    pub unit: SignalUnit,
 }
 
 /// Format-independent description of a continuous multi-channel recording.
@@ -22,19 +23,18 @@ pub struct RecordingInfo {
     /// Samples per channel.
     pub samples: u64,
     pub sample_rate: SampleRate,
-    /// Stored sample type (reads always return µV `f32`).
+    /// Stored sample type (reads always return scaled `f32` in each channel's unit).
     pub format: SampleFormat,
     /// Stored memory order (reads always return channel-major).
     pub order: MemoryOrder,
-    /// Time of sample 0, in seconds from the acquisition start.
-    pub start_time_sec: f64,
-    pub layout: Option<SensorLayout>,
-    /// Free-form format metadata (e.g. probe type, acquisition software).
+    /// Time of sample 0 from the acquisition start.
+    pub start_time: RationalTime,
+    /// Free-form format metadata (e.g. device type, acquisition software).
     pub metadata: BTreeMap<String, String>,
 }
 
 impl RecordingInfo {
-    /// Channels named `ch0..chN` with unit gain and no offset.
+    /// Channels named `ch0..chN` with unit gain, no offset and dimensionless values.
     pub fn new(
         name: impl Into<String>,
         channel_count: usize,
@@ -44,7 +44,7 @@ impl RecordingInfo {
         order: MemoryOrder,
     ) -> Self {
         let channels = (0..channel_count)
-            .map(|i| ChannelInfo { name: format!("ch{i}"), gain_uv: 1.0, offset_uv: 0.0 })
+            .map(|i| ChannelInfo { name: format!("ch{i}"), gain: 1.0, offset: 0.0, unit: SignalUnit::Dimensionless })
             .collect();
         Self {
             name: name.into(),
@@ -53,16 +53,16 @@ impl RecordingInfo {
             sample_rate,
             format,
             order,
-            start_time_sec: 0.0,
-            layout: None,
+            start_time: RationalTime::ZERO,
             metadata: BTreeMap::new(),
         }
     }
 
-    /// Sets the same gain on every channel.
-    pub fn with_gain_uv(mut self, gain_uv: f32) -> Self {
+    /// Sets the same gain and unit on every channel.
+    pub fn with_gain(mut self, gain: f32, unit: SignalUnit) -> Self {
         for c in &mut self.channels {
-            c.gain_uv = gain_uv;
+            c.gain = gain;
+            c.unit = unit.clone();
         }
         self
     }
