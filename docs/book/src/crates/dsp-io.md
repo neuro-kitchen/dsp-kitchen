@@ -1,11 +1,5 @@
 # dsp-io
 
-> **Status:** restructured on 2026-10-05 (`versions/v0.14`): phase 1 (layered tree), phase 1b
-> (format registry), phase 2 (shared containers) and phase 3 (sorting files, from the dsp-synapse
-> review) done; probe presets and the out-of-core prefetch reader moved in. Does not compile yet
-> (it still uses core's pre-cleanup `ChannelInfo` fields); downstream crates are intentionally
-> broken until the final fix-up pass. Moves are tracked in `refactoring/dsp-io/README.md`.
-
 ## Intent
 
 Reading (and writing) recording files. Every format turns a file into a
@@ -113,7 +107,7 @@ and `format.rs` (a unit struct implementing `Format`). See
 | Module | Contents |
 |---|---|
 | `binary::codec` | Crate-internal: decode/encode little-endian runs with gain/offset, select stored channels, native↔LE. |
-| `npy` | `read_npy::<T>` (v1–3, all numeric dtypes, both byte orders, C/Fortran → C order, exact integer conversion), `write_npy`, `read_header`, typed 1-D/2-D/3-D helpers, `NpyArray`, `NpyElement`, `NpyWritable`. |
+| `npy` | `read_npy::<T>` (v1–3, all numeric dtypes, both byte orders, C/Fortran → C order, exact integer conversion), `read_npy_bytes`, `write_npy`, `read_header`, typed 1-D/2-D/3-D helpers, `NpyArray`, `NpyElement`, `NpyWritable`; `.npz` archives: `read_npz::<T>` (all arrays by name), `read_npz_entries` (stored and deflate entries, no zip64). |
 | `zarr` | `open_store`, `open_rw_store`, `write_group`, `read_node_json`, `read_node_attributes`, `has_array`, `write_array_{u64,i64,i32,f32,f64}` (hdmf-zarr `_DTYPE` / `_ARRAY_DIMENSIONS`), `read_array::<T>` (falls back to legacy `<node>.npy`), `read_optional_array`, `read_all`. |
 
 ### `generic`
@@ -164,10 +158,9 @@ converts them to and from its `SortingOutput`.
 
 `dsp-synapse` (probe geometry, prefetch, sorting files), `dsp-app`, `dsp-cli`, `dsp-synapse-ml`.
 
-## Open items
+## Limitations
 
-- **Compile**: update the readers to core's `ChannelInfo { gain, offset, unit }` and
-  `RecordingInfo.start_time` (the remaining `cargo check` errors).
-- Whether `.sorting.zarr` should become SpikeInterface-compatible is undecided.
-- NWB does not yet implement `ProbeSource` (the electrodes table holds positions).
-- `core/` tests still use `SyntheticRecording` and so only run with `neuro`.
+- NWB does not implement `ProbeSource` yet (the electrodes table holds positions).
+- `.sorting.zarr` is dsp-kitchen's own layout, not SpikeInterface's.
+- `.npz` reading does not support zip64 archives.
+- `core/` tests use `SyntheticRecording`, so they run only with feature `neuro`.
