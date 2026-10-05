@@ -21,7 +21,6 @@ extension-module = ["pyo3/extension-module"]
 dsp-core = { workspace = true, features = ["compute"] }
 dsp-base.workspace = true
 dsp-io.workspace = true
-dsp-stream.workspace = true
 dsp-synapse.workspace = true
 dsp-synapse-ml.workspace = true
 cubecl = { workspace = true, features = ["wgpu"] }
