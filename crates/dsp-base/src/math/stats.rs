@@ -28,6 +28,28 @@ pub fn estimate_noise_std(signal: &[f32]) -> f32 {
     median / MAD_TO_SIGMA
 }
 
+/// [`estimate_noise_std`] of columns `cols` of every channel of the `[channels, samples]` device
+/// buffer `input`, on the device (`median(|x|)` at index `n / 2` by
+/// [`reduce::row_abs_kth`]); only the `channels` estimates are downloaded. Empty `cols`: zeros.
+pub fn execute_channel_noise_std<R: Runtime, F: DspFloat>(
+    client: &ComputeClient<R>,
+    input: &cubecl::server::Handle,
+    channels: usize,
+    samples: usize,
+    cols: std::ops::Range<usize>,
+) -> Vec<f64> {
+    if cols.is_empty() || channels == 0 {
+        return vec![0.0; channels];
+    }
+    let out = crate::core::buffer::empty::<R, F>(client, channels);
+    let k = cols.len() / 2;
+    reduce::row_abs_kth::<R, F>(client, input, &out, channels, samples, cols, k);
+    crate::core::buffer::download::<R, F>(client, out)
+        .into_iter()
+        .map(|m| crate::core::to_f64(m) / MAD_TO_SIGMA as f64)
+        .collect()
+}
+
 /// Computes the root-mean-square (RMS) standard deviation around the sample mean:
 /// $\sigma_{\text{rms}} = \sqrt{\frac{1}{N} \sum_{i=1}^N (x_i - \mu)^2}$
 pub fn estimate_noise_rms(signal: &[f32]) -> f32 {
