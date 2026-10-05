@@ -4,9 +4,15 @@
 //! which simultaneously boosts high-frequency, high-amplitude action potentials
 //! while suppressing low-frequency LFP hum.
 
-use crate::traits::SpikeDetector;
+use dsp_base::peaks::{local_extrema, DistanceRule, Polarity};
+
+use crate::core::SpikeDetector;
 use super::noise::estimate_noise_std;
+use super::spacing::SpikeSpacing;
 use super::threshold::SpikeEvent;
+
+/// Samples on each side of an energy peak searched for the voltage trough.
+const TROUGH_SEARCH_SAMPLES: usize = 2;
 
 /// Computes the 1D Teager-Kaiser Nonlinear Energy Operator $\psi[n] = x^2[n] - x[n-1]x[n+1]$.
 pub fn compute_neo_energy_1d(signal: &[f32]) -> Vec<f32> {
@@ -24,13 +30,15 @@ pub fn compute_neo_energy_1d(signal: &[f32]) -> Vec<f32> {
     psi
 }
 
-/// Detects multi-channel spikes using the Teager-Kaiser Nonlinear Energy Operator (NEO).
+/// Detects multi-channel spikes with the Teager-Kaiser Nonlinear Energy Operator (NEO): energy
+/// peaks above `neo_threshold_factor · σ(ψ)` where the voltage is negative, moved to the voltage
+/// trough within ±2 samples, spaced by `spacing` (larger energy wins).
 pub fn detect_spikes_neo(
     data: &[f32],
     channels: usize,
     samples: usize,
     neo_threshold_factor: f32,
-    refractory_samples: usize,
+    spacing: SpikeSpacing,
 ) -> Vec<SpikeEvent> {
     assert_eq!(data.len(), channels * samples);
     let mut events = Vec::new();
@@ -39,46 +47,33 @@ pub fn detect_spikes_neo(
     }
 
     for ch in 0..channels {
-        let off = ch * samples;
-        let ch_slice = &data[off..off + samples];
+        let ch_slice = &data[ch * samples..(ch + 1) * samples];
         let psi = compute_neo_energy_1d(ch_slice);
 
-        // Estimate baseline NEO energy via MAD / median
+        // Baseline NEO energy via MAD / median
         let neo_std = estimate_noise_std(&psi);
         if neo_std <= 0.0 || neo_std.is_nan() {
             continue;
         }
         let thresh = neo_threshold_factor * neo_std;
-        let mut last_spike = 0usize;
 
-        for t in 1..(samples - 1) {
-            let e = psi[t];
-            if e > thresh && e >= psi[t - 1] && e >= psi[t + 1] && ch_slice[t] < 0.0 {
-                if events.is_empty() || t > last_spike + refractory_samples {
-                    // Refine to local negative voltage trough within +/- 2 samples
-                    let w_start = t.saturating_sub(2);
-                    let w_end = (t + 2).min(samples - 1);
-                    let mut best_t = t;
-                    let mut min_v = ch_slice[t];
-                    for k in w_start..=w_end {
-                        if ch_slice[k] < min_v {
-                            min_v = ch_slice[k];
-                            best_t = k;
-                        }
-                    }
-
-                    events.push(SpikeEvent {
-                        channel_id: ch,
-                        sample_index: best_t as u64,
-                        peak_amplitude_uv: min_v,
-                    });
-                    last_spike = best_t;
-                }
-            }
-        }
+        let candidates: Vec<(usize, f32, f32)> = local_extrema(&psi, Polarity::Positive)
+            .into_iter()
+            .filter(|&(t, _)| psi[t] >= thresh && ch_slice[t] < 0.0)
+            .map(|(t, _)| {
+                let window = t.saturating_sub(TROUGH_SEARCH_SAMPLES)..=(t + TROUGH_SEARCH_SAMPLES).min(samples - 1);
+                let trough = window.min_by(|&a, &b| ch_slice[a].total_cmp(&ch_slice[b])).unwrap_or(t);
+                (trough, psi[t], ch_slice[trough])
+            })
+            .collect();
+        events.extend(spacing.select(candidates).into_iter().map(|(t, _, v)| SpikeEvent {
+            channel_id: ch,
+            sample_index: t as u64,
+            peak_amplitude_uv: v,
+        }));
     }
 
-    events.sort_by_key(|s| s.sample_index);
+    events.sort_by_key(|s| (s.sample_index, s.channel_id));
     events
 }
 
@@ -87,6 +82,8 @@ pub fn detect_spikes_neo(
 pub struct NeoSpikeDetector {
     pub threshold_factor: f32,
     pub refractory_ms: f64,
+    /// How spikes nearer than the refractory period are resolved (see [`SpikeSpacing`]).
+    pub distance_rule: DistanceRule,
 }
 
 impl Default for NeoSpikeDetector {
@@ -94,6 +91,7 @@ impl Default for NeoSpikeDetector {
         Self {
             threshold_factor: 8.0,
             refractory_ms: 1.0,
+            distance_rule: DistanceRule::LocallyExclusive,
         }
     }
 }
@@ -106,8 +104,8 @@ impl SpikeDetector for NeoSpikeDetector {
         samples: usize,
         sample_rate_hz: f64,
     ) -> dsp_core::DspResult<Vec<SpikeEvent>> {
-        let ref_samples = ((sample_rate_hz * self.refractory_ms * 1e-3).round() as usize).max(1);
-        Ok(detect_spikes_neo(data, channels, samples, self.threshold_factor, ref_samples))
+        let spacing = SpikeSpacing::from_ms(self.refractory_ms, sample_rate_hz, self.distance_rule);
+        Ok(detect_spikes_neo(data, channels, samples, self.threshold_factor, spacing))
     }
 }
 
@@ -127,7 +125,7 @@ mod tests {
         sig[400] = -95.0;
         sig[401] = 35.0;
 
-        let spikes = detect_spikes_neo(&sig, 1, samples, 8.0, 20);
+        let spikes = detect_spikes_neo(&sig, 1, samples, 8.0, SpikeSpacing::new(20));
         assert_eq!(spikes.len(), 1);
         assert_eq!(spikes[0].sample_index, 400);
         assert_eq!(spikes[0].peak_amplitude_uv, -95.0);

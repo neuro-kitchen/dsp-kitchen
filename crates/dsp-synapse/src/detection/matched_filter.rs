@@ -3,8 +3,11 @@
 //! Correlates continuous multi-channel signals against a zero-mean, unit-norm
 //! canonical biphasic action potential template to boost low-SNR spikes.
 
-use crate::traits::SpikeDetector;
+use dsp_base::peaks::{local_extrema, DistanceRule, Polarity};
+
+use crate::core::SpikeDetector;
 use super::noise::estimate_noise_std;
+use super::spacing::SpikeSpacing;
 use super::threshold::SpikeEvent;
 
 /// Generates a zero-mean, unit-$L_2$-norm canonical extracellular biphasic spike prototype
@@ -37,14 +40,16 @@ pub fn canonical_biphasic_prototype(kernel_samples: usize) -> Vec<f32> {
     proto
 }
 
-/// Detects multi-channel spikes using matched-filter inner product against `prototype`.
+/// Detects multi-channel spikes with the matched-filter inner product against `prototype`: score
+/// peaks above `threshold_factor · σ(score)` where the voltage is negative, spaced by `spacing`
+/// (larger score wins).
 pub fn detect_spikes_matched_filter(
     data: &[f32],
     channels: usize,
     samples: usize,
     prototype: &[f32],
     threshold_factor: f32,
-    refractory_samples: usize,
+    spacing: SpikeSpacing,
 ) -> Vec<SpikeEvent> {
     assert_eq!(data.len(), channels * samples);
     let k_len = prototype.len();
@@ -82,24 +87,19 @@ pub fn detect_spikes_matched_filter(
         }
 
         let thresh = threshold_factor * sigma_c;
-        let mut last_spike = 0usize;
-
-        for t in 1..(samples - 1) {
-            let score = corr[t];
-            if score > thresh && score >= corr[t - 1] && score >= corr[t + 1] && sig[t] < 0.0 {
-                if events.is_empty() || t > last_spike + refractory_samples {
-                    events.push(SpikeEvent {
-                        channel_id: ch,
-                        sample_index: t as u64,
-                        peak_amplitude_uv: sig[t],
-                    });
-                    last_spike = t;
-                }
-            }
-        }
+        let candidates: Vec<(usize, f32, ())> = local_extrema(&corr, Polarity::Positive)
+            .into_iter()
+            .filter(|&(t, _)| corr[t] >= thresh && sig[t] < 0.0)
+            .map(|(t, _)| (t, corr[t], ()))
+            .collect();
+        events.extend(spacing.select(candidates).into_iter().map(|(t, _, ())| SpikeEvent {
+            channel_id: ch,
+            sample_index: t as u64,
+            peak_amplitude_uv: sig[t],
+        }));
     }
 
-    events.sort_by_key(|e| e.sample_index);
+    events.sort_by_key(|e| (e.sample_index, e.channel_id));
     events
 }
 
@@ -109,6 +109,8 @@ pub struct MatchedFilterSpikeDetector {
     pub prototype: Vec<f32>,
     pub threshold_factor: f32,
     pub refractory_ms: f64,
+    /// How spikes nearer than the refractory period are resolved (see [`SpikeSpacing`]).
+    pub distance_rule: DistanceRule,
 }
 
 impl MatchedFilterSpikeDetector {
@@ -117,6 +119,7 @@ impl MatchedFilterSpikeDetector {
             prototype: canonical_biphasic_prototype(kernel_samples),
             threshold_factor,
             refractory_ms,
+            distance_rule: DistanceRule::LocallyExclusive,
         }
     }
 }
@@ -129,15 +132,8 @@ impl SpikeDetector for MatchedFilterSpikeDetector {
         samples: usize,
         sample_rate_hz: f64,
     ) -> dsp_core::DspResult<Vec<SpikeEvent>> {
-        let ref_samples = ((sample_rate_hz * self.refractory_ms * 1e-3).round() as usize).max(1);
-        Ok(detect_spikes_matched_filter(
-            data,
-            channels,
-            samples,
-            &self.prototype,
-            self.threshold_factor,
-            ref_samples,
-        ))
+        let spacing = SpikeSpacing::from_ms(self.refractory_ms, sample_rate_hz, self.distance_rule);
+        Ok(detect_spikes_matched_filter(data, channels, samples, &self.prototype, self.threshold_factor, spacing))
     }
 }
 
@@ -157,7 +153,7 @@ mod tests {
             sig[500 + k] += p * 180.0;
         }
 
-        let events = detect_spikes_matched_filter(&sig, 1, samples, &proto, 4.5, 20);
+        let events = detect_spikes_matched_filter(&sig, 1, samples, &proto, 4.5, SpikeSpacing::new(20));
         assert_eq!(events.len(), 1);
         assert!((events[0].sample_index as i64 - 508).abs() <= 2);
     }

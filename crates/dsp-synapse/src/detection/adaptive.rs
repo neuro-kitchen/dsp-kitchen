@@ -1,5 +1,8 @@
+use dsp_base::peaks::{local_extrema, DistanceRule};
+
 use crate::core::{SpikeDetector, SpikeEvent};
 use super::noise::estimate_noise_std;
+use super::spacing::SpikeSpacing;
 use super::threshold::SpikePolarity;
 
 /// Adaptive Exponential-Moving-Average (EMA) MAD threshold detector for non-stationary recordings
@@ -15,6 +18,8 @@ pub struct AdaptiveThresholdDetector {
     pub block_duration_ms: f64,
     pub smoothing_alpha: f32,
     pub polarity: SpikePolarity,
+    /// How spikes nearer than the refractory period are resolved (see [`SpikeSpacing`]).
+    pub distance_rule: DistanceRule,
 }
 
 impl Default for AdaptiveThresholdDetector {
@@ -25,6 +30,7 @@ impl Default for AdaptiveThresholdDetector {
             block_duration_ms: 100.0,
             smoothing_alpha: 0.25,
             polarity: SpikePolarity::Negative,
+            distance_rule: DistanceRule::LocallyExclusive,
         }
     }
 }
@@ -43,6 +49,7 @@ impl AdaptiveThresholdDetector {
             block_duration_ms,
             smoothing_alpha: smoothing_alpha.clamp(0.01, 1.0),
             polarity,
+            ..Self::default()
         }
     }
 }
@@ -56,67 +63,42 @@ impl SpikeDetector for AdaptiveThresholdDetector {
         sample_rate_hz: f64,
     ) -> dsp_core::DspResult<Vec<SpikeEvent>> {
         assert_eq!(data.len(), channels * samples);
-        let ref_samples = ((sample_rate_hz * self.refractory_ms * 1e-3).round() as usize).max(1);
+        let spacing = SpikeSpacing::from_ms(self.refractory_ms, sample_rate_hz, self.distance_rule);
         let block_samples = ((sample_rate_hz * self.block_duration_ms * 1e-3).round() as usize)
             .clamp(32, samples.max(32));
         let alpha = self.smoothing_alpha.clamp(0.01, 1.0);
 
         let mut all_spikes = Vec::new();
-
         for ch in 0..channels {
             let row = &data[ch * samples..(ch + 1) * samples];
             if samples < 3 {
                 continue;
             }
-            let first_end = block_samples.min(samples);
-            let mut running_sigma = estimate_noise_std(&row[..first_end]).max(1e-6);
-            let mut last_spike_sample: Option<usize> = None;
-
-            let mut block_start = 0usize;
-            while block_start < samples {
-                let block_end = (block_start + block_samples).min(samples);
-                let local_sigma = estimate_noise_std(&row[block_start..block_end]);
-                if local_sigma > 0.0 {
-                    running_sigma = (1.0 - alpha) * running_sigma + alpha * local_sigma;
-                }
-                let thresh = self.threshold_factor * running_sigma;
-
-                let t_start = block_start.max(1);
-                let t_end = block_end.min(samples.saturating_sub(1));
-                for t in t_start..t_end {
-                    let val = row[t];
-                    let prev = row[t - 1];
-                    let next = row[t + 1];
-
-                    let is_neg = val < -thresh && val < prev && val <= next;
-                    let is_pos = val > thresh && val > prev && val >= next;
-                    let triggered = match self.polarity {
-                        SpikePolarity::Negative => is_neg,
-                        SpikePolarity::Positive => is_pos,
-                        SpikePolarity::Both => is_neg || is_pos,
-                    };
-
-                    if triggered {
-                        let past_refractory = match last_spike_sample {
-                            None => true,
-                            Some(prev_t) => t > prev_t + ref_samples,
-                        };
-                        if past_refractory {
-                            all_spikes.push(SpikeEvent {
-                                channel_id: ch,
-                                sample_index: t as u64,
-                                peak_amplitude_uv: val,
-                            });
-                            last_spike_sample = Some(t);
-                        }
+            // Threshold of each block: σ smoothed across blocks
+            let mut running_sigma = estimate_noise_std(&row[..block_samples.min(samples)]).max(1e-6);
+            let thresholds: Vec<f32> = row
+                .chunks(block_samples)
+                .map(|block| {
+                    let local_sigma = estimate_noise_std(block);
+                    if local_sigma > 0.0 {
+                        running_sigma = (1.0 - alpha) * running_sigma + alpha * local_sigma;
                     }
-                }
-
-                block_start = block_end;
-            }
+                    self.threshold_factor * running_sigma
+                })
+                .collect();
+            let candidates: Vec<(usize, f32, ())> = local_extrema(row, self.polarity.into())
+                .into_iter()
+                .filter(|&(t, sign)| f32::from(sign) * row[t] >= thresholds[t / block_samples])
+                .map(|(t, _)| (t, row[t].abs(), ()))
+                .collect();
+            all_spikes.extend(spacing.select(candidates).into_iter().map(|(t, _, ())| SpikeEvent {
+                channel_id: ch,
+                sample_index: t as u64,
+                peak_amplitude_uv: row[t],
+            }));
         }
 
-        all_spikes.sort_by_key(|s| s.sample_index);
+        all_spikes.sort_by_key(|s| (s.sample_index, s.channel_id));
         Ok(all_spikes)
     }
 }

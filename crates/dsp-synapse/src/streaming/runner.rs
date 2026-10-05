@@ -6,15 +6,15 @@ use cubecl::{CubeElement, Runtime};
 use dsp_core::compute::{ComputeTarget, ComputeTask};
 
 use dsp_base::pipeline::{Pipeline, PipelineWorkspace};
-use dsp_core::{ChunkSchedule, DspError, DspResult, HaloWindow, ProbeLayout, RecordingSource, SampleFormat};
-use dsp_stream::PrefetchReader;
+use dsp_core::{ChunkSchedule, DspError, DspResult, HaloWindow, RecordingSource, SampleFormat};
+use dsp_io::neuro::probe::{precompute_knn_table, SensorLayout};
+use dsp_io::PrefetchReader;
 
 use crate::core::{DeduplicatedSpike, SortedUnit, SortingOutput, WaveformTemplate};
 use crate::detection::{
-    DetectionCarry, StreamingDedup, estimate_noise_std, execute_detect_spikes_in_vram,
+    SpikeSpacing, StreamingDedup, detection_heights, estimate_noise_std, execute_detect_spikes_in_vram,
 };
 use crate::extraction::{execute_extract_sinc_in_vram, extraction_margin};
-use crate::probe::precompute_knn_table;
 use super::accumulator::TemplateAccumulator;
 use super::config::StreamingSortConfig;
 use super::kernels::execute_reduce_templates_in_vram;
@@ -50,7 +50,7 @@ impl StreamingSortResult {
     pub fn to_sorting_output(
         &self,
         sorter_name: impl Into<String>,
-        probe: Option<ProbeLayout>,
+        probe: Option<SensorLayout>,
     ) -> SortingOutput {
         let mut per_ch_samples: Vec<Vec<u64>> = vec![Vec::new(); self.channels];
         let mut per_ch_amps: Vec<Vec<f32>> = vec![Vec::new(); self.channels];
@@ -107,7 +107,7 @@ impl StreamingSpikeRunner {
         &self,
         source: &dyn RecordingSource,
         pipeline: &Pipeline,
-        probe: &ProbeLayout,
+        probe: &SensorLayout,
     ) -> DspResult<StreamingSortResult> {
         let target = ComputeTarget::from_env().map_err(|e| DspError::ComputeError(e.to_string()))?;
         self.run_with(target, source, pipeline, probe)
@@ -119,13 +119,13 @@ impl StreamingSpikeRunner {
         target: ComputeTarget,
         source: &dyn RecordingSource,
         pipeline: &Pipeline,
-        probe: &ProbeLayout,
+        probe: &SensorLayout,
     ) -> DspResult<StreamingSortResult> {
         struct Task<'a> {
             runner: &'a StreamingSpikeRunner,
             source: &'a dyn RecordingSource,
             pipeline: &'a Pipeline,
-            probe: &'a ProbeLayout,
+            probe: &'a SensorLayout,
         }
         impl ComputeTask for Task<'_> {
             type Output = DspResult<StreamingSortResult>;
@@ -146,7 +146,7 @@ impl StreamingSpikeRunner {
         client: ComputeClient<R>,
         source: &dyn RecordingSource,
         pipeline: &Pipeline,
-        probe: &ProbeLayout,
+        probe: &SensorLayout,
     ) -> DspResult<StreamingSortResult> {
         let info = source.info();
         let channels = info.channel_count();
@@ -181,10 +181,10 @@ impl StreamingSpikeRunner {
         let channel_sigmas_uv =
             calibrate_noise(source, &mut workspace, &self.config, (left_halo, right_halo))?;
 
-        // Pre-upload per-channel sigmas and K-nearest neighbor table to VRAM once
-        let sigmas_handle = workspace
-            .client()
-            .create_from_slice(f32::as_bytes(&channel_sigmas_uv));
+        // Pre-upload per-channel detection heights and K-nearest neighbor table to VRAM once
+        let heights = detection_heights(&channel_sigmas_uv, self.config.threshold_factor);
+        let heights_handle = workspace.client().create_from_slice(f32::as_bytes(&heights));
+        let spacing = SpikeSpacing { refractory_samples: refrac_samples, rule: self.config.distance_rule };
         let knn_table = precompute_knn_table(probe, channels, k_neighbors);
         let knn_handle = workspace
             .client()
@@ -206,9 +206,11 @@ impl StreamingSpikeRunner {
         let mut total_dedup_spikes = 0u64;
         let mut global_spikes = Vec::new();
         let elems_per_spike = k_neighbors * snippet_samples;
-        let mut carry = DetectionCarry::new(channels);
         let mut dedup = StreamingDedup::new(probe, self.config.spatial_radius_um, refrac_samples as u64);
+        // Detection looks `spacing.distance()` samples past each window's own range (exact
+        // streaming with `DistanceRule::LocallyExclusive`); the halos cover it
         debug_assert!(left_halo as usize >= refrac_samples + pre_samples + margin);
+        debug_assert!(right_halo as usize >= spacing.distance());
 
         // Integer recordings upload their stored values and are scaled on the device
         let stored = matches!(info.format, SampleFormat::I8 | SampleFormat::I16 | SampleFormat::U16 | SampleFormat::I32)
@@ -225,23 +227,22 @@ impl StreamingSpikeRunner {
             let n_read = win.read_len();
             let read_start = win.read_global.start;
 
-            // 2. Detect crossings in this window's share of the detection range, continuing the
-            //    refractory period from the previous window
+            // 2. Detect crossings in this window's share of the detection range (spacing decided
+            //    with the neighbouring samples of the halo)
             let det_start = win.valid_global.start.max(detect_range.start);
             let det_end = win.valid_global.end.min(detect_range.end);
             if det_start < det_end {
+                let local = |g: u64| (g - read_start) as usize;
                 let crossings = execute_detect_spikes_in_vram::<R>(
                     &client,
                     &filt_handle,
-                    &sigmas_handle,
+                    &heights_handle,
                     channels,
                     n_read,
-                    (det_start - read_start) as usize,
-                    (det_end - read_start) as usize,
+                    local(det_start)..local(det_end),
                     read_start,
-                    self.config.threshold_factor,
-                    refrac_samples,
-                    Some(&mut carry),
+                    self.config.polarity,
+                    spacing,
                 );
                 total_raw_crossings += crossings.len() as u64;
                 dedup.push(&crossings);
@@ -263,7 +264,7 @@ impl StreamingSpikeRunner {
                 .collect();
 
             // 4. Extract Blackman-Harris sinc-realigned snippets and reduce moments directly in VRAM
-            if let Some(extracted) = execute_extract_sinc_in_vram::<R>(
+            if let Some(extracted) = execute_extract_sinc_in_vram::<R, f32>(
                 &client,
                 &filt_handle,
                 &knn_handle,

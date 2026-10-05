@@ -6,10 +6,11 @@
 //! using Golub-Pereyra variable projection (exact 3x3 regularized linear solve for $\mathbf{p}(\mathbf{r}_0)$
 //! at each candidate $\mathbf{r}_0$) combined with damped coordinate-wise Gauss-Newton steps.
 
-use dsp_core::SensorLayout;
+use dsp_io::neuro::probe::SensorLayout;
 use serde::{Deserialize, Serialize};
 use crate::core::{PeakLocalizer, SnippetBatch};
-use super::center_of_mass::{localize_spike_center_of_mass, waveform_peak_to_peak};
+use dsp_base::math::peak_to_peak;
+use super::center_of_mass::localize_spike_center_of_mass;
 
 /// Estimated 3D dipole position (`um`) and dipole moment vector $\mathbf{p}$ (`uV * um^2`).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -180,15 +181,14 @@ impl PeakLocalizer for DipoleLocalizer {
     fn localize(&self, batch: &SnippetBatch, layout: &SensorLayout) -> dsp_core::DspResult<Vec<[f32; 3]>> {
         let mut out = Vec::with_capacity(batch.num_spikes);
         let mut signed_peaks = vec![0.0f32; batch.num_channels];
-        let center_t = batch.num_samples / 2;
 
         for i in 0..batch.num_spikes {
             for k in 0..batch.num_channels {
                 let ch_wave = batch.channel_slice(i, k);
                 signed_peaks[k] = if !ch_wave.is_empty() {
-                    ch_wave[center_t.min(ch_wave.len() - 1)]
+                    ch_wave[batch.peak_index.min(ch_wave.len() - 1)]
                 } else {
-                    waveform_peak_to_peak(ch_wave)
+                    peak_to_peak(ch_wave)
                 };
             }
             let ch_ids = batch.spike_channel_ids(i);
@@ -202,7 +202,7 @@ impl PeakLocalizer for DipoleLocalizer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::probe::neuropixels_2_0;
+    use dsp_io::neuro::probe::neuropixels_2_0;
 
     #[test]
     fn test_dipole_localizer_recovers_3d_position_and_orientation() {

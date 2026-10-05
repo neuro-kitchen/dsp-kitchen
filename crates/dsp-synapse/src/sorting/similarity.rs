@@ -4,6 +4,8 @@
 //! multi-channel `WaveformTemplate` pairs over integer lags $[-\Delta_{\max}, +\Delta_{\max}]$
 //! to identify over-split clusters for merging.
 
+use dsp_base::math::{cross_correlation, peak_lag};
+
 use crate::metrics::WaveformTemplate;
 
 /// Computes the lag-maximized cosine similarity in `[-1.0, 1.0]` and best sample shift
@@ -29,28 +31,18 @@ pub fn template_max_cosine_similarity(
     let norm_b = b.mean.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-8);
     let denom = norm_a * norm_b;
 
-    let max_lag = (max_lag_samples.min(len / 2)) as isize;
-    let mut best_sim = f32::NEG_INFINITY;
-    let mut best_lag = 0isize;
-
-    for lag in -max_lag..=max_lag {
-        let mut dot = 0.0f32;
-        for (ra, rb) in &pairs {
-            for t in 0..len {
-                let tb = t as isize + lag;
-                if tb >= 0 && (tb as usize) < len {
-                    dot += ra[t] * rb[tb as usize];
-                }
-            }
-        }
-        let sim = dot / denom;
-        if sim > best_sim {
-            best_sim = sim;
-            best_lag = lag;
+    // Cross-correlation summed over the shared channels
+    let max_lag = max_lag_samples.min(len / 2);
+    let mut corr = vec![0.0f32; 2 * max_lag + 1];
+    for (ra, rb) in &pairs {
+        for (c, v) in corr.iter_mut().zip(cross_correlation(&ra[..len], &rb[..len], max_lag)) {
+            *c += v;
         }
     }
-
-    (best_sim.clamp(-1.0, 1.0), best_lag)
+    match peak_lag(&corr, max_lag) {
+        Some(p) => ((p.value / denom).clamp(-1.0, 1.0), p.lag),
+        None => (0.0, 0),
+    }
 }
 
 /// Computes the symmetric `[U, U]` lag-maximized cosine similarity matrix across all unit templates.

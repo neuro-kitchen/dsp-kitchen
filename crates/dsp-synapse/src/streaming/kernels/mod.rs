@@ -9,13 +9,12 @@ mod tests {
     use super::*;
     use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
     use cubecl::{CubeElement, Runtime};
-    use dsp_core::layout::{Position3D, SensorLayout, SensorSite};
+    use dsp_io::neuro::probe::{precompute_knn_table, Position3D, SensorLayout, SensorSite};
     use crate::detection::{
-        DetectionCarry, deduplicate_spikes_spatial, detect_spikes_with_sigma,
-        execute_detect_spikes_in_vram,
+        SpikePolarity, SpikeSpacing, deduplicate_spikes_spatial, detect_spikes_with_sigma,
+        detection_heights, execute_detect_spikes_in_vram,
     };
     use crate::extraction::{execute_extract_sinc_in_vram, extract_snippets_multichannel};
-    use crate::probe::precompute_knn_table;
     use crate::streaming::TemplateAccumulator;
 
     #[test]
@@ -69,13 +68,15 @@ mod tests {
         let threshold_factor = 5.0f32;
         let refrac = 25usize;
 
+        let spacing = SpikeSpacing::new(refrac);
         let cpu_spikes = detect_spikes_with_sigma(
             &trace,
             channels,
             samples,
             &sigmas,
             threshold_factor,
-            refrac,
+            SpikePolarity::Negative,
+            spacing,
         );
         let cpu_dedup = deduplicate_spikes_spatial(&cpu_spikes, &probe, 150.0, refrac as u64);
         let cpu_snips = extract_snippets_multichannel(
@@ -108,26 +109,24 @@ mod tests {
         let device = WgpuDevice::default();
         let client = WgpuRuntime::client(&device);
         let trace_handle = client.create_from_slice(f32::as_bytes(&trace));
-        let sigmas_handle = client.create_from_slice(f32::as_bytes(&sigmas));
+        let heights_handle = client.create_from_slice(f32::as_bytes(&detection_heights(&sigmas, threshold_factor)));
         let knn_handle = client.create_from_slice(u32::as_bytes(&knn_table));
 
         let gpu_spikes = execute_detect_spikes_in_vram::<WgpuRuntime>(
             &client,
             &trace_handle,
-            &sigmas_handle,
+            &heights_handle,
             channels,
             samples,
-            1,
-            samples - 1,
+            0..samples,
             0,
-            threshold_factor,
-            refrac,
-            None,
+            SpikePolarity::Negative,
+            spacing,
         );
         assert_eq!(gpu_spikes, cpu_spikes);
 
         let gpu_dedup = deduplicate_spikes_spatial(&gpu_spikes, &probe, 150.0, refrac as u64);
-        let extracted = execute_extract_sinc_in_vram::<WgpuRuntime>(
+        let extracted = execute_extract_sinc_in_vram::<WgpuRuntime, f32>(
             &client,
             &trace_handle,
             &knn_handle,
@@ -187,6 +186,8 @@ mod tests {
 
     #[test]
     fn dense_crossings_are_all_found_across_blocks_and_windows() {
+        // Troughs every 40 samples, plus a smaller one 7 samples before a regular trough on each
+        // channel: the larger one wins, whatever the window split
         let (channels, samples, refrac) = (3usize, 3_001usize, 10usize);
         let mut trace = vec![0.0f32; channels * samples];
         for ch in 0..channels {
@@ -197,19 +198,19 @@ mod tests {
         }
         let client = WgpuRuntime::client(&WgpuDevice::default());
         let trace_h = client.create_from_slice(f32::as_bytes(&trace));
-        let sig_h = client.create_from_slice(f32::as_bytes(&[5.0f32; 3]));
-        let detect = |start: usize, end: usize, carry: Option<&mut DetectionCarry>| {
+        let heights_h = client.create_from_slice(f32::as_bytes(&detection_heights(&[5.0f32; 3], 5.0)));
+        let detect = |start: usize, end: usize| {
             execute_detect_spikes_in_vram::<WgpuRuntime>(
-                &client, &trace_h, &sig_h, channels, samples, start, end, 0, 5.0, refrac, carry,
+                &client, &trace_h, &heights_h, channels, samples, start..end, 0, SpikePolarity::Negative, SpikeSpacing::new(refrac),
             )
         };
-        let full = detect(1, samples - 1, None);
+        let full = detect(0, samples);
         let expected: Vec<(usize, u64)> = {
             let mut v: Vec<(usize, u64)> = (0..channels)
                 .flat_map(|ch| {
                     (50 + ch..samples - 50)
                         .step_by(40)
-                        .map(move |t| (ch, if t == 1_010 + ch { 1_003 } else { t } as u64))
+                        .map(move |t| (ch, t as u64))
                 })
                 .collect();
             v.sort_by_key(|&(ch, t)| (t, ch));
@@ -222,11 +223,11 @@ mod tests {
             expected
         );
 
-        let mut carry = DetectionCarry::new(channels);
         let mut split = Vec::new();
-        for w in [1usize, 700, 1_005, 1_900, samples - 1].windows(2) {
-            split.extend(detect(w[0], w[1], Some(&mut carry)));
+        for w in [0usize, 700, 1_005, 1_900, samples].windows(2) {
+            split.extend(detect(w[0], w[1]));
         }
+        split.sort_by_key(|s| (s.sample_index, s.channel_id));
         assert_eq!(split, full);
     }
 

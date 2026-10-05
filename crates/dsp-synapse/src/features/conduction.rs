@@ -5,7 +5,7 @@
 //! adjacent single-differential channels.
 
 use serde::{Deserialize, Serialize};
-use crate::extraction::parabolic_subsample_offset;
+use dsp_base::math::{cross_correlation, peak_lag};
 
 /// Estimated Muscle Fiber Conduction Velocity (MFCV) along a longitudinal HD-EMG electrode column.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -66,7 +66,7 @@ pub fn estimate_hdemg_conduction_velocity(
     }
 
     // 3. Cross-correlate adjacent single-differential channels with sub-sample parabolic refinement
-    let max_lag = (samples / 3).max(2) as isize;
+    let max_lag = (samples / 3).max(2);
     let mut weighted_delay_samples = 0.0f32;
     let mut weight_sum = 0.0f32;
     let mut corr_sum = 0.0f32;
@@ -82,33 +82,10 @@ pub fn estimate_hdemg_conduction_velocity(
             continue;
         }
 
-        let n_lags = (2 * max_lag + 1) as usize;
-        let mut corrs = vec![0.0f32; n_lags];
-        let mut best_idx = max_lag as usize;
-        let mut best_r = f32::NEG_INFINITY;
-
-        for (idx, lag) in (-max_lag..=max_lag).enumerate() {
-            let mut dot = 0.0f32;
-            for t in 0..samples {
-                let shifted = t as isize + lag;
-                if shifted >= 0 && (shifted as usize) < samples {
-                    dot += x[t] * y[shifted as usize];
-                }
-            }
-            let r = dot / denom;
-            corrs[idx] = r;
-            if r > best_r {
-                best_r = r;
-                best_idx = idx;
-            }
-        }
-
-        let sub = if best_idx > 0 && best_idx + 1 < n_lags {
-            parabolic_subsample_offset(-corrs[best_idx - 1], -corrs[best_idx], -corrs[best_idx + 1])
-        } else {
-            0.0
-        };
-        let lag_samples = ((best_idx as isize - max_lag) as f32 + sub).abs();
+        let corrs: Vec<f32> = cross_correlation(x, y, max_lag).into_iter().map(|c| c / denom).collect();
+        let Some(peak) = peak_lag(&corrs, max_lag) else { continue };
+        let best_r = peak.value;
+        let lag_samples = peak.fractional_lag().abs();
         if best_r > 0.2 && lag_samples > 1e-3 {
             let w = best_r * denom;
             weighted_delay_samples += w * lag_samples;

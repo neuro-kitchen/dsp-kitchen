@@ -1,7 +1,10 @@
 //! Configuration and dynamic halo computation for out-of-core spike sorting.
 
+use dsp_base::peaks::DistanceRule;
 use dsp_base::pipeline::Pipeline;
 use dsp_core::{DspError, DspResult};
+
+use crate::detection::SpikePolarity;
 
 /// Half-window lobe margin for Lanczos/sinc fractional resampling (`W = 8` samples).
 pub const SINC_RESAMPLE_MARGIN: usize = 8;
@@ -17,10 +20,16 @@ pub struct StreamingSortConfig {
     /// Number of calibration chunks; σ per channel is the median of the per-chunk estimates
     /// (default: `5`).
     pub calibration_chunks: usize,
-    /// Negative threshold multiplier in units of Quiroga $\sigma_n$ (default: `5.0`).
+    /// Threshold multiplier in units of Quiroga $\sigma_n$ (default: `5.0`).
     pub threshold_factor: f32,
     /// Refractory period in milliseconds (default: `1.0` ms).
     pub refractory_ms: f64,
+    /// Which extrema are spikes (default: negative troughs).
+    pub polarity: SpikePolarity,
+    /// How crossings nearer than the refractory period are resolved (default:
+    /// [`DistanceRule::LocallyExclusive`], for which streaming equals whole-recording detection;
+    /// [`DistanceRule::Scipy`] can differ at batch edges).
+    pub distance_rule: DistanceRule,
     /// Spatial deduplication radius in micrometers (default: `150.0` $\mu\text{m}$).
     pub spatial_radius_um: f32,
     /// Number of $K$-nearest neighbor channels extracted per waveform snippet (default: `4`).
@@ -41,6 +50,8 @@ impl Default for StreamingSortConfig {
             calibration_chunks: 5,
             threshold_factor: 5.0,
             refractory_ms: 1.0,
+            polarity: SpikePolarity::Negative,
+            distance_rule: DistanceRule::LocallyExclusive,
             spatial_radius_um: 150.0,
             k_neighbors: 4,
             pre_ms: 1.0,

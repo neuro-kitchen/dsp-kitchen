@@ -6,7 +6,7 @@ pub mod kriging;
 pub mod monopolar;
 
 pub use center_of_mass::{
-    CenterOfMassLocalizer, localize_spike_center_of_mass, waveform_peak_to_peak,
+    CenterOfMassLocalizer, localize_spike_center_of_mass,
 };
 pub use dipole::{DipoleEstimate, DipoleLocalizer, localize_spike_dipole};
 pub use drift::{

@@ -1,7 +1,10 @@
-use dsp_core::{RecordingSource, SensorLayout};
+use dsp_core::RecordingSource;
+use dsp_io::neuro::probe::{find_k_nearest_neighbors, SensorLayout};
 use crate::core::{DeduplicatedSpike, SnippetBatch, SpikeEvent, WaveformSnippet};
-use crate::probe::find_k_nearest_neighbors;
-use super::alignment::{SINC_KERNEL_RADIUS, interpolate_window, parabolic_subsample_offset};
+use dsp_base::math::parabolic_vertex_offset;
+use dsp_base::resampler::fractional_delay;
+
+use super::alignment::SINC_KERNEL_RADIUS;
 
 /// Samples a snippet `[center − pre, center + post)` needs beyond its window on each side: the
 /// sinc taps when realigning, else the ±1 neighbours of the parabolic trough fit.
@@ -28,7 +31,7 @@ pub fn snippet_fits(
 
 /// Parabolic sub-sample trough offset `δ` on `row` at `center` (trough at `center + δ`).
 pub(crate) fn trough_offset(row: &[f32], center: usize) -> f32 {
-    parabolic_subsample_offset(row[center - 1], row[center], row[center + 1])
+    parabolic_vertex_offset(row[center - 1], row[center], row[center + 1])
 }
 
 /// Copies `[center − pre, center − pre + out.len())` of `row` into `out`, realigned by `+δ` so the
@@ -42,10 +45,8 @@ pub(crate) fn cut_row(
 ) {
     let start = center - pre;
     match shift {
-        Some(delta) if delta.abs() > 1e-4 => {
-            interpolate_window(row, start, delta, SINC_KERNEL_RADIUS, out)
-        }
-        _ => out.copy_from_slice(&row[start..start + out.len()]),
+        Some(delta) => fractional_delay(row, start, delta, SINC_KERNEL_RADIUS, out),
+        None => out.copy_from_slice(&row[start..start + out.len()]),
     }
 }
 
@@ -120,6 +121,7 @@ pub fn extract_snippet_batch_multichannel(
         num_spikes,
         num_channels: k,
         num_samples: snippet_len,
+        peak_index: pre_samples,
         primary_channels,
         center_samples,
         subsample_offsets,
@@ -246,7 +248,7 @@ mod tests {
     }
 
     use super::*;
-    use crate::probe::tetrode;
+    use dsp_io::neuro::probe::tetrode;
 
     #[test]
     fn test_snippet_batch_extraction_and_indexing() {

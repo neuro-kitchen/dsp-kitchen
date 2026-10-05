@@ -1,52 +1,36 @@
-//! Neural spike detection, spatial deduplication, waveform alignment, PCA extraction,
+//! Neural spike detection, spatial deduplication, waveform alignment, feature extraction,
 //! localization, drift estimation, kriging, clustering, template matching, correlograms,
-//! Allen/IBL quality metrics, sorter comparison, neural frequency bands, and probe geometries.
+//! Allen/IBL quality metrics, sorter comparison, and neural frequency bands.
+//!
+//! Probe geometry (layouts, presets, nearest-site queries) lives in `dsp_io::neuro::probe`.
 
 pub mod core;
 pub mod detection;
 pub mod extraction;
 pub mod features;
 pub mod metrics;
-pub mod probe;
 pub mod sorting;
 pub mod spatial;
 pub mod storage;
 pub mod streaming;
 
-// Compatibility module aliases so downstream callers referencing `dsp_synapse::{bands, clustering, correlogram, kernels, localization, matching, motion, traits}` continue to work seamlessly.
-pub use core::{bands, traits};
-pub use metrics::correlogram;
-pub use sorting as clustering;
-pub use sorting as matching;
-pub use spatial as localization;
-pub use spatial as motion;
-
-pub mod kernels {
-    pub use crate::detection::kernels::*;
-    pub use crate::extraction::kernels::*;
-    pub use crate::sorting::kernels::*;
-    pub use crate::streaming::kernels::*;
-}
-
 pub use core::{
-    DeduplicatedSpike, DenseTemplates, FeatureEmbedder, MatchedSpike, NeuralBand, PeakLocalizer,
-    RecordingMeta, SnippetBatch, SortedUnit, SortingOutput, SpikeDetector, SpikeEvent,
-    SpikeMatcher, TemplateAxisOrder, UnitQualityLabel, WaveformDenoiser, WaveformSnippet,
-    WaveformTemplate, compute_mean_template,
+    DeduplicatedSpike, FeatureEmbedder, MatchedSpike, NeuralBand, PeakLocalizer, RecordingMeta,
+    SnippetBatch, SortedUnit, SortingOutput, SpikeDetector, SpikeEvent, SpikeMatcher,
+    UnitQualityLabel, WaveformDenoiser, WaveformSnippet, WaveformTemplate, compute_mean_template,
+    dense_waveform, pack_templates, unpack_template,
 };
 pub use detection::{
-    AdaptiveThresholdDetector, MatchedFilterSpikeDetector, NeoSpikeDetector, SpikePolarity,
-    ThresholdSpikeDetector, canonical_biphasic_prototype, compute_neo_energy_1d,
-    count_trough_candidates_kernel, deduplicate_spikes_spatial, deduplicate_spikes_spatial_gpu,
-    detect_spikes_matched_filter, detect_spikes_multichannel, detect_spikes_multichannel_polarity,
-    detect_spikes_neo, detect_spikes_with_sigma, detect_spikes_with_sigma_polarity,
-    estimate_noise_std, execute_detect_spikes_in_vram,
+    AdaptiveThresholdDetector, DistanceRule, MatchedFilterSpikeDetector, NeoSpikeDetector,
+    SpikePolarity, SpikeSpacing, ThresholdSpikeDetector, canonical_biphasic_prototype,
+    compute_neo_energy_1d, deduplicate_spikes_spatial, deduplicate_spikes_spatial_gpu,
+    detect_spikes_matched_filter, detect_spikes_multichannel, detect_spikes_neo,
+    detect_spikes_with_sigma, detection_heights, estimate_noise_std, execute_detect_spikes_in_vram,
 };
 pub use extraction::{
-    execute_extract_sinc_in_vram, extract_sinc_snippets_kernel,
-    extract_snippet_batch_multichannel, extract_snippets_multichannel,
-    extract_snippets_single_channel, parabolic_subsample_offset, read_snippets, resample_sinc_1d,
-    resample_sinc_multichannel,
+    execute_extract_sinc_in_vram, extract_snippet_batch_multichannel, extract_snippets_kernel,
+    extract_snippets_multichannel, extract_snippets_single_channel, read_snippets,
+    trough_shift_kernel,
 };
 pub use features::{
     ConductionVelocityEstimate, PcaFeatureEmbedder, PpcaFeatureEmbedder, SpikeMorphology,
@@ -62,10 +46,6 @@ pub use metrics::{
     compute_isolation_distance, compute_llobet_contamination, compute_presence_ratio,
     compute_psth, compute_silhouette_score, compute_snr, compute_stimulus_triggered_average,
     count_refractory_violations, detect_burst_epochs, isi_histogram, quantify_mep,
-};
-pub use probe::{
-    find_k_nearest_neighbors, hdemg_4x8, hdemg_8x8, hdemg_grid, neuropixels_1_0, neuropixels_2_0,
-    precompute_knn_table, tetrode, utah_array,
 };
 pub use sorting::{
     ConvolutiveBssDecomposer, DensityPeaksResult, GmmClusterer, GmmCovarianceKind, GmmResult,
@@ -87,7 +67,7 @@ pub use streaming::{
     reduce_channel_templates_kernel,
 };
 pub use storage::{
-    ClusterTables, PhyParams, PhySorting, PhyTemplates, SortingFormat, load_nwb_units,
-    load_phy_folder, load_sorting, load_sorting_zarr, load_spikes, resolve_dat_path,
-    save_nwb_units, save_phy_folder, save_sorting, save_sorting_zarr,
+    fill_similarity, load_nwb_units, load_phy_folder, load_sorting,
+    load_sorting_zarr, load_spikes, save_nwb_units, save_phy_folder, save_sorting,
+    save_sorting_zarr,
 };

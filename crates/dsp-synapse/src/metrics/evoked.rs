@@ -6,7 +6,7 @@
 //! trial-averaged responses $\mu(t) \pm \text{SE}(t)$ ($\text{SE} = \text{SD} / \sqrt{N_{\text{trials}}}$)
 //! and per-channel MEP onset latency, peak-to-peak amplitude, RMS, and rectified AUC.
 
-use dsp_base::math::standard_error;
+use dsp_base::math::{standard_error, RunningMoments};
 use serde::{Deserialize, Serialize};
 
 /// Peri-Stimulus Time Histogram (PSTH) across $N$ stimulus trials.
@@ -133,6 +133,10 @@ pub fn compute_psth(
     }
 }
 
+/// Degrees-of-freedom correction of the across-trial SD of [`compute_stimulus_triggered_average`]:
+/// 1 (sample SD; zero with a single trial).
+pub const STA_STD_DDOF: u64 = 1;
+
 /// Computes the multi-channel Stimulus-Triggered Average (`STA`) and across-trial Standard Error (`SE`)
 /// around stimulus sample indices `stim_samples`.
 pub fn compute_stimulus_triggered_average(
@@ -176,36 +180,21 @@ pub fn compute_stimulus_triggered_average(
         };
     }
 
-    // Welford across valid stimulus trials
-    let mut m2 = vec![0.0f64; total_out];
-    let mut mean_f64 = vec![0.0f64; total_out];
-
-    for (tr_idx, &s0) in valid_stims.iter().enumerate() {
-        let count = (tr_idx + 1) as f64;
+    // Across-trial moments; SD with ddof = 1 (sample SD), as the SE it feeds
+    let mut moments = RunningMoments::new(total_out);
+    let mut trial = vec![0.0f32; total_out];
+    for &s0 in &valid_stims {
         let start = s0 - pre_samples;
         for ch in 0..channels {
-            let src = &data[ch * samples + start..ch * samples + start + win_len];
-            let dst_off = ch * win_len;
-            for t in 0..win_len {
-                let x = src[t] as f64;
-                let delta = x - mean_f64[dst_off + t];
-                mean_f64[dst_off + t] += delta / count;
-                let delta2 = x - mean_f64[dst_off + t];
-                m2[dst_off + t] += delta * delta2;
-            }
+            trial[ch * win_len..(ch + 1) * win_len].copy_from_slice(&data[ch * samples + start..ch * samples + start + win_len]);
         }
+        moments.push(&trial);
     }
-
-    let denom = if n_trials > 1 { (n_trials - 1) as f64 } else { 1.0 };
+    let std = moments.std(STA_STD_DDOF);
     for idx in 0..total_out {
-        mean_uv[idx] = mean_f64[idx] as f32;
-        let sd = if n_trials > 1 {
-            (m2[idx] / denom).max(0.0).sqrt() as f32
-        } else {
-            0.0
-        };
-        std_uv[idx] = sd;
-        se_uv[idx] = standard_error(sd, n_trials);
+        mean_uv[idx] = moments.mean()[idx] as f32;
+        std_uv[idx] = std[idx] as f32;
+        se_uv[idx] = standard_error(std_uv[idx], n_trials);
     }
 
     StimulusTriggeredAverage {

@@ -5,7 +5,7 @@
 //! registering each temporal column via sub-bin parabolic cross-correlation.
 
 use serde::{Deserialize, Serialize};
-use crate::extraction::parabolic_subsample_offset;
+use dsp_base::math::{cross_correlation, peak_lag};
 
 /// Estimated vertical probe drift trace and 2D activity histogram.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -92,50 +92,28 @@ pub fn estimate_rigid_drift(
         }
     }
 
-    // Reference depth profile (first active time bin or mean profile)
-    let ref_profile = smoothed[0..num_depth_bins].to_vec();
-    let max_lag_bins = ((max_drift_um / dz).ceil() as isize).clamp(1, (num_depth_bins as isize) / 2);
-
+    // Reference depth profile: the first time bin with spikes (drift is relative to it). Bins
+    // without spikes cannot be registered: they take the drift of the nearest earlier bin with
+    // spikes (or, before the first one, 0).
+    let profile = |tb: usize| &smoothed[tb * num_depth_bins..(tb + 1) * num_depth_bins];
+    let active: Vec<bool> = (0..num_time_bins).map(|tb| profile(tb).iter().any(|&v| v > 0.0)).collect();
+    let time_bin_centers_sec: Vec<f64> = (0..num_time_bins).map(|tb| (tb as f64 + 0.5) * dt).collect();
     let mut drift_um = vec![0.0f32; num_time_bins];
-    let mut time_bin_centers_sec = Vec::with_capacity(num_time_bins);
+    let Some(ref_bin) = active.iter().position(|&a| a) else {
+        return DriftEstimate { time_bin_centers_sec, drift_um, activity_map, num_time_bins, num_depth_bins, depth_min_um, depth_bin_size_um: dz };
+    };
+    let ref_profile = profile(ref_bin).to_vec();
+    let max_lag_bins = ((max_drift_um / dz).ceil() as usize).clamp(1, num_depth_bins / 2);
 
     for tb in 0..num_time_bins {
-        time_bin_centers_sec.push((tb as f64 + 0.5) * dt);
-        let cur = &smoothed[tb * num_depth_bins..(tb + 1) * num_depth_bins];
-
-        let mut best_lag = 0isize;
-        let mut best_corr = f32::NEG_INFINITY;
-        let n_lags = (2 * max_lag_bins + 1) as usize;
-        let mut corr_curve = vec![0.0f32; n_lags];
-
-        for (idx, lag) in (-max_lag_bins..=max_lag_bins).enumerate() {
-            let mut dot = 0.0f32;
-            for zb in 0..num_depth_bins {
-                let shifted = zb as isize + lag;
-                if shifted >= 0 && (shifted as usize) < num_depth_bins {
-                    dot += ref_profile[zb] * cur[shifted as usize];
-                }
-            }
-            corr_curve[idx] = dot;
-            if dot > best_corr {
-                best_corr = dot;
-                best_lag = lag;
-            }
+        if !active[tb] {
+            drift_um[tb] = if tb > 0 { drift_um[tb - 1] } else { 0.0 };
+            continue;
         }
-
-        let best_idx = (best_lag + max_lag_bins) as usize;
-        let sub_bin = if best_idx > 0 && best_idx + 1 < n_lags {
-            // Invert sign so parabolic_subsample_offset (which finds minimum) finds maximum
-            parabolic_subsample_offset(
-                -corr_curve[best_idx - 1],
-                -corr_curve[best_idx],
-                -corr_curve[best_idx + 1],
-            )
-        } else {
-            0.0
-        };
-
-        drift_um[tb] = (best_lag as f32 + sub_bin) * dz;
+        // Shift of this bin's depth profile against the reference, refined between bins
+        let corr = cross_correlation(&ref_profile, profile(tb), max_lag_bins);
+        let shift_bins = peak_lag(&corr, max_lag_bins).map_or(0.0, |p| p.fractional_lag());
+        drift_um[tb] = shift_bins * dz;
     }
 
     DriftEstimate {
@@ -321,6 +299,27 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn test_rigid_drift_with_empty_bins_uses_first_active_bin() {
+        // Bins 0 and 2 have no spikes; bin 1 is the reference, bin 3 is shifted by +12 µm
+        let (mut times, mut depths, mut amps) = (Vec::new(), Vec::new(), Vec::new());
+        for (b, shift) in [(1usize, 0.0f32), (3, 12.0)] {
+            for k in 0..40 {
+                let t = b as f64 + k as f64 * 0.02 + 0.1;
+                for layer in [100.0f32, 220.0] {
+                    times.push(t);
+                    depths.push(layer + shift);
+                    amps.push(100.0);
+                }
+            }
+        }
+        let est = estimate_rigid_drift(&times, &depths, &amps, 4.0, 1.0, 0.0, 350.0, 4.0, 40.0);
+        assert_eq!(est.drift_um[0], 0.0, "before the reference");
+        assert!(est.drift_um[1].abs() <= 1e-3, "reference bin: {}", est.drift_um[1]);
+        assert_eq!(est.drift_um[2], est.drift_um[1], "empty bin holds the previous drift");
+        assert!((est.drift_um[3] - 12.0).abs() <= 4.0, "shifted bin: {}", est.drift_um[3]);
     }
 
     #[test]

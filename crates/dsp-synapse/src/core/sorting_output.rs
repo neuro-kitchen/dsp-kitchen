@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use dsp_core::SensorLayout;
+use dsp_io::neuro::probe::SensorLayout;
 use serde::{Deserialize, Serialize};
 
 use crate::metrics::{

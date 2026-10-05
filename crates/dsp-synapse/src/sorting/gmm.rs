@@ -9,7 +9,7 @@
 //! - Automatic cluster count selection $K^* = \arg\min_{K \in [K_{\min}, K_{\max}]} \text{BIC}(K)$
 //! - Soft posterior assignment probabilities $p(z_i = k \mid \mathbf{x}_i)$ and Mahalanobis refractory/outlier gating.
 
-use dsp_base::linalg::SymmetricEig;
+use dsp_base::linalg::spd_inverse_logdet;
 use serde::{Deserialize, Serialize};
 
 /// Covariance structure for Gaussian Mixture Model EM.
@@ -536,30 +536,32 @@ fn initialize_centroids_diverse(features: &[f32], n: usize, d: usize, k: usize) 
     centroids
 }
 
+/// Times the diagonal jitter grows (×10 each, from `reg`) before giving up on a covariance that
+/// is not positive definite.
+const CHOLESKY_JITTER_ATTEMPTS: usize = 6;
+
+/// Precision matrix and `ln det` of covariance `cov` (`[d, d]`) by Cholesky (exact). A covariance
+/// that is not positive definite gets `reg`, `10·reg`, … added to its diagonal until it is; if
+/// none works, the diagonal alone (each variance at least `reg`) is used.
 fn invert_spd_and_logdet(cov: &[f32], d: usize, reg: f32) -> (Vec<f32>, f64) {
-    let eig = SymmetricEig::decompose(cov, d, 80);
+    let mut a: Vec<f64> = cov.iter().map(|&v| v as f64).collect();
+    let mut jitter = 0.0f64;
+    for attempt in 0..=CHOLESKY_JITTER_ATTEMPTS {
+        if let Some((inv, log_det)) = spd_inverse_logdet(&a, d) {
+            return (inv.into_iter().map(|v| v as f32).collect(), log_det);
+        }
+        let next = reg as f64 * 10f64.powi(attempt as i32);
+        for f in 0..d {
+            a[f * d + f] += next - jitter;
+        }
+        jitter = next;
+    }
     let mut inv = vec![0.0f32; d * d];
     let mut log_det = 0.0f64;
-
-    let inv_evals: Vec<f32> = eig
-        .eigenvalues
-        .iter()
-        .map(|&lam| {
-            let safe_lam = lam.max(reg);
-            log_det += (safe_lam as f64).ln();
-            1.0 / safe_lam
-        })
-        .collect();
-
-    for i in 0..d {
-        for j in i..d {
-            let mut sum = 0.0f32;
-            for m in 0..d {
-                sum += eig.eigenvectors[i * d + m] * inv_evals[m] * eig.eigenvectors[j * d + m];
-            }
-            inv[i * d + j] = sum;
-            inv[j * d + i] = sum;
-        }
+    for f in 0..d {
+        let v = cov[f * d + f].max(reg);
+        inv[f * d + f] = 1.0 / v;
+        log_det += (v as f64).ln();
     }
     (inv, log_det)
 }

@@ -64,7 +64,8 @@ pub fn cluster_isosplit(
         }
         pairs.sort_by(|x, y| x.2.partial_cmp(&y.2).unwrap_or(std::cmp::Ordering::Equal));
 
-        let mut merged_any = false;
+        // One merge or one boundary change per pass, then centroids are recomputed
+        let mut changed = false;
         for (a, b, dist_sq) in pairs {
             if dist_sq < 1e-10 {
                 for l in &mut labels {
@@ -73,7 +74,7 @@ pub fn cluster_isosplit(
                     }
                 }
                 compact_labels(&mut labels);
-                merged_any = true;
+                changed = true;
                 break;
             }
 
@@ -82,25 +83,15 @@ pub fn cluster_isosplit(
             let inv_norm = 1.0 / dist_sq.sqrt();
             let dir: Vec<f32> = (0..num_features).map(|f| (cb[f] - ca[f]) * inv_norm).collect();
 
-            // Project all points in cluster a and cluster b onto `dir` where ca projects to 0 and cb projects to dist
+            // Project the points of a and b onto `dir`: dot(x − ca, dir) (ca at 0, cb at dist)
             let dist = dist_sq.sqrt();
-            let mut proj_idx: Vec<(usize, f32)> = Vec::new();
-            for i in 0..num_spikes {
-                let li = labels[i];
-                if li == a as i32 || li == b as i32 {
+            let proj_idx: Vec<(usize, f32)> = (0..num_spikes)
+                .filter(|&i| labels[i] == a as i32 || labels[i] == b as i32)
+                .map(|i| {
                     let xi = &features[i * num_features..(i + 1) * num_features];
-                    let p: f32 = xi.iter().zip(&dir).map(|(x, v)| (x - ca[0.min(0)]) * v).sum::<f32>()
-                        - ca.iter().zip(&dir).map(|(c, v)| c * v).sum::<f32>()
-                        + ca[0.min(0)] * dir.iter().sum::<f32>();
-                    proj_idx.push((i, p));
-                }
-            }
-
-            // Simpler exact projection: dot(xi - ca, dir)
-            for item in &mut proj_idx {
-                let xi = &features[item.0 * num_features..(item.0 + 1) * num_features];
-                item.1 = xi.iter().zip(ca).zip(&dir).map(|((x, c), v)| (x - c) * v).sum();
-            }
+                    (i, xi.iter().zip(ca).zip(&dir).map(|((x, c), v)| (x - c) * v).sum())
+                })
+                .collect();
 
             let (dip_score, cut_val) = evaluate_1d_dip(&proj_idx, dist);
             if dip_score < dip_threshold {
@@ -109,7 +100,7 @@ pub fn cluster_isosplit(
                     labels[idx] = a as i32;
                 }
                 compact_labels(&mut labels);
-                merged_any = true;
+                changed = true;
                 break;
             } else {
                 // Bimodal -> refine boundary at minimum-density cut point if it changes labels
@@ -123,14 +114,21 @@ pub fn cluster_isosplit(
                     }
                 }
                 if count_left >= min_cluster_size && count_right >= min_cluster_size {
+                    let mut moved = false;
                     for &(idx, p) in &proj_idx {
-                        labels[idx] = if p <= cut_val { a as i32 } else { b as i32 };
+                        let side = if p <= cut_val { a as i32 } else { b as i32 };
+                        moved |= labels[idx] != side;
+                        labels[idx] = side;
+                    }
+                    if moved {
+                        changed = true;
+                        break;
                     }
                 }
             }
         }
 
-        if !merged_any {
+        if !changed {
             break;
         }
     }
