@@ -1,0 +1,5 @@
+[book]
+title = "dsp-kitchen"
+authors = ["dsp-kitchen contributors"]
+language = "en"
+src = "src"
