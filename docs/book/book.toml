@@ -3,3 +3,14 @@ title = "dsp-kitchen"
 authors = ["dsp-kitchen contributors"]
 language = "en"
 src = "src"
+
+[build]
+# Built pages go to the workspace target/ (git-ignored): mdbook build docs/book → target/book
+build-dir = "../../target/book"
+create-missing = false
+
+[output.html]
+# Served from https://neuro-kitchen.github.io/dsp-kitchen/ (see .github/workflows/docs.yml)
+site-url = "/dsp-kitchen/"
+git-repository-url = "https://github.com/neuro-kitchen/dsp-kitchen"
+edit-url-template = "https://github.com/neuro-kitchen/dsp-kitchen/edit/main/docs/book/src/{path}"
