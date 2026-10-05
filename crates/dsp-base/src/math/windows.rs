@@ -1,10 +1,14 @@
 use std::f32::consts::PI;
 
 /// `|x|` below which [`sinc`] returns its limit 1.
-const SINC_ZERO: f32 = 1e-7;
+pub const SINC_ZERO: f32 = 1e-7;
 
-/// 4-term Blackman-Harris coefficients `a0..a3`.
-const BLACKMAN_HARRIS: [f32; 4] = [0.35875, 0.48829, 0.14128, 0.01168];
+/// 4-term Blackman-Harris coefficients `a0..a3` (`a0 − a1 cos + a2 cos 2· − a3 cos 3·`).
+pub const BLACKMAN_HARRIS_A0: f32 = 0.35875;
+pub const BLACKMAN_HARRIS_A1: f32 = 0.48829;
+pub const BLACKMAN_HARRIS_A2: f32 = 0.14128;
+pub const BLACKMAN_HARRIS_A3: f32 = 0.01168;
+const BLACKMAN_HARRIS: [f32; 4] = [BLACKMAN_HARRIS_A0, BLACKMAN_HARRIS_A1, BLACKMAN_HARRIS_A2, BLACKMAN_HARRIS_A3];
 
 /// Hamming window `α`, `β` (`α − β·cos`).
 const HAMMING: [f32; 2] = [0.54, 0.46];
