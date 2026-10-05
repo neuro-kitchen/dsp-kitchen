@@ -1,34 +1,55 @@
-//! IsoSplit 1D Projection Dip-Test Non-Parametric Clustering (`isosplit.rs`, MountainSort style).
+//! KDE valley merge clustering: a heuristic in the spirit of MountainSort's IsoSplit (which tests
+//! unimodality with isotonic regression; this does not).
 //!
-//! Starts from an initial over-clustering ($K_0$ fine parcels) and iteratively projects pairs of
-//! adjacent clusters onto the 1D Fisher / centroid-difference axis $\mathbf{v} = \boldsymbol{\mu}_B - \boldsymbol{\mu}_A$.
-//! If the 1D projected density between $\boldsymbol{\mu}_A \cdot \mathbf{v}$ and $\boldsymbol{\mu}_B \cdot \mathbf{v}$
-//! does not exhibit a statistically significant dip below the unimodal bridge (controlled by
-//! `dip_threshold`), the two clusters are merged; otherwise points are re-partitioned at the
-//! optimal minimum-density cut point.
+//! Starts from an over-clustering ($K_0$ k-means parcels) and repeatedly projects the closest pair
+//! of clusters onto their centroid axis $\mathbf{v} = \boldsymbol{\mu}_B - \boldsymbol{\mu}_A$. A
+//! Gaussian KDE of the projections is compared between the two centroids: the valley-to-peak ratio
+//! gives `dip_score = 3 · (1 − ratio)`. Below `dip_threshold` the pair merges; otherwise the points
+//! are re-cut at the lowest-density point. No significance test is made.
 
 use serde::{Deserialize, Serialize};
 
-/// Result of IsoSplit non-parametric clustering.
+/// Merge / re-cut passes before stopping.
+const MAX_PASSES: usize = 30;
+/// Lloyd iterations of the initial over-clustering.
+const SEED_KMEANS_ITERATIONS: usize = 10;
+/// Squared centroid distance below which two clusters are the same (merged without a test).
+const SAME_CENTROID_DIST_SQ: f32 = 1e-10;
+/// Fewest projected points, and smallest centroid distance, a valley test is made on.
+const MIN_PROJECTED_POINTS: usize = 6;
+const MIN_CENTROID_DISTANCE: f32 = 1e-6;
+/// KDE bandwidth at least this fraction of the centroid distance.
+const MIN_BANDWIDTH_FRACTION: f32 = 0.25;
+/// Density below which a centroid has no peak to compare with.
+const MIN_PEAK_DENSITY: f32 = 1e-8;
+/// The valley is searched at `VALLEY_SEARCH` fractions of the centroid distance.
+const VALLEY_SEARCH: [f32; 7] = [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8];
+/// `dip_score = DIP_SCALE · (1 − valley / peak)` (valley / peak capped at `MAX_BRIDGE_RATIO`).
+const DIP_SCALE: f32 = 3.0;
+const MAX_BRIDGE_RATIO: f32 = 2.0;
+/// Cut used when no valley test can be made: midway.
+const MIDPOINT: f32 = 0.5;
+
+/// Result of [`cluster_kde_merge`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct IsoSplitResult {
+pub struct KdeMergeResult {
     pub labels: Vec<i32>,
     pub num_clusters: usize,
     pub centroids: Vec<f32>,
 }
 
-/// Clusters `features` (`[num_spikes, num_features]`) using IsoSplit 1D projection dip-merging.
-pub fn cluster_isosplit(
+/// Clusters `features` (`[num_spikes, num_features]`) by KDE valley merging (see the module docs).
+pub fn cluster_kde_merge(
     features: &[f32],
     num_spikes: usize,
     num_features: usize,
     initial_k: usize,
     dip_threshold: f32,
     min_cluster_size: usize,
-) -> IsoSplitResult {
+) -> KdeMergeResult {
     assert_eq!(features.len(), num_spikes * num_features);
     if num_spikes == 0 || num_features == 0 {
-        return IsoSplitResult {
+        return KdeMergeResult {
             labels: Vec::new(),
             num_clusters: 0,
             centroids: Vec::new(),
@@ -38,8 +59,7 @@ pub fn cluster_isosplit(
     let k0 = initial_k.clamp(1, (num_spikes / min_cluster_size.max(2)).max(1));
     let mut labels = initial_kmeans_partition(features, num_spikes, num_features, k0);
 
-    let max_passes = 30;
-    for _pass in 0..max_passes {
+    for _pass in 0..MAX_PASSES {
         let (centroids, counts) = compute_centroids(features, &labels, num_spikes, num_features);
         let active_k = counts.len();
         if active_k <= 1 {
@@ -67,7 +87,7 @@ pub fn cluster_isosplit(
         // One merge or one boundary change per pass, then centroids are recomputed
         let mut changed = false;
         for (a, b, dist_sq) in pairs {
-            if dist_sq < 1e-10 {
+            if dist_sq < SAME_CENTROID_DIST_SQ {
                 for l in &mut labels {
                     if *l == b as i32 {
                         *l = a as i32;
@@ -135,7 +155,7 @@ pub fn cluster_isosplit(
 
     compact_labels(&mut labels);
     let (centroids, counts) = compute_centroids(features, &labels, num_spikes, num_features);
-    IsoSplitResult {
+    KdeMergeResult {
         labels,
         num_clusters: counts.len(),
         centroids,
@@ -147,8 +167,8 @@ pub fn cluster_isosplit(
 /// Returns `(dip_score, cut_coordinate)`.
 fn evaluate_1d_dip(proj_idx: &[(usize, f32)], dist: f32) -> (f32, f32) {
     let n = proj_idx.len();
-    if n < 6 || dist <= 1e-6 {
-        return (0.0, dist * 0.5);
+    if n < MIN_PROJECTED_POINTS || dist <= MIN_CENTROID_DISTANCE {
+        return (0.0, dist * MIDPOINT);
     }
 
     // Estimate within-cluster 1D spread around 0 and dist
@@ -157,7 +177,7 @@ fn evaluate_1d_dip(proj_idx: &[(usize, f32)], dist: f32) -> (f32, f32) {
         let d_near = p.abs().min((p - dist).abs());
         sum_sq += d_near * d_near;
     }
-    let sigma = (sum_sq / (n as f32)).sqrt().max(dist * 0.25);
+    let sigma = (sum_sq / (n as f32)).sqrt().max(dist * MIN_BANDWIDTH_FRACTION);
     let inv_two_h2 = 1.0 / (2.0 * sigma * sigma);
 
     let kde = |x: f32| -> f32 {
@@ -173,14 +193,14 @@ fn evaluate_1d_dip(proj_idx: &[(usize, f32)], dist: f32) -> (f32, f32) {
     let rho_a = kde(0.0);
     let rho_b = kde(dist);
     let ref_peak = rho_a.min(rho_b);
-    if ref_peak <= 1e-8 {
-        return (0.0, dist * 0.5);
+    if ref_peak <= MIN_PEAK_DENSITY {
+        return (0.0, dist * MIDPOINT);
     }
 
     let mut min_valley = f32::INFINITY;
-    let mut cut_coord = dist * 0.5;
-    for step in 2..=8 {
-        let x = dist * (step as f32) / 10.0;
+    let mut cut_coord = dist * MIDPOINT;
+    for fraction in VALLEY_SEARCH {
+        let x = dist * fraction;
         let r = kde(x);
         if r < min_valley {
             min_valley = r;
@@ -188,10 +208,10 @@ fn evaluate_1d_dip(proj_idx: &[(usize, f32)], dist: f32) -> (f32, f32) {
         }
     }
 
-    let bridge_ratio = (min_valley / ref_peak).clamp(0.0, 2.0);
+    let bridge_ratio = (min_valley / ref_peak).clamp(0.0, MAX_BRIDGE_RATIO);
     // When bridge_ratio is close to 1.0, there is no valley (unimodal -> dip_score ~ 0).
     // When bridge_ratio << 0.5, there is a deep valley (bimodal -> dip_score > 1.5).
-    let dip_score = (1.0 - bridge_ratio).max(0.0) * 3.0;
+    let dip_score = (1.0 - bridge_ratio).max(0.0) * DIP_SCALE;
     (dip_score, cut_coord)
 }
 
@@ -203,7 +223,7 @@ fn initial_kmeans_partition(features: &[f32], n: usize, d: usize, k: usize) -> V
     }
 
     let mut labels = vec![0i32; n];
-    for _ in 0..10 {
+    for _ in 0..SEED_KMEANS_ITERATIONS {
         let mut sums = vec![0.0f32; k * d];
         let mut counts = vec![0usize; k];
         for i in 0..n {
@@ -290,7 +310,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_isosplit_merges_overclustered_parcels_into_three_true_clusters() {
+    fn test_kde_merge_merges_overclustered_parcels_into_three_true_clusters() {
         let centers = [[-12.0f32, 0.0], [0.0, 12.0], [12.0, 0.0]];
         let n_per = 60;
         let n = 3 * n_per;
@@ -316,8 +336,8 @@ mod tests {
             }
         }
 
-        // Start with K0 = 9 over-clustered parcels; IsoSplit merges unimodal sub-parcels down to 3
-        let res = cluster_isosplit(&features, n, d, 9, 1.5, 5);
+        // Start with K0 = 9 over-clustered parcels; unimodal sub-parcels merge down to 3
+        let res = cluster_kde_merge(&features, n, d, 9, 1.5, 5);
         assert_eq!(res.num_clusters, 3, "expected 3 clusters, got {}", res.num_clusters);
     }
 }

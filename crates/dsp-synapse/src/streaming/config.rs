@@ -1,4 +1,4 @@
-//! Configuration and dynamic halo computation for out-of-core spike sorting.
+//! Configuration and dynamic halo computation for out-of-core streaming detection.
 
 use dsp_base::peaks::DistanceRule;
 use dsp_base::pipeline::Pipeline;
@@ -6,12 +6,20 @@ use dsp_core::{DspError, DspResult};
 
 use crate::detection::SpikePolarity;
 
-/// Half-window lobe margin for Lanczos/sinc fractional resampling (`W = 8` samples).
-pub const SINC_RESAMPLE_MARGIN: usize = 8;
+/// Samples of halo the sub-sample realignment needs beyond a snippet: the windowed-sinc radius of
+/// extraction (one source of truth, [`crate::extraction::SINC_KERNEL_RADIUS`]).
+pub const SINC_RESAMPLE_MARGIN: usize = crate::extraction::SINC_KERNEL_RADIUS;
 
-/// Configuration for [`super::StreamingSpikeRunner`].
+/// Shortest refractory period and snippet sides (ms), shortest batch and calibration (s).
+const MIN_WINDOW_MS: f64 = 0.1;
+const MIN_BATCH_SEC: f64 = 0.5;
+const MIN_CALIBRATION_SEC: f64 = 0.1;
+/// Sample rate floor used in the conversions (Hz; a real rate is far above it).
+const MIN_SAMPLE_RATE_HZ: f64 = 1.0;
+
+/// Configuration for [`super::StreamingDetector`].
 #[derive(Debug, Clone)]
-pub struct StreamingSortConfig {
+pub struct StreamingDetectionConfig {
     /// Duration of each valid interior streaming batch in seconds (default: `10.0` s).
     pub batch_duration_sec: f64,
     /// Total duration of the noise-floor calibration in seconds (default: `5.0` s), split into
@@ -38,11 +46,11 @@ pub struct StreamingSortConfig {
     pub pre_ms: f64,
     /// Post-trough snippet window in milliseconds (default: `2.0` ms).
     pub post_ms: f64,
-    /// Whether to apply continuous sub-sample Lanczos/sinc realignment (default: `true`).
+    /// Whether to apply sub-sample windowed-sinc (Blackman-Harris) realignment (default: `true`).
     pub apply_sinc_shift: bool,
 }
 
-impl Default for StreamingSortConfig {
+impl Default for StreamingDetectionConfig {
     fn default() -> Self {
         Self {
             batch_duration_sec: 10.0,
@@ -61,23 +69,23 @@ impl Default for StreamingSortConfig {
     }
 }
 
-impl StreamingSortConfig {
+impl StreamingDetectionConfig {
     /// Refractory period in samples at `sample_rate` Hz.
     #[inline]
     pub fn refractory_samples(&self, sample_rate: f64) -> usize {
-        ((self.refractory_ms.max(0.1) * 1e-3) * sample_rate.max(1.0)).round() as usize
+        ((self.refractory_ms.max(MIN_WINDOW_MS) * 1e-3) * sample_rate.max(MIN_SAMPLE_RATE_HZ)).round() as usize
     }
 
     /// Pre-trough snippet length in samples at `sample_rate` Hz.
     #[inline]
     pub fn pre_samples(&self, sample_rate: f64) -> usize {
-        ((self.pre_ms.max(0.1) * 1e-3) * sample_rate.max(1.0)).round() as usize
+        ((self.pre_ms.max(MIN_WINDOW_MS) * 1e-3) * sample_rate.max(MIN_SAMPLE_RATE_HZ)).round() as usize
     }
 
     /// Post-trough snippet length in samples at `sample_rate` Hz.
     #[inline]
     pub fn post_samples(&self, sample_rate: f64) -> usize {
-        ((self.post_ms.max(0.1) * 1e-3) * sample_rate.max(1.0)).round() as usize
+        ((self.post_ms.max(MIN_WINDOW_MS) * 1e-3) * sample_rate.max(MIN_SAMPLE_RATE_HZ)).round() as usize
     }
 
     /// Total snippet length (`pre_samples + post_samples`) at `sample_rate` Hz.
@@ -89,7 +97,7 @@ impl StreamingSortConfig {
     /// Valid interior batch size in samples at `sample_rate` Hz.
     #[inline]
     pub fn batch_samples(&self, sample_rate: f64) -> u64 {
-        ((self.batch_duration_sec.max(0.5) * sample_rate.max(1.0)).round() as u64).max(1)
+        ((self.batch_duration_sec.max(MIN_BATCH_SEC) * sample_rate.max(MIN_SAMPLE_RATE_HZ)).round() as u64).max(1)
     }
 
     /// Global sample range where spikes are detected: a full snippet plus the realignment margin
@@ -105,7 +113,7 @@ impl StreamingSortConfig {
     /// spread evenly across `0..total_samples` (fewer / shorter for short recordings).
     pub fn calibration_chunks(&self, sample_rate: f64, total_samples: u64) -> Vec<std::ops::Range<u64>> {
         let k = self.calibration_chunks.max(1) as u64;
-        let total_len = ((self.calibration_duration_sec.max(0.1) * sample_rate.max(1.0)).round() as u64).max(k);
+        let total_len = ((self.calibration_duration_sec.max(MIN_CALIBRATION_SEC) * sample_rate.max(MIN_SAMPLE_RATE_HZ)).round() as u64).max(k);
         let len = (total_len / k).min(total_samples);
         if len == 0 {
             return Vec::new();

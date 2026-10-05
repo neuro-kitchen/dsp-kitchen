@@ -26,8 +26,8 @@ pub fn compute_kriging_weight_matrix(
         return Ok(Vec::new());
     }
 
-    let two_sigma_sq = (2.0 * (sigma_um as f64) * (sigma_um as f64)).max(1.0);
-    let reg = regularization.max(1e-5) as f64;
+    let two_sigma_sq = (2.0 * (sigma_um as f64) * (sigma_um as f64)).max(MIN_TWO_SIGMA_SQ_UM2);
+    let reg = regularization.max(MIN_REGULARIZATION) as f64;
 
     let mut k_ss = vec![0.0f64; k * k];
     for i in 0..k {
@@ -65,8 +65,17 @@ pub fn compute_kriging_weight_matrix(
     Ok(w)
 }
 
+/// Smallest `2σ²` (µm²) of the Gaussian kernel (σ below ~0.7 µm would make it singular-prone).
+const MIN_TWO_SIGMA_SQ_UM2: f64 = 1.0;
+/// Smallest ridge added to the kernel diagonal.
+const MIN_REGULARIZATION: f32 = 1e-5;
+
 /// Drift quantization for weight caching (µm).
 const DRIFT_QUANTUM_UM: f32 = 0.1;
+
+/// Ridge `λ` added to the kernel diagonal by the drift corrections (relative to the unit kernel
+/// peak): keeps the solve stable when sites nearly coincide.
+pub const KRIGING_REGULARIZATION: f32 = 1e-2;
 
 fn quantize(d: f32) -> i64 {
     (d / DRIFT_QUANTUM_UM).round() as i64
@@ -114,7 +123,7 @@ pub fn correct_snippet_batch_drift_kriging(
                 let source_xy = ch_ids.iter().map(|&c| site_xy(layout, c)).collect::<DspResult<Vec<_>>>()?;
                 let dy = key as f32 * DRIFT_QUANTUM_UM;
                 let target_xy: Vec<[f32; 2]> = source_xy.iter().map(|&[x, y]| [x, y + dy]).collect();
-                let w = compute_kriging_weight_matrix(&source_xy, &target_xy, sigma_um, 1e-2)?;
+                let w = compute_kriging_weight_matrix(&source_xy, &target_xy, sigma_um, KRIGING_REGULARIZATION)?;
                 cache.entry((ch_ids.to_vec(), key)).or_insert(w)
             }
         };
@@ -146,11 +155,190 @@ pub fn correct_snippet_batch_drift_kriging(
     ))
 }
 
-/// Drift-corrects a `[channels, samples]` chunk (rows = recording channels, first sample at global
-/// `start_sample`): channel `c` becomes the signal at `site(c) + (0, d(t))`, kriged from every
-/// enabled site within `radius_um` of that target. Drift is evaluated per sample and quantized to
-/// 0.1 µm; weights are cached per drift step. Channels without a site keep their samples; errors if
-/// a site's channel is outside the chunk.
+/// Quantized drift runs of a chunk: maximal sample ranges with one drift step.
+fn drift_runs(samples: usize, start_sample: u64, drift: &DriftEstimate, sample_rate_hz: f64) -> Vec<(std::ops::Range<usize>, i64)> {
+    let key_at = |s: usize| quantize(drift.interpolate_drift_at((start_sample + s as u64) as f64 / sample_rate_hz));
+    let mut runs = Vec::new();
+    let mut s0 = 0usize;
+    while s0 < samples {
+        let key = key_at(s0);
+        let mut s1 = s0 + 1;
+        while s1 < samples && key_at(s1) == key {
+            s1 += 1;
+        }
+        runs.push((s0..s1, key));
+        s0 = s1;
+    }
+    runs
+}
+
+/// Kriging weights of one drift step: per enabled site, (source channels, weights).
+type SiteWeights = Vec<(Vec<usize>, Vec<f32>)>;
+
+/// Drift correction of `[channels, samples]` chunks by kriging, on the host ([`Self::correct`]) or
+/// the device ([`Self::correct_in_vram`]). Channel `c` becomes the signal at `site(c) + (0, d(t))`,
+/// kriged from every enabled site within `radius_um` of that target. Drift is evaluated per sample
+/// and quantized to 0.1 µm; weights are cached per drift step across chunks. Channels without a site
+/// keep their samples.
+#[derive(Debug, Clone)]
+pub struct TraceKriging {
+    sites: Vec<(usize, [f32; 2])>,
+    sigma_um: f32,
+    radius_um: f32,
+    cache: HashMap<i64, SiteWeights>,
+}
+
+impl TraceKriging {
+    pub fn new(layout: &SensorLayout, sigma_um: f32, radius_um: f32) -> Self {
+        let sites = layout
+            .contacts
+            .iter()
+            .filter(|s| s.enabled)
+            .map(|s| (s.channel_id, [s.position.x_um, s.position.y_um]))
+            .collect();
+        Self { sites, sigma_um, radius_um, cache: HashMap::new() }
+    }
+
+    fn check_channels(&self, channels: usize) -> DspResult<()> {
+        match self.sites.iter().find(|(c, _)| *c >= channels) {
+            Some((c, _)) => Err(DspError::InvalidConfig(format!("site channel {c} is outside the {channels}-channel chunk"))),
+            None => Ok(()),
+        }
+    }
+
+    fn weights(&mut self, key: i64) -> DspResult<&SiteWeights> {
+        if !self.cache.contains_key(&key) {
+            let dy = key as f32 * DRIFT_QUANTUM_UM;
+            let w = self
+                .sites
+                .iter()
+                .map(|&(_, [x, y])| {
+                    let target = [x, y + dy];
+                    let near: Vec<&(usize, [f32; 2])> = self
+                        .sites
+                        .iter()
+                        .filter(|(_, p)| ((p[0] - target[0]).powi(2) + (p[1] - target[1]).powi(2)).sqrt() <= self.radius_um)
+                        .collect();
+                    let src: Vec<[f32; 2]> = near.iter().map(|(_, p)| *p).collect();
+                    let w = compute_kriging_weight_matrix(&src, &[target], self.sigma_um, KRIGING_REGULARIZATION)?;
+                    Ok((near.iter().map(|(c, _)| *c).collect(), w))
+                })
+                .collect::<DspResult<SiteWeights>>()?;
+            self.cache.insert(key, w);
+        }
+        Ok(&self.cache[&key])
+    }
+
+    /// Corrects a host chunk (first sample at global `start_sample`). Errors if a site's channel is
+    /// outside the chunk.
+    pub fn correct(
+        &mut self,
+        data: &[f32],
+        channels: usize,
+        samples: usize,
+        start_sample: u64,
+        drift: &DriftEstimate,
+        sample_rate_hz: f64,
+    ) -> DspResult<Vec<f32>> {
+        assert_eq!(data.len(), channels * samples);
+        self.check_channels(channels)?;
+        let mut out = data.to_vec();
+        for (run, key) in drift_runs(samples, start_sample, drift, sample_rate_hz) {
+            let site_channels: Vec<usize> = self.sites.iter().map(|(c, _)| *c).collect();
+            let weights = self.weights(key)?;
+            for (&ch, (src, w)) in site_channels.iter().zip(weights.iter()) {
+                let dst = &mut out[ch * samples + run.start..ch * samples + run.end];
+                dst.fill(0.0);
+                for (&c, &wc) in src.iter().zip(w) {
+                    for (d, x) in dst.iter_mut().zip(&data[c * samples + run.start..c * samples + run.end]) {
+                        *d += wc * x;
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// [`Self::correct`] of the `[channels, samples]` device buffer `input` into `output` (`F`
+    /// values, distinct buffers). Only the weights of the chunk's drift steps are uploaded (ELLPACK
+    /// rows, one set per step); all runs are applied in one launch.
+    #[allow(clippy::too_many_arguments)]
+    pub fn correct_in_vram<R: cubecl::Runtime, F: dsp_base::core::DspFloat>(
+        &mut self,
+        client: &cubecl::prelude::ComputeClient<R>,
+        input: &cubecl::server::Handle,
+        output: &cubecl::server::Handle,
+        channels: usize,
+        samples: usize,
+        start_sample: u64,
+        drift: &DriftEstimate,
+        sample_rate_hz: f64,
+    ) -> DspResult<()> {
+        use cubecl::prelude::*;
+        use dsp_base::core::{buffer, cast_f32};
+        use dsp_core::compute::LaunchGeometry;
+        use super::kernels::kriging_runs_kernel;
+
+        self.check_channels(channels)?;
+        if channels == 0 || samples == 0 {
+            return Ok(());
+        }
+        let runs = drift_runs(samples, start_sample, drift, sample_rate_hz);
+        // One weight set per distinct drift step of the chunk
+        let mut keys: Vec<i64> = runs.iter().map(|(_, k)| *k).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        let site_channels: Vec<usize> = self.sites.iter().map(|(c, _)| *c).collect();
+        let mut sets: Vec<Vec<Vec<(u32, f32)>>> = Vec::with_capacity(keys.len());
+        for &key in &keys {
+            // Identity for channels without a site
+            let mut rows: Vec<Vec<(u32, f32)>> = (0..channels).map(|c| vec![(c as u32, 1.0)]).collect();
+            for (&ch, (src, w)) in site_channels.iter().zip(self.weights(key)?.iter()) {
+                rows[ch] = src.iter().zip(w).map(|(&c, &wc)| (c as u32, wc)).collect();
+            }
+            sets.push(rows);
+        }
+        let width = sets.iter().flatten().map(Vec::len).max().unwrap_or(1).max(1);
+        let mut values = vec![0.0f32; keys.len() * channels * width];
+        let mut indices = vec![0u32; keys.len() * channels * width];
+        for (slot, rows) in sets.iter().enumerate() {
+            for (o, row) in rows.iter().enumerate() {
+                let base = (slot * channels + o) * width;
+                for (k, &(c, w)) in row.iter().enumerate() {
+                    values[base + k] = w;
+                    indices[base + k] = c;
+                }
+            }
+        }
+        let mut run_starts: Vec<u32> = runs.iter().map(|(r, _)| r.start as u32).collect();
+        run_starts.push(samples as u32);
+        let run_slots: Vec<u32> = runs.iter().map(|(_, k)| keys.binary_search(k).expect("key listed") as u32).collect();
+
+        let values_f: Vec<F> = cast_f32::<F>(&values);
+        let geom = LaunchGeometry::channels_samples(client, channels, samples);
+        // SAFETY: every array is passed with the length it was created with
+        unsafe {
+            kriging_runs_kernel::launch::<F, R>(
+                client,
+                geom.cube_count,
+                geom.cube_dim,
+                ArrayArg::from_raw_parts(input.clone(), channels * samples),
+                ArrayArg::from_raw_parts(buffer::upload(client, &values_f), values.len()),
+                ArrayArg::from_raw_parts(buffer::upload(client, &indices), indices.len()),
+                ArrayArg::from_raw_parts(buffer::upload(client, &run_starts), run_starts.len()),
+                ArrayArg::from_raw_parts(buffer::upload(client, &run_slots), run_slots.len()),
+                ArrayArg::from_raw_parts(output.clone(), channels * samples),
+                channels as u32,
+                samples as u32,
+                width as u32,
+                runs.len() as u32,
+            );
+        }
+        Ok(())
+    }
+}
+
+/// One-off [`TraceKriging::correct`] (weights are not kept between calls).
 #[allow(clippy::too_many_arguments)]
 pub fn correct_traces_drift_kriging(
     data: &[f32],
@@ -163,61 +351,7 @@ pub fn correct_traces_drift_kriging(
     sigma_um: f32,
     radius_um: f32,
 ) -> DspResult<Vec<f32>> {
-    assert_eq!(data.len(), channels * samples);
-    let sites: Vec<(usize, [f32; 2])> = layout
-        .contacts
-        .iter()
-        .filter(|s| s.enabled)
-        .map(|s| (s.channel_id, [s.position.x_um, s.position.y_um]))
-        .collect();
-    if let Some((c, _)) = sites.iter().find(|(c, _)| *c >= channels) {
-        return Err(DspError::InvalidConfig(format!("site channel {c} is outside the {channels}-channel chunk")));
-    }
-
-    // Per drift step: for each site, (source rows, weights).
-    let mut cache: HashMap<i64, Vec<(Vec<usize>, Vec<f32>)>> = HashMap::new();
-    let weights_for = |key: i64| -> DspResult<Vec<(Vec<usize>, Vec<f32>)>> {
-        let dy = key as f32 * DRIFT_QUANTUM_UM;
-        sites
-            .iter()
-            .map(|&(_, [x, y])| {
-                let target = [x, y + dy];
-                let near: Vec<&(usize, [f32; 2])> = sites
-                    .iter()
-                    .filter(|(_, p)| ((p[0] - target[0]).powi(2) + (p[1] - target[1]).powi(2)).sqrt() <= radius_um)
-                    .collect();
-                let src: Vec<[f32; 2]> = near.iter().map(|(_, p)| *p).collect();
-                let w = compute_kriging_weight_matrix(&src, &[target], sigma_um, 1e-2)?;
-                Ok((near.iter().map(|(c, _)| *c).collect(), w))
-            })
-            .collect()
-    };
-
-    let mut out = data.to_vec();
-    let mut s0 = 0usize;
-    while s0 < samples {
-        let key_at = |s: usize| quantize(drift.interpolate_drift_at((start_sample + s as u64) as f64 / sample_rate_hz));
-        let key = key_at(s0);
-        let mut s1 = s0 + 1;
-        while s1 < samples && key_at(s1) == key {
-            s1 += 1;
-        }
-        let weights = match cache.entry(key) {
-            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
-            std::collections::hash_map::Entry::Vacant(e) => e.insert(weights_for(key)?),
-        };
-        for ((ch, _), (src, w)) in sites.iter().zip(weights.iter()) {
-            let dst = &mut out[ch * samples + s0..ch * samples + s1];
-            dst.fill(0.0);
-            for (&c, &wc) in src.iter().zip(w) {
-                for (d, x) in dst.iter_mut().zip(&data[c * samples + s0..c * samples + s1]) {
-                    *d += wc * x;
-                }
-            }
-        }
-        s0 = s1;
-    }
-    Ok(out)
+    TraceKriging::new(layout, sigma_um, radius_um).correct(data, channels, samples, start_sample, drift, sample_rate_hz)
 }
 
 #[cfg(test)]
@@ -285,5 +419,36 @@ mod tests {
         let layout = linear_probe(4, 20.0);
         let batch = SnippetBatch::from_raw_parts(vec![0.0; 6], 1, 2, 3, 1, vec![0], vec![0], vec![0.0], vec![0, 9]);
         assert!(correct_snippet_batch_drift_kriging(&batch, &layout, &constant_drift(1.0), 30_000.0, 20.0).is_err());
+    }
+
+    #[test]
+    fn device_trace_correction_matches_host() {
+        use cubecl::prelude::*;
+        use dsp_base::core::buffer;
+        use dsp_core::compute::{ComputeTarget, ComputeTask};
+
+        let (n, pitch, samples, fs) = (16usize, 20.0f32, 300usize, 1_000.0f64);
+        let mut layout = linear_probe(n, pitch);
+        layout.contacts[3].enabled = false; // a channel without a site keeps its samples
+        // Drift ramps 0 → 0.5 µm across the chunk: several 0.1 µm runs
+        let drift = DriftEstimate { time_bin_centers_sec: vec![0.0, 0.3], drift_um: vec![0.0, 0.5], ..constant_drift(0.0) };
+        let data: Vec<f32> = (0..n * samples).map(|i| field((i / samples) as f32 * pitch, (i % samples) as f32 * 0.05)).collect();
+        let host = TraceKriging::new(&layout, 20.0, 60.0).correct(&data, n, samples, 0, &drift, fs).unwrap();
+
+        struct Task<'a>(&'a [f32], &'a SensorLayout, &'a DriftEstimate, usize, usize, f64);
+        impl ComputeTask for Task<'_> {
+            type Output = Vec<f32>;
+            fn run<R: Runtime>(self, client: ComputeClient<R>) -> Vec<f32> {
+                let (input, output) = (buffer::upload(&client, self.0), buffer::empty::<R, f32>(&client, self.0.len()));
+                let mut kriging = TraceKriging::new(self.1, 20.0, 60.0);
+                kriging.correct_in_vram::<R, f32>(&client, &input, &output, self.3, self.4, 0, self.2, self.5).unwrap();
+                buffer::download::<R, f32>(&client, output)
+            }
+        }
+        for target in ComputeTarget::available() {
+            let device = target.run(Task(&data, &layout, &drift, n, samples, fs)).expect("runtime");
+            let err = device.iter().zip(&host).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+            assert!(err < 1e-3, "device vs host {err}");
+        }
     }
 }

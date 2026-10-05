@@ -5,11 +5,33 @@
 //! $$p(\mathbf{x}_i) = \sum_{k=1}^K \pi_k \,\mathcal{N}(\mathbf{x}_i \mid \boldsymbol{\mu}_k, \boldsymbol{\Sigma}_k)$$
 //! Supports:
 //! - Diagonal, Full, and **Masked EM** (KlustaKwik / Rossant et al. 2016 noise-prior masking for high-density probes)
-//! - Deterministic `k-means++` / farthest-first seeding
+//! - Deterministic farthest-first seeding (not k-means++: no random draws), refined by Lloyd steps
 //! - Automatic cluster count selection $K^* = \arg\min_{K \in [K_{\min}, K_{\max}]} \text{BIC}(K)$
 //! - Soft posterior assignment probabilities $p(z_i = k \mid \mathbf{x}_i)$ and Mahalanobis refractory/outlier gating.
 
+use cubecl::prelude::*;
+use dsp_base::core::{buffer, reduce};
 use dsp_base::linalg::spd_inverse_logdet;
+use dsp_core::compute::LaunchGeometry;
+
+use super::kernels::{gmm_e_step_kernel, gmm_mean_sums_kernel, gmm_scatter_kernel};
+
+/// Default EM tolerance on the mean per-spike log-likelihood (sklearn `GaussianMixture.tol`).
+pub const DEFAULT_TOLERANCE: f64 = 1e-3;
+
+/// Smallest ridge `reg` the fit uses.
+const MIN_REGULARIZATION: f32 = 1e-6;
+/// Smallest mixture weight of the initial (nearest-seed) partition.
+const MIN_INIT_WEIGHT: f32 = 1e-4;
+/// Lloyd iterations refining the farthest-first seeds.
+const SEED_LLOYD_ITERATIONS: usize = 8;
+
+/// Smallest mixture weight kept after an M-step (a component never fully vanishes).
+const MIN_WEIGHT: f32 = 1e-5;
+/// Weight floor inside `ln π` of the E-step.
+const MIN_WEIGHT_LOG: f32 = 1e-12;
+/// Smallest responsibility mass a component's statistics are divided by.
+const MIN_COMPONENT_MASS: f32 = 1e-8;
 use serde::{Deserialize, Serialize};
 
 /// Covariance structure for Gaussian Mixture Model EM.
@@ -55,6 +77,7 @@ pub struct GmmClusterer {
     pub k_max: usize,
     pub covariance_kind: GmmCovarianceKind,
     pub max_iterations: usize,
+    /// EM stops when the mean per-spike log-likelihood changes by less than this (sklearn `tol`).
     pub tolerance: f64,
     pub regularization: f32,
     /// Optional squared Mahalanobis outlier threshold (e.g. `Some(25.0)` labels spikes with $d_M > 5\sigma$ as `-1`).
@@ -68,7 +91,7 @@ impl Default for GmmClusterer {
             k_max: 8,
             covariance_kind: GmmCovarianceKind::Full,
             max_iterations: 100,
-            tolerance: 1e-5,
+            tolerance: DEFAULT_TOLERANCE,
             regularization: 1e-4,
             outlier_mahalanobis_sq: None,
         }
@@ -85,9 +108,10 @@ impl GmmClusterer {
         }
     }
 
-    /// Fits GMM for a fixed cluster count `k`.
-    pub fn fit_k(
+    /// Fits GMM for a fixed cluster count `k` (EM on `client`'s device).
+    pub fn fit_k<R: Runtime>(
         &self,
+        client: &ComputeClient<R>,
         features: &[f32],
         num_spikes: usize,
         num_features: usize,
@@ -95,6 +119,7 @@ impl GmmClusterer {
         feature_mask: Option<&[f32]>,
     ) -> GmmResult {
         fit_gmm_single_k(
+            client,
             features,
             num_spikes,
             num_features,
@@ -109,8 +134,9 @@ impl GmmClusterer {
     }
 
     /// Sweeps $K \in [k_{\min}, k_{\max}]$ and returns the model minimizing the Bayesian Information Criterion (BIC).
-    pub fn fit(
+    pub fn fit<R: Runtime>(
         &self,
+        client: &ComputeClient<R>,
         features: &[f32],
         num_spikes: usize,
         num_features: usize,
@@ -134,7 +160,7 @@ impl GmmClusterer {
 
         let mut best: Option<GmmResult> = None;
         for k in k_lo..=k_hi {
-            let candidate = self.fit_k(features, num_spikes, num_features, k, feature_mask);
+            let candidate = self.fit_k(client, features, num_spikes, num_features, k, feature_mask);
             if best.as_ref().map_or(true, |b| candidate.bic < b.bic) {
                 best = Some(candidate);
             }
@@ -144,18 +170,20 @@ impl GmmClusterer {
 }
 
 /// Convenience function to fit a GMM with automatic BIC selection over `k_min..=k_max`.
-pub fn cluster_gmm_bic(
+pub fn cluster_gmm_bic<R: Runtime>(
+    client: &ComputeClient<R>,
     features: &[f32],
     num_spikes: usize,
     num_features: usize,
     k_min: usize,
     k_max: usize,
 ) -> GmmResult {
-    GmmClusterer::new(k_min, k_max, GmmCovarianceKind::Full).fit(features, num_spikes, num_features, None)
+    GmmClusterer::new(k_min, k_max, GmmCovarianceKind::Full).fit(client, features, num_spikes, num_features, None)
 }
 
 #[allow(clippy::too_many_arguments)]
-fn fit_gmm_single_k(
+fn fit_gmm_single_k<R: Runtime>(
+    client: &ComputeClient<R>,
     features: &[f32],
     n: usize,
     d: usize,
@@ -169,9 +197,9 @@ fn fit_gmm_single_k(
 ) -> GmmResult {
     assert_eq!(features.len(), n * d);
     let k = k.clamp(1, n);
-    let reg = reg.max(1e-6);
+    let reg = reg.max(MIN_REGULARIZATION);
 
-    // 1. Deterministic farthest-first / k-means++ initialization + 5 Lloyd steps
+    // 1. Deterministic farthest-first seeding + Lloyd steps
     let mut means = initialize_centroids_diverse(features, n, d, k);
     let mut weights = vec![1.0f32 / (k as f32); k];
     let mut covariances = vec![0.0f32; k * d * d];
@@ -211,174 +239,143 @@ fn fit_gmm_single_k(
     }
     for c in 0..k {
         let cnt = (init_counts[c] as f32).max(1.0);
-        weights[c] = (cnt / (n as f32)).max(1e-4);
+        weights[c] = (cnt / (n as f32)).max(MIN_INIT_WEIGHT);
         let cov_c = &mut covariances[c * d * d..(c + 1) * d * d];
         for elem in cov_c.iter_mut() {
             *elem /= cnt;
         }
         for f in 0..d {
-            cov_c[f * d + f] = cov_c[f * d + f].max(reg) + reg;
+            // Same ridge as every M-step (was regularized twice: `max(reg) + reg`)
+            cov_c[f * d + f] += reg;
         }
     }
 
-    let mut responsibilities = vec![0.0f32; n * k];
-    let mut mahalanobis_sq = vec![0.0f32; n];
-    let mut prev_ll = f64::NEG_INFINITY;
-    let mut log_likelihood = f64::NEG_INFINITY;
+    // 2. EM on the device: features, mask and responsibilities stay there; per iteration only the
+    //    component parameters go up and their sums come back
     let ln_2pi_d = (d as f64) * (2.0 * std::f64::consts::PI).ln();
+    let masked = cov_kind == GmmCovarianceKind::Masked && feature_mask.is_some();
+    let features_h = buffer::upload(client, features);
+    let mask_h = match feature_mask.filter(|_| masked) {
+        Some(m) => buffer::upload(client, m),
+        None => buffer::empty::<R, f32>(client, 1),
+    };
+    let mask_len = if masked { n * d } else { 1 };
+    let resp_h = buffer::empty::<R, f32>(client, n * k);
+    let log_lik_h = buffer::empty::<R, f32>(client, n);
+    let mahal_h = buffer::empty::<R, f32>(client, n);
+    let (ll_mean_h, ll_std_h) = (buffer::empty::<R, f32>(client, 1), buffer::empty::<R, f32>(client, 1));
+    let per_spike = LaunchGeometry::elementwise(client, n);
 
-    // Precompute precision matrices (Sigma_k^-1) and log determinants
-    let mut precisions = vec![0.0f32; k * d * d];
-    let mut log_dets = vec![0.0f64; k];
-    let mut log_probs = vec![0.0f64; k];
-    let mut new_mean = vec![0.0f32; d];
-    let mut mask_sum = vec![0.0f32; d];
+    // E-step with the current parameters; returns the mean per-spike log-likelihood
+    let e_step = |means: &[f32], covariances: &[f32], weights: &[f32]| -> f64 {
+        let mut precisions = vec![0.0f32; k * d * d];
+        let mut log_norms = vec![0.0f32; k];
+        for c in 0..k {
+            let cov_c = &covariances[c * d * d..(c + 1) * d * d];
+            let (prec, log_det) = if cov_kind == GmmCovarianceKind::Diagonal {
+                diagonal_inverse_logdet(cov_c, d, reg)
+            } else {
+                invert_spd_and_logdet(cov_c, d, reg)
+            };
+            precisions[c * d * d..(c + 1) * d * d].copy_from_slice(&prec);
+            log_norms[c] = ((weights[c].max(MIN_WEIGHT_LOG) as f64).ln() - 0.5 * (ln_2pi_d + log_det)) as f32;
+        }
+        // SAFETY: every array is passed with the length it was created with
+        unsafe {
+            gmm_e_step_kernel::launch::<f32, R>(
+                client,
+                per_spike.cube_count.clone(),
+                per_spike.cube_dim.clone(),
+                ArrayArg::from_raw_parts(features_h.clone(), n * d),
+                ArrayArg::from_raw_parts(buffer::upload(client, means), k * d),
+                ArrayArg::from_raw_parts(buffer::upload(client, &precisions), k * d * d),
+                ArrayArg::from_raw_parts(buffer::upload(client, &log_norms), k),
+                ArrayArg::from_raw_parts(resp_h.clone(), n * k),
+                ArrayArg::from_raw_parts(log_lik_h.clone(), n),
+                ArrayArg::from_raw_parts(mahal_h.clone(), n),
+                n as u32,
+                d as u32,
+                k as u32,
+            );
+        }
+        reduce::row_mean_std::<R, f32>(client, &log_lik_h, &ll_mean_h, &ll_std_h, 1, n);
+        buffer::download::<R, f32>(client, ll_mean_h.clone())[0] as f64
+    };
 
+    let mut prev_mean_ll = f64::NEG_INFINITY;
+    let mut mean_ll = f64::NEG_INFINITY;
     for _iter in 0..max_iters.max(1) {
-        if cov_kind == GmmCovarianceKind::Diagonal {
-            for c in 0..k {
-                let cov_c = &covariances[c * d * d..(c + 1) * d * d];
-                let prec_c = &mut precisions[c * d * d..(c + 1) * d * d];
-                prec_c.fill(0.0);
-                let mut ldet = 0.0f64;
-                for f in 0..d {
-                    let v = (cov_c[f * d + f]).max(reg);
-                    ldet += (v as f64).ln();
-                    prec_c[f * d + f] = 1.0 / v;
-                }
-                log_dets[c] = ldet;
-            }
-        } else {
-            for c in 0..k {
-                let cov_c = &covariances[c * d * d..(c + 1) * d * d];
-                let (inv_c, ldet) = invert_spd_and_logdet(cov_c, d, reg);
-                precisions[c * d * d..(c + 1) * d * d].copy_from_slice(&inv_c);
-                log_dets[c] = ldet;
-            }
-        }
-
-        // E-step: evaluate log responsibilities
-        let mut total_ll = 0.0f64;
-        for i in 0..n {
-            let xi = &features[i * d..(i + 1) * d];
-            let mut max_lp = f64::NEG_INFINITY;
-
-            for c in 0..k {
-                let mc = &means[c * d..(c + 1) * d];
-                let prec_c = &precisions[c * d * d..(c + 1) * d * d];
-                let d_m2 = if cov_kind == GmmCovarianceKind::Diagonal {
-                    let mut sum = 0.0f32;
-                    for f in 0..d {
-                        let diff = xi[f] - mc[f];
-                        sum += diff * diff * prec_c[f * d + f];
-                    }
-                    sum
-                } else {
-                    quad_form_mahalanobis(xi, mc, prec_c, d)
-                };
-                let lp = (weights[c].max(1e-12) as f64).ln() - 0.5 * (ln_2pi_d + log_dets[c] + d_m2 as f64);
-                log_probs[c] = lp;
-                if lp > max_lp {
-                    max_lp = lp;
-                }
-            }
-
-            let mut sum_exp = 0.0f64;
-            for c in 0..k {
-                let e = (log_probs[c] - max_lp).exp();
-                responsibilities[i * k + c] = e as f32;
-                sum_exp += e;
-            }
-            let inv_sum = (1.0 / sum_exp.max(1e-30)) as f32;
-            for c in 0..k {
-                responsibilities[i * k + c] *= inv_sum;
-            }
-            total_ll += max_lp + sum_exp.ln();
-        }
-
-        log_likelihood = total_ll;
-        if (log_likelihood - prev_ll).abs() < tol {
+        mean_ll = e_step(&means, &covariances, &weights);
+        // Converged when the mean per-spike log-likelihood changes by less than `tol` (sklearn)
+        if (mean_ll - prev_mean_ll).abs() < tol {
             break;
         }
-        prev_ll = log_likelihood;
+        prev_mean_ll = mean_ll;
 
-        // M-step: update weights, means, and covariances
+        // M-step: weighted sums on the device, normalization on the host
+        let sums_h = buffer::empty::<R, f32>(client, k * d);
+        let mask_sums_h = buffer::empty::<R, f32>(client, k * d);
+        let resp_sums_h = buffer::empty::<R, f32>(client, k);
+        let per_feature = LaunchGeometry::elementwise(client, k * d);
+        // SAFETY: as above
+        unsafe {
+            gmm_mean_sums_kernel::launch::<f32, R>(
+                client,
+                per_feature.cube_count,
+                per_feature.cube_dim,
+                ArrayArg::from_raw_parts(features_h.clone(), n * d),
+                ArrayArg::from_raw_parts(resp_h.clone(), n * k),
+                ArrayArg::from_raw_parts(mask_h.clone(), mask_len),
+                ArrayArg::from_raw_parts(sums_h.clone(), k * d),
+                ArrayArg::from_raw_parts(mask_sums_h.clone(), k * d),
+                ArrayArg::from_raw_parts(resp_sums_h.clone(), k),
+                n as u32,
+                d as u32,
+                k as u32,
+                u32::from(masked),
+            );
+        }
+        let sums = buffer::download::<R, f32>(client, sums_h);
+        let mask_sums = buffer::download::<R, f32>(client, mask_sums_h);
+        let nk = buffer::download::<R, f32>(client, resp_sums_h);
         for c in 0..k {
-            let mut nk = 0.0f64;
-            for i in 0..n {
-                nk += responsibilities[i * k + c] as f64;
-            }
-            let nk_safe = nk.max(1e-8) as f32;
-            weights[c] = ((nk / (n as f64)) as f32).clamp(1e-5, 1.0);
-
-            new_mean.fill(0.0);
-            mask_sum.fill(0.0);
-            for i in 0..n {
-                let r_ic = responsibilities[i * k + c];
-                if r_ic < 1e-9 {
-                    continue;
-                }
-                let xi = &features[i * d..(i + 1) * d];
-                for f in 0..d {
-                    let m_if = if cov_kind == GmmCovarianceKind::Masked {
-                        feature_mask
-                            .map(|m| m[i * d + f].clamp(0.0, 1.0))
-                            .unwrap_or(1.0)
-                    } else {
-                        1.0
-                    };
-                    new_mean[f] += r_ic * m_if * xi[f];
-                    mask_sum[f] += r_ic * m_if;
-                }
-            }
+            let nk_safe = nk[c].max(MIN_COMPONENT_MASS);
+            weights[c] = (nk[c] / n as f32).clamp(MIN_WEIGHT, 1.0);
             for f in 0..d {
-                means[c * d + f] = new_mean[f] / nk_safe;
+                means[c * d + f] = sums[c * d + f] / nk_safe;
             }
+        }
 
-            let mc = &means[c * d..(c + 1) * d];
+        let scatter_h = buffer::empty::<R, f32>(client, k * d * d);
+        let per_entry = LaunchGeometry::elementwise(client, k * d * d);
+        // SAFETY: as above
+        unsafe {
+            gmm_scatter_kernel::launch::<f32, R>(
+                client,
+                per_entry.cube_count,
+                per_entry.cube_dim,
+                ArrayArg::from_raw_parts(features_h.clone(), n * d),
+                ArrayArg::from_raw_parts(resp_h.clone(), n * k),
+                ArrayArg::from_raw_parts(buffer::upload(client, &means), k * d),
+                ArrayArg::from_raw_parts(scatter_h.clone(), k * d * d),
+                n as u32,
+                d as u32,
+                k as u32,
+                u32::from(cov_kind == GmmCovarianceKind::Diagonal),
+            );
+        }
+        let scatter = buffer::download::<R, f32>(client, scatter_h);
+        for c in 0..k {
+            let nk_safe = nk[c].max(MIN_COMPONENT_MASS);
             let cov_c = &mut covariances[c * d * d..(c + 1) * d * d];
-            cov_c.fill(0.0);
-
-            if cov_kind == GmmCovarianceKind::Diagonal {
-                for i in 0..n {
-                    let r_ic = responsibilities[i * k + c];
-                    if r_ic < 1e-9 {
-                        continue;
-                    }
-                    let xi = &features[i * d..(i + 1) * d];
-                    for r in 0..d {
-                        let dr = xi[r] - mc[r];
-                        cov_c[r * d + r] += r_ic * dr * dr;
-                    }
-                }
-            } else {
-                for i in 0..n {
-                    let r_ic = responsibilities[i * k + c];
-                    if r_ic < 1e-9 {
-                        continue;
-                    }
-                    let xi = &features[i * d..(i + 1) * d];
-                    for r in 0..d {
-                        let dr = xi[r] - mc[r];
-                        for col in r..d {
-                            let dc = xi[col] - mc[col];
-                            let v = r_ic * dr * dc;
-                            cov_c[r * d + col] += v;
-                            if r != col {
-                                cov_c[col * d + r] += v;
-                            }
-                        }
-                    }
-                }
-            }
-
-            for elem in cov_c.iter_mut() {
-                *elem /= nk_safe;
+            for (v, s) in cov_c.iter_mut().zip(&scatter[c * d * d..(c + 1) * d * d]) {
+                *v = s / nk_safe;
             }
             for f in 0..d {
-                if cov_kind == GmmCovarianceKind::Masked {
-                    let obs_frac = (mask_sum[f] / nk_safe).clamp(0.0, 1.0);
-                    cov_c[f * d + f] = obs_frac * cov_c[f * d + f] + (1.0 - obs_frac) * 1.0 + reg;
+                if masked {
+                    // Masked EM: unobserved share of the feature shrinks toward the unit noise prior
+                    let obs_frac = (mask_sums[c * d + f] / nk_safe).clamp(0.0, 1.0);
+                    cov_c[f * d + f] = obs_frac * cov_c[f * d + f] + (1.0 - obs_frac) + reg;
                 } else {
                     cov_c[f * d + f] += reg;
                 }
@@ -386,60 +383,24 @@ fn fit_gmm_single_k(
         }
     }
 
-    // Final hard labels and Mahalanobis distances
-    if cov_kind == GmmCovarianceKind::Diagonal {
-        for c in 0..k {
-            let cov_c = &covariances[c * d * d..(c + 1) * d * d];
-            let prec_c = &mut precisions[c * d * d..(c + 1) * d * d];
-            prec_c.fill(0.0);
-            let mut ldet = 0.0f64;
-            for f in 0..d {
-                let v = cov_c[f * d + f].max(reg);
-                ldet += (v as f64).ln();
-                prec_c[f * d + f] = 1.0 / v;
-            }
-            log_dets[c] = ldet;
-        }
-    } else {
-        for c in 0..k {
-            let cov_c = &covariances[c * d * d..(c + 1) * d * d];
-            let (inv_c, ldet) = invert_spd_and_logdet(cov_c, d, reg);
-            precisions[c * d * d..(c + 1) * d * d].copy_from_slice(&inv_c);
-            log_dets[c] = ldet;
-        }
+    // 3. Final responsibilities, labels and Mahalanobis distances from the final parameters
+    let final_ll = e_step(&means, &covariances, &weights);
+    if final_ll.is_finite() {
+        mean_ll = final_ll;
     }
-
-    let mut labels = vec![0i32; n];
-    for i in 0..n {
-        let mut best_c = 0usize;
-        let mut best_r = -1.0f32;
-        for c in 0..k {
-            let r = responsibilities[i * k + c];
-            if r > best_r {
-                best_r = r;
-                best_c = c;
+    let log_likelihood = mean_ll * n as f64;
+    let responsibilities = buffer::download::<R, f32>(client, resp_h.clone());
+    let mahalanobis_sq = buffer::download::<R, f32>(client, mahal_h.clone());
+    let labels: Vec<i32> = (0..n)
+        .map(|i| {
+            let row = &responsibilities[i * k..(i + 1) * k];
+            let best = (0..k).fold(0, |b, c| if row[c] > row[b] { c } else { b });
+            match outlier_mahal_sq {
+                Some(max_d2) if mahalanobis_sq[i] > max_d2 => -1,
+                _ => best as i32,
             }
-        }
-        let xi = &features[i * d..(i + 1) * d];
-        let mc = &means[best_c * d..(best_c + 1) * d];
-        let prec_c = &precisions[best_c * d * d..(best_c + 1) * d * d];
-        let d_m2 = if cov_kind == GmmCovarianceKind::Diagonal {
-            let mut sum = 0.0f32;
-            for f in 0..d {
-                let diff = xi[f] - mc[f];
-                sum += diff * diff * prec_c[f * d + f];
-            }
-            sum
-        } else {
-            quad_form_mahalanobis(xi, mc, prec_c, d)
-        };
-        mahalanobis_sq[i] = d_m2;
-        labels[i] = if let Some(max_d2) = outlier_mahal_sq {
-            if d_m2 > max_d2 { -1 } else { best_c as i32 }
-        } else {
-            best_c as i32
-        };
-    }
+        })
+        .collect();
 
     // Number of free parameters p for BIC = -2 ln L + p ln N
     let cov_params_per_cluster = match cov_kind {
@@ -464,7 +425,7 @@ fn fit_gmm_single_k(
 
 fn initialize_centroids_diverse(features: &[f32], n: usize, d: usize, k: usize) -> Vec<f32> {
     let mut centroids = vec![0.0f32; k * d];
-    // Pick first centroid closest to overall mean, then farthest-first + local density refinement
+    // First centroid: the point farthest from the overall mean; then farthest-first, then Lloyd steps
     let mut global_mean = vec![0.0f32; d];
     for i in 0..n {
         for f in 0..d {
@@ -502,8 +463,8 @@ fn initialize_centroids_diverse(features: &[f32], n: usize, d: usize, k: usize) 
         centroids[c * d..(c + 1) * d].copy_from_slice(&features[best_i * d..(best_i + 1) * d]);
     }
 
-    // Run 8 Lloyd k-means iterations to settle centroids in high-density cluster cores
-    for _ in 0..8 {
+    // Lloyd k-means iterations settle the seeds in high-density cluster cores
+    for _ in 0..SEED_LLOYD_ITERATIONS {
         let mut sums = vec![0.0f32; k * d];
         let mut counts = vec![0usize; k];
         for i in 0..n {
@@ -536,6 +497,18 @@ fn initialize_centroids_diverse(features: &[f32], n: usize, d: usize, k: usize) 
     centroids
 }
 
+/// Precision and `ln det` of a diagonal covariance (each variance at least `reg`).
+fn diagonal_inverse_logdet(cov: &[f32], d: usize, reg: f32) -> (Vec<f32>, f64) {
+    let mut inv = vec![0.0f32; d * d];
+    let mut log_det = 0.0f64;
+    for f in 0..d {
+        let v = cov[f * d + f].max(reg);
+        inv[f * d + f] = 1.0 / v;
+        log_det += (v as f64).ln();
+    }
+    (inv, log_det)
+}
+
 /// Times the diagonal jitter grows (×10 each, from `reg`) before giving up on a covariance that
 /// is not positive definite.
 const CHOLESKY_JITTER_ATTEMPTS: usize = 6;
@@ -566,21 +539,6 @@ fn invert_spd_and_logdet(cov: &[f32], d: usize, reg: f32) -> (Vec<f32>, f64) {
     (inv, log_det)
 }
 
-#[inline]
-fn quad_form_mahalanobis(x: &[f32], mean: &[f32], precision: &[f32], d: usize) -> f32 {
-    let mut sum = 0.0f32;
-    for i in 0..d {
-        let di = x[i] - mean[i];
-        let row = &precision[i * d..(i + 1) * d];
-        let mut inner = 0.0f32;
-        for j in 0..d {
-            inner += row[j] * (x[j] - mean[j]);
-        }
-        sum += di * inner;
-    }
-    sum.max(0.0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -609,7 +567,17 @@ mod tests {
             }
         }
 
-        let res = cluster_gmm_bic(&features, n, d, 1, 6);
+        struct Task<'a>(&'a [f32], usize, usize);
+        impl dsp_core::compute::ComputeTask for Task<'_> {
+            type Output = GmmResult;
+            fn run<R: Runtime>(self, client: ComputeClient<R>) -> GmmResult {
+                cluster_gmm_bic(&client, self.0, self.1, self.2, 1, 6)
+            }
+        }
+        let targets = dsp_core::compute::ComputeTarget::available();
+        assert!(!targets.is_empty(), "no CubeCL runtime compiled in");
+        for target in targets {
+        let res = target.run(Task(&features, n, d)).expect("runtime");
         assert_eq!(res.num_clusters, 3, "BIC selected K={}", res.num_clusters);
 
         let l0 = res.labels[0];
@@ -632,5 +600,6 @@ mod tests {
             }
         }
         assert!(correct as f32 / (n as f32) > 0.98);
+        }
     }
 }

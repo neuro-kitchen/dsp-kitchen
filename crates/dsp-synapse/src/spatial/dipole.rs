@@ -4,7 +4,8 @@
 //! moment vector $\mathbf{p} = (p_x, p_y, p_z)$ to signed multi-channel potentials:
 //! $$\hat{V}_k(\mathbf{r}_0, \mathbf{p}) = \frac{\mathbf{p} \cdot (\mathbf{r}_k - \mathbf{r}_0)}{\|\mathbf{r}_k - \mathbf{r}_0\|^3}$$
 //! using Golub-Pereyra variable projection (exact 3x3 regularized linear solve for $\mathbf{p}(\mathbf{r}_0)$
-//! at each candidate $\mathbf{r}_0$) combined with damped coordinate-wise Gauss-Newton steps.
+//! at each candidate $\mathbf{r}_0$) combined with a compass (pattern) search over $\mathbf{r}_0$:
+//! ± step along each axis, keeping improvements, halving the step when none helps.
 
 use dsp_io::neuro::probe::SensorLayout;
 use serde::{Deserialize, Serialize};

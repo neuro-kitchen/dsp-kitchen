@@ -130,7 +130,78 @@ burst check (only the deepest trough of a burst stays); new tests in `threshold.
 dsp-base template subtraction (`filter/template/subtraction.rs`) keeps its own lag search: it
 searches full-overlap positions only, a different operation.
 
+## Step 4 — host work moved to the device (2026-10-05)
+
+| Item (review) | Change |
+|---|---|
+| Template matching (O2, O4) | `SpikeMatcher::match_spikes<R>(&self, client, …)` takes the device; `match_spikes_omp` (chose the device itself via `ComputeTarget::from_env`) **removed** — entry points choose. Each pass finds local maxima of the energy reduction on the device (`dsp_base::peaks::find_peak_candidates`), keeps those with no larger one within a template length (`DistanceRule::LocallyExclusive`, was greedy first-wins), and gathers unit / scale / neighbouring reductions of the picks with `omp_gather_picks_kernel`: only the picks are downloaded (was three full arrays per pass). dsp-base `buffer` helpers; tests run on every runtime. |
+| Noise calibration (ST4) | Filtered calibration chunks stay on the device (`process_chunk_in_vram`); `dsp_base::math::execute_channel_noise_std` returns one σ per channel (device `median(|x|)` by `core::reduce::row_abs_kth`, same index `n / 2` as the host estimator). The thread-per-channel host loop is gone. |
+| Dedup geometry (DD3) | `DedupNeighbours` (CSR radius-neighbour rows, built once per probe and radius, uploaded once): the device kernel tests neighbours from it and returns each survivor's participating channels as bitmasks — no host `C × C` distance matrix, no host re-scan. `deduplicate_spikes_spatial_gpu` is now a one-off wrapper. Test on every runtime, 1 and 2 mask words. |
+| GMM EM (G5) | EM on the device (`sorting/kernels/gmm.rs`): `gmm_e_step_kernel` (one unit per spike: all components' log-densities, log-sum-exp, responsibilities, per-spike log-likelihood, Mahalanobis² to the most likely component), `gmm_mean_sums_kernel` (per component × feature), `gmm_scatter_kernel` (per component × entry). Features, mask and responsibilities stay on the device; per iteration only parameters go up and their sums come back; the total log-likelihood is a dsp-base row reduction; responsibilities are downloaded once. Host keeps the init and the `k` Cholesky inversions. API: `GmmClusterer::{fit, fit_k}` and `cluster_gmm_bic` take a `ComputeClient<R>`. **Behaviour:** convergence on the mean per-spike log-likelihood (sklearn), default `tolerance` `1e-3` (`DEFAULT_TOLERANCE`, was `1e-5` on the total); final responsibilities / labels / Mahalanobis from one E-step with the final parameters; `r < 1e-9` skip removed; floors named (`MIN_WEIGHT`, `MIN_WEIGHT_LOG`, `MIN_COMPONENT_MASS`). Test runs on every runtime. |
+| IsoSplit (I4) | **Kept on the host** (decision): per merge test it projects two clusters (`O(n_a + n_b)`) and evaluates a 1-D KDE at 7 points; seeding is 10 k-means passes. Linear and small next to EM; a device version would add launches without saving time. |
+| Kriging application (K2 traces, K3) | `TraceKriging` keeps weights per drift step across chunks; `correct` (host) and `correct_in_vram::<R, F>` (one launch per chunk: ELLPACK weight rows per drift step + run table, `spatial/kernels/kriging.rs`). `correct_traces_drift_kriging` = one-off host wrapper. Regularization named `KRIGING_REGULARIZATION`. Test: device = host. Snippet-batch kriging still host. |
+
+Follow-ups done on review: `row_abs_kth_kernel` halvings are a runtime loop (a comptime range
+unrolled 64 counting passes); `DedupNeighbours`, `TraceKriging`, `KRIGING_REGULARIZATION`
+re-exported at the crate root.
+
+## Step 5 — names and docs that misstated the algorithm (2026-10-05)
+
+| Before | After |
+|---|---|
+| `sorting/omp.rs`, `match_spikes_omp_on`, `OmpSpikeMatcher`, `omp_{score,subtract,gather_picks}_kernel` | `sorting/matching_pursuit.rs`, `match_spikes_matching_pursuit`, `MatchingPursuitMatcher`, `mp_*_kernel` (`kernels/matching_pursuit.rs`). Greedy matching pursuit with bounded amplitudes, no orthogonal re-fit (O1). |
+| `sorting/isosplit.rs`, `cluster_isosplit`, `IsoSplitResult` | `sorting/kde_merge.rs`, `cluster_kde_merge`, `KdeMergeResult`; doc states it is a KDE valley heuristic, not isotonic IsoSplit, no significance test (I1). Sorter name example `"kde_merge"`. |
+| `StreamingSpikeRunner`, `StreamingSortConfig`, `StreamingSortResult`; docs "spike sorting" | `StreamingDetector`, `StreamingDetectionConfig`, `StreamingDetectionResult`; docs: detection + per-channel templates, `to_sorting_output` = one unit per primary channel (ST2). `run` (chose the device via `ComputeTarget::from_env`) **removed**; `run_with(target)` / `run_on(client)` stay (ST3). |
+| `SpikeMorphology::peak_amplitude_uv` (held the trough) | `trough_amplitude_uv` (F4). |
+| `SINC_RESAMPLE_MARGIN = 8` ("Lanczos") | `= extraction::SINC_KERNEL_RADIUS` (5), Blackman-Harris in the docs (SC1): halos 3 samples shorter per side. |
+| Docs | dipole: compass search, not Gauss-Newton (SP2); grid convolution: inspired by, not matching, SpikeInterface (SP2); `d′` / isolation distance: diagonal covariance (MT4); comparison: greedy, not Hungarian (MT5); wavelet: Haar + IQR, not Daubechies-4 / Lilliefors (F3); GMM: farthest-first seeding from the point farthest from the mean, not k-means++ (G2). |
+
+Still open (review SP7, not in the step-4 list): the localizers (center of mass, monopolar LM,
+dipole, grid convolution) are host loops one spike at a time — batched device work.
+
+## Step 6 — constants and fabricated values (2026-10-05)
+
+Named (module-level `const` with a doc line; defaults inside `Default` impls were already
+documented and stay):
+
+| File | Constants |
+|---|---|
+| `sorting/gmm.rs` | `MIN_REGULARIZATION`, `MIN_INIT_WEIGHT`, `SEED_LLOYD_ITERATIONS`; init covariance now `+ reg` like every M-step (was `max(reg) + reg`, G4). |
+| `sorting/kde_merge.rs` | `MAX_PASSES`, `SEED_KMEANS_ITERATIONS`, `SAME_CENTROID_DIST_SQ`, `MIN_PROJECTED_POINTS`, `MIN_CENTROID_DISTANCE`, `MIN_BANDWIDTH_FRACTION`, `MIN_PEAK_DENSITY`, `VALLEY_SEARCH`, `DIP_SCALE`, `MAX_BRIDGE_RATIO`, `MIDPOINT` (I4). |
+| `sorting/matching_pursuit.rs` | `MIN_TEMPLATE_ENERGY`; public `DEFAULT_{MIN,MAX}_AMPLITUDE_SCALE`, `DEFAULT_MIN_EXPLAINED_ENERGY_UV2` (documented as µV²-scale dependent), `DEFAULT_MAX_PASSES` (O5). |
+| `spatial/drift.rs` | `MIN_TIME_BIN_SEC`, `MIN_DEPTH_BIN_UM`, `MIN_DEPTH_BINS`, `PROFILE_SMOOTHING`, `TIME_EPS_SEC`, `DEPTH_EPS_UM`, `BLOCK_HALF_WIDTH_FRACTION` (comment corrected: 30 % overlap, not 25 %), `MIN_BLOCK_HALF_BINS`, `MIN_SPAN_BINS` (DR3). |
+| `spatial/kriging.rs` | `MIN_TWO_SIGMA_SQ_UM2`, `MIN_REGULARIZATION` (K4; `KRIGING_REGULARIZATION` in step 4). |
+| `features/conduction.rs` | `MAX_LAG_FRACTION`, `MIN_PAIR_ENERGY`, `MIN_PAIR_CORRELATION`, `MIN_DELAY_SAMPLES` (F5). |
+| `streaming/config.rs` | `MIN_WINDOW_MS`, `MIN_BATCH_SEC`, `MIN_CALIBRATION_SEC`, `MIN_SAMPLE_RATE_HZ` (SC2). |
+| `detection/adaptive.rs` | `MIN_BLOCK_SAMPLES`, `MIN_SMOOTHING_ALPHA`, `MIN_SIGMA`. |
+| `metrics/{correlogram, evoked, isolation}.rs` | `MIN_BIN_MS`; `MIN_PSTH_BIN_MS`, `MIN_BASELINE_SD_UV`, `MIN_THRESHOLD_SIGMA`; `MIN_NOISE_STD_UV`. |
+
+Fabricated outputs → NaN (undefined, never mistaken for a measurement):
+
+| Where | Was | Now |
+|---|---|---|
+| `estimate_hdemg_conduction_velocity` (no estimate) | velocity / delay / r = `0.0` | `ConductionVelocityEstimate::UNDEFINED` (all NaN) |
+| `compute_snr` (noise ≤ 1e-6) / `compute_d_prime` (< 2 spikes) | `0.0` | NaN (labels: `classify` already maps non-finite SNR to `Unsorted`) |
+| `compare_spike_trains` (both empty) | agreement / precision / recall / accuracy `1.0` | NaN |
+| `quantify_mep` (no baseline / empty window) | baseline `(0, 1)`, ptp / rms / auc `0` | NaN |
+| `SortedUnit::from_spikes_with` SNR | noise floored at `1e-3` | raw noise (NaN below `MIN_NOISE_STD_UV`) |
+| missing per-channel σ (`SortingOutput` builders, streaming `to_sorting_output`) | `10.0` µV | NaN |
+| CBSS amplitudes past the IPT, `flattened_spikes` missing amplitude / location | `1.0`, `[0, 0, 0]` | `MISSING_AMPLITUDE` / `MISSING_LOCATION` = NaN — **check at the end** that Phy accepts NaN in `amplitudes.npy` (else write the folder without it). |
+
+Left as is: unit conversions (`ms · 1e-3`), structural guards (`.max(1)` on counts), the
+matched-filter prototype shape (documented by its formula).
+
 ## Downstream breakage (to fix at the end)
+
+- Step-5 renames: dsp-cli `benchmark.rs` (`StreamingSpikeRunner`, `match_spikes_omp_on`),
+  dsp_kitchen_py `synapse/{sorting, streaming, mod}.rs`, `lib.rs`; dsp-app (any use of the old
+  names); `StreamingDetector::run` → `run_with(target, …)`.
+
+- `GmmClusterer::fit` / `fit_k`, `cluster_gmm_bic` take a client: dsp_kitchen_py
+  `synapse/sorting.rs`.
+- `match_spikes_omp` removed and `SpikeMatcher` takes a client: dsp_kitchen_py
+  `synapse/sorting.rs` (choose the device in the binding), dsp-cli `benchmark.rs` (already uses
+  `_on`).
 
 - Removed extraction / spatial helpers: dsp-synapse-ml `examples/emusort_nwb_zarr.rs`
   (`waveform_peak_to_peak` → `dsp_base::math::peak_to_peak`); any user of

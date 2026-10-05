@@ -3,8 +3,8 @@
 //! Provides [`SortedUnit`] and [`SortingOutput`] as the canonical domain containers for
 //! sorted spike trains, templates (`mean`, `std`, `se`), 3D positions, drift estimates,
 //! probe layouts, and IBL/SpikeInterface quality metrics across all `dsp-synapse` sorters
-//! (`StreamingSpikeRunner`, `GmmClusterer`, `cluster_isosplit`, `cluster_density_peaks`,
-//! `OmpSpikeMatcher`, `ConvolutiveBssDecomposer`, and external Phy/Kilosort/NWB runs).
+//! (`StreamingDetector`, `GmmClusterer`, `cluster_kde_merge`, `cluster_density_peaks`,
+//! `MatchingPursuitMatcher`, `ConvolutiveBssDecomposer`, and external Phy/Kilosort/NWB runs).
 
 use std::collections::BTreeMap;
 
@@ -32,6 +32,11 @@ pub struct RecordingMeta {
     pub hp_filtered: bool,
     pub n_channels_dat: Option<usize>,
 }
+
+/// Amplitude and location written for a spike that has none in flat (Phy-style) arrays, which
+/// need one value per spike: NaN, so missing values are never mistaken for measurements.
+pub const MISSING_AMPLITUDE: f32 = f32::NAN;
+pub const MISSING_LOCATION: [f32; 3] = [f32::NAN; 3];
 
 pub mod serde_nan {
     use serde::{Deserialize, Deserializer};
@@ -212,7 +217,7 @@ impl SortedUnit {
             })
             .unwrap_or(0.0);
         let snr = match channel_noise_std_uv {
-            Some(sd) => compute_snr(peak_uv, sd.max(1e-3)),
+            Some(sd) => compute_snr(peak_uv, sd),
             None => f32::NAN,
         };
         let resolved_primary = primary_channel
@@ -245,7 +250,7 @@ impl SortedUnit {
 /// Complete output of a spike sorting or motor-unit decomposition run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SortingOutput {
-    /// Identifier of the sorter or pipeline (e.g., `"kilosort4"`, `"ppca_gmm"`, `"isosplit"`, `"cbss"`).
+    /// Identifier of the sorter or pipeline (e.g., `"kilosort4"`, `"ppca_gmm"`, `"kde_merge"`, `"cbss"`).
     pub sorter_name: String,
     /// Recording sample rate in Hz.
     pub sample_rate_hz: f64,
@@ -350,7 +355,7 @@ impl SortingOutput {
             let noise_sd = channel_sigmas_uv
                 .get(primary_channel)
                 .copied()
-                .unwrap_or(10.0);
+                .unwrap_or(f32::NAN);
 
             units.push(SortedUnit::from_spikes(
                 unit_id,
@@ -381,7 +386,7 @@ impl SortingOutput {
             let amps: Vec<f32> = mu
                 .spike_samples
                 .iter()
-                .map(|&s| mu.ipt.get(s as usize).copied().unwrap_or(1.0))
+                .map(|&s| mu.ipt.get(s as usize).copied().unwrap_or(f32::NAN))
                 .collect();
             let mut unit = SortedUnit::from_spikes(
                 mu.unit_id,
@@ -428,8 +433,8 @@ impl SortingOutput {
         let mut rows: Vec<(u64, i32, f32, [f32; 3])> = Vec::with_capacity(total);
         for u in &self.units {
             for (i, &s) in u.spike_samples.iter().enumerate() {
-                let amp = u.amplitudes_uv.get(i).copied().unwrap_or(1.0);
-                let loc = u.locations_um.get(i).copied().unwrap_or([0.0, 0.0, 0.0]);
+                let amp = u.amplitudes_uv.get(i).copied().unwrap_or(MISSING_AMPLITUDE);
+                let loc = u.locations_um.get(i).copied().unwrap_or(MISSING_LOCATION);
                 rows.push((s, u.unit_id as i32, amp, loc));
             }
         }
