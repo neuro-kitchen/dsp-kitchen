@@ -2,18 +2,22 @@ pub mod kernels;
 pub mod scaling;
 pub mod clamp;
 pub mod histogram;
+pub mod moments;
 pub mod unpack;
 pub mod stats;
 pub mod windows;
+pub mod xcorr;
 
 pub use scaling::execute_scaling;
 pub use clamp::execute_clamp;
 pub use unpack::{execute_unpack_stored, stored_words, upload_stored};
 pub use stats::{
     estimate_noise_rms, estimate_noise_std, estimate_noise_trimmed, execute_channel_mean_std,
-    interquartile_range, standard_error,
+    interquartile_range, peak_to_peak, standard_error,
 };
 pub use histogram::{bin_centers, histogram, percentile};
+pub use moments::RunningMoments;
+pub use xcorr::{cross_correlation, lagged_dot, parabolic_vertex_offset, peak_lag, LagPeak};
 pub use windows::{bessel_i0, blackman_window, gaussian_window, hamming_window, hann_window, kaiser_window, sinc};
 
 #[cfg(test)]

@@ -89,6 +89,15 @@ pub fn estimate_noise_trimmed(signal: &[f32], clip_sigma: f32, iterations: usize
     sigma
 }
 
+/// `max − min` of `signal` (`numpy.ptp`); 0 when empty.
+pub fn peak_to_peak(signal: &[f32]) -> f32 {
+    if signal.is_empty() {
+        return 0.0;
+    }
+    let (lo, hi) = signal.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), &v| (lo.min(v), hi.max(v)));
+    hi - lo
+}
+
 /// Computes the Interquartile Range ($\text{IQR} = Q_{75} - Q_{25}$) of a 1D signal (lower ranks
 /// `n/4` and `3n/4`, by selection). For a Gaussian, $\sigma \approx \text{IQR}$ / [`IQR_TO_SIGMA`].
 pub fn interquartile_range(signal: &[f32]) -> f32 {

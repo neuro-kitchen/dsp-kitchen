@@ -9,6 +9,7 @@ pub mod filter;
 pub mod spatial;
 pub mod math;
 pub mod linalg;
+pub mod peaks;
 pub mod pipeline;
 pub mod resampler;
 
