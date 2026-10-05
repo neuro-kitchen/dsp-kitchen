@@ -3,6 +3,15 @@ use super::FilterError;
 /// Relative impulse-response amplitude below which a filter is considered settled.
 pub const DEFAULT_SETTLING_TOLERANCE: f64 = 1e-3;
 
+/// Extra samples simulated past twice the pole-radius bound when measuring settling.
+const SETTLING_HORIZON_MARGIN: usize = 64;
+
+/// Largest `|a0 − 1|` accepted as a normalized section.
+const A0_TOLERANCE: f64 = 1e-12;
+
+/// Pole radius below which a section is treated as pole-free (settles in two samples).
+const NEGLIGIBLE_POLE_RADIUS: f64 = 1e-12;
+
 /// One second-order section `b0 + b1 z⁻¹ + b2 z⁻² / (1 + a1 z⁻¹ + a2 z⁻²)`, `a[0] = 1`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Section {
@@ -83,7 +92,7 @@ impl Sos {
         let ok = !self.sections.is_empty()
             && self.sections.iter().all(|s| {
                 s.b.iter().chain(s.a.iter()).all(|c| c.is_finite())
-                    && (s.a[0] - 1.0).abs() < 1e-12
+                    && (s.a[0] - 1.0).abs() < A0_TOLERANCE
                     && s.pole_radius() < 1.0
             });
         if ok { Ok(()) } else { Err(FilterError::InvalidSections) }
@@ -111,7 +120,7 @@ impl Sos {
     /// Measured on the designed cascade in f64; simulated up to twice the pole-radius bound
     /// ([`Self::pole_settling_bound`]), which is always longer.
     pub fn settling_samples(&self, tol: f64) -> usize {
-        let horizon = 2 * self.pole_settling_bound(tol) + 64;
+        let horizon = 2 * self.pole_settling_bound(tol) + SETTLING_HORIZON_MARGIN;
         let mut impulse = vec![0.0; horizon];
         impulse[0] = 1.0;
         let h = self.filter(&impulse, false);
@@ -133,7 +142,7 @@ impl Sos {
             .iter()
             .map(|s| {
                 let r = s.pole_radius();
-                if r < 1e-12 {
+                if r < NEGLIGIBLE_POLE_RADIUS {
                     2
                 } else {
                     (tol.ln() / r.ln()).ceil().max(2.0) as usize
@@ -145,14 +154,6 @@ impl Sos {
     /// DC gain of the whole cascade.
     pub fn dc_gain(&self) -> f64 {
         self.sections.iter().map(Section::dc_gain).product()
-    }
-
-    /// Kernel coefficient layout: [`Section::svf`] per section, then the cascade DC gain, f32.
-    pub fn svf_coeffs_f32(&self) -> Vec<f32> {
-        let mut c: Vec<f32> =
-            self.sections.iter().flat_map(|s| s.svf()).map(|c| c as f32).collect();
-        c.push(self.dc_gain() as f32);
-        c
     }
 
     /// Host f64 reference of a forward pass (`sosfilt`) starting from `zi · x[0]` when

@@ -1,12 +1,13 @@
 //! The time-block-parallel SOS pass matches the host f64 reference for any block length (one
 //! block, single-step blocks, lengths that do not divide the signal), for forward, zero-phase and
-//! stateful streaming passes, on every compiled-in runtime.
+//! stateful streaming passes, from rest and from the steady state, in channel-major and time-major
+//! memory order, on every compiled-in runtime.
 
 mod common;
 
 use common::*;
 use cubecl::prelude::*;
-use dsp_base::filter::{DeviceFilter, FilterBand, FilterMode, FilterSpec};
+use dsp_base::filter::{DeviceFilter, FilterBand, FilterMode, FilterSpec, FilterStart, PassLayout};
 use dsp_core::compute::{ComputeTarget, ComputeTask};
 
 const FS: f64 = 30_000.0;
@@ -51,47 +52,54 @@ impl ComputeTask for Check {
         let scale = max_abs(&x);
         let input = upload(&client, &x);
 
-        for spec in specs() {
+        for (spec, layout) in specs().into_iter().flat_map(|s| [PassLayout::ChannelMajor, PassLayout::TimeMajor].map(|l| (s.clone(), l))) {
             for block in BLOCKS {
-                for mode in [FilterMode::Forward, FilterMode::ForwardBackward] {
-                    let spec = spec.clone().with_mode(mode);
+                for (mode, start) in [
+                    (FilterMode::Forward, FilterStart::Rest),
+                    (FilterMode::Forward, FilterStart::SteadyState),
+                    (FilterMode::ForwardBackward, FilterStart::Rest),
+                ] {
+                    let spec = spec.clone().with_mode(mode).with_start(start);
                     let sos = spec.design(FS).unwrap();
-                    let filter = DeviceFilter::new(&client, &spec, FS).unwrap().with_block_len(block);
+                    let filter = DeviceFilter::<f32>::new(&client, &spec, FS).unwrap().with_block_len(block).with_layout(layout);
                     let output = client.empty(CHANNELS * n * 4);
                     let scratch = client.empty((filter.scratch_len(CHANNELS, n) * 4).max(4));
                     let state = client.empty(CHANNELS * filter.state_len() * 4);
                     filter.apply(&client, &input, &output, &scratch, &state, CHANNELS, n);
                     let expected = match mode {
-                        FilterMode::Forward => sos.filter(&x, true),
+                        FilterMode::Forward => sos.filter(&x, start == FilterStart::SteadyState),
                         FilterMode::ForwardBackward => sos.filtfilt(&x, sos.settling_samples(1e-3).min(n - 1)),
                     };
-                    assert_close(&format!("{rt} {spec:?} block {block}"), &read(&client, output), &expected, scale);
+                    assert_close(&format!("{rt} {spec:?} {layout:?} block {block}"), &read(&client, output), &expected, scale);
                 }
 
                 // Stateful chunks continue the carried state across block-parallel passes
-                let spec = spec.clone().with_mode(FilterMode::Forward);
-                let sos = spec.design(FS).unwrap();
-                let filter = DeviceFilter::new(&client, &spec, FS).unwrap().with_block_len(block);
-                let state = client.empty(CHANNELS * filter.state_len() * 4);
-                let mut got = vec![0.0f64; CHANNELS * n];
-                for (i, w) in [0usize, 3_001, 7_777, n].windows(2).enumerate() {
-                    let len = w[1] - w[0];
-                    let chunk: Vec<f64> = x[w[0]..w[1]].to_vec();
-                    let output = client.empty(CHANNELS * len * 4);
-                    filter.apply_stateful(&client, &upload(&client, &chunk), &output, &state, CHANNELS, len, i == 0).unwrap();
-                    let part = read(&client, output);
-                    for c in 0..CHANNELS {
-                        got[c * n + w[0]..c * n + w[1]].copy_from_slice(&part[c * len..(c + 1) * len]);
+                for start in [FilterStart::Rest, FilterStart::SteadyState] {
+                    let spec = spec.clone().with_mode(FilterMode::Forward).with_start(start);
+                    let sos = spec.design(FS).unwrap();
+                    let filter = DeviceFilter::<f32>::new(&client, &spec, FS).unwrap().with_block_len(block).with_layout(layout);
+                    let state = client.empty(CHANNELS * filter.state_len() * 4);
+                    let mut got = vec![0.0f64; CHANNELS * n];
+                    for (i, w) in [0usize, 3_001, 7_777, n].windows(2).enumerate() {
+                        let len = w[1] - w[0];
+                        let chunk: Vec<f64> = x[w[0]..w[1]].to_vec();
+                        let output = client.empty(CHANNELS * len * 4);
+                        filter.apply_stateful(&client, &upload(&client, &chunk), &output, &state, CHANNELS, len, i == 0).unwrap();
+                        let part = read(&client, output);
+                        for c in 0..CHANNELS {
+                            got[c * n + w[0]..c * n + w[1]].copy_from_slice(&part[c * len..(c + 1) * len]);
+                        }
                     }
+                    let expected = sos.filter(&x, start == FilterStart::SteadyState);
+                    assert_close(&format!("{rt} stateful {spec:?} {layout:?} block {block}"), &got, &expected, scale);
                 }
-                assert_close(&format!("{rt} stateful {spec:?} block {block}"), &got, &sos.filter(&x, true), scale);
             }
         }
 
         // Autotuned block length gives the same result
         let spec = specs().remove(0);
         let sos = spec.design(FS).unwrap();
-        let filter = DeviceFilter::new(&client, &spec, FS).unwrap();
+        let filter = DeviceFilter::<f32>::new(&client, &spec, FS).unwrap();
         let output = client.empty(CHANNELS * n * 4);
         let scratch = client.empty((filter.scratch_len(CHANNELS, n) * 4).max(4));
         let state = client.empty(CHANNELS * filter.state_len() * 4);

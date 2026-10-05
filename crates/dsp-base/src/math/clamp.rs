@@ -1,20 +1,21 @@
 use cubecl::prelude::*;
 use dsp_core::compute::LaunchGeometry;
-use super::kernels::clamp_samples_kernel;
 
-/// High-level host dispatcher for elementwise sample clamping.
-pub fn execute_clamp<R: Runtime>(
+use super::kernels::clamp_samples_kernel;
+use crate::core::DspFloat;
+
+/// `output = clamp(input, min_val, max_val)` over `total_elements` values.
+pub fn execute_clamp<R: Runtime, F: DspFloat>(
     client: &ComputeClient<R>,
     input: &cubecl::server::Handle,
     output: &cubecl::server::Handle,
     total_elements: usize,
-    min_val: f32,
-    max_val: f32,
+    min_val: F,
+    max_val: F,
 ) {
     let geom = LaunchGeometry::elementwise(client, total_elements);
-
     unsafe {
-        clamp_samples_kernel::launch::<R>(
+        clamp_samples_kernel::launch::<F, R>(
             client,
             geom.cube_count,
             geom.cube_dim,

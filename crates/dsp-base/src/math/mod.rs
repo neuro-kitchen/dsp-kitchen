@@ -1,90 +1,40 @@
 pub mod kernels;
 pub mod scaling;
-pub mod baseline;
 pub mod clamp;
-pub mod geometry;
 pub mod histogram;
-pub mod ticks;
 pub mod unpack;
 pub mod stats;
 pub mod windows;
 
 pub use scaling::execute_scaling;
-pub use baseline::execute_baseline_subtract;
 pub use clamp::execute_clamp;
-pub use unpack::{execute_unpack_stored, stored_words};
+pub use unpack::{execute_unpack_stored, stored_words, upload_stored};
 pub use stats::{
     estimate_noise_rms, estimate_noise_std, estimate_noise_trimmed, execute_channel_mean_std,
     interquartile_range, standard_error,
 };
-pub use geometry::point_in_polygon;
 pub use histogram::{bin_centers, histogram, percentile};
-pub use ticks::{nice_step, ticks};
-pub use windows::{blackman_window, gaussian_window, hamming_window, hann_window, sinc};
+pub use windows::{bessel_i0, blackman_window, gaussian_window, hamming_window, hann_window, kaiser_window, sinc};
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
+    use crate::core::buffer;
     use cubecl::prelude::*;
 
-    #[test]
-    fn test_scaling_wgpu_kernel() {
-        let device = WgpuDevice::default();
-        let client = WgpuRuntime::client(&device);
-
-        let input_data = vec![1.0f32, 2.0, 3.0, 4.0];
-        let total = input_data.len();
-
-        let input_bytes = f32::as_bytes(&input_data);
-        let input_handle = client.create_from_slice(input_bytes);
-        let output_handle = client.empty(total * core::mem::size_of::<f32>());
-
-        execute_scaling::<WgpuRuntime>(
-            &client,
-            &input_handle,
-            &output_handle,
-            total,
-            2.5,
-            10.0,
-        );
-
-        let output_bytes = client.read_one_unchecked(output_handle);
-        let output_slice = f32::from_bytes(&output_bytes);
-
-        assert_eq!(output_slice[0], 1.0 * 2.5 + 10.0);
-        assert_eq!(output_slice[1], 2.0 * 2.5 + 10.0);
-        assert_eq!(output_slice[2], 3.0 * 2.5 + 10.0);
-        assert_eq!(output_slice[3], 4.0 * 2.5 + 10.0);
+    fn scaling<R: Runtime>(client: &ComputeClient<R>) {
+        let input = buffer::upload(client, &[1.0f32, 2.0, 3.0, 4.0]);
+        let output = buffer::empty::<R, f32>(client, 4);
+        execute_scaling::<R, f32>(client, &input, &output, 4, 2.5, 10.0);
+        assert_eq!(buffer::download::<R, f32>(client, output), vec![12.5, 15.0, 17.5, 20.0]);
     }
+    runtime_test!(test_scaling_kernel, scaling);
 
-    #[test]
-    fn test_clamp_wgpu_kernel() {
-        let device = WgpuDevice::default();
-        let client = WgpuRuntime::client(&device);
-
-        let input_data = vec![-10.0f32, 5.0, 20.0, 0.0];
-        let total = input_data.len();
-
-        let input_bytes = f32::as_bytes(&input_data);
-        let input_handle = client.create_from_slice(input_bytes);
-        let output_handle = client.empty(total * core::mem::size_of::<f32>());
-
-        execute_clamp::<WgpuRuntime>(
-            &client,
-            &input_handle,
-            &output_handle,
-            total,
-            -2.0,
-            10.0,
-        );
-
-        let output_bytes = client.read_one_unchecked(output_handle);
-        let output_slice = f32::from_bytes(&output_bytes);
-
-        assert_eq!(output_slice[0], -2.0);
-        assert_eq!(output_slice[1], 5.0);
-        assert_eq!(output_slice[2], 10.0);
-        assert_eq!(output_slice[3], 0.0);
+    fn clamp<R: Runtime>(client: &ComputeClient<R>) {
+        let input = buffer::upload(client, &[-10.0f32, 5.0, 20.0, 0.0]);
+        let output = buffer::empty::<R, f32>(client, 4);
+        execute_clamp::<R, f32>(client, &input, &output, 4, -2.0, 10.0);
+        assert_eq!(buffer::download::<R, f32>(client, output), vec![-2.0, 5.0, 10.0, 0.0]);
     }
+    runtime_test!(test_clamp_kernel, clamp);
 }

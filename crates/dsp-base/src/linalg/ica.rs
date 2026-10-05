@@ -1,4 +1,14 @@
-use super::svd::SymmetricEig;
+use cubecl::prelude::*;
+
+use super::covariance::covariance_of_host;
+use super::eigen::{symmetric_eigen, EigenOptions};
+use crate::core::DspFloat;
+
+/// Floor of the eigenvalues the whitening divides by (flat or rank-deficient directions).
+pub const MIN_WHITENING_EIGENVALUE: f64 = 1e-8;
+
+/// Floor of a component's norm before it is normalized.
+const MIN_COMPONENT_NORM: f32 = 1e-12;
 
 /// Contrast function $G(u)$ and its derivatives $g(u) = G'(u)$, $g'(u) = G''(u)$ for FastICA.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,8 +47,12 @@ pub struct FastIcaModel {
 }
 
 impl FastIcaModel {
-    /// Fits deflationary fixed-point FastICA on `data` (`[channels, samples]`).
-    pub fn fit(
+    /// Fits deflationary fixed-point FastICA on host `data` (`[channels, samples]`). The whitening
+    /// (covariance and eigendecomposition) runs on the device in `F`; the fixed-point iterations on
+    /// the host.
+    #[allow(clippy::too_many_arguments)]
+    pub fn fit<R: Runtime, F: DspFloat>(
+        client: &ComputeClient<R>,
         data: &[f32],
         channels: usize,
         samples: usize,
@@ -52,35 +66,15 @@ impl FastIcaModel {
         num_components = num_components.clamp(1, channels);
 
         let inv_s = 1.0 / (samples as f32);
-        let mut mean = vec![0.0f32; channels];
-        for c in 0..channels {
-            mean[c] = data[c * samples..(c + 1) * samples].iter().sum::<f32>() * inv_s;
-        }
-
-        // 1. Center and compute PCA whitening matrix K of shape [num_components, channels]
-        let mut cov = vec![0.0f32; channels * channels];
-        for i in 0..channels {
-            let ri = &data[i * samples..(i + 1) * samples];
-            let mi = mean[i];
-            for j in i..channels {
-                let rj = &data[j * samples..(j + 1) * samples];
-                let mj = mean[j];
-                let mut acc = 0.0f64;
-                for t in 0..samples {
-                    acc += ((ri[t] - mi) as f64) * ((rj[t] - mj) as f64);
-                }
-                let val = (acc * (inv_s as f64)) as f32;
-                cov[i * channels + j] = val;
-                cov[j * channels + i] = val;
-            }
-        }
-
-        let eig = SymmetricEig::decompose(&cov, channels, 120);
+        // 1. Center and compute the PCA whitening matrix K of shape [num_components, channels]
+        let (cov, mean) = covariance_of_host::<R, F>(client, data, channels, samples);
+        let mean: Vec<f32> = mean.iter().map(|&m| m as f32).collect();
+        let eig = symmetric_eigen::<R, F>(client, &cov, channels, EigenOptions::default());
         let mut k_whiten = vec![0.0f32; num_components * channels];
         for comp in 0..num_components {
-            let scale = 1.0 / (eig.eigenvalues[comp].max(1e-8)).sqrt();
+            let scale = 1.0 / eig.values[comp].max(MIN_WHITENING_EIGENVALUE).sqrt();
             for c in 0..channels {
-                k_whiten[comp * channels + c] = eig.eigenvectors[c * channels + comp] * scale;
+                k_whiten[comp * channels + c] = (eig.vectors[c * channels + comp] * scale) as f32;
             }
         }
 
@@ -136,7 +130,7 @@ impl FastIcaModel {
                     }
                 }
 
-                let norm = wp_new.iter().map(|&v| v * v).sum::<f32>().sqrt().max(1e-12);
+                let norm = wp_new.iter().map(|&v| v * v).sum::<f32>().sqrt().max(MIN_COMPONENT_NORM);
                 for v in &mut wp_new {
                     *v /= norm;
                 }
@@ -195,8 +189,7 @@ impl FastIcaModel {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_fastica_separates_two_supergaussian_sources() {
+    fn separates<R: Runtime>(client: &ComputeClient<R>) {
         let samples = 2000;
         let mut s1 = vec![0.0f32; samples];
         let mut s2 = vec![0.0f32; samples];
@@ -217,7 +210,7 @@ mod tests {
             x[samples + t] = -0.5 * s1[t] + 0.9 * s2[t];
         }
 
-        let ica = FastIcaModel::fit(&x, 2, samples, 2, IcaContrast::Cube, 100, 1e-5);
+        let ica = FastIcaModel::fit::<R, f32>(client, &x, 2, samples, 2, IcaContrast::Cube, 100, 1e-5);
         let y = ica.transform_cpu(&x, 2, samples);
 
         let corr = |a: &[f32], b: &[f32]| -> f32 {
@@ -248,4 +241,5 @@ mod tests {
         assert!(best1 > 0.95, "best1={best1}");
         assert!(best2 > 0.95, "best2={best2}");
     }
+    runtime_test!(test_fastica_separates_two_supergaussian_sources, separates);
 }

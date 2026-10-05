@@ -1,9 +1,20 @@
 use cubecl::prelude::*;
-use dsp_core::compute::LaunchGeometry;
-use super::kernels::channel_mean_variance_kernel;
+use crate::core::{reduce, DspFloat};
+
+/// `Φ⁻¹(0.75)`: the median absolute value of a zero-mean Gaussian in units of its σ.
+pub const MAD_TO_SIGMA: f32 = 0.674_489_75;
+
+/// `2·Φ⁻¹(0.75)`: the interquartile range of a Gaussian in units of its σ.
+pub const IQR_TO_SIGMA: f32 = 1.348_979_5;
+
+/// Relative change of the trimmed σ below which [`estimate_noise_trimmed`] stops iterating.
+pub const TRIMMED_SIGMA_REL_TOL: f32 = 1e-6;
+
+/// σ below which a signal is treated as constant.
+pub const MIN_SIGMA: f32 = 1e-12;
 
 /// Computes the robust estimate of background noise standard deviation (Quiroga et al., 2004):
-/// $\sigma_n = \text{median}(|x|) / 0.6745$
+/// $\sigma_n = \text{median}(|x|) / \Phi^{-1}(0.75)$ ([`MAD_TO_SIGMA`])
 pub fn estimate_noise_std(signal: &[f32]) -> f32 {
     if signal.is_empty() {
         return 0.0;
@@ -14,7 +25,7 @@ pub fn estimate_noise_std(signal: &[f32]) -> f32 {
     abs_vals.select_nth_unstable_by(mid, |a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let median = abs_vals[mid];
 
-    median / 0.6745f32
+    median / MAD_TO_SIGMA
 }
 
 /// Computes the root-mean-square (RMS) standard deviation around the sample mean:
@@ -44,7 +55,7 @@ pub fn estimate_noise_trimmed(signal: &[f32], clip_sigma: f32, iterations: usize
     }
     let k = clip_sigma.max(1.0);
     let mut sigma = estimate_noise_std(signal);
-    if sigma <= 1e-12 {
+    if sigma <= MIN_SIGMA {
         return estimate_noise_rms(signal);
     }
 
@@ -68,7 +79,7 @@ pub fn estimate_noise_trimmed(signal: &[f32], clip_sigma: f32, iterations: usize
         let var = (sum_sq / count as f64 - mean * mean).max(0.0);
         // Correct for truncated Gaussian tail variance loss within [-k, k]
         let new_sigma = (var.sqrt()) as f32;
-        if (new_sigma - sigma).abs() < 1e-6 * sigma {
+        if (new_sigma - sigma).abs() < TRIMMED_SIGMA_REL_TOL * sigma {
             sigma = new_sigma;
             break;
         }
@@ -78,17 +89,16 @@ pub fn estimate_noise_trimmed(signal: &[f32], clip_sigma: f32, iterations: usize
     sigma
 }
 
-/// Computes the Interquartile Range ($\text{IQR} = Q_{75} - Q_{25}$) of a 1D signal.
-/// For a Gaussian distribution, $\sigma \approx \text{IQR} / 1.34898$.
+/// Computes the Interquartile Range ($\text{IQR} = Q_{75} - Q_{25}$) of a 1D signal (lower ranks
+/// `n/4` and `3n/4`, by selection). For a Gaussian, $\sigma \approx \text{IQR}$ / [`IQR_TO_SIGMA`].
 pub fn interquartile_range(signal: &[f32]) -> f32 {
     if signal.len() < 2 {
         return 0.0;
     }
-    let mut sorted = signal.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let n = sorted.len();
-    let q25 = sorted[n / 4];
-    let q75 = sorted[(3 * n) / 4];
+    let mut values = signal.to_vec();
+    let n = values.len();
+    let q75 = *values.select_nth_unstable_by((3 * n) / 4, f32::total_cmp).1;
+    let q25 = *values[..(3 * n) / 4].select_nth_unstable_by(n / 4, f32::total_cmp).1;
     q75 - q25
 }
 
@@ -103,8 +113,10 @@ pub fn standard_error(sample_std: f32, count: usize) -> f32 {
     }
 }
 
-/// Dispatches the CubeCL per-channel Welford online mean and standard deviation reduction kernel.
-pub fn execute_channel_mean_std<R: Runtime>(
+/// Per-channel mean and population standard deviation of a `[channels, samples]` buffer into
+/// `out_mean` / `out_std` (`channels` values each); a parallel reduction per channel
+/// ([`reduce::row_mean_std`]).
+pub fn execute_channel_mean_std<R: Runtime, F: DspFloat>(
     client: &ComputeClient<R>,
     input: &cubecl::server::Handle,
     out_mean: &cubecl::server::Handle,
@@ -112,27 +124,13 @@ pub fn execute_channel_mean_std<R: Runtime>(
     channels: usize,
     samples: usize,
 ) {
-    let geom = LaunchGeometry::per_channel(client, channels);
-    let total = channels * samples;
-
-    unsafe {
-        channel_mean_variance_kernel::launch::<R>(
-            client,
-            geom.cube_count,
-            geom.cube_dim,
-            ArrayArg::from_raw_parts(input.clone(), total),
-            ArrayArg::from_raw_parts(out_mean.clone(), channels),
-            ArrayArg::from_raw_parts(out_std.clone(), channels),
-            channels as u32,
-            samples as u32,
-        );
-    }
+    reduce::row_mean_std::<R, F>(client, input, out_mean, out_std, channels, samples);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
+    use crate::core::buffer;
 
     #[test]
     fn test_robust_noise_and_trimmed_on_spiky_trace() {
@@ -168,11 +166,7 @@ mod tests {
         assert!((standard_error(10.0, 100) - 1.0).abs() < 1e-6);
     }
 
-    #[test]
-    fn test_wgpu_channel_mean_std_kernel() {
-        let device = WgpuDevice::default();
-        let client = WgpuRuntime::client(&device);
-
+    fn channel_mean_std<R: Runtime>(client: &ComputeClient<R>) {
         let channels = 4;
         let samples = 256;
         let mut data = vec![0.0f32; channels * samples];
@@ -183,12 +177,12 @@ mod tests {
             }
         }
 
-        let in_handle = client.create_from_slice(f32::as_bytes(&data));
-        let mean_handle = client.empty(channels * 4);
-        let std_handle = client.empty(channels * 4);
+        let in_handle = buffer::upload(client, &data);
+        let mean_handle = buffer::empty::<R, f32>(client, channels);
+        let std_handle = buffer::empty::<R, f32>(client, channels);
 
-        execute_channel_mean_std::<WgpuRuntime>(
-            &client,
+        execute_channel_mean_std::<R, f32>(
+            client,
             &in_handle,
             &mean_handle,
             &std_handle,
@@ -196,8 +190,8 @@ mod tests {
             samples,
         );
 
-        let means = f32::from_bytes(&client.read_one_unchecked(mean_handle)).to_vec();
-        let stds = f32::from_bytes(&client.read_one_unchecked(std_handle)).to_vec();
+        let means = buffer::download::<R, f32>(client, mean_handle);
+        let stds = buffer::download::<R, f32>(client, std_handle);
 
         for c in 0..channels {
             let expected_mean = (c as f32) * 10.0;
@@ -206,4 +200,5 @@ mod tests {
             assert!((stds[c] - expected_std).abs() < 1e-2);
         }
     }
+    runtime_test!(test_channel_mean_std_kernel, channel_mean_std);
 }

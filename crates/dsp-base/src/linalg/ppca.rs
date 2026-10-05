@@ -1,7 +1,14 @@
 use cubecl::prelude::*;
-use dsp_core::compute::LaunchGeometry;
-use super::kernels::pca_project_kernel;
-use super::svd::SymmetricEig;
+use crate::core::DspFloat;
+use super::covariance::covariance_of_host;
+use super::eigen::{symmetric_eigen, EigenOptions};
+use super::projection::DeviceProjection;
+
+/// Floor of the isotropic noise variance (keeps `M = WᵀW + σ²I` invertible).
+pub const MIN_NOISE_VARIANCE: f64 = 1e-8;
+
+/// Noise variance used when every component is kept (no discarded eigenvalues to average).
+pub const FULL_RANK_NOISE_VARIANCE: f64 = 1e-6;
 
 /// Probabilistic Principal Component Analysis (PPCA) model (Tipping & Bishop, 1999).
 ///
@@ -24,80 +31,53 @@ pub struct PpcaModel {
 }
 
 impl PpcaModel {
-    /// Fits PPCA in closed form via maximum likelihood eigendecomposition on `[channels, samples]`.
-    pub fn fit(data: &[f32], channels: usize, samples: usize, mut num_components: usize) -> Self {
-        assert_eq!(data.len(), channels * samples, "Data size mismatch");
+    /// Fits PPCA in closed form (maximum likelihood from the covariance eigendecomposition) on host
+    /// data `[channels, samples]`; covariance and eigendecomposition on the device in `F`.
+    pub fn fit<R: Runtime, F: DspFloat>(client: &ComputeClient<R>, data: &[f32], channels: usize, samples: usize, num_components: usize) -> Self {
         assert!(channels > 0 && samples > 0, "Channels and samples must be > 0");
-        num_components = num_components.clamp(1, channels);
+        let num_components = num_components.clamp(1, channels);
+        let (cov, mean) = covariance_of_host::<R, F>(client, data, channels, samples);
+        let eig = symmetric_eigen::<R, F>(client, &cov, channels, EigenOptions::default());
 
-        let mut mean = vec![0.0f32; channels];
-        let inv_s = 1.0 / (samples as f32);
-        for c in 0..channels {
-            let row = &data[c * samples..(c + 1) * samples];
-            mean[c] = row.iter().sum::<f32>() * inv_s;
-        }
-
-        let mut cov = vec![0.0f32; channels * channels];
-        for i in 0..channels {
-            let row_i = &data[i * samples..(i + 1) * samples];
-            let mi = mean[i];
-            for j in i..channels {
-                let row_j = &data[j * samples..(j + 1) * samples];
-                let mj = mean[j];
-                let mut dot = 0.0f64;
-                for t in 0..samples {
-                    dot += ((row_i[t] - mi) as f64) * ((row_j[t] - mj) as f64);
-                }
-                let val = (dot * (inv_s as f64)) as f32;
-                cov[i * channels + j] = val;
-                cov[j * channels + i] = val;
-            }
-        }
-
-        let eig = SymmetricEig::decompose(&cov, channels, 120);
-
-        // Tipping & Bishop (1999) Eq. 8: sigma_ML^2 is average of discarded eigenvalues
+        // Tipping & Bishop (1999) Eq. 8: sigma_ML^2 is the average of the discarded eigenvalues
         let noise_variance = if num_components < channels {
-            let tail_sum: f32 = eig.eigenvalues[num_components..]
-                .iter()
-                .map(|&v| v.max(0.0))
-                .sum();
-            (tail_sum / ((channels - num_components) as f32)).max(1e-8)
+            let tail: f64 = eig.values[num_components..].iter().map(|&v| v.max(0.0)).sum();
+            (tail / (channels - num_components) as f64).max(MIN_NOISE_VARIANCE)
         } else {
-            1e-6
+            FULL_RANK_NOISE_VARIANCE
         };
 
         let mut weights = vec![0.0f32; channels * num_components];
         let mut posterior_projection = vec![0.0f32; channels * num_components];
         let mut eigenvalues = Vec::with_capacity(num_components);
-
         for k in 0..num_components {
-            let lam = eig.eigenvalues[k].max(noise_variance + 1e-8);
-            eigenvalues.push(lam);
+            let lam = eig.values[k].max(noise_variance + MIN_NOISE_VARIANCE);
+            eigenvalues.push(lam as f32);
             let scale_w = (lam - noise_variance).max(0.0).sqrt();
-            // Since W^T W + sigma^2 I = diag(lam_1, ..., lam_q), P = W * M^-1 scales column k by scale_w / lam
-            let scale_p = scale_w / lam.max(1e-8);
+            // W^T W + sigma^2 I = diag(lam_1, ..., lam_q), so P = W M^-1 scales column k by scale_w / lam
+            let scale_p = scale_w / lam;
             for c in 0..channels {
-                let u_ck = eig.eigenvectors[c * channels + k];
-                weights[c * num_components + k] = u_ck * scale_w;
-                posterior_projection[c * num_components + k] = u_ck * scale_p;
+                let u_ck = eig.vectors[c * channels + k];
+                weights[c * num_components + k] = (u_ck * scale_w) as f32;
+                posterior_projection[c * num_components + k] = (u_ck * scale_p) as f32;
             }
         }
 
         Self {
             num_channels: channels,
             num_components,
-            mean,
+            mean: mean.iter().map(|&m| m as f32).collect(),
             weights,
             posterior_projection,
-            noise_variance,
+            noise_variance: noise_variance as f32,
             eigenvalues,
         }
     }
 
     /// Fits PPCA via Expectation-Maximization (EM) with an observation mask (`[channels, samples]`,
     /// `true` = observed, `false` = missing/outside local neighborhood).
-    pub fn fit_em_masked(
+    pub fn fit_em_masked<R: Runtime, F: DspFloat>(
+        client: &ComputeClient<R>,
         data: &[f32],
         observed_mask: &[bool],
         channels: usize,
@@ -132,7 +112,7 @@ impl PpcaModel {
             }
         }
 
-        let mut model = Self::fit(&imputed, channels, samples, num_components);
+        let mut model = Self::fit::<R, F>(client, &imputed, channels, samples, num_components);
         for _iter in 0..max_iters.max(1) {
             // E-step: project current imputed data to posterior latent expectations Z = E[z | x]
             let z = model.project_cpu(&imputed, channels, samples);
@@ -147,7 +127,7 @@ impl PpcaModel {
                 }
             }
             // M-step: re-estimate closed-form subspace on completed sufficient statistics
-            model = Self::fit(&imputed, channels, samples, num_components);
+            model = Self::fit::<R, F>(client, &imputed, channels, samples, num_components);
         }
         model
     }
@@ -192,8 +172,14 @@ impl PpcaModel {
         recon
     }
 
-    /// Computes posterior latent expectations $\mathbb{E}[\mathbf{z} \mid \mathbf{x}]$ in VRAM using CubeCL.
-    pub fn project_gpu<R: Runtime>(
+    /// The projection with its weights uploaded once as `F`, for repeated calls.
+    pub fn to_device<R: Runtime, F: DspFloat>(&self, client: &ComputeClient<R>) -> DeviceProjection {
+        DeviceProjection::upload::<R, F>(client, &self.posterior_projection, &self.mean, self.num_channels, self.num_components)
+    }
+
+    /// One-off device projection of `[channels, samples]` into `[num_components, samples]` (uploads
+    /// the weights; use [`Self::to_device`] for repeated calls).
+    pub fn project_gpu<R: Runtime, F: DspFloat>(
         &self,
         client: &ComputeClient<R>,
         input_handle: &cubecl::server::Handle,
@@ -202,24 +188,7 @@ impl PpcaModel {
         samples: usize,
     ) {
         assert_eq!(channels, self.num_channels);
-        let proj_handle = client.create_from_slice(f32::as_bytes(&self.posterior_projection));
-        let mean_handle = client.create_from_slice(f32::as_bytes(&self.mean));
-        let geom = LaunchGeometry::channels_samples(client, self.num_components, samples);
-
-        unsafe {
-            pca_project_kernel::launch::<R>(
-                client,
-                geom.cube_count,
-                geom.cube_dim,
-                ArrayArg::from_raw_parts(input_handle.clone(), channels * samples),
-                ArrayArg::from_raw_parts(proj_handle, channels * self.num_components),
-                ArrayArg::from_raw_parts(mean_handle, channels),
-                ArrayArg::from_raw_parts(output_handle.clone(), self.num_components * samples),
-                channels as u32,
-                samples as u32,
-                self.num_components as u32,
-            );
-        }
+        self.to_device::<R, F>(client).project::<R, F>(client, input_handle, output_handle, samples);
     }
 }
 
@@ -227,8 +196,7 @@ impl PpcaModel {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_ppca_recovers_subspace_and_isotropic_noise_variance() {
+    fn recovers<R: Runtime>(client: &ComputeClient<R>) {
         let channels = 5;
         let samples = 3000;
         let true_sigma2 = 0.25f32; // sigma = 0.5
@@ -253,11 +221,12 @@ mod tests {
             }
         }
 
-        let ppca = PpcaModel::fit(&data, channels, samples, 1);
+        let ppca = PpcaModel::fit::<R, f32>(client, &data, channels, samples, 1);
         assert!((ppca.noise_variance - true_sigma2).abs() < 0.05, "noise_var={}", ppca.noise_variance);
 
         // Norm of W_ML should be close to ||w_true|| = sqrt(9 + 4 + 1) = sqrt(14) = 3.7417
         let w_norm_sq: f32 = ppca.weights.iter().map(|&v| v * v).sum();
         assert!((w_norm_sq - 14.0).abs() < 1.0, "w_norm_sq={w_norm_sq}");
     }
+    runtime_test!(test_ppca_recovers_subspace_and_isotropic_noise_variance, recovers);
 }

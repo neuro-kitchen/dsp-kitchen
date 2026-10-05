@@ -1,5 +1,6 @@
-//! Butterworth design: analog prototype → band transform → bilinear transform → SOS pairing,
-//! following `scipy.signal.butter(N, Wn, btype, fs=fs, output="sos")` step by step.
+//! IIR design: analog prototype → band transform → bilinear transform → SOS pairing, following
+//! `scipy.signal.iirfilter(..., output="sos")` step by step for Butterworth (`butter`) and
+//! Chebyshev type I (`cheby1`) prototypes.
 
 use num_complex::Complex64 as C;
 use std::f64::consts::PI;
@@ -9,10 +10,27 @@ use super::{FilterBand, FilterError, check_cutoff, check_sample_rate};
 
 /// Designs a Butterworth filter of `order` (per band edge) as second-order sections.
 pub fn butterworth_sos(order: usize, band: FilterBand, sample_rate: f64) -> Result<Sos, FilterError> {
-    check_sample_rate(sample_rate)?;
     if order == 0 {
         return Err(FilterError::InvalidOrder);
     }
+    design_sos(prototype(order), band, sample_rate)
+}
+
+/// Designs a Chebyshev type I filter of `order` (per band edge) with `ripple_db` of pass-band ripple
+/// as second-order sections (`scipy.signal.cheby1`).
+pub fn chebyshev1_sos(order: usize, ripple_db: f64, band: FilterBand, sample_rate: f64) -> Result<Sos, FilterError> {
+    if order == 0 {
+        return Err(FilterError::InvalidOrder);
+    }
+    if !(ripple_db.is_finite() && ripple_db > 0.0) {
+        return Err(FilterError::InvalidRipple(ripple_db));
+    }
+    design_sos(chebyshev1_prototype(order, ripple_db), band, sample_rate)
+}
+
+/// Turns an analog low-pass prototype into digital second-order sections for `band`.
+fn design_sos((z, p, k): Zpk, band: FilterBand, sample_rate: f64) -> Result<Sos, FilterError> {
+    check_sample_rate(sample_rate)?;
     let edges = match band {
         FilterBand::Lowpass(f) | FilterBand::Highpass(f) => vec![f],
         FilterBand::Bandpass(lo, hi) | FilterBand::Bandstop(lo, hi) => vec![lo, hi],
@@ -27,10 +45,9 @@ pub fn butterworth_sos(order: usize, band: FilterBand, sample_rate: f64) -> Resu
     }
 
     // Design on scipy's normalized grid (fs = 2) with prewarped edges.
-    let fs2 = 4.0;
+    let fs2 = DESIGN_FS2;
     let warped: Vec<f64> = edges.iter().map(|f| fs2 * (PI * f / sample_rate).tan()).collect();
 
-    let (z, p, k) = prototype(order);
     let (z, p, k) = match band {
         FilterBand::Lowpass(_) => lp2lp(&z, &p, k, warped[0]),
         FilterBand::Highpass(_) => lp2hp(&z, &p, k, warped[0]),
@@ -47,6 +64,13 @@ pub fn butterworth_sos(order: usize, band: FilterBand, sample_rate: f64) -> Resu
 
 type Zpk = (Vec<C>, Vec<C>, f64);
 
+/// scipy designs digitally on a grid with `fs = 2`; the bilinear transform then uses `2·fs = 4`.
+const DESIGN_FS2: f64 = 4.0;
+
+/// A root is real when its imaginary part is within this many machine epsilons of its magnitude
+/// (scipy `_cplxreal`'s `100 · eps`).
+const REAL_ROOT_EPS: f64 = 100.0;
+
 /// Analog Butterworth prototype (`buttap`): no zeros, poles on the unit circle, gain 1.
 fn prototype(n: usize) -> Zpk {
     let n_f = n as f64;
@@ -57,6 +81,26 @@ fn prototype(n: usize) -> Zpk {
         })
         .collect();
     (Vec::new(), p, 1.0)
+}
+
+/// Analog Chebyshev type I prototype (`cheb1ap`): poles on an ellipse, gain normalized so the
+/// pass-band peaks at 0 dB (even orders start the ripple at `−ripple_db`).
+fn chebyshev1_prototype(n: usize, ripple_db: f64) -> Zpk {
+    let n_f = n as f64;
+    let eps = (10f64.powf(0.1 * ripple_db) - 1.0).sqrt();
+    let mu = (1.0 / eps).asinh() / n_f;
+    let p: Vec<C> = (0..n)
+        .map(|i| {
+            let m = -(n_f) + 1.0 + 2.0 * i as f64;
+            let theta = PI * m / (2.0 * n_f);
+            -(C::new(mu, theta)).sinh()
+        })
+        .collect();
+    let mut k = prod_neg(&p).re;
+    if n % 2 == 0 {
+        k /= (1.0 + eps * eps).sqrt();
+    }
+    (Vec::new(), p, k)
 }
 
 fn prod_neg(v: &[C]) -> C {
@@ -116,7 +160,7 @@ fn bilinear(z: &[C], p: &[C], k: f64, fs2: f64) -> Zpk {
 }
 
 fn is_real(x: C) -> bool {
-    x.im.abs() <= 100.0 * f64::EPSILON * x.norm().max(1.0)
+    x.im.abs() <= REAL_ROOT_EPS * f64::EPSILON * x.norm().max(1.0)
 }
 
 /// `_cplxreal`: keep one member (positive imaginary part) of each conjugate pair, then reals.
@@ -243,4 +287,40 @@ fn zpk2sos(z: Vec<C>, p: Vec<C>, k: f64) -> Sos {
         *c *= k;
     }
     Sos::new(sections)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `|H(e^{jω})|` in dB of the cascade at `f` Hz.
+    fn gain_db(sos: &Sos, f: f64, fs: f64) -> f64 {
+        let z = C::from_polar(1.0, 2.0 * PI * f / fs);
+        let h = sos.sections.iter().fold(C::new(1.0, 0.0), |acc, s| {
+            let zi = z.inv();
+            acc * (s.b[0] + s.b[1] * zi + s.b[2] * zi * zi) / (s.a[0] + s.a[1] * zi + s.a[2] * zi * zi)
+        });
+        20.0 * h.norm().log10()
+    }
+
+    #[test]
+    fn chebyshev1_meets_its_ripple_definition() {
+        let fs = 2.0;
+        for order in [3usize, 4, 8] {
+            let rp = 0.05;
+            let cutoff = 0.8 / 4.0; // scipy decimate's design for q = 4 (Nyquist-normalized at fs = 2)
+            let sos = chebyshev1_sos(order, rp, FilterBand::Lowpass(cutoff), fs).unwrap();
+            sos.validate().unwrap();
+            // Pass-band edge sits exactly at −rp dB; DC at 0 dB (odd) or −rp dB (even)
+            assert!((gain_db(&sos, cutoff, fs) + rp).abs() < 1e-6, "order {order}: edge {}", gain_db(&sos, cutoff, fs));
+            let dc = if order % 2 == 1 { 0.0 } else { -rp };
+            assert!((gain_db(&sos, 0.0, fs) - dc).abs() < 1e-6, "order {order}: dc {}", gain_db(&sos, 0.0, fs));
+            // Equiripple inside the pass-band, strong attenuation well above it
+            for i in 0..=200 {
+                let g = gain_db(&sos, cutoff * i as f64 / 200.0, fs);
+                assert!(g <= 1e-6 && g >= -rp - 1e-6, "order {order}: {g} dB inside the pass-band");
+            }
+            assert!(gain_db(&sos, 0.9, fs) < -40.0);
+        }
+    }
 }

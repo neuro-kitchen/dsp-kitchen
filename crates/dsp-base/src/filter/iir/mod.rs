@@ -1,4 +1,4 @@
 pub mod kernels;
 pub mod sos;
 
-pub use sos::{DeviceFilter, execute_filter};
+pub use sos::{DeviceFilter, PassLayout, execute_filter};

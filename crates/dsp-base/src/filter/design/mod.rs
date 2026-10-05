@@ -8,7 +8,7 @@ mod butterworth;
 mod notch;
 mod sos;
 
-pub use butterworth::butterworth_sos;
+pub use butterworth::{butterworth_sos, chebyshev1_sos};
 pub use notch::notch_sos;
 pub use sos::{Section, Sos, DEFAULT_SETTLING_TOLERANCE};
 
@@ -34,22 +34,38 @@ pub enum FilterMode {
     ForwardBackward,
 }
 
+/// Where a [`FilterMode::Forward`] pass starts. Forward-backward passes always start from the steady
+/// state of their first sample, as `sosfiltfilt` does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FilterStart {
+    /// As if the input had been zero before the first sample (`sosfilt` without `zi`): a DC level
+    /// produces a step transient.
+    #[default]
+    Rest,
+    /// From the steady state of the first sample (`sosfilt` with `zi = sosfilt_zi · x[0]`): no step
+    /// transient, so halo windows over DC-heavy data settle with less context.
+    SteadyState,
+}
+
 /// Filter design.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FilterDesign {
     /// Butterworth of any order (per edge for band filters, as in scipy).
     Butterworth { order: usize, band: FilterBand },
+    /// Chebyshev type I of any order with `ripple_db` of pass-band ripple (`cheby1`).
+    Chebyshev1 { order: usize, ripple_db: f64, band: FilterBand },
     /// Second-order notch at `freq_hz` with quality factor `q` (`iirnotch`).
     Notch { freq_hz: f64, q: f64 },
     /// Explicit second-order sections, already designed for the target sample rate.
     Sos(Sos),
 }
 
-/// A filter to design and the direction(s) it runs in.
+/// A filter to design, the direction(s) it runs in, and where forward passes start.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FilterSpec {
     pub design: FilterDesign,
     pub mode: FilterMode,
+    pub start: FilterStart,
 }
 
 /// Default Butterworth order, matching SpikeInterface's `bandpass_filter` / `highpass_filter`.
@@ -57,7 +73,7 @@ pub const DEFAULT_BUTTERWORTH_ORDER: usize = 5;
 
 impl FilterSpec {
     pub fn butterworth(order: usize, band: FilterBand) -> Self {
-        Self { design: FilterDesign::Butterworth { order, band }, mode: FilterMode::default() }
+        Self { design: FilterDesign::Butterworth { order, band }, mode: FilterMode::default(), start: FilterStart::default() }
     }
 
     pub fn bandpass(low_hz: f64, high_hz: f64) -> Self {
@@ -76,17 +92,21 @@ impl FilterSpec {
         Self::butterworth(DEFAULT_BUTTERWORTH_ORDER, FilterBand::Bandstop(low_hz, high_hz))
     }
 
+    pub fn chebyshev1(order: usize, ripple_db: f64, band: FilterBand) -> Self {
+        Self { design: FilterDesign::Chebyshev1 { order, ripple_db, band }, mode: FilterMode::default(), start: FilterStart::default() }
+    }
+
     pub fn notch(freq_hz: f64, q: f64) -> Self {
-        Self { design: FilterDesign::Notch { freq_hz, q }, mode: FilterMode::default() }
+        Self { design: FilterDesign::Notch { freq_hz, q }, mode: FilterMode::default(), start: FilterStart::default() }
     }
 
     pub fn sos(sos: Sos) -> Self {
-        Self { design: FilterDesign::Sos(sos), mode: FilterMode::default() }
+        Self { design: FilterDesign::Sos(sos), mode: FilterMode::default(), start: FilterStart::default() }
     }
 
-    /// Returns the same filter with Butterworth `order` (ignored for notch / explicit SOS).
+    /// Returns the same filter with `order` (Butterworth / Chebyshev; ignored for notch / explicit SOS).
     pub fn with_order(mut self, new_order: usize) -> Self {
-        if let FilterDesign::Butterworth { order, .. } = &mut self.design {
+        if let FilterDesign::Butterworth { order, .. } | FilterDesign::Chebyshev1 { order, .. } = &mut self.design {
             *order = new_order;
         }
         self
@@ -97,10 +117,17 @@ impl FilterSpec {
         self
     }
 
+    /// Returns the same filter starting forward passes at `start`.
+    pub fn with_start(mut self, start: FilterStart) -> Self {
+        self.start = start;
+        self
+    }
+
     /// Designs the second-order sections for `sample_rate` Hz, validating the parameters.
     pub fn design(&self, sample_rate: f64) -> Result<Sos, FilterError> {
         match &self.design {
             FilterDesign::Butterworth { order, band } => butterworth_sos(*order, *band, sample_rate),
+            FilterDesign::Chebyshev1 { order, ripple_db, band } => chebyshev1_sos(*order, *ripple_db, *band, sample_rate),
             FilterDesign::Notch { freq_hz, q } => notch_sos(*freq_hz, *q, sample_rate),
             FilterDesign::Sos(sos) => {
                 sos.validate()?;
@@ -133,6 +160,8 @@ pub enum FilterError {
     InvalidBand { low_hz: f64, high_hz: f64 },
     #[error("quality factor must be positive and finite, got {0}")]
     InvalidQ(f64),
+    #[error("pass-band ripple must be positive and finite dB, got {0}")]
+    InvalidRipple(f64),
     #[error("second-order sections must be non-empty, finite, with a0 = 1 and stable poles")]
     InvalidSections,
     #[error("forward-backward filters need future samples and cannot run on a live stream")]

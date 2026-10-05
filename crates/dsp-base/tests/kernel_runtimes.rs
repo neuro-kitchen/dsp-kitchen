@@ -3,8 +3,9 @@
 //! runtime next to WGPU.
 
 use cubecl::prelude::*;
-use dsp_base::filter::{execute_fir, execute_median_9p, execute_teager_kaiser};
-use dsp_base::math::{execute_baseline_subtract, execute_clamp, execute_scaling, execute_unpack_stored, stored_words};
+use dsp_base::filter::{execute_fir, execute_median_9p, execute_teager_kaiser, FIR_DEFAULT_EDGE};
+use dsp_base::filter::non_linear::TEAGER_KAISER_DEFAULT_EDGE;
+use dsp_base::math::{execute_clamp, execute_scaling, execute_unpack_stored, upload_stored};
 use dsp_core::SampleFormat;
 use dsp_base::pipeline::{Pipeline, PipelineStage};
 use dsp_base::spatial::execute_direct_car;
@@ -46,50 +47,50 @@ impl ComputeTask for Check {
         let output = client.empty(n * 4);
         let read = |h: &cubecl::server::Handle| f32::from_bytes(&client.read_one_unchecked(h.clone())).to_vec();
 
-        execute_scaling::<R>(&client, &input, &output, n, 0.5, -3.0);
+        execute_scaling::<R, f32>(&client, &input, &output, n, 0.5, -3.0);
         let expected: Vec<f32> = x.iter().map(|v| v * 0.5 - 3.0).collect();
         assert!(max_err(&read(&output), &expected) < 1e-4, "{name}: scaling");
 
-        execute_clamp::<R>(&client, &input, &output, n, -20.0, 30.0);
+        execute_clamp::<R, f32>(&client, &input, &output, n, -20.0, 30.0);
         let expected: Vec<f32> = x.iter().map(|v| v.clamp(-20.0, 30.0)).collect();
         assert!(max_err(&read(&output), &expected) == 0.0, "{name}: clamp");
 
-        let baselines: Vec<f32> = (0..CHANNELS).map(|c| c as f32 * 3.0).collect();
-        let base_h = client.create_from_slice(f32::as_bytes(&baselines));
-        execute_baseline_subtract::<R>(&client, &input, &output, &base_h, CHANNELS, SAMPLES);
-        let expected: Vec<f32> = x.iter().enumerate().map(|(i, v)| v - baselines[i / SAMPLES]).collect();
-        assert!(max_err(&read(&output), &expected) < 1e-4, "{name}: baseline");
-
-        execute_direct_car::<R>(&client, &input, &output, CHANNELS, SAMPLES);
+        execute_direct_car::<R, f32>(&client, &input, &output, CHANNELS, SAMPLES);
         let means: Vec<f32> = (0..SAMPLES)
             .map(|t| (0..CHANNELS).map(|c| x[c * SAMPLES + t]).sum::<f32>() / CHANNELS as f32)
             .collect();
         let expected: Vec<f32> = x.iter().enumerate().map(|(i, v)| v - means[i % SAMPLES]).collect();
         assert!(max_err(&read(&output), &expected) < 1e-3, "{name}: CAR");
 
-        execute_median_9p::<R>(&client, &input, &output, CHANNELS, SAMPLES);
+        execute_median_9p::<R, f32>(&client, &input, &output, CHANNELS, SAMPLES);
         let got = read(&output);
         for c in [0, CHANNELS / 2, CHANNELS - 1] {
             let row = &x[c * SAMPLES..(c + 1) * SAMPLES];
             for t in [0, 3, 4, 2_000, SAMPLES - 5, SAMPLES - 1] {
-                let want = if (4..SAMPLES - 4).contains(&t) { median9(&row[t - 4..t + 5]) } else { row[t] };
-                assert_eq!(got[c * SAMPLES + t], want, "{name}: median ch {c} t {t}");
+                // scipy.signal.medfilt: zeros past the ends
+                let window: Vec<f32> = (t as isize - 4..=t as isize + 4)
+                    .map(|p| if p < 0 || p >= SAMPLES as isize { 0.0 } else { row[p as usize] })
+                    .collect();
+                assert_eq!(got[c * SAMPLES + t], median9(&window), "{name}: median ch {c} t {t}");
             }
         }
 
-        execute_teager_kaiser::<R>(&client, &input, &output, CHANNELS, SAMPLES);
+        execute_teager_kaiser::<R, f32>(&client, &input, &output, CHANNELS, SAMPLES, TEAGER_KAISER_DEFAULT_EDGE);
         let got = read(&output);
         for c in [0, CHANNELS - 1] {
             let row = &x[c * SAMPLES..(c + 1) * SAMPLES];
-            for t in [1, 100, SAMPLES - 2] {
-                let want = (row[t] * row[t] - row[t - 1] * row[t + 1]).max(0.0);
-                assert!((got[c * SAMPLES + t] - want).abs() <= 1e-3 * want.abs().max(1.0), "{name}: TKEO");
+            // Reflected neighbours at the ends: x[−1] = x[0], x[n] = x[n−1]
+            let at = |p: isize| row[p.clamp(0, SAMPLES as isize - 1) as usize];
+            for t in [0isize, 1, 100, SAMPLES as isize - 2, SAMPLES as isize - 1] {
+                let want = at(t) * at(t) - at(t - 1) * at(t + 1);
+                let g = got[c * SAMPLES + t as usize];
+                assert!((g - want).abs() <= 1e-3 * want.abs().max(1.0), "{name}: TKEO t {t}: {g} vs {want}");
             }
         }
 
         let taps = [0.25f32, 0.5, 0.25];
         let taps_h = client.create_from_slice(f32::as_bytes(&taps));
-        execute_fir::<R>(&client, &input, &output, &taps_h, CHANNELS, SAMPLES, taps.len());
+        execute_fir::<R, f32>(&client, &input, &output, &taps_h, CHANNELS, SAMPLES, taps.len(), FIR_DEFAULT_EDGE);
         let got = read(&output);
         for c in [0, CHANNELS - 1] {
             let row = &x[c * SAMPLES..(c + 1) * SAMPLES];
@@ -103,11 +104,11 @@ impl ComputeTask for Check {
         let big = 20_000_000usize;
         let ones = client.create_from_slice(f32::as_bytes(&vec![1.0f32; big]));
         let big_out = client.empty(big * 4);
-        execute_scaling::<R>(&client, &ones, &big_out, big, 2.0, 1.0);
+        execute_scaling::<R, f32>(&client, &ones, &big_out, big, 2.0, 1.0);
         let got = read(&big_out);
         assert!(got.iter().all(|v| *v == 3.0), "{name}: large elementwise launch left elements unwritten");
 
-        // Stored samples → µV: every device format, extremes, an odd count (partial last word)
+        // Stored samples → scaled values: every device format, extremes, an odd count (partial last word)
         let (ch, n) = (3usize, 7usize);
         let gains = [0.5f32, 2.0, 1.0];
         let offsets = [1.0f32, -3.0, 0.0];
@@ -136,25 +137,28 @@ impl ComputeTask for Check {
                     _ => (v as f32).to_le_bytes().to_vec(),
                 })
                 .collect();
-            let words = client.create_from_slice(u32::as_bytes(&stored_words(&bytes)));
+            // int8 / int16 (21 / 42 bytes) take the padded upload, 32-bit formats the direct one
+            let words = upload_stored(&client, &bytes);
             let out = client.empty(ch * n * 4);
-            execute_unpack_stored::<R>(&client, &words, format, &gains_h, &offsets_h, &out, ch, n).unwrap();
+            execute_unpack_stored::<R, f32>(&client, &words, format, &gains_h, &offsets_h, &out, ch, n).unwrap();
             let got = read(&out);
             for (i, v) in values.iter().enumerate() {
                 let want = (*v as f32) * gains[i / n] + offsets[i / n];
                 assert_eq!(got[i], want, "{name}: {format:?} value {i} ({v})");
             }
         }
-        assert!(execute_unpack_stored::<R>(&client, &input, SampleFormat::F64, &gains_h, &offsets_h, &output, ch, n).is_err());
+        assert!(execute_unpack_stored::<R, f32>(&client, &input, SampleFormat::F64, &gains_h, &offsets_h, &output, ch, n).is_err());
 
         // Pipeline with filter and stencil stages.
         let pipeline = Pipeline::with_stages(vec![
             PipelineStage::Scale { alpha: 1.0, beta: 0.0 },
             PipelineStage::bandpass(300.0, 6000.0),
             PipelineStage::CommonAverageReference,
-            PipelineStage::Median9p,
+            PipelineStage::median9(),
+            PipelineStage::teager_kaiser(),
+            PipelineStage::gaussian_smooth(2.0),
         ]);
-        let out = pipeline.execute::<R>(&client, &input, CHANNELS, SAMPLES, 30_000.0).unwrap();
+        let out = pipeline.execute::<R, f32>(&client, &input, CHANNELS, SAMPLES, 30_000.0).unwrap();
         assert!(read(&out).iter().all(|v| v.is_finite()), "{name}: pipeline");
     }
 }
