@@ -19,6 +19,9 @@ use flate2::read::ZlibDecoder;
 use memmap2::Mmap;
 use serde::Deserialize;
 
+mod format;
+pub use format::Mtscomp;
+
 #[derive(Debug, Deserialize)]
 struct ChFile {
     chunk_bounds: Vec<u64>,
@@ -304,7 +307,7 @@ mod tests {
                 let expect: Vec<f32> =
                     chans.iter().flat_map(|&c| data[c][range.start as usize..range.end as usize].iter().map(|&v| v as f32)).collect();
                 assert_eq!(out, expect, "{range:?} spatial diff {spatial}");
-                crate::tests::assert_stored_matches(&rec, &chans, range.clone());
+                crate::core::tests::assert_stored_matches(&rec, &chans, range.clone());
             }
             assert_eq!(rec.cache.lock().unwrap().iter().map(|(i, _)| *i).collect::<Vec<_>>(), vec![0], "cache holds the last window");
         }

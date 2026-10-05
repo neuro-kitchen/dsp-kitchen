@@ -2,18 +2,21 @@
 //!
 //! Samples are int16, interleaved. Conversion to µV follows the SpikeGLX metadata guide:
 //! `µV = i * AiRangeMax / MaxInt / gain * 1e6`, with per-channel gains from `imroTbl` (imec)
-//! or `niMNGain` / `niMAGain` (nidq). Probe geometry comes from `snsGeomMap` when present,
-//! otherwise from `snsShankMap` and the probe type's electrode pitch. Compressed IBL files
-//! (`.cbin` + `.ch`) are read through [`MtscompRecording`](crate::mtscomp::MtscompRecording).
+//! or `niMNGain` / `niMAGain` (nidq). Probe geometry ([`probe_layout`]) comes from `snsGeomMap`
+//! when present, otherwise from `snsShankMap` and the probe type's electrode pitch. Compressed IBL files
+//! (`.cbin` + `.ch`) are read through [`MtscompRecording`](crate::neuro::mtscomp::MtscompRecording).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use dsp_core::layout::{Position3D, SensorLayout, SensorSite};
+use crate::neuro::probe::{Position3D, SensorLayout, SensorSite};
 use dsp_core::{DspError, DspResult, MemoryOrder, RecordingInfo, RecordingSource, SampleFormat};
 
-use crate::mtscomp::MtscompRecording;
-use crate::raw::{RawParams, RawRecording};
+use crate::neuro::mtscomp::MtscompRecording;
+use crate::generic::raw::{RawParams, RawRecording};
+
+mod format;
+pub use format::SpikeGlx;
 
 /// Parsed `.meta` file (`~` prefixes of table keys are dropped).
 #[derive(Debug, Clone, Default)]
@@ -78,6 +81,12 @@ impl SpikeGlxMeta {
                 })
                 .collect(),
         }
+    }
+
+    /// `(AP, LF)` acquired channel counts of an imec stream (the rest are sync channels).
+    fn ap_lf_counts(&self, n_saved: usize) -> (usize, usize) {
+        let c = self.counts("acqApLfSy").or_else(|| self.counts("snsApLfSy")).unwrap_or_else(|| vec![n_saved - 1, 0, 1]);
+        (c[0], c[1])
     }
 
     /// Probe type: `imDatPrb_type`, else 0 (1.0 / 3B) — 3A probes have neither and act like 1.0.
@@ -156,7 +165,7 @@ fn geometry(meta: &SpikeGlxMeta) -> Option<Vec<(f32, f32, usize)>> {
         .collect()
 }
 
-/// Applies SpikeGLX names, µV gains, geometry and metadata to `info` (samples unchanged).
+/// Applies SpikeGLX names, µV gains and metadata to `info` (samples unchanged).
 pub fn apply_meta(meta: &SpikeGlxMeta, mut info: RecordingInfo, lf_stream: bool) -> DspResult<RecordingInfo> {
     let n_saved = info.channels.len();
     let saved = meta.saved_channels(n_saved);
@@ -186,8 +195,7 @@ pub fn apply_meta(meta: &SpikeGlxMeta, mut info: RecordingInfo, lf_stream: bool)
             ch.gain_uv = gain.map_or(1.0, |g| (range / max_int / g * 1e6) as f32);
         }
     } else {
-        let c = meta.counts("acqApLfSy").or_else(|| meta.counts("snsApLfSy")).unwrap_or_else(|| vec![n_saved - 1, 0, 1]);
-        let (n_ap, n_lf) = (c[0], c[1]);
+        let (n_ap, n_lf) = meta.ap_lf_counts(n_saved);
         let range = meta.require_f64("imAiRangeMax")?;
         let max_int = meta.f64("imMaxInt").unwrap_or(512.0);
         let gains = imro_gains(meta, n_ap);
@@ -205,17 +213,6 @@ pub fn apply_meta(meta: &SpikeGlxMeta, mut info: RecordingInfo, lf_stream: bool)
             ch.name = name;
             ch.gain_uv = gain.map_or(1.0, |g| (range / max_int / g as f64 * 1e6) as f32);
         }
-
-        if let Some(geom) = geometry(meta) {
-            let neural: Vec<usize> = (0..n_saved).filter(|i| !sync.contains(i)).collect();
-            let contacts = neural
-                .iter()
-                .zip(&geom)
-                .map(|(&file_ch, &(x, y, shank))| SensorSite::new(file_ch, Position3D::new(x, y, 0.0), shank))
-                .collect();
-            let probe = meta.get("imDatPrb_pn").unwrap_or(if meta.get("imProbeOpt").is_some() { "3A" } else { "Neuropixels" });
-            info.layout = Some(SensorLayout::new(probe, contacts));
-        }
     }
 
     for key in ["typeThis", "imDatPrb_type", "imDatPrb_pn", "imDatPrb_sn", "imProbeOpt", "appVersion", "fileCreateTime", "firstSample"] {
@@ -228,6 +225,27 @@ pub fn apply_meta(meta: &SpikeGlxMeta, mut info: RecordingInfo, lf_stream: bool)
     }
     info.metadata.insert("format".into(), "SpikeGLX".into());
     Ok(info)
+}
+
+/// Probe geometry of an imec stream: one site per saved neural (AP / LF) channel, numbered by its
+/// file channel. `None` for nidq streams or when the meta has no geometry map.
+pub fn probe_layout(meta: &SpikeGlxMeta) -> Option<SensorLayout> {
+    if meta.is_nidq() {
+        return None;
+    }
+    let n_saved = meta.f64("nSavedChans")? as usize;
+    let (n_ap, n_lf) = meta.ap_lf_counts(n_saved);
+    let geom = geometry(meta)?;
+    let contacts = meta
+        .saved_channels(n_saved)
+        .iter()
+        .enumerate()
+        .filter(|&(_, &id)| id < n_ap + n_lf)
+        .zip(&geom)
+        .map(|((file_ch, _), &(x, y, shank))| SensorSite::new(file_ch, Position3D::new(x, y, 0.0), shank))
+        .collect();
+    let probe = meta.get("imDatPrb_pn").unwrap_or(if meta.get("imProbeOpt").is_some() { "3A" } else { "Neuropixels" });
+    Some(SensorLayout::new(probe, contacts))
 }
 
 /// Opens a SpikeGLX `.bin` (memory-mapped) or IBL `.cbin` (mtscomp) with its `.meta`.
@@ -280,7 +298,7 @@ acqApLfSy=4,4,1\nsnsApLfSy=4,0,1\nsnsSaveChanSubset=0:3,8\n\
         assert_eq!(i.channels[4].gain_uv, 1.0);
         assert_eq!(i.metadata["sync_channels"], "4");
 
-        let layout = i.layout.unwrap();
+        let layout = probe_layout(&meta).unwrap();
         assert_eq!(layout.total_channels(), 4);
         let p: Vec<(f32, f32)> = layout.sites().iter().map(|s| (s.position.x_um, s.position.y_um)).collect();
         assert_eq!(p, [(43.0, 0.0), (11.0, 0.0), (59.0, 20.0), (27.0, 20.0)]);
@@ -295,7 +313,7 @@ snsApLfSy=2,0,1\n~imroTbl=(24,2)(0 0 0 0 0)(1 0 0 0 1)\n~snsGeomMap=(NP2014,4,25
         let i = apply_meta(&meta, info(3), false).unwrap();
         // 0.5 V / 8192 / 80 = 0.762939 µV per bit
         assert!((i.channels[1].gain_uv - 0.762_939).abs() < 1e-5);
-        let p: Vec<(f32, f32, usize)> = i.layout.unwrap().sites().iter().map(|s| (s.position.x_um, s.position.y_um, s.shank_id)).collect();
+        let p: Vec<(f32, f32, usize)> = probe_layout(&meta).unwrap().sites().iter().map(|s| (s.position.x_um, s.position.y_um, s.shank_id)).collect();
         assert_eq!(p, [(27.0, 0.0, 0), (309.0, 15.0, 1)]);
     }
 

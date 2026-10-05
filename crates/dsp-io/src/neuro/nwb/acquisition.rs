@@ -15,7 +15,8 @@ use dsp_core::{DspError, DspResult, MemoryOrder, RecordingInfo, RecordingSource,
 use serde_json::Value;
 use zarrs::array::{Array, ArrayBytes};
 
-use crate::codec::{native_to_le, scale_frames, select_stored};
+use crate::container::binary::codec::{native_to_le, scale_frames, select_stored};
+use crate::container::zarr::{read_all, read_node_json};
 use zarrs::filesystem::FilesystemStore;
 use zarrs::storage::ReadableStorageTraits;
 
@@ -25,14 +26,9 @@ fn err(what: impl std::fmt::Display) -> DspError {
     DspError::Io(format!("nwb-zarr: {what}"))
 }
 
-fn node_meta(store: &Path, node: &str) -> Option<Value> {
-    let text = std::fs::read_to_string(store.join(node.trim_start_matches('/')).join("zarr.json")).ok()?;
-    serde_json::from_str(&text).ok()
-}
-
 /// True when `path` is a Zarr store whose root is an NWB file.
 pub fn is_nwb_zarr(path: &Path) -> bool {
-    node_meta(path, "").is_some_and(|m| m["attributes"]["neurodata_type"] == "NWBFile")
+    read_node_json(path, "").is_some_and(|m| m["attributes"]["neurodata_type"] == "NWBFile")
 }
 
 /// A continuous series found in the store.
@@ -45,27 +41,30 @@ pub struct SeriesEntry {
     pub samples: u64,
     pub rate: f64,
     pub start_time: f64,
+    /// Stored sample type.
+    pub format: SampleFormat,
     /// Unit of the stored data (`volts`, `a.u.`, …).
     pub unit: String,
 }
 
-/// Continuous series under `/acquisition` that have a regular rate (irregular, timestamped
-/// series such as event trains are not recordings).
+/// Continuous series under `/acquisition` that have a regular rate and a readable data type
+/// (irregular, timestamped series such as event trains are not recordings).
 pub fn list_series(store: &Path) -> Vec<SeriesEntry> {
     let Ok(entries) = std::fs::read_dir(store.join("acquisition")) else { return Vec::new() };
     let mut out: Vec<SeriesEntry> = entries
         .flatten()
         .filter_map(|e| {
             let path = format!("/acquisition/{}", e.file_name().to_string_lossy());
-            let meta = node_meta(store, &path)?;
+            let meta = read_node_json(store, &path)?;
             let kind = meta["attributes"]["neurodata_type"].as_str()?.to_string();
             if !matches!(kind.as_str(), "ElectricalSeries" | "TimeSeries") {
                 return None;
             }
-            let start_meta = node_meta(store, &format!("{path}/starting_time"))?;
+            let start_meta = read_node_json(store, &format!("{path}/starting_time"))?;
             let rate = start_meta["attributes"]["rate"].as_f64()?;
-            let data_meta = node_meta(store, &format!("{path}/data"))?;
+            let data_meta = read_node_json(store, &format!("{path}/data"))?;
             let unit = data_meta["attributes"]["unit"].as_str().unwrap_or("a.u.").to_string();
+            let format = SampleFormat::parse(data_meta["data_type"].as_str()?)?;
             let shape: Vec<u64> = data_meta["shape"].as_array()?.iter().filter_map(Value::as_u64).collect();
             let (samples, channels) = match shape[..] {
                 [t] => (t, 1),
@@ -74,7 +73,7 @@ pub fn list_series(store: &Path) -> Vec<SeriesEntry> {
             };
             let fs: Arc<Storage> = Arc::new(FilesystemStore::new(store).ok()?);
             let start_time = read_all::<f64>(&fs, &format!("{path}/starting_time")).and_then(|v| v.first().copied()).unwrap_or(0.0);
-            Some(SeriesEntry { path, neurodata_type: kind, channels, samples, rate, start_time, unit })
+            Some(SeriesEntry { path, neurodata_type: kind, channels, samples, rate, start_time, format, unit })
         })
         .collect();
     out.sort_by(|a, b| a.path.cmp(&b.path));
@@ -108,8 +107,8 @@ impl NwbZarrRecording {
         let store: Arc<Storage> = Arc::new(FilesystemStore::new(path).map_err(err)?);
         let data_path = format!("{series}/data");
         let data = Array::open(store.clone(), &data_path).map_err(|e| err(format!("{data_path}: {e}")))?;
-        let meta = node_meta(path, &data_path).ok_or_else(|| err(format!("{data_path}: no metadata")))?;
-        let group = node_meta(path, series).unwrap_or(Value::Null);
+        let meta = read_node_json(path, &data_path).ok_or_else(|| err(format!("{data_path}: no metadata")))?;
+        let group = read_node_json(path, series).unwrap_or(Value::Null);
         let kind = group["attributes"]["neurodata_type"].as_str().unwrap_or("TimeSeries").to_string();
 
         let data_type = meta["data_type"].as_str();
@@ -123,7 +122,7 @@ impl NwbZarrRecording {
             _ => return Err(DspError::UnsupportedFormat(format!("{data_path}: {}-D data", shape.len()))),
         };
 
-        let start_meta = node_meta(path, &format!("{series}/starting_time"))
+        let start_meta = read_node_json(path, &format!("{series}/starting_time"))
             .ok_or_else(|| DspError::UnsupportedFormat(format!("{series} has timestamps, not a regular rate")))?;
         let rate = start_meta["attributes"]["rate"].as_f64().ok_or_else(|| err(format!("{series}/starting_time has no rate")))?;
         let start = read_all::<f64>(&store, &format!("{series}/starting_time")).and_then(|v| v.first().copied()).unwrap_or(0.0);
@@ -193,10 +192,6 @@ impl NwbZarrRecording {
     }
 }
 
-fn read_all<T: zarrs::array::ElementOwned>(store: &Arc<Storage>, path: &str) -> Option<Vec<T>> {
-    let a = Array::open(store.clone(), path).ok()?;
-    a.retrieve_array_subset::<Vec<T>>(&a.subset_all()).ok()
-}
 
 impl RecordingSource for NwbZarrRecording {
     fn info(&self) -> &RecordingInfo {
@@ -335,12 +330,18 @@ mod tests {
         let mut out = vec![0.0; 2 * 3];
         rec.read(&[2, 0], 1..4, &mut out).unwrap();
         assert_eq!(out, vec![12.0, 22.0, 32.0, 10.0, 20.0, 30.0]);
-        crate::tests::assert_stored_matches(rec.as_ref(), &[2, 0], 1..4);
-        crate::tests::assert_native_matches(rec.as_ref(), 1..4);
+        crate::core::tests::assert_stored_matches(rec.as_ref(), &[2, 0], 1..4);
+        crate::core::tests::assert_native_matches(rec.as_ref(), 1..4);
 
-        let listed: Vec<(String, String, f64, f64)> =
-            crate::sources(&path).unwrap().into_iter().map(|s| (s.name, s.unit, s.sample_rate, s.start_time_sec)).collect();
-        assert_eq!(listed, vec![("ES".into(), "µV".into(), 1000.0, 0.5), ("Temp".into(), "a.u.".into(), 10.0, 0.0)]);
+        let listed: Vec<(String, dsp_core::SignalUnit, f64, f64)> = crate::sources(&path)
+            .unwrap()
+            .into_iter()
+            .map(|s| (s.name, s.unit, s.sample_rate.rate_hz(), s.start_time.as_seconds_f64()))
+            .collect();
+        assert_eq!(
+            listed,
+            vec![("ES".into(), dsp_core::SignalUnit::Microvolt, 1000.0, 0.5), ("Temp".into(), dsp_core::SignalUnit::Dimensionless, 10.0, 0.0)]
+        );
         assert_eq!(crate::open_source(&path, "/acquisition/Temp").unwrap().info().channel_count(), 1);
 
         let temp = NwbZarrRecording::open_series(&path, "/acquisition/Temp").unwrap();
@@ -389,7 +390,7 @@ mod tests {
             let mut out = vec![0.0; 2 * 3];
             rec.read(&[2, 0], 1..4, &mut out).unwrap();
             assert_eq!(out, vec![8.0, 18.0, 28.0, 10.0, 20.0, 30.0], "{name}");
-            crate::tests::assert_stored_matches(&rec, &[2, 0], 1..4);
+            crate::core::tests::assert_stored_matches(&rec, &[2, 0], 1..4);
         }
         std::fs::remove_dir_all(&path).unwrap();
     }

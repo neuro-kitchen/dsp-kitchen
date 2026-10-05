@@ -7,12 +7,10 @@
 //!
 //! [`load_spikes`] reads any of them spike by spike ([`PhySorting`]: what curation works on).
 
-pub mod npy;
 pub mod nwb_units;
 pub mod phy;
 pub mod phy_sorting;
 pub mod zarr_analyzer;
-pub mod zarr_store;
 
 use std::path::Path;
 use dsp_core::{DspError, DspResult};
