@@ -1,6 +1,6 @@
 use cubecl::prelude::*;
 
-/// Scores every template start against the multi-channel residual for one OMP pass.
+/// Scores every template start against the multi-channel residual for one matching-pursuit pass.
 ///
 /// One unit per start sample `s` (`ABSOLUTE_POS`). For each unit `u` it correlates the residual
 /// window `[s, s + t_len)` with the template's rows (`row_offsets[u]..row_offsets[u + 1]` into
@@ -8,7 +8,7 @@ use cubecl::prelude::*;
 /// `[min_scale, max_scale]`, the energy reduction `2·a·dot − a²·‖W_u‖²`. Writes the best unit,
 /// amplitude and gain per start (gain 0 when nothing fits).
 #[cube(launch)]
-pub fn omp_score_kernel(
+pub fn mp_score_kernel(
     residual: &Array<f32>,
     row_offsets: &Array<u32>,
     row_channels: &Array<u32>,
@@ -66,7 +66,7 @@ pub fn omp_score_kernel(
 /// `(pick, row slot, sample)` (`ABSOLUTE_POS`, `max_rows` slots per pick; slots beyond a unit's
 /// row count do nothing). Picks of one pass are at least `t_len` apart, so writes never overlap.
 #[cube(launch)]
-pub fn omp_subtract_kernel(
+pub fn mp_subtract_kernel(
     residual: &mut Array<f32>,
     row_offsets: &Array<u32>,
     row_channels: &Array<u32>,
@@ -92,5 +92,29 @@ pub fn omp_subtract_kernel(
             let at = row_channels[k as usize] * num_samples + pick_starts[p as usize] + i;
             residual[at as usize] -= pick_scales[p as usize] * row_data[(k * t_len + i) as usize];
         }
+    }
+}
+
+/// One unit per pick: copies the best unit and amplitude scale at start `starts[i]` and the energy
+/// reductions at `starts[i] ± 1` (`starts` are interior: `1 ≤ s < len − 1`).
+#[cube(launch)]
+pub fn mp_gather_picks_kernel(
+    best_unit: &Array<u32>,
+    best_scale: &Array<f32>,
+    best_gain: &Array<f32>,
+    starts: &Array<u32>,
+    out_units: &mut Array<u32>,
+    out_scales: &mut Array<f32>,
+    out_gain_prev: &mut Array<f32>,
+    out_gain_next: &mut Array<f32>,
+    picks: u32,
+) {
+    let i = ABSOLUTE_POS as u32;
+    if i < picks {
+        let s = starts[i as usize];
+        out_units[i as usize] = best_unit[s as usize];
+        out_scales[i as usize] = best_scale[s as usize];
+        out_gain_prev[i as usize] = best_gain[(s - 1u32) as usize];
+        out_gain_next[i as usize] = best_gain[(s + 1u32) as usize];
     }
 }

@@ -13,7 +13,7 @@ pub mod threshold;
 
 pub use adaptive::AdaptiveThresholdDetector;
 pub use dedup::{
-    DeduplicatedSpike, StreamingDedup, deduplicate_spikes_spatial, deduplicate_spikes_spatial_gpu,
+    DedupNeighbours, DeduplicatedSpike, StreamingDedup, deduplicate_spikes_spatial, deduplicate_spikes_spatial_gpu,
 };
 pub use device::execute_detect_spikes_in_vram;
 pub use dsp_base::peaks::DistanceRule;

@@ -23,7 +23,7 @@ pub use core::{
 pub use detection::{
     AdaptiveThresholdDetector, DistanceRule, MatchedFilterSpikeDetector, NeoSpikeDetector,
     SpikePolarity, SpikeSpacing, ThresholdSpikeDetector, canonical_biphasic_prototype,
-    compute_neo_energy_1d, deduplicate_spikes_spatial, deduplicate_spikes_spatial_gpu,
+    DedupNeighbours, compute_neo_energy_1d, deduplicate_spikes_spatial, deduplicate_spikes_spatial_gpu,
     detect_spikes_matched_filter, detect_spikes_multichannel, detect_spikes_neo,
     detect_spikes_with_sigma, detection_heights, estimate_noise_std, execute_detect_spikes_in_vram,
 };
@@ -49,21 +49,22 @@ pub use metrics::{
 };
 pub use sorting::{
     ConvolutiveBssDecomposer, DensityPeaksResult, GmmClusterer, GmmCovarianceKind, GmmResult,
-    IsoSplitResult, MotorUnitPulseTrain, OmpSpikeMatcher, cluster_density_peaks,
-    cluster_density_peaks_capped, cluster_gmm_bic, cluster_isosplit,
-    compute_template_similarity_matrix, match_spikes_omp, match_spikes_omp_on,
+    KdeMergeResult, MotorUnitPulseTrain, MatchingPursuitMatcher, cluster_density_peaks,
+    cluster_density_peaks_capped, cluster_gmm_bic, cluster_kde_merge,
+    compute_template_similarity_matrix, match_spikes_matching_pursuit,
     suggest_template_merges, template_max_cosine_similarity,
 };
 pub use spatial::{
     CenterOfMassLocalizer, DipoleEstimate, DipoleLocalizer, DriftEstimate, GridConvolutionLocalizer,
-    MonopolarTriangulator, NonRigidDriftEstimate, compute_kriging_weight_matrix,
+    KRIGING_REGULARIZATION, MonopolarTriangulator, NonRigidDriftEstimate, TraceKriging,
+    compute_kriging_weight_matrix,
     correct_snippet_batch_drift_kriging, correct_traces_drift_kriging, estimate_nonrigid_drift,
     estimate_rigid_drift, localize_spike_center_of_mass, localize_spike_dipole,
     localize_spike_grid_convolution, localize_spike_monopolar,
 };
 pub use streaming::{
-    BatchTemplateStats, SINC_RESAMPLE_MARGIN, StreamingSortConfig, StreamingSortResult,
-    StreamingSpikeRunner, TemplateAccumulator, execute_reduce_templates_in_vram,
+    BatchTemplateStats, SINC_RESAMPLE_MARGIN, StreamingDetectionConfig, StreamingDetectionResult,
+    StreamingDetector, TemplateAccumulator, execute_reduce_templates_in_vram,
     reduce_channel_templates_kernel,
 };
 pub use storage::{

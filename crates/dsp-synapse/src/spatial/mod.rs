@@ -2,6 +2,7 @@ pub mod center_of_mass;
 pub mod dipole;
 pub mod drift;
 pub mod grid_convolution;
+pub mod kernels;
 pub mod kriging;
 pub mod monopolar;
 
@@ -14,7 +15,7 @@ pub use drift::{
 };
 pub use grid_convolution::{GridConvolutionLocalizer, localize_spike_grid_convolution};
 pub use kriging::{
-    compute_kriging_weight_matrix, correct_snippet_batch_drift_kriging,
-    correct_traces_drift_kriging,
+    KRIGING_REGULARIZATION, TraceKriging, compute_kriging_weight_matrix,
+    correct_snippet_batch_drift_kriging, correct_traces_drift_kriging,
 };
 pub use monopolar::{MonopolarTriangulator, localize_spike_monopolar};

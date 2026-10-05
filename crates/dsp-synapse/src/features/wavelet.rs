@@ -1,8 +1,8 @@
 //! Multi-level Discrete Wavelet Transform (DWT) Feature Extraction (`wavelet.rs`, *Wave_Clus* style).
 //!
-//! Decomposes each spike snippet with a multi-level Haar / Daubechies-4 filter bank and selects
-//! the $D$ wavelet coefficients with the largest multimodal dispersion (measured via normalized
-//! Interquartile Range / Lilliefors-style tail ratio across the spike population).
+//! Decomposes each spike snippet with a multi-level Haar filter bank and selects the $D$ wavelet
+//! coefficients with the largest spread across the spike population, ranked by a normalized
+//! interquartile range (Wave_Clus uses a Lilliefors test; this is a simpler proxy).
 
 use dsp_base::math::interquartile_range;
 use crate::core::{FeatureEmbedder, SnippetBatch};

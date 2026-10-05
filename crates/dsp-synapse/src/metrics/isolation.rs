@@ -2,25 +2,31 @@
 //!
 //! Provides the standard SNR and PCA/latent feature space cluster isolation metrics:
 //! - **SNR**: Signal-to-noise ratio (`|peak_amplitude| / noise_std`).
-//! - **$d'$ (Linear Discriminant Sensitivity)**: Hill et al. (2011) Fisher LDA separation.
+//! - **$d'$ (Linear Discriminant Sensitivity)**: Hill et al. (2011) LDA separation, with a
+//!   **diagonal** pooled covariance (an approximation of the full Fisher discriminant).
 //! - **Silhouette Score**: Rousseeuw (1987) intra- vs. inter-cluster distance ratio in `[-1.0, 1.0]`.
-//! - **Isolation Distance**: Schmitzer-Torbert et al. (2005) $N_C$-th closest outside spike Mahalanobis distance.
+//! - **Isolation Distance**: Schmitzer-Torbert et al. (2005) $N_C$-th closest outside spike, in a
+//!   Mahalanobis metric with the cluster's **diagonal** covariance (the published metric uses the
+//!   full covariance).
+
+/// Noise σ (µV) below which an SNR is undefined.
+pub const MIN_NOISE_STD_UV: f32 = 1e-6;
 
 /// Computes the signal-to-noise ratio (SNR) of an action potential against background noise:
-/// `SNR = |peak_amplitude| / noise_std`
+/// `SNR = |peak_amplitude| / noise_std`; NaN when the noise is below [`MIN_NOISE_STD_UV`].
 pub fn compute_snr(peak_amplitude_uv: f32, noise_std_uv: f32) -> f32 {
-    if noise_std_uv <= 1e-6 {
-        0.0
+    if !(noise_std_uv > MIN_NOISE_STD_UV) {
+        f32::NAN
     } else {
         peak_amplitude_uv.abs() / noise_std_uv
     }
 }
 
-/// Computes Fisher's Linear Discriminant sensitivity $d'$ between `cluster_a` (`[N_a, D]`)
-/// and `cluster_b` (`[N_b, D]`).
+/// Linear-discriminant sensitivity $d'$ between `cluster_a` (`[N_a, D]`) and `cluster_b`
+/// (`[N_b, D]`), with a diagonal pooled covariance; NaN with fewer than 2 spikes per cluster.
 pub fn compute_d_prime(cluster_a: &[f32], n_a: usize, cluster_b: &[f32], n_b: usize, dim: usize) -> f32 {
     if n_a < 2 || n_b < 2 || dim == 0 {
-        return 0.0;
+        return f32::NAN;
     }
     assert_eq!(cluster_a.len(), n_a * dim);
     assert_eq!(cluster_b.len(), n_b * dim);
@@ -176,7 +182,7 @@ pub fn compute_silhouette_score(
     total_s / (target_indices.len() as f32)
 }
 
-/// Computes the Schmitzer-Torbert et al. (2005) Mahalanobis Isolation Distance
+/// Schmitzer-Torbert et al. (2005) Isolation Distance with a diagonal-covariance Mahalanobis metric
 /// for `target_unit` in `[N, D]` feature space.
 pub fn compute_isolation_distance(
     features: &[f32],

@@ -38,10 +38,12 @@ pub trait PeakLocalizer: Send + Sync {
     fn localize(&self, batch: &SnippetBatch, layout: &SensorLayout) -> DspResult<Vec<[f32; 3]>>;
 }
 
-/// Polymorphic contract for Stage 5: Template Matching & Collision Deconvolution (OMP vs. Deep Separator).
+/// Polymorphic contract for Stage 5: Template Matching & Collision Deconvolution (matching pursuit or learned separators).
+/// Template matching on a compute device (the caller chooses it; see `dsp_core::compute`).
 pub trait SpikeMatcher: Send + Sync {
-    fn match_spikes(
+    fn match_spikes<R: cubecl::Runtime>(
         &self,
+        client: &cubecl::prelude::ComputeClient<R>,
         data: &[f32],
         channels: usize,
         samples: usize,

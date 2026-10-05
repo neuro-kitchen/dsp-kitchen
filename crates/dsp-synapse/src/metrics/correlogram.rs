@@ -16,6 +16,9 @@ pub struct Correlogram {
     pub window_ms: f32,
 }
 
+/// Narrowest correlogram bin (ms).
+const MIN_BIN_MS: f32 = 0.05;
+
 /// Computes the symmetric Auto-Correlogram (ACG) of a sorted spike train (in sample indices),
 /// excluding the trivial zero-lag self-coincidence ($i = j$).
 ///
@@ -29,7 +32,7 @@ pub fn compute_autocorrelogram(
     bin_size_ms: f32,
     window_ms: f32,
 ) -> Correlogram {
-    let bin_ms = bin_size_ms.max(0.05);
+    let bin_ms = bin_size_ms.max(MIN_BIN_MS);
     let half_bins = ((window_ms.max(bin_ms) / bin_ms).round() as usize).max(1);
     let num_bins = 2 * half_bins + 1;
     let max_lag_ms = (half_bins as f32 + 0.5) * bin_ms;
@@ -82,7 +85,7 @@ pub fn compute_crosscorrelogram(
     bin_size_ms: f32,
     window_ms: f32,
 ) -> Correlogram {
-    let bin_ms = bin_size_ms.max(0.05);
+    let bin_ms = bin_size_ms.max(MIN_BIN_MS);
     let half_bins = ((window_ms.max(bin_ms) / bin_ms).round() as usize).max(1);
     let num_bins = 2 * half_bins + 1;
     let max_lag_ms = (half_bins as f32 + 0.5) * bin_ms;
