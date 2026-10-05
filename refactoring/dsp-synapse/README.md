@@ -191,6 +191,17 @@ Fabricated outputs → NaN (undefined, never mistaken for a measurement):
 Left as is: unit conversions (`ms · 1e-3`), structural guards (`.max(1)` on counts), the
 matched-filter prototype shape (documented by its formula).
 
+## Remaining tasks (not started)
+
+- **Phy and NaN amplitudes** (end pass, needs Phy installed): check that Phy opens a folder whose
+  `amplitudes.npy` holds NaN (`MISSING_AMPLITUDE`, step 6). If it does not, write the folder
+  without `amplitudes.npy` for those sortings, or drop the spikes that have no amplitude.
+- **SP7: localizers to the device** (`REVIEW.md` SP7): centre of mass, monopolar
+  Levenberg-Marquardt, dipole and grid convolution are host loops, one spike at a time.
+  - Batch them: one spike per cube.
+  - Run the LM / grid search on the device.
+  - Download only the positions.
+
 ## Downstream breakage (to fix at the end)
 
 - Step-5 renames: dsp-cli `benchmark.rs` (`StreamingSpikeRunner`, `match_spikes_omp_on`),
