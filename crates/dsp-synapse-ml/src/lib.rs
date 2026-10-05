@@ -1,33 +1,30 @@
-//! `dsp-synapse-ml` (`synapseml`): Pretrained model hub and neural inference engine
-//! for electrophysiology spike sorting, denoising, latent embeddings, and automated curation.
+//! `dsp-synapse-ml`: neuro models and sorters from the literature, each traceable to its authors.
+//!
+//! - [`sorters`]: spike sorters reimplemented from their papers (Kilosort4, EMUsort).
+//! - [`models`]: pretrained networks run as released (parked until their artifacts are verified).
+//! - [`hub`]: the catalog of published artifacts (with feature `hub`, downloads through
+//!   `dsp-synapse-hub`).
+//! - [`provenance`]: paper, code, license and download source of every sorter and model.
+//! - [`runtime`]: tensor execution for the pretrained models.
 
 pub mod hub;
 pub mod models;
+pub mod provenance;
 pub mod runtime;
+pub mod sorters;
+
+pub use provenance::{ArtifactSource, Attributed, Paper, Provenance, ProvenanceKind, UpstreamCode};
 
 pub use hub::{
-    HubCache, ModelCatalog, ModelFormat, ModelHub, ModelHubEntry, ModelManifest, ModelPresetConfig,
-    ModelStatus, ModelVerifyReport, ProbePreset, PyTorchRemapRule,
-    PyTorchWeightAdapter, SafetensorEntryHeader, SafetensorsMap, TensorIoSpec, TensorPortSpec,
-    WeightTransform, transpose_2d_slice,
+    ArraySpec, ModelCatalog, ModelFormat, ModelManifest, SafetensorEntryHeader, SafetensorsMap,
+    TensorIoSpec, TensorPortSpec,
 };
+#[cfg(feature = "hub")]
+pub use hub::{ModelHub, ModelHubEntry};
 pub use models::{
-    DARTSORT_DENOISER_MODEL_ID, DARTSORT_VAE_MODEL_ID, DartsortVaeEmbedder,
-    DartsortWaveformDenoiser, DEFAULT_MUAP_BASIS_COMPONENTS, DEFAULT_MUAP_BASIS_WINDOW_LEN,
-    DEFAULT_MUAP_WINDOW_LEN, EMUSORT_BASIS_MODEL_ID, EMUSORT_TEMPLATES_MODEL_ID,
-    EmusortBasisEmbedder, EmusortDetector, EmusortLatencyAligner, EmusortProbeKind,
-    EmusortSortConfig, EmusortTemplateMatcher, KILOSORT4_BASIS_MODEL_ID,
-    KILOSORT4_TEMPLATES_MODEL_ID, Kilosort4BasisEmbedder, Kilosort4Detector,
-    Kilosort4TemplateMatcher, MYOMATRIX_BASIS_MODEL_ID, MYOMATRIX_TEMPLATES_MODEL_ID,
-    MyomatrixBasisEmbedder, MyomatrixDetector, MyomatrixLatencyAligner, MyomatrixProbeKind,
-    MyomatrixSortConfig, MyomatrixTemplateMatcher, SPIKENET2_IED_MODEL_ID, SpikeNet2Detector,
-    UNITREFINE_BOMBCELL_MODEL_ID, UNITREFINE_CURATION_MODEL_ID, UnitCurationResult,
+    DARTSORT_DENOISER_MODEL_ID, DARTSORT_VAE_MODEL_ID, DartsortVaeEmbedder, DartsortWaveformDenoiser,
+    SPIKENET2_IED_MODEL_ID, SpikeNet2Detector, UNITREFINE_CURATION_MODEL_ID, UnitCurationResult,
     UnitRefineClassifier,
 };
-pub use runtime::{
-    ComputeError, ComputeTarget, ComputeTask, LaunchGeometry, OnnxRuntimeSession, RuntimeTensor,
-    burn_conv1d, burn_linear_2d, default_compute_target, validate_tensor_port,
-};
-
-
-
+pub use runtime::{OnnxRuntimeSession, RuntimeTensor, burn_conv1d, burn_linear_2d, validate_tensor_port};
+pub use sorters::{Emusort, EmusortConfig, Kilosort4, Kilosort4Config};

@@ -4,12 +4,14 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Burn-powered deep learning model zoo for electrophysiology spike inference (synapseml)"
+description = "Neuro spike sorters reimplemented from their papers (Kilosort4, EMUsort) and pretrained models, each with its provenance"
 
 [features]
 default = ["wgpu", "flex"]
 wgpu = ["dep:burn-wgpu", "cubecl/wgpu", "dsp-base/wgpu"]
 flex = ["dep:burn-flex"]
+# Resolve catalog ids to verified local files (network access through dsp-synapse-hub)
+hub = ["dep:dsp-synapse-hub", "dep:anyhow"]
 cpu = ["cubecl/cpu", "dsp-base/cpu"]
 cuda = ["cubecl/cuda", "dsp-base/cuda"]
 
@@ -17,23 +19,15 @@ cuda = ["cubecl/cuda", "dsp-base/cuda"]
 dsp-core = { workspace = true, features = ["compute"] }
 dsp-base.workspace = true
 dsp-synapse.workspace = true
+dsp-io = { workspace = true, features = ["neuro"] }
 burn-tensor.workspace = true
 burn-flex = { workspace = true, optional = true }
 burn-wgpu = { workspace = true, optional = true }
 onnx-ir.workspace = true
 safetensors.workspace = true
-memmap2.workspace = true
 cubecl.workspace = true
 bytemuck.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
-anyhow.workspace = true
-tracing.workspace = true
-sha2.workspace = true
-hex.workspace = true
-dirs.workspace = true
-reqwest.workspace = true
-
-[dev-dependencies]
-dsp-io.workspace = true
+anyhow = { workspace = true, optional = true }
+dsp-synapse-hub = { workspace = true, optional = true }
