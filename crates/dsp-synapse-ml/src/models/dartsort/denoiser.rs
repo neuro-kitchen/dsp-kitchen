@@ -7,7 +7,7 @@ use dsp_synapse::{SnippetBatch, WaveformDenoiser};
 
 use crate::hub::{SafetensorsMap, TensorIoSpec};
 use crate::runtime::{
-    burn_conv1d, burn_linear_2d, default_compute_target, pull_model, validate_tensor_port,
+    burn_conv1d, burn_linear_2d, validate_tensor_port,
 };
 
 pub const DARTSORT_DENOISER_MODEL_ID: &str = "dartsort/singlechan-denoiser-v1";
@@ -21,17 +21,15 @@ pub struct DartsortWaveformDenoiser {
 
 impl DartsortWaveformDenoiser {
     /// Pulls and initializes `dartsort/singlechan-denoiser-v1` from [`crate::hub::ModelHub`].
-    pub fn from_hub(target: Option<ComputeTarget>) -> DspResult<Self> {
-        let (manifest, path) = pull_model(DARTSORT_DENOISER_MODEL_ID)?;
-        let compute_target = match target {
-            Some(t) => t.checked().map_err(|e| DspError::Model(e.to_string()))?,
-            None => default_compute_target()?,
-        };
+    #[cfg(feature = "hub")]
+    pub fn from_hub(target: ComputeTarget) -> DspResult<Self> {
+        let (manifest, path) = crate::runtime::pull_model(DARTSORT_DENOISER_MODEL_ID)?;
+        let compute_target = target.checked().map_err(|e| DspError::ComputeError(e.to_string()))?;
         let weights = SafetensorsMap::from_file(&path)
-            .map_err(|e| DspError::Model(e.to_string()))?;
+            .map_err(|e| DspError::InvalidConfig(e.to_string()))?;
         Ok(Self {
             weights,
-            io_spec: Some(manifest.io_spec),
+            io_spec: manifest.io_spec,
             target: compute_target,
         })
     }
@@ -39,14 +37,11 @@ impl DartsortWaveformDenoiser {
     /// Loads a DARTsort `.safetensors` denoiser file from disk.
     pub fn from_safetensors_file(
         path: impl AsRef<Path>,
-        target: Option<ComputeTarget>,
+        target: ComputeTarget,
     ) -> DspResult<Self> {
-        let compute_target = match target {
-            Some(t) => t.checked().map_err(|e| DspError::Model(e.to_string()))?,
-            None => default_compute_target()?,
-        };
+        let compute_target = target.checked().map_err(|e| DspError::ComputeError(e.to_string()))?;
         let weights = SafetensorsMap::from_file(path)
-            .map_err(|e| DspError::Model(e.to_string()))?;
+            .map_err(|e| DspError::InvalidConfig(e.to_string()))?;
         Ok(Self {
             weights,
             io_spec: None,
@@ -76,9 +71,9 @@ impl WaveformDenoiser for DartsortWaveformDenoiser {
         let (conv_w_shape, conv_w) = self
             .weights
             .get_raw("conv1.weight")
-            .map_err(|e| DspError::Model(e.to_string()))?;
+            .map_err(|e| DspError::InvalidConfig(e.to_string()))?;
         if conv_w_shape.len() != 3 {
-            return Err(DspError::Model(format!(
+            return Err(DspError::InvalidConfig(format!(
                 "conv1.weight expected 3D shape, got {:?}",
                 conv_w_shape
             )));
@@ -110,9 +105,9 @@ impl WaveformDenoiser for DartsortWaveformDenoiser {
         let (lin_w_shape, lin_w) = self
             .weights
             .get_raw("fc.weight")
-            .map_err(|e| DspError::Model(e.to_string()))?;
+            .map_err(|e| DspError::InvalidConfig(e.to_string()))?;
         if lin_w_shape.len() != 2 {
-            return Err(DspError::Model(format!(
+            return Err(DspError::InvalidConfig(format!(
                 "fc.weight expected 2D shape, got {:?}",
                 lin_w_shape
             )));

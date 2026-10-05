@@ -16,6 +16,17 @@ use onnx_ir::OnnxGraphBuilder;
 
 use crate::runtime::burn_engine::{burn_conv1d, burn_linear_2d};
 
+/// Row-major `[rows, cols]` → `[cols, rows]`.
+fn transpose_2d(data: &[f32], rows: usize, cols: usize) -> Vec<f32> {
+    let mut out = vec![0.0f32; rows * cols];
+    for r in 0..rows {
+        for c in 0..cols {
+            out[c * rows + r] = data[r * cols + c];
+        }
+    }
+    out
+}
+
 /// Dynamic multi-dimensional float32 tensor passed between ONNX graph nodes.
 #[derive(Debug, Clone)]
 pub struct RuntimeTensor {
@@ -27,7 +38,7 @@ impl RuntimeTensor {
     pub fn new(data: Vec<f32>, shape: Vec<usize>) -> DspResult<Self> {
         let expected: usize = shape.iter().product();
         if data.len() != expected {
-            return Err(DspError::Model(format!(
+            return Err(DspError::InvalidConfig(format!(
                 "RuntimeTensor shape {shape:?} expects {expected} elements, got {}",
                 data.len()
             )));
@@ -52,7 +63,7 @@ impl OnnxRuntimeSession {
         let path_ref = path.as_ref();
         let graph = OnnxGraphBuilder::new()
             .parse_file(path_ref)
-            .map_err(|e| DspError::Model(format!("ONNX parse failed for {:?}: {e:?}", path_ref)))?;
+            .map_err(|e| DspError::InvalidConfig(format!("ONNX parse failed for {:?}: {e:?}", path_ref)))?;
         Ok(Self { graph, target })
     }
 
@@ -60,7 +71,7 @@ impl OnnxRuntimeSession {
     pub fn from_bytes(bytes: &[u8], target: ComputeTarget) -> DspResult<Self> {
         let graph = OnnxGraphBuilder::new()
             .parse_bytes(bytes)
-            .map_err(|e| DspError::Model(format!("ONNX parse_bytes failed: {e:?}")))?;
+            .map_err(|e| DspError::InvalidConfig(format!("ONNX parse_bytes failed: {e:?}")))?;
         Ok(Self { graph, target })
     }
 
@@ -86,7 +97,7 @@ impl OnnxRuntimeSession {
             .graph
             .inputs
             .first()
-            .ok_or_else(|| DspError::Model("ONNX graph has no inputs".to_string()))?
+            .ok_or_else(|| DspError::InvalidConfig("ONNX graph has no inputs".to_string()))?
             .name
             .clone();
 
@@ -98,13 +109,13 @@ impl OnnxRuntimeSession {
             .graph
             .outputs
             .first()
-            .ok_or_else(|| DspError::Model("ONNX graph has no outputs".to_string()))?
+            .ok_or_else(|| DspError::InvalidConfig("ONNX graph has no outputs".to_string()))?
             .name
             .clone();
 
         outputs
             .remove(&first_output)
-            .ok_or_else(|| DspError::Model(format!("ONNX output '{first_output}' not produced")))
+            .ok_or_else(|| DspError::InvalidConfig(format!("ONNX output '{first_output}' not produced")))
     }
 
     /// Executes the ONNX graph in topological order on named input tensors.
@@ -134,7 +145,7 @@ impl OnnxRuntimeSession {
             let shape: Vec<usize> = data.shape.iter().copied().collect();
             let floats = data
                 .to_f32_vec()
-                .map_err(|e| DspError::Model(format!("ONNX constant f32 conversion failed: {e:?}")))?;
+                .map_err(|e| DspError::InvalidConfig(format!("ONNX constant f32 conversion failed: {e:?}")))?;
             return RuntimeTensor::new(floats, shape);
         }
         if let ArgType::ScalarNative(_) | ArgType::ScalarTensor(_) = &arg.ty {
@@ -143,7 +154,7 @@ impl OnnxRuntimeSession {
             }
         }
         env.get(&arg.name).cloned().ok_or_else(|| {
-            DspError::Model(format!("ONNX tensor '{}' not found in execution scope", arg.name))
+            DspError::InvalidConfig(format!("ONNX tensor '{}' not found in execution scope", arg.name))
         })
     }
 
@@ -231,7 +242,7 @@ impl OnnxRuntimeSession {
                 let a = self.resolve_arg(&n.inputs[0], env)?;
                 let b = self.resolve_arg(&n.inputs[1], env)?;
                 if a.shape.len() != 2 || b.shape.len() != 2 || a.shape[1] != b.shape[0] {
-                    return Err(DspError::Model(format!(
+                    return Err(DspError::InvalidConfig(format!(
                         "ONNX MatMul incompatible shapes {:?} and {:?}",
                         a.shape, b.shape
                     )));
@@ -239,7 +250,7 @@ impl OnnxRuntimeSession {
                 let batch = a.shape[0];
                 let k = a.shape[1];
                 let out_dim = b.shape[1];
-                let b_t = crate::hub::transpose_2d_slice(&b.data, k, out_dim);
+                let b_t = transpose_2d(&b.data, k, out_dim);
                 let data = burn_linear_2d(self.target, &a.data, batch, k, &b_t, out_dim, None)?;
                 env.insert(
                     n.outputs[0].name.clone(),
@@ -250,7 +261,7 @@ impl OnnxRuntimeSession {
             Node::GlobalAveragePool(n) => {
                 let x = self.resolve_arg(&n.inputs[0], env)?;
                 if x.shape.len() != 3 {
-                    return Err(DspError::Model(format!(
+                    return Err(DspError::InvalidConfig(format!(
                         "ONNX GlobalAveragePool expects 3D [N, C, T], got {:?}",
                         x.shape
                     )));
@@ -271,7 +282,7 @@ impl OnnxRuntimeSession {
                 );
             }
             other => {
-                return Err(DspError::Model(format!(
+                return Err(DspError::InvalidConfig(format!(
                     "Unsupported ONNX operator node: {:?}",
                     other.name()
                 )));
@@ -305,7 +316,7 @@ impl OnnxRuntimeSession {
                 .map(|(i, &x)| op(x, b.data[i % stride]))
                 .collect()
         } else {
-            return Err(DspError::Model(format!(
+            return Err(DspError::InvalidConfig(format!(
                 "ONNX binary broadcast unsupported for {:?} and {:?}",
                 a.shape, b.shape
             )));
@@ -329,7 +340,7 @@ impl OnnxRuntimeSession {
         };
 
         if a.shape.len() != 2 || b.shape.len() != 2 {
-            return Err(DspError::Model(format!(
+            return Err(DspError::InvalidConfig(format!(
                 "ONNX Gemm requires 2D tensors, got {:?} and {:?}",
                 a.shape, b.shape
             )));
@@ -343,7 +354,7 @@ impl OnnxRuntimeSession {
         let a_row = if n.config.trans_a == 0 {
             a.data
         } else {
-            crate::hub::transpose_2d_slice(&a.data, a.shape[0], a.shape[1])
+            transpose_2d(&a.data, a.shape[0], a.shape[1])
         };
 
         // burn_linear_2d expects weight in [out_features, in_features]
@@ -353,12 +364,12 @@ impl OnnxRuntimeSession {
             (
                 b.shape[1],
                 b.shape[0],
-                crate::hub::transpose_2d_slice(&b.data, b.shape[0], b.shape[1]),
+                transpose_2d(&b.data, b.shape[0], b.shape[1]),
             )
         };
 
         if k_a != k_b {
-            return Err(DspError::Model(format!(
+            return Err(DspError::InvalidConfig(format!(
                 "ONNX Gemm inner dimension mismatch: {k_a} vs {k_b}"
             )));
         }
@@ -414,7 +425,7 @@ impl OnnxRuntimeSession {
         let (out_dim, w_out_in) = if n.config.transpose_weight {
             (
                 w.shape[1],
-                crate::hub::transpose_2d_slice(&w.data, w.shape[0], w.shape[1]),
+                transpose_2d(&w.data, w.shape[0], w.shape[1]),
             )
         } else {
             (w.shape[0], w.data)
@@ -453,7 +464,7 @@ impl OnnxRuntimeSession {
         };
 
         if x.shape.len() != 3 || w.shape.len() != 3 {
-            return Err(DspError::Model(format!(
+            return Err(DspError::InvalidConfig(format!(
                 "ONNX Conv1d expects 3D input and weight, got {:?} and {:?}",
                 x.shape, w.shape
             )));

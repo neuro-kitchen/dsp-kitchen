@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use anyhow::{Context, Result, bail};
+use dsp_core::{DspError, DspResult as Result};
 use safetensors::tensor::{Dtype, SafeTensors, TensorView};
 use serde::{Deserialize, Serialize};
 
@@ -67,7 +67,7 @@ impl SafetensorsMap {
         let (shape, data) = self
             .tensors
             .get(name)
-            .with_context(|| format!("Tensor '{}' not found in safetensors map", name))?;
+            .ok_or_else(|| DspError::InvalidConfig(format!("tensor '{name}' not found in safetensors map")))?;
         Ok((shape.as_slice(), data.as_slice()))
     }
 
@@ -77,27 +77,27 @@ impl SafetensorsMap {
         for (name, (shape, data)) in &self.tensors {
             let raw_bytes: &[u8] = bytemuck::cast_slice(data.as_slice());
             let view = TensorView::new(Dtype::F32, shape.clone(), raw_bytes)
-                .with_context(|| format!("Failed to construct TensorView for '{}'", name))?;
+                .map_err(|e| DspError::InvalidConfig(format!("failed to construct TensorView for '{name}': {e}")))?;
             views.push((name.as_str(), view));
         }
         let encoded = safetensors::serialize(views, None)
-            .context("Failed to serialize SafetensorsMap")?;
+            .map_err(|e| DspError::InvalidConfig(format!("Failed to serialize SafetensorsMap: {e}")))?;
         Ok(encoded)
     }
 
     /// Parses a `.safetensors` byte buffer into a `SafetensorsMap` via `safetensors::SafeTensors::deserialize`.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let st = SafeTensors::deserialize(bytes)
-            .context("Failed to deserialize .safetensors buffer")?;
+            .map_err(|e| DspError::InvalidConfig(format!("Failed to deserialize .safetensors buffer: {e}")))?;
 
         let mut tensors = BTreeMap::new();
         for (key, view) in st.tensors() {
             if view.dtype() != Dtype::F32 {
-                bail!(
-                    "Unsupported dtype {:?} for tensor '{}', only F32 is supported",
+                return Err(DspError::UnsupportedFormat(format!(
+                    "unsupported dtype {:?} for tensor '{}', only F32 is supported",
                     view.dtype(),
                     key
-                );
+                )));
             }
             let raw_slice = view.data();
             let mut vec = Vec::with_capacity(raw_slice.len() / 4);
@@ -112,12 +112,11 @@ impl SafetensorsMap {
 
     pub fn save_to_file(&self, path: impl AsRef<Path>) -> Result<()> {
         let bytes = self.to_bytes()?;
-        std::fs::write(path, bytes)?;
-        Ok(())
+        std::fs::write(path.as_ref(), bytes).map_err(|e| DspError::Io(format!("{}: {e}", path.as_ref().display())))
     }
 
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
-        let bytes = std::fs::read(path)?;
+        let bytes = std::fs::read(path.as_ref()).map_err(|e| DspError::Io(format!("{}: {e}", path.as_ref().display())))?;
         Self::from_bytes(&bytes)
     }
 }

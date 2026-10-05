@@ -32,20 +32,20 @@ pub fn burn_linear_2d(
     bias: Option<&[f32]>,
 ) -> DspResult<Vec<f32>> {
     if input.len() != batch * in_features {
-        return Err(DspError::Model(format!(
+        return Err(DspError::InvalidConfig(format!(
             "burn_linear_2d: input len {} != batch ({batch}) * in_features ({in_features})",
             input.len()
         )));
     }
     if weight.len() != out_features * in_features {
-        return Err(DspError::Model(format!(
+        return Err(DspError::InvalidConfig(format!(
             "burn_linear_2d: weight len {} != out_features ({out_features}) * in_features ({in_features})",
             weight.len()
         )));
     }
     if let Some(b) = bias {
         if b.len() != out_features {
-            return Err(DspError::Model(format!(
+            return Err(DspError::InvalidConfig(format!(
                 "burn_linear_2d: bias len {} != out_features ({out_features})",
                 b.len()
             )));
@@ -80,7 +80,7 @@ pub fn burn_linear_2d(
             ))
         }
         #[cfg(not(feature = "flex"))]
-        other => Err(DspError::Model(format!(
+        other => Err(DspError::InvalidConfig(format!(
             "Burn backend not compiled for compute target {other}"
         ))),
     }
@@ -136,7 +136,7 @@ pub fn burn_conv1d(
 ) -> DspResult<(Vec<f32>, usize)> {
     let expected_in = batch * in_channels * length;
     if input.len() != expected_in {
-        return Err(DspError::Model(format!(
+        return Err(DspError::InvalidConfig(format!(
             "burn_conv1d: input len {} != [{batch}, {in_channels}, {length}]",
             input.len()
         )));
@@ -144,7 +144,7 @@ pub fn burn_conv1d(
     let in_per_group = in_channels / groups.max(1);
     let expected_w = out_channels * in_per_group * kernel_size;
     if weight.len() != expected_w {
-        return Err(DspError::Model(format!(
+        return Err(DspError::InvalidConfig(format!(
             "burn_conv1d: weight len {} != [{out_channels}, {in_per_group}, {kernel_size}]",
             weight.len()
         )));
@@ -192,7 +192,7 @@ pub fn burn_conv1d(
             ))
         }
         #[cfg(not(feature = "flex"))]
-        other => Err(DspError::Model(format!(
+        other => Err(DspError::InvalidConfig(format!(
             "Burn backend not compiled for compute target {other}"
         ))),
     }
