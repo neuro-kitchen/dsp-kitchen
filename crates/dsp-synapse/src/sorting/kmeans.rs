@@ -267,6 +267,17 @@ pub fn kmeans<R: Runtime>(client: &ComputeClient<R>, x: &[f32], n: usize, d: usi
 
 /// k-means of device points into `k` clusters (`k ≤ n`). See the module docs.
 pub fn kmeans_points<R: Runtime>(client: &ComputeClient<R>, points: &DevicePoints, k: usize, options: &KMeansOptions) -> KMeansResult {
+    kmeans_points_with_progress(client, points, k, options, &mut |_, _| {})
+}
+
+/// [`kmeans_points`], calling `progress(done, total)` after each of the `n_init` restarts.
+pub fn kmeans_points_with_progress<R: Runtime>(
+    client: &ComputeClient<R>,
+    points: &DevicePoints,
+    k: usize,
+    options: &KMeansOptions,
+    progress: &mut dyn FnMut(u64, u64),
+) -> KMeansResult {
     let (n, d) = (points.n, points.d);
     assert!(k >= 1 && k <= n, "kmeans: need 1 ≤ k ≤ n");
     // sklearn: tol scaled by the mean variance of the features (rows of the feature-major points)
@@ -278,12 +289,14 @@ pub fn kmeans_points<R: Runtime>(client: &ComputeClient<R>, points: &DevicePoint
     let unreached = buffer::upload(client, &vec![f32::MAX; n]);
     let mut rng = Rng(options.seed);
     let mut best: Option<(Vec<f32>, f64, Assignment)> = None;
-    for _ in 0..options.n_init.max(1) {
+    let restarts = options.n_init.max(1);
+    for restart in 0..restarts {
         let init = kmeans_plus_plus(client, points, k, &unreached, &mut rng);
         let run = lloyd(client, points, k, init, options.max_iter, tol_abs);
         if best.as_ref().is_none_or(|b| run.1 < b.1) {
             best = Some(run);
         }
+        progress(restart as u64 + 1, restarts as u64);
     }
     let (centers, inertia, assignment) = best.expect("n_init ≥ 1");
     let labels = buffer::download_prefix::<R, u32>(client, assignment.label, n).into_iter().map(|l| l as usize).collect();

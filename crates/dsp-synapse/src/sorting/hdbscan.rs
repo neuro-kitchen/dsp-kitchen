@@ -4,6 +4,12 @@
 //!
 //! 1. Core distance of each point, on the device: distance to its `min_samples`-th nearest
 //!    neighbour (the point itself counts as the first), the nearest kept in registers.
+//!
+//!    Every pass over all pairs shares the points in tiles through shared memory (each point is
+//!    read once per cube, not once per unit) and is split into launches of at most
+//!    [`PAIR_TERMS_PER_LAUNCH`] terms, with each point's running result kept on the device between
+//!    launches: no launch runs long enough for a display driver to stop it, and progress is
+//!    reported after each.
 //! 2. Minimum spanning tree of the mutual-reachability distance `max(core_a, core_b, ‖a − b‖)`, on
 //!    the device by Borůvka: every round, each point's cheapest edge to another component
 //!    (`O(n²·d)`, one unit per point); the host keeps each component's cheapest (ties by the
@@ -15,10 +21,41 @@
 
 use cubecl::prelude::*;
 use dsp_base::core::buffer;
+use dsp_core::compute::bench::sync;
 use dsp_core::compute::LaunchGeometry;
 
-use super::kernels::points::{cheapest_edge_kernel, core_distance_kernel};
+use super::kernels::points::{cheapest_edge_tile_kernel, core_distance_tile_kernel};
 use super::points::DevicePoints;
+
+/// Most `(point, point, feature)` terms one launch computes: passes over all pairs are split into
+/// launches this large, so none runs long enough for a display driver to stop it, and progress
+/// can be reported between them.
+pub const PAIR_TERMS_PER_LAUNCH: u64 = 1 << 32;
+
+/// Shared memory per unit of the tiled kernels: a point's `d` features, plus its core distance
+/// and component (`f32`, `u32`) for the Borůvka step.
+fn shared_bytes_per_unit(d: usize) -> usize {
+    (d + 2) * size_of::<f32>()
+}
+
+/// Points `j` each launch of a pass covers, a multiple of the cube's `units` (one tile at least).
+fn chunk_points(n: usize, d: usize, units: usize) -> usize {
+    let per_launch = (PAIR_TERMS_PER_LAUNCH / (n.max(1) as u64 * d.max(1) as u64)).max(1) as usize;
+    per_launch.div_ceil(units) * units
+}
+
+/// Most Borůvka rounds over `n` points: each round at least halves the number of components.
+fn max_rounds(n: usize) -> usize {
+    (usize::BITS - n.saturating_sub(1).leading_zeros()) as usize
+}
+
+/// Launches [`hdbscan_points_with_progress`] makes over `n` points of `d` features at most (the
+/// Borůvka rounds may end sooner): its progress total.
+pub fn hdbscan_launches<R: Runtime>(client: &ComputeClient<R>, n: usize, d: usize) -> u64 {
+    let units = LaunchGeometry::tiles(client, n, shared_bytes_per_unit(d)).cube_dim.x as usize;
+    let per_pass = n.div_ceil(chunk_points(n, d, units)) as u64;
+    per_pass * (1 + max_rounds(n) as u64)
+}
 
 /// Labels of [`hdbscan_points`] for host points `x` (`[n, d]` row-major), uploaded once.
 pub fn hdbscan<R: Runtime>(client: &ComputeClient<R>, x: &[f32], n: usize, d: usize, min_cluster_size: usize) -> Vec<i32> {
@@ -27,27 +64,57 @@ pub fn hdbscan<R: Runtime>(client: &ComputeClient<R>, x: &[f32], n: usize, d: us
 
 /// Labels of HDBSCAN on device points: cluster index per point (`0..`), `-1` for noise.
 pub fn hdbscan_points<R: Runtime>(client: &ComputeClient<R>, points: &DevicePoints, min_cluster_size: usize) -> Vec<i32> {
+    hdbscan_points_with_progress(client, points, min_cluster_size, &mut |_, _| {})
+}
+
+/// [`hdbscan_points`], calling `progress(done, total)` after each launch (`total` from
+/// [`hdbscan_launches`]; the last call is `(total, total)` even when Borůvka ends early).
+pub fn hdbscan_points_with_progress<R: Runtime>(
+    client: &ComputeClient<R>,
+    points: &DevicePoints,
+    min_cluster_size: usize,
+    progress: &mut dyn FnMut(u64, u64),
+) -> Vec<i32> {
     let (n, d) = (points.n, points.d);
     let mcs = min_cluster_size.max(2);
     if n < mcs {
         return vec![-1; n];
     }
-    let geom = LaunchGeometry::elementwise(client, n);
+    let geom = LaunchGeometry::tiles(client, n, shared_bytes_per_unit(d));
+    let units = geom.cube_dim.x;
+    let chunk = chunk_points(n, d, units as usize);
+    let total = hdbscan_launches(client, n, d);
+    let mut done = 0u64;
+    let mut step = |client: &ComputeClient<R>| {
+        // Each launch finishes before the next: progress is real, and no queue of long launches
+        sync(client);
+        done += 1;
+        progress(done.min(total), total);
+    };
 
     // 1. Squared core distances (min_samples = min_cluster_size, self included)
+    let best = buffer::upload(client, &vec![f32::MAX; n * mcs]);
     let core = buffer::empty::<R, f32>(client, n);
-    // SAFETY: `points` holds `d · n` values, `core` `n`
-    unsafe {
-        core_distance_kernel::launch::<f32, R>(
-            client,
-            geom.cube_count.clone(),
-            geom.cube_dim.clone(),
-            ArrayArg::from_raw_parts(points.handle.clone(), d * n),
-            ArrayArg::from_raw_parts(core.clone(), n),
-            n as u32,
-            d as u32,
-            mcs as u32,
-        );
+    for j0 in (0..n).step_by(chunk) {
+        let j1 = (j0 + chunk).min(n);
+        // SAFETY: `points` holds `d · n`, `best` `n · mcs`, `core` `n` values
+        unsafe {
+            core_distance_tile_kernel::launch::<f32, R>(
+                client,
+                geom.cube_count.clone(),
+                geom.cube_dim.clone(),
+                ArrayArg::from_raw_parts(points.handle.clone(), d * n),
+                ArrayArg::from_raw_parts(best.clone(), n * mcs),
+                ArrayArg::from_raw_parts(core.clone(), n),
+                n as u32,
+                j0 as u32,
+                j1 as u32,
+                d as u32,
+                mcs as u32,
+                units,
+            );
+        }
+        step(client);
     }
 
     // 2. Borůvka over the mutual-reachability graph
@@ -63,20 +130,29 @@ pub fn hdbscan_points<R: Runtime>(client: &ComputeClient<R>, points: &DevicePoin
     let mut edges: Vec<(usize, usize, f64)> = Vec::with_capacity(n - 1);
     let mut component: Vec<u32> = (0..n as u32).collect();
     while edges.len() < n - 1 {
-        // SAFETY: as above; `component`, `best_w`, `best_j` hold `n` values
-        unsafe {
-            cheapest_edge_kernel::launch::<f32, R>(
-                client,
-                geom.cube_count.clone(),
-                geom.cube_dim.clone(),
-                ArrayArg::from_raw_parts(points.handle.clone(), d * n),
-                ArrayArg::from_raw_parts(core.clone(), n),
-                ArrayArg::from_raw_parts(buffer::upload(client, &component), n),
-                ArrayArg::from_raw_parts(best_w.clone(), n),
-                ArrayArg::from_raw_parts(best_j.clone(), n),
-                n as u32,
-                d as u32,
-            );
+        let components = buffer::upload(client, &component);
+        for j0 in (0..n).step_by(chunk) {
+            let j1 = (j0 + chunk).min(n);
+            // SAFETY: as above; `components`, `best_w`, `best_j` hold `n` values
+            unsafe {
+                cheapest_edge_tile_kernel::launch::<f32, R>(
+                    client,
+                    geom.cube_count.clone(),
+                    geom.cube_dim.clone(),
+                    ArrayArg::from_raw_parts(points.handle.clone(), d * n),
+                    ArrayArg::from_raw_parts(core.clone(), n),
+                    ArrayArg::from_raw_parts(components.clone(), n),
+                    ArrayArg::from_raw_parts(best_w.clone(), n),
+                    ArrayArg::from_raw_parts(best_j.clone(), n),
+                    n as u32,
+                    j0 as u32,
+                    j1 as u32,
+                    u32::from(j0 == 0),
+                    d as u32,
+                    units,
+                );
+            }
+            step(client);
         }
         let w = buffer::download_prefix::<R, f32>(client, best_w.clone(), n);
         let j = buffer::download_prefix::<R, u32>(client, best_j.clone(), n);
@@ -106,6 +182,7 @@ pub fn hdbscan_points<R: Runtime>(client: &ComputeClient<R>, points: &DevicePoin
             *c = root(&mut parent, i) as u32;
         }
     }
+    progress(total, total);
     labels_from_spanning_tree(n, mcs, edges)
 }
 

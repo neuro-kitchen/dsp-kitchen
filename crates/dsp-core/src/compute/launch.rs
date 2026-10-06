@@ -89,6 +89,27 @@ impl LaunchGeometry {
         Self { cube_dim, cube_count: CubeCount::Static(x, y, 1) }
     }
 
+    /// One unit per point of `points`, in 1-D cubes of a power-of-two number of units (the
+    /// runtime's cube flattened onto x, shrunk until `shared_bytes_per_unit` per unit fits the
+    /// device's shared memory) for kernels that share tiles of points in shared memory: the point
+    /// is `row_position() * CUBE_DIM_X + UNIT_POS_X`, and kernels size shared memory with
+    /// `cube_dim.x` (passed as a comptime value). Every unit of a cube takes part in the tile loads,
+    /// so kernels bound-check the point only around their own work.
+    ///
+    /// # Panics
+    /// If one unit's shared memory exceeds the device's, or the points need more cubes than the
+    /// runtime's whole grid holds.
+    pub fn tiles<R: Runtime>(client: &ComputeClient<R>, points: usize, shared_bytes_per_unit: usize) -> Self {
+        let shared = client.properties().hardware.max_shared_memory_size;
+        let fit = shared / shared_bytes_per_unit.max(1);
+        assert!(fit >= 1, "{shared_bytes_per_unit} bytes of shared memory per unit exceed the device's {shared}");
+        let units = Self::flat(client, points).x.min(u32::try_from(fit).unwrap_or(u32::MAX));
+        let units = 1 << (u32::BITS - 1 - units.max(1).leading_zeros());
+        let (x, y) = Self::spill(client, points, units);
+        assert!(y <= client.properties().hardware.max_cube_count.1, "{points} points exceed the runtime's cube grid");
+        Self { cube_dim: CubeDim::new_1d(units), cube_count: CubeCount::Static(x, y, 1) }
+    }
+
     /// Units that execute in lock-step (the runtime's plane / warp / subgroup size; 1 where every
     /// unit runs on its own, as on the CPU runtime). It is the x size of
     /// [`Self::channels_samples`] cubes, so consecutive `sample_position`s of a plane share a cube.

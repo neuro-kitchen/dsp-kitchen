@@ -3,6 +3,7 @@
 //! the dsp-base row reductions (per-feature moments, second moment) apply unchanged.
 
 use cubecl::prelude::*;
+use dsp_core::compute::row_position;
 
 /// `‖x_a − x_b‖²` of points `a` and `b` of a feature-major `[d, n]` buffer.
 #[cube]
@@ -17,79 +18,185 @@ pub fn point_sq_dist<F: Float>(x: &Array<F>, a: u32, b: u32, n: u32, d: u32) -> 
     acc
 }
 
-/// `core[i]` = squared distance from point `i` to its `k`-th nearest point, itself counted first
-/// (HDBSCAN core distance with `min_samples = k`). The `k` smallest are kept sorted in registers.
-/// One unit per point.
+/// Copies the features of point `i` (feature-major `[d, n]`) into `own` (registers).
+#[cube]
+fn load_own<F: Float>(x: &Array<F>, own: &mut Array<F>, i: u32, n: u32, #[comptime] d: u32) {
+    let mut f = 0u32;
+    while f < d {
+        own[f as usize] = x[(f * n + i) as usize];
+        f += 1u32;
+    }
+}
+
+/// Unit `UNIT_POS_X` of the cube copies point `t0 + UNIT_POS_X` (if before `j1`) into its row of
+/// the shared tile (`[tile, d]`).
+#[cube]
+fn load_tile<F: Float>(x: &Array<F>, tile: &mut SharedMemory<F>, t0: u32, j1: u32, n: u32, #[comptime] d: u32) {
+    let j = t0 + UNIT_POS_X;
+    if j < j1 {
+        let mut f = 0u32;
+        while f < d {
+            tile[(UNIT_POS_X * d + f) as usize] = x[(f * n + j) as usize];
+            f += 1u32;
+        }
+    }
+}
+
+/// `‖own − tile[u]‖²`.
+#[cube]
+fn tile_sq_dist<F: Float>(own: &Array<F>, tile: &SharedMemory<F>, u: u32, #[comptime] d: u32) -> F {
+    let mut acc = F::new(0.0f32);
+    let mut f = 0u32;
+    while f < d {
+        let diff = own[f as usize] - tile[(u * d + f) as usize];
+        acc += diff * diff;
+        f += 1u32;
+    }
+    acc
+}
+
+/// HDBSCAN core distances over points `j0..j1` (one launch of several): `best[i, ·]` (`[n, k]`)
+/// keeps the `k` smallest squared distances from point `i` so far, sorted, and `core[i]` the
+/// `k`-th (the point itself counts as the first; `min_samples = k`). Points `j` are shared by
+/// the cube in tiles of `units` (its size) through shared memory. Launch with
+/// [`dsp_core::compute::LaunchGeometry::tiles`]; `best` starts at `F::max_value()`.
 #[cube(launch)]
-pub fn core_distance_kernel<F: Float>(x: &Array<F>, core: &mut Array<F>, n: u32, d: u32, #[comptime] k: u32) {
-    let i = ABSOLUTE_POS as u32;
-    if i < n {
-        let last = comptime!(k - 1);
-        let mut best = Array::<F>::new(comptime!(k as usize));
+#[allow(clippy::too_many_arguments)]
+pub fn core_distance_tile_kernel<F: Float>(
+    x: &Array<F>,
+    best: &mut Array<F>,
+    core: &mut Array<F>,
+    n: u32,
+    j0: u32,
+    j1: u32,
+    #[comptime] d: u32,
+    #[comptime] k: u32,
+    #[comptime] units: u32,
+) {
+    let i = row_position() * units + UNIT_POS_X;
+    let active = i < n;
+    let last = comptime!(k - 1);
+    let mut kbest = Array::<F>::new(comptime!(k as usize));
+    let mut own = Array::<F>::new(comptime!(d as usize));
+    if active {
+        load_own::<F>(x, &mut own, i, n, d);
         #[unroll]
         for s in 0..k {
-            best[s as usize] = F::max_value();
+            kbest[s as usize] = best[(i * k + s) as usize];
         }
-        let mut j = 0u32;
-        while j < n {
-            let dist = point_sq_dist::<F>(x, i, j, n, d);
-            if dist < best[last as usize] {
-                // Insertion: shift the larger ones up one slot
-                let pos = RuntimeCell::<u32>::new(last);
-                let mut moving = true;
-                while moving {
-                    let s = pos.read();
-                    if s > 0u32 {
-                        if best[(s - 1u32) as usize] > dist {
-                            best[s as usize] = best[(s - 1u32) as usize];
-                            pos.store(s - 1u32);
+    }
+    let mut tile = SharedMemory::<F>::new(comptime!((units * d) as usize));
+    let mut t0 = j0;
+    while t0 < j1 {
+        load_tile::<F>(x, &mut tile, t0, j1, n, d);
+        sync_cube();
+        if active {
+            let count = u32::min(units, j1 - t0);
+            let mut u = 0u32;
+            while u < count {
+                let dist = tile_sq_dist::<F>(&own, &tile, u, d);
+                if dist < kbest[last as usize] {
+                    // Insertion: shift the larger ones up one slot
+                    let pos = RuntimeCell::<u32>::new(last);
+                    let mut moving = true;
+                    while moving {
+                        let s = pos.read();
+                        if s > 0u32 {
+                            if kbest[(s - 1u32) as usize] > dist {
+                                kbest[s as usize] = kbest[(s - 1u32) as usize];
+                                pos.store(s - 1u32);
+                            } else {
+                                moving = false;
+                            }
                         } else {
                             moving = false;
                         }
-                    } else {
-                        moving = false;
                     }
+                    kbest[pos.read() as usize] = dist;
                 }
-                best[pos.read() as usize] = dist;
+                u += 1u32;
             }
-            j += 1u32;
         }
-        core[i as usize] = best[last as usize];
+        sync_cube();
+        t0 += units;
+    }
+    if active {
+        #[unroll]
+        for s in 0..k {
+            best[(i * k + s) as usize] = kbest[s as usize];
+        }
+        core[i as usize] = kbest[last as usize];
     }
 }
 
 /// Borůvka step of HDBSCAN's minimum spanning tree over the mutual-reachability distance
-/// `max(core_i, core_j, ‖x_i − x_j‖²)` (all squared): the cheapest edge from point `i` to a
-/// point of another component, the smallest `j` on ties (`best_j[i] = n` when there is none).
-/// One unit per point.
+/// `max(core_i, core_j, ‖x_i − x_j‖²)` (all squared), for points `j0..j1` (one launch of
+/// several): `best_w[i]`, `best_j[i]` keep point `i`'s cheapest edge to another component so far
+/// (the smallest `j` on ties; `best_j[i] = n` when there is none). Launches run `j` in increasing
+/// order; the first resets the state (`first = 1`). Points `j`, their core distances and
+/// components are shared by the cube in tiles. Launch with
+/// [`dsp_core::compute::LaunchGeometry::tiles`].
 #[cube(launch)]
 #[allow(clippy::too_many_arguments)]
-pub fn cheapest_edge_kernel<F: Float>(
+pub fn cheapest_edge_tile_kernel<F: Float>(
     x: &Array<F>,
     core: &Array<F>,
     component: &Array<u32>,
     best_w: &mut Array<F>,
     best_j: &mut Array<u32>,
     n: u32,
-    d: u32,
+    j0: u32,
+    j1: u32,
+    first: u32,
+    #[comptime] d: u32,
+    #[comptime] units: u32,
 ) {
-    let i = ABSOLUTE_POS as u32;
-    if i < n {
-        let ci = component[i as usize];
-        let core_i = core[i as usize];
-        let mut bw = F::max_value();
-        let mut bj = n;
-        let mut j = 0u32;
-        while j < n {
-            if component[j as usize] != ci {
-                let w = F::max(F::max(core_i, core[j as usize]), point_sq_dist::<F>(x, i, j, n, d));
-                if w < bw {
-                    bw = w;
-                    bj = j;
-                }
-            }
-            j += 1u32;
+    let i = row_position() * units + UNIT_POS_X;
+    let active = i < n;
+    let mut own = Array::<F>::new(comptime!(d as usize));
+    let mut ci = 0u32;
+    let mut core_i = F::new(0.0f32);
+    let mut bw = F::max_value();
+    let mut bj = n;
+    if active {
+        load_own::<F>(x, &mut own, i, n, d);
+        ci = component[i as usize];
+        core_i = core[i as usize];
+        if first == 0u32 {
+            bw = best_w[i as usize];
+            bj = best_j[i as usize];
         }
+    }
+    let mut tile = SharedMemory::<F>::new(comptime!((units * d) as usize));
+    let mut tile_core = SharedMemory::<F>::new(comptime!(units as usize));
+    let mut tile_comp = SharedMemory::<u32>::new(comptime!(units as usize));
+    let mut t0 = j0;
+    while t0 < j1 {
+        load_tile::<F>(x, &mut tile, t0, j1, n, d);
+        let j = t0 + UNIT_POS_X;
+        if j < j1 {
+            tile_core[UNIT_POS_X as usize] = core[j as usize];
+            tile_comp[UNIT_POS_X as usize] = component[j as usize];
+        }
+        sync_cube();
+        if active {
+            let count = u32::min(units, j1 - t0);
+            let mut u = 0u32;
+            while u < count {
+                if tile_comp[u as usize] != ci {
+                    let w = F::max(F::max(core_i, tile_core[u as usize]), tile_sq_dist::<F>(&own, &tile, u, d));
+                    if w < bw {
+                        bw = w;
+                        bj = t0 + u;
+                    }
+                }
+                u += 1u32;
+            }
+        }
+        sync_cube();
+        t0 += units;
+    }
+    if active {
         best_w[i as usize] = bw;
         best_j[i as usize] = bj;
     }
