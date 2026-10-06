@@ -17,7 +17,7 @@ pub use runner::{
     fit_kilosort4_preprocessing, fit_preprocessing, run_plan, ChannelDelays, FitSettings, FittedPreprocessing, Kilosort4Result,
     RunPlan,
 };
-pub use templates::{extract_clips, learn_universal_templates, ClipOptions, LearnOptions, UniversalTemplates};
+pub use templates::{extract_clips, learn_universal_templates, learn_universal_templates_with_progress, ClipOptions, LearnOptions, UniversalTemplates};
 
 use crate::provenance::{ArtifactSource, Attributed, Paper, Provenance, ProvenanceKind, UpstreamCode};
 

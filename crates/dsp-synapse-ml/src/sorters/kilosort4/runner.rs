@@ -27,7 +27,7 @@ use dsp_synapse::core::{SortedUnit, SortingOutput};
 use dsp_synapse::QualityCriteria;
 
 use super::detect::{TemplateCentres, UniversalDetector, UniversalSpike};
-use super::templates::{extract_clips, learn_universal_templates, LearnOptions, UniversalTemplates, MAX_CLIPS};
+use super::templates::{extract_clips, learn_universal_templates_with_progress, LearnOptions, UniversalTemplates, MAX_CLIPS};
 use super::Kilosort4Config;
 use crate::sorters::emusort::kernels::{ChannelAligner, ChannelDelayEstimator};
 
@@ -372,6 +372,8 @@ pub fn run_plan<R: Runtime>(
         };
         let mut scanned = 0u64;
         let planned = learning.len() as u64;
+        // The total the last report used: the stage is closed explicitly only if it stopped short
+        let mut reported_total = planned;
         stages.report(STAGE_CLIPS, 0, planned);
         loader.stream_while(&learning, |window, raw| {
             let more = collect(raw, window, &mut clips) < MAX_CLIPS;
@@ -383,6 +385,7 @@ pub fn run_plan<R: Runtime>(
         let needed = plan.learn.n_templates.max(plan.learn.n_pcs);
         if clips.len() / ks.nt < needed {
             let extended = planned + rest.len() as u64;
+            reported_total = extended;
             loader.stream_while(&rest, |window, raw| {
                 let more = collect(raw, window, &mut clips) < needed;
                 scanned += 1;
@@ -390,12 +393,11 @@ pub fn run_plan<R: Runtime>(
                 Ok(more)
             })?;
         }
-        // The stage ends here even when it stopped early (enough clips)
-        stages.report(STAGE_CLIPS, scanned, scanned);
-        stages.report(STAGE_TEMPLATES, 0, 1);
-        let learned = learn_universal_templates(client, &clips, ks.nt, &plan.learn)?;
-        stages.report(STAGE_TEMPLATES, 1, 1);
-        learned
+        // Stopped early (enough clips): end the stage at what was scanned
+        if scanned < reported_total {
+            stages.report(STAGE_CLIPS, scanned, scanned);
+        }
+        learn_universal_templates_with_progress(client, &clips, ks.nt, &plan.learn, &mut |done, total| stages.report(STAGE_TEMPLATES, done, total))?
     } else {
         predefined_templates(plan)?
     };
