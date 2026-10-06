@@ -122,6 +122,19 @@ written (samples path, pyramid vs raw extremes, invalid views) but not run.
 
 - **dsp-stream:** the session protocol (header, `SignalFrame`, `EnvelopeFrame`, `View` request)
   carrying these types (dsp-stream REVIEW ST1–ST3).
-- **dsp-app:** imports from `dsp_view` (see step 1's table).
+- **dsp-app:** done (step 5; `refactoring/dsp-app/README.md`).
 - **End pass:** run the dsp-view tests (layout, storage, pyramid incl. concurrency, builder,
   device kernel on every runtime, view).
+
+## Step 5 — viewer backend, streamed raw reads (2026-10-06, done)
+
+- `signal.rs`: `SignalBackend` (`info`, `view`, `read`, `focus`, `prepare`, `progress`, `watch`)
+  and `LocalSignal` (source + pyramid + `PyramidBuilder`; cancels on drop). Pyramid policy: the
+  complete file next to the recording, else a new file for recordings ≥ `FILE_PYRAMID_MIN_BYTES`
+  (64 MiB, the app's former `AUTO_LOD_BYTES`), else memory. One read of the recording builds it.
+- `View::read_into(source, pyramid, &mut Envelope)`: reuses the output buffer; raw windows are
+  streamed in chunk-aligned blocks of at most `RAW_BLOCK_VALUES` (2²² values), the next block read
+  while the current one folds (`read::read_channel_blocks`, two thread-local buffers). Was: one
+  read of the whole window (up to base × width × channels values). Moved from dsp-app's renderer.
+- Tests (not run): block split, streamed vs single fold, `LocalSignal` fills a memory pyramid.
+- Open: a remote `SignalBackend` over dsp-stream's `Session`.

@@ -71,3 +71,9 @@ preprocessing). Playground: the Kilosort4 script's predefined-templates run reus
 run's preprocessing; the synthetic script no longer re-runs Kilosort4 on the default runtime.
 `synapse.hdbscan(features, min_cluster_size, *, runtime=None)` and `synapse.kmeans(..., runtime=None)`
 run on the device; `kmeans` checks `1 ≤ k ≤ n` (was a panic).
+
+**Progress (2026-10-06):** `kilosort4.run` / `emusort.run` are Python wrappers with
+`progress=True` (default: `dsp_kitchen.progress.ProgressBar`, `tqdm.auto` when installed, else a
+text line on stderr with the time left), `False`, or a callable
+`(stage, step, steps, done, total, unit)`; the bindings take `progress=` (a callable, called with
+the GIL re-taken; its errors are printed, not raised). New module `dsp_kitchen.progress`.
