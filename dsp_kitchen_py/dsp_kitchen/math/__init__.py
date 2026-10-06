@@ -1,17 +1,7 @@
 """
-Mathematical and sample scaling operations for signal processing.
+Pointwise stages: ``Scale`` (``x · alpha + beta``), ``SubtractBaseline``, ``Clamp``.
 """
 
-from .._bindings import (
-    Clamp,
-    Scale,
-    SubtractBaseline,
-    scale_samples,
-)
+from dsp_kitchen_bindings import Clamp, Scale, SubtractBaseline, scale_samples
 
-__all__ = [
-    "Scale",
-    "SubtractBaseline",
-    "Clamp",
-    "scale_samples",
-]
+__all__ = ["Clamp", "Scale", "SubtractBaseline", "scale_samples"]

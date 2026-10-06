@@ -12,21 +12,25 @@ name = "dsp_kitchen_bindings"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = []
+default = ["wgpu", "hub"]
 ## Enable `pyo3/extension-module` when building the Python wheel via Maturin,
 ## while keeping it off during `cargo test --workspace` to avoid linker errors.
 extension-module = ["pyo3/extension-module"]
+## CubeCL runtimes (chosen at run time with `dsp_kitchen.runtime.set`)
+wgpu = ["dsp-core/wgpu", "dsp-base/wgpu"]
+cpu = ["dsp-core/cpu", "dsp-base/cpu", "dsp-synapse/cpu"]
+cuda = ["dsp-core/cuda", "dsp-base/cuda", "dsp-synapse/cuda"]
+hip = ["dsp-core/hip", "dsp-base/hip", "dsp-synapse/hip"]
+## `ModelHub` and `UniversalTemplates.from_hub`: verified downloads (network access)
+hub = ["dsp-synapse-ml/hub"]
 
 [dependencies]
 dsp-core = { workspace = true, features = ["compute"] }
 dsp-base.workspace = true
-dsp-io.workspace = true
+dsp-io = { workspace = true, features = ["neuro"] }
 dsp-synapse.workspace = true
-dsp-synapse-ml.workspace = true
-cubecl = { workspace = true, features = ["wgpu"] }
+# Sorters and the catalog only (no Burn backends)
+dsp-synapse-ml = { workspace = true, default-features = false }
+cubecl.workspace = true
 pyo3.workspace = true
 numpy.workspace = true
-memmap2.workspace = true
-serde.workspace = true
-thiserror.workspace = true
-tracing.workspace = true

@@ -1,12 +1,9 @@
 """
-Zero-copy recording I/O (`MmapRecording`), NWB Zarr v3 / `dsp-io` reader (`NwbZarrRecording`),
-and series discovery utilities.
+Recordings: ``Recording`` (any format dsp-io reads, lazily sliced; ``list_sources`` lists a
+file's signals), ``MmapRecording`` (raw binary with zero-copy NumPy views) and
+``SyntheticRecording`` (procedural, with ground-truth spike times).
 """
 
-from .._bindings import MmapRecording, NwbZarrRecording, list_nwb_series
+from dsp_kitchen_bindings import MmapRecording, Recording, SyntheticRecording, list_sources
 
-__all__ = [
-    "MmapRecording",
-    "NwbZarrRecording",
-    "list_nwb_series",
-]
+__all__ = ["MmapRecording", "Recording", "SyntheticRecording", "list_sources"]

@@ -1,5 +1,5 @@
 """Soundness of the native bindings: zero-copy views keep their owner alive, heavy calls release
-the GIL, reads use recording-relative defaults and raise precise errors (Task 05)."""
+the GIL, reads use recording-relative defaults and raise precise errors."""
 
 import gc
 import json
@@ -15,6 +15,7 @@ FS = 30_000.0
 
 
 def write_raw(tmp_path, data, dtype="float32", order="channel_major", gain_uv=1.0):
+    """A raw file and its JSON sidecar (the sidecar schema names the gain `gain_uv`)."""
     path = tmp_path / "rec.bin"
     stored = data if order == "channel_major" else data.T
     np.ascontiguousarray(stored, dtype=dtype).tofile(path)
@@ -54,6 +55,16 @@ def test_explicit_layout_without_sidecar(tmp_path):
     np.testing.assert_array_equal(rec.read(0, 3_000), data)
     with pytest.raises(ValueError):
         dk.MmapRecording(str(path), channels=2)  # sample_rate missing
+
+
+def test_filters_need_the_sample_rate():
+    x = np.zeros((2, 100), dtype=np.float32)
+    with pytest.raises(TypeError):
+        dk.bandpass_filter(x, 300.0, 6000.0)  # fs is keyword-only and required
+    pipe = dk.Pipeline([dk.BandpassFilter(300.0, 6000.0)])
+    with pytest.raises(ValueError):
+        pipe.run(x)  # a filter stage needs fs
+    assert dk.Pipeline([dk.CommonAverageReference()]).run(x).shape == x.shape
     with pytest.raises(OSError):
         dk.MmapRecording(str(path))  # no sidecar
 
@@ -75,7 +86,7 @@ def test_pipeline_releases_the_gil():
     done = threading.Event()
 
     def work():
-        dk.bandpass_filter(data, 300.0, 6000.0, FS)
+        dk.bandpass_filter(data, 300.0, 6000.0, fs=FS)
         done.set()
 
     worker = threading.Thread(target=work)
@@ -93,5 +104,5 @@ def test_pipeline_releases_the_gil():
 
 def test_filter_output_is_a_fresh_float32_array():
     x = np.random.default_rng(2).normal(size=(3, 5_000))  # float64 input is converted
-    y = dk.highpass_filter(x, 300.0, FS)
+    y = dk.highpass_filter(x, 300.0, fs=FS)
     assert y.dtype == np.float32 and y.shape == (3, 5_000) and y.flags.writeable

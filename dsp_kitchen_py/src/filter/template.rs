@@ -1,6 +1,7 @@
 use pyo3::prelude::*;
 
 use crate::array::{to_numpy, F32Array};
+use dsp_base::filter::template::subtraction::DEFAULT_MAX_LAG;
 use dsp_base::filter::template::TemplateFilter;
 
 /// Python wrapper for TemplateFilter.
@@ -13,7 +14,7 @@ pub struct PyTemplateFilter {
 #[pymethods]
 impl PyTemplateFilter {
     #[new]
-    #[pyo3(signature = (template, center_offset=0, max_lag=8, dynamic_scaling=true))]
+    #[pyo3(signature = (template, center_offset=0, max_lag=DEFAULT_MAX_LAG, dynamic_scaling=true))]
     pub fn new<'py>(
         template: Bound<'py, PyAny>,
         center_offset: usize,
@@ -87,7 +88,7 @@ impl PyTemplateFilter {
 
 /// Direct function for template subtraction on 1D or 2D signals.
 #[pyfunction]
-#[pyo3(signature = (data, template, event_indices, center_offset=0, max_lag=8, dynamic_scaling=true))]
+#[pyo3(signature = (data, template, event_indices, center_offset=0, max_lag=DEFAULT_MAX_LAG, dynamic_scaling=true))]
 pub fn subtract_template<'py>(
     py: Python<'py>,
     data: Bound<'py, PyAny>,
@@ -99,4 +100,10 @@ pub fn subtract_template<'py>(
 ) -> PyResult<Bound<'py, PyAny>> {
     let filter = PyTemplateFilter::new(template, center_offset, max_lag, dynamic_scaling)?;
     filter.apply(py, data, event_indices)
+}
+
+pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyTemplateFilter>()?;
+    m.add_function(wrap_pyfunction!(subtract_template, m)?)?;
+    Ok(())
 }

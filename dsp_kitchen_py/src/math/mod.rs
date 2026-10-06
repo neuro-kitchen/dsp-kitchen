@@ -1,3 +1,3 @@
 pub mod arithmetic;
 
-pub use arithmetic::{scale_samples, PyClamp, PyScale, PySubtractBaseline};
+pub use arithmetic::{register, PyClamp, PyScale, PySubtractBaseline};
