@@ -1,0 +1,23 @@
+[package]
+name = "dsp-view"
+description = "Preparing multi-channel signals for viewing: min/max envelopes and pyramids, local or remote"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[features]
+default = ["wgpu"]
+## Envelopes of samples already on a CubeCL device.
+device = ["dep:cubecl", "dsp-core/compute"]
+wgpu = ["device", "dsp-core/wgpu"]
+cpu = ["device", "dsp-core/cpu"]
+cuda = ["device", "dsp-core/cuda"]
+hip = ["device", "dsp-core/hip"]
+
+[dependencies]
+dsp-core.workspace = true
+cubecl = { workspace = true, optional = true }
+rayon.workspace = true
+memmap2.workspace = true
+tracing.workspace = true
