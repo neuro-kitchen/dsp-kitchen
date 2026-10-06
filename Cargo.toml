@@ -7,6 +7,7 @@ members = [
     "crates/dsp-synapse-ml",
     "crates/dsp-synapse-hub",
     "crates/dsp-stream",
+    "crates/dsp-view",
     "crates/dsp-io",
     "crates/dsp-cli",
     "crates/dsp-app",
@@ -27,6 +28,7 @@ dsp-synapse = { path = "crates/dsp-synapse" }
 dsp-synapse-ml = { path = "crates/dsp-synapse-ml" }
 dsp-synapse-hub = { path = "crates/dsp-synapse-hub" }
 dsp-stream = { path = "crates/dsp-stream" }
+dsp-view = { path = "crates/dsp-view" }
 dsp-io = { path = "crates/dsp-io" }
 dsp_kitchen_py = { path = "dsp_kitchen_py" }
 
@@ -50,6 +52,8 @@ zarrs = { version = "0.23.14", default-features = false, features = ["filesystem
 quinn = "0.11.12"
 tonic = "0.14.6"
 prost = "0.14.4"
+prost-build = "0.14.4"
+protox = "0.9.1"
 rcgen = "0.14.10"
 rustls = { version = "0.23.45", default-features = false, features = ["ring", "std"] }
 rustls-pki-types = "1.15.1"
