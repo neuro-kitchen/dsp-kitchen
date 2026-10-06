@@ -6,12 +6,23 @@ dsp-kitchen API; the others are described so the remaining work is clear.
 Input to every stage is **preprocessed** data in batches of `batch_size = 60000` samples with
 `nt` samples of padding on each side, in whitened units (thresholds are multiples of the noise σ).
 
-## 1. Preprocessing — *stages available, driver not yet*
+## Front end over a recording — *implemented*
 
-Common average reference (`do_car`), high-pass at `highpass_cutoff_hz = 300` Hz, and local
-whitening over the `whitening_range = 32` nearest channels. The building blocks are dsp-base
-pipeline stages (`PipelineStage::CommonAverageReference`, a high-pass `FilterSpec`,
-`SpatialWhitening::fit_local_knn`); a Kilosort4 driver that fits and chains them is not written yet.
+`run_front_end(client, source, probe, &FrontEndOptions)` runs stages 1–3 over a whole recording.
+Kilosort4's batches are the windows of a dsp-core `ChunkSchedule` (`batch_size`, with halos
+covering the filter's settling, `nt` and any channel delay); windows are read through
+`PrefetchReader` and processed by a `PipelineWorkspace` on the device, so memory is bounded
+whatever the recording length. Learning passes use every `nskip`-th window; detection keeps
+each window's own spikes and reports recording samples. `FrontEndOptions::kilosort4` /
+`::emusort` select the sorter.
+
+## 1. Preprocessing — *implemented (approximation)*
+
+High-pass at `highpass_cutoff_hz = 300` Hz (`HIGHPASS_ORDER` = 3, forward-backward), common
+average reference when `do_car` (a mean; upstream may use a median), and local whitening over
+the `whitening_range = 32` nearest channels from the covariance averaged over every `nskip`-th
+window (`SpatialWhitening::local_knn_from_covariance`, `WHITENING_EPSILON`). The order, the
+reference and ε are to be verified against upstream.
 
 ## 2. Universal templates — *implemented*
 

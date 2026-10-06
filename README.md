@@ -42,7 +42,8 @@ sorters reimplemented from their papers (Kilosort4, EMUsort).
 | `dsp-synapse` | Spike detection, deduplication, extraction, features, localization, drift, clustering, template matching, metrics, streaming detection. |
 | `dsp-synapse-ml` | Sorters from papers (Kilosort4, EMUsort) and pretrained models, with provenance. |
 | `dsp-synapse-hub` | Verified download and cache of published artifacts. |
-| `dsp-stream` | Network transport of continuous signals (QUIC + TLS). |
+| `dsp-stream` | Network sessions for continuous signals (QUIC + TLS, protobuf): exact header, stored samples, views. |
+| `dsp-view` | Preparing signals for viewing, locally or remotely: min/max envelopes and pyramids. |
 | `dsp-cli`, `dsp-app`, `dsp_kitchen_py` | Command line, desktop app, Python bindings. |
 
 ## Building

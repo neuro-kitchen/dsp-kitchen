@@ -5,7 +5,9 @@ differences are described here.
 
 ## 1. Preprocessing
 
-As Kilosort4, **without** the common average reference (`do_car = false`).
+As Kilosort4, **without** the common average reference (`do_car = false`). The whole front end
+(preprocessing, delays, templates, detection) runs over a recording with
+`run_front_end(…, &FrontEndOptions::emusort(&config, fs))`.
 
 ## 2. Channel-delay removal — *implemented*
 
