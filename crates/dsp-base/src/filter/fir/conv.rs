@@ -94,6 +94,8 @@ impl<R: Runtime> FirInputs<R> {
 /// [`FirInputs::run`] with the kernel CubeCL's autotuner found fastest for this device, element type,
 /// filter shape and problem size. Benchmarks write to a scratch output.
 fn tuned<R: Runtime, F: DspFloat>(inputs: FirInputs<R>) {
+    // cubecl-runtime 0.10's `local_tuner!` expands with a trailing semicolon (rust-lang/rust#79813)
+    #[allow(semicolon_in_expressions_from_non_local_macros)]
     static TUNER: LocalTuner<String, String> = local_tuner!("fir-kernel");
     let set = TUNER.init(|| {
         let key = |p: &FirInputs<R>| {

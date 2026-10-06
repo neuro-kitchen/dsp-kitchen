@@ -12,7 +12,7 @@ use crate::filter::iir::DeviceFilter;
 use crate::filter::{execute_fir_centered, execute_median, execute_teager_kaiser, gaussian_kernel_1d, FilterMode};
 use crate::math::{execute_clamp, execute_scaling, execute_unpack_stored, upload_stored};
 use crate::spatial::{execute_direct_car, DeviceSpatialMatrix};
-use dsp_core::{DspError, DspResult, HaloWindow, SampleFormat};
+use dsp_core::{DspError, DspResult, SampleFormat};
 
 /// How consecutive chunks relate to each other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -291,57 +291,7 @@ impl<R: Runtime, F: DspFloat> PipelineWorkspace<R, F> {
         }
 
         let out_handle = self.process_chunk_in_vram(input, samples);
-        let out = buffer::download::<R, F>(&self.client, out_handle);
-        output.copy_from_slice(&out[..output.len()]);
-    }
-
-    /// Downloads only the valid interior samples of a halo-padded window,
-    /// cropping out the halo settling margins.
-    pub fn download_interior(&self, handle: Handle, window: &HaloWindow) -> Vec<F> {
-        let full = buffer::download::<R, F>(&self.client, handle);
-        let read_len = window.read_len();
-        let valid_range = window.valid_local.clone();
-        full.chunks_exact(read_len)
-            .flat_map(|row| row[valid_range.clone()].iter().copied())
-            .collect()
+        output.copy_from_slice(&buffer::download_prefix::<R, F>(&self.client, out_handle, output.len()));
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use dsp_core::ChunkSchedule;
-
-    #[test]
-    fn test_workspace_download_interior() {
-        let sched = ChunkSchedule::full_recording(100, 40, 10, 10);
-        let win = &sched.windows()[1]; // Valid 40..80, read 30..90 (local 10..50, read_len 60)
-
-        let mut data = vec![0.0f32; 2 * 60];
-        for ch in 0..2 {
-            for t in 0..60 {
-                data[ch * 60 + t] = (ch * 1000 + t) as f32;
-            }
-        }
-
-        if let Ok(target) = dsp_core::compute::ComputeTarget::from_env() {
-            struct Task(Vec<f32>, HaloWindow);
-            impl dsp_core::compute::ComputeTask for Task {
-                type Output = Vec<f32>;
-                fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
-                    let pipeline = Pipeline::new();
-                    let mut ws = PipelineWorkspace::<R, f32>::new(client, pipeline, 2, 60, 1000.0).unwrap();
-                    let handle = ws.process_chunk_in_vram(&self.0, 60);
-                    ws.download_interior(handle, &self.1)
-                }
-            }
-
-            let interior = target.run(Task(data, win.clone())).unwrap();
-            assert_eq!(interior.len(), 2 * 40);
-            assert_eq!(interior[0], 10.0);
-            assert_eq!(interior[39], 49.0);
-            assert_eq!(interior[40], 1010.0);
-            assert_eq!(interior[79], 1049.0);
-        }
-    }
-}
