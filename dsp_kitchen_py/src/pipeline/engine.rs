@@ -96,7 +96,7 @@ pub(crate) fn run_stage<'py>(py: Python<'py>, stage: PipelineStage, data: &Bound
 /// Stages run one after the other on the device; intermediate results never leave it.
 #[pyclass(name = "Pipeline", skip_from_py_object)]
 pub struct PyPipeline {
-    stages: Vec<PipelineStage>,
+    pub(crate) stages: Vec<PipelineStage>,
 }
 
 #[pymethods]

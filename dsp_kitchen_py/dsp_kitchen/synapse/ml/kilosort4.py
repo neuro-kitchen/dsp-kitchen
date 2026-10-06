@@ -9,13 +9,29 @@ by one. Clustering, deconvolution and merging are not implemented yet.
 from dsp_kitchen_bindings import (
     FrontEndResult,
     Kilosort4Config as Config,
+    Kilosort4Result,
     TemplateCentres,
     UniversalTemplates,
+    create_preprocessing,
     detect_universal,
     extract_clips,
     kilosort4_provenance as provenance,
     learn_universal_templates,
+    run,
     run_front_end,
 )
 
-__all__ = ["Config", "FrontEndResult", "run_front_end", "TemplateCentres", "UniversalTemplates", "detect_universal", "extract_clips", "learn_universal_templates", "provenance"]
+__all__ = [
+    "Config",
+    "Kilosort4Result",
+    "run",
+    "create_preprocessing",
+    "FrontEndResult",
+    "run_front_end",
+    "TemplateCentres",
+    "UniversalTemplates",
+    "detect_universal",
+    "extract_clips",
+    "learn_universal_templates",
+    "provenance",
+]

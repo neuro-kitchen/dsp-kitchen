@@ -10,9 +10,10 @@ use cubecl::CubeElement;
 use dsp_core::compute::ComputeTask;
 use dsp_synapse_ml::sorters::emusort::{apply_channel_delays as shift_channels, emusort_provenance as emusort_record, ChannelDelayEstimator, EmusortConfig};
 use dsp_synapse_ml::sorters::kilosort4::{
-    run_front_end, FrontEndOptions, FrontEndResult,
-    detect_universal as detect, extract_clips as clips_of, kilosort4_provenance as kilosort4_record, learn_universal_templates as learn, CentreOptions, Kilosort4Config,
-    LearnOptions, TemplateCentres, UniversalSpike, UniversalTemplates,
+    detect_universal as detect, extract_clips as clips_of, fit_kilosort4_preprocessing,
+    kilosort4_provenance as kilosort4_record, learn_universal_templates as learn, run_front_end,
+    CentreOptions, FrontEndOptions, FrontEndResult, Kilosort4Config, Kilosort4Result,
+    Kilosort4Runner, LearnOptions, TemplateCentres, UniversalSpike, UniversalTemplates,
 };
 use dsp_synapse_ml::Provenance;
 use pyo3::exceptions::PyValueError;
@@ -20,7 +21,9 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
 use super::probe::PyProbeLayout;
+use super::storage::PySortingOutput;
 use crate::array::{runtime_error, to_numpy, value_error, F32Array};
+use crate::pipeline::engine::PyPipeline;
 use crate::runtime::target;
 
 // ------------------------------------------------------------------------------------------------
@@ -432,6 +435,117 @@ fn run_front_end_py(py: Python<'_>, recording: PyRef<'_, crate::buffer::PyRecord
     Ok(PyFrontEndResult { inner })
 }
 
+/// Results of a Kilosort4 run: whitening matrix, templates, detected spikes, and preprocessing pipeline.
+#[pyclass(name = "Kilosort4Result", skip_from_py_object)]
+pub struct PyKilosort4Result {
+    inner: Kilosort4Result,
+}
+
+#[pymethods]
+impl PyKilosort4Result {
+    #[getter]
+    fn whitening<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let c = self.inner.whitening.num_channels;
+        to_numpy(py, self.inner.whitening.matrix.clone(), &[c, c])
+    }
+    #[getter]
+    fn templates(&self) -> PyUniversalTemplates {
+        PyUniversalTemplates { inner: self.inner.templates.clone() }
+    }
+    #[getter]
+    fn halos(&self) -> (u64, u64) {
+        self.inner.halos
+    }
+    #[getter]
+    fn windows(&self) -> usize {
+        self.inner.windows
+    }
+    #[getter]
+    fn preprocessing(&self) -> PyPipeline {
+        PyPipeline { stages: self.inner.preprocessing.stages().to_vec() }
+    }
+    fn spikes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let s = &self.inner.spikes;
+        let d = PyDict::new(py);
+        d.set_item("sample", s.iter().map(|x| x.sample as u64).collect::<Vec<_>>())?;
+        d.set_item("centre", s.iter().map(|x| x.centre).collect::<Vec<_>>())?;
+        d.set_item("amplitude", to_numpy(py, s.iter().map(|x| x.amplitude).collect(), &[s.len()])?)?;
+        d.set_item("template", s.iter().map(|x| x.template).collect::<Vec<_>>())?;
+        d.set_item("size", s.iter().map(|x| x.size).collect::<Vec<_>>())?;
+        d.set_item("y_um", to_numpy(py, s.iter().map(|x| x.y_um).collect(), &[s.len()])?)?;
+        Ok(d)
+    }
+    #[pyo3(signature = (probe=None, sample_rate_hz=None, total_samples=None))]
+    fn to_sorting_output(
+        &self,
+        probe: Option<PyRef<'_, PyProbeLayout>>,
+        sample_rate_hz: Option<f64>,
+        total_samples: Option<u64>,
+    ) -> PySortingOutput {
+        let p = probe.map(|p| p.inner.clone());
+        let fs = sample_rate_hz.unwrap_or(30_000.0);
+        let samples = total_samples.unwrap_or(0);
+        PySortingOutput::new(self.inner.to_sorting_output(p, fs, samples))
+    }
+    fn __repr__(&self) -> String {
+        format!("Kilosort4Result(spikes={}, windows={}, halos={:?})", self.inner.spikes.len(), self.inner.windows, self.inner.halos)
+    }
+}
+
+/// Creates and fits the Kilosort4 preprocessing pipeline (high-pass filter, CAR, whitening)
+/// as a reusable `Pipeline` asset.
+#[pyfunction(name = "create_preprocessing")]
+#[pyo3(signature = (recording, probe, config, *, runtime=None))]
+fn create_kilosort4_preprocessing_py(
+    py: Python<'_>,
+    recording: PyRef<'_, crate::buffer::PyRecording>,
+    probe: PyRef<'_, PyProbeLayout>,
+    config: Bound<'_, PyAny>,
+    runtime: Option<&str>,
+) -> PyResult<PyPipeline> {
+    struct Task<'a>(&'a dyn dsp_core::RecordingSource, &'a dsp_io::neuro::probe::SensorLayout, &'a Kilosort4Config);
+    impl ComputeTask for Task<'_> {
+        type Output = dsp_core::DspResult<dsp_base::pipeline::Pipeline>;
+        fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
+            fit_kilosort4_preprocessing(&client, self.0, self.1, self.2).map(|(pipe, _)| pipe)
+        }
+    }
+    let source = recording.inner.clone();
+    let ks_config = sorter_settings(py, &config)?.0;
+    let (layout, target) = (probe.inner.clone(), target(runtime)?);
+    let inner = py.detach(|| target.run(Task(source.as_ref(), &layout, &ks_config)))
+        .map_err(runtime_error)?
+        .map_err(value_error)?;
+    Ok(PyPipeline { stages: inner.stages().to_vec() })
+}
+
+/// Runs Kilosort4 over `recording` on the device using halo-windowed VRAM streaming.
+#[pyfunction(name = "run")]
+#[pyo3(signature = (recording, probe, config, *, runtime=None))]
+fn run_kilosort4_py(
+    py: Python<'_>,
+    recording: PyRef<'_, crate::buffer::PyRecording>,
+    probe: PyRef<'_, PyProbeLayout>,
+    config: Bound<'_, PyAny>,
+    runtime: Option<&str>,
+) -> PyResult<PyKilosort4Result> {
+    struct Task<'a>(&'a dyn dsp_core::RecordingSource, &'a dsp_io::neuro::probe::SensorLayout, &'a Kilosort4Config);
+    impl ComputeTask for Task<'_> {
+        type Output = dsp_core::DspResult<Kilosort4Result>;
+        fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
+            let runner = Kilosort4Runner::new(self.2.clone());
+            runner.run(&client, self.0, self.1)
+        }
+    }
+    let source = recording.inner.clone();
+    let ks_config = sorter_settings(py, &config)?.0;
+    let (layout, target) = (probe.inner.clone(), target(runtime)?);
+    let inner = py.detach(|| target.run(Task(source.as_ref(), &layout, &ks_config)))
+        .map_err(runtime_error)?
+        .map_err(value_error)?;
+    Ok(PyKilosort4Result { inner })
+}
+
 // ------------------------------------------------------------------------------------------------
 // EMUsort channel delays
 // ------------------------------------------------------------------------------------------------
@@ -641,7 +755,10 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyChannelDelayEstimator>()?;
     m.add_class::<PyProvenance>()?;
     m.add_class::<PyFrontEndResult>()?;
+    m.add_class::<PyKilosort4Result>()?;
     m.add_function(wrap_pyfunction!(run_front_end_py, m)?)?;
+    m.add_function(wrap_pyfunction!(run_kilosort4_py, m)?)?;
+    m.add_function(wrap_pyfunction!(create_kilosort4_preprocessing_py, m)?)?;
     m.add_function(wrap_pyfunction!(extract_clips, m)?)?;
     m.add_function(wrap_pyfunction!(learn_universal_templates, m)?)?;
     m.add_function(wrap_pyfunction!(detect_universal, m)?)?;
