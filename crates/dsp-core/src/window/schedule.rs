@@ -1,4 +1,4 @@
-//! Boundary-safe halo window scheduling for out-of-core chunked streaming.
+//! Halo window scheduling: which samples each window owns and which it reads.
 //!
 //! When streaming a large recording through causal/non-causal processing, each non-overlapping
 //! valid window `[s0 .. s1)` is padded with a `left_halo` (e.g. filter settling, lookback) and a
@@ -44,6 +44,29 @@ impl HaloWindow {
     pub fn to_global_sample(&self, local_sample: usize) -> u64 {
         self.read_global.start + local_sample as u64
     }
+
+    /// Global sample of a local event (e.g. a spike found in the padded buffer) if this window
+    /// owns it (it lies in the valid interior), `None` if it belongs to a neighbouring window.
+    #[inline]
+    pub fn remap_event(&self, local_sample: usize) -> Option<u64> {
+        self.is_interior_local(local_sample).then(|| self.to_global_sample(local_sample))
+    }
+
+    /// The window owning `valid` (clamped to `[0 .. total_samples)`), read with `left_halo` and
+    /// `right_halo` samples of context, also clamped to the recording.
+    pub fn around(index: usize, valid: Range<u64>, left_halo: u64, right_halo: u64, total_samples: u64) -> Self {
+        let end = valid.end.min(total_samples);
+        let start = valid.start.min(end);
+        let read_start = start.saturating_sub(left_halo);
+        let read_end = (end + right_halo).min(total_samples);
+        let left_pad = (start - read_start) as usize;
+        Self {
+            index,
+            valid_global: start..end,
+            read_global: read_start..read_end,
+            valid_local: left_pad..left_pad + (end - start) as usize,
+        }
+    }
 }
 
 /// Schedule of contiguous `HaloWindow`s covering a sample range `[start .. end)` of a recording.
@@ -73,19 +96,7 @@ impl ChunkSchedule {
 
         while s0 < end {
             let s1 = (s0 + step).min(end);
-            let read_start = s0.saturating_sub(left_halo);
-            let read_end = (s1 + right_halo).min(total_samples);
-
-            let left_pad = (s0 - read_start) as usize;
-            let valid_len = (s1 - s0) as usize;
-            let valid_local = left_pad..(left_pad + valid_len);
-
-            let win = HaloWindow {
-                index,
-                valid_global: s0..s1,
-                read_global: read_start..read_end,
-                valid_local,
-            };
+            let win = HaloWindow::around(index, s0..s1, left_halo, right_halo, total_samples);
             max_read_samples = max_read_samples.max(win.read_len());
             windows.push(win);
 
@@ -173,5 +184,16 @@ mod tests {
         assert_eq!(w[3].read_global, 8_500..10_000);
         assert_eq!(w[3].valid_local, 500..1_500);
         assert_eq!(w[3].to_global_sample(1_499), 9_999);
+    }
+
+    #[test]
+    fn around_clamps_and_remaps_events() {
+        let w = HaloWindow::around(7, 30..60, 5, 5, 62);
+        assert_eq!((w.index, w.read_global.clone(), w.valid_local.clone()), (7, 25..62, 5..35));
+        assert_eq!(w.remap_event(4), None);
+        assert_eq!(w.remap_event(5), Some(30));
+        assert_eq!(w.remap_event(34), Some(59));
+        assert_eq!(w.remap_event(35), None);
+        assert_eq!(HaloWindow::around(0, 90..120, 5, 5, 100).valid_global, 90..100);
     }
 }
