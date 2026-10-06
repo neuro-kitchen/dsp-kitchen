@@ -38,9 +38,19 @@ KS4_RESULTS = DATA_DIR / "kilosort4" / "saved_results"
 print(kilosort4.provenance().citation())
 rec = Recording(str(BIN_PATH))
 probe = syn.ProbeLayout.from_recording(str(BIN_PATH))
+if probe is None and KS4_RESULTS.exists():
+    ks4_ref = syn.load_sorting(str(KS4_RESULTS))
+    probe = ks4_ref.probe
+    if probe is not None:
+        rec = rec.slice_samples(channels=probe.channel_ids())
+
 if probe is None:
-    raise SystemExit("the recording carries no probe geometry")
+    probe = syn.ProbeLayout.neuropixels_1_0()
+    if rec.channels > probe.total_channels:
+        rec = rec.slice_samples(channels=list(range(probe.total_channels)))
+
 config = kilosort4.Config()
+config.whitening_range = min(config.whitening_range, probe.total_channels)
 print(f"\n{rec}\n{probe}\n{config}")
 
 # %% [2] Run Kilosort4 over the Whole Recording
