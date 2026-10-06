@@ -10,7 +10,7 @@ Items removed from `crates/dsp-base`.
 
 | Parked path | Original path | Reason |
 |---|---|---|
-| `resampler/` (`mod.rs`, `minmax.rs`, `decimate.rs`, `cache.rs`, `summary.rs`, `summarize.rs`) | `crates/dsp-base/src/resampler/` | Display envelopes: min/max folds, an mmap'd min/max pyramid file written next to the recording, an in-memory summary, a background summarizer thread. Not DSP; the name will be reused for real sample-rate conversion kernels. |
+| `resampler/` (`mod.rs`, `minmax.rs`, `decimate.rs`, `cache.rs`, `summary.rs`, `summarize.rs`) | `crates/dsp-base/src/resampler/` | Display envelopes: min/max folds, an mmap'd min/max pyramid file written next to the recording, an in-memory summary, a background summarizer thread. Not DSP; the name will be reused for real sample-rate conversion kernels. **Moved on 2026-10-06 to the new crate `crates/dsp-view/`** (see `refactoring/dsp-view/README.md`). |
 | `math/ticks.rs` (`nice_step`, `ticks`) | `crates/dsp-base/src/math/ticks.rs` | Axis tick labels (UI). |
 | `math/geometry.rs` (`point_in_polygon`) | `crates/dsp-base/src/math/geometry.rs` | Lasso selection (UI). |
 
@@ -147,3 +147,13 @@ coefficients and `SINC_ZERO` made public named constants.
 bisection, exact sample value; `ROW_SELECT_ITERATIONS = 64`). `math/stats.rs`:
 `execute_channel_noise_std` (device MAD noise per channel). Closes the "median-based noise
 estimators on the host" open item for the MAD estimator.
+
+## 2026-10-06 — `row_min_max` moved to dsp-view
+
+`core::reduce::{row_min_max_kernel, row_min_max}` had no users. They are removed here and
+replaced by dsp-view's segmented `envelope_kernel` / `envelope_on_device` (min/max per column
+of each row; a whole row is one column). dsp-view does not depend on dsp-base (user). The
+min / max part of `test_row_reductions_match_host` went with it. `cargo check -p dsp-base
+--all-targets` passes (three pre-existing warnings, in `sos.rs`, `conv.rs` and
+`peaks/device.rs`).
+

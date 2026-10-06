@@ -102,3 +102,25 @@ aliases (with their modules), `runtime::default_compute_target` (models now take
 - `src/models/emusort/basis.rs`, `src/models/emusort/matcher.rs`
 
 `dsp-synapse-ml` already depends on `dsp-io`.
+
+## 2026-10-06
+
+- `models/dartsort/denoiser.rs`: `SnippetBatch` keeps the input's `peak_index`.
+- Built without default features (as dsp-cli does, `hub` only), `runtime/burn_engine.rs` warns
+  about unused code (`linear_on_backend`, `conv1d_on_backend`, unused arguments): gate them on
+  the backend features when the runtime is reworked (burn-onnx, step 4).
+
+## 2026-10-06 — front end driver
+
+`sorters/kilosort4/frontend.rs`: `run_front_end(client, source, probe, &FrontEndOptions)` over a
+whole recording on dsp-core `ChunkSchedule` (batches = windows of `batch_size`, halos = filter
+settling + `nt` + max channel delay), dsp-io `PrefetchReader` and dsp-base `PipelineWorkspace`:
+whitening from the covariance averaged over every `nskip`-th window, EMUsort delays, clips and
+templates, detection on every window (spikes kept in each window's valid range, recording
+samples). Without delays the windows stay on the device for detection; with delays they make a
+host round trip (a device shift kernel is open). `FrontEndOptions::{kilosort4, emusort}`.
+Named: `HIGHPASS_ORDER = 3`, `WHITENING_EPSILON = 1e-6` (both to verify against upstream); the
+common reference is a mean (upstream may use a median). dsp-base gained
+`SpatialWhitening::local_knn_from_covariance` (`fit_local_knn` now uses it). Python:
+`kilosort4.run_front_end`, `FrontEndResult`. The playground's Python batching helper is gone.
+

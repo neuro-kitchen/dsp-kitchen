@@ -114,3 +114,22 @@ detection); dsp-synapse converts them to / from `SortingOutput`.
   (zarr-based checks only with feature `zarr`).
 
 ### Earlier notes
+
+## 2026-10-06 — builds again (dsp-core unit change)
+
+dsp-core had replaced `ChannelInfo::{gain_uv, offset_uv}` with `{gain, offset, unit}`,
+`RecordingInfo::with_gain_uv` with `with_gain(gain, unit)` and `start_time_sec` with
+`start_time: RationalTime`; dsp-io did not build (16 errors default, more with `neuro`). Fixed:
+- raw sidecar and Zarr `gain_uv` attribute: their schemas declare µV → `SignalUnit::Microvolt`
+  (Zarr without the attribute: gain 1, `Dimensionless`);
+- SpikeGLX: `set_gain` — neural / analog channels from volts per bit → `Microvolt` (via
+  dsp-core `MICROVOLTS_PER_VOLT`), sync / digital words → gain 1, `Dimensionless`;
+- NWB: electrical series or volts → µV, `Microvolt`; otherwise the series' unit string
+  (`"a.u."` / empty → `Dimensionless`, else `Other`); `start_time` exact via
+  `RationalTime::from_seconds_f64`;
+- mtscomp, `open` test, codec: field renames; an unused test import removed.
+
+`cargo check -p dsp-io --all-features --all-targets`: clean. Open: the raw sidecar schema still
+names µV (`gain_uv`); storing a unit there is a schema change. `decode_run` duplicates dsp-core
+`SampleFormat::decode` (switch over).
+
