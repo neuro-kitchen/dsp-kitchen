@@ -82,3 +82,10 @@ when `f` returns `false`). `HaloWindow::around(index, valid, left, right, total)
 std threads; dsp-base and dsp-view depend only on dsp-core, so they get out-of-core reading
 without dsp-io. Breaking: `dsp_io::PrefetchReader` and `dsp_orchestrate::*` are gone
 (`for_each_window(f)` → `WindowLoader::new(src).stream(schedule.windows(), f)`).
+
+## 2026-10-06 — progress reporting
+
+`progress.rs`: `ProgressEvent { stage, step, steps, done, total, unit }`, `ProgressSink`
+(closures implement it), `NoProgress`, `Stages` (a run's numbered stages over one sink).
+Libraries report; Python (`dsp_kitchen.progress.ProgressBar`) and dsp-cli (`progress.rs`,
+`TerminalProgress`) draw.

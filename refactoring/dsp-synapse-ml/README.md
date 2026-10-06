@@ -186,3 +186,10 @@ is `SecondMomentAccumulator` on them (`into_sum`, read by `symmetric_eigen` on t
 host `f64` loop plus an upload), HDBSCAN (`hdbscan_points`) and k-means (`kmeans_points`) read the
 same copy, inliers are gathered on the device. The host keeps the clip scale and the final row
 normalisation.
+
+## 2026-10-06 — progress
+
+`run_plan(…, progress: &dyn ProgressSink)` and `fit_preprocessing(…, progress)` report the stages
+`STAGE_FIT`, `STAGE_CLIPS`, `STAGE_TEMPLATES`, `STAGE_DETECTION` (those the run has; per window,
+learning as one step); `Kilosort4::run_with_progress`, `Emusort::run_with_progress` (`run` reports
+nothing). **Breaking:** `run_plan` / `fit_preprocessing` take the sink.

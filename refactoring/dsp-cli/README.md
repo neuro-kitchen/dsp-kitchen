@@ -54,3 +54,10 @@ src/commands/net/{serve, receive}.rs
 
 Open: CLI15 (new commands `detect`, `sort`, `convert`) — your decision.
 
+
+## 2026-10-06 — terminal progress bar
+
+`src/progress.rs`: `TerminalProgress` (a `dsp_core::ProgressSink`: one line per stage on
+stderr, bar, counts, elapsed and time left, redrawn at most every 100 ms). Used by `net serve`
+for the pyramid build (was "Pyramid N%" lines). Ready for a sort command when the API work adds
+one (no new command now, per the user).
