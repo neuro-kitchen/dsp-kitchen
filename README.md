@@ -1,11 +1,10 @@
 # dsp-kitchen
 
 > [!WARNING]
-> **Under development.** The workspace is being reorganized crate by crate, and downstream crates
-> do not build while that happens. Today `dsp-core`, `dsp-base` and `dsp-synapse-hub` build;
-> `dsp-io`, `dsp-synapse` and `dsp-synapse-ml` are being brought up to the new core API.
-> **Fixes to `dsp-synapse-ml`, `dsp-stream`, `dsp-cli`, `dsp-app` and the Python bindings are
-> coming soon.** Nothing here is released; APIs change.
+> **Under development.** Every crate and the Python bindings build except `dsp-app`, which is
+> being brought up to the reorganized crates. Kilosort4 and EMUsort run over whole recordings
+> (preprocessing, universal templates, detection); their clustering and deconvolution stages are
+> not implemented yet. Nothing here is released; APIs change.
 
 GPU-accelerated digital signal processing for multi-channel recordings, in Rust, with a focus on
 neural and muscle electrophysiology: filtering, resampling, spatial operators, spike detection,
@@ -26,7 +25,11 @@ sorters reimplemented from their papers (Kilosort4, EMUsort).
 - **Minimal data transport.** Processing pipelines keep data on the device between stages;
   integer recordings upload as stored and are scaled there; detection, matching and clustering
   compact their results on the device so only spikes, statistics or parameters come back;
-  recordings are read out of core with background prefetching, so host memory stays bounded.
+  constant data is uploaded once per run; recordings are read out of core with background
+  prefetching (`dsp_core::WindowLoader`), so host memory stays bounded.
+- **Sorters from their papers.** Kilosort4 and EMUsort (one shared runner) stream a whole
+  recording through preprocessing, universal-template learning and detection on the device, in
+  Rust or from Python.
 - **scipy / numpy semantics** for defaults where an equivalent exists, and exact chunked
   processing: any batch size gives the whole-recording result.
 - **Provenance.** Every sorter and model names the paper (DOI), code, license and downloaded
@@ -36,8 +39,8 @@ sorters reimplemented from their papers (Kilosort4, EMUsort).
 
 | Crate | Role |
 |---|---|
-| `dsp-core` | Exact time and sample rates, buffers, errors, the `RecordingSource` contract, compute-runtime selection. |
-| `dsp-io` | Recording formats and containers (`.npy`, `.npz`, Zarr), NWB / SpikeGLX / mtscomp, probe geometry, sorting files (Phy, NWB units, `.sorting.zarr`), out-of-core prefetching. |
+| `dsp-core` | Exact time and sample rates, buffers, errors, the `RecordingSource` contract, out-of-core window streaming, compute-runtime selection. |
+| `dsp-io` | Recording formats and containers (`.npy`, `.npz`, Zarr), NWB / SpikeGLX / mtscomp, probe geometry, sorting files (Phy, NWB units, `.sorting.zarr`). |
 | `dsp-base` | DSP primitives on the device: IIR / FIR / non-linear filters, resampling, spatial operators, linear algebra, peak finding, statistics, device pipelines. |
 | `dsp-synapse` | Spike detection, deduplication, extraction, features, localization, drift, clustering, template matching, metrics, streaming detection. |
 | `dsp-synapse-ml` | Sorters from papers (Kilosort4, EMUsort) and pretrained models, with provenance. |
@@ -51,12 +54,16 @@ sorters reimplemented from their papers (Kilosort4, EMUsort).
 Requires a recent stable Rust toolchain (edition 2024).
 
 ```bash
-cargo build -p dsp-core --features wgpu   # pick runtimes: wgpu, cuda, hip, cpu
-cargo build -p dsp-base
-cargo build -p dsp-synapse-hub
+cargo build --workspace --exclude dsp-app   # dsp-app: see the warning
+cargo build -p dsp-core --features cuda     # runtimes are features: wgpu (default), cuda, hip, cpu
 ```
 
-The rest of the workspace builds again once the reorganization reaches it (see the warning).
+Python (`dsp_kitchen`, default features `wgpu` and `hub`):
+
+```bash
+cd dsp_kitchen_py && maturin develop
+python ../playground/sorters/kilosort4_universal_templates.py   # examples: see playground/README.md
+```
 
 ## Citing
 

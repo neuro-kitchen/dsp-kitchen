@@ -86,7 +86,7 @@ Every device algorithm in this crate follows the same rules:
 dsp-base/src/
 ├── core/                 shared device building blocks
 │   ├── float.rs          DspFloat, cast / cast_all / cast_f32 / to_f64
-│   ├── buffer.rs         bytes, empty, upload, zeros, download, truncate
+│   ├── buffer.rs         bytes, empty, upload, zeros, download, download_prefix, download_range, truncate
 │   ├── scratch.rs        Scratch (grow-only reusable buffer)
 │   ├── edge.rs           EdgeMode, read_extended, read_extended_strided
 │   ├── layout.rs         transpose
@@ -120,7 +120,7 @@ dsp-base/src/
 | `Scratch` | Device buffer reallocated only when a call needs more. |
 | `EdgeMode`, `read_extended(_strided)` | One edge policy for every stencil. |
 | `layout::transpose` | `[rows, cols]` → `[cols, rows]`. |
-| `reduce::row_mean_std`, `row_abs_kth` | Parallel per-row reductions: mean / standard deviation (Welford + Chan merge in shared memory), k-th smallest `|x|`. (Min / max envelopes are in dsp-view.) |
+| `reduce::row_mean_std` | Per-row mean / standard deviation (Welford + Chan merge in shared memory). (Min / max envelopes are in dsp-view.) |
 | `reduce::row_abs_kth` | Per-row k-th smallest `|x|` over a column range (value bisection, exact sample value). |
 
 ### `filter`
@@ -152,6 +152,7 @@ dsp-base/src/
 | `DistanceRule` | `Scipy` (default): largest first, removed peaks remove nothing — a chain can reach beyond `distance`. `LocallyExclusive`: kept unless a larger peak is nearer than `distance` — depends only on neighbours, so chunked processing with `distance` of context equals the whole-signal result. |
 | `local_extrema`, `select_by_distance` | The building blocks, for detectors that score candidates differently. |
 | `find_peak_candidates::<R, F>` → `PeakCandidates` | Device: local extrema above a per-channel height, counted, scanned and compacted on the device (autotuned block length) so only candidates are downloaded; plateaus → first sample. |
+| `find_peak_candidates_on_device::<R, F>` → `DevicePeakCandidates` | The same, left on the device (sample, value and channel buffers, unordered within a channel) for further kernels; only the per-channel counts are read back. |
 
 ### `spatial`
 | Item | Purpose |
@@ -164,8 +165,9 @@ dsp-base/src/
 ### `linalg`
 | Item | Purpose |
 |---|---|
-| `covariance`, `covariance_of_host` | Device covariance (`/ samples`) and means, sample-split for parallelism. |
-| `symmetric_eigen(_batched / _host)`, `EigenOptions`, `SymmetricEigen` | Parallel cyclic Jacobi; relative tolerance; shared-memory or global path by size. |
+| `covariance`, `covariance_of_host` | Device covariance (`/ samples`) and means, sample-split for parallelism. `covariance_of_host` is an entry point for host data only. |
+| `SecondMomentAccumulator` | Mean over batches of the uncentred `X Xᵀ / n` (Kilosort4's whitening covariance), accumulated on the device from a column range of each batch (e.g. a window's interior), scratch kept between batches; one download in `finish`, or `into_sum` to keep it on the device. |
+| `symmetric_eigen(_batched / _host)`, `EigenOptions`, `SymmetricEigen` | Parallel cyclic Jacobi; relative tolerance; shared-memory or global path by size. `symmetric_eigen` reads a device matrix; `_host` uploads one. |
 | `PcaModel`, `PpcaModel`, `FastIcaModel` | Fits take a client (device covariance + eigensolver); `to_device` → `DeviceProjection`. |
 | `cholesky`, `spd_inverse_logdet`, `cholesky_solve` | Host, f64, exact: SPD factor, inverse with `ln det`, multi-RHS solve (`None` when not positive definite). |
 

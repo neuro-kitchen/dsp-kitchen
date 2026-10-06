@@ -24,9 +24,10 @@ reuses every Kilosort4 stage of `sorters::kilosort4` with its own settings and a
 
 | Stage | Status |
 |---|---|
-| Channel-delay estimation and removal | implemented |
-| Universal templates learned with HDBSCAN outlier removal and several thresholds | implemented |
-| Universal-template detection and features | implemented (shared with Kilosort4) |
+| Whole-recording run (`Emusort::run`, Python `emusort.run`), Kilosort4's runner with EMUsort's plan | implemented |
+| Channel-delay estimation and removal | implemented (device) |
+| Universal templates learned with HDBSCAN outlier removal and several thresholds | implemented (device) |
+| Universal-template detection and features | implemented (device, shared with Kilosort4) |
 | Everything after detection | as in Kilosort4: not yet |
 
 EMUsort learns its universal templates from every recording; it publishes no weight or template

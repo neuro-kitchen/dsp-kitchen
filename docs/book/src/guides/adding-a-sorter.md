@@ -22,9 +22,13 @@ sorters/<name>/
 └── <stage>.rs    one file per stage; generic DSP goes to dsp-base, generic spike work to dsp-synapse
 ```
 
-- A fork reuses the sorter it forks (EMUsort reuses `sorters::kilosort4`) and adds only what
-  differs; do not copy code between sorters.
-- GPU stages take a `ComputeClient<R>`; download only results.
+- A fork reuses the sorter it forks (EMUsort is a `RunPlan` of Kilosort4's runner plus its own
+  device kernels) and adds only what differs; do not copy code between sorters.
+- Run over recordings with `dsp_core::WindowLoader` over a `ChunkSchedule` and a
+  `PipelineWorkspace`, never by loading a recording into memory.
+- GPU stages take a `ComputeClient<R>`; follow the data-movement rule of
+  [Architecture](../architecture.md#data-movement): a window goes up once, constants once per run,
+  only results come back.
 - Name constants and say what they are; follow the upstream defaults and name them as upstream
   does in the field docs.
 

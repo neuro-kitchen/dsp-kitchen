@@ -12,10 +12,12 @@ the published defaults** (the upstream code is GPL-3.0 and is not ported).
 
 | Stage | Status |
 |---|---|
-| Universal templates learned from the recording (`wPCA`, `wTEMP`) | implemented |
+| Whole-recording run (`Kilosort4::run`, Python `kilosort4.run`): halo windows streamed on the device | implemented |
+| Preprocessing fitted on the recording (common reference, 300 Hz high-pass, local whitening) | implemented (device) |
+| Universal templates learned from the recording (`wPCA`, `wTEMP`) | implemented (device) |
 | Predefined universal templates (`wTEMP.npz`) | implemented |
-| Universal-template spike detection, `wPCA` features, vertical position | implemented (device) |
-| Preprocessing (common reference, 300 Hz high-pass, local whitening) | stages exist in dsp-base; Kilosort4 driver not yet |
+| Universal-template spike detection, `wPCA` features, position | implemented (device) |
+| Export as a `SortingOutput` (one unit per universal template) | implemented |
 | Drift correction | not yet |
 | Graph-based clustering, learned templates, deconvolution, merging | not yet |
 
