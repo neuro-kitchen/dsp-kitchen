@@ -90,7 +90,7 @@ dsp-base/src/
 │   ├── scratch.rs        Scratch (grow-only reusable buffer)
 │   ├── edge.rs           EdgeMode, read_extended, read_extended_strided
 │   ├── layout.rs         transpose
-│   └── reduce.rs         row_mean_std, row_min_max (one cube per row)
+│   └── reduce.rs         row_mean_std, row_abs_kth (one cube per row)
 ├── filter/
 │   ├── design/           FilterSpec / FilterDesign / FilterBand / FilterMode / FilterStart,
 │   │                     Butterworth + Chebyshev I (butterworth.rs), notch, Sos (settling, host reference)
@@ -120,7 +120,7 @@ dsp-base/src/
 | `Scratch` | Device buffer reallocated only when a call needs more. |
 | `EdgeMode`, `read_extended(_strided)` | One edge policy for every stencil. |
 | `layout::transpose` | `[rows, cols]` → `[cols, rows]`. |
-| `reduce::row_mean_std`, `row_min_max` | Parallel per-row reductions (Welford + Chan merge in shared memory). |
+| `reduce::row_mean_std`, `row_abs_kth` | Parallel per-row reductions: mean / standard deviation (Welford + Chan merge in shared memory), k-th smallest `|x|`. (Min / max envelopes are in dsp-view.) |
 | `reduce::row_abs_kth` | Per-row k-th smallest `|x|` over a column range (value bisection, exact sample value). |
 
 ### `filter`

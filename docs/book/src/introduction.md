@@ -62,7 +62,8 @@ See [Architecture](architecture.md#data-movement).
 | [`dsp-synapse`](crates/dsp-synapse.md) | Spike detection, extraction, features, localization, drift, clustering, matching, metrics, storage conversions, streaming detection. |
 | [`dsp-synapse-ml`](crates/dsp-synapse-ml.md) | Sorters reimplemented from papers (Kilosort4, EMUsort) and pretrained models, each with its provenance. |
 | [`dsp-synapse-hub`](crates/dsp-synapse-hub.md) | Verified download and cache of published artifacts. |
-| `dsp-stream` | Network transport of continuous signals (QUIC + TLS). *Documentation pending.* |
+| [`dsp-stream`](crates/dsp-stream.md) | Network sessions for continuous signals (QUIC + TLS, protobuf): exact header, stored samples, views. |
+| [`dsp-view`](crates/dsp-view.md) | Preparing signals for viewing, locally or remotely: min/max envelopes (host and device) and pyramids. |
 | `dsp-cli`, `dsp-app`, `dsp_kitchen_py` | Command line, desktop app, Python bindings. *Documentation pending.* |
 
 ## Conventions
