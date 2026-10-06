@@ -1,10 +1,17 @@
 //! What a viewer asks for ([`View`]) and what it gets ([`Envelope`]), the same whether the viewer
 //! runs next to the recording or across the network (dsp-stream carries both).
 
+use std::ops::Range;
+
 use dsp_core::{DspError, DspResult, RecordingSource};
 
-use crate::envelope::fold::{finish, fold_row, Columns, EMPTY};
+use crate::envelope::fold::{finish, fold_block, Columns, EMPTY};
 use crate::pyramid::Pyramid;
+use crate::read::read_channel_blocks;
+
+/// Most values (channels × samples) one raw read of a view holds: bounds the memory of a raw
+/// window, not the work (every sample of the window is still read once).
+pub const RAW_BLOCK_VALUES: usize = 1 << 22;
 
 /// A window of a recording drawn `width` columns wide.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,40 +58,100 @@ impl View {
         Ok(())
     }
 
-    /// The view's contents, as cheaply as is exact:
+    /// The view's contents, as cheaply as is exact (see [`Self::read_into`]).
+    pub fn read(&self, source: &dyn RecordingSource, pyramid: Option<&Pyramid>) -> DspResult<Envelope> {
+        let mut out = Envelope::Samples(Vec::new());
+        self.read_into(source, pyramid, &mut out)?;
+        Ok(out)
+    }
+
+    /// The view's contents into `out`, reusing its buffer, as cheaply as is exact:
     /// - fewer samples than columns: the samples, read from `source`;
     /// - columns of at least the pyramid's base: from `pyramid` (no samples read);
-    /// - otherwise (finer columns, or no pyramid): the samples read from `source` and folded
-    ///   into columns. Without a pyramid this reads the whole window, however long.
-    pub fn read(&self, source: &dyn RecordingSource, pyramid: Option<&Pyramid>) -> DspResult<Envelope> {
+    /// - otherwise (finer columns, or no pyramid): the samples read from `source` and folded into
+    ///   columns, streamed in blocks of at most [`RAW_BLOCK_VALUES`] values aligned to the source's
+    ///   storage chunks (each chunk decoded once), the next block read while the current one is
+    ///   folded. Memory stays bounded however long the window.
+    pub fn read_into(&self, source: &dyn RecordingSource, pyramid: Option<&Pyramid>, out: &mut Envelope) -> DspResult<()> {
         let info = source.info();
         self.validate(info.channel_count(), info.samples)?;
-        let n = self.samples();
+        let (rows, n) = (self.channels.len(), self.samples());
+        let (mut samples, mut values) = match std::mem::replace(out, Envelope::Samples(Vec::new())) {
+            Envelope::Samples(s) => (s, Vec::new()),
+            Envelope::Columns { values, .. } => (Vec::new(), values),
+        };
         if n <= self.width as u64 {
-            let mut samples = vec![0.0f32; self.channels.len() * n as usize];
+            samples.clear();
+            samples.resize(rows * n as usize, 0.0);
             source.read(&self.channels, self.start..self.end, &mut samples)?;
-            return Ok(Envelope::Samples(samples));
+            *out = Envelope::Samples(samples);
+            return Ok(());
         }
+        values.clear();
+        values.resize(rows * self.width, EMPTY);
         if let Some(pyramid) = pyramid {
-            let mut values = vec![EMPTY; self.channels.len() * self.width];
             if pyramid.envelope(&self.channels, self.start, self.end, self.width, &mut values)? {
-                return Ok(Envelope::Columns { values, complete: pyramid.covers(self.start, self.end) });
+                *out = Envelope::Columns { values, complete: pyramid.covers(self.start, self.end) };
+                return Ok(());
             }
         }
-        let mut samples = vec![0.0f32; self.channels.len() * n as usize];
-        source.read(&self.channels, self.start..self.end, &mut samples)?;
-        let mut values = vec![EMPTY; self.channels.len() * self.width];
-        for (row, acc) in samples.chunks_exact(n as usize).zip(values.chunks_exact_mut(self.width)) {
-            fold_row(row, self.start, self.columns(), acc);
-        }
+        let columns = self.columns();
+        let ranges = chunk_aligned(self.start, self.end, source.chunk_samples(), RAW_BLOCK_VALUES / rows.max(1));
+        read_channel_blocks(source, &self.channels, &ranges, |block| fold_block(block, 0..block.samples, columns, &mut values))?;
         finish(&mut values);
-        Ok(Envelope::Columns { values, complete: true })
+        *out = Envelope::Columns { values, complete: true };
+        Ok(())
     }
+}
+
+/// Blocks of `start..end` of at most `max_samples` samples (at least one storage chunk) whose
+/// edges fall on the source's storage chunks (`chunk`), so no chunk is decoded twice.
+fn chunk_aligned(start: u64, end: u64, chunk: Option<u64>, max_samples: usize) -> Vec<Range<u64>> {
+    let chunk = chunk.filter(|&c| c > 0).unwrap_or(1);
+    let step = ((max_samples as u64) / chunk).max(1) * chunk;
+    let mut ranges = Vec::new();
+    let mut b0 = start;
+    while b0 < end {
+        // The first block may start inside a chunk; every later one starts on a chunk edge
+        let b1 = (b0 / chunk * chunk + step).min(end);
+        ranges.push(b0..b1);
+        b0 = b1;
+    }
+    ranges
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blocks_cover_the_window_on_chunk_edges() {
+        let ranges = chunk_aligned(10, 1000, Some(64), 200);
+        assert_eq!(ranges.first().map(|r| r.start), Some(10));
+        assert_eq!(ranges.last().map(|r| r.end), Some(1000));
+        assert!(ranges.windows(2).all(|w| w[0].end == w[1].start && w[1].start % 64 == 0));
+        assert!(ranges.iter().all(|r| r.end - r.start <= 192));
+        // Blocks are at least one chunk even when the budget is smaller
+        assert!(chunk_aligned(0, 1000, Some(512), 10).iter().all(|r| r.end - r.start <= 512));
+    }
+
+    #[test]
+    fn streamed_blocks_fold_like_one_read() {
+        let rec = recording();
+        let (channels, start, end, width) = (vec![0usize, 2], 37u64, 19_000u64, 300usize);
+        let columns = Columns::Even { start, len: end - start, width };
+        let mut whole = vec![EMPTY; channels.len() * width];
+        let mut data = vec![0.0; channels.len() * (end - start) as usize];
+        rec.read(&channels, start..end, &mut data).unwrap();
+        for (row, acc) in data.chunks_exact((end - start) as usize).zip(whole.chunks_exact_mut(width)) {
+            crate::envelope::fold::fold_row(row, start, columns, acc);
+        }
+        let mut streamed = vec![EMPTY; channels.len() * width];
+        let ranges = chunk_aligned(start, end, Some(1000), 2500);
+        assert!(ranges.len() > 2);
+        read_channel_blocks(&rec, &channels, &ranges, |b| fold_block(b, 0..b.samples, columns, &mut streamed)).unwrap();
+        assert_eq!(streamed, whole);
+    }
     use dsp_core::MemoryRecording;
 
     fn recording() -> MemoryRecording {
