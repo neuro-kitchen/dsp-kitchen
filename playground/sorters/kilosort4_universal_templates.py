@@ -43,8 +43,8 @@ if probe is None:
 config = kilosort4.Config()
 print(f"\n{rec}\n{probe}\n{config}")
 
-# %% [2] Front End over the Whole Recording
-result = kilosort4.run_front_end(rec, probe, config)
+# %% [2] Run Kilosort4 over the Whole Recording
+result = kilosort4.run(rec, probe, config)
 ours = sorted(result.spikes()["sample"])
 print(f"\n{result} on {dk.runtime.current()}")
 

@@ -123,7 +123,9 @@ out_causal = pipe_causal.run(raw, fs=fs)
 halo_zp = pipe_zero_phase.settling(fs=fs)
 halo_causal = pipe_causal.settling(fs=fs)
 cheby_out = Pipeline([cheby_band]).run(raw, fs=fs)
-print(f"Chebyshev I band-pass RMS (ch 0): {np.sqrt(np.mean(cheby_out[0] ** 2)):6.2f} uV")
+print(
+    f"Chebyshev I band-pass RMS (ch 0): {np.sqrt(np.mean(cheby_out[0] ** 2)):6.2f} uV"
+)
 print(f"Zero-phase pipeline settling halo (left, right): {halo_zp} samples")
 print(f"Causal pipeline settling halo (left, right):     {halo_causal} samples")
 

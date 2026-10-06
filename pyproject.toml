@@ -7,10 +7,13 @@ name = "dsp-kitchen"
 version = "0.1.0"
 description = "High-throughput real-time digital signal processing library in Rust for large-scale neuroscience electrophysiology"
 readme = "README.md"
-authors = [{ name = "jesusdpa1", email = "jesuspenalozaa2@gmail.com" }]
+authors = [{ name = "jesusdpa1", email = "jpenalozaa2@gmail.com" }]
 requires-python = ">=3.10"
 dependencies = [
+    "matplotlib>=3.10.9",
+    "maturin>=1.15.0",
     "numpy>=2.2.6",
+    "polars>=2.0.0",
 ]
 
 [tool.maturin]
