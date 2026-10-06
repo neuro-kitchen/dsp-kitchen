@@ -60,6 +60,11 @@ impl RationalTime {
         }
     }
 
+    /// The time as an exact fraction of seconds.
+    pub fn as_ratio(&self) -> Ratio<u64> {
+        self.seconds
+    }
+
     pub fn as_seconds_f64(&self) -> f64 {
         *self.seconds.numer() as f64 / *self.seconds.denom() as f64
     }

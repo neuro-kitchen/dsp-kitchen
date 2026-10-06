@@ -195,7 +195,10 @@ fn every_runtime_returns_the_same_spikes() {
     }
 }
 
-/// int16 recording (0.25 µV per unit, per-channel offsets) with native stored reads.
+/// µV per stored step of the int16 test recording.
+const I16_GAIN: f32 = 0.25;
+
+/// int16 recording ([`I16_GAIN`] µV per unit, per-channel offsets) with native stored reads.
 struct I16Recording {
     info: dsp_core::RecordingInfo,
     data: Vec<i16>,
@@ -207,7 +210,7 @@ impl I16Recording {
         let mut values = vec![0.0f32; CHANNELS * n];
         rec.read(&(0..CHANNELS).collect::<Vec<_>>(), 0..n as u64, &mut values).unwrap();
         let offsets: Vec<f32> = (0..CHANNELS).map(|c| -300.0 + 20.0 * c as f32).collect();
-        let data = values.iter().enumerate().map(|(i, v)| ((v - offsets[i / n]) / 0.25).round() as i16).collect();
+        let data = values.iter().enumerate().map(|(i, v)| ((v - offsets[i / n]) / I16_GAIN).round() as i16).collect();
         let mut info = dsp_core::RecordingInfo::new(
             "i16",
             CHANNELS,
@@ -216,9 +219,9 @@ impl I16Recording {
             dsp_core::SampleFormat::I16,
             dsp_core::MemoryOrder::ChannelMajor,
         )
-        .with_gain_uv(0.25);
+        .with_gain(I16_GAIN, dsp_core::SignalUnit::Microvolt);
         for (c, ch) in info.channels.iter_mut().enumerate() {
-            ch.offset_uv = offsets[c];
+            ch.offset = offsets[c];
         }
         Self { info, data }
     }
@@ -234,7 +237,7 @@ impl RecordingSource for I16Recording {
         for (dst, &c) in out.chunks_exact_mut(n.max(1)).zip(channels) {
             let row = &self.data[c * total + samples.start as usize..c * total + samples.end as usize];
             for (o, &v) in dst.iter_mut().zip(row) {
-                *o = v as f32 * 0.25 + self.info.channels[c].offset_uv;
+                *o = v as f32 * I16_GAIN + self.info.channels[c].offset;
             }
         }
         Ok(())

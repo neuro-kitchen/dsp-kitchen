@@ -16,7 +16,7 @@ pub use mask::ChannelMask;
 pub use time::{RationalTime, SampleRate, TimeRange};
 pub use buffer::{BufferLayout, MemoryOrder, SignalChunk};
 pub use recording::{
-    ChannelInfo, MemoryRecording, RecordingInfo, RecordingSource, SampleFormat, SignalUnit,
+    ChannelInfo, MemoryRecording, RecordingInfo, RecordingSource, SampleFormat, SignalUnit, MICROVOLTS_PER_VOLT,
     SlicedRecording,
 };
 pub use window::{ChunkSchedule, HaloWindow};

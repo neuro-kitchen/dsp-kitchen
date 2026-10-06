@@ -26,6 +26,23 @@ pub use rate::{
     BurstEpoch, FiringRateCurve, compute_instantaneous_firing_rate, detect_burst_epochs,
 };
 
+/// ISI-violation refractory threshold (ms), SpikeInterface `isi_violation(isi_threshold_ms=1.5)`.
+pub const DEFAULT_ISI_THRESHOLD_MS: f64 = 1.5;
+/// Censored period below which ISIs are duplicates (ms), SpikeInterface `min_isi_ms=0`.
+pub const DEFAULT_MIN_ISI_MS: f64 = 0.0;
+/// Presence-ratio bin (s) and minimum rate ratio, SpikeInterface `presence_ratio(bin_duration_s=60,
+/// mean_fr_ratio_thresh=0.0)`.
+pub const DEFAULT_PRESENCE_BIN_SEC: f64 = 60.0;
+pub const DEFAULT_PRESENCE_MEAN_FR_RATIO: f64 = 0.0;
+/// Correlogram bin and half window (ms), SpikeInterface `compute_correlograms(bin_ms=1.0,
+/// window_ms=50.0)`.
+pub const DEFAULT_CORRELOGRAM_BIN_MS: f32 = 1.0;
+pub const DEFAULT_CORRELOGRAM_WINDOW_MS: f32 = 50.0;
+/// Spike-matching tolerance (ms) and unit agreement threshold for sorting comparison,
+/// SpikeInterface `compare_two_sorters(delta_time=0.4, match_score=0.5)`.
+pub const DEFAULT_MATCH_DELTA_MS: f64 = 0.4;
+pub const DEFAULT_AGREEMENT_THRESHOLD: f32 = 0.5;
+
 /// Configurable Allen / IBL / Phy quality metric parameters and automated unit classification
 /// thresholds (eliminating hardcoded refractory periods and SNR / ISI cutoffs across sorters,
 /// storage loaders, and curation).
@@ -48,8 +65,8 @@ pub struct QualityCriteria {
 impl Default for QualityCriteria {
     fn default() -> Self {
         Self {
-            refractory_ms: 1.5,
-            censored_ms: 0.0,
+            refractory_ms: DEFAULT_ISI_THRESHOLD_MS,
+            censored_ms: DEFAULT_MIN_ISI_MS,
             min_spikes: 3,
             noise_snr_threshold: 1.5,
             sua_snr_threshold: 3.0,

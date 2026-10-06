@@ -10,7 +10,7 @@ use std::ops::Range;
 use std::path::Path;
 
 use dsp_core::recording::{check_read, check_read_stored};
-use dsp_core::{DspError, DspResult, MemoryOrder, RecordingInfo, RecordingSource, SampleFormat, SampleRate};
+use dsp_core::{DspError, DspResult, MemoryOrder, RecordingInfo, RecordingSource, SampleFormat, SampleRate, SignalUnit};
 use serde_json::{json, Value};
 use zarrs::array::{Array, ArrayBuilder, ArrayBytes, data_type};
 
@@ -70,10 +70,14 @@ impl ZarrRecording {
             .or_else(|| attrs.get("sampling_frequency"))
             .and_then(Value::as_f64)
             .ok_or_else(|| DspError::InvalidConfig(format!("{} has no sample_rate_hz attribute", path.display())))?;
-        let gain = array.attributes().get("gain_uv").and_then(Value::as_f64).unwrap_or(1.0) as f32;
+        // A `gain_uv` attribute declares µV; without it values are taken as they are stored
+        let (gain, unit) = match array.attributes().get("gain_uv").and_then(Value::as_f64) {
+            Some(g) => (g as f32, SignalUnit::Microvolt),
+            None => (1.0, SignalUnit::Dimensionless),
+        };
 
         let name = path.file_name().map_or_else(|| "recording.zarr".into(), |n| n.to_string_lossy().into_owned());
-        let mut info = RecordingInfo::new(name, channels, samples, SampleRate::new(rate)?, format, order).with_gain_uv(gain);
+        let mut info = RecordingInfo::new(name, channels, samples, SampleRate::new(rate)?, format, order).with_gain(gain, unit);
         info.metadata.insert("format".into(), "zarr v3".into());
         let time_axis = if order == MemoryOrder::TimeMajor { 0 } else { 1 };
         let chunk_samples = array.chunk_shape(&[0, 0]).ok().map(|c| c[time_axis].get());
@@ -143,7 +147,7 @@ impl RecordingSource for ZarrRecording {
             MemoryOrder::TimeMajor => scale_frames(&self.info, out),
             MemoryOrder::ChannelMajor => {
                 for (row, c) in out.chunks_exact_mut(n).zip(&self.info.channels) {
-                    row.iter_mut().for_each(|v| *v = *v * c.gain_uv + c.offset_uv);
+                    row.iter_mut().for_each(|v| *v = *v * c.gain + c.offset);
                 }
             }
         }
@@ -186,7 +190,7 @@ impl RecordingSource for ZarrRecording {
             let c = &self.info.channels[ch];
             let row = &block[(ch - lo) * n..(ch - lo + 1) * n];
             for (o, &v) in dst.iter_mut().zip(row) {
-                *o = v * c.gain_uv + c.offset_uv;
+                *o = v * c.gain + c.offset;
             }
         }
         Ok(())

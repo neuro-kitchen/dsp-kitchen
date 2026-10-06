@@ -208,8 +208,8 @@ impl StreamingDetector {
             && total_samples > 0
             && source.read_stored(&[0], 0..1, &mut vec![0u8; info.format.bytes()]).is_ok();
         if stored {
-            let gains: Vec<f32> = info.channels.iter().map(|c| c.gain_uv).collect();
-            let offsets: Vec<f32> = info.channels.iter().map(|c| c.offset_uv).collect();
+            let gains: Vec<f32> = info.channels.iter().map(|c| c.gain).collect();
+            let offsets: Vec<f32> = info.channels.iter().map(|c| c.offset).collect();
             workspace.set_stored_scaling(&gains, &offsets);
         }
         let client = workspace.client().clone();

@@ -15,7 +15,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use dsp_core::recording::{check_read, check_read_stored};
-use dsp_core::{DspError, DspResult, MemoryOrder, RecordingInfo, RecordingSource, SampleFormat, SampleRate};
+use dsp_core::{DspError, DspResult, MemoryOrder, RecordingInfo, RecordingSource, SampleFormat, SampleRate, SignalUnit};
 use memmap2::Mmap;
 use serde::{Deserialize, Serialize};
 
@@ -120,9 +120,10 @@ impl RawRecording {
 
         let name = path.file_name().map_or_else(|| "recording".into(), |n| n.to_string_lossy().into_owned());
         let info = RecordingInfo::new(name, params.channels, samples, SampleRate::new(params.sample_rate_hz)?, params.format, params.order);
-        let mut info = info.with_gain_uv(params.gain_uv);
+        // The sidecar's gain and offset are µV by its schema
+        let mut info = info.with_gain(params.gain_uv, SignalUnit::Microvolt);
         for c in &mut info.channels {
-            c.offset_uv = params.offset_uv;
+            c.offset = params.offset_uv;
         }
         Ok(Self { info, map, header: params.header_bytes as usize })
     }
@@ -206,14 +207,14 @@ impl RecordingSource for RawRecording {
                 for (dst, &ch) in out.chunks_exact_mut(n).zip(channels) {
                     let c = &self.info.channels[ch];
                     let base = (ch * total + start) * bps;
-                    decode_run(fmt, &data[base..base + n * bps], dst, c.gain_uv, c.offset_uv);
+                    decode_run(fmt, &data[base..base + n * bps], dst, c.gain, c.offset);
                 }
             }
             MemoryOrder::TimeMajor => {
                 let frame = nch * bps;
                 let selected: Vec<(usize, f32, f32)> = channels
                     .iter()
-                    .map(|&ch| (ch, self.info.channels[ch].gain_uv, self.info.channels[ch].offset_uv))
+                    .map(|&ch| (ch, self.info.channels[ch].gain, self.info.channels[ch].offset))
                     .collect();
                 decode_frames(fmt, &data[start * frame..(start + n) * frame], frame, &selected, n, out);
             }

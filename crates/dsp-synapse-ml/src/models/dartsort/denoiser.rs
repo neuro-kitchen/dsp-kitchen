@@ -128,6 +128,8 @@ impl WaveformDenoiser for DartsortWaveformDenoiser {
             num_spikes: n,
             num_channels: k,
             num_samples: t,
+            // Denoising keeps the alignment
+            peak_index: batch.peak_index,
             primary_channels: batch.primary_channels.clone(),
             center_samples: batch.center_samples.clone(),
             subsample_offsets: batch.subsample_offsets.clone(),

@@ -8,10 +8,12 @@
 //! clustering, learned-template deconvolution, merging. See `docs/sorters/kilosort4/`.
 
 pub mod detect;
+pub mod frontend;
 mod kernels;
 pub mod templates;
 
 pub use detect::{detect_universal, CentreOptions, TemplateCentres, UniversalSpike};
+pub use frontend::{run_front_end, FrontEndOptions, FrontEndResult};
 pub use templates::{extract_clips, learn_universal_templates, ClipOptions, LearnOptions, UniversalTemplates};
 
 use crate::provenance::{ArtifactSource, Attributed, Paper, Provenance, ProvenanceKind, UpstreamCode};

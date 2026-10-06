@@ -11,8 +11,12 @@
 //!    of Inter-Spike Intervals ($\text{CoV}_{\text{ISI}} = \sigma_{\text{ISI}} / \mu_{\text{ISI}}$) and
 //!    Pulse-to-Noise Ratio ($\text{PNR}$ in dB).
 
+use cubecl::prelude::{ComputeClient, Runtime};
 use dsp_base::linalg::{FastIcaModel, IcaContrast};
 use serde::{Deserialize, Serialize};
+
+/// FastICA convergence tolerance on the change of each unmixing vector.
+pub const ICA_TOLERANCE: f32 = 1e-4;
 
 /// Decomposed single Motor Unit (MU) pulse train and discharge quality metrics.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -66,9 +70,11 @@ impl ConvolutiveBssDecomposer {
         }
     }
 
-    /// Decomposes a multi-channel HD-EMG recording (`[channels, samples]`) into deduplicated Motor Unit Pulse Trains.
-    pub fn decompose(
+    /// Decomposes a multi-channel HD-EMG recording (`[channels, samples]`) into deduplicated Motor
+    /// Unit Pulse Trains, fitting ICA on `client`.
+    pub fn decompose<R: Runtime>(
         &self,
+        client: &ComputeClient<R>,
         data: &[f32],
         channels: usize,
         samples: usize,
@@ -94,14 +100,15 @@ impl ConvolutiveBssDecomposer {
         }
 
         // 2. Fit FastICA with Cube (kurtosis) contrast over the extended observations
-        let ica = FastIcaModel::fit(
+        let ica = FastIcaModel::fit::<R, f32>(
+            client,
             &extended,
             ext_channels,
             samples,
             k_sources,
             IcaContrast::Cube,
             self.max_iterations,
-            1e-4,
+            ICA_TOLERANCE,
         );
         let sources = ica.transform_cpu(&extended, ext_channels, samples);
 
@@ -277,10 +284,18 @@ mod tests {
             }
         }
 
-        let decomposer = ConvolutiveBssDecomposer::new(3, 4, 20.0);
-        let units = decomposer.decompose(&data, channels, samples, fs);
-        assert!(units.len() >= 2, "expected at least 2 motor units, got {}", units.len());
-        assert!(units[0].cov_isi < 0.15, "cov_isi={}", units[0].cov_isi);
-        assert!(units[0].pnr_db > 15.0, "pnr_db={}", units[0].pnr_db);
+        struct Decompose<'a>(&'a [f32], usize, usize, f64);
+        impl dsp_core::compute::ComputeTask for Decompose<'_> {
+            type Output = Vec<MotorUnitPulseTrain>;
+            fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
+                ConvolutiveBssDecomposer::new(3, 4, 20.0).decompose(&client, self.0, self.1, self.2, self.3)
+            }
+        }
+        for target in dsp_core::compute::ComputeTarget::available() {
+            let units = target.run(Decompose(&data, channels, samples, fs)).unwrap();
+            assert!(units.len() >= 2, "{}: expected at least 2 motor units, got {}", target.name(), units.len());
+            assert!(units[0].cov_isi < 0.15, "cov_isi={}", units[0].cov_isi);
+            assert!(units[0].pnr_db > 15.0, "pnr_db={}", units[0].pnr_db);
+        }
     }
 }

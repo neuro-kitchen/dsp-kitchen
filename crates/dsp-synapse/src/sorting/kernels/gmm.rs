@@ -66,7 +66,7 @@ pub fn gmm_e_step_kernel<F: Float>(
             resp[(i * k + c) as usize] = v / sum;
             c += 1u32;
         }
-        log_lik[i as usize] = best + F::log(sum);
+        log_lik[i as usize] = best + F::ln(sum);
         mahalanobis_sq[i as usize] = best_q;
     }
 }
