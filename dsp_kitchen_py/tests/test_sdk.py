@@ -154,8 +154,7 @@ def test_channel_delays_are_recovered():
     emusort = dk.synapse.ml.emusort
     x = np.abs(signal(3, 20_000))
     x[1] = np.roll(x[0], 5)
-    est = emusort.ChannelDelayEstimator(3, 20)
-    est.add_batch(x, 0)
-    delays, reference = est.delays()
+    delays, reference = emusort.estimate_channel_delays([x], pad=25, max_lag=20)
     shifted = emusort.apply_channel_delays(x, delays)
     assert shifted.shape == x.shape and abs(delays[1] - delays[0]) == 5
+    np.testing.assert_allclose(shifted[0], np.roll(x[0], -delays[0]))
