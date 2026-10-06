@@ -60,10 +60,11 @@ pub fn envelope_kernel<F: Float>(
         hi_s[unit as usize] = hi;
         sync_cube();
 
-        let mut stride = comptime!(units / 2);
-        while stride > 0u32 {
-            if unit < stride {
-                let other = (unit + stride) as usize;
+        let stride = RuntimeCell::<u32>::new(units / 2u32);
+        while stride.read() > 0u32 {
+            let s = stride.read();
+            if unit < s {
+                let other = (unit + s) as usize;
                 let (lo_o, hi_o) = (lo_s[other], hi_s[other]);
                 if lo_o < lo_s[unit as usize] {
                     lo_s[unit as usize] = lo_o;
@@ -73,7 +74,7 @@ pub fn envelope_kernel<F: Float>(
                 }
             }
             sync_cube();
-            stride /= 2u32;
+            stride.store(s / 2u32);
         }
 
         if unit == 0u32 {

@@ -204,15 +204,16 @@ pub fn jacobi_norms_kernel<F: Float>(a: &Array<F>, norms: &mut Array<F>, batch: 
         off_s[unit as usize] = off;
         all_s[unit as usize] = all;
         sync_cube();
-        let mut stride = comptime!(units / 2);
-        while stride > 0u32 {
-            if unit < stride {
-                let (o, t) = (off_s[(unit + stride) as usize], all_s[(unit + stride) as usize]);
+        let stride = RuntimeCell::<u32>::new(units / 2u32);
+        while stride.read() > 0u32 {
+            let s = stride.read();
+            if unit < s {
+                let (o, t) = (off_s[(unit + s) as usize], all_s[(unit + s) as usize]);
                 off_s[unit as usize] += o;
                 all_s[unit as usize] += t;
             }
             sync_cube();
-            stride /= 2u32;
+            stride.store(s / 2u32);
         }
         if unit == 0u32 {
             norms[(2u32 * b) as usize] = off_s[0];
@@ -285,15 +286,16 @@ pub fn jacobi_shared_kernel<F: Float + CubeElement>(
             off_s[unit as usize] = off;
             all_s[unit as usize] = all;
             sync_cube();
-            let mut stride = comptime!(units / 2);
-            while stride > 0u32 {
-                if unit < stride {
-                    let (o, t) = (off_s[(unit + stride) as usize], all_s[(unit + stride) as usize]);
+            let stride = RuntimeCell::<u32>::new(units / 2u32);
+            while stride.read() > 0u32 {
+                let s = stride.read();
+                if unit < s {
+                    let (o, t) = (off_s[(unit + s) as usize], all_s[(unit + s) as usize]);
                     off_s[unit as usize] += o;
                     all_s[unit as usize] += t;
                 }
                 sync_cube();
-                stride /= 2u32;
+                stride.store(s / 2u32);
             }
             // Every unit reads the same reduced values: the loop exit is uniform
             if off_s[0] <= tolerance_sq * all_s[0] || sweep >= max_sweeps {
