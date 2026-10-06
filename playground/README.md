@@ -36,7 +36,8 @@ synthetic data when the recording is absent.
 
 ## What the sorter examples show
 
-`kilosort4.run` and `emusort.run` run the stages implemented so far over a whole recording, in Rust and
+`kilosort4.run` and `emusort.run` (with a progress bar per stage and the time left; `tqdm` is
+used when installed) run the stages implemented so far over a whole recording, in Rust and
 on the device (halo windows, bounded memory): preprocessing, EMUsort's channel-delay removal,
 universal templates and universal-template detection. Clustering, deconvolution and merging are not
 implemented yet; see the book's *Sorters* pages. `sorters/00_sorters_synthetic.py` checks them

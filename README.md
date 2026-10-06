@@ -1,8 +1,8 @@
 # dsp-kitchen
 
 > [!WARNING]
-> **Under development.** Every crate and the Python bindings build except `dsp-app`, which is
-> being brought up to the reorganized crates. Kilosort4 and EMUsort run over whole recordings
+> **Under development.** Every crate and the Python bindings build; in `dsp-app`, Explore is
+> rewired to the reorganized crates and Curation is parked. Kilosort4 and EMUsort run over whole recordings
 > (preprocessing, universal templates, detection); their clustering and deconvolution stages are
 > not implemented yet. Nothing here is released; APIs change.
 
@@ -10,6 +10,15 @@ GPU-accelerated digital signal processing for multi-channel recordings, in Rust,
 neural and muscle electrophysiology: filtering, resampling, spatial operators, spike detection,
 waveform extraction, localization, drift correction, clustering, quality metrics, and spike
 sorters reimplemented from their papers (Kilosort4, EMUsort).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/img/dsp-app_main-darkmode.png">
+  <source media="(prefers-color-scheme: light)" srcset="assets/img/dsp-app_main-lightmode.png">
+  <img alt="dsp-app, the Explore workspace: 385 channels of a Neuropixels recording as traces and a heatmap, the channel list, view settings and the timeline" src="assets/img/dsp-app_main-darkmode.png">
+</picture>
+
+*`dsp-app`, the desktop workbench: a Neuropixels recording (385 channels, 30 kHz) as traces and
+a heatmap on one timeline, drawn from min/max pyramids built in the background.*
 
 **Documentation:** the mdBook in [`docs/book`](docs/book/src/introduction.md)
 (`mdbook build docs/book` → `target/book`; published at
@@ -47,14 +56,16 @@ sorters reimplemented from their papers (Kilosort4, EMUsort).
 | `dsp-synapse-hub` | Verified download and cache of published artifacts. |
 | `dsp-stream` | Network sessions for continuous signals (QUIC + TLS, protobuf): exact header, stored samples, views. |
 | `dsp-view` | Preparing signals for viewing, locally or remotely: min/max envelopes and pyramids. |
-| `dsp-cli`, `dsp-app`, `dsp_kitchen_py` | Command line, desktop app, Python bindings. |
+| `dsp-app` | Desktop workbench (GPUI, the screenshot above): the UI over dsp-view's signal backend. |
+| `dsp-cli`, `dsp_kitchen_py` | Command line, Python bindings. |
 
 ## Building
 
 Requires a recent stable Rust toolchain (edition 2024).
 
 ```bash
-cargo build --workspace --exclude dsp-app   # dsp-app: see the warning
+cargo build --workspace
+cargo run -p dsp-app --release -- <recording>   # desktop workbench
 cargo build -p dsp-core --features cuda     # runtimes are features: wgpu (default), cuda, hip, cpu
 ```
 

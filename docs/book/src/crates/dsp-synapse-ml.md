@@ -56,7 +56,18 @@ whole recording through one runner (`run_plan` with a `RunPlan`): preprocessing 
 recording, universal templates, detection; see the [Kilosort4 pipeline](../sorters/kilosort4/pipeline.md).
 They return a `Kilosort4Result` (`fitted`, `templates`, `spikes`, `to_sorting_output(probe)`).
 Python: `dsp_kitchen.synapse.ml.kilosort4.run` / `emusort.run` (with `templates=`,
-`preprocessing_from=`, `runtime=`).
+`preprocessing_from=`, `progress=`, `runtime=`).
+
+**Progress.** `run_plan(…, progress)` / `run_with_progress` report each stage to a
+`dsp_core::ProgressSink`: `Fitting preprocessing`, `Finding clips`, `Learning templates`,
+`Detecting spikes` (the ones the run has; windows, or one step for learning). In Python a bar is
+shown by default (`progress=False` to silence it, or a callable
+`(stage, step, steps, done, total, unit)`):
+
+```text
+[1/4] Fitting preprocessing  ████████████████████████  12/12 windows  0:04
+[2/4] Finding clips          ████████████░░░░░░░░░░░░  6/12 windows  0:03 < 0:03
+```
 
 Data movement follows the workspace rule ([Architecture](../architecture.md#data-movement)): each
 window goes up once; the fit statistics come back once; constants (templates, centre tables) are

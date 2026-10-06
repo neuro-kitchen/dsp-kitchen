@@ -52,6 +52,7 @@ dsp-core/src/
 │   ├── format.rs    SampleFormat
 │   ├── memory.rs    MemoryRecording
 │   └── slice.rs     SlicedRecording
+├── progress.rs      ProgressSink, ProgressEvent, NoProgress, Stages
 ├── device.rs        ComputeTarget, ComputeError, RUNTIME_ENV
 └── compute/         (feature `compute`)
     ├── target.rs    ComputeTask, ComputeTarget::run
@@ -132,6 +133,19 @@ WindowLoader::new(&source).stream(schedule.windows(), |window, raw| {
 | `LaunchGeometry` | Cube dims/counts from runtime properties: `elementwise`, `channels_samples`, `per_sample`, `per_channel`, `per_row` (one cube per row, power-of-two cube for tree reductions; `row_position`), `plane_lanes`. |
 | `tune` | `tune_id` (per-device autotune key), `size_class` (power-of-two bucketing). |
 | `bench` | `sync`, `time_device` (median wall time including device completion). |
+
+### `progress`
+
+Long runs report where they are; entry points draw it (libraries never print).
+
+| Item | Purpose |
+|---|---|
+| `ProgressEvent` | `stage` (a name), `step` of `steps`, `done` of `total` (`0`: unknown) in `unit`s. |
+| `ProgressSink` | `report(&ProgressEvent)`, called on the run's thread; closures implement it. `NoProgress` ignores. |
+| `progress::Stages` | A run's numbered stages over one sink: `report(name, done, total)`. |
+
+Drawn by Python (`dsp_kitchen.progress.ProgressBar`: `tqdm` when installed, else a text line) and
+dsp-cli (a terminal bar on stderr); both estimate the time left from the rate.
 
 ### `error`
 `DspError`: `InvalidChannel`, `ShapeMismatch`, `InvalidSampleRate`, `BufferOverrun`,
