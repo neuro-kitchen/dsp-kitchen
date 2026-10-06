@@ -11,8 +11,6 @@ data is stored.
   for the whole workspace.
 - **Format schemas**: conventions on top of a container (raw + sidecar, Zarr `/traces`, NWB,
   SpikeGLX, mtscomp), and detection of which one a path is.
-- **Out-of-core reading**: `PrefetchReader` streams halo windows of any `RecordingSource` with the
-  next window read on a background thread, so disk and decompression overlap device work.
 - **Neural file metadata** (feature `neuro`): probe geometry as stored by acquisition formats,
   nominal probe presets and nearest-site queries.
 - **Spike-sorting files** (feature `neuro`): Phy / Kilosort folders, NWB `/units` tables and
@@ -55,8 +53,7 @@ dsp-io/src/
 │   ├── format.rs            Format trait
 │   ├── open.rs              detect, open, sources, open_source
 │   ├── sources.rs           SourceEntry, SourceKind, MAIN, single_source, require_main, default_source
-│   ├── cached.rs            CachedRecording
-│   └── prefetch.rs          PrefetchReader (double-buffered background window reads)
+│   └── cached.rs            CachedRecording
 ├── container/
 │   ├── binary/codec.rs      little-endian decode/encode, frame scaling (crate-internal)
 │   ├── npy/                 .npy read/write
@@ -96,7 +93,6 @@ and `format.rs` (a unit struct implementing `Format`). See
 | `MAIN`, `single_source`, `require_main` | Helpers for single-recording formats. |
 | `default_source` | Largest electrical source, else largest. |
 | `CachedRecording` | Wraps a chunked source; keeps recently decoded chunks within a memory budget. |
-| `PrefetchReader` | `new(source, ChunkSchedule)`, `with_channels`; `for_each_window(f)` (scaled values) / `for_each_window_stored(f)` (stored bytes) call `f` per halo window while the next is read on a background thread. Host memory stays at two windows whatever the recording length. |
 
 ### `registry`
 | Item | Purpose |

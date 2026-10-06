@@ -42,7 +42,9 @@ dsp-core/src/
 │   └── chunk.rs     SignalChunk
 ├── mask/
 │   └── channel.rs   ChannelMask
-├── window.rs        ChunkSchedule, HaloWindow
+├── window/          orchestration of recordings larger than memory
+│   ├── schedule.rs  ChunkSchedule, HaloWindow
+│   └── loader.rs    WindowLoader
 ├── recording/
 │   ├── source.rs    RecordingSource, check_read, check_read_stored
 │   ├── info.rs      RecordingInfo, ChannelInfo
@@ -79,11 +81,29 @@ dsp-core/src/
 |---|---|
 | `ChannelMask` | Enabled/disabled flag per channel; `active_indices`, `active_count`. |
 
-### `window`
+### `window`: orchestration (recordings larger than memory)
+
+Use this module whenever a computation runs over a whole recording: never read a recording into
+memory at once.
+
 | Type | Purpose |
 |---|---|
 | `ChunkSchedule` | Splits a sample range into non-overlapping windows of `batch_samples`, each padded by a left/right halo clamped to the recording. `max_read_samples` sizes persistent buffers. |
-| `HaloWindow` | One window: `valid_global`, `read_global`, `valid_local`; local ↔ global helpers. |
+| `HaloWindow` | One window: `valid_global` (samples it owns), `read_global` (samples it reads), `valid_local` (owned part of the read buffer). `around(index, valid, left, right, total)` builds one window; `remap_event(local)` maps an event in the read buffer to a recording sample only if this window owns it (no duplicates across windows). |
+| `WindowLoader` | `new(source)` / `with_channels`. `stream(windows, f)` calls `f(&window, samples)` for every window of any list (a whole schedule, every n-th window, isolated windows) with the channel-major `[channels, read_len]` scaled values, reading the next window on a background thread; `stream_stored` gives the stored bytes; `stream_while` stops when `f` returns `false`. Host memory stays at two windows; no allocation per window. |
+
+```rust,ignore
+use dsp_core::{ChunkSchedule, WindowLoader};
+
+let schedule = ChunkSchedule::full_recording(info.samples, batch, left_halo, right_halo);
+WindowLoader::new(&source).stream(schedule.windows(), |window, raw| {
+    let handle = workspace.process_chunk_in_vram(raw, window.read_len()); // stays on the device
+    for event in detect(&handle)? {
+        if let Some(sample) = window.remap_event(event) { /* keep */ }
+    }
+    Ok(())
+})?;
+```
 
 ### `recording`
 | Type | Purpose |
@@ -128,8 +148,8 @@ dsp-core/src/
 
 ## Consumers
 
-`dsp-base`, `dsp-synapse`, `dsp-synapse-ml`, `dsp-stream`, `dsp-io`, `dsp-cli`, `dsp-app`,
-`dsp_kitchen_py`.
+`dsp-base`, `dsp-io`, `dsp-synapse`, `dsp-synapse-ml`, `dsp-view`, `dsp-stream`, `dsp-cli`,
+`dsp-app`, `dsp_kitchen_py`.
 
 ## Limitations
 
