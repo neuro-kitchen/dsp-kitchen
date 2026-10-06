@@ -11,6 +11,9 @@ produces those columns without reading more samples than it must.
 - The min/max reduction on the host (vectorized, parallel) and on a CubeCL device.
 - The min/max pyramid of a whole recording (in memory or in a file) and its background builder.
 - `View` (what a viewer asks for) and `Envelope` (what it gets).
+- The viewer's backend: `SignalBackend` (what a viewer may ask of a signal) and `LocalSignal`
+  (a recording and its pyramid in this process). A remote session (dsp-stream) answers the same
+  views; a viewer such as dsp-app only asks and draws.
 
 ### Must not contain
 - Rendering or UI (dsp-app), network transport (dsp-stream), file formats (dsp-io).
@@ -38,11 +41,32 @@ dsp-view/src/
 │   ├── layout.rs    levels and pages
 │   ├── storage.rs   memory or file bytes; PyramidIdentity, pyramid_path
 │   └── builder.rs   PyramidBuilder: fills nearest the view first
-├── view.rs          View, Envelope
-└── read.rs          pipelined reading (private)
+├── signal.rs        SignalBackend, LocalSignal (pyramid policy, background builder), FILE_PYRAMID_MIN_BYTES
+├── view.rs          View, Envelope, read / read_into (streamed raw reads)
+└── read.rs          pipelined block reading (private)
 ```
 
 ## Usage
+
+A viewer holds a `SignalBackend` and asks it for views:
+
+```rust,ignore
+use std::sync::Arc;
+use dsp_view::{Envelope, LocalSignal, SignalBackend, View};
+
+let signal: Arc<dyn SignalBackend> = Arc::new(LocalSignal::open(rec, Some((path, "main")))?);
+signal.watch(Arc::new(|p| { /* more is built: redraw views that were incomplete */ }));
+signal.focus(view.start);                       // build the pyramid here first
+let mut out = Envelope::Samples(Vec::new());    // reused frame to frame
+signal.view(&view, &mut out)?;
+```
+
+`LocalSignal::open` picks the pyramid: the complete file next to the recording if there is one;
+else a new file there for recordings of at least `FILE_PYRAMID_MIN_BYTES` (64 MiB), filled once,
+nearest the view first, while views already draw from it; else memory. `prepare(start, end)`
+builds one range now (an exact single image, e.g. a snapshot).
+
+The parts, used directly:
 
 ```rust,ignore
 use std::sync::Arc;
@@ -86,7 +110,9 @@ let env = dsp_view::envelope_on_device::<R, f32>(&client, &handle, channels, sam
 | `Pyramid::fill(source, start, end, block_values, stop)` | Build the pages (≈ `PAGE_SEC` = 1 s) holding `start..end`; any order, from several threads, each page once. |
 | `Pyramid::envelope` | `[min, max]` per column from the coarsest level with ≤ 1 bucket per column, edges aligned to buckets (no peak lost); `false` when columns are finer than the base. |
 | `PyramidBuilder::run` | Fill in the background, nearest the focus first; a new focus re-orders what is left. |
-| `View::read(source, pyramid)` | Samples, pyramid columns, or raw columns, whichever is exact and cheapest. |
+| `View::read(source, pyramid)` / `read_into(…, &mut Envelope)` | Samples, pyramid columns, or raw columns, whichever is exact and cheapest; `read_into` reuses the output buffer. Raw windows are streamed in blocks of at most `RAW_BLOCK_VALUES` values aligned to the source's storage chunks, the next block read while the current one folds: bounded memory, each chunk decoded once. |
+| `SignalBackend` | `info`, `view`, `read` (samples, e.g. under the cursor), `focus`, `prepare`, `progress`, `watch`. |
+| `LocalSignal::open(source, recording)` | The local backend: source, pyramid (policy above), `PyramidBuilder`; cancels the build when dropped. |
 
 ## Design rules
 

@@ -1,7 +1,7 @@
 # dsp-kitchen
 
-> **Under development.** Every crate and the Python bindings build except `dsp-app`, which is
-> being brought up to the reorganized crates. [Kilosort4](sorters/kilosort4/intro.md) and
+> **Under development.** Every crate and the Python bindings build; in `dsp-app`, Explore is
+> rewired and Curation is parked. [Kilosort4](sorters/kilosort4/intro.md) and
 > [EMUsort](sorters/emusort/intro.md) run over whole recordings (preprocessing, universal
 > templates, detection); their clustering and deconvolution stages are not implemented yet.
 > Nothing here is released.
@@ -10,6 +10,11 @@ dsp-kitchen is a digital-signal-processing framework for multi-channel recording
 Rust, with a focus on neural and muscle electrophysiology: filtering, resampling and spatial
 operators, spike detection, waveform extraction, localization, drift correction, sorting and
 quality metrics, and spike sorters reimplemented from their papers.
+
+![dsp-app, the Explore workspace: a Neuropixels recording as traces and a heatmap on one timeline](assets/img/dsp-app_main-darkmode.png)
+
+*[`dsp-app`](crates/dsp-app.md): a Neuropixels recording (385 channels, 30 kHz) as traces and a
+heatmap on one timeline.*
 
 ## Highlights
 
@@ -69,7 +74,8 @@ See [Architecture](architecture.md#data-movement).
 | [`dsp-synapse-hub`](crates/dsp-synapse-hub.md) | Verified download and cache of published artifacts. |
 | [`dsp-stream`](crates/dsp-stream.md) | Network sessions for continuous signals (QUIC + TLS, protobuf): exact header, stored samples, views. |
 | [`dsp-view`](crates/dsp-view.md) | Preparing signals for viewing, locally or remotely: min/max envelopes (host and device) and pyramids. |
-| `dsp-cli`, `dsp-app`, `dsp_kitchen_py` | Command line, desktop app, Python bindings (`dsp_kitchen`, examples in `playground/`). *Book pages pending.* |
+| [`dsp-app`](crates/dsp-app.md) | Desktop workbench (GPUI): the UI over dsp-view's signal backend. |
+| `dsp-cli`, `dsp_kitchen_py` | Command line, Python bindings (`dsp_kitchen`, examples in `playground/`). *Book pages pending.* |
 
 ## Conventions
 

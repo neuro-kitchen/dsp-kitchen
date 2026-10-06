@@ -13,6 +13,7 @@
 - [dsp-synapse-hub](crates/dsp-synapse-hub.md)
 - [dsp-stream](crates/dsp-stream.md)
 - [dsp-view](crates/dsp-view.md)
+- [dsp-app](crates/dsp-app.md)
 
 # Sorters
 
