@@ -9,7 +9,6 @@ members = [
     "crates/dsp-stream",
     "crates/dsp-view",
     "crates/dsp-io",
-    "crates/dsp-orchestrate",
     "crates/dsp-cli",
     "crates/dsp-app",
     "dsp_kitchen_py",
@@ -31,7 +30,6 @@ dsp-synapse-hub = { path = "crates/dsp-synapse-hub" }
 dsp-stream = { path = "crates/dsp-stream" }
 dsp-view = { path = "crates/dsp-view" }
 dsp-io = { path = "crates/dsp-io" }
-dsp-orchestrate = { path = "crates/dsp-orchestrate" }
 dsp_kitchen_py = { path = "dsp_kitchen_py" }
 
 # Compute & Tensors

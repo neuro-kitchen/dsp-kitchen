@@ -19,4 +19,4 @@ pub use recording::{
     ChannelInfo, MemoryRecording, RecordingInfo, RecordingSource, SampleFormat, SignalUnit, MICROVOLTS_PER_VOLT,
     SlicedRecording,
 };
-pub use window::{ChunkSchedule, HaloWindow};
+pub use window::{ChunkSchedule, HaloWindow, WindowLoader};
