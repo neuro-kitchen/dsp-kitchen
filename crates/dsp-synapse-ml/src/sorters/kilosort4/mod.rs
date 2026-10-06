@@ -8,12 +8,15 @@
 //! clustering, learned-template deconvolution, merging. See `docs/sorters/kilosort4/`.
 
 pub mod detect;
-pub mod frontend;
 mod kernels;
+pub mod runner;
 pub mod templates;
 
 pub use detect::{detect_universal, CentreOptions, TemplateCentres, UniversalSpike};
-pub use frontend::{run_front_end, FrontEndOptions, FrontEndResult};
+pub use runner::{
+    fit_kilosort4_preprocessing, run_front_end, FrontEndOptions, FrontEndResult, Kilosort4Result,
+    Kilosort4Runner,
+};
 pub use templates::{extract_clips, learn_universal_templates, ClipOptions, LearnOptions, UniversalTemplates};
 
 use crate::provenance::{ArtifactSource, Attributed, Paper, Provenance, ProvenanceKind, UpstreamCode};
@@ -115,6 +118,25 @@ pub fn kilosort4_provenance() -> Provenance {
 #[derive(Debug, Clone, Default)]
 pub struct Kilosort4 {
     pub config: Kilosort4Config,
+}
+
+impl Kilosort4 {
+    pub fn new(config: Kilosort4Config) -> Self {
+        Self { config }
+    }
+
+    pub fn runner(&self) -> Kilosort4Runner {
+        Kilosort4Runner::new(self.config.clone())
+    }
+
+    pub fn run<R: cubecl::prelude::Runtime>(
+        &self,
+        client: &cubecl::prelude::ComputeClient<R>,
+        source: &dyn dsp_core::RecordingSource,
+        probe: &dsp_io::neuro::probe::SensorLayout,
+    ) -> dsp_core::DspResult<Kilosort4Result> {
+        self.runner().run(client, source, probe)
+    }
 }
 
 impl Attributed for Kilosort4 {
