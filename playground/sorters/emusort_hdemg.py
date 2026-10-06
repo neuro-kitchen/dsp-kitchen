@@ -39,7 +39,7 @@ ELECTRODE_PITCH_UM = 100.0  # inter-electrode distance of the grid (set your arr
 print(emusort.provenance().citation())
 hdemg = next((s["id"] for s in list_sources(str(NWB_PATH)) if "HDEMG" in s["id"]), None)
 rec = Recording(str(NWB_PATH), source=hdemg)
-
+rec_segment = rec.slice_time(start_sec=0.0, end_sec=300.0)
 probe = syn.ProbeLayout.hdemg_grid(
     "HD-EMG 4x8", GRID_ROWS, GRID_COLS, ELECTRODE_PITCH_UM
 )
@@ -47,7 +47,7 @@ config = emusort.Config()
 print(f"\n{rec}\n{config}")
 
 # %% [2] EMUsort over the Recording
-result = emusort.run(rec, probe, config)
+result = emusort.run(rec_segment, probe, config)
 spikes = result.spikes()
 delays, reference = result.channel_delays
 print(f"\n{result} on {dk.runtime.current()}")

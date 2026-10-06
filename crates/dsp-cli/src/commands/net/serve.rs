@@ -4,15 +4,17 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use anyhow::Context;
 use clap::Args;
-use dsp_core::RecordingSource;
+use dsp_core::{ProgressEvent, ProgressSink, RecordingSource};
 use dsp_io::{SyntheticParams, SyntheticRecording};
 use dsp_stream::{serve_recording, server_config, Pacing, ServeOptions, Server, ServerIdentity};
 use dsp_view::{Pyramid, PyramidBuilder, MEMORY_BASE};
+
+use crate::progress::TerminalProgress;
 
 const DEFAULT_BIND: &str = "127.0.0.1:50051";
 const LOCALHOST: &str = "localhost";
@@ -20,9 +22,8 @@ const LOCALHOST: &str = "localhost";
 const SYNTHETIC_CHANNELS: usize = 384;
 const SYNTHETIC_SAMPLE_RATE_HZ: f64 = 30_000.0;
 const SYNTHETIC_DURATION_SEC: f64 = 3_600.0;
-/// Pyramid build progress is logged every this many percent.
-const PROGRESS_STEP_PERCENT: u64 = 10;
-const PERCENT: u64 = 100;
+/// Progress label of the pyramid build.
+const PYRAMID_STAGE: &str = "Building pyramid";
 
 #[derive(Args, Debug)]
 pub struct ServeArgs {
@@ -81,12 +82,9 @@ pub async fn run(args: &ServeArgs) -> anyhow::Result<()> {
         _ => {
             let label = pyramid.path().map_or_else(|| "memory".to_string(), |p| p.display().to_string());
             println!("Views from a pyramid being built in {label}");
-            let last_step = AtomicU64::new(u64::MAX);
+            let bar = TerminalProgress::default();
             let on_progress: dsp_view::OnProgress = Arc::new(move |p: dsp_view::Progress| {
-                let step = p.done * PERCENT / p.total.max(1) / PROGRESS_STEP_PERCENT;
-                if last_step.swap(step, Ordering::Relaxed) != step {
-                    println!("Pyramid {}%", step * PROGRESS_STEP_PERCENT);
-                }
+                bar.report(&ProgressEvent { stage: PYRAMID_STAGE, step: 1, steps: 1, done: p.done, total: p.total, unit: "samples" });
             });
             PyramidBuilder::default().run(source.clone(), pyramid.clone(), 0, Arc::new(AtomicBool::new(false)), on_progress);
         }
