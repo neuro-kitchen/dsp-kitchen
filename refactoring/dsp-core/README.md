@@ -89,3 +89,5 @@ without dsp-io. Breaking: `dsp_io::PrefetchReader` and `dsp_orchestrate::*` are 
 (closures implement it), `NoProgress`, `Stages` (a run's numbered stages over one sink).
 Libraries report; Python (`dsp_kitchen.progress.ProgressBar`) and dsp-cli (`progress.rs`,
 `TerminalProgress`) draw.
+- `LaunchGeometry::tiles(client, points, shared_bytes_per_unit)`: 1-D power-of-two cubes for
+  kernels sharing point tiles, shrunk to fit the device's shared memory.

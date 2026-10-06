@@ -280,3 +280,17 @@ windows with `HaloWindow::around` and streams them too (read-ahead). Dependency 
   distances: a draw can tip differently from the `f64` reference, so tests compare inertia and
   partitions.
 - **Breaking:** both take a `ComputeClient` first. Python `hdbscan` / `kmeans` gain `runtime=`.
+
+## 2026-10-06 — HDBSCAN speed and progress
+
+Long runs (1 h+ HD-EMG, 500 000 clips) looked stuck in template learning: one brute-force launch
+per pass, ~2.5·10¹¹ pairs each, ~20 passes. Now (still exact):
+- `core_distance_tile_kernel`, `cheapest_edge_tile_kernel` (replace the brute-force kernels): a
+  cube loads a tile of points (and their core distance and component) into shared memory once
+  and every unit compares its own point (in registers) against it; `d` and `k` are comptime.
+- Each pass is split into launches of at most `PAIR_TERMS_PER_LAUNCH = 2³²` terms; per-point
+  state (the `k` nearest, the cheapest edge) stays on the device between launches; the host
+  waits for each launch and reports `progress(done, total)` (`hdbscan_points_with_progress`,
+  `hdbscan_launches` = the total). No launch runs long enough for a display driver to stop it.
+- `kmeans_points_with_progress` (one step per restart).
+Tests (device vs host reference) not run.

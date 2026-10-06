@@ -193,3 +193,6 @@ normalisation.
 `STAGE_FIT`, `STAGE_CLIPS`, `STAGE_TEMPLATES`, `STAGE_DETECTION` (those the run has; per window,
 learning as one step); `Kilosort4::run_with_progress`, `Emusort::run_with_progress` (`run` reports
 nothing). **Breaking:** `run_plan` / `fit_preprocessing` take the sink.
+- `learn_universal_templates_with_progress`: "Learning templates" counts real steps (1 for `wPCA`,
+  one per HDBSCAN launch, one per k-means restart) instead of 0/1. Fixed: a second
+  "Finding clips" line when the pass had already reached its total.
