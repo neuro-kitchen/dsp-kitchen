@@ -3,16 +3,21 @@
 //!
 //! Implemented stages: universal templates (`wPCA` / `wTEMP`) learned from the recording or loaded
 //! from the predefined `wTEMP.npz` ([`templates`]), and universal-template spike detection with
-//! `wPCA` features on the device ([`detect`]). Not yet: preprocessing driver (CAR, high-pass,
-//! local whitening — the dsp-base pipeline provides the stages), drift correction, graph-based
-//! clustering, learned-template deconvolution, merging. See `docs/sorters/kilosort4/`.
+//! `wPCA` features on the device ([`detect`]), driven over a whole recording by [`runner`]
+//! (preprocessing fit: CAR, high-pass, local whitening). Not yet: drift correction, graph-based
+//! clustering, learned-template deconvolution, merging. See the book's *Sorters* pages.
 
 pub mod detect;
 mod kernels;
+pub mod runner;
 pub mod templates;
 
-pub use detect::{detect_universal, CentreOptions, TemplateCentres, UniversalSpike};
-pub use templates::{extract_clips, learn_universal_templates, ClipOptions, LearnOptions, UniversalTemplates};
+pub use detect::{detect_universal, CentreOptions, TemplateCentres, UniversalDetector, UniversalSpike};
+pub use runner::{
+    fit_kilosort4_preprocessing, fit_preprocessing, run_plan, ChannelDelays, FitSettings, FittedPreprocessing, Kilosort4Result,
+    RunPlan,
+};
+pub use templates::{extract_clips, learn_universal_templates, learn_universal_templates_with_progress, ClipOptions, LearnOptions, UniversalTemplates};
 
 use crate::provenance::{ArtifactSource, Attributed, Paper, Provenance, ProvenanceKind, UpstreamCode};
 
@@ -109,10 +114,37 @@ pub fn kilosort4_provenance() -> Provenance {
     }
 }
 
-/// Kilosort4 stages configured by a [`Kilosort4Config`].
+/// Kilosort4 over a whole recording ([`run_plan`] with [`RunPlan::kilosort4`]).
 #[derive(Debug, Clone, Default)]
 pub struct Kilosort4 {
     pub config: Kilosort4Config,
+}
+
+impl Kilosort4 {
+    pub fn new(config: Kilosort4Config) -> Self {
+        Self { config }
+    }
+
+    /// Runs Kilosort4 over `source` on `client`'s device runtime.
+    pub fn run<R: cubecl::prelude::Runtime>(
+        &self,
+        client: &cubecl::prelude::ComputeClient<R>,
+        source: &dyn dsp_core::RecordingSource,
+        probe: &dsp_io::neuro::probe::SensorLayout,
+    ) -> dsp_core::DspResult<Kilosort4Result> {
+        self.run_with_progress(client, source, probe, &dsp_core::NoProgress)
+    }
+
+    /// [`Self::run`], reporting each stage to `progress` ([`runner::STAGE_FIT`] …).
+    pub fn run_with_progress<R: cubecl::prelude::Runtime>(
+        &self,
+        client: &cubecl::prelude::ComputeClient<R>,
+        source: &dyn dsp_core::RecordingSource,
+        probe: &dsp_io::neuro::probe::SensorLayout,
+        progress: &dyn dsp_core::ProgressSink,
+    ) -> dsp_core::DspResult<Kilosort4Result> {
+        run_plan(client, source, probe, &RunPlan::kilosort4(&self.config), progress)
+    }
 }
 
 impl Attributed for Kilosort4 {

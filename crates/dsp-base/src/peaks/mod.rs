@@ -11,7 +11,7 @@ mod device;
 mod host;
 pub mod kernels;
 
-pub use device::{find_peak_candidates, PeakCandidates};
+pub use device::{find_peak_candidates, find_peak_candidates_on_device, DevicePeakCandidates, PeakCandidates};
 pub use host::{
     find_peaks, local_extrema, select_by_distance, DistanceRule, Interval, PeakOptions, Peaks, Polarity, DEFAULT_REL_HEIGHT,
 };

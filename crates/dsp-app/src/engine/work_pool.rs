@@ -1,4 +1,4 @@
-//! Background threads shared by every view: renders and curation computations.
+//! Background threads shared by every view (renders).
 //!
 //! Keeps work off the UI thread. A job is a closure under a [`JobKey`] (a view and one of its
 //! kinds of work); for each key only the newest job waiting is kept (a burst of input costs at

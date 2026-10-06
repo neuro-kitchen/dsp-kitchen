@@ -2,10 +2,10 @@
 //! metadata when the file opens; each is opened the first time a view shows it, then cached.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
+use dsp_core::SignalUnit;
 use dsp_io::{CachedRecording, SourceEntry, SourceKind};
 
 use super::dataset::Dataset;
@@ -14,17 +14,11 @@ use super::dataset::Dataset;
 /// frames over the same region decode each chunk once.
 const CHUNK_CACHE_BYTES: usize = 128 << 20;
 
-/// Recordings at least this large automatically build their persistent min/max cache file in the
-/// background when opened.
-const AUTO_LOD_BYTES: u64 = 64 << 20;
-
 pub struct SourceSet {
     path: Option<PathBuf>,
     entries: Vec<SourceEntry>,
     default: usize,
     opened: Mutex<Vec<Option<Arc<Dataset>>>>,
-    /// The user asked for min/max caches: sources opened later build theirs too.
-    build_caches: AtomicBool,
 }
 
 impl SourceSet {
@@ -33,24 +27,26 @@ impl SourceSet {
         let entries = dsp_io::sources(path).with_context(|| format!("Failed to open {}", path.display()))?;
         let default_id = dsp_io::default_source(&entries).map(|e| e.id.clone()).unwrap_or_default();
         let default = entries.iter().position(|e| e.id == default_id).unwrap_or(0);
-        let set = Self { path: Some(path.to_path_buf()), opened: Mutex::new(vec![None; entries.len()]), entries, default, build_caches: AtomicBool::new(false) };
+        let set = Self { path: Some(path.to_path_buf()), opened: Mutex::new(vec![None; entries.len()]), entries, default };
         set.load(default)?;
         Ok(set)
     }
 
     /// A single in-memory or procedural recording.
     pub fn single(dataset: Dataset) -> Self {
+        let info = dataset.signal().info();
         let entry = SourceEntry {
             id: dsp_io::sources::MAIN.into(),
             name: dataset.name.clone(),
             kind: SourceKind::Electrical,
             channels: dataset.total_channels,
             samples: dataset.total_samples as u64,
-            sample_rate: dataset.sample_rate,
-            start_time_sec: dataset.start_time_sec,
-            unit: dataset.unit.clone(),
+            sample_rate: info.sample_rate,
+            start_time: info.start_time,
+            format: info.format,
+            unit: info.channels.first().map_or(SignalUnit::Dimensionless, |c| c.unit.clone()),
         };
-        Self { path: None, entries: vec![entry], default: 0, opened: Mutex::new(vec![Some(Arc::new(dataset))]), build_caches: AtomicBool::new(false) }
+        Self { path: None, entries: vec![entry], default: 0, opened: Mutex::new(vec![Some(Arc::new(dataset))]) }
     }
 
     pub fn entries(&self) -> &[SourceEntry] {
@@ -91,42 +87,22 @@ impl SourceSet {
             return Ok(ds.clone());
         }
         let path = self.path.as_deref().context("in-memory source set has one source")?;
-        let rec = dsp_io::open_source(path, &self.entries[i].id).with_context(|| format!("Failed to open source {}", self.entries[i].name))?;
-        let large = rec.info().data_bytes() >= AUTO_LOD_BYTES;
-        let mut ds = Dataset::new(Arc::from(CachedRecording::wrap(rec, CHUNK_CACHE_BYTES)));
-        ds.unit = self.entries[i].unit.clone();
-        ds.open_lod(path, &self.entries[i].id);
-        if self.build_caches.load(Ordering::Relaxed) {
-            ds.build_lod(self.recording(i));
-        } else if large {
-            // Large recordings get a cache file for next time, written after the summary
-            ds.cache_after_summary(self.recording(i));
-        }
-        let ds = Arc::new(ds);
+        let entry = &self.entries[i];
+        let rec = dsp_io::open_source(path, &entry.id).with_context(|| format!("Failed to open source {}", entry.name))?;
+        let source = Arc::from(CachedRecording::wrap(rec, CHUNK_CACHE_BYTES));
+        let signal = dsp_view::LocalSignal::open(source, Some((path, &entry.id))).with_context(|| format!("Failed to prepare {} for viewing", entry.name))?;
+        let probe = dsp_io::neuro::probe::probe_of(path, &entry.id).unwrap_or_else(|e| {
+            tracing::warn!("no probe geometry for {}: {e}", entry.name);
+            None
+        });
+        let ds = Arc::new(Dataset::new(Arc::new(signal), probe));
         self.opened.lock().unwrap()[i] = Some(ds.clone());
         Ok(ds)
     }
 
-    /// Builds the min/max cache of every source (user request): the opened ones now, the others
-    /// when first shown.
-    pub fn build_caches(&self) {
-        self.build_caches.store(true, Ordering::Relaxed);
-        let opened = self.opened.lock().unwrap().clone();
-        for (i, ds) in opened.iter().enumerate() {
-            if let Some(ds) = ds {
-                ds.build_lod(self.recording(i));
-            }
-        }
-    }
-
-    /// The file and source id of source `i` (`None` for in-memory sets).
-    fn recording(&self, i: usize) -> Option<(PathBuf, String)> {
-        self.path.clone().map(|p| (p, self.entries[i].id.clone()))
-    }
-
     /// Latest end time over all sources (the shared timeline's length).
     pub fn extent_sec(&self) -> f64 {
-        self.entries.iter().map(|e| e.start_time_sec + e.duration_sec()).fold(0.0, f64::max)
+        self.entries.iter().map(|e| e.start_time.as_seconds_f64() + e.duration_sec()).fold(0.0, f64::max)
     }
 }
 

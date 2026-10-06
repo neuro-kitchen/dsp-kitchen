@@ -10,7 +10,7 @@ are in whitened σ.
 | `th_universal` | `Th_universal` | 9 | universal-template detection |
 | `th_learned` | `Th_learned` | 8 | learned-template detection (not yet implemented) |
 | `th_single_ch` | `Th_single_ch` | `[6]` | clips for learning universal templates |
-| `templates_from_data` | `templates_from_data` | `true` | learn `wPCA` / `wTEMP` (else load `wTEMP.npz`) |
+| `templates_from_data` | `templates_from_data` | `true` | learn `wPCA` / `wTEMP` (else the predefined `wTEMP.npz`: `RunPlan::templates` / Python `templates=`, or the hub) |
 | `n_templates` | `n_templates` | 6 | universal templates learned |
 | `n_pcs` | `n_pcs` | 6 | temporal PCs learned |
 | `nskip` | (fixed 25 in `spikedetect.run`) | 25 | batch stride for learning |

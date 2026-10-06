@@ -1,15 +1,13 @@
-//! Hover readouts, read off the UI thread.
+//! Hover readouts, read off the UI thread through the signal's backend.
 //!
-//! A sample of a chunked, compressed source costs decoding its whole chunk, so the reader keeps
-//! the last chunk of the channel it read: moving along a trace reads each chunk once. Requests
-//! that arrive while a read is running are collapsed to the newest. Each request carries its
-//! `reply`, so the readout goes back to the view that asked.
+//! Requests that arrive while a read is running are collapsed to the newest. Each request carries
+//! its `reply`, so the readout goes back to the view that asked. Reading one sample of a chunked,
+//! compressed source decodes its chunk once: opened sources keep decoded chunks in their chunk
+//! cache (`dsp_io::CachedRecording`), so moving along a trace does not decode a chunk again.
 
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use std::thread;
-
-use dsp_core::RecordingSource;
 
 use crate::engine::data::Dataset;
 
@@ -30,32 +28,11 @@ pub struct HoverRequest {
     pub reply: HoverReply,
 }
 
-/// The samples of one channel over a chunk-aligned range of one dataset.
-struct Held {
-    dataset: Weak<Dataset>,
-    channel: usize,
-    start: u64,
-    values: Vec<f32>,
-}
-
-impl Held {
-    fn value(&self, req: &HoverRequest) -> Option<f32> {
-        let same = Weak::ptr_eq(&self.dataset, &Arc::downgrade(&req.dataset)) && self.channel == req.channel;
-        let i = req.sample.checked_sub(self.start)? as usize;
-        if same { self.values.get(i).copied() } else { None }
-    }
-
-    /// Reads the chunk holding the request's sample (just the sample for unchunked sources).
-    fn read(req: &HoverRequest) -> Option<Self> {
-        let total = req.dataset.info().samples;
-        let (start, end) = match req.dataset.chunk_samples().filter(|&c| c > 0) {
-            Some(c) => (req.sample / c * c, (req.sample / c * c + c).min(total)),
-            None => (req.sample, (req.sample + 1).min(total)),
-        };
-        let mut values = vec![0.0f32; end.saturating_sub(start) as usize];
-        req.dataset.read(&[req.channel], start..end, &mut values).ok()?;
-        Some(Self { dataset: Arc::downgrade(&req.dataset), channel: req.channel, start, values })
-    }
+/// The value under the cursor, or `None` when it cannot be read.
+fn read(req: &HoverRequest) -> Option<f32> {
+    let mut value = [0.0f32];
+    req.dataset.signal().read(&[req.channel], req.sample..req.sample + 1, &mut value).ok()?;
+    Some(value[0])
 }
 
 pub struct HoverReader {
@@ -69,18 +46,12 @@ impl HoverReader {
         thread::Builder::new()
             .name("dsp-app-hover".into())
             .spawn(move || {
-                let mut held: Option<Held> = None;
                 // Exits when the sender (owned by the UI) is dropped
                 while let Ok(mut req) = rx.recv() {
                     while let Ok(newer) = rx.try_recv() {
                         req = newer;
                     }
-                    let mut value = held.as_ref().and_then(|h| h.value(&req));
-                    if value.is_none() {
-                        held = Held::read(&req);
-                        value = held.as_ref().and_then(|h| h.value(&req));
-                    }
-                    let text = match value {
+                    let text = match read(&req) {
                         Some(v) => format!("{}{} {}", req.prefix, fmt_amount(v), req.unit),
                         None => format!("{}read failed", req.prefix),
                     };

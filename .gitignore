@@ -1,6 +1,4 @@
 .worktrees
-playground/data/
-playground/sorters/phy_*
 data/
 .env
 .knowledge
@@ -255,3 +253,4 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+playground/output/

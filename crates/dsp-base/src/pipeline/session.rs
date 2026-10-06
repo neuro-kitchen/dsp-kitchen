@@ -291,7 +291,7 @@ impl<R: Runtime, F: DspFloat> PipelineWorkspace<R, F> {
         }
 
         let out_handle = self.process_chunk_in_vram(input, samples);
-        let out = buffer::download::<R, F>(&self.client, out_handle);
-        output.copy_from_slice(&out[..output.len()]);
+        output.copy_from_slice(&buffer::download_prefix::<R, F>(&self.client, out_handle, output.len()));
     }
 }
+

@@ -27,4 +27,4 @@ pub use models::{
     UnitRefineClassifier,
 };
 pub use runtime::{OnnxRuntimeSession, RuntimeTensor, burn_conv1d, burn_linear_2d, validate_tensor_port};
-pub use sorters::{Emusort, EmusortConfig, Kilosort4, Kilosort4Config};
+pub use sorters::{Emusort, EmusortConfig, Kilosort4, Kilosort4Config, Kilosort4Result};

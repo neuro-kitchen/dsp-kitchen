@@ -5,31 +5,42 @@ differences are described here.
 
 ## 1. Preprocessing
 
-As Kilosort4, **without** the common average reference (`do_car = false`).
+As Kilosort4, **without** the common average reference (`do_car = false`). The whole run
+(preprocessing, delays, templates, detection) is Kilosort4's runner with EMUsort's plan:
+`Emusort::new(config).run(client, source, probe)` (`run_plan` with `RunPlan::emusort`), or in
+Python `emusort.run(recording, probe, config)`; it returns a `Kilosort4Result` with
+`channel_delays` set. The halos also cover the largest delay.
 
-## 2. Channel-delay removal — *implemented*
+## 2. Channel-delay removal — *implemented, on the device*
 
-1. **Estimate** (over every `nskip`-th preprocessed batch): each channel is divided by its standard
-   deviation and rectified (`|x|`). For every pair of channels `a, b` and every lag within
-   ±`fs / 500` samples (2 ms), `mean_t x_a[t − lag] · x_b[t]` is accumulated over the batch's
-   unpadded samples.
+Semantics checked against upstream (`snel-repo/EMUsort` `a06bb60`, `ks4mods/preprocessing.py`
+`get_channel_delays`, `ks4mods/io.py`); the code is not ported.
+
+1. **Estimate** in the fit pass, on the same high-passed data as the whitening (before whitening,
+   as upstream), over every `nskip`-th window except the last: each channel is divided by its
+   standard deviation over the padded window and rectified (`|x|`). For every pair of channels
+   `a, b` and every lag within ±`fs / 500` samples (2 ms), `mean_t x_a[t − lag] · x_b[t]` over the
+   window's interior is accumulated on the device (`kernels::ChannelDelayEstimator`, one unit per
+   channel pair and lag adding to a running sum; scratch buffers kept between windows); lagged
+   reads past the window repeat its edge sample, as upstream pads its first and last batches. One
+   download at the end. In Python, `emusort.estimate_channel_delays(batches, pad=, max_lag=)`
+   takes all batches in one call for the same reason.
 2. **Reference**: the channel whose best-lag correlations with all channels sum highest.
-3. **Delays**: for each channel, the lag of its best correlation with the reference.
-4. **Remove** from every batch, after whitening: `x[i, t] ← x[i, t + delay_i]` (a circular shift
-   within the padded batch, so only padding wraps).
+3. **Delays**: for each channel, the lag of its best correlation with the reference
+   (`kernels::delays_from_cross_correlation`).
+4. **Remove** from every window, after whitening, on the device (`kernels::ChannelAligner`):
+   `x[i, t] ← x[i, t + delay_i]` (a circular shift within the padded window, so only padding
+   wraps). Template learning and detection both use it. Spike times stay in this aligned frame
+   (the reference channel's time), as upstream.
 
 ```rust,ignore
-use dsp_synapse_ml::sorters::emusort::{apply_channel_delays, ChannelDelayEstimator, EmusortConfig};
+use dsp_synapse_ml::sorters::emusort::kernels::{ChannelAligner, ChannelDelayEstimator};
 
-let cfg = EmusortConfig::default();
-let mut est = ChannelDelayEstimator::new(channels, cfg.max_delay_samples(fs));
-for batch in batches.iter().step_by(cfg.kilosort4.nskip) {
-    est.add_batch(batch, padded_samples, cfg.kilosort4.nt);
-}
+let mut est = ChannelDelayEstimator::new(&client, channels, cfg.max_delay_samples(fs));
+est.add(&filtered_window, window.read_len(), window.valid_local.clone()); // per fit window
 let (delays, reference) = est.delays();
-for batch in &mut batches {
-    apply_channel_delays(batch, padded_samples, &delays);
-}
+let mut aligner = ChannelAligner::new(&client, delays, schedule.max_read_samples());
+let aligned = aligner.align(&whitened_window, window.read_len()); // stays on the device
 ```
 
 ## 3. Universal templates — *implemented*
@@ -47,11 +58,13 @@ As Kilosort4, with:
 let templates = learn_universal_templates(&client, &clips, cfg.kilosort4.nt, &cfg.learn_options())?;
 ```
 
-`dsp_synapse::sorting::hdbscan` is exact but `O(n²·d)` on the host: fine for tens of thousands of
-clips, slow near the 500 000-clip cap.
+`dsp_synapse::sorting::hdbscan_points` is exact and runs on the device on the clips already
+uploaded for `wPCA`: `O(n²·d)` per Borůvka round (~`log₂ n` rounds), so tens of thousands of clips
+take seconds while the 500 000-clip cap is still slow. Inliers are gathered on the device for
+k-means.
 
 ## 4. Detection and later stages
 
-Universal-template detection is Kilosort4's, with EMUsort's templates and settings
-(`detect_universal`). Drift, clustering, deconvolution and merging are not implemented yet (as in
-Kilosort4).
+Universal-template detection is Kilosort4's (`UniversalDetector`), on the delay-aligned windows
+with EMUsort's templates and settings. Drift, clustering, deconvolution and merging are not
+implemented yet (as in Kilosort4).

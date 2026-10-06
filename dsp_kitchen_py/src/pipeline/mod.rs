@@ -1,4 +1,4 @@
 pub mod engine;
 
-pub(crate) use engine::compute_target;
-pub use engine::{PyDspSession, PyPipeline};
+pub(crate) use engine::run_stage;
+pub use engine::{register, PyPipeline};

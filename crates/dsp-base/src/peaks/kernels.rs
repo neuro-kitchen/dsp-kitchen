@@ -91,8 +91,8 @@ pub fn scan_candidate_counts_kernel(
     }
 }
 
-/// Each `(block, channel)` unit holding candidates writes their local sample and value from
-/// `channel_bases[ch] + block_offsets[ch · num_blocks + b]` on, so every channel's list is
+/// Each `(block, channel)` unit holding candidates writes their local sample, value and channel
+/// from `channel_bases[ch] + block_offsets[ch · num_blocks + b]` on, so every channel's list is
 /// contiguous (`channel_bases` has `num_channels + 1` entries).
 #[cube(launch)]
 pub fn write_peak_candidates_kernel<F: Float>(
@@ -102,6 +102,7 @@ pub fn write_peak_candidates_kernel<F: Float>(
     channel_bases: &Array<u32>,
     out_indices: &mut Array<u32>,
     out_values: &mut Array<F>,
+    out_rows: &mut Array<u32>,
     num_channels: u32,
     num_samples: u32,
     scan_start: u32,
@@ -131,6 +132,7 @@ pub fn write_peak_candidates_kernel<F: Float>(
                 if is_candidate::<F>(trace, row, t, height, polarity) {
                     out_indices[slot as usize] = t;
                     out_values[slot as usize] = trace[(row + t) as usize];
+                    out_rows[slot as usize] = ch;
                     slot += 1u32;
                 }
                 i += 1u32;

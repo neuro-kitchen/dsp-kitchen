@@ -33,14 +33,14 @@ pub(crate) fn scale_frames(info: &RecordingInfo, out: &mut [f32]) {
     if ch.is_empty() {
         return;
     }
-    let (g, o) = (ch[0].gain_uv, ch[0].offset_uv);
-    if ch.iter().all(|c| c.gain_uv == g && c.offset_uv == o) {
+    let (g, o) = (ch[0].gain, ch[0].offset);
+    if ch.iter().all(|c| c.gain == g && c.offset == o) {
         if (g, o) != (1.0, 0.0) {
             out.iter_mut().for_each(|v| *v = *v * g + o);
         }
         return;
     }
-    let (gains, offsets): (Vec<f32>, Vec<f32>) = ch.iter().map(|c| (c.gain_uv, c.offset_uv)).unzip();
+    let (gains, offsets): (Vec<f32>, Vec<f32>) = ch.iter().map(|c| (c.gain, c.offset)).unzip();
     for frame in out.chunks_exact_mut(ch.len()) {
         for ((v, g), o) in frame.iter_mut().zip(&gains).zip(&offsets) {
             *v = *v * g + o;

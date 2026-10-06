@@ -31,8 +31,8 @@ dsp-synapse/src/
 ├── features/    PCA / PPCA / wavelet embedders, morphology, HD-EMG conduction velocity
 ├── spatial/     localizers (centre of mass, monopolar, dipole, grid convolution), rigid and
 │                non-rigid drift, kriging drift correction (host and device)
-├── sorting/     GMM (EM on the device), KDE valley merge, density peaks, k-means, HDBSCAN, CBSS,
-│                matching pursuit (device), template similarity
+├── sorting/     GMM (EM on the device), KDE valley merge, density peaks, k-means and HDBSCAN (device,
+│                points.rs: DevicePoints), CBSS, matching pursuit (device), template similarity
 ├── metrics/     firing (ISI, presence, amplitude cutoff, contamination), isolation, correlograms,
 │                rates and bursts, evoked responses, sorting comparison
 ├── storage/     Phy / NWB units / .sorting.zarr ↔ SortingOutput
@@ -75,7 +75,7 @@ dsp-synapse/src/
 |---|---|
 | `GmmClusterer`, `cluster_gmm_bic` | Gaussian mixture by EM on the device (diagonal, full, masked covariances), BIC over `k`, Cholesky inverses; convergence on the mean log-likelihood (sklearn `tol`). |
 | `cluster_kde_merge` | KDE valley merge of an over-clustering (a heuristic in the spirit of IsoSplit; no significance test). |
-| `kmeans`, `hdbscan` | sklearn semantics (k-means++ seeding, restarts; HDBSCAN with excess-of-mass selection). |
+| `kmeans`, `hdbscan` (`kmeans_points`, `hdbscan_points` on `DevicePoints`) | sklearn semantics (k-means++ seeding, restarts; HDBSCAN with excess-of-mass selection), on the device. Points are uploaded once, feature-major (`DevicePoints`, subsets gathered on the device). k-means: assignments, sums, trial potentials and inertia on the device; the host keeps the random draws and the `[k, d]` centres (reads back `k · d` sums per iteration, one block of weights per draw). HDBSCAN: core distances and a Borůvka minimum spanning tree on the device (`O(n²·d)` per round, ~`log₂ n` rounds, `O(n)` read back per round), points shared in tiles through shared memory and each pass split into launches of at most `PAIR_TERMS_PER_LAUNCH` terms (progress after each, `hdbscan_points_with_progress`); the condensed tree and cluster selection on the host. |
 | `cluster_density_peaks`, `ConvolutiveBssDecomposer` | Rodriguez–Laio density peaks; convolutive blind source separation for HD-EMG motor units. |
 | `match_spikes_matching_pursuit`, `MatchingPursuitMatcher` | Greedy matching pursuit with bounded amplitudes on the device; picks found and compacted on the device. |
 
@@ -98,7 +98,7 @@ dsp-io (`detect_sorting` picks the format): Phy / Kilosort folders (`load_phy_fo
 
 `StreamingDetector::run_on(client, source, pipeline, probe)` (or `run_with(target, …)`):
 calibrates noise on chunks spread over the recording (on the device), then streams halo windows
-through a persistent `PipelineWorkspace` with `PrefetchReader`, detects, deduplicates, extracts
+through a persistent `PipelineWorkspace` with `dsp_core::WindowLoader`, detects, deduplicates, extracts
 snippets and accumulates per-channel templates — all on the device. It is detection with
 per-channel templates, **not** clustering: `StreamingDetectionResult::to_sorting_output` reports
 one unit per primary channel. Any batch size gives the whole-recording result.
@@ -113,5 +113,7 @@ one unit per primary channel. Any batch size gives the whole-recording result.
 ## Limitations
 
 - Localizers run on the host, one spike at a time.
-- `cluster_kde_merge` and `hdbscan` run on the host (`hdbscan` is `O(n²·d)`).
+- `cluster_kde_merge` runs on the host.
+- `hdbscan` is exact: `O(n²·d)` work per Borůvka round on the device (no spatial index), so very
+  large point sets (hundreds of thousands) still take long.
 - Drift registration uses a single reference bin (no iterative template).

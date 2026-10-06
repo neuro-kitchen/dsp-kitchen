@@ -1,11 +1,11 @@
-pub mod benchmark;
-pub mod components;
-pub mod generate;
-pub mod hub;
-pub mod info;
-pub mod inspect;
-pub mod probe;
-pub mod receive;
-pub mod serve;
-pub mod stream;
+//! One module per command (file name = command name); each defines its arguments and `run`.
 
+pub mod benchmark;
+pub mod doctor;
+pub mod generate;
+#[cfg(feature = "hub")]
+pub mod hub;
+pub mod inspect;
+pub mod net;
+pub mod open;
+pub mod probe;

@@ -1,115 +1,67 @@
-use pyo3::prelude::*;
+//! `dsp_kitchen.pipeline`: stages chained on the device (`Pipeline`), and the runner every
+//! stage function uses.
+
+use cubecl::prelude::{ComputeClient, Runtime};
+use cubecl::CubeElement;
 use dsp_base::pipeline::{Pipeline, PipelineStage};
-use cubecl::prelude::ComputeClient;
-use cubecl::{CubeElement, Runtime};
-use dsp_core::compute::{ComputeTarget, ComputeTask};
+use dsp_core::compute::ComputeTask;
+use pyo3::exceptions::{PyTypeError, PyValueError};
+use pyo3::prelude::*;
 
-use crate::array::{to_numpy, value_error, F32Array};
-
-use crate::math::{PyScale, PySubtractBaseline, PyClamp};
-use crate::filter::{extract_filter_spec, PyMedianFilter, PyTeagerKaiser};
+use crate::array::{runtime_error, to_numpy, value_error, F32Array};
+use crate::filter::fir::PyGaussianSmooth;
+use crate::filter::iir::{PyBandpassFilter, PyBandstopFilter, PyChebyshevFilter, PyHighpassFilter, PyLowpassFilter, PyNotchFilter};
+use crate::filter::non_linear::{PyMedianFilter, PyTeagerKaiser};
+use crate::math::{PyClamp, PyScale, PySubtractBaseline};
+use crate::runtime::target;
 use crate::spatial::{PyCommonAverageReference, PySpatialWhitening, PySurfaceLaplacian};
 
-#[pyclass(name = "Pipeline")]
-pub struct PyPipeline {
-    stages: Vec<PipelineStage>,
+/// Rate given to pipelines whose stages do not depend on it (only filters do).
+const RATE_NOT_USED_HZ: f64 = 1.0;
+
+/// The pipeline stage a Python stage object stands for.
+fn stage_of(item: &Bound<'_, PyAny>) -> PyResult<PipelineStage> {
+    macro_rules! try_stage {
+        ($($class:ty => $get:expr),* $(,)?) => {
+            $(if let Ok(s) = item.cast::<$class>() {
+                let s = s.borrow();
+                return Ok($get(&*s));
+            })*
+        };
+    }
+    try_stage!(
+        PyScale => |s: &PyScale| s.stage.clone(),
+        PySubtractBaseline => |s: &PySubtractBaseline| s.stage.clone(),
+        PyClamp => |s: &PyClamp| s.stage.clone(),
+        PyBandpassFilter => PyBandpassFilter::stage,
+        PyHighpassFilter => PyHighpassFilter::stage,
+        PyLowpassFilter => PyLowpassFilter::stage,
+        PyBandstopFilter => PyBandstopFilter::stage,
+        PyNotchFilter => PyNotchFilter::stage,
+        PyChebyshevFilter => PyChebyshevFilter::stage,
+        PyGaussianSmooth => |s: &PyGaussianSmooth| s.stage.clone(),
+        PyMedianFilter => |s: &PyMedianFilter| s.stage.clone(),
+        PyTeagerKaiser => |s: &PyTeagerKaiser| s.stage.clone(),
+        PyCommonAverageReference => |_: &PyCommonAverageReference| PipelineStage::CommonAverageReference,
+        PySpatialWhitening => |s: &PySpatialWhitening| PipelineStage::SpatialWhitening(s.inner.clone()),
+        PySurfaceLaplacian => |s: &PySurfaceLaplacian| PipelineStage::SurfaceLaplacian(s.inner.clone()),
+    );
+    Err(PyTypeError::new_err(format!("not a pipeline stage: {}", item.repr()?)))
 }
 
-impl PyPipeline {
-    pub fn from_stages(stages: Vec<PipelineStage>) -> Self {
-        Self { stages }
-    }
-
-    pub(crate) fn to_rust_pipeline(&self) -> Pipeline {
-        Pipeline::with_stages(self.stages.clone())
-    }
-}
-
-#[pymethods]
-impl PyPipeline {
-    #[new]
-    #[pyo3(signature = (stages=None))]
-    pub fn new(stages: Option<Vec<Bound<'_, PyAny>>>) -> PyResult<Self> {
-        let mut pipe = Self { stages: Vec::new() };
-        if let Some(stage_list) = stages {
-            for item in stage_list {
-                pipe.add(item)?;
-            }
-        }
-        Ok(pipe)
-    }
-
-    pub fn add(&mut self, item: Bound<'_, PyAny>) -> PyResult<()> {
-        if let Ok(scale) = item.extract::<PyRef<PyScale>>() {
-            self.stages.push(PipelineStage::Scale { alpha: scale.alpha, beta: scale.beta });
-        } else if let Ok(base) = item.extract::<PyRef<PySubtractBaseline>>() {
-            self.stages.push(PipelineStage::SubtractBaseline { baseline_uv: base.baseline_uv });
-        } else if let Ok(clamp) = item.extract::<PyRef<PyClamp>>() {
-            self.stages.push(PipelineStage::Clamp { min: clamp.min_val, max: clamp.max_val });
-        } else if let Some(spec) = extract_filter_spec(&item) {
-            self.stages.push(PipelineStage::Filter(spec));
-        } else if item.is_instance_of::<PyCommonAverageReference>() {
-            self.stages.push(PipelineStage::CommonAverageReference);
-        } else if let Ok(whiten) = item.extract::<PyRef<PySpatialWhitening>>() {
-            self.stages.push(PipelineStage::SpatialWhitening(whiten.inner.clone()));
-        } else if let Ok(lap) = item.extract::<PyRef<PySurfaceLaplacian>>() {
-            self.stages.push(PipelineStage::SurfaceLaplacian(lap.inner.clone()));
-        } else if item.is_instance_of::<PyMedianFilter>() {
-            self.stages.push(PipelineStage::Median9p);
-        } else if item.is_instance_of::<PyTeagerKaiser>() {
-            self.stages.push(PipelineStage::TeagerKaiser);
-        } else {
-            return Err(pyo3::exceptions::PyTypeError::new_err(format!(
-                "Unrecognized pipeline stage: {}", item.repr()?
-            )));
-        }
-        Ok(())
-    }
-
-    #[getter]
-    pub fn stages(&self) -> Vec<String> {
-        self.stages.iter().map(|s| format!("{:?}", s)).collect()
-    }
-
-    pub fn __len__(&self) -> usize {
-        self.stages.len()
-    }
-
-    /// `(left, right)` context in samples a chunk needs at `fs` Hz so its interior matches
-    /// whole-recording filtering (forward-backward filters need both sides).
-    #[pyo3(signature = (fs=30000.0))]
-    pub fn settling(&self, fs: f64) -> PyResult<(usize, usize)> {
-        self.to_rust_pipeline()
-            .settling(fs)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
-    }
-
-    /// Executes the pipeline across 2D array [channels, samples] directly inside GPU VRAM.
-    #[pyo3(signature = (data, fs=30000.0, channels=None))]
-    pub fn run<'py>(
-        &self,
-        py: Python<'py>,
-        data: Bound<'py, PyAny>,
-        fs: f64,
-        channels: Option<usize>,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        run_pipeline(py, Pipeline::with_stages(self.stages.clone()), &data, fs, channels)
-    }
-
-    fn __repr__(&self) -> String {
-        format!("Pipeline(stages={:?})", self.stages)
+/// The sample rate for `pipeline`: required when a stage is a filter.
+fn rate(pipeline: &Pipeline, fs: Option<f64>) -> PyResult<f64> {
+    let needs_rate = pipeline.stages().iter().any(|s| matches!(s, PipelineStage::Filter(_)));
+    match (needs_rate, fs) {
+        (_, Some(fs)) => Ok(fs),
+        (false, None) => Ok(RATE_NOT_USED_HZ),
+        (true, None) => Err(PyValueError::new_err("fs (the sample rate in Hz) is required for filter stages")),
     }
 }
 
-/// Runs `pipeline` on a `[channels, samples]` array (or 1-D with `channels`) with the GIL released,
-/// on the runtime selected by `DSP_KITCHEN_RUNTIME` (default: first compiled-in).
-pub(crate) fn run_pipeline<'py>(
-    py: Python<'py>,
-    pipeline: Pipeline,
-    data: &Bound<'py, PyAny>,
-    fs: f64,
-    channels: Option<usize>,
-) -> PyResult<Bound<'py, PyAny>> {
+/// Runs `pipeline` on `data` (`[channels, samples]`, or 1-D for one channel) with the GIL released,
+/// on the runtime of `runtime=` or the current one; returns a new float32 array.
+pub(crate) fn run_pipeline<'py>(py: Python<'py>, pipeline: Pipeline, data: &Bound<'py, PyAny>, fs: Option<f64>, runtime: Option<&str>) -> PyResult<Bound<'py, PyAny>> {
     struct Task<'a> {
         pipeline: Pipeline,
         x: &'a [f32],
@@ -120,80 +72,84 @@ pub(crate) fn run_pipeline<'py>(
     impl ComputeTask for Task<'_> {
         type Output = Result<Vec<f32>, dsp_base::filter::FilterError>;
         fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
-            let in_handle = client.create_from_slice(f32::as_bytes(self.x));
-            self.pipeline
-                .execute::<R>(&client, &in_handle, self.channels, self.samples, self.fs)
-                .map(|h| f32::from_bytes(&client.read_one_unchecked(h)).to_vec())
+            let input = client.create_from_slice(f32::as_bytes(self.x));
+            let out = self.pipeline.execute::<R, f32>(&client, &input, self.channels, self.samples, self.fs)?;
+            Ok(f32::from_bytes(&client.read_one_unchecked(out)).to_vec())
         }
     }
 
     let input = F32Array::new(data)?;
-    let (ch, samples) = input.channels_samples(channels)?;
+    let (channels, samples) = input.channels_samples(None)?;
+    let fs = rate(&pipeline, fs)?;
     pipeline.validate(fs).map_err(value_error)?;
-    let target = compute_target()?;
-    let task = Task { pipeline, x: input.slice(), channels: ch, samples, fs };
-    let out = py.detach(|| target.run(task)).map_err(value_error)?;
-    to_numpy(py, out.map_err(value_error)?, &[ch, samples])
+    let target = target(runtime)?;
+    let task = Task { pipeline, x: input.slice(), channels, samples, fs };
+    let out = py.detach(|| target.run(task)).map_err(runtime_error)?.map_err(value_error)?;
+    to_numpy(py, out, input.shape())
 }
 
-/// The compute runtime for native calls (`DSP_KITCHEN_RUNTIME`, default: first compiled-in).
-pub(crate) fn compute_target() -> PyResult<ComputeTarget> {
-    ComputeTarget::from_env().map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+/// Runs one stage (the stage functions: `bandpass_filter`, `median_filter`, …).
+pub(crate) fn run_stage<'py>(py: Python<'py>, stage: PipelineStage, data: &Bound<'py, PyAny>, fs: Option<f64>, runtime: Option<&str>) -> PyResult<Bound<'py, PyAny>> {
+    run_pipeline(py, Pipeline::with_stages(vec![stage]), data, fs, runtime)
 }
 
-// ============================================================================
-// Legacy compatibility DspSession
-// ============================================================================
-
-#[pyclass(name = "DspSession")]
-pub struct PyDspSession {
-    sample_rate: f64,
-    channels: usize,
+/// Stages run one after the other on the device; intermediate results never leave it.
+#[pyclass(name = "Pipeline", skip_from_py_object)]
+pub struct PyPipeline {
+    pub(crate) stages: Vec<PipelineStage>,
 }
 
 #[pymethods]
-impl PyDspSession {
+impl PyPipeline {
     #[new]
-    #[pyo3(signature = (sample_rate=30000.0, channels=384))]
-    pub fn new(sample_rate: f64, channels: usize) -> Self {
-        Self { sample_rate, channels }
+    #[pyo3(signature = (stages=None))]
+    fn new(stages: Option<Vec<Bound<'_, PyAny>>>) -> PyResult<Self> {
+        let stages = stages.unwrap_or_default().iter().map(stage_of).collect::<PyResult<_>>()?;
+        Ok(Self { stages })
+    }
+
+    /// Appends a stage; returns the pipeline, so calls chain.
+    fn add<'py>(mut slf: PyRefMut<'py, Self>, stage: Bound<'py, PyAny>) -> PyResult<PyRefMut<'py, Self>> {
+        slf.stages.push(stage_of(&stage)?);
+        Ok(slf)
     }
 
     #[getter]
-    pub fn sample_rate(&self) -> f64 {
-        self.sample_rate
+    fn stages(&self) -> Vec<String> {
+        self.stages.iter().map(|s| format!("{s:?}")).collect()
     }
 
-    #[getter]
-    pub fn channels(&self) -> usize {
-        self.channels
+    fn __len__(&self) -> usize {
+        self.stages.len()
     }
 
-    #[pyo3(signature = (input_data, alpha=None, beta=None, notch_freq=None, notch_q=None))]
-    pub fn run_pipeline_wgpu<'py>(
-        &self,
-        py: Python<'py>,
-        input_data: Bound<'py, PyAny>,
-        alpha: Option<f32>,
-        beta: Option<f32>,
-        notch_freq: Option<f32>,
-        notch_q: Option<f32>,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let mut pipe = Pipeline::new();
-        pipe.add(PipelineStage::Scale {
-            alpha: alpha.unwrap_or(0.195),
-            beta: beta.unwrap_or(0.0),
-        });
-        pipe.add(PipelineStage::notch(
-            notch_freq.unwrap_or(60.0) as f64,
-            notch_q.unwrap_or(30.0) as f64,
-        ));
-
-        let flat = F32Array::new(&input_data)?.ndim() == 1;
-        run_pipeline(py, pipe, &input_data, self.sample_rate, flat.then_some(self.channels))
+    /// `(left, right)` samples of context a chunk needs at `fs` Hz so its interior equals
+    /// whole-recording processing.
+    #[pyo3(signature = (*, fs=None))]
+    fn settling(&self, fs: Option<f64>) -> PyResult<(usize, usize)> {
+        let pipeline = Pipeline::with_stages(self.stages.clone());
+        let fs = rate(&pipeline, fs)?;
+        pipeline.settling(fs).map_err(value_error)
     }
 
-    pub fn info(&self) -> String {
-        format!("DspSession(channels={}, sample_rate={:.1}Hz)", self.channels, self.sample_rate)
+    /// Runs every stage on `data` (`[channels, samples]`, or 1-D); `fs` is required when a stage
+    /// is a filter.
+    #[pyo3(signature = (data, *, fs=None, runtime=None))]
+    fn run<'py>(&self, py: Python<'py>, data: Bound<'py, PyAny>, fs: Option<f64>, runtime: Option<&str>) -> PyResult<Bound<'py, PyAny>> {
+        run_pipeline(py, Pipeline::with_stages(self.stages.clone()), &data, fs, runtime)
     }
+
+    fn __repr__(&self) -> String {
+        format!("Pipeline({:?})", self.stages)
+    }
+}
+
+impl PyPipeline {
+    pub(crate) fn pipeline(&self) -> Pipeline {
+        Pipeline::with_stages(self.stages.clone())
+    }
+}
+
+pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyPipeline>()
 }

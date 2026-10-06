@@ -10,4 +10,4 @@ pub mod emusort;
 pub mod kilosort4;
 
 pub use emusort::{Emusort, EmusortConfig};
-pub use kilosort4::{Kilosort4, Kilosort4Config};
+pub use kilosort4::{Kilosort4, Kilosort4Config, Kilosort4Result};

@@ -9,9 +9,8 @@ use dsp_core::compute::{ComputeTarget, ComputeTask};
 
 use dsp_base::math::execute_channel_noise_std;
 use dsp_base::pipeline::{Pipeline, PipelineWorkspace};
-use dsp_core::{ChunkSchedule, DspError, DspResult, HaloWindow, RecordingSource, SampleFormat};
+use dsp_core::{ChunkSchedule, DspError, DspResult, HaloWindow, RecordingSource, SampleFormat, WindowLoader};
 use dsp_io::neuro::probe::{precompute_knn_table, SensorLayout};
-use dsp_io::PrefetchReader;
 
 use crate::core::{DeduplicatedSpike, SortedUnit, SortingOutput, WaveformTemplate};
 use crate::detection::{SpikeSpacing, StreamingDedup, detection_heights, execute_detect_spikes_in_vram};
@@ -208,8 +207,8 @@ impl StreamingDetector {
             && total_samples > 0
             && source.read_stored(&[0], 0..1, &mut vec![0u8; info.format.bytes()]).is_ok();
         if stored {
-            let gains: Vec<f32> = info.channels.iter().map(|c| c.gain_uv).collect();
-            let offsets: Vec<f32> = info.channels.iter().map(|c| c.offset_uv).collect();
+            let gains: Vec<f32> = info.channels.iter().map(|c| c.gain).collect();
+            let offsets: Vec<f32> = info.channels.iter().map(|c| c.offset).collect();
             workspace.set_stored_scaling(&gains, &offsets);
         }
         let client = workspace.client().clone();
@@ -304,14 +303,14 @@ impl StreamingDetector {
         };
 
         // 1. Filter each padded chunk in VRAM (persistent ping-pong buffers, no host readback)
-        let reader = PrefetchReader::new(source, schedule);
+        let loader = WindowLoader::new(source);
         if stored {
-            reader.for_each_window_stored(|win, bytes| {
+            loader.stream_stored(schedule.windows(), |win, bytes| {
                 let filt_handle = workspace.process_stored_chunk_in_vram(bytes, info.format, win.read_len())?;
                 process(win, filt_handle)
             })?;
         } else {
-            reader.for_each_window(|win, raw_padded| {
+            loader.stream(schedule.windows(), |win, raw_padded| {
                 let filt_handle = workspace.process_chunk_in_vram(raw_padded, win.read_len());
                 process(win, filt_handle)
             })?;
@@ -345,22 +344,28 @@ pub fn calibrate_noise<R: Runtime>(
 ) -> DspResult<Vec<f32>> {
     let info = source.info();
     let (channels, total, fs) = (info.channel_count(), info.samples, info.sample_rate_hz());
-    let all_ch: Vec<usize> = (0..channels).collect();
     let mut per_chunk: Vec<Vec<f32>> = vec![Vec::new(); channels];
-
-    for chunk in config.calibration_chunks(fs, total) {
-        let read = chunk.start.saturating_sub(halos.0)..(chunk.end + halos.1).min(total);
-        let n = (read.end - read.start) as usize;
-        let mut raw = vec![0.0f32; channels * n];
-        source.read(&all_ch, read.clone(), &mut raw)?;
+    let windows: Vec<HaloWindow> = config
+        .calibration_chunks(fs, total)
+        .into_iter()
+        .enumerate()
+        .map(|(index, chunk)| HaloWindow::around(index, chunk, halos.0, halos.1, total))
+        .collect();
+    WindowLoader::new(source).stream(&windows, |window, raw| {
         // Filtered chunk stays on the device; only one σ per channel is downloaded
-        let filt = workspace.process_chunk_in_vram(&raw, n);
-        let interior = (chunk.start - read.start) as usize..(chunk.end - read.start) as usize;
-        let sigmas = execute_channel_noise_std::<R, f32>(workspace.client(), &filt, channels, n, interior);
+        let filt = workspace.process_chunk_in_vram(raw, window.read_len());
+        let sigmas = execute_channel_noise_std::<R, f32>(
+            workspace.client(),
+            &filt,
+            channels,
+            window.read_len(),
+            window.valid_local.clone(),
+        );
         for (acc, sigma) in per_chunk.iter_mut().zip(sigmas) {
             acc.push(sigma as f32);
         }
-    }
+        Ok(())
+    })?;
 
     Ok(per_chunk
         .into_iter()

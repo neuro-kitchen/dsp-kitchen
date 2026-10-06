@@ -241,3 +241,56 @@ matched-filter prototype shape (documented by its formula).
   `commands/probe.rs`), dsp-synapse-ml (`models/emusort/mod.rs`, `models/kilosort4/mod.rs`,
   `examples/emusort_nwb_zarr.rs`), dsp_kitchen_py (`synapse/probe.rs`, 17 sites).
 - Alias paths: dsp_kitchen_py `synapse/spatial.rs` (`dsp_synapse::{localization|motion|…}`).
+
+## 2026-10-06 — builds (lib, tests, integration test)
+
+- `features`: `extract_waveform_pca(client, …)`; `PcaFeatureEmbedder` / `PpcaFeatureEmbedder`
+  hold an explicit `ComputeTarget` (`new(target)`, `DEFAULT_FEATURE_COMPONENTS = 4`; `Default`
+  removed: it would pick a device); shared `feature_matrix` / `per_spike` helpers replace the
+  duplicated code. dsp-app `curation/derived.rs` must pass a client.
+- `ConvolutiveBssDecomposer::decompose(client, …)`; `ICA_TOLERANCE` named. dsp_kitchen_py
+  `synapse/sorting.rs` must pass a client.
+- `SnippetBatch::from_snippets(snippets, peak_index)` (the alignment sample is not in
+  `WaveformSnippet`).
+- GMM kernel: `F::ln` (CubeCL 0.10 name). Dedup kernel: `NO_SLOT` sentinel via `.runtime()`.
+- Streaming runner and `tests/streaming_invariance.rs`: `gain` / `offset` / `with_gain(…, Microvolt)`,
+  `I16_GAIN` named.
+
+
+## 2026-10-06 — `WindowLoader`
+
+`streaming/runner.rs`: streams with `dsp_core::WindowLoader`; `calibrate_noise` builds its
+windows with `HaloWindow::around` and streams them too (read-ahead). Dependency on
+`dsp-orchestrate` removed.
+
+## 2026-10-06 — k-means and HDBSCAN on the device
+
+- `sorting/points.rs`: `DevicePoints` (points uploaded once, feature-major `[d, n]`; `gather`
+  subsets on the device; `point` reads one point), `block_sums` / `device_sum` (`SUM_BLOCK`
+  values per unit, added on the host in `f64`).
+- `sorting/kernels/points.rs`: `core_distance_kernel` (k smallest in registers),
+  `cheapest_edge_kernel` (Borůvka), `nearest_centre_kernel`, `cluster_sums_kernel` (split over
+  points), `closest_update_kernel` (k-means++ trials), `block_sums_kernel`, `gather_points_kernel`.
+- `hdbscan(client, x, n, d, mcs)` / `hdbscan_points`: core distances and a Borůvka minimum
+  spanning tree on the device (ties by (weight, lower, higher) index, so the unique minimum tree),
+  step 3 unchanged on the host. Prim kept only as the test reference.
+- `kmeans(client, x, n, d, k, opts)` / `kmeans_points`: same algorithm and random stream as before
+  (kept as the test reference); distances, assignments, sums, trial potentials and inertia on the
+  device; per iteration the host reads `k · d` sums, per draw one block of weights. `f32`
+  distances: a draw can tip differently from the `f64` reference, so tests compare inertia and
+  partitions.
+- **Breaking:** both take a `ComputeClient` first. Python `hdbscan` / `kmeans` gain `runtime=`.
+
+## 2026-10-06 — HDBSCAN speed and progress
+
+Long runs (1 h+ HD-EMG, 500 000 clips) looked stuck in template learning: one brute-force launch
+per pass, ~2.5·10¹¹ pairs each, ~20 passes. Now (still exact):
+- `core_distance_tile_kernel`, `cheapest_edge_tile_kernel` (replace the brute-force kernels): a
+  cube loads a tile of points (and their core distance and component) into shared memory once
+  and every unit compares its own point (in registers) against it; `d` and `k` are comptime.
+- Each pass is split into launches of at most `PAIR_TERMS_PER_LAUNCH = 2³²` terms; per-point
+  state (the `k` nearest, the cheapest edge) stays on the device between launches; the host
+  waits for each launch and reports `progress(done, total)` (`hdbscan_points_with_progress`,
+  `hdbscan_launches` = the total). No launch runs long enough for a display driver to stop it.
+- `kmeans_points_with_progress` (one step per restart).
+Tests (device vs host reference) not run.

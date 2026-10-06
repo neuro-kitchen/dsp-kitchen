@@ -8,7 +8,8 @@
 # 2. **Spatial Referencing (`dsp_kitchen.spatial`)**:
 #    - `CommonAverageReference` / `common_average_reference` (multi-channel common-mode rejection)
 # 3. **Dimensionality Reduction (`dsp_kitchen.linalg.PCA`)**:
-#    - Fitting `PCA` on multi-channel arrays and projecting on CPU (`use_gpu=False`) vs. CubeCL GPU (`use_gpu=True`)
+#    - Fitting and projecting `PCA` on every compiled-in runtime (`dk.runtime.available()`, e.g. a GPU
+#      through WebGPU and the CPU), which give the same result
 
 # %% [1] Imports & Synthetic 32-Channel Array with Shared Common-Mode Artifact
 import numpy as np
@@ -32,10 +33,13 @@ n_samples = 3_000  # 100 ms
 t = np.arange(n_samples, dtype=np.float32) / fs
 rng = np.random.default_rng(7)
 
+STEP_UV = 0.195  # µV per ADC step of a typical extracellular headstage (e.g. Intan, Neuropixels 1.0 AP)
+BASELINE_COUNTS = 500.0
+
 # Simulate raw int16-scale ADC counts with a DC baseline offset, shared movement artifact,
 # and localized neural activity on channels 4..8
 adc_counts = rng.normal(0.0, 20.0, size=(n_channels, n_samples)).astype(np.float32)
-adc_counts += 500.0  # DC baseline in ADC counts (~97.5 uV at 0.195 uV/bit)
+adc_counts += BASELINE_COUNTS  # DC baseline in ADC counts
 
 # Shared common-mode artifact across all 32 channels
 common_artifact = 350.0 * np.sin(2.0 * np.pi * 25.0 * t) + 200.0 * np.exp(
@@ -55,22 +59,18 @@ print(
 )
 
 # %% [2] Math Stages: Scale, SubtractBaseline, and Clamp
-# 1. Direct scaling helper: y = 0.195 * x + 0.0
-scaled_uv = scale_samples(adc_counts, alpha=0.195, beta=0.0)
+# 1. Direct scaling helper: y = STEP_UV * x
+scaled_uv = scale_samples(adc_counts, STEP_UV)
 
 # 2. Composable math pipeline: Scale -> SubtractBaseline -> Clamp
 math_pipe = Pipeline(
     [
-        Scale(alpha=0.195, beta=0.0),  # Convert Neuropixels ADC counts -> uV
-        SubtractBaseline(
-            baseline_uv=97.5
-        ),  # Remove the 500 * 0.195 = 97.5 uV DC offset
-        Clamp(
-            min_val=-500.0, max_val=500.0
-        ),  # Clamp saturation rails to [-500, +500] uV
+        Scale(STEP_UV),  # ADC counts -> µV
+        SubtractBaseline(BASELINE_COUNTS * STEP_UV),  # remove the DC offset (µV)
+        Clamp(-500.0, 500.0),  # clip saturated samples to ±500 µV
     ]
 )
-cleaned_uv = math_pipe.run(adc_counts, fs=fs)
+cleaned_uv = math_pipe.run(adc_counts)  # no filter stage: no sample rate needed
 
 print("[Math Pipeline Results]")
 print(
@@ -96,21 +96,20 @@ print(
     f"  Ch 5 Peak after CAR: {car_referenced[5, spike_idx : spike_idx + 40].min():6.2f} uV (localized spike preserved)"
 )
 
-# %% [4] Principal Component Analysis (PCA) on CPU and GPU
-pca = PCA(n_components=3)
-pca.fit(car_referenced)
+# %% [4] Principal Component Analysis (PCA) on every compiled-in runtime
+# The same code runs on any GPU or the CPU; the runtime is chosen at run time.
+projections = {}
+for runtime in dk.runtime.available():
+    pca = PCA(n_components=3).fit(car_referenced, runtime=runtime)
+    projections[runtime] = pca.transform(car_referenced, runtime=runtime)
+    evr = pca.explained_variance_ratio
+    print(f"\n[PCA on {runtime}] explained variance ratio {np.round(evr, 4)}")
 
-proj_cpu = pca.transform(car_referenced, use_gpu=False)
-proj_gpu = pca.transform(car_referenced, use_gpu=True)
-
-evr = pca.explained_variance_ratio
-max_diff = float(np.max(np.abs(proj_cpu - proj_gpu)))
-
-print("\n[PCA Dimensionality Reduction]")
-print(f"  Model:                    {pca}")
-print(f"  Projected Shape:          {proj_gpu.shape} (n_components, samples)")
-print(f"  Explained Variance Ratio: {np.round(evr, 4)}")
-print(f"  CPU vs GPU Max Abs Diff:  {max_diff:.6e}")
+proj_gpu = next(iter(projections.values()))
+if len(projections) > 1:
+    a, b = list(projections.values())[:2]
+    # Components are defined up to sign: compare magnitudes
+    print(f"  Max |difference| between runtimes: {float(np.max(np.abs(np.abs(a) - np.abs(b)))):.3e}")
 
 # %% [5] Visualize Math, CAR, and PCA Projections
 if HAS_PLT:
@@ -165,7 +164,7 @@ if HAS_PLT:
             label=f"PC{c + 1} ({evr[c] * 100:.1f}% var)",
         )
     axes[2].set_title(
-        "3. CubeCL GPU-Projected Principal Components (PC1–PC3)", fontweight="bold"
+        f"3. Principal Components (PC1–PC3) on {next(iter(projections))}", fontweight="bold"
     )
     axes[2].set_xlabel("Time (ms)")
     axes[2].set_ylabel("Score")

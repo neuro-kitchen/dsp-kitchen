@@ -1,30 +1,33 @@
 """
-Infinite Impulse Response (IIR) digital filters for neural signal processing.
-
-Butterworth filters of any order and notch filters, run forward (causal) or forward-backward
-(zero phase, the default).
+IIR filters (scipy semantics): Butterworth of any order (per edge for band filters), Chebyshev
+type I and notch; ``direction="forward-backward"`` (zero phase, default) or ``"forward"``;
+``start="rest"`` (default) or ``"steady-state"``. Functions need ``fs`` (Hz).
 """
 
-from .._bindings import (
+from dsp_kitchen_bindings import (
     BandpassFilter,
     BandstopFilter,
+    ChebyshevFilter,
     HighpassFilter,
     LowpassFilter,
     NotchFilter,
     bandpass_filter,
+    bandstop_filter,
     highpass_filter,
     lowpass_filter,
     notch_filter,
 )
 
 __all__ = [
-    "NotchFilter",
     "BandpassFilter",
+    "BandstopFilter",
+    "ChebyshevFilter",
     "HighpassFilter",
     "LowpassFilter",
-    "BandstopFilter",
-    "notch_filter",
+    "NotchFilter",
     "bandpass_filter",
+    "bandstop_filter",
     "highpass_filter",
     "lowpass_filter",
+    "notch_filter",
 ]

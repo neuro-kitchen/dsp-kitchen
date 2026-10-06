@@ -153,18 +153,22 @@ pub fn local_peak_score_kernel<F: Float>(
     }
 }
 
-/// Per spike `i` (centre `centres[i]`, sample `times[i]`) and centre channel `c`: features
-/// `feat[i, c, p] = Σ_j x[iC[c, centre], t − nt/2 + j] · wpca[p, j]` and the template response
-/// `amp[i, c] = B[iC[c, centre], template[i], t]`. One unit per `(i, c)`.
+/// Per spike `i` (centre `centres[i]`, sample `times[i]`) and centre channel `c`: the signed
+/// arg-max `picked[i] = arg[centre, t]` (written by `c = 0`), the template it encodes
+/// (`(|a| − 1) mod n_templates`), features `feat[i, c, p] = Σ_j x[iC[c, centre], t − nt/2 + j] ·
+/// wpca[p, j]` and the template response `amp[i, c] = B[iC[c, centre], template, t]`. One unit per
+/// `(i, c)`; the spikes come straight from the device candidate lists.
 #[cube(launch)]
+#[allow(clippy::too_many_arguments)]
 pub fn spike_features_kernel<F: Float>(
     x: &Array<F>,
     b: &Array<F>,
     wpca: &Array<F>,
     ic: &Array<u32>,
+    arg: &Array<i32>,
     centres: &Array<u32>,
     times: &Array<u32>,
-    templates: &Array<u32>,
+    picked: &mut Array<i32>,
     feat: &mut Array<F>,
     amp: &mut Array<F>,
     samples: u32,
@@ -181,6 +185,18 @@ pub fn spike_features_kernel<F: Float>(
         let c = unit - i * n_chans;
         let centre = centres[i as usize];
         let t = times[i as usize];
+        let a = arg[(centre * samples + t) as usize];
+        if c == 0u32 {
+            picked[i as usize] = a;
+        }
+        let mut magnitude = u32::cast_from(a);
+        if a < 0i32 {
+            magnitude = u32::cast_from(-a);
+        }
+        let mut template = 0u32;
+        if magnitude > 0u32 {
+            template = (magnitude - 1u32) % n_templates;
+        }
         let ch = ic[(c * n_centres + centre) as usize];
         let half = nt / 2u32;
         let mut p: u32 = 0u32;
@@ -196,16 +212,6 @@ pub fn spike_features_kernel<F: Float>(
             feat[((i * n_chans + c) * n_pcs + p) as usize] = acc;
             p += 1u32;
         }
-        amp[(i * n_chans + c) as usize] = b[((ch * n_templates + templates[i as usize]) * samples + t) as usize];
-    }
-}
-
-/// `out[i] = arg[centres[i], times[i]]`: the signed arg-max of each detected spike. One unit per
-/// spike.
-#[cube(launch)]
-pub fn gather_args_kernel(arg: &Array<i32>, centres: &Array<u32>, times: &Array<u32>, out: &mut Array<i32>, samples: u32, n_spikes: u32) {
-    let i = ABSOLUTE_POS as u32;
-    if i < n_spikes {
-        out[i as usize] = arg[(centres[i as usize] * samples + times[i as usize]) as usize];
+        amp[(i * n_chans + c) as usize] = b[((ch * n_templates + template) * samples + t) as usize];
     }
 }

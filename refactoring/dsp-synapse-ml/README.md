@@ -102,3 +102,97 @@ aliases (with their modules), `runtime::default_compute_target` (models now take
 - `src/models/emusort/basis.rs`, `src/models/emusort/matcher.rs`
 
 `dsp-synapse-ml` already depends on `dsp-io`.
+
+## 2026-10-06
+
+- `models/dartsort/denoiser.rs`: `SnippetBatch` keeps the input's `peak_index`.
+- Built without default features (as dsp-cli does, `hub` only), `runtime/burn_engine.rs` warns
+  about unused code (`linear_on_backend`, `conv1d_on_backend`, unused arguments): gate them on
+  the backend features when the runtime is reworked (burn-onnx, step 4).
+
+## 2026-10-06 — front end driver
+
+`sorters/kilosort4/frontend.rs`: `run_front_end(client, source, probe, &FrontEndOptions)` over a
+whole recording on dsp-core `ChunkSchedule` (batches = windows of `batch_size`, halos = filter
+settling + `nt` + max channel delay), dsp-io `PrefetchReader` and dsp-base `PipelineWorkspace`:
+whitening from the covariance averaged over every `nskip`-th window, EMUsort delays, clips and
+templates, detection on every window (spikes kept in each window's valid range, recording
+samples). Without delays the windows stay on the device for detection; with delays they make a
+host round trip (a device shift kernel is open). `FrontEndOptions::{kilosort4, emusort}`.
+Named: `HIGHPASS_ORDER = 3`, `WHITENING_EPSILON = 1e-6` (both to verify against upstream); the
+common reference is a mean (upstream may use a median). dsp-base gained
+`SpatialWhitening::local_knn_from_covariance` (`fit_local_knn` now uses it). Python:
+`kilosort4.run_front_end`, `FrontEndResult`. The playground's Python batching helper is gone.
+
+
+## 2026-10-06 — one Kilosort4-family runner, delays on the device
+
+Replaces the duplicated `kilosort4/runner.rs` / `emusort/runner.rs` (from `97eacad`).
+
+- `kilosort4/runner.rs`: `RunPlan` (`kilosort4(&cfg)`, `emusort(&cfg, fs)` in `emusort/mod.rs`),
+  `fit_preprocessing` → `FittedPreprocessing`, `run_plan` → `Kilosort4Result` (one result type,
+  `channel_delays: Option<ChannelDelays>`, `sorter`, `sample_rate_hz`, `total_samples`,
+  `centre_positions`). `Kilosort4::run` and `Emusort::run` call `run_plan` (`Kilosort4Runner` removed);
+  `fit_kilosort4_preprocessing` kept. `EmusortRunner` / `EmusortResult` removed.
+- Matches upstream (`snel-repo/EMUsort` `a06bb60`, `ks4mods`; behaviour compared, code not
+  ported): whitening = uncentred `X Xᵀ / n` per window, equal weight, on every `nskip`-th window
+  **except the last**; channel delays estimated in the same pass on the high-passed data
+  (**before whitening**; before this they were estimated on whitened data); template clips on
+  every `nskip`-th window **including the last**. Fit pass: one read of the learning windows for
+  both statistics (was three).
+- `emusort/kernels.rs`: `ChannelDelayEstimator<R>` (envelope, lagged cross-correlation summed on
+  the device, one download; edge reads repeat the edge sample, like upstream's batch padding),
+  `ChannelAligner<R>` (persistent output, shifts uploaded per window length),
+  `delays_from_cross_correlation`. Host `ChannelDelayEstimator` / `apply_channel_delays` removed
+  (kept only as test oracles in `kernels.rs` tests). One GPU path for clips and detection.
+- Clips: still on the host (one download per learning window); the fallback scan streams the
+  remaining windows with read-ahead and stops once there are enough (`stream_while`).
+- No silent defaults: `to_sorting_output(probe)` uses the run's rate and length; spike `x` from
+  the centre position. `templates_from_data = false` takes `RunPlan::templates` or the hub; no
+  more relative-path search for `wTEMP.npz`.
+- `learn_universal_templates`: warns (`tracing`) when HDBSCAN keeps fewer than `n_templates`
+  clips and falls back to all clips. An uncommitted change from another tool capped HDBSCAN to a
+  2 000-clip subsample; removed (user: match upstream, HDBSCAN on all clips).
+- `to_sorting_output`: primary channel = channel nearest the unit's most frequent centre
+  (`Kilosort4Result::centre_channels`), no noise floor (amplitudes are whitened σ, SNR left
+  undefined) instead of channel 0 and σ = 1. Predefined templates must match `nt`. Python
+  `kilosort4.run(..., templates=None)` passes predefined templates.
+- Named: `MIN_LEARNING_WINDOWS = 5`, `KILOSORT4_SORTER`, `EMUSORT_SORTER`.
+
+## 2026-10-06 — fewer CPU↔GPU transfers
+
+- `kilosort4/detect.rs`: `UniversalDetector<R>` uploads `wTEMP`, `wPCA`, `iC`, `iC2`, weights and
+  thresholds once and keeps its scratch buffers (`B` is `[channels, n_templates, max_samples]`).
+  Per window it reads back twice: the candidate counts (dsp-base
+  `find_peak_candidates_on_device`), then spikes, arg-max, features and responses after every
+  kernel ran. Before: six constant uploads, five allocations and four reads per window (candidates,
+  arg-max, features), with the candidates re-uploaded between them. `spike_features_kernel` now
+  reads the arg-max and decodes the template on the device; `gather_args_kernel` removed.
+  `detect_universal` is a one-off `UniversalDetector`. Spikes are ordered by centre, then sample.
+- `emusort/kernels.rs`: `delay_cc_kernel` (one unit per pair × lag, adds to the running sum; a
+  branch-free loop unless the interior is within `max_lag` of an edge) replaces the split partial
+  buffer (`[C², lags, splits]`: 476 MB per window at 256 channels) and its merge kernel; the
+  estimator keeps mean / std / envelope buffers. `apply_channel_delays_kernel` wraps with one
+  subtraction instead of `%`.
+- Clip pass: `buffer::download_prefix` reads only the window's part of the max-sized buffer.
+- `RunPlan::fitted` + `FitSettings`: a run reuses an earlier run's `FittedPreprocessing` when the
+  fit settings match (error otherwise). `Kilosort4Result` now holds `fitted: FittedPreprocessing`
+  (its `whitening`, `channel_delays`, `halos`, `windows`, `preprocessing` fields moved there).
+
+## 2026-10-06 — universal templates on the device
+
+`learn_universal_templates`: the scaled clips are uploaded once (`DevicePoints`); the Gram matrix
+is `SecondMomentAccumulator` on them (`into_sum`, read by `symmetric_eigen` on the device; was a
+host `f64` loop plus an upload), HDBSCAN (`hdbscan_points`) and k-means (`kmeans_points`) read the
+same copy, inliers are gathered on the device. The host keeps the clip scale and the final row
+normalisation.
+
+## 2026-10-06 — progress
+
+`run_plan(…, progress: &dyn ProgressSink)` and `fit_preprocessing(…, progress)` report the stages
+`STAGE_FIT`, `STAGE_CLIPS`, `STAGE_TEMPLATES`, `STAGE_DETECTION` (those the run has; per window,
+learning as one step); `Kilosort4::run_with_progress`, `Emusort::run_with_progress` (`run` reports
+nothing). **Breaking:** `run_plan` / `fit_preprocessing` take the sink.
+- `learn_universal_templates_with_progress`: "Learning templates" counts real steps (1 for `wPCA`,
+  one per HDBSCAN launch, one per k-means restart) instead of 0/1. Fixed: a second
+  "Finding clips" line when the pass had already reached its total.

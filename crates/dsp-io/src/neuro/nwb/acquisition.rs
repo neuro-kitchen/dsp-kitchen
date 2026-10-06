@@ -11,7 +11,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use dsp_core::recording::{check_read, check_read_stored};
-use dsp_core::{DspError, DspResult, MemoryOrder, RecordingInfo, RecordingSource, SampleFormat, SampleRate};
+use dsp_core::{DspError, DspResult, MemoryOrder, RationalTime, RecordingInfo, RecordingSource, SampleFormat, SampleRate, SignalUnit, MICROVOLTS_PER_VOLT};
 use serde_json::Value;
 use zarrs::array::{Array, ArrayBytes};
 
@@ -130,7 +130,13 @@ impl NwbZarrRecording {
         // value = stored * conversion + offset, in `unit`; electrical series → µV
         let attrs = &meta["attributes"];
         let unit = attrs["unit"].as_str().unwrap_or("a.u.").to_string();
-        let to_uv = if kind == "ElectricalSeries" || unit == "volts" { 1e6 } else { 1.0 };
+        let in_volts = kind == "ElectricalSeries" || unit == "volts";
+        let to_uv = if in_volts { MICROVOLTS_PER_VOLT } else { 1.0 };
+        let signal_unit = match unit.as_str() {
+            _ if in_volts => SignalUnit::Microvolt,
+            "" | "a.u." => SignalUnit::Dimensionless,
+            other => SignalUnit::Other(other.to_string()),
+        };
         let gain = attrs["conversion"].as_f64().unwrap_or(1.0) * to_uv;
         let offset = attrs["offset"].as_f64().unwrap_or(0.0) * to_uv;
 
@@ -140,10 +146,11 @@ impl NwbZarrRecording {
             series.rsplit('/').next().unwrap_or(series)
         );
         let mut info = RecordingInfo::new(name, channels, samples, SampleRate::new(rate)?, format, MemoryOrder::TimeMajor);
-        info.start_time_sec = start;
+        info.start_time = RationalTime::from_seconds_f64(start)?;
         for c in &mut info.channels {
-            c.gain_uv = gain as f32;
-            c.offset_uv = offset as f32;
+            c.gain = gain as f32;
+            c.offset = offset as f32;
+            c.unit = signal_unit.clone();
         }
         // Channel names from the electrodes table rows this series references
         if kind == "ElectricalSeries" {
@@ -248,7 +255,7 @@ impl RecordingSource for NwbZarrRecording {
         let block = self.retrieve(lo as u64..hi as u64, samples)?;
         // [time, channel] block to channel-major rows: one pass over the block, each row read once
         let selected: Vec<(usize, f32, f32)> =
-            channels.iter().map(|&ch| (ch - lo, self.info.channels[ch].gain_uv, self.info.channels[ch].offset_uv)).collect();
+            channels.iter().map(|&ch| (ch - lo, self.info.channels[ch].gain, self.info.channels[ch].offset)).collect();
         for (t, frame) in block.chunks_exact(width).enumerate() {
             for (i, &(col, gain, offset)) in selected.iter().enumerate() {
                 out[i * n + t] = frame[col] * gain + offset;
@@ -326,7 +333,7 @@ mod tests {
         // Default: the ElectricalSeries
         let rec = crate::open(&path).unwrap();
         let i = rec.info();
-        assert_eq!((i.channel_count(), i.samples, i.sample_rate_hz(), i.start_time_sec), (3, 4, 1000.0, 0.5));
+        assert_eq!((i.channel_count(), i.samples, i.sample_rate_hz(), i.start_time.as_seconds_f64()), (3, 4, 1000.0, 0.5));
         let mut out = vec![0.0; 2 * 3];
         rec.read(&[2, 0], 1..4, &mut out).unwrap();
         assert_eq!(out, vec![12.0, 22.0, 32.0, 10.0, 20.0, 30.0]);

@@ -1,14 +1,20 @@
 # dsp-kitchen
 
-> **Under development.** The workspace is being reorganized crate by crate. `dsp-core`,
-> `dsp-base` and `dsp-synapse-hub` build; `dsp-io`, `dsp-synapse` and `dsp-synapse-ml` are being
-> brought up to the new core API; fixes to `dsp-stream`, `dsp-cli`, `dsp-app` and the Python
-> bindings are coming. Nothing here is released.
+> **Under development.** Every crate and the Python bindings build; in `dsp-app`, Explore is
+> rewired and Curation is parked. [Kilosort4](sorters/kilosort4/intro.md) and
+> [EMUsort](sorters/emusort/intro.md) run over whole recordings (preprocessing, universal
+> templates, detection); their clustering and deconvolution stages are not implemented yet.
+> Nothing here is released.
 
 dsp-kitchen is a digital-signal-processing framework for multi-channel recordings, written in
 Rust, with a focus on neural and muscle electrophysiology: filtering, resampling and spatial
 operators, spike detection, waveform extraction, localization, drift correction, sorting and
 quality metrics, and spike sorters reimplemented from their papers.
+
+![dsp-app, the Explore workspace: a Neuropixels recording as traces and a heatmap on one timeline](assets/img/dsp-app_main-darkmode.png)
+
+*[`dsp-app`](crates/dsp-app.md): a Neuropixels recording (385 channels, 30 kHz) as traces and a
+heatmap on one timeline.*
 
 ## Highlights
 
@@ -43,8 +49,12 @@ pipeline, so the framework is built to move as little as possible:
 - **Compaction on the device.** Detection finds and compacts candidates on the device
   (`dsp_base::peaks::find_peak_candidates`); only the candidates are downloaded, not the trace.
   The same pattern is used for template matching, deduplication, noise estimation (one σ per
-  channel comes back) and EM clustering (only model parameters cross the bus).
-- **Out-of-core reading.** `dsp_io::PrefetchReader` reads the next halo window on a background
+  channel comes back) and clustering: EM, k-means and HDBSCAN keep the points on the device and
+  read back only parameters, sums or tree edges.
+- **Upload once.** Constant data (templates, probe tables, thresholds) goes to the device once
+  per run and scratch buffers are kept; statistics over many windows (whitening covariance,
+  channel-delay correlations) accumulate on the device and come back once.
+- **Out-of-core reading.** `dsp_core::WindowLoader` reads the next halo window on a background
   thread while the device processes the current one; host memory stays at two windows whatever
   the recording length.
 - **Exact streaming.** Detection and deduplication give the same result in chunks as on the
@@ -56,14 +66,16 @@ See [Architecture](architecture.md#data-movement).
 
 | Crate | Role |
 |---|---|
-| [`dsp-core`](crates/dsp-core.md) | Exact time and sample rates, buffers, errors, the `RecordingSource` contract, runtime selection. |
+| [`dsp-core`](crates/dsp-core.md) | Exact time and sample rates, buffers, errors, the `RecordingSource` contract, out-of-core window streaming, runtime selection. |
 | [`dsp-io`](crates/dsp-io.md) | Recording formats, containers (`.npy` / `.npz`, Zarr), neural formats, probe geometry, sorting files. |
 | [`dsp-base`](crates/dsp-base.md) | DSP primitives on the device: filters, resampling, spatial operators, linear algebra, peaks, statistics, pipelines. |
 | [`dsp-synapse`](crates/dsp-synapse.md) | Spike detection, extraction, features, localization, drift, clustering, matching, metrics, storage conversions, streaming detection. |
 | [`dsp-synapse-ml`](crates/dsp-synapse-ml.md) | Sorters reimplemented from papers (Kilosort4, EMUsort) and pretrained models, each with its provenance. |
 | [`dsp-synapse-hub`](crates/dsp-synapse-hub.md) | Verified download and cache of published artifacts. |
-| `dsp-stream` | Network transport of continuous signals (QUIC + TLS). *Documentation pending.* |
-| `dsp-cli`, `dsp-app`, `dsp_kitchen_py` | Command line, desktop app, Python bindings. *Documentation pending.* |
+| [`dsp-stream`](crates/dsp-stream.md) | Network sessions for continuous signals (QUIC + TLS, protobuf): exact header, stored samples, views. |
+| [`dsp-view`](crates/dsp-view.md) | Preparing signals for viewing, locally or remotely: min/max envelopes (host and device) and pyramids. |
+| [`dsp-app`](crates/dsp-app.md) | Desktop workbench (GPUI): the UI over dsp-view's signal backend. |
+| `dsp-cli`, `dsp_kitchen_py` | Command line, Python bindings (`dsp_kitchen`, examples in `playground/`). *Book pages pending.* |
 
 ## Conventions
 

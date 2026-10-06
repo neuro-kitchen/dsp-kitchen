@@ -39,12 +39,40 @@ dsp-synapse-ml/
 └── src/
     ├── provenance.rs          Provenance, Paper, UpstreamCode, ArtifactSource, Attributed
     ├── sorters/
-    │   ├── kilosort4/         config, universal templates (learned or wTEMP.npz), detection (device)
-    │   └── emusort/           config, channel-delay removal; reuses kilosort4 + HDBSCAN outliers
+    │   ├── kilosort4/         config; runner.rs (RunPlan, run_plan: fit, templates, detection over a
+    │   │                      recording); templates.rs (clips, learned or wTEMP.npz); detect.rs
+    │   │                      (TemplateCentres, UniversalDetector); kernels.rs
+    │   └── emusort/           config, RunPlan::emusort, Emusort::run; kernels.rs (ChannelDelayEstimator,
+    │                          ChannelAligner on the device); reuses kilosort4 + HDBSCAN outliers
     ├── models/                dartsort (denoiser, VAE), spikenet2, unitrefine — no verified artifacts yet
     ├── hub/                   catalog, manifests, safetensors reader, ModelHub (feature hub)
     └── runtime/               Burn operations and an ONNX evaluator for the models
 ```
+
+## Running a sorter
+
+`Kilosort4::new(config).run(client, source, probe)` and `Emusort::new(config).run(…)` stream a
+whole recording through one runner (`run_plan` with a `RunPlan`): preprocessing fitted on the
+recording, universal templates, detection; see the [Kilosort4 pipeline](../sorters/kilosort4/pipeline.md).
+They return a `Kilosort4Result` (`fitted`, `templates`, `spikes`, `to_sorting_output(probe)`).
+Python: `dsp_kitchen.synapse.ml.kilosort4.run` / `emusort.run` (with `templates=`,
+`preprocessing_from=`, `progress=`, `runtime=`).
+
+**Progress.** `run_plan(…, progress)` / `run_with_progress` report each stage to a
+`dsp_core::ProgressSink`: `Fitting preprocessing`, `Finding clips`, `Learning templates`,
+`Detecting spikes` (the ones the run has; windows, or one step for learning). In Python a bar is
+shown by default (`progress=False` to silence it, or a callable
+`(stage, step, steps, done, total, unit)`):
+
+```text
+[1/4] Fitting preprocessing  ████████████████████████  12/12 windows  0:04
+[2/4] Finding clips          ████████████░░░░░░░░░░░░  6/12 windows  0:03 < 0:03
+```
+
+Data movement follows the workspace rule ([Architecture](../architecture.md#data-movement)): each
+window goes up once; the fit statistics come back once; constants (templates, centre tables) are
+uploaded once per run; per window only candidate counts and spikes come back (clip extraction
+reads learning windows back).
 
 ## Provenance
 
@@ -90,4 +118,6 @@ load user-supplied files (`from_safetensors_file`, `from_onnx_file`) on an expli
 - The model runtime moves data between host and device for every operation; it is to be replaced
   by `burn-onnx` with device-resident weights on the shared CubeCL client when a model artifact
   is validated.
-- Sorters: see each sorter's page for the stages implemented so far.
+- Sorters: preprocessing, universal templates and detection run; drift correction, clustering,
+  deconvolution and merging are not implemented yet (see each sorter's page).
+- Clip extraction for template learning runs on the host (one download per learning window).

@@ -1,13 +1,18 @@
-//! Network transport of continuous multi-channel signals: QUIC streams with TLS carrying protobuf
-//! frames, for full-fidelity processing or decimated visualization.
+//! Network sessions for continuous multi-channel signals: a server streams a recording, a client
+//! receives its exact description, its stored samples, and envelopes of any view.
 //!
-//! Local recording I/O (formats, out-of-core reading) lives in `dsp-io`.
+//! - [`protocol`]: the messages (generated from `proto/dsp_stream.proto`), their framing, and
+//!   conversions to and from dsp-core / dsp-view types.
+//! - [`transport`]: QUIC + TLS 1.3 endpoints, the server session and the client session.
+//!
+//! Local recording I/O lives in `dsp-io`; envelopes and pyramids in `dsp-view` (a server answers
+//! views with them).
 
-pub mod purpose;
-pub mod network;
+pub mod error;
+pub mod protocol;
+pub mod transport;
 
-pub use purpose::StreamPurpose;
-pub use network::{
-    generate_self_signed_tls, generate_server_config, make_client_config_with_cert,
-    make_insecure_client_config, QuicStreamClient, QuicStreamServer, StreamFrame,
+pub use error::{StreamError, StreamResult};
+pub use transport::{
+    client_config, serve_recording, server_config, Pacing, ServeOptions, Server, ServerIdentity, ServerTls, ServerTrust, Session, SignalReceiver,
 };

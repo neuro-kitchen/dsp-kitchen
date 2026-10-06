@@ -8,7 +8,7 @@
 //! - [`Scratch`]: a device buffer that grows on demand and is reused across calls.
 //! - [`EdgeMode`] and [`read_extended`]: how stencils read samples past either end of a row.
 //! - [`layout`]: transposes between channel-major and time-major buffers.
-//! - [`reduce`]: per-row reductions (mean / standard deviation, min / max), one cube per row.
+//! - [`reduce`]: per-row reductions (mean / standard deviation, k-th smallest |x|), one cube per row.
 
 pub mod buffer;
 pub mod edge;

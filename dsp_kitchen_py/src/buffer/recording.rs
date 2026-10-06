@@ -5,13 +5,16 @@ use pyo3::exceptions::{PyIOError, PyIndexError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PySlice, PyTuple};
 
-use crate::array::to_numpy;
+use crate::array::{to_numpy, F32Array};
 
-use dsp_core::{RecordingSource, SlicedRecording};
-use dsp_io::nwb::{list_series, NwbZarrRecording};
+use dsp_core::{MemoryRecording, RecordingSource, SlicedRecording};
 
-/// Reads `[start_sample, end_sample)` (default: 1 s at the recording rate) of `channels` (default:
-/// all) as a µV `float32` `[channels, samples]` NumPy array, with the GIL released during the read.
+/// Seconds `read` returns when no end is given.
+const DEFAULT_READ_SEC: f64 = 1.0;
+
+/// Reads `[start_sample, end_sample)` (default: [`DEFAULT_READ_SEC`] at the recording rate) of
+/// `channels` (default: all) as a `float32` `[channels, samples]` NumPy array in each channel's
+/// unit, with the GIL released during the read.
 pub(crate) fn read_to_numpy<'py>(
     py: Python<'py>,
     source: &dyn RecordingSource,
@@ -21,8 +24,8 @@ pub(crate) fn read_to_numpy<'py>(
 ) -> PyResult<Bound<'py, PyAny>> {
     let info = source.info();
     let (total_samples, total_channels) = (info.samples, info.channel_count());
-    let one_second = info.sample_rate_hz().round().max(1.0) as u64;
-    let end = end_sample.unwrap_or_else(|| start_sample.saturating_add(one_second).min(total_samples));
+    let default_len = (info.sample_rate_hz() * DEFAULT_READ_SEC).round().max(1.0) as u64;
+    let end = end_sample.unwrap_or_else(|| start_sample.saturating_add(default_len).min(total_samples));
     if start_sample > end || end > total_samples {
         return Err(PyValueError::new_err(format!(
             "sample range {start_sample}..{end} is outside 0..{total_samples}"
@@ -44,60 +47,66 @@ pub(crate) fn read_to_numpy<'py>(
     to_numpy(py, buf, &[n_ch, n_samp])
 }
 
-/// Lists continuous series (`ElectricalSeries` and `TimeSeries` with regular rate)
-/// inside an NWB Zarr v3 store (`/acquisition/*`).
+/// The sources (signals) a recording file holds, as dicts: `id`, `name`, `kind`
+/// (`"electrical"` / `"other"`), `channels`, `samples`, `sample_rate`, `unit`. Pass an `id` to
+/// `Recording(path, source=id)`.
 #[pyfunction]
-pub fn list_nwb_series<'py>(
-    py: Python<'py>,
-    path: &str,
-) -> PyResult<Vec<Bound<'py, pyo3::types::PyDict>>> {
-    let entries = list_series(Path::new(path));
-    let mut out = Vec::with_capacity(entries.len());
-    for entry in entries {
-        let d = pyo3::types::PyDict::new(py);
-        d.set_item("path", entry.path)?;
-        d.set_item("neurodata_type", entry.neurodata_type)?;
-        d.set_item("channels", entry.channels)?;
-        d.set_item("samples", entry.samples)?;
-        out.push(d);
-    }
-    Ok(out)
+pub fn list_sources<'py>(py: Python<'py>, path: &str) -> PyResult<Vec<Bound<'py, pyo3::types::PyDict>>> {
+    let entries = dsp_io::sources(Path::new(path)).map_err(|e| PyIOError::new_err(format!("{path}: {e}")))?;
+    entries
+        .into_iter()
+        .map(|e| {
+            let d = pyo3::types::PyDict::new(py);
+            d.set_item("id", e.id)?;
+            d.set_item("name", e.name)?;
+            d.set_item("kind", if e.kind == dsp_io::SourceKind::Electrical { "electrical" } else { "other" })?;
+            d.set_item("channels", e.channels)?;
+            d.set_item("samples", e.samples)?;
+            d.set_item("sample_rate", e.sample_rate.rate_hz())?;
+            d.set_item("unit", e.unit.symbol())?;
+            Ok(d)
+        })
+        .collect()
 }
 
-/// Chunked reader for NWB Zarr v3 (`.nwb.zarr`) and general `dsp-io` recordings.
-#[pyclass(name = "NwbZarrRecording", skip_from_py_object)]
-pub struct PyNwbZarrRecording {
+/// A recording in any format dsp-io reads (SpikeGLX, NWB, Zarr, raw binary, mtscomp, …), read
+/// in chunks on demand; slicing is lazy.
+#[pyclass(name = "Recording", skip_from_py_object)]
+pub struct PyRecording {
     path: PathBuf,
     pub(crate) inner: Arc<dyn RecordingSource>,
 }
 
+impl PyRecording {
+    pub(crate) fn from_source(path: PathBuf, inner: Arc<dyn RecordingSource>) -> Self {
+        Self { path, inner }
+    }
+}
+
 #[pymethods]
-impl PyNwbZarrRecording {
+impl PyRecording {
+    /// Opens `path`: source `source` (an id from `list_sources`), else the main one.
     #[new]
-    #[pyo3(signature = (path, series=None))]
-    pub fn new(path: &str, series: Option<&str>) -> PyResult<Self> {
+    #[pyo3(signature = (path, source=None))]
+    pub fn new(path: &str, source: Option<&str>) -> PyResult<Self> {
         let p = PathBuf::from(path);
-        let inner: Arc<dyn RecordingSource> = if let Some(s) = series {
-            let norm = if s.starts_with('/') {
-                s.to_string()
-            } else {
-                format!("/acquisition/{s}")
-            };
-            Arc::new(NwbZarrRecording::open_series(&p, &norm).map_err(|e| {
-                pyo3::exceptions::PyIOError::new_err(format!(
-                    "Failed to open NWB series '{}' in '{}': {}",
-                    norm, path, e
-                ))
-            })?)
-        } else {
-            Arc::from(dsp_io::open(&p).map_err(|e| {
-                pyo3::exceptions::PyIOError::new_err(format!(
-                    "Failed to open recording '{}': {}",
-                    path, e
-                ))
-            })?)
+        let opened = match source {
+            Some(id) => dsp_io::open_source(&p, id),
+            None => dsp_io::open(&p),
         };
+        let inner: Arc<dyn RecordingSource> = Arc::from(opened.map_err(|e| PyIOError::new_err(format!("{path}: {e}")))?);
         Ok(Self { path: p, inner })
+    }
+
+    /// An in-memory recording of a `float32` `[channels, samples]` array at `fs` Hz (copied; values
+    /// unitless). For tests and derived signals; files open with `Recording(path)`.
+    #[staticmethod]
+    #[pyo3(signature = (data, fs, *, name="array"))]
+    pub fn from_array(data: Bound<'_, PyAny>, fs: f64, name: &str) -> PyResult<Self> {
+        let input = F32Array::new(&data)?;
+        let (channels, _) = input.channels_samples(None)?;
+        let rec = MemoryRecording::new(name, input.slice().to_vec(), channels, fs).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(Self { path: PathBuf::new(), inner: Arc::new(rec) })
     }
 
     #[getter]
@@ -130,9 +139,10 @@ impl PyNwbZarrRecording {
         self.inner.info().duration_sec()
     }
 
+    /// Time of sample 0 from the acquisition start (s).
     #[getter]
     pub fn start_time_sec(&self) -> f64 {
-        self.inner.info().start_time_sec
+        self.inner.info().start_time.as_seconds_f64()
     }
 
     #[getter]
@@ -150,19 +160,10 @@ impl PyNwbZarrRecording {
             .collect()
     }
 
+    /// Each channel's unit symbol (`"µV"`, `"mV"`, …; empty for dimensionless values).
     #[getter]
-    pub fn unit(&self) -> String {
-        self.inner
-            .info()
-            .metadata
-            .get("unit")
-            .cloned()
-            .unwrap_or_else(|| "uV".to_string())
-    }
-
-    #[getter]
-    pub fn series(&self) -> Option<String> {
-        self.inner.info().metadata.get("nwb_series").cloned()
+    pub fn units(&self) -> Vec<String> {
+        self.inner.info().channels.iter().map(|c| c.unit.symbol().to_string()).collect()
     }
 
     #[getter]
@@ -175,7 +176,7 @@ impl PyNwbZarrRecording {
             .collect()
     }
 
-    /// Creates a lazy zero-load `NwbZarrRecording` view over `[start_sample..end_sample)` and `channels`.
+    /// A lazy view (nothing read) over `[start_sample..end_sample)` and `channels`.
     #[pyo3(signature = (start_sample=0, end_sample=None, channels=None))]
     pub fn slice_samples(
         &self,
@@ -192,7 +193,7 @@ impl PyNwbZarrRecording {
         })
     }
 
-    /// Creates a lazy zero-load `NwbZarrRecording` view over a time window (`start_sec` to `end_sec`
+    /// A lazy view (nothing read) over a time window (`start_sec` to `end_sec`
     /// or `start_sec + duration_sec`) and optional `channels`.
     #[pyo3(signature = (start_sec=0.0, end_sec=None, duration_sec=None, channels=None))]
     pub fn slice_time(
@@ -234,8 +235,10 @@ impl PyNwbZarrRecording {
             return self.slice_samples(start, Some(stop), None);
         }
 
-        if let Ok(tup) = key.cast::<PyTuple>() {
-            if tup.len() == 2 {
+        if let Ok(tup) = key.cast::<PyTuple>()
+            && tup.len() == 2
+        {
+            {
                 let ch_item = tup.get_item(0)?;
                 let samp_item = tup.get_item(1)?;
 
@@ -279,8 +282,8 @@ impl PyNwbZarrRecording {
         ))
     }
 
-    /// Reads µV `float32` `[channels, samples]` for `[start_sample, end_sample)` across `channels`
-    /// (default: all channels, 1 s from `start_sample`).
+    /// Reads `float32` `[channels, samples]` in the channels' units for `[start_sample, end_sample)`
+    /// across `channels` (default: all channels, one second from `start_sample`).
     #[pyo3(signature = (start_sample=0, end_sample=None, channels=None))]
     pub fn read<'py>(
         &self,
@@ -292,8 +295,8 @@ impl PyNwbZarrRecording {
         read_to_numpy(py, self.inner.as_ref(), start_sample, end_sample, channels)
     }
 
-    /// Reads a time window `[start_sec, start_sec + duration_sec]` and returns `(time_sec_array, data_2d_array)`.
-    #[pyo3(signature = (start_sec=0.0, duration_sec=0.1, channels=None))]
+    /// Reads `duration_sec` from `start_sec` (acquisition time) as `[channels, samples]`.
+    #[pyo3(signature = (start_sec, duration_sec, channels=None))]
     pub fn read_window<'py>(
         &self,
         py: Python<'py>,
@@ -310,14 +313,20 @@ impl PyNwbZarrRecording {
 
     fn __repr__(&self) -> String {
         format!(
-            "NwbZarrRecording(name='{}', shape=({}, {}), sample_rate={:.2}Hz, duration={:.2}s, start_time={:.2}s, unit='{}')",
+            "Recording(name='{}', shape=({}, {}), sample_rate={:.2} Hz, duration={:.2} s, start_time={:.2} s, units={:?})",
             self.name(),
             self.channels(),
             self.samples(),
             self.sample_rate(),
             self.duration_sec(),
             self.start_time_sec(),
-            self.unit()
+            self.units().first()
         )
     }
+}
+
+pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyRecording>()?;
+    m.add_function(wrap_pyfunction!(list_sources, m)?)?;
+    Ok(())
 }

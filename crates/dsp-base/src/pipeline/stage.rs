@@ -59,6 +59,11 @@ impl PipelineStage {
         Self::Filter(FilterSpec::notch(freq_hz, q))
     }
 
+    /// Common Average Referencing across all channels.
+    pub fn common_average_reference() -> Self {
+        Self::CommonAverageReference
+    }
+
     /// Explicit second-order sections, zero phase.
     pub fn sos(sos: Sos) -> Self {
         Self::Filter(FilterSpec::sos(sos))

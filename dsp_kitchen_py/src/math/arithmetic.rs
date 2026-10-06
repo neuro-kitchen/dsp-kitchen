@@ -1,76 +1,77 @@
-use pyo3::prelude::*;
-use crate::pipeline::PyPipeline;
-use dsp_base::pipeline::{Pipeline, PipelineStage};
+//! `dsp_kitchen.math`: pointwise stages (scale, baseline, clamp). No defaults: the values depend
+//! on the recording.
 
+use dsp_base::pipeline::PipelineStage;
+use pyo3::prelude::*;
+
+use crate::pipeline::run_stage;
+
+/// `x · alpha + beta` (e.g. stored steps to physical units).
 #[pyclass(name = "Scale", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyScale {
-    pub alpha: f32,
-    pub beta: f32,
+    pub stage: PipelineStage,
 }
 
 #[pymethods]
 impl PyScale {
     #[new]
-    #[pyo3(signature = (alpha=0.195, beta=0.0))]
-    pub fn new(alpha: f32, beta: f32) -> Self {
-        Self { alpha, beta }
+    #[pyo3(signature = (alpha, beta=0.0))]
+    fn new(alpha: f32, beta: f32) -> Self {
+        Self { stage: PipelineStage::Scale { alpha, beta } }
     }
-
     fn __repr__(&self) -> String {
-        format!("Scale(alpha={}, beta={})", self.alpha, self.beta)
+        format!("{:?}", self.stage)
     }
 }
 
+/// `x − baseline`.
 #[pyclass(name = "SubtractBaseline", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PySubtractBaseline {
-    pub baseline_uv: f32,
+    pub stage: PipelineStage,
 }
 
 #[pymethods]
 impl PySubtractBaseline {
     #[new]
-    #[pyo3(signature = (baseline_uv=0.0))]
-    pub fn new(baseline_uv: f32) -> Self {
-        Self { baseline_uv }
+    fn new(baseline: f32) -> Self {
+        Self { stage: PipelineStage::SubtractBaseline { baseline } }
     }
-
     fn __repr__(&self) -> String {
-        format!("SubtractBaseline(baseline_uv={})", self.baseline_uv)
+        format!("{:?}", self.stage)
     }
 }
 
+/// `x` limited to `[min, max]`.
 #[pyclass(name = "Clamp", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyClamp {
-    pub min_val: f32,
-    pub max_val: f32,
+    pub stage: PipelineStage,
 }
 
 #[pymethods]
 impl PyClamp {
     #[new]
-    #[pyo3(signature = (min_val=-1000.0, max_val=1000.0))]
-    pub fn new(min_val: f32, max_val: f32) -> Self {
-        Self { min_val, max_val }
+    fn new(min: f32, max: f32) -> Self {
+        Self { stage: PipelineStage::Clamp { min, max } }
     }
-
     fn __repr__(&self) -> String {
-        format!("Clamp(min_val={}, max_val={})", self.min_val, self.max_val)
+        format!("{:?}", self.stage)
     }
 }
 
+/// `data · alpha + beta` on the device.
 #[pyfunction]
-#[pyo3(signature = (data, alpha=0.195, beta=0.0))]
-pub fn scale_samples<'py>(
-    py: Python<'py>,
-    data: Bound<'py, PyAny>,
-    alpha: f32,
-    beta: f32,
-) -> PyResult<Bound<'py, PyAny>> {
-    let mut pipe = Pipeline::new();
-    pipe.add(PipelineStage::Scale { alpha, beta });
-    let py_pipe = PyPipeline::from_stages(pipe.stages().to_vec());
-    py_pipe.run(py, data, 30000.0, None)
+#[pyo3(signature = (data, alpha, beta=0.0, *, runtime=None))]
+fn scale_samples<'py>(py: Python<'py>, data: Bound<'py, PyAny>, alpha: f32, beta: f32, runtime: Option<&str>) -> PyResult<Bound<'py, PyAny>> {
+    run_stage(py, PipelineStage::Scale { alpha, beta }, &data, None, runtime)
+}
+
+pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyScale>()?;
+    m.add_class::<PySubtractBaseline>()?;
+    m.add_class::<PyClamp>()?;
+    m.add_function(wrap_pyfunction!(scale_samples, m)?)?;
+    Ok(())
 }
