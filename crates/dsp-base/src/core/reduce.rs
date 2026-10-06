@@ -64,13 +64,14 @@ pub fn row_mean_std_kernel<F: Float>(
         m2_s[unit as usize] = m2;
         sync_cube();
 
-        let mut stride = comptime!(units / 2);
-        while stride > 0u32 {
-            if unit < stride {
-                merge_moments::<F>(&mut count_s, &mut mean_s, &mut m2_s, unit as usize, (unit + stride) as usize);
+        let stride = RuntimeCell::<u32>::new(units / 2u32);
+        while stride.read() > 0u32 {
+            let s = stride.read();
+            if unit < s {
+                merge_moments::<F>(&mut count_s, &mut mean_s, &mut m2_s, unit as usize, (unit + s) as usize);
             }
             sync_cube();
-            stride /= 2u32;
+            stride.store(s / 2u32);
         }
 
         if unit == 0u32 {
@@ -89,14 +90,15 @@ pub const ROW_SELECT_ITERATIONS: u32 = 64;
 /// Sum of `values[0..units]` into `values[0]` (pairwise, in shared memory).
 #[cube]
 fn shared_sum_u32(values: &mut SharedMemory<u32>, unit: u32, #[comptime] units: u32) {
-    let mut stride = comptime!(units / 2);
-    while stride > 0u32 {
-        if unit < stride {
-            let other = values[(unit + stride) as usize];
+    let stride = RuntimeCell::<u32>::new(units / 2u32);
+    while stride.read() > 0u32 {
+        let s = stride.read();
+        if unit < s {
+            let other = values[(unit + s) as usize];
             values[unit as usize] += other;
         }
         sync_cube();
-        stride /= 2u32;
+        stride.store(s / 2u32);
     }
 }
 
@@ -120,7 +122,7 @@ pub fn row_abs_kth_kernel<F: Float>(
     if row < rows {
         let unit = UNIT_POS_X;
         let base = (row * row_stride + col_start) as usize;
-        let mut vals = SharedMemory::<F>::new(comptime!(units as usize));
+        let mut vals = SharedMemory::<F>::new(comptime!(units.max(2) as usize));
         let mut counts = SharedMemory::<u32>::new(comptime!(units as usize));
 
         // Bracket: lo below every |x|, hi = max |x|
@@ -132,22 +134,27 @@ pub fn row_abs_kth_kernel<F: Float>(
         }
         vals[unit as usize] = hi_u;
         sync_cube();
-        let mut stride = comptime!(units / 2);
-        while stride > 0u32 {
-            if unit < stride {
-                let other = vals[(unit + stride) as usize];
+        let stride = RuntimeCell::<u32>::new(units / 2u32);
+        while stride.read() > 0u32 {
+            let s = stride.read();
+            if unit < s {
+                let other = vals[(unit + s) as usize];
                 vals[unit as usize] = F::max(vals[unit as usize], other);
             }
             sync_cube();
-            stride /= 2u32;
+            stride.store(s / 2u32);
         }
-        let mut lo = F::new(-1.0f32);
-        let mut hi = vals[0];
+        if unit == 0u32 {
+            vals[1] = vals[0]; // hi
+            vals[0] = F::new(-1.0f32); // lo
+        }
         sync_cube();
 
         // Runtime loop (a comptime range would unroll every halving into the kernel)
-        let mut it: u32 = 0u32;
-        while it < iterations {
+        let it = RuntimeCell::<u32>::new(0u32);
+        while it.read() < iterations {
+            let lo = vals[0];
+            let hi = vals[1];
             let mid = (lo + hi) / F::new(2.0f32);
             let mut n = 0u32;
             let mut col = unit;
@@ -160,17 +167,21 @@ pub fn row_abs_kth_kernel<F: Float>(
             counts[unit as usize] = n;
             sync_cube();
             shared_sum_u32(&mut counts, unit, units);
-            if counts[0] > k {
-                hi = mid;
-            } else {
-                lo = mid;
+            if unit == 0u32 {
+                if counts[0] > k {
+                    vals[1] = mid;
+                } else {
+                    vals[0] = mid;
+                }
             }
             sync_cube();
-            it += 1u32;
+            let cur_it = it.read();
+            it.store(cur_it + 1u32);
         }
 
+        let lo = vals[0];
         // Smallest |x| above lo
-        let mut best = F::new(f32::INFINITY);
+        let mut best = F::max_value();
         let mut col = unit;
         while col < cols {
             let a = F::abs(input[base + col as usize]);
@@ -181,14 +192,15 @@ pub fn row_abs_kth_kernel<F: Float>(
         }
         vals[unit as usize] = best;
         sync_cube();
-        let mut stride = comptime!(units / 2);
-        while stride > 0u32 {
-            if unit < stride {
-                let other = vals[(unit + stride) as usize];
+        let stride = RuntimeCell::<u32>::new(units / 2u32);
+        while stride.read() > 0u32 {
+            let s = stride.read();
+            if unit < s {
+                let other = vals[(unit + s) as usize];
                 vals[unit as usize] = F::min(vals[unit as usize], other);
             }
             sync_cube();
-            stride /= 2u32;
+            stride.store(s / 2u32);
         }
         if unit == 0u32 {
             out[row as usize] = vals[0];
