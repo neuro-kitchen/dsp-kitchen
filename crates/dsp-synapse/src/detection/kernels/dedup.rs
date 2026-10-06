@@ -1,13 +1,16 @@
 use cubecl::prelude::*;
 
+/// [`neighbour_slot`] of a channel outside the radius.
+pub const NO_SLOT: u32 = u32::MAX;
+
 /// Slot of `channel` in channel `ch`'s neighbour row (`nbr_offsets[ch]..nbr_offsets[ch + 1]` of
-/// `nbr_channels`), or `u32::MAX` when it is not within the radius.
+/// `nbr_channels`), or [`NO_SLOT`] when it is not within the radius.
 #[cube]
 fn neighbour_slot(nbr_offsets: &Array<u32>, nbr_channels: &Array<u32>, ch: u32, channel: u32) -> u32 {
-    let start = nbr_offsets[ch as usize];
-    let end = nbr_offsets[(ch + 1u32) as usize];
-    let mut slot = u32::MAX;
-    let mut k = start;
+    let start: u32 = nbr_offsets[ch as usize];
+    let end: u32 = nbr_offsets[(ch + 1u32) as usize];
+    let mut slot: u32 = NO_SLOT.runtime();
+    let mut k: u32 = start;
     while k < end {
         if nbr_channels[k as usize] == channel {
             slot = k - start;
@@ -60,7 +63,7 @@ pub fn spatial_dedup_survival_kernel(
         while j < num_spikes && sample_indices[j as usize] <= t_i + window_samples {
             let ch_j = channel_ids[j as usize];
             let slot = neighbour_slot(nbr_offsets, nbr_channels, ch_i, ch_j);
-            if slot != u32::MAX {
+            if slot != NO_SLOT {
                 let word = (mask_base + slot / 32u32) as usize;
                 participating[word] = participating[word] | (1u32 << (slot % 32u32));
                 if j != i {

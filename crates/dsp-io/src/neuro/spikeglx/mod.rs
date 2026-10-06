@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::neuro::probe::{Position3D, SensorLayout, SensorSite};
-use dsp_core::{DspError, DspResult, MemoryOrder, RecordingInfo, RecordingSource, SampleFormat};
+use dsp_core::{ChannelInfo, DspError, DspResult, MemoryOrder, RecordingInfo, RecordingSource, SampleFormat, SignalUnit, MICROVOLTS_PER_VOLT};
 
 use crate::neuro::mtscomp::MtscompRecording;
 use crate::generic::raw::{RawParams, RawRecording};
@@ -166,6 +166,15 @@ fn geometry(meta: &SpikeGlxMeta) -> Option<Vec<(f32, f32, usize)>> {
 }
 
 /// Applies SpikeGLX names, µV gains and metadata to `info` (samples unchanged).
+/// Sets a channel's scaling: `volts_per_bit` for neural and analog channels (reported in µV),
+/// none for sync and digital words (raw counts).
+fn set_gain(ch: &mut ChannelInfo, volts_per_bit: Option<f64>) {
+    (ch.gain, ch.unit) = match volts_per_bit {
+        Some(v) => ((v * MICROVOLTS_PER_VOLT) as f32, SignalUnit::Microvolt),
+        None => (1.0, SignalUnit::Dimensionless),
+    };
+}
+
 pub fn apply_meta(meta: &SpikeGlxMeta, mut info: RecordingInfo, lf_stream: bool) -> DspResult<RecordingInfo> {
     let n_saved = info.channels.len();
     let saved = meta.saved_channels(n_saved);
@@ -192,7 +201,7 @@ pub fn apply_meta(meta: &SpikeGlxMeta, mut info: RecordingInfo, lf_stream: bool)
                 (format!("DW{}", id - mn - ma - xa), None)
             };
             ch.name = name;
-            ch.gain_uv = gain.map_or(1.0, |g| (range / max_int / g * 1e6) as f32);
+            set_gain(ch, gain.map(|g| range / max_int / g));
         }
     } else {
         let (n_ap, n_lf) = meta.ap_lf_counts(n_saved);
@@ -211,7 +220,7 @@ pub fn apply_meta(meta: &SpikeGlxMeta, mut info: RecordingInfo, lf_stream: bool)
             // An LF-only file's LF channels carry the LF gain even when numbered like AP
             let gain = if lf_stream && id < n_ap { Some(gains[id].1) } else { gain };
             ch.name = name;
-            ch.gain_uv = gain.map_or(1.0, |g| (range / max_int / g as f64 * 1e6) as f32);
+            set_gain(ch, gain.map(|g| range / max_int / g as f64));
         }
     }
 
@@ -293,9 +302,9 @@ acqApLfSy=4,4,1\nsnsApLfSy=4,0,1\nsnsSaveChanSubset=0:3,8\n\
         let names: Vec<&str> = i.channels.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, ["AP0", "AP1", "AP2", "AP3", "SY0"]);
         // 0.6 V / 512 / 500 = 2.34375 µV per bit; channel 2 has gain 1000
-        assert!((i.channels[0].gain_uv - 2.34375).abs() < 1e-5);
-        assert!((i.channels[2].gain_uv - 1.171875).abs() < 1e-5);
-        assert_eq!(i.channels[4].gain_uv, 1.0);
+        assert!((i.channels[0].gain - 2.34375).abs() < 1e-5);
+        assert!((i.channels[2].gain - 1.171875).abs() < 1e-5);
+        assert_eq!(i.channels[4].gain, 1.0);
         assert_eq!(i.metadata["sync_channels"], "4");
 
         let layout = probe_layout(&meta).unwrap();
@@ -312,7 +321,7 @@ snsApLfSy=2,0,1\n~imroTbl=(24,2)(0 0 0 0 0)(1 0 0 0 1)\n~snsGeomMap=(NP2014,4,25
         );
         let i = apply_meta(&meta, info(3), false).unwrap();
         // 0.5 V / 8192 / 80 = 0.762939 µV per bit
-        assert!((i.channels[1].gain_uv - 0.762_939).abs() < 1e-5);
+        assert!((i.channels[1].gain - 0.762_939).abs() < 1e-5);
         let p: Vec<(f32, f32, usize)> = probe_layout(&meta).unwrap().sites().iter().map(|s| (s.position.x_um, s.position.y_um, s.shank_id)).collect();
         assert_eq!(p, [(27.0, 0.0, 0), (309.0, 15.0, 1)]);
     }

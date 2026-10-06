@@ -276,7 +276,7 @@ mod tests {
         assert_eq!(batch.snippet_slice(0).len(), 120);
         assert_eq!(batch.channel_slice(0, 0).len(), 30);
 
-        let roundtrip = SnippetBatch::from_snippets(&batch.to_snippets()).unwrap();
+        let roundtrip = SnippetBatch::from_snippets(&batch.to_snippets(), batch.peak_index).unwrap();
         assert_eq!(roundtrip, batch);
     }
 }

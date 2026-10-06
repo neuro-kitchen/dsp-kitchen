@@ -97,8 +97,6 @@ impl SensorLayout {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn neuropixels_1_0_matches_probeinterface() {
         let np = crate::neuro::probe::neuropixels_1_0();

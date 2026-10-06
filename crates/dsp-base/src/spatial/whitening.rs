@@ -58,12 +58,27 @@ impl SpatialWhitening {
         k_neighbors: usize,
         epsilon: f32,
     ) -> Self {
-        assert_eq!(positions.len(), channels, "Positions length must equal channels");
-        let k = k_neighbors.clamp(1, channels);
-        let eps = epsilon.max(MIN_WHITENING_EPSILON) as f64;
-
         let (cov, _) = covariance_of_host::<R, F>(client, data, channels, samples);
         let full_cov: Vec<f64> = buffer::download::<R, F>(client, cov).into_iter().map(to_f64).collect();
+        Self::local_knn_from_covariance::<R, F>(client, &full_cov, channels, positions, k_neighbors, epsilon)
+    }
+
+    /// Local ZCA whitening from a `[channels, channels]` covariance (row-major), for callers that
+    /// accumulate the covariance over many chunks: each channel is whitened over its
+    /// `k_neighbors` nearest contacts (`positions`), all neighbourhoods eigendecomposed in one
+    /// batch on `client`.
+    pub fn local_knn_from_covariance<R: Runtime, F: DspFloat>(
+        client: &ComputeClient<R>,
+        full_cov: &[f64],
+        channels: usize,
+        positions: &[[f32; 2]],
+        k_neighbors: usize,
+        epsilon: f32,
+    ) -> Self {
+        assert_eq!(positions.len(), channels, "Positions length must equal channels");
+        assert_eq!(full_cov.len(), channels * channels, "covariance must be [channels, channels]");
+        let k = k_neighbors.clamp(1, channels);
+        let eps = epsilon.max(MIN_WHITENING_EPSILON) as f64;
 
         let neighbourhoods: Vec<Vec<usize>> = (0..channels)
             .map(|c| {
