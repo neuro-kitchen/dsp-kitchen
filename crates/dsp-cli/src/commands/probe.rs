@@ -1,33 +1,52 @@
-use dsp_synapse::probe::{neuropixels_1_0, neuropixels_2_0, tetrode, utah_array};
+//! `probe`: a probe layout preset (dsp-io `neuro::probe`).
 
-pub fn run_probe(model: &str) {
-    println!("=== Electrode Probe Inspector ===");
-    let probe = match model {
-        "neuropixels-1" | "np1" => neuropixels_1_0(),
-        "neuropixels-2" | "np2" => neuropixels_2_0(),
-        "tetrode" => tetrode(),
-        "utah" | "utah-array" => utah_array(),
-        other => {
-            println!("Unknown probe model: '{}'. Supported models: neuropixels-1, neuropixels-2, tetrode, utah", other);
-            return;
-        }
+use clap::{Args, ValueEnum};
+use dsp_io::neuro::probe::{self, SensorLayout};
+
+/// Default electrode pitch of the HD-EMG grid presets (µm).
+const DEFAULT_HDEMG_PITCH_UM: f32 = 8_000.0;
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum Preset {
+    Neuropixels1,
+    Neuropixels2,
+    Tetrode,
+    Utah,
+    Hdemg4x8,
+    Hdemg8x8,
+}
+
+#[derive(Args, Debug)]
+pub struct ProbeArgs {
+    /// Layout preset
+    #[arg(value_enum)]
+    preset: Preset,
+    /// Electrode pitch of HD-EMG grids (µm)
+    #[arg(long, default_value_t = DEFAULT_HDEMG_PITCH_UM)]
+    pitch_um: f32,
+}
+
+pub fn run(args: &ProbeArgs) -> anyhow::Result<()> {
+    let layout: SensorLayout = match args.preset {
+        Preset::Neuropixels1 => probe::neuropixels_1_0(),
+        Preset::Neuropixels2 => probe::neuropixels_2_0(),
+        Preset::Tetrode => probe::tetrode(),
+        Preset::Utah => probe::utah_array(),
+        Preset::Hdemg4x8 => probe::hdemg_4x8(args.pitch_um),
+        Preset::Hdemg8x8 => probe::hdemg_8x8(args.pitch_um),
     };
-
-    println!("Probe Name:        {}", probe.name);
-    println!("Total Channels:    {}", probe.total_channels());
-    println!("Active Channels:   {}", probe.active_channels());
-
-    if let Ok(c0) = probe.get_contact(0) {
-        println!(
-            "Contact 0 Position:   ({:.1} um, {:.1} um, {:.1} um) [shank {}]",
-            c0.position.x_um, c0.position.y_um, c0.position.z_um, c0.shank_id
-        );
+    let sites = layout.sites();
+    let span = |coord: fn(&probe::SensorSite) -> f32| {
+        let (lo, hi) = sites.iter().map(coord).fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), v| (a.min(v), b.max(v)));
+        if lo <= hi { hi - lo } else { 0.0 }
+    };
+    let shanks = sites.iter().map(|s| s.shank_id).max().map_or(0, |m| m + 1);
+    println!("{}", layout.name);
+    println!("Sites:    {} ({} active), {shanks} shank(s)", layout.total_channels(), layout.active_channels());
+    println!("Extent:   {:.0} µm × {:.0} µm", span(|s| s.position.x_um), span(|s| s.position.y_um));
+    for site in sites.iter().take(1).chain(sites.last()) {
+        let p = &site.position;
+        println!("  channel {:>4}: ({:.1}, {:.1}, {:.1}) µm, shank {}", site.channel_id, p.x_um, p.y_um, p.z_um, site.shank_id);
     }
-    let last_idx = probe.total_channels().saturating_sub(1);
-    if let Ok(c_last) = probe.get_contact(last_idx) {
-        println!(
-            "Contact {} Position: ({:.1} um, {:.1} um, {:.1} um) [shank {}]",
-            last_idx, c_last.position.x_um, c_last.position.y_um, c_last.position.z_um, c_last.shank_id
-        );
-    }
+    Ok(())
 }

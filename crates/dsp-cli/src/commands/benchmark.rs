@@ -1,31 +1,122 @@
-//! Device benchmarks. Every timed region is synchronised with the compute client
+//! `benchmark`: device timings. Every timed region is synchronised with the compute client
 //! (`dsp_core::compute::bench`), so kernel time is execution time, not enqueueing.
+//!
+//! - `pipeline`: the production path, a `PipelineWorkspace` (upload, stages, download).
+//! - `sweep`: the same stages across channel counts.
+//! - `suite`: every kernel family and streaming detection, with a JSON report.
+//!
+//! Signals come from dsp-io's `SyntheticRecording`; detection settings from
+//! `StreamingDetectionConfig::default()`; matching settings from dsp-synapse's defaults.
 
 use std::fs;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use clap::{Args, Subcommand};
 use cubecl::prelude::*;
 use cubecl::server::Handle;
-use dsp_base::filter::{DeviceFilter, FilterMode, FilterSpec, execute_fir, execute_median_9p, execute_teager_kaiser};
-use dsp_base::math::{execute_clamp, execute_scaling, execute_unpack_stored, stored_words};
-use dsp_base::pipeline::{Pipeline, PipelineStage};
+use dsp_base::filter::non_linear::{MEDIAN9_RADIUS, MEDIAN_DEFAULT_EDGE, TEAGER_KAISER_DEFAULT_EDGE};
+use dsp_base::filter::{execute_fir, execute_median, execute_teager_kaiser, DeviceFilter, FilterMode, FilterSpec, FIR_DEFAULT_EDGE};
+use dsp_base::math::{execute_channel_noise_std, execute_clamp, execute_scaling, execute_unpack_stored, stored_words};
+use dsp_base::pipeline::{Pipeline, PipelineStage, PipelineWorkspace};
 use dsp_base::spatial::execute_direct_car;
 use dsp_core::compute::bench::{sync, time_device};
 use dsp_core::compute::{ComputeTarget, ComputeTask};
-use dsp_core::layout::{Position3D, SensorLayout, SensorSite};
-use dsp_core::{RecordingSource, SampleFormat};
-use dsp_synapse::detection::deduplicate_spikes_spatial;
+use dsp_core::{MemoryOrder, MemoryRecording, RecordingSource, SampleFormat};
+use dsp_io::neuro::probe::{precompute_knn_table, Position3D, SensorLayout, SensorSite};
+use dsp_io::{SyntheticParams, SyntheticRecording};
+use dsp_synapse::sorting::matching_pursuit::{
+    DEFAULT_MAX_AMPLITUDE_SCALE, DEFAULT_MAX_PASSES, DEFAULT_MIN_AMPLITUDE_SCALE, DEFAULT_MIN_EXPLAINED_ENERGY_UV2,
+};
 use dsp_synapse::{
-    StreamingSortConfig, StreamingSpikeRunner, WaveformTemplate, execute_detect_spikes_in_vram,
-    execute_extract_sinc_in_vram, execute_reduce_templates_in_vram, match_spikes_omp_on, precompute_knn_table,
+    deduplicate_spikes_spatial, execute_detect_spikes_in_vram, execute_extract_sinc_in_vram, execute_reduce_templates_in_vram,
+    match_spikes_matching_pursuit, SpikeSpacing, StreamingDetectionConfig, StreamingDetector,
 };
 use serde::Serialize;
 
-const FS: f64 = 30_000.0;
+/// Defaults: a Neuropixels-sized probe for one second at 30 kHz.
+const DEFAULT_CHANNELS: usize = 384;
+const DEFAULT_SAMPLES: usize = 30_000;
+const DEFAULT_SAMPLE_RATE_HZ: f64 = 30_000.0;
+const DEFAULT_ITERATIONS: usize = 5;
+/// Live-pipeline chain: µV per int16 step of a typical headstage, power-line notch.
+const STEP_UV: f32 = 0.195;
+const LINE_HZ: f64 = 60.0;
+const NOTCH_Q: f64 = 30.0;
+/// Spike band of extracellular recordings (SpikeInterface's default band-pass).
+const SPIKE_BAND_HZ: (f64, f64) = (300.0, 6_000.0);
+/// Moving-average FIR length timed by the suite.
+const FIR_TAPS: usize = 32;
+/// Channel counts of `sweep`.
+const SWEEP_CHANNELS: [usize; 8] = [1, 4, 16, 32, 64, 128, 384, 1024];
+/// Synthetic probe for the suite: two columns, this pitch (µm).
+const PROBE_COLUMN_PITCH_UM: f32 = 32.0;
+const PROBE_ROW_PITCH_UM: f32 = 20.0;
+const PROBE_COLUMNS: usize = 2;
+/// One simulated unit per this many channels, at most [`MAX_UNITS`].
+const CHANNELS_PER_UNIT: usize = 4;
+const MAX_UNITS: usize = 64;
+/// Matching pursuit is timed on at most this many channels and seconds.
+const MATCHING_CHANNELS: usize = 32;
+const MATCHING_SEC: f64 = 1.0;
+/// Streaming detection is timed on at most this many seconds.
+const DETECTION_MAX_SEC: f64 = 10.0;
+const MS_PER_S: f64 = 1e3;
+const PER_MEGA: f64 = 1e6;
+
+#[derive(Args, Debug, Clone)]
+pub struct Shape {
+    /// Channels
+    #[arg(short, long, default_value_t = DEFAULT_CHANNELS)]
+    channels: usize,
+    /// Samples per channel
+    #[arg(short, long, default_value_t = DEFAULT_SAMPLES)]
+    samples: usize,
+    /// Sample rate (Hz): sets the filters and the real-time factor
+    #[arg(short = 'r', long, default_value_t = DEFAULT_SAMPLE_RATE_HZ)]
+    sample_rate: f64,
+    /// Timed repetitions (the median is reported)
+    #[arg(short, long, default_value_t = DEFAULT_ITERATIONS)]
+    iterations: usize,
+}
+
+#[derive(Subcommand, Debug)]
+enum Mode {
+    /// A PipelineWorkspace (scale → notch → TKEO): upload, stages, download
+    Pipeline {
+        #[command(flatten)]
+        shape: Shape,
+        /// Upload int16 stored samples (scaled on the device) instead of f32
+        #[arg(long)]
+        int16: bool,
+        /// Write the output once as raw binary + sidecar (timed separately)
+        #[arg(long)]
+        save: Option<PathBuf>,
+    },
+    /// The pipeline's stages across channel counts
+    Sweep {
+        #[command(flatten)]
+        shape: Shape,
+    },
+    /// Every kernel family and streaming detection; writes a JSON report
+    Suite {
+        #[command(flatten)]
+        shape: Shape,
+        /// Folder for the report (`<unix time>-<runtime>.json`)
+        #[arg(long)]
+        report_dir: PathBuf,
+    },
+}
+
+#[derive(Args, Debug)]
+pub struct BenchmarkArgs {
+    #[command(subcommand)]
+    mode: Mode,
+}
 
 fn ms(d: Duration) -> f64 {
-    d.as_secs_f64() * 1e3
+    d.as_secs_f64() * MS_PER_S
 }
 
 fn median(mut v: Vec<Duration>) -> Duration {
@@ -33,156 +124,127 @@ fn median(mut v: Vec<Duration>) -> Duration {
     v[v.len() / 2]
 }
 
-// ------------------------------------------------------------------------------------------------
-// Pipeline: upload → kernels → download, each region synchronised
-// ------------------------------------------------------------------------------------------------
+/// Samples per second of input, in millions.
+fn msamples_per_s(values: usize, t: Duration) -> f64 {
+    values as f64 / t.as_secs_f64() / PER_MEGA
+}
 
-pub fn run_benchmark_pipeline(
-    target: ComputeTarget,
-    channels: usize,
-    samples: usize,
-    iterations: usize,
-    save: bool,
-    format: &str,
-    output_path: &Path,
-) -> anyhow::Result<()> {
-    struct Task<'a>(usize, usize, usize, bool, &'a str, &'a Path);
+/// Channel-major samples of a synthetic recording (noise, line noise, drifting units).
+fn synthetic(channels: usize, samples: usize, sample_rate: f64) -> anyhow::Result<(SyntheticRecording, Vec<f32>)> {
+    let source = SyntheticRecording::new(SyntheticParams {
+        channels,
+        sample_rate_hz: sample_rate,
+        duration_sec: samples as f64 / sample_rate,
+        units: (channels / CHANNELS_PER_UNIT).clamp(1, MAX_UNITS),
+        ..Default::default()
+    })?;
+    let n = source.info().samples.min(samples as u64);
+    let mut data = vec![0.0f32; channels * n as usize];
+    source.read(&(0..channels).collect::<Vec<_>>(), 0..n, &mut data)?;
+    Ok((source, data))
+}
+
+/// The live chain: scale stored steps to µV, remove the power line, emphasise spikes.
+fn live_chain() -> Pipeline {
+    Pipeline::with_stages(vec![PipelineStage::Scale { alpha: STEP_UV, beta: 0.0 }, PipelineStage::notch(LINE_HZ, NOTCH_Q), PipelineStage::teager_kaiser()])
+}
+
+pub fn run(target: ComputeTarget, args: &BenchmarkArgs) -> anyhow::Result<()> {
+    struct Task<'a>(&'a Mode);
     impl ComputeTask for Task<'_> {
         type Output = anyhow::Result<()>;
         fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
-            benchmark_pipeline_on(client, self.0, self.1, self.2, self.3, self.4, self.5)
+            match self.0 {
+                Mode::Pipeline { shape, int16, save } => pipeline_on(client, shape, *int16, save.as_deref()),
+                Mode::Sweep { shape } => sweep_on(client, shape),
+                Mode::Suite { shape, report_dir } => suite_on(client, shape, report_dir),
+            }
         }
     }
-    target.run(Task(channels, samples, iterations, save, format, output_path))?
+    target.run(Task(&args.mode))?
 }
 
-/// Scale → 60 Hz notch → TKEO on `[channels, samples]`, the live-pipeline chain.
-fn chain<R: Runtime>(client: &ComputeClient<R>, notch: &DeviceFilter, state: &Handle, a: &Handle, b: &Handle, channels: usize, samples: usize) {
-    execute_scaling::<R>(client, a, b, channels * samples, 0.195, 0.0);
-    notch.apply(client, b, a, state, state, channels, samples);
-    execute_teager_kaiser::<R>(client, a, b, channels, samples);
-}
+// ------------------------------------------------------------------------------------------------
+// Pipeline
+// ------------------------------------------------------------------------------------------------
 
-fn benchmark_pipeline_on<R: Runtime>(
-    client: ComputeClient<R>,
-    channels: usize,
-    samples: usize,
-    iterations: usize,
-    save: bool,
-    format: &str,
-    output_path: &Path,
-) -> anyhow::Result<()> {
+fn pipeline_on<R: Runtime>(client: ComputeClient<R>, shape: &Shape, int16: bool, save: Option<&Path>) -> anyhow::Result<()> {
+    let Shape { channels, samples, sample_rate, iterations } = *shape;
+    let (_, values) = synthetic(channels, samples, sample_rate)?;
+    let samples = values.len() / channels.max(1);
     let total = channels * samples;
-    println!("Pipeline benchmark: {channels} ch × {samples} samples, {iterations} iterations, {}", R::name(&client));
-    println!("Chain: scale → 60 Hz notch (forward) → TKEO; every region is device-synchronised");
+    let mut workspace = PipelineWorkspace::<R, f32>::new(client.clone(), live_chain(), channels, samples, sample_rate)?;
+    // int16 stored steps of the same signal; the workspace scales them on the device
+    let stored: Vec<u8> = values.iter().flat_map(|v| ((v / STEP_UV).round() as i16).to_le_bytes()).collect();
+    if int16 {
+        workspace.set_stored_scaling(&vec![STEP_UV; channels], &vec![0.0; channels]);
+    }
+    let upload_bytes = if int16 { stored.len() } else { total * std::mem::size_of::<f32>() };
+    println!("Pipeline: {channels} ch × {samples} samples at {sample_rate} Hz, {} upload ({upload_bytes} bytes), {}", if int16 { "int16" } else { "f32" }, R::name(&client));
+    println!("Stages: {:?}", workspace.pipeline().stages());
 
-    let input = vec![10.0f32; total];
-    let notch = notch_filter(&client)?;
-    let state = client.empty(channels * notch.state_len() * 4);
-    let scratch = client.empty(total * 4);
-
-    // Warm-up: kernel compilation and autotuning, then drain the queue
-    let warm = client.create_from_slice(f32::as_bytes(&input));
-    chain(&client, &notch, &state, &warm, &scratch, channels, samples);
+    let run_once = |workspace: &mut PipelineWorkspace<R, f32>| -> anyhow::Result<Handle> {
+        Ok(if int16 { workspace.process_stored_chunk_in_vram(&stored, SampleFormat::I16, samples)? } else { workspace.process_chunk_in_vram(&values, samples) })
+    };
+    // Warm-up: compilation and autotuning
+    run_once(&mut workspace)?;
     sync(&client);
 
-    let (mut up, mut kern, mut down, mut store, mut end_to_end) = (vec![], vec![], vec![], vec![], vec![]);
+    let (mut end_to_end, mut download) = (Vec::new(), Vec::new());
+    let mut last = Vec::new();
     for _ in 0..iterations.max(1) {
         let t0 = Instant::now();
-        let buf = client.create_from_slice(f32::as_bytes(&input));
+        let out = run_once(&mut workspace)?;
         sync(&client);
         let t1 = Instant::now();
-        chain(&client, &notch, &state, &buf, &scratch, channels, samples);
-        sync(&client);
+        last = client.read_one_unchecked(out).to_vec();
         let t2 = Instant::now();
-        let out = client.read_one_unchecked(scratch.clone());
-        let t3 = Instant::now();
-        if save {
-            persist(&out, channels, format, output_path)?;
-        }
-        let t4 = Instant::now();
-        up.push(t1 - t0);
-        kern.push(t2 - t1);
-        down.push(t3 - t2);
-        store.push(t4 - t3);
-        end_to_end.push(t4 - t0);
+        end_to_end.push(t1 - t0);
+        download.push(t2 - t1);
     }
-    let kernel = median(kern);
-    let msamples = total as f64 / kernel.as_secs_f64() / 1e6;
-    println!("  upload       {:>9.3} ms", ms(median(up)));
-    println!("  kernels      {:>9.3} ms   {msamples:.0} Msamples/s, {:.1}× real time", ms(kernel), samples as f64 / FS / kernel.as_secs_f64());
-    println!("  download     {:>9.3} ms", ms(median(down)));
-    if save {
-        println!("  storage      {:>9.3} ms ({format})", ms(median(store)));
-    }
-    println!("  end to end   {:>9.3} ms (medians)", ms(median(end_to_end)));
-    Ok(())
-}
+    let processed = median(end_to_end);
+    println!("  upload + stages  {:>9.3} ms   {:.0} Msamples/s, {:.1}× real time", ms(processed), msamples_per_s(total, processed), samples as f64 / sample_rate / processed.as_secs_f64());
+    println!("  download         {:>9.3} ms", ms(median(download)));
 
-fn persist(bytes: &[u8], channels: usize, format: &str, output_path: &Path) -> anyhow::Result<()> {
-    if format == "zarr" {
-        let path = if output_path.extension().is_some_and(|e| e == "bin") { output_path.with_extension("zarr") } else { output_path.to_path_buf() };
-        let rec = dsp_core::MemoryRecording::new("pipeline_output", f32::from_bytes(bytes).to_vec(), channels, FS)?;
-        dsp_io::write_zarr(&rec, &path, dsp_io::zarr::DEFAULT_CHUNK_SAMPLES, |_, _| {})?;
-    } else {
-        if let Some(parent) = output_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(output_path, bytes)?;
+    if let Some(path) = save {
+        let output = f32::from_bytes(&last).to_vec();
+        let recording = MemoryRecording::new("benchmark output", output, channels, sample_rate)?;
+        let t = Instant::now();
+        dsp_io::write_raw(&recording, path, SampleFormat::F32, MemoryOrder::ChannelMajor, 1.0, samples, |_, _| {})?;
+        println!("  save             {:>9.3} ms → {} (+ sidecar)", ms(t.elapsed()), path.display());
     }
     Ok(())
 }
 
 // ------------------------------------------------------------------------------------------------
-// Channel sweep
+// Sweep
 // ------------------------------------------------------------------------------------------------
 
-pub fn run_benchmark_sweep(target: ComputeTarget, samples_per_channel: usize, iterations: usize) -> anyhow::Result<()> {
-    struct Task(usize, usize);
-    impl ComputeTask for Task {
-        type Output = anyhow::Result<()>;
-        fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
-            benchmark_sweep_on(client, self.0, self.1)
-        }
-    }
-    target.run(Task(samples_per_channel, iterations))?
-}
-
-fn benchmark_sweep_on<R: Runtime>(client: ComputeClient<R>, samples: usize, iterations: usize) -> anyhow::Result<()> {
-    println!("Channel sweep: scale → notch → TKEO, {samples} samples per channel, {}", R::name(&client));
-    println!("{:>8} | {:>12} | {:>10} | {:>12} | {:>9}", "channels", "elements", "kernel ms", "Msamples/s", "realtime");
-    let notch = notch_filter(&client)?;
-    for channels in [1usize, 4, 16, 32, 64, 128, 384, 1024] {
+fn sweep_on<R: Runtime>(client: ComputeClient<R>, shape: &Shape) -> anyhow::Result<()> {
+    let Shape { samples, sample_rate, iterations, .. } = *shape;
+    println!("Channel sweep: live chain on {samples} samples per channel at {sample_rate} Hz, {}", R::name(&client));
+    println!("{:>8} | {:>12} | {:>10} | {:>12} | {:>9}", "channels", "values", "stages ms", "Msamples/s", "realtime");
+    for channels in SWEEP_CHANNELS {
         let total = channels * samples;
-        let a = client.create_from_slice(f32::as_bytes(&vec![1.0f32; total]));
-        let b = client.empty(total * 4);
-        let state = client.empty(channels * notch.state_len() * 4);
-        let t = time_device(&client, iterations, || chain(&client, &notch, &state, &a, &b, channels, samples));
-        println!(
-            "{channels:>8} | {total:>12} | {:>10.3} | {:>12.0} | {:>8.1}×",
-            ms(t),
-            total as f64 / t.as_secs_f64() / 1e6,
-            samples as f64 / FS / t.as_secs_f64()
-        );
+        let input = client.create_from_slice(f32::as_bytes(&vec![0.0f32; total]));
+        let mut workspace = PipelineWorkspace::<R, f32>::new(client.clone(), live_chain(), channels, samples, sample_rate)?;
+        let t = time_device(&client, iterations, || {
+            workspace.process_handle(&input, samples);
+        });
+        println!("{channels:>8} | {total:>12} | {:>10.3} | {:>12.0} | {:>8.1}×", ms(t), msamples_per_s(total, t), samples as f64 / sample_rate / t.as_secs_f64());
     }
     Ok(())
 }
 
-/// Causal 60 Hz notch (Q 30) at 30 kHz, as used in live pipelines.
-fn notch_filter<R: Runtime>(client: &ComputeClient<R>) -> anyhow::Result<DeviceFilter> {
-    let spec = FilterSpec::notch(60.0, 30.0).with_mode(FilterMode::Forward);
-    Ok(DeviceFilter::new(client, &spec, FS)?)
-}
-
 // ------------------------------------------------------------------------------------------------
-// Kernel suite
+// Suite
 // ------------------------------------------------------------------------------------------------
 
 #[derive(Serialize)]
 struct SuiteRow {
     kernel: String,
     ms: f64,
-    /// Input samples processed per second (channels × samples / time), when meaningful.
+    /// Input samples processed per second (millions), when meaningful.
     msamples_per_s: Option<f64>,
     note: String,
 }
@@ -197,7 +259,7 @@ struct Hardware {
 }
 
 #[derive(Serialize)]
-struct SortRow {
+struct DetectionRow {
     channels: usize,
     seconds: f64,
     /// First run, including kernel compilation and autotuning.
@@ -215,36 +277,25 @@ struct SuiteReport {
     hardware: Hardware,
     channels: usize,
     samples: usize,
+    sample_rate_hz: f64,
     iterations: usize,
     kernels: Vec<SuiteRow>,
-    sorter: SortRow,
+    streaming_detection: DetectionRow,
 }
 
-/// Times each kernel family and the streaming sorter on `target`, prints a table and writes the
-/// report as JSON into `out_dir` (`<unix time>-<runtime>.json`).
-pub fn run_benchmark_suite(target: ComputeTarget, channels: usize, samples: usize, iterations: usize, out_dir: &Path) -> anyhow::Result<PathBuf> {
-    struct Task(usize, usize, usize);
-    impl ComputeTask for Task {
-        type Output = anyhow::Result<SuiteReport>;
-        fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
-            suite_on(client, self.0, self.1, self.2)
-        }
-    }
-    let report = target.run(Task(channels, samples, iterations))??;
-    fs::create_dir_all(out_dir)?;
-    let file = out_dir.join(format!("{}-{}.json", report.unix_time, target.name()));
-    fs::write(&file, serde_json::to_string_pretty(&report)?)?;
-    println!("Report written to {}", file.display());
-    Ok(file)
+/// A two-column layout for any channel count.
+fn columns_probe(channels: usize) -> SensorLayout {
+    let sites = (0..channels)
+        .map(|c| {
+            let (col, row) = (c % PROBE_COLUMNS, c / PROBE_COLUMNS);
+            SensorSite::new(c, Position3D::new(col as f32 * PROBE_COLUMN_PITCH_UM, row as f32 * PROBE_ROW_PITCH_UM, 0.0), 0)
+        })
+        .collect();
+    SensorLayout::new("benchmark columns", sites)
 }
 
-/// Two-column layout with 20 µm row pitch for any channel count.
-fn linear_probe(channels: usize) -> SensorLayout {
-    let sites = (0..channels).map(|c| SensorSite::new(c, Position3D::new((c % 2) as f32 * 32.0, (c / 2) as f32 * 20.0, 0.0), 0)).collect();
-    SensorLayout::new("benchmark", sites)
-}
-
-fn suite_on<R: Runtime>(client: ComputeClient<R>, channels: usize, samples: usize, iterations: usize) -> anyhow::Result<SuiteReport> {
+fn suite_on<R: Runtime>(client: ComputeClient<R>, shape: &Shape, report_dir: &Path) -> anyhow::Result<()> {
+    let Shape { channels, samples, sample_rate: fs, iterations } = *shape;
     let hw = &client.properties().hardware;
     let hardware = Hardware {
         runtime: R::name(&client).to_string(),
@@ -253,146 +304,135 @@ fn suite_on<R: Runtime>(client: ComputeClient<R>, channels: usize, samples: usiz
         num_cpu_cores: hw.num_cpu_cores,
         num_streaming_multiprocessors: hw.num_streaming_multiprocessors,
     };
-    println!("Kernel suite: {channels} ch × {samples} samples ({:.1} s at 30 kHz), median of {iterations}, {}", samples as f64 / FS, hardware.runtime);
+    let (source, host) = synthetic(channels, samples, fs)?;
+    let samples = host.len() / channels.max(1);
     let total = channels * samples;
+    println!("Kernel suite: {channels} ch × {samples} samples ({:.1} s at {fs} Hz), median of {iterations}, {}", samples as f64 / fs, hardware.runtime);
+
     let mut rows: Vec<SuiteRow> = Vec::new();
-    let mut add = |kernel: &str, t: Duration, elements: Option<usize>, note: String| {
-        let row = SuiteRow { kernel: kernel.into(), ms: ms(t), msamples_per_s: elements.map(|n| n as f64 / t.as_secs_f64() / 1e6), note };
+    let mut add = |kernel: &str, t: Duration, values: Option<usize>, note: String| {
+        let row = SuiteRow { kernel: kernel.into(), ms: ms(t), msamples_per_s: values.map(|n| msamples_per_s(n, t)), note };
         match row.msamples_per_s {
             Some(r) => println!("  {:<30} {:>10.3} ms  {:>9.0} Msamples/s  {}", row.kernel, row.ms, r, row.note),
             None => println!("  {:<30} {:>10.3} ms  {:>20}  {}", row.kernel, row.ms, "", row.note),
         }
         rows.push(row);
     };
-
-    // Deterministic noise with sparse negative spikes
-    let mut seed = 0x9e37_79b9_7f4a_7c15u64;
-    let mut rnd = move || {
-        seed ^= seed << 13;
-        seed ^= seed >> 7;
-        seed ^= seed << 17;
-        (seed >> 11) as f32 / (1u64 << 53) as f32 * 2.0 - 1.0
-    };
-    let host: Vec<f32> = (0..total).map(|i| rnd() * 20.0 + if i % 997 == 0 { -150.0 } else { 0.0 }).collect();
     let input = client.create_from_slice(f32::as_bytes(&host));
-    let output = client.empty(total * 4);
+    let output = client.empty(total * std::mem::size_of::<f32>());
 
-    add("scale", time_device(&client, iterations, || execute_scaling::<R>(&client, &input, &output, total, 0.5, 1.0)), Some(total), String::new());
-    add("clamp", time_device(&client, iterations, || execute_clamp::<R>(&client, &input, &output, total, -50.0, 50.0)), Some(total), String::new());
-    add("CAR (direct)", time_device(&client, iterations, || execute_direct_car::<R>(&client, &input, &output, channels, samples)), Some(total), String::new());
-    add("median 9-point", time_device(&client, iterations, || execute_median_9p::<R>(&client, &input, &output, channels, samples)), Some(total), String::new());
-    add("TKEO", time_device(&client, iterations, || execute_teager_kaiser::<R>(&client, &input, &output, channels, samples)), Some(total), String::new());
-    let taps = client.create_from_slice(f32::as_bytes(&[1.0f32 / 32.0; 32]));
-    add("FIR 32 taps", time_device(&client, iterations, || execute_fir::<R>(&client, &input, &output, &taps, channels, samples, 32)), Some(total), String::new());
+    add("scale", time_device(&client, iterations, || execute_scaling::<R, f32>(&client, &input, &output, total, STEP_UV, 0.0)), Some(total), String::new());
+    let (lo, hi) = host.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), &v| (a.min(v), b.max(v)));
+    add("clamp", time_device(&client, iterations, || execute_clamp::<R, f32>(&client, &input, &output, total, lo / 2.0, hi / 2.0)), Some(total), "to half the range".into());
+    add("common reference (direct)", time_device(&client, iterations, || execute_direct_car::<R, f32>(&client, &input, &output, channels, samples)), Some(total), String::new());
+    let median_width = 2 * MEDIAN9_RADIUS + 1;
+    add("median", time_device(&client, iterations, || execute_median::<R, f32>(&client, &input, &output, channels, samples, median_width, MEDIAN_DEFAULT_EDGE)), Some(total), format!("width {median_width}"));
+    add("TKEO", time_device(&client, iterations, || execute_teager_kaiser::<R, f32>(&client, &input, &output, channels, samples, TEAGER_KAISER_DEFAULT_EDGE)), Some(total), String::new());
+    let taps = client.create_from_slice(f32::as_bytes(&[1.0f32 / FIR_TAPS as f32; FIR_TAPS]));
+    add("FIR", time_device(&client, iterations, || execute_fir::<R, f32>(&client, &input, &output, &taps, channels, samples, FIR_TAPS, FIR_DEFAULT_EDGE)), Some(total), format!("{FIR_TAPS} taps"));
 
-    for (name, mode) in [("bandpass o5 forward", FilterMode::Forward), ("bandpass o5 filtfilt", FilterMode::ForwardBackward)] {
-        let filter = DeviceFilter::new(&client, &FilterSpec::bandpass(300.0, 6000.0).with_mode(mode), FS)?;
-        let scratch = client.empty((filter.scratch_len(channels, samples) * 4).max(4));
-        let state = client.empty(channels * filter.state_len() * 4);
+    for (name, mode) in [("band-pass forward", FilterMode::Forward), ("band-pass forward-backward", FilterMode::ForwardBackward)] {
+        let filter = DeviceFilter::<f32>::new(&client, &FilterSpec::bandpass(SPIKE_BAND_HZ.0, SPIKE_BAND_HZ.1).with_mode(mode), fs)?;
+        let scratch = client.empty((filter.scratch_len(channels, samples) * std::mem::size_of::<f32>()).max(std::mem::size_of::<f32>()));
+        let state = client.empty((channels * filter.state_len() * std::mem::size_of::<f32>()).max(std::mem::size_of::<f32>()));
         let t = time_device(&client, iterations, || filter.apply(&client, &input, &output, &scratch, &state, channels, samples));
-        add(name, t, Some(total), "autotuned time blocks".into());
+        add(name, t, Some(total), format!("{}–{} Hz, autotuned blocks", SPIKE_BAND_HZ.0, SPIKE_BAND_HZ.1));
     }
 
-    // int16 stored samples → µV (half the upload of f32)
-    let stored: Vec<u8> = host.iter().flat_map(|v| ((v * 4.0) as i16).to_le_bytes()).collect();
+    // int16 stored samples → µV on the device (half the upload of f32)
+    let stored: Vec<u8> = host.iter().flat_map(|v| ((v / STEP_UV).round() as i16).to_le_bytes()).collect();
     let words = client.create_from_slice(u32::as_bytes(&stored_words(&stored)));
-    let gains = client.create_from_slice(f32::as_bytes(&vec![0.25f32; channels]));
+    let gains = client.create_from_slice(f32::as_bytes(&vec![STEP_UV; channels]));
     let offsets = client.create_from_slice(f32::as_bytes(&vec![0.0f32; channels]));
     let t = time_device(&client, iterations, || {
-        execute_unpack_stored::<R>(&client, &words, SampleFormat::I16, &gains, &offsets, &output, channels, samples).expect("int16 unpack")
+        execute_unpack_stored::<R, f32>(&client, &words, SampleFormat::I16, &gains, &offsets, &output, channels, samples).expect("int16 unpack");
     });
     add("unpack int16 → µV", t, Some(total), String::new());
 
-    let sigmas = client.create_from_slice(f32::as_bytes(&vec![12.0f32; channels]));
+    // Detection, deduplication, extraction and templates, with the streaming defaults
+    let config = StreamingDetectionConfig::default();
+    let sigmas = execute_channel_noise_std::<R, f32>(&client, &input, channels, samples, 0..samples);
+    let heights: Vec<f32> = sigmas.iter().map(|s| (*s as f32) * config.threshold_factor).collect();
+    let heights = client.create_from_slice(f32::as_bytes(&heights));
+    let refractory = config.refractory_samples(fs);
+    let spacing = SpikeSpacing { refractory_samples: refractory, rule: config.distance_rule };
+    let (pre, post) = (config.pre_samples(fs), config.post_samples(fs));
+    let emit: Range<usize> = pre..samples.saturating_sub(post);
     let mut events = Vec::new();
     let t = time_device(&client, iterations, || {
-        events = execute_detect_spikes_in_vram::<R>(&client, &input, &sigmas, channels, samples, 10, samples - 10, 0, 5.0, 30, None);
+        events = execute_detect_spikes_in_vram(&client, &input, &heights, channels, samples, emit.clone(), 0, config.polarity, spacing);
     });
     add("threshold detection", t, Some(total), format!("{} crossings", events.len()));
 
-    let probe = linear_probe(channels);
-    let (k, pre, post) = (4usize.min(channels), 30usize, 60usize);
-    let spikes = deduplicate_spikes_spatial(&events, &probe, 40.0, 30);
+    let probe = columns_probe(channels);
+    let k = config.k_neighbors.min(channels);
+    let spikes = deduplicate_spikes_spatial(&events, &probe, config.spatial_radius_um, refractory as u64);
     let knn = client.create_from_slice(u32::as_bytes(&precompute_knn_table(&probe, channels, k)));
     let mut extracted = None;
     let t = time_device(&client, iterations, || {
-        extracted = execute_extract_sinc_in_vram::<R>(&client, &input, &knn, channels, samples, &spikes, k, pre, post, true);
+        extracted = execute_extract_sinc_in_vram::<R, f32>(&client, &input, &knn, channels, samples, &spikes, k, pre, post, config.apply_sinc_shift);
     });
     add("sinc snippet extraction", t, None, format!("{} spikes × {k} ch × {} samples", spikes.len(), pre + post));
     if let Some(ex) = &extracted {
         let t = time_device(&client, iterations, || {
-            execute_reduce_templates_in_vram::<R>(&client, &ex.snippets, &ex.primaries, channels, k, pre + post);
+            execute_reduce_templates_in_vram(&client, &ex.snippets, &ex.primaries, channels, k, pre + post);
         });
-        add("template reduction", t, None, format!("{} spikes", ex.num_spikes()));
+        add("template reduction", t, None, format!("{} spikes", ex.primaries.len()));
     }
 
-    // OMP on one second of the first channels against a small dictionary
-    let (omp_ch, omp_len, units, t_len) = (channels.min(32), samples.min(30_000), 16usize, 60usize);
-    let omp_data: Vec<f32> = (0..omp_ch).flat_map(|c| host[c * samples..c * samples + omp_len].to_vec()).collect();
-    let templates: Vec<WaveformTemplate> = (0..units)
-        .map(|u| {
-            let ids: Vec<usize> = (0..4).map(|r| (u * 2 + r) % omp_ch).collect();
-            let mean: Vec<f32> = (0..4 * t_len).map(|i| -100.0 * (-((i % t_len) as f32 - 20.0).powi(2) / 20.0).exp() * (1.0 - 0.2 * (i / t_len) as f32)).collect();
-            WaveformTemplate::new(ids, t_len, mean, vec![1.0; 4 * t_len])
-        })
-        .collect();
-    let mut matched = 0;
-    let t = time_device(&client, iterations, || {
-        matched = match_spikes_omp_on::<R>(&client, &omp_data, omp_ch, omp_len, &templates, 0.65, 1.45, 500.0, 4).len();
-    });
-    add("OMP matching", t, Some(omp_ch * omp_len), format!("{omp_ch} ch × {omp_len} samples, {units} templates, {matched} matches"));
-
-    // Streaming sorter end to end on a synthetic recording
-    let sort_secs = (samples as f64 / FS).min(10.0);
-    let source = dsp_io::SyntheticRecording::new(dsp_io::SyntheticParams {
-        channels,
-        sample_rate_hz: FS,
-        duration_sec: sort_secs,
-        units: (channels / 4).clamp(1, 64),
-        ..Default::default()
-    })?;
-    // Reading the source alone, to separate its cost from the sorter's
-    let all: Vec<usize> = (0..channels).collect();
-    let n_src = source.info().samples;
-    let mut buf = vec![0.0f32; channels * FS as usize];
+    // Streaming detection end to end on the synthetic recording
+    let detection_sec = (samples as f64 / fs).min(DETECTION_MAX_SEC);
+    let pipeline = Pipeline::with_stages(vec![PipelineStage::bandpass(SPIKE_BAND_HZ.0, SPIKE_BAND_HZ.1)]);
+    let detector = StreamingDetector::new(config.clone());
     let start = Instant::now();
-    let mut s0 = 0u64;
-    while s0 < n_src {
-        let s1 = (s0 + FS as u64).min(n_src);
-        source.read(&all, s0..s1, &mut buf[..channels * (s1 - s0) as usize])?;
-        s0 = s1;
-    }
-    let read = start.elapsed();
-    add("source read (synthetic)", read, Some(channels * n_src as usize), "host-side sample generation, no processing".into());
-
-    let pipeline = Pipeline::with_stages(vec![PipelineStage::bandpass(300.0, 6000.0)]);
-    let runner = StreamingSpikeRunner::new(StreamingSortConfig::default());
-    let start = Instant::now();
-    runner.run_on::<R>(client.clone(), &source, &pipeline, &probe)?;
+    detector.run_on::<R>(client.clone(), &source, &pipeline, &probe)?;
     let cold = start.elapsed().as_secs_f64();
     let start = Instant::now();
-    let result = runner.run_on::<R>(client.clone(), &source, &pipeline, &probe)?;
+    let result = detector.run_on::<R>(client.clone(), &source, &pipeline, &probe)?;
     let wall = start.elapsed().as_secs_f64();
-    let sorted_samples = source.info().samples as f64 * channels as f64;
-    let sorter = SortRow {
+    let detected_values = source.info().samples as f64 * channels as f64;
+    let streaming_detection = DetectionRow {
         channels,
-        seconds: sort_secs,
+        seconds: detection_sec,
         cold_wall_s: cold,
         wall_s: wall,
-        msamples_per_s: sorted_samples / wall / 1e6,
-        real_time_factor: sort_secs / wall,
+        msamples_per_s: detected_values / wall / PER_MEGA,
+        real_time_factor: source.info().duration_sec() / wall,
         spikes: result.total_dedup_spikes,
     };
     println!(
         "  {:<30} {:>10.3} s   {:>9.0} Msamples/s  {:.1}× real time, {} spikes (first run {:.2} s with compilation)",
-        "streaming sorter",
-        sorter.wall_s,
-        sorter.msamples_per_s,
-        sorter.real_time_factor,
-        sorter.spikes,
-        sorter.cold_wall_s
+        "streaming detection", wall, streaming_detection.msamples_per_s, streaming_detection.real_time_factor, streaming_detection.spikes, cold
     );
 
+    // Matching pursuit with the templates detection found, on the first channels
+    let templates: Vec<_> = result.channel_templates.iter().flatten().filter(|t| t.channel_ids.iter().all(|&c| c < MATCHING_CHANNELS)).cloned().collect();
+    let (mp_channels, mp_samples) = (channels.min(MATCHING_CHANNELS), samples.min((MATCHING_SEC * fs) as usize));
+    if !templates.is_empty() {
+        let data: Vec<f32> = (0..mp_channels).flat_map(|c| host[c * samples..c * samples + mp_samples].to_vec()).collect();
+        let mut matched = 0;
+        let t = time_device(&client, iterations, || {
+            matched = match_spikes_matching_pursuit(
+                &client,
+                &data,
+                mp_channels,
+                mp_samples,
+                &templates,
+                DEFAULT_MIN_AMPLITUDE_SCALE,
+                DEFAULT_MAX_AMPLITUDE_SCALE,
+                DEFAULT_MIN_EXPLAINED_ENERGY_UV2,
+                DEFAULT_MAX_PASSES,
+            )
+            .len();
+        });
+        add("matching pursuit", t, Some(mp_channels * mp_samples), format!("{mp_channels} ch × {mp_samples} samples, {} templates, {matched} matches", templates.len()));
+    }
+
     let unix_time = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    Ok(SuiteReport { unix_time, hardware, channels, samples, iterations, kernels: rows, sorter })
+    let report = SuiteReport { unix_time, hardware, channels, samples, sample_rate_hz: fs, iterations, kernels: rows, streaming_detection };
+    fs::create_dir_all(report_dir)?;
+    let file = report_dir.join(format!("{unix_time}-{}.json", R::name(&client)));
+    fs::write(&file, serde_json::to_string_pretty(&report)?)?;
+    println!("Report written to {}", file.display());
+    Ok(())
 }
