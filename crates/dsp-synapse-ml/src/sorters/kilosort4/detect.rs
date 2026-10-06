@@ -80,10 +80,14 @@ impl TemplateCentres {
     }
 
     /// Centres of `layout` (channels indexed as in the recording). Needs at least
-    /// `nearest_chans` enabled contacts.
     pub fn new(layout: &SensorLayout, opts: &CentreOptions) -> DspResult<Self> {
-        let sites: Vec<(usize, f32, f32, usize)> =
-            layout.contacts.iter().filter(|s| s.enabled).map(|s| (s.channel_id, s.position.x_um, s.position.y_um, s.shank_id)).collect();
+        let sites: Vec<(usize, f32, f32, usize)> = layout
+            .contacts
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.enabled)
+            .map(|(idx, s)| (idx, s.position.x_um, s.position.y_um, s.shank_id))
+            .collect();
         let n_chans = opts.nearest_chans.min(sites.len());
         if n_chans == 0 {
             return Err(DspError::InvalidConfig("probe has no enabled contacts".into()));
