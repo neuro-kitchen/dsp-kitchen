@@ -4,14 +4,15 @@
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use dsp_core::RecordingSource;
-use dsp_base::resampler::{MinMaxCache, MinMaxSummary};
+use dsp_view::SignalBackend;
 
-use dsp_base::math::{nice_step, ticks};
 use crate::engine::canvas::Pixel;
+use crate::engine::ticks::{nice_step, ticks};
 use crate::engine::data::{Dataset, SpikeEventStore};
 
-use super::renderer::{px_per_unit, scale_bar_value, RenderRequest, TimeViewKind, NOMINAL_UV};
+use dsp_core::SignalUnit;
+
+use super::renderer::{nominal_amplitude, px_per_unit, scale_bar_value, RenderRequest, TimeViewKind};
 use crate::engine::palette::Palette;
 use super::timeline::TimelineState;
 
@@ -78,6 +79,9 @@ pub struct TimeView {
     /// Unit of the source's values (for the scale bar and readout).
     #[serde(skip, default = "micro")]
     pub unit: String,
+    /// Amplitude filling a lane when not auto-scaled, in `unit` ([`nominal_amplitude`]).
+    #[serde(skip, default = "nominal")]
+    pub nominal: f32,
     /// Plot area in physical pixels, and physical px per logical px.
     #[serde(skip)]
     pub canvas_width: u32,
@@ -92,9 +96,6 @@ pub struct TimeView {
     /// Latest hover request of this view (older readouts arriving late are dropped).
     #[serde(skip)]
     pub hover_seq: u64,
-    /// Whether the last frame had the complete min/max cache file (redraw once it completes).
-    #[serde(skip)]
-    pub has_lod: bool,
 }
 
 fn one() -> f32 {
@@ -103,11 +104,12 @@ fn one() -> f32 {
 fn yes() -> bool {
     true
 }
+/// Defaults until a source is set: microvolts, as most electrophysiology recordings.
 fn nominal() -> f32 {
-    NOMINAL_UV
+    nominal_amplitude(&SignalUnit::Microvolt)
 }
 fn micro() -> String {
-    "µV".into()
+    SignalUnit::Microvolt.symbol().into()
 }
 
 impl TimeView {
@@ -125,15 +127,15 @@ impl TimeView {
             auto_scale: true,
             remove_dc: true,
             pinned_selection: false,
-            amp_scale: NOMINAL_UV,
+            amp_scale: nominal(),
             unit: micro(),
+            nominal: nominal(),
             canvas_width: 0,
             canvas_height: 0,
             scale_factor: 1.0,
             needs_render: true,
             hover: String::new(),
             hover_seq: 0,
-            has_lod: false,
         }
     }
 
@@ -147,15 +149,16 @@ impl TimeView {
     }
 
     /// Shows source `id` (all `channels` of it), resetting scroll and scale.
-    pub fn set_source(&mut self, id: &str, name: &str, unit: &str, channels: usize) {
+    pub fn set_source(&mut self, id: &str, name: &str, unit: &SignalUnit, channels: usize) {
         let changed = self.source != id;
         self.source = id.to_string();
         self.source_name = name.to_string();
-        self.unit = unit.to_string();
+        self.unit = unit.symbol().to_string();
+        self.nominal = nominal_amplitude(unit);
         if changed {
             self.set_selection(0..channels, channels);
             self.scroll = 0;
-            self.amp_scale = NOMINAL_UV;
+            self.amp_scale = self.nominal;
         }
         self.retitle();
         self.needs_render = true;
@@ -365,17 +368,13 @@ impl TimeView {
     pub fn render_request(
         &self,
         timeline: &TimelineState,
-        source: Arc<dyn RecordingSource>,
-        lod: Option<Arc<MinMaxCache>>,
-        summary: Option<Arc<MinMaxSummary>>,
+        signal: Arc<dyn SignalBackend>,
         events: Arc<SpikeEventStore>,
         palette: Palette,
     ) -> RenderRequest {
-        let start_time_sec = source.info().start_time_sec;
+        let start_time_sec = signal.info().start_time.as_seconds_f64();
         RenderRequest {
-            source,
-            lod,
-            summary,
+            signal,
             events,
             width: self.canvas_width.max(1),
             height: self.canvas_height.max(1),
@@ -386,6 +385,7 @@ impl TimeView {
             window_sec: timeline.visible_window_sec,
             start_time_sec,
             amplitude_scale: self.gain,
+            nominal: self.nominal,
             auto_scale: self.auto_scale,
             remove_dc: self.remove_dc,
             scale_hint: if self.auto_scale { self.amp_scale } else { 0.0 },
