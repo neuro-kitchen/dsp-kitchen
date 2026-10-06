@@ -10,11 +10,7 @@ readme = "README.md"
 authors = [{ name = "jesusdpa1", email = "jesuspenalozaa2@gmail.com" }]
 requires-python = ">=3.10"
 dependencies = [
-    "h5py>=3.16.0",
-    "matplotlib>=3.10.9",
     "numpy>=2.2.6",
-    "polars>=1.44.2",
-    "python-dotenv>=1.2.3",
 ]
 
 [tool.maturin]

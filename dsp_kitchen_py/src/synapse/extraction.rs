@@ -1,16 +1,21 @@
+//! Waveform snippets around spikes, realigned to their sub-sample trough (windowed sinc).
+
 use pyo3::prelude::*;
 
 use crate::array::{to_numpy, F32Array};
 use dsp_synapse::detection::DeduplicatedSpike;
 use dsp_synapse::extraction::{extract_snippets_multichannel, WaveformSnippet};
+use dsp_synapse::StreamingDetectionConfig;
 use super::detection::PyDeduplicatedSpike;
 use super::probe::PyProbeLayout;
 
 /// Extracted multi-channel waveform snippet.
-#[pyclass(name = "WaveformSnippet")]
+#[pyclass(name = "WaveformSnippet", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyWaveformSnippet {
     pub inner: WaveformSnippet,
+    /// Sample of the snippet the spike's trough is aligned to (`pre_samples` at extraction).
+    pub peak_index: usize,
 }
 
 #[pymethods]
@@ -33,6 +38,12 @@ impl PyWaveformSnippet {
     #[getter]
     pub fn channel_ids(&self) -> Vec<usize> {
         self.inner.channel_ids.clone()
+    }
+
+    /// Sample of the snippet the trough is aligned to.
+    #[getter]
+    pub fn peak_index(&self) -> usize {
+        self.peak_index
     }
 
     #[getter]
@@ -63,50 +74,34 @@ impl PyWaveformSnippet {
     }
 }
 
+/// Snippets of `data` (`[channels, samples]`) on each spike's `k_neighbors` nearest channels
+/// (on `probe`), `pre_samples` before and `post_samples` after it; realigned to the sub-sample
+/// trough unless `apply_sinc_shift=False` (default from the streaming detection settings).
 #[pyfunction]
-#[pyo3(signature = (data, spikes, probe, channels=None, k_neighbors=7, pre_samples=20, post_samples=40, apply_sinc_shift=true))]
-pub fn extract_snippets<'py>(
-    py: Python<'py>,
-    data: Bound<'py, PyAny>,
-    spikes: Vec<PyRef<PyDeduplicatedSpike>>,
-    probe: PyRef<PyProbeLayout>,
-    channels: Option<usize>,
+#[pyo3(signature = (data, spikes, probe, *, k_neighbors, pre_samples, post_samples, apply_sinc_shift=None))]
+#[allow(clippy::too_many_arguments)]
+pub fn extract_snippets(
+    py: Python<'_>,
+    data: Bound<'_, PyAny>,
+    spikes: Vec<PyRef<'_, PyDeduplicatedSpike>>,
+    probe: PyRef<'_, PyProbeLayout>,
     k_neighbors: usize,
     pre_samples: usize,
     post_samples: usize,
-    apply_sinc_shift: bool,
+    apply_sinc_shift: Option<bool>,
 ) -> PyResult<Vec<PyWaveformSnippet>> {
     let input = F32Array::new(&data)?;
-    let (ch, samples) = input.channels_samples(channels)?;
-    let float_slice = input.slice();
-
-    let rust_spikes: Vec<DeduplicatedSpike> = spikes
-        .iter()
-        .map(|s| DeduplicatedSpike {
-            primary_channel: s.primary_channel,
-            sample_index: s.sample_index,
-            peak_amplitude_uv: s.peak_amplitude_uv,
-            participating_channels: s.participating_channels.clone(),
-        })
-        .collect();
-
+    let (channels, samples) = input.channels_samples(None)?;
+    let x = input.slice();
+    let shift = apply_sinc_shift.unwrap_or(StreamingDetectionConfig::default().apply_sinc_shift);
+    let spikes: Vec<DeduplicatedSpike> = spikes.iter().map(|s| DeduplicatedSpike::from(&**s)).collect();
     let layout = &probe.inner;
-    let snippets = py.detach(|| {
-        extract_snippets_multichannel(
-            float_slice,
-            ch,
-            samples,
-            &rust_spikes,
-            layout,
-            k_neighbors,
-            pre_samples,
-            post_samples,
-            apply_sinc_shift,
-        )
-    });
+    let snippets = py.detach(|| extract_snippets_multichannel(x, channels, samples, &spikes, layout, k_neighbors, pre_samples, post_samples, shift));
+    Ok(snippets.into_iter().map(|inner| PyWaveformSnippet { inner, peak_index: pre_samples }).collect())
+}
 
-    Ok(snippets
-        .into_iter()
-        .map(|s| PyWaveformSnippet { inner: s })
-        .collect())
+pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyWaveformSnippet>()?;
+    m.add_function(wrap_pyfunction!(extract_snippets, m)?)?;
+    Ok(())
 }

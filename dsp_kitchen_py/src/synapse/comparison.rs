@@ -8,6 +8,9 @@ use dsp_synapse::metrics::comparison::{
     compare_sortings as rust_compare_sortings,
     compare_spike_trains as rust_compare_spike_trains,
 };
+use dsp_synapse::metrics::{DEFAULT_AGREEMENT_THRESHOLD, DEFAULT_MATCH_DELTA_MS};
+
+const MS_PER_S: f64 = 1e3;
 
 use super::storage::PySortingOutput;
 
@@ -25,15 +28,15 @@ use super::storage::PySortingOutput;
 /// - `false_negatives`: Unmatched spikes in A
 /// - `false_positives`: Unmatched spikes in B
 #[pyfunction]
-#[pyo3(signature = (train_a, train_b, sample_rate_hz=30000.0, delta_time_ms=0.4))]
+#[pyo3(signature = (train_a, train_b, *, fs, delta_time_ms=DEFAULT_MATCH_DELTA_MS))]
 pub fn compare_spike_trains<'py>(
     py: Python<'py>,
     train_a: Vec<u64>,
     train_b: Vec<u64>,
-    sample_rate_hz: f64,
+    fs: f64,
     delta_time_ms: f64,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let tolerance_samples = ((delta_time_ms * 1e-3 * sample_rate_hz).round() as u64).max(1);
+    let tolerance_samples = ((delta_time_ms / MS_PER_S * fs).round() as u64).max(1);
     let res = rust_compare_spike_trains(&train_a, &train_b, tolerance_samples);
 
     let f1 = if res.precision + res.recall > 0.0 {
@@ -71,13 +74,10 @@ pub fn compare_spike_trains<'py>(
 /// - `well_detected_units_a`: List of units in A with agreement >= `agreement_threshold`
 /// - `missed_units_a`: List of units in A with no match above `agreement_threshold`
 /// - `false_positive_units_b`: List of units in B with no match above `agreement_threshold`
-/// - `mean_agreement`: Mean agreement score across matched pairs
-/// - `mean_accuracy`: Alias for mean agreement
-/// - `mean_precision`: Mean precision across matched pairs
-/// - `mean_recall`: Mean recall across matched pairs
-/// - `mean_f1`: Mean F1 score across matched pairs
+/// - `mean_agreement`, `mean_precision`, `mean_recall`, `mean_f1`: means over matched pairs (NaN
+///   when no pair matched)
 #[pyfunction]
-#[pyo3(signature = (sorting_a, sorting_b, delta_time_ms=0.4, agreement_threshold=0.5))]
+#[pyo3(signature = (sorting_a, sorting_b, *, delta_time_ms=DEFAULT_MATCH_DELTA_MS, agreement_threshold=DEFAULT_AGREEMENT_THRESHOLD))]
 pub fn compare_sortings<'py>(
     py: Python<'py>,
     sorting_a: &PySortingOutput,
@@ -127,9 +127,8 @@ pub fn compare_sortings<'py>(
         matches_list.append(md)?;
     }
 
-    let mean_prec = if n_matches > 0 { sum_prec / n_matches as f64 } else { 0.0 };
-    let mean_rec = if n_matches > 0 { sum_rec / n_matches as f64 } else { 0.0 };
-    let mean_f1 = if n_matches > 0 { sum_f1 / n_matches as f64 } else { 0.0 };
+    let mean = |sum: f64| if n_matches > 0 { sum / n_matches as f64 } else { f64::NAN };
+    let (mean_prec, mean_rec, mean_f1) = (mean(sum_prec), mean(sum_rec), mean(sum_f1));
 
     let dict = PyDict::new(py);
     dict.set_item("sorter_a", comp.sorter_a)?;
@@ -142,9 +141,14 @@ pub fn compare_sortings<'py>(
     dict.set_item("missed_units_a", comp.missed_units_a)?;
     dict.set_item("false_positive_units_b", comp.false_positive_units_b)?;
     dict.set_item("mean_agreement", comp.mean_matched_agreement as f64)?;
-    dict.set_item("mean_accuracy", comp.mean_matched_agreement as f64)?;
     dict.set_item("mean_precision", mean_prec)?;
     dict.set_item("mean_recall", mean_rec)?;
     dict.set_item("mean_f1", mean_f1)?;
     Ok(dict)
+}
+
+pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(compare_spike_trains, m)?)?;
+    m.add_function(wrap_pyfunction!(compare_sortings, m)?)?;
+    Ok(())
 }

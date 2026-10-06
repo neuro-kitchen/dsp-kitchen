@@ -1,5 +1,7 @@
 """
-Finite Impulse Response (FIR) digital filters for neural signal processing.
+FIR filters: Gaussian smoothing (``scipy.ndimage.gaussian_filter1d``, reflected edges by default).
 """
 
-__all__ = []
+from dsp_kitchen_bindings import GaussianSmooth, gaussian_smooth
+
+__all__ = ["GaussianSmooth", "gaussian_smooth"]

@@ -1,11 +1,8 @@
 """
-Composable in-VRAM DSP Pipeline Engine.
-Zero-host-PCIe round-trips via double-buffered ping-pong GPU memory.
+``Pipeline``: stages chained on the device; intermediate results never leave it. ``fs`` is
+required when a stage is a filter.
 """
 
-from .._bindings import DspSession, Pipeline
+from dsp_kitchen_bindings import Pipeline
 
-__all__ = [
-    "Pipeline",
-    "DspSession",
-]
+__all__ = ["Pipeline"]

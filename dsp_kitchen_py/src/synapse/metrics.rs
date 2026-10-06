@@ -1,47 +1,34 @@
+//! Unit quality and response metrics. Defaults are SpikeInterface's (named in
+//! `dsp_synapse::metrics`); analysis windows without a standard (rates, PSTH, MEP) are required.
+//! Spike times are sample indices; `fs` (Hz) is always given.
+
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyList};
 
 use crate::array::{to_numpy, F32Array};
 use dsp_synapse::metrics::{
-    compute_amplitude_cutoff as rust_compute_amplitude_cutoff,
-    compute_autocorrelogram as rust_compute_autocorrelogram,
-    compute_crosscorrelogram as rust_compute_crosscorrelogram,
-    compute_d_prime as rust_compute_d_prime,
-    compute_instantaneous_firing_rate, compute_isi_violations,
-    compute_isolation_distance as rust_compute_isolation_distance, compute_mean_template,
-    compute_presence_ratio as rust_compute_presence_ratio, compute_psth as rust_compute_psth,
-    compute_silhouette_score as rust_compute_silhouette_score, compute_snr as rust_compute_snr,
-    compute_stimulus_triggered_average, quantify_mep as rust_quantify_mep,
-    StimulusTriggeredAverage,
+    compute_amplitude_cutoff as amplitude_cutoff, compute_autocorrelogram as autocorrelogram, compute_crosscorrelogram as crosscorrelogram,
+    compute_d_prime as d_prime, compute_instantaneous_firing_rate, compute_isi_violations, compute_isolation_distance as isolation_distance,
+    compute_mean_template, compute_presence_ratio as presence_ratio, compute_psth as psth, compute_silhouette_score as silhouette, compute_snr as snr,
+    compute_stimulus_triggered_average, quantify_mep, Correlogram, DEFAULT_CORRELOGRAM_BIN_MS, DEFAULT_CORRELOGRAM_WINDOW_MS, DEFAULT_ISI_THRESHOLD_MS,
+    DEFAULT_MIN_ISI_MS, DEFAULT_PRESENCE_BIN_SEC, DEFAULT_PRESENCE_MEAN_FR_RATIO,
 };
+
 use super::extraction::PyWaveformSnippet;
 
-/// ISI violations (SpikeInterface `isi_violations`). `total_duration_sec` defaults to the span up to
-/// the last spike, a lower bound of the recording duration: pass the real duration.
+const MS_PER_S: f64 = 1e3;
+
+fn seconds(samples: &[u64], fs: f64) -> Vec<f64> {
+    samples.iter().map(|&s| s as f64 / fs).collect()
+}
+
+/// ISI violations (SpikeInterface `isi_violations`, Hill et al. ratio). `duration_sec` is the
+/// recording's length (rates depend on it).
 #[pyfunction]
-#[pyo3(signature = (spike_samples, sample_rate_hz=30000.0, refractory_ms=1.5, total_duration_sec=None, min_isi_ms=0.0))]
-pub fn compute_isi<'py>(
-    py: Python<'py>,
-    spike_samples: Vec<u64>,
-    sample_rate_hz: f64,
-    refractory_ms: f64,
-    total_duration_sec: Option<f64>,
-    min_isi_ms: f64,
-) -> PyResult<Bound<'py, PyDict>> {
-    let duration = total_duration_sec.unwrap_or_else(|| {
-        spike_samples
-            .iter()
-            .max()
-            .map_or(0.0, |&m| (m + 1) as f64 / sample_rate_hz)
-    });
-    let res = compute_isi_violations(
-        &spike_samples,
-        sample_rate_hz,
-        duration,
-        refractory_ms,
-        min_isi_ms,
-    );
+#[pyo3(signature = (spike_samples, *, fs, duration_sec, isi_threshold_ms=DEFAULT_ISI_THRESHOLD_MS, min_isi_ms=DEFAULT_MIN_ISI_MS))]
+pub fn compute_isi<'py>(py: Python<'py>, spike_samples: Vec<u64>, fs: f64, duration_sec: f64, isi_threshold_ms: f64, min_isi_ms: f64) -> PyResult<Bound<'py, PyDict>> {
+    let res = compute_isi_violations(&spike_samples, fs, duration_sec, isi_threshold_ms, min_isi_ms);
     let dict = PyDict::new(py);
     dict.set_item("total_spikes", res.total_spikes)?;
     dict.set_item("violation_count", res.violation_count)?;
@@ -52,324 +39,213 @@ pub fn compute_isi<'py>(
     Ok(dict)
 }
 
+/// Peak amplitude over noise σ (NaN when the noise is unknown or zero).
 #[pyfunction]
-#[pyo3(signature = (peak_amplitude_uv, noise_std_uv))]
-pub fn compute_snr(peak_amplitude_uv: f32, noise_std_uv: f32) -> f32 {
-    rust_compute_snr(peak_amplitude_uv, noise_std_uv)
+pub fn compute_snr(peak_amplitude: f32, noise_std: f32) -> f32 {
+    snr(peak_amplitude, noise_std)
 }
 
+/// Mean waveform of `snippets` (`[channels, samples]`), its SD (ddof 0, as Phy) and standard
+/// error (from the ddof-1 SD; NaN below two spikes).
 #[pyfunction]
-#[pyo3(signature = (snippets))]
-pub fn compute_template<'py>(
-    py: Python<'py>,
-    snippets: Vec<PyRef<PyWaveformSnippet>>,
-) -> PyResult<Option<Bound<'py, PyDict>>> {
-    let rust_snippets: Vec<_> = snippets.iter().map(|s| s.inner.clone()).collect();
-    let n = rust_snippets.len();
-    let template = match compute_mean_template(&rust_snippets) {
-        Some(t) => t,
-        None => return Ok(None),
-    };
-
+pub fn compute_template<'py>(py: Python<'py>, snippets: Vec<PyRef<'py, PyWaveformSnippet>>) -> PyResult<Option<Bound<'py, PyDict>>> {
+    let all: Vec<_> = snippets.iter().map(|s| s.inner.clone()).collect();
+    let n = all.len();
+    let Some(template) = compute_mean_template(&all) else { return Ok(None) };
     let (k, s) = (template.num_channels, template.num_samples);
-    let inv_sqrt_n = 1.0 / (n.max(1) as f32).sqrt();
-    let se_vec: Vec<f32> = template.std.iter().map(|&sd| sd * inv_sqrt_n).collect();
-
-    let mean_arr = to_numpy(py, template.mean, &[k, s])?;
-    let std_arr = to_numpy(py, template.std, &[k, s])?;
-    let se_arr = to_numpy(py, se_vec, &[k, s])?;
-
+    let se: Vec<f32> = template.std.iter().map(|&sd| if n < 2 { f32::NAN } else { sd / ((n - 1) as f32).sqrt() }).collect();
     let dict = PyDict::new(py);
-    dict.set_item("mean", mean_arr)?;
-    dict.set_item("std", std_arr)?;
-    dict.set_item("se", se_arr)?;
+    dict.set_item("mean", to_numpy(py, template.mean, &[k, s])?)?;
+    dict.set_item("std", to_numpy(py, template.std, &[k, s])?)?;
+    dict.set_item("se", to_numpy(py, se, &[k, s])?)?;
     dict.set_item("count", n)?;
-    dict.set_item("num_channels", k)?;
-    dict.set_item("num_samples", s)?;
     Ok(Some(dict))
 }
 
-/// Fast $O(N)$ symmetric Auto-Correlogram (ACG) over `[-window_ms, +window_ms]`.
-#[pyfunction]
-#[pyo3(signature = (spike_samples, sample_rate_hz=30000.0, bin_size_ms=1.0, window_ms=50.0))]
-pub fn compute_autocorrelogram<'py>(
-    py: Python<'py>,
-    mut spike_samples: Vec<u64>,
-    sample_rate_hz: f64,
-    bin_size_ms: f32,
-    window_ms: f32,
-) -> PyResult<Bound<'py, PyDict>> {
-    spike_samples.sort_unstable();
-    let res = rust_compute_autocorrelogram(&spike_samples, sample_rate_hz, bin_size_ms, window_ms);
-    let n_bins = res.bin_centers_ms.len();
+fn correlogram_dict<'py>(py: Python<'py>, c: Correlogram) -> PyResult<Bound<'py, PyDict>> {
+    let n = c.bin_centers_ms.len();
     let dict = PyDict::new(py);
-    dict.set_item(
-        "bin_centers_ms",
-        to_numpy(py, res.bin_centers_ms, &[n_bins])?,
-    )?;
-    dict.set_item("counts", res.counts)?;
-    dict.set_item("bin_size_ms", res.bin_size_ms)?;
-    dict.set_item("window_ms", res.window_ms)?;
+    dict.set_item("bin_centers_ms", to_numpy(py, c.bin_centers_ms, &[n])?)?;
+    dict.set_item("counts", c.counts)?;
+    dict.set_item("bin_ms", c.bin_size_ms)?;
+    dict.set_item("window_ms", c.window_ms)?;
     Ok(dict)
 }
 
-/// Fast $O(N)$ Cross-Correlogram (CCG) between `spike_samples_a` and `spike_samples_b`.
+/// Autocorrelogram over ±`window_ms` in `bin_ms` bins.
 #[pyfunction]
-#[pyo3(signature = (spike_samples_a, spike_samples_b, sample_rate_hz=30000.0, bin_size_ms=1.0, window_ms=50.0))]
-pub fn compute_crosscorrelogram<'py>(
-    py: Python<'py>,
-    mut spike_samples_a: Vec<u64>,
-    mut spike_samples_b: Vec<u64>,
-    sample_rate_hz: f64,
-    bin_size_ms: f32,
-    window_ms: f32,
-) -> PyResult<Bound<'py, PyDict>> {
+#[pyo3(signature = (spike_samples, *, fs, bin_ms=DEFAULT_CORRELOGRAM_BIN_MS, window_ms=DEFAULT_CORRELOGRAM_WINDOW_MS))]
+pub fn compute_autocorrelogram<'py>(py: Python<'py>, mut spike_samples: Vec<u64>, fs: f64, bin_ms: f32, window_ms: f32) -> PyResult<Bound<'py, PyDict>> {
+    spike_samples.sort_unstable();
+    correlogram_dict(py, autocorrelogram(&spike_samples, fs, bin_ms, window_ms))
+}
+
+/// Cross-correlogram of `b` relative to `a` over ±`window_ms`.
+#[pyfunction]
+#[pyo3(signature = (spike_samples_a, spike_samples_b, *, fs, bin_ms=DEFAULT_CORRELOGRAM_BIN_MS, window_ms=DEFAULT_CORRELOGRAM_WINDOW_MS))]
+pub fn compute_crosscorrelogram<'py>(py: Python<'py>, mut spike_samples_a: Vec<u64>, mut spike_samples_b: Vec<u64>, fs: f64, bin_ms: f32, window_ms: f32) -> PyResult<Bound<'py, PyDict>> {
     spike_samples_a.sort_unstable();
     spike_samples_b.sort_unstable();
-    let res = rust_compute_crosscorrelogram(
-        &spike_samples_a,
-        &spike_samples_b,
-        sample_rate_hz,
-        bin_size_ms,
-        window_ms,
-    );
-    let n_bins = res.bin_centers_ms.len();
-    let dict = PyDict::new(py);
-    dict.set_item(
-        "bin_centers_ms",
-        to_numpy(py, res.bin_centers_ms, &[n_bins])?,
-    )?;
-    dict.set_item("counts", res.counts)?;
-    dict.set_item("bin_size_ms", res.bin_size_ms)?;
-    dict.set_item("window_ms", res.window_ms)?;
-    Ok(dict)
+    correlogram_dict(py, crosscorrelogram(&spike_samples_a, &spike_samples_b, fs, bin_ms, window_ms))
 }
 
-/// Continuous Gaussian-smoothed instantaneous firing rate curve $r(t)$ (in Hz).
+/// Firing rate (Hz) in `bin_ms` bins smoothed by a Gaussian of `sigma_ms`.
 #[pyfunction]
-#[pyo3(signature = (spike_samples, total_duration_sec, sample_rate_hz=30000.0, bin_dt_sec=0.01, sigma_ms=25.0))]
-pub fn compute_firing_rate<'py>(
-    py: Python<'py>,
-    spike_samples: Vec<u64>,
-    total_duration_sec: f64,
-    sample_rate_hz: f64,
-    bin_dt_sec: f64,
-    sigma_ms: f64,
-) -> PyResult<Bound<'py, PyDict>> {
-    let fs = sample_rate_hz.max(1.0);
-    let spike_times_sec: Vec<f64> = spike_samples.iter().map(|&s| (s as f64) / fs).collect();
-    let curve = compute_instantaneous_firing_rate(
-        &spike_times_sec,
-        total_duration_sec,
-        bin_dt_sec * 1000.0,
-        sigma_ms,
-    );
+#[pyo3(signature = (spike_samples, *, fs, duration_sec, bin_ms, sigma_ms))]
+pub fn compute_firing_rate<'py>(py: Python<'py>, spike_samples: Vec<u64>, fs: f64, duration_sec: f64, bin_ms: f64, sigma_ms: f64) -> PyResult<Bound<'py, PyDict>> {
+    let curve = compute_instantaneous_firing_rate(&seconds(&spike_samples, fs), duration_sec, bin_ms, sigma_ms);
     let n = curve.rate_hz.len();
     let dict = PyDict::new(py);
     dict.set_item("time_sec", curve.time_bin_centers_sec)?;
     dict.set_item("rate_hz", to_numpy(py, curve.rate_hz, &[n])?)?;
-    dict.set_item("bin_dt_sec", curve.bin_width_sec)?;
-    dict.set_item("sigma_ms", curve.kernel_sigma_ms)?;
     Ok(dict)
 }
 
-/// Peri-Stimulus Time Histogram (PSTH) aligned to `trigger_samples`.
+/// Peri-stimulus time histogram: rate (Hz) and its standard error across trials, `pre_ms` before
+/// to `post_ms` after each trigger in `bin_ms` bins.
 #[pyfunction]
-#[pyo3(signature = (spike_samples, trigger_samples, sample_rate_hz=30000.0, pre_ms=50.0, post_ms=100.0, bin_ms=2.0, smooth_sigma_ms=0.0))]
-pub fn compute_psth<'py>(
-    py: Python<'py>,
-    spike_samples: Vec<u64>,
-    trigger_samples: Vec<u64>,
-    sample_rate_hz: f64,
-    pre_ms: f64,
-    post_ms: f64,
-    bin_ms: f64,
-    smooth_sigma_ms: f64,
-) -> PyResult<Bound<'py, PyDict>> {
-    let _ = smooth_sigma_ms;
-    let fs = sample_rate_hz.max(1.0);
-    let spike_times_sec: Vec<f64> = spike_samples.iter().map(|&s| (s as f64) / fs).collect();
-    let stim_times_sec: Vec<f64> = trigger_samples.iter().map(|&s| (s as f64) / fs).collect();
-    let res = rust_compute_psth(&spike_times_sec, &stim_times_sec, pre_ms, post_ms, bin_ms);
+#[pyo3(signature = (spike_samples, trigger_samples, *, fs, pre_ms, post_ms, bin_ms))]
+pub fn compute_psth<'py>(py: Python<'py>, spike_samples: Vec<u64>, trigger_samples: Vec<u64>, fs: f64, pre_ms: f64, post_ms: f64, bin_ms: f64) -> PyResult<Bound<'py, PyDict>> {
+    let res = psth(&seconds(&spike_samples, fs), &seconds(&trigger_samples, fs), pre_ms, post_ms, bin_ms);
     let n = res.mean_rate_hz.len();
-    let time_ms_f32: Vec<f32> = res.time_bins_ms.iter().map(|&t| t as f32).collect();
     let dict = PyDict::new(py);
-    dict.set_item("bin_centers_ms", to_numpy(py, time_ms_f32, &[n])?)?;
+    dict.set_item("bin_centers_ms", res.time_bins_ms)?;
     dict.set_item("rate_hz", to_numpy(py, res.mean_rate_hz, &[n])?)?;
     dict.set_item("se_rate_hz", to_numpy(py, res.se_rate_hz, &[n])?)?;
     dict.set_item("num_trials", res.num_trials)?;
     Ok(dict)
 }
 
-/// Stimulus-Triggered Average (STA) across `trigger_samples` with mean, SD, and SE ($\text{SD}/\sqrt{N}$).
+fn window_samples(ms: f64, fs: f64) -> usize {
+    (ms / MS_PER_S * fs).round() as usize
+}
+
+/// Stimulus-triggered average of `data` (`[channels, samples]`): mean, SD (ddof 1) and standard
+/// error, `pre_ms` before to `post_ms` after each trigger.
 #[pyfunction]
-#[pyo3(signature = (data, trigger_samples, sample_rate_hz=30000.0, pre_ms=10.0, post_ms=50.0, channels=None))]
-pub fn compute_sta<'py>(
+#[pyo3(signature = (data, trigger_samples, *, fs, pre_ms, post_ms))]
+pub fn compute_sta<'py>(py: Python<'py>, data: Bound<'py, PyAny>, trigger_samples: Vec<u64>, fs: f64, pre_ms: f64, post_ms: f64) -> PyResult<Bound<'py, PyDict>> {
+    let input = F32Array::new(&data)?;
+    let (channels, samples) = input.channels_samples(None)?;
+    let x = input.slice();
+    let sta = py.detach(|| compute_stimulus_triggered_average(x, channels, samples, &trigger_samples, window_samples(pre_ms, fs), window_samples(post_ms, fs), fs));
+    let w = sta.num_samples;
+    let dict = PyDict::new(py);
+    dict.set_item("mean", to_numpy(py, sta.mean_uv, &[channels, w])?)?;
+    dict.set_item("std", to_numpy(py, sta.std_uv, &[channels, w])?)?;
+    dict.set_item("se", to_numpy(py, sta.se_uv, &[channels, w])?)?;
+    dict.set_item("time_ms", sta.time_ms)?;
+    dict.set_item("num_trials", sta.num_trials)?;
+    Ok(dict)
+}
+
+/// Motor evoked potentials of `data` (`[channels, samples]`) after `trigger_samples`: the
+/// stimulus-triggered average, then per channel the onset (first crossing of
+/// `threshold_sigma` · pre-stimulus SD within `response_window_ms`), peak-to-peak, RMS and
+/// rectified area. Onsets that never cross are NaN.
+#[pyfunction]
+#[pyo3(signature = (data, trigger_samples, *, fs, pre_ms, post_ms, response_window_ms, threshold_sigma))]
+#[allow(clippy::too_many_arguments)]
+pub fn compute_mep<'py>(
     py: Python<'py>,
     data: Bound<'py, PyAny>,
     trigger_samples: Vec<u64>,
-    sample_rate_hz: f64,
+    fs: f64,
     pre_ms: f64,
     post_ms: f64,
-    channels: Option<usize>,
-) -> PyResult<Bound<'py, PyDict>> {
+    response_window_ms: (f64, f64),
+    threshold_sigma: f32,
+) -> PyResult<Bound<'py, PyList>> {
     let input = F32Array::new(&data)?;
-    let (ch, samples) = input.channels_samples(channels)?;
-    let pre_samples = ((pre_ms * 1e-3 * sample_rate_hz).round() as usize).max(1);
-    let post_samples = ((post_ms * 1e-3 * sample_rate_hz).round() as usize).max(1);
-    let sta = compute_stimulus_triggered_average(
-        input.slice(),
-        ch,
-        samples,
-        &trigger_samples,
-        pre_samples,
-        post_samples,
-        sample_rate_hz,
-    );
-
-    let w = sta.num_samples;
-    let time_ms_f32: Vec<f32> = sta.time_ms.iter().map(|&t| t as f32).collect();
-    let dict = PyDict::new(py);
-    dict.set_item("mean", to_numpy(py, sta.mean_uv, &[ch, w])?)?;
-    dict.set_item("std", to_numpy(py, sta.std_uv, &[ch, w])?)?;
-    dict.set_item("se", to_numpy(py, sta.se_uv, &[ch, w])?)?;
-    dict.set_item("time_ms", to_numpy(py, time_ms_f32, &[w])?)?;
-    dict.set_item("num_trials", sta.num_trials)?;
-    dict.set_item("num_channels", sta.num_channels)?;
-    dict.set_item("num_window_samples", w)?;
-    Ok(dict)
-}
-
-/// Quantify Motor Evoked Potential (MEP) onset latency, peak-to-peak amplitude, rectified AUC, and RMS.
-#[pyfunction]
-#[pyo3(signature = (waveform, time_ms, baseline_window_ms=(-10.0, -1.0), response_window_ms=(2.0, 45.0), threshold_sd=3.0))]
-pub fn quantify_mep<'py>(
-    py: Python<'py>,
-    waveform: Bound<'py, PyAny>,
-    time_ms: Vec<f32>,
-    baseline_window_ms: (f32, f32),
-    response_window_ms: (f32, f32),
-    threshold_sd: f32,
-) -> PyResult<Bound<'py, PyDict>> {
-    let _ = baseline_window_ms;
-    let wave_arr = F32Array::new(&waveform)?;
-    let w_slice = wave_arr.slice();
-    let n = w_slice.len().min(time_ms.len());
-    let sta = StimulusTriggeredAverage {
-        num_channels: 1,
-        num_samples: n,
-        num_trials: 1,
-        time_ms: time_ms[..n].iter().map(|&t| t as f64).collect(),
-        mean_uv: w_slice[..n].to_vec(),
-        std_uv: vec![0.0; n],
-        se_uv: vec![0.0; n],
-    };
-    let meps = rust_quantify_mep(
-        &sta,
-        response_window_ms.0 as f64,
-        response_window_ms.1 as f64,
-        threshold_sd,
-    );
-    let dict = PyDict::new(py);
-    if let Some(m) = meps.first() {
-        let onset = if m.onset_latency_ms.is_nan() {
-            None
-        } else {
-            Some(m.onset_latency_ms)
-        };
-        dict.set_item("onset_latency_ms", onset)?;
-        dict.set_item("peak_to_peak_uv", m.peak_to_peak_uv)?;
-        dict.set_item("rectified_auc_uv_ms", m.rectified_auc_uv_ms)?;
-        dict.set_item("rms_uv", m.rms_uv)?;
+    let (channels, samples) = input.channels_samples(None)?;
+    let x = input.slice();
+    let meps = py.detach(|| {
+        let sta = compute_stimulus_triggered_average(x, channels, samples, &trigger_samples, window_samples(pre_ms, fs), window_samples(post_ms, fs), fs);
+        quantify_mep(&sta, response_window_ms.0, response_window_ms.1, threshold_sigma)
+    });
+    let out = PyList::empty(py);
+    for m in meps {
+        let d = PyDict::new(py);
+        d.set_item("channel", m.channel_id)?;
+        d.set_item("onset_latency_ms", m.onset_latency_ms)?;
+        d.set_item("peak_to_peak", m.peak_to_peak_uv)?;
+        d.set_item("rms", m.rms_uv)?;
+        d.set_item("rectified_auc_ms", m.rectified_auc_uv_ms)?;
+        out.append(d)?;
     }
-    Ok(dict)
+    Ok(out)
 }
 
-/// Fisher Linear Discriminant sensitivity $d'$ between two feature clusters `[N_a, D]` and `[N_b, D]`.
-#[pyfunction]
-pub fn compute_d_prime<'py>(
-    cluster_a: Bound<'py, PyAny>,
-    cluster_b: Bound<'py, PyAny>,
-) -> PyResult<f32> {
-    let a = F32Array::new(&cluster_a)?;
-    let b = F32Array::new(&cluster_b)?;
-    if a.shape().len() != 2 || b.shape().len() != 2 || a.shape()[1] != b.shape()[1] {
-        return Err(PyValueError::new_err(
-            "cluster_a and cluster_b must be 2D arrays with matching feature dimension D",
-        ));
+/// `(values, rows, columns)` of a 2-D array.
+fn rows<'a>(a: &'a F32Array<'_>, what: &str) -> PyResult<(&'a [f32], usize, usize)> {
+    match *a.shape() {
+        [n, d] => Ok((a.slice(), n, d)),
+        _ => Err(PyValueError::new_err(format!("{what} must be a 2-D [spikes, features] array"))),
     }
-    Ok(rust_compute_d_prime(
-        a.slice(),
-        a.shape()[0],
-        b.slice(),
-        b.shape()[0],
-        a.shape()[1],
-    ))
 }
 
-/// Mahalanobis Isolation Distance (Schmitzer-Torbert et al. 2005) for `target_unit`.
+/// Fisher discriminant d′ between two clusters of features (`[n_a, d]`, `[n_b, d]`).
 #[pyfunction]
-pub fn compute_isolation_distance<'py>(
-    features: Bound<'py, PyAny>,
-    labels: Vec<usize>,
-    target_unit: usize,
-) -> PyResult<f32> {
+pub fn compute_d_prime(cluster_a: Bound<'_, PyAny>, cluster_b: Bound<'_, PyAny>) -> PyResult<f32> {
+    let (a, b) = (F32Array::new(&cluster_a)?, F32Array::new(&cluster_b)?);
+    let ((xa, na, da), (xb, nb, db)) = (rows(&a, "cluster_a")?, rows(&b, "cluster_b")?);
+    if da != db {
+        return Err(PyValueError::new_err("clusters must have the same number of features"));
+    }
+    Ok(d_prime(xa, na, xb, nb, da))
+}
+
+/// Isolation distance (Schmitzer-Torbert et al. 2005) of `target_unit`.
+#[pyfunction]
+pub fn compute_isolation_distance(features: Bound<'_, PyAny>, labels: Vec<usize>, target_unit: usize) -> PyResult<f32> {
     let f = F32Array::new(&features)?;
-    if f.shape().len() != 2 || f.shape()[0] != labels.len() {
-        return Err(PyValueError::new_err(
-            "features must have shape [len(labels), dim]",
-        ));
+    let (x, n, d) = rows(&f, "features")?;
+    if n != labels.len() {
+        return Err(PyValueError::new_err("one label per row of features"));
     }
-    Ok(rust_compute_isolation_distance(
-        f.slice(),
-        &labels,
-        f.shape()[1],
-        target_unit,
-    ))
+    Ok(isolation_distance(x, &labels, d, target_unit))
 }
 
-/// Silhouette score in `[-1, 1]` for `target_unit`.
+/// Silhouette score in `[-1, 1]` of `target_unit`.
 #[pyfunction]
-pub fn compute_silhouette_score<'py>(
-    features: Bound<'py, PyAny>,
-    labels: Vec<usize>,
-    target_unit: usize,
-) -> PyResult<f32> {
+pub fn compute_silhouette_score(features: Bound<'_, PyAny>, labels: Vec<usize>, target_unit: usize) -> PyResult<f32> {
     let f = F32Array::new(&features)?;
-    if f.shape().len() != 2 || f.shape()[0] != labels.len() {
-        return Err(PyValueError::new_err(
-            "features must have shape [len(labels), dim]",
-        ));
+    let (x, n, d) = rows(&f, "features")?;
+    if n != labels.len() {
+        return Err(PyValueError::new_err("one label per row of features"));
     }
-    Ok(rust_compute_silhouette_score(
-        f.slice(),
-        &labels,
-        f.shape()[1],
-        target_unit,
-    ))
+    Ok(silhouette(x, &labels, d, target_unit))
 }
 
-/// IBL / SpikeInterface amplitude cutoff quality metric in `[0.0, 0.5]`.
+/// Amplitude cutoff (IBL / SpikeInterface): estimated fraction of spikes below detection, in
+/// `[0, 0.5]`.
 #[pyfunction]
 pub fn compute_amplitude_cutoff(amplitudes: Vec<f32>) -> f64 {
-    rust_compute_amplitude_cutoff(&amplitudes)
+    amplitude_cutoff(&amplitudes)
 }
 
-/// Fraction of `bin_duration_s` bins in which the unit fires above `mean_fr_ratio_thresh` × its mean rate.
+/// Fraction of `bin_duration_sec` bins in which the unit fires above `mean_fr_ratio` × its mean
+/// rate (SpikeInterface `presence_ratio`).
 #[pyfunction]
-#[pyo3(signature = (spike_samples, total_samples, sample_rate_hz=30000.0, bin_duration_s=60.0, mean_fr_ratio_thresh=0.0))]
-pub fn compute_presence_ratio(
-    spike_samples: Vec<u64>,
-    total_samples: u64,
-    sample_rate_hz: f64,
-    bin_duration_s: f64,
-    mean_fr_ratio_thresh: f64,
-) -> f64 {
-    rust_compute_presence_ratio(
-        &spike_samples,
-        total_samples,
-        sample_rate_hz,
-        bin_duration_s,
-        mean_fr_ratio_thresh,
-    )
+#[pyo3(signature = (spike_samples, total_samples, *, fs, bin_duration_sec=DEFAULT_PRESENCE_BIN_SEC, mean_fr_ratio=DEFAULT_PRESENCE_MEAN_FR_RATIO))]
+pub fn compute_presence_ratio(spike_samples: Vec<u64>, total_samples: u64, fs: f64, bin_duration_sec: f64, mean_fr_ratio: f64) -> f64 {
+    presence_ratio(&spike_samples, total_samples, fs, bin_duration_sec, mean_fr_ratio)
+}
+
+pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(compute_isi, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_snr, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_template, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_autocorrelogram, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_crosscorrelogram, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_firing_rate, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_psth, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_sta, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_mep, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_d_prime, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_isolation_distance, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_silhouette_score, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_amplitude_cutoff, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_presence_ratio, m)?)?;
+    Ok(())
 }

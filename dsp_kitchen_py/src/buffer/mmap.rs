@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use dsp_core::{MemoryOrder, RecordingSource, SampleFormat};
-use dsp_io::raw::{RawParams, RawRecording};
+use dsp_io::{RawParams, RawRecording};
 use numpy::ndarray::{ArrayView1, ArrayView2, ShapeBuilder};
 use numpy::{Element, PyArray};
 use pyo3::exceptions::PyValueError;
@@ -14,8 +14,10 @@ use super::recording::read_to_numpy;
 /// Memory-mapped raw binary recording (dsp-io `RawRecording`).
 ///
 /// The layout comes from the JSON sidecar next to the file (`rec.bin` → `rec.meta`) or from the
-/// arguments. `read()` returns µV `float32` copies; `to_numpy()` is a zero-copy, read-only view of
+/// arguments. `read()` returns `float32` copies in the channels' unit (the raw format stores µV); `to_numpy()` is a zero-copy, read-only view of
 /// the stored samples that keeps this recording (and its mapping) alive.
+const BYTES_PER_MIB: f64 = 1_048_576.0;
+
 #[pyclass(name = "MmapRecording", frozen, skip_from_py_object)]
 pub struct PyMmapRecording {
     path: String,
@@ -24,8 +26,8 @@ pub struct PyMmapRecording {
 
 fn parse_order(order: &str) -> PyResult<MemoryOrder> {
     match order {
-        "channel_major" | "C" => Ok(MemoryOrder::ChannelMajor),
-        "time_major" | "F" => Ok(MemoryOrder::TimeMajor),
+        "channel_major" => Ok(MemoryOrder::ChannelMajor),
+        "time_major" => Ok(MemoryOrder::TimeMajor),
         other => Err(PyValueError::new_err(format!(
             "order must be 'channel_major' or 'time_major', got '{other}'"
         ))),
@@ -62,9 +64,10 @@ impl PyMmapRecording {
 
 #[pymethods]
 impl PyMmapRecording {
-    /// Opens `path`. Without `channels` / `sample_rate` the JSON sidecar describes the layout.
+    /// Opens `path`. Without `channels` / `sample_rate` the JSON sidecar describes the layout;
+    /// `gain` and `offset` are µV per stored step and µV (the raw format's unit).
     #[new]
-    #[pyo3(signature = (path, channels=None, sample_rate=None, dtype="float32", order="channel_major", gain_uv=1.0, offset_uv=0.0, header_bytes=0, samples=None))]
+    #[pyo3(signature = (path, channels=None, sample_rate=None, *, dtype="float32", order="channel_major", gain=1.0, offset=0.0, header_bytes=0, samples=None))]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         path: &str,
@@ -72,8 +75,8 @@ impl PyMmapRecording {
         sample_rate: Option<f64>,
         dtype: &str,
         order: &str,
-        gain_uv: f32,
-        offset_uv: f32,
+        gain: f32,
+        offset: f32,
         header_bytes: u64,
         samples: Option<u64>,
     ) -> PyResult<Self> {
@@ -84,8 +87,8 @@ impl PyMmapRecording {
                 let format = SampleFormat::parse(dtype)
                     .ok_or_else(|| PyValueError::new_err(format!("unsupported dtype '{dtype}'")))?;
                 let mut params = RawParams::new(channels, rate, format, parse_order(order)?);
-                params.gain_uv = gain_uv;
-                params.offset_uv = offset_uv;
+                params.gain_uv = gain;
+                params.offset_uv = offset;
                 params.header_bytes = header_bytes;
                 params.samples = samples;
                 RawRecording::open_with(p, &params)
@@ -136,7 +139,8 @@ impl PyMmapRecording {
         self.inner.stored_bytes().len()
     }
 
-    /// Reads µV `float32` `[channels, samples]` for `[start_sample, end_sample)` (default: 1 s).
+    /// Reads `float32` `[channels, samples]` in the channels' unit for `[start_sample, end_sample)`
+    /// (default: one second).
     #[pyo3(signature = (start_sample=0, end_sample=None, channels=None))]
     pub fn read<'py>(
         &self,
@@ -174,13 +178,17 @@ impl PyMmapRecording {
 
     fn __repr__(&self) -> String {
         format!(
-            "MmapRecording(path='{}', shape=({}, {}), dtype={}, sample_rate={:.1}Hz, size={:.2}MB)",
+            "MmapRecording(path='{}', shape=({}, {}), dtype={}, sample_rate={:.1}Hz, size={:.2} MiB)",
             self.path,
             self.channels(),
             self.samples(),
             self.dtype(),
             self.sample_rate(),
-            self.total_bytes() as f64 / 1_048_576.0
+            self.total_bytes() as f64 / BYTES_PER_MIB
         )
     }
+}
+
+pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyMmapRecording>()
 }

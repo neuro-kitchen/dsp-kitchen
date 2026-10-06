@@ -1,18 +1,8 @@
 """
-Non-linear filters (e.g. median filtering via sorting networks, Teager-Kaiser Energy Operator)
-for neural signal processing.
+Non-linear filters: running median (``scipy.signal.medfilt``, width 9 and zero edges by default)
+and the Teager-Kaiser energy operator.
 """
 
-from .._bindings import (
-    MedianFilter,
-    TeagerKaiser,
-    median_filter_9p,
-    teager_kaiser_filter,
-)
+from dsp_kitchen_bindings import MedianFilter, TeagerKaiser, median_filter, teager_kaiser_filter
 
-__all__ = [
-    "MedianFilter",
-    "median_filter_9p",
-    "TeagerKaiser",
-    "teager_kaiser_filter",
-]
+__all__ = ["MedianFilter", "TeagerKaiser", "median_filter", "teager_kaiser_filter"]
