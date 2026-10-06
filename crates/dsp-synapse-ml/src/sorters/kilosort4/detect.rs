@@ -5,7 +5,7 @@
 //!    Gaussian spatial weights of `template_sizes` widths (`min_template_size · (s + 1)`), L2-
 //!    normalized; centres farther than `max_channel_distance` from every contact dropped; each
 //!    centre's `nearest_templates` neighbouring centres.
-//! 2. Per batch ([`detect_universal`]): correlation of every channel with every `wTEMP` row;
+//! 2. Per batch ([`UniversalDetector::detect`]): correlation of every channel with every `wTEMP` row;
 //!    weighted sum over each centre's channels, maximum magnitude over sizes and templates;
 //!    maximum over neighbouring centres; local maxima over ±`nt0min` samples above
 //!    `Th_universal`, compacted on the device (`dsp_base::peaks::find_peak_candidates`); features
@@ -17,14 +17,14 @@
 use cubecl::prelude::*;
 use cubecl::server::Handle;
 use dsp_base::core::buffer;
-use dsp_base::peaks::{find_peak_candidates, Polarity};
+use dsp_base::peaks::{find_peak_candidates_on_device, Polarity};
 use dsp_core::compute::LaunchGeometry;
 use dsp_core::{DspError, DspResult};
 use dsp_io::neuro::probe::SensorLayout;
 
 use super::kernels::{
-    centre_response_kernel, correlate_templates_kernel, gather_args_kernel, local_peak_score_kernel,
-    neighbour_max_kernel, spike_features_kernel,
+    centre_response_kernel, correlate_templates_kernel, local_peak_score_kernel, neighbour_max_kernel,
+    spike_features_kernel,
 };
 use super::templates::UniversalTemplates;
 
@@ -196,8 +196,220 @@ pub struct UniversalSpike {
     pub features: Vec<f32>,
 }
 
+/// Universal-template detection on the device, set up once for a probe and a batch size:
+/// templates, centre tables and thresholds are uploaded once and the scratch buffers kept, so a
+/// batch costs its kernels plus two reads (the candidate counts, then the spikes).
+pub struct UniversalDetector<R: Runtime> {
+    client: ComputeClient<R>,
+    channels: usize,
+    max_samples: usize,
+    nt: usize,
+    n_templates: usize,
+    n_pcs: usize,
+    nt0min: usize,
+    centres: TemplateCentres,
+    wtemp: Handle,
+    wpca: Handle,
+    ic: Handle,
+    ic2: Handle,
+    weights: Handle,
+    /// `Th_universal` per centre.
+    heights: Handle,
+    /// `[channels, n_templates, max_samples]` correlations.
+    b: Handle,
+    /// `[n_centres, max_samples]` centre responses, arg-max, neighbourhood maximum, score.
+    a_s: Handle,
+    arg: Handle,
+    a_max: Handle,
+    score: Handle,
+}
+
+impl<R: Runtime> UniversalDetector<R> {
+    /// Detector for `[channels, samples ≤ max_samples]` batches.
+    pub fn new(
+        client: &ComputeClient<R>,
+        channels: usize,
+        max_samples: usize,
+        centres: &TemplateCentres,
+        templates: &UniversalTemplates,
+        th_universal: f32,
+        nt0min: usize,
+    ) -> DspResult<Self> {
+        if centres.ic.iter().any(|&c| c as usize >= channels) {
+            return Err(DspError::InvalidConfig(format!("template centres use a channel outside the {channels}-channel batch")));
+        }
+        let (k, n_centres) = (templates.n_templates, centres.n_centres());
+        let per_centre = n_centres * max_samples;
+        Ok(Self {
+            client: client.clone(),
+            channels,
+            max_samples,
+            nt: templates.nt,
+            n_templates: k,
+            n_pcs: templates.n_pcs,
+            nt0min,
+            centres: centres.clone(),
+            wtemp: buffer::upload(client, &templates.wtemp),
+            wpca: buffer::upload(client, &templates.wpca),
+            ic: buffer::upload(client, &centres.ic),
+            ic2: buffer::upload(client, &centres.ic2),
+            weights: buffer::upload(client, &centres.weights),
+            heights: buffer::upload(client, &vec![th_universal; n_centres.max(1)]),
+            b: buffer::empty::<R, f32>(client, channels * k * max_samples),
+            a_s: buffer::empty::<R, f32>(client, per_centre),
+            arg: buffer::empty::<R, i32>(client, per_centre),
+            a_max: buffer::empty::<R, f32>(client, per_centre),
+            score: buffer::empty::<R, f32>(client, per_centre),
+        })
+    }
+
+    /// Spikes of one preprocessed `[channels, samples]` device batch `x` (see the module docs),
+    /// ordered by centre then sample.
+    pub fn detect(&mut self, x: &Handle, samples: usize) -> DspResult<Vec<UniversalSpike>> {
+        if samples > self.max_samples {
+            return Err(DspError::InvalidConfig(format!("batch of {samples} samples exceeds the detector's {}", self.max_samples)));
+        }
+        let (client, channels) = (&self.client, self.channels);
+        let (nt, k, n_pcs) = (self.nt, self.n_templates, self.n_pcs);
+        let centres = &self.centres;
+        let (n_centres, n_chans) = (centres.n_centres(), centres.n_chans);
+        if n_centres == 0 || samples <= 2 * nt {
+            return Ok(Vec::new());
+        }
+        let per_row = LaunchGeometry::channels_samples(client, channels * k, samples);
+        let per_centre = LaunchGeometry::channels_samples(client, n_centres, samples);
+        let (b_len, c_len) = (channels * k * samples, n_centres * samples);
+        // SAFETY: every array is passed with at most the length it was created with
+        unsafe {
+            correlate_templates_kernel::launch::<f32, R>(
+                client,
+                per_row.cube_count,
+                per_row.cube_dim,
+                ArrayArg::from_raw_parts(x.clone(), channels * samples),
+                ArrayArg::from_raw_parts(self.wtemp.clone(), k * nt),
+                ArrayArg::from_raw_parts(self.b.clone(), b_len),
+                channels as u32,
+                samples as u32,
+                k as u32,
+                nt as u32,
+            );
+            centre_response_kernel::launch::<f32, R>(
+                client,
+                per_centre.cube_count.clone(),
+                per_centre.cube_dim.clone(),
+                ArrayArg::from_raw_parts(self.b.clone(), b_len),
+                ArrayArg::from_raw_parts(self.weights.clone(), centres.weights.len()),
+                ArrayArg::from_raw_parts(self.ic.clone(), centres.ic.len()),
+                ArrayArg::from_raw_parts(self.a_s.clone(), c_len),
+                ArrayArg::from_raw_parts(self.arg.clone(), c_len),
+                samples as u32,
+                k as u32,
+                n_centres as u32,
+                n_chans as u32,
+                centres.n_sizes as u32,
+            );
+            neighbour_max_kernel::launch::<f32, R>(
+                client,
+                per_centre.cube_count.clone(),
+                per_centre.cube_dim.clone(),
+                ArrayArg::from_raw_parts(self.a_s.clone(), c_len),
+                ArrayArg::from_raw_parts(self.ic2.clone(), centres.ic2.len()),
+                ArrayArg::from_raw_parts(self.a_max.clone(), c_len),
+                samples as u32,
+                n_centres as u32,
+                centres.n_neighbours as u32,
+                nt as u32,
+            );
+            local_peak_score_kernel::launch::<f32, R>(
+                client,
+                per_centre.cube_count,
+                per_centre.cube_dim,
+                ArrayArg::from_raw_parts(self.a_s.clone(), c_len),
+                ArrayArg::from_raw_parts(self.a_max.clone(), c_len),
+                ArrayArg::from_raw_parts(self.score.clone(), c_len),
+                samples as u32,
+                n_centres as u32,
+                self.nt0min as u32,
+            );
+        }
+
+        // Local maxima of the score above Th_universal, compacted and kept on the device (read 1:
+        // the counts per centre)
+        let cand = find_peak_candidates_on_device::<R, f32>(client, &self.score, &self.heights, n_centres, samples, 0..samples, Polarity::Positive);
+        let n = cand.total;
+        if n == 0 {
+            return Ok(Vec::new());
+        }
+        // Arg-max, features and per-channel template responses of every candidate, on the device
+        let picked = buffer::empty::<R, i32>(client, n);
+        let feat = buffer::empty::<R, f32>(client, n * n_chans * n_pcs);
+        let amp = buffer::empty::<R, f32>(client, n * n_chans);
+        let per_spike = LaunchGeometry::elementwise(client, n * n_chans);
+        // SAFETY: as above; the candidate buffers hold `n` entries
+        unsafe {
+            spike_features_kernel::launch::<f32, R>(
+                client,
+                per_spike.cube_count,
+                per_spike.cube_dim,
+                ArrayArg::from_raw_parts(x.clone(), channels * samples),
+                ArrayArg::from_raw_parts(self.b.clone(), b_len),
+                ArrayArg::from_raw_parts(self.wpca.clone(), n_pcs * nt),
+                ArrayArg::from_raw_parts(self.ic.clone(), centres.ic.len()),
+                ArrayArg::from_raw_parts(self.arg.clone(), c_len),
+                ArrayArg::from_raw_parts(cand.rows.clone(), n),
+                ArrayArg::from_raw_parts(cand.indices.clone(), n),
+                ArrayArg::from_raw_parts(picked.clone(), n),
+                ArrayArg::from_raw_parts(feat.clone(), n * n_chans * n_pcs),
+                ArrayArg::from_raw_parts(amp.clone(), n * n_chans),
+                samples as u32,
+                k as u32,
+                n_centres as u32,
+                n_chans as u32,
+                n_pcs as u32,
+                nt as u32,
+                n as u32,
+            );
+        }
+        // Read 2: the spikes (all kernels are queued; these reads wait for them once)
+        let rows = buffer::download::<R, u32>(client, cand.rows);
+        let times = buffer::download::<R, u32>(client, cand.indices);
+        let values = buffer::download::<R, f32>(client, cand.values);
+        let picked = buffer::download::<R, i32>(client, picked);
+        let feat = buffer::download::<R, f32>(client, feat);
+        let amp = buffer::download::<R, f32>(client, amp);
+
+        let mut spikes: Vec<UniversalSpike> = (0..n)
+            .map(|i| {
+                let (centre, t, a) = (rows[i] as usize, times[i] as usize, picked[i]);
+                let idx = (a.unsigned_abs() as usize).saturating_sub(1);
+                let (template, size, sign) = (idx % k, idx / k, if a < 0 { -1.0 } else { 1.0 });
+                // y: contact y weighted by the (sign-corrected, rectified) template response
+                let w: Vec<f32> = (0..n_chans).map(|c| (amp[i * n_chans + c] * sign).max(0.0)).collect();
+                let total: f32 = w.iter().sum();
+                let y_um = if total > 0.0 {
+                    (0..n_chans).map(|c| w[c] * centres.channel_y[centres.ic[c * n_centres + centre] as usize]).sum::<f32>() / total
+                } else {
+                    centres.positions[centre][1]
+                };
+                UniversalSpike {
+                    sample: t,
+                    centre,
+                    amplitude: values[i],
+                    template,
+                    size,
+                    y_um,
+                    features: feat[i * n_chans * n_pcs..(i + 1) * n_chans * n_pcs].to_vec(),
+                }
+            })
+            .collect();
+        // The device lists are unordered within a centre
+        spikes.sort_unstable_by_key(|s| (s.centre, s.sample));
+        Ok(spikes)
+    }
+}
+
 /// Universal-template detection of one preprocessed `[channels, samples]` batch on the device
-/// (`x`). See the module docs.
+/// (`x`), with a one-off [`UniversalDetector`]. Over many batches, keep a detector instead.
 #[allow(clippy::too_many_arguments)]
 pub fn detect_universal<R: Runtime>(
     client: &ComputeClient<R>,
@@ -209,174 +421,5 @@ pub fn detect_universal<R: Runtime>(
     th_universal: f32,
     nt0min: usize,
 ) -> DspResult<Vec<UniversalSpike>> {
-    let (nt, k) = (templates.nt, templates.n_templates);
-    let n_centres = centres.n_centres();
-    if n_centres == 0 || samples <= 2 * nt {
-        return Ok(Vec::new());
-    }
-    if centres.ic.iter().any(|&c| c as usize >= channels) {
-        return Err(DspError::InvalidConfig(format!("template centres use a channel outside the {channels}-channel batch")));
-    }
-    let wtemp = buffer::upload(client, &templates.wtemp);
-    let b = buffer::empty::<R, f32>(client, channels * k * samples);
-    let a_s = buffer::empty::<R, f32>(client, n_centres * samples);
-    let arg = buffer::empty::<R, i32>(client, n_centres * samples);
-    let a_max = buffer::empty::<R, f32>(client, n_centres * samples);
-    let score = buffer::empty::<R, f32>(client, n_centres * samples);
-    let ic = buffer::upload(client, &centres.ic);
-    let ic2 = buffer::upload(client, &centres.ic2);
-    let weights = buffer::upload(client, &centres.weights);
-    let per_row = LaunchGeometry::channels_samples(client, channels * k, samples);
-    let per_centre = LaunchGeometry::channels_samples(client, n_centres, samples);
-    // SAFETY: every array is passed with the length it was created with
-    unsafe {
-        correlate_templates_kernel::launch::<f32, R>(
-            client,
-            per_row.cube_count,
-            per_row.cube_dim,
-            ArrayArg::from_raw_parts(x.clone(), channels * samples),
-            ArrayArg::from_raw_parts(wtemp, k * nt),
-            ArrayArg::from_raw_parts(b.clone(), channels * k * samples),
-            channels as u32,
-            samples as u32,
-            k as u32,
-            nt as u32,
-        );
-        centre_response_kernel::launch::<f32, R>(
-            client,
-            per_centre.cube_count.clone(),
-            per_centre.cube_dim.clone(),
-            ArrayArg::from_raw_parts(b.clone(), channels * k * samples),
-            ArrayArg::from_raw_parts(weights, centres.weights.len()),
-            ArrayArg::from_raw_parts(ic.clone(), centres.ic.len()),
-            ArrayArg::from_raw_parts(a_s.clone(), n_centres * samples),
-            ArrayArg::from_raw_parts(arg.clone(), n_centres * samples),
-            samples as u32,
-            k as u32,
-            n_centres as u32,
-            centres.n_chans as u32,
-            centres.n_sizes as u32,
-        );
-        neighbour_max_kernel::launch::<f32, R>(
-            client,
-            per_centre.cube_count.clone(),
-            per_centre.cube_dim.clone(),
-            ArrayArg::from_raw_parts(a_s.clone(), n_centres * samples),
-            ArrayArg::from_raw_parts(ic2, centres.ic2.len()),
-            ArrayArg::from_raw_parts(a_max.clone(), n_centres * samples),
-            samples as u32,
-            n_centres as u32,
-            centres.n_neighbours as u32,
-            nt as u32,
-        );
-        local_peak_score_kernel::launch::<f32, R>(
-            client,
-            per_centre.cube_count,
-            per_centre.cube_dim,
-            ArrayArg::from_raw_parts(a_s.clone(), n_centres * samples),
-            ArrayArg::from_raw_parts(a_max, n_centres * samples),
-            ArrayArg::from_raw_parts(score.clone(), n_centres * samples),
-            samples as u32,
-            n_centres as u32,
-            nt0min as u32,
-        );
-    }
-
-    // Local maxima of the score above Th_universal, compacted on the device
-    let heights = buffer::upload(client, &vec![th_universal; n_centres]);
-    let cand = find_peak_candidates::<R, f32>(client, &score, &heights, n_centres, samples, 0..samples, Polarity::Positive);
-    let mut spikes: Vec<(usize, usize, f32)> = Vec::new(); // (centre, t, amplitude)
-    for centre in 0..n_centres {
-        let (ts, vals) = cand.channel(centre);
-        spikes.extend(ts.iter().zip(vals).map(|(&t, &v)| (centre, t as usize, v)));
-    }
-    if spikes.is_empty() {
-        return Ok(Vec::new());
-    }
-    // Arg-max (template, size, sign) of each spike: gathered on the device, only those entries read
-    let n = spikes.len();
-    let centre_ids: Vec<u32> = spikes.iter().map(|s| s.0 as u32).collect();
-    let times: Vec<u32> = spikes.iter().map(|s| s.1 as u32).collect();
-    let (centres_h, times_h) = (buffer::upload(client, &centre_ids), buffer::upload(client, &times));
-    let picked = buffer::empty::<R, i32>(client, n);
-    let per_pick = LaunchGeometry::elementwise(client, n);
-    // SAFETY: as above
-    unsafe {
-        gather_args_kernel::launch::<R>(
-            client,
-            per_pick.cube_count,
-            per_pick.cube_dim,
-            ArrayArg::from_raw_parts(arg, n_centres * samples),
-            ArrayArg::from_raw_parts(centres_h.clone(), n),
-            ArrayArg::from_raw_parts(times_h.clone(), n),
-            ArrayArg::from_raw_parts(picked.clone(), n),
-            samples as u32,
-            n as u32,
-        );
-    }
-    let decoded: Vec<(usize, usize, f32)> = buffer::download::<R, i32>(client, picked)
-        .into_iter()
-        .map(|a| {
-            let idx = (a.unsigned_abs() as usize).saturating_sub(1);
-            (idx % k, idx / k, if a < 0 { -1.0 } else { 1.0 })
-        })
-        .collect();
-
-    // Features and per-channel template responses
-    let (n_chans, n_pcs) = (centres.n_chans, templates.n_pcs);
-    let feat = buffer::empty::<R, f32>(client, n * n_chans * n_pcs);
-    let amp = buffer::empty::<R, f32>(client, n * n_chans);
-    let per_spike = LaunchGeometry::elementwise(client, n * n_chans);
-    let tmpl: Vec<u32> = decoded.iter().map(|d| d.0 as u32).collect();
-    // SAFETY: as above
-    unsafe {
-        spike_features_kernel::launch::<f32, R>(
-            client,
-            per_spike.cube_count,
-            per_spike.cube_dim,
-            ArrayArg::from_raw_parts(x.clone(), channels * samples),
-            ArrayArg::from_raw_parts(b, channels * k * samples),
-            ArrayArg::from_raw_parts(buffer::upload(client, &templates.wpca), n_pcs * nt),
-            ArrayArg::from_raw_parts(ic, centres.ic.len()),
-            ArrayArg::from_raw_parts(centres_h, n),
-            ArrayArg::from_raw_parts(times_h, n),
-            ArrayArg::from_raw_parts(buffer::upload(client, &tmpl), n),
-            ArrayArg::from_raw_parts(feat.clone(), n * n_chans * n_pcs),
-            ArrayArg::from_raw_parts(amp.clone(), n * n_chans),
-            samples as u32,
-            k as u32,
-            n_centres as u32,
-            n_chans as u32,
-            n_pcs as u32,
-            nt as u32,
-            n as u32,
-        );
-    }
-    let feat = buffer::download::<R, f32>(client, feat);
-    let amp = buffer::download::<R, f32>(client, amp);
-
-    Ok(spikes
-        .iter()
-        .zip(&decoded)
-        .enumerate()
-        .map(|(i, (&(centre, t, amplitude), &(template, size, sign)))| {
-            // y: contact y weighted by the (sign-corrected, rectified) template response
-            let w: Vec<f32> = (0..n_chans).map(|c| (amp[i * n_chans + c] * sign).max(0.0)).collect();
-            let total: f32 = w.iter().sum();
-            let y_um = if total > 0.0 {
-                (0..n_chans).map(|c| w[c] * centres.channel_y[centres.ic[c * n_centres + centre] as usize]).sum::<f32>() / total
-            } else {
-                centres.positions[centre][1]
-            };
-            UniversalSpike {
-                sample: t,
-                centre,
-                amplitude,
-                template,
-                size,
-                y_um,
-                features: feat[i * n_chans * n_pcs..(i + 1) * n_chans * n_pcs].to_vec(),
-            }
-        })
-        .collect())
+    UniversalDetector::new(client, channels, samples, centres, templates, th_universal, nt0min)?.detect(x, samples)
 }

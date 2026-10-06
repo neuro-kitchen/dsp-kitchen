@@ -4,14 +4,23 @@
 //!
 //! EMUsort is a Kilosort4 fork, so it reuses every stage of [`crate::sorters::kilosort4`] with
 //! its own settings ([`EmusortConfig`]) and adds:
-//! - **channel-delay removal** ([`ChannelDelayEstimator`], [`apply_channel_delays`]): the lag
-//!   (within ±2 ms) aligning each channel with the reference channel that correlates best with
-//!   all others, removed before detection;
+//! - **channel-delay removal** on the device ([`kernels::ChannelDelayEstimator`],
+//!   [`kernels::ChannelAligner`]): the lag (within ±2 ms) aligning each channel with the reference
+//!   channel that correlates best with all others, estimated on the high-passed data and removed
+//!   after whitening, before template learning and detection;
 //! - **HDBSCAN outlier removal** before the universal templates are clustered
 //!   ([`EmusortConfig::learn_options`]).
 
+use cubecl::prelude::{ComputeClient, Runtime};
+use dsp_core::{DspResult, RecordingSource};
+use dsp_io::neuro::probe::SensorLayout;
+
 use crate::provenance::{Attributed, Paper, Provenance, ProvenanceKind, UpstreamCode};
+use crate::sorters::kilosort4::runner::{run_plan, Kilosort4Result, RunPlan};
 use crate::sorters::kilosort4::{ClipOptions, Kilosort4Config, LearnOptions};
+
+/// Sorter name of an EMUsort run in [`dsp_synapse::core::SortingOutput`].
+pub const EMUSORT_SORTER: &str = "emusort";
 
 /// Largest channel delay searched: `fs / MAX_DELAY_DIVISOR` samples (2 ms).
 pub const MAX_DELAY_DIVISOR: f64 = 500.0;
@@ -65,86 +74,6 @@ impl EmusortConfig {
     }
 }
 
-/// Accumulates the lagged cross-correlations of channel envelopes over batches: each channel of
-/// a batch is divided by its standard deviation and rectified; `CC[a, b, lag] += mean_t
-/// x_a[t − lag] · x_b[t]` over the batch's unpadded samples.
-#[derive(Debug, Clone)]
-pub struct ChannelDelayEstimator {
-    channels: usize,
-    max_lag: usize,
-    /// `[channels, channels, 2·max_lag + 1]`.
-    cc: Vec<f64>,
-    batches: usize,
-}
-
-impl ChannelDelayEstimator {
-    pub fn new(channels: usize, max_lag: usize) -> Self {
-        Self { channels, max_lag, cc: vec![0.0; channels * channels * (2 * max_lag + 1)], batches: 0 }
-    }
-
-    /// Adds a `[channels, samples]` batch with `pad ≥ max_lag` samples of context on each side.
-    pub fn add_batch(&mut self, x: &[f32], samples: usize, pad: usize) {
-        let (c, l) = (self.channels, self.max_lag);
-        assert_eq!(x.len(), c * samples, "batch size mismatch");
-        assert!(pad >= l && samples > 2 * pad, "padding must cover the largest delay");
-        let env: Vec<f64> = (0..c)
-            .flat_map(|ch| {
-                let row = &x[ch * samples..(ch + 1) * samples];
-                let mean = row.iter().map(|&v| v as f64).sum::<f64>() / samples as f64;
-                let sd = (row.iter().map(|&v| (v as f64 - mean).powi(2)).sum::<f64>() / samples as f64).sqrt();
-                let inv = if sd > 0.0 { 1.0 / sd } else { 0.0 };
-                row.iter().map(move |&v| (v as f64 * inv).abs()).collect::<Vec<_>>()
-            })
-            .collect();
-        let inner = samples - 2 * pad;
-        let n_lags = 2 * l + 1;
-        for a in 0..c {
-            for b in 0..c {
-                for (li, lag) in (-(l as isize)..=l as isize).enumerate() {
-                    let mut s = 0.0;
-                    for t in pad..samples - pad {
-                        s += env[a * samples + (t as isize - lag) as usize] * env[b * samples + t];
-                    }
-                    self.cc[(a * c + b) * n_lags + li] += s / inner as f64;
-                }
-            }
-        }
-        self.batches += 1;
-    }
-
-    /// `(delays, reference)`: the reference channel maximizes `Σ_a max_lag CC[a, b, ·]`; each
-    /// channel's delay is the lag of its best correlation with the reference. Zeros before any
-    /// batch.
-    pub fn delays(&self) -> (Vec<isize>, usize) {
-        let (c, l) = (self.channels, self.max_lag);
-        let n_lags = 2 * l + 1;
-        if self.batches == 0 || c == 0 {
-            return (vec![0; c], 0);
-        }
-        let peak = |a: usize, b: usize| {
-            let row = &self.cc[(a * c + b) * n_lags..(a * c + b + 1) * n_lags];
-            row.iter().enumerate().fold((0usize, f64::NEG_INFINITY), |best, (i, &v)| if v > best.1 { (i, v) } else { best })
-        };
-        let reference = (0..c)
-            .map(|b| (b, (0..c).map(|a| peak(a, b).1).sum::<f64>()))
-            .fold((0usize, f64::NEG_INFINITY), |best, x| if x.1 > best.1 { x } else { best })
-            .0;
-        let delays = (0..c).map(|b| peak(reference, b).0 as isize - l as isize).collect();
-        (delays, reference)
-    }
-}
-
-/// Removes `delays` from a `[channels, samples]` batch: `x[i, t] ← x[i, (t + delay_i) mod
-/// samples]` (a circular shift within the batch, as upstream; with `max_lag` samples of padding
-/// only the padding wraps).
-pub fn apply_channel_delays(x: &mut [f32], samples: usize, delays: &[isize]) {
-    assert_eq!(x.len(), delays.len() * samples, "batch size mismatch");
-    for (row, &d) in x.chunks_exact_mut(samples).zip(delays) {
-        let shift = d.rem_euclid(samples as isize) as usize;
-        row.rotate_left(shift);
-    }
-}
-
 /// Paper and code of EMUsort.
 pub fn emusort_provenance() -> Provenance {
     Provenance {
@@ -167,11 +96,23 @@ pub fn emusort_provenance() -> Provenance {
 }
 
 pub mod kernels;
-pub mod runner;
-pub use kernels::{apply_channel_delays_kernel, execute_apply_channel_delays};
-pub use runner::{EmusortResult, EmusortRunner};
 
-/// EMUsort stages configured by an [`EmusortConfig`].
+impl RunPlan {
+    /// EMUsort's run at `sample_rate_hz`: Kilosort4's stages with `config`'s settings, channel
+    /// delays and HDBSCAN outlier removal.
+    pub fn emusort(config: &EmusortConfig, sample_rate_hz: f64) -> Self {
+        Self {
+            sorter: EMUSORT_SORTER,
+            config: config.kilosort4.clone(),
+            learn: config.learn_options(),
+            max_channel_delay: config.remove_channel_delays.then(|| config.max_delay_samples(sample_rate_hz)),
+            templates: None,
+            fitted: None,
+        }
+    }
+}
+
+/// EMUsort over a whole recording ([`run_plan`] with [`RunPlan::emusort`]).
 #[derive(Debug, Clone, Default)]
 pub struct Emusort {
     pub config: EmusortConfig,
@@ -182,17 +123,9 @@ impl Emusort {
         Self { config }
     }
 
-    pub fn runner(&self) -> EmusortRunner {
-        EmusortRunner::new(self.config.clone())
-    }
-
-    pub fn run<R: cubecl::prelude::Runtime>(
-        &self,
-        client: &cubecl::prelude::ComputeClient<R>,
-        source: &dyn dsp_core::RecordingSource,
-        probe: &dsp_io::neuro::probe::SensorLayout,
-    ) -> dsp_core::DspResult<EmusortResult> {
-        self.runner().run(client, source, probe)
+    /// Runs EMUsort over `source` on `client`'s device runtime.
+    pub fn run<R: Runtime>(&self, client: &ComputeClient<R>, source: &dyn RecordingSource, probe: &SensorLayout) -> DspResult<Kilosort4Result> {
+        run_plan(client, source, probe, &RunPlan::emusort(&self.config, source.info().sample_rate_hz()))
     }
 }
 
@@ -207,28 +140,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn recovers_and_removes_channel_delays() {
-        let (channels, samples, pad, max_lag) = (3usize, 2_000usize, 61usize, 20usize);
-        // Bursts on channel 0; channel 1 delayed by +5, channel 2 by −3
-        let burst = |t: isize| -> f32 { if (t % 200).abs() < 4 { 10.0 } else { 0.1 * ((t * 7919) % 13) as f32 } };
-        let mut x = vec![0.0f32; channels * samples];
-        for t in 0..samples as isize {
-            x[t as usize] = burst(t);
-            x[samples + t as usize] = burst(t - 5);
-            x[2 * samples + t as usize] = burst(t + 3);
-        }
-        let mut est = ChannelDelayEstimator::new(channels, max_lag);
-        est.add_batch(&x, samples, pad);
-        let (delays, _) = est.delays();
-        assert_eq!(delays[1] - delays[0], 5);
-        assert_eq!(delays[2] - delays[0], -3);
-        apply_channel_delays(&mut x, samples, &delays);
-        for t in (pad..samples - pad).step_by(200) {
-            assert!((x[t] - x[samples + t]).abs() < 1e-6 && (x[t] - x[2 * samples + t]).abs() < 1e-6, "aligned at {t}");
-        }
-    }
-
-    #[test]
     fn defaults_follow_the_paper() {
         let c = EmusortConfig::default();
         assert_eq!((c.kilosort4.n_pcs, c.kilosort4.n_templates, c.kilosort4.nskip), (9, 9, 2));
@@ -238,35 +149,33 @@ mod tests {
     }
 
     #[test]
-    fn gpu_channel_delays_matches_host() {
-        use dsp_base::core::buffer;
+    fn emusort_runs_on_synthetic_recording() {
         use dsp_core::compute::{ComputeTarget, ComputeTask};
+        use dsp_io::neuro::synthetic::{SyntheticParams, SyntheticRecording};
 
-        let (channels, samples) = (3, 100);
-        let host_x: Vec<f32> = (0..(channels * samples)).map(|v| v as f32).collect();
-        let delays = vec![0isize, 5, -3];
+        let rec = SyntheticRecording::new(SyntheticParams { channels: 4, duration_sec: 1.0, sample_rate_hz: 30_000.0, ..Default::default() })
+            .expect("synthetic recording");
+        let probe = SensorLayout::from_channel_arrays("4ch", &[0, 1, 2, 3], &[[0.0, 0.0], [0.0, 25.0], [0.0, 50.0], [0.0, 75.0]], &[0, 0, 0, 0])
+            .expect("probe layout");
+        let mut config = EmusortConfig::default();
+        config.kilosort4.batch_size = 1000;
+        config.kilosort4.nskip = 1;
+        config.kilosort4.whitening_range = 4;
+        config.kilosort4.th_single_ch = vec![4.0];
 
-        let mut expected = host_x.clone();
-        apply_channel_delays(&mut expected, samples, &delays);
-
-        struct Task(Vec<f32>, Vec<isize>, usize, usize);
-        impl ComputeTask for Task {
-            type Output = Vec<f32>;
-            fn run<R: cubecl::prelude::Runtime>(self, client: cubecl::prelude::ComputeClient<R>) -> Self::Output {
-                let x_handle = buffer::upload(&client, &self.0);
-                let shifts: Vec<u32> = self.1.iter().map(|&d| d.rem_euclid(self.3 as isize) as u32).collect();
-                let s_handle = buffer::upload(&client, &shifts);
-                let out_handle = execute_apply_channel_delays(&client, &x_handle, &s_handle, self.2, self.3);
-                buffer::download(&client, out_handle)
+        struct Task<'a>(&'a dyn RecordingSource, &'a SensorLayout, &'a EmusortConfig);
+        impl ComputeTask for Task<'_> {
+            type Output = DspResult<Kilosort4Result>;
+            fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
+                Emusort::new(self.2.clone()).run(&client, self.0, self.1)
             }
         }
 
         if let Ok(target) = ComputeTarget::from_env() {
-            let actual = target.run(Task(host_x, delays, channels, samples)).expect("target run");
-            assert_eq!(actual.len(), expected.len());
-            for (i, (a, e)) in actual.iter().zip(&expected).enumerate() {
-                assert!((a - e).abs() < 1e-6, "at index {i} (ch {}, t {}): actual {a} != expected {e}", i / samples, i % samples);
-            }
+            let res = target.run(Task(&rec, &probe, &config)).expect("compute target should run").expect("EMUsort should succeed");
+            assert!(res.fitted.schedule.len() > 0);
+            assert_eq!(res.fitted.channel_delays.as_ref().map(|d| d.delays.len()), Some(4));
+            assert_eq!(res.to_sorting_output(Some(probe.clone())).sorter_name, EMUSORT_SORTER);
         }
     }
 }
