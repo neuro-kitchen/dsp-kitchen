@@ -564,10 +564,10 @@ side_panel!(TimelinePanel, "dsp-app.timeline", "Timeline");
 impl TimelinePanel {
     pub fn new(store: Entity<Store>, dock: DockToggle, cx: &mut Context<Self>) -> Self {
         let sub = cx.subscribe(&store, |this, _, e: &AppEvent, cx| {
-            if matches!(e, AppEvent::RecordingChanged | AppEvent::SummaryProgress(_) | AppEvent::PaletteChanged) {
+            if matches!(e, AppEvent::RecordingChanged | AppEvent::PyramidProgress(_) | AppEvent::PaletteChanged) {
                 this.activity = None;
             }
-            if matches!(e, AppEvent::WindowMoved | AppEvent::PlaybackChanged | AppEvent::RecordingChanged | AppEvent::SummaryProgress(_) | AppEvent::PaletteChanged) {
+            if matches!(e, AppEvent::WindowMoved | AppEvent::PlaybackChanged | AppEvent::RecordingChanged | AppEvent::PyramidProgress(_) | AppEvent::PaletteChanged) {
                 cx.notify();
             }
         });
@@ -633,7 +633,7 @@ impl TimelinePanel {
     fn header_extra(&self, cx: &App) -> Option<gpui_kit::AnyElement> {
         let s = self.store.read(cx);
         let muted = cx.theme().muted_foreground;
-        let summarizing = s.summary_label().map(|l| div().id("summarizing").text_xs().text_color(cx.theme().primary).child(l));
+        let summarizing = s.pyramid_label().map(|l| div().id("building-overview").text_xs().text_color(cx.theme().primary).child(l));
         Some(h_flex().gap_3().child(div().text_xs().text_color(muted).child(s.timeline.format_time_readout())).children(summarizing).into_any_element())
     }
 

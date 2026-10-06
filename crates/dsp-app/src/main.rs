@@ -20,7 +20,6 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
-use dsp_core::RecordingSource;
 use gpui_kit::component::TitleBar;
 use gpui_kit::{px, size, App, AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOptions};
 
@@ -116,7 +115,6 @@ fn main() -> Result<()> {
 
         match (synthetic, file) {
             (Some(d), _) => store.update(cx, |s, cx| s.open_synthetic(channels, rate, d, cx)),
-            // A phy / Kilosort folder opens in Curation (and its recording in Explore)
             (None, Some(p)) => root.update(cx, |a, cx| a.open_any(p, cx)),
             (None, None) => {}
         }
@@ -124,8 +122,8 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Renders the default traces (or heatmap) view of the recording around `--at` to a PNG,
-/// reading raw samples (exact at any zoom) rather than waiting for a min/max cache.
+/// Renders the default traces (or heatmap) view of the recording around `--at` to a PNG, exact
+/// at any zoom: the pyramid is built over the visible window first.
 fn snapshot(args: &Args, path: &std::path::Path) -> Result<()> {
     let sources = match (&args.synthetic, &args.file) {
         (Some(d), _) => SourceSet::single(Dataset::procedural(args.channels, args.sample_rate, parse_duration(d)?)?),
@@ -144,8 +142,10 @@ fn snapshot(args: &Args, path: &std::path::Path) -> Result<()> {
     view.set_source(&entry.id, &entry.name, &entry.unit, entry.channels);
     view.set_canvas(w, h, 1.0);
     let dataset = sources.get(&entry.id);
-    let source: Arc<dyn RecordingSource> = dataset.clone();
-    let req = view.render_request(&timeline, source, None, None, Arc::new(SpikeEventStore::default()), engine::palette::Palette::DARK);
+    let window = |t: f64| ((t - dataset.start_time_sec) * dataset.sample_rate).max(0.0) as u64;
+    let (start, end) = (window(timeline.window_start_sec), window(timeline.window_start_sec + timeline.visible_window_sec));
+    dataset.signal().prepare(start, end)?;
+    let req = view.render_request(&timeline, dataset.signal().clone(), Arc::new(SpikeEventStore::default()), engine::palette::Palette::DARK);
     let (frame, scale) = WaveformRenderer::default().render_scaled(&req);
     view.amp_scale = scale;
     println!("Source {} · scale bar {}", dataset.name, view.scale_bar_label());

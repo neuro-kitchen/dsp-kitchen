@@ -2574,6 +2574,7 @@ dependencies = [
  "dsp-core",
  "dsp-io",
  "dsp-synapse",
+ "dsp-view",
  "gpui-kit",
  "image",
  "serde",

@@ -154,7 +154,7 @@ impl Session {
     }
 
     /// `path` becomes the newest recent sorting folder.
-    #[allow(dead_code)] // Curation opens sortings (step 7)
+    #[allow(dead_code)] // Curation (parked) opens sortings
     pub fn push_recent_sorting(&mut self, path: &Path) {
         self.recent_sortings.retain(|p| p != path);
         self.recent_sortings.insert(0, path.to_path_buf());
