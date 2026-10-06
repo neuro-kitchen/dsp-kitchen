@@ -7,7 +7,7 @@ differences are described here.
 
 As Kilosort4, **without** the common average reference (`do_car = false`). The whole front end
 (preprocessing, delays, templates, detection) runs over a recording with
-`run_front_end(…, &FrontEndOptions::emusort(&config, fs))`.
+`EmusortRunner::new(config).run(client, source, probe)` (or in Python with `emusort.run(recording, probe, config)`).
 
 ## 2. Channel-delay removal — *implemented*
 

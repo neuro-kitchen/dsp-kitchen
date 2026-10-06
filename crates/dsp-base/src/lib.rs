@@ -1,5 +1,7 @@
 //! Classical deterministic DSP, linear algebra, and filtering algorithms powered by CubeCL kernels.
 
+#![allow(semicolon_in_expressions_from_non_local_macros)]
+
 #[cfg(test)]
 #[macro_use]
 mod test_support;

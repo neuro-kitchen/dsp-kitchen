@@ -13,10 +13,7 @@ pub mod runner;
 pub mod templates;
 
 pub use detect::{detect_universal, CentreOptions, TemplateCentres, UniversalSpike};
-pub use runner::{
-    fit_kilosort4_preprocessing, run_front_end, FrontEndOptions, FrontEndResult, Kilosort4Result,
-    Kilosort4Runner,
-};
+pub use runner::{fit_kilosort4_preprocessing, Kilosort4Result, Kilosort4Runner};
 pub use templates::{extract_clips, learn_universal_templates, ClipOptions, LearnOptions, UniversalTemplates};
 
 use crate::provenance::{ArtifactSource, Attributed, Paper, Provenance, ProvenanceKind, UpstreamCode};

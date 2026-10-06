@@ -16,13 +16,12 @@ use dsp_base::pipeline::{Pipeline, PipelineStage, PipelineWorkspace};
 use dsp_base::spatial::SpatialWhitening;
 use dsp_core::{ChunkSchedule, DspError, DspResult, HaloWindow, RecordingSource};
 use dsp_io::neuro::probe::SensorLayout;
-use dsp_io::PrefetchReader;
+use dsp_orchestrate::{remap_event, WindowLoader};
 use dsp_synapse::core::{SortedUnit, SortingOutput};
 
 use super::detect::{detect_universal, TemplateCentres, UniversalSpike};
-use super::templates::{extract_clips, learn_universal_templates, ClipOptions, LearnOptions, UniversalTemplates, MAX_CLIPS};
+use super::templates::{extract_clips, learn_universal_templates, UniversalTemplates, MAX_CLIPS};
 use super::Kilosort4Config;
-use crate::sorters::emusort::{apply_channel_delays, ChannelDelayEstimator, EmusortConfig};
 
 /// Butterworth order of the high-pass filter, matching upstream Kilosort4.
 pub const HIGHPASS_ORDER: usize = 3;
@@ -67,30 +66,6 @@ fn load_universal_templates() -> DspResult<UniversalTemplates> {
     }
 }
 
-/// Reads padded samples of `window` (all channels, channel-major).
-fn read_window(source: &dyn RecordingSource, window: &HaloWindow) -> DspResult<Vec<f32>> {
-    let channels: Vec<usize> = (0..source.info().channel_count()).collect();
-    let mut data = vec![0.0f32; channels.len() * window.read_len()];
-    source.read(&channels, window.read_global.clone(), &mut data)?;
-    Ok(data)
-}
-
-/// The `[channels, valid]` interior of a `[channels, read_len]` window.
-fn interior(data: &[f32], window: &HaloWindow) -> Vec<f32> {
-    data.chunks_exact(window.read_len())
-        .flat_map(|row| row[window.valid_local.clone()].iter().copied())
-        .collect()
-}
-
-/// The window with a symmetric margin of `pad` samples around its interior.
-fn symmetric(data: &[f32], window: &HaloWindow) -> (Vec<f32>, usize, usize) {
-    let pad = window.valid_local.start.min(window.read_len() - window.valid_local.end);
-    let range = window.valid_local.start - pad..window.valid_local.end + pad;
-    let samples = range.len();
-    let cropped = data.chunks_exact(window.read_len()).flat_map(|row| row[range.clone()].iter().copied()).collect();
-    (cropped, samples, pad)
-}
-
 /// Fits Kilosort4 preprocessing (high-pass Butterworth, optional CAR, local whitening)
 /// over the recording, returning a composable [`Pipeline`] asset and the [`SpatialWhitening`] matrix.
 pub fn fit_kilosort4_preprocessing<R: Runtime>(
@@ -108,13 +83,14 @@ pub fn fit_kilosort4_preprocessing<R: Runtime>(
         )));
     }
 
-    let mut stages = vec![PipelineStage::Filter(FilterSpec::butterworth(
-        HIGHPASS_ORDER,
-        FilterBand::Highpass(ks.highpass_cutoff_hz),
-    ))];
+    let mut stages = Vec::new();
     if ks.do_car {
         stages.push(PipelineStage::CommonAverageReference);
     }
+    stages.push(PipelineStage::Filter(FilterSpec::butterworth(
+        HIGHPASS_ORDER,
+        FilterBand::Highpass(ks.highpass_cutoff_hz),
+    )));
     let filtering = Pipeline::with_stages(stages.clone());
     let (settle_left, settle_right) = filtering.settling(fs).map_err(filter_error)?;
     let margin = ks.nt as u64;
@@ -125,19 +101,21 @@ pub fn fit_kilosort4_preprocessing<R: Runtime>(
     let learning: Vec<HaloWindow> = schedule.windows().iter().step_by(stride).cloned().collect();
 
     // 1. Whitening from average covariance of learning windows' interiors
+    let loader = WindowLoader::new(source);
     let mut workspace = PipelineWorkspace::<R, f32>::new(client.clone(), filtering, channels, max_window, fs).map_err(filter_error)?;
     let mut covariance = vec![0.0f64; channels * channels];
     let mut counted = 0u64;
-    for window in &learning {
-        let filtered = workspace.process_chunk_in_vram(&read_window(source, window)?, window.read_len());
-        let inner = interior(&buffer::download::<R, f32>(client, filtered)[..channels * window.read_len()], window);
-        let (cov, _) = covariance_of_host::<R, f32>(client, &inner, channels, window.valid_len());
-        let n = window.valid_len() as u64;
+    loader.for_windows(&learning, |buf| {
+        let filtered = workspace.process_chunk_in_vram(buf.as_slice(), buf.read_len());
+        let inner = workspace.download_interior(filtered, buf.window());
+        let (cov, _) = covariance_of_host::<R, f32>(client, &inner, channels, buf.valid_len());
+        let n = buf.valid_len() as u64;
         for (acc, c) in covariance.iter_mut().zip(buffer::download::<R, f32>(client, cov)) {
             *acc += c as f64 * n as f64;
         }
         counted += n;
-    }
+        Ok(())
+    })?;
     covariance.iter_mut().for_each(|c| *c /= counted.max(1) as f64);
     let positions: Vec<[f32; 2]> = probe.sites().iter().map(|s| [s.position.x_um, s.position.y_um]).collect();
     let k = ks.whitening_range.min(channels);
@@ -239,20 +217,22 @@ impl Kilosort4Runner {
         let stride = learning_stride(schedule.len(), ks.nskip);
         let learning: Vec<HaloWindow> = schedule.windows().iter().step_by(stride).cloned().collect();
 
+        let loader = WindowLoader::new(source);
         let mut workspace = PipelineWorkspace::<R, f32>::new(client.clone(), preprocessing.clone(), channels, max_window, fs).map_err(filter_error)?;
 
         // Universal templates (wPCA / wTEMP)
         let min_clips_needed = ks.n_templates.max(ks.n_pcs);
         let templates = if ks.templates_from_data {
             let mut clips = Vec::new();
-            for window in &learning {
-                let handle = workspace.process_chunk_in_vram(&read_window(source, window)?, window.read_len());
-                let whitened = buffer::download::<R, f32>(client, handle)[..channels * window.read_len()].to_vec();
-                extract_clips(&whitened, channels, window.read_len(), &ks.clip_options(), &mut clips);
+            loader.for_windows(&learning, |buf| {
                 if clips.len() / ks.nt >= MAX_CLIPS {
-                    break;
+                    return Ok(());
                 }
-            }
+                let handle = workspace.process_chunk_in_vram(buf.as_slice(), buf.read_len());
+                let whitened = buffer::download::<R, f32>(client, handle)[..channels * buf.read_len()].to_vec();
+                extract_clips(&whitened, channels, buf.read_len(), &ks.clip_options(), &mut clips);
+                Ok(())
+            })?;
 
             // Fallback: if stride skipped too aggressively and we didn't get enough clips, scan remaining windows
             if clips.len() / ks.nt < min_clips_needed {
@@ -260,9 +240,10 @@ impl Kilosort4Runner {
                     if learning.iter().any(|w| w.index == window.index) {
                         continue;
                     }
-                    let handle = workspace.process_chunk_in_vram(&read_window(source, window)?, window.read_len());
-                    let whitened = buffer::download::<R, f32>(client, handle)[..channels * window.read_len()].to_vec();
-                    extract_clips(&whitened, channels, window.read_len(), &ks.clip_options(), &mut clips);
+                    let buf = loader.load_window(window)?;
+                    let handle = workspace.process_chunk_in_vram(buf.as_slice(), buf.read_len());
+                    let whitened = buffer::download::<R, f32>(client, handle)[..channels * buf.read_len()].to_vec();
+                    extract_clips(&whitened, channels, buf.read_len(), &ks.clip_options(), &mut clips);
                     if clips.len() / ks.nt >= min_clips_needed {
                         break;
                     }
@@ -278,11 +259,11 @@ impl Kilosort4Runner {
         let centres = TemplateCentres::new(probe, &ks.centres)?;
         let nt0min = ks.nt0min();
         let mut spikes = Vec::new();
-        PrefetchReader::new(source, schedule.clone()).for_each_window(|window, data| {
+        loader.stream_schedule(&schedule, |window, data| {
             let handle = workspace.process_chunk_in_vram(data, window.read_len());
             for mut spike in detect_universal(client, &handle, channels, window.read_len(), &centres, &templates, ks.th_universal, nt0min)? {
-                if window.is_interior_local(spike.sample) {
-                    spike.sample = window.to_global_sample(spike.sample) as usize;
+                if let Some(global_sample) = remap_event(window, spike.sample) {
+                    spike.sample = global_sample as usize;
                     spikes.push(spike);
                 }
             }
@@ -300,196 +281,7 @@ impl Kilosort4Runner {
     }
 }
 
-// ------------------------------------------------------------------------------------------------
-// Backwards Compatibility Adapter (used by EMUsort until migrated)
-// ------------------------------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
-pub struct FrontEndOptions {
-    pub kilosort4: Kilosort4Config,
-    pub clips: ClipOptions,
-    pub learn: LearnOptions,
-    pub max_channel_delay: Option<usize>,
-}
-
-impl FrontEndOptions {
-    pub fn kilosort4(config: &Kilosort4Config) -> Self {
-        Self {
-            kilosort4: config.clone(),
-            clips: config.clip_options(),
-            learn: config.learn_options(),
-            max_channel_delay: None,
-        }
-    }
-
-    pub fn emusort(config: &EmusortConfig, fs: f64) -> Self {
-        Self {
-            kilosort4: config.kilosort4.clone(),
-            clips: config.clip_options(),
-            learn: config.learn_options(),
-            max_channel_delay: config.remove_channel_delays.then(|| config.max_delay_samples(fs)),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct FrontEndResult {
-    pub whitening: SpatialWhitening,
-    pub channel_delays: Option<(Vec<isize>, usize)>,
-    pub templates: UniversalTemplates,
-    pub spikes: Vec<UniversalSpike>,
-    pub halos: (u64, u64),
-    pub windows: usize,
-}
-
-impl From<Kilosort4Result> for FrontEndResult {
-    fn from(r: Kilosort4Result) -> Self {
-        Self {
-            whitening: r.whitening,
-            channel_delays: None,
-            templates: r.templates,
-            spikes: r.spikes,
-            halos: r.halos,
-            windows: r.windows,
-        }
-    }
-}
-
-pub fn run_front_end<R: Runtime>(
-    client: &ComputeClient<R>,
-    source: &dyn RecordingSource,
-    probe: &SensorLayout,
-    options: &FrontEndOptions,
-) -> DspResult<FrontEndResult> {
-    if options.max_channel_delay.is_none() {
-        let runner = Kilosort4Runner::new(options.kilosort4.clone());
-        let res = runner.run(client, source, probe)?;
-        return Ok(res.into());
-    }
-
-    // EMUsort delay removal path
-    let info = source.info();
-    let (channels, total, fs) = (info.channel_count(), info.samples, info.sample_rate_hz());
-    let ks = &options.kilosort4;
-    if probe.total_channels() != channels {
-        return Err(DspError::InvalidConfig(format!(
-            "probe has {} sites, recording {channels} channels",
-            probe.total_channels()
-        )));
-    }
-
-    let mut stages = vec![PipelineStage::Filter(FilterSpec::butterworth(
-        HIGHPASS_ORDER,
-        FilterBand::Highpass(ks.highpass_cutoff_hz),
-    ))];
-    if ks.do_car {
-        stages.push(PipelineStage::CommonAverageReference);
-    }
-    let filtering = Pipeline::with_stages(stages.clone());
-    let (settle_left, settle_right) = filtering.settling(fs).map_err(filter_error)?;
-    let margin = (ks.nt + options.max_channel_delay.unwrap_or(0)) as u64;
-    let halos = (settle_left as u64 + margin, settle_right as u64 + margin);
-    let schedule = ChunkSchedule::full_recording(total, ks.batch_size as u64, halos.0, halos.1);
-    let max_window = schedule.max_read_samples();
-    let stride = learning_stride(schedule.len(), ks.nskip);
-    let learning: Vec<HaloWindow> = schedule.windows().iter().step_by(stride).cloned().collect();
-
-    let mut workspace = PipelineWorkspace::<R, f32>::new(client.clone(), filtering, channels, max_window, fs).map_err(filter_error)?;
-    let mut covariance = vec![0.0f64; channels * channels];
-    let mut counted = 0u64;
-    for window in &learning {
-        let filtered = workspace.process_chunk_in_vram(&read_window(source, window)?, window.read_len());
-        let inner = interior(&buffer::download::<R, f32>(client, filtered)[..channels * window.read_len()], window);
-        let (cov, _) = covariance_of_host::<R, f32>(client, &inner, channels, window.valid_len());
-        let n = window.valid_len() as u64;
-        for (acc, c) in covariance.iter_mut().zip(buffer::download::<R, f32>(client, cov)) {
-            *acc += c as f64 * n as f64;
-        }
-        counted += n;
-    }
-    covariance.iter_mut().for_each(|c| *c /= counted.max(1) as f64);
-    let positions: Vec<[f32; 2]> = probe.sites().iter().map(|s| [s.position.x_um, s.position.y_um]).collect();
-    let k = ks.whitening_range.min(channels);
-    let whitening = SpatialWhitening::local_knn_from_covariance::<R, f32>(client, &covariance, channels, &positions, k, WHITENING_EPSILON);
-
-    stages.push(PipelineStage::SpatialWhitening(whitening.clone()));
-    let mut workspace = PipelineWorkspace::<R, f32>::new(client.clone(), Pipeline::with_stages(stages), channels, max_window, fs).map_err(filter_error)?;
-    let mut preprocess_on_device = |data: &[f32], window: &HaloWindow| workspace.process_chunk_in_vram(data, window.read_len());
-    let download = |handle, window: &HaloWindow| buffer::download::<R, f32>(client, handle)[..channels * window.read_len()].to_vec();
-
-    let channel_delays = match options.max_channel_delay {
-        Some(max_lag) => {
-            let mut estimator = ChannelDelayEstimator::new(channels, max_lag);
-            for window in &learning {
-                let x = download(preprocess_on_device(&read_window(source, window)?, window), window);
-                let (x, samples, pad) = symmetric(&x, window);
-                if pad >= max_lag && samples > 2 * pad {
-                    estimator.add_batch(&x, samples, pad);
-                }
-            }
-            Some(estimator.delays())
-        }
-        None => None,
-    };
-    let align = |x: &mut [f32], window: &HaloWindow| {
-        if let Some((delays, _)) = &channel_delays {
-            apply_channel_delays(x, window.read_len(), delays);
-        }
-    };
-
-    let mut clips = Vec::new();
-    for window in &learning {
-        let mut x = download(preprocess_on_device(&read_window(source, window)?, window), window);
-        align(&mut x, window);
-        extract_clips(&x, channels, window.read_len(), &options.clips, &mut clips);
-        if clips.len() / ks.nt >= MAX_CLIPS {
-            break;
-        }
-    }
-    let min_clips_needed = options.learn.n_templates.max(options.learn.n_pcs);
-    if clips.len() / ks.nt < min_clips_needed {
-        for window in schedule.windows() {
-            if learning.iter().any(|w| w.index == window.index) {
-                continue;
-            }
-            let mut x = download(preprocess_on_device(&read_window(source, window)?, window), window);
-            align(&mut x, window);
-            extract_clips(&x, channels, window.read_len(), &options.clips, &mut clips);
-            if clips.len() / ks.nt >= min_clips_needed {
-                break;
-            }
-        }
-    }
-    let templates = learn_universal_templates(client, &clips, ks.nt, &options.learn)?;
-
-    let centres = TemplateCentres::new(probe, &ks.centres)?;
-    let nt0min = ks.nt0min();
-    let mut spikes = Vec::new();
-    PrefetchReader::new(source, schedule.clone()).for_each_window(|window, data| {
-        let mut handle = preprocess_on_device(data, window);
-        if channel_delays.is_some() {
-            let mut x = download(handle, window);
-            align(&mut x, window);
-            handle = buffer::upload(client, &x);
-        }
-        for mut spike in detect_universal(client, &handle, channels, window.read_len(), &centres, &templates, ks.th_universal, nt0min)? {
-            if window.is_interior_local(spike.sample) {
-                spike.sample = window.to_global_sample(spike.sample) as usize;
-                spikes.push(spike);
-            }
-        }
-        Ok(())
-    })?;
-
-    Ok(FrontEndResult {
-        whitening,
-        channel_delays,
-        templates,
-        spikes,
-        halos,
-        windows: schedule.len(),
-    })
-}
 
 #[cfg(test)]
 mod tests {
