@@ -5,9 +5,9 @@ use pyo3::exceptions::{PyIOError, PyIndexError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PySlice, PyTuple};
 
-use crate::array::to_numpy;
+use crate::array::{to_numpy, F32Array};
 
-use dsp_core::{RecordingSource, SlicedRecording};
+use dsp_core::{MemoryRecording, RecordingSource, SlicedRecording};
 
 /// Seconds `read` returns when no end is given.
 const DEFAULT_READ_SEC: f64 = 1.0;
@@ -96,6 +96,17 @@ impl PyRecording {
         };
         let inner: Arc<dyn RecordingSource> = Arc::from(opened.map_err(|e| PyIOError::new_err(format!("{path}: {e}")))?);
         Ok(Self { path: p, inner })
+    }
+
+    /// An in-memory recording of a `float32` `[channels, samples]` array at `fs` Hz (copied; values
+    /// unitless). For tests and derived signals; files open with `Recording(path)`.
+    #[staticmethod]
+    #[pyo3(signature = (data, fs, *, name="array"))]
+    pub fn from_array(data: Bound<'_, PyAny>, fs: f64, name: &str) -> PyResult<Self> {
+        let input = F32Array::new(&data)?;
+        let (channels, _) = input.channels_samples(None)?;
+        let rec = MemoryRecording::new(name, input.slice().to_vec(), channels, fs).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok(Self { path: PathBuf::new(), inner: Arc::new(rec) })
     }
 
     #[getter]

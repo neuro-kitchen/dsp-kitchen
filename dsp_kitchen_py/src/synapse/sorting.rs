@@ -105,14 +105,27 @@ pub fn cluster_gmm<'py>(
     Ok(dict)
 }
 
-/// k-means with k-means++ seeding (scikit-learn `KMeans` defaults: `n_init`, `max_iter`, `tol`).
+/// k-means with k-means++ seeding (scikit-learn `KMeans` defaults: `n_init`, `max_iter`, `tol`), on
+/// the device (`features` uploaded once).
 #[pyfunction]
-#[pyo3(signature = (features, k, *, n_init=DEFAULT_N_INIT, max_iter=DEFAULT_MAX_ITER, tol=DEFAULT_TOL, seed=None))]
-pub fn kmeans<'py>(py: Python<'py>, features: Bound<'py, PyAny>, k: usize, n_init: usize, max_iter: usize, tol: f64, seed: Option<u64>) -> PyResult<Bound<'py, PyDict>> {
+#[pyo3(signature = (features, k, *, n_init=DEFAULT_N_INIT, max_iter=DEFAULT_MAX_ITER, tol=DEFAULT_TOL, seed=None, runtime=None))]
+#[allow(clippy::too_many_arguments)]
+pub fn kmeans<'py>(py: Python<'py>, features: Bound<'py, PyAny>, k: usize, n_init: usize, max_iter: usize, tol: f64, seed: Option<u64>, runtime: Option<&str>) -> PyResult<Bound<'py, PyDict>> {
+    struct Task<'a>(&'a [f32], usize, usize, usize, KMeansOptions);
+    impl ComputeTask for Task<'_> {
+        type Output = dsp_synapse::sorting::KMeansResult;
+        fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
+            kmeans_fit(&client, self.0, self.1, self.2, self.3, &self.4)
+        }
+    }
     let feats = F32Array::new(&features)?;
     let (x, n, d) = matrix(&feats, "features")?;
+    if k == 0 || k > n {
+        return Err(PyValueError::new_err(format!("k = {k} must be in 1..={n}")));
+    }
     let options = KMeansOptions { n_init, max_iter, tol, seed: seed.unwrap_or(KMeansOptions::default().seed) };
-    let res = py.detach(|| kmeans_fit(x, n, d, k, &options));
+    let target = target(runtime)?;
+    let res = py.detach(|| target.run(Task(x, n, d, k, options))).map_err(runtime_error)?;
     let centers = res.centers.len() / d.max(1);
     let dict = PyDict::new(py);
     dict.set_item("labels", res.labels)?;
@@ -121,12 +134,22 @@ pub fn kmeans<'py>(py: Python<'py>, features: Bound<'py, PyAny>, k: usize, n_ini
     Ok(dict)
 }
 
-/// HDBSCAN labels of `features` (`-1` = noise), excess-of-mass selection (scikit-learn semantics).
+/// HDBSCAN labels of `features` (`-1` = noise), excess-of-mass selection (scikit-learn semantics),
+/// on the device (`features` uploaded once).
 #[pyfunction]
-pub fn hdbscan(py: Python<'_>, features: Bound<'_, PyAny>, min_cluster_size: usize) -> PyResult<Vec<i32>> {
+#[pyo3(signature = (features, min_cluster_size, *, runtime=None))]
+pub fn hdbscan(py: Python<'_>, features: Bound<'_, PyAny>, min_cluster_size: usize, runtime: Option<&str>) -> PyResult<Vec<i32>> {
+    struct Task<'a>(&'a [f32], usize, usize, usize);
+    impl ComputeTask for Task<'_> {
+        type Output = Vec<i32>;
+        fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
+            hdbscan_labels(&client, self.0, self.1, self.2, self.3)
+        }
+    }
     let feats = F32Array::new(&features)?;
     let (x, n, d) = matrix(&feats, "features")?;
-    Ok(py.detach(|| hdbscan_labels(x, n, d, min_cluster_size)))
+    let target = target(runtime)?;
+    py.detach(|| target.run(Task(x, n, d, min_cluster_size))).map_err(runtime_error)
 }
 
 /// Density-peaks clustering (Rodriguez & Laio 2014) with `cutoff_distance` and `num_clusters`.
