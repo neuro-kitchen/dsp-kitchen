@@ -7,6 +7,7 @@ them as notebooks in VS Code / Jupyter).
 playground/
 ├── base/       01 filtering · 02 math, common reference, PCA on every runtime · 03 pipelines, probes, recordings
 ├── synapse/    01 detection walkthrough · 02 streaming detection of a whole recording · 03 detection vs ground truth
+├── benchmarks/ kilosort4_benchmark: speed per stage and runtime, outputs vs Kilosort4's saved results
 ├── sorters/    00 Kilosort4 + EMUsort on synthetic ground truth · emusort_hdemg (EMUsort on HD-EMG) · kilosort4_universal_templates (Neuropixels)
 └── output/     anything the scripts write (git-ignored)
 ```
@@ -27,8 +28,8 @@ in the folder named by `DSP_KITCHEN_DATA`.
 | Path under `data/` | Used by |
 |---|---|
 | `nwb/15-25-33_meps.nwb.zarr` (HD-EMG, 4 × 8 grid, `HDEMG` series) | `base/03`, `synapse/01`, `synapse/02`, `sorters/emusort_hdemg` |
-| `kilosort4/ZFM-02370_mini.imec0.ap.short.bin` + `.meta` (Neuropixels 1.0, SpikeGLX) | `sorters/kilosort4_universal_templates` |
-| `kilosort4/saved_results/` (Kilosort4's output for that file, Phy folder) | `sorters/kilosort4_universal_templates` |
+| `kilosort4/ZFM-02370_mini.imec0.ap.short.bin` + `.meta` (Neuropixels 1.0, SpikeGLX) | `sorters/kilosort4_universal_templates`, `benchmarks/kilosort4_benchmark` |
+| `kilosort4/saved_results/` (Kilosort4's output for that file, Phy folder) | `sorters/kilosort4_universal_templates`, `benchmarks/kilosort4_benchmark` |
 
 `base/01`, `base/02`, `synapse/03` and `sorters/00` need no data (synthetic signals, or
 `dsp_kitchen.io.SyntheticRecording` with ground truth). `base/03` and `synapse/01` fall back to
