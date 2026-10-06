@@ -1,9 +1,10 @@
 # %% [markdown]
-# # dsp-kitchen (`dsp-synapse-ml`): Kilosort4 Front End on Neuropixels
-# Kilosort4 (Pachitariu et al., Nature Methods 2024). `run_front_end` runs the stages implemented
+# # dsp-kitchen (`dsp-synapse-ml`): Kilosort4 on Neuropixels
+# Kilosort4 (Pachitariu et al., Nature Methods 2024). `kilosort4.run` runs the stages implemented
 # so far over the recording, in Rust and on the device (halo windows of `batch_size`):
 # preprocessing and whitening, universal templates learned from the data, detection. Then:
-# - learned templates vs Kilosort4's predefined `wTEMP.npz` (hub, verified download)
+# - learned templates vs Kilosort4's predefined `wTEMP.npz` (hub, verified download), and a run
+#   with the predefined templates (`templates_from_data = False`, `run(..., templates=...)`)
 # - detected spike times vs Kilosort4's own results (its final spikes, after clustering and
 #   deconvolution, which are not implemented here yet)
 #
@@ -91,7 +92,28 @@ if KS4_RESULTS.exists():
         f"Kilosort4 ({len(theirs):,} spikes) vs our detection ({len(ours):,}): recall {cmp['recall']:.3f}, precision {cmp['precision']:.3f}"
     )
 
-# %% [5] Plot Templates
+# %% [5] Detection with the Predefined Templates
+if predefined is not None:
+    config_predefined = kilosort4.Config()
+    config_predefined.whitening_range = config.whitening_range
+    config_predefined.templates_from_data = False
+    # Same fit settings: reuse the first run's preprocessing (no second fit pass)
+    result_predefined = kilosort4.run(
+        rec, probe, config_predefined, templates=predefined, preprocessing_from=result
+    )
+    ours_predefined = sorted(result_predefined.spikes()["sample"])
+    cmp = syn.compare_spike_trains(ours, ours_predefined, fs=rec.sample_rate)
+    print(
+        f"Learned ({len(ours):,}) vs predefined templates ({len(ours_predefined):,}): agreement {cmp['agreement_score']:.3f}"
+    )
+
+# %% [6] Export (one unit per universal template)
+sorting = result.to_sorting_output(probe)
+print(f"\n{sorting}")
+for row in sorting.summary_table()[:5]:
+    print(f"  {row}")
+
+# %% [7] Plot Templates
 if HAS_PLT:
     t_ms = (np.arange(config.nt) - config.resolved_nt0min()) / rec.sample_rate * 1e3
     panels = [("learned", learned)] + (

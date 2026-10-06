@@ -1,6 +1,6 @@
 # %% [markdown]
-# # dsp-kitchen (`dsp-synapse-ml`): EMUsort Front End on HD-EMG
-# EMUsort (O'Connell et al., 2026), a Kilosort4 fork for motor units. `run_front_end` runs the
+# # dsp-kitchen (`dsp-synapse-ml`): EMUsort on HD-EMG
+# EMUsort (O'Connell et al., 2026), a Kilosort4 fork for motor units. `emusort.run` runs the
 # stages implemented so far over the whole recording, in Rust and on the device, in halo windows
 # of `batch_size` (bounded memory):
 # 1. High-pass, local whitening (EMUsort: no common reference)
@@ -39,15 +39,15 @@ ELECTRODE_PITCH_UM = 100.0  # inter-electrode distance of the grid (set your arr
 print(emusort.provenance().citation())
 hdemg = next((s["id"] for s in list_sources(str(NWB_PATH)) if "HDEMG" in s["id"]), None)
 rec = Recording(str(NWB_PATH), source=hdemg)
-rec_segment = rec.slice_time(start_sec=0.0, end_sec=300.0)
+
 probe = syn.ProbeLayout.hdemg_grid(
     "HD-EMG 4x8", GRID_ROWS, GRID_COLS, ELECTRODE_PITCH_UM
 )
 config = emusort.Config()
 print(f"\n{rec}\n{config}")
 
-# %% [2] Front End over the Whole Recording
-result = emusort.run(rec_segment, probe, config)
+# %% [2] EMUsort over the Recording
+result = emusort.run(rec, probe, config)
 spikes = result.spikes()
 delays, reference = result.channel_delays
 print(f"\n{result} on {dk.runtime.current()}")
@@ -56,7 +56,15 @@ print(
     f"{len(spikes['sample']):,} spikes; amplitude (whitened) median {np.median(spikes['amplitude']):.1f}"
 )
 
-# %% [3] Plot
+# %% [3] Export (one unit per universal template; spike times in the reference channel's frame)
+sorting = result.to_sorting_output(probe)
+print(
+    f"\n{sorting} ({result.sorter}, {result.sample_rate_hz:.0f} Hz, {result.total_samples:,} samples)"
+)
+for row in sorting.summary_table()[:5]:
+    print(f"  {row}")
+
+# %% [4] Plot
 if HAS_PLT:
     ks4 = config.kilosort4
     fig, axes = plt.subplots(1, 3, figsize=(16, 4.5))
