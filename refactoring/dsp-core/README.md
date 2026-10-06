@@ -62,3 +62,11 @@ Snapshot of references to removed items at removal time (files per crate):
 New: `recording::SignalUnit` (`Volt`, `Millivolt`, `Microvolt`, `Ampere`, `Milliampere`,
 `Microampere`, `Dimensionless` (default), `Other(String)`), `RationalTime::from_seconds_f64`,
 `RationalTime::checked_add`.
+
+## 2026-10-06 — additions for dsp-stream
+
+- `RationalTime::as_ratio()`: the exact fraction of seconds (mirrors `SampleRate::as_ratio`), so
+  a stream header carries the start time exactly.
+- `SampleFormat::decode(bytes, out, gain, offset)`: little-endian stored words → scaled `f32`,
+  every format, with a test. **One decoder:** dsp-io's private `container/binary/codec.rs::decode_run`
+  is the same code and should call this instead (dsp-io fix-up pass).

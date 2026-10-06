@@ -241,3 +241,18 @@ matched-filter prototype shape (documented by its formula).
   `commands/probe.rs`), dsp-synapse-ml (`models/emusort/mod.rs`, `models/kilosort4/mod.rs`,
   `examples/emusort_nwb_zarr.rs`), dsp_kitchen_py (`synapse/probe.rs`, 17 sites).
 - Alias paths: dsp_kitchen_py `synapse/spatial.rs` (`dsp_synapse::{localization|motion|…}`).
+
+## 2026-10-06 — builds (lib, tests, integration test)
+
+- `features`: `extract_waveform_pca(client, …)`; `PcaFeatureEmbedder` / `PpcaFeatureEmbedder`
+  hold an explicit `ComputeTarget` (`new(target)`, `DEFAULT_FEATURE_COMPONENTS = 4`; `Default`
+  removed: it would pick a device); shared `feature_matrix` / `per_spike` helpers replace the
+  duplicated code. dsp-app `curation/derived.rs` must pass a client.
+- `ConvolutiveBssDecomposer::decompose(client, …)`; `ICA_TOLERANCE` named. dsp_kitchen_py
+  `synapse/sorting.rs` must pass a client.
+- `SnippetBatch::from_snippets(snippets, peak_index)` (the alignment sample is not in
+  `WaveformSnippet`).
+- GMM kernel: `F::ln` (CubeCL 0.10 name). Dedup kernel: `NO_SLOT` sentinel via `.runtime()`.
+- Streaming runner and `tests/streaming_invariance.rs`: `gain` / `offset` / `with_gain(…, Microvolt)`,
+  `I16_GAIN` named.
+
