@@ -464,6 +464,8 @@ impl<R: Runtime, F: DspFloat> PassInputs<R, F> {
 /// this device, element type, filter order and problem size. Benchmarks write to scratch output and
 /// state buffers.
 fn tuned_pass<R: Runtime, F: DspFloat>(inputs: PassInputs<R, F>) {
+    // cubecl-runtime 0.10's `local_tuner!` expands with a trailing semicolon (rust-lang/rust#79813)
+    #[allow(semicolon_in_expressions_from_non_local_macros)]
     static TUNER: LocalTuner<String, String> = local_tuner!("sos-blocks");
     let set = TUNER.init(|| {
         let key = |p: &PassInputs<R, F>| {

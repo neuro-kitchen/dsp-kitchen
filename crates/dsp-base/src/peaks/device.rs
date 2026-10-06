@@ -123,6 +123,8 @@ fn count_candidates<R: Runtime, F: DspFloat>(i: &CountInputs<R>, block: u32) -> 
 /// [`count_candidates`] with the block length CubeCL's autotuner found fastest for this device,
 /// element type and problem size.
 fn tuned_count<R: Runtime, F: DspFloat>(inputs: CountInputs<R>) -> CountPass {
+    // cubecl-runtime 0.10's `local_tuner!` expands with a trailing semicolon (rust-lang/rust#79813)
+    #[allow(semicolon_in_expressions_from_non_local_macros)]
     static TUNER: LocalTuner<String, String> = local_tuner!("peak-candidates");
     let set = TUNER.init(|| {
         let key = |i: &CountInputs<R>| format!("{}-c{}-s{}", F::type_name(), size_class(i.channels), size_class(i.scan.1 - i.scan.0));
@@ -135,15 +137,30 @@ fn tuned_count<R: Runtime, F: DspFloat>(inputs: CountInputs<R>) -> CountPass {
     TUNER.execute(&tune_id(&client), &client, set, inputs)
 }
 
+/// Candidate peaks left on the device (see [`find_peak_candidates_on_device`]). Each channel's
+/// candidates are contiguous (`bases`) but not ordered in time.
+pub struct DevicePeakCandidates {
+    /// `channels + 1` offsets: channel `c` owns `bases[c]..bases[c + 1]`.
+    pub bases: Vec<usize>,
+    /// Number of candidates (`bases[channels]`); the buffers hold at least one element.
+    pub total: usize,
+    /// `u32` local sample of each candidate.
+    pub indices: Handle,
+    /// `F` signal value at each candidate.
+    pub values: Handle,
+    /// `u32` channel of each candidate.
+    pub rows: Handle,
+}
+
 /// Candidate peaks of the `[channels, samples]` buffer `trace` within local samples `scan`
 /// (clamped to `1..samples − 1`): local extrema of `polarity` whose signed value reaches the
 /// channel's entry of `heights` (`[channels]` of `F`; `+∞` skips a channel). Strict on the left
 /// (`x[t−1] < x[t] ≥ x[t+1]`), so a flat peak reports its first sample, where
 /// [`super::find_peaks`] reports its middle one.
 ///
-/// Only the conditions that need no neighbouring peak run on the device; apply `distance`
-/// ([`super::select_by_distance`]) or other conditions to the candidates on the host.
-pub fn find_peak_candidates<R: Runtime, F: DspFloat>(
+/// The candidates stay on the device for further kernels; only the per-channel counts are read
+/// back (to size the output). [`find_peak_candidates`] downloads and orders them.
+pub fn find_peak_candidates_on_device<R: Runtime, F: DspFloat>(
     client: &ComputeClient<R>,
     trace: &Handle,
     heights: &Handle,
@@ -151,10 +168,17 @@ pub fn find_peak_candidates<R: Runtime, F: DspFloat>(
     samples: usize,
     scan: Range<usize>,
     polarity: Polarity,
-) -> PeakCandidates<F> {
+) -> DevicePeakCandidates {
     let scan = scan.start.max(1)..scan.end.min(samples.saturating_sub(1));
+    let none = || DevicePeakCandidates {
+        bases: vec![0; channels + 1],
+        total: 0,
+        indices: buffer::empty::<R, u32>(client, 1),
+        values: buffer::empty::<R, F>(client, 1),
+        rows: buffer::empty::<R, u32>(client, 1),
+    };
     if channels == 0 || scan.is_empty() {
-        return PeakCandidates::empty(channels);
+        return none();
     }
     let polarity = polarity_id(polarity);
     let pass = tuned_count::<R, F>(CountInputs {
@@ -175,15 +199,16 @@ pub fn find_peak_candidates<R: Runtime, F: DspFloat>(
     }
     let total = bases[channels];
     if total == 0 {
-        return PeakCandidates::empty(channels);
+        return DevicePeakCandidates { bases, ..none() };
     }
 
     let lanes = LaunchGeometry::plane_lanes(client);
     let tiles = LaunchGeometry::channels_samples(client, channels, pass.blocks);
     let bases_u32: Vec<u32> = bases.iter().map(|&b| b as u32).collect();
     let bases_handle = buffer::upload(client, &bases_u32);
-    let out_indices = buffer::empty::<R, u32>(client, total);
-    let out_values = buffer::empty::<R, F>(client, total);
+    let indices = buffer::empty::<R, u32>(client, total);
+    let values = buffer::empty::<R, F>(client, total);
+    let rows = buffer::empty::<R, u32>(client, total);
     // SAFETY: buffers sized above (`trace` and `heights` as in `count_candidates`)
     unsafe {
         write_peak_candidates_kernel::launch::<F, R>(
@@ -194,8 +219,9 @@ pub fn find_peak_candidates<R: Runtime, F: DspFloat>(
             ArrayArg::from_raw_parts(heights.clone(), channels),
             ArrayArg::from_raw_parts(pass.offsets, channels * pass.blocks),
             ArrayArg::from_raw_parts(bases_handle, channels + 1),
-            ArrayArg::from_raw_parts(out_indices.clone(), total),
-            ArrayArg::from_raw_parts(out_values.clone(), total),
+            ArrayArg::from_raw_parts(indices.clone(), total),
+            ArrayArg::from_raw_parts(values.clone(), total),
+            ArrayArg::from_raw_parts(rows.clone(), total),
             channels as u32,
             samples as u32,
             scan.start as u32,
@@ -206,12 +232,35 @@ pub fn find_peak_candidates<R: Runtime, F: DspFloat>(
             polarity,
         );
     }
-    let mut indices = buffer::download::<R, u32>(client, out_indices);
-    let mut values = buffer::download::<R, F>(client, out_values);
+    DevicePeakCandidates { bases, total, indices, values, rows }
+}
+
+/// [`find_peak_candidates_on_device`], downloaded with each channel's candidates ascending in
+/// sample.
+///
+/// Only the conditions that need no neighbouring peak run on the device; apply `distance`
+/// ([`super::select_by_distance`]) or other conditions to the candidates on the host.
+pub fn find_peak_candidates<R: Runtime, F: DspFloat>(
+    client: &ComputeClient<R>,
+    trace: &Handle,
+    heights: &Handle,
+    channels: usize,
+    samples: usize,
+    scan: Range<usize>,
+    polarity: Polarity,
+) -> PeakCandidates<F> {
+    let found = find_peak_candidates_on_device::<R, F>(client, trace, heights, channels, samples, scan, polarity);
+    if found.total == 0 {
+        return PeakCandidates { bases: found.bases, indices: Vec::new(), values: Vec::new() };
+    }
+    let total = found.total;
+    let mut indices = buffer::download::<R, u32>(client, found.indices);
+    let mut values = buffer::download::<R, F>(client, found.values);
     indices.truncate(total);
     values.truncate(total);
 
     // Interleaved plane lanes leave each channel's list unordered in time
+    let bases = found.bases;
     let mut pairs: Vec<(u32, F)> = Vec::new();
     for ch in 0..channels {
         let r = bases[ch]..bases[ch + 1];

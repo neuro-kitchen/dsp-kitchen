@@ -64,11 +64,6 @@ impl PipelineStage {
         Self::CommonAverageReference
     }
 
-    /// Alias for [`PipelineStage::common_average_reference`].
-    pub fn car() -> Self {
-        Self::CommonAverageReference
-    }
-
     /// Explicit second-order sections, zero phase.
     pub fn sos(sos: Sos) -> Self {
         Self::Filter(FilterSpec::sos(sos))

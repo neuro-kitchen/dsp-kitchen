@@ -180,6 +180,8 @@ pub fn row_abs_kth_kernel<F: Float>(
         }
 
         let lo = vals[0];
+        // Every unit must read `lo` before unit 0 overwrites `vals[0]` below
+        sync_cube();
         // Smallest |x| above lo
         let mut best = F::max_value();
         let mut col = unit;
