@@ -70,3 +70,15 @@ New: `recording::SignalUnit` (`Volt`, `Millivolt`, `Microvolt`, `Ampere`, `Milli
 - `SampleFormat::decode(bytes, out, gain, offset)`: little-endian stored words → scaled `f32`,
   every format, with a test. **One decoder:** dsp-io's private `container/binary/codec.rs::decode_run`
   is the same code and should call this instead (dsp-io fix-up pass).
+
+## 2026-10-06 — orchestration moved into core
+
+`window.rs` → `window/{schedule.rs, loader.rs}` ("Orchestration" in the book). `WindowLoader`
+(from dsp-io's `PrefetchReader` and the short-lived `dsp-orchestrate` crate, both removed) streams
+any `&[HaloWindow]` with a background read-ahead: `stream`, `stream_stored`, `stream_while` (stops
+when `f` returns `false`). `HaloWindow::around(index, valid, left, right, total)` and
+`HaloWindow::remap_event(local)` replace hand-built windows and the separate remap helpers.
+**Why core:** it needs only `RecordingSource`, `ChunkSchedule` and `HaloWindow` (all here) and
+std threads; dsp-base and dsp-view depend only on dsp-core, so they get out-of-core reading
+without dsp-io. Breaking: `dsp_io::PrefetchReader` and `dsp_orchestrate::*` are gone
+(`for_each_window(f)` → `WindowLoader::new(src).stream(schedule.windows(), f)`).

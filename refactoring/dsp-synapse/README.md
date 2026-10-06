@@ -256,3 +256,27 @@ matched-filter prototype shape (documented by its formula).
 - Streaming runner and `tests/streaming_invariance.rs`: `gain` / `offset` / `with_gain(…, Microvolt)`,
   `I16_GAIN` named.
 
+
+## 2026-10-06 — `WindowLoader`
+
+`streaming/runner.rs`: streams with `dsp_core::WindowLoader`; `calibrate_noise` builds its
+windows with `HaloWindow::around` and streams them too (read-ahead). Dependency on
+`dsp-orchestrate` removed.
+
+## 2026-10-06 — k-means and HDBSCAN on the device
+
+- `sorting/points.rs`: `DevicePoints` (points uploaded once, feature-major `[d, n]`; `gather`
+  subsets on the device; `point` reads one point), `block_sums` / `device_sum` (`SUM_BLOCK`
+  values per unit, added on the host in `f64`).
+- `sorting/kernels/points.rs`: `core_distance_kernel` (k smallest in registers),
+  `cheapest_edge_kernel` (Borůvka), `nearest_centre_kernel`, `cluster_sums_kernel` (split over
+  points), `closest_update_kernel` (k-means++ trials), `block_sums_kernel`, `gather_points_kernel`.
+- `hdbscan(client, x, n, d, mcs)` / `hdbscan_points`: core distances and a Borůvka minimum
+  spanning tree on the device (ties by (weight, lower, higher) index, so the unique minimum tree),
+  step 3 unchanged on the host. Prim kept only as the test reference.
+- `kmeans(client, x, n, d, k, opts)` / `kmeans_points`: same algorithm and random stream as before
+  (kept as the test reference); distances, assignments, sums, trial potentials and inertia on the
+  device; per iteration the host reads `k · d` sums, per draw one block of weights. `f32`
+  distances: a draw can tip differently from the `f64` reference, so tests compare inertia and
+  partitions.
+- **Breaking:** both take a `ComputeClient` first. Python `hdbscan` / `kmeans` gain `runtime=`.

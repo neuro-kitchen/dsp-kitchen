@@ -157,3 +157,28 @@ min / max part of `test_row_reductions_match_host` went with it. `cargo check -p
 --all-targets` passes (three pre-existing warnings, in `sos.rs`, `conv.rs` and
 `peaks/device.rs`).
 
+
+## 2026-10-06 — device whitening statistics, review fixes
+
+- `core/reduce.rs` `row_abs_kth_kernel`: race fixed (a `sync_cube()` between every unit reading
+  `lo = vals[0]` and unit 0 overwriting `vals[0]`). Affects `execute_channel_noise_std`.
+- `linalg/covariance.rs`: the pair-sum kernels take a column range of `[channels, row_len]` rows
+  and can skip centring / accumulate; new `SecondMomentAccumulator` (mean over batches of
+  `X Xᵀ / n`, on the device, one download). `covariance` / `covariance_of_host` unchanged.
+- Removed `PipelineWorkspace::download_interior` (download → upload round trip; use device column
+  ranges), `PipelineStage::car()` alias and the unused `spatial::CommonAverageReference` struct
+  (`PipelineStage::CommonAverageReference` / `common_average_reference()` remain).
+- The crate-wide `#![allow(semicolon_in_expressions_from_non_local_macros)]` is now on the three
+  `local_tuner!` statics (cubecl-runtime 0.10 macro, rust-lang/rust#79813).
+
+## 2026-10-06 — device-resident candidates, partial reads
+
+- `peaks`: `find_peak_candidates_on_device` → `DevicePeakCandidates` (sample, value and channel
+  buffers left on the device; only per-channel counts read back). `find_peak_candidates` is it
+  plus the download and per-channel ordering. `write_peak_candidates_kernel` also writes each
+  candidate's channel.
+- `core::buffer::download_prefix(client, handle, len)`: reads only the first `len` elements;
+  `PipelineWorkspace::process_chunk` uses it.
+- `SecondMomentAccumulator` keeps its partial-sum buffer between batches.
+- `buffer::download_range(client, handle, start, len)`; `SecondMomentAccumulator::into_sum` (the
+  device sum, nothing read back).

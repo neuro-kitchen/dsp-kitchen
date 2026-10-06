@@ -133,3 +133,8 @@ dsp-core had replaced `ChannelInfo::{gain_uv, offset_uv}` with `{gain, offset, u
 names µV (`gain_uv`); storing a unit there is a schema change. `decode_run` duplicates dsp-core
 `SampleFormat::decode` (switch over).
 
+
+## 2026-10-06 — `PrefetchReader` removed
+
+`core/prefetch.rs` deleted: out-of-core window streaming is `dsp_core::WindowLoader` (see
+`refactoring/dsp-core/README.md`). dsp-io no longer exports `PrefetchReader`.

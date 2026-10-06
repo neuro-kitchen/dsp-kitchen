@@ -48,3 +48,26 @@ Fabrications removed on the way: 100 µV default drift weights, 50 µV default a
 0 for spikes without a channel, last-spike-based `total_samples`, `0..1000` depth fallbacks,
 `std = 1` templates (now NaN, unused by matching), zero-SD MEP input, silently empty `ipt`,
 0-valued means over no matches (now NaN).
+
+## 2026-10-06 — sorter bindings follow the merged runner
+
+`run_emusort` returns `Kilosort4Result` (new getters `sorter`, `channel_delays`,
+`sample_rate_hz`, `total_samples`); `EmusortResult` and the `run_front_end` shim are gone (also
+from `kilosort4.py`, with the `FrontEndResult` alias). `to_sorting_output(probe=None)`: no
+`sample_rate_hz` / `total_samples` defaults. `ChannelDelayEstimator.add_batch(batch, pad, *,
+runtime=None)` and `apply_channel_delays(batch, delays, *, runtime=None)` run on the device.
+`tests/test_sdk.py::test_channel_delays_are_recovered` updated (pad 25, checks the shift).
+Also: `Recording.from_array(data, fs, *, name="array")` (in-memory `MemoryRecording`, for tests
+and derived signals); `kilosort4.run(..., templates=None)` passes predefined universal
+templates; `Kilosort4Runner` is gone on the Rust side (`Kilosort4::run`). Playground:
+`sorters/00_sorters_synthetic.py` (no data) checks delays, Kilosort4, EMUsort, every runtime and
+export; the two data scripts export `to_sorting_output(probe)` and the Kilosort4 one also runs
+with the predefined templates.
+
+**Later 2026-10-06:** `ChannelDelayEstimator` (one cross-correlation download per batch) replaced
+by `estimate_channel_delays(batches, *, pad, max_lag, runtime=None)` (all batches, one download).
+`kilosort4.run` / `emusort.run` take `preprocessing_from=` (reuse a result's fitted
+preprocessing). Playground: the Kilosort4 script's predefined-templates run reuses the first
+run's preprocessing; the synthetic script no longer re-runs Kilosort4 on the default runtime.
+`synapse.hdbscan(features, min_cluster_size, *, runtime=None)` and `synapse.kmeans(..., runtime=None)`
+run on the device; `kmeans` checks `1 ≤ k ≤ n` (was a panic).
