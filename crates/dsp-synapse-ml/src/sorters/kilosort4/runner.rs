@@ -20,7 +20,7 @@ use dsp_io::PrefetchReader;
 use dsp_synapse::core::{SortedUnit, SortingOutput};
 
 use super::detect::{detect_universal, TemplateCentres, UniversalSpike};
-use super::templates::{extract_clips, learn_universal_templates, ClipOptions, LearnOptions, UniversalTemplates};
+use super::templates::{extract_clips, learn_universal_templates, ClipOptions, LearnOptions, UniversalTemplates, MAX_CLIPS};
 use super::Kilosort4Config;
 use crate::sorters::emusort::{apply_channel_delays, ChannelDelayEstimator, EmusortConfig};
 
@@ -32,6 +32,39 @@ pub const WHITENING_EPSILON: f32 = 1e-6;
 
 fn filter_error(e: dsp_base::filter::FilterError) -> DspError {
     DspError::InvalidConfig(e.to_string())
+}
+
+/// Dynamic learning stride: ensures short recordings sample at least ~5 batches across the span
+/// rather than only window 0 when total_windows < nskip.
+fn learning_stride(schedule_len: usize, nskip: usize) -> usize {
+    if schedule_len <= nskip {
+        (schedule_len / 5).max(1)
+    } else {
+        nskip.max(1)
+    }
+}
+
+fn load_universal_templates() -> DspResult<UniversalTemplates> {
+    #[cfg(feature = "hub")]
+    {
+        let (_, path) = crate::runtime::pull_model(super::KILOSORT4_WTEMP_MODEL_ID)?;
+        return UniversalTemplates::from_npz(&path);
+    }
+    #[allow(unreachable_code)]
+    {
+        for candidate in [
+            std::path::Path::new("data/kilosort4/wTEMP.npz"),
+            std::path::Path::new("../data/kilosort4/wTEMP.npz"),
+            std::path::Path::new("../../data/kilosort4/wTEMP.npz"),
+        ] {
+            if candidate.exists() {
+                return UniversalTemplates::from_npz(candidate);
+            }
+        }
+        Err(DspError::InvalidConfig(
+            "Universal templates from data is disabled, but 'hub' feature is off and data/kilosort4/wTEMP.npz was not found".into(),
+        ))
+    }
 }
 
 /// Reads padded samples of `window` (all channels, channel-major).
@@ -88,7 +121,8 @@ pub fn fit_kilosort4_preprocessing<R: Runtime>(
     let halos = (settle_left as u64 + margin, settle_right as u64 + margin);
     let schedule = ChunkSchedule::full_recording(total, ks.batch_size as u64, halos.0, halos.1);
     let max_window = schedule.max_read_samples();
-    let learning: Vec<HaloWindow> = schedule.windows().iter().step_by(ks.nskip.max(1)).cloned().collect();
+    let stride = learning_stride(schedule.len(), ks.nskip);
+    let learning: Vec<HaloWindow> = schedule.windows().iter().step_by(stride).cloned().collect();
 
     // 1. Whitening from average covariance of learning windows' interiors
     let mut workspace = PipelineWorkspace::<R, f32>::new(client.clone(), filtering, channels, max_window, fs).map_err(filter_error)?;
@@ -202,18 +236,43 @@ impl Kilosort4Runner {
         let halos = (settle_left as u64 + margin, settle_right as u64 + margin);
         let schedule = ChunkSchedule::full_recording(total, ks.batch_size as u64, halos.0, halos.1);
         let max_window = schedule.max_read_samples();
-        let learning: Vec<HaloWindow> = schedule.windows().iter().step_by(ks.nskip.max(1)).cloned().collect();
+        let stride = learning_stride(schedule.len(), ks.nskip);
+        let learning: Vec<HaloWindow> = schedule.windows().iter().step_by(stride).cloned().collect();
 
         let mut workspace = PipelineWorkspace::<R, f32>::new(client.clone(), preprocessing.clone(), channels, max_window, fs).map_err(filter_error)?;
 
         // Universal templates (wPCA / wTEMP)
-        let mut clips = Vec::new();
-        for window in &learning {
-            let handle = workspace.process_chunk_in_vram(&read_window(source, window)?, window.read_len());
-            let whitened = buffer::download::<R, f32>(client, handle)[..channels * window.read_len()].to_vec();
-            extract_clips(&whitened, channels, window.read_len(), &ks.clip_options(), &mut clips);
-        }
-        let templates = learn_universal_templates(client, &clips, ks.nt, &ks.learn_options())?;
+        let min_clips_needed = ks.n_templates.max(ks.n_pcs);
+        let templates = if ks.templates_from_data {
+            let mut clips = Vec::new();
+            for window in &learning {
+                let handle = workspace.process_chunk_in_vram(&read_window(source, window)?, window.read_len());
+                let whitened = buffer::download::<R, f32>(client, handle)[..channels * window.read_len()].to_vec();
+                extract_clips(&whitened, channels, window.read_len(), &ks.clip_options(), &mut clips);
+                if clips.len() / ks.nt >= MAX_CLIPS {
+                    break;
+                }
+            }
+
+            // Fallback: if stride skipped too aggressively and we didn't get enough clips, scan remaining windows
+            if clips.len() / ks.nt < min_clips_needed {
+                for window in schedule.windows() {
+                    if learning.iter().any(|w| w.index == window.index) {
+                        continue;
+                    }
+                    let handle = workspace.process_chunk_in_vram(&read_window(source, window)?, window.read_len());
+                    let whitened = buffer::download::<R, f32>(client, handle)[..channels * window.read_len()].to_vec();
+                    extract_clips(&whitened, channels, window.read_len(), &ks.clip_options(), &mut clips);
+                    if clips.len() / ks.nt >= min_clips_needed {
+                        break;
+                    }
+                }
+            }
+
+            learn_universal_templates(client, &clips, ks.nt, &ks.learn_options())?
+        } else {
+            load_universal_templates()?
+        };
 
         // Streaming detection with zero host readback of filtered signals
         let centres = TemplateCentres::new(probe, &ks.centres)?;
@@ -332,7 +391,8 @@ pub fn run_front_end<R: Runtime>(
     let halos = (settle_left as u64 + margin, settle_right as u64 + margin);
     let schedule = ChunkSchedule::full_recording(total, ks.batch_size as u64, halos.0, halos.1);
     let max_window = schedule.max_read_samples();
-    let learning: Vec<HaloWindow> = schedule.windows().iter().step_by(ks.nskip.max(1)).cloned().collect();
+    let stride = learning_stride(schedule.len(), ks.nskip);
+    let learning: Vec<HaloWindow> = schedule.windows().iter().step_by(stride).cloned().collect();
 
     let mut workspace = PipelineWorkspace::<R, f32>::new(client.clone(), filtering, channels, max_window, fs).map_err(filter_error)?;
     let mut covariance = vec![0.0f64; channels * channels];
@@ -382,6 +442,23 @@ pub fn run_front_end<R: Runtime>(
         let mut x = download(preprocess_on_device(&read_window(source, window)?, window), window);
         align(&mut x, window);
         extract_clips(&x, channels, window.read_len(), &options.clips, &mut clips);
+        if clips.len() / ks.nt >= MAX_CLIPS {
+            break;
+        }
+    }
+    let min_clips_needed = options.learn.n_templates.max(options.learn.n_pcs);
+    if clips.len() / ks.nt < min_clips_needed {
+        for window in schedule.windows() {
+            if learning.iter().any(|w| w.index == window.index) {
+                continue;
+            }
+            let mut x = download(preprocess_on_device(&read_window(source, window)?, window), window);
+            align(&mut x, window);
+            extract_clips(&x, channels, window.read_len(), &options.clips, &mut clips);
+            if clips.len() / ks.nt >= min_clips_needed {
+                break;
+            }
+        }
     }
     let templates = learn_universal_templates(client, &clips, ks.nt, &options.learn)?;
 
@@ -424,7 +501,7 @@ mod tests {
     fn kilosort4_runner_executes_on_synthetic_recording() {
         let rec = SyntheticRecording::new(SyntheticParams {
             channels: 4,
-            duration_sec: 0.1,
+            duration_sec: 1.0,
             sample_rate_hz: 30_000.0,
             ..Default::default()
         })
@@ -441,6 +518,7 @@ mod tests {
         config.batch_size = 1000;
         config.nskip = 1;
         config.whitening_range = 4;
+        config.th_single_ch = vec![4.0];
 
         struct Task<'a>(&'a dyn RecordingSource, &'a SensorLayout, &'a Kilosort4Config);
         impl ComputeTask for Task<'_> {
