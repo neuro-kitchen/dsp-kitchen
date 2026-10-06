@@ -7,9 +7,10 @@
 #    - `LowpassFilter` / `lowpass_filter`
 #    - `BandstopFilter`
 #    - `NotchFilter` / `notch_filter`
+#    - `ChebyshevFilter` (type I)
 #    - Causal (`direction="forward"`) vs. Zero-Phase (`direction="forward-backward"`) & settling halos
 # 2. **Non-Linear Filters**:
-#    - `MedianFilter` / `median_filter_9p` (impulse & stimulation artifact removal)
+#    - `MedianFilter` / `median_filter` (impulse & stimulation artifact removal; width 9 by default)
 #    - `TeagerKaiser` / `teager_kaiser_filter` (instantaneous action-potential energy operator)
 # 3. **Template Subtraction**:
 #    - `TemplateFilter` / `subtract_template` (1D & multi-channel dynamic lag/amplitude subtraction)
@@ -29,6 +30,7 @@ from dsp_kitchen.pipeline import Pipeline
 from dsp_kitchen.filter.iir import (
     BandpassFilter,
     BandstopFilter,
+    ChebyshevFilter,
     HighpassFilter,
     LowpassFilter,
     NotchFilter,
@@ -40,7 +42,7 @@ from dsp_kitchen.filter.iir import (
 from dsp_kitchen.filter.non_linear import (
     MedianFilter,
     TeagerKaiser,
-    median_filter_9p,
+    median_filter,
     teager_kaiser_filter,
 )
 from dsp_kitchen.filter.template import TemplateFilter, subtract_template
@@ -54,7 +56,7 @@ t_ms = t * 1000.0
 
 rng = np.random.default_rng(42)
 
-# Construct a realistic composite signal on 8 channels:
+# A synthetic composite signal on 8 channels, built in µV:
 #   - Slow LFP oscillation (8 Hz theta + 40 Hz gamma)
 #   - 60 Hz power-line interference
 #   - Sharp extracellular action potentials (~1 ms biphasic waveforms)
@@ -82,16 +84,12 @@ print(f"Composite signal shape: {raw.shape} (channels, samples) @ {fs:.0f} Hz")
 
 # %% [2] Direct IIR Filtering Functions (Bandpass, Highpass, Lowpass, Notch)
 # Extract the AP spike band (300 - 6000 Hz), LFP band (< 300 Hz), Highpass (> 300 Hz), and 60 Hz Notch
-ap_band = bandpass_filter(
-    raw, low=300.0, high=6000.0, fs=fs, order=5, direction="forward-backward"
-)
-lfp_band = lowpass_filter(
-    raw, cutoff=300.0, fs=fs, order=4, direction="forward-backward"
-)
-hp_band = highpass_filter(
-    raw, cutoff=300.0, fs=fs, order=4, direction="forward-backward"
-)
-notched = notch_filter(raw, freq=60.0, q=30.0, fs=fs, direction="forward-backward")
+ap_band = bandpass_filter(raw, 300.0, 6000.0, fs=fs, order=5)
+lfp_band = lowpass_filter(raw, 300.0, fs=fs, order=4)
+hp_band = highpass_filter(raw, 300.0, fs=fs, order=4)
+notched = notch_filter(raw, 60.0, 30.0, fs=fs)
+# Chebyshev type I: steeper transition for the same order, with pass-band ripple
+cheby_band = ChebyshevFilter(4, 0.5, "bandpass", 300.0, 6000.0)
 
 print("[IIR Functional API Results on Channel 0]")
 print(f"  Raw RMS:             {np.sqrt(np.mean(raw[0] ** 2)):6.2f} uV")
@@ -122,8 +120,10 @@ pipe_causal = Pipeline(
 out_zero_phase = pipe_zero_phase.run(raw, fs=fs)
 out_causal = pipe_causal.run(raw, fs=fs)
 
-halo_zp = pipe_zero_phase.settling(fs)
-halo_causal = pipe_causal.settling(fs)
+halo_zp = pipe_zero_phase.settling(fs=fs)
+halo_causal = pipe_causal.settling(fs=fs)
+cheby_out = Pipeline([cheby_band]).run(raw, fs=fs)
+print(f"Chebyshev I band-pass RMS (ch 0): {np.sqrt(np.mean(cheby_out[0] ** 2)):6.2f} uV")
 print(f"Zero-phase pipeline settling halo (left, right): {halo_zp} samples")
 print(f"Causal pipeline settling halo (left, right):     {halo_causal} samples")
 
@@ -135,20 +135,20 @@ print(
     f"Spike trough index — Zero-phase: sample {trough_zp}, Causal: sample {trough_causal} (phase lag = {trough_causal - trough_zp} samples)"
 )
 
-# %% [4] Non-Linear Filters: 9-Point Median Filter & Teager-Kaiser Energy Operator (TKEO)
+# %% [4] Non-Linear Filters: Running Median & Teager-Kaiser Energy Operator (TKEO)
 # Inject single-sample stimulation / ADC glitch spikes to test MedianFilter
 glitchy = ap_band.copy()
 glitch_indices = [300, 900, 1500, 2100]
 for idx in glitch_indices:
     glitchy[:, idx] += 450.0  # Huge 1-sample impulse artifact
 
-despiked = median_filter_9p(glitchy)
+despiked = median_filter(glitchy, 9)
 tkeo_energy = teager_kaiser_filter(ap_band)
 
 print("\n[Non-Linear Filters]")
 print(f"  Glitchy Peak Max:      {glitchy[0].max():7.2f} uV")
 print(
-    f"  After 9p Median Max:   {despiked[0].max():7.2f} uV (impulse artifacts suppressed)"
+    f"  After 9-point Median:  {despiked[0].max():7.2f} uV (impulse artifacts suppressed)"
 )
 print(
     f"  TKEO Energy Peak/Mean: {tkeo_energy[0].max() / (np.mean(np.abs(tkeo_energy[0])) + 1e-6):7.1f}x"
