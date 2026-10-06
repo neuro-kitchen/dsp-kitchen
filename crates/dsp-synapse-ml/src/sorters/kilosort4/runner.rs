@@ -20,7 +20,8 @@ use dsp_base::filter::{FilterBand, FilterSpec};
 use dsp_base::linalg::SecondMomentAccumulator;
 use dsp_base::pipeline::{Pipeline, PipelineStage, PipelineWorkspace};
 use dsp_base::spatial::SpatialWhitening;
-use dsp_core::{ChunkSchedule, DspError, DspResult, HaloWindow, RecordingSource, WindowLoader};
+use dsp_core::progress::Stages;
+use dsp_core::{ChunkSchedule, DspError, DspResult, HaloWindow, ProgressSink, RecordingSource, WindowLoader};
 use dsp_io::neuro::probe::SensorLayout;
 use dsp_synapse::core::{SortedUnit, SortingOutput};
 use dsp_synapse::QualityCriteria;
@@ -39,6 +40,15 @@ pub const WHITENING_EPSILON: f32 = 1e-6;
 /// Fewest windows the template-learning stride samples when the recording has `nskip` windows or
 /// fewer.
 pub const MIN_LEARNING_WINDOWS: usize = 5;
+
+/// Progress stages of a run (reported in this order; a run reports only the ones it has), and
+/// what each counts.
+pub const STAGE_FIT: &str = "Fitting preprocessing";
+pub const STAGE_CLIPS: &str = "Finding clips";
+pub const STAGE_TEMPLATES: &str = "Learning templates";
+pub const STAGE_DETECTION: &str = "Detecting spikes";
+const WINDOWS: &str = "windows";
+const STEPS: &str = "steps";
 
 /// Sorter name of a Kilosort4 run in [`SortingOutput`].
 pub const KILOSORT4_SORTER: &str = "kilosort4";
@@ -193,12 +203,24 @@ impl Kilosort4Result {
     }
 }
 
-/// Pass 1: fits the preprocessing of `plan` (filtering, whitening, channel delays) over `source`.
+/// Pass 1: fits the preprocessing of `plan` (filtering, whitening, channel delays) over `source`,
+/// reporting [`STAGE_FIT`] to `progress`.
 pub fn fit_preprocessing<R: Runtime>(
     client: &ComputeClient<R>,
     source: &dyn RecordingSource,
     probe: &SensorLayout,
     plan: &RunPlan,
+    progress: &dyn ProgressSink,
+) -> DspResult<FittedPreprocessing> {
+    fit_with_stages(client, source, probe, plan, &Stages::new(progress, &[(STAGE_FIT, WINDOWS)]))
+}
+
+fn fit_with_stages<R: Runtime>(
+    client: &ComputeClient<R>,
+    source: &dyn RecordingSource,
+    probe: &SensorLayout,
+    plan: &RunPlan,
+    progress: &Stages<'_>,
 ) -> DspResult<FittedPreprocessing> {
     let info = source.info();
     let (channels, total, fs) = (info.channel_count(), info.samples, info.sample_rate_hz());
@@ -231,12 +253,17 @@ pub fn fit_preprocessing<R: Runtime>(
         PipelineWorkspace::<R, f32>::new(client.clone(), filtering, channels, schedule.max_read_samples(), fs).map_err(filter_error)?;
     let mut second_moment = SecondMomentAccumulator::<R, f32>::new(client, channels);
     let mut delays = plan.max_channel_delay.map(|max_lag| ChannelDelayEstimator::new(client, channels, max_lag));
+    let fit_total = fit_windows.len() as u64;
+    let mut fit_done = 0u64;
+    progress.report(STAGE_FIT, 0, fit_total);
     WindowLoader::new(source).stream(&fit_windows, |window, raw| {
         let filtered = workspace.process_chunk_in_vram(raw, window.read_len());
         second_moment.add(&filtered, window.read_len(), window.valid_local.clone());
         if let Some(est) = delays.as_mut() {
             est.add(&filtered, window.read_len(), window.valid_local.clone());
         }
+        fit_done += 1;
+        progress.report(STAGE_FIT, fit_done, fit_total);
         Ok(())
     })?;
 
@@ -261,7 +288,7 @@ pub fn fit_kilosort4_preprocessing<R: Runtime>(
     probe: &SensorLayout,
     ks: &Kilosort4Config,
 ) -> DspResult<(Pipeline, SpatialWhitening)> {
-    let fitted = fit_preprocessing(client, source, probe, &RunPlan::kilosort4(ks))?;
+    let fitted = fit_preprocessing(client, source, probe, &RunPlan::kilosort4(ks), &dsp_core::NoProgress)?;
     Ok((fitted.pipeline, fitted.whitening))
 }
 
@@ -280,16 +307,27 @@ fn predefined_templates(plan: &RunPlan) -> DspResult<UniversalTemplates> {
     ))
 }
 
-/// Runs `plan` over `source` on `client`'s device.
+/// Runs `plan` over `source` on `client`'s device, reporting its stages ([`STAGE_FIT`],
+/// [`STAGE_CLIPS`], [`STAGE_TEMPLATES`], [`STAGE_DETECTION`], those the run has) to `progress`.
 pub fn run_plan<R: Runtime>(
     client: &ComputeClient<R>,
     source: &dyn RecordingSource,
     probe: &SensorLayout,
     plan: &RunPlan,
+    progress: &dyn ProgressSink,
 ) -> DspResult<Kilosort4Result> {
     let info = source.info();
     let (channels, total, fs) = (info.channel_count(), info.samples, info.sample_rate_hz());
     let ks = &plan.config;
+    let mut names = Vec::new();
+    if plan.fitted.is_none() {
+        names.push((STAGE_FIT, WINDOWS));
+    }
+    if ks.templates_from_data {
+        names.extend([(STAGE_CLIPS, WINDOWS), (STAGE_TEMPLATES, STEPS)]);
+    }
+    names.push((STAGE_DETECTION, WINDOWS));
+    let stages = Stages::new(progress, &names);
     let fitted = match &plan.fitted {
         Some(fitted) if fitted.settings == FitSettings::of(plan, info) => fitted.clone(),
         Some(fitted) => {
@@ -299,7 +337,7 @@ pub fn run_plan<R: Runtime>(
                 FitSettings::of(plan, info)
             )))
         }
-        None => fit_preprocessing(client, source, probe, plan)?,
+        None => fit_with_stages(client, source, probe, plan, &stages)?,
     };
     let schedule = &fitted.schedule;
     let max_window = schedule.max_read_samples();
@@ -332,13 +370,32 @@ pub fn run_plan<R: Runtime>(
             extract_clips(&x, channels, window.read_len(), &clip_opts, clips);
             clips.len() / ks.nt
         };
-        loader.stream_while(&learning, |window, raw| Ok(collect(raw, window, &mut clips) < MAX_CLIPS))?;
+        let mut scanned = 0u64;
+        let planned = learning.len() as u64;
+        stages.report(STAGE_CLIPS, 0, planned);
+        loader.stream_while(&learning, |window, raw| {
+            let more = collect(raw, window, &mut clips) < MAX_CLIPS;
+            scanned += 1;
+            stages.report(STAGE_CLIPS, scanned, planned);
+            Ok(more)
+        })?;
         // Too few clips at this stride: scan the other windows until there are enough
         let needed = plan.learn.n_templates.max(plan.learn.n_pcs);
         if clips.len() / ks.nt < needed {
-            loader.stream_while(&rest, |window, raw| Ok(collect(raw, window, &mut clips) < needed))?;
+            let extended = planned + rest.len() as u64;
+            loader.stream_while(&rest, |window, raw| {
+                let more = collect(raw, window, &mut clips) < needed;
+                scanned += 1;
+                stages.report(STAGE_CLIPS, scanned, extended);
+                Ok(more)
+            })?;
         }
-        learn_universal_templates(client, &clips, ks.nt, &plan.learn)?
+        // The stage ends here even when it stopped early (enough clips)
+        stages.report(STAGE_CLIPS, scanned, scanned);
+        stages.report(STAGE_TEMPLATES, 0, 1);
+        let learned = learn_universal_templates(client, &clips, ks.nt, &plan.learn)?;
+        stages.report(STAGE_TEMPLATES, 1, 1);
+        learned
     } else {
         predefined_templates(plan)?
     };
@@ -350,6 +407,8 @@ pub fn run_plan<R: Runtime>(
     let centres = TemplateCentres::new(probe, &ks.centres)?;
     let mut detector = UniversalDetector::new(client, channels, max_window, &centres, &templates, ks.th_universal, ks.nt0min())?;
     let mut spikes = Vec::new();
+    let (mut detected, windows) = (0u64, schedule.len() as u64);
+    stages.report(STAGE_DETECTION, 0, windows);
     loader.stream(schedule.windows(), |window, raw| {
         let handle = prepare(raw, window);
         for mut spike in detector.detect(&handle, window.read_len())? {
@@ -358,6 +417,8 @@ pub fn run_plan<R: Runtime>(
                 spikes.push(spike);
             }
         }
+        detected += 1;
+        stages.report(STAGE_DETECTION, detected, windows);
         Ok(())
     })?;
 

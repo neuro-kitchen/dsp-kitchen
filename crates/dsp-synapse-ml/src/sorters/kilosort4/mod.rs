@@ -132,7 +132,18 @@ impl Kilosort4 {
         source: &dyn dsp_core::RecordingSource,
         probe: &dsp_io::neuro::probe::SensorLayout,
     ) -> dsp_core::DspResult<Kilosort4Result> {
-        run_plan(client, source, probe, &RunPlan::kilosort4(&self.config))
+        self.run_with_progress(client, source, probe, &dsp_core::NoProgress)
+    }
+
+    /// [`Self::run`], reporting each stage to `progress` ([`runner::STAGE_FIT`] …).
+    pub fn run_with_progress<R: cubecl::prelude::Runtime>(
+        &self,
+        client: &cubecl::prelude::ComputeClient<R>,
+        source: &dyn dsp_core::RecordingSource,
+        probe: &dsp_io::neuro::probe::SensorLayout,
+        progress: &dyn dsp_core::ProgressSink,
+    ) -> dsp_core::DspResult<Kilosort4Result> {
+        run_plan(client, source, probe, &RunPlan::kilosort4(&self.config), progress)
     }
 }
 

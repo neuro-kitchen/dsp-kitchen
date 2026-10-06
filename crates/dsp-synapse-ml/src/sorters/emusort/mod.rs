@@ -125,7 +125,18 @@ impl Emusort {
 
     /// Runs EMUsort over `source` on `client`'s device runtime.
     pub fn run<R: Runtime>(&self, client: &ComputeClient<R>, source: &dyn RecordingSource, probe: &SensorLayout) -> DspResult<Kilosort4Result> {
-        run_plan(client, source, probe, &RunPlan::emusort(&self.config, source.info().sample_rate_hz()))
+        self.run_with_progress(client, source, probe, &dsp_core::NoProgress)
+    }
+
+    /// [`Self::run`], reporting each stage to `progress` (Kilosort4's runner stages).
+    pub fn run_with_progress<R: Runtime>(
+        &self,
+        client: &ComputeClient<R>,
+        source: &dyn RecordingSource,
+        probe: &SensorLayout,
+        progress: &dyn dsp_core::ProgressSink,
+    ) -> DspResult<Kilosort4Result> {
+        run_plan(client, source, probe, &RunPlan::emusort(&self.config, source.info().sample_rate_hz()), progress)
     }
 }
 

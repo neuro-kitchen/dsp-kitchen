@@ -9,11 +9,11 @@ electrophysiology), on any GPU or the CPU.
 
 Subpackages: ``filter`` (``iir``, ``fir``, ``non_linear``, ``template``), ``spatial``, ``math``,
 ``linalg``, ``pipeline``, ``io``, ``synapse`` (``synapse.ml``: sorters and published artifacts),
-``runtime``.
+``runtime``, ``progress`` (bars for long runs).
 """
 
 from dsp_kitchen_bindings import __version__
 
-from . import filter, io, linalg, math, pipeline, runtime, spatial, synapse
+from . import filter, io, linalg, math, pipeline, progress, runtime, spatial, synapse
 
-__all__ = ["__version__", "filter", "io", "linalg", "math", "pipeline", "runtime", "spatial", "synapse"]
+__all__ = ["__version__", "filter", "io", "linalg", "math", "pipeline", "progress", "runtime", "spatial", "synapse"]

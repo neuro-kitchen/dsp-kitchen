@@ -16,8 +16,32 @@ from dsp_kitchen_bindings import (
     extract_clips,
     kilosort4_provenance as provenance,
     learn_universal_templates,
-    run,
 )
+from dsp_kitchen_bindings import run as _run
+
+from ...progress import progress_callback
+
+
+def run(recording, probe, config, *, templates=None, preprocessing_from=None, progress=True, runtime=None):
+    """Kilosort4 over the whole ``recording`` (preprocessing fit, universal templates,
+    detection), showing a progress bar per stage with the time left (``progress=False``: none; a
+    callable receives ``(stage, step, steps, done, total, unit)``). ``templates``: predefined
+    universal templates when ``config.templates_from_data`` is off. ``preprocessing_from``: an
+    earlier result on the same recording with the same fit settings (skips the fit)."""
+    callback = progress_callback(progress)
+    try:
+        return _run(
+            recording,
+            probe,
+            config,
+            templates=templates,
+            preprocessing_from=preprocessing_from,
+            progress=callback,
+            runtime=runtime,
+        )
+    finally:
+        if hasattr(callback, "close"):
+            callback.close()
 
 __all__ = [
     "Config",

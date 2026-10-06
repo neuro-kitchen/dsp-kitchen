@@ -12,8 +12,22 @@ from dsp_kitchen_bindings import (
     apply_channel_delays,
     estimate_channel_delays,
     emusort_provenance as provenance,
-    run_emusort as run,
 )
+from dsp_kitchen_bindings import run_emusort as _run
+
+from ...progress import progress_callback
+
+
+def run(recording, probe, config, *, preprocessing_from=None, progress=True, runtime=None):
+    """EMUsort over the whole ``recording`` (Kilosort4's runner with EMUsort's settings, channel
+    delays and outlier removal), showing a progress bar per stage with the time left
+    (``progress=False``: none; a callable receives ``(stage, step, steps, done, total, unit)``)."""
+    callback = progress_callback(progress)
+    try:
+        return _run(recording, probe, config, preprocessing_from=preprocessing_from, progress=callback, runtime=runtime)
+    finally:
+        if hasattr(callback, "close"):
+            callback.close()
 
 __all__ = [
     "Config",

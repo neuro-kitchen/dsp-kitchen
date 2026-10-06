@@ -2,6 +2,7 @@
 //! module with its own arguments; this file only parses and dispatches.
 
 mod commands;
+mod progress;
 
 use clap::{Parser, Subcommand};
 use dsp_core::ComputeTarget;

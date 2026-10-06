@@ -367,42 +367,65 @@ fn detect_universal<'py>(py: Python<'py>, batch: Bound<'py, PyAny>, centres: PyR
 /// runner with EMUsort's settings, channel delays and outlier removal). `preprocessing_from` (an
 /// earlier result on the same recording with the same fit settings) skips the preprocessing fit.
 #[pyfunction(name = "run_emusort")]
-#[pyo3(signature = (recording, probe, config, *, preprocessing_from=None, runtime=None))]
+#[pyo3(signature = (recording, probe, config, *, preprocessing_from=None, progress=None, runtime=None))]
+#[allow(clippy::too_many_arguments)]
 fn run_emusort_py(
     py: Python<'_>,
     recording: PyRef<'_, crate::buffer::PyRecording>,
     probe: PyRef<'_, PyProbeLayout>,
     config: Bound<'_, PyAny>,
     preprocessing_from: Option<PyRef<'_, PyKilosort4Result>>,
+    progress: Option<Py<PyAny>>,
     runtime: Option<&str>,
 ) -> PyResult<PyKilosort4Result> {
     let Ok(config) = config.cast::<PyEmusortConfig>() else {
         return Err(PyValueError::new_err("config must be an EmusortConfig"));
     };
     let plan = RunPlan::emusort(&config.borrow().to_rust(py), recording.inner.info().sample_rate_hz());
-    run_plan_py(py, &recording, &probe, plan, preprocessing_from, runtime)
+    run_plan_py(py, &recording, &probe, plan, preprocessing_from, progress, runtime)
 }
 
-/// Runs `plan` over `recording` on `runtime` (shared by `kilosort4.run` and `emusort.run`).
+/// A Python callable receiving `(stage, step, steps, done, total, unit)` for each progress report
+/// of a run (called with the GIL re-taken; its errors are printed, not raised, so a bar cannot
+/// stop a run).
+struct PyProgress(Py<PyAny>);
+
+impl dsp_core::ProgressSink for PyProgress {
+    fn report(&self, e: &dsp_core::ProgressEvent<'_>) {
+        Python::attach(|py| {
+            if let Err(err) = self.0.call1(py, (e.stage, e.step, e.steps, e.done, e.total, e.unit)) {
+                err.print(py);
+            }
+        });
+    }
+}
+
+/// Runs `plan` over `recording` on `runtime` (shared by `kilosort4.run` and `emusort.run`),
+/// reporting progress to the callable `progress` when given.
 fn run_plan_py(
     py: Python<'_>,
     recording: &crate::buffer::PyRecording,
     probe: &PyProbeLayout,
     mut plan: RunPlan,
     preprocessing_from: Option<PyRef<'_, PyKilosort4Result>>,
+    progress: Option<Py<PyAny>>,
     runtime: Option<&str>,
 ) -> PyResult<PyKilosort4Result> {
-    struct Task<'a>(&'a dyn dsp_core::RecordingSource, &'a dsp_io::neuro::probe::SensorLayout, &'a RunPlan);
+    struct Task<'a>(&'a dyn dsp_core::RecordingSource, &'a dsp_io::neuro::probe::SensorLayout, &'a RunPlan, &'a dyn dsp_core::ProgressSink);
     impl ComputeTask for Task<'_> {
         type Output = dsp_core::DspResult<Kilosort4Result>;
         fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
-            run_plan(&client, self.0, self.1, self.2)
+            run_plan(&client, self.0, self.1, self.2, self.3)
         }
     }
+    let sink: Box<dyn dsp_core::ProgressSink> = match progress {
+        Some(callable) => Box::new(PyProgress(callable)),
+        None => Box::new(dsp_core::NoProgress),
+    };
     plan.fitted = preprocessing_from.map(|r| r.inner.fitted.clone());
     let source = recording.inner.clone();
     let (layout, target) = (probe.inner.clone(), target(runtime)?);
-    let inner = py.detach(|| target.run(Task(source.as_ref(), &layout, &plan))).map_err(runtime_error)?.map_err(value_error)?;
+    let inner = py.detach(|| target.run(Task(source.as_ref(), &layout, &plan, sink.as_ref()))).map_err(runtime_error)?.map_err(value_error)?;
     Ok(PyKilosort4Result { inner })
 }
 
@@ -517,7 +540,8 @@ fn create_kilosort4_preprocessing_py(
 /// `preprocessing_from` (an earlier result on the same recording with the same fit settings)
 /// skips the preprocessing fit.
 #[pyfunction(name = "run")]
-#[pyo3(signature = (recording, probe, config, *, templates=None, preprocessing_from=None, runtime=None))]
+#[pyo3(signature = (recording, probe, config, *, templates=None, preprocessing_from=None, progress=None, runtime=None))]
+#[allow(clippy::too_many_arguments)]
 fn run_kilosort4_py(
     py: Python<'_>,
     recording: PyRef<'_, crate::buffer::PyRecording>,
@@ -525,11 +549,12 @@ fn run_kilosort4_py(
     config: Bound<'_, PyAny>,
     templates: Option<PyRef<'_, PyUniversalTemplates>>,
     preprocessing_from: Option<PyRef<'_, PyKilosort4Result>>,
+    progress: Option<Py<PyAny>>,
     runtime: Option<&str>,
 ) -> PyResult<PyKilosort4Result> {
     let mut plan = RunPlan::kilosort4(&sorter_settings(py, &config)?.0);
     plan.templates = templates.map(|t| t.inner.clone());
-    run_plan_py(py, &recording, &probe, plan, preprocessing_from, runtime)
+    run_plan_py(py, &recording, &probe, plan, preprocessing_from, progress, runtime)
 }
 
 // ------------------------------------------------------------------------------------------------
