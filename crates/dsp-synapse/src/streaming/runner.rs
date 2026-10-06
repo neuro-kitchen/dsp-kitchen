@@ -11,7 +11,7 @@ use dsp_base::math::execute_channel_noise_std;
 use dsp_base::pipeline::{Pipeline, PipelineWorkspace};
 use dsp_core::{ChunkSchedule, DspError, DspResult, HaloWindow, RecordingSource, SampleFormat};
 use dsp_io::neuro::probe::{precompute_knn_table, SensorLayout};
-use dsp_io::PrefetchReader;
+use dsp_orchestrate::WindowLoader;
 
 use crate::core::{DeduplicatedSpike, SortedUnit, SortingOutput, WaveformTemplate};
 use crate::detection::{SpikeSpacing, StreamingDedup, detection_heights, execute_detect_spikes_in_vram};
@@ -304,14 +304,14 @@ impl StreamingDetector {
         };
 
         // 1. Filter each padded chunk in VRAM (persistent ping-pong buffers, no host readback)
-        let reader = PrefetchReader::new(source, schedule);
+        let loader = WindowLoader::new(source);
         if stored {
-            reader.for_each_window_stored(|win, bytes| {
+            loader.stream_stored(&schedule, |win, bytes| {
                 let filt_handle = workspace.process_stored_chunk_in_vram(bytes, info.format, win.read_len())?;
                 process(win, filt_handle)
             })?;
         } else {
-            reader.for_each_window(|win, raw_padded| {
+            loader.stream_schedule(&schedule, |win, raw_padded| {
                 let filt_handle = workspace.process_chunk_in_vram(raw_padded, win.read_len());
                 process(win, filt_handle)
             })?;
@@ -345,18 +345,28 @@ pub fn calibrate_noise<R: Runtime>(
 ) -> DspResult<Vec<f32>> {
     let info = source.info();
     let (channels, total, fs) = (info.channel_count(), info.samples, info.sample_rate_hz());
-    let all_ch: Vec<usize> = (0..channels).collect();
     let mut per_chunk: Vec<Vec<f32>> = vec![Vec::new(); channels];
-
-    for chunk in config.calibration_chunks(fs, total) {
+    let loader = WindowLoader::new(source);
+    for (index, chunk) in config.calibration_chunks(fs, total).into_iter().enumerate() {
         let read = chunk.start.saturating_sub(halos.0)..(chunk.end + halos.1).min(total);
-        let n = (read.end - read.start) as usize;
-        let mut raw = vec![0.0f32; channels * n];
-        source.read(&all_ch, read.clone(), &mut raw)?;
+        let left_pad = (chunk.start - read.start) as usize;
+        let valid_len = (chunk.end - chunk.start) as usize;
+        let window = HaloWindow {
+            index,
+            valid_global: chunk.clone(),
+            read_global: read,
+            valid_local: left_pad..(left_pad + valid_len),
+        };
+        let buf = loader.load_window(&window)?;
         // Filtered chunk stays on the device; only one σ per channel is downloaded
-        let filt = workspace.process_chunk_in_vram(&raw, n);
-        let interior = (chunk.start - read.start) as usize..(chunk.end - read.start) as usize;
-        let sigmas = execute_channel_noise_std::<R, f32>(workspace.client(), &filt, channels, n, interior);
+        let filt = workspace.process_chunk_in_vram(buf.as_slice(), buf.read_len());
+        let sigmas = execute_channel_noise_std::<R, f32>(
+            workspace.client(),
+            &filt,
+            channels,
+            buf.read_len(),
+            buf.window().valid_local.clone(),
+        );
         for (acc, sigma) in per_chunk.iter_mut().zip(sigmas) {
             acc.push(sigma as f32);
         }

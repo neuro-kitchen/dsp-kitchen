@@ -168,7 +168,17 @@ pub fn learn_universal_templates<R: Runtime>(client: &ComputeClient<R>, clips: &
     let kept: Vec<f32> = match opts.outlier_min_cluster_size {
         Some(mcs) if n >= MIN_CLIPS_FOR_OUTLIERS.max(mcs) => {
             let labels = hdbscan(&scaled, n, nt, mcs);
-            scaled.chunks_exact(nt).zip(&labels).filter(|(_, l)| **l >= 0).flat_map(|(c, _)| c.iter().copied()).collect()
+            let inliers: Vec<f32> = scaled
+                .chunks_exact(nt)
+                .zip(&labels)
+                .filter(|(_, l)| **l >= 0)
+                .flat_map(|(c, _)| c.iter().copied())
+                .collect();
+            if inliers.len() / nt >= opts.n_templates {
+                inliers
+            } else {
+                scaled
+            }
         }
         _ => scaled,
     };

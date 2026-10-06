@@ -28,3 +28,13 @@ pub fn execute_direct_car<R: Runtime, F: DspFloat>(
         );
     }
 }
+
+/// Zero-parameter spatial stage descriptor for Common Average Referencing across channels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CommonAverageReference;
+
+impl From<CommonAverageReference> for crate::pipeline::PipelineStage {
+    fn from(_: CommonAverageReference) -> Self {
+        crate::pipeline::PipelineStage::CommonAverageReference
+    }
+}

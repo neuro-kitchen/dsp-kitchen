@@ -2643,6 +2643,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dsp-orchestrate"
+version = "0.1.0"
+dependencies = [
+ "dsp-core",
+ "dsp-io",
+ "tracing",
+]
+
+[[package]]
 name = "dsp-stream"
 version = "0.1.0"
 dependencies = [
@@ -2668,6 +2677,7 @@ dependencies = [
  "dsp-base",
  "dsp-core",
  "dsp-io",
+ "dsp-orchestrate",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -2701,6 +2711,7 @@ dependencies = [
  "dsp-base",
  "dsp-core",
  "dsp-io",
+ "dsp-orchestrate",
  "dsp-synapse",
  "dsp-synapse-hub",
  "onnx-ir",

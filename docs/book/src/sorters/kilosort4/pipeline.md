@@ -7,14 +7,14 @@ Input to every stage is **preprocessed** data in batches of `batch_size = 60000`
 `nt` samples of padding on each side, in whitened units (thresholds are multiples of the noise σ).
 
 ## Front end over a recording — *implemented*
-
-`run_front_end(client, source, probe, &FrontEndOptions)` runs stages 1–3 over a whole recording.
+ 
+`Kilosort4Runner::new(config).run(client, source, probe)` runs stages 1–3 over a whole recording.
 Kilosort4's batches are the windows of a dsp-core `ChunkSchedule` (`batch_size`, with halos
-covering the filter's settling, `nt` and any channel delay); windows are read through
-`PrefetchReader` and processed by a `PipelineWorkspace` on the device, so memory is bounded
+covering the filter's settling and `nt`); windows are read through `WindowLoader`
+and processed by a `PipelineWorkspace` on the device, so memory is bounded
 whatever the recording length. Learning passes use every `nskip`-th window; detection keeps
-each window's own spikes and reports recording samples. `FrontEndOptions::kilosort4` /
-`::emusort` select the sorter.
+each window's own spikes and reports recording samples. Dedicated `Kilosort4Runner` and `EmusortRunner`
+provide first-class execution for neural and high-density EMG recordings respectively.
 
 ## 1. Preprocessing — *implemented (approximation)*
 

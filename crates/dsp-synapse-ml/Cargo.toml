@@ -19,6 +19,7 @@ cuda = ["cubecl/cuda", "dsp-base/cuda"]
 dsp-core = { workspace = true, features = ["compute"] }
 dsp-base.workspace = true
 dsp-synapse.workspace = true
+dsp-orchestrate.workspace = true
 dsp-io = { workspace = true, features = ["neuro"] }
 burn-tensor.workspace = true
 burn-flex = { workspace = true, optional = true }

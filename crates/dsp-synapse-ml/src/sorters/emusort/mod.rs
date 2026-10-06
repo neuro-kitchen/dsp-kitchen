@@ -166,10 +166,34 @@ pub fn emusort_provenance() -> Provenance {
     }
 }
 
+pub mod kernels;
+pub mod runner;
+pub use kernels::{apply_channel_delays_kernel, execute_apply_channel_delays};
+pub use runner::{EmusortResult, EmusortRunner};
+
 /// EMUsort stages configured by an [`EmusortConfig`].
 #[derive(Debug, Clone, Default)]
 pub struct Emusort {
     pub config: EmusortConfig,
+}
+
+impl Emusort {
+    pub fn new(config: EmusortConfig) -> Self {
+        Self { config }
+    }
+
+    pub fn runner(&self) -> EmusortRunner {
+        EmusortRunner::new(self.config.clone())
+    }
+
+    pub fn run<R: cubecl::prelude::Runtime>(
+        &self,
+        client: &cubecl::prelude::ComputeClient<R>,
+        source: &dyn dsp_core::RecordingSource,
+        probe: &dsp_io::neuro::probe::SensorLayout,
+    ) -> dsp_core::DspResult<EmusortResult> {
+        self.runner().run(client, source, probe)
+    }
 }
 
 impl Attributed for Emusort {
@@ -211,5 +235,38 @@ mod tests {
         assert_eq!(c.kilosort4.th_single_ch, vec![6.0, 9.0, 12.0, 15.0]);
         assert!(!c.kilosort4.do_car && c.remove_channel_delays && c.remove_spike_outliers);
         assert_eq!(c.learn_options().outlier_min_cluster_size, Some(20));
+    }
+
+    #[test]
+    fn gpu_channel_delays_matches_host() {
+        use dsp_base::core::buffer;
+        use dsp_core::compute::{ComputeTarget, ComputeTask};
+
+        let (channels, samples) = (3, 100);
+        let host_x: Vec<f32> = (0..(channels * samples)).map(|v| v as f32).collect();
+        let delays = vec![0isize, 5, -3];
+
+        let mut expected = host_x.clone();
+        apply_channel_delays(&mut expected, samples, &delays);
+
+        struct Task(Vec<f32>, Vec<isize>, usize, usize);
+        impl ComputeTask for Task {
+            type Output = Vec<f32>;
+            fn run<R: cubecl::prelude::Runtime>(self, client: cubecl::prelude::ComputeClient<R>) -> Self::Output {
+                let x_handle = buffer::upload(&client, &self.0);
+                let shifts: Vec<u32> = self.1.iter().map(|&d| d.rem_euclid(self.3 as isize) as u32).collect();
+                let s_handle = buffer::upload(&client, &shifts);
+                let out_handle = execute_apply_channel_delays(&client, &x_handle, &s_handle, self.2, self.3);
+                buffer::download(&client, out_handle)
+            }
+        }
+
+        if let Ok(target) = ComputeTarget::from_env() {
+            let actual = target.run(Task(host_x, delays, channels, samples)).expect("target run");
+            assert_eq!(actual.len(), expected.len());
+            for (i, (a, e)) in actual.iter().zip(&expected).enumerate() {
+                assert!((a - e).abs() < 1e-6, "at index {i} (ch {}, t {}): actual {a} != expected {e}", i / samples, i % samples);
+            }
+        }
     }
 }

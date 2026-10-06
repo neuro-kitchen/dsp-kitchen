@@ -26,10 +26,12 @@ except ImportError:
 import dsp_kitchen as dk
 import dsp_kitchen.synapse as syn
 from dsp_kitchen.io import Recording, list_sources
-from dsp_kitchen.synapse.ml import emusort, kilosort4
+from dsp_kitchen.synapse.ml import emusort
 
 # Test data lives outside the playground: `<repository>/data/`, or the folder in DSP_KITCHEN_DATA
-DATA_DIR = Path(os.environ.get("DSP_KITCHEN_DATA", Path(__file__).resolve().parents[2] / "data"))
+DATA_DIR = Path(
+    os.environ.get("DSP_KITCHEN_DATA", Path(__file__).resolve().parents[2] / "data")
+)
 NWB_PATH = DATA_DIR / "nwb" / "15-25-33_meps.nwb.zarr"
 GRID_ROWS, GRID_COLS = 4, 8
 ELECTRODE_PITCH_UM = 100.0  # inter-electrode distance of the grid (set your array's)
@@ -37,17 +39,22 @@ ELECTRODE_PITCH_UM = 100.0  # inter-electrode distance of the grid (set your arr
 print(emusort.provenance().citation())
 hdemg = next((s["id"] for s in list_sources(str(NWB_PATH)) if "HDEMG" in s["id"]), None)
 rec = Recording(str(NWB_PATH), source=hdemg)
-probe = syn.ProbeLayout.hdemg_grid("HD-EMG 4x8", GRID_ROWS, GRID_COLS, ELECTRODE_PITCH_UM)
+rec_segment = rec.slice_time(start_sec=0.0, end_sec=300.0)
+probe = syn.ProbeLayout.hdemg_grid(
+    "HD-EMG 4x8", GRID_ROWS, GRID_COLS, ELECTRODE_PITCH_UM
+)
 config = emusort.Config()
 print(f"\n{rec}\n{config}")
 
 # %% [2] Front End over the Whole Recording
-result = kilosort4.run_front_end(rec, probe, config)
+result = emusort.run(rec_segment, probe, config)
 spikes = result.spikes()
 delays, reference = result.channel_delays
 print(f"\n{result} on {dk.runtime.current()}")
 print(f"Channel delays (samples) vs channel {reference}: {delays}")
-print(f"{len(spikes['sample']):,} spikes; amplitude (whitened) median {np.median(spikes['amplitude']):.1f}")
+print(
+    f"{len(spikes['sample']):,} spikes; amplitude (whitened) median {np.median(spikes['amplitude']):.1f}"
+)
 
 # %% [3] Plot
 if HAS_PLT:
@@ -58,9 +65,18 @@ if HAS_PLT:
         axes[0].plot(t_ms, row, linewidth=1.2)
     axes[0].set_title("Universal templates (learned)", fontweight="bold")
     axes[0].set_xlabel("Time from peak (ms)")
-    axes[1].imshow(np.reshape(delays, (GRID_ROWS, GRID_COLS)) / rec.sample_rate * 1e3, cmap="coolwarm")
+    axes[1].imshow(
+        np.reshape(delays, (GRID_ROWS, GRID_COLS)) / rec.sample_rate * 1e3,
+        cmap="coolwarm",
+    )
     axes[1].set_title("Channel delays (ms)", fontweight="bold")
-    axes[2].scatter(np.asarray(spikes["sample"]) / rec.sample_rate, spikes["y_um"], s=3, c=spikes["template"], cmap="tab10")
+    axes[2].scatter(
+        np.asarray(spikes["sample"]) / rec.sample_rate,
+        spikes["y_um"],
+        s=3,
+        c=spikes["template"],
+        cmap="tab10",
+    )
     axes[2].set_title("Spikes: time vs position", fontweight="bold")
     axes[2].set_xlabel("Time (s)")
     axes[2].set_ylabel("y (µm)")

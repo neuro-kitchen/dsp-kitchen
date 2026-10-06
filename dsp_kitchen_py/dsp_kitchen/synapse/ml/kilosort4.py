@@ -7,7 +7,6 @@ by one. Clustering, deconvolution and merging are not implemented yet.
 """
 
 from dsp_kitchen_bindings import (
-    FrontEndResult,
     Kilosort4Config as Config,
     Kilosort4Result,
     TemplateCentres,
@@ -20,6 +19,9 @@ from dsp_kitchen_bindings import (
     run,
     run_front_end,
 )
+
+# Backwards compatibility alias
+FrontEndResult = Kilosort4Result
 
 __all__ = [
     "Config",
