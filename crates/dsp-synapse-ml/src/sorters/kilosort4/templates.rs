@@ -14,7 +14,7 @@ use cubecl::prelude::*;
 use dsp_base::linalg::{symmetric_eigen, EigenOptions, SecondMomentAccumulator};
 use dsp_core::{DspError, DspResult};
 use dsp_io::container::npy::read_npz;
-use dsp_synapse::sorting::{hdbscan_points, kmeans_points, DevicePoints, KMeansOptions};
+use dsp_synapse::sorting::{hdbscan_launches, hdbscan_points_with_progress, kmeans_points_with_progress, DevicePoints, KMeansOptions};
 
 /// Half-window of the local-maximum test of clip detection: ±4 samples × ±5 channel indices.
 pub const CLIP_LOCAL_SAMPLES: usize = 4;
@@ -131,10 +131,26 @@ const KMEANS_N_INIT: usize = 10;
 /// scaled clips are uploaded once; the Gram matrix, its eigendecomposition, HDBSCAN and k-means
 /// all read that device copy (inliers are gathered on the device).
 pub fn learn_universal_templates<R: Runtime>(client: &ComputeClient<R>, clips: &[f32], nt: usize, opts: &LearnOptions) -> DspResult<UniversalTemplates> {
+    learn_universal_templates_with_progress(client, clips, nt, opts, &mut |_, _| {})
+}
+
+/// [`learn_universal_templates`], calling `progress(done, total)` in steps: one for `wPCA`, one
+/// per HDBSCAN launch (EMUsort's outlier removal), one per k-means restart.
+pub fn learn_universal_templates_with_progress<R: Runtime>(
+    client: &ComputeClient<R>,
+    clips: &[f32],
+    nt: usize,
+    opts: &LearnOptions,
+    progress: &mut dyn FnMut(u64, u64),
+) -> DspResult<UniversalTemplates> {
     let n = clips.len() / nt.max(1);
     if n < opts.n_templates.max(opts.n_pcs) || nt == 0 {
         return Err(DspError::InvalidConfig(format!("{n} clips: too few to learn {} PCs and {} templates", opts.n_pcs, opts.n_templates)));
     }
+    let outliers = opts.outlier_min_cluster_size.filter(|&mcs| n >= MIN_CLIPS_FOR_OUTLIERS.max(mcs));
+    let hdbscan_steps = if outliers.is_some() { hdbscan_launches(client, n, nt) } else { 0 };
+    let total = 1 + hdbscan_steps + KMEANS_N_INIT as u64;
+    progress(0, total);
     // One common scale: 1 / sqrt(std of the clip energies) (keeps relative amplitudes)
     let energies: Vec<f64> = clips.chunks_exact(nt).map(|c| c.iter().map(|&v| (v as f64).powi(2)).sum()).collect();
     let mean = energies.iter().sum::<f64>() / n as f64;
@@ -154,11 +170,12 @@ pub fn learn_universal_templates<R: Runtime>(client: &ComputeClient<R>, clips: &
             wpca[p * nt + t] = eig.vectors[t * nt + p] as f32;
         }
     }
+    progress(1, total);
 
     // EMUsort: drop HDBSCAN outliers before clustering
-    let kept = match opts.outlier_min_cluster_size {
-        Some(mcs) if n >= MIN_CLIPS_FOR_OUTLIERS.max(mcs) => {
-            let labels = hdbscan_points(client, &points, mcs);
+    let kept = match outliers {
+        Some(mcs) => {
+            let labels = hdbscan_points_with_progress(client, &points, mcs, &mut |done, _| progress(1 + done, total));
             let inliers: Vec<u32> = (0..n as u32).filter(|&i| labels[i as usize] >= 0).collect();
             if inliers.len() >= opts.n_templates {
                 points.gather(client, &inliers)
@@ -172,11 +189,13 @@ pub fn learn_universal_templates<R: Runtime>(client: &ComputeClient<R>, clips: &
                 points
             }
         }
-        _ => points,
+        None => points,
     };
 
     // wTEMP: k-means centres, rows L2-normalized
-    let km = kmeans_points(client, &kept, opts.n_templates, &KMeansOptions { n_init: KMEANS_N_INIT, seed: opts.seed, ..Default::default() });
+    let offset = 1 + hdbscan_steps;
+    let options = KMeansOptions { n_init: KMEANS_N_INIT, seed: opts.seed, ..Default::default() };
+    let km = kmeans_points_with_progress(client, &kept, opts.n_templates, &options, &mut |done, _| progress(offset + done, total));
     let mut wtemp = km.centers;
     for row in wtemp.chunks_exact_mut(nt) {
         let norm = row.iter().map(|v| v * v).sum::<f32>().sqrt();
