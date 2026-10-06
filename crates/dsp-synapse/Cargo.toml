@@ -14,7 +14,6 @@ hip = ["dsp-base/hip"]
 [dependencies]
 dsp-core = { workspace = true, features = ["compute"] }
 dsp-base.workspace = true
-dsp-orchestrate.workspace = true
 dsp-io = { workspace = true, features = ["zarr", "neuro"] }
 cubecl = { workspace = true, features = ["wgpu"] }
 serde.workspace = true

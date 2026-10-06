@@ -9,9 +9,8 @@ use dsp_core::compute::{ComputeTarget, ComputeTask};
 
 use dsp_base::math::execute_channel_noise_std;
 use dsp_base::pipeline::{Pipeline, PipelineWorkspace};
-use dsp_core::{ChunkSchedule, DspError, DspResult, HaloWindow, RecordingSource, SampleFormat};
+use dsp_core::{ChunkSchedule, DspError, DspResult, HaloWindow, RecordingSource, SampleFormat, WindowLoader};
 use dsp_io::neuro::probe::{precompute_knn_table, SensorLayout};
-use dsp_orchestrate::WindowLoader;
 
 use crate::core::{DeduplicatedSpike, SortedUnit, SortingOutput, WaveformTemplate};
 use crate::detection::{SpikeSpacing, StreamingDedup, detection_heights, execute_detect_spikes_in_vram};
@@ -306,12 +305,12 @@ impl StreamingDetector {
         // 1. Filter each padded chunk in VRAM (persistent ping-pong buffers, no host readback)
         let loader = WindowLoader::new(source);
         if stored {
-            loader.stream_stored(&schedule, |win, bytes| {
+            loader.stream_stored(schedule.windows(), |win, bytes| {
                 let filt_handle = workspace.process_stored_chunk_in_vram(bytes, info.format, win.read_len())?;
                 process(win, filt_handle)
             })?;
         } else {
-            loader.stream_schedule(&schedule, |win, raw_padded| {
+            loader.stream(schedule.windows(), |win, raw_padded| {
                 let filt_handle = workspace.process_chunk_in_vram(raw_padded, win.read_len());
                 process(win, filt_handle)
             })?;
@@ -346,31 +345,27 @@ pub fn calibrate_noise<R: Runtime>(
     let info = source.info();
     let (channels, total, fs) = (info.channel_count(), info.samples, info.sample_rate_hz());
     let mut per_chunk: Vec<Vec<f32>> = vec![Vec::new(); channels];
-    let loader = WindowLoader::new(source);
-    for (index, chunk) in config.calibration_chunks(fs, total).into_iter().enumerate() {
-        let read = chunk.start.saturating_sub(halos.0)..(chunk.end + halos.1).min(total);
-        let left_pad = (chunk.start - read.start) as usize;
-        let valid_len = (chunk.end - chunk.start) as usize;
-        let window = HaloWindow {
-            index,
-            valid_global: chunk.clone(),
-            read_global: read,
-            valid_local: left_pad..(left_pad + valid_len),
-        };
-        let buf = loader.load_window(&window)?;
+    let windows: Vec<HaloWindow> = config
+        .calibration_chunks(fs, total)
+        .into_iter()
+        .enumerate()
+        .map(|(index, chunk)| HaloWindow::around(index, chunk, halos.0, halos.1, total))
+        .collect();
+    WindowLoader::new(source).stream(&windows, |window, raw| {
         // Filtered chunk stays on the device; only one σ per channel is downloaded
-        let filt = workspace.process_chunk_in_vram(buf.as_slice(), buf.read_len());
+        let filt = workspace.process_chunk_in_vram(raw, window.read_len());
         let sigmas = execute_channel_noise_std::<R, f32>(
             workspace.client(),
             &filt,
             channels,
-            buf.read_len(),
-            buf.window().valid_local.clone(),
+            window.read_len(),
+            window.valid_local.clone(),
         );
         for (acc, sigma) in per_chunk.iter_mut().zip(sigmas) {
             acc.push(sigma as f32);
         }
-    }
+        Ok(())
+    })?;
 
     Ok(per_chunk
         .into_iter()
