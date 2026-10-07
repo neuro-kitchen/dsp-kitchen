@@ -8,7 +8,7 @@ mod common;
 
 use common::*;
 use cubecl::prelude::*;
-use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
+use cubecl::device::WgpuDevice;
 use dsp_base::filter::{DeviceFilter, FilterBand, FilterMode, FilterSpec, FilterStart, Sos};
 
 #[test]
@@ -58,7 +58,7 @@ fn host_reference_matches_sosfilt_and_sosfiltfilt() {
 }
 
 fn run_device(sos: &Sos, mode: FilterMode, start: FilterStart, x: &[f64], channels: usize) -> Vec<Vec<f64>> {
-    let client = WgpuRuntime::client(&WgpuDevice::default());
+    let client = cubecl::Device::Wgpu(WgpuDevice::default()).client();
     let n = x.len();
     let data: Vec<f32> = (0..channels).flat_map(|c| x.iter().map(move |v| (*v as f32) * (1.0 + c as f32))).collect();
     let input = client.create_from_slice(f32::as_bytes(&data));

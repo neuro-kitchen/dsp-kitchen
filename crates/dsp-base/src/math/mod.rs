@@ -27,19 +27,19 @@ mod tests {
     use crate::core::buffer;
     use cubecl::prelude::*;
 
-    fn scaling<R: Runtime>(client: &ComputeClient<R>) {
+    fn scaling(client: &Client) {
         let input = buffer::upload(client, &[1.0f32, 2.0, 3.0, 4.0]);
-        let output = buffer::empty::<R, f32>(client, 4);
-        execute_scaling::<R, f32>(client, &input, &output, 4, 2.5, 10.0);
-        assert_eq!(buffer::download::<R, f32>(client, output), vec![12.5, 15.0, 17.5, 20.0]);
+        let output = buffer::empty::<f32>(client, 4);
+        execute_scaling::<f32>(client, &input, &output, 4, 2.5, 10.0);
+        assert_eq!(buffer::download::<f32>(client, output), vec![12.5, 15.0, 17.5, 20.0]);
     }
     runtime_test!(test_scaling_kernel, scaling);
 
-    fn clamp<R: Runtime>(client: &ComputeClient<R>) {
+    fn clamp(client: &Client) {
         let input = buffer::upload(client, &[-10.0f32, 5.0, 20.0, 0.0]);
-        let output = buffer::empty::<R, f32>(client, 4);
-        execute_clamp::<R, f32>(client, &input, &output, 4, -2.0, 10.0);
-        assert_eq!(buffer::download::<R, f32>(client, output), vec![-2.0, 5.0, 10.0, 0.0]);
+        let output = buffer::empty::<f32>(client, 4);
+        execute_clamp::<f32>(client, &input, &output, 4, -2.0, 10.0);
+        assert_eq!(buffer::download::<f32>(client, output), vec![-2.0, 5.0, 10.0, 0.0]);
     }
     runtime_test!(test_clamp_kernel, clamp);
 }

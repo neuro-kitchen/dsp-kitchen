@@ -23,12 +23,12 @@ fn specs() -> Vec<FilterSpec> {
     ]
 }
 
-fn upload<R: Runtime>(client: &ComputeClient<R>, x: &[f64]) -> cubecl::server::Handle {
+fn upload(client: &Client, x: &[f64]) -> cubecl::server::Handle {
     let data: Vec<f32> = (0..CHANNELS).flat_map(|_| x.iter().map(|v| *v as f32)).collect();
     client.create_from_slice(f32::as_bytes(&data))
 }
 
-fn read<R: Runtime>(client: &ComputeClient<R>, h: cubecl::server::Handle) -> Vec<f64> {
+fn read(client: &Client, h: cubecl::server::Handle) -> Vec<f64> {
     f32::from_bytes(&client.read_one_unchecked(h)).iter().map(|v| *v as f64).collect()
 }
 
@@ -45,8 +45,8 @@ struct Check;
 impl ComputeTask for Check {
     type Output = ();
 
-    fn run<R: Runtime>(self, client: ComputeClient<R>) {
-        let rt = R::name(&client).to_string();
+    fn run(self, client: Client) {
+        let rt = client.name().to_string();
         let x = test_signal(20_003, FS);
         let n = x.len();
         let scale = max_abs(&x);

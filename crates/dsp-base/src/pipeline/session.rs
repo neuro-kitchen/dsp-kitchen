@@ -39,8 +39,8 @@ enum Planned<F: DspFloat> {
 /// Pre-allocated device workspace for running a [`Pipeline`] over many chunks of `F` values.
 ///
 /// Filter designs are made and uploaded once. Buffers only grow: a shorter tail chunk reuses them.
-pub struct PipelineWorkspace<R: Runtime, F: DspFloat = f32> {
-    client: ComputeClient<R>,
+pub struct PipelineWorkspace<F: DspFloat = f32> {
+    client: Client,
     pipeline: Pipeline,
     plan: Vec<Planned<F>>,
     mode: ChunkMode,
@@ -56,10 +56,10 @@ pub struct PipelineWorkspace<R: Runtime, F: DspFloat = f32> {
     unpacked: Option<Handle>,
 }
 
-impl<R: Runtime, F: DspFloat> PipelineWorkspace<R, F> {
+impl<F: DspFloat> PipelineWorkspace<F> {
     /// Workspace for independent chunks (see [`ChunkMode::Independent`]).
     pub fn new(
-        client: ComputeClient<R>,
+        client: Client,
         pipeline: Pipeline,
         channels: usize,
         initial_samples: usize,
@@ -71,7 +71,7 @@ impl<R: Runtime, F: DspFloat> PipelineWorkspace<R, F> {
     /// Workspace for a continuous stream (see [`ChunkMode::Stateful`]); rejects forward-backward
     /// filters.
     pub fn new_stateful(
-        client: ComputeClient<R>,
+        client: Client,
         pipeline: Pipeline,
         channels: usize,
         initial_samples: usize,
@@ -81,7 +81,7 @@ impl<R: Runtime, F: DspFloat> PipelineWorkspace<R, F> {
     }
 
     fn with_mode(
-        client: ComputeClient<R>,
+        client: Client,
         pipeline: Pipeline,
         channels: usize,
         initial_samples: usize,
@@ -96,16 +96,16 @@ impl<R: Runtime, F: DspFloat> PipelineWorkspace<R, F> {
                     if mode == ChunkMode::Stateful && filter.mode() != FilterMode::Forward {
                         return Err(FilterError::ForwardBackwardOnLiveStream);
                     }
-                    let state = buffer::empty::<R, F>(&client, channels * filter.state_len());
+                    let state = buffer::empty::<F>(&client, channels * filter.state_len());
                     plan.push(Planned::Filter { filter, state });
                 }
                 PipelineStage::SpatialWhitening(w) => {
                     assert_eq!(w.num_channels, channels, "SpatialWhitening channel mismatch");
-                    plan.push(Planned::SpatialMatrix(DeviceSpatialMatrix::upload::<R, F>(&client, &w.matrix, channels)));
+                    plan.push(Planned::SpatialMatrix(DeviceSpatialMatrix::upload::<F>(&client, &w.matrix, channels)));
                 }
                 PipelineStage::SurfaceLaplacian(lap) => {
                     assert_eq!(lap.num_channels, channels, "SurfaceLaplacian channel mismatch");
-                    plan.push(Planned::SpatialMatrix(DeviceSpatialMatrix::upload::<R, F>(&client, &lap.matrix, channels)));
+                    plan.push(Planned::SpatialMatrix(DeviceSpatialMatrix::upload::<F>(&client, &lap.matrix, channels)));
                 }
                 PipelineStage::GaussianSmooth { sigma_samples, edge } => {
                     let (taps, radius) = gaussian_kernel_1d(*sigma_samples, GAUSSIAN_TRUNCATE);
@@ -115,9 +115,9 @@ impl<R: Runtime, F: DspFloat> PipelineWorkspace<R, F> {
             }
         }
         let mut workspace = Self {
-            buf_ping: buffer::empty::<R, F>(&client, channels * initial_samples),
-            buf_pong: buffer::empty::<R, F>(&client, channels * initial_samples),
-            scratch: buffer::empty::<R, F>(&client, 1),
+            buf_ping: buffer::empty::<F>(&client, channels * initial_samples),
+            buf_pong: buffer::empty::<F>(&client, channels * initial_samples),
+            scratch: buffer::empty::<F>(&client, 1),
             client,
             pipeline,
             plan,
@@ -133,9 +133,9 @@ impl<R: Runtime, F: DspFloat> PipelineWorkspace<R, F> {
         Ok(workspace)
     }
 
-    /// Reference to the underlying [`ComputeClient`].
+    /// Reference to the underlying [`Client`].
     #[inline]
-    pub fn client(&self) -> &ComputeClient<R> {
+    pub fn client(&self) -> &Client {
         &self.client
     }
 
@@ -157,8 +157,8 @@ impl<R: Runtime, F: DspFloat> PipelineWorkspace<R, F> {
 
     fn reserve(&mut self, samples: usize) {
         if samples > self.capacity_samples {
-            self.buf_ping = buffer::empty::<R, F>(&self.client, self.channels * samples);
-            self.buf_pong = buffer::empty::<R, F>(&self.client, self.channels * samples);
+            self.buf_ping = buffer::empty::<F>(&self.client, self.channels * samples);
+            self.buf_pong = buffer::empty::<F>(&self.client, self.channels * samples);
             self.unpacked = None;
             self.capacity_samples = samples;
         }
@@ -172,7 +172,7 @@ impl<R: Runtime, F: DspFloat> PipelineWorkspace<R, F> {
             .max()
             .unwrap_or(0);
         if need > self.scratch_len {
-            self.scratch = buffer::empty::<R, F>(&self.client, need);
+            self.scratch = buffer::empty::<F>(&self.client, need);
             self.scratch_len = need;
         }
     }
@@ -202,28 +202,28 @@ impl<R: Runtime, F: DspFloat> PipelineWorkspace<R, F> {
                         .apply_stateful(client, &current_in, &out, state, channels, samples, first)
                         .expect("stateful workspaces only hold forward filters"),
                 },
-                Planned::SpatialMatrix(matrix) => matrix.apply::<R, F>(client, &current_in, &out, channels, samples),
+                Planned::SpatialMatrix(matrix) => matrix.apply::<F>(client, &current_in, &out, channels, samples),
                 Planned::CenteredFir { taps, radius, edge } => {
-                    execute_fir_centered::<R, F>(client, &current_in, &out, taps, channels, samples, *radius, *edge);
+                    execute_fir_centered::<F>(client, &current_in, &out, taps, channels, samples, *radius, *edge);
                 }
                 Planned::Stage(stage) => match stage {
                     PipelineStage::Scale { alpha, beta } => {
-                        execute_scaling::<R, F>(client, &current_in, &out, total, cast(*alpha as f64), cast(*beta as f64))
+                        execute_scaling::<F>(client, &current_in, &out, total, cast(*alpha as f64), cast(*beta as f64))
                     }
                     PipelineStage::SubtractBaseline { baseline } => {
-                        execute_scaling::<R, F>(client, &current_in, &out, total, cast(1.0), cast(-*baseline as f64))
+                        execute_scaling::<F>(client, &current_in, &out, total, cast(1.0), cast(-*baseline as f64))
                     }
                     PipelineStage::Clamp { min, max } => {
-                        execute_clamp::<R, F>(client, &current_in, &out, total, cast(*min as f64), cast(*max as f64))
+                        execute_clamp::<F>(client, &current_in, &out, total, cast(*min as f64), cast(*max as f64))
                     }
                     PipelineStage::CommonAverageReference => {
-                        execute_direct_car::<R, F>(client, &current_in, &out, channels, samples)
+                        execute_direct_car::<F>(client, &current_in, &out, channels, samples)
                     }
                     PipelineStage::Median { width, edge } => {
-                        execute_median::<R, F>(client, &current_in, &out, channels, samples, *width, *edge)
+                        execute_median::<F>(client, &current_in, &out, channels, samples, *width, *edge)
                     }
                     PipelineStage::TeagerKaiser { edge } => {
-                        execute_teager_kaiser::<R, F>(client, &current_in, &out, channels, samples, *edge)
+                        execute_teager_kaiser::<F>(client, &current_in, &out, channels, samples, *edge)
                     }
                     PipelineStage::Filter(_)
                     | PipelineStage::SpatialWhitening(_)
@@ -272,10 +272,10 @@ impl<R: Runtime, F: DspFloat> PipelineWorkspace<R, F> {
         self.reserve(samples);
         let unpacked = self
             .unpacked
-            .get_or_insert_with(|| buffer::empty::<R, F>(&self.client, self.channels * self.capacity_samples))
+            .get_or_insert_with(|| buffer::empty::<F>(&self.client, self.channels * self.capacity_samples))
             .clone();
         let words = upload_stored(&self.client, stored);
-        execute_unpack_stored::<R, F>(&self.client, &words, format, &gains, &offsets, &unpacked, self.channels, samples)?;
+        execute_unpack_stored::<F>(&self.client, &words, format, &gains, &offsets, &unpacked, self.channels, samples)?;
         let unpacked = buffer::truncate::<F>(unpacked, (self.capacity_samples - samples) * self.channels);
         Ok(self.process_handle(&unpacked, samples))
     }
@@ -291,7 +291,7 @@ impl<R: Runtime, F: DspFloat> PipelineWorkspace<R, F> {
         }
 
         let out_handle = self.process_chunk_in_vram(input, samples);
-        output.copy_from_slice(&buffer::download_prefix::<R, F>(&self.client, out_handle, output.len()));
+        output.copy_from_slice(&buffer::download_prefix::<F>(&self.client, out_handle, output.len()));
     }
 }
 

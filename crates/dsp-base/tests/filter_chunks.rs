@@ -8,8 +8,7 @@
 mod common;
 
 use common::*;
-use cubecl::Runtime;
-use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
+use cubecl::device::WgpuDevice;
 use dsp_base::filter::{FilterMode, FilterSpec, FilterStart};
 use dsp_base::pipeline::{Pipeline, PipelineStage, PipelineWorkspace};
 
@@ -23,8 +22,8 @@ fn recording(n: usize) -> Vec<f32> {
         .collect()
 }
 
-fn workspace(pipeline: &Pipeline, samples: usize, stateful: bool) -> PipelineWorkspace<WgpuRuntime, f32> {
-    let client = WgpuRuntime::client(&WgpuDevice::default());
+fn workspace(pipeline: &Pipeline, samples: usize, stateful: bool) -> PipelineWorkspace<f32> {
+    let client = cubecl::Device::Wgpu(WgpuDevice::default()).client();
     if stateful {
         PipelineWorkspace::new_stateful(client, pipeline.clone(), CHANNELS, samples, FS).unwrap()
     } else {
@@ -133,8 +132,8 @@ fn stateful_chunks_are_exact_for_forward_filters() {
 #[test]
 fn stateful_workspace_rejects_forward_backward() {
     let pipeline = Pipeline::with_stages(vec![PipelineStage::bandpass(300.0, 6000.0)]);
-    let client = WgpuRuntime::client(&WgpuDevice::default());
-    assert!(PipelineWorkspace::<WgpuRuntime, f32>::new_stateful(client, pipeline, 2, 100, FS).is_err());
+    let client = cubecl::Device::Wgpu(WgpuDevice::default()).client();
+    assert!(PipelineWorkspace::<f32>::new_stateful(client, pipeline, 2, 100, FS).is_err());
 }
 
 #[test]

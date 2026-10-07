@@ -16,7 +16,7 @@ impl Scratch {
     }
 
     /// A buffer of at least `len` elements of `E` (contents unspecified).
-    pub fn get<R: Runtime, E: CubeElement>(&mut self, client: &ComputeClient<R>, len: usize) -> Handle {
+    pub fn get<E: CubeElement>(&mut self, client: &Client, len: usize) -> Handle {
         let need = buffer::bytes::<E>(len);
         match &self.handle {
             Some(handle) if self.capacity_bytes >= need => handle.clone(),

@@ -5,7 +5,7 @@ use dsp_core::compute::sample_position;
 /// sample over all channels and subtracts the average, with no intermediate buffer. Units of a plane
 /// read consecutive samples of one channel at a time (coalesced).
 #[cube(launch)]
-pub fn direct_car_kernel<F: Float>(input: &Array<F>, output: &mut Array<F>, num_channels: u32, num_samples: u32) {
+pub fn direct_car_kernel<F: Float>(input: &[F], output: &mut [F], num_channels: u32, num_samples: u32) {
     let sample_idx = sample_position();
 
     if sample_idx < num_samples {

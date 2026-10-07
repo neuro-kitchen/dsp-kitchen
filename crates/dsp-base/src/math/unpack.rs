@@ -23,10 +23,10 @@ const FLOAT: u32 = 2;
 /// (`ABSOLUTE_POS`).
 #[cube(launch)]
 pub fn unpack_stored_kernel<F: Float>(
-    words: &Array<u32>,
-    gains: &Array<F>,
-    offsets: &Array<F>,
-    output: &mut Array<F>,
+    words: &[u32],
+    gains: &[F],
+    offsets: &[F],
+    output: &mut [F],
     num_samples: u32,
     total: u32,
     #[comptime] bytes: u32,
@@ -62,7 +62,7 @@ pub fn unpack_stored_kernel<F: Float>(
 /// Device buffer of `stored` little-endian values as 32-bit words for [`execute_unpack_stored`].
 /// Uploaded as is when it fills whole words (no host copy); otherwise padded through
 /// [`stored_words`]. Words are read little-endian on the device, which every CubeCL target is.
-pub fn upload_stored<R: Runtime>(client: &ComputeClient<R>, stored: &[u8]) -> cubecl::server::Handle {
+pub fn upload_stored(client: &Client, stored: &[u8]) -> cubecl::server::Handle {
     if stored.len() % WORD_BYTES == 0 && !stored.is_empty() {
         client.create_from_slice(stored)
     } else {
@@ -84,8 +84,8 @@ pub fn stored_words(stored: &[u8]) -> Vec<u32> {
 /// buffers of `channels` values of `F`). `float64` storage is not unpacked on the device; convert
 /// those on the host.
 #[allow(clippy::too_many_arguments)]
-pub fn execute_unpack_stored<R: Runtime, F: DspFloat>(
-    client: &ComputeClient<R>,
+pub fn execute_unpack_stored<F: DspFloat>(
+    client: &Client,
     words: &cubecl::server::Handle,
     format: SampleFormat,
     gains: &cubecl::server::Handle,
@@ -108,14 +108,14 @@ pub fn execute_unpack_stored<R: Runtime, F: DspFloat>(
     }
     let geom = LaunchGeometry::elementwise(client, total);
     unsafe {
-        unpack_stored_kernel::launch::<F, R>(
+        unpack_stored_kernel::launch::<F>(
             client,
             geom.cube_count,
             geom.cube_dim,
-            ArrayArg::from_raw_parts(words.clone(), (total * bytes as usize).div_ceil(WORD_BYTES)),
-            ArrayArg::from_raw_parts(gains.clone(), channels),
-            ArrayArg::from_raw_parts(offsets.clone(), channels),
-            ArrayArg::from_raw_parts(output.clone(), total),
+            BufferArg::from_raw_parts(words.clone(), (total * bytes as usize).div_ceil(WORD_BYTES)),
+            BufferArg::from_raw_parts(gains.clone(), channels),
+            BufferArg::from_raw_parts(offsets.clone(), channels),
+            BufferArg::from_raw_parts(output.clone(), total),
             samples as u32,
             total as u32,
             bytes,

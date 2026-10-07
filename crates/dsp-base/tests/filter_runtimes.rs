@@ -7,7 +7,7 @@ use common::*;
 use cubecl::prelude::*;
 use dsp_base::filter::{DeviceFilter, FilterBand, FilterMode, FilterSpec};
 
-fn run<R: Runtime>(client: &ComputeClient<R>, spec: &FilterSpec, x: &[f64], channels: usize) -> Vec<f64> {
+fn run(client: &Client, spec: &FilterSpec, x: &[f64], channels: usize) -> Vec<f64> {
     let n = x.len();
     let data: Vec<f32> = (0..channels).flat_map(|_| x.iter().map(|v| *v as f32)).collect();
     let input = client.create_from_slice(f32::as_bytes(&data));
@@ -19,7 +19,7 @@ fn run<R: Runtime>(client: &ComputeClient<R>, spec: &FilterSpec, x: &[f64], chan
     f32::from_bytes(&client.read_one_unchecked(output)).iter().map(|v| *v as f64).collect()
 }
 
-fn check<R: Runtime>(client: &ComputeClient<R>) {
+fn check(client: &Client) {
     let x = test_signal(20_000, 30_000.0);
     let scale = max_abs(&x);
     // 130 channels: more than one cube of 64 channels, not a multiple of it.
@@ -39,7 +39,7 @@ fn check<R: Runtime>(client: &ComputeClient<R>) {
             let got = run(client, &spec, &x, channels);
             for c in 0..channels {
                 let err = max_abs_diff(&got[c * x.len()..(c + 1) * x.len()], &expected);
-                assert!(err < 2e-5 * scale, "{} {spec:?} channel {c}: max error {err}", R::name(client));
+                assert!(err < 2e-5 * scale, "{} {spec:?} channel {c}: max error {err}", client.name());
             }
         }
     }
@@ -47,13 +47,13 @@ fn check<R: Runtime>(client: &ComputeClient<R>) {
 
 #[test]
 fn wgpu_runtime() {
-    use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
-    check(&WgpuRuntime::client(&WgpuDevice::default()));
+    use cubecl::device::WgpuDevice;
+    check(&cubecl::Device::Wgpu(WgpuDevice::default()).client());
 }
 
 #[cfg(feature = "cpu")]
 #[test]
 fn cpu_runtime() {
-    use cubecl::cpu::{CpuDevice, CpuRuntime};
-    check(&CpuRuntime::client(&CpuDevice));
+    use cubecl::device::CpuDevice;
+    check(&cubecl::Device::Cpu(CpuDevice).client());
 }

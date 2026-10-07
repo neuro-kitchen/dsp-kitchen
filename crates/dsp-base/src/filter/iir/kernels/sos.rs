@@ -52,11 +52,11 @@ pub const fn coeffs_len(n_sections: usize) -> usize {
 #[cube(launch)]
 #[allow(clippy::too_many_arguments)]
 pub fn sos_block_kernel<F: Float>(
-    input: &Array<F>,
-    output: &mut Array<F>,
-    coeffs: &Array<F>,
-    state: &mut Array<F>,
-    block_states: &mut Array<F>,
+    input: &[F],
+    output: &mut [F],
+    coeffs: &[F],
+    state: &mut [F],
+    block_states: &mut [F],
     num_channels: u32,
     in_len: u32,
     pad: u32,
@@ -180,8 +180,8 @@ pub fn sos_block_kernel<F: Float>(
 /// `prev + (s + (Aᴸ − I)·prev)` keeps rounding on the small part only.
 #[cube(launch)]
 pub fn sos_block_scan_kernel<F: Float>(
-    block_states: &mut Array<F>,
-    transition_delta: &Array<F>,
+    block_states: &mut [F],
+    transition_delta: &[F],
     num_channels: u32,
     num_blocks: u32,
     #[comptime] n_sections: usize,

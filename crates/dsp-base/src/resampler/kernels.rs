@@ -7,8 +7,8 @@ use crate::core::edge::EDGE_ZEROS;
 /// `output[c, m] = input[c, phase + m · step]` (keep every `step`-th sample).
 #[cube(launch)]
 pub fn downsample_kernel<F: Float>(
-    input: &Array<F>,
-    output: &mut Array<F>,
+    input: &[F],
+    output: &mut [F],
     num_channels: u32,
     in_len: u32,
     out_len: u32,
@@ -30,9 +30,9 @@ pub fn downsample_kernel<F: Float>(
 #[cube(launch)]
 #[allow(clippy::too_many_arguments)]
 pub fn upfirdn_kernel<F: Float>(
-    input: &Array<F>,
-    taps: &Array<F>,
-    output: &mut Array<F>,
+    input: &[F],
+    taps: &[F],
+    output: &mut [F],
     num_channels: u32,
     in_len: u32,
     out_len: u32,

@@ -31,8 +31,8 @@ pub fn estimate_noise_std(signal: &[f32]) -> f32 {
 /// [`estimate_noise_std`] of columns `cols` of every channel of the `[channels, samples]` device
 /// buffer `input`, on the device (`median(|x|)` at index `n / 2` by
 /// [`reduce::row_abs_kth`]); only the `channels` estimates are downloaded. Empty `cols`: zeros.
-pub fn execute_channel_noise_std<R: Runtime, F: DspFloat>(
-    client: &ComputeClient<R>,
+pub fn execute_channel_noise_std<F: DspFloat>(
+    client: &Client,
     input: &cubecl::server::Handle,
     channels: usize,
     samples: usize,
@@ -41,10 +41,10 @@ pub fn execute_channel_noise_std<R: Runtime, F: DspFloat>(
     if cols.is_empty() || channels == 0 {
         return vec![0.0; channels];
     }
-    let out = crate::core::buffer::empty::<R, F>(client, channels);
+    let out = crate::core::buffer::empty::<F>(client, channels);
     let k = cols.len() / 2;
-    reduce::row_abs_kth::<R, F>(client, input, &out, channels, samples, cols, k);
-    crate::core::buffer::download::<R, F>(client, out)
+    reduce::row_abs_kth::<F>(client, input, &out, channels, samples, cols, k);
+    crate::core::buffer::download::<F>(client, out)
         .into_iter()
         .map(|m| crate::core::to_f64(m) / MAD_TO_SIGMA as f64)
         .collect()
@@ -147,15 +147,15 @@ pub fn standard_error(sample_std: f32, count: usize) -> f32 {
 /// Per-channel mean and population standard deviation of a `[channels, samples]` buffer into
 /// `out_mean` / `out_std` (`channels` values each); a parallel reduction per channel
 /// ([`reduce::row_mean_std`]).
-pub fn execute_channel_mean_std<R: Runtime, F: DspFloat>(
-    client: &ComputeClient<R>,
+pub fn execute_channel_mean_std<F: DspFloat>(
+    client: &Client,
     input: &cubecl::server::Handle,
     out_mean: &cubecl::server::Handle,
     out_std: &cubecl::server::Handle,
     channels: usize,
     samples: usize,
 ) {
-    reduce::row_mean_std::<R, F>(client, input, out_mean, out_std, channels, samples);
+    reduce::row_mean_std::<F>(client, input, out_mean, out_std, channels, samples);
 }
 
 #[cfg(test)]
@@ -197,7 +197,7 @@ mod tests {
         assert!((standard_error(10.0, 100) - 1.0).abs() < 1e-6);
     }
 
-    fn channel_mean_std<R: Runtime>(client: &ComputeClient<R>) {
+    fn channel_mean_std(client: &Client) {
         let channels = 4;
         let samples = 256;
         let mut data = vec![0.0f32; channels * samples];
@@ -209,10 +209,10 @@ mod tests {
         }
 
         let in_handle = buffer::upload(client, &data);
-        let mean_handle = buffer::empty::<R, f32>(client, channels);
-        let std_handle = buffer::empty::<R, f32>(client, channels);
+        let mean_handle = buffer::empty::<f32>(client, channels);
+        let std_handle = buffer::empty::<f32>(client, channels);
 
-        execute_channel_mean_std::<R, f32>(
+        execute_channel_mean_std::<f32>(
             client,
             &in_handle,
             &mean_handle,
@@ -221,8 +221,8 @@ mod tests {
             samples,
         );
 
-        let means = buffer::download::<R, f32>(client, mean_handle);
-        let stds = buffer::download::<R, f32>(client, std_handle);
+        let means = buffer::download::<f32>(client, mean_handle);
+        let stds = buffer::download::<f32>(client, std_handle);
 
         for c in 0..channels {
             let expected_mean = (c as f32) * 10.0;

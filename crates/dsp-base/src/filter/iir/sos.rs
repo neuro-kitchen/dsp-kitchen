@@ -68,13 +68,13 @@ pub struct DeviceFilter<F: DspFloat = f32> {
 
 impl<F: DspFloat> DeviceFilter<F> {
     /// Designs `spec` for `sample_rate` Hz and uploads its coefficients.
-    pub fn new<R: Runtime>(client: &ComputeClient<R>, spec: &FilterSpec, sample_rate: f64) -> Result<Self, FilterError> {
+    pub fn new(client: &Client, spec: &FilterSpec, sample_rate: f64) -> Result<Self, FilterError> {
         let sos = spec.design(sample_rate)?;
         Ok(Self::from_sos(client, sos, spec.mode).with_start(spec.start))
     }
 
     /// Uploads already designed sections (forward passes start at rest; see [`Self::with_start`]).
-    pub fn from_sos<R: Runtime>(client: &ComputeClient<R>, sos: Sos, mode: FilterMode) -> Self {
+    pub fn from_sos(client: &Client, sos: Sos, mode: FilterMode) -> Self {
         let settling = sos.settling_samples(crate::filter::design::DEFAULT_SETTLING_TOLERANCE);
         let coeffs_host = kernel_coeffs::<F>(&sos);
         let coeffs = buffer::upload(client, &cast_all::<F>(&coeffs_host));
@@ -152,9 +152,9 @@ impl<F: DspFloat> DeviceFilter<F> {
     /// forward-backward odd-pads both edges and starts each pass from the steady state of its first
     /// sample. `state` must hold `channels · state_len()` values, `scratch` at least `scratch_len()`.
     #[allow(clippy::too_many_arguments)]
-    pub fn apply<R: Runtime>(
+    pub fn apply(
         &self,
-        client: &ComputeClient<R>,
+        client: &Client,
         input: &Handle,
         output: &Handle,
         scratch: &Handle,
@@ -193,9 +193,9 @@ impl<F: DspFloat> DeviceFilter<F> {
     /// Filters the next chunk of a continuous stream, continuing from `state` (forward only).
     /// `first` starts the stream per [`FilterStart`] instead.
     #[allow(clippy::too_many_arguments)]
-    pub fn apply_stateful<R: Runtime>(
+    pub fn apply_stateful(
         &self,
-        client: &ComputeClient<R>,
+        client: &Client,
         input: &Handle,
         output: &Handle,
         state: &Handle,
@@ -225,7 +225,7 @@ impl<F: DspFloat> DeviceFilter<F> {
         Ok(())
     }
 
-    fn run<R: Runtime>(&self, client: &ComputeClient<R>, pass: Pass) {
+    fn run(&self, client: &Client, pass: Pass) {
         let inputs = PassInputs { client: client.clone(), filter: self.clone(), pass };
         match (self.block_len, self.layout) {
             (None, None) => tuned_pass(inputs),
@@ -234,7 +234,7 @@ impl<F: DspFloat> DeviceFilter<F> {
     }
 
     /// `Aᴸ − I` of the cascade (zero-input state transition over `block_len` steps) on the device.
-    fn transition<R: Runtime>(&self, client: &ComputeClient<R>, block_len: usize) -> Handle {
+    fn transition(&self, client: &Client, block_len: usize) -> Handle {
         let mut cache = self.transitions.lock().expect("transition cache");
         cache
             .entry(block_len)
@@ -375,13 +375,13 @@ struct Pass {
 
 /// One pass of a [`DeviceFilter`] (cloned per autotune candidate).
 #[derive(Clone)]
-struct PassInputs<R: Runtime, F: DspFloat> {
-    client: ComputeClient<R>,
+struct PassInputs<F: DspFloat> {
+    client: Client,
     filter: DeviceFilter<F>,
     pass: Pass,
 }
 
-impl<R: Runtime, F: DspFloat> PassInputs<R, F> {
+impl<F: DspFloat> PassInputs<F> {
     fn steps(&self) -> usize {
         self.pass.in_len + 2 * self.pass.pad
     }
@@ -395,29 +395,29 @@ impl<R: Runtime, F: DspFloat> PassInputs<R, F> {
         let blocks = steps.div_ceil(block_len).max(1);
         let mut workspaces = f.workspace.lock().expect("filter workspace");
         let ws = workspaces.entry(std::thread::current().id()).or_default();
-        let slots = ws.slots.get::<R, F>(client, p.channels * blocks * f.state_len());
+        let slots = ws.slots.get::<F>(client, p.channels * blocks * f.state_len());
         // Buffers the kernel reads and writes, and their (channel, time) strides
         let (input, output, in_strides, out_strides) = match layout {
             PassLayout::ChannelMajor => (p.input.clone(), p.output.clone(), (p.in_len, 1), (p.out_len, 1)),
             PassLayout::TimeMajor => {
-                let input_t = ws.input_t.get::<R, F>(client, p.channels * p.in_len);
-                layout::transpose::<R, F>(client, &p.input, &input_t, p.channels, p.in_len);
-                let output_t = ws.output_t.get::<R, F>(client, p.channels * p.out_len);
+                let input_t = ws.input_t.get::<F>(client, p.channels * p.in_len);
+                layout::transpose::<F>(client, &p.input, &input_t, p.channels, p.in_len);
+                let output_t = ws.output_t.get::<F>(client, p.channels * p.out_len);
                 (input_t, output_t, (1, p.channels), (1, p.channels))
             }
         };
         let launch = |phase: u32, active: usize| unsafe {
             // `phase` is a compile-time kernel parameter: each phase is its own specialised kernel
             let geom = LaunchGeometry::elementwise(client, p.channels * active);
-            sos_block_kernel::launch::<F, R>(
+            sos_block_kernel::launch::<F>(
                 client,
                 geom.cube_count,
                 geom.cube_dim,
-                ArrayArg::from_raw_parts(input.clone(), p.channels * p.in_len),
-                ArrayArg::from_raw_parts(output.clone(), p.channels * p.out_len),
-                ArrayArg::from_raw_parts(f.coeffs.clone(), coeffs_len(n)),
-                ArrayArg::from_raw_parts(p.state.clone(), p.channels * f.state_len()),
-                ArrayArg::from_raw_parts(slots.clone(), (p.channels * blocks * f.state_len()).max(1)),
+                BufferArg::from_raw_parts(input.clone(), p.channels * p.in_len),
+                BufferArg::from_raw_parts(output.clone(), p.channels * p.out_len),
+                BufferArg::from_raw_parts(f.coeffs.clone(), coeffs_len(n)),
+                BufferArg::from_raw_parts(p.state.clone(), p.channels * f.state_len()),
+                BufferArg::from_raw_parts(slots.clone(), (p.channels * blocks * f.state_len()).max(1)),
                 p.channels as u32,
                 p.in_len as u32,
                 p.pad as u32,
@@ -441,12 +441,12 @@ impl<R: Runtime, F: DspFloat> PassInputs<R, F> {
             let transition = f.transition(client, block_len);
             let geom = LaunchGeometry::per_channel(client, p.channels);
             unsafe {
-                sos_block_scan_kernel::launch::<F, R>(
+                sos_block_scan_kernel::launch::<F>(
                     client,
                     geom.cube_count,
                     geom.cube_dim,
-                    ArrayArg::from_raw_parts(slots.clone(), p.channels * blocks * f.state_len()),
-                    ArrayArg::from_raw_parts(transition, (2 * n) * (2 * n)),
+                    BufferArg::from_raw_parts(slots.clone(), p.channels * blocks * f.state_len()),
+                    BufferArg::from_raw_parts(transition, (2 * n) * (2 * n)),
                     p.channels as u32,
                     blocks as u32,
                     n,
@@ -455,7 +455,7 @@ impl<R: Runtime, F: DspFloat> PassInputs<R, F> {
         }
         launch(1, blocks);
         if layout == PassLayout::TimeMajor {
-            layout::transpose::<R, F>(client, &output, &p.output, p.out_len, p.channels);
+            layout::transpose::<F>(client, &output, &p.output, p.out_len, p.channels);
         }
     }
 }
@@ -463,39 +463,38 @@ impl<R: Runtime, F: DspFloat> PassInputs<R, F> {
 /// [`PassInputs::run`] with the block length and memory order CubeCL's autotuner found fastest for
 /// this device, element type, filter order and problem size. Benchmarks write to scratch output and
 /// state buffers.
-fn tuned_pass<R: Runtime, F: DspFloat>(inputs: PassInputs<R, F>) {
-    // cubecl-runtime 0.10's `local_tuner!` expands with a trailing semicolon (rust-lang/rust#79813)
-    #[allow(semicolon_in_expressions_from_non_local_macros)]
+fn tuned_pass<F: DspFloat>(inputs: PassInputs<F>) {
     static TUNER: LocalTuner<String, String> = local_tuner!("sos-blocks");
-    let set = TUNER.init(|| {
-        let key = |p: &PassInputs<R, F>| {
+    let client = inputs.client.clone();
+    let id = tune_id(&client);
+    let set = TUNER.init(&id, || {
+        let key = |p: &PassInputs<F>| {
             format!("{}-n{}-c{}-t{}", F::type_name(), p.filter.n_sections(), size_class(p.pass.channels), size_class(p.steps()))
         };
-        let scratch = |_: &String, p: &PassInputs<R, F>| {
+        let scratch = |_: &String, p: &PassInputs<F>| {
             let mut pass = p.pass.clone();
-            pass.output = buffer::empty::<R, F>(&p.client, pass.channels * pass.out_len);
-            pass.state = buffer::zeros::<R, F>(&p.client, pass.channels * p.filter.state_len());
+            pass.output = buffer::empty::<F>(&p.client, pass.channels * pass.out_len);
+            pass.state = buffer::zeros::<F>(&p.client, pass.channels * p.filter.state_len());
             PassInputs { client: p.client.clone(), filter: p.filter.clone(), pass }
         };
-        let set: TunableSet<String, PassInputs<R, F>, ()> = TunableSet::new(key, scratch);
+        let set: TunableSet<String, PassInputs<F>, ()> = TunableSet::new(key, scratch);
         let candidates = [PassLayout::ChannelMajor, PassLayout::TimeMajor]
             .into_iter()
             .flat_map(|layout| BLOCK_COUNT_CANDIDATES.into_iter().map(move |blocks| (layout, blocks)));
         candidates.fold(set, |set, (layout, blocks)| {
-            set.with(Tunable::new(&format!("{layout:?}-blocks{blocks}"), move |p: PassInputs<R, F>| {
+            set.with(Tunable::new(&format!("{layout:?}-blocks{blocks}"), move |p: PassInputs<F>| {
                 p.run(p.steps().div_ceil(blocks), layout);
                 Ok::<_, String>(())
             }))
         })
     });
-    let client = inputs.client.clone();
-    TUNER.execute(&tune_id(&client), &client, set, inputs)
+    TUNER.execute(&id, &client, set, inputs)
 }
 
 /// One-shot filtering of a `[channels, samples]` buffer (independent chunk semantics).
 #[allow(clippy::too_many_arguments)]
-pub fn execute_filter<R: Runtime, F: DspFloat>(
-    client: &ComputeClient<R>,
+pub fn execute_filter<F: DspFloat>(
+    client: &Client,
     spec: &FilterSpec,
     sample_rate: f64,
     input: &Handle,
@@ -504,8 +503,8 @@ pub fn execute_filter<R: Runtime, F: DspFloat>(
     samples: usize,
 ) -> Result<(), FilterError> {
     let filter = DeviceFilter::<F>::new(client, spec, sample_rate)?;
-    let scratch = buffer::empty::<R, F>(client, filter.scratch_len(channels, samples));
-    let state = buffer::empty::<R, F>(client, channels * filter.state_len());
+    let scratch = buffer::empty::<F>(client, filter.scratch_len(channels, samples));
+    let state = buffer::empty::<F>(client, channels * filter.state_len());
     filter.apply(client, input, output, &scratch, &state, channels, samples);
     Ok(())
 }

@@ -117,22 +117,22 @@ impl SurfaceLaplacian {
     }
 
     /// The operator uploaded once as `F` (dense or sparse rows), for repeated calls.
-    pub fn to_device<R: Runtime, F: DspFloat>(&self, client: &ComputeClient<R>) -> super::DeviceSpatialMatrix {
-        super::DeviceSpatialMatrix::upload::<R, F>(client, &self.matrix, self.num_channels)
+    pub fn to_device<F: DspFloat>(&self, client: &Client) -> super::DeviceSpatialMatrix {
+        super::DeviceSpatialMatrix::upload::<F>(client, &self.matrix, self.num_channels)
     }
 
     /// One-off: applies the Surface Laplacian on the device (uploads the matrix; use
     /// [`Self::to_device`] for repeated calls).
-    pub fn apply_gpu<R: Runtime, F: DspFloat>(
+    pub fn apply_gpu<F: DspFloat>(
         &self,
-        client: &ComputeClient<R>,
+        client: &Client,
         input: &cubecl::server::Handle,
         output: &cubecl::server::Handle,
         channels: usize,
         samples: usize,
     ) {
         assert_eq!(channels, self.num_channels);
-        self.to_device::<R, F>(client).apply::<R, F>(client, input, output, channels, samples);
+        self.to_device::<F>(client).apply::<F>(client, input, output, channels, samples);
     }
 }
 
