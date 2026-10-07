@@ -1,20 +1,25 @@
 //! Burn tensor execution engine bridged to [`dsp_core::ComputeTarget`].
 //!
 //! Executes pretrained weights (from `.safetensors`, `.npy`, or `.onnx` initializers)
-//! using Burn's `burn-wgpu` (CubeCL WGPU) or `burn-flex` backends without synthetic
-//! random initialization or hardcoded tensor dimensions.
+//! using Burn's wgpu (CubeCL) or Flex (CPU) backend without synthetic random initialization or
+//! hardcoded tensor dimensions.
 
-use burn_tensor::backend::Backend;
 use burn_tensor::module::conv1d;
 use burn_tensor::ops::ConvOptions;
-use burn_tensor::{Shape, TensorData};
+use burn_tensor::{Device, Shape, Tensor, TensorData};
 use dsp_core::{ComputeTarget, DspError, DspResult};
 
-#[cfg(feature = "flex")]
-pub type CpuBurnBackend = burn_flex::Flex;
-
-#[cfg(feature = "wgpu")]
-pub type WgpuBurnBackend = burn_wgpu::Wgpu<f32, i32, u32>;
+/// The Burn device for `target`: wgpu for [`ComputeTarget::Wgpu`], Flex (CPU) otherwise.
+fn burn_device(target: ComputeTarget) -> DspResult<Device> {
+    match target {
+        #[cfg(feature = "wgpu")]
+        ComputeTarget::Wgpu => Ok(Device::wgpu(burn_tensor::DeviceKind::DefaultDevice)),
+        #[cfg(feature = "flex")]
+        _ => Ok(Device::flex()),
+        #[cfg(not(feature = "flex"))]
+        other => Err(DspError::InvalidConfig(format!("Burn backend not compiled for compute target {other}"))),
+    }
+}
 
 /// Executes a 2D linear / GEMM projection `Y = X * W^T + b` on Burn tensors.
 ///
@@ -52,42 +57,11 @@ pub fn burn_linear_2d(
         }
     }
 
-    match target {
-        #[cfg(feature = "wgpu")]
-        ComputeTarget::Wgpu => {
-            let dev = Default::default();
-            Ok(linear_on_backend::<WgpuBurnBackend>(
-                &dev,
-                input,
-                batch,
-                in_features,
-                weight,
-                out_features,
-                bias,
-            ))
-        }
-        #[cfg(feature = "flex")]
-        _ => {
-            let dev = Default::default();
-            Ok(linear_on_backend::<CpuBurnBackend>(
-                &dev,
-                input,
-                batch,
-                in_features,
-                weight,
-                out_features,
-                bias,
-            ))
-        }
-        #[cfg(not(feature = "flex"))]
-        other => Err(DspError::InvalidConfig(format!(
-            "Burn backend not compiled for compute target {other}"
-        ))),
-    }
+    Ok(linear_on_device(&burn_device(target)?, input, batch, in_features, weight, out_features, bias))
 }
 
-fn linear_on_backend<B: Backend>(
-    dev: &burn_tensor::Device<B>,
+fn linear_on_device(
+    dev: &Device,
     input: &[f32],
     batch: usize,
     in_features: usize,
@@ -95,23 +69,23 @@ fn linear_on_backend<B: Backend>(
     out_features: usize,
     bias: Option<&[f32]>,
 ) -> Vec<f32> {
-    let x = burn_tensor::Tensor::<B, 2>::from_data(
+    let x = Tensor::<2>::from_data(
         TensorData::new(input.to_vec(), Shape::new([batch, in_features])),
         dev,
     );
-    let w = burn_tensor::Tensor::<B, 2>::from_data(
+    let w = Tensor::<2>::from_data(
         TensorData::new(weight.to_vec(), Shape::new([out_features, in_features])),
         dev,
     );
     let mut y = x.matmul(w.transpose());
     if let Some(b) = bias {
-        let b_tensor = burn_tensor::Tensor::<B, 2>::from_data(
+        let b_tensor = Tensor::<2>::from_data(
             TensorData::new(b.to_vec(), Shape::new([1, out_features])),
             dev,
         );
         y = y + b_tensor;
     }
-    y.into_data().to_vec::<f32>().expect("f32 tensor output")
+    y.into_data().try_to_vec::<f32>().expect("f32 tensor output")
 }
 
 /// Executes a 1D convolution on `[batch, in_channels, length]` with weights
@@ -150,57 +124,16 @@ pub fn burn_conv1d(
         )));
     }
 
-    match target {
-        #[cfg(feature = "wgpu")]
-        ComputeTarget::Wgpu => {
-            let dev = Default::default();
-            Ok(conv1d_on_backend::<WgpuBurnBackend>(
-                &dev,
-                input,
-                batch,
-                in_channels,
-                length,
-                weight,
-                out_channels,
-                in_per_group,
-                kernel_size,
-                bias,
-                stride,
-                padding,
-                dilation,
-                groups,
-            ))
-        }
-        #[cfg(feature = "flex")]
-        _ => {
-            let dev = Default::default();
-            Ok(conv1d_on_backend::<CpuBurnBackend>(
-                &dev,
-                input,
-                batch,
-                in_channels,
-                length,
-                weight,
-                out_channels,
-                in_per_group,
-                kernel_size,
-                bias,
-                stride,
-                padding,
-                dilation,
-                groups,
-            ))
-        }
-        #[cfg(not(feature = "flex"))]
-        other => Err(DspError::InvalidConfig(format!(
-            "Burn backend not compiled for compute target {other}"
-        ))),
-    }
+    let dev = burn_device(target)?;
+    Ok(conv1d_on_device(
+        &dev, input, batch, in_channels, length, weight, out_channels, in_per_group, kernel_size, bias, stride, padding,
+        dilation, groups,
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
-fn conv1d_on_backend<B: Backend>(
-    dev: &burn_tensor::Device<B>,
+fn conv1d_on_device(
+    dev: &Device,
     input: &[f32],
     batch: usize,
     in_channels: usize,
@@ -215,11 +148,11 @@ fn conv1d_on_backend<B: Backend>(
     dilation: usize,
     groups: usize,
 ) -> (Vec<f32>, usize) {
-    let x = burn_tensor::Tensor::<B, 3>::from_data(
+    let x = Tensor::<3>::from_data(
         TensorData::new(input.to_vec(), Shape::new([batch, in_channels, length])),
         dev,
     );
-    let w = burn_tensor::Tensor::<B, 3>::from_data(
+    let w = Tensor::<3>::from_data(
         TensorData::new(
             weight.to_vec(),
             Shape::new([out_channels, in_per_group, kernel_size]),
@@ -227,7 +160,7 @@ fn conv1d_on_backend<B: Backend>(
         dev,
     );
     let b = bias.map(|b_slice| {
-        burn_tensor::Tensor::<B, 1>::from_data(
+        Tensor::<1>::from_data(
             TensorData::new(b_slice.to_vec(), Shape::new([out_channels])),
             dev,
         )
@@ -235,6 +168,6 @@ fn conv1d_on_backend<B: Backend>(
     let options = ConvOptions::new([stride], [padding], [dilation], groups);
     let y = conv1d(x, w, b, options);
     let out_len = y.dims()[2];
-    let data = y.into_data().to_vec::<f32>().expect("f32 tensor output");
+    let data = y.into_data().try_to_vec::<f32>().expect("f32 tensor output");
     (data, out_len)
 }

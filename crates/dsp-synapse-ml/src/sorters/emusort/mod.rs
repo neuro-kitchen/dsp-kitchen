@@ -11,7 +11,7 @@
 //! - **HDBSCAN outlier removal** before the universal templates are clustered
 //!   ([`EmusortConfig::learn_options`]).
 
-use cubecl::prelude::{ComputeClient, Runtime};
+use cubecl::prelude::Client;
 use dsp_core::{DspResult, RecordingSource};
 use dsp_io::neuro::probe::SensorLayout;
 
@@ -124,14 +124,14 @@ impl Emusort {
     }
 
     /// Runs EMUsort over `source` on `client`'s device runtime.
-    pub fn run<R: Runtime>(&self, client: &ComputeClient<R>, source: &dyn RecordingSource, probe: &SensorLayout) -> DspResult<Kilosort4Result> {
+    pub fn run(&self, client: &Client, source: &dyn RecordingSource, probe: &SensorLayout) -> DspResult<Kilosort4Result> {
         self.run_with_progress(client, source, probe, &dsp_core::NoProgress)
     }
 
     /// [`Self::run`], reporting each stage to `progress` (Kilosort4's runner stages).
-    pub fn run_with_progress<R: Runtime>(
+    pub fn run_with_progress(
         &self,
-        client: &ComputeClient<R>,
+        client: &Client,
         source: &dyn RecordingSource,
         probe: &SensorLayout,
         progress: &dyn dsp_core::ProgressSink,
@@ -177,7 +177,7 @@ mod tests {
         struct Task<'a>(&'a dyn RecordingSource, &'a SensorLayout, &'a EmusortConfig);
         impl ComputeTask for Task<'_> {
             type Output = DspResult<Kilosort4Result>;
-            fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
+            fn run(self, client: Client) -> Self::Output {
                 Emusort::new(self.2.clone()).run(&client, self.0, self.1)
             }
         }

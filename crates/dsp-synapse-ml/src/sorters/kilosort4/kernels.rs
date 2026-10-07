@@ -10,9 +10,9 @@ use dsp_core::compute::{channel_position, sample_position};
 /// `(row = ch · n_templates + k, t)`.
 #[cube(launch)]
 pub fn correlate_templates_kernel<F: Float>(
-    x: &Array<F>,
-    templates: &Array<F>,
-    b: &mut Array<F>,
+    x: &[F],
+    templates: &[F],
+    b: &mut [F],
     channels: u32,
     samples: u32,
     n_templates: u32,
@@ -25,7 +25,7 @@ pub fn correlate_templates_kernel<F: Float>(
         let k = row - ch * n_templates;
         let half = nt / 2u32;
         let mut acc = F::new(0.0f32);
-        let mut j: u32 = 0u32;
+        let mut j = 0u32;
         while j < nt {
             if t + j >= half && t + j - half < samples {
                 acc += x[(ch * samples + t + j - half) as usize] * templates[(k * nt + j) as usize];
@@ -41,11 +41,11 @@ pub fn correlate_templates_kernel<F: Float>(
 /// `(centre, t)`.
 #[cube(launch)]
 pub fn centre_response_kernel<F: Float>(
-    b: &Array<F>,
-    weights: &Array<F>,
-    ic: &Array<u32>,
-    a_s: &mut Array<F>,
-    arg: &mut Array<i32>,
+    b: &[F],
+    weights: &[F],
+    ic: &[u32],
+    a_s: &mut [F],
+    arg: &mut [i32],
     samples: u32,
     n_templates: u32,
     n_centres: u32,
@@ -56,13 +56,13 @@ pub fn centre_response_kernel<F: Float>(
     let centre = channel_position();
     if centre < n_centres && t < samples {
         let mut best = F::new(-1.0f32);
-        let mut best_arg: i32 = 0i32;
-        let mut s: u32 = 0u32;
+        let mut best_arg = 0i32;
+        let mut s = 0u32;
         while s < n_sizes {
-            let mut k: u32 = 0u32;
+            let mut k = 0u32;
             while k < n_templates {
                 let mut acc = F::new(0.0f32);
-                let mut c: u32 = 0u32;
+                let mut c = 0u32;
                 while c < n_chans {
                     let ch = ic[(c * n_centres + centre) as usize];
                     acc += weights[((s * n_chans + c) * n_centres + centre) as usize]
@@ -91,9 +91,9 @@ pub fn centre_response_kernel<F: Float>(
 /// unit per `(centre, t)`.
 #[cube(launch)]
 pub fn neighbour_max_kernel<F: Float>(
-    a_s: &Array<F>,
-    ic2: &Array<u32>,
-    a_max: &mut Array<F>,
+    a_s: &[F],
+    ic2: &[u32],
+    a_max: &mut [F],
     samples: u32,
     n_centres: u32,
     n_neighbours: u32,
@@ -104,7 +104,7 @@ pub fn neighbour_max_kernel<F: Float>(
     if centre < n_centres && t < samples {
         let mut m = F::new(0.0f32);
         if t >= nt && t + nt < samples {
-            let mut j: u32 = 0u32;
+            let mut j = 0u32;
             while j < n_neighbours {
                 let other = ic2[(j * n_centres + centre) as usize];
                 m = F::max(m, a_s[(other * samples + t) as usize]);
@@ -120,9 +120,9 @@ pub fn neighbour_max_kernel<F: Float>(
 /// `(centre, t)`.
 #[cube(launch)]
 pub fn local_peak_score_kernel<F: Float>(
-    a_s: &Array<F>,
-    a_max: &Array<F>,
-    score: &mut Array<F>,
+    a_s: &[F],
+    a_max: &[F],
+    score: &mut [F],
     samples: u32,
     n_centres: u32,
     pool: u32,
@@ -132,7 +132,7 @@ pub fn local_peak_score_kernel<F: Float>(
     if centre < n_centres && t < samples {
         let row = centre * samples;
         let mut pooled = F::new(0.0f32);
-        let mut u: u32 = 0u32;
+        let mut u = 0u32;
         if t >= pool {
             u = t - pool;
         }
@@ -161,16 +161,16 @@ pub fn local_peak_score_kernel<F: Float>(
 #[cube(launch)]
 #[allow(clippy::too_many_arguments)]
 pub fn spike_features_kernel<F: Float>(
-    x: &Array<F>,
-    b: &Array<F>,
-    wpca: &Array<F>,
-    ic: &Array<u32>,
-    arg: &Array<i32>,
-    centres: &Array<u32>,
-    times: &Array<u32>,
-    picked: &mut Array<i32>,
-    feat: &mut Array<F>,
-    amp: &mut Array<F>,
+    x: &[F],
+    b: &[F],
+    wpca: &[F],
+    ic: &[u32],
+    arg: &[i32],
+    centres: &[u32],
+    times: &[u32],
+    picked: &mut [i32],
+    feat: &mut [F],
+    amp: &mut [F],
     samples: u32,
     n_templates: u32,
     n_centres: u32,
@@ -199,10 +199,10 @@ pub fn spike_features_kernel<F: Float>(
         }
         let ch = ic[(c * n_centres + centre) as usize];
         let half = nt / 2u32;
-        let mut p: u32 = 0u32;
+        let mut p = 0u32;
         while p < n_pcs {
             let mut acc = F::new(0.0f32);
-            let mut j: u32 = 0u32;
+            let mut j = 0u32;
             while j < nt {
                 if t + j >= half && t + j - half < samples {
                     acc += x[(ch * samples + t + j - half) as usize] * wpca[(p * nt + j) as usize];

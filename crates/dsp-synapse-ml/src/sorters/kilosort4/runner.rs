@@ -14,14 +14,15 @@
 //!
 //! Spike samples are in the delay-aligned frame (the reference channel's time), as upstream.
 
-use cubecl::prelude::{ComputeClient, Runtime};
+use cubecl::prelude::Client;
 use dsp_base::core::buffer;
 use dsp_base::filter::{FilterBand, FilterSpec};
 use dsp_base::linalg::SecondMomentAccumulator;
 use dsp_base::pipeline::{Pipeline, PipelineStage, PipelineWorkspace};
 use dsp_base::spatial::SpatialWhitening;
 use dsp_core::progress::Stages;
-use dsp_core::{ChunkSchedule, DspError, DspResult, HaloWindow, ProgressSink, RecordingSource, WindowLoader};
+use cubecl::server::Handle;
+use dsp_core::{ChunkSchedule, DspError, DspResult, HaloWindow, ProgressSink, RecordingSource, SampleFormat, WindowLoader};
 use dsp_io::neuro::probe::SensorLayout;
 use dsp_synapse::core::{SortedUnit, SortingOutput};
 use dsp_synapse::QualityCriteria;
@@ -55,6 +56,57 @@ pub const KILOSORT4_SORTER: &str = "kilosort4";
 
 fn filter_error(e: dsp_base::filter::FilterError) -> DspError {
     DspError::InvalidConfig(e.to_string())
+}
+
+/// Windows of a recording on their way to the device: read on a background thread, uploaded as
+/// the source's **stored** values when it can provide them (integers: `int16` moves half the bytes
+/// of `f32`, and the gain / offset are applied on the device, not on the host thread), else as
+/// scaled `f32`; preprocessed by `workspace` and, with channel delays, aligned. Every pass of a
+/// run goes through it, so a window crosses to the device once, in its compact form.
+struct DeviceWindows<'a> {
+    loader: WindowLoader<'a>,
+    stored: Option<SampleFormat>,
+    workspace: PipelineWorkspace<f32>,
+    aligner: Option<ChannelAligner>,
+}
+
+impl<'a> DeviceWindows<'a> {
+    fn new(source: &'a dyn RecordingSource, mut workspace: PipelineWorkspace<f32>, aligner: Option<ChannelAligner>) -> Self {
+        let info = source.info();
+        // Stored reads only pay off for integer formats, and not every source implements them
+        let probe = |format: SampleFormat| source.read_stored(&[0], 0..1, &mut vec![0u8; format.bytes()]).is_ok();
+        let stored = (info.format != SampleFormat::F32 && info.samples > 0 && info.channel_count() > 0 && probe(info.format))
+            .then_some(info.format);
+        if stored.is_some() {
+            let (gains, offsets): (Vec<f32>, Vec<f32>) = info.channels.iter().map(|c| (c.gain, c.offset)).unzip();
+            workspace.set_stored_scaling(&gains, &offsets);
+        }
+        Self { loader: WindowLoader::new(source), stored, workspace, aligner }
+    }
+
+    /// Calls `f(window, prepared)` for every window of `windows` in order (`prepared`: the
+    /// `[channels, window.read_len()]` preprocessed window on the device, valid until the next
+    /// call), until `f` returns `false`.
+    fn for_each_while(&mut self, windows: &[HaloWindow], mut f: impl FnMut(&HaloWindow, &Handle) -> DspResult<bool>) -> DspResult<()> {
+        let Self { loader, stored, workspace, aligner } = self;
+        let mut finish = |window: &HaloWindow, handle: Handle| {
+            let handle = match aligner.as_mut() {
+                Some(aligner) => aligner.align(&handle, window.read_len()),
+                None => handle,
+            };
+            f(window, &handle)
+        };
+        match *stored {
+            Some(format) => loader.stream_stored_while(windows, |window, bytes| {
+                let handle = workspace.process_stored_chunk_in_vram(bytes, format, window.read_len())?;
+                finish(window, handle)
+            }),
+            None => loader.stream_while(windows, |window, raw| {
+                let handle = workspace.process_chunk_in_vram(raw, window.read_len());
+                finish(window, handle)
+            }),
+        }
+    }
 }
 
 /// Every `nskip`-th window; short recordings (`nskip` windows or fewer) are sampled at
@@ -205,8 +257,8 @@ impl Kilosort4Result {
 
 /// Pass 1: fits the preprocessing of `plan` (filtering, whitening, channel delays) over `source`,
 /// reporting [`STAGE_FIT`] to `progress`.
-pub fn fit_preprocessing<R: Runtime>(
-    client: &ComputeClient<R>,
+pub fn fit_preprocessing(
+    client: &Client,
     source: &dyn RecordingSource,
     probe: &SensorLayout,
     plan: &RunPlan,
@@ -215,8 +267,8 @@ pub fn fit_preprocessing<R: Runtime>(
     fit_with_stages(client, source, probe, plan, &Stages::new(progress, &[(STAGE_FIT, WINDOWS)]))
 }
 
-fn fit_with_stages<R: Runtime>(
-    client: &ComputeClient<R>,
+fn fit_with_stages(
+    client: &Client,
     source: &dyn RecordingSource,
     probe: &SensorLayout,
     plan: &RunPlan,
@@ -242,6 +294,8 @@ fn fit_with_stages<R: Runtime>(
     let margin = (ks.nt + plan.max_channel_delay.unwrap_or(0)) as u64;
     let halos = (settle_left as u64 + margin, settle_right as u64 + margin);
     let schedule = ChunkSchedule::full_recording(total, ks.batch_size as u64, halos.0, halos.1);
+    // Device buffers hold one window: refuse a batch size past the 32-bit index limit up front
+    dsp_core::compute::device_elements("a window of [channels, samples]", &[channels, schedule.max_read_samples()])?;
 
     // Upstream fits on `range(0, n_batches - 1, nskip)`: the last (partial) window is left out
     let fit_len = if schedule.len() > 1 { schedule.len() - 1 } else { schedule.len() };
@@ -249,28 +303,28 @@ fn fit_with_stages<R: Runtime>(
     let stride = learning_stride(fit_span.len(), ks.nskip);
     let fit_windows: Vec<HaloWindow> = fit_span.iter().step_by(stride).cloned().collect();
 
-    let mut workspace =
-        PipelineWorkspace::<R, f32>::new(client.clone(), filtering, channels, schedule.max_read_samples(), fs).map_err(filter_error)?;
-    let mut second_moment = SecondMomentAccumulator::<R, f32>::new(client, channels);
+    let workspace =
+        PipelineWorkspace::<f32>::new(client.clone(), filtering, channels, schedule.max_read_samples(), fs).map_err(filter_error)?;
+    let mut device = DeviceWindows::new(source, workspace, None);
+    let mut second_moment = SecondMomentAccumulator::<f32>::new(client, channels);
     let mut delays = plan.max_channel_delay.map(|max_lag| ChannelDelayEstimator::new(client, channels, max_lag));
     let fit_total = fit_windows.len() as u64;
     let mut fit_done = 0u64;
     progress.report(STAGE_FIT, 0, fit_total);
-    WindowLoader::new(source).stream(&fit_windows, |window, raw| {
-        let filtered = workspace.process_chunk_in_vram(raw, window.read_len());
-        second_moment.add(&filtered, window.read_len(), window.valid_local.clone());
+    device.for_each_while(&fit_windows, |window, filtered| {
+        second_moment.add(filtered, window.read_len(), window.valid_local.clone());
         if let Some(est) = delays.as_mut() {
-            est.add(&filtered, window.read_len(), window.valid_local.clone());
+            est.add(filtered, window.read_len(), window.valid_local.clone());
         }
         fit_done += 1;
         progress.report(STAGE_FIT, fit_done, fit_total);
-        Ok(())
+        Ok(true)
     })?;
 
     let positions: Vec<[f32; 2]> = probe.sites().iter().map(|s| [s.position.x_um, s.position.y_um]).collect();
     let k = ks.whitening_range.min(channels);
     let whitening =
-        SpatialWhitening::local_knn_from_covariance::<R, f32>(client, &second_moment.finish(), channels, &positions, k, WHITENING_EPSILON);
+        SpatialWhitening::local_knn_from_covariance::<f32>(client, &second_moment.finish(), channels, &positions, k, WHITENING_EPSILON);
     stages.push(PipelineStage::SpatialWhitening(whitening.clone()));
     let channel_delays = delays.map(|est| {
         let (delays, reference) = est.delays();
@@ -282,8 +336,8 @@ fn fit_with_stages<R: Runtime>(
 
 /// Fits Kilosort4 preprocessing (high-pass Butterworth, optional CAR, local whitening) over the
 /// recording: the composable [`Pipeline`] and its [`SpatialWhitening`].
-pub fn fit_kilosort4_preprocessing<R: Runtime>(
-    client: &ComputeClient<R>,
+pub fn fit_kilosort4_preprocessing(
+    client: &Client,
     source: &dyn RecordingSource,
     probe: &SensorLayout,
     ks: &Kilosort4Config,
@@ -309,8 +363,8 @@ fn predefined_templates(plan: &RunPlan) -> DspResult<UniversalTemplates> {
 
 /// Runs `plan` over `source` on `client`'s device, reporting its stages ([`STAGE_FIT`],
 /// [`STAGE_CLIPS`], [`STAGE_TEMPLATES`], [`STAGE_DETECTION`], those the run has) to `progress`.
-pub fn run_plan<R: Runtime>(
-    client: &ComputeClient<R>,
+pub fn run_plan(
+    client: &Client,
     source: &dyn RecordingSource,
     probe: &SensorLayout,
     plan: &RunPlan,
@@ -341,18 +395,11 @@ pub fn run_plan<R: Runtime>(
     };
     let schedule = &fitted.schedule;
     let max_window = schedule.max_read_samples();
-    let loader = WindowLoader::new(source);
-    let mut workspace =
-        PipelineWorkspace::<R, f32>::new(client.clone(), fitted.pipeline.clone(), channels, max_window, fs).map_err(filter_error)?;
-    let mut aligner = fitted.channel_delays.as_ref().map(|d| ChannelAligner::new(client, d.delays.clone(), max_window));
-    // Preprocessed (and delay-aligned) window, on the device
-    let mut prepare = |raw: &[f32], window: &HaloWindow| {
-        let handle = workspace.process_chunk_in_vram(raw, window.read_len());
-        match aligner.as_mut() {
-            Some(aligner) => aligner.align(&handle, window.read_len()),
-            None => handle,
-        }
-    };
+    let workspace =
+        PipelineWorkspace::<f32>::new(client.clone(), fitted.pipeline.clone(), channels, max_window, fs).map_err(filter_error)?;
+    let aligner = fitted.channel_delays.as_ref().map(|d| ChannelAligner::new(client, d.delays.clone(), max_window));
+    // Preprocessed (and delay-aligned) windows, on the device
+    let mut device = DeviceWindows::new(source, workspace, aligner);
 
     // 2. Universal templates
     let templates = if ks.templates_from_data {
@@ -364,9 +411,9 @@ pub fn run_plan<R: Runtime>(
         }
         let mut clips = Vec::new();
         // Clips are found on the host: the only full-window download, on learning windows only
-        let mut collect = |raw: &[f32], window: &HaloWindow, clips: &mut Vec<f32>| {
+        let collect = |prepared: &Handle, window: &HaloWindow, clips: &mut Vec<f32>| {
             // The prepared buffer is sized for the longest window: read only this window's part
-            let x = buffer::download_prefix::<R, f32>(client, prepare(raw, window), channels * window.read_len());
+            let x = buffer::download_prefix::<f32>(client, prepared.clone(), channels * window.read_len());
             extract_clips(&x, channels, window.read_len(), &clip_opts, clips);
             clips.len() / ks.nt
         };
@@ -375,8 +422,8 @@ pub fn run_plan<R: Runtime>(
         // The total the last report used: the stage is closed explicitly only if it stopped short
         let mut reported_total = planned;
         stages.report(STAGE_CLIPS, 0, planned);
-        loader.stream_while(&learning, |window, raw| {
-            let more = collect(raw, window, &mut clips) < MAX_CLIPS;
+        device.for_each_while(&learning, |window, prepared| {
+            let more = collect(prepared, window, &mut clips) < MAX_CLIPS;
             scanned += 1;
             stages.report(STAGE_CLIPS, scanned, planned);
             Ok(more)
@@ -386,8 +433,8 @@ pub fn run_plan<R: Runtime>(
         if clips.len() / ks.nt < needed {
             let extended = planned + rest.len() as u64;
             reported_total = extended;
-            loader.stream_while(&rest, |window, raw| {
-                let more = collect(raw, window, &mut clips) < needed;
+            device.for_each_while(&rest, |window, prepared| {
+                let more = collect(prepared, window, &mut clips) < needed;
                 scanned += 1;
                 stages.report(STAGE_CLIPS, scanned, extended);
                 Ok(more)
@@ -411,9 +458,8 @@ pub fn run_plan<R: Runtime>(
     let mut spikes = Vec::new();
     let (mut detected, windows) = (0u64, schedule.len() as u64);
     stages.report(STAGE_DETECTION, 0, windows);
-    loader.stream(schedule.windows(), |window, raw| {
-        let handle = prepare(raw, window);
-        for mut spike in detector.detect(&handle, window.read_len())? {
+    device.for_each_while(schedule.windows(), |window, prepared| {
+        for mut spike in detector.detect(prepared, window.read_len())? {
             if let Some(global) = window.remap_event(spike.sample) {
                 spike.sample = global as usize;
                 spikes.push(spike);
@@ -421,7 +467,7 @@ pub fn run_plan<R: Runtime>(
         }
         detected += 1;
         stages.report(STAGE_DETECTION, detected, windows);
-        Ok(())
+        Ok(true)
     })?;
 
     Ok(Kilosort4Result {
@@ -449,6 +495,107 @@ mod tests {
         assert_eq!(learning_stride(3, 25), 1);
     }
 
+    /// µV per stored step of the int16 test recording.
+    const I16_GAIN: f32 = 0.25;
+
+    /// A recording stored as int16 ([`I16_GAIN`] µV per step, per-channel offsets), with native
+    /// stored reads.
+    struct I16Recording {
+        info: dsp_core::RecordingInfo,
+        data: Vec<i16>,
+    }
+
+    impl I16Recording {
+        fn from(rec: &dyn RecordingSource) -> Self {
+            let (channels, n) = (rec.info().channel_count(), rec.info().samples as usize);
+            let mut values = vec![0.0f32; channels * n];
+            rec.read(&(0..channels).collect::<Vec<_>>(), 0..n as u64, &mut values).unwrap();
+            let offsets: Vec<f32> = (0..channels).map(|c| -300.0 + 20.0 * c as f32).collect();
+            let data = values.iter().enumerate().map(|(i, v)| ((v - offsets[i / n]) / I16_GAIN).round() as i16).collect();
+            let mut info = dsp_core::RecordingInfo::new(
+                "i16",
+                channels,
+                n as u64,
+                rec.info().sample_rate,
+                SampleFormat::I16,
+                dsp_core::MemoryOrder::ChannelMajor,
+            )
+            .with_gain(I16_GAIN, dsp_core::SignalUnit::Microvolt);
+            for (c, ch) in info.channels.iter_mut().enumerate() {
+                ch.offset = offsets[c];
+            }
+            Self { info, data }
+        }
+    }
+
+    impl RecordingSource for I16Recording {
+        fn info(&self) -> &dsp_core::RecordingInfo {
+            &self.info
+        }
+        fn read(&self, channels: &[usize], samples: std::ops::Range<u64>, out: &mut [f32]) -> DspResult<()> {
+            let n = dsp_core::recording::check_read(&self.info, channels, &samples, out.len())?;
+            let total = self.info.samples as usize;
+            for (dst, &c) in out.chunks_exact_mut(n.max(1)).zip(channels) {
+                let row = &self.data[c * total + samples.start as usize..c * total + samples.end as usize];
+                for (o, &v) in dst.iter_mut().zip(row) {
+                    *o = v as f32 * I16_GAIN + self.info.channels[c].offset;
+                }
+            }
+            Ok(())
+        }
+        fn read_stored(&self, channels: &[usize], samples: std::ops::Range<u64>, out: &mut [u8]) -> DspResult<()> {
+            let n = dsp_core::recording::check_read_stored(&self.info, channels, &samples, out.len())?;
+            let total = self.info.samples as usize;
+            for (dst, &c) in out.chunks_exact_mut((2 * n).max(1)).zip(channels) {
+                let row = &self.data[c * total + samples.start as usize..c * total + samples.end as usize];
+                for (o, &v) in dst.chunks_exact_mut(2).zip(row) {
+                    o.copy_from_slice(&v.to_le_bytes());
+                }
+            }
+            Ok(())
+        }
+    }
+
+    /// The same recording without stored reads (forces the `f32` upload).
+    struct F32Only<'a>(&'a I16Recording);
+
+    impl RecordingSource for F32Only<'_> {
+        fn info(&self) -> &dsp_core::RecordingInfo {
+            self.0.info()
+        }
+        fn read(&self, channels: &[usize], samples: std::ops::Range<u64>, out: &mut [f32]) -> DspResult<()> {
+            self.0.read(channels, samples, out)
+        }
+    }
+
+    /// Uploading the stored int16 values (scaled on the device) finds the same spikes as uploading
+    /// host-scaled `f32`.
+    #[test]
+    fn stored_upload_matches_f32_upload() {
+        let synthetic = SyntheticRecording::new(SyntheticParams { channels: 4, duration_sec: 1.0, sample_rate_hz: 30_000.0, ..Default::default() })
+            .expect("synthetic recording");
+        let rec = I16Recording::from(&synthetic);
+        assert!(F32Only(&rec).read_stored(&[0], 0..1, &mut [0u8; 2]).is_err(), "the wrapper has no stored reads");
+        let probe = SensorLayout::from_channel_arrays("4ch", &[0, 1, 2, 3], &[[0.0, 0.0], [0.0, 25.0], [0.0, 50.0], [0.0, 75.0]], &[0, 0, 0, 0])
+            .expect("probe layout");
+        let config = Kilosort4Config { batch_size: 1000, nskip: 1, whitening_range: 4, th_single_ch: vec![4.0], ..Default::default() };
+
+        struct Task<'a>(&'a dyn RecordingSource, &'a SensorLayout, &'a Kilosort4Config);
+        impl ComputeTask for Task<'_> {
+            type Output = DspResult<Kilosort4Result>;
+            fn run(self, client: Client) -> Self::Output {
+                crate::sorters::Kilosort4::new(self.2.clone()).run(&client, self.0, self.1)
+            }
+        }
+        let key = |r: &Kilosort4Result| r.spikes.iter().map(|s| (s.sample, s.centre, s.template)).collect::<Vec<_>>();
+        if let Ok(target) = ComputeTarget::from_env() {
+            let stored = target.run(Task(&rec, &probe, &config)).expect("compute target").expect("stored run");
+            let scaled = target.run(Task(&F32Only(&rec), &probe, &config)).expect("compute target").expect("f32 run");
+            assert!(!stored.spikes.is_empty(), "the recording has spikes");
+            assert_eq!(key(&stored), key(&scaled));
+        }
+    }
+
     #[test]
     fn kilosort4_runs_on_synthetic_recording() {
         let rec = SyntheticRecording::new(SyntheticParams { channels: 4, duration_sec: 1.0, sample_rate_hz: 30_000.0, ..Default::default() })
@@ -460,7 +607,7 @@ mod tests {
         struct Task<'a>(&'a dyn RecordingSource, &'a SensorLayout, &'a Kilosort4Config);
         impl ComputeTask for Task<'_> {
             type Output = DspResult<Kilosort4Result>;
-            fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
+            fn run(self, client: Client) -> Self::Output {
                 crate::sorters::Kilosort4::new(self.2.clone()).run(&client, self.0, self.1)
             }
         }
