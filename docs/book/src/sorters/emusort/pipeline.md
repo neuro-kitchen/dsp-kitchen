@@ -20,21 +20,23 @@ Semantics checked against upstream (`snel-repo/EMUsort` `a06bb60`, `ks4mods/prep
    as upstream), over every `nskip`-th window except the last: each channel is divided by its
    standard deviation over the padded window and rectified (`|x|`). For every pair of channels
    `a, b` and every lag within ±`fs / 500` samples (2 ms), `mean_t x_a[t − lag] · x_b[t]` over the
-   window's interior is accumulated on the device (`kernels::ChannelDelayEstimator`, one unit per
-   channel pair and lag adding to a running sum; scratch buffers kept between windows); lagged
+   window's interior is accumulated on the device (`delays::ChannelDelayEstimator`: each pair's
+   interior is split into tiles of `DELAY_TILE_SAMPLES` loaded once into shared memory, one unit
+   per lag, and the tiles' partial sums are added to a running sum; scratch buffers kept between
+   windows); lagged
    reads past the window repeat its edge sample, as upstream pads its first and last batches. One
    download at the end. In Python, `emusort.estimate_channel_delays(batches, pad=, max_lag=)`
    takes all batches in one call for the same reason.
 2. **Reference**: the channel whose best-lag correlations with all channels sum highest.
 3. **Delays**: for each channel, the lag of its best correlation with the reference
-   (`kernels::delays_from_cross_correlation`).
-4. **Remove** from every window, after whitening, on the device (`kernels::ChannelAligner`):
+   (`delays::delays_from_cross_correlation`).
+4. **Remove** from every window, after whitening, on the device (`delays::ChannelAligner`):
    `x[i, t] ← x[i, t + delay_i]` (a circular shift within the padded window, so only padding
    wraps). Template learning and detection both use it. Spike times stay in this aligned frame
    (the reference channel's time), as upstream.
 
 ```rust,ignore
-use dsp_synapse_ml::sorters::emusort::kernels::{ChannelAligner, ChannelDelayEstimator};
+use dsp_synapse_ml::sorters::emusort::delays::{ChannelAligner, ChannelDelayEstimator};
 
 let mut est = ChannelDelayEstimator::new(&client, channels, cfg.max_delay_samples(fs));
 est.add(&filtered_window, window.read_len(), window.valid_local.clone()); // per fit window
@@ -68,3 +70,18 @@ k-means.
 Universal-template detection is Kilosort4's (`UniversalDetector`), on the delay-aligned windows
 with EMUsort's templates and settings. Drift, clustering, deconvolution and merging are not
 implemented yet (as in Kilosort4).
+
+## Known differences from upstream (to revisit)
+
+Checked against `snel-repo/EMUsort` `a06bb60`, `ks4mods/spikedetect.py` (`extract_wPCA_wTEMP`,
+`extract_snippets`):
+
+- **Filling the clip buffer.** Upstream stops at the first batch whose clips would overflow its
+  500 000-row buffer and drops that batch entirely; here clips are added until exactly
+  `MAX_CLIPS`.
+- **Duplicates across thresholds.** Upstream pools the peaks of every threshold of
+  `Th_single_ch` and removes duplicates on the **time index only** (`torch.unique(xy_all[:, 1])`),
+  so two peaks at the same sample on different channels count once; here duplicates are removed on
+  (channel, time).
+
+Both change which clips are learned from, not how; neither affects speed.

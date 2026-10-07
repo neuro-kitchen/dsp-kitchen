@@ -23,6 +23,7 @@
   - [Case study: HDBSCAN](gpu/hdbscan.md)
   - [Case study: exact median](gpu/selection.md)
   - [Case study: when the review was wrong](gpu/eigen.md)
+  - [Case study: Kilosort4 detection, measured](gpu/detection.md)
   - [Moving data to the device](gpu/data-movement.md)
   - [Pitfalls](gpu/pitfalls.md)
 
