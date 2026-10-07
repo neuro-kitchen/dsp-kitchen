@@ -14,7 +14,7 @@ use cubecl::prelude::*;
 use dsp_base::linalg::{symmetric_eigen, EigenOptions, SecondMomentAccumulator};
 use dsp_core::{DspError, DspResult};
 use dsp_io::container::npy::read_npz;
-use dsp_synapse::sorting::{hdbscan_launches, hdbscan_points_with_progress, kmeans_points_with_progress, DevicePoints, KMeansOptions};
+use dsp_synapse::sorting::{hdbscan_points_with_progress, hdbscan_progress_total, kmeans_points_with_progress, DevicePoints, KMeansOptions};
 
 /// Half-window of the local-maximum test of clip detection: ±4 samples × ±5 channel indices.
 pub const CLIP_LOCAL_SAMPLES: usize = 4;
@@ -130,14 +130,14 @@ const KMEANS_N_INIT: usize = 10;
 /// `wPCA` and `wTEMP` from `[n, nt]` clips (see the module docs), on `client`'s device: the
 /// scaled clips are uploaded once; the Gram matrix, its eigendecomposition, HDBSCAN and k-means
 /// all read that device copy (inliers are gathered on the device).
-pub fn learn_universal_templates<R: Runtime>(client: &ComputeClient<R>, clips: &[f32], nt: usize, opts: &LearnOptions) -> DspResult<UniversalTemplates> {
+pub fn learn_universal_templates(client: &Client, clips: &[f32], nt: usize, opts: &LearnOptions) -> DspResult<UniversalTemplates> {
     learn_universal_templates_with_progress(client, clips, nt, opts, &mut |_, _| {})
 }
 
 /// [`learn_universal_templates`], calling `progress(done, total)` in steps: one for `wPCA`, one
 /// per HDBSCAN launch (EMUsort's outlier removal), one per k-means restart.
-pub fn learn_universal_templates_with_progress<R: Runtime>(
-    client: &ComputeClient<R>,
+pub fn learn_universal_templates_with_progress(
+    client: &Client,
     clips: &[f32],
     nt: usize,
     opts: &LearnOptions,
@@ -148,7 +148,7 @@ pub fn learn_universal_templates_with_progress<R: Runtime>(
         return Err(DspError::InvalidConfig(format!("{n} clips: too few to learn {} PCs and {} templates", opts.n_pcs, opts.n_templates)));
     }
     let outliers = opts.outlier_min_cluster_size.filter(|&mcs| n >= MIN_CLIPS_FOR_OUTLIERS.max(mcs));
-    let hdbscan_steps = if outliers.is_some() { hdbscan_launches(client, n, nt) } else { 0 };
+    let hdbscan_steps = if outliers.is_some() { hdbscan_progress_total(n) } else { 0 };
     let total = 1 + hdbscan_steps + KMEANS_N_INIT as u64;
     progress(0, total);
     // One common scale: 1 / sqrt(std of the clip energies) (keeps relative amplitudes)
@@ -161,9 +161,9 @@ pub fn learn_universal_templates_with_progress<R: Runtime>(
 
     // wPCA: top right singular vectors (uncentred) = top eigenvectors of Cᵀ C (the second moment
     // of the feature-major clips, whose rows are the nt samples)
-    let mut gram = SecondMomentAccumulator::<R, f32>::new(client, nt);
+    let mut gram = SecondMomentAccumulator::<f32>::new(client, nt);
     gram.add(&points.handle, n, 0..n);
-    let eig = symmetric_eigen::<R, f32>(client, &gram.into_sum(), nt, EigenOptions::default());
+    let eig = symmetric_eigen::<f32>(client, &gram.into_sum(), nt, EigenOptions::default());
     let mut wpca = vec![0.0f32; opts.n_pcs * nt];
     for p in 0..opts.n_pcs {
         for t in 0..nt {

@@ -142,7 +142,7 @@ impl OnnxRuntimeSession {
         env: &HashMap<String, RuntimeTensor>,
     ) -> DspResult<RuntimeTensor> {
         if let Some(data) = arg.value() {
-            let shape: Vec<usize> = data.shape.iter().copied().collect();
+            let shape: Vec<usize> = data.shape().iter().copied().collect();
             let floats = data
                 .to_f32_vec()
                 .map_err(|e| DspError::InvalidConfig(format!("ONNX constant f32 conversion failed: {e:?}")))?;

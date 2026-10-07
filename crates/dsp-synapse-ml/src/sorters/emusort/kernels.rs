@@ -21,9 +21,9 @@ use dsp_core::compute::{channel_position, sample_position, LaunchGeometry};
 /// `output[ch, t] = input[ch, (t + shift[ch]) mod samples]`, `shift[ch] ≥ 0`.
 #[cube(launch)]
 pub fn apply_channel_delays_kernel<F: Float>(
-    input: &Array<F>,
-    output: &mut Array<F>,
-    shifts: &Array<u32>,
+    input: &[F],
+    output: &mut [F],
+    shifts: &[u32],
     channels: u32,
     samples: u32,
 ) {
@@ -41,7 +41,7 @@ pub fn apply_channel_delays_kernel<F: Float>(
 
 /// `env[ch, t] = |x[ch, t]| / std[ch]` (`0` for a flat channel).
 #[cube(launch)]
-pub fn delay_envelope_kernel<F: Float>(input: &Array<F>, std: &Array<F>, env: &mut Array<F>, channels: u32, samples: u32) {
+pub fn delay_envelope_kernel<F: Float>(input: &[F], std: &[F], env: &mut [F], channels: u32, samples: u32) {
     let t = sample_position();
     let ch = channel_position();
     if ch < channels && t < samples {
@@ -62,8 +62,8 @@ pub fn delay_envelope_kernel<F: Float>(input: &Array<F>, std: &Array<F>, env: &m
 #[cube(launch)]
 #[allow(clippy::too_many_arguments)]
 pub fn delay_cc_kernel<F: Float>(
-    env: &Array<F>,
-    cc: &mut Array<F>,
+    env: &[F],
+    cc: &mut [F],
     channels: u32,
     row_len: u32,
     col_start: u32,
@@ -126,8 +126,8 @@ pub fn delays_from_cross_correlation(cc: &[f64], channels: usize, max_lag: usize
 
 /// Accumulates the lagged cross-correlation of channel envelopes over batches on the device. Its
 /// scratch buffers are kept between batches; nothing is read back until the end.
-pub struct ChannelDelayEstimator<R: Runtime> {
-    client: ComputeClient<R>,
+pub struct ChannelDelayEstimator {
+    client: Client,
     channels: usize,
     max_lag: usize,
     /// `[channels, channels, 2·max_lag + 1]` sum of per-batch means.
@@ -141,17 +141,17 @@ pub struct ChannelDelayEstimator<R: Runtime> {
     capacity: usize,
 }
 
-impl<R: Runtime> ChannelDelayEstimator<R> {
-    pub fn new(client: &ComputeClient<R>, channels: usize, max_lag: usize) -> Self {
+impl ChannelDelayEstimator {
+    pub fn new(client: &Client, channels: usize, max_lag: usize) -> Self {
         Self {
             client: client.clone(),
             channels,
             max_lag,
-            cc: buffer::zeros::<R, f32>(client, channels * channels * (2 * max_lag + 1)),
+            cc: buffer::zeros::<f32>(client, channels * channels * (2 * max_lag + 1)),
             batches: 0,
-            mean: buffer::empty::<R, f32>(client, channels),
-            std: buffer::empty::<R, f32>(client, channels),
-            env: buffer::empty::<R, f32>(client, 1),
+            mean: buffer::empty::<f32>(client, channels),
+            std: buffer::empty::<f32>(client, channels),
+            env: buffer::empty::<f32>(client, 1),
             capacity: 0,
         }
     }
@@ -165,22 +165,22 @@ impl<R: Runtime> ChannelDelayEstimator<R> {
             return;
         }
         if row_len > self.capacity {
-            self.env = buffer::empty::<R, f32>(&self.client, channels * row_len);
+            self.env = buffer::empty::<f32>(&self.client, channels * row_len);
             self.capacity = row_len;
         }
         let client = &self.client;
-        reduce::row_mean_std::<R, f32>(client, input, &self.mean, &self.std, channels, row_len);
+        reduce::row_mean_std::<f32>(client, input, &self.mean, &self.std, channels, row_len);
 
         let total = channels * row_len;
         let geom = LaunchGeometry::channels_samples(client, channels, row_len);
         unsafe {
-            delay_envelope_kernel::launch::<f32, R>(
+            delay_envelope_kernel::launch::<f32>(
                 client,
                 geom.cube_count,
                 geom.cube_dim,
-                ArrayArg::from_raw_parts(input.clone(), total),
-                ArrayArg::from_raw_parts(self.std.clone(), channels),
-                ArrayArg::from_raw_parts(self.env.clone(), total),
+                BufferArg::from_raw_parts(input.clone(), total),
+                BufferArg::from_raw_parts(self.std.clone(), channels),
+                BufferArg::from_raw_parts(self.env.clone(), total),
                 channels as u32,
                 row_len as u32,
             );
@@ -189,12 +189,12 @@ impl<R: Runtime> ChannelDelayEstimator<R> {
         let triples = channels * channels * (2 * self.max_lag + 1);
         let geom = LaunchGeometry::elementwise(client, triples);
         unsafe {
-            delay_cc_kernel::launch::<f32, R>(
+            delay_cc_kernel::launch::<f32>(
                 client,
                 geom.cube_count,
                 geom.cube_dim,
-                ArrayArg::from_raw_parts(self.env.clone(), total),
-                ArrayArg::from_raw_parts(self.cc.clone(), triples),
+                BufferArg::from_raw_parts(self.env.clone(), total),
+                BufferArg::from_raw_parts(self.cc.clone(), triples),
                 channels as u32,
                 row_len as u32,
                 cols.start as u32,
@@ -214,7 +214,7 @@ impl<R: Runtime> ChannelDelayEstimator<R> {
     /// download); zeros before any batch.
     pub fn cross_correlation(self) -> Vec<f64> {
         let k = self.batches.max(1) as f64;
-        buffer::download::<R, f32>(&self.client, self.cc).into_iter().map(|v| v as f64 / k).collect()
+        buffer::download::<f32>(&self.client, self.cc).into_iter().map(|v| v as f64 / k).collect()
     }
 
     /// `(delays, reference)` ([`delays_from_cross_correlation`]); zeros and channel 0 before any
@@ -231,8 +231,8 @@ impl<R: Runtime> ChannelDelayEstimator<R> {
 /// Removes per-channel delays from device batches into one persistent output buffer. The shifts
 /// are uploaded again only when the batch length changes (in a schedule: the first and last
 /// windows).
-pub struct ChannelAligner<R: Runtime> {
-    client: ComputeClient<R>,
+pub struct ChannelAligner {
+    client: Client,
     delays: Vec<isize>,
     max_samples: usize,
     output: Handle,
@@ -240,10 +240,10 @@ pub struct ChannelAligner<R: Runtime> {
     shifts: Option<(usize, Handle)>,
 }
 
-impl<R: Runtime> ChannelAligner<R> {
+impl ChannelAligner {
     /// Aligner for batches of at most `max_samples` samples per channel.
-    pub fn new(client: &ComputeClient<R>, delays: Vec<isize>, max_samples: usize) -> Self {
-        let output = buffer::empty::<R, f32>(client, delays.len() * max_samples);
+    pub fn new(client: &Client, delays: Vec<isize>, max_samples: usize) -> Self {
+        let output = buffer::empty::<f32>(client, delays.len() * max_samples);
         Self { client: client.clone(), delays, max_samples, output, shifts: None }
     }
 
@@ -268,13 +268,13 @@ impl<R: Runtime> ChannelAligner<R> {
         let total = channels * samples;
         let geom = LaunchGeometry::channels_samples(&self.client, channels, samples);
         unsafe {
-            apply_channel_delays_kernel::launch::<f32, R>(
+            apply_channel_delays_kernel::launch::<f32>(
                 &self.client,
                 geom.cube_count,
                 geom.cube_dim,
-                ArrayArg::from_raw_parts(input.clone(), total),
-                ArrayArg::from_raw_parts(self.output.clone(), total),
-                ArrayArg::from_raw_parts(shifts, channels),
+                BufferArg::from_raw_parts(input.clone(), total),
+                BufferArg::from_raw_parts(self.output.clone(), total),
+                BufferArg::from_raw_parts(shifts, channels),
                 channels as u32,
                 samples as u32,
             );
@@ -334,7 +334,7 @@ mod tests {
     struct Estimate(Vec<f32>, usize, usize, Range<usize>, usize);
     impl ComputeTask for Estimate {
         type Output = Vec<f64>;
-        fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
+        fn run(self, client: Client) -> Self::Output {
             let Estimate(x, channels, row_len, cols, max_lag) = self;
             let mut est = ChannelDelayEstimator::new(&client, channels, max_lag);
             est.add(&buffer::upload(&client, &x), row_len, cols);
@@ -367,7 +367,7 @@ mod tests {
     struct Align(Vec<f32>, Vec<isize>, Vec<usize>);
     impl ComputeTask for Align {
         type Output = Vec<Vec<f32>>;
-        fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
+        fn run(self, client: Client) -> Self::Output {
             let Align(x, delays, lengths) = self;
             let channels = delays.len();
             let mut aligner = ChannelAligner::new(&client, delays, *lengths.iter().max().unwrap());
@@ -375,7 +375,7 @@ mod tests {
                 .into_iter()
                 .map(|n| {
                     let out = aligner.align(&buffer::upload(&client, &x[..channels * n]), n);
-                    buffer::download::<R, f32>(&client, out)[..channels * n].to_vec()
+                    buffer::download::<f32>(&client, out)[..channels * n].to_vec()
                 })
                 .collect()
         }
