@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use cubecl::prelude::{ComputeClient, Runtime};
+use cubecl::prelude::Client;
 use cubecl::CubeElement;
 use dsp_core::compute::ComputeTask;
 use dsp_synapse_ml::sorters::emusort::kernels::{ChannelAligner, ChannelDelayEstimator};
@@ -276,7 +276,7 @@ fn learn_universal_templates(py: Python<'_>, clips: Bound<'_, PyAny>, config: Bo
     struct Task<'a>(&'a [f32], usize, LearnOptions);
     impl ComputeTask for Task<'_> {
         type Output = dsp_core::DspResult<UniversalTemplates>;
-        fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
+        fn run(self, client: Client) -> Self::Output {
             learn(&client, self.0, self.1, &self.2)
         }
     }
@@ -332,7 +332,7 @@ fn detect_universal<'py>(py: Python<'py>, batch: Bound<'py, PyAny>, centres: PyR
     }
     impl ComputeTask for Task<'_> {
         type Output = dsp_core::DspResult<Vec<UniversalSpike>>;
-        fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
+        fn run(self, client: Client) -> Self::Output {
             let handle = client.create_from_slice(f32::as_bytes(self.x));
             detect(&client, &handle, self.channels, self.samples, self.centres, self.templates, self.th, self.nt0min)
         }
@@ -414,7 +414,7 @@ fn run_plan_py(
     struct Task<'a>(&'a dyn dsp_core::RecordingSource, &'a dsp_io::neuro::probe::SensorLayout, &'a RunPlan, &'a dyn dsp_core::ProgressSink);
     impl ComputeTask for Task<'_> {
         type Output = dsp_core::DspResult<Kilosort4Result>;
-        fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
+        fn run(self, client: Client) -> Self::Output {
             run_plan(&client, self.0, self.1, self.2, self.3)
         }
     }
@@ -521,7 +521,7 @@ fn create_kilosort4_preprocessing_py(
     struct Task<'a>(&'a dyn dsp_core::RecordingSource, &'a dsp_io::neuro::probe::SensorLayout, &'a Kilosort4Config);
     impl ComputeTask for Task<'_> {
         type Output = dsp_core::DspResult<dsp_base::pipeline::Pipeline>;
-        fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
+        fn run(self, client: Client) -> Self::Output {
             fit_kilosort4_preprocessing(&client, self.0, self.1, self.2).map(|(pipe, _)| pipe)
         }
     }
@@ -572,7 +572,7 @@ fn estimate_channel_delays(py: Python<'_>, batches: Vec<Bound<'_, PyAny>>, pad: 
     struct Task<'a>(Vec<(&'a [f32], usize)>, usize, usize, usize);
     impl ComputeTask for Task<'_> {
         type Output = (Vec<isize>, usize);
-        fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
+        fn run(self, client: Client) -> Self::Output {
             let Task(batches, channels, pad, max_lag) = self;
             let mut est = ChannelDelayEstimator::new(&client, channels, max_lag);
             for (x, samples) in batches {
@@ -610,12 +610,12 @@ fn apply_channel_delays<'py>(py: Python<'py>, batch: Bound<'py, PyAny>, delays: 
     struct Task<'a>(&'a [f32], Vec<isize>, usize);
     impl ComputeTask for Task<'_> {
         type Output = Vec<f32>;
-        fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
+        fn run(self, client: Client) -> Self::Output {
             let Task(x, delays, samples) = self;
             let total = x.len();
             let mut aligner = ChannelAligner::new(&client, delays, samples);
             let out = aligner.align(&dsp_base::core::buffer::upload(&client, x), samples);
-            dsp_base::core::buffer::download::<R, f32>(&client, out)[..total].to_vec()
+            dsp_base::core::buffer::download::<f32>(&client, out)[..total].to_vec()
         }
     }
     let input = F32Array::new(&batch)?;

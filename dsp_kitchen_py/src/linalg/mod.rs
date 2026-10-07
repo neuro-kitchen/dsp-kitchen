@@ -3,7 +3,7 @@
 //! observations. Defaults follow scikit-learn (`n_components=None`: all; FastICA `max_iter=200`,
 //! `tol=1e-4`, `fun="logcosh"`).
 
-use cubecl::prelude::{ComputeClient, Runtime};
+use cubecl::prelude::Client;
 use cubecl::CubeElement;
 use dsp_base::linalg::{FastIcaModel, IcaContrast, PcaModel, PpcaModel};
 use dsp_core::compute::ComputeTask;
@@ -41,12 +41,12 @@ struct FitTask<'a> {
 
 impl ComputeTask for FitTask<'_> {
     type Output = Fitted;
-    fn run<R: Runtime>(self, client: ComputeClient<R>) -> Fitted {
+    fn run(self, client: Client) -> Fitted {
         let (x, c, s, k) = (self.x, self.channels, self.samples, self.components);
         match self.model {
-            Model::Pca => Fitted::Pca(PcaModel::fit::<R, f32>(&client, x, c, s, k)),
-            Model::Ppca => Fitted::Ppca(PpcaModel::fit::<R, f32>(&client, x, c, s, k)),
-            Model::Ica { contrast, max_iter, tol } => Fitted::Ica(FastIcaModel::fit::<R, f32>(&client, x, c, s, k, contrast, max_iter, tol)),
+            Model::Pca => Fitted::Pca(PcaModel::fit::<f32>(&client, x, c, s, k)),
+            Model::Ppca => Fitted::Ppca(PpcaModel::fit::<f32>(&client, x, c, s, k)),
+            Model::Ica { contrast, max_iter, tol } => Fitted::Ica(FastIcaModel::fit::<f32>(&client, x, c, s, k, contrast, max_iter, tol)),
         }
     }
 }
@@ -70,7 +70,7 @@ struct ProjectTask<'a> {
 
 impl ComputeTask for ProjectTask<'_> {
     type Output = Vec<f32>;
-    fn run<R: Runtime>(self, client: ComputeClient<R>) -> Vec<f32> {
+    fn run(self, client: Client) -> Vec<f32> {
         let input = client.create_from_slice(f32::as_bytes(self.x));
         let components = match self.model {
             Fitted::Pca(m) => m.num_components,
@@ -79,8 +79,8 @@ impl ComputeTask for ProjectTask<'_> {
         };
         let out = client.empty(components * self.samples * std::mem::size_of::<f32>());
         match self.model {
-            Fitted::Pca(m) => m.project_gpu::<R, f32>(&client, &input, &out, self.channels, self.samples),
-            Fitted::Ppca(m) => m.project_gpu::<R, f32>(&client, &input, &out, self.channels, self.samples),
+            Fitted::Pca(m) => m.project_gpu::<f32>(&client, &input, &out, self.channels, self.samples),
+            Fitted::Ppca(m) => m.project_gpu::<f32>(&client, &input, &out, self.channels, self.samples),
             Fitted::Ica(_) => unreachable!("ICA transforms on the host"),
         }
         f32::from_bytes(&client.read_one_unchecked(out)).to_vec()

@@ -2,7 +2,7 @@
 //! (`GmmClusterer::default()`, k-means and matching-pursuit `DEFAULT_*`, which follow
 //! scikit-learn where it applies); parameters without a library default are required.
 
-use cubecl::prelude::{ComputeClient, Runtime};
+use cubecl::prelude::Client;
 use dsp_core::compute::ComputeTask;
 use dsp_synapse::core::WaveformTemplate;
 use dsp_synapse::sorting::kmeans::{DEFAULT_MAX_ITER, DEFAULT_N_INIT, DEFAULT_TOL};
@@ -48,7 +48,7 @@ struct GmmTask<'a> {
 
 impl ComputeTask for GmmTask<'_> {
     type Output = GmmResult;
-    fn run<R: Runtime>(self, client: ComputeClient<R>) -> GmmResult {
+    fn run(self, client: Client) -> GmmResult {
         self.clusterer.fit(&client, self.x, self.n, self.d, self.masks)
     }
 }
@@ -114,7 +114,7 @@ pub fn kmeans<'py>(py: Python<'py>, features: Bound<'py, PyAny>, k: usize, n_ini
     struct Task<'a>(&'a [f32], usize, usize, usize, KMeansOptions);
     impl ComputeTask for Task<'_> {
         type Output = dsp_synapse::sorting::KMeansResult;
-        fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
+        fn run(self, client: Client) -> Self::Output {
             kmeans_fit(&client, self.0, self.1, self.2, self.3, &self.4)
         }
     }
@@ -142,7 +142,7 @@ pub fn hdbscan(py: Python<'_>, features: Bound<'_, PyAny>, min_cluster_size: usi
     struct Task<'a>(&'a [f32], usize, usize, usize);
     impl ComputeTask for Task<'_> {
         type Output = Vec<i32>;
-        fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
+        fn run(self, client: Client) -> Self::Output {
             hdbscan_labels(&client, self.0, self.1, self.2, self.3)
         }
     }
@@ -224,7 +224,7 @@ pub fn match_spikes_matching_pursuit_py<'py>(
     }
     impl ComputeTask for Task<'_> {
         type Output = Vec<dsp_synapse::core::MatchedSpike>;
-        fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
+        fn run(self, client: Client) -> Self::Output {
             let (lo, hi, energy, passes) = self.bounds;
             match_spikes_matching_pursuit(&client, self.x, self.channels, self.samples, self.templates, lo, hi, energy, passes)
         }
@@ -267,7 +267,7 @@ pub fn decompose_hdemg_cbss<'py>(
     struct Task<'a>(ConvolutiveBssDecomposer, &'a [f32], usize, usize, f64);
     impl ComputeTask for Task<'_> {
         type Output = Vec<MotorUnitPulseTrain>;
-        fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
+        fn run(self, client: Client) -> Self::Output {
             self.0.decompose(&client, self.1, self.2, self.3, self.4)
         }
     }

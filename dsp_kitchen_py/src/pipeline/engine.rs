@@ -1,7 +1,7 @@
 //! `dsp_kitchen.pipeline`: stages chained on the device (`Pipeline`), and the runner every
 //! stage function uses.
 
-use cubecl::prelude::{ComputeClient, Runtime};
+use cubecl::prelude::Client;
 use cubecl::CubeElement;
 use dsp_base::pipeline::{Pipeline, PipelineStage};
 use dsp_core::compute::ComputeTask;
@@ -71,9 +71,9 @@ pub(crate) fn run_pipeline<'py>(py: Python<'py>, pipeline: Pipeline, data: &Boun
     }
     impl ComputeTask for Task<'_> {
         type Output = Result<Vec<f32>, dsp_base::filter::FilterError>;
-        fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
+        fn run(self, client: Client) -> Self::Output {
             let input = client.create_from_slice(f32::as_bytes(self.x));
-            let out = self.pipeline.execute::<R, f32>(&client, &input, self.channels, self.samples, self.fs)?;
+            let out = self.pipeline.execute::<f32>(&client, &input, self.channels, self.samples, self.fs)?;
             Ok(f32::from_bytes(&client.read_one_unchecked(out)).to_vec())
         }
     }
