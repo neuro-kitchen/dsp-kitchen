@@ -26,7 +26,7 @@ sorters/<name>/
   device kernels) and adds only what differs; do not copy code between sorters.
 - Run over recordings with `dsp_core::WindowLoader` over a `ChunkSchedule` and a
   `PipelineWorkspace`, never by loading a recording into memory.
-- GPU stages take a `ComputeClient<R>`; follow the data-movement rule of
+- GPU stages take a cubecl `Client`; follow the data-movement rule of
   [Architecture](../architecture.md#data-movement): a window goes up once, constants once per run,
   only results come back.
 - Name constants and say what they are; follow the upstream defaults and name them as upstream

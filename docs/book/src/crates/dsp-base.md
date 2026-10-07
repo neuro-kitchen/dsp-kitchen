@@ -23,7 +23,7 @@ them on the device without host round-trips between steps.
   `dsp-app`.
 - File formats or recordings I/O (`dsp-io`).
 - Domain models (spikes, units, probes): neuro layers above.
-- Runtime selection or launch geometry (`dsp-core::compute`); algorithms take a `ComputeClient<R>`
+- Runtime selection or launch geometry (`dsp-core::compute`); algorithms take a cubecl `Client`
   and never inspect the device.
 
 ## Features
@@ -37,10 +37,10 @@ them on the device without host round-trips between steps.
 
 Every device algorithm in this crate follows the same rules:
 
-1. **Generic float.** Kernels take `F: Float` (`F: Float + CubeElement` when a scalar argument is of
-   type `F`); dispatchers take `<R: Runtime, F: DspFloat>`. Coefficients are designed in f64 on the
+1. **Generic float.** Kernels take `F: Float` (`F: Float + CubeElement + LaunchArg` when a scalar
+   argument is of type `F`); dispatchers take `<F: DspFloat>` and a `&Client`. Coefficients are designed in f64 on the
    host and rounded to `F` once (`core::cast`). Types that hold device data default to `f32`
-   (`DeviceFilter<F = f32>`, `PipelineWorkspace<R, F = f32>`), but defaults do not drive inference:
+   (`DeviceFilter<F = f32>`, `PipelineWorkspace<F = f32>`), but defaults do not drive inference:
    callers write `::<f32>`.
 2. **Typed buffers.** Sizes come from the element type (`core::buffer`), never a literal byte count.
    Reused device buffers go through `core::Scratch`.
@@ -151,8 +151,8 @@ dsp-base/src/
 | `PeakOptions`, `Interval`, `Polarity` | Conditions as `min` / `max` intervals; maxima, minima (maxima of `−x`) or both (conditions on magnitude). |
 | `DistanceRule` | `Scipy` (default): largest first, removed peaks remove nothing — a chain can reach beyond `distance`. `LocallyExclusive`: kept unless a larger peak is nearer than `distance` — depends only on neighbours, so chunked processing with `distance` of context equals the whole-signal result. |
 | `local_extrema`, `select_by_distance` | The building blocks, for detectors that score candidates differently. |
-| `find_peak_candidates::<R, F>` → `PeakCandidates` | Device: local extrema above a per-channel height, counted, scanned and compacted on the device (autotuned block length) so only candidates are downloaded; plateaus → first sample. |
-| `find_peak_candidates_on_device::<R, F>` → `DevicePeakCandidates` | The same, left on the device (sample, value and channel buffers, unordered within a channel) for further kernels; only the per-channel counts are read back. |
+| `find_peak_candidates::<F>` → `PeakCandidates` | Device: local extrema above a per-channel height, counted, scanned and compacted on the device (autotuned block length) so only candidates are downloaded; plateaus → first sample. |
+| `find_peak_candidates_on_device::<F>` → `DevicePeakCandidates` | The same, left on the device (sample, value and channel buffers, unordered within a channel) for further kernels; only the per-channel counts are read back. |
 
 ### `spatial`
 | Item | Purpose |
@@ -186,7 +186,7 @@ coefficients are public constants shared with device code), `cross_correlation` 
 |---|---|
 | `PipelineStage` | `Scale`, `SubtractBaseline`, `Clamp`, `Filter`, `CommonAverageReference`, `SpatialWhitening`, `SurfaceLaplacian`, `GaussianSmooth`, `Median`, `TeagerKaiser`; `settling(fs)`. |
 | `Pipeline` | Stage list; `settling`, `validate`, one-off `execute`. |
-| `PipelineWorkspace<R, F>` | Designs, weights and ping-pong buffers kept on the device; `process_handle`, `process_chunk(_in_vram)`, `process_stored_chunk_in_vram`; `ChunkMode::{Independent, Stateful}`. |
+| `PipelineWorkspace<F>` | Designs, weights and ping-pong buffers kept on the device; `process_handle`, `process_chunk(_in_vram)`, `process_stored_chunk_in_vram`; `ChunkMode::{Independent, Stateful}`. |
 
 ## Limitations
 
