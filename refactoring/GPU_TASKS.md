@@ -8,13 +8,13 @@ crate cleanup.
 |---|------|----------|--------|
 | 0 | Upgrade to cubecl 0.11 / cubek 0.3 / burn 0.22 | **done 2026-10-07** (compiles, tests not run) | workspace |
 | 1 | Covariance / second moment as a matmul | **done 2026-10-07** (+ dense spatial, projection; direct kernel as tuning candidate) | dsp-base |
-| 2 | No CPU↔GPU stalls per window in the sorter pipeline | implement | dsp-base, dsp-synapse-ml |
+| 2 | No CPU↔GPU stalls per window in the sorter pipeline | **done differently 2026-10-07**: measured, stalls = 7 of 316 ms; the real costs fixed instead (host upload copy, `centre_response`, correlation, `neighbour_max`): 477 → 123 ms/window. Capacity/double-buffer redesign not built (~2%) | dsp-base, dsp-synapse-ml |
 | 3 | Upload stored samples (int16), unpack on the device | **done 2026-10-07** (`DeviceWindows`) | dsp-synapse-ml |
 | 4 | Exact k-th smallest `|x|` by bit-pattern select | **done 2026-10-07** (radix select, 8-bit digits; 4–10× faster, exact) | dsp-base |
 | 5 | Eigensolver tolerance aware of `F` and `n` | **done 2026-10-07** (Demmel–Veselić pair test; measured: no speed change, review hypothesis wrong) | dsp-base |
 | 6 | 32-bit device index guard + README warning | **done 2026-10-07** (`device_elements`, buffer backstop, README) | dsp-core, dsp-base, all kernels, README |
 | 7 | HDBSCAN scaling (exact pruning) | **done 2026-10-07** (+ hang fix: bounded insertion; 500k clips in 52 s) | dsp-synapse |
-| 8 | Smaller kernel inefficiencies | agreed | dsp-base, dsp-synapse-ml, dsp-view |
+| 8 | Smaller kernel inefficiencies | **partly done** (correlation tiled; rest open: delay CC, plane reductions, zeros fill, transpose via cubecl-std) | dsp-base, dsp-synapse-ml, dsp-view |
 | 9 | Reproducible sorts | required | dsp-core, dsp-base, dsp-synapse(-ml) |
 
 ---
@@ -269,3 +269,16 @@ autotuner can choose differently between runs, which changes rounding and can fl
 
 **Done when.** Two runs of the playground scripts on the same machine give identical spike
 trains (check at test time).
+
+## Reported, not acted on: upstream EMUsort differences (user, 2026-10-07)
+
+Documented in the book (`sorters/emusort/pipeline.md`, "Known differences from upstream"): upstream
+drops the batch that would overflow the 500k clip buffer (we fill to `MAX_CLIPS`), and de-duplicates
+cross-threshold peaks on the time index only (we use (channel, time)). To check later.
+
+## IIR "from-rest bug" (resolved 2026-10-07, not a kernel bug)
+
+Absolute vs relative error (0.0702 of a ~650 peak = 1.08e-4) from f32 coefficient rounding of
+0.5 Hz poles, excited by the from-rest DC step; tests now use relative errors and a named from-rest
+low-cutoff limit. Stale scipy fixtures regenerated. `DeviceFilter` checks state/scratch sizes.
+Written up in the book (GPU engineering → Pitfalls).
