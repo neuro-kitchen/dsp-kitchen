@@ -1,45 +1,40 @@
 //! Running work on a [`ComputeTarget`].
 //!
-//! Library code is generic over `R: cubecl::Runtime`; the CLI, Python bindings and the app pick a
-//! target once and run a [`ComputeTask`] on it.
+//! Library code takes a [`Client`] (cubecl 0.11 resolves the runtime when the client is made, not
+//! through a generic); the CLI, Python bindings and the app pick a target once and get its client,
+//! or run a [`ComputeTask`] on it.
 
+use cubecl::device::{AmdDevice, CpuDevice, CudaDevice, WgpuDevice};
 use cubecl::prelude::*;
+use cubecl::Device;
 
 use crate::device::{ComputeError, ComputeTarget};
 
 /// Work to run on whichever runtime a [`ComputeTarget`] selects.
 pub trait ComputeTask {
     type Output;
-    fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output;
+    fn run(self, client: Client) -> Self::Output;
 }
 
 impl ComputeTarget {
+    /// The default device of this runtime, if it is compiled in.
+    pub fn device(self) -> Result<Device, ComputeError> {
+        Ok(match self.checked()? {
+            Self::Wgpu => Device::Wgpu(WgpuDevice::default()),
+            Self::Cpu => Device::Cpu(CpuDevice),
+            Self::Cuda => Device::Cuda(CudaDevice::default()),
+            Self::Hip => Device::Hip(AmdDevice::default()),
+        })
+    }
+
+    /// A client for this runtime's default device.
+    pub fn client(self) -> Result<Client, ComputeError> {
+        Ok(self.device()?.client())
+    }
+
     /// Runs `task` with a client for this runtime's default device.
     pub fn run<T: ComputeTask>(self, task: T) -> Result<T::Output, ComputeError> {
-        match self.checked()? {
-            #[cfg(feature = "wgpu")]
-            Self::Wgpu => {
-                use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
-                Ok(task.run(WgpuRuntime::client(&WgpuDevice::default())))
-            }
-            #[cfg(feature = "cpu")]
-            Self::Cpu => {
-                use cubecl::cpu::{CpuDevice, CpuRuntime};
-                Ok(task.run(CpuRuntime::client(&CpuDevice)))
-            }
-            #[cfg(feature = "cuda")]
-            Self::Cuda => {
-                use cubecl::cuda::{CudaDevice, CudaRuntime};
-                Ok(task.run(CudaRuntime::client(&CudaDevice::default())))
-            }
-            #[cfg(feature = "hip")]
-            Self::Hip => {
-                use cubecl::hip::{AmdDevice, HipRuntime};
-                Ok(task.run(HipRuntime::client(&AmdDevice::default())))
-            }
-            #[allow(unreachable_patterns)]
-            other => Err(ComputeError::Unavailable(other, other.name())),
-        }
+        Ok(task.run(self.client()?))
     }
 }
 
@@ -50,8 +45,8 @@ mod tests {
     struct RuntimeName;
     impl ComputeTask for RuntimeName {
         type Output = String;
-        fn run<R: Runtime>(self, client: ComputeClient<R>) -> String {
-            R::name(&client).to_string()
+        fn run(self, client: Client) -> String {
+            client.name().to_string()
         }
     }
 

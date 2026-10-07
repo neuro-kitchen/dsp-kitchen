@@ -9,11 +9,11 @@ use cubecl::prelude::*;
 
 /// Autotune id of the device behind `client`: runtime name plus the hardware properties that shape
 /// launches, so different devices keep separate tuning results.
-pub fn tune_id<R: Runtime>(client: &ComputeClient<R>) -> String {
+pub fn tune_id(client: &Client) -> String {
     let hw = &client.properties().hardware;
     format!(
         "{}-plane{}-units{}-cores{}-sm{}",
-        R::name(client),
+        client.name(),
         hw.plane_size_max,
         hw.max_units_per_cube,
         hw.num_cpu_cores.unwrap_or(0),
