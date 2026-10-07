@@ -47,8 +47,8 @@ impl Shape {
 
 /// One FIR call (cloned per autotune candidate).
 #[derive(Clone)]
-struct FirInputs<R: Runtime> {
-    client: ComputeClient<R>,
+struct FirInputs {
+    client: Client,
     input: Handle,
     output: Handle,
     taps: Handle,
@@ -58,7 +58,7 @@ struct FirInputs<R: Runtime> {
     edge: EdgeMode,
 }
 
-impl<R: Runtime> FirInputs<R> {
+impl FirInputs {
     fn run<F: DspFloat>(&self, kernel: FirKernel) {
         let (client, total) = (&self.client, self.channels * self.samples);
         let geom = LaunchGeometry::channels_samples(client, self.channels, self.samples);
@@ -68,23 +68,23 @@ impl<R: Runtime> FirInputs<R> {
         // SAFETY: the handles hold `total` samples and `num_taps` taps of `F`
         let (input, output, taps) = unsafe {
             (
-                ArrayArg::from_raw_parts(self.input.clone(), total),
-                ArrayArg::from_raw_parts(self.output.clone(), total),
-                ArrayArg::from_raw_parts(self.taps.clone(), self.shape.num_taps()),
+                BufferArg::from_raw_parts(self.input.clone(), total),
+                BufferArg::from_raw_parts(self.output.clone(), total),
+                BufferArg::from_raw_parts(self.taps.clone(), self.shape.num_taps()),
             )
         };
         let (channels, samples, edge) = (self.channels as u32, self.samples as u32, self.edge.id());
         match (self.shape, tiled) {
-            (Shape::Causal { num_taps }, false) => fir_filter_kernel::launch::<F, R>(
+            (Shape::Causal { num_taps }, false) => fir_filter_kernel::launch::<F>(
                 client, geom.cube_count, geom.cube_dim, input, output, taps, channels, samples, num_taps as u32, edge,
             ),
-            (Shape::Causal { num_taps }, true) => fir_tiled_kernel::launch::<F, R>(
+            (Shape::Causal { num_taps }, true) => fir_tiled_kernel::launch::<F>(
                 client, geom.cube_count, geom.cube_dim, input, output, taps, channels, samples, num_taps as u32, tile_x, tile_y, edge,
             ),
-            (Shape::Centered { radius }, false) => fir_centered_filter_kernel::launch::<F, R>(
+            (Shape::Centered { radius }, false) => fir_centered_filter_kernel::launch::<F>(
                 client, geom.cube_count, geom.cube_dim, input, output, taps, channels, samples, radius as u32, edge,
             ),
-            (Shape::Centered { radius }, true) => fir_centered_tiled_kernel::launch::<F, R>(
+            (Shape::Centered { radius }, true) => fir_centered_tiled_kernel::launch::<F>(
                 client, geom.cube_count, geom.cube_dim, input, output, taps, channels, samples, radius as u32, tile_x, tile_y, edge,
             ),
         }
@@ -93,41 +93,40 @@ impl<R: Runtime> FirInputs<R> {
 
 /// [`FirInputs::run`] with the kernel CubeCL's autotuner found fastest for this device, element type,
 /// filter shape and problem size. Benchmarks write to a scratch output.
-fn tuned<R: Runtime, F: DspFloat>(inputs: FirInputs<R>) {
-    // cubecl-runtime 0.10's `local_tuner!` expands with a trailing semicolon (rust-lang/rust#79813)
-    #[allow(semicolon_in_expressions_from_non_local_macros)]
+fn tuned<F: DspFloat>(inputs: FirInputs) {
     static TUNER: LocalTuner<String, String> = local_tuner!("fir-kernel");
-    let set = TUNER.init(|| {
-        let key = |p: &FirInputs<R>| {
+    let client = inputs.client.clone();
+    let id = tune_id(&client);
+    let set = TUNER.init(&id, || {
+        let key = |p: &FirInputs| {
             format!("{}-{:?}-c{}-t{}", F::type_name(), p.shape, size_class(p.channels), size_class(p.samples))
         };
-        let scratch = |_: &String, p: &FirInputs<R>| FirInputs { output: buffer::empty::<R, F>(&p.client, p.channels * p.samples), ..p.clone() };
-        let set: TunableSet<String, FirInputs<R>, ()> = TunableSet::new(key, scratch);
+        let scratch = |_: &String, p: &FirInputs| FirInputs { output: buffer::empty::<F>(&p.client, p.channels * p.samples), ..p.clone() };
+        let set: TunableSet<String, FirInputs, ()> = TunableSet::new(key, scratch);
         [FirKernel::Direct, FirKernel::Tiled].into_iter().fold(set, |set, kernel| {
-            set.with(Tunable::new(&format!("{kernel:?}"), move |p: FirInputs<R>| {
+            set.with(Tunable::new(&format!("{kernel:?}"), move |p: FirInputs| {
                 p.run::<F>(kernel);
                 Ok::<_, String>(())
             }))
         })
     });
-    let client = inputs.client.clone();
-    TUNER.execute(&tune_id(&client), &client, set, inputs)
+    TUNER.execute(&id, &client, set, inputs)
 }
 
-fn dispatch<R: Runtime, F: DspFloat>(inputs: FirInputs<R>, kernel: Option<FirKernel>) {
+fn dispatch<F: DspFloat>(inputs: FirInputs, kernel: Option<FirKernel>) {
     if inputs.channels == 0 || inputs.samples == 0 {
         return;
     }
     match kernel {
         Some(kernel) => inputs.run::<F>(kernel),
-        None => tuned::<R, F>(inputs),
+        None => tuned::<F>(inputs),
     }
 }
 
 /// Causal multi-channel FIR filtering of a `[channels, samples]` buffer with `num_taps` taps.
 #[allow(clippy::too_many_arguments)]
-pub fn execute_fir<R: Runtime, F: DspFloat>(
-    client: &ComputeClient<R>,
+pub fn execute_fir<F: DspFloat>(
+    client: &Client,
     input: &Handle,
     output: &Handle,
     taps: &Handle,
@@ -136,13 +135,13 @@ pub fn execute_fir<R: Runtime, F: DspFloat>(
     num_taps: usize,
     edge: EdgeMode,
 ) {
-    execute_fir_with::<R, F>(client, input, output, taps, channels, samples, num_taps, edge, None);
+    execute_fir_with::<F>(client, input, output, taps, channels, samples, num_taps, edge, None);
 }
 
 /// [`execute_fir`] with a fixed kernel (`None` = autotuned); for tests and benchmarks.
 #[allow(clippy::too_many_arguments)]
-pub fn execute_fir_with<R: Runtime, F: DspFloat>(
-    client: &ComputeClient<R>,
+pub fn execute_fir_with<F: DspFloat>(
+    client: &Client,
     input: &Handle,
     output: &Handle,
     taps: &Handle,
@@ -162,13 +161,13 @@ pub fn execute_fir_with<R: Runtime, F: DspFloat>(
         shape: Shape::Causal { num_taps: num_taps.max(1) },
         edge,
     };
-    dispatch::<R, F>(inputs, kernel);
+    dispatch::<F>(inputs, kernel);
 }
 
 /// Centered (zero-phase for symmetric taps) FIR filtering with `2 · radius + 1` taps.
 #[allow(clippy::too_many_arguments)]
-pub fn execute_fir_centered<R: Runtime, F: DspFloat>(
-    client: &ComputeClient<R>,
+pub fn execute_fir_centered<F: DspFloat>(
+    client: &Client,
     input: &Handle,
     output: &Handle,
     taps: &Handle,
@@ -177,13 +176,13 @@ pub fn execute_fir_centered<R: Runtime, F: DspFloat>(
     radius: usize,
     edge: EdgeMode,
 ) {
-    execute_fir_centered_with::<R, F>(client, input, output, taps, channels, samples, radius, edge, None);
+    execute_fir_centered_with::<F>(client, input, output, taps, channels, samples, radius, edge, None);
 }
 
 /// [`execute_fir_centered`] with a fixed kernel (`None` = autotuned); for tests and benchmarks.
 #[allow(clippy::too_many_arguments)]
-pub fn execute_fir_centered_with<R: Runtime, F: DspFloat>(
-    client: &ComputeClient<R>,
+pub fn execute_fir_centered_with<F: DspFloat>(
+    client: &Client,
     input: &Handle,
     output: &Handle,
     taps: &Handle,
@@ -203,14 +202,14 @@ pub fn execute_fir_centered_with<R: Runtime, F: DspFloat>(
         shape: Shape::Centered { radius },
         edge,
     };
-    dispatch::<R, F>(inputs, kernel);
+    dispatch::<F>(inputs, kernel);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn tiled_matches_direct<R: Runtime>(client: &ComputeClient<R>) {
+    fn tiled_matches_direct(client: &Client) {
         let (channels, samples) = (5usize, 1_003usize);
         let x: Vec<f32> = (0..channels * samples).map(|i| ((i * 7919) % 211) as f32 - 100.0).collect();
         let input = buffer::upload(client, &x);
@@ -219,23 +218,23 @@ mod tests {
                 let taps: Vec<f32> = (0..num_taps).map(|k| 1.0 / (k as f32 + 1.0)).collect();
                 let taps_h = buffer::upload(client, &taps);
                 let run = |kernel| {
-                    let out = buffer::empty::<R, f32>(client, x.len());
-                    execute_fir_with::<R, f32>(client, &input, &out, &taps_h, channels, samples, num_taps, edge, Some(kernel));
-                    buffer::download::<R, f32>(client, out)
+                    let out = buffer::empty::<f32>(client, x.len());
+                    execute_fir_with::<f32>(client, &input, &out, &taps_h, channels, samples, num_taps, edge, Some(kernel));
+                    buffer::download::<f32>(client, out)
                 };
                 let (direct, tiled) = (run(FirKernel::Direct), run(FirKernel::Tiled));
-                assert!(direct.iter().zip(&tiled).all(|(a, b)| (a - b).abs() < 1e-3), "{} causal {num_taps} taps {edge:?}", R::name(client));
+                assert!(direct.iter().zip(&tiled).all(|(a, b)| (a - b).abs() < 1e-3), "{} causal {num_taps} taps {edge:?}", client.name());
             }
             for radius in [0usize, 3, 20] {
                 let taps: Vec<f32> = (0..2 * radius + 1).map(|k| 1.0 / (k as f32 + 1.0)).collect();
                 let taps_h = buffer::upload(client, &taps);
                 let run = |kernel| {
-                    let out = buffer::empty::<R, f32>(client, x.len());
-                    execute_fir_centered_with::<R, f32>(client, &input, &out, &taps_h, channels, samples, radius, edge, Some(kernel));
-                    buffer::download::<R, f32>(client, out)
+                    let out = buffer::empty::<f32>(client, x.len());
+                    execute_fir_centered_with::<f32>(client, &input, &out, &taps_h, channels, samples, radius, edge, Some(kernel));
+                    buffer::download::<f32>(client, out)
                 };
                 let (direct, tiled) = (run(FirKernel::Direct), run(FirKernel::Tiled));
-                assert!(direct.iter().zip(&tiled).all(|(a, b)| (a - b).abs() < 1e-3), "{} centered radius {radius} {edge:?}", R::name(client));
+                assert!(direct.iter().zip(&tiled).all(|(a, b)| (a - b).abs() < 1e-3), "{} centered radius {radius} {edge:?}", client.name());
             }
         }
     }

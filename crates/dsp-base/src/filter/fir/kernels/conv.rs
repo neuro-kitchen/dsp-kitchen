@@ -8,9 +8,9 @@ use crate::core::read_extended;
 /// `lfilter` reads zeros). Units with a full history take a branch-free path.
 #[cube(launch)]
 pub fn fir_filter_kernel<F: Float>(
-    input: &Array<F>,
-    output: &mut Array<F>,
-    taps: &Array<F>,
+    input: &[F],
+    output: &mut [F],
+    taps: &[F],
     num_channels: u32,
     num_samples: u32,
     num_taps: u32,
@@ -45,9 +45,9 @@ pub fn fir_filter_kernel<F: Float>(
 /// inside the row take a branch-free path.
 #[cube(launch)]
 pub fn fir_centered_filter_kernel<F: Float>(
-    input: &Array<F>,
-    output: &mut Array<F>,
-    taps: &Array<F>,
+    input: &[F],
+    output: &mut [F],
+    taps: &[F],
     num_channels: u32,
     num_samples: u32,
     radius: u32,
@@ -83,8 +83,8 @@ pub fn fir_centered_filter_kernel<F: Float>(
 #[cube]
 #[allow(clippy::too_many_arguments)]
 fn load_tile<F: Float>(
-    input: &Array<F>,
-    tile: &mut SharedMemory<F>,
+    input: &[F],
+    tile: &mut Shared<[F]>,
     num_channels: u32,
     num_samples: u32,
     pad: u32,
@@ -112,9 +112,9 @@ fn load_tile<F: Float>(
 #[cube(launch)]
 #[allow(clippy::too_many_arguments)]
 pub fn fir_tiled_kernel<F: Float>(
-    input: &Array<F>,
-    output: &mut Array<F>,
-    taps: &Array<F>,
+    input: &[F],
+    output: &mut [F],
+    taps: &[F],
     num_channels: u32,
     num_samples: u32,
     #[comptime] num_taps: u32,
@@ -123,7 +123,7 @@ pub fn fir_tiled_kernel<F: Float>(
     #[comptime] edge: u32,
 ) {
     let span = comptime!(tile_x + num_taps - 1);
-    let mut tile = SharedMemory::<F>::new(comptime!((span * tile_y) as usize));
+    let mut tile = Shared::<[F]>::new_slice(comptime!((span * tile_y) as usize));
     load_tile::<F>(input, &mut tile, num_channels, num_samples, comptime!(num_taps - 1), span, tile_x, edge);
     sync_cube();
 
@@ -148,9 +148,9 @@ pub fn fir_tiled_kernel<F: Float>(
 #[cube(launch)]
 #[allow(clippy::too_many_arguments)]
 pub fn fir_centered_tiled_kernel<F: Float>(
-    input: &Array<F>,
-    output: &mut Array<F>,
-    taps: &Array<F>,
+    input: &[F],
+    output: &mut [F],
+    taps: &[F],
     num_channels: u32,
     num_samples: u32,
     #[comptime] radius: u32,
@@ -159,7 +159,7 @@ pub fn fir_centered_tiled_kernel<F: Float>(
     #[comptime] edge: u32,
 ) {
     let span = comptime!(tile_x + 2 * radius);
-    let mut tile = SharedMemory::<F>::new(comptime!((span * tile_y) as usize));
+    let mut tile = Shared::<[F]>::new_slice(comptime!((span * tile_y) as usize));
     load_tile::<F>(input, &mut tile, num_channels, num_samples, radius, span, tile_x, edge);
     sync_cube();
 

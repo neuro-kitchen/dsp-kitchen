@@ -1,6 +1,6 @@
 //! Unit-test helpers.
 
-/// Defines a `#[test]` that runs `$body::<R>(&client)` on every compiled-in CubeCL runtime
+/// Defines a `#[test]` that runs `$body(&client)` on every compiled-in CubeCL runtime
 /// (through [`dsp_core::compute::ComputeTask`]), so tests never name a runtime.
 macro_rules! runtime_test {
     ($name:ident, $body:ident) => {
@@ -9,8 +9,8 @@ macro_rules! runtime_test {
             struct Task;
             impl dsp_core::compute::ComputeTask for Task {
                 type Output = ();
-                fn run<R: cubecl::Runtime>(self, client: cubecl::prelude::ComputeClient<R>) {
-                    $body::<R>(&client)
+                fn run(self, client: cubecl::prelude::Client) {
+                    $body(&client)
                 }
             }
             let targets = dsp_core::compute::ComputeTarget::available();

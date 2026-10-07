@@ -8,8 +8,8 @@ use crate::core::read_extended;
 /// id). Negative values (energy decreasing) are kept.
 #[cube(launch)]
 pub fn teager_kaiser_kernel<F: Float>(
-    input: &Array<F>,
-    output: &mut Array<F>,
+    input: &[F],
+    output: &mut [F],
     num_channels: u32,
     num_samples: u32,
     #[comptime] edge: u32,

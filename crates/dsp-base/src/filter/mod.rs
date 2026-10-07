@@ -32,14 +32,14 @@ mod tests {
             .collect()
     }
 
-    fn median_widths<R: Runtime>(client: &ComputeClient<R>) {
+    fn median_widths(client: &Client) {
         let samples = 40;
         let x: Vec<f32> = (0..samples).map(|i| ((i * 37 % 11) as f32) - 5.0 + if i == 20 { 500.0 } else { 0.0 }).collect();
         let input = buffer::upload(client, &x);
         for width in [1usize, 3, 7, 9, 15] {
-            let output = buffer::empty::<R, f32>(client, samples);
-            execute_median::<R, f32>(client, &input, &output, 1, samples, width, EdgeMode::Zeros);
-            assert_eq!(buffer::download::<R, f32>(client, output), medfilt(&x, width), "{} width {width}", R::name(client));
+            let output = buffer::empty::<f32>(client, samples);
+            execute_median::<f32>(client, &input, &output, 1, samples, width, EdgeMode::Zeros);
+            assert_eq!(buffer::download::<f32>(client, output), medfilt(&x, width), "{} width {width}", client.name());
         }
     }
     runtime_test!(test_median_matches_medfilt, median_widths);
