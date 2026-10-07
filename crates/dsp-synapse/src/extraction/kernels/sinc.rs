@@ -17,10 +17,10 @@ const PARABOLA_FLAT: f32 = 1e-12;
 /// `center_samples[i]` on `primary_channels[i]` (trough at `center + δ`).
 #[cube(launch)]
 pub fn trough_shift_kernel<F: Float>(
-    trace: &Array<F>,
-    primary_channels: &Array<u32>,
-    center_samples: &Array<u32>,
-    shifts: &mut Array<F>,
+    trace: &[F],
+    primary_channels: &[u32],
+    center_samples: &[u32],
+    shifts: &mut [F],
     num_samples: u32,
     num_spikes: u32,
 ) {
@@ -45,12 +45,12 @@ pub fn trough_shift_kernel<F: Float>(
 /// copied. Spikes were checked to fit (with the taps) beforehand.
 #[cube(launch)]
 pub fn extract_snippets_kernel<F: Float>(
-    trace: &Array<F>,
-    knn_table: &Array<u32>,
-    primary_channels: &Array<u32>,
-    center_samples: &Array<u32>,
-    taps: &Array<F>,
-    out_snippets: &mut Array<F>,
+    trace: &[F],
+    knn_table: &[u32],
+    primary_channels: &[u32],
+    center_samples: &[u32],
+    taps: &[F],
+    out_snippets: &mut [F],
     num_samples: u32,
     num_spikes: u32,
     k_neighbors: u32,
@@ -111,8 +111,8 @@ impl VramSnippets {
 /// Spikes whose window plus [`crate::extraction::extraction_margin`] leaves the trace are skipped
 /// (reported in [`VramSnippets::dropped`]). Returns `None` when nothing is extracted.
 #[allow(clippy::too_many_arguments)]
-pub fn execute_extract_sinc_in_vram<R: Runtime, F: DspFloat>(
-    client: &ComputeClient<R>,
+pub fn execute_extract_sinc_in_vram<F: DspFloat>(
+    client: &Client,
     trace_handle: &cubecl::server::Handle,
     knn_handle: &cubecl::server::Handle,
     channels: usize,
@@ -148,45 +148,45 @@ pub fn execute_extract_sinc_in_vram<R: Runtime, F: DspFloat>(
     let prim_handle = buffer::upload(client, &primary_channels);
     let center_handle = buffer::upload(client, &center_samples);
     let total = num_spikes * k_neighbors * snippet_len;
-    let out_snippets_handle = buffer::empty::<R, F>(client, total);
+    let out_snippets_handle = buffer::empty::<F>(client, total);
 
     // SAFETY (all launches): handles hold the lengths passed — the trace `channels · samples`,
     // the KNN table `channels · k_neighbors`, per-spike arrays `num_spikes`, taps
     // `num_spikes · (2·radius + 1)`, the output `total`
     let taps = if apply_sinc_shift {
-        let shifts = buffer::empty::<R, F>(client, num_spikes);
+        let shifts = buffer::empty::<F>(client, num_spikes);
         let per_spike = LaunchGeometry::elementwise(client, num_spikes);
         unsafe {
-            trough_shift_kernel::launch::<F, R>(
+            trough_shift_kernel::launch::<F>(
                 client,
                 per_spike.cube_count,
                 per_spike.cube_dim,
-                ArrayArg::from_raw_parts(trace_handle.clone(), channels * samples),
-                ArrayArg::from_raw_parts(prim_handle.clone(), num_spikes),
-                ArrayArg::from_raw_parts(center_handle.clone(), num_spikes),
-                ArrayArg::from_raw_parts(shifts.clone(), num_spikes),
+                BufferArg::from_raw_parts(trace_handle.clone(), channels * samples),
+                BufferArg::from_raw_parts(prim_handle.clone(), num_spikes),
+                BufferArg::from_raw_parts(center_handle.clone(), num_spikes),
+                BufferArg::from_raw_parts(shifts.clone(), num_spikes),
                 samples as u32,
                 num_spikes as u32,
             );
         }
-        fractional_delay_taps_device::<R, F>(client, &shifts, num_spikes, SINC_KERNEL_RADIUS)
+        fractional_delay_taps_device::<F>(client, &shifts, num_spikes, SINC_KERNEL_RADIUS)
     } else {
-        buffer::empty::<R, F>(client, 1)
+        buffer::empty::<F>(client, 1)
     };
     let tap_len = if apply_sinc_shift { num_spikes * (2 * SINC_KERNEL_RADIUS + 1) } else { 1 };
 
     let geom = LaunchGeometry::elementwise(client, total);
     unsafe {
-        extract_snippets_kernel::launch::<F, R>(
+        extract_snippets_kernel::launch::<F>(
             client,
             geom.cube_count,
             geom.cube_dim,
-            ArrayArg::from_raw_parts(trace_handle.clone(), channels * samples),
-            ArrayArg::from_raw_parts(knn_handle.clone(), channels * k_neighbors),
-            ArrayArg::from_raw_parts(prim_handle.clone(), num_spikes),
-            ArrayArg::from_raw_parts(center_handle, num_spikes),
-            ArrayArg::from_raw_parts(taps, tap_len),
-            ArrayArg::from_raw_parts(out_snippets_handle.clone(), total),
+            BufferArg::from_raw_parts(trace_handle.clone(), channels * samples),
+            BufferArg::from_raw_parts(knn_handle.clone(), channels * k_neighbors),
+            BufferArg::from_raw_parts(prim_handle.clone(), num_spikes),
+            BufferArg::from_raw_parts(center_handle, num_spikes),
+            BufferArg::from_raw_parts(taps, tap_len),
+            BufferArg::from_raw_parts(out_snippets_handle.clone(), total),
             samples as u32,
             num_spikes as u32,
             k_neighbors as u32,

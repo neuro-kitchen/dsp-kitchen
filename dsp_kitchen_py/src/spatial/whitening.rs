@@ -1,7 +1,7 @@
 //! Spatial whitening (ZCA, global or over each channel's nearest neighbours), fitted on the
 //! device. `epsilon` (added to eigenvalues) has no default: it depends on the data's scale.
 
-use cubecl::prelude::{ComputeClient, Runtime};
+use cubecl::prelude::Client;
 use dsp_base::pipeline::PipelineStage;
 use dsp_base::spatial::SpatialWhitening;
 use dsp_core::compute::ComputeTask;
@@ -34,11 +34,11 @@ struct FitTask<'a> {
 
 impl ComputeTask for FitTask<'_> {
     type Output = SpatialWhitening;
-    fn run<R: Runtime>(self, client: ComputeClient<R>) -> SpatialWhitening {
+    fn run(self, client: Client) -> SpatialWhitening {
         match self.fit {
-            Fit::Zca => SpatialWhitening::fit_zca::<R, f32>(&client, self.x, self.channels, self.samples, self.epsilon),
+            Fit::Zca => SpatialWhitening::fit_zca::<f32>(&client, self.x, self.channels, self.samples, self.epsilon),
             Fit::LocalKnn { positions, k_neighbors } => {
-                SpatialWhitening::fit_local_knn::<R, f32>(&client, self.x, self.channels, self.samples, positions, k_neighbors, self.epsilon)
+                SpatialWhitening::fit_local_knn::<f32>(&client, self.x, self.channels, self.samples, positions, k_neighbors, self.epsilon)
             }
         }
     }

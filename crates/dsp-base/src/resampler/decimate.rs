@@ -44,8 +44,8 @@ pub fn decimate_len(samples: usize, q: usize) -> usize {
 /// # Panics
 /// If `q` is zero.
 #[allow(clippy::too_many_arguments)]
-pub fn decimate<R: Runtime, F: DspFloat>(
-    client: &ComputeClient<R>,
+pub fn decimate<F: DspFloat>(
+    client: &Client,
     input: &Handle,
     output: &Handle,
     channels: usize,
@@ -64,19 +64,19 @@ pub fn decimate<R: Runtime, F: DspFloat>(
             let spec = FilterSpec::chebyshev1(order, ripple_db, FilterBand::Lowpass(DECIMATE_IIR_CUTOFF / q as f64))
                 .with_mode(FilterMode::ForwardBackward);
             let device = DeviceFilter::<F>::new(client, &spec, 2.0)?;
-            let filtered = buffer::empty::<R, F>(client, channels * samples);
-            let scratch = buffer::empty::<R, F>(client, device.scratch_len(channels, samples));
-            let state = buffer::empty::<R, F>(client, channels * device.state_len());
+            let filtered = buffer::empty::<F>(client, channels * samples);
+            let scratch = buffer::empty::<F>(client, device.scratch_len(channels, samples));
+            let state = buffer::empty::<F>(client, channels * device.state_len());
             device.apply(client, input, &filtered, &scratch, &state, channels, samples);
 
             let geom = LaunchGeometry::channels_samples(client, channels, out_len);
             unsafe {
-                downsample_kernel::launch::<F, R>(
+                downsample_kernel::launch::<F>(
                     client,
                     geom.cube_count,
                     geom.cube_dim,
-                    ArrayArg::from_raw_parts(filtered, channels * samples),
-                    ArrayArg::from_raw_parts(output.clone(), channels * out_len),
+                    BufferArg::from_raw_parts(filtered, channels * samples),
+                    BufferArg::from_raw_parts(output.clone(), channels * out_len),
                     channels as u32,
                     samples as u32,
                     out_len as u32,
@@ -89,7 +89,7 @@ pub fn decimate<R: Runtime, F: DspFloat>(
         DecimateFilter::Fir { taps_per_factor } => {
             let taps = firwin(taps_per_factor * q + 1, 1.0 / q as f64, FirWindow::Hamming);
             let filter = ResampleFilter::Taps(taps);
-            Ok(resample_poly::<R, F>(client, input, output, channels, samples, 1, q, &filter, RESAMPLE_POLY_DEFAULT_EDGE))
+            Ok(resample_poly::<F>(client, input, output, channels, samples, 1, q, &filter, RESAMPLE_POLY_DEFAULT_EDGE))
         }
     }
 }
@@ -98,21 +98,21 @@ pub fn decimate<R: Runtime, F: DspFloat>(
 mod tests {
     use super::*;
 
-    fn iir_matches_host<R: Runtime>(client: &ComputeClient<R>) {
+    fn iir_matches_host(client: &Client) {
         let (samples, q) = (5_000usize, 4usize);
         let x: Vec<f64> = (0..samples).map(|i| (i as f64 * 0.01).sin() * 50.0 + (i as f64 * 1.9).sin() * 5.0 - 20.0).collect();
         let input = buffer::upload(client, &x.iter().map(|v| *v as f32).collect::<Vec<_>>());
         let out_len = decimate_len(samples, q);
-        let output = buffer::empty::<R, f32>(client, out_len);
-        assert_eq!(decimate::<R, f32>(client, &input, &output, 1, samples, q, DECIMATE_DEFAULT).unwrap(), out_len);
-        let got = buffer::download::<R, f32>(client, output);
+        let output = buffer::empty::<f32>(client, out_len);
+        assert_eq!(decimate::<f32>(client, &input, &output, 1, samples, q, DECIMATE_DEFAULT).unwrap(), out_len);
+        let got = buffer::download::<f32>(client, output);
 
         let DecimateFilter::Iir { order, ripple_db } = DECIMATE_DEFAULT else { unreachable!() };
         let sos = crate::filter::design::chebyshev1_sos(order, ripple_db, FilterBand::Lowpass(DECIMATE_IIR_CUTOFF / q as f64), 2.0).unwrap();
         let filtered = sos.filtfilt(&x, sos.settling_samples(crate::filter::design::DEFAULT_SETTLING_TOLERANCE).min(samples - 1));
         for (m, g) in got.iter().enumerate() {
             let w = filtered[m * q];
-            assert!((*g as f64 - w).abs() < 2e-3 * 70.0, "{} sample {m}: {g} vs {w}", R::name(client));
+            assert!((*g as f64 - w).abs() < 2e-3 * 70.0, "{} sample {m}: {g} vs {w}", client.name());
         }
     }
     runtime_test!(test_decimate_iir_matches_host, iir_matches_host);

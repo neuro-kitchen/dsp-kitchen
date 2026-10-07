@@ -49,8 +49,8 @@ pub fn resample_poly_len(samples: usize, up: usize, down: usize) -> usize {
 /// # Panics
 /// If `up` or `down` is zero.
 #[allow(clippy::too_many_arguments)]
-pub fn resample_poly<R: Runtime, F: DspFloat>(
-    client: &ComputeClient<R>,
+pub fn resample_poly<F: DspFloat>(
+    client: &Client,
     input: &Handle,
     output: &Handle,
     channels: usize,
@@ -90,13 +90,13 @@ pub fn resample_poly<R: Runtime, F: DspFloat>(
     let taps_h = buffer::upload(client, &cast_all::<F>(&taps));
     let geom = LaunchGeometry::channels_samples(client, channels, out_len);
     unsafe {
-        upfirdn_kernel::launch::<F, R>(
+        upfirdn_kernel::launch::<F>(
             client,
             geom.cube_count,
             geom.cube_dim,
-            ArrayArg::from_raw_parts(input.clone(), channels * samples),
-            ArrayArg::from_raw_parts(taps_h, taps.len()),
-            ArrayArg::from_raw_parts(output.clone(), channels * out_len),
+            BufferArg::from_raw_parts(input.clone(), channels * samples),
+            BufferArg::from_raw_parts(taps_h, taps.len()),
+            BufferArg::from_raw_parts(output.clone(), channels * out_len),
             channels as u32,
             samples as u32,
             out_len as u32,
@@ -134,19 +134,19 @@ mod tests {
             .collect()
     }
 
-    fn matches_host<R: Runtime>(client: &ComputeClient<R>) {
+    fn matches_host(client: &Client) {
         let samples = 997;
         let x: Vec<f64> = (0..samples).map(|i| (i as f64 * 0.05).sin() * 10.0 + ((i * 7919) % 31) as f64 * 0.1).collect();
         let input = buffer::upload(client, &x.iter().map(|v| *v as f32).collect::<Vec<_>>());
         for (up, down) in [(1usize, 3usize), (3, 1), (2, 3), (160, 147)] {
             let out_len = resample_poly_len(samples, up, down);
-            let output = buffer::empty::<R, f32>(client, out_len);
-            let n = resample_poly::<R, f32>(client, &input, &output, 1, samples, up, down, &ResampleFilter::default(), RESAMPLE_POLY_DEFAULT_EDGE);
+            let output = buffer::empty::<f32>(client, out_len);
+            let n = resample_poly::<f32>(client, &input, &output, 1, samples, up, down, &ResampleFilter::default(), RESAMPLE_POLY_DEFAULT_EDGE);
             assert_eq!(n, out_len);
-            let got = buffer::download::<R, f32>(client, output);
+            let got = buffer::download::<f32>(client, output);
             let want = host_resample_poly(&x, up, down);
             for (m, (g, w)) in got.iter().zip(&want).enumerate() {
-                assert!((*g as f64 - w).abs() < 1e-3, "{} {up}/{down} sample {m}: {g} vs {w}", R::name(client));
+                assert!((*g as f64 - w).abs() < 1e-3, "{} {up}/{down} sample {m}: {g} vs {w}", client.name());
             }
         }
     }

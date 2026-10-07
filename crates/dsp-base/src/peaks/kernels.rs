@@ -22,7 +22,7 @@ fn first_candidate_sample(scan_start: u32, b: u32, lanes: u32, block: u32) -> u3
 
 /// Whether local sample `t` of the row starting at `row` is a candidate (`1 ≤ t < samples − 1`).
 #[cube]
-fn is_candidate<F: Float>(trace: &Array<F>, row: u32, t: u32, height: F, polarity: u32) -> bool {
+fn is_candidate<F: Float>(trace: &[F], row: u32, t: u32, height: F, polarity: u32) -> bool {
     let v = trace[(row + t) as usize];
     let prev = trace[(row + t - 1u32) as usize];
     let next = trace[(row + t + 1u32) as usize];
@@ -36,9 +36,9 @@ fn is_candidate<F: Float>(trace: &Array<F>, row: u32, t: u32, height: F, polarit
 /// [`channel_position`]) into `block_counts[ch · num_blocks + b]`.
 #[cube(launch)]
 pub fn count_peak_candidates_kernel<F: Float>(
-    trace: &Array<F>,
-    heights: &Array<F>,
-    block_counts: &mut Array<u32>,
+    trace: &[F],
+    heights: &[F],
+    block_counts: &mut [u32],
     num_channels: u32,
     num_samples: u32,
     scan_start: u32,
@@ -55,7 +55,7 @@ pub fn count_peak_candidates_kernel<F: Float>(
         let row = ch * num_samples;
         let mut n = 0u32;
         let mut t = first_candidate_sample(scan_start, b, lanes, block);
-        let mut i: u32 = 0u32;
+        let mut i = 0u32;
         while i < block && t < scan_end {
             if is_candidate::<F>(trace, row, t, height, polarity) {
                 n += 1u32;
@@ -71,8 +71,8 @@ pub fn count_peak_candidates_kernel<F: Float>(
 /// the channel's total to `channel_totals`.
 #[cube(launch)]
 pub fn scan_candidate_counts_kernel(
-    block_counts: &mut Array<u32>,
-    channel_totals: &mut Array<u32>,
+    block_counts: &mut [u32],
+    channel_totals: &mut [u32],
     num_channels: u32,
     num_blocks: u32,
 ) {
@@ -96,13 +96,13 @@ pub fn scan_candidate_counts_kernel(
 /// contiguous (`channel_bases` has `num_channels + 1` entries).
 #[cube(launch)]
 pub fn write_peak_candidates_kernel<F: Float>(
-    trace: &Array<F>,
-    heights: &Array<F>,
-    block_offsets: &Array<u32>,
-    channel_bases: &Array<u32>,
-    out_indices: &mut Array<u32>,
-    out_values: &mut Array<F>,
-    out_rows: &mut Array<u32>,
+    trace: &[F],
+    heights: &[F],
+    block_offsets: &[u32],
+    channel_bases: &[u32],
+    out_indices: &mut [u32],
+    out_values: &mut [F],
+    out_rows: &mut [u32],
     num_channels: u32,
     num_samples: u32,
     scan_start: u32,
@@ -127,7 +127,7 @@ pub fn write_peak_candidates_kernel<F: Float>(
             let row = ch * num_samples;
             let mut slot = base + offset;
             let mut t = first_candidate_sample(scan_start, b, lanes, block);
-            let mut i: u32 = 0u32;
+            let mut i = 0u32;
             while i < block && t < scan_end {
                 if is_candidate::<F>(trace, row, t, height, polarity) {
                     out_indices[slot as usize] = t;

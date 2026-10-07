@@ -59,9 +59,9 @@ impl Pipeline {
     /// One-off: every call designs and uploads the filters and allocates the buffers again. For more
     /// than one chunk, create a [`PipelineWorkspace`] once and call
     /// [`PipelineWorkspace::process_handle`]; it keeps designs, weights and buffers on its device.
-    pub fn execute<R: Runtime, F: DspFloat>(
+    pub fn execute<F: DspFloat>(
         &self,
-        client: &ComputeClient<R>,
+        client: &Client,
         input_handle: &cubecl::server::Handle,
         channels: usize,
         samples: usize,
@@ -70,7 +70,7 @@ impl Pipeline {
         if self.stages.is_empty() {
             return Ok(input_handle.clone());
         }
-        let mut workspace = PipelineWorkspace::<R, F>::new(
+        let mut workspace = PipelineWorkspace::<F>::new(
             client.clone(),
             self.clone(),
             channels,
@@ -86,7 +86,7 @@ mod tests {
     use super::*;
     use crate::core::buffer;
 
-    fn chained<R: Runtime>(client: &ComputeClient<R>) {
+    fn chained(client: &Client) {
         let channels = 32;
         let samples = 500;
         let total = channels * samples;
@@ -102,12 +102,12 @@ mod tests {
 
         assert_eq!(pipeline.len(), 3);
 
-        let out_handle = pipeline.execute::<R, f32>(client, &in_handle, channels, samples, 30000.0).unwrap();
-        let out = buffer::download::<R, f32>(client, out_handle);
+        let out_handle = pipeline.execute::<f32>(client, &in_handle, channels, samples, 30000.0).unwrap();
+        let out = buffer::download::<f32>(client, out_handle);
 
         assert_eq!(out.len(), total);
         // A constant input is removed by CAR (every channel equals the average)
-        assert!(out.iter().all(|v| v.abs() < 1e-3), "{}", R::name(client));
+        assert!(out.iter().all(|v| v.abs() < 1e-3), "{}", client.name());
     }
     runtime_test!(test_pipeline_chained, chained);
 

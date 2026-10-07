@@ -61,8 +61,8 @@ pub fn gaussian_smooth_1d(signal: &[f32], sigma_samples: f32) -> Vec<f32> {
 }
 
 /// Multi-channel zero-phase Gaussian smoothing on the device via [`execute_fir_centered`].
-pub fn execute_gaussian_smooth<R: Runtime, F: DspFloat>(
-    client: &ComputeClient<R>,
+pub fn execute_gaussian_smooth<F: DspFloat>(
+    client: &Client,
     input: &cubecl::server::Handle,
     output: &cubecl::server::Handle,
     channels: usize,
@@ -72,14 +72,14 @@ pub fn execute_gaussian_smooth<R: Runtime, F: DspFloat>(
 ) {
     let (taps, radius) = gaussian_kernel_1d(sigma_samples, GAUSSIAN_TRUNCATE);
     let taps_handle = buffer::upload(client, &cast_f32::<F>(&taps));
-    execute_fir_centered::<R, F>(client, input, output, &taps_handle, channels, samples, radius, edge);
+    execute_fir_centered::<F>(client, input, output, &taps_handle, channels, samples, radius, edge);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn device_matches_host<R: Runtime>(client: &ComputeClient<R>) {
+    fn device_matches_host(client: &Client) {
         let channels = 2;
         let samples = 64;
         let mut data = vec![0.0f32; channels * samples];
@@ -88,14 +88,14 @@ mod tests {
         data[1] = 7.0; // near the edge: exercises the reflected border
 
         let input = buffer::upload(client, &data);
-        let output = buffer::empty::<R, f32>(client, data.len());
-        execute_gaussian_smooth::<R, f32>(client, &input, &output, channels, samples, 2.0, GAUSSIAN_DEFAULT_EDGE);
-        let dev = buffer::download::<R, f32>(client, output);
+        let output = buffer::empty::<f32>(client, data.len());
+        execute_gaussian_smooth::<f32>(client, &input, &output, channels, samples, 2.0, GAUSSIAN_DEFAULT_EDGE);
+        let dev = buffer::download::<f32>(client, output);
 
         for c in 0..channels {
             let host = gaussian_smooth_1d(&data[c * samples..(c + 1) * samples], 2.0);
             for i in 0..samples {
-                assert!((dev[c * samples + i] - host[i]).abs() < 1e-5, "{} ch {c} sample {i}", R::name(client));
+                assert!((dev[c * samples + i] - host[i]).abs() < 1e-5, "{} ch {c} sample {i}", client.name());
             }
         }
         // Peak stays centered at index 32

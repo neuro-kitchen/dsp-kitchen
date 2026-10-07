@@ -39,30 +39,30 @@ struct Check;
 impl ComputeTask for Check {
     type Output = ();
 
-    fn run<R: Runtime>(self, client: ComputeClient<R>) {
-        let name = R::name(&client).to_string();
+    fn run(self, client: Client) {
+        let name = client.name().to_string();
         let x = signal();
         let n = x.len();
         let input = client.create_from_slice(f32::as_bytes(&x));
         let output = client.empty(n * 4);
         let read = |h: &cubecl::server::Handle| f32::from_bytes(&client.read_one_unchecked(h.clone())).to_vec();
 
-        execute_scaling::<R, f32>(&client, &input, &output, n, 0.5, -3.0);
+        execute_scaling::<f32>(&client, &input, &output, n, 0.5, -3.0);
         let expected: Vec<f32> = x.iter().map(|v| v * 0.5 - 3.0).collect();
         assert!(max_err(&read(&output), &expected) < 1e-4, "{name}: scaling");
 
-        execute_clamp::<R, f32>(&client, &input, &output, n, -20.0, 30.0);
+        execute_clamp::<f32>(&client, &input, &output, n, -20.0, 30.0);
         let expected: Vec<f32> = x.iter().map(|v| v.clamp(-20.0, 30.0)).collect();
         assert!(max_err(&read(&output), &expected) == 0.0, "{name}: clamp");
 
-        execute_direct_car::<R, f32>(&client, &input, &output, CHANNELS, SAMPLES);
+        execute_direct_car::<f32>(&client, &input, &output, CHANNELS, SAMPLES);
         let means: Vec<f32> = (0..SAMPLES)
             .map(|t| (0..CHANNELS).map(|c| x[c * SAMPLES + t]).sum::<f32>() / CHANNELS as f32)
             .collect();
         let expected: Vec<f32> = x.iter().enumerate().map(|(i, v)| v - means[i % SAMPLES]).collect();
         assert!(max_err(&read(&output), &expected) < 1e-3, "{name}: CAR");
 
-        execute_median_9p::<R, f32>(&client, &input, &output, CHANNELS, SAMPLES);
+        execute_median_9p::<f32>(&client, &input, &output, CHANNELS, SAMPLES);
         let got = read(&output);
         for c in [0, CHANNELS / 2, CHANNELS - 1] {
             let row = &x[c * SAMPLES..(c + 1) * SAMPLES];
@@ -75,7 +75,7 @@ impl ComputeTask for Check {
             }
         }
 
-        execute_teager_kaiser::<R, f32>(&client, &input, &output, CHANNELS, SAMPLES, TEAGER_KAISER_DEFAULT_EDGE);
+        execute_teager_kaiser::<f32>(&client, &input, &output, CHANNELS, SAMPLES, TEAGER_KAISER_DEFAULT_EDGE);
         let got = read(&output);
         for c in [0, CHANNELS - 1] {
             let row = &x[c * SAMPLES..(c + 1) * SAMPLES];
@@ -90,7 +90,7 @@ impl ComputeTask for Check {
 
         let taps = [0.25f32, 0.5, 0.25];
         let taps_h = client.create_from_slice(f32::as_bytes(&taps));
-        execute_fir::<R, f32>(&client, &input, &output, &taps_h, CHANNELS, SAMPLES, taps.len(), FIR_DEFAULT_EDGE);
+        execute_fir::<f32>(&client, &input, &output, &taps_h, CHANNELS, SAMPLES, taps.len(), FIR_DEFAULT_EDGE);
         let got = read(&output);
         for c in [0, CHANNELS - 1] {
             let row = &x[c * SAMPLES..(c + 1) * SAMPLES];
@@ -104,7 +104,7 @@ impl ComputeTask for Check {
         let big = 20_000_000usize;
         let ones = client.create_from_slice(f32::as_bytes(&vec![1.0f32; big]));
         let big_out = client.empty(big * 4);
-        execute_scaling::<R, f32>(&client, &ones, &big_out, big, 2.0, 1.0);
+        execute_scaling::<f32>(&client, &ones, &big_out, big, 2.0, 1.0);
         let got = read(&big_out);
         assert!(got.iter().all(|v| *v == 3.0), "{name}: large elementwise launch left elements unwritten");
 
@@ -140,14 +140,14 @@ impl ComputeTask for Check {
             // int8 / int16 (21 / 42 bytes) take the padded upload, 32-bit formats the direct one
             let words = upload_stored(&client, &bytes);
             let out = client.empty(ch * n * 4);
-            execute_unpack_stored::<R, f32>(&client, &words, format, &gains_h, &offsets_h, &out, ch, n).unwrap();
+            execute_unpack_stored::<f32>(&client, &words, format, &gains_h, &offsets_h, &out, ch, n).unwrap();
             let got = read(&out);
             for (i, v) in values.iter().enumerate() {
                 let want = (*v as f32) * gains[i / n] + offsets[i / n];
                 assert_eq!(got[i], want, "{name}: {format:?} value {i} ({v})");
             }
         }
-        assert!(execute_unpack_stored::<R, f32>(&client, &input, SampleFormat::F64, &gains_h, &offsets_h, &output, ch, n).is_err());
+        assert!(execute_unpack_stored::<f32>(&client, &input, SampleFormat::F64, &gains_h, &offsets_h, &output, ch, n).is_err());
 
         // Pipeline with filter and stencil stages.
         let pipeline = Pipeline::with_stages(vec![
@@ -158,7 +158,7 @@ impl ComputeTask for Check {
             PipelineStage::teager_kaiser(),
             PipelineStage::gaussian_smooth(2.0),
         ]);
-        let out = pipeline.execute::<R, f32>(&client, &input, CHANNELS, SAMPLES, 30_000.0).unwrap();
+        let out = pipeline.execute::<f32>(&client, &input, CHANNELS, SAMPLES, 30_000.0).unwrap();
         assert!(read(&out).iter().all(|v| v.is_finite()), "{name}: pipeline");
     }
 }

@@ -3,8 +3,8 @@
 //! extraction → per-channel templates (`TemplateAccumulator`). No clustering: templates and
 //! spike lists are per primary channel.
 
-use cubecl::prelude::ComputeClient;
-use cubecl::{CubeElement, Runtime};
+use cubecl::prelude::Client;
+use cubecl::CubeElement;
 use dsp_core::compute::{ComputeTarget, ComputeTask};
 
 use dsp_base::math::execute_channel_noise_std;
@@ -119,7 +119,7 @@ impl StreamingDetector {
         }
         impl ComputeTask for Task<'_> {
             type Output = DspResult<StreamingDetectionResult>;
-            fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
+            fn run(self, client: Client) -> Self::Output {
                 self.runner.run_on(client, self.source, self.pipeline, self.probe)
             }
         }
@@ -131,9 +131,9 @@ impl StreamingDetector {
     /// Streams `source` out-of-core in halo-padded batches using double-buffered I/O prefetching
     /// and a persistent `PipelineWorkspace` on `client`'s runtime, returning global spikes and
     /// per-channel templates.
-    pub fn run_on<R: Runtime>(
+    pub fn run_on(
         &self,
-        client: ComputeClient<R>,
+        client: Client,
         source: &dyn RecordingSource,
         pipeline: &Pipeline,
         probe: &SensorLayout,
@@ -158,7 +158,7 @@ impl StreamingDetector {
             right_halo,
         );
 
-        let mut workspace = PipelineWorkspace::<R>::new(
+        let mut workspace = PipelineWorkspace::new(
             client,
             pipeline.clone(),
             channels,
@@ -223,7 +223,7 @@ impl StreamingDetector {
             let det_end = win.valid_global.end.min(detect_range.end);
             if det_start < det_end {
                 let local = |g: u64| (g - read_start) as usize;
-                let crossings = execute_detect_spikes_in_vram::<R>(
+                let crossings = execute_detect_spikes_in_vram(
                     &client,
                     &filt_handle,
                     &heights_handle,
@@ -254,7 +254,7 @@ impl StreamingDetector {
                 .collect();
 
             // 4. Extract Blackman-Harris sinc-realigned snippets and reduce moments directly in VRAM
-            if let Some(extracted) = execute_extract_sinc_in_vram::<R, f32>(
+            if let Some(extracted) = execute_extract_sinc_in_vram::<f32>(
                 &client,
                 &filt_handle,
                 &knn_handle,
@@ -267,7 +267,7 @@ impl StreamingDetector {
                 self.config.apply_sinc_shift,
             ) {
                 debug_assert_eq!(extracted.dropped, 0, "finalized spikes lie inside the window");
-                let batch_stats = execute_reduce_templates_in_vram::<R>(
+                let batch_stats = execute_reduce_templates_in_vram(
                     &client,
                     &extracted.snippets,
                     &extracted.primaries,
@@ -336,9 +336,9 @@ impl StreamingDetector {
 /// Per-channel noise floor σ (Quiroga MAD) as the median over `config.calibration_chunks` chunks
 /// spread evenly across the recording (total `config.calibration_duration_sec`). Each chunk is
 /// filtered with `halos` of context so its interior is settled. Independent of the batch size.
-pub fn calibrate_noise<R: Runtime>(
+pub fn calibrate_noise(
     source: &dyn RecordingSource,
-    workspace: &mut PipelineWorkspace<R>,
+    workspace: &mut PipelineWorkspace,
     config: &StreamingDetectionConfig,
     halos: (u64, u64),
 ) -> DspResult<Vec<f32>> {
@@ -354,7 +354,7 @@ pub fn calibrate_noise<R: Runtime>(
     WindowLoader::new(source).stream(&windows, |window, raw| {
         // Filtered chunk stays on the device; only one σ per channel is downloaded
         let filt = workspace.process_chunk_in_vram(raw, window.read_len());
-        let sigmas = execute_channel_noise_std::<R, f32>(
+        let sigmas = execute_channel_noise_std::<f32>(
             workspace.client(),
             &filt,
             channels,

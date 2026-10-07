@@ -31,8 +31,8 @@ fn median_by_rank<F: Float>(window: &Array<F>, #[comptime] width: u32) -> F {
     #[unroll]
     for i in 0..width {
         let x = window[i as usize];
-        let mut less: u32 = 0u32;
-        let mut less_equal: u32 = 0u32;
+        let mut less = 0u32;
+        let mut less_equal = 0u32;
         #[unroll]
         for j in 0..width {
             let y = window[j as usize];
@@ -55,8 +55,8 @@ fn median_by_rank<F: Float>(window: &Array<F>, #[comptime] width: u32) -> F {
 /// `signal.medfilt` reads zeros). Width 9 uses [`med9`]; other widths rank the window.
 #[cube(launch)]
 pub fn median_filter_kernel<F: Float>(
-    input: &Array<F>,
-    output: &mut Array<F>,
+    input: &[F],
+    output: &mut [F],
     num_channels: u32,
     num_samples: u32,
     #[comptime] width: u32,

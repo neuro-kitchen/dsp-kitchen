@@ -8,8 +8,8 @@ use crate::core::{DspFloat, EdgeMode};
 pub const TEAGER_KAISER_DEFAULT_EDGE: EdgeMode = EdgeMode::Reflect;
 
 /// Discrete Teager-Kaiser energy operator along time of a `[channels, samples]` buffer.
-pub fn execute_teager_kaiser<R: Runtime, F: DspFloat>(
-    client: &ComputeClient<R>,
+pub fn execute_teager_kaiser<F: DspFloat>(
+    client: &Client,
     input: &cubecl::server::Handle,
     output: &cubecl::server::Handle,
     channels: usize,
@@ -19,12 +19,12 @@ pub fn execute_teager_kaiser<R: Runtime, F: DspFloat>(
     let geom = LaunchGeometry::channels_samples(client, channels, samples);
     let total_elements = channels * samples;
     unsafe {
-        teager_kaiser_kernel::launch::<F, R>(
+        teager_kaiser_kernel::launch::<F>(
             client,
             geom.cube_count,
             geom.cube_dim,
-            ArrayArg::from_raw_parts(input.clone(), total_elements),
-            ArrayArg::from_raw_parts(output.clone(), total_elements),
+            BufferArg::from_raw_parts(input.clone(), total_elements),
+            BufferArg::from_raw_parts(output.clone(), total_elements),
             channels as u32,
             samples as u32,
             edge.id(),

@@ -126,9 +126,9 @@ impl Kilosort4 {
     }
 
     /// Runs Kilosort4 over `source` on `client`'s device runtime.
-    pub fn run<R: cubecl::prelude::Runtime>(
+    pub fn run(
         &self,
-        client: &cubecl::prelude::ComputeClient<R>,
+        client: &cubecl::prelude::Client,
         source: &dyn dsp_core::RecordingSource,
         probe: &dsp_io::neuro::probe::SensorLayout,
     ) -> dsp_core::DspResult<Kilosort4Result> {
@@ -136,9 +136,9 @@ impl Kilosort4 {
     }
 
     /// [`Self::run`], reporting each stage to `progress` ([`runner::STAGE_FIT`] …).
-    pub fn run_with_progress<R: cubecl::prelude::Runtime>(
+    pub fn run_with_progress(
         &self,
-        client: &cubecl::prelude::ComputeClient<R>,
+        client: &cubecl::prelude::Client,
         source: &dyn dsp_core::RecordingSource,
         probe: &dsp_io::neuro::probe::SensorLayout,
         progress: &dyn dsp_core::ProgressSink,

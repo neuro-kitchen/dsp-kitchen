@@ -6,10 +6,10 @@ use dsp_core::compute::{channel_position, sample_position};
 /// One unit per `(output channel, sample)`.
 #[cube(launch)]
 pub fn sparse_rows_multiply_kernel<F: Float>(
-    input: &Array<F>,
-    values: &Array<F>,
-    indices: &Array<u32>,
-    output: &mut Array<F>,
+    input: &[F],
+    values: &[F],
+    indices: &[u32],
+    output: &mut [F],
     num_channels: u32,
     num_samples: u32,
     width: u32,

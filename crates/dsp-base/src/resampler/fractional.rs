@@ -58,7 +58,7 @@ pub fn windowed_sinc_weight<F: Float>(tau: F, half_width: F) -> F {
 /// One unit per shift: writes the `2·radius + 1` normalized weights of `shifts[i]` to
 /// `taps[i · (2·radius + 1) ..]`.
 #[cube(launch)]
-pub fn fractional_delay_taps_kernel<F: Float>(shifts: &Array<F>, taps: &mut Array<F>, count: u32, #[comptime] radius: u32) {
+pub fn fractional_delay_taps_kernel<F: Float>(shifts: &[F], taps: &mut [F], count: u32, #[comptime] radius: u32) {
     let i = ABSOLUTE_POS as u32;
     if i < count {
         let n = 2 * radius + 1;
@@ -81,19 +81,19 @@ pub fn fractional_delay_taps_kernel<F: Float>(shifts: &Array<F>, taps: &mut Arra
 }
 
 /// Device weights (`[count, 2·radius + 1]` of `F`) of the `count` shifts in `shifts`.
-pub fn fractional_delay_taps_device<R: Runtime, F: DspFloat>(client: &ComputeClient<R>, shifts: &Handle, count: usize, radius: usize) -> Handle {
+pub fn fractional_delay_taps_device<F: DspFloat>(client: &Client, shifts: &Handle, count: usize, radius: usize) -> Handle {
     let n = 2 * radius + 1;
-    let taps = buffer::empty::<R, F>(client, count * n);
+    let taps = buffer::empty::<F>(client, count * n);
     if count > 0 {
         let geom = LaunchGeometry::elementwise(client, count);
         // SAFETY: `shifts` holds `count` values of `F`; `taps` was just sized for `count · n`
         unsafe {
-            fractional_delay_taps_kernel::launch::<F, R>(
+            fractional_delay_taps_kernel::launch::<F>(
                 client,
                 geom.cube_count,
                 geom.cube_dim,
-                ArrayArg::from_raw_parts(shifts.clone(), count),
-                ArrayArg::from_raw_parts(taps.clone(), count * n),
+                BufferArg::from_raw_parts(shifts.clone(), count),
+                BufferArg::from_raw_parts(taps.clone(), count * n),
                 count as u32,
                 radius as u32,
             );
@@ -115,13 +115,13 @@ mod tests {
         let mut out = vec![0.0f32; 10];
         fractional_delay(&row, 20, 0.3, 5, &mut out);
         for (i, o) in out.iter().enumerate() {
-            assert!((o - ((20 + i) as f32 + 0.3) * 0.1).sin().abs() < 1e-3);
+            assert!((o - (((20 + i) as f32 + 0.3) * 0.1).sin()).abs() < 1e-3);
         }
     }
 
-    fn device_taps_match_host<R: Runtime>(client: &ComputeClient<R>) {
+    fn device_taps_match_host(client: &Client) {
         let shifts = [-0.5f32, -0.2, 0.0, 0.37];
-        let taps = buffer::download::<R, f32>(client, fractional_delay_taps_device::<R, f32>(client, &buffer::upload(client, &shifts), 4, 5));
+        let taps = buffer::download::<f32>(client, fractional_delay_taps_device::<f32>(client, &buffer::upload(client, &shifts), 4, 5));
         for (i, &s) in shifts.iter().enumerate() {
             for (d, h) in taps[i * 11..(i + 1) * 11].iter().zip(fractional_delay_taps(s, 5)) {
                 assert!((d - h).abs() < 1e-5, "shift {s}: {d} vs {h}");
