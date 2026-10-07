@@ -109,9 +109,9 @@ impl GmmClusterer {
     }
 
     /// Fits GMM for a fixed cluster count `k` (EM on `client`'s device).
-    pub fn fit_k<R: Runtime>(
+    pub fn fit_k(
         &self,
-        client: &ComputeClient<R>,
+        client: &Client,
         features: &[f32],
         num_spikes: usize,
         num_features: usize,
@@ -134,9 +134,9 @@ impl GmmClusterer {
     }
 
     /// Sweeps $K \in [k_{\min}, k_{\max}]$ and returns the model minimizing the Bayesian Information Criterion (BIC).
-    pub fn fit<R: Runtime>(
+    pub fn fit(
         &self,
-        client: &ComputeClient<R>,
+        client: &Client,
         features: &[f32],
         num_spikes: usize,
         num_features: usize,
@@ -170,8 +170,8 @@ impl GmmClusterer {
 }
 
 /// Convenience function to fit a GMM with automatic BIC selection over `k_min..=k_max`.
-pub fn cluster_gmm_bic<R: Runtime>(
-    client: &ComputeClient<R>,
+pub fn cluster_gmm_bic(
+    client: &Client,
     features: &[f32],
     num_spikes: usize,
     num_features: usize,
@@ -182,8 +182,8 @@ pub fn cluster_gmm_bic<R: Runtime>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn fit_gmm_single_k<R: Runtime>(
-    client: &ComputeClient<R>,
+fn fit_gmm_single_k(
+    client: &Client,
     features: &[f32],
     n: usize,
     d: usize,
@@ -257,13 +257,13 @@ fn fit_gmm_single_k<R: Runtime>(
     let features_h = buffer::upload(client, features);
     let mask_h = match feature_mask.filter(|_| masked) {
         Some(m) => buffer::upload(client, m),
-        None => buffer::empty::<R, f32>(client, 1),
+        None => buffer::empty::<f32>(client, 1),
     };
     let mask_len = if masked { n * d } else { 1 };
-    let resp_h = buffer::empty::<R, f32>(client, n * k);
-    let log_lik_h = buffer::empty::<R, f32>(client, n);
-    let mahal_h = buffer::empty::<R, f32>(client, n);
-    let (ll_mean_h, ll_std_h) = (buffer::empty::<R, f32>(client, 1), buffer::empty::<R, f32>(client, 1));
+    let resp_h = buffer::empty::<f32>(client, n * k);
+    let log_lik_h = buffer::empty::<f32>(client, n);
+    let mahal_h = buffer::empty::<f32>(client, n);
+    let (ll_mean_h, ll_std_h) = (buffer::empty::<f32>(client, 1), buffer::empty::<f32>(client, 1));
     let per_spike = LaunchGeometry::elementwise(client, n);
 
     // E-step with the current parameters; returns the mean per-spike log-likelihood
@@ -282,24 +282,24 @@ fn fit_gmm_single_k<R: Runtime>(
         }
         // SAFETY: every array is passed with the length it was created with
         unsafe {
-            gmm_e_step_kernel::launch::<f32, R>(
+            gmm_e_step_kernel::launch::<f32>(
                 client,
                 per_spike.cube_count.clone(),
                 per_spike.cube_dim.clone(),
-                ArrayArg::from_raw_parts(features_h.clone(), n * d),
-                ArrayArg::from_raw_parts(buffer::upload(client, means), k * d),
-                ArrayArg::from_raw_parts(buffer::upload(client, &precisions), k * d * d),
-                ArrayArg::from_raw_parts(buffer::upload(client, &log_norms), k),
-                ArrayArg::from_raw_parts(resp_h.clone(), n * k),
-                ArrayArg::from_raw_parts(log_lik_h.clone(), n),
-                ArrayArg::from_raw_parts(mahal_h.clone(), n),
+                BufferArg::from_raw_parts(features_h.clone(), n * d),
+                BufferArg::from_raw_parts(buffer::upload(client, means), k * d),
+                BufferArg::from_raw_parts(buffer::upload(client, &precisions), k * d * d),
+                BufferArg::from_raw_parts(buffer::upload(client, &log_norms), k),
+                BufferArg::from_raw_parts(resp_h.clone(), n * k),
+                BufferArg::from_raw_parts(log_lik_h.clone(), n),
+                BufferArg::from_raw_parts(mahal_h.clone(), n),
                 n as u32,
                 d as u32,
                 k as u32,
             );
         }
-        reduce::row_mean_std::<R, f32>(client, &log_lik_h, &ll_mean_h, &ll_std_h, 1, n);
-        buffer::download::<R, f32>(client, ll_mean_h.clone())[0] as f64
+        reduce::row_mean_std::<f32>(client, &log_lik_h, &ll_mean_h, &ll_std_h, 1, n);
+        buffer::download::<f32>(client, ll_mean_h.clone())[0] as f64
     };
 
     let mut prev_mean_ll = f64::NEG_INFINITY;
@@ -313,31 +313,31 @@ fn fit_gmm_single_k<R: Runtime>(
         prev_mean_ll = mean_ll;
 
         // M-step: weighted sums on the device, normalization on the host
-        let sums_h = buffer::empty::<R, f32>(client, k * d);
-        let mask_sums_h = buffer::empty::<R, f32>(client, k * d);
-        let resp_sums_h = buffer::empty::<R, f32>(client, k);
+        let sums_h = buffer::empty::<f32>(client, k * d);
+        let mask_sums_h = buffer::empty::<f32>(client, k * d);
+        let resp_sums_h = buffer::empty::<f32>(client, k);
         let per_feature = LaunchGeometry::elementwise(client, k * d);
         // SAFETY: as above
         unsafe {
-            gmm_mean_sums_kernel::launch::<f32, R>(
+            gmm_mean_sums_kernel::launch::<f32>(
                 client,
                 per_feature.cube_count,
                 per_feature.cube_dim,
-                ArrayArg::from_raw_parts(features_h.clone(), n * d),
-                ArrayArg::from_raw_parts(resp_h.clone(), n * k),
-                ArrayArg::from_raw_parts(mask_h.clone(), mask_len),
-                ArrayArg::from_raw_parts(sums_h.clone(), k * d),
-                ArrayArg::from_raw_parts(mask_sums_h.clone(), k * d),
-                ArrayArg::from_raw_parts(resp_sums_h.clone(), k),
+                BufferArg::from_raw_parts(features_h.clone(), n * d),
+                BufferArg::from_raw_parts(resp_h.clone(), n * k),
+                BufferArg::from_raw_parts(mask_h.clone(), mask_len),
+                BufferArg::from_raw_parts(sums_h.clone(), k * d),
+                BufferArg::from_raw_parts(mask_sums_h.clone(), k * d),
+                BufferArg::from_raw_parts(resp_sums_h.clone(), k),
                 n as u32,
                 d as u32,
                 k as u32,
                 u32::from(masked),
             );
         }
-        let sums = buffer::download::<R, f32>(client, sums_h);
-        let mask_sums = buffer::download::<R, f32>(client, mask_sums_h);
-        let nk = buffer::download::<R, f32>(client, resp_sums_h);
+        let sums = buffer::download::<f32>(client, sums_h);
+        let mask_sums = buffer::download::<f32>(client, mask_sums_h);
+        let nk = buffer::download::<f32>(client, resp_sums_h);
         for c in 0..k {
             let nk_safe = nk[c].max(MIN_COMPONENT_MASS);
             weights[c] = (nk[c] / n as f32).clamp(MIN_WEIGHT, 1.0);
@@ -346,25 +346,25 @@ fn fit_gmm_single_k<R: Runtime>(
             }
         }
 
-        let scatter_h = buffer::empty::<R, f32>(client, k * d * d);
+        let scatter_h = buffer::empty::<f32>(client, k * d * d);
         let per_entry = LaunchGeometry::elementwise(client, k * d * d);
         // SAFETY: as above
         unsafe {
-            gmm_scatter_kernel::launch::<f32, R>(
+            gmm_scatter_kernel::launch::<f32>(
                 client,
                 per_entry.cube_count,
                 per_entry.cube_dim,
-                ArrayArg::from_raw_parts(features_h.clone(), n * d),
-                ArrayArg::from_raw_parts(resp_h.clone(), n * k),
-                ArrayArg::from_raw_parts(buffer::upload(client, &means), k * d),
-                ArrayArg::from_raw_parts(scatter_h.clone(), k * d * d),
+                BufferArg::from_raw_parts(features_h.clone(), n * d),
+                BufferArg::from_raw_parts(resp_h.clone(), n * k),
+                BufferArg::from_raw_parts(buffer::upload(client, &means), k * d),
+                BufferArg::from_raw_parts(scatter_h.clone(), k * d * d),
                 n as u32,
                 d as u32,
                 k as u32,
                 u32::from(cov_kind == GmmCovarianceKind::Diagonal),
             );
         }
-        let scatter = buffer::download::<R, f32>(client, scatter_h);
+        let scatter = buffer::download::<f32>(client, scatter_h);
         for c in 0..k {
             let nk_safe = nk[c].max(MIN_COMPONENT_MASS);
             let cov_c = &mut covariances[c * d * d..(c + 1) * d * d];
@@ -389,8 +389,8 @@ fn fit_gmm_single_k<R: Runtime>(
         mean_ll = final_ll;
     }
     let log_likelihood = mean_ll * n as f64;
-    let responsibilities = buffer::download::<R, f32>(client, resp_h.clone());
-    let mahalanobis_sq = buffer::download::<R, f32>(client, mahal_h.clone());
+    let responsibilities = buffer::download::<f32>(client, resp_h.clone());
+    let mahalanobis_sq = buffer::download::<f32>(client, mahal_h.clone());
     let labels: Vec<i32> = (0..n)
         .map(|i| {
             let row = &responsibilities[i * k..(i + 1) * k];
@@ -570,7 +570,7 @@ mod tests {
         struct Task<'a>(&'a [f32], usize, usize);
         impl dsp_core::compute::ComputeTask for Task<'_> {
             type Output = GmmResult;
-            fn run<R: Runtime>(self, client: ComputeClient<R>) -> GmmResult {
+            fn run(self, client: Client) -> GmmResult {
                 cluster_gmm_bic(&client, self.0, self.1, self.2, 1, 6)
             }
         }

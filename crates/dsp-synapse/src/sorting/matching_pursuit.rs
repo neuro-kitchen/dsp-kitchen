@@ -41,8 +41,8 @@ struct MatchingPursuitParams {
 /// them from the device residual; overlapping spikes are resolved by later passes. Only the picks
 /// are downloaded.
 #[allow(clippy::too_many_arguments)]
-pub fn match_spikes_matching_pursuit<R: Runtime>(
-    client: &ComputeClient<R>,
+pub fn match_spikes_matching_pursuit(
+    client: &Client,
     data: &[f32],
     channels: usize,
     samples: usize,
@@ -56,8 +56,8 @@ pub fn match_spikes_matching_pursuit<R: Runtime>(
     matching_pursuit_on(client, data, channels, samples, templates, params)
 }
 
-fn matching_pursuit_on<R: Runtime>(
-    client: &ComputeClient<R>,
+fn matching_pursuit_on(
+    client: &Client,
     data: &[f32],
     channels: usize,
     samples: usize,
@@ -102,9 +102,9 @@ fn matching_pursuit_on<R: Runtime>(
     let channels_h = buffer::upload(client, &row_channels);
     let data_h = buffer::upload(client, &row_data);
     let energies_h = buffer::upload(client, &energies);
-    let unit_h = buffer::empty::<R, u32>(client, valid_starts);
-    let scale_h = buffer::empty::<R, f32>(client, valid_starts);
-    let gain_h = buffer::empty::<R, f32>(client, valid_starts);
+    let unit_h = buffer::empty::<u32>(client, valid_starts);
+    let scale_h = buffer::empty::<f32>(client, valid_starts);
+    let gain_h = buffer::empty::<f32>(client, valid_starts);
     let min_gain_h = buffer::upload(client, &[params.min_explained_energy]);
     let rows_len = row_channels.len();
 
@@ -112,18 +112,18 @@ fn matching_pursuit_on<R: Runtime>(
     for _pass in 0..params.max_passes.max(1) {
         let geom = LaunchGeometry::elementwise(client, valid_starts);
         unsafe {
-            mp_score_kernel::launch::<R>(
+            mp_score_kernel::launch(
                 client,
                 geom.cube_count,
                 geom.cube_dim,
-                ArrayArg::from_raw_parts(residual.clone(), channels * samples),
-                ArrayArg::from_raw_parts(offsets_h.clone(), num_units + 1),
-                ArrayArg::from_raw_parts(channels_h.clone(), rows_len),
-                ArrayArg::from_raw_parts(data_h.clone(), rows_len * t_len),
-                ArrayArg::from_raw_parts(energies_h.clone(), num_units),
-                ArrayArg::from_raw_parts(unit_h.clone(), valid_starts),
-                ArrayArg::from_raw_parts(scale_h.clone(), valid_starts),
-                ArrayArg::from_raw_parts(gain_h.clone(), valid_starts),
+                BufferArg::from_raw_parts(residual.clone(), channels * samples),
+                BufferArg::from_raw_parts(offsets_h.clone(), num_units + 1),
+                BufferArg::from_raw_parts(channels_h.clone(), rows_len),
+                BufferArg::from_raw_parts(data_h.clone(), rows_len * t_len),
+                BufferArg::from_raw_parts(energies_h.clone(), num_units),
+                BufferArg::from_raw_parts(unit_h.clone(), valid_starts),
+                BufferArg::from_raw_parts(scale_h.clone(), valid_starts),
+                BufferArg::from_raw_parts(gain_h.clone(), valid_starts),
                 samples as u32,
                 valid_starts as u32,
                 num_units as u32,
@@ -133,7 +133,7 @@ fn matching_pursuit_on<R: Runtime>(
             );
         }
         // Local maxima of the energy reduction above the floor, found and compacted on the device
-        let candidates = find_peak_candidates::<R, f32>(client, &gain_h, &min_gain_h, 1, valid_starts, 0..valid_starts, Polarity::Positive);
+        let candidates = find_peak_candidates::<f32>(client, &gain_h, &min_gain_h, 1, valid_starts, 0..valid_starts, Polarity::Positive);
         let (starts, gains) = candidates.channel(0);
         if starts.is_empty() {
             break;
@@ -147,31 +147,31 @@ fn matching_pursuit_on<R: Runtime>(
         let picks = pick_starts.len();
 
         let starts_h = buffer::upload(client, &pick_starts);
-        let units_out = buffer::empty::<R, u32>(client, picks);
-        let scales_out = buffer::empty::<R, f32>(client, picks);
-        let prev_out = buffer::empty::<R, f32>(client, picks);
-        let next_out = buffer::empty::<R, f32>(client, picks);
+        let units_out = buffer::empty::<u32>(client, picks);
+        let scales_out = buffer::empty::<f32>(client, picks);
+        let prev_out = buffer::empty::<f32>(client, picks);
+        let next_out = buffer::empty::<f32>(client, picks);
         let per_pick = LaunchGeometry::elementwise(client, picks);
         unsafe {
-            mp_gather_picks_kernel::launch::<R>(
+            mp_gather_picks_kernel::launch(
                 client,
                 per_pick.cube_count,
                 per_pick.cube_dim,
-                ArrayArg::from_raw_parts(unit_h.clone(), valid_starts),
-                ArrayArg::from_raw_parts(scale_h.clone(), valid_starts),
-                ArrayArg::from_raw_parts(gain_h.clone(), valid_starts),
-                ArrayArg::from_raw_parts(starts_h.clone(), picks),
-                ArrayArg::from_raw_parts(units_out.clone(), picks),
-                ArrayArg::from_raw_parts(scales_out.clone(), picks),
-                ArrayArg::from_raw_parts(prev_out.clone(), picks),
-                ArrayArg::from_raw_parts(next_out.clone(), picks),
+                BufferArg::from_raw_parts(unit_h.clone(), valid_starts),
+                BufferArg::from_raw_parts(scale_h.clone(), valid_starts),
+                BufferArg::from_raw_parts(gain_h.clone(), valid_starts),
+                BufferArg::from_raw_parts(starts_h.clone(), picks),
+                BufferArg::from_raw_parts(units_out.clone(), picks),
+                BufferArg::from_raw_parts(scales_out.clone(), picks),
+                BufferArg::from_raw_parts(prev_out.clone(), picks),
+                BufferArg::from_raw_parts(next_out.clone(), picks),
                 picks as u32,
             );
         }
-        let pick_units = buffer::download::<R, u32>(client, units_out);
-        let pick_scales = buffer::download::<R, f32>(client, scales_out);
-        let gain_prev = buffer::download::<R, f32>(client, prev_out);
-        let gain_next = buffer::download::<R, f32>(client, next_out);
+        let pick_units = buffer::download::<u32>(client, units_out);
+        let pick_scales = buffer::download::<f32>(client, scales_out);
+        let gain_prev = buffer::download::<f32>(client, prev_out);
+        let gain_next = buffer::download::<f32>(client, next_out);
         for (n, &i) in kept.iter().enumerate() {
             let s = starts[i] as usize;
             let g = gains[i];
@@ -189,17 +189,17 @@ fn matching_pursuit_on<R: Runtime>(
 
         let geom = LaunchGeometry::elementwise(client, picks * max_rows * t_len);
         unsafe {
-            mp_subtract_kernel::launch::<R>(
+            mp_subtract_kernel::launch(
                 client,
                 geom.cube_count,
                 geom.cube_dim,
-                ArrayArg::from_raw_parts(residual.clone(), channels * samples),
-                ArrayArg::from_raw_parts(offsets_h.clone(), num_units + 1),
-                ArrayArg::from_raw_parts(channels_h.clone(), rows_len),
-                ArrayArg::from_raw_parts(data_h.clone(), rows_len * t_len),
-                ArrayArg::from_raw_parts(buffer::upload(client, &pick_units), picks),
-                ArrayArg::from_raw_parts(starts_h, picks),
-                ArrayArg::from_raw_parts(buffer::upload(client, &pick_scales), picks),
+                BufferArg::from_raw_parts(residual.clone(), channels * samples),
+                BufferArg::from_raw_parts(offsets_h.clone(), num_units + 1),
+                BufferArg::from_raw_parts(channels_h.clone(), rows_len),
+                BufferArg::from_raw_parts(data_h.clone(), rows_len * t_len),
+                BufferArg::from_raw_parts(buffer::upload(client, &pick_units), picks),
+                BufferArg::from_raw_parts(starts_h, picks),
+                BufferArg::from_raw_parts(buffer::upload(client, &pick_scales), picks),
                 samples as u32,
                 picks as u32,
                 max_rows as u32,
@@ -244,9 +244,9 @@ impl Default for MatchingPursuitMatcher {
 }
 
 impl SpikeMatcher for MatchingPursuitMatcher {
-    fn match_spikes<R: Runtime>(
+    fn match_spikes(
         &self,
-        client: &ComputeClient<R>,
+        client: &Client,
         data: &[f32],
         channels: usize,
         samples: usize,
@@ -276,7 +276,7 @@ mod tests {
         struct Task<'a>(&'a [f32], usize, usize, &'a [WaveformTemplate], f32, f32);
         impl ComputeTask for Task<'_> {
             type Output = Vec<MatchedSpike>;
-            fn run<R: Runtime>(self, client: ComputeClient<R>) -> Vec<MatchedSpike> {
+            fn run(self, client: Client) -> Vec<MatchedSpike> {
                 let min_scale = 2.0 - self.4;
                 match_spikes_matching_pursuit(&client, self.0, self.1, self.2, self.3, min_scale, self.4, self.5, 4)
             }

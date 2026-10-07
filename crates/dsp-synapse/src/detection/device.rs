@@ -20,8 +20,8 @@ use super::threshold::{SpikeEvent, SpikePolarity};
 /// consecutive windows give exactly the whole-recording result when each buffer holds that much
 /// context around its `emit` range.
 #[allow(clippy::too_many_arguments)]
-pub fn execute_detect_spikes_in_vram<R: Runtime>(
-    client: &ComputeClient<R>,
+pub fn execute_detect_spikes_in_vram(
+    client: &Client,
     trace: &Handle,
     heights: &Handle,
     channels: usize,
@@ -36,7 +36,7 @@ pub fn execute_detect_spikes_in_vram<R: Runtime>(
     }
     let d = spacing.distance();
     let scan = emit.start.saturating_sub(d)..(emit.end + d).min(samples);
-    let candidates = find_peak_candidates::<R, f32>(client, trace, heights, channels, samples, scan, polarity.into());
+    let candidates = find_peak_candidates::<f32>(client, trace, heights, channels, samples, scan, polarity.into());
 
     let mut events = Vec::new();
     for ch in 0..channels {

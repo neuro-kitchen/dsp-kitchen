@@ -2,6 +2,7 @@
 //! Shapes: features `[n, d]`, means `[k, d]`, precisions `[k, d, d]`, responsibilities `[n, k]`.
 
 use cubecl::prelude::*;
+use dsp_core::compute::negative_infinity;
 
 /// One unit per spike `i`: `lp_c = log_norms[c] − ½ (x − μ_c)ᵀ P_c (x − μ_c)` for every component,
 /// responsibilities `exp(lp_c − logsumexp lp)` into `resp[i, ·]`, `log_lik[i] = logsumexp lp`, and
@@ -9,13 +10,13 @@ use cubecl::prelude::*;
 /// `log_norms[c] = ln π_c − ½ (d ln 2π + ln det Σ_c)`.
 #[cube(launch)]
 pub fn gmm_e_step_kernel<F: Float>(
-    features: &Array<F>,
-    means: &Array<F>,
-    precisions: &Array<F>,
-    log_norms: &Array<F>,
-    resp: &mut Array<F>,
-    log_lik: &mut Array<F>,
-    mahalanobis_sq: &mut Array<F>,
+    features: &[F],
+    means: &[F],
+    precisions: &[F],
+    log_norms: &[F],
+    resp: &mut [F],
+    log_lik: &mut [F],
+    mahalanobis_sq: &mut [F],
     n: u32,
     d: u32,
     k: u32,
@@ -23,18 +24,18 @@ pub fn gmm_e_step_kernel<F: Float>(
     let i = ABSOLUTE_POS as u32;
     if i < n {
         let x = i * d;
-        let mut best = F::new(f32::NEG_INFINITY);
+        let mut best = negative_infinity::<F>();
         let mut best_q = F::new(0.0f32);
-        let mut c: u32 = 0u32;
+        let mut c = 0u32;
         while c < k {
             let m = c * d;
             let p = c * d * d;
             let mut q = F::new(0.0f32);
-            let mut r: u32 = 0u32;
+            let mut r = 0u32;
             while r < d {
                 let dr = features[(x + r) as usize] - means[(m + r) as usize];
                 let mut inner = F::new(0.0f32);
-                let mut col: u32 = 0u32;
+                let mut col = 0u32;
                 while col < d {
                     let dc = features[(x + col) as usize] - means[(m + col) as usize];
                     inner += precisions[(p + r * d + col) as usize] * dc;
@@ -53,14 +54,14 @@ pub fn gmm_e_step_kernel<F: Float>(
             c += 1u32;
         }
         let mut sum = F::new(0.0f32);
-        let mut c: u32 = 0u32;
+        let mut c = 0u32;
         while c < k {
             let e = F::exp(resp[(i * k + c) as usize] - best);
             resp[(i * k + c) as usize] = e;
             sum += e;
             c += 1u32;
         }
-        let mut c: u32 = 0u32;
+        let mut c = 0u32;
         while c < k {
             let v = resp[(i * k + c) as usize];
             resp[(i * k + c) as usize] = v / sum;
@@ -76,12 +77,12 @@ pub fn gmm_e_step_kernel<F: Float>(
 /// and, from the `f = 0` unit, `Σᵢ rᵢc` into `resp_sum[c]`.
 #[cube(launch)]
 pub fn gmm_mean_sums_kernel<F: Float>(
-    features: &Array<F>,
-    resp: &Array<F>,
-    mask: &Array<F>,
-    weighted_sum: &mut Array<F>,
-    mask_sum: &mut Array<F>,
-    resp_sum: &mut Array<F>,
+    features: &[F],
+    resp: &[F],
+    mask: &[F],
+    weighted_sum: &mut [F],
+    mask_sum: &mut [F],
+    resp_sum: &mut [F],
     n: u32,
     d: u32,
     k: u32,
@@ -94,7 +95,7 @@ pub fn gmm_mean_sums_kernel<F: Float>(
         let mut s = F::new(0.0f32);
         let mut sm = F::new(0.0f32);
         let mut sr = F::new(0.0f32);
-        let mut i: u32 = 0u32;
+        let mut i = 0u32;
         while i < n {
             let r = resp[(i * k + c) as usize];
             let mut m = F::new(1.0f32);
@@ -118,10 +119,10 @@ pub fn gmm_mean_sums_kernel<F: Float>(
 /// `scatter[c, r, col]` (off-diagonal entries 0 when `diagonal`).
 #[cube(launch)]
 pub fn gmm_scatter_kernel<F: Float>(
-    features: &Array<F>,
-    resp: &Array<F>,
-    means: &Array<F>,
-    scatter: &mut Array<F>,
+    features: &[F],
+    resp: &[F],
+    means: &[F],
+    scatter: &mut [F],
     n: u32,
     d: u32,
     k: u32,
@@ -136,7 +137,7 @@ pub fn gmm_scatter_kernel<F: Float>(
         let mut s = F::new(0.0f32);
         if diagonal == 0u32 || r == col {
             let (mr, mc) = (means[(c * d + r) as usize], means[(c * d + col) as usize]);
-            let mut i: u32 = 0u32;
+            let mut i = 0u32;
             while i < n {
                 let w = resp[(i * k + c) as usize];
                 s += w * (features[(i * d + r) as usize] - mr) * (features[(i * d + col) as usize] - mc);

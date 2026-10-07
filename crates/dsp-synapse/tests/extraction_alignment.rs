@@ -2,7 +2,7 @@
 //! with full sinc taps and safe handling of spikes at the buffer edges.
 
 use cubecl::prelude::*;
-use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
+use cubecl::device::WgpuDevice;
 use dsp_synapse::detection::DeduplicatedSpike;
 use dsp_synapse::extraction::{
     extract_snippet_batch_multichannel, extract_snippets_multichannel, snippet_fits,
@@ -83,10 +83,10 @@ fn cpu_extractors_put_trough_on_centre() {
 }
 
 fn gpu_extract(trace: &[f32], spikes: &[DeduplicatedSpike]) -> Option<(Vec<f32>, Vec<usize>, usize)> {
-    let client = WgpuRuntime::client(&WgpuDevice::default());
+    let client = cubecl::Device::Wgpu(WgpuDevice::default()).client();
     let trace_h = client.create_from_slice(f32::as_bytes(trace));
     let knn_h = client.create_from_slice(u32::as_bytes(&precompute_knn_table(&tetrode(), CHANNELS, K)));
-    let out = execute_extract_sinc_in_vram::<WgpuRuntime, f32>(
+    let out = execute_extract_sinc_in_vram::<f32>(
         &client, &trace_h, &knn_h, CHANNELS, SAMPLES, spikes, K, PRE, POST, true,
     )?;
     let data = f32::from_bytes(&client.read_one_unchecked(out.snippets.clone())).to_vec();

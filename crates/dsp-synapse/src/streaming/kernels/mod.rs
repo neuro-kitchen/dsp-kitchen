@@ -7,8 +7,8 @@ pub use template_reduce::{
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
-    use cubecl::{CubeElement, Runtime};
+    use cubecl::device::WgpuDevice;
+    use cubecl::CubeElement;
     use dsp_io::neuro::probe::{precompute_knn_table, Position3D, SensorLayout, SensorSite};
     use crate::detection::{
         SpikePolarity, SpikeSpacing, deduplicate_spikes_spatial, detect_spikes_with_sigma,
@@ -107,12 +107,12 @@ mod tests {
         }
 
         let device = WgpuDevice::default();
-        let client = WgpuRuntime::client(&device);
+        let client = cubecl::Device::Wgpu(device).client();
         let trace_handle = client.create_from_slice(f32::as_bytes(&trace));
         let heights_handle = client.create_from_slice(f32::as_bytes(&detection_heights(&sigmas, threshold_factor)));
         let knn_handle = client.create_from_slice(u32::as_bytes(&knn_table));
 
-        let gpu_spikes = execute_detect_spikes_in_vram::<WgpuRuntime>(
+        let gpu_spikes = execute_detect_spikes_in_vram(
             &client,
             &trace_handle,
             &heights_handle,
@@ -126,7 +126,7 @@ mod tests {
         assert_eq!(gpu_spikes, cpu_spikes);
 
         let gpu_dedup = deduplicate_spikes_spatial(&gpu_spikes, &probe, 150.0, refrac as u64);
-        let extracted = execute_extract_sinc_in_vram::<WgpuRuntime, f32>(
+        let extracted = execute_extract_sinc_in_vram::<f32>(
             &client,
             &trace_handle,
             &knn_handle,
@@ -141,7 +141,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(extracted.dropped, 0);
-        let batch_stats = execute_reduce_templates_in_vram::<WgpuRuntime>(
+        let batch_stats = execute_reduce_templates_in_vram(
             &client,
             &extracted.snippets,
             &extracted.primaries,
@@ -196,11 +196,11 @@ mod tests {
             }
             trace[ch * samples + 1_003] = -90.0;
         }
-        let client = WgpuRuntime::client(&WgpuDevice::default());
+        let client = cubecl::Device::Wgpu(WgpuDevice::default()).client();
         let trace_h = client.create_from_slice(f32::as_bytes(&trace));
         let heights_h = client.create_from_slice(f32::as_bytes(&detection_heights(&[5.0f32; 3], 5.0)));
         let detect = |start: usize, end: usize| {
-            execute_detect_spikes_in_vram::<WgpuRuntime>(
+            execute_detect_spikes_in_vram(
                 &client, &trace_h, &heights_h, channels, samples, start..end, 0, SpikePolarity::Negative, SpikeSpacing::new(refrac),
             )
         };
@@ -240,9 +240,9 @@ mod tests {
             .enumerate()
             .flat_map(|(i, _)| (0..len).map(move |t| 10_000.0 + (i as f32) + t as f32 * 0.5))
             .collect();
-        let client = WgpuRuntime::client(&WgpuDevice::default());
+        let client = cubecl::Device::Wgpu(WgpuDevice::default()).client();
         let snip_h = client.create_from_slice(f32::as_bytes(&snippets));
-        let stats = execute_reduce_templates_in_vram::<WgpuRuntime>(
+        let stats = execute_reduce_templates_in_vram(
             &client, &snip_h, &primaries, channels, k, len,
         );
         assert_eq!(stats.counts, vec![2, 3]);

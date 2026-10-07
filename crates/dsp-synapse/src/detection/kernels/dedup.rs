@@ -6,11 +6,11 @@ pub const NO_SLOT: u32 = u32::MAX;
 /// Slot of `channel` in channel `ch`'s neighbour row (`nbr_offsets[ch]..nbr_offsets[ch + 1]` of
 /// `nbr_channels`), or [`NO_SLOT`] when it is not within the radius.
 #[cube]
-fn neighbour_slot(nbr_offsets: &Array<u32>, nbr_channels: &Array<u32>, ch: u32, channel: u32) -> u32 {
+fn neighbour_slot(nbr_offsets: &[u32], nbr_channels: &[u32], ch: u32, channel: u32) -> u32 {
     let start: u32 = nbr_offsets[ch as usize];
     let end: u32 = nbr_offsets[(ch + 1u32) as usize];
-    let mut slot: u32 = NO_SLOT.runtime();
-    let mut k: u32 = start;
+    let mut slot = NO_SLOT.runtime();
+    let mut k = start;
     while k < end {
         if nbr_channels[k as usize] == channel {
             slot = k - start;
@@ -30,13 +30,13 @@ fn neighbour_slot(nbr_offsets: &Array<u32>, nbr_channels: &Array<u32>, ch: u32, 
 /// Dispatched via [`dsp_core::compute::LaunchGeometry::elementwise`].
 #[cube(launch)]
 pub fn spatial_dedup_survival_kernel(
-    sample_indices: &Array<u32>,
-    channel_ids: &Array<u32>,
-    peak_magnitudes: &Array<f32>,
-    nbr_offsets: &Array<u32>,
-    nbr_channels: &Array<u32>,
-    survives: &mut Array<u32>,
-    participating: &mut Array<u32>,
+    sample_indices: &[u32],
+    channel_ids: &[u32],
+    peak_magnitudes: &[f32],
+    nbr_offsets: &[u32],
+    nbr_channels: &[u32],
+    survives: &mut [u32],
+    participating: &mut [u32],
     num_spikes: u32,
     mask_words: u32,
     window_samples: u32,

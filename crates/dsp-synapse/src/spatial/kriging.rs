@@ -263,9 +263,9 @@ impl TraceKriging {
     /// values, distinct buffers). Only the weights of the chunk's drift steps are uploaded (ELLPACK
     /// rows, one set per step); all runs are applied in one launch.
     #[allow(clippy::too_many_arguments)]
-    pub fn correct_in_vram<R: cubecl::Runtime, F: dsp_base::core::DspFloat>(
+    pub fn correct_in_vram<F: dsp_base::core::DspFloat>(
         &mut self,
-        client: &cubecl::prelude::ComputeClient<R>,
+        client: &cubecl::prelude::Client,
         input: &cubecl::server::Handle,
         output: &cubecl::server::Handle,
         channels: usize,
@@ -318,16 +318,16 @@ impl TraceKriging {
         let geom = LaunchGeometry::channels_samples(client, channels, samples);
         // SAFETY: every array is passed with the length it was created with
         unsafe {
-            kriging_runs_kernel::launch::<F, R>(
+            kriging_runs_kernel::launch::<F>(
                 client,
                 geom.cube_count,
                 geom.cube_dim,
-                ArrayArg::from_raw_parts(input.clone(), channels * samples),
-                ArrayArg::from_raw_parts(buffer::upload(client, &values_f), values.len()),
-                ArrayArg::from_raw_parts(buffer::upload(client, &indices), indices.len()),
-                ArrayArg::from_raw_parts(buffer::upload(client, &run_starts), run_starts.len()),
-                ArrayArg::from_raw_parts(buffer::upload(client, &run_slots), run_slots.len()),
-                ArrayArg::from_raw_parts(output.clone(), channels * samples),
+                BufferArg::from_raw_parts(input.clone(), channels * samples),
+                BufferArg::from_raw_parts(buffer::upload(client, &values_f), values.len()),
+                BufferArg::from_raw_parts(buffer::upload(client, &indices), indices.len()),
+                BufferArg::from_raw_parts(buffer::upload(client, &run_starts), run_starts.len()),
+                BufferArg::from_raw_parts(buffer::upload(client, &run_slots), run_slots.len()),
+                BufferArg::from_raw_parts(output.clone(), channels * samples),
                 channels as u32,
                 samples as u32,
                 width as u32,
@@ -438,11 +438,11 @@ mod tests {
         struct Task<'a>(&'a [f32], &'a SensorLayout, &'a DriftEstimate, usize, usize, f64);
         impl ComputeTask for Task<'_> {
             type Output = Vec<f32>;
-            fn run<R: Runtime>(self, client: ComputeClient<R>) -> Vec<f32> {
-                let (input, output) = (buffer::upload(&client, self.0), buffer::empty::<R, f32>(&client, self.0.len()));
+            fn run(self, client: Client) -> Vec<f32> {
+                let (input, output) = (buffer::upload(&client, self.0), buffer::empty::<f32>(&client, self.0.len()));
                 let mut kriging = TraceKriging::new(self.1, 20.0, 60.0);
-                kriging.correct_in_vram::<R, f32>(&client, &input, &output, self.3, self.4, 0, self.2, self.5).unwrap();
-                buffer::download::<R, f32>(&client, output)
+                kriging.correct_in_vram::<f32>(&client, &input, &output, self.3, self.4, 0, self.2, self.5).unwrap();
+                buffer::download::<f32>(&client, output)
             }
         }
         for target in ComputeTarget::available() {

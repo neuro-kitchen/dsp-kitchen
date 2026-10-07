@@ -1,4 +1,4 @@
-use cubecl::prelude::{ComputeClient, Runtime};
+use cubecl::prelude::Client;
 use dsp_base::linalg::{PcaModel, PpcaModel};
 use dsp_core::compute::{ComputeTarget, ComputeTask};
 use dsp_core::{DspError, DspResult};
@@ -40,8 +40,8 @@ fn per_spike(projected: &[f32], d: usize, spikes: usize) -> Vec<f32> {
 
 /// Fits a PCA model (`dsp_base::linalg::PcaModel`) on `client` to spike waveforms (primary trace
 /// of each snippet; snippets of another length are left at zero) and projects each spike.
-pub fn extract_waveform_pca<R: Runtime>(
-    client: &ComputeClient<R>,
+pub fn extract_waveform_pca(
+    client: &Client,
     snippets: &[WaveformSnippet],
     num_components: usize,
 ) -> Option<(PcaModel, Vec<Vec<f32>>)> {
@@ -51,7 +51,7 @@ pub fn extract_waveform_pca<R: Runtime>(
         let w = &snippets[s].waveform;
         if w.len() == samples { w.clone() } else { Vec::new() }
     });
-    let pca = PcaModel::fit::<R, f32>(client, &matrix, samples, spikes, num_components);
+    let pca = PcaModel::fit::<f32>(client, &matrix, samples, spikes, num_components);
     let d = pca.num_components;
     let flat = per_spike(&pca.project_cpu(&matrix, samples, spikes), d, spikes);
     let rows = flat.chunks_exact(d.max(1)).map(<[f32]>::to_vec).collect();
@@ -76,14 +76,14 @@ struct EmbedTask<'a> {
 
 impl ComputeTask for EmbedTask<'_> {
     type Output = (Vec<f32>, usize);
-    fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
+    fn run(self, client: Client) -> Self::Output {
         let (projected, d) = match self.model {
             LinearModel::Pca => {
-                let m = PcaModel::fit::<R, f32>(&client, self.matrix, self.features, self.spikes, self.components);
+                let m = PcaModel::fit::<f32>(&client, self.matrix, self.features, self.spikes, self.components);
                 (m.project_cpu(self.matrix, self.features, self.spikes), m.num_components)
             }
             LinearModel::Ppca => {
-                let m = PpcaModel::fit::<R, f32>(&client, self.matrix, self.features, self.spikes, self.components);
+                let m = PpcaModel::fit::<f32>(&client, self.matrix, self.features, self.spikes, self.components);
                 (m.project_cpu(self.matrix, self.features, self.spikes), m.num_components)
             }
         };

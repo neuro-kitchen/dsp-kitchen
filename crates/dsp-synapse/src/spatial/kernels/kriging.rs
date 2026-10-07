@@ -9,12 +9,12 @@ use dsp_core::compute::{channel_position, sample_position};
 /// changes slowly), so they are scanned linearly.
 #[cube(launch)]
 pub fn kriging_runs_kernel<F: Float>(
-    input: &Array<F>,
-    values: &Array<F>,
-    indices: &Array<u32>,
-    run_starts: &Array<u32>,
-    run_slots: &Array<u32>,
-    output: &mut Array<F>,
+    input: &[F],
+    values: &[F],
+    indices: &[u32],
+    run_starts: &[u32],
+    run_slots: &[u32],
+    output: &mut [F],
     num_channels: u32,
     num_samples: u32,
     width: u32,
