@@ -9,7 +9,7 @@
 
 use cubecl::prelude::*;
 use cubecl::server::Handle;
-use dsp_core::compute::{row_position, LaunchGeometry};
+use dsp_core::compute::{negative_infinity, positive_infinity, row_position, LaunchGeometry};
 use dsp_core::{DspError, DspResult};
 
 use super::fold::{finish, Columns};
@@ -22,9 +22,9 @@ const PAIR: u32 = 2;
 /// sample other than NaN stay `[+∞, −∞]`. `units` is the cube's x size (a power of two).
 #[cube(launch)]
 pub fn envelope_kernel<F: Float>(
-    input: &Array<F>,
-    edges: &Array<u32>,
-    out: &mut Array<F>,
+    input: &[F],
+    edges: &[u32],
+    out: &mut [F],
     columns: u32,
     rows: u32,
     row_stride: u32,
@@ -40,8 +40,8 @@ pub fn envelope_kernel<F: Float>(
         let end = edges[(column + 1u32) as usize];
 
         // Comparisons are false for NaN, so NaN samples never replace a bound
-        let mut lo = F::new(f32::INFINITY);
-        let mut hi = F::new(f32::NEG_INFINITY);
+        let mut lo = positive_infinity::<F>();
+        let mut hi = negative_infinity::<F>();
         let mut s = edges[column as usize] + unit;
         while s < end {
             let x = input[(base + s) as usize];
@@ -54,8 +54,8 @@ pub fn envelope_kernel<F: Float>(
             s += units;
         }
 
-        let mut lo_s = SharedMemory::<F>::new(comptime!(units as usize));
-        let mut hi_s = SharedMemory::<F>::new(comptime!(units as usize));
+        let mut lo_s = Shared::<[F]>::new_slice(comptime!(units as usize));
+        let mut hi_s = Shared::<[F]>::new_slice(comptime!(units as usize));
         lo_s[unit as usize] = lo;
         hi_s[unit as usize] = hi;
         sync_cube();
@@ -88,8 +88,8 @@ pub fn envelope_kernel<F: Float>(
 /// (channel-major; it holds recording samples `first..first + samples`), as
 /// `out[channel · columns.count() + x]`. Columns are clipped to the buffer; columns with no
 /// sample (or only NaN) are NaN, as on the host.
-pub fn envelope_on_device<R: Runtime, F: Float + CubeElement>(
-    client: &ComputeClient<R>,
+pub fn envelope_on_device<F: Float + CubeElement>(
+    client: &Client,
     input: &Handle,
     channels: usize,
     samples: usize,
@@ -118,13 +118,13 @@ pub fn envelope_on_device<R: Runtime, F: Float + CubeElement>(
     let out = client.empty(rows * PAIR as usize * std::mem::size_of::<F>());
     let geom = LaunchGeometry::per_row(client, rows, longest);
     unsafe {
-        envelope_kernel::launch::<F, R>(
+        envelope_kernel::launch::<F>(
             client,
             geom.cube_count,
             geom.cube_dim,
-            ArrayArg::from_raw_parts(input.clone(), values),
-            ArrayArg::from_raw_parts(edges_handle, edges.len()),
-            ArrayArg::from_raw_parts(out.clone(), rows * PAIR as usize),
+            BufferArg::from_raw_parts(input.clone(), values),
+            BufferArg::from_raw_parts(edges_handle, edges.len()),
+            BufferArg::from_raw_parts(out.clone(), rows * PAIR as usize),
             count as u32,
             rows as u32,
             samples as u32,
@@ -159,7 +159,7 @@ mod tests {
 
     impl ComputeTask for Matches {
         type Output = ();
-        fn run<R: Runtime>(self, client: ComputeClient<R>) {
+        fn run(self, client: Client) {
             let (channels, samples, first) = (3usize, 70_001usize, 1_000u64);
             let mut data: Vec<f32> = (0..channels * samples).map(|i| ((i * 7919) % 1013) as f32 - 500.0).collect();
             data[samples + 12_345] = f32::NAN;
@@ -171,7 +171,7 @@ mod tests {
                 Columns::Buckets { origin: first, size: 40, count: 1_751 },
                 Columns::Even { start: first, len: samples as u64, width: 1 },
             ] {
-                let env = envelope_on_device::<R, f32>(&client, &input, channels, samples, first, columns).unwrap();
+                let env = envelope_on_device::<f32>(&client, &input, channels, samples, first, columns).unwrap();
                 for c in 0..channels {
                     let row = &data[c * samples..(c + 1) * samples];
                     let (from, to) = (columns.start(0) - first, columns.end().min(first + samples as u64) - first);
@@ -179,7 +179,7 @@ mod tests {
                     let got = &env[c * columns.count()..(c + 1) * columns.count()];
                     for (x, (g, e)) in got.iter().zip(&expected).enumerate() {
                         let same = |a: f32, b: f32| a == b || (a.is_nan() && b.is_nan());
-                        assert!(same(g[0], e[0]) && same(g[1], e[1]), "{} channel {c} column {x}: {g:?} vs {e:?} ({columns:?})", R::name(&client));
+                        assert!(same(g[0], e[0]) && same(g[1], e[1]), "{} channel {c} column {x}: {g:?} vs {e:?} ({columns:?})", client.name());
                     }
                 }
             }
