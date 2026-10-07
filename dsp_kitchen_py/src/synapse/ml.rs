@@ -8,7 +8,7 @@ use std::path::Path;
 use cubecl::prelude::Client;
 use cubecl::CubeElement;
 use dsp_core::compute::ComputeTask;
-use dsp_synapse_ml::sorters::emusort::kernels::{ChannelAligner, ChannelDelayEstimator};
+use dsp_synapse_ml::sorters::emusort::delays::{ChannelAligner, ChannelDelayEstimator};
 use dsp_synapse_ml::sorters::emusort::{emusort_provenance as emusort_record, EmusortConfig};
 use dsp_synapse_ml::sorters::kilosort4::{
     detect_universal as detect, extract_clips as clips_of, fit_kilosort4_preprocessing,
@@ -56,6 +56,7 @@ pub struct PyKilosort4Config {
     highpass_cutoff_hz: f64,
     whitening_range: usize,
     batch_size: usize,
+    reproducible: bool,
 }
 
 impl From<&Kilosort4Config> for PyKilosort4Config {
@@ -81,6 +82,7 @@ impl From<&Kilosort4Config> for PyKilosort4Config {
             do_car: c.do_car,
             highpass_cutoff_hz: c.highpass_cutoff_hz,
             whitening_range: c.whitening_range,
+            reproducible: c.reproducible,
             batch_size: c.batch_size,
         }
     }
@@ -111,6 +113,7 @@ impl PyKilosort4Config {
             highpass_cutoff_hz: self.highpass_cutoff_hz,
             whitening_range: self.whitening_range,
             batch_size: self.batch_size,
+            reproducible: self.reproducible,
         }
     }
 }
@@ -451,6 +454,16 @@ impl PyKilosort4Result {
     #[getter]
     fn sample_rate_hz(&self) -> f64 {
         self.inner.sample_rate_hz
+    }
+    /// Whether the run pinned its result-changing tuned choices (`config.reproducible`).
+    #[getter]
+    fn reproducible(&self) -> bool {
+        self.inner.reproducible
+    }
+    /// The device the run used: reproducible runs give the same spikes on the same device.
+    #[getter]
+    fn device(&self) -> String {
+        self.inner.device.clone()
     }
     #[getter]
     fn total_samples(&self) -> u64 {
