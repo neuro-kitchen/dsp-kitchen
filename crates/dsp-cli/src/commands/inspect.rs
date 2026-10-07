@@ -25,10 +25,10 @@ struct Inspect {
 
 impl ComputeTask for Inspect {
     type Output = ();
-    fn run<R: Runtime>(self, client: ComputeClient<R>) {
+    fn run(self, client: Client) {
         let (channels, samples) = (self.channels, self.samples);
         let hw = &client.properties().hardware;
-        println!("Runtime:          {}", R::name(&client));
+        println!("Runtime:          {}", client.name());
         println!("Max cube count:   {:?}", hw.max_cube_count);
         println!("Plane lanes:      {}", LaunchGeometry::plane_lanes(&client));
         println!("Buffer:           {channels} channels × {samples} samples\n");

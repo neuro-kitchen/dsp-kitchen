@@ -8,7 +8,7 @@ struct Describe;
 
 impl ComputeTask for Describe {
     type Output = String;
-    fn run<R: Runtime>(self, client: ComputeClient<R>) -> String {
+    fn run(self, client: Client) -> String {
         let hw = &client.properties().hardware;
         let mut parts = vec![
             format!("plane {}", hw.plane_size_max),
@@ -16,7 +16,7 @@ impl ComputeTask for Describe {
         ];
         parts.extend(hw.num_streaming_multiprocessors.map(|n| format!("{n} multiprocessors")));
         parts.extend(hw.num_cpu_cores.map(|n| format!("{n} cores")));
-        format!("{} ({})", R::name(&client), parts.join(", "))
+        format!("{} ({})", client.name(), parts.join(", "))
     }
 }
 

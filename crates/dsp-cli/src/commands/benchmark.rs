@@ -153,7 +153,7 @@ pub fn run(target: ComputeTarget, args: &BenchmarkArgs) -> anyhow::Result<()> {
     struct Task<'a>(&'a Mode);
     impl ComputeTask for Task<'_> {
         type Output = anyhow::Result<()>;
-        fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
+        fn run(self, client: Client) -> Self::Output {
             match self.0 {
                 Mode::Pipeline { shape, int16, save } => pipeline_on(client, shape, *int16, save.as_deref()),
                 Mode::Sweep { shape } => sweep_on(client, shape),
@@ -168,22 +168,22 @@ pub fn run(target: ComputeTarget, args: &BenchmarkArgs) -> anyhow::Result<()> {
 // Pipeline
 // ------------------------------------------------------------------------------------------------
 
-fn pipeline_on<R: Runtime>(client: ComputeClient<R>, shape: &Shape, int16: bool, save: Option<&Path>) -> anyhow::Result<()> {
+fn pipeline_on(client: Client, shape: &Shape, int16: bool, save: Option<&Path>) -> anyhow::Result<()> {
     let Shape { channels, samples, sample_rate, iterations } = *shape;
     let (_, values) = synthetic(channels, samples, sample_rate)?;
     let samples = values.len() / channels.max(1);
     let total = channels * samples;
-    let mut workspace = PipelineWorkspace::<R, f32>::new(client.clone(), live_chain(), channels, samples, sample_rate)?;
+    let mut workspace = PipelineWorkspace::<f32>::new(client.clone(), live_chain(), channels, samples, sample_rate)?;
     // int16 stored steps of the same signal; the workspace scales them on the device
     let stored: Vec<u8> = values.iter().flat_map(|v| ((v / STEP_UV).round() as i16).to_le_bytes()).collect();
     if int16 {
         workspace.set_stored_scaling(&vec![STEP_UV; channels], &vec![0.0; channels]);
     }
     let upload_bytes = if int16 { stored.len() } else { total * std::mem::size_of::<f32>() };
-    println!("Pipeline: {channels} ch × {samples} samples at {sample_rate} Hz, {} upload ({upload_bytes} bytes), {}", if int16 { "int16" } else { "f32" }, R::name(&client));
+    println!("Pipeline: {channels} ch × {samples} samples at {sample_rate} Hz, {} upload ({upload_bytes} bytes), {}", if int16 { "int16" } else { "f32" }, client.name());
     println!("Stages: {:?}", workspace.pipeline().stages());
 
-    let run_once = |workspace: &mut PipelineWorkspace<R, f32>| -> anyhow::Result<Handle> {
+    let run_once = |workspace: &mut PipelineWorkspace<f32>| -> anyhow::Result<Handle> {
         Ok(if int16 { workspace.process_stored_chunk_in_vram(&stored, SampleFormat::I16, samples)? } else { workspace.process_chunk_in_vram(&values, samples) })
     };
     // Warm-up: compilation and autotuning
@@ -220,14 +220,14 @@ fn pipeline_on<R: Runtime>(client: ComputeClient<R>, shape: &Shape, int16: bool,
 // Sweep
 // ------------------------------------------------------------------------------------------------
 
-fn sweep_on<R: Runtime>(client: ComputeClient<R>, shape: &Shape) -> anyhow::Result<()> {
+fn sweep_on(client: Client, shape: &Shape) -> anyhow::Result<()> {
     let Shape { samples, sample_rate, iterations, .. } = *shape;
-    println!("Channel sweep: live chain on {samples} samples per channel at {sample_rate} Hz, {}", R::name(&client));
+    println!("Channel sweep: live chain on {samples} samples per channel at {sample_rate} Hz, {}", client.name());
     println!("{:>8} | {:>12} | {:>10} | {:>12} | {:>9}", "channels", "values", "stages ms", "Msamples/s", "realtime");
     for channels in SWEEP_CHANNELS {
         let total = channels * samples;
         let input = client.create_from_slice(f32::as_bytes(&vec![0.0f32; total]));
-        let mut workspace = PipelineWorkspace::<R, f32>::new(client.clone(), live_chain(), channels, samples, sample_rate)?;
+        let mut workspace = PipelineWorkspace::<f32>::new(client.clone(), live_chain(), channels, samples, sample_rate)?;
         let t = time_device(&client, iterations, || {
             workspace.process_handle(&input, samples);
         });
@@ -294,11 +294,11 @@ fn columns_probe(channels: usize) -> SensorLayout {
     SensorLayout::new("benchmark columns", sites)
 }
 
-fn suite_on<R: Runtime>(client: ComputeClient<R>, shape: &Shape, report_dir: &Path) -> anyhow::Result<()> {
+fn suite_on(client: Client, shape: &Shape, report_dir: &Path) -> anyhow::Result<()> {
     let Shape { channels, samples, sample_rate: fs, iterations } = *shape;
     let hw = &client.properties().hardware;
     let hardware = Hardware {
-        runtime: R::name(&client).to_string(),
+        runtime: client.name().to_string(),
         plane_size_max: hw.plane_size_max,
         max_units_per_cube: hw.max_units_per_cube,
         num_cpu_cores: hw.num_cpu_cores,
@@ -321,15 +321,15 @@ fn suite_on<R: Runtime>(client: ComputeClient<R>, shape: &Shape, report_dir: &Pa
     let input = client.create_from_slice(f32::as_bytes(&host));
     let output = client.empty(total * std::mem::size_of::<f32>());
 
-    add("scale", time_device(&client, iterations, || execute_scaling::<R, f32>(&client, &input, &output, total, STEP_UV, 0.0)), Some(total), String::new());
+    add("scale", time_device(&client, iterations, || execute_scaling::<f32>(&client, &input, &output, total, STEP_UV, 0.0)), Some(total), String::new());
     let (lo, hi) = host.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), &v| (a.min(v), b.max(v)));
-    add("clamp", time_device(&client, iterations, || execute_clamp::<R, f32>(&client, &input, &output, total, lo / 2.0, hi / 2.0)), Some(total), "to half the range".into());
-    add("common reference (direct)", time_device(&client, iterations, || execute_direct_car::<R, f32>(&client, &input, &output, channels, samples)), Some(total), String::new());
+    add("clamp", time_device(&client, iterations, || execute_clamp::<f32>(&client, &input, &output, total, lo / 2.0, hi / 2.0)), Some(total), "to half the range".into());
+    add("common reference (direct)", time_device(&client, iterations, || execute_direct_car::<f32>(&client, &input, &output, channels, samples)), Some(total), String::new());
     let median_width = 2 * MEDIAN9_RADIUS + 1;
-    add("median", time_device(&client, iterations, || execute_median::<R, f32>(&client, &input, &output, channels, samples, median_width, MEDIAN_DEFAULT_EDGE)), Some(total), format!("width {median_width}"));
-    add("TKEO", time_device(&client, iterations, || execute_teager_kaiser::<R, f32>(&client, &input, &output, channels, samples, TEAGER_KAISER_DEFAULT_EDGE)), Some(total), String::new());
+    add("median", time_device(&client, iterations, || execute_median::<f32>(&client, &input, &output, channels, samples, median_width, MEDIAN_DEFAULT_EDGE)), Some(total), format!("width {median_width}"));
+    add("TKEO", time_device(&client, iterations, || execute_teager_kaiser::<f32>(&client, &input, &output, channels, samples, TEAGER_KAISER_DEFAULT_EDGE)), Some(total), String::new());
     let taps = client.create_from_slice(f32::as_bytes(&[1.0f32 / FIR_TAPS as f32; FIR_TAPS]));
-    add("FIR", time_device(&client, iterations, || execute_fir::<R, f32>(&client, &input, &output, &taps, channels, samples, FIR_TAPS, FIR_DEFAULT_EDGE)), Some(total), format!("{FIR_TAPS} taps"));
+    add("FIR", time_device(&client, iterations, || execute_fir::<f32>(&client, &input, &output, &taps, channels, samples, FIR_TAPS, FIR_DEFAULT_EDGE)), Some(total), format!("{FIR_TAPS} taps"));
 
     for (name, mode) in [("band-pass forward", FilterMode::Forward), ("band-pass forward-backward", FilterMode::ForwardBackward)] {
         let filter = DeviceFilter::<f32>::new(&client, &FilterSpec::bandpass(SPIKE_BAND_HZ.0, SPIKE_BAND_HZ.1).with_mode(mode), fs)?;
@@ -345,13 +345,13 @@ fn suite_on<R: Runtime>(client: ComputeClient<R>, shape: &Shape, report_dir: &Pa
     let gains = client.create_from_slice(f32::as_bytes(&vec![STEP_UV; channels]));
     let offsets = client.create_from_slice(f32::as_bytes(&vec![0.0f32; channels]));
     let t = time_device(&client, iterations, || {
-        execute_unpack_stored::<R, f32>(&client, &words, SampleFormat::I16, &gains, &offsets, &output, channels, samples).expect("int16 unpack");
+        execute_unpack_stored::<f32>(&client, &words, SampleFormat::I16, &gains, &offsets, &output, channels, samples).expect("int16 unpack");
     });
     add("unpack int16 → µV", t, Some(total), String::new());
 
     // Detection, deduplication, extraction and templates, with the streaming defaults
     let config = StreamingDetectionConfig::default();
-    let sigmas = execute_channel_noise_std::<R, f32>(&client, &input, channels, samples, 0..samples);
+    let sigmas = execute_channel_noise_std::<f32>(&client, &input, channels, samples, 0..samples);
     let heights: Vec<f32> = sigmas.iter().map(|s| (*s as f32) * config.threshold_factor).collect();
     let heights = client.create_from_slice(f32::as_bytes(&heights));
     let refractory = config.refractory_samples(fs);
@@ -370,7 +370,7 @@ fn suite_on<R: Runtime>(client: ComputeClient<R>, shape: &Shape, report_dir: &Pa
     let knn = client.create_from_slice(u32::as_bytes(&precompute_knn_table(&probe, channels, k)));
     let mut extracted = None;
     let t = time_device(&client, iterations, || {
-        extracted = execute_extract_sinc_in_vram::<R, f32>(&client, &input, &knn, channels, samples, &spikes, k, pre, post, config.apply_sinc_shift);
+        extracted = execute_extract_sinc_in_vram::<f32>(&client, &input, &knn, channels, samples, &spikes, k, pre, post, config.apply_sinc_shift);
     });
     add("sinc snippet extraction", t, None, format!("{} spikes × {k} ch × {} samples", spikes.len(), pre + post));
     if let Some(ex) = &extracted {
@@ -385,10 +385,10 @@ fn suite_on<R: Runtime>(client: ComputeClient<R>, shape: &Shape, report_dir: &Pa
     let pipeline = Pipeline::with_stages(vec![PipelineStage::bandpass(SPIKE_BAND_HZ.0, SPIKE_BAND_HZ.1)]);
     let detector = StreamingDetector::new(config.clone());
     let start = Instant::now();
-    detector.run_on::<R>(client.clone(), &source, &pipeline, &probe)?;
+    detector.run_on(client.clone(), &source, &pipeline, &probe)?;
     let cold = start.elapsed().as_secs_f64();
     let start = Instant::now();
-    let result = detector.run_on::<R>(client.clone(), &source, &pipeline, &probe)?;
+    let result = detector.run_on(client.clone(), &source, &pipeline, &probe)?;
     let wall = start.elapsed().as_secs_f64();
     let detected_values = source.info().samples as f64 * channels as f64;
     let streaming_detection = DetectionRow {
@@ -431,7 +431,7 @@ fn suite_on<R: Runtime>(client: ComputeClient<R>, shape: &Shape, report_dir: &Pa
     let unix_time = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
     let report = SuiteReport { unix_time, hardware, channels, samples, sample_rate_hz: fs, iterations, kernels: rows, streaming_detection };
     fs::create_dir_all(report_dir)?;
-    let file = report_dir.join(format!("{unix_time}-{}.json", R::name(&client)));
+    let file = report_dir.join(format!("{unix_time}-{}.json", client.name()));
     fs::write(&file, serde_json::to_string_pretty(&report)?)?;
     println!("Report written to {}", file.display());
     Ok(())
