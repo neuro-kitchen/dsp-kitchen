@@ -21,6 +21,12 @@ use crate::filter::design::{FilterError, FilterMode, FilterSpec, FilterStart, So
 /// [`dsp_core::compute::tune`]).
 const BLOCK_COUNT_CANDIDATES: [usize; 5] = [1, 4, 16, 64, 256];
 
+/// Time blocks of every pass while tuned choices are pinned
+/// ([`dsp_core::compute::pin_tuned_choices`]): one of the tuned candidates, keeping several-way
+/// parallelism for few channels; with channel-major order the result depends only on the signal
+/// length, not on the device's timings.
+pub const PINNED_BLOCK_COUNT: usize = 16;
+
 /// Memory order a pass runs in. Channel-major rows are the buffers' own order; time-major runs on a
 /// transposed copy so the units of a plane (consecutive channels) read and write consecutive
 /// addresses, at the cost of two transposes. Which is faster depends on the device; the autotuner
@@ -165,6 +171,9 @@ impl<F: DspFloat> DeviceFilter<F> {
         if channels == 0 || samples == 0 {
             return;
         }
+        // A short buffer would not fail on the device (writes past its end are dropped): check here
+        self.check_buffer("state", state, channels * self.state_len());
+        self.check_buffer("scratch", scratch, self.scratch_len(channels, samples));
         let pass = |input: &Handle, output: &Handle, in_len, pad, out_start, out_len, reverse, rest| Pass {
             input: input.clone(),
             output: output.clone(),
@@ -207,6 +216,7 @@ impl<F: DspFloat> DeviceFilter<F> {
             return Err(FilterError::ForwardBackwardOnLiveStream);
         }
         if channels > 0 && samples > 0 {
+            self.check_buffer("state", state, channels * self.state_len());
             let pass = Pass {
                 input: input.clone(),
                 output: output.clone(),
@@ -225,9 +235,19 @@ impl<F: DspFloat> DeviceFilter<F> {
         Ok(())
     }
 
+    /// Panics with `name` when `handle` holds fewer than `len` values of `F`.
+    fn check_buffer(&self, name: &str, handle: &Handle, len: usize) {
+        let need = (len * size_of::<F>()) as u64;
+        assert!(handle.size_in_used() >= need, "{name} buffer holds {} bytes, the filter needs {need}", handle.size_in_used());
+    }
+
     fn run(&self, client: &Client, pass: Pass) {
         let inputs = PassInputs { client: client.clone(), filter: self.clone(), pass };
         match (self.block_len, self.layout) {
+            // Block splits round differently: pinned runs use a fixed split
+            (None, None) if dsp_core::compute::tuned_choices_pinned() => {
+                inputs.run(inputs.steps().div_ceil(PINNED_BLOCK_COUNT), PassLayout::ChannelMajor)
+            }
             (None, None) => tuned_pass(inputs),
             (len, layout) => inputs.run(len.unwrap_or(usize::MAX), layout.unwrap_or(PassLayout::ChannelMajor)),
         }

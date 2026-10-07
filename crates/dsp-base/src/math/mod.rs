@@ -10,7 +10,7 @@ pub mod xcorr;
 
 pub use scaling::execute_scaling;
 pub use clamp::execute_clamp;
-pub use unpack::{execute_unpack_stored, stored_words, upload_stored};
+pub use unpack::{execute_unpack_stored, stored_word_bytes, stored_words, upload_stored, write_stored, write_stored_owned};
 pub use stats::{
     estimate_noise_rms, estimate_noise_std, estimate_noise_trimmed, execute_channel_mean_std,
     execute_channel_noise_std,

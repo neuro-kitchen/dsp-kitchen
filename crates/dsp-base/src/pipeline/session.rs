@@ -10,7 +10,7 @@ use crate::filter::design::FilterError;
 use crate::filter::fir::gaussian::GAUSSIAN_TRUNCATE;
 use crate::filter::iir::DeviceFilter;
 use crate::filter::{execute_fir_centered, execute_median, execute_teager_kaiser, gaussian_kernel_1d, FilterMode};
-use crate::math::{execute_clamp, execute_scaling, execute_unpack_stored, upload_stored};
+use crate::math::{execute_clamp, execute_scaling, execute_unpack_stored, stored_word_bytes, write_stored_owned};
 use crate::spatial::{execute_direct_car, DeviceSpatialMatrix};
 use dsp_core::{DspError, DspResult, SampleFormat};
 
@@ -54,6 +54,10 @@ pub struct PipelineWorkspace<F: DspFloat = f32> {
     /// Per-channel gain and offset for stored chunks, and the buffer they are unpacked into.
     stored_scaling: Option<(Handle, Handle)>,
     unpacked: Option<Handle>,
+    /// Persistent upload buffers (`F` chunks; stored words with their byte capacity), written in
+    /// place every chunk instead of allocating a new device buffer per chunk.
+    input: Option<Handle>,
+    stored_input: Option<(Handle, usize)>,
 }
 
 impl<F: DspFloat> PipelineWorkspace<F> {
@@ -128,6 +132,8 @@ impl<F: DspFloat> PipelineWorkspace<F> {
             scratch_len: 1,
             stored_scaling: None,
             unpacked: None,
+            input: None,
+            stored_input: None,
         };
         workspace.reserve(initial_samples);
         Ok(workspace)
@@ -160,6 +166,7 @@ impl<F: DspFloat> PipelineWorkspace<F> {
             self.buf_ping = buffer::empty::<F>(&self.client, self.channels * samples);
             self.buf_pong = buffer::empty::<F>(&self.client, self.channels * samples);
             self.unpacked = None;
+            self.input = None;
             self.capacity_samples = samples;
         }
         let need = self
@@ -243,8 +250,19 @@ impl<F: DspFloat> PipelineWorkspace<F> {
     /// Uploads a `[channels, samples]` host chunk, runs the pipeline and returns the device result
     /// **without** downloading it (see [`Self::process_handle`]).
     pub fn process_chunk_in_vram(&mut self, input: &[F], samples: usize) -> Handle {
+        self.process_owned_chunk_in_vram(input.to_vec(), samples)
+    }
+
+    /// [`Self::process_chunk_in_vram`] taking ownership of the chunk: it moves into the upload
+    /// without a copy on this thread. The upload writes a persistent device buffer in place.
+    pub fn process_owned_chunk_in_vram(&mut self, input: Vec<F>, samples: usize) -> Handle {
         assert_eq!(input.len(), self.channels * samples);
-        let in_handle = buffer::upload(&self.client, input);
+        self.reserve(samples);
+        let capacity = self.channels * self.capacity_samples;
+        let len = input.len();
+        let in_handle = self.input.get_or_insert_with(|| buffer::empty::<F>(&self.client, capacity)).clone();
+        buffer::write_owned(&self.client, &in_handle, input);
+        let in_handle = buffer::truncate::<F>(in_handle, capacity - len);
         self.process_handle(&in_handle, samples)
     }
 
@@ -262,6 +280,13 @@ impl<F: DspFloat> PipelineWorkspace<F> {
     /// pipeline. Integer recordings move `format.bytes()` per sample instead of `size_of::<F>()`.
     /// Needs [`Self::set_stored_scaling`]; see [`Self::process_handle`] for the returned handle.
     pub fn process_stored_chunk_in_vram(&mut self, stored: &[u8], format: SampleFormat, samples: usize) -> DspResult<Handle> {
+        self.process_owned_stored_chunk_in_vram(stored.to_vec(), format, samples)
+    }
+
+    /// [`Self::process_stored_chunk_in_vram`] taking ownership of the stored bytes: they move into
+    /// the upload without a copy on this thread (padded in place when they do not fill whole
+    /// 32-bit words).
+    pub fn process_owned_stored_chunk_in_vram(&mut self, stored: Vec<u8>, format: SampleFormat, samples: usize) -> DspResult<Handle> {
         if stored.len() != self.channels * samples * format.bytes() {
             return Err(DspError::ShapeMismatch { expected: vec![self.channels, samples, format.bytes()], actual: vec![stored.len()] });
         }
@@ -274,7 +299,16 @@ impl<F: DspFloat> PipelineWorkspace<F> {
             .unpacked
             .get_or_insert_with(|| buffer::empty::<F>(&self.client, self.channels * self.capacity_samples))
             .clone();
-        let words = upload_stored(&self.client, stored);
+        let need = stored_word_bytes(stored.len());
+        let words = match &self.stored_input {
+            Some((handle, bytes)) if *bytes >= need => handle.clone(),
+            _ => {
+                let handle = self.client.empty(need);
+                self.stored_input = Some((handle.clone(), need));
+                handle
+            }
+        };
+        write_stored_owned(&self.client, &words, stored);
         execute_unpack_stored::<F>(&self.client, &words, format, &gains, &offsets, &unpacked, self.channels, samples)?;
         let unpacked = buffer::truncate::<F>(unpacked, (self.capacity_samples - samples) * self.channels);
         Ok(self.process_handle(&unpacked, samples))

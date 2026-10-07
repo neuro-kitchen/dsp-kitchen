@@ -18,6 +18,9 @@
 //! [`direct_matmul_kernel`], one unit per output element, which wins on products with little to
 //! reuse (a few rows, a short inner dimension), where a tiled routine's fixed per-call cost and
 //! unused tile space dominate. The tuner keeps whichever is fastest: no size threshold.
+//!
+//! **Reproducibility.** Routines sum in different orders, so the tuner's pick can change the last
+//! bits; while [`dsp_core::compute::pin_tuned_choices`] is held, one fixed routine runs instead.
 
 use cubecl::prelude::*;
 use cubecl::server::Handle;
@@ -229,6 +232,13 @@ fn exact_strategies(cpu_lanes: bool) -> Vec<Strategy> {
     all
 }
 
+/// The routine of every product while tuned choices are pinned
+/// ([`dsp_core::compute::pin_tuned_choices`]): `SimpleUnit` with its largest tiles, exact and
+/// available on every runtime; [`direct_matmul_kernel`] where a layout rules it out.
+fn pinned_strategy() -> Strategy {
+    LevelStrategy::SimpleUnit(BlueprintStrategy::Inferred(SimpleUnitSelectionArgs { tile_size: TileSizeSelection::MaxTileSize })).into()
+}
+
 /// Whether a view's columns are its contiguous axis (row-major) or its rows are.
 fn layout(view: &MatrixView) -> &'static str {
     if view.strides[2] == 1 { "row" } else { "col" }
@@ -251,6 +261,13 @@ pub fn matmul<F: DspFloat>(client: &Client, lhs: &MatrixView, rhs: &MatrixView, 
     }
     let (lhs, rhs) = (lhs.aligned::<F>(client), rhs.aligned::<F>(client));
     let inputs = MatmulInputs { client: client.clone(), lhs, rhs, out: out.clone() };
+    // Routines sum in different orders: pinned runs use one fixed, exact routine
+    if dsp_core::compute::tuned_choices_pinned() {
+        if inputs.run::<F>(&pinned_strategy()).is_err() {
+            inputs.run_direct::<F>();
+        }
+        return;
+    }
 
     static TUNER: LocalTuner<String, String> = local_tuner!("matmul-exact");
     let id = tune_id(client);
