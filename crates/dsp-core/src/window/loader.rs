@@ -70,10 +70,18 @@ impl<'a> WindowLoader<'a> {
     where
         F: FnMut(&HaloWindow, &[u8]) -> DspResult<()>,
     {
+        self.stream_stored_while(windows, |win, buf| f(win, buf).map(|()| true))
+    }
+
+    /// Like [`Self::stream_stored`] until `f` returns `false`.
+    pub fn stream_stored_while<F>(&self, windows: &[HaloWindow], f: F) -> DspResult<()>
+    where
+        F: FnMut(&HaloWindow, &[u8]) -> DspResult<bool>,
+    {
         let source = self.source;
         let bytes = source.info().format.bytes();
         let read = |ch: &[usize], range, buf: &mut [u8]| source.read_stored(ch, range, buf);
-        self.stream_with(windows, bytes, read, |win, buf| f(win, buf).map(|()| true))
+        self.stream_with(windows, bytes, read, f)
     }
 
     /// Double-buffered loop over `per_sample` elements per channel sample, until `f` returns
