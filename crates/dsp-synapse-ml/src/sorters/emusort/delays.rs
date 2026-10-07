@@ -15,93 +15,15 @@ use std::ops::Range;
 
 use cubecl::prelude::*;
 use cubecl::server::Handle;
-use dsp_base::core::{buffer, reduce};
-use dsp_core::compute::{channel_position, sample_position, LaunchGeometry};
+use dsp_base::core::{buffer, reduce, Scratch};
+use dsp_core::compute::LaunchGeometry;
 
-/// `output[ch, t] = input[ch, (t + shift[ch]) mod samples]`, `shift[ch] ≥ 0`.
-#[cube(launch)]
-pub fn apply_channel_delays_kernel<F: Float>(
-    input: &[F],
-    output: &mut [F],
-    shifts: &[u32],
-    channels: u32,
-    samples: u32,
-) {
-    let t = sample_position();
-    let ch = channel_position();
-    if ch < channels && t < samples {
-        // shift < samples, so one subtraction wraps
-        let mut src_t = t + shifts[ch as usize];
-        if src_t >= samples {
-            src_t -= samples;
-        }
-        output[(ch * samples + t) as usize] = input[(ch * samples + src_t) as usize];
-    }
-}
+use super::kernels::{apply_channel_delays_kernel, delay_cc_accumulate_kernel, delay_cc_tile_kernel, delay_envelope_kernel};
 
-/// `env[ch, t] = |x[ch, t]| / std[ch]` (`0` for a flat channel).
-#[cube(launch)]
-pub fn delay_envelope_kernel<F: Float>(input: &[F], std: &[F], env: &mut [F], channels: u32, samples: u32) {
-    let t = sample_position();
-    let ch = channel_position();
-    if ch < channels && t < samples {
-        let sd = std[ch as usize];
-        let idx = (ch * samples + t) as usize;
-        if sd > F::new(0.0f32) {
-            env[idx] = F::abs(input[idx]) / sd;
-        } else {
-            env[idx] = F::new(0.0f32);
-        }
-    }
-}
-
-/// `cc[q] += Σ_t env[a, t − lag] · env[b, t] / samples` over the interior samples
-/// `t ∈ [col_start .. col_start + samples)`, for `q = (a · channels + b) · lags + li`,
-/// `lag = li − max_lag`; `t − lag` is clamped to the row (only windows whose interior is closer
-/// than `max_lag` to an edge take the clamped loop). One unit per `q`, adding to the running sum.
-#[cube(launch)]
-#[allow(clippy::too_many_arguments)]
-pub fn delay_cc_kernel<F: Float>(
-    env: &[F],
-    cc: &mut [F],
-    channels: u32,
-    row_len: u32,
-    col_start: u32,
-    samples: u32,
-    max_lag: u32,
-) {
-    let lags = 2u32 * max_lag + 1u32;
-    let q = ABSOLUTE_POS as u32;
-    if q < channels * channels * lags {
-        let li = q % lags;
-        let pair = q / lags;
-        let (base_a, base_b) = ((pair / channels) * row_len, (pair % channels) * row_len);
-        // Lagged sample of interior sample t: col_start + t + max_lag − li
-        let shift = col_start + max_lag;
-        let in_bounds = shift >= li && shift - li + samples <= row_len;
-        let mut acc = F::new(0.0f32);
-        let mut t = 0u32;
-        if in_bounds {
-            let start_a = base_a + shift - li;
-            let start_b = base_b + col_start;
-            while t < samples {
-                acc += env[(start_a + t) as usize] * env[(start_b + t) as usize];
-                t += 1u32;
-            }
-        } else {
-            while t < samples {
-                let shifted = shift + t;
-                let mut ta = 0u32;
-                if shifted >= li {
-                    ta = u32::min(shifted - li, row_len - 1u32);
-                }
-                acc += env[(base_a + ta) as usize] * env[(base_b + col_start + t) as usize];
-                t += 1u32;
-            }
-        }
-        cc[q as usize] += acc / F::cast_from(u32::max(samples, 1u32));
-    }
-}
+/// Samples of one tile of [`delay_cc_tile_kernel`]: each lag's partial sum adds this many products
+/// (shorter sums than one over the whole batch), and the tile with its lag margin fits shared
+/// memory on every device we target (`(2 · DELAY_TILE_SAMPLES + 2 · max_lag) · 4` bytes).
+pub const DELAY_TILE_SAMPLES: usize = 1024;
 
 /// `(delays, reference)` from a `[channels, channels, 2·max_lag + 1]` mean cross-correlation: the
 /// reference channel maximizes `Σ_a max_lag CC[a, b, ·]`; each channel's delay is the lag of its
@@ -139,6 +61,8 @@ pub struct ChannelDelayEstimator {
     /// `[channels, capacity]` envelope of the current batch.
     env: Handle,
     capacity: usize,
+    /// `[pairs, tiles, lags]` partial sums of the current batch.
+    partial: Scratch,
 }
 
 impl ChannelDelayEstimator {
@@ -153,6 +77,7 @@ impl ChannelDelayEstimator {
             std: buffer::empty::<f32>(client, channels),
             env: buffer::empty::<f32>(client, 1),
             capacity: 0,
+            partial: Scratch::new(),
         }
     }
 
@@ -186,20 +111,44 @@ impl ChannelDelayEstimator {
             );
         }
 
-        let triples = channels * channels * (2 * self.max_lag + 1);
-        let geom = LaunchGeometry::elementwise(client, triples);
+        let lags = 2 * self.max_lag + 1;
+        let triples = channels * channels * lags;
+        let samples = cols.len();
+        let tiles = samples.div_ceil(DELAY_TILE_SAMPLES);
+        let partial = self.partial.get::<f32>(client, triples * tiles);
+        // One unit per lag: the cube is the lag count rounded up to the plane width
+        let plane = LaunchGeometry::plane_lanes(client).max(1) as usize;
+        let units = lags.div_ceil(plane) * plane;
         unsafe {
-            delay_cc_kernel::launch::<f32>(
+            delay_cc_tile_kernel::launch::<f32>(
                 client,
-                geom.cube_count,
-                geom.cube_dim,
+                CubeCount::Static(tiles as u32, (channels * channels) as u32, 1),
+                CubeDim::new_1d(units as u32),
                 BufferArg::from_raw_parts(self.env.clone(), total),
-                BufferArg::from_raw_parts(self.cc.clone(), triples),
+                BufferArg::from_raw_parts(partial.clone(), triples * tiles),
                 channels as u32,
                 row_len as u32,
                 cols.start as u32,
-                cols.len() as u32,
+                samples as u32,
                 self.max_lag as u32,
+                tiles as u32,
+                DELAY_TILE_SAMPLES as u32,
+                self.max_lag as u32,
+                units as u32,
+            );
+        }
+        let geom = LaunchGeometry::elementwise(client, triples);
+        unsafe {
+            delay_cc_accumulate_kernel::launch::<f32>(
+                client,
+                geom.cube_count,
+                geom.cube_dim,
+                BufferArg::from_raw_parts(partial, triples * tiles),
+                BufferArg::from_raw_parts(self.cc.clone(), triples),
+                triples as u32,
+                lags as u32,
+                tiles as u32,
+                samples as u32,
             );
         }
         self.batches += 1;

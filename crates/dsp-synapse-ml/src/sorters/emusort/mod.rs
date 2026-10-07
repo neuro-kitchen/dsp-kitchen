@@ -4,8 +4,8 @@
 //!
 //! EMUsort is a Kilosort4 fork, so it reuses every stage of [`crate::sorters::kilosort4`] with
 //! its own settings ([`EmusortConfig`]) and adds:
-//! - **channel-delay removal** on the device ([`kernels::ChannelDelayEstimator`],
-//!   [`kernels::ChannelAligner`]): the lag (within ±2 ms) aligning each channel with the reference
+//! - **channel-delay removal** on the device ([`delays::ChannelDelayEstimator`],
+//!   [`delays::ChannelAligner`]): the lag (within ±2 ms) aligning each channel with the reference
 //!   channel that correlates best with all others, estimated on the high-passed data and removed
 //!   after whitening, before template learning and detection;
 //! - **HDBSCAN outlier removal** before the universal templates are clustered
@@ -95,7 +95,10 @@ pub fn emusort_provenance() -> Provenance {
     }
 }
 
+pub mod delays;
 pub mod kernels;
+
+pub use delays::{delays_from_cross_correlation, ChannelAligner, ChannelDelayEstimator, DELAY_TILE_SAMPLES};
 
 impl RunPlan {
     /// EMUsort's run at `sample_rate_hz`: Kilosort4's stages with `config`'s settings, channel

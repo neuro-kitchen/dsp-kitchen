@@ -51,6 +51,11 @@ pub struct Kilosort4Config {
     pub whitening_range: usize,
     /// Samples per batch.
     pub batch_size: usize,
+    /// Same input on the same device gives the same spikes: the autotuned choices that change the
+    /// numbers (IIR time blocks, matrix-product routine) are pinned for the run
+    /// ([`dsp_core::compute::pin_tuned_choices`]). Off, the tuner may pick differently between runs
+    /// (last-bit differences that can move a spike across a threshold).
+    pub reproducible: bool,
 }
 
 impl Default for Kilosort4Config {
@@ -70,6 +75,7 @@ impl Default for Kilosort4Config {
             highpass_cutoff_hz: 300.0,
             whitening_range: 32,
             batch_size: 60_000,
+            reproducible: true,
         }
     }
 }

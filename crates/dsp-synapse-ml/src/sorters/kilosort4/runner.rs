@@ -30,7 +30,7 @@ use dsp_synapse::QualityCriteria;
 use super::detect::{TemplateCentres, UniversalDetector, UniversalSpike};
 use super::templates::{extract_clips, learn_universal_templates_with_progress, LearnOptions, UniversalTemplates, MAX_CLIPS};
 use super::Kilosort4Config;
-use crate::sorters::emusort::kernels::{ChannelAligner, ChannelDelayEstimator};
+use crate::sorters::emusort::delays::{ChannelAligner, ChannelDelayEstimator};
 
 /// Butterworth order of the high-pass filter, matching upstream Kilosort4.
 pub const HIGHPASS_ORDER: usize = 3;
@@ -58,7 +58,8 @@ fn filter_error(e: dsp_base::filter::FilterError) -> DspError {
     DspError::InvalidConfig(e.to_string())
 }
 
-/// Windows of a recording on their way to the device: read on a background thread, uploaded as
+/// Windows of a recording on their way to the device: read on a background thread into a buffer
+/// the upload then takes over (no copy on the calling thread), uploaded as
 /// the source's **stored** values when it can provide them (integers: `int16` moves half the bytes
 /// of `f32`, and the gain / offset are applied on the device, not on the host thread), else as
 /// scaled `f32`; preprocessed by `workspace` and, with channel delays, aligned. Every pass of a
@@ -96,13 +97,15 @@ impl<'a> DeviceWindows<'a> {
             };
             f(window, &handle)
         };
+        // Owned windows: the reading thread allocates and fills each one, and it moves into the
+        // upload without a copy here, so this thread's time goes to queueing device work
         match *stored {
-            Some(format) => loader.stream_stored_while(windows, |window, bytes| {
-                let handle = workspace.process_stored_chunk_in_vram(bytes, format, window.read_len())?;
+            Some(format) => loader.stream_stored_owned_while(windows, |window, bytes| {
+                let handle = workspace.process_owned_stored_chunk_in_vram(bytes, format, window.read_len())?;
                 finish(window, handle)
             }),
-            None => loader.stream_while(windows, |window, raw| {
-                let handle = workspace.process_chunk_in_vram(raw, window.read_len());
+            None => loader.stream_owned_while(windows, |window, raw| {
+                let handle = workspace.process_owned_chunk_in_vram(raw, window.read_len());
                 finish(window, handle)
             }),
         }
@@ -169,6 +172,7 @@ pub struct FitSettings {
     pub nskip: usize,
     pub whitening_range: usize,
     pub max_channel_delay: Option<usize>,
+    pub reproducible: bool,
 }
 
 impl FitSettings {
@@ -185,6 +189,7 @@ impl FitSettings {
             nskip: ks.nskip,
             whitening_range: ks.whitening_range,
             max_channel_delay: plan.max_channel_delay,
+            reproducible: ks.reproducible,
         }
     }
 }
@@ -217,6 +222,11 @@ pub struct Kilosort4Result {
     pub centre_channels: Vec<usize>,
     pub sample_rate_hz: f64,
     pub total_samples: u64,
+    /// Whether the run pinned its result-changing tuned choices ([`Kilosort4Config::reproducible`]).
+    pub reproducible: bool,
+    /// The device the run used (runtime and the properties that shape its launches): reproducible
+    /// runs give the same spikes on the same device.
+    pub device: String,
 }
 
 impl Kilosort4Result {
@@ -264,6 +274,7 @@ pub fn fit_preprocessing(
     plan: &RunPlan,
     progress: &dyn ProgressSink,
 ) -> DspResult<FittedPreprocessing> {
+    let _pinned = plan.config.reproducible.then(dsp_core::compute::pin_tuned_choices);
     fit_with_stages(client, source, probe, plan, &Stages::new(progress, &[(STAGE_FIT, WINDOWS)]))
 }
 
@@ -373,6 +384,8 @@ pub fn run_plan(
     let info = source.info();
     let (channels, total, fs) = (info.channel_count(), info.samples, info.sample_rate_hz());
     let ks = &plan.config;
+    // Held for the whole run (fit, learning, detection), on this thread
+    let _pinned = ks.reproducible.then(dsp_core::compute::pin_tuned_choices);
     let mut names = Vec::new();
     if plan.fitted.is_none() {
         names.push((STAGE_FIT, WINDOWS));
@@ -479,6 +492,8 @@ pub fn run_plan(
         centre_positions: centres.positions,
         sample_rate_hz: fs,
         total_samples: total,
+        reproducible: ks.reproducible,
+        device: dsp_core::compute::tune::tune_id(client),
     })
 }
 

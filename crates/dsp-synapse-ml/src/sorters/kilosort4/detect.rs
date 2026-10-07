@@ -178,6 +178,95 @@ impl TemplateCentres {
     }
 }
 
+/// Blocks of consecutive centres for [`neighbour_max_kernel`]: each block of `tile_y` centres
+/// with the union of their neighbour centres (`union_rows`, `union_len`; padded to `u_max`), and
+/// every centre's neighbours as positions in its block's union (`local_nb`, laid out like `iC2`).
+/// Centres are numbered along the probe, so a block's union is little more than one centre's
+/// neighbourhood. `tile_y` is the largest power of two whose union of `tile_x`-sample rows fits the
+/// device's shared memory (`tile_x`: the plane width).
+struct NeighbourTiles {
+    union_rows: Handle,
+    union_len: Handle,
+    local_nb: Handle,
+    blocks: usize,
+    u_max: usize,
+    tile_x: usize,
+    tile_y: usize,
+}
+
+impl NeighbourTiles {
+    fn new(client: &Client, centres: &TemplateCentres, max_samples: usize) -> DspResult<Self> {
+        let hw = &client.properties().hardware;
+        let tile_x = LaunchGeometry::plane_lanes(client).max(1) as usize;
+        if max_samples.div_ceil(tile_x) > hw.max_cube_count.0 as usize {
+            return Err(DspError::InvalidConfig(format!("windows of {max_samples} samples exceed the device's cube grid")));
+        }
+        let shared = hw.max_shared_memory_size;
+        let mut tile_y = (hw.max_units_per_cube as usize / tile_x).max(1);
+        tile_y = 1 << (usize::BITS - 1 - tile_y.leading_zeros());
+        loop {
+            let host = Self::build(centres, tile_y);
+            let fits = host.3 * tile_x * size_of::<f32>() <= shared;
+            if fits || tile_y == 1 {
+                if !fits {
+                    return Err(DspError::InvalidConfig(format!(
+                        "a centre's {} neighbours × {tile_x} samples exceed the device's shared memory",
+                        centres.n_neighbours
+                    )));
+                }
+                let (union_rows, union_len, local_nb, u_max) = host;
+                let blocks = union_len.len();
+                return Ok(Self {
+                    union_rows: buffer::upload(client, &union_rows),
+                    union_len: buffer::upload(client, &union_len),
+                    local_nb: buffer::upload(client, &local_nb),
+                    blocks,
+                    u_max,
+                    tile_x,
+                    tile_y,
+                });
+            }
+            tile_y /= 2;
+        }
+    }
+
+    /// `(union_rows [blocks, u_max], union_len [blocks], local_nb [n_neighbours, n_centres], u_max)`.
+    fn build(centres: &TemplateCentres, tile_y: usize) -> (Vec<u32>, Vec<u32>, Vec<u32>, usize) {
+        let (n_centres, n_nb) = (centres.n_centres(), centres.n_neighbours);
+        let blocks = n_centres.div_ceil(tile_y).max(1);
+        let mut unions: Vec<Vec<u32>> = Vec::with_capacity(blocks);
+        let mut local_nb = vec![0u32; n_nb * n_centres];
+        for block in 0..blocks {
+            let members = block * tile_y..((block + 1) * tile_y).min(n_centres);
+            let mut union: Vec<u32> = members.clone().flat_map(|c| (0..n_nb).map(move |j| centres.ic2[j * n_centres + c])).collect();
+            union.sort_unstable();
+            union.dedup();
+            for c in members {
+                for j in 0..n_nb {
+                    let other = centres.ic2[j * n_centres + c];
+                    local_nb[j * n_centres + c] = union.binary_search(&other).expect("neighbour in its block's union") as u32;
+                }
+            }
+            unions.push(union);
+        }
+        let u_max = unions.iter().map(Vec::len).max().unwrap_or(0).max(1);
+        let union_len = unions.iter().map(|u| u.len() as u32).collect();
+        let mut union_rows = vec![0u32; blocks * u_max];
+        for (b, u) in unions.iter().enumerate() {
+            union_rows[b * u_max..b * u_max + u.len()].copy_from_slice(u);
+        }
+        (union_rows, union_len, local_nb, u_max)
+    }
+
+    fn cube_dim(&self) -> CubeDim {
+        CubeDim::new_2d(self.tile_x as u32, self.tile_y as u32)
+    }
+
+    fn cube_count(&self, samples: usize) -> CubeCount {
+        CubeCount::Static(samples.div_ceil(self.tile_x) as u32, self.blocks as u32, 1)
+    }
+}
+
 /// One detected spike.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UniversalSpike {
@@ -211,7 +300,8 @@ pub struct UniversalDetector {
     wtemp: Handle,
     wpca: Handle,
     ic: Handle,
-    ic2: Handle,
+    /// Neighbour blocks of [`neighbour_max_kernel`] (see [`NeighbourTiles`]).
+    tiles: NeighbourTiles,
     weights: Handle,
     /// `Th_universal` per centre.
     heights: Handle,
@@ -254,7 +344,7 @@ impl UniversalDetector {
             wtemp: buffer::upload(client, &templates.wtemp),
             wpca: buffer::upload(client, &templates.wpca),
             ic: buffer::upload(client, &centres.ic),
-            ic2: buffer::upload(client, &centres.ic2),
+            tiles: NeighbourTiles::new(client, centres, max_samples)?,
             weights: buffer::upload(client, &centres.weights),
             heights: buffer::upload(client, &vec![th_universal; n_centres.max(1)]),
             b: buffer::empty::<f32>(client, channels * k * max_samples),
@@ -278,15 +368,15 @@ impl UniversalDetector {
         if n_centres == 0 || samples <= 2 * nt {
             return Ok(Vec::new());
         }
-        let per_row = LaunchGeometry::channels_samples(client, channels * k, samples);
+        let per_channel = LaunchGeometry::channels_samples(client, channels, samples);
         let per_centre = LaunchGeometry::channels_samples(client, n_centres, samples);
         let (b_len, c_len) = (channels * k * samples, n_centres * samples);
         // SAFETY: every array is passed with at most the length it was created with
         unsafe {
             correlate_templates_kernel::launch::<f32>(
                 client,
-                per_row.cube_count,
-                per_row.cube_dim,
+                per_channel.cube_count,
+                per_channel.cube_dim.clone(),
                 BufferArg::from_raw_parts(x.clone(), channels * samples),
                 BufferArg::from_raw_parts(self.wtemp.clone(), k * nt),
                 BufferArg::from_raw_parts(self.b.clone(), b_len),
@@ -294,6 +384,8 @@ impl UniversalDetector {
                 samples as u32,
                 k as u32,
                 nt as u32,
+                per_channel.cube_dim.x,
+                per_channel.cube_dim.y,
             );
             centre_response_kernel::launch::<f32>(
                 client,
@@ -305,22 +397,28 @@ impl UniversalDetector {
                 BufferArg::from_raw_parts(self.a_s.clone(), c_len),
                 BufferArg::from_raw_parts(self.arg.clone(), c_len),
                 samples as u32,
-                k as u32,
                 n_centres as u32,
                 n_chans as u32,
                 centres.n_sizes as u32,
+                k as u32,
             );
+            let tiles = &self.tiles;
             neighbour_max_kernel::launch::<f32>(
                 client,
-                per_centre.cube_count.clone(),
-                per_centre.cube_dim.clone(),
+                tiles.cube_count(samples),
+                tiles.cube_dim(),
                 BufferArg::from_raw_parts(self.a_s.clone(), c_len),
-                BufferArg::from_raw_parts(self.ic2.clone(), centres.ic2.len()),
+                BufferArg::from_raw_parts(tiles.union_rows.clone(), tiles.blocks * tiles.u_max),
+                BufferArg::from_raw_parts(tiles.union_len.clone(), tiles.blocks),
+                BufferArg::from_raw_parts(tiles.local_nb.clone(), centres.ic2.len()),
                 BufferArg::from_raw_parts(self.a_max.clone(), c_len),
                 samples as u32,
                 n_centres as u32,
                 centres.n_neighbours as u32,
                 nt as u32,
+                tiles.tile_x as u32,
+                tiles.tile_y as u32,
+                tiles.u_max as u32,
             );
             local_peak_score_kernel::launch::<f32>(
                 client,
@@ -424,4 +522,63 @@ pub fn detect_universal(
     nt0min: usize,
 ) -> DspResult<Vec<UniversalSpike>> {
     UniversalDetector::new(client, channels, samples, centres, templates, th_universal, nt0min)?.detect(x, samples)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dsp_core::compute::ComputeTarget;
+
+    /// The blocked neighbour maximum equals the plain maximum over `iC2`, on real centres of a
+    /// two-column probe and random responses.
+    #[test]
+    fn neighbour_max_matches_host() {
+        let Ok(target) = ComputeTarget::from_env() else { return };
+        let client = target.client().expect("client");
+        let channels = 64usize;
+        let ids: Vec<usize> = (0..channels).collect();
+        let positions: Vec<[f32; 2]> = (0..channels).map(|c| [(c % 2) as f32 * 32.0, (c / 2) as f32 * 20.0]).collect();
+        let probe = SensorLayout::from_channel_arrays("64ch", &ids, &positions, &vec![0; channels]).expect("probe");
+        let centres = TemplateCentres::new(&probe, &CentreOptions::default()).expect("centres");
+        let (n_centres, samples, nt) = (centres.n_centres(), 333usize, 21usize);
+        let mut state = 0x0bad_cafeu32;
+        let a_s: Vec<f32> = (0..n_centres * samples)
+            .map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (state >> 8) as f32 / (1u32 << 24) as f32
+            })
+            .collect();
+        let tiles = NeighbourTiles::new(&client, &centres, samples).expect("tiles");
+        let out = buffer::empty::<f32>(&client, n_centres * samples);
+        unsafe {
+            neighbour_max_kernel::launch::<f32>(
+                &client,
+                tiles.cube_count(samples),
+                tiles.cube_dim(),
+                BufferArg::from_raw_parts(buffer::upload(&client, &a_s), a_s.len()),
+                BufferArg::from_raw_parts(tiles.union_rows.clone(), tiles.blocks * tiles.u_max),
+                BufferArg::from_raw_parts(tiles.union_len.clone(), tiles.blocks),
+                BufferArg::from_raw_parts(tiles.local_nb.clone(), centres.ic2.len()),
+                BufferArg::from_raw_parts(out.clone(), n_centres * samples),
+                samples as u32,
+                n_centres as u32,
+                centres.n_neighbours as u32,
+                nt as u32,
+                tiles.tile_x as u32,
+                tiles.tile_y as u32,
+                tiles.u_max as u32,
+            );
+        }
+        let got = buffer::download::<f32>(&client, out);
+        for c in 0..n_centres {
+            for t in 0..samples {
+                let want = if t >= nt && t + nt < samples {
+                    (0..centres.n_neighbours).map(|j| a_s[centres.ic2[j * n_centres + c] as usize * samples + t]).fold(0.0f32, f32::max)
+                } else {
+                    0.0
+                };
+                assert_eq!(got[c * samples + t], want, "centre {c} t {t}");
+            }
+        }
+    }
 }
