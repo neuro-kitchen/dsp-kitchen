@@ -1,8 +1,7 @@
 //! The out-of-core sorter returns the same spikes for any batch size, and the same as one pass over
 //! the whole recording (filter → detect → deduplicate).
 
-use cubecl::Runtime;
-use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
+use cubecl::device::WgpuDevice;
 use dsp_base::pipeline::{Pipeline, PipelineStage, PipelineWorkspace};
 use dsp_io::neuro::probe::{Position3D, SensorLayout, SensorSite};
 use dsp_core::{MemoryRecording, RecordingSource};
@@ -120,8 +119,8 @@ fn key(spikes: &[DeduplicatedSpike]) -> Vec<(u64, usize, Vec<usize>)> {
 /// Filter the whole recording in one chunk, detect and deduplicate on the host.
 fn whole_recording(rec: &MemoryRecording, cfg: &StreamingDetectionConfig) -> Vec<DeduplicatedSpike> {
     let n = rec.info().samples as usize;
-    let client = WgpuRuntime::client(&WgpuDevice::default());
-    let mut ws = PipelineWorkspace::<WgpuRuntime>::new(client, pipeline(), CHANNELS, n, FS).unwrap();
+    let client = cubecl::Device::Wgpu(WgpuDevice::default()).client();
+    let mut ws = PipelineWorkspace::new(client, pipeline(), CHANNELS, n, FS).unwrap();
     let halos = cfg.compute_halos(FS, &pipeline()).unwrap();
     let sigmas = calibrate_noise(rec, &mut ws, cfg, halos).unwrap();
     let mut filtered = vec![0.0; rec.data().len()];

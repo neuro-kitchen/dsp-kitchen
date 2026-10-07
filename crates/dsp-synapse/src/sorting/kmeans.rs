@@ -77,7 +77,7 @@ fn sq_dist(a: &[f32], b: &[f32]) -> f64 {
 /// Index drawn with probability proportional to the `n` device `weights` (as the reference
 /// `draw`: one uniform, the first index where the running sum passes it, the last positive weight
 /// on round-off), reading back only the block sums and one block.
-fn draw<R: Runtime>(client: &ComputeClient<R>, weights: &Handle, sums: &[f32], n: usize, rng: &mut Rng) -> usize {
+fn draw(client: &Client, weights: &Handle, sums: &[f32], n: usize, rng: &mut Rng) -> usize {
     let total: f64 = sums.iter().map(|&v| v as f64).sum();
     if !(total > 0.0) {
         return (rng.next_u64() as usize) % n;
@@ -90,7 +90,7 @@ fn draw<R: Runtime>(client: &ComputeClient<R>, weights: &Handle, sums: &[f32], n
             continue;
         }
         let (start, len) = block_of(b);
-        for (i, &w) in buffer::download_range::<R, f32>(client, weights.clone(), start, len).iter().enumerate() {
+        for (i, &w) in buffer::download_range::<f32>(client, weights.clone(), start, len).iter().enumerate() {
             r -= w as f64;
             if r < 0.0 {
                 return start + i;
@@ -100,7 +100,7 @@ fn draw<R: Runtime>(client: &ComputeClient<R>, weights: &Handle, sums: &[f32], n
     // Round-off: the last positive weight
     for b in (0..sums.len()).rev().filter(|&b| sums[b] > 0.0) {
         let (start, len) = block_of(b);
-        let block = buffer::download_range::<R, f32>(client, weights.clone(), start, len);
+        let block = buffer::download_range::<f32>(client, weights.clone(), start, len);
         if let Some(i) = block.iter().rposition(|&w| w > 0.0) {
             return start + i;
         }
@@ -109,19 +109,19 @@ fn draw<R: Runtime>(client: &ComputeClient<R>, weights: &Handle, sums: &[f32], n
 }
 
 /// `updated = min(closest, ‖x − x_candidate‖²)` on the device.
-fn closest_after<R: Runtime>(client: &ComputeClient<R>, points: &DevicePoints, closest: &Handle, candidate: usize) -> Handle {
+fn closest_after(client: &Client, points: &DevicePoints, closest: &Handle, candidate: usize) -> Handle {
     let (n, d) = (points.n, points.d);
-    let updated = buffer::empty::<R, f32>(client, n);
+    let updated = buffer::empty::<f32>(client, n);
     let geom = LaunchGeometry::elementwise(client, n);
     // SAFETY: `points` holds `d · n`, `closest` and `updated` `n` values
     unsafe {
-        closest_update_kernel::launch::<f32, R>(
+        closest_update_kernel::launch::<f32>(
             client,
             geom.cube_count,
             geom.cube_dim,
-            ArrayArg::from_raw_parts(points.handle.clone(), d * n),
-            ArrayArg::from_raw_parts(closest.clone(), n),
-            ArrayArg::from_raw_parts(updated.clone(), n),
+            BufferArg::from_raw_parts(points.handle.clone(), d * n),
+            BufferArg::from_raw_parts(closest.clone(), n),
+            BufferArg::from_raw_parts(updated.clone(), n),
             candidate as u32,
             n as u32,
             d as u32,
@@ -132,7 +132,7 @@ fn closest_after<R: Runtime>(client: &ComputeClient<R>, points: &DevicePoints, c
 
 /// Greedy k-means++ (sklearn): each new centre is the best of `2 + ln k` candidates drawn by
 /// squared distance. `unreached` holds `n` values of `f32::MAX`.
-fn kmeans_plus_plus<R: Runtime>(client: &ComputeClient<R>, points: &DevicePoints, k: usize, unreached: &Handle, rng: &mut Rng) -> Vec<f32> {
+fn kmeans_plus_plus(client: &Client, points: &DevicePoints, k: usize, unreached: &Handle, rng: &mut Rng) -> Vec<f32> {
     let n = points.n;
     let trials = 2 + (k as f64).ln() as usize;
     let first = (rng.next_u64() as usize) % n;
@@ -163,19 +163,19 @@ struct Assignment {
 }
 
 /// Nearest centre and its squared distance for every point.
-fn assign<R: Runtime>(client: &ComputeClient<R>, points: &DevicePoints, centers: &[f32], k: usize, out: &Assignment) {
+fn assign(client: &Client, points: &DevicePoints, centers: &[f32], k: usize, out: &Assignment) {
     let (n, d) = (points.n, points.d);
     let geom = LaunchGeometry::elementwise(client, n);
     // SAFETY: `points` holds `d · n`, the centres `k · d`, `label` and `dist` `n` values
     unsafe {
-        nearest_centre_kernel::launch::<f32, R>(
+        nearest_centre_kernel::launch::<f32>(
             client,
             geom.cube_count,
             geom.cube_dim,
-            ArrayArg::from_raw_parts(points.handle.clone(), d * n),
-            ArrayArg::from_raw_parts(buffer::upload(client, centers), k * d),
-            ArrayArg::from_raw_parts(out.label.clone(), n),
-            ArrayArg::from_raw_parts(out.dist.clone(), n),
+            BufferArg::from_raw_parts(points.handle.clone(), d * n),
+            BufferArg::from_raw_parts(buffer::upload(client, centers), k * d),
+            BufferArg::from_raw_parts(out.label.clone(), n),
+            BufferArg::from_raw_parts(out.dist.clone(), n),
             n as u32,
             d as u32,
             k as u32,
@@ -184,21 +184,21 @@ fn assign<R: Runtime>(client: &ComputeClient<R>, points: &DevicePoints, centers:
 }
 
 /// `(sums [k, d], counts [k])` of the current assignment, split on the device, added in `f64`.
-fn cluster_sums<R: Runtime>(client: &ComputeClient<R>, points: &DevicePoints, label: &Handle, k: usize) -> (Vec<f64>, Vec<usize>) {
+fn cluster_sums(client: &Client, points: &DevicePoints, label: &Handle, k: usize) -> (Vec<f64>, Vec<usize>) {
     let (n, d) = (points.n, points.d);
     let splits = n.div_ceil(SUM_SPLIT).max(1);
-    let (sums, counts) = (buffer::empty::<R, f32>(client, splits * k * d), buffer::empty::<R, u32>(client, splits * k));
+    let (sums, counts) = (buffer::empty::<f32>(client, splits * k * d), buffer::empty::<u32>(client, splits * k));
     let geom = LaunchGeometry::elementwise(client, splits * k * d);
     // SAFETY: `points` holds `d · n`, `label` `n`, `sums` `splits · k · d`, `counts` `splits · k`
     unsafe {
-        cluster_sums_kernel::launch::<f32, R>(
+        cluster_sums_kernel::launch::<f32>(
             client,
             geom.cube_count,
             geom.cube_dim,
-            ArrayArg::from_raw_parts(points.handle.clone(), d * n),
-            ArrayArg::from_raw_parts(label.clone(), n),
-            ArrayArg::from_raw_parts(sums.clone(), splits * k * d),
-            ArrayArg::from_raw_parts(counts.clone(), splits * k),
+            BufferArg::from_raw_parts(points.handle.clone(), d * n),
+            BufferArg::from_raw_parts(label.clone(), n),
+            BufferArg::from_raw_parts(sums.clone(), splits * k * d),
+            BufferArg::from_raw_parts(counts.clone(), splits * k),
             n as u32,
             d as u32,
             k as u32,
@@ -206,7 +206,7 @@ fn cluster_sums<R: Runtime>(client: &ComputeClient<R>, points: &DevicePoints, la
             splits as u32,
         );
     }
-    let (sums, counts) = (buffer::download_prefix::<R, f32>(client, sums, splits * k * d), buffer::download_prefix::<R, u32>(client, counts, splits * k));
+    let (sums, counts) = (buffer::download_prefix::<f32>(client, sums, splits * k * d), buffer::download_prefix::<u32>(client, counts, splits * k));
     let mut total = vec![0.0f64; k * d];
     let mut count = vec![0usize; k];
     for s in 0..splits {
@@ -222,9 +222,9 @@ fn cluster_sums<R: Runtime>(client: &ComputeClient<R>, points: &DevicePoints, la
 
 /// One Lloyd run from `centers`: the final centres, their inertia, and the assignment (on the
 /// device).
-fn lloyd<R: Runtime>(client: &ComputeClient<R>, points: &DevicePoints, k: usize, mut centers: Vec<f32>, max_iter: usize, tol_abs: f64) -> (Vec<f32>, f64, Assignment) {
+fn lloyd(client: &Client, points: &DevicePoints, k: usize, mut centers: Vec<f32>, max_iter: usize, tol_abs: f64) -> (Vec<f32>, f64, Assignment) {
     let (n, d) = (points.n, points.d);
-    let assignment = Assignment { label: buffer::empty::<R, u32>(client, n), dist: buffer::empty::<R, f32>(client, n) };
+    let assignment = Assignment { label: buffer::empty::<u32>(client, n), dist: buffer::empty::<f32>(client, n) };
     for _ in 0..max_iter.max(1) {
         assign(client, points, &centers, k, &assignment);
         let (sums, counts) = cluster_sums(client, points, &assignment.label, k);
@@ -238,7 +238,7 @@ fn lloyd<R: Runtime>(client: &ComputeClient<R>, points: &DevicePoints, k: usize,
                 }
             } else {
                 let far = far.get_or_insert_with(|| {
-                    let dist = buffer::download_prefix::<R, f32>(client, assignment.dist.clone(), n);
+                    let dist = buffer::download_prefix::<f32>(client, assignment.dist.clone(), n);
                     let mut order: Vec<usize> = (0..n).collect();
                     order.sort_by(|&a, &b| dist[b].total_cmp(&dist[a]));
                     order.into_iter()
@@ -261,18 +261,18 @@ fn lloyd<R: Runtime>(client: &ComputeClient<R>, points: &DevicePoints, k: usize,
 }
 
 /// k-means of host points `x` (`[n, d]` row-major) into `k` clusters (`k ≤ n`), uploaded once.
-pub fn kmeans<R: Runtime>(client: &ComputeClient<R>, x: &[f32], n: usize, d: usize, k: usize, options: &KMeansOptions) -> KMeansResult {
+pub fn kmeans(client: &Client, x: &[f32], n: usize, d: usize, k: usize, options: &KMeansOptions) -> KMeansResult {
     kmeans_points(client, &DevicePoints::upload(client, x, n, d), k, options)
 }
 
 /// k-means of device points into `k` clusters (`k ≤ n`). See the module docs.
-pub fn kmeans_points<R: Runtime>(client: &ComputeClient<R>, points: &DevicePoints, k: usize, options: &KMeansOptions) -> KMeansResult {
+pub fn kmeans_points(client: &Client, points: &DevicePoints, k: usize, options: &KMeansOptions) -> KMeansResult {
     kmeans_points_with_progress(client, points, k, options, &mut |_, _| {})
 }
 
 /// [`kmeans_points`], calling `progress(done, total)` after each of the `n_init` restarts.
-pub fn kmeans_points_with_progress<R: Runtime>(
-    client: &ComputeClient<R>,
+pub fn kmeans_points_with_progress(
+    client: &Client,
     points: &DevicePoints,
     k: usize,
     options: &KMeansOptions,
@@ -281,9 +281,9 @@ pub fn kmeans_points_with_progress<R: Runtime>(
     let (n, d) = (points.n, points.d);
     assert!(k >= 1 && k <= n, "kmeans: need 1 ≤ k ≤ n");
     // sklearn: tol scaled by the mean variance of the features (rows of the feature-major points)
-    let (mean, std) = (buffer::empty::<R, f32>(client, d), buffer::empty::<R, f32>(client, d));
-    reduce::row_mean_std::<R, f32>(client, &points.handle, &mean, &std, d, n);
-    let mean_var = buffer::download_prefix::<R, f32>(client, std, d).iter().map(|&s| (s as f64).powi(2)).sum::<f64>() / d.max(1) as f64;
+    let (mean, std) = (buffer::empty::<f32>(client, d), buffer::empty::<f32>(client, d));
+    reduce::row_mean_std::<f32>(client, &points.handle, &mean, &std, d, n);
+    let mean_var = buffer::download_prefix::<f32>(client, std, d).iter().map(|&s| (s as f64).powi(2)).sum::<f64>() / d.max(1) as f64;
     let tol_abs = options.tol * mean_var;
 
     let unreached = buffer::upload(client, &vec![f32::MAX; n]);
@@ -299,7 +299,7 @@ pub fn kmeans_points_with_progress<R: Runtime>(
         progress(restart as u64 + 1, restarts as u64);
     }
     let (centers, inertia, assignment) = best.expect("n_init ≥ 1");
-    let labels = buffer::download_prefix::<R, u32>(client, assignment.label, n).into_iter().map(|l| l as usize).collect();
+    let labels = buffer::download_prefix::<u32>(client, assignment.label, n).into_iter().map(|l| l as usize).collect();
     KMeansResult { centers, labels, inertia }
 }
 
@@ -444,7 +444,7 @@ mod tests {
     struct Fit(Vec<f32>, usize, usize, usize, KMeansOptions);
     impl ComputeTask for Fit {
         type Output = KMeansResult;
-        fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
+        fn run(self, client: Client) -> Self::Output {
             kmeans(&client, &self.0, self.1, self.2, self.3, &self.4)
         }
     }

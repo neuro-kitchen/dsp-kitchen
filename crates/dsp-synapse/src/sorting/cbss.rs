@@ -11,7 +11,7 @@
 //!    of Inter-Spike Intervals ($\text{CoV}_{\text{ISI}} = \sigma_{\text{ISI}} / \mu_{\text{ISI}}$) and
 //!    Pulse-to-Noise Ratio ($\text{PNR}$ in dB).
 
-use cubecl::prelude::{ComputeClient, Runtime};
+use cubecl::prelude::Client;
 use dsp_base::linalg::{FastIcaModel, IcaContrast};
 use serde::{Deserialize, Serialize};
 
@@ -72,9 +72,9 @@ impl ConvolutiveBssDecomposer {
 
     /// Decomposes a multi-channel HD-EMG recording (`[channels, samples]`) into deduplicated Motor
     /// Unit Pulse Trains, fitting ICA on `client`.
-    pub fn decompose<R: Runtime>(
+    pub fn decompose(
         &self,
-        client: &ComputeClient<R>,
+        client: &Client,
         data: &[f32],
         channels: usize,
         samples: usize,
@@ -100,7 +100,7 @@ impl ConvolutiveBssDecomposer {
         }
 
         // 2. Fit FastICA with Cube (kurtosis) contrast over the extended observations
-        let ica = FastIcaModel::fit::<R, f32>(
+        let ica = FastIcaModel::fit::<f32>(
             client,
             &extended,
             ext_channels,
@@ -287,7 +287,7 @@ mod tests {
         struct Decompose<'a>(&'a [f32], usize, usize, f64);
         impl dsp_core::compute::ComputeTask for Decompose<'_> {
             type Output = Vec<MotorUnitPulseTrain>;
-            fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
+            fn run(self, client: Client) -> Self::Output {
                 ConvolutiveBssDecomposer::new(3, 4, 20.0).decompose(&client, self.0, self.1, self.2, self.3)
             }
         }

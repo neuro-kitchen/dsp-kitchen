@@ -9,14 +9,14 @@ use cubecl::prelude::*;
 /// amplitude and gain per start (gain 0 when nothing fits).
 #[cube(launch)]
 pub fn mp_score_kernel(
-    residual: &Array<f32>,
-    row_offsets: &Array<u32>,
-    row_channels: &Array<u32>,
-    row_data: &Array<f32>,
-    energies: &Array<f32>,
-    best_unit: &mut Array<u32>,
-    best_scale: &mut Array<f32>,
-    best_gain: &mut Array<f32>,
+    residual: &[f32],
+    row_offsets: &[u32],
+    row_channels: &[u32],
+    row_data: &[f32],
+    energies: &[f32],
+    best_unit: &mut [u32],
+    best_scale: &mut [f32],
+    best_gain: &mut [f32],
     num_samples: u32,
     num_starts: u32,
     num_units: u32,
@@ -67,13 +67,13 @@ pub fn mp_score_kernel(
 /// row count do nothing). Picks of one pass are at least `t_len` apart, so writes never overlap.
 #[cube(launch)]
 pub fn mp_subtract_kernel(
-    residual: &mut Array<f32>,
-    row_offsets: &Array<u32>,
-    row_channels: &Array<u32>,
-    row_data: &Array<f32>,
-    pick_units: &Array<u32>,
-    pick_starts: &Array<u32>,
-    pick_scales: &Array<f32>,
+    residual: &mut [f32],
+    row_offsets: &[u32],
+    row_channels: &[u32],
+    row_data: &[f32],
+    pick_units: &[u32],
+    pick_starts: &[u32],
+    pick_scales: &[f32],
     num_samples: u32,
     num_picks: u32,
     max_rows: u32,
@@ -99,14 +99,14 @@ pub fn mp_subtract_kernel(
 /// reductions at `starts[i] ± 1` (`starts` are interior: `1 ≤ s < len − 1`).
 #[cube(launch)]
 pub fn mp_gather_picks_kernel(
-    best_unit: &Array<u32>,
-    best_scale: &Array<f32>,
-    best_gain: &Array<f32>,
-    starts: &Array<u32>,
-    out_units: &mut Array<u32>,
-    out_scales: &mut Array<f32>,
-    out_gain_prev: &mut Array<f32>,
-    out_gain_next: &mut Array<f32>,
+    best_unit: &[u32],
+    best_scale: &[f32],
+    best_gain: &[f32],
+    starts: &[u32],
+    out_units: &mut [u32],
+    out_scales: &mut [f32],
+    out_gain_prev: &mut [f32],
+    out_gain_next: &mut [f32],
     picks: u32,
 ) {
     let i = ABSOLUTE_POS as u32;

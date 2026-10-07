@@ -179,8 +179,8 @@ pub struct DedupNeighbours {
 }
 
 impl DedupNeighbours {
-    pub fn new<R: cubecl::prelude::Runtime>(
-        client: &cubecl::prelude::ComputeClient<R>,
+    pub fn new(
+        client: &cubecl::prelude::Client,
         layout: &SensorLayout,
         radius_um: f32,
     ) -> Self {
@@ -223,9 +223,9 @@ impl DedupNeighbours {
 
     /// [`deduplicate_spikes_spatial`] on the device. Only the survival flags and participating
     /// bitmasks (`1 + mask_words` words per crossing) are downloaded.
-    pub fn deduplicate<R: cubecl::prelude::Runtime>(
+    pub fn deduplicate(
         &self,
-        client: &cubecl::prelude::ComputeClient<R>,
+        client: &cubecl::prelude::Client,
         spikes: &[SpikeEvent],
         window_samples: u64,
     ) -> Vec<DeduplicatedSpike> {
@@ -249,29 +249,29 @@ impl DedupNeighbours {
         let channel_ids: Vec<u32> = sorted.iter().map(|e| e.channel_id as u32).collect();
         let magnitudes: Vec<f32> = sorted.iter().map(|e| e.peak_amplitude_uv.abs()).collect();
 
-        let surv_h = buffer::empty::<R, u32>(client, n);
-        let mask_h = buffer::empty::<R, u32>(client, n * self.mask_words);
+        let surv_h = buffer::empty::<u32>(client, n);
+        let mask_h = buffer::empty::<u32>(client, n * self.mask_words);
         let geom = LaunchGeometry::elementwise(client, n);
         // SAFETY: every array is passed with the length it was created with
         unsafe {
-            spatial_dedup_survival_kernel::launch::<R>(
+            spatial_dedup_survival_kernel::launch(
                 client,
                 geom.cube_count,
                 geom.cube_dim,
-                ArrayArg::from_raw_parts(buffer::upload(client, &sample_indices), n),
-                ArrayArg::from_raw_parts(buffer::upload(client, &channel_ids), n),
-                ArrayArg::from_raw_parts(buffer::upload(client, &magnitudes), n),
-                ArrayArg::from_raw_parts(self.offsets_h.clone(), self.offsets.len()),
-                ArrayArg::from_raw_parts(self.channels_h.clone(), self.channels.len().max(1)),
-                ArrayArg::from_raw_parts(surv_h.clone(), n),
-                ArrayArg::from_raw_parts(mask_h.clone(), n * self.mask_words),
+                BufferArg::from_raw_parts(buffer::upload(client, &sample_indices), n),
+                BufferArg::from_raw_parts(buffer::upload(client, &channel_ids), n),
+                BufferArg::from_raw_parts(buffer::upload(client, &magnitudes), n),
+                BufferArg::from_raw_parts(self.offsets_h.clone(), self.offsets.len()),
+                BufferArg::from_raw_parts(self.channels_h.clone(), self.channels.len().max(1)),
+                BufferArg::from_raw_parts(surv_h.clone(), n),
+                BufferArg::from_raw_parts(mask_h.clone(), n * self.mask_words),
                 n as u32,
                 self.mask_words as u32,
                 window_samples as u32,
             );
         }
-        let survives = buffer::download::<R, u32>(client, surv_h);
-        let masks = buffer::download::<R, u32>(client, mask_h);
+        let survives = buffer::download::<u32>(client, surv_h);
+        let masks = buffer::download::<u32>(client, mask_h);
 
         sorted
             .iter()
@@ -300,8 +300,8 @@ impl DedupNeighbours {
 
 /// One-off [`DedupNeighbours::deduplicate`]: builds the neighbour table for this call. Reuse a
 /// [`DedupNeighbours`] when deduplicating more than one batch.
-pub fn deduplicate_spikes_spatial_gpu<R: cubecl::prelude::Runtime>(
-    client: &cubecl::prelude::ComputeClient<R>,
+pub fn deduplicate_spikes_spatial_gpu(
+    client: &cubecl::prelude::Client,
     spikes: &[SpikeEvent],
     layout: &SensorLayout,
     radius_um: f32,
@@ -441,8 +441,8 @@ mod tests {
         struct Task<'a>(&'a [SpikeEvent], &'a SensorLayout, f32, u64);
         impl ComputeTask for Task<'_> {
             type Output = Vec<DeduplicatedSpike>;
-            fn run<R: Runtime>(self, client: ComputeClient<R>) -> Vec<DeduplicatedSpike> {
-                deduplicate_spikes_spatial_gpu::<R>(&client, self.0, self.1, self.2, self.3)
+            fn run(self, client: Client) -> Vec<DeduplicatedSpike> {
+                deduplicate_spikes_spatial_gpu(&client, self.0, self.1, self.2, self.3)
             }
         }
 

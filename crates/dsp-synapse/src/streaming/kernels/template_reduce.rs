@@ -9,11 +9,11 @@ use dsp_core::compute::LaunchGeometry;
 /// channel's segment (total work O(N·K·L)) with Welford updates, so no large sums cancel in f32.
 #[cube(launch)]
 pub fn reduce_channel_templates_kernel(
-    snippets: &Array<f32>,
-    spike_order: &Array<u32>,
-    segment_offsets: &Array<u32>,
-    out_mean: &mut Array<f32>,
-    out_m2: &mut Array<f32>,
+    snippets: &[f32],
+    spike_order: &[u32],
+    segment_offsets: &[u32],
+    out_mean: &mut [f32],
+    out_m2: &mut [f32],
     num_channels: u32,
     elems_per_spike: u32,
 ) {
@@ -53,8 +53,8 @@ pub struct BatchTemplateStats {
 /// Host-side dispatcher executing [`reduce_channel_templates_kernel`] on in-VRAM extracted snippets.
 /// `primary_channels[i]` is the primary channel of snippet `i`; snippets on channels
 /// `>= channels` are ignored.
-pub fn execute_reduce_templates_in_vram<R: Runtime>(
-    client: &ComputeClient<R>,
+pub fn execute_reduce_templates_in_vram(
+    client: &Client,
     snippets_handle: &cubecl::server::Handle,
     primary_channels: &[u32],
     channels: usize,
@@ -96,15 +96,15 @@ pub fn execute_reduce_templates_in_vram<R: Runtime>(
 
     let geom = LaunchGeometry::elementwise(client, total_slots);
     unsafe {
-        reduce_channel_templates_kernel::launch::<R>(
+        reduce_channel_templates_kernel::launch(
             client,
             geom.cube_count,
             geom.cube_dim,
-            ArrayArg::from_raw_parts(snippets_handle.clone(), num_spikes * elems_per_spike),
-            ArrayArg::from_raw_parts(order_handle, order.len()),
-            ArrayArg::from_raw_parts(offsets_handle, channels + 1),
-            ArrayArg::from_raw_parts(out_mean_handle.clone(), total_slots),
-            ArrayArg::from_raw_parts(out_m2_handle.clone(), total_slots),
+            BufferArg::from_raw_parts(snippets_handle.clone(), num_spikes * elems_per_spike),
+            BufferArg::from_raw_parts(order_handle, order.len()),
+            BufferArg::from_raw_parts(offsets_handle, channels + 1),
+            BufferArg::from_raw_parts(out_mean_handle.clone(), total_slots),
+            BufferArg::from_raw_parts(out_m2_handle.clone(), total_slots),
             channels as u32,
             elems_per_spike as u32,
         );

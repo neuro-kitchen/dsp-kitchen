@@ -41,9 +41,9 @@ pub trait PeakLocalizer: Send + Sync {
 /// Polymorphic contract for Stage 5: Template Matching & Collision Deconvolution (matching pursuit or learned separators).
 /// Template matching on a compute device (the caller chooses it; see `dsp_core::compute`).
 pub trait SpikeMatcher: Send + Sync {
-    fn match_spikes<R: cubecl::Runtime>(
+    fn match_spikes(
         &self,
-        client: &cubecl::prelude::ComputeClient<R>,
+        client: &cubecl::prelude::Client,
         data: &[f32],
         channels: usize,
         samples: usize,
