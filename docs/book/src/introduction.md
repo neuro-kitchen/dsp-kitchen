@@ -26,7 +26,7 @@ Rust and compiled for whichever runtime is available: **WebGPU** (Vulkan, Metal,
 
 - `dsp_core::ComputeTarget::available()` lists the runtimes compiled in (GPUs first);
   `ComputeTarget::from_env()` honours `DSP_KITCHEN_RUNTIME`.
-- Algorithms never choose a device: they take a `ComputeClient<R>` for any CubeCL runtime `R`.
+- Algorithms never choose a device: they take a CubeCL `Client`, whatever runtime it was made on.
   Only entry points (CLI, app, Python) pick one.
 - Launch shapes come from the device (`dsp_core::compute::LaunchGeometry`), and where the
   fastest variant depends on the hardware (filter block counts and memory layouts, FIR direct vs

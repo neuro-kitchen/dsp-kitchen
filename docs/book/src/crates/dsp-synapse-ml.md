@@ -19,7 +19,7 @@ Every sorter and model carries a [`Provenance`](#provenance); results can always
 - Generic DSP or clustering (dsp-base, dsp-synapse), file formats (dsp-io), network code
   (dsp-synapse-hub).
 - Invented weights: an entry without a verified artifact is not shipped.
-- Device selection: GPU stages take a `ComputeClient<R>`; models take an explicit `ComputeTarget`.
+- Device selection: GPU stages take a cubecl `Client`; models take an explicit `ComputeTarget`.
 
 ## Features
 

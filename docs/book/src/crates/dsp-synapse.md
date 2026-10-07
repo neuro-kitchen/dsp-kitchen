@@ -18,7 +18,7 @@ files. Built on [dsp-base](dsp-base.md) primitives and [dsp-io](dsp-io.md) files
 ### Must not contain
 - File layouts (dsp-io), generic DSP (dsp-base), probe geometry (dsp-io `neuro::probe`).
 - Sorters reimplemented from papers or pretrained networks (dsp-synapse-ml).
-- Device selection: GPU entry points take a `ComputeClient<R>`.
+- Device selection: GPU entry points take a cubecl `Client`.
 
 ## Module map
 
@@ -105,7 +105,7 @@ one unit per primary channel. Any batch size gives the whole-recording result.
 
 ## Design rules
 
-1. Algorithms take a `ComputeClient<R>`; nothing chooses a device.
+1. Algorithms take a cubecl `Client`; nothing chooses a device.
 2. Generic DSP lives in dsp-base, file layouts in dsp-io; this crate composes them.
 3. Undefined results are NaN; documented names say what an algorithm really is (for example
    matching pursuit, not OMP; KDE valley merge, not IsoSplit).

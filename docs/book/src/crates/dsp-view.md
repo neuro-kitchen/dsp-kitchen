@@ -93,7 +93,7 @@ Data already on the device (for example after a processing pipeline):
 
 ```rust,ignore
 let columns = view.columns();
-let env = dsp_view::envelope_on_device::<R, f32>(&client, &handle, channels, samples, first, columns)?;
+let env = dsp_view::envelope_on_device::<f32>(&client, &handle, channels, samples, first, columns)?;
 ```
 
 ## Reference

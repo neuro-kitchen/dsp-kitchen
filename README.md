@@ -5,6 +5,12 @@
 > rewired to the reorganized crates and Curation is parked. Kilosort4 and EMUsort run over whole recordings
 > (preprocessing, universal templates, detection); their clustering and deconvolution stages are
 > not implemented yet. Nothing here is released; APIs change.
+>
+> **Device size limit.** GPU kernels index buffers with 32-bit integers (WebGPU has no 64-bit
+> integers, and one kernel source serves every runtime). One window or batch on the device can
+> hold at most 2³² − 1 values (≈ 4.29 · 10⁹), e.g. 384 channels × 11.1 million samples. Larger
+> requests (a very large `batch_size`) are refused with an error rather than computed wrongly;
+> use smaller batches.
 
 GPU-accelerated digital signal processing for multi-channel recordings, in Rust, with a focus on
 neural and muscle electrophysiology: filtering, resampling, spatial operators, spike detection,

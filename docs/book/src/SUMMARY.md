@@ -15,6 +15,17 @@
 - [dsp-view](crates/dsp-view.md)
 - [dsp-app](crates/dsp-app.md)
 
+# GPU engineering
+
+- [Overview](gpu/index.md)
+  - [Why matrix multiplication matters](gpu/matmul.md)
+  - [Case study: covariance](gpu/covariance.md)
+  - [Case study: HDBSCAN](gpu/hdbscan.md)
+  - [Case study: exact median](gpu/selection.md)
+  - [Case study: when the review was wrong](gpu/eigen.md)
+  - [Moving data to the device](gpu/data-movement.md)
+  - [Pitfalls](gpu/pitfalls.md)
+
 # Sorters
 
 - [Overview](sorters/index.md)

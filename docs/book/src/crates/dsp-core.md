@@ -14,7 +14,7 @@ channel masks, chunk scheduling, the recording-source abstraction, and compute-r
 - Neural, probe, or sorting concepts (probe geometry, spikes, units/clusters, Phy/Kilosort formats).
 - ML concepts (model errors, inference).
 - File-format implementations (those live in `dsp-io`).
-- DSP algorithms or kernels (those take a `ComputeClient<R>` from here and live in algorithm crates).
+- DSP algorithms or kernels (those take a cubecl `Client` from here and live in algorithm crates).
 
 ## Features
 
@@ -129,7 +129,8 @@ WindowLoader::new(&source).stream(schedule.windows(), |window, raw| {
 | Item | Purpose |
 |---|---|
 | `ComputeTarget` | `Wgpu`, `Cpu`, `Cuda`, `Hip`. One name used by CLI, Python, app and `DSP_KITCHEN_RUNTIME`. `parse`, `available`, `from_env`, `checked`. |
-| `ComputeTask` + `ComputeTarget::run` | Run generic `R: Runtime` work on the selected target's default device. |
+| `ComputeTarget::device` / `client` | The `cubecl::Device` / `Client` of the target's default device. |
+| `ComputeTask` + `ComputeTarget::run` | Run work with that client. |
 | `LaunchGeometry` | Cube dims/counts from runtime properties: `elementwise`, `channels_samples`, `per_sample`, `per_channel`, `per_row` (one cube per row, power-of-two cube for tree reductions; `row_position`), `plane_lanes`. |
 | `tune` | `tune_id` (per-device autotune key), `size_class` (power-of-two bucketing). |
 | `bench` | `sync`, `time_device` (median wall time including device completion). |
@@ -156,7 +157,7 @@ dsp-cli (a terminal bar on stderr); both estimate the time left from the rate.
 1. **Exact time.** Sample ↔ time conversion goes through `RationalTime` / `SampleRate` ratios,
    never accumulated `f64`.
 2. **Units are data, not assumptions.** Values carry their `SignalUnit`; nothing in core assumes µV.
-3. **Algorithms never pick a device.** They take a `ComputeClient<R>`; only entry points (CLI,
+3. **Algorithms never pick a device.** They take a cubecl `Client`; only entry points (CLI,
    Python, app) choose a `ComputeTarget`.
 4. **Launch geometry comes from the runtime**, not constants.
 

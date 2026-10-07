@@ -28,32 +28,23 @@ network access for model artifacts.
 ### Choosing a runtime
 
 ```rust,ignore
-use dsp_core::compute::{ComputeTarget, ComputeTask};
-use cubecl::prelude::*;
-
-struct Filter<'a> { data: &'a [f32] }
-
-impl ComputeTask for Filter<'_> {
-    type Output = Vec<f32>;
-    fn run<R: Runtime>(self, client: ComputeClient<R>) -> Vec<f32> {
-        // any dsp-base / dsp-synapse algorithm, generic over R
-        # unimplemented!()
-    }
-}
+use dsp_core::compute::ComputeTarget;
 
 let target = ComputeTarget::from_env()?;   // DSP_KITCHEN_RUNTIME, else the first compiled-in
-let out = target.run(Filter { data: &samples })?;
+let client = target.client()?;             // a cubecl `Client` for that runtime's default device
+// pass `&client` to any dsp-base / dsp-synapse algorithm
 ```
 
 - Runtimes are Cargo features of `dsp-core` (`wgpu`, `cuda`, `hip`, `cpu`); `available()` lists the
-  compiled-in ones, GPUs first.
-- **Libraries never call `from_env`.** Every algorithm takes a `ComputeClient<R>` (or, for the few
+  compiled-in ones, GPUs first. `ComputeTarget::device()` gives the `cubecl::Device`, `client()` its
+  client; `ComputeTask` + `run` remain for callers that hand work to a target.
+- **Libraries never call `from_env`.** Every algorithm takes a cubecl `Client` (or, for the few
   host-orchestrated APIs, an explicit `ComputeTarget`). This keeps one device per run and lets the
   caller decide.
 
 ### Kernels
 
-- Generic over the float type: kernels take `F: Float`, dispatchers `<R: Runtime, F: DspFloat>`.
+- Generic over the float type: kernels take `F: Float`, dispatchers `<F: DspFloat>`. Since cubecl 0.11 there is no runtime generic: a `Client` is resolved when it is made.
 - Buffers are typed (`dsp_base::core::buffer`): sizes come from the element type, never a byte
   literal; reusable buffers go through `Scratch` or are kept by the struct that uses them;
   `download_prefix` / `download_range` read only the part of a buffer in use.
