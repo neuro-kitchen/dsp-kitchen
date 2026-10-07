@@ -33,7 +33,7 @@ dsp-io = { path = "crates/dsp-io" }
 dsp_kitchen_py = { path = "dsp_kitchen_py" }
 
 # Compute & Tensors
-cubecl = { version = "0.11.0", default-features = false, features = ["std"] }
+cubecl = { version = "0.11.0", default-features = false, features = ["std", "stdlib"] }
 # Kernel library on CubeCL (matmul); CubeCL itself has no matmul since 0.11
 cubek-matmul = "0.3.0"
 cubek-std = "0.3.0"
