@@ -8,8 +8,8 @@ description = "Neuro spike sorters reimplemented from their papers (Kilosort4, E
 
 [features]
 default = ["wgpu", "flex"]
-wgpu = ["dep:burn-wgpu", "cubecl/wgpu", "dsp-base/wgpu"]
-flex = ["dep:burn-flex"]
+wgpu = ["burn-tensor/wgpu", "cubecl/wgpu", "dsp-base/wgpu"]
+flex = ["burn-tensor/flex"]
 # Resolve catalog ids to verified local files (network access through dsp-synapse-hub)
 hub = ["dep:dsp-synapse-hub", "dep:anyhow"]
 cpu = ["cubecl/cpu", "dsp-base/cpu"]
@@ -21,8 +21,6 @@ dsp-base.workspace = true
 dsp-synapse.workspace = true
 dsp-io = { workspace = true, features = ["neuro"] }
 burn-tensor.workspace = true
-burn-flex = { workspace = true, optional = true }
-burn-wgpu = { workspace = true, optional = true }
 onnx-ir.workspace = true
 safetensors.workspace = true
 cubecl.workspace = true
