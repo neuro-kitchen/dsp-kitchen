@@ -1,6 +1,7 @@
 //! Typed device buffers: sizes come from the element type, never from a literal byte count.
 
 use cubecl::prelude::*;
+use cubecl::bytes::Bytes;
 use cubecl::server::Handle;
 use dsp_core::compute::MAX_DEVICE_ELEMENTS;
 
@@ -26,12 +27,32 @@ pub fn empty<E: CubeElement>(client: &Client, len: usize) -> Handle {
 /// If `data` holds more than [`MAX_DEVICE_ELEMENTS`] elements (see [`bytes`]).
 pub fn upload<E: CubeElement>(client: &Client, data: &[E]) -> Handle {
     bytes::<E>(data.len());
-    client.create_from_slice(E::as_bytes(data))
+    // `create` with owned bytes: `create_from_slice` copies through a slower general path
+    // (≈2–3× longer for a 92 MB window on wgpu and CUDA; `tests/bench_upload.rs`)
+    client.create(Bytes::from_elems(data.to_vec()))
 }
 
-/// Device buffer of `len` zeros.
-pub fn zeros<E: CubeElement + Default>(client: &Client, len: usize) -> Handle {
-    upload(client, &vec![E::default(); len.max(1)])
+/// Writes `data` to the start of the existing device buffer `handle` (which holds at least
+/// `data.len()` elements of `E`): no allocation, enqueued after the work already queued on the
+/// client's stream, so a buffer reused every window is not overwritten before the previous window's
+/// kernels have read it.
+pub fn write<E: CubeElement>(client: &Client, handle: &Handle, data: &[E]) {
+    bytes::<E>(data.len());
+    client.write(handle, Bytes::from_elems(data.to_vec()));
+}
+
+/// [`write`] taking ownership of `data`: the bytes move into the transfer without a copy (useful
+/// when the buffer was filled on another thread, e.g. a read-ahead loader).
+pub fn write_owned<E: CubeElement>(client: &Client, handle: &Handle, data: Vec<E>) {
+    bytes::<E>(data.len());
+    client.write(handle, Bytes::from_elems(data));
+}
+
+/// Device buffer of `len` zeros, filled on the device (cubecl-std's zero kernel): nothing is
+/// uploaded.
+pub fn zeros<E: CubeElement + Scalar>(client: &Client, len: usize) -> Handle {
+    bytes::<E>(len);
+    cubecl::std::tensor::TensorHandle::zeros(client, [len.max(1)], E::elem_type_native()).handle
 }
 
 /// Host copy of a device buffer of `E` (waits for the queued work that writes it).

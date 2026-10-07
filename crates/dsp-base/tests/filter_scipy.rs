@@ -99,6 +99,11 @@ fn device_kernel_matches_scipy() {
     }
 }
 
+/// Limits (fractions of the signal's peak) of [`device_low_cutoffs_match_f64_reference`]: passes
+/// that start from a steady state or run zero-phase, and forward passes from rest.
+const LOW_CUTOFF_TOLERANCE: f64 = 2.5e-5;
+const REST_LOW_CUTOFF_TOLERANCE: f64 = 2e-4;
+
 #[test]
 fn device_low_cutoffs_match_f64_reference() {
     // Poles next to z = 1: plain f32 direct form II is off by tens of µV here.
@@ -122,11 +127,19 @@ fn device_low_cutoffs_match_f64_reference() {
             (FilterMode::ForwardBackward, FilterStart::Rest, &expected_fb),
         ] {
             let got = &run_device(&sos, mode, start, &x, 1)[0];
-            let err = max_abs_diff(got, expected);
-            // The 0.5 Hz high-pass sits at the f32 rounding floor: measured 1.89e-5–1.97e-5 of the
-            // amplitude across time-block splits (one block 1.95e-5), so the limit leaves margin
-            // for summation order. Plain f32 direct form II is ~1e-2 here.
-            assert!(err < 2.5e-5 * scale, "{name} {mode:?} {start:?}: max error {err}");
+            let err = max_abs_diff(got, expected) / scale;
+            // Steady-state starts and zero-phase passes sit at the f32 rounding floor (measured
+            // 1.89e-5–1.97e-5 of the peak for the 0.5 Hz high-pass; plain f32 direct form II is
+            // ~1e-2). A forward pass from rest feeds the −500 DC level in as a step, whose slow
+            // response exposes how rounding the coefficients to f32 moves poles next to z = 1:
+            // the f64 state-variable filter with those rounded coefficients is itself ~1.1e-4 off
+            // this reference (measured on the high-pass), so those passes get their own limit.
+            let limit = if start == FilterStart::Rest && mode == FilterMode::Forward && name != "notch 60 Hz Q30" {
+                REST_LOW_CUTOFF_TOLERANCE
+            } else {
+                LOW_CUTOFF_TOLERANCE
+            };
+            assert!(err < limit, "{name} {mode:?} {start:?}: max error {err:.2e} of the peak (limit {limit:.1e})");
         }
     }
 }
