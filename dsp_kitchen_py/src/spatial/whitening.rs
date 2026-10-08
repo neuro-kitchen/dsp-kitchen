@@ -7,11 +7,23 @@ use dsp_base::spatial::SpatialWhitening;
 use dsp_core::compute::ComputeTask;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
 
 use crate::array::{runtime_error, to_numpy, F32Array};
 use crate::pipeline::run_stage;
 use crate::runtime::target;
 
+/// Spatial (ZCA) whitening fitted on data: decorrelates channels and scales them to unit variance,
+/// `W = U (Λ + ε I)^(−1/2) Uᵀ` from the channel covariance (eigenvalues `Λ`, eigenvectors `U`).
+///
+/// Fit it with `fit_zca` (all channels together) or `fit_local_knn` (each channel over its nearest
+/// contacts, as Kilosort4 does), then use it as a pipeline stage or with `run`.
+///
+/// Examples
+/// --------
+/// >>> w = SpatialWhitening.fit_zca(x, epsilon=1e-6)
+/// >>> y = w.run(x)                                   # or Pipeline([..., w])
+#[gen_stub_pyclass]
 #[pyclass(name = "SpatialWhitening", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PySpatialWhitening {
@@ -58,16 +70,40 @@ fn fit(py: Python<'_>, data: &Bound<'_, PyAny>, fit: Fit<'_>, epsilon: f32, runt
     Ok(PySpatialWhitening { inner })
 }
 
+#[gen_stub_pymethods]
 #[pymethods]
 impl PySpatialWhitening {
-    /// ZCA whitening of all channels from `data` (`[channels, samples]`).
+    /// Fits ZCA whitening over all channels.
+    ///
+    /// Parameters
+    /// ----------
+    /// data : numpy.ndarray
+    ///     `[channels, samples]`, converted to float32.
+    /// epsilon : float
+    ///     Added to the covariance eigenvalues (regularization; avoids blowing up near-silent
+    ///     directions). Required: its right value depends on the data's scale.
+    /// runtime : str, optional
+    ///     Compute runtime (`"wgpu"`, `"cuda"`, `"cpu"`, …); default: the current one.
     #[staticmethod]
     #[pyo3(signature = (data, *, epsilon, runtime=None))]
     fn fit_zca(py: Python<'_>, data: Bound<'_, PyAny>, epsilon: f32, runtime: Option<&str>) -> PyResult<Self> {
         fit(py, &data, Fit::Zca, epsilon, runtime)
     }
 
-    /// ZCA whitening of each channel over its `k_neighbors` nearest contacts (`positions` in µm).
+    /// Fits local ZCA whitening: each channel is whitened over its `k_neighbors` nearest contacts.
+    ///
+    /// Parameters
+    /// ----------
+    /// data : numpy.ndarray
+    ///     `[channels, samples]`, converted to float32.
+    /// positions : list of (float, float)
+    ///     `(x, y)` of each channel's contact, µm.
+    /// k_neighbors : int
+    ///     Contacts in each neighbourhood (the channel included).
+    /// epsilon : float
+    ///     Added to the covariance eigenvalues (see `fit_zca`).
+    /// runtime : str, optional
+    ///     Compute runtime (`"wgpu"`, `"cuda"`, `"cpu"`, …); default: the current one.
     #[staticmethod]
     #[pyo3(signature = (data, positions, k_neighbors, *, epsilon, runtime=None))]
     fn fit_local_knn(py: Python<'_>, data: Bound<'_, PyAny>, positions: Vec<[f32; 2]>, k_neighbors: usize, epsilon: f32, runtime: Option<&str>) -> PyResult<Self> {
@@ -75,17 +111,32 @@ impl PySpatialWhitening {
     }
 
     #[getter]
+    /// Number of channels it whitens.
     fn num_channels(&self) -> usize {
         self.inner.num_channels
     }
 
-    /// The `[channels, channels]` whitening matrix.
+    /// The whitening matrix, `[channels, channels]` float32 (`y = W · x`).
+    #[gen_stub(override_return_type(type_repr = "numpy.typing.NDArray[numpy.float32]", imports = ("numpy", "numpy.typing")))]
     fn matrix<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let c = self.inner.num_channels;
         to_numpy(py, self.inner.matrix.clone(), &[c, c])
     }
 
-    /// Whitens `data` (`[channels, samples]`) on the device.
+    /// Whitens data on the device (`y = W · x`).
+    ///
+    /// Parameters
+    /// ----------
+    /// data : numpy.ndarray
+    ///     `[channels, samples]`, converted to float32.
+    /// runtime : str, optional
+    ///     Compute runtime (`"wgpu"`, `"cuda"`, `"cpu"`, …); default: the current one.
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray
+    ///     `[channels, samples]` float32.
+    #[gen_stub(override_return_type(type_repr = "numpy.typing.NDArray[numpy.float32]", imports = ("numpy", "numpy.typing")))]
     #[pyo3(signature = (data, *, runtime=None))]
     fn run<'py>(&self, py: Python<'py>, data: Bound<'py, PyAny>, runtime: Option<&str>) -> PyResult<Bound<'py, PyAny>> {
         run_stage(py, PipelineStage::SpatialWhitening(self.inner.clone()), &data, None, runtime)

@@ -9,6 +9,7 @@ use dsp_base::linalg::{FastIcaModel, IcaContrast, PcaModel, PpcaModel};
 use dsp_core::compute::ComputeTask;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
 
 use crate::array::{runtime_error, to_numpy, F32Array};
 use crate::runtime::target;
@@ -104,28 +105,60 @@ fn vector<'py>(py: Python<'py>, v: &[f32]) -> PyResult<Bound<'py, PyAny>> {
     to_numpy(py, v.to_vec(), &[v.len()])
 }
 
+/// Principal component analysis, fitted on the device (scikit-learn's `PCA` semantics: centred data).
+///
+/// Parameters
+/// ----------
+/// n_components : int, optional
+///     Components kept; default: as many as channels.
+///
+/// Examples
+/// --------
+/// >>> from dsp_kitchen.linalg import PCA
+/// >>> pca = PCA(3).fit(x)                 # x: [channels, samples]
+/// >>> z = pca.transform(x)                # [3, samples]
+/// >>> pca.explained_variance_ratio
+#[gen_stub_pyclass]
 #[pyclass(name = "PCA")]
 pub struct PyPca {
     model: Option<Fitted>,
     n_components: Option<usize>,
 }
 
+#[gen_stub_pymethods]
 #[pymethods]
 impl PyPca {
+    /// See the class docs.
     #[new]
     #[pyo3(signature = (n_components=None))]
     fn new(n_components: Option<usize>) -> Self {
         Self { model: None, n_components }
     }
 
-    /// Fits on `data` (`[channels, samples]`); returns the model, so calls chain.
+    /// Fits the model on `data` and returns it, so calls chain (`PCA(3).fit(x).transform(x)`).
+    ///
+    /// Parameters
+    /// ----------
+    /// data : numpy.ndarray
+    ///     `[channels, samples]`: channels are the features, samples the observations (the transpose
+    ///     of scikit-learn's `[n_samples, n_features]`).
+    /// runtime : str, optional
+    ///     Compute runtime (`"wgpu"`, `"cuda"`, `"cpu"`, …); default: the current one.
     #[pyo3(signature = (data, *, runtime=None))]
     fn fit<'py>(mut slf: PyRefMut<'py, Self>, data: Bound<'py, PyAny>, runtime: Option<&str>) -> PyResult<PyRefMut<'py, Self>> {
         slf.model = Some(fit(data.py(), &data, Model::Pca, slf.n_components, runtime)?);
         Ok(slf)
     }
 
-    /// `[components, samples]` coordinates of `data`, projected on the device.
+    /// Coordinates of `data` on the components, `[components, samples]` float32 (on the device).
+    ///
+    /// Parameters
+    /// ----------
+    /// data : numpy.ndarray
+    ///     `[channels, samples]`, with the channels the model was fitted on.
+    /// runtime : str, optional
+    ///     Compute runtime (`"wgpu"`, `"cuda"`, `"cpu"`, …); default: the current one.
+    #[gen_stub(override_return_type(type_repr = "numpy.typing.NDArray[numpy.float32]", imports = ("numpy", "numpy.typing")))]
     #[pyo3(signature = (data, *, runtime=None))]
     fn transform<'py>(&self, py: Python<'py>, data: Bound<'py, PyAny>, runtime: Option<&str>) -> PyResult<Bound<'py, PyAny>> {
         let Some(model @ Fitted::Pca(m)) = &self.model else { return Err(not_fitted()) };
@@ -136,26 +169,33 @@ impl PyPca {
         to_numpy(py, out, &[m.num_components, samples])
     }
 
-    /// `[components, channels]` principal axes.
+    /// Principal axes, `[components, channels]` float32 (unit vectors).
+    #[gen_stub(override_return_type(type_repr = "numpy.typing.NDArray[numpy.float32]", imports = ("numpy", "numpy.typing")))]
     #[getter]
     fn components<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let Some(Fitted::Pca(m)) = &self.model else { return Err(not_fitted()) };
         to_numpy(py, m.components.clone(), &[m.num_components, m.num_channels])
     }
 
+    /// Mean of each channel over the fitted samples, `[channels]` float32.
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "numpy.typing.NDArray[numpy.float32]", imports = ("numpy", "numpy.typing")))]
     fn mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let Some(Fitted::Pca(m)) = &self.model else { return Err(not_fitted()) };
         vector(py, &m.mean)
     }
 
+    /// Variance along each component, `[components]` float32 (in the data's unit squared).
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "numpy.typing.NDArray[numpy.float32]", imports = ("numpy", "numpy.typing")))]
     fn explained_variance<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let Some(Fitted::Pca(m)) = &self.model else { return Err(not_fitted()) };
         vector(py, &m.explained_variance)
     }
 
+    /// Fraction of the total variance along each component, `[components]` float32.
     #[getter]
+    #[gen_stub(override_return_type(type_repr = "numpy.typing.NDArray[numpy.float32]", imports = ("numpy", "numpy.typing")))]
     fn explained_variance_ratio<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let Some(Fitted::Pca(m)) = &self.model else { return Err(not_fitted()) };
         vector(py, &m.explained_variance_ratio)
@@ -166,28 +206,54 @@ impl PyPca {
     }
 }
 
+/// Probabilistic PCA (Tipping & Bishop, maximum likelihood), fitted on the device: PCA with an
+/// isotropic noise model, so it reconstructs data and gives the noise variance.
+///
+/// Parameters
+/// ----------
+/// n_components : int, optional
+///     Latent dimensions; default: as many as channels.
+#[gen_stub_pyclass]
 #[pyclass(name = "PPCA")]
 pub struct PyPpca {
     model: Option<Fitted>,
     n_components: Option<usize>,
 }
 
+#[gen_stub_pymethods]
 #[pymethods]
 impl PyPpca {
+    /// See the class docs.
     #[new]
     #[pyo3(signature = (n_components=None))]
     fn new(n_components: Option<usize>) -> Self {
         Self { model: None, n_components }
     }
 
-    /// Fits on `data` (`[channels, samples]`) (Tipping & Bishop maximum likelihood).
+    /// Fits the model on `data` and returns it, so calls chain (`PPCA(3).fit(x).transform(x)`).
+    ///
+    /// Parameters
+    /// ----------
+    /// data : numpy.ndarray
+    ///     `[channels, samples]`: channels are the features, samples the observations (the transpose
+    ///     of scikit-learn's `[n_samples, n_features]`).
+    /// runtime : str, optional
+    ///     Compute runtime (`"wgpu"`, `"cuda"`, `"cpu"`, …); default: the current one.
     #[pyo3(signature = (data, *, runtime=None))]
     fn fit<'py>(mut slf: PyRefMut<'py, Self>, data: Bound<'py, PyAny>, runtime: Option<&str>) -> PyResult<PyRefMut<'py, Self>> {
         slf.model = Some(fit(data.py(), &data, Model::Ppca, slf.n_components, runtime)?);
         Ok(slf)
     }
 
-    /// `[components, samples]` posterior means of the latent coordinates, on the device.
+    /// Posterior means of the latent coordinates, `[components, samples]` float32 (on the device).
+    ///
+    /// Parameters
+    /// ----------
+    /// data : numpy.ndarray
+    ///     `[channels, samples]`, with the channels the model was fitted on.
+    /// runtime : str, optional
+    ///     Compute runtime (`"wgpu"`, `"cuda"`, `"cpu"`, …); default: the current one.
+    #[gen_stub(override_return_type(type_repr = "numpy.typing.NDArray[numpy.float32]", imports = ("numpy", "numpy.typing")))]
     #[pyo3(signature = (data, *, runtime=None))]
     fn transform<'py>(&self, py: Python<'py>, data: Bound<'py, PyAny>, runtime: Option<&str>) -> PyResult<Bound<'py, PyAny>> {
         let Some(model @ Fitted::Ppca(m)) = &self.model else { return Err(not_fitted()) };
@@ -198,7 +264,18 @@ impl PyPpca {
         to_numpy(py, out, &[m.num_components, samples])
     }
 
-    /// `[channels, samples]` reconstruction of latent coordinates `z` (`[components, samples]`).
+    /// Data reconstructed from latent coordinates.
+    ///
+    /// Parameters
+    /// ----------
+    /// z : numpy.ndarray
+    ///     `[components, samples]` (e.g. from `transform`).
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray
+    ///     `[channels, samples]` float32.
+    #[gen_stub(override_return_type(type_repr = "numpy.typing.NDArray[numpy.float32]", imports = ("numpy", "numpy.typing")))]
     fn reconstruct<'py>(&self, py: Python<'py>, z: Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
         let Some(Fitted::Ppca(m)) = &self.model else { return Err(not_fitted()) };
         let input = F32Array::new(&z)?;
@@ -207,6 +284,7 @@ impl PyPpca {
         to_numpy(py, out, &[m.num_channels, samples])
     }
 
+    /// Variance of the isotropic noise (σ² of the model), in the data's unit squared.
     #[getter]
     fn noise_variance(&self) -> PyResult<f32> {
         let Some(Fitted::Ppca(m)) = &self.model else { return Err(not_fitted()) };
@@ -218,6 +296,20 @@ impl PyPpca {
     }
 }
 
+/// Independent component analysis (FastICA, scikit-learn's defaults): whitening on the device,
+/// fixed-point iterations on the host.
+///
+/// Parameters
+/// ----------
+/// n_components : int, optional
+///     Sources estimated; default: as many as channels.
+/// fun : {"logcosh", "cube", "skew"}, default "logcosh"
+///     Contrast function (`logcosh` for general sources, `cube` for super-Gaussian ones, `skew` for
+///     skewed ones).
+/// max_iter : int, default 200
+/// tol : float, default 1e-4
+///     Convergence tolerance on the unmixing vectors.
+#[gen_stub_pyclass]
 #[pyclass(name = "FastICA")]
 pub struct PyFastIca {
     model: Option<Fitted>,
@@ -227,9 +319,10 @@ pub struct PyFastIca {
     tol: f32,
 }
 
+#[gen_stub_pymethods]
 #[pymethods]
 impl PyFastIca {
-    /// `fun`: `"logcosh"`, `"cube"` or `"skew"`.
+    /// See the class docs.
     #[new]
     #[pyo3(signature = (n_components=None, *, fun=ICA_DEFAULT_FUN, max_iter=ICA_DEFAULT_MAX_ITER, tol=ICA_DEFAULT_TOL))]
     fn new(n_components: Option<usize>, fun: &str, max_iter: usize, tol: f32) -> PyResult<Self> {
@@ -242,7 +335,15 @@ impl PyFastIca {
         Ok(Self { model: None, n_components, contrast, max_iter, tol })
     }
 
-    /// Fits on `data` (`[channels, samples]`): whitening on the device, iterations on the host.
+    /// Fits the model on `data` and returns it, so calls chain (`FastICA(3).fit(x).transform(x)`).
+    ///
+    /// Parameters
+    /// ----------
+    /// data : numpy.ndarray
+    ///     `[channels, samples]`: channels are the features, samples the observations (the transpose
+    ///     of scikit-learn's `[n_samples, n_features]`).
+    /// runtime : str, optional
+    ///     Compute runtime (`"wgpu"`, `"cuda"`, `"cpu"`, …); default: the current one.
     #[pyo3(signature = (data, *, runtime=None))]
     fn fit<'py>(mut slf: PyRefMut<'py, Self>, data: Bound<'py, PyAny>, runtime: Option<&str>) -> PyResult<PyRefMut<'py, Self>> {
         let model = Model::Ica { contrast: slf.contrast, max_iter: slf.max_iter, tol: slf.tol };
@@ -250,7 +351,13 @@ impl PyFastIca {
         Ok(slf)
     }
 
-    /// `[components, samples]` sources of `data` (on the host).
+    /// Estimated sources of `data`, `[components, samples]` float32.
+    ///
+    /// Parameters
+    /// ----------
+    /// data : numpy.ndarray
+    ///     `[channels, samples]`, with the channels the model was fitted on.
+    #[gen_stub(override_return_type(type_repr = "numpy.typing.NDArray[numpy.float32]", imports = ("numpy", "numpy.typing")))]
     fn transform<'py>(&self, py: Python<'py>, data: Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
         let Some(Fitted::Ica(m)) = &self.model else { return Err(not_fitted()) };
         let input = F32Array::new(&data)?;
@@ -259,7 +366,8 @@ impl PyFastIca {
         to_numpy(py, out, &[m.num_components, samples])
     }
 
-    /// `[components, channels]` unmixing matrix.
+    /// Unmixing matrix, `[components, channels]` float32 (`sources = W · (x − mean)`).
+    #[gen_stub(override_return_type(type_repr = "numpy.typing.NDArray[numpy.float32]", imports = ("numpy", "numpy.typing")))]
     #[getter]
     fn unmixing<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let Some(Fitted::Ica(m)) = &self.model else { return Err(not_fitted()) };

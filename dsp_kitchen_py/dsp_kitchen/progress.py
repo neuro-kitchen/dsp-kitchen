@@ -27,7 +27,15 @@ def _clock(seconds):
 
 
 class ProgressBar:
-    """One bar per stage of a run: ``[2/4] Finding clips  12/40 windows  0:05 < 0:12``."""
+    """One bar per stage of a run: ``[2/4] Finding clips  12/40 windows  0:05 < 0:12``.
+
+    Uses tqdm when it is installed, else draws a plain line.
+
+    Parameters
+    ----------
+    file : file-like, optional
+        Where to draw; default: ``sys.stderr``.
+    """
 
     def __init__(self, file=None):
         try:
@@ -43,6 +51,19 @@ class ProgressBar:
         self._width = 0
 
     def __call__(self, stage, step, steps, done, total, unit):
+        """Reports progress; a new ``(step, stage)`` closes the previous bar and starts one.
+
+        Parameters
+        ----------
+        stage : str
+            Name of the stage (``"Finding clips"``).
+        step, steps : int
+            Its position among the run's stages (1-based) and their number.
+        done, total : int
+            Work done in the stage, and its total.
+        unit : str
+            What ``done`` counts (``"windows"``).
+        """
         key = (step, stage)
         if key != self._key:
             self.close()
@@ -98,8 +119,23 @@ class ProgressBar:
 
 
 def progress_callback(progress):
-    """The callable a run reports to: a :class:`ProgressBar` for ``True``, nothing for ``False``
-    or ``None``, else ``progress`` itself."""
+    """The callable a run reports to.
+
+    Parameters
+    ----------
+    progress : bool, callable or None
+        ``True``: a new :class:`ProgressBar`; ``False`` or ``None``: no reporting; a callable:
+        itself.
+
+    Returns
+    -------
+    callable or None
+
+    Raises
+    ------
+    TypeError
+        For anything else.
+    """
     if progress is True:
         return ProgressBar()
     if progress is False or progress is None:

@@ -3,6 +3,7 @@
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3_stub_gen::derive::{gen_stub_pyfunction};
 use pyo3::types::PyDict;
 
 use crate::array::{to_numpy, value_error, F32Array};
@@ -21,11 +22,29 @@ const COORDS: usize = 3;
 /// Weight of each spike when no amplitudes are given (every spike counts once).
 const UNIT_WEIGHT: f32 = 1.0;
 
-/// `[spikes, 3]` positions `(x, y, z)` in µm of the snippets' sources: `"center_of_mass"`,
-/// `"monopolar"`, `"dipole"` or `"grid_convolution"`; `max_iterations` overrides the iterative
-/// methods' default.
+/// Position of each spike's source from its snippet.
+///
+/// Parameters
+/// ----------
+/// snippets : list of WaveformSnippet
+/// probe : ProbeLayout
+/// method : {"center_of_mass", "monopolar", "dipole", "grid_convolution"}, default "center_of_mass"
+///     `"center_of_mass"`: amplitude-weighted mean of the channel positions (fast, biased towards the
+///     probe); `"monopolar"` / `"dipole"`: least-squares fit of a point source / dipole (iterative);
+///     `"grid_convolution"`: a soft-argmax over a 3-D grid of monopole footprints around the primary
+///     channel, by cosine similarity with the spike's peak-to-peak amplitudes (inspired by
+///     SpikeInterface's, results differ).
+/// max_iterations : int, optional
+///     Iterations of the fitted methods; default: each method's own.
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     `[spikes, 3]` float32 `(x, y, z)`, µm.
+#[gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (snippets, probe, method="center_of_mass", *, max_iterations=None))]
+#[gen_stub(override_return_type(type_repr = "numpy.typing.NDArray[numpy.float32]", imports = ("numpy", "numpy.typing")))]
 pub fn localize_spikes<'py>(py: Python<'py>, snippets: Vec<PyRef<'py, PyWaveformSnippet>>, probe: PyRef<'py, PyProbeLayout>, method: &str, max_iterations: Option<usize>) -> PyResult<Bound<'py, PyAny>> {
     let Some(first) = snippets.first() else { return to_numpy(py, Vec::new(), &[0, COORDS]) };
     let peak_index = first.peak_index;
@@ -76,9 +95,35 @@ fn drift_inputs(spike_samples: &[u64], depths_um: &[f32], amplitudes: Option<Vec
     Ok(DriftInputs { amplitudes: amplitudes.unwrap_or_else(|| vec![UNIT_WEIGHT; depths_um.len()]), times_sec, depth_range, duration_sec })
 }
 
-/// Rigid vertical drift over time, from spike times and depths (`y`, µm): activity profiles per
-/// time bin registered by cross-correlation. Amplitudes weight spikes (default: equally); the
-/// depth range defaults to the spikes' span, the duration to the last spike.
+/// Vertical drift of the probe over time, the same at every depth: per time bin, the depth profile of
+/// spike activity is registered against a reference by cross-correlation.
+///
+/// Parameters
+/// ----------
+/// spike_samples : list of int
+///     Spike times, recording samples.
+/// spike_depths_um : list of float
+///     Spike depths (`y`), µm (e.g. from `localize_spikes`).
+/// fs : float
+///     Sampling rate, Hz.
+/// time_bin_sec : float
+///     Time bin, s.
+/// depth_bin_um : float
+///     Depth bin of the activity profiles, µm.
+/// max_drift_um : float
+///     Largest shift searched, µm.
+/// spike_amplitudes : list of float, optional
+///     Weights of the spikes; default: every spike counts once.
+/// depth_range_um : tuple of float, optional
+///     `(min, max)` depth considered; default: the spikes' span.
+/// duration_sec : float, optional
+///     Length of the recording, s; default: up to the last spike.
+///
+/// Returns
+/// -------
+/// dict
+///     `time_bin_centers_sec`, `drift_um` (`[time bins]` float32), `depth_min_um`, `depth_bin_size_um`.
+#[gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (spike_samples, spike_depths_um, *, fs, time_bin_sec, depth_bin_um, max_drift_um, spike_amplitudes=None, depth_range_um=None, duration_sec=None))]
 #[allow(clippy::too_many_arguments)]
@@ -104,8 +149,36 @@ pub fn estimate_rigid_drift<'py>(
     Ok(dict)
 }
 
-/// Depth-dependent drift: rigid drift in `num_depth_blocks` blocks (`drift_um` is
-/// `[blocks, time bins]`).
+/// Depth-dependent drift: rigid drift estimated separately in `num_depth_blocks` depth blocks.
+///
+/// Parameters
+/// ----------
+/// spike_samples : list of int
+///     Spike times, recording samples.
+/// spike_depths_um : list of float
+///     Spike depths (`y`), µm.
+/// fs : float
+///     Sampling rate, Hz.
+/// num_depth_blocks : int
+///     Depth blocks, each with its own rigid drift.
+/// time_bin_sec : float
+///     Time bin, s.
+/// depth_bin_um : float
+///     Depth bin of the activity profiles, µm.
+/// max_drift_um : float
+///     Largest shift searched, µm.
+/// spike_amplitudes : list of float, optional
+///     Weights of the spikes; default: every spike counts once.
+/// depth_range_um : tuple of float, optional
+///     `(min, max)` depth considered; default: the spikes' span.
+/// duration_sec : float, optional
+///     Length of the recording, s; default: up to the last spike.
+///
+/// Returns
+/// -------
+/// dict
+///     `time_bin_centers_sec`, `block_centers_um`, `drift_um` (`[blocks, time bins]` float32).
+#[gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (spike_samples, spike_depths_um, *, fs, num_depth_blocks, time_bin_sec, depth_bin_um, max_drift_um, spike_amplitudes=None, depth_range_um=None, duration_sec=None))]
 #[allow(clippy::too_many_arguments)]
@@ -131,11 +204,36 @@ pub fn estimate_nonrigid_drift<'py>(
     Ok(dict)
 }
 
-/// `data` (`[channels, samples]`, first sample `start_sample`) resampled by Gaussian-process
-/// kriging onto drift-corrected positions, for rigid drift `drift_um` at `time_bin_centers_sec`.
+/// Corrects a signal for drift: every channel is resampled at its drift-corrected position by
+/// Gaussian-process (kriging) interpolation from its neighbours.
+///
+/// Parameters
+/// ----------
+/// data : numpy.ndarray
+///     `[channels, samples]`, converted to float32.
+/// probe : ProbeLayout
+/// time_bin_centers_sec : list of float
+///     Times of the drift estimate, s (from `estimate_rigid_drift`).
+/// drift_um : list of float
+///     Rigid drift at those times, µm.
+/// fs : float
+///     Sampling rate, Hz.
+/// sigma_um : float
+///     Length scale of the Gaussian kernel, µm.
+/// radius_um : float
+///     Neighbours used for each channel, µm.
+/// start_sample : int, default 0
+///     Recording sample of `data`'s first column (to find each sample's drift).
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     `[channels, samples]` float32.
+#[gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (data, probe, time_bin_centers_sec, drift_um, *, fs, sigma_um, radius_um, start_sample=0))]
 #[allow(clippy::too_many_arguments)]
+#[gen_stub(override_return_type(type_repr = "numpy.typing.NDArray[numpy.float32]", imports = ("numpy", "numpy.typing")))]
 pub fn correct_drift_kriging<'py>(
     py: Python<'py>,
     data: Bound<'py, PyAny>,

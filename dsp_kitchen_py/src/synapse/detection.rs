@@ -11,25 +11,40 @@ use dsp_synapse::detection::{
 use dsp_synapse::StreamingDetectionConfig;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 
 use super::probe::PyProbeLayout;
 use crate::array::{to_numpy, F32Array};
 
 /// A threshold crossing: `amplitude` is the extremum, in the recording's unit.
+#[gen_stub_pyclass]
 #[pyclass(name = "SpikeEvent", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PySpikeEvent {
+    /// Channel of the crossing.
     #[pyo3(get)]
     pub channel: usize,
+    /// Sample of the extremum.
     #[pyo3(get)]
     pub sample: u64,
+    /// Value at the extremum, in the recording's unit (negative for troughs).
     #[pyo3(get)]
     pub amplitude: f32,
 }
 
+#[gen_stub_pymethods]
 #[pymethods]
 impl PySpikeEvent {
     #[new]
+    /// A crossing, for building inputs by hand.
+    ///
+    /// Parameters
+    /// ----------
+    /// channel : int
+    /// sample : int
+    ///     Sample of the extremum.
+    /// amplitude : float
+    ///     Value at the extremum, in the recording's unit (negative for troughs).
     fn new(channel: usize, sample: u64, amplitude: f32) -> Self {
         Self { channel, sample, amplitude }
     }
@@ -51,19 +66,25 @@ impl From<&PySpikeEvent> for SpikeEvent {
 }
 
 /// One spike after deduplication: its strongest channel and the channels it reached.
+#[gen_stub_pyclass]
 #[pyclass(name = "DeduplicatedSpike", skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyDeduplicatedSpike {
+    /// Channel with the strongest crossing.
     #[pyo3(get)]
     pub primary_channel: usize,
+    /// Sample of the strongest crossing.
     #[pyo3(get)]
     pub sample: u64,
+    /// Value of the strongest crossing, in the recording's unit.
     #[pyo3(get)]
     pub amplitude: f32,
+    /// Every channel whose crossing was merged into this spike (the primary included).
     #[pyo3(get)]
     pub participating_channels: Vec<usize>,
 }
 
+#[gen_stub_pymethods]
 #[pymethods]
 impl PyDeduplicatedSpike {
     fn __repr__(&self) -> String {
@@ -105,9 +126,32 @@ pub(crate) fn parse_distance_rule(rule: &str) -> PyResult<DistanceRule> {
     }
 }
 
-/// Threshold crossings of `data` (`[channels, samples]`): local extrema beyond
-/// `threshold_factor · σ` per channel (σ = MAD / 0.6745 of each channel, or `sigmas`), at least
-/// `refractory_samples` apart on a channel.
+/// Threshold crossings: on each channel, local extrema beyond `threshold_factor · σ`, at least
+/// `refractory_samples` apart.
+///
+/// Parameters
+/// ----------
+/// data : numpy.ndarray
+///     `[channels, samples]`, converted to float32 (filtered first, e.g. 300–5000 Hz).
+/// refractory_samples : int
+///     Smallest distance between two crossings on a channel, samples.
+/// threshold_factor : float, default 5.0
+///     Threshold in multiples of each channel's noise σ.
+/// polarity : {"negative", "positive", "both"}, default "negative"
+///     Which extrema count (extracellular spikes are mostly negative).
+/// distance_rule : {"locally-exclusive", "scipy"}, default "locally-exclusive"
+///     `"locally-exclusive"`: a crossing stays unless a larger one is closer than `refractory_samples`
+///     (exact when data is processed in chunks); `"scipy"`: `scipy.signal.find_peaks`' `distance`.
+/// sigmas : list of float, optional
+///     Noise σ of every channel (e.g. from `estimate_noise` on a quiet stretch); default: each channel's
+///     MAD / 0.6745 over `data`.
+///
+/// Returns
+/// -------
+/// list of SpikeEvent
+///     One per crossing (channel, sample, amplitude). The same spike on several channels gives several
+///     crossings: see `deduplicate_spikes`.
+#[gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (data, *, refractory_samples, threshold_factor=None, polarity=None, distance_rule=None, sigmas=None))]
 pub fn detect_spikes(
@@ -139,8 +183,25 @@ pub fn detect_spikes(
     Ok(spikes.into_iter().map(PySpikeEvent::from).collect())
 }
 
-/// One spike per action potential: a crossing survives unless a stronger one is within
-/// `radius_um` (on `probe`) and `window_samples`.
+/// One spike per action potential: a crossing survives unless a stronger one is within `radius_um`
+/// on the probe and `window_samples` in time.
+///
+/// Parameters
+/// ----------
+/// spikes : list of SpikeEvent
+///     Crossings, e.g. from `detect_spikes`.
+/// probe : ProbeLayout
+///     Contact positions (channel distances).
+/// radius_um : float
+///     Spatial radius, µm.
+/// window_samples : int
+///     Time window, samples.
+///
+/// Returns
+/// -------
+/// list of DeduplicatedSpike
+///     With the strongest channel and every channel merged into each spike.
+#[gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (spikes, probe, *, radius_um, window_samples))]
 pub fn deduplicate_spikes(py: Python<'_>, spikes: Vec<PyRef<'_, PySpikeEvent>>, probe: PyRef<'_, PyProbeLayout>, radius_um: f32, window_samples: u64) -> Vec<PyDeduplicatedSpike> {
@@ -150,11 +211,28 @@ pub fn deduplicate_spikes(py: Python<'_>, spikes: Vec<PyRef<'_, PySpikeEvent>>, 
     deduplicated.into_iter().map(PyDeduplicatedSpike::from).collect()
 }
 
-/// Noise σ of every channel of `data` (`[channels, samples]`): `"mad"` (median |x| / 0.6745,
-/// robust to spikes), `"rms"`, or `"trimmed"` (σ re-estimated without samples beyond
-/// `clip_sigma · σ`, `iterations` times; both required).
+/// Noise σ of every channel.
+///
+/// Parameters
+/// ----------
+/// data : numpy.ndarray
+///     `[channels, samples]`, converted to float32.
+/// method : {"mad", "rms", "trimmed"}, default "mad"
+///     `"mad"`: median |x| / 0.6745 (robust to spikes); `"rms"`: root mean square; `"trimmed"`: σ
+///     re-estimated without samples beyond `clip_sigma · σ`, `iterations` times.
+/// clip_sigma : float, optional
+///     `"trimmed"` only (required there).
+/// iterations : int, optional
+///     `"trimmed"` only (required there).
+///
+/// Returns
+/// -------
+/// numpy.ndarray
+///     `[channels]` float32, in the data's unit.
+#[gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (data, method="mad", *, clip_sigma=None, iterations=None))]
+#[gen_stub(override_return_type(type_repr = "numpy.typing.NDArray[numpy.float32]", imports = ("numpy", "numpy.typing")))]
 pub fn estimate_noise<'py>(py: Python<'py>, data: Bound<'py, PyAny>, method: &str, clip_sigma: Option<f32>, iterations: Option<usize>) -> PyResult<Bound<'py, PyAny>> {
     let estimator: NoiseEstimator = match method {
         "mad" => Box::new(estimate_noise_std),

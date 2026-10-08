@@ -7,6 +7,7 @@ use dsp_base::pipeline::{Pipeline, PipelineStage};
 use dsp_core::compute::ComputeTask;
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
 
 use crate::array::{runtime_error, to_numpy, value_error, F32Array};
 use crate::filter::fir::PyGaussianSmooth;
@@ -93,14 +94,36 @@ pub(crate) fn run_stage<'py>(py: Python<'py>, stage: PipelineStage, data: &Bound
     run_pipeline(py, Pipeline::with_stages(vec![stage]), data, fs, runtime)
 }
 
-/// Stages run one after the other on the device; intermediate results never leave it.
+/// Processing stages run one after the other on the device; intermediate results never leave it.
+///
+/// Stages: filters (`BandpassFilter`, `HighpassFilter`, `LowpassFilter`, `BandstopFilter`,
+/// `NotchFilter`, `ChebyshevFilter`, `GaussianSmooth`, `MedianFilter`, `TeagerKaiser`), spatial
+/// operators (`CommonAverageReference`, `SpatialWhitening`, `SurfaceLaplacian`) and pointwise ones
+/// (`Scale`, `SubtractBaseline`, `Clamp`). A sorter's fitted preprocessing is a `Pipeline` too
+/// (`result.preprocessing`).
+///
+/// Examples
+/// --------
+/// >>> from dsp_kitchen.pipeline import Pipeline
+/// >>> from dsp_kitchen.filter.iir import BandpassFilter, NotchFilter
+/// >>> from dsp_kitchen.spatial import CommonAverageReference
+/// >>> pipe = Pipeline([CommonAverageReference(), BandpassFilter(300.0, 5000.0)]).add(NotchFilter(60.0, 30.0))
+/// >>> y = pipe.run(rec.read_window(0.0, 10.0), fs=rec.sample_rate)
+#[gen_stub_pyclass]
 #[pyclass(name = "Pipeline", skip_from_py_object)]
 pub struct PyPipeline {
     pub(crate) stages: Vec<PipelineStage>,
 }
 
+#[gen_stub_pymethods]
 #[pymethods]
 impl PyPipeline {
+    /// A pipeline of `stages` (see the class docs for the stage types).
+    ///
+    /// Parameters
+    /// ----------
+    /// stages : list, optional
+    ///     Stages in the order they run; more can be added with `add`.
     #[new]
     #[pyo3(signature = (stages=None))]
     fn new(stages: Option<Vec<Bound<'_, PyAny>>>) -> PyResult<Self> {
@@ -108,12 +131,18 @@ impl PyPipeline {
         Ok(Self { stages })
     }
 
-    /// Appends a stage; returns the pipeline, so calls chain.
+    /// Appends a stage and returns the pipeline, so calls chain (`pipe.add(a).add(b)`).
+    ///
+    /// Parameters
+    /// ----------
+    /// stage : filter, spatial or pointwise stage
+    ///     E.g. `BandpassFilter`, `CommonAverageReference`, `Scale` (see the class docs).
     fn add<'py>(mut slf: PyRefMut<'py, Self>, stage: Bound<'py, PyAny>) -> PyResult<PyRefMut<'py, Self>> {
         slf.stages.push(stage_of(&stage)?);
         Ok(slf)
     }
 
+    /// The stages, as text (for display).
     #[getter]
     fn stages(&self) -> Vec<String> {
         self.stages.iter().map(|s| format!("{s:?}")).collect()
@@ -123,8 +152,20 @@ impl PyPipeline {
         self.stages.len()
     }
 
-    /// `(left, right)` samples of context a chunk needs at `fs` Hz so its interior equals
-    /// whole-recording processing.
+    /// Samples of context a chunk needs so its interior equals processing the whole recording.
+    ///
+    /// Filters need samples before (and, zero-phase, after) a chunk to settle; read a chunk with this
+    /// much extra on each side and trim it after `run`.
+    ///
+    /// Parameters
+    /// ----------
+    /// fs : float, optional
+    ///     Sampling rate, Hz (required when a stage is a filter).
+    ///
+    /// Returns
+    /// -------
+    /// tuple of int
+    ///     `(left, right)` samples.
     #[pyo3(signature = (*, fs=None))]
     fn settling(&self, fs: Option<f64>) -> PyResult<(usize, usize)> {
         let pipeline = Pipeline::with_stages(self.stages.clone());
@@ -132,9 +173,23 @@ impl PyPipeline {
         pipeline.settling(fs).map_err(value_error)
     }
 
-    /// Runs every stage on `data` (`[channels, samples]`, or 1-D); `fs` is required when a stage
-    /// is a filter.
+    /// Runs every stage on `data`.
+    ///
+    /// Parameters
+    /// ----------
+    /// data : numpy.ndarray
+    ///     `[channels, samples]` (or 1-D for one channel), converted to float32.
+    /// fs : float, optional
+    ///     Sampling rate, Hz (required when a stage is a filter).
+    /// runtime : str, optional
+    ///     Compute runtime (`"wgpu"`, `"cuda"`, `"cpu"`, …); default: the current one.
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray
+    ///     The processed data, float32, same shape as `data`.
     #[pyo3(signature = (data, *, fs=None, runtime=None))]
+    #[gen_stub(override_return_type(type_repr = "numpy.typing.NDArray[numpy.float32]", imports = ("numpy", "numpy.typing")))]
     fn run<'py>(&self, py: Python<'py>, data: Bound<'py, PyAny>, fs: Option<f64>, runtime: Option<&str>) -> PyResult<Bound<'py, PyAny>> {
         run_pipeline(py, Pipeline::with_stages(self.stages.clone()), &data, fs, runtime)
     }

@@ -49,9 +49,7 @@ config = emusort.Config()
 # MUAPs outlast Kilosort4's 61-sample (2.5 ms at 24.4 kHz) window: measured on this recording,
 # 121 samples (5 ms) removes the truncated templates and their re-matched late phases (see the
 # book's EMUsort parameters page); nt0min follows (int(20 · nt / 61))
-ks = config.kilosort4
-ks.nt, ks.nt0min = 121, None
-config.kilosort4 = ks
+config.kilosort4.nt = 121
 print(f"\n{rec}\n{config}")
 
 # %% [2] EMUsort over the Recording

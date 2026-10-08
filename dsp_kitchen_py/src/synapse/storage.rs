@@ -3,6 +3,7 @@
 use std::path::Path;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 use pyo3::types::{PyDict, PyList};
 
 use crate::array::{to_numpy, to_numpy_u64, F32Array};
@@ -29,7 +30,21 @@ fn parse_format(fmt: Option<&str>) -> PyResult<Option<SortingFormat>> {
     .transpose()
 }
 
-/// Unified, format-agnostic container holding spike trains, waveform templates, and quality metrics.
+/// Units of a sorting: spike trains, amplitudes, positions, waveform templates and quality metrics,
+/// whatever sorter or file they came from.
+///
+/// Sorters return one (`result.to_sorting_output(probe)`); `load_sorting` reads one from a Phy folder,
+/// a `.sorting.zarr` or an NWB `/units` table, and `save_sorting` writes it back. Units are addressed
+/// by id (`unit_ids()`); spike times are recording samples.
+///
+/// Examples
+/// --------
+/// >>> import dsp_kitchen.synapse as syn
+/// >>> sorting = syn.load_sorting("kilosort_output/")          # a Phy folder
+/// >>> for unit in sorting.unit_ids():
+/// ...     times = sorting.spike_train(unit) / sorting.sample_rate   # seconds
+/// >>> syn.save_sorting(sorting, "units.sorting.zarr")
+#[gen_stub_pyclass]
 #[pyclass(name = "SortingOutput")]
 pub struct PySortingOutput {
     pub(crate) inner: SortingOutput,
@@ -45,33 +60,40 @@ impl PySortingOutput {
     }
 }
 
+#[gen_stub_pymethods]
 #[pymethods]
 impl PySortingOutput {
+    /// Name of the sorter that made it (`"kilosort4"`, `"emusort"`, …).
     #[getter]
     pub fn sorter_name(&self) -> &str {
         &self.inner.sorter_name
     }
 
+    /// Sampling rate of the spike times, Hz.
     #[getter]
     pub fn sample_rate(&self) -> f64 {
         self.inner.sample_rate_hz
     }
 
+    /// Samples in the sorted recording.
     #[getter]
     pub fn total_samples(&self) -> u64 {
         self.inner.total_samples
     }
 
+    /// Number of units.
     #[getter]
     pub fn num_units(&self) -> usize {
         self.inner.num_units()
     }
 
+    /// Spikes over all units.
     #[getter]
     pub fn total_spikes(&self) -> usize {
         self.inner.total_spikes()
     }
 
+    /// Probe geometry stored with the sorting, if any.
     #[getter]
     pub fn probe(&self) -> Option<PyProbeLayout> {
         self.inner.probe.as_ref().map(|p| PyProbeLayout {
@@ -79,12 +101,28 @@ impl PySortingOutput {
         })
     }
 
-    /// List of all integer unit IDs.
+    /// Ids of all units.
     pub fn unit_ids(&self) -> Vec<usize> {
         self.inner.units.iter().map(|u| u.unit_id).collect()
     }
 
-    /// Returns spike timestamps in sample indices for `unit_id`.
+    /// Spike times of a unit, in recording samples (divide by `sample_rate` for seconds).
+    ///
+    /// Parameters
+    /// ----------
+    /// unit_id : int
+    ///     One of `unit_ids()`.
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray
+    ///     uint64.
+    ///
+    /// Raises
+    /// ------
+    /// ValueError
+    ///     If there is no unit `unit_id`.
+    #[gen_stub(override_return_type(type_repr = "numpy.typing.NDArray[numpy.uint64]", imports = ("numpy", "numpy.typing")))]
     pub fn spike_train<'py>(&self, py: Python<'py>, unit_id: usize) -> PyResult<Bound<'py, PyAny>> {
         let unit = self
             .inner
@@ -94,7 +132,19 @@ impl PySortingOutput {
         to_numpy_u64(py, unit.spike_samples.clone(), &[n])
     }
 
-    /// Spike amplitudes of `unit_id` (NaN where unknown).
+    /// Spike amplitudes of a unit (the sorter's unit: µV, or whitened σ for Kilosort4 / EMUsort; NaN
+    /// where unknown).
+    ///
+    /// Parameters
+    /// ----------
+    /// unit_id : int
+    ///     One of `unit_ids()`.
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray
+    ///     `[spikes]` float32.
+    #[gen_stub(override_return_type(type_repr = "numpy.typing.NDArray[numpy.float32]", imports = ("numpy", "numpy.typing")))]
     pub fn spike_amplitudes<'py>(
         &self,
         py: Python<'py>,
@@ -108,7 +158,18 @@ impl PySortingOutput {
         to_numpy(py, unit.amplitudes_uv.clone(), &[n])
     }
 
-    /// Returns 3D spike coordinates `[N, 3]` in $\mu\text{m}$ for `unit_id`.
+    /// Spike positions of a unit.
+    ///
+    /// Parameters
+    /// ----------
+    /// unit_id : int
+    ///     One of `unit_ids()`.
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray
+    ///     `[spikes, 3]` float32 `(x, y, z)`, µm.
+    #[gen_stub(override_return_type(type_repr = "numpy.typing.NDArray[numpy.float32]", imports = ("numpy", "numpy.typing")))]
     pub fn spike_locations<'py>(
         &self,
         py: Python<'py>,
@@ -123,7 +184,18 @@ impl PySortingOutput {
         to_numpy(py, flat, &[n, COORDS])
     }
 
-    /// Returns the multi-channel waveform template (`mean`, `std`, `se`, `channel_ids`).
+    /// Waveform template of a unit.
+    ///
+    /// Parameters
+    /// ----------
+    /// unit_id : int
+    ///     One of `unit_ids()`.
+    ///
+    /// Returns
+    /// -------
+    /// dict or None
+    ///     `mean`, `std`, `se`: `[channels, samples]` float32 (rows follow `channel_ids`); `channel_ids`;
+    ///     `num_channels`, `num_samples`; `count` (spikes averaged). `None` when the sorting has none.
     pub fn unit_template<'py>(
         &self,
         py: Python<'py>,
@@ -149,7 +221,18 @@ impl PySortingOutput {
         Ok(Some(dict))
     }
 
-    /// Returns quality metrics dictionary for `unit_id`.
+    /// Quality metrics of a unit.
+    ///
+    /// Parameters
+    /// ----------
+    /// unit_id : int
+    ///     One of `unit_ids()`.
+    ///
+    /// Returns
+    /// -------
+    /// dict
+    ///     `unit_id`, `primary_channel`, `quality_label`, `snr`, `firing_rate_hz` (Hz),
+    ///     `isi_violation_ratio`, `presence_ratio`, `amplitude_cutoff`, `num_spikes`.
     pub fn unit_metrics<'py>(&self, py: Python<'py>, unit_id: usize) -> PyResult<Bound<'py, PyDict>> {
         let unit = self
             .inner
@@ -169,7 +252,7 @@ impl PySortingOutput {
         Ok(dict)
     }
 
-    /// Returns a list of metric dictionaries for all units in this sorting.
+    /// `unit_metrics` of every unit, as a list (one dict per unit; e.g. `pandas.DataFrame(...)`).
     pub fn summary_table<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let list = PyList::empty(py);
         for u in &self.inner.units {
@@ -178,7 +261,14 @@ impl PySortingOutput {
         Ok(list)
     }
 
-    /// Saves the sorting output to `path` in format `format` (or auto-detected from path).
+    /// Writes the sorting to `path` (same as `save_sorting`).
+    ///
+    /// Parameters
+    /// ----------
+    /// path : str
+    /// format : {"phy", "sorting-zarr", "nwb-units"}, optional
+    ///     `"phy"`: a Phy / Kilosort folder; `"sorting-zarr"`: dsp-kitchen's `.sorting.zarr`;
+    ///     `"nwb-units"`: the `/units` table of a `.nwb.zarr` store. Default: from the path's name.
     #[pyo3(signature = (path, format=None))]
     pub fn save(&self, path: &str, format: Option<&str>) -> PyResult<()> {
         let fmt = parse_format(format)?;
@@ -186,7 +276,12 @@ impl PySortingOutput {
             .map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
-    /// Loads a sorting output from `path` (Phy folder, `.sorting.zarr`, or `.nwb.zarr`).
+    /// Reads a sorting (same as `load_sorting`).
+    ///
+    /// Parameters
+    /// ----------
+    /// path : str
+    ///     A Phy / Kilosort folder, a `.sorting.zarr` or a `.nwb.zarr` store (the format is detected).
     #[staticmethod]
     pub fn load(path: &str) -> PyResult<Self> {
         let inner = rust_load_sorting(Path::new(path))
@@ -194,10 +289,39 @@ impl PySortingOutput {
         Ok(Self { inner })
     }
 
-    /// A sorting from clustered spikes: `spike_samples` and `labels` (one per spike; `-1` =
-    /// unassigned) over a recording of `total_samples` at `fs` Hz. Each spike's primary channel
-    /// comes from `snippets` (which also give templates) or `primary_channels`; amplitudes are
-    /// NaN unless given.
+    /// A sorting from clustered spikes (e.g. your own detection and clustering).
+    ///
+    /// Parameters
+    /// ----------
+    /// sorter_name : str
+    ///     Recorded as the sorting's sorter.
+    /// spike_samples : list of int
+    ///     Spike times, recording samples.
+    /// labels : list of int
+    ///     Unit of each spike; `-1`: unassigned (left out).
+    /// fs : float
+    ///     Sampling rate, Hz.
+    /// total_samples : int
+    ///     Length of the recording, samples.
+    /// primary_channels : list of int, optional
+    ///     Each spike's channel. Give this or `snippets`.
+    /// amplitudes : list of float, optional
+    ///     Each spike's amplitude; default: NaN.
+    /// locations : list of (float, float, float), optional
+    ///     Each spike's position, µm.
+    /// probe : ProbeLayout, optional
+    ///     Geometry stored with the units.
+    /// snippets : list of WaveformSnippet, optional
+    ///     Each spike's waveform: gives its channels and the units' templates.
+    ///
+    /// Returns
+    /// -------
+    /// SortingOutput
+    ///
+    /// Raises
+    /// ------
+    /// ValueError
+    ///     If a per-spike list has the wrong length, or neither `snippets` nor `primary_channels` is given.
     #[staticmethod]
     #[pyo3(signature = (sorter_name, spike_samples, labels, *, fs, total_samples, primary_channels=None, amplitudes=None, locations=None, probe=None, snippets=None))]
     #[allow(clippy::too_many_arguments)]
@@ -243,7 +367,22 @@ impl PySortingOutput {
         Ok(Self { inner })
     }
 
-    /// Constructs a `SortingOutput` from Convolutive BSS motor unit pulse trains.
+    /// A sorting from the motor units of `decompose_hdemg_cbss`.
+    ///
+    /// Parameters
+    /// ----------
+    /// sorter_name : str
+    /// cbss_units : list of dict
+    ///     The units `decompose_hdemg_cbss` returns.
+    /// fs : float
+    ///     Sampling rate, Hz.
+    /// total_samples : int
+    ///     Length of the recording, samples.
+    /// probe : ProbeLayout, optional
+    ///
+    /// Returns
+    /// -------
+    /// SortingOutput
     #[staticmethod]
     #[pyo3(signature = (sorter_name, cbss_units, *, fs, total_samples, probe=None))]
     pub fn from_cbss(
@@ -306,7 +445,17 @@ impl PySortingOutput {
     }
 }
 
-/// Saves a `SortingOutput` to `path` with automatic or explicit format selection.
+/// Writes a sorting to `path`.
+///
+/// Parameters
+/// ----------
+/// sorting : SortingOutput
+/// path : str
+///     A folder (Phy), or a `.sorting.zarr` / `.nwb.zarr` path.
+/// format : {"phy", "sorting-zarr", "nwb-units"}, optional
+///     `"phy"`: a Phy / Kilosort folder; `"sorting-zarr"`: dsp-kitchen's `.sorting.zarr`;
+///     `"nwb-units"`: the `/units` table of a `.nwb.zarr` store. Default: from the path's name.
+#[gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (sorting, path, format=None))]
 pub fn save_sorting(
@@ -317,14 +466,36 @@ pub fn save_sorting(
     sorting.save(path, format)
 }
 
-/// Loads a `SortingOutput` from `path` (Phy folder, `.sorting.zarr`, or `.nwb.zarr`).
+/// Reads a sorting.
+///
+/// Parameters
+/// ----------
+/// path : str
+///     A Phy / Kilosort folder, a dsp-kitchen `.sorting.zarr`, or a `.nwb.zarr` store (its `/units`
+///     table); the format is detected.
+///
+/// Returns
+/// -------
+/// SortingOutput
+#[gen_stub_pyfunction]
 #[pyfunction]
 pub fn load_sorting(path: &str) -> PyResult<PySortingOutput> {
     PySortingOutput::load(path)
 }
 
-/// Loads the `/units` table of an NWB Zarr store; `fs` sets the sample rate its spike times
-/// (seconds) are converted with, when the store does not give it.
+/// Reads the `/units` table of an NWB Zarr store.
+///
+/// Parameters
+/// ----------
+/// nwb_zarr_path : str
+/// fs : float, optional
+///     Sampling rate the spike times (seconds in NWB) are converted to samples with, when the store does
+///     not give one.
+///
+/// Returns
+/// -------
+/// SortingOutput
+#[gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (nwb_zarr_path, *, fs=None))]
 pub fn load_nwb_units(nwb_zarr_path: &str, fs: Option<f64>) -> PyResult<PySortingOutput> {
