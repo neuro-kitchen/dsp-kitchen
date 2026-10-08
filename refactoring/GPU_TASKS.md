@@ -270,11 +270,43 @@ autotuner can choose differently between runs, which changes rounding and can fl
 **Done when.** Two runs of the playground scripts on the same machine give identical spike
 trains (check at test time).
 
+**Done (2026-10-08).** `dsp_core::compute::pin_tuned_choices()` (thread-scoped guard) pins the IIR
+split (`PINNED_BLOCK_COUNT` = 16 blocks, channel-major) and the matmul routine (`SimpleUnit`, max
+tiles; `direct_matmul_kernel` where unavailable); `Kilosort4Config::reproducible` (default `true`)
+holds it for the whole run; `Kilosort4Result::{reproducible, device}` record it (also in Python).
+The clustering added since uses only integer atomics (counts), seeded k-means++ (seed from the
+learn options) and ordered reductions. Checked: test `pinned_choices_match_the_fixed_split`
+(bit-identical); two runs give identical spikes **and unit labels** on the Neuropixels and HD-EMG
+test recordings.
+
 ## Reported, not acted on: upstream EMUsort differences (user, 2026-10-07)
 
 Documented in the book (`sorters/emusort/pipeline.md`, "Known differences from upstream"): upstream
 drops the batch that would overflow the 500k clip buffer (we fill to `MAX_CLIPS`), and de-duplicates
 cross-threshold peaks on the time index only (we use (channel, time)). To check later.
+
+## Pending (2026-10-08): EMUsort pipeline vs the paper — decided, not coded yet
+
+From the EMUsort paper (O'Connell et al., eLife 2026, RP110417; Table 5, Methods). Notes in the book:
+`sorters/emusort/tuning.md` ("Notes on our implementation"). **Do not change code until told.**
+
+- **Filtering (decided by user):** one band-pass **300–5000 Hz** instead of upstream's cascade
+  (SpikeInterface 250–5000 Hz, then Kilosort4's 300 Hz high-pass: the two high-passes are redundant,
+  only the 5000 Hz low-pass adds anything). Keep the low-pass edge below Nyquist (drop it at low rates).
+- **Notch (decided: add):** 60 Hz notch as an option (50 Hz outside the Americas). Note: after the
+  300 Hz high-pass, 60 Hz is already ~80 dB down; in-band harmonics (300, 360, 420 Hz…) would need a
+  comb — only if data shows it.
+- **`nt` (decided: keep 121 for the HD-EMG recording):** `nt` counts samples, so it depends on fs
+  (5 ms = 121 at 24.4 kHz, 151 at 30 kHz). Proposed: optional window in ms converted per recording
+  (`round(ms·fs)`, odd, `nt0min ≈ nt/3`), alongside `nt`. Library default stays 61.
+- **Linear channel map (to decide):** EMUsort places channels on a dense line 2 µm apart so spatial
+  templates span ~5–25 channels; we use the physical grid (100 µm), where templates collapse onto one
+  contact (root cause of the tied detections). Plan: detection and clustering on the linear map,
+  positions mapped back onto the real grid for export / inspection.
+- **Composite score** (`cluster_score_threshold`): not implemented.
+- Also still open from the Kilosort4 work: stage 5 (refractory CCG split criterion, global merges,
+  duplicate-spike removal); provenance DOI to update to the eLife reviewed preprint
+  (10.7554/eLife.110417.1).
 
 ## IIR "from-rest bug" (resolved 2026-10-07, not a kernel bug)
 
