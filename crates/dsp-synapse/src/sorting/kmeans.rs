@@ -52,10 +52,10 @@ use super::points::{block_sums, device_sum, DevicePoints, SUM_BLOCK};
 const SUM_SPLIT: usize = 4096;
 
 /// SplitMix64: small, seeded, reproducible.
-struct Rng(u64);
+pub(crate) struct Rng(pub(crate) u64);
 
 impl Rng {
-    fn next_u64(&mut self) -> u64 {
+    pub(crate) fn next_u64(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.0;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -64,7 +64,7 @@ impl Rng {
     }
 
     /// Uniform in `[0, 1)`.
-    fn uniform(&mut self) -> f64 {
+    pub(crate) fn uniform(&mut self) -> f64 {
         (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
     }
 }
@@ -183,8 +183,9 @@ fn assign(client: &Client, points: &DevicePoints, centers: &[f32], k: usize, out
     }
 }
 
-/// `(sums [k, d], counts [k])` of the current assignment, split on the device, added in `f64`.
-fn cluster_sums(client: &Client, points: &DevicePoints, label: &Handle, k: usize) -> (Vec<f64>, Vec<usize>) {
+/// `(sums [k, d], counts [k])` of the points per label (`label[i] < k`; other labels are left
+/// out), split on the device, added in `f64`. Downloads `splits · k · (d + 1)` values.
+pub fn cluster_sums(client: &Client, points: &DevicePoints, label: &Handle, k: usize) -> (Vec<f64>, Vec<usize>) {
     let (n, d) = (points.n, points.d);
     let splits = n.div_ceil(SUM_SPLIT).max(1);
     let (sums, counts) = (buffer::empty::<f32>(client, splits * k * d), buffer::empty::<u32>(client, splits * k));
