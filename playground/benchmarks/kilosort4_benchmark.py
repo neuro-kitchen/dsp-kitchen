@@ -1,21 +1,22 @@
 # %% [markdown]
 # # dsp-kitchen benchmark: Kilosort4 speed and outputs vs Kilosort4's own results
-# Runs our Kilosort4 (preprocessing fit, universal templates, universal-template detection) over
+# Runs our Kilosort4 (preprocessing, universal templates, detection, clustering, learned-template
+# matching, clustering of the matches) over
 # the Neuropixels test recording and compares it with what Kilosort4 recorded in
 # `data/kilosort4/saved_results/`:
 # 1. **Speed**: wall time per stage on each chosen runtime (first run includes kernel
 #    compilation; later runs are warm), as a multiple of real time; Kilosort4's recorded total.
 # 2. **Whitening**: our matrix vs `whitening_mat_dat.npy` (same channels, same order), up to a
 #    scale: Kilosort4 whitens the stored integers, we whiten values in their unit (µV).
-# 3. **Spikes**: our detections vs Kilosort4's final spikes (recall, precision within ±0.4 ms),
-#    per Kilosort4 unit, and the vertical position of matched spikes.
+# 3. **Spikes**: our spikes vs Kilosort4's final spikes (recall, precision within ±0.4 ms, time
+#    only), per Kilosort4 unit, and the vertical position of matched spikes. For the comparison in
+#    time *and* place, and per unit, see `kilosort4_validation.py` (time alone matches by chance at
+#    this spike density).
 #
 # Not like for like (read the numbers with this in mind):
-# - Kilosort4's `runtime` covers all its stages (drift correction, clustering, deconvolution,
-#   merging) on the device it ran on (`torch_device` in `ops.npy`); ours covers the stages
-#   implemented so far.
-# - Kilosort4's spikes are its final ones (after clustering and template deconvolution); ours are
-#   universal-template detections. High recall is the target; precision is expected to be lower.
+# - Kilosort4's `runtime` covers all its stages (drift correction, merging included) on the device
+#   it ran on (`torch_device` in `ops.npy`): another machine, so not comparable with ours.
+# - Ours does not yet have Kilosort4's refractory criteria, final merges and drift correction.
 #
 # Data (local, git-ignored): `data/kilosort4/ZFM-02370_mini.imec0.ap.short.bin` (+ `.meta`),
 # `data/kilosort4/saved_results/` (see playground/README.md).
