@@ -5,7 +5,7 @@
 //! 1. **Graph.** Left nodes are all `n` points; right nodes are a subset (every `subset_stride`-th
 //!    point, at most `max_subset`, so the neighbourhood scale does not shrink as recordings grow).
 //!    Each left node links to its `neighbours` nearest right nodes (exact squared distances,
-//!    `‖x‖² + ‖y‖² − 2·X·Yᵀ` through [`dsp_base::linalg::matmul`], in row chunks; a point is not its
+//!    `‖x‖² + ‖y‖² − 2·X·Yᵀ` through [`fn@dsp_base::linalg::matmul`], in row chunks; a point is not its
 //!    own neighbour). Every edge joins a left and a right node, so given the right labels every left
 //!    node can be assigned independently, and vice versa: the steps are fully parallel.
 //! 2. **Initialization.** `init_clusters` seeds by greedy k-means++ (each seed the best of

@@ -63,6 +63,10 @@ pub fn stored_words(stored: &[u8]) -> Vec<u32> {
 /// [`stored_words`]) into scaled `F` values in `output` using per-channel `gains` / `offsets` (device
 /// buffers of `channels` values of `F`). `float64` storage is not unpacked on the device; convert
 /// those on the host.
+///
+/// # Errors
+///
+/// [`DspError::UnsupportedFormat`] for `float64` storage.
 #[allow(clippy::too_many_arguments)]
 pub fn execute_unpack_stored<F: DspFloat>(
     client: &Client,

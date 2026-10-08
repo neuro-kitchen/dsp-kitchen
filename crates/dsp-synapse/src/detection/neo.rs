@@ -1,6 +1,6 @@
 //! Teager-Kaiser Nonlinear Energy Operator (NEO) spike detection (`neo.rs`).
 //!
-//! Computes the discrete Teager-Kaiser energy $\psi[n] = x^2[n] - x[n-1]x[n+1]$,
+//! Computes the discrete Teager-Kaiser energy `ψ[n] = x²[n] − x[n−1]·x[n+1]`,
 //! which simultaneously boosts high-frequency, high-amplitude action potentials
 //! while suppressing low-frequency LFP hum.
 
@@ -14,7 +14,7 @@ use super::threshold::SpikeEvent;
 /// Samples on each side of an energy peak searched for the voltage trough.
 const TROUGH_SEARCH_SAMPLES: usize = 2;
 
-/// Computes the 1D Teager-Kaiser Nonlinear Energy Operator $\psi[n] = x^2[n] - x[n-1]x[n+1]$.
+/// Computes the 1D Teager-Kaiser Nonlinear Energy Operator `ψ[n] = x²[n] − x[n−1]·x[n+1]`.
 pub fn compute_neo_energy_1d(signal: &[f32]) -> Vec<f32> {
     let n = signal.len();
     let mut psi = vec![0.0f32; n];

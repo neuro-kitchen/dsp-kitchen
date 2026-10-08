@@ -2,11 +2,11 @@
 //! the uncentred second moment `X Xᵀ / samples` accumulated over many buffers on the device
 //! ([`SecondMomentAccumulator`]).
 //!
-//! Both are products of the samples with themselves ([`super::matmul`]). [`split_rows_kernel`]
+//! Both are products of the samples with themselves ([`fn@super::matmul`]). [`fn@split_rows_kernel`]
 //! first copies the samples (centred for the covariance) into a split-major buffer `[splits,
 //! channels, COVARIANCE_SPLIT_SAMPLES]`, the last split zero-padded; one batched product then gives
 //! every split's `X_s X_sᵀ`: no single sum adds more than [`COVARIANCE_SPLIT_SAMPLES`] terms, and
-//! few channels still give the device enough independent work. [`sum_slices_kernel`] adds the
+//! few channels still give the device enough independent work. [`fn@sum_slices_kernel`] adds the
 //! partial products, divides by the true sample count and writes (or adds to) the result.
 //!
 //! The copy is what keeps the product's batches outermost: a strided view whose batch stride is

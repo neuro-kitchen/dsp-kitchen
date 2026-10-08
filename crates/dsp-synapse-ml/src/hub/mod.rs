@@ -1,5 +1,5 @@
 //! The model catalog of `dsp-synapse-ml` (`catalog/models.json`: what each published artifact is,
-//! how to verify it, whom to credit) and, with feature `hub`, [`ModelHub`]: catalog lookups backed
+//! how to verify it, whom to credit) and, with feature `hub`, `ModelHub`: catalog lookups backed
 //! by `dsp-synapse-hub` downloads.
 
 pub mod catalog;

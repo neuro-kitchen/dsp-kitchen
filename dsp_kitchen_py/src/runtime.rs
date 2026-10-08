@@ -9,6 +9,7 @@ use std::sync::Mutex;
 use dsp_core::ComputeTarget;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3_stub_gen::derive::{gen_stub_pyfunction};
 
 /// The runtime chosen with `runtime.set`, if any.
 static SELECTED: Mutex<Option<ComputeTarget>> = Mutex::new(None);
@@ -29,19 +30,27 @@ pub fn target(explicit: Option<&str>) -> PyResult<ComputeTarget> {
 }
 
 /// Names of the runtimes compiled into this build, in preference order (GPUs first).
+#[gen_stub_pyfunction]
 #[pyfunction]
 pub fn available_runtimes() -> Vec<&'static str> {
     ComputeTarget::available().into_iter().map(ComputeTarget::name).collect()
 }
 
 /// The runtime calls use when they are not given `runtime=`.
+#[gen_stub_pyfunction]
 #[pyfunction]
 pub fn current_runtime() -> PyResult<&'static str> {
     Ok(target(None)?.name())
 }
 
-/// Uses `name` (`"wgpu"`, `"cpu"`, `"cuda"`, `"hip"`) for every later call; `None` returns to
-/// the default (`DSP_KITCHEN_RUNTIME`, else the first compiled in).
+/// Chooses the compute runtime of every later call (unless a call passes `runtime=`).
+///
+/// Parameters
+/// ----------
+/// name : str or None
+///     `"wgpu"`, `"cpu"`, `"cuda"` or `"hip"` (one of `available_runtimes()`); `None`: back to the
+///     default (`DSP_KITCHEN_RUNTIME`, else the first compiled in).
+#[gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (name))]
 pub fn set_runtime(name: Option<&str>) -> PyResult<()> {

@@ -1,7 +1,7 @@
 use cubecl::prelude::*;
 use dsp_core::compute::sample_position;
 
-/// Single-pass Common Average Referencing: one unit per sample ([`sample_position`]) averages that
+/// Single-pass Common Average Referencing: one unit per sample ([`fn@sample_position`]) averages that
 /// sample over all channels and subtracts the average, with no intermediate buffer. Units of a plane
 /// read consecutive samples of one channel at a time (coalesced).
 #[cube(launch)]

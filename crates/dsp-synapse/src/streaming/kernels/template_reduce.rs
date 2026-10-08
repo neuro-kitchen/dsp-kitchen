@@ -50,7 +50,7 @@ pub struct BatchTemplateStats {
     pub m2: Vec<f32>,
 }
 
-/// Host-side dispatcher executing [`reduce_channel_templates_kernel`] on in-VRAM extracted snippets.
+/// Host-side dispatcher executing [`fn@reduce_channel_templates_kernel`] on in-VRAM extracted snippets.
 /// `primary_channels[i]` is the primary channel of snippet `i`; snippets on channels
 /// `>= channels` are ignored.
 pub fn execute_reduce_templates_in_vram(

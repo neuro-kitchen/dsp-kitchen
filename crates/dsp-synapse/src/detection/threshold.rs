@@ -8,12 +8,12 @@ use super::spacing::SpikeSpacing;
 /// Polarity mode for action potential peak detection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum SpikePolarity {
-    /// Extracellular negative troughs ($x[t] < -\alpha \sigma_n$).
+    /// Extracellular negative troughs (`x[t] < −α·σₙ`).
     #[default]
     Negative,
-    /// Positive peaks ($x[t] > +\alpha \sigma_n$, e.g. axonal return currents or rectified EMG).
+    /// Positive peaks (`x[t] > +α·σₙ`, e.g. axonal return currents or rectified EMG).
     Positive,
-    /// Biphasic / dual-polarity local extrema ($|x[t]| > \alpha \sigma_n$).
+    /// Biphasic / dual-polarity local extrema (`|x[t]| > α·σₙ`).
     Both,
 }
 

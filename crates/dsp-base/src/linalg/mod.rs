@@ -1,3 +1,8 @@
+//! Linear algebra on the device: matrix products ([`matmul`](fn@matmul)), covariance, symmetric
+//! eigendecomposition, Cholesky; and the models built on them: [`PcaModel`], [`PpcaModel`]
+//! (probabilistic PCA), [`FastIcaModel`] (independent components), and [`DeviceProjection`]
+//! (applying a fitted projection to device buffers).
+
 pub mod cholesky;
 pub mod covariance;
 pub mod eigen;

@@ -27,3 +27,13 @@ fn dsp_kitchen_bindings(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }
+
+/// What `src/bin/stub_gen.rs` writes into `dsp_kitchen_bindings.pyi`: every class and function
+/// annotated for `pyo3-stub-gen`, with types, defaults and docstrings. The project's
+/// `pyproject.toml` (module name, Python source folder) is at the repository root, one level above
+/// this crate.
+pub fn stub_info() -> pyo3_stub_gen::Result<pyo3_stub_gen::StubInfo> {
+    let manifest_dir: &std::path::Path = env!("CARGO_MANIFEST_DIR").as_ref();
+    let root = manifest_dir.parent().expect("dsp_kitchen_py sits in the workspace root");
+    pyo3_stub_gen::StubInfo::from_pyproject_toml(root.join("pyproject.toml"))
+}

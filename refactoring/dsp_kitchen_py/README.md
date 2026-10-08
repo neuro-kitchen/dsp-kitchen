@@ -77,3 +77,9 @@ run on the device; `kmeans` checks `1 ≤ k ≤ n` (was a panic).
 text line on stderr with the time left), `False`, or a callable
 `(stage, step, steps, done, total, unit)`; the bindings take `progress=` (a callable, called with
 the GIL re-taken; its errors are printed, not raised). New module `dsp_kitchen.progress`.
+
+## Deleted (2026-10-08)
+
+Removed from `refactoring/` (superseded; history in git): `synapse_ml/`, `tests/`, `sdk/synapse/ml.py`
+(bindings and tests of the parked Kilosort4 / EMUsort design; replaced by `src/synapse/ml.rs`) and
+`stub/dsp_kitchen_bindings.pyi` (described the removed API). PY14 stays open: generate a new stub.

@@ -3,6 +3,9 @@
 `Kilosort4Config::default()` holds the upstream defaults (`kilosort/parameters.py`). Thresholds
 are in whitened σ.
 
+In Python, every setting with its type, default and unit:
+[`dsp_kitchen.synapse.ml.kilosort4`](../../../api/python/sorters/kilosort4/index.html) (Python API).
+
 | Field | Upstream name | Default | Used by |
 |---|---|---|---|
 | `nt` | `nt` | 61 | samples per waveform (odd) and batch padding |

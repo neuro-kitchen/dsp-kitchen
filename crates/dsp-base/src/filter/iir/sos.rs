@@ -74,6 +74,10 @@ pub struct DeviceFilter<F: DspFloat = f32> {
 
 impl<F: DspFloat> DeviceFilter<F> {
     /// Designs `spec` for `sample_rate` Hz and uploads its coefficients.
+    ///
+    /// # Errors
+    ///
+    /// As [`FilterSpec::design`].
     pub fn new(client: &Client, spec: &FilterSpec, sample_rate: f64) -> Result<Self, FilterError> {
         let sos = spec.design(sample_rate)?;
         Ok(Self::from_sos(client, sos, spec.mode).with_start(spec.start))
@@ -201,6 +205,10 @@ impl<F: DspFloat> DeviceFilter<F> {
 
     /// Filters the next chunk of a continuous stream, continuing from `state` (forward only).
     /// `first` starts the stream per [`FilterStart`] instead.
+    ///
+    /// # Errors
+    ///
+    /// [`FilterError::ForwardBackwardOnLiveStream`] when the filter is zero-phase.
     #[allow(clippy::too_many_arguments)]
     pub fn apply_stateful(
         &self,
@@ -512,6 +520,10 @@ fn tuned_pass<F: DspFloat>(inputs: PassInputs<F>) {
 }
 
 /// One-shot filtering of a `[channels, samples]` buffer (independent chunk semantics).
+///
+/// # Errors
+///
+/// As [`FilterSpec::design`].
 #[allow(clippy::too_many_arguments)]
 pub fn execute_filter<F: DspFloat>(
     client: &Client,

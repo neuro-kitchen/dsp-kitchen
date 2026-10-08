@@ -13,6 +13,7 @@ use dsp_synapse::sorting::{
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3_stub_gen::derive::{gen_stub_pyfunction};
 use pyo3::types::{PyDict, PyList};
 
 use crate::array::{runtime_error, to_numpy, F32Array};
@@ -53,9 +54,33 @@ impl ComputeTask for GmmTask<'_> {
     }
 }
 
-/// Gaussian mixture of `features` (`[spikes, features]`) by EM on the device, the number of
-/// components chosen by BIC in `min_clusters..=max_clusters`. `masks` (same shape, in `[0, 1]`)
-/// selects masked EM (KlustaKwik). Unset options take `GmmClusterer::default()`.
+/// Gaussian mixture clustering, the number of components chosen by BIC.
+///
+/// Parameters
+/// ----------
+/// features : numpy.ndarray
+///     `[spikes, features]` (e.g. PCA scores of snippets), converted to float32.
+/// min_clusters, max_clusters : int, default 1, 8
+///     Range of components tried; the one with the lowest BIC wins.
+/// covariance : {"full", "diagonal", "masked"}, default "full"
+///     Covariance of each component; `"masked"` is KlustaKwik's masked EM (with `masks`).
+/// max_iterations : int, default 100
+///     EM iterations per fit.
+/// tolerance : float, default 1e-3
+///     Stop when the log-likelihood improves less than this.
+/// regularization : float, default 1e-4
+///     Added to the covariance diagonals.
+/// masks : numpy.ndarray, optional
+///     `[spikes, features]` in `[0, 1]`: how much each feature of each spike is trusted (masked EM).
+/// runtime : str, optional
+///     Compute runtime (`"wgpu"`, `"cuda"`, `"cpu"`, …); default: the current one.
+///
+/// Returns
+/// -------
+/// dict
+///     `labels` (component of each spike), `num_clusters`, `weights` (`[k]`), `means` (`[k, features]`),
+///     `responsibilities` (`[spikes, k]`), `log_likelihood`, `bic`.
+#[gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (features, *, min_clusters=None, max_clusters=None, covariance=None, max_iterations=None, tolerance=None, regularization=None, masks=None, runtime=None))]
 #[allow(clippy::too_many_arguments)]
@@ -105,8 +130,31 @@ pub fn cluster_gmm<'py>(
     Ok(dict)
 }
 
-/// k-means with k-means++ seeding (scikit-learn `KMeans` defaults: `n_init`, `max_iter`, `tol`), on
-/// the device (`features` uploaded once).
+/// k-means with k-means++ seeding (scikit-learn `KMeans` semantics), on the device.
+///
+/// Parameters
+/// ----------
+/// features : numpy.ndarray
+///     `[spikes, features]` (e.g. PCA scores of snippets), converted to float32.
+/// k : int
+///     Clusters.
+/// n_init : int, default 10
+///     Seedings tried; the one with the lowest inertia is kept.
+/// max_iter : int, default 300
+///     Iterations per seeding.
+/// tol : float, default 1e-4
+///     Stop when centres move less than this (relative to the features' variance, as scikit-learn).
+/// seed : int, optional
+///     Seed of the seedings; the same seed gives the same result.
+/// runtime : str, optional
+///     Compute runtime (`"wgpu"`, `"cuda"`, `"cpu"`, …); default: the current one.
+///
+/// Returns
+/// -------
+/// dict
+///     `labels` (cluster of each spike), `centers` (`[k, features]`), `inertia` (sum of squared
+///     distances to the nearest centre).
+#[gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (features, k, *, n_init=DEFAULT_N_INIT, max_iter=DEFAULT_MAX_ITER, tol=DEFAULT_TOL, seed=None, runtime=None))]
 #[allow(clippy::too_many_arguments)]
@@ -134,8 +182,22 @@ pub fn kmeans<'py>(py: Python<'py>, features: Bound<'py, PyAny>, k: usize, n_ini
     Ok(dict)
 }
 
-/// HDBSCAN labels of `features` (`-1` = noise), excess-of-mass selection (scikit-learn semantics),
-/// on the device (`features` uploaded once).
+/// HDBSCAN density clustering (scikit-learn semantics: excess-of-mass selection), exact, on the device.
+///
+/// Parameters
+/// ----------
+/// features : numpy.ndarray
+///     `[spikes, features]` (e.g. PCA scores of snippets), converted to float32.
+/// min_cluster_size : int
+///     Smallest group counted as a cluster; smaller groups are noise.
+/// runtime : str, optional
+///     Compute runtime (`"wgpu"`, `"cuda"`, `"cpu"`, …); default: the current one.
+///
+/// Returns
+/// -------
+/// list of int
+///     Cluster of each spike; `-1` is noise.
+#[gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (features, min_cluster_size, *, runtime=None))]
 pub fn hdbscan(py: Python<'_>, features: Bound<'_, PyAny>, min_cluster_size: usize, runtime: Option<&str>) -> PyResult<Vec<i32>> {
@@ -152,7 +214,24 @@ pub fn hdbscan(py: Python<'_>, features: Bound<'_, PyAny>, min_cluster_size: usi
     py.detach(|| target.run(Task(x, n, d, min_cluster_size))).map_err(runtime_error)
 }
 
-/// Density-peaks clustering (Rodriguez & Laio 2014) with `cutoff_distance` and `num_clusters`.
+/// Density-peaks clustering (Rodriguez & Laio 2014): centres are points of high density far from any
+/// denser point.
+///
+/// Parameters
+/// ----------
+/// features : numpy.ndarray
+///     `[spikes, features]` (e.g. PCA scores of snippets), converted to float32.
+/// cutoff_distance : float
+///     Neighbourhood radius for the local density, in feature units.
+/// num_clusters : int
+///     Centres picked (the highest density × distance).
+///
+/// Returns
+/// -------
+/// dict
+///     `labels`, `cluster_centers` (index of each centre's spike), `densities` (`[spikes]`), `deltas`
+///     (distance to the nearest denser point, `[spikes]`).
+#[gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (features, *, cutoff_distance, num_clusters))]
 pub fn cluster_density_peaks<'py>(py: Python<'py>, features: Bound<'py, PyAny>, cutoff_distance: f32, num_clusters: usize) -> PyResult<Bound<'py, PyDict>> {
@@ -167,8 +246,27 @@ pub fn cluster_density_peaks<'py>(py: Python<'py>, features: Bound<'py, PyAny>, 
     Ok(dict)
 }
 
-/// Over-clusters `features` into `initial_k` groups, then merges neighbours whose density valley
-/// is shallower than `dip_threshold` (a heuristic in the spirit of IsoSplit; no significance test).
+/// Over-clusters, then merges neighbouring clusters whose density valley is shallow (in the spirit of
+/// IsoSplit; a heuristic, no significance test).
+///
+/// Parameters
+/// ----------
+/// features : numpy.ndarray
+///     `[spikes, features]` (e.g. PCA scores of snippets), converted to float32.
+/// initial_k : int
+///     Clusters of the first, deliberately too fine, k-means (at most spikes / `min_cluster_size`).
+/// dip_threshold : float
+///     The closest pair is projected on its centroid axis and scored `dip_score = 3 · (1 − valley /
+///     peak)` from a kernel density estimate (0: no valley, 3: empty valley). Below `dip_threshold`
+///     the pair merges; otherwise the points are re-cut at the valley.
+/// min_cluster_size : int
+///     A re-cut is applied only when both sides keep at least this many spikes.
+///
+/// Returns
+/// -------
+/// dict
+///     `labels`, `num_clusters`, `centroids` (`[clusters, features]`).
+#[gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (features, *, initial_k, dip_threshold, min_cluster_size))]
 pub fn cluster_kde_merge<'py>(py: Python<'py>, features: Bound<'py, PyAny>, initial_k: usize, dip_threshold: f32, min_cluster_size: usize) -> PyResult<Bound<'py, PyDict>> {
@@ -199,9 +297,30 @@ fn template(item: &Bound<'_, PyAny>) -> PyResult<WaveformTemplate> {
     Ok(WaveformTemplate::new(ids, samples, mean.slice().to_vec(), vec![STD_NOT_GIVEN; channels * samples]))
 }
 
-/// Greedy matching pursuit of `templates` in `data` (`[channels, samples]`) on the device, with
-/// amplitudes bounded to `[min_amplitude_scale, max_amplitude_scale]`; returns dicts
-/// (`unit_id`, `sample`, `subsample_lag`, `amplitude_scale`, `score`).
+/// Greedy matching pursuit of known templates in a signal, on the device: repeatedly finds the
+/// template and time that explain the most energy, subtracts it, and continues.
+///
+/// Parameters
+/// ----------
+/// data : numpy.ndarray
+///     `[channels, samples]`, converted to float32.
+/// templates : list
+///     One per unit: a dict with `mean` (`[channels, samples]`) and optional `channel_ids`, or a
+///     `[channels, samples]` array.
+/// min_amplitude_scale, max_amplitude_scale : float, default 0.65, 1.45
+///     Each match's amplitude, relative to its template, is limited to this range.
+/// min_explained_energy : float, default 500.0
+///     A match must explain at least this much energy, in the data's unit squared.
+/// max_passes : int, default 4
+///     Detect-and-subtract passes.
+/// runtime : str, optional
+///     Compute runtime (`"wgpu"`, `"cuda"`, `"cpu"`, …); default: the current one.
+///
+/// Returns
+/// -------
+/// list of dict
+///     One per match: `unit_id` (template index), `sample`, `subsample_lag`, `amplitude_scale`, `score`.
+#[gen_stub_pyfunction]
 #[pyfunction(name = "match_spikes_matching_pursuit")]
 #[pyo3(signature = (data, templates, *, min_amplitude_scale=DEFAULT_MIN_AMPLITUDE_SCALE, max_amplitude_scale=DEFAULT_MAX_AMPLITUDE_SCALE, min_explained_energy=DEFAULT_MIN_EXPLAINED_ENERGY_UV2, max_passes=DEFAULT_MAX_PASSES, runtime=None))]
 #[allow(clippy::too_many_arguments)]
@@ -248,9 +367,32 @@ pub fn match_spikes_matching_pursuit_py<'py>(
     Ok(out)
 }
 
-/// Motor units of HD-EMG `data` (`[channels, samples]` at `fs` Hz) by convolutive blind source
-/// separation (extension, whitening, FastICA on the device, peak picking). `min_pnr_db` drops
-/// units below that pulse-to-noise ratio when given.
+/// Motor units of HD-EMG by convolutive blind source separation: delayed copies of the channels
+/// (extension), whitening and FastICA on the device, then spike-train peak picking.
+///
+/// Parameters
+/// ----------
+/// data : numpy.ndarray
+///     `[channels, samples]` HD-EMG, converted to float32.
+/// fs : float
+///     Sampling rate, Hz.
+/// extension_factor : int
+///     Delayed copies of each channel (typically 10–20).
+/// num_sources : int
+///     Sources estimated.
+/// refractory_ms : float
+///     Shortest interval between two discharges of a unit, ms.
+/// min_pnr_db : float, optional
+///     Drop units whose pulse-to-noise ratio is below this, dB.
+/// runtime : str, optional
+///     Compute runtime (`"wgpu"`, `"cuda"`, `"cpu"`, …); default: the current one.
+///
+/// Returns
+/// -------
+/// list of dict
+///     One per unit: `unit_id`, `spike_samples`, `pnr_db`, `cov_isi` (coefficient of variation of the
+///     inter-spike intervals), `ipt` (the source's innervation pulse train, float32).
+#[gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (data, *, fs, extension_factor, num_sources, refractory_ms, min_pnr_db=None, runtime=None))]
 #[allow(clippy::too_many_arguments)]

@@ -41,7 +41,7 @@ pub fn write<E: CubeElement>(client: &Client, handle: &Handle, data: &[E]) {
     client.write(handle, Bytes::from_elems(data.to_vec()));
 }
 
-/// [`write`] taking ownership of `data`: the bytes move into the transfer without a copy (useful
+/// [`fn@write`] taking ownership of `data`: the bytes move into the transfer without a copy (useful
 /// when the buffer was filled on another thread, e.g. a read-ahead loader).
 pub fn write_owned<E: CubeElement>(client: &Client, handle: &Handle, data: Vec<E>) {
     bytes::<E>(data.len());

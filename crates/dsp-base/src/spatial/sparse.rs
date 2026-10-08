@@ -82,7 +82,7 @@ pub fn execute_sparse_rows_multiply<F: DspFloat>(
 }
 
 /// `output = W · input` for a dense row-major `W` (`[channels, channels]`) on a `[channels, samples]`
-/// buffer of `F`: one matrix product ([`crate::linalg::matmul`]).
+/// buffer of `F`: one matrix product ([`fn@crate::linalg::matmul`]).
 pub fn execute_spatial_matrix_multiply<F: DspFloat>(
     client: &Client,
     input: &Handle,

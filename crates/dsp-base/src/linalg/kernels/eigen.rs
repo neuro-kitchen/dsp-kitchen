@@ -154,7 +154,7 @@ pub fn jacobi_cols_kernel<F: Float>(
     }
 }
 
-/// `ratio[b]` = the largest [`offdiag_ratio`] over the off-diagonal entries of matrix `b` (the
+/// `ratio[b]` = the largest [`fn@offdiag_ratio`] over the off-diagonal entries of matrix `b` (the
 /// matrix has converged when it is at most the tolerance). One cube per matrix
 /// ([`dsp_core::compute::LaunchGeometry::per_row`]).
 #[cube(launch)]
@@ -197,7 +197,7 @@ pub fn jacobi_offdiag_ratio_kernel<F: Float>(a: &[F], ratio: &mut [F], batch: u3
 // ---------------------------------------------------------------------------------------------
 
 /// Every sweep of one matrix per cube, in shared memory: rotations, row stage and column stage of a
-/// round are separated by cube barriers, and the convergence test (the largest [`offdiag_ratio`]
+/// round are separated by cube barriers, and the convergence test (the largest [`fn@offdiag_ratio`]
 /// at most `tolerance`) is a cube reduction. `a` is overwritten with the converged (diagonal)
 /// matrix, `v` with the eigenvectors. `n` is comptime so the shared buffers are sized at compile
 /// time.

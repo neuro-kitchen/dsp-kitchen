@@ -107,7 +107,7 @@ mod tests {
 
 /// Per-row `k`-th smallest `|x|` (0-based, a sample value, exact) over columns `cols` of a buffer
 /// of `rows` rows `row_stride` apart, into `out` (`rows` values of `F`). `k < cols.len()`. A radix
-/// select over the bits of `|x|` ([`row_abs_kth_radix_kernel`]): 4 passes over each row for
+/// select over the bits of `|x|` ([`fn@row_abs_kth_radix_kernel`]): 4 passes over each row for
 /// `f32`, 8 for `f64`.
 ///
 /// # Panics

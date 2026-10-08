@@ -34,3 +34,5 @@ dsp-synapse-ml = { workspace = true, default-features = false }
 cubecl.workspace = true
 pyo3.workspace = true
 numpy.workspace = true
+# Generates the `.pyi` stubs (binary `stub_gen`): types, defaults and docstrings for editors and docs
+pyo3-stub-gen = "0.23.1"

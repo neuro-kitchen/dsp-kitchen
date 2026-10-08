@@ -182,3 +182,11 @@ min / max part of `test_row_reductions_match_host` went with it. `cargo check -p
 - `SecondMomentAccumulator` keeps its partial-sum buffer between batches.
 - `buffer::download_range(client, handle, start, len)`; `SecondMomentAccumulator::into_sum` (the
   device sum, nothing read back).
+
+## Deleted (2026-10-08)
+
+Removed from `refactoring/` (superseded; history in git): `linalg/svd.rs` (host Jacobi, replaced by
+`linalg::eigen`); `math/baseline.rs`, `math/kernels/baseline.rs`, `spatial/reference.rs`,
+`spatial/car_precomputed.rs`, `filter/fir/causal_kernels.rs` (no users when parked, and written against
+the pre-0.11 CubeCL API, so not reusable as is). Kept: `math/geometry.rs` (lasso selection, for the
+app's Curation).

@@ -116,11 +116,19 @@ pub fn to_sorting_output(store: &SortingZarr) -> SortingOutput {
 }
 
 /// Saves a [`SortingOutput`] as a `.sorting.zarr` store.
+///
+/// # Errors
+///
+/// Fails ([`DspError::Io`](dsp_core::DspError::Io)) when the path cannot be written.
 pub fn save_sorting_zarr(sorting: &SortingOutput, dir: &Path) -> DspResult<()> {
     from_sorting_output(sorting).write(dir)
 }
 
 /// Loads a `.sorting.zarr` store as a [`SortingOutput`].
+///
+/// # Errors
+///
+/// Fails ([`DspError::Io`](dsp_core::DspError::Io) and others) when the path cannot be read or is not in that format.
 pub fn load_sorting_zarr(dir: &Path) -> DspResult<SortingOutput> {
     Ok(to_sorting_output(&SortingZarr::read(dir)?))
 }

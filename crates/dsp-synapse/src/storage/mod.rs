@@ -23,6 +23,10 @@ pub use sorting_zarr::{load_sorting_zarr, save_sorting_zarr};
 
 /// Saves `sorting` at `path` as `format`, or as the format the path's name implies
 /// ([`SortingFormat::from_path_name`]).
+///
+/// # Errors
+///
+/// Fails ([`DspError::Io`]) when the path cannot be written.
 pub fn save_sorting(sorting: &SortingOutput, path: &Path, format: Option<SortingFormat>) -> DspResult<()> {
     match format.unwrap_or_else(|| SortingFormat::from_path_name(path)) {
         SortingFormat::Phy => save_phy_folder(sorting, path),
@@ -32,6 +36,10 @@ pub fn save_sorting(sorting: &SortingOutput, path: &Path, format: Option<Sorting
 }
 
 /// Loads the sorting at `path`, in the format detected from its contents (else its name).
+///
+/// # Errors
+///
+/// [`DspError::Io`] when `path` does not exist; fails when it cannot be read in the detected format.
 pub fn load_sorting(path: &Path) -> DspResult<SortingOutput> {
     if !path.exists() {
         return Err(DspError::Io(format!("Path {} does not exist", path.display())));

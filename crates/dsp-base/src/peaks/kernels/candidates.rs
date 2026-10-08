@@ -5,7 +5,7 @@
 use cubecl::prelude::*;
 use dsp_core::compute::{channel_position, sample_position};
 
-/// Polarity ids of the kernels (see [`super::Polarity`]).
+/// Polarity ids of the kernels (see [`Polarity`](crate::peaks::Polarity)).
 pub const POLARITY_POSITIVE: u32 = 0;
 pub const POLARITY_NEGATIVE: u32 = 1;
 pub const POLARITY_BOTH: u32 = 2;
@@ -32,8 +32,8 @@ fn is_candidate<F: Float>(trace: &[F], row: u32, t: u32, height: F, polarity: u3
     (polarity != POLARITY_NEGATIVE && is_max) || (polarity != POLARITY_POSITIVE && is_min)
 }
 
-/// Counts the candidates of each `(block, channel)` unit (block = [`sample_position`], channel =
-/// [`channel_position`]) into `block_counts[ch · num_blocks + b]`.
+/// Counts the candidates of each `(block, channel)` unit (block = [`fn@sample_position`], channel =
+/// [`fn@channel_position`]) into `block_counts[ch · num_blocks + b]`.
 #[cube(launch)]
 pub fn count_peak_candidates_kernel<F: Float>(
     trace: &[F],
