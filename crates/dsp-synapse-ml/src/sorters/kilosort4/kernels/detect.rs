@@ -8,7 +8,7 @@ use dsp_core::compute::{channel_position, sample_position};
 
 /// `B[ch, k, t] = Σ_j x[ch, t − nt/2 + j] · w[k, j]` (zero outside the row), summed over `j` in
 /// order: every channel correlated with every template, a filter bank. One unit per `(ch, t)`
-/// ([`sample_position`], [`channel_position`]) computing all `n_templates` outputs.
+/// ([`fn@sample_position`], [`fn@channel_position`]) computing all `n_templates` outputs.
 ///
 /// A cube shares its `tile_x` samples (plus `nt − 1` of context) of its `tile_y` channels and the
 /// `[n_templates, nt]` templates through shared memory, loaded once; each sample read from the

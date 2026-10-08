@@ -1,6 +1,6 @@
 use cubecl::prelude::*;
 
-/// How a stored value's bits are read (`kind` of [`unpack_stored_kernel`]).
+/// How a stored value's bits are read (`kind` of [`fn@unpack_stored_kernel`]).
 pub const SIGNED: u32 = 0;
 pub const UNSIGNED: u32 = 1;
 pub const FLOAT: u32 = 2;

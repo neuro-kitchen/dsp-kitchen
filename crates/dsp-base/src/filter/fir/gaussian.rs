@@ -20,7 +20,7 @@ pub fn gaussian_radius(sigma_samples: f32, truncate: f32) -> usize {
 }
 
 /// Constructs a normalized 1D symmetric Gaussian FIR kernel of radius [`gaussian_radius`]:
-/// $g[k] = \frac{1}{Z} \exp\left(-\frac{k^2}{2\sigma^2}\right), \quad k \in [-R, R]$.
+/// `g[k] = exp(−k² / 2σ²) / Z`, `k ∈ [−R, R]`.
 pub fn gaussian_kernel_1d(sigma_samples: f32, truncate_sigma: f32) -> (Vec<f32>, usize) {
     let sigma = sigma_samples.max(MIN_KERNEL_WIDTH);
     let radius = gaussian_radius(sigma, truncate_sigma);

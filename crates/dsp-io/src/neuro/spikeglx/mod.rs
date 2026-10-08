@@ -4,7 +4,7 @@
 //! `µV = i * AiRangeMax / MaxInt / gain * 1e6`, with per-channel gains from `imroTbl` (imec)
 //! or `niMNGain` / `niMAGain` (nidq). Probe geometry ([`probe_layout`]) comes from `snsGeomMap`
 //! when present, otherwise from `snsShankMap` and the probe type's electrode pitch. Compressed IBL files
-//! (`.cbin` + `.ch`) are read through [`MtscompRecording`](crate::neuro::mtscomp::MtscompRecording).
+//! (`.cbin` + `.ch`) are read through [`MtscompRecording`].
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

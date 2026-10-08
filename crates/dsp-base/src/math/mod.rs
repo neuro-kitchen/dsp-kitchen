@@ -1,3 +1,10 @@
+//! Element-wise operations and statistics.
+//!
+//! On the device: scaling and clamping, unpacking stored integer samples to floats, per-channel
+//! mean, standard deviation and noise. On the host: noise estimators ([`estimate_noise_std`],
+//! median absolute deviation), percentiles and histograms ([`histogram`](mod@histogram)), running moments
+//! ([`moments`]), lagged cross-correlation ([`xcorr`]), windows and `sinc` ([`windows`]).
+
 pub mod kernels;
 pub mod scaling;
 pub mod clamp;

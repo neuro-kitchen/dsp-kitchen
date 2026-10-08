@@ -62,6 +62,10 @@ pub struct PipelineWorkspace<F: DspFloat = f32> {
 
 impl<F: DspFloat> PipelineWorkspace<F> {
     /// Workspace for independent chunks (see [`ChunkMode::Independent`]).
+    ///
+    /// # Errors
+    ///
+    /// [`FilterError`] when a filter stage's design is invalid at `sample_rate`.
     pub fn new(
         client: Client,
         pipeline: Pipeline,
@@ -74,6 +78,11 @@ impl<F: DspFloat> PipelineWorkspace<F> {
 
     /// Workspace for a continuous stream (see [`ChunkMode::Stateful`]); rejects forward-backward
     /// filters.
+    ///
+    /// # Errors
+    ///
+    /// [`FilterError`] when a filter stage's design is invalid at `sample_rate`, and
+    /// [`FilterError::ForwardBackwardOnLiveStream`] for a zero-phase filter (it needs future samples).
     pub fn new_stateful(
         client: Client,
         pipeline: Pipeline,
@@ -279,6 +288,12 @@ impl<F: DspFloat> PipelineWorkspace<F> {
     /// [`dsp_core::RecordingSource::read_stored`] returns it), scales it on the device and runs the
     /// pipeline. Integer recordings move `format.bytes()` per sample instead of `size_of::<F>()`.
     /// Needs [`Self::set_stored_scaling`]; see [`Self::process_handle`] for the returned handle.
+    ///
+    /// # Errors
+    ///
+    /// [`DspError::ShapeMismatch`] when `stored` is not `channels × samples × format.bytes()` long;
+    /// [`DspError::InvalidConfig`] before [`Self::set_stored_scaling`]; [`DspError::UnsupportedFormat`]
+    /// for `float64` storage.
     pub fn process_stored_chunk_in_vram(&mut self, stored: &[u8], format: SampleFormat, samples: usize) -> DspResult<Handle> {
         self.process_owned_stored_chunk_in_vram(stored.to_vec(), format, samples)
     }
@@ -286,6 +301,10 @@ impl<F: DspFloat> PipelineWorkspace<F> {
     /// [`Self::process_stored_chunk_in_vram`] taking ownership of the stored bytes: they move into
     /// the upload without a copy on this thread (padded in place when they do not fill whole
     /// 32-bit words).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::process_stored_chunk_in_vram`].
     pub fn process_owned_stored_chunk_in_vram(&mut self, stored: Vec<u8>, format: SampleFormat, samples: usize) -> DspResult<Handle> {
         if stored.len() != self.channels * samples * format.bytes() {
             return Err(DspError::ShapeMismatch { expected: vec![self.channels, samples, format.bytes()], actual: vec![stored.len()] });

@@ -42,8 +42,8 @@ impl LaunchGeometry {
         Self { cube_dim, cube_count }
     }
 
-    /// One unit per `(channel, sample)` of a `[channels, samples]` buffer: [`sample_position`]
-    /// and [`channel_position`]. The cube's x size is the runtime's plane, so a plane walks
+    /// One unit per `(channel, sample)` of a `[channels, samples]` buffer: [`fn@sample_position`]
+    /// and [`fn@channel_position`]. The cube's x size is the runtime's plane, so a plane walks
     /// neighbouring samples of one channel.
     ///
     /// # Panics
@@ -59,7 +59,7 @@ impl LaunchGeometry {
         Self { cube_dim, cube_count: CubeCount::Static(x, y, z) }
     }
 
-    /// One unit per sample for kernels that walk all channels of a sample ([`sample_position`]).
+    /// One unit per sample for kernels that walk all channels of a sample ([`fn@sample_position`]).
     pub fn per_sample(client: &Client, samples: usize) -> Self {
         let cube_dim = Self::flat(client, samples);
         let (x, z) = Self::spill(client, samples, cube_dim.x);
@@ -73,7 +73,7 @@ impl LaunchGeometry {
         Self { cube_dim, cube_count: CubeCount::Static((channels.max(1) as u32).div_ceil(cube_dim.x), 1, 1) }
     }
 
-    /// One cube per row of a `[rows, cols]` buffer, for cube-wide reductions: [`row_position`] is the
+    /// One cube per row of a `[rows, cols]` buffer, for cube-wide reductions: [`fn@row_position`] is the
     /// row (cubes along x, continuing along y past the grid's x limit) and `UNIT_POS_X` strides along
     /// it. The cube is the runtime's cube for `cols` units flattened onto x and rounded down to a
     /// power of two, so tree reductions can halve it; kernels size shared memory with

@@ -216,11 +216,19 @@ pub fn to_sorting_output(folder: &PhyFolder) -> SortingOutput {
 }
 
 /// Saves a [`SortingOutput`] as a Phy / Kilosort folder.
+///
+/// # Errors
+///
+/// Fails ([`DspError::Io`]) when the path cannot be written.
 pub fn save_phy_folder(sorting: &SortingOutput, dir: &Path) -> DspResult<()> {
     from_sorting_output(sorting).write(dir)
 }
 
 /// Loads a Phy / Kilosort folder as a [`SortingOutput`].
+///
+/// # Errors
+///
+/// [`DspError::Io`] when `dir` is not a directory; fails when its files cannot be read.
 pub fn load_phy_folder(dir: &Path) -> DspResult<SortingOutput> {
     if !dir.is_dir() {
         return Err(DspError::Io(format!("{} is not a directory", dir.display())));
@@ -230,6 +238,10 @@ pub fn load_phy_folder(dir: &Path) -> DspResult<SortingOutput> {
 
 /// Spikes of a sorting at `path`: a phy / Kilosort folder (or a file in one), else any format
 /// [`super::load_sorting`] reads, in folder form; similarity filled when missing.
+///
+/// # Errors
+///
+/// As [`super::load_sorting`].
 pub fn load_spikes(path: &Path) -> DspResult<PhyFolder> {
     let folder = if path.is_dir() { Some(path) } else { path.parent().filter(|_| path.is_file()) };
     let mut spikes = match folder.filter(|d| PhyFolder::is_phy_folder(d)) {

@@ -1,3 +1,15 @@
+//! Filters for `[channels, samples]` signals on the device.
+//!
+//! - [`design`]: IIR designs (Butterworth, Chebyshev, notch) as second-order sections, checked
+//!   against `scipy.signal`; [`FilterSpec`] describes one, [`FilterError`] explains a bad one.
+//! - [`iir`]: running sections over channels ([`DeviceFilter`]), causal or zero-phase.
+//! - [`fir`]: convolutions and Gaussian smoothing.
+//! - [`non_linear`]: median filters and the Teager–Kaiser energy operator.
+//! - [`template`]: subtracting a waveform template at known events (e.g. stimulation artefacts).
+//!
+//! Most uses go through [`Pipeline`](crate::Pipeline) and its [`PipelineStage`](crate::PipelineStage)
+//! constructors (`bandpass`, `notch`, …), which chain filters without leaving the device.
+
 pub mod design;
 pub mod iir;
 pub mod fir;

@@ -5,14 +5,14 @@ use cubecl::prelude::*;
 use crate::core::edge::{EDGE_NEAREST, EDGE_ODD, EDGE_REFLECT};
 
 /// Sample `j − pad` of the row starting at `input[base]` with `len` samples, extended by `mode`
-/// (`mode` is an [`EdgeMode::id`]). `j` runs over `0..len + 2·pad`. Reflections are one row deep:
+/// (`mode` is an [`EdgeMode::id`](crate::core::EdgeMode::id)). `j` runs over `0..len + 2·pad`. Reflections are one row deep:
 /// positions further out than `len − 1` samples read the far end of the row (never out of bounds).
 #[cube]
 pub fn read_extended<F: Float>(input: &[F], base: usize, len: u32, pad: u32, j: u32, #[comptime] mode: u32) -> F {
     read_extended_strided::<F>(input, base, 1u32, len, pad, j, mode)
 }
 
-/// [`read_extended`] for a row whose consecutive samples are `stride` values apart (sample `i` at
+/// [`fn@read_extended`] for a row whose consecutive samples are `stride` values apart (sample `i` at
 /// `input[base + i · stride]`), e.g. a channel of a time-major buffer.
 #[cube]
 pub fn read_extended_strided<F: Float>(input: &[F], base: usize, stride: u32, len: u32, pad: u32, j: u32, #[comptime] mode: u32) -> F {

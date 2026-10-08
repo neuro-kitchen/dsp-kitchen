@@ -1,7 +1,7 @@
 use cubecl::prelude::*;
 use dsp_core::compute::row_position;
 
-/// Bits of one radix digit of [`row_abs_kth_radix_kernel`].
+/// Bits of one radix digit of [`fn@row_abs_kth_radix_kernel`].
 pub const RADIX_BITS: u32 = 8;
 
 /// Bins of a digit's histogram.

@@ -124,6 +124,12 @@ impl FilterSpec {
     }
 
     /// Designs the second-order sections for `sample_rate` Hz, validating the parameters.
+    ///
+    /// # Errors
+    ///
+    /// [`FilterError`] when the design is invalid at `sample_rate`: non-positive sample rate, zero
+    /// order, a cutoff outside `(0, Nyquist)`, band edges out of order, a bad `q` or ripple.
+    /// Explicit sections fail [`Sos::validate`].
     pub fn design(&self, sample_rate: f64) -> Result<Sos, FilterError> {
         match &self.design {
             FilterDesign::Butterworth { order, band } => butterworth_sos(*order, *band, sample_rate),
@@ -138,6 +144,10 @@ impl FilterSpec {
 
     /// `(left, right)` samples needed around a chunk for its interior to match whole-recording
     /// filtering (impulse response decayed below [`DEFAULT_SETTLING_TOLERANCE`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::design`].
     pub fn settling(&self, sample_rate: f64) -> Result<(usize, usize), FilterError> {
         let s = self.design(sample_rate)?.settling_samples(DEFAULT_SETTLING_TOLERANCE);
         Ok(match self.mode {

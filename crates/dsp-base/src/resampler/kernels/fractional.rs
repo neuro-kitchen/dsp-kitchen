@@ -3,7 +3,7 @@ use cubecl::prelude::*;
 use crate::math::windows::{BLACKMAN_HARRIS_A0, BLACKMAN_HARRIS_A1, BLACKMAN_HARRIS_A2, BLACKMAN_HARRIS_A3, SINC_ZERO};
 
 /// Un-normalized tap weight at `τ` for a window of half-width `half_width` (device form of the
-/// host weight in [`fractional_delay_taps`]).
+/// host weight in [`fractional_delay_taps`](crate::resampler::fractional_delay_taps)).
 #[cube]
 pub fn windowed_sinc_weight<F: Float>(tau: F, half_width: F) -> F {
     let pi = F::new(core::f32::consts::PI);

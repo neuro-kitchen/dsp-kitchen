@@ -58,7 +58,7 @@ fn max_rounds(n: usize) -> usize {
 }
 
 /// Progress total of [`hdbscan_points_with_progress`] over `n` points: `n` units per pass (the
-/// neighbour pass and at most [`max_rounds`] Borůvka rounds). A launch over `c` of the `n` targets
+/// neighbour pass and at most `max_rounds` Borůvka rounds). A launch over `c` of the `n` targets
 /// for `r` of the `n` points advances `c · r / n`; a round's skipped work is credited when it ends.
 pub fn hdbscan_progress_total(n: usize) -> u64 {
     (1 + max_rounds(n) as u64) * n as u64

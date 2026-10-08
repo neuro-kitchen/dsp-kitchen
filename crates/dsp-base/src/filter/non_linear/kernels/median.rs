@@ -52,7 +52,7 @@ fn median_by_rank<F: Float>(window: &Array<F>, #[comptime] width: u32) -> F {
 
 /// Running median over `width` samples (odd, comptime) centred on each sample of a channel-major
 /// `[channels, samples]` buffer. Samples beyond either end come from `edge` (an `EdgeMode` id; scipy
-/// `signal.medfilt` reads zeros). Width 9 uses [`med9`]; other widths rank the window.
+/// `signal.medfilt` reads zeros). Width 9 uses [`fn@med9`]; other widths rank the window.
 #[cube(launch)]
 pub fn median_filter_kernel<F: Float>(
     input: &[F],

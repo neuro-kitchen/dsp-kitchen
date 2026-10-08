@@ -135,6 +135,10 @@ impl StreamingDetectionConfig {
     ///
     /// where `(settling_left, settling_right) = pipeline.settling(fs)` (forward-backward filters need
     /// both sides).
+    ///
+    /// # Errors
+    ///
+    /// [`DspError::InvalidConfig`] when a filter stage's design is invalid at `sample_rate`.
     pub fn compute_halos(&self, sample_rate: f64, pipeline: &Pipeline) -> DspResult<(u64, u64)> {
         let (settle_left, settle_right) = pipeline
             .settling(sample_rate)

@@ -14,6 +14,10 @@ use super::drift::DriftEstimate;
 /// Computes the $[M \times K]$ spatial Kriging weight matrix mapping observed channels
 /// at `source_xy` to drift-shifted target positions `target_xy`. Fails when the regularized kernel
 /// matrix is not positive definite (e.g. non-finite positions).
+///
+/// # Errors
+///
+/// When the regularized kernel matrix is not positive definite (e.g. non-finite positions).
 pub fn compute_kriging_weight_matrix(
     source_xy: &[[f32; 2]],
     target_xy: &[[f32; 2]],
@@ -96,6 +100,10 @@ fn site_xy(layout: &SensorLayout, ch: usize) -> DspResult<[f32; 2]> {
 /// Only the snippet's K channels are available here, so targets moved beyond them are
 /// extrapolated (attenuated); prefer [`correct_traces_drift_kriging`] before extraction. Weights are
 /// cached per channel set and drift (0.1 µm steps). Errors if a channel has no site in `layout`.
+///
+/// # Errors
+///
+/// When a snippet channel has no site in `layout`, or a weight matrix cannot be computed.
 pub fn correct_snippet_batch_drift_kriging(
     batch: &SnippetBatch,
     layout: &SensorLayout,
@@ -231,6 +239,11 @@ impl TraceKriging {
 
     /// Corrects a host chunk (first sample at global `start_sample`). Errors if a site's channel is
     /// outside the chunk.
+    ///
+    /// # Errors
+    ///
+    /// [`DspError::InvalidConfig`] when a site's channel is outside the chunk; when a weight matrix
+    /// cannot be computed.
     pub fn correct(
         &mut self,
         data: &[f32],
@@ -262,6 +275,10 @@ impl TraceKriging {
     /// [`Self::correct`] of the `[channels, samples]` device buffer `input` into `output` (`F`
     /// values, distinct buffers). Only the weights of the chunk's drift steps are uploaded (ELLPACK
     /// rows, one set per step); all runs are applied in one launch.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::correct`].
     #[allow(clippy::too_many_arguments)]
     pub fn correct_in_vram<F: dsp_base::core::DspFloat>(
         &mut self,
@@ -339,6 +356,10 @@ impl TraceKriging {
 }
 
 /// One-off [`TraceKriging::correct`] (weights are not kept between calls).
+///
+/// # Errors
+///
+/// As [`TraceKriging::correct`].
 #[allow(clippy::too_many_arguments)]
 pub fn correct_traces_drift_kriging(
     data: &[f32],

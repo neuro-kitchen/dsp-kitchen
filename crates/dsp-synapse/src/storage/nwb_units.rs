@@ -121,12 +121,20 @@ pub fn to_sorting_output(table: &NwbUnitsTable) -> SortingOutput {
 }
 
 /// Saves a [`SortingOutput`] as the `/units` group of the NWB store `nwb_zarr_dir`.
+///
+/// # Errors
+///
+/// Fails ([`DspError::Io`](dsp_core::DspError::Io)) when the path cannot be written.
 pub fn save_nwb_units(sorting: &SortingOutput, nwb_zarr_dir: &Path) -> DspResult<()> {
     from_sorting_output(sorting).write(nwb_zarr_dir)
 }
 
 /// Loads the `/units` table at `nwb_zarr_dir` (an NWB root or the `units` group). The sample rate
 /// is `sample_rate_hz` when given, else inferred from the store.
+///
+/// # Errors
+///
+/// Fails ([`DspError::Io`](dsp_core::DspError::Io) and others) when the path cannot be read or is not in that format.
 pub fn load_nwb_units(nwb_zarr_dir: &Path, sample_rate_hz: impl Into<Option<f64>>) -> DspResult<SortingOutput> {
     Ok(to_sorting_output(&NwbUnitsTable::read(nwb_zarr_dir, sample_rate_hz.into())?))
 }
