@@ -3,6 +3,9 @@
 `EmusortConfig::default()` is `Kilosort4Config` with the paper's changes, plus EMUsort's own
 settings. Everything not listed keeps its [Kilosort4 default](../kilosort4/parameters.md).
 
+In Python, every setting with its type, default and unit:
+[`dsp_kitchen.synapse.ml.emusort`](../../../api/python/sorters/emusort/index.html) (Python API).
+
 | Field | Upstream name | EMUsort | Kilosort4 |
 |---|---|---|---|
 | `kilosort4.n_pcs` | `n_pcs` | 9 | 6 |

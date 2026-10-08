@@ -1,16 +1,31 @@
-# Builds the mdBook in docs/book and publishes it to https://neuro-kitchen.github.io/dsp-kitchen/.
+# Builds the documentation site (docs/build.sh: landing page, guide, Python API, Rust API) and
+# publishes it to https://neuro-kitchen.github.io/dsp-kitchen/.
 # Prerequisite (one-time repo setting):
 #   https://github.com/neuro-kitchen/dsp-kitchen/settings/pages
 #   -> Build and deployment -> Source: "GitHub Actions"
-# Pull requests only build (catches broken links/SUMMARY); pushes to main also deploy.
+# Every run first checks the docs (docs/check.sh: stub up to date with the bindings, numpydoc
+# docstrings, strict Python API build, rustdoc without warnings; doctests need a GPU runtime and run
+# locally). Pull requests only check and build; pushes to main also deploy.
 name: docs
 
 on:
   push:
     branches: [main, "versions/**"]
-    paths: ["docs/book/**", ".github/workflows/docs.yml"]
+    paths:
+      - "docs/**"
+      - "dsp_kitchen_py/dsp_kitchen/**"
+      - "dsp_kitchen_py/dsp_kitchen_bindings/*.pyi"
+      - "dsp_kitchen_py/src/**"
+      - "crates/**"
+      - ".github/workflows/docs.yml"
   pull_request:
-    paths: ["docs/book/**", ".github/workflows/docs.yml"]
+    paths:
+      - "docs/**"
+      - "dsp_kitchen_py/dsp_kitchen/**"
+      - "dsp_kitchen_py/dsp_kitchen_bindings/*.pyi"
+      - "dsp_kitchen_py/src/**"
+      - "crates/**"
+      - ".github/workflows/docs.yml"
   workflow_dispatch:
 
 permissions:
@@ -38,20 +53,33 @@ jobs:
           curl -sSL "$url" | tar -xz -C "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+      # The Python API (Zensical + mkdocstrings) is built through uv; the Rust API needs a toolchain
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust builds
+        uses: Swatinem/rust-cache@v2
+
       - name: Setup Pages
         if: github.event_name != 'pull_request'
         id: pages
         uses: actions/configure-pages@v6
 
-      # book.toml sets build-dir = "../../target/book"
-      - name: Build book
-        run: mdbook build docs/book
+      - name: Check docs
+        run: docs/check.sh --no-doctests
+
+      # Landing page, guide, Python API (from the committed stub) and Rust API into target/site
+      - name: Build site
+        run: docs/build.sh
 
       - name: Upload Pages artifact
         if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v5
         with:
-          path: target/book
+          path: target/site
 
   deploy:
     if: github.event_name != 'pull_request'
