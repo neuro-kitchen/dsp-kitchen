@@ -17,6 +17,9 @@ to write fast, correct GPU code for signal processing, not only by someone who w
   checked against the literature and measured.
 - [Case study: Kilosort4 detection, measured](detection.md): 477 → 123 ms per window, and why the
   planned fix was not the one that mattered.
+- [Case study: Kilosort4 clustering and matching](clustering.md): graph clustering, merging trees
+  and matching pursuit as matrix products and parallel kernels; 158 s → 5 s once the real cost (long
+  serial loops in few threads, not host round trips) was measured.
 - [Moving data to the device](data-movement.md): one crossing per window, in its stored integer
   form, scaled on the device.
 - [Pitfalls](pitfalls.md): the traps that cost us a failing test or a frozen run.

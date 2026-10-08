@@ -53,8 +53,13 @@ dsp-synapse-ml/
 
 `Kilosort4::new(config).run(client, source, probe)` and `Emusort::new(config).run(…)` stream a
 whole recording through one runner (`run_plan` with a `RunPlan`): preprocessing fitted on the
-recording, universal templates, detection; see the [Kilosort4 pipeline](../sorters/kilosort4/pipeline.md).
-They return a `Kilosort4Result` (`fitted`, `templates`, `spikes`, `to_sorting_output(probe)`).
+recording, universal templates, detection, clustering, learned templates, learned-template matching
+and the clustering of the matches; see the [Kilosort4 pipeline](../sorters/kilosort4/pipeline.md).
+They return a `Kilosort4Result` (`fitted`, `templates`, `detected`, `first_clusters`, `learned`,
+`spikes`, `clusters`, `reproducible`, `device`, `to_sorting_output(probe)` with one unit per cluster
+and its waveform template). Modules: `detect` (universal templates), `clustering` (sections, merging
+tree, splits), `learned` (template alignment and merging), `matching` (`TemplateMatcher`, matching
+pursuit), each with its kernels under `kernels/`. Results and times: [Benchmarks](../sorters/benchmarks.md).
 Python: `dsp_kitchen.synapse.ml.kilosort4.run` / `emusort.run` (with `templates=`,
 `preprocessing_from=`, `progress=`, `runtime=`).
 
@@ -118,6 +123,7 @@ load user-supplied files (`from_safetensors_file`, `from_onnx_file`) on an expli
 - The model runtime moves data between host and device for every operation; it is to be replaced
   by `burn-onnx` with device-resident weights on the shared CubeCL client when a model artifact
   is validated.
-- Sorters: preprocessing, universal templates and detection run; drift correction, clustering,
-  deconvolution and merging are not implemented yet (see each sorter's page).
+- Sorters: everything up to the clustering of the learned-template matches runs; the refractory
+  (CCG) criteria, global merges, duplicate-spike removal, drift correction and EMUsort's unit score
+  are not implemented yet (see each sorter's page).
 - Clip extraction for template learning runs on the host (one download per learning window).
