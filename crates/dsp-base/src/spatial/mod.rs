@@ -1,3 +1,12 @@
+//! Operators that mix channels: each output channel is a weighted sum of input channels.
+//!
+//! - [`car`]: common average reference (subtracts the mean over channels at every sample).
+//! - [`SpatialWhitening`]: ZCA whitening, global or over each channel's nearest contacts.
+//! - [`SurfaceLaplacian`]: each channel minus the (distance-weighted) mean of its neighbours (HD-EMG,
+//!   ECoG grids).
+//! - [`sparse`]: the `[channels, channels]` matrix behind whitening and the Laplacian, applied dense
+//!   or as sparse rows (CAR has its own single-pass kernel).
+
 pub mod car;
 pub mod kernels;
 pub mod laplacian;

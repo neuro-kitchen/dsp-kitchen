@@ -106,7 +106,7 @@ fn load_tile<F: Float>(
     }
 }
 
-/// [`fir_filter_kernel`] through shared memory: each cube loads its `tile_x` samples of `tile_y`
+/// [`fn@fir_filter_kernel`] through shared memory: each cube loads its `tile_x` samples of `tile_y`
 /// channels plus the `num_taps − 1` samples of history once, then every unit reads its window from
 /// the tile. `num_taps`, `tile_x` (= `CUBE_DIM_X`) and `tile_y` (= `CUBE_DIM_Y`) are comptime.
 #[cube(launch)]
@@ -142,7 +142,7 @@ pub fn fir_tiled_kernel<F: Float>(
     }
 }
 
-/// [`fir_centered_filter_kernel`] through shared memory: each cube loads its `tile_x` samples of
+/// [`fn@fir_centered_filter_kernel`] through shared memory: each cube loads its `tile_x` samples of
 /// `tile_y` channels plus `radius` samples on each side once. `radius`, `tile_x` (= `CUBE_DIM_X`) and
 /// `tile_y` (= `CUBE_DIM_Y`) are comptime.
 #[cube(launch)]

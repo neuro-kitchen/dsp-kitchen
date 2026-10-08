@@ -20,7 +20,7 @@ use dsp_core::compute::LaunchGeometry;
 
 use super::kernels::{apply_channel_delays_kernel, delay_cc_accumulate_kernel, delay_cc_tile_kernel, delay_envelope_kernel};
 
-/// Samples of one tile of [`delay_cc_tile_kernel`]: each lag's partial sum adds this many products
+/// Samples of one tile of [`fn@delay_cc_tile_kernel`]: each lag's partial sum adds this many products
 /// (shorter sums than one over the whole batch), and the tile with its lag margin fits shared
 /// memory on every device we target (`(2 · DELAY_TILE_SAMPLES + 2 · max_lag) · 4` bytes).
 pub const DELAY_TILE_SAMPLES: usize = 1024;

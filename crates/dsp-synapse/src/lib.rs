@@ -3,6 +3,51 @@
 //! Allen/IBL quality metrics, sorter comparison, and neural frequency bands.
 //!
 //! Probe geometry (layouts, presets, nearest-site queries) lives in `dsp_io::neuro::probe`.
+//!
+//! # Where things are
+//!
+//! | Step | Module | Start with |
+//! |---|---|---|
+//! | Find spikes | [`detection`] | [`detect_spikes_multichannel`], [`deduplicate_spikes_spatial`] |
+//! | Whole recordings, bounded memory | [`streaming`] | [`streaming::StreamingDetector`] |
+//! | Cut waveforms | [`extraction`] | [`extract_snippets_multichannel`] |
+//! | Features | [`features`] | [`PcaFeatureEmbedder`] |
+//! | Positions and drift | [`spatial`] | [`PeakLocalizer`] implementations |
+//! | Cluster into units | [`sorting`] | k-means, GMM, HDBSCAN, bipartite modularity |
+//! | Quality and comparison | [`metrics`] | ISI violations, presence, amplitude cutoff; sorter agreement |
+//! | Results on disk | [`storage`] | [`SortingOutput`] (Phy, Zarr, NWB) |
+//!
+//! Complete sorters (Kilosort4, EMUsort) are in `dsp-synapse-ml`.
+//!
+//! # Example
+//!
+//! Detect threshold crossings, then keep one spike per event: a spike seen on neighbouring
+//! channels is one spike, assigned to the channel where it is largest.
+//!
+//! ```
+//! use dsp_io::neuro::probe::{Position3D, SensorLayout, SensorSite};
+//! use dsp_synapse::{deduplicate_spikes_spatial, detect_spikes_multichannel, SpikePolarity, SpikeSpacing};
+//!
+//! // 4 channels on a line, 20 µm apart
+//! let sites = (0..4).map(|c| SensorSite::new(c, Position3D::new(0.0, 20.0 * c as f32, 0.0), 0)).collect();
+//! let layout = SensorLayout::new("linear", sites);
+//!
+//! // Small noise, and one spike at sample 500: −80 µV on channel 1, −40 µV on its neighbour
+//! let (channels, samples) = (4, 1_000);
+//! let mut x: Vec<f32> = (0..channels * samples).map(|i| ((i * 7_919) % 200) as f32 / 100.0 - 1.0).collect();
+//! x[samples + 500] = -80.0;
+//! x[2 * samples + 500] = -40.0;
+//!
+//! // Troughs below −5 σ (σ per channel, from the median absolute deviation), ≥ 1 ms apart at 30 kHz
+//! let crossings = detect_spikes_multichannel(&x, channels, samples, 5.0, SpikePolarity::Negative, SpikeSpacing::new(30));
+//! assert_eq!(crossings.len(), 2); // the same spike, on two channels
+//!
+//! // Crossings within 50 µm and 10 samples of a larger one belong to it
+//! let spikes = deduplicate_spikes_spatial(&crossings, &layout, 50.0, 10);
+//! assert_eq!(spikes.len(), 1);
+//! assert_eq!(spikes[0].primary_channel, 1);
+//! assert_eq!(spikes[0].participating_channels, vec![1, 2]);
+//! ```
 
 pub mod core;
 pub mod detection;

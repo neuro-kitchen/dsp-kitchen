@@ -15,7 +15,7 @@
 //! the candidates once per device and problem class instead; candidates a device or layout cannot
 //! run report `Unavailable` and drop out. The CPU routines are offered only where lanes run on
 //! their own (plane width 1, the CPU runtime), as burn does. One more candidate is ours:
-//! [`direct_matmul_kernel`], one unit per output element, which wins on products with little to
+//! [`fn@direct_matmul_kernel`], one unit per output element, which wins on products with little to
 //! reuse (a few rows, a short inner dimension), where a tiled routine's fixed per-call cost and
 //! unused tile space dominate. The tuner keeps whichever is fastest: no size threshold.
 //!
@@ -183,7 +183,7 @@ impl MatmulInputs {
         Ok(())
     }
 
-    /// [`direct_matmul_kernel`] over the views (offsets applied in the kernel).
+    /// [`fn@direct_matmul_kernel`] over the views (offsets applied in the kernel).
     fn run_direct<F: DspFloat>(&self) {
         let [b, m, k] = self.lhs.shape;
         let n = self.rhs.cols();
@@ -234,7 +234,7 @@ fn exact_strategies(cpu_lanes: bool) -> Vec<Strategy> {
 
 /// The routine of every product while tuned choices are pinned
 /// ([`dsp_core::compute::pin_tuned_choices`]): `SimpleUnit` with its largest tiles, exact and
-/// available on every runtime; [`direct_matmul_kernel`] where a layout rules it out.
+/// available on every runtime; [`fn@direct_matmul_kernel`] where a layout rules it out.
 fn pinned_strategy() -> Strategy {
     LevelStrategy::SimpleUnit(BlueprintStrategy::Inferred(SimpleUnitSelectionArgs { tile_size: TileSizeSelection::MaxTileSize })).into()
 }

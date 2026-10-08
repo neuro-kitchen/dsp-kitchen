@@ -1,4 +1,4 @@
-//! Point sets on the device for clustering ([`super::hdbscan`], [`super::kmeans`]): uploaded once,
+//! Point sets on the device for clustering ([`mod@super::hdbscan`], [`mod@super::kmeans`]): uploaded once,
 //! **feature-major** (`[d, n]`, see [`super::kernels::points`]), subsets gathered on the device.
 
 use cubecl::prelude::*;

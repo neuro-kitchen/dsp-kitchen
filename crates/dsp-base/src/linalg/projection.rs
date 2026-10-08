@@ -1,5 +1,5 @@
 //! Linear projections `Y = Wᵀ (X − mean)` with their weights uploaded once: the input is centred
-//! into a reused scratch buffer, then projected with one matrix product ([`super::matmul`]).
+//! into a reused scratch buffer, then projected with one matrix product ([`fn@super::matmul`]).
 //! Centring first (rather than subtracting `Wᵀ mean` afterwards) keeps a large mean from cancelling
 //! the signal's digits.
 

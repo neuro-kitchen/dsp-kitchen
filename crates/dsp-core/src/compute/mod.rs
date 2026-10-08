@@ -5,7 +5,7 @@
 //!   the selected runtime.
 //! - [`LaunchGeometry`]: cube sizes and counts from the runtime's properties.
 //! - [`tune`]: CubeCL autotuning for launch settings with no device-independent best value.
-//! - [`bench`]: device-synchronised timing.
+//! - [`mod@bench`]: device-synchronised timing.
 //!
 //! Algorithm crates (`dsp-base`, `dsp-synapse`, …) take a `Client` and use these; they
 //! never inspect or special-case the device.

@@ -3,8 +3,8 @@ use dsp_core::compute::{channel_position, sample_position};
 
 /// Direct product of strided views, one unit per output element: `out[(b · m + i) · n + j] =
 /// Σ_t lhs[l_off + b · l_bs + i · l_rs + t · l_cs] · rhs[r_off + b · r_bs + t · r_rs + j · r_cs]`
-/// (`t < k`, summed in order). Output columns run along x ([`sample_position`]), rows of all
-/// batches along y ([`channel_position`]): neighbouring units read neighbouring `rhs` columns, and
+/// (`t < k`, summed in order). Output columns run along x ([`fn@sample_position`]), rows of all
+/// batches along y ([`fn@channel_position`]): neighbouring units read neighbouring `rhs` columns, and
 /// a row of `lhs` is shared by the plane. No reuse beyond that, so it suits products with little
 /// to reuse (few rows, or a short inner dimension), where a tiled product's per-call cost and
 /// unused tile space dominate. Offsets are applied here, so both inputs bind at their start.

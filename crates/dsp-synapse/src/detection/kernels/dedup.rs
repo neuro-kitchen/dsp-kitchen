@@ -1,6 +1,6 @@
 use cubecl::prelude::*;
 
-/// [`neighbour_slot`] of a channel outside the radius.
+/// `neighbour_slot` of a channel outside the radius.
 pub const NO_SLOT: u32 = u32::MAX;
 
 /// Slot of `channel` in channel `ch`'s neighbour row (`nbr_offsets[ch]..nbr_offsets[ch + 1]` of

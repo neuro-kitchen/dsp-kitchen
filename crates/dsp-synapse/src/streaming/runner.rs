@@ -104,6 +104,10 @@ impl StreamingDetector {
     }
 
     /// Streams `source` out-of-core on `target`.
+    ///
+    /// # Errors
+    ///
+    /// [`DspError::ComputeError`] when `target` is not available; otherwise as [`Self::run_on`].
     pub fn run_with(
         &self,
         target: ComputeTarget,
@@ -131,6 +135,10 @@ impl StreamingDetector {
     /// Streams `source` out-of-core in halo-padded batches using double-buffered I/O prefetching
     /// and a persistent `PipelineWorkspace` on `client`'s runtime, returning global spikes and
     /// per-channel templates.
+    ///
+    /// # Errors
+    ///
+    /// When the pipeline is invalid at the recording's rate, or reading `source` fails.
     pub fn run_on(
         &self,
         client: Client,
@@ -336,6 +344,10 @@ impl StreamingDetector {
 /// Per-channel noise floor σ (Quiroga MAD) as the median over `config.calibration_chunks` chunks
 /// spread evenly across the recording (total `config.calibration_duration_sec`). Each chunk is
 /// filtered with `halos` of context so its interior is settled. Independent of the batch size.
+///
+/// # Errors
+///
+/// When reading `source` fails.
 pub fn calibrate_noise(
     source: &dyn RecordingSource,
     workspace: &mut PipelineWorkspace,

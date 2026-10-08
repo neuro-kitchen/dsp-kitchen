@@ -1,7 +1,7 @@
 //! Sample-rate conversion on the device, following `scipy.signal`:
 //!
 //! - [`resample_poly`]: rational `up / down` resampling with a polyphase FIR (`resample_poly`).
-//! - [`decimate`]: integer down-sampling behind an anti-aliasing filter (`decimate`).
+//! - [`mod@decimate`]: integer down-sampling behind an anti-aliasing filter (`decimate`).
 //! - [`design`]: the windowed-sinc FIR design both use (`firwin`).
 //! - [`fractional`]: fractional-delay (sub-sample shift) interpolation with a windowed sinc, host
 //!   and device.

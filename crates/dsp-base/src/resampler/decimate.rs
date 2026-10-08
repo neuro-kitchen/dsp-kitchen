@@ -43,6 +43,10 @@ pub fn decimate_len(samples: usize, q: usize) -> usize {
 ///
 /// # Panics
 /// If `q` is zero.
+///
+/// # Errors
+///
+/// [`FilterError`] when the anti-aliasing filter's design is invalid at the input rate.
 #[allow(clippy::too_many_arguments)]
 pub fn decimate<F: DspFloat>(
     client: &Client,

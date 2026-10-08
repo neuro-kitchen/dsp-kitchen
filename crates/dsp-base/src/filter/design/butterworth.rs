@@ -9,6 +9,11 @@ use super::sos::{Section, Sos};
 use super::{FilterBand, FilterError, check_cutoff, check_sample_rate};
 
 /// Designs a Butterworth filter of `order` (per band edge) as second-order sections.
+///
+/// # Errors
+///
+/// [`FilterError`] when the design is invalid at `sample_rate`: non-positive sample rate, zero
+/// order, a cutoff outside `(0, Nyquist)`, band edges out of order, a bad `q` or ripple.
 pub fn butterworth_sos(order: usize, band: FilterBand, sample_rate: f64) -> Result<Sos, FilterError> {
     if order == 0 {
         return Err(FilterError::InvalidOrder);
@@ -18,6 +23,11 @@ pub fn butterworth_sos(order: usize, band: FilterBand, sample_rate: f64) -> Resu
 
 /// Designs a Chebyshev type I filter of `order` (per band edge) with `ripple_db` of pass-band ripple
 /// as second-order sections (`scipy.signal.cheby1`).
+///
+/// # Errors
+///
+/// [`FilterError`] when the design is invalid at `sample_rate`: non-positive sample rate, zero
+/// order, a cutoff outside `(0, Nyquist)`, band edges out of order, a bad `q` or ripple.
 pub fn chebyshev1_sos(order: usize, ripple_db: f64, band: FilterBand, sample_rate: f64) -> Result<Sos, FilterError> {
     if order == 0 {
         return Err(FilterError::InvalidOrder);
