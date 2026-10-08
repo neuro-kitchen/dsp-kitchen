@@ -39,11 +39,19 @@ ELECTRODE_PITCH_UM = 100.0  # inter-electrode distance of the grid (set your arr
 print(emusort.provenance().citation())
 hdemg = next((s["id"] for s in list_sources(str(NWB_PATH)) if "HDEMG" in s["id"]), None)
 rec = Recording(str(NWB_PATH), source=hdemg)
-rec_segment = rec.slice_time(start_sec=0.0, end_sec=60 * 60)
+rec_segment = rec.slice_time(
+    start_sec=0.0, end_sec=200.0
+)  # 200 s: quick to sort; set longer as needed
 probe = syn.ProbeLayout.hdemg_grid(
     "HD-EMG 4x8", GRID_ROWS, GRID_COLS, ELECTRODE_PITCH_UM
 )
 config = emusort.Config()
+# MUAPs outlast Kilosort4's 61-sample (2.5 ms at 24.4 kHz) window: measured on this recording,
+# 121 samples (5 ms) removes the truncated templates and their re-matched late phases (see the
+# book's EMUsort parameters page); nt0min follows (int(20 · nt / 61))
+ks = config.kilosort4
+ks.nt, ks.nt0min = 121, None
+config.kilosort4 = ks
 print(f"\n{rec}\n{config}")
 
 # %% [2] EMUsort over the Recording
@@ -56,7 +64,7 @@ print(
     f"{len(spikes['sample']):,} spikes; amplitude (whitened) median {np.median(spikes['amplitude']):.1f}"
 )
 
-# %% [3] Export (one unit per universal template; spike times in the reference channel's frame)
+# %% [3] Export (one unit per cluster; spike times in the reference channel's frame)
 sorting = result.to_sorting_output(probe)
 print(
     f"\n{sorting} ({result.sorter}, {result.sample_rate_hz:.0f} Hz, {result.total_samples:,} samples)"
@@ -90,5 +98,24 @@ if HAS_PLT:
     axes[2].set_ylabel("y (µm)")
     plt.tight_layout()
     plt.show()
+
+# %% [5] Inspect One Channel
+# The run's own preprocessing of a 10 s segment with the units on the chosen channel; spike times
+# are in the reference channel's frame, so each channel's marks are moved by its delay.
+from inspection import inspect, preprocessed_segment
+
+INSPECT_CHANNEL, INSPECT_START, INSPECT_END = 2, 0.0, 0.2
+signal, offset = preprocessed_segment(result, rec_segment, INSPECT_START, INSPECT_END)
+if HAS_PLT:
+    inspector = inspect(
+        sorting,
+        signal,
+        rec_segment.sample_rate,
+        offset=offset,
+        channel=INSPECT_CHANNEL,
+        start=INSPECT_START,
+        end=INSPECT_START + 0.5,
+        channel_shifts=delays,
+    )
 
 # %%
