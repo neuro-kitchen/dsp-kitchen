@@ -107,7 +107,7 @@ if predefined is not None:
         f"Learned ({len(ours):,}) vs predefined templates ({len(ours_predefined):,}): agreement {cmp['agreement_score']:.3f}"
     )
 
-# %% [6] Export (one unit per universal template)
+# %% [6] Export (one unit per cluster, with its waveform template)
 sorting = result.to_sorting_output(probe)
 print(f"\n{sorting}")
 for row in sorting.summary_table()[:5]:
@@ -129,5 +129,26 @@ if HAS_PLT:
         ax.set_xlabel("Time from peak (ms)")
     plt.tight_layout()
     plt.show()
+
+# %% [8] Inspect One Channel: Our Units vs Kilosort4's
+# The run's own preprocessing (filter, whitening) of a 10 s segment, our units and Kilosort4's saved
+# ones on the same trace (solid: ours, dashed: Kilosort4). Change channel / window in the figure.
+from inspection import inspect, preprocessed_segment
+
+INSPECT_CHANNEL, INSPECT_START, INSPECT_END = 30, 10.0, 20.0
+signal, offset = preprocessed_segment(result, rec, INSPECT_START, INSPECT_END)
+sortings = {"ours": result.to_sorting_output(probe)}
+if KS4_RESULTS.exists():
+    sortings["Kilosort4"] = syn.load_sorting(str(KS4_RESULTS))
+if HAS_PLT:
+    inspector = inspect(
+        sortings,
+        signal,
+        rec.sample_rate,
+        offset=offset,
+        channel=INSPECT_CHANNEL,
+        start=INSPECT_START,
+        end=INSPECT_START + 0.5,
+    )
 
 # %%

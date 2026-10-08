@@ -177,4 +177,14 @@ if HAS_PLT:
     plt.tight_layout()
     plt.show()
 
+# %% [8] Inspect One Channel
+# The run's own preprocessing of the synthetic recording, with Kilosort4's units on the reference
+# channel; change channel / window in the figure.
+if HAS_PLT:
+    from inspection import inspect, preprocessed_segment
+
+    ch = int(run_reference)
+    signal, offset = preprocessed_segment(ks, rec, 0.0, rec.samples / FS)
+    inspector = inspect(ks.to_sorting_output(probe), signal, FS, offset=offset, channel=ch, start=0.0, end=1.5, title=f"Kilosort4 synthetic: channel {ch}")
+
 # %%

@@ -23,6 +23,8 @@
   - [Case study: HDBSCAN](gpu/hdbscan.md)
   - [Case study: exact median](gpu/selection.md)
   - [Case study: when the review was wrong](gpu/eigen.md)
+  - [Case study: Kilosort4 detection, measured](gpu/detection.md)
+  - [Case study: Kilosort4 clustering and matching](gpu/clustering.md)
   - [Moving data to the device](gpu/data-movement.md)
   - [Pitfalls](gpu/pitfalls.md)
 
@@ -32,9 +34,12 @@
 - [Kilosort4](sorters/kilosort4/intro.md)
   - [Pipeline](sorters/kilosort4/pipeline.md)
   - [Parameters](sorters/kilosort4/parameters.md)
+  - [Tuning](sorters/kilosort4/tuning.md)
 - [EMUsort](sorters/emusort/intro.md)
   - [Pipeline](sorters/emusort/pipeline.md)
   - [Parameters](sorters/emusort/parameters.md)
+  - [Tuning](sorters/emusort/tuning.md)
+- [Benchmarks](sorters/benchmarks.md)
 
 # Guides
 

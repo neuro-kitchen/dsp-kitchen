@@ -84,6 +84,65 @@ impl<'a> WindowLoader<'a> {
         self.stream_with(windows, bytes, read, f)
     }
 
+    /// Like [`Self::stream_while`], handing `f` each window as an **owned** buffer: the reading
+    /// thread allocates and fills it, so a consumer that moves it on (e.g. into a device upload)
+    /// copies nothing on the calling thread. At most one window is read ahead.
+    pub fn stream_owned_while<F>(&self, windows: &[HaloWindow], f: F) -> DspResult<()>
+    where
+        F: FnMut(&HaloWindow, Vec<f32>) -> DspResult<bool>,
+    {
+        let source = self.source;
+        self.stream_owned(windows, 1, |ch: &[usize], range, buf: &mut [f32]| source.read(ch, range, buf), f)
+    }
+
+    /// [`Self::stream_owned_while`] with the stored values ([`RecordingSource::read_stored`]).
+    pub fn stream_stored_owned_while<F>(&self, windows: &[HaloWindow], f: F) -> DspResult<()>
+    where
+        F: FnMut(&HaloWindow, Vec<u8>) -> DspResult<bool>,
+    {
+        let source = self.source;
+        let bytes = source.info().format.bytes();
+        self.stream_owned(windows, bytes, |ch: &[usize], range, buf: &mut [u8]| source.read_stored(ch, range, buf), f)
+    }
+
+    /// Read-ahead loop handing over a fresh buffer per window (`per_sample` elements per channel
+    /// sample), until `f` returns `false`.
+    fn stream_owned<T, R, F>(&self, windows: &[HaloWindow], per_sample: usize, read: R, mut f: F) -> DspResult<()>
+    where
+        T: Copy + Default + Send,
+        R: Fn(&[usize], Range<u64>, &mut [T]) -> DspResult<()> + Sync,
+        F: FnMut(&HaloWindow, Vec<T>) -> DspResult<bool>,
+    {
+        if windows.is_empty() || self.channels.is_empty() {
+            return Ok(());
+        }
+        let n_ch = self.channels.len();
+        let channels = &self.channels;
+        let read = &read;
+        std::thread::scope(|s| {
+            // Capacity 1: the reader fills the next window while the caller holds the current one
+            let (ready_tx, ready_rx) = sync_channel::<DspResult<(usize, Vec<T>)>>(1);
+            s.spawn(move || {
+                for (i, win) in windows.iter().enumerate() {
+                    let mut buf = vec![T::default(); n_ch * win.read_len() * per_sample];
+                    let item = read(channels, win.read_global.clone(), &mut buf).map(|()| (i, buf));
+                    let failed = item.is_err();
+                    if ready_tx.send(item).is_err() || failed {
+                        break;
+                    }
+                }
+            });
+            // Returning early drops the receiver, which stops the reading thread
+            for item in ready_rx {
+                let (i, buf) = item?;
+                if !f(&windows[i], buf)? {
+                    break;
+                }
+            }
+            Ok(())
+        })
+    }
+
     /// Double-buffered loop over `per_sample` elements per channel sample, until `f` returns
     /// `false`.
     fn stream_with<T, R, F>(&self, windows: &[HaloWindow], per_sample: usize, read: R, mut f: F) -> DspResult<()>
@@ -160,6 +219,28 @@ mod tests {
         assert_eq!(visited[0], (0, 0..30, 35, 0.0, 1000.0));
         assert_eq!(visited[1], (1, 30..60, 40, 30.0, 1025.0));
         assert_eq!(visited[3], (3, 90..100, 15, 90.0, 1085.0));
+    }
+
+    /// The owned stream hands over the same windows as the borrowed one, and stops when asked.
+    #[test]
+    fn owned_stream_matches_borrowed_stream() {
+        let rec = recording();
+        let sched = ChunkSchedule::full_recording(100, 30, 5, 5);
+        let mut borrowed = Vec::new();
+        WindowLoader::new(&rec).stream(sched.windows(), |_, buf| {
+            borrowed.push(buf.to_vec());
+            Ok(())
+        })
+        .unwrap();
+        let mut owned = Vec::new();
+        WindowLoader::new(&rec)
+            .stream_owned_while(sched.windows(), |win, buf| {
+                owned.push(buf);
+                Ok(win.index < 2)
+            })
+            .unwrap();
+        assert_eq!(owned.len(), 3, "stopped after the window that returned false");
+        assert_eq!(owned[..], borrowed[..3]);
     }
 
     #[test]

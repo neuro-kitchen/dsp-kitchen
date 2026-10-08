@@ -46,6 +46,28 @@ Autotuning compiles and times every candidate the first time a device sees a pro
 seconds per class, not saved between runs unless CubeCL's cache is enabled. Benchmarks warm up
 before timing; `CUBECL_DEBUG_LOG=<file>` shows what the tuner decided.
 
+## A failing test is not yet a bug
+
+A filter test failed for weeks as "the IIR from-rest bug": a 0.5 Hz high-pass started at rest
+reported `max error 0.0702`, against a limit of `2e-5 · scale`. Taken apart (a host replay of the
+kernel's arithmetic in `f32` and `f64`, then the device beside it):
+
+- **Read the units.** 0.0702 was an *absolute* error on a signal whose peak is ~650: 1.08·10⁻⁴ of
+  the peak, not 7 %. The tests now report relative errors.
+- **Separate the kernel from the design.** The kernel matched its own arithmetic to ~6·10⁻⁶. The
+  gap to scipy came from rounding the coefficients to `f32`: poles this close to `z = 1` move a
+  little, and a start at rest feeds the signal's −500 DC level in as a step whose slow response
+  exposes it. The `f64` state-variable filter with the same rounded coefficients is just as far from
+  scipy. The tight limit had been measured with steady-state starts, which never excite that
+  transient; from-rest at very low cutoffs now has its own, named, measured limit.
+- **Regenerate fixtures when their generator changes.** The scipy reference script had learned to
+  write `forward_rest` outputs, but the fixture file was never regenerated, so two more tests failed
+  on a missing key (`uv run crates/dsp-base/tests/scipy_reference.py` declares its own numpy/scipy
+  and leaves the project untouched).
+- **An undersized buffer fails silently on a GPU.** While probing, a too-small scratch buffer made a
+  forward-backward filter return zeros: writes past a buffer's end are dropped, reads return zero.
+  `DeviceFilter::apply` now checks its `state` and `scratch` sizes.
+
 ## CubeCL 0.11 surprises inside kernels
 
 - `comptime!(T::size_bits())` does not give the element width (192 for `u32`): pass widths from

@@ -30,6 +30,15 @@ fit, clip collection, detection):
 The test `stored_upload_matches_f32_upload` runs Kilosort4 on an int16 recording both ways (the
 second through a wrapper that hides stored reads) and requires the same spikes.
 
+## Owned buffers, persistent device buffers
+
+Two details decide whether an upload costs a transfer or much more (measured in
+[Kilosort4 detection](detection.md)): CubeCL's `create_from_slice` copies through a slow general
+path (~0.5 GB/s for a 92 MB window), and a fresh host allocation per window pays its page faults on
+the calling thread. So uploads hand over **owned** bytes (`client.create` / `client.write` with
+`Bytes`), the workspace writes a **persistent** device buffer in place, and the read-ahead thread
+allocates each window itself (`WindowLoader::stream_owned_while`): the main thread copies nothing.
+
 ## What it saves
 
 For 384 channels in 60 000-sample windows, an `f32` window is 92 MB and an int16 window 46 MB.

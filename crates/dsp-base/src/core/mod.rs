@@ -19,6 +19,7 @@ pub mod layout;
 pub mod reduce;
 mod scratch;
 
-pub use edge::{read_extended, read_extended_strided, EdgeMode};
+pub use edge::EdgeMode;
+pub use kernels::{read_extended, read_extended_strided};
 pub use float::{cast, cast_all, cast_f32, to_f64, DspFloat};
 pub use scratch::Scratch;

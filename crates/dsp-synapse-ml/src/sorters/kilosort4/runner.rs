@@ -24,13 +24,16 @@ use dsp_core::progress::Stages;
 use cubecl::server::Handle;
 use dsp_core::{ChunkSchedule, DspError, DspResult, HaloWindow, ProgressSink, RecordingSource, SampleFormat, WindowLoader};
 use dsp_io::neuro::probe::SensorLayout;
-use dsp_synapse::core::{SortedUnit, SortingOutput};
+use dsp_synapse::core::{SortedUnit, SortingOutput, WaveformTemplate};
 use dsp_synapse::QualityCriteria;
 
+use super::clustering::{cluster_spikes, SpikeClusters};
+use super::learned::{learned_templates, LearnedTemplates};
+use super::matching::TemplateMatcher;
 use super::detect::{TemplateCentres, UniversalDetector, UniversalSpike};
 use super::templates::{extract_clips, learn_universal_templates_with_progress, LearnOptions, UniversalTemplates, MAX_CLIPS};
 use super::Kilosort4Config;
-use crate::sorters::emusort::kernels::{ChannelAligner, ChannelDelayEstimator};
+use crate::sorters::emusort::delays::{ChannelAligner, ChannelDelayEstimator};
 
 /// Butterworth order of the high-pass filter, matching upstream Kilosort4.
 pub const HIGHPASS_ORDER: usize = 3;
@@ -38,16 +41,16 @@ pub const HIGHPASS_ORDER: usize = 3;
 /// Regularization added to covariance eigenvalues before local whitening.
 pub const WHITENING_EPSILON: f32 = 1e-6;
 
-/// Fewest windows the template-learning stride samples when the recording has `nskip` windows or
-/// fewer.
-pub const MIN_LEARNING_WINDOWS: usize = 5;
-
 /// Progress stages of a run (reported in this order; a run reports only the ones it has), and
 /// what each counts.
 pub const STAGE_FIT: &str = "Fitting preprocessing";
 pub const STAGE_CLIPS: &str = "Finding clips";
 pub const STAGE_TEMPLATES: &str = "Learning templates";
 pub const STAGE_DETECTION: &str = "Detecting spikes";
+pub const STAGE_CLUSTERING: &str = "Clustering spikes";
+pub const STAGE_MATCHING: &str = "Matching templates";
+pub const STAGE_RECLUSTERING: &str = "Clustering matched spikes";
+const SECTIONS: &str = "sections";
 const WINDOWS: &str = "windows";
 const STEPS: &str = "steps";
 
@@ -58,7 +61,8 @@ fn filter_error(e: dsp_base::filter::FilterError) -> DspError {
     DspError::InvalidConfig(e.to_string())
 }
 
-/// Windows of a recording on their way to the device: read on a background thread, uploaded as
+/// Windows of a recording on their way to the device: read on a background thread into a buffer
+/// the upload then takes over (no copy on the calling thread), uploaded as
 /// the source's **stored** values when it can provide them (integers: `int16` moves half the bytes
 /// of `f32`, and the gain / offset are applied on the device, not on the host thread), else as
 /// scaled `f32`; preprocessed by `workspace` and, with channel delays, aligned. Every pass of a
@@ -96,27 +100,26 @@ impl<'a> DeviceWindows<'a> {
             };
             f(window, &handle)
         };
+        // Owned windows: the reading thread allocates and fills each one, and it moves into the
+        // upload without a copy here, so this thread's time goes to queueing device work
         match *stored {
-            Some(format) => loader.stream_stored_while(windows, |window, bytes| {
-                let handle = workspace.process_stored_chunk_in_vram(bytes, format, window.read_len())?;
+            Some(format) => loader.stream_stored_owned_while(windows, |window, bytes| {
+                let handle = workspace.process_owned_stored_chunk_in_vram(bytes, format, window.read_len())?;
                 finish(window, handle)
             }),
-            None => loader.stream_while(windows, |window, raw| {
-                let handle = workspace.process_chunk_in_vram(raw, window.read_len());
+            None => loader.stream_owned_while(windows, |window, raw| {
+                let handle = workspace.process_owned_chunk_in_vram(raw, window.read_len());
                 finish(window, handle)
             }),
         }
     }
 }
 
-/// Every `nskip`-th window; short recordings (`nskip` windows or fewer) are sampled at
-/// ~[`MIN_LEARNING_WINDOWS`] windows instead of only window 0.
-fn learning_stride(windows: usize, nskip: usize) -> usize {
-    if windows <= nskip {
-        (windows / MIN_LEARNING_WINDOWS).max(1)
-    } else {
-        nskip.max(1)
-    }
+/// Every `nskip`-th window, as upstream (`range(0, n_batches, nskip)`): a recording of `nskip`
+/// windows or fewer is learned from window 0 alone (clip collection scans further only if that
+/// gives too few clips to learn from).
+fn learning_stride(nskip: usize) -> usize {
+    nskip.max(1)
 }
 
 /// What a run does: Kilosort4's settings plus the variant's additions.
@@ -169,6 +172,7 @@ pub struct FitSettings {
     pub nskip: usize,
     pub whitening_range: usize,
     pub max_channel_delay: Option<usize>,
+    pub reproducible: bool,
 }
 
 impl FitSettings {
@@ -185,6 +189,7 @@ impl FitSettings {
             nskip: ks.nskip,
             whitening_range: ks.whitening_range,
             max_channel_delay: plan.max_channel_delay,
+            reproducible: ks.reproducible,
         }
     }
 }
@@ -211,47 +216,89 @@ pub struct Kilosort4Result {
     pub fitted: FittedPreprocessing,
     pub templates: UniversalTemplates,
     pub spikes: Vec<UniversalSpike>,
+    /// Units of the spikes (`clusters.labels[i]` is the unit of `spikes[i]`).
+    pub clusters: SpikeClusters,
+    /// The universal-template detections and their first clustering (from which the learned
+    /// templates come); `spikes` are the learned-template matches.
+    pub detected: Vec<UniversalSpike>,
+    pub first_clusters: SpikeClusters,
+    /// The units' templates aligned and merged: what learned-template matching would use.
+    pub learned: LearnedTemplates,
     /// `(x, y)` µm of every template centre (`UniversalSpike::centre` indexes it).
     pub centre_positions: Vec<[f32; 2]>,
     /// Recording channel nearest to every template centre.
     pub centre_channels: Vec<usize>,
     pub sample_rate_hz: f64,
     pub total_samples: u64,
+    /// Whether the run pinned its result-changing tuned choices ([`Kilosort4Config::reproducible`]).
+    pub reproducible: bool,
+    /// The device the run used (runtime and the properties that shape its launches): reproducible
+    /// runs give the same spikes on the same device.
+    pub device: String,
 }
 
 impl Kilosort4Result {
-    /// One unit per universal template that detected spikes, in [`SortingOutput`] form. Spike
-    /// locations are the detecting centre's `x` and the response-weighted `y` (µm); a unit's
-    /// primary channel is the channel nearest to its most frequent centre. Amplitudes are in
-    /// whitened σ, not µV, so no noise floor is given (SNR is left undefined).
+    /// One unit per cluster ([`Kilosort4Result::clusters`]), in [`SortingOutput`] form. Spike
+    /// locations are the response-weighted centre of mass `(x, y)` (µm). A unit's
+    /// template is its mean PC features projected back through `wPCA` (`[channels, nt]`, whitened
+    /// units) on the channels its spikes cover; its primary channel is the one where that template
+    /// is largest. Amplitudes are in whitened σ, not µV, so no noise floor is given (SNR undefined).
     pub fn to_sorting_output(&self, probe: Option<SensorLayout>) -> SortingOutput {
-        let n_templates = self.templates.n_templates;
-        let n_centres = self.centre_positions.len();
-        let mut samples: Vec<Vec<u64>> = vec![Vec::new(); n_templates];
-        let mut amps: Vec<Vec<f32>> = vec![Vec::new(); n_templates];
-        let mut locs: Vec<Vec<[f32; 3]>> = vec![Vec::new(); n_templates];
-        let mut centre_counts = vec![vec![0usize; n_centres]; n_templates];
-        for spike in self.spikes.iter().filter(|s| s.template < n_templates && s.centre < n_centres) {
-            let t = spike.template;
-            samples[t].push(spike.sample as u64);
-            amps[t].push(spike.amplitude);
-            locs[t].push([self.centre_positions[spike.centre][0], spike.y_um, 0.0]);
-            centre_counts[t][spike.centre] += 1;
+        let (clusters, n_centres) = (&self.clusters, self.centre_positions.len());
+        let (nt, n_pcs, channels) = (self.templates.nt, clusters.n_pcs, clusters.channels);
+        let n_units = clusters.n_units;
+        let mut samples: Vec<Vec<u64>> = vec![Vec::new(); n_units];
+        let mut amps: Vec<Vec<f32>> = vec![Vec::new(); n_units];
+        let mut locs: Vec<Vec<[f32; 3]>> = vec![Vec::new(); n_units];
+        for (spike, &u) in self.spikes.iter().zip(&clusters.labels).filter(|(s, u)| s.centre < n_centres && (**u as usize) < n_units) {
+            let u = u as usize;
+            samples[u].push(spike.sample as u64);
+            amps[u].push(spike.amplitude);
+            locs[u].push([spike.x_um, spike.y_um, 0.0]);
         }
         let units = samples
             .into_iter()
             .zip(amps)
             .zip(locs)
-            .zip(centre_counts)
             .enumerate()
-            .filter(|(_, (((s, _), _), _))| !s.is_empty())
-            .map(|(unit_id, (((s, a), l), counts))| {
-                let primary = counts.iter().enumerate().max_by_key(|&(_, n)| *n).map(|(c, _)| self.centre_channels[c]);
+            .filter(|(_, ((s, _), _))| !s.is_empty())
+            .map(|(unit_id, ((s, a), l))| {
+                let template = self.unit_waveform(unit_id, nt, n_pcs, channels, s.len());
+                let primary = template.as_ref().and_then(|t| {
+                    (0..t.channel_ids.len())
+                        .max_by(|&i, &j| {
+                            let norm = |r: usize| t.mean[r * nt..(r + 1) * nt].iter().map(|v| v * v).sum::<f32>();
+                            norm(i).total_cmp(&norm(j))
+                        })
+                        .map(|r| t.channel_ids[r])
+                });
                 let criteria = QualityCriteria::default();
-                SortedUnit::from_spikes_with(unit_id, primary, s, a, l, None, self.sample_rate_hz, self.total_samples, None, criteria)
+                SortedUnit::from_spikes_with(unit_id, primary, s, a, l, template, self.sample_rate_hz, self.total_samples, None, criteria)
             })
             .collect();
         SortingOutput::new(self.sorter, self.sample_rate_hz, self.total_samples, probe, units, None)
+    }
+
+    /// Unit `u`'s waveform: its mean features `[channels, n_pcs]` times `wPCA` (`[n_pcs, nt]`), on
+    /// the channels with any feature; `None` when it covers none.
+    fn unit_waveform(&self, u: usize, nt: usize, n_pcs: usize, channels: usize, count: usize) -> Option<WaveformTemplate> {
+        let feat = &self.clusters.templates[u * channels * n_pcs..(u + 1) * channels * n_pcs];
+        let wpca = &self.templates.wpca;
+        let covered: Vec<usize> = (0..channels).filter(|&ch| feat[ch * n_pcs..(ch + 1) * n_pcs].iter().any(|&v| v != 0.0)).collect();
+        if covered.is_empty() {
+            return None;
+        }
+        let mut mean = vec![0.0f32; covered.len() * nt];
+        for (row, &ch) in covered.iter().enumerate() {
+            for p in 0..n_pcs {
+                let f = feat[ch * n_pcs + p];
+                for t in 0..nt {
+                    mean[row * nt + t] += f * wpca[p * nt + t];
+                }
+            }
+        }
+        let std = vec![0.0f32; mean.len()];
+        Some(WaveformTemplate::with_count(covered, nt, count, mean, std))
     }
 }
 
@@ -264,6 +311,7 @@ pub fn fit_preprocessing(
     plan: &RunPlan,
     progress: &dyn ProgressSink,
 ) -> DspResult<FittedPreprocessing> {
+    let _pinned = plan.config.reproducible.then(dsp_core::compute::pin_tuned_choices);
     fit_with_stages(client, source, probe, plan, &Stages::new(progress, &[(STAGE_FIT, WINDOWS)]))
 }
 
@@ -300,7 +348,7 @@ fn fit_with_stages(
     // Upstream fits on `range(0, n_batches - 1, nskip)`: the last (partial) window is left out
     let fit_len = if schedule.len() > 1 { schedule.len() - 1 } else { schedule.len() };
     let fit_span = &schedule.windows()[..fit_len];
-    let stride = learning_stride(fit_span.len(), ks.nskip);
+    let stride = learning_stride(ks.nskip);
     let fit_windows: Vec<HaloWindow> = fit_span.iter().step_by(stride).cloned().collect();
 
     let workspace =
@@ -373,6 +421,8 @@ pub fn run_plan(
     let info = source.info();
     let (channels, total, fs) = (info.channel_count(), info.samples, info.sample_rate_hz());
     let ks = &plan.config;
+    // Held for the whole run (fit, learning, detection), on this thread
+    let _pinned = ks.reproducible.then(dsp_core::compute::pin_tuned_choices);
     let mut names = Vec::new();
     if plan.fitted.is_none() {
         names.push((STAGE_FIT, WINDOWS));
@@ -381,6 +431,9 @@ pub fn run_plan(
         names.extend([(STAGE_CLIPS, WINDOWS), (STAGE_TEMPLATES, STEPS)]);
     }
     names.push((STAGE_DETECTION, WINDOWS));
+    names.push((STAGE_CLUSTERING, SECTIONS));
+    names.push((STAGE_MATCHING, WINDOWS));
+    names.push((STAGE_RECLUSTERING, SECTIONS));
     let stages = Stages::new(progress, &names);
     let fitted = match &plan.fitted {
         Some(fitted) if fitted.settings == FitSettings::of(plan, info) => fitted.clone(),
@@ -404,7 +457,7 @@ pub fn run_plan(
     // 2. Universal templates
     let templates = if ks.templates_from_data {
         let clip_opts = ks.clip_options();
-        let stride = learning_stride(schedule.len(), ks.nskip);
+        let stride = learning_stride(ks.nskip);
         let (mut learning, mut rest) = (Vec::new(), Vec::new());
         for (i, window) in schedule.windows().iter().enumerate() {
             if i % stride == 0 { &mut learning } else { &mut rest }.push(window.clone());
@@ -470,15 +523,58 @@ pub fn run_plan(
         Ok(true)
     })?;
 
+    // 4. Clustering into units (features on the host since detection; each section goes up once)
+    let mut seeded = ks.clustering;
+    seeded.graph.seed = plan.learn.seed;
+    let clusters = cluster_spikes(client, &spikes, &centres, probe, channels, templates.n_pcs, &seeded, &mut |done, total| {
+        stages.report(STAGE_CLUSTERING, done, total)
+    });
+    // 5. Learned templates (aligned, near-duplicates merged)
+    let learned = learned_templates(client, &clusters, &templates, &ks.template_merge);
+    drop(detector);
+
+    // 6. Learned-template matching over every window (matching pursuit), then the matched spikes'
+    //    clustering. Without learned templates the detections stand.
+    let (spikes, clusters, detected_spikes, first_clusters) = if learned.n == 0 {
+        (spikes.clone(), clusters.clone(), spikes, clusters)
+    } else {
+        let mut matcher = TemplateMatcher::new(client, &learned, &templates, &centres, max_window, ks.th_learned, ks.nt0min(), ks.max_peels)?;
+        let mut matched = Vec::new();
+        let mut done = 0u64;
+        stages.report(STAGE_MATCHING, 0, windows);
+        device.for_each_while(schedule.windows(), |window, prepared| {
+            for mut spike in matcher.match_window(prepared, window.read_len(), 0..window.read_len())? {
+                if let Some(global) = window.remap_event(spike.sample) {
+                    spike.sample = global as usize;
+                    matched.push(spike);
+                }
+            }
+            done += 1;
+            stages.report(STAGE_MATCHING, done, windows);
+            Ok(true)
+        })?;
+        drop(matcher);
+        let reclustered = cluster_spikes(client, &matched, &centres, probe, channels, templates.n_pcs, &seeded, &mut |d, total| {
+            stages.report(STAGE_RECLUSTERING, d, total)
+        });
+        (matched, reclustered, spikes, clusters)
+    };
+
     Ok(Kilosort4Result {
         sorter: plan.sorter,
         fitted,
         templates,
         spikes,
+        clusters,
+        detected: detected_spikes,
+        first_clusters,
+        learned,
         centre_channels: (0..centres.n_centres()).map(|k| centres.ic[k] as usize).collect(),
         centre_positions: centres.positions,
         sample_rate_hz: fs,
         total_samples: total,
+        reproducible: ks.reproducible,
+        device: dsp_core::compute::tune::tune_id(client),
     })
 }
 
@@ -487,13 +583,6 @@ mod tests {
     use super::*;
     use dsp_core::compute::{ComputeTarget, ComputeTask};
     use dsp_io::neuro::synthetic::{SyntheticParams, SyntheticRecording};
-
-    #[test]
-    fn learning_stride_samples_short_recordings() {
-        assert_eq!(learning_stride(100, 25), 25);
-        assert_eq!(learning_stride(20, 25), 4);
-        assert_eq!(learning_stride(3, 25), 1);
-    }
 
     /// µV per stored step of the int16 test recording.
     const I16_GAIN: f32 = 0.25;

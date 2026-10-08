@@ -8,7 +8,7 @@ use std::path::Path;
 use cubecl::prelude::Client;
 use cubecl::CubeElement;
 use dsp_core::compute::ComputeTask;
-use dsp_synapse_ml::sorters::emusort::kernels::{ChannelAligner, ChannelDelayEstimator};
+use dsp_synapse_ml::sorters::emusort::delays::{ChannelAligner, ChannelDelayEstimator};
 use dsp_synapse_ml::sorters::emusort::{emusort_provenance as emusort_record, EmusortConfig};
 use dsp_synapse_ml::sorters::kilosort4::{
     detect_universal as detect, extract_clips as clips_of, fit_kilosort4_preprocessing,
@@ -56,6 +56,13 @@ pub struct PyKilosort4Config {
     highpass_cutoff_hz: f64,
     whitening_range: usize,
     batch_size: usize,
+    /// Every `cluster_downsampling`-th spike is a right node of the clustering graph.
+    cluster_downsampling: usize,
+    /// Neighbours of every spike in the clustering graph.
+    cluster_neighbors: usize,
+    /// At most this many right nodes per probe section.
+    max_cluster_subset: usize,
+    reproducible: bool,
 }
 
 impl From<&Kilosort4Config> for PyKilosort4Config {
@@ -81,6 +88,10 @@ impl From<&Kilosort4Config> for PyKilosort4Config {
             do_car: c.do_car,
             highpass_cutoff_hz: c.highpass_cutoff_hz,
             whitening_range: c.whitening_range,
+            cluster_downsampling: c.clustering.graph.subset_stride,
+            cluster_neighbors: c.clustering.graph.neighbours,
+            max_cluster_subset: c.clustering.graph.max_subset,
+            reproducible: c.reproducible,
             batch_size: c.batch_size,
         }
     }
@@ -111,6 +122,16 @@ impl PyKilosort4Config {
             highpass_cutoff_hz: self.highpass_cutoff_hz,
             whitening_range: self.whitening_range,
             batch_size: self.batch_size,
+            clustering: {
+                let mut c = dsp_synapse_ml::sorters::kilosort4::ClusteringOptions::default();
+                c.graph.subset_stride = self.cluster_downsampling;
+                c.graph.neighbours = self.cluster_neighbors;
+                c.graph.max_subset = self.max_cluster_subset;
+                c
+            },
+            template_merge: Default::default(),
+            max_peels: dsp_synapse_ml::sorters::kilosort4::MAX_PEELS,
+            reproducible: self.reproducible,
         }
     }
 }
@@ -313,11 +334,24 @@ impl PyTemplateCentres {
     fn count(&self) -> usize {
         self.inner.n_centres()
     }
+
+    /// `[centres, 2]` positions (x, y µm): Kilosort4's `xcup`, `ycup`.
+    #[getter]
+    fn positions<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let flat: Vec<f32> = self.inner.positions.iter().flatten().copied().collect();
+        to_numpy(py, flat, &[self.inner.n_centres(), 2])
+    }
+
+    /// `[nearest_chans, centres]` nearest channels of each centre: Kilosort4's `iC`.
+    #[getter]
+    fn channels(&self) -> Vec<Vec<u32>> {
+        self.inner.ic.chunks_exact(self.inner.n_centres().max(1)).map(<[u32]>::to_vec).collect()
+    }
 }
 
 /// Spikes of a preprocessed batch (`[channels, samples]`, whitened) detected with universal
 /// templates on the device: dicts with `sample`, `centre`, `amplitude`, `template`, `size`,
-/// `y_um`, `features` (`[nearest_chans, n_pcs]`).
+/// `x_um`, `y_um`, `features` (`[nearest_chans, n_pcs]`).
 #[pyfunction]
 #[pyo3(signature = (batch, centres, templates, config, *, runtime=None))]
 fn detect_universal<'py>(py: Python<'py>, batch: Bound<'py, PyAny>, centres: PyRef<'py, PyTemplateCentres>, templates: PyRef<'py, PyUniversalTemplates>, config: Bound<'py, PyAny>, runtime: Option<&str>) -> PyResult<Bound<'py, PyList>> {
@@ -352,6 +386,7 @@ fn detect_universal<'py>(py: Python<'py>, batch: Bound<'py, PyAny>, centres: PyR
         d.set_item("amplitude", s.amplitude)?;
         d.set_item("template", s.template)?;
         d.set_item("size", s.size)?;
+        d.set_item("x_um", s.x_um)?;
         d.set_item("y_um", s.y_um)?;
         d.set_item("features", to_numpy(py, s.features, &[per_spike / templates.inner.n_pcs.max(1), templates.inner.n_pcs])?)?;
         out.append(d)?;
@@ -452,6 +487,26 @@ impl PyKilosort4Result {
     fn sample_rate_hz(&self) -> f64 {
         self.inner.sample_rate_hz
     }
+    /// Units found by clustering the detected spikes.
+    #[getter]
+    fn n_units(&self) -> usize {
+        self.inner.clusters.n_units
+    }
+    /// Learned templates: the units' templates aligned, near-duplicates merged.
+    #[getter]
+    fn n_learned_templates(&self) -> usize {
+        self.inner.learned.n
+    }
+    /// Whether the run pinned its result-changing tuned choices (`config.reproducible`).
+    #[getter]
+    fn reproducible(&self) -> bool {
+        self.inner.reproducible
+    }
+    /// The device the run used: reproducible runs give the same spikes on the same device.
+    #[getter]
+    fn device(&self) -> String {
+        self.inner.device.clone()
+    }
     #[getter]
     fn total_samples(&self) -> u64 {
         self.inner.total_samples
@@ -478,7 +533,7 @@ impl PyKilosort4Result {
         PyPipeline { stages: self.inner.fitted.pipeline.stages().to_vec() }
     }
     /// Detected spikes: arrays `sample` (recording samples, delay-aligned frame), `centre`,
-    /// `amplitude`, `template`, `size`, `y_um`.
+    /// `amplitude`, `template`, `size`, `x_um`, `y_um`.
     fn spikes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let s = &self.inner.spikes;
         let d = PyDict::new(py);
@@ -487,10 +542,12 @@ impl PyKilosort4Result {
         d.set_item("amplitude", to_numpy(py, s.iter().map(|x| x.amplitude).collect(), &[s.len()])?)?;
         d.set_item("template", s.iter().map(|x| x.template).collect::<Vec<_>>())?;
         d.set_item("size", s.iter().map(|x| x.size).collect::<Vec<_>>())?;
+        d.set_item("x_um", to_numpy(py, s.iter().map(|x| x.x_um).collect(), &[s.len()])?)?;
         d.set_item("y_um", to_numpy(py, s.iter().map(|x| x.y_um).collect(), &[s.len()])?)?;
+        d.set_item("unit", self.inner.clusters.labels.clone())?;
         Ok(d)
     }
-    /// One unit per universal template, at the recording's sample rate and length.
+    /// One unit per cluster (with its waveform template), at the recording's sample rate and length.
     #[pyo3(signature = (probe=None))]
     fn to_sorting_output(&self, probe: Option<PyRef<'_, PyProbeLayout>>) -> PySortingOutput {
         PySortingOutput::new(self.inner.to_sorting_output(probe.map(|p| p.inner.clone())))

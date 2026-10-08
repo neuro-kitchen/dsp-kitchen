@@ -17,9 +17,13 @@ the published defaults** (the upstream code is GPL-3.0 and is not ported).
 | Universal templates learned from the recording (`wPCA`, `wTEMP`) | implemented (device) |
 | Predefined universal templates (`wTEMP.npz`) | implemented |
 | Universal-template spike detection, `wPCA` features, position | implemented (device) |
-| Export as a `SortingOutput` (one unit per universal template) | implemented |
+| Graph-based clustering of the detected spikes (bipartite k-NN graph, merging tree, bimodality splits) | implemented (device) |
+| Learned templates: the units' templates aligned and near-duplicates merged | implemented (device) |
+| Learned-template matching with matching pursuit, background-subtracted features | implemented (device) |
+| Clustering of the matched spikes into the final units | implemented (device; without the CCG criterion) |
+| Export as a `SortingOutput` (one unit per cluster, with its waveform template) | implemented |
+| Refractory (CCG) split criterion, global merges, duplicate-spike removal | not yet |
 | Drift correction | not yet |
-| Graph-based clustering, learned templates, deconvolution, merging | not yet |
 
 ## Universal templates
 
