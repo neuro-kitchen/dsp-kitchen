@@ -10,7 +10,8 @@ build-dir = "../../target/book"
 create-missing = false
 
 [output.html]
-# Served from https://neuro-kitchen.github.io/dsp-kitchen/ (see .github/workflows/docs.yml)
-site-url = "/dsp-kitchen/"
+# Served from https://neuro-kitchen.github.io/dsp-kitchen/guide/ (the site's landing page is
+# docs/site/index.html; the whole site is built by docs/build.sh, see .github/workflows/docs.yml)
+site-url = "/dsp-kitchen/guide/"
 git-repository-url = "https://github.com/neuro-kitchen/dsp-kitchen"
 edit-url-template = "https://github.com/neuro-kitchen/dsp-kitchen/edit/main/docs/book/src/{path}"

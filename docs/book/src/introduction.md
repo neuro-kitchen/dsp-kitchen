@@ -2,9 +2,13 @@
 
 > **Under development.** Every crate and the Python bindings build; in `dsp-app`, Explore is
 > rewired and Curation is parked. [Kilosort4](sorters/kilosort4/intro.md) and
-> [EMUsort](sorters/emusort/intro.md) run over whole recordings (preprocessing, universal
-> templates, detection); their clustering and deconvolution stages are not implemented yet.
-> Nothing here is released.
+> [EMUsort](sorters/emusort/intro.md) run over whole recordings, from the raw file to sorted units;
+> drift correction, the refractory-period criteria and the final merges are not implemented yet
+> (see [Sorters](sorters/index.md)). Nothing here is released.
+>
+> **Reference:** this guide explains the concepts. For exact signatures, arguments, defaults and
+> units, see the [Python API](../api/python/index.html) and the [Rust API](../api/rust/dsp_base/index.html)
+> (rustdoc; every crate is listed on the [documentation home](../index.html)).
 
 dsp-kitchen is a digital-signal-processing framework for multi-channel recordings, written in
 Rust, with a focus on neural and muscle electrophysiology: filtering, resampling and spatial
