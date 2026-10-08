@@ -69,6 +69,9 @@ let client = target.client()?;             // a cubecl `Client` for that runtime
 | `dsp_synapse_ml` Kilosort4 detection (`UniversalDetector`) | templates and centre tables (uploaded once), correlations, centre responses, scores, candidates | per window: candidate counts, then the spikes and their features |
 | `dsp_synapse_ml` EMUsort delays | envelopes, the cross-correlation sum | the cross-correlation once |
 | `dsp_synapse_ml` universal templates | the scaled clips (uploaded once), Gram matrix, gathered inliers | eigenvectors, HDBSCAN labels, k-means sums per iteration |
+| `dsp_synapse_ml` Kilosort4 clustering (per section) | the section's features (embedded on the device), k-NN graph, labels, regression Gram, projections | labels, the cluster edge counts; per split check a `d × d` Gram and a 400-bin histogram |
+| `dsp_synapse_ml` learned templates, matching (`TemplateMatcher`) | template products at every lag (uploaded once), per window the residual, PC projections, scores | per pursuit round the spike count; per window the matched spikes and their features |
+| `dsp_synapse` bipartite clustering (`bipartite_clustering`) | points, neighbour lists, k-means++ state, labels, counts | the seeds once, one `u32` per round, the edge counts once |
 | `dsp_synapse` k-means, HDBSCAN (`DevicePoints`) | the points, distances, assignments, core distances | `k · d` sums per iteration; one weight block per k-means++ draw; `O(n)` cheapest edges per Borůvka round |
 
 Reading is out of core: `dsp_core::WindowLoader` streams halo windows of any `RecordingSource`

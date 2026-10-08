@@ -67,9 +67,26 @@ k-means.
 
 ## 4. Detection and later stages
 
-Universal-template detection is Kilosort4's (`UniversalDetector`), on the delay-aligned windows
-with EMUsort's templates and settings. Drift, clustering, deconvolution and merging are not
-implemented yet (as in Kilosort4).
+Every later stage is Kilosort4's ([pipeline](../kilosort4/pipeline.md)), on the delay-aligned
+windows with EMUsort's templates and settings: universal-template detection, clustering, learned
+templates, learned-template matching and the clustering of the matches. Not yet (as in Kilosort4):
+the refractory criteria, global merges and duplicate removal; and EMUsort's own last step, its unit
+score (refractory violations, presence ratio, amplitude cutoff, firing-rate validity, SNR) with
+`cluster_score_threshold`.
+
+**HD-EMG grids and detection ties.** On a 4 × 8 grid with 100 µm pitch the detection centres sit
+every 16 µm while the spatial templates are 10–50 µm wide, so neighbouring centres compute
+bit-identical responses. Detection keeps one spike per tie (Kilosort4 pipeline, stage 3); before
+that fix, 56 000 of 94 000 detections on the 200 s test segment were copies, and the median unit had
+53% of its intervals under 2 ms.
+
+## Differences from the paper (to decide)
+
+Reading the paper (O'Connell et al., *eLife* 2026, RP110417) showed three differences in our
+pipeline: EMUsort's dense linear channel map (2 µm between channels), its filtering (a 250–5000 Hz
+band-pass before Kilosort4's own 300 Hz high-pass, and a 60 Hz notch), and the template window to be
+matched to each dataset's MUAP width. What they change and what we plan: [EMUsort tuning, notes on
+our implementation](tuning.md#notes-on-our-implementation).
 
 ## Known differences from upstream (to revisit)
 

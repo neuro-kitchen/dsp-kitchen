@@ -19,6 +19,7 @@ reuses every Kilosort4 stage of `sorters::kilosort4` with its own settings and a
 | **HDBSCAN outlier removal** before the templates are clustered | movement artifacts contaminate the templates |
 | No common average reference | a MUAP spans many channels; subtracting the average removes signal |
 | Template-learning stride `nskip` 2 (Kilosort4: 25) | more MUAP waveforms for the templates |
+| Clips scaled by one common factor (Kilosort4: each to unit norm) | keeps relative amplitudes, so the templates separate MUAP sizes |
 
 ## What is implemented
 
@@ -28,7 +29,9 @@ reuses every Kilosort4 stage of `sorters::kilosort4` with its own settings and a
 | Channel-delay estimation and removal | implemented (device) |
 | Universal templates learned with HDBSCAN outlier removal and several thresholds | implemented (device) |
 | Universal-template detection and features | implemented (device, shared with Kilosort4) |
-| Everything after detection | as in Kilosort4: not yet |
+| Clustering, learned templates, learned-template matching, clustering of the matches | implemented (device, shared with Kilosort4) |
+| Refractory (CCG) criteria, global merges, duplicate-spike removal | as in Kilosort4: not yet |
+| EMUsort's unit score (`cluster_score_threshold`) | not yet |
 
 EMUsort learns its universal templates from every recording; it publishes no weight or template
 files.
