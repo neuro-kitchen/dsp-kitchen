@@ -91,3 +91,7 @@ Libraries report; Python (`dsp_kitchen.progress.ProgressBar`) and dsp-cli (`prog
 `TerminalProgress`) draw.
 - `LaunchGeometry::tiles(client, points, shared_bytes_per_unit)`: 1-D power-of-two cubes for
   kernels sharing point tiles, shrunk to fit the device's shared memory.
+
+## Deleted (2026-10-08)
+
+Removed from `refactoring/` (history in git): `probe.rs` (compatibility facade with no users).

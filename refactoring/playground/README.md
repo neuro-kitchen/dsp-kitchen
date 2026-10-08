@@ -49,3 +49,10 @@ was checked against the SDK's exports.
   could do this itself (an `emit` range, like dsp-synapse's device detection).
 - dsp-io `SyntheticRecording` has unnamed literals (waveform shape, rate and amplitude ranges);
   name them in the dsp-io pass.
+
+## Deleted (2026-10-08)
+
+Removed from `refactoring/` (superseded; history in git): `sorters/` (the six scripts that ran the
+parked detector or the invented EMUsort design; replaced by `sorters/kilosort4_universal_templates.py`,
+`sorters/emusort_hdemg.py` and `benchmarks/`) and `benchmarks/*.json` (old suite format; the book's
+*Benchmarks* page replaces them).

@@ -196,3 +196,13 @@ nothing). **Breaking:** `run_plan` / `fit_preprocessing` take the sink.
 - `learn_universal_templates_with_progress`: "Learning templates" counts real steps (1 for `wPCA`,
   one per HDBSCAN launch, one per k-means restart) instead of 0/1. Fixed: a second
   "Finding clips" line when the pass had already reached its total.
+
+## Deleted (2026-10-08)
+
+Removed from `refactoring/` (superseded; history in git): `models/kilosort4/`, `models/emusort/`
+(the fixed-template "Kilosort4" detector and the invented EMUsort design; replaced by
+`sorters::kilosort4` / `sorters::emusort`), `examples/emusort_nwb_zarr.rs` (used them), `hub/{npy,
+registry, pytorch_remap}.rs` (replaced by `dsp_io::container::npy` and `dsp-synapse-hub`). Kept:
+`catalog/` and `runtime/kernels/` (the deferred ONNX runtime), `build.rs`. Also deleted:
+`refactoring/docs/` (the former `docs/sorters/`, replaced by the book's *Sorters* pages; see DOC1–DOC2
+in `REVIEW.md`: invented designs, parameters Kilosort4 does not have, APIs that do not exist).

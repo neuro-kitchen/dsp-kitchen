@@ -15,7 +15,7 @@ crate cleanup.
 | 6 | 32-bit device index guard + README warning | **done 2026-10-07** (`device_elements`, buffer backstop, README) | dsp-core, dsp-base, all kernels, README |
 | 7 | HDBSCAN scaling (exact pruning) | **done 2026-10-07** (+ hang fix: bounded insertion; 500k clips in 52 s) | dsp-synapse |
 | 8 | Smaller kernel inefficiencies | **partly done** (correlation tiled; rest open: delay CC, plane reductions, zeros fill, transpose via cubecl-std) | dsp-base, dsp-synapse-ml, dsp-view |
-| 9 | Reproducible sorts | required | dsp-core, dsp-base, dsp-synapse(-ml) |
+| 9 | Reproducible sorts | **done 2026-10-08** (`pin_tuned_choices`, `Kilosort4Config::reproducible`; identical spikes and units run to run) | dsp-core, dsp-base, dsp-synapse(-ml) |
 
 ---
 
@@ -286,6 +286,8 @@ drops the batch that would overflow the 500k clip buffer (we fill to `MAX_CLIPS`
 cross-threshold peaks on the time index only (we use (channel, time)). To check later.
 
 ## Pending (2026-10-08): EMUsort pipeline vs the paper — decided, not coded yet
+
+Tracked as tasks S6–S8, S11 in `SORTER_TASKS.md` (with everything else missing from both sorters).
 
 From the EMUsort paper (O'Connell et al., eLife 2026, RP110417; Table 5, Methods). Notes in the book:
 `sorters/emusort/tuning.md` ("Notes on our implementation"). **Do not change code until told.**
