@@ -17,7 +17,7 @@ use dsp_io::neuro::probe::SensorLayout;
 
 use crate::provenance::{Attributed, Paper, Provenance, ProvenanceKind, UpstreamCode};
 use crate::sorters::kilosort4::runner::{run_plan, Kilosort4Result, RunPlan};
-use crate::sorters::kilosort4::{ClipOptions, Kilosort4Config, LearnOptions};
+use crate::sorters::kilosort4::{ClipOptions, ClipScaling, Kilosort4Config, LearnOptions};
 
 /// Sorter name of an EMUsort run in [`dsp_synapse::core::SortingOutput`].
 pub const EMUSORT_SORTER: &str = "emusort";
@@ -63,6 +63,8 @@ impl EmusortConfig {
 
     pub fn learn_options(&self) -> LearnOptions {
         LearnOptions {
+            // EMUsort's fork scales clips by one common factor
+            clip_scaling: ClipScaling::Common,
             outlier_min_cluster_size: self.remove_spike_outliers.then_some(self.hdbscan_min_cluster_size),
             ..self.kilosort4.learn_options()
         }
