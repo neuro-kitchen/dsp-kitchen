@@ -4,6 +4,7 @@
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3_stub_gen::derive::{gen_stub_pyfunction};
 use pyo3::types::{PyDict, PyList};
 
 use crate::array::{to_numpy, F32Array};
@@ -23,8 +24,28 @@ fn seconds(samples: &[u64], fs: f64) -> Vec<f64> {
     samples.iter().map(|&s| s as f64 / fs).collect()
 }
 
-/// ISI violations (SpikeInterface `isi_violations`, Hill et al. ratio). `duration_sec` is the
-/// recording's length (rates depend on it).
+/// Inter-spike-interval violations of a unit (SpikeInterface `isi_violations`; Hill et al. ratio).
+///
+/// Parameters
+/// ----------
+/// spike_samples : list of int
+///     Spike times, recording samples.
+/// fs : float
+///     Sampling rate, Hz.
+/// duration_sec : float
+///     Length of the recording, s (rates depend on it).
+/// isi_threshold_ms : float, default 1.5
+///     Intervals shorter than this violate the refractory period, ms.
+/// min_isi_ms : float, default 0.0
+///     Shortest possible interval (e.g. a duplicate-removal window), ms.
+///
+/// Returns
+/// -------
+/// dict
+///     `total_spikes`, `violation_count`, `violation_rate_pct` (% of intervals),
+///     `isi_violations_ratio` (Hill et al.: estimated contamination rate relative to the unit's rate),
+///     `violations_per_sec`, `firing_rate_hz`.
+#[gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (spike_samples, *, fs, duration_sec, isi_threshold_ms=DEFAULT_ISI_THRESHOLD_MS, min_isi_ms=DEFAULT_MIN_ISI_MS))]
 pub fn compute_isi<'py>(py: Python<'py>, spike_samples: Vec<u64>, fs: f64, duration_sec: f64, isi_threshold_ms: f64, min_isi_ms: f64) -> PyResult<Bound<'py, PyDict>> {
@@ -39,14 +60,38 @@ pub fn compute_isi<'py>(py: Python<'py>, spike_samples: Vec<u64>, fs: f64, durat
     Ok(dict)
 }
 
-/// Peak amplitude over noise σ (NaN when the noise is unknown or zero).
+/// Signal-to-noise ratio: peak amplitude over noise σ.
+///
+/// Parameters
+/// ----------
+/// peak_amplitude : float
+///     Peak of the unit's template, in the data's unit.
+/// noise_std : float
+///     Noise σ of the channel, same unit.
+///
+/// Returns
+/// -------
+/// float
+///     `|peak_amplitude| / noise_std`; NaN when the noise is unknown or zero.
+#[gen_stub_pyfunction]
 #[pyfunction]
 pub fn compute_snr(peak_amplitude: f32, noise_std: f32) -> f32 {
     snr(peak_amplitude, noise_std)
 }
 
-/// Mean waveform of `snippets` (`[channels, samples]`), its SD (ddof 0, as Phy) and standard
-/// error (from the ddof-1 SD; NaN below two spikes).
+/// Mean waveform of a unit's snippets, with its spread.
+///
+/// Parameters
+/// ----------
+/// snippets : list of WaveformSnippet
+///     Snippets of one unit, all with the same channels and length.
+///
+/// Returns
+/// -------
+/// dict or None
+///     `mean`, `std` (ddof 0, as Phy), `se` (standard error from the ddof-1 SD; NaN below two snippets):
+///     `[channels, samples]` float32; `count`. `None` without snippets.
+#[gen_stub_pyfunction]
 #[pyfunction]
 pub fn compute_template<'py>(py: Python<'py>, snippets: Vec<PyRef<'py, PyWaveformSnippet>>) -> PyResult<Option<Bound<'py, PyDict>>> {
     let all: Vec<_> = snippets.iter().map(|s| s.inner.clone()).collect();
@@ -72,7 +117,25 @@ fn correlogram_dict<'py>(py: Python<'py>, c: Correlogram) -> PyResult<Bound<'py,
     Ok(dict)
 }
 
-/// Autocorrelogram over ±`window_ms` in `bin_ms` bins.
+/// Autocorrelogram of a unit: counts of the time differences between every pair of its spikes (a
+/// spike is not paired with itself), in bins; symmetric around 0.
+///
+/// Parameters
+/// ----------
+/// spike_samples : list of int
+///     Spike times, recording samples.
+/// fs : float
+///     Sampling rate, Hz.
+/// bin_ms : float, default 1.0
+///     Bin width, ms.
+/// window_ms : float, default 50.0
+///     Half width, ms: lags in `[-window_ms, window_ms]`.
+///
+/// Returns
+/// -------
+/// dict
+///     `bin_centers_ms` (float32 array), `counts` (list of int), `bin_ms`, `window_ms`.
+#[gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (spike_samples, *, fs, bin_ms=DEFAULT_CORRELOGRAM_BIN_MS, window_ms=DEFAULT_CORRELOGRAM_WINDOW_MS))]
 pub fn compute_autocorrelogram<'py>(py: Python<'py>, mut spike_samples: Vec<u64>, fs: f64, bin_ms: f32, window_ms: f32) -> PyResult<Bound<'py, PyDict>> {
@@ -80,7 +143,25 @@ pub fn compute_autocorrelogram<'py>(py: Python<'py>, mut spike_samples: Vec<u64>
     correlogram_dict(py, autocorrelogram(&spike_samples, fs, bin_ms, window_ms))
 }
 
-/// Cross-correlogram of `b` relative to `a` over ±`window_ms`.
+/// Cross-correlogram of unit B relative to unit A: counts of `t_B − t_A` in bins (positive lags:
+/// B after A). A refractory dip at 0 suggests the two are one neuron.
+///
+/// Parameters
+/// ----------
+/// spike_samples_a, spike_samples_b : list of int
+///     Spike times of the two units, recording samples.
+/// fs : float
+///     Sampling rate, Hz.
+/// bin_ms : float, default 1.0
+///     Bin width, ms.
+/// window_ms : float, default 50.0
+///     Half width, ms.
+///
+/// Returns
+/// -------
+/// dict
+///     `bin_centers_ms` (float32 array), `counts` (list of int), `bin_ms`, `window_ms`.
+#[gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (spike_samples_a, spike_samples_b, *, fs, bin_ms=DEFAULT_CORRELOGRAM_BIN_MS, window_ms=DEFAULT_CORRELOGRAM_WINDOW_MS))]
 pub fn compute_crosscorrelogram<'py>(py: Python<'py>, mut spike_samples_a: Vec<u64>, mut spike_samples_b: Vec<u64>, fs: f64, bin_ms: f32, window_ms: f32) -> PyResult<Bound<'py, PyDict>> {
@@ -89,7 +170,26 @@ pub fn compute_crosscorrelogram<'py>(py: Python<'py>, mut spike_samples_a: Vec<u
     correlogram_dict(py, crosscorrelogram(&spike_samples_a, &spike_samples_b, fs, bin_ms, window_ms))
 }
 
-/// Firing rate (Hz) in `bin_ms` bins smoothed by a Gaussian of `sigma_ms`.
+/// Firing rate over time: spike counts in bins, smoothed by a Gaussian.
+///
+/// Parameters
+/// ----------
+/// spike_samples : list of int
+///     Spike times, recording samples.
+/// fs : float
+///     Sampling rate, Hz.
+/// duration_sec : float
+///     Length of the recording, s.
+/// bin_ms : float
+///     Bin width, ms.
+/// sigma_ms : float
+///     Standard deviation of the smoothing Gaussian, ms.
+///
+/// Returns
+/// -------
+/// dict
+///     `time_sec` (bin centres, s), `rate_hz` (float32 array, Hz).
+#[gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (spike_samples, *, fs, duration_sec, bin_ms, sigma_ms))]
 pub fn compute_firing_rate<'py>(py: Python<'py>, spike_samples: Vec<u64>, fs: f64, duration_sec: f64, bin_ms: f64, sigma_ms: f64) -> PyResult<Bound<'py, PyDict>> {
@@ -101,8 +201,27 @@ pub fn compute_firing_rate<'py>(py: Python<'py>, spike_samples: Vec<u64>, fs: f6
     Ok(dict)
 }
 
-/// Peri-stimulus time histogram: rate (Hz) and its standard error across trials, `pre_ms` before
-/// to `post_ms` after each trigger in `bin_ms` bins.
+/// Peri-stimulus time histogram: the unit's rate around each trigger, averaged over trials.
+///
+/// Parameters
+/// ----------
+/// spike_samples : list of int
+///     Spike times, recording samples.
+/// trigger_samples : list of int
+///     Stimulus times, recording samples (one trial each).
+/// fs : float
+///     Sampling rate, Hz.
+/// pre_ms, post_ms : float
+///     Window before and after each trigger, ms.
+/// bin_ms : float
+///     Bin width, ms.
+///
+/// Returns
+/// -------
+/// dict
+///     `bin_centers_ms`, `rate_hz` (mean over trials, Hz), `se_rate_hz` (standard error across trials),
+///     `num_trials`.
+#[gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (spike_samples, trigger_samples, *, fs, pre_ms, post_ms, bin_ms))]
 pub fn compute_psth<'py>(py: Python<'py>, spike_samples: Vec<u64>, trigger_samples: Vec<u64>, fs: f64, pre_ms: f64, post_ms: f64, bin_ms: f64) -> PyResult<Bound<'py, PyDict>> {
@@ -120,8 +239,25 @@ fn window_samples(ms: f64, fs: f64) -> usize {
     (ms / MS_PER_S * fs).round() as usize
 }
 
-/// Stimulus-triggered average of `data` (`[channels, samples]`): mean, SD (ddof 1) and standard
-/// error, `pre_ms` before to `post_ms` after each trigger.
+/// Stimulus-triggered average of a signal around each trigger.
+///
+/// Parameters
+/// ----------
+/// data : numpy.ndarray
+///     `[channels, samples]`, converted to float32.
+/// trigger_samples : list of int
+///     Stimulus times, samples of `data`.
+/// fs : float
+///     Sampling rate, Hz.
+/// pre_ms, post_ms : float
+///     Window before and after each trigger, ms.
+///
+/// Returns
+/// -------
+/// dict
+///     `mean`, `std` (ddof 1), `se`: `[channels, window samples]` float32 in the data's unit;
+///     `time_ms` (relative to the trigger); `num_trials` (triggers whose window fits the data).
+#[gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (data, trigger_samples, *, fs, pre_ms, post_ms))]
 pub fn compute_sta<'py>(py: Python<'py>, data: Bound<'py, PyAny>, trigger_samples: Vec<u64>, fs: f64, pre_ms: f64, post_ms: f64) -> PyResult<Bound<'py, PyDict>> {
@@ -139,10 +275,29 @@ pub fn compute_sta<'py>(py: Python<'py>, data: Bound<'py, PyAny>, trigger_sample
     Ok(dict)
 }
 
-/// Motor evoked potentials of `data` (`[channels, samples]`) after `trigger_samples`: the
-/// stimulus-triggered average, then per channel the onset (first crossing of
-/// `threshold_sigma` · pre-stimulus SD within `response_window_ms`), peak-to-peak, RMS and
-/// rectified area. Onsets that never cross are NaN.
+/// Motor evoked potentials: the stimulus-triggered average, then per channel its onset, size and area.
+///
+/// Parameters
+/// ----------
+/// data : numpy.ndarray
+///     `[channels, samples]` (e.g. EMG), converted to float32.
+/// trigger_samples : list of int
+///     Stimulus times, samples of `data`.
+/// fs : float
+///     Sampling rate, Hz.
+/// pre_ms, post_ms : float
+///     Window before and after each trigger, ms (the pre-stimulus part gives the baseline SD).
+/// response_window_ms : tuple of float
+///     `(start, end)` after the trigger where the response is searched, ms.
+/// threshold_sigma : float
+///     The onset is the first crossing of `threshold_sigma` · pre-stimulus SD in the response window.
+///
+/// Returns
+/// -------
+/// list of dict
+///     One per channel: `channel`, `onset_latency_ms` (NaN when it never crosses), `peak_to_peak`,
+///     `rms` (data's unit), `rectified_auc_ms` (area of `|x|`, unit · ms).
+#[gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (data, trigger_samples, *, fs, pre_ms, post_ms, response_window_ms, threshold_sigma))]
 #[allow(clippy::too_many_arguments)]
@@ -184,7 +339,18 @@ fn rows<'a>(a: &'a F32Array<'_>, what: &str) -> PyResult<(&'a [f32], usize, usiz
     }
 }
 
-/// Fisher discriminant d′ between two clusters of features (`[n_a, d]`, `[n_b, d]`).
+/// Fisher discriminant d′ between two clusters of features: how separated they are along the
+/// direction that best separates them.
+///
+/// Parameters
+/// ----------
+/// cluster_a, cluster_b : numpy.ndarray
+///     `[spikes, features]` of each cluster (same number of features).
+///
+/// Returns
+/// -------
+/// float
+#[gen_stub_pyfunction]
 #[pyfunction]
 pub fn compute_d_prime(cluster_a: Bound<'_, PyAny>, cluster_b: Bound<'_, PyAny>) -> PyResult<f32> {
     let (a, b) = (F32Array::new(&cluster_a)?, F32Array::new(&cluster_b)?);
@@ -195,7 +361,23 @@ pub fn compute_d_prime(cluster_a: Bound<'_, PyAny>, cluster_b: Bound<'_, PyAny>)
     Ok(d_prime(xa, na, xb, nb, da))
 }
 
-/// Isolation distance (Schmitzer-Torbert et al. 2005) of `target_unit`.
+/// Isolation distance of a unit (Schmitzer-Torbert et al. 2005): the squared Mahalanobis distance,
+/// from the unit's centre, of the n-th closest spike of other units (n = the unit's spike count).
+/// Larger is better isolated.
+///
+/// Parameters
+/// ----------
+/// features : numpy.ndarray
+///     `[spikes, features]` of all spikes.
+/// labels : list of int
+///     Unit of each spike.
+/// target_unit : int
+///     The unit scored.
+///
+/// Returns
+/// -------
+/// float
+#[gen_stub_pyfunction]
 #[pyfunction]
 pub fn compute_isolation_distance(features: Bound<'_, PyAny>, labels: Vec<usize>, target_unit: usize) -> PyResult<f32> {
     let f = F32Array::new(&features)?;
@@ -206,7 +388,22 @@ pub fn compute_isolation_distance(features: Bound<'_, PyAny>, labels: Vec<usize>
     Ok(isolation_distance(x, &labels, d, target_unit))
 }
 
-/// Silhouette score in `[-1, 1]` of `target_unit`.
+/// Silhouette score of a unit in `[-1, 1]`: how much closer its spikes are to each other than to
+/// the nearest other unit (1: well separated).
+///
+/// Parameters
+/// ----------
+/// features : numpy.ndarray
+///     `[spikes, features]` of all spikes.
+/// labels : list of int
+///     Unit of each spike.
+/// target_unit : int
+///     The unit scored.
+///
+/// Returns
+/// -------
+/// float
+#[gen_stub_pyfunction]
 #[pyfunction]
 pub fn compute_silhouette_score(features: Bound<'_, PyAny>, labels: Vec<usize>, target_unit: usize) -> PyResult<f32> {
     let f = F32Array::new(&features)?;
@@ -217,15 +414,44 @@ pub fn compute_silhouette_score(features: Bound<'_, PyAny>, labels: Vec<usize>, 
     Ok(silhouette(x, &labels, d, target_unit))
 }
 
-/// Amplitude cutoff (IBL / SpikeInterface): estimated fraction of spikes below detection, in
-/// `[0, 0.5]`.
+/// Amplitude cutoff (IBL / SpikeInterface): the estimated fraction of a unit's spikes missed because
+/// they fall below the detection threshold, from the shape of its amplitude distribution.
+///
+/// Parameters
+/// ----------
+/// amplitudes : list of float
+///     Spike amplitudes of the unit.
+///
+/// Returns
+/// -------
+/// float
+///     In `[0, 0.5]`; low is good.
+#[gen_stub_pyfunction]
 #[pyfunction]
 pub fn compute_amplitude_cutoff(amplitudes: Vec<f32>) -> f64 {
     amplitude_cutoff(&amplitudes)
 }
 
-/// Fraction of `bin_duration_sec` bins in which the unit fires above `mean_fr_ratio` × its mean
-/// rate (SpikeInterface `presence_ratio`).
+/// Presence ratio (SpikeInterface): the fraction of time bins in which the unit fires.
+///
+/// Parameters
+/// ----------
+/// spike_samples : list of int
+///     Spike times, recording samples.
+/// total_samples : int
+///     Length of the recording, samples.
+/// fs : float
+///     Sampling rate, Hz.
+/// bin_duration_sec : float, default 60.0
+///     Bin width, s.
+/// mean_fr_ratio : float, default 0.0
+///     A bin counts when the unit fires above `mean_fr_ratio` × its mean rate there (0: any spike).
+///
+/// Returns
+/// -------
+/// float
+///     In `[0, 1]`; 1: present throughout.
+#[gen_stub_pyfunction]
 #[pyfunction]
 #[pyo3(signature = (spike_samples, total_samples, *, fs, bin_duration_sec=DEFAULT_PRESENCE_BIN_SEC, mean_fr_ratio=DEFAULT_PRESENCE_MEAN_FR_RATIO))]
 pub fn compute_presence_ratio(spike_samples: Vec<u64>, total_samples: u64, fs: f64, bin_duration_sec: f64, mean_fr_ratio: f64) -> f64 {
