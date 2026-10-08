@@ -3,10 +3,10 @@
 //! ([`learn_universal_templates`], Kilosort4's default) or loaded from Kilosort4's predefined
 //! `wTEMP.npz` ([`UniversalTemplates::from_npz`]).
 //!
-//! Learning, as in the paper / upstream: isolated single-channel threshold crossings of the
-//! whitened data → clips scaled by one common factor → `wPCA` = top right singular vectors of the
-//! clip matrix → (optionally, EMUsort) HDBSCAN outlier removal → `wTEMP` = k-means centres,
-//! rows L2-normalized.
+//! Learning, as upstream (`spikedetect.extract_wPCA_wTEMP`): isolated single-channel threshold
+//! crossings of the whitened data → clips scaled ([`ClipScaling`]: each to unit norm in Kilosort4,
+//! one common factor in EMUsort's fork) → `wPCA` = top right singular vectors of the clip matrix →
+//! (optionally, EMUsort) HDBSCAN outlier removal → `wTEMP` = k-means centres, rows L2-normalized.
 
 use std::path::Path;
 
@@ -16,9 +16,10 @@ use dsp_core::{DspError, DspResult};
 use dsp_io::container::npy::read_npz;
 use dsp_synapse::sorting::{hdbscan_points_with_progress, hdbscan_progress_total, kmeans_points_with_progress, DevicePoints, KMeansOptions};
 
-/// Half-window of the local-maximum test of clip detection: ±4 samples × ±5 channel indices.
-pub const CLIP_LOCAL_SAMPLES: usize = 4;
-pub const CLIP_LOCAL_CHANNELS: usize = 5;
+/// Half-window of the local-maximum test of clip detection: ±4 channel indices × ±5 samples
+/// (upstream `loc_range = [4, 5]` over `[channels, samples]`, in Kilosort4 and EMUsort's fork).
+pub const CLIP_LOCAL_CHANNELS: usize = 4;
+pub const CLIP_LOCAL_SAMPLES: usize = 5;
 /// Isolation window: no other peak within ±6 channel indices × ±`nt / 2` samples.
 pub const CLIP_ISOLATION_CHANNELS: usize = 6;
 /// Most clips gathered for learning.
@@ -82,7 +83,7 @@ pub fn extract_clips(x: &[f32], channels: usize, samples: usize, opts: &ClipOpti
     let mut taken = std::collections::BTreeSet::new();
     let mut added = 0;
     for &th in &opts.thresholds {
-        // Peaks: equal to the local max of |x| over ±4 samples × ±5 channels, above `th`
+        // Peaks: equal to the local max of |x| over ±4 channels × ±5 samples, above `th`
         let is_peak = |c: usize, t: usize| {
             let v = abs(c, t);
             if !(v > th) {
@@ -111,11 +112,24 @@ pub fn extract_clips(x: &[f32], channels: usize, samples: usize, opts: &ClipOpti
     added
 }
 
-/// What [`learn_universal_templates`] does beyond Kilosort4.
+/// How clips are scaled before `wPCA` and k-means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ClipScaling {
+    /// Each clip to unit L2 norm: k-means groups clips by shape alone (Kilosort4,
+    /// `clips /= (clips**2).sum(1)**.5`).
+    #[default]
+    PerClip,
+    /// All clips by `1 / sqrt(std of the clip energies)`: relative amplitudes are kept, so k-means
+    /// also separates sizes (EMUsort's fork, `clips /= (clips**2).sum(1).std()**.5`).
+    Common,
+}
+
+/// How [`learn_universal_templates`] learns (Kilosort4's defaults, EMUsort's additions).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LearnOptions {
     pub n_pcs: usize,
     pub n_templates: usize,
+    pub clip_scaling: ClipScaling,
     /// EMUsort: HDBSCAN `min_cluster_size` for outlier removal before k-means (`None`: Kilosort4).
     pub outlier_min_cluster_size: Option<usize>,
     /// Seed of the k-means initialisations.
@@ -151,12 +165,7 @@ pub fn learn_universal_templates_with_progress(
     let hdbscan_steps = if outliers.is_some() { hdbscan_progress_total(n) } else { 0 };
     let total = 1 + hdbscan_steps + KMEANS_N_INIT as u64;
     progress(0, total);
-    // One common scale: 1 / sqrt(std of the clip energies) (keeps relative amplitudes)
-    let energies: Vec<f64> = clips.chunks_exact(nt).map(|c| c.iter().map(|&v| (v as f64).powi(2)).sum()).collect();
-    let mean = energies.iter().sum::<f64>() / n as f64;
-    let std = (energies.iter().map(|e| (e - mean).powi(2)).sum::<f64>() / n as f64).sqrt();
-    let scale = if std > 0.0 { (1.0 / std.sqrt()) as f32 } else { 1.0 };
-    let scaled: Vec<f32> = clips.iter().map(|&v| v * scale).collect();
+    let scaled = scale_clips(clips, nt, opts.clip_scaling);
     let points = DevicePoints::upload(client, &scaled, n, nt);
 
     // wPCA: top right singular vectors (uncentred) = top eigenvectors of Cᵀ C (the second moment
@@ -206,9 +215,46 @@ pub fn learn_universal_templates_with_progress(
     Ok(UniversalTemplates { nt, n_pcs: opts.n_pcs, n_templates: opts.n_templates, wpca, wtemp })
 }
 
+/// `clips` (`[n, nt]`) scaled as `scaling` says (energies in `f64`, scaled values in `f32`).
+fn scale_clips(clips: &[f32], nt: usize, scaling: ClipScaling) -> Vec<f32> {
+    let energies: Vec<f64> = clips.chunks_exact(nt).map(|c| c.iter().map(|&v| (v as f64).powi(2)).sum()).collect();
+    match scaling {
+        ClipScaling::PerClip => clips
+            .chunks_exact(nt)
+            .zip(&energies)
+            .flat_map(|(clip, &e)| {
+                let scale = if e > 0.0 { (1.0 / e.sqrt()) as f32 } else { 1.0 };
+                clip.iter().map(move |&v| v * scale)
+            })
+            .collect(),
+        ClipScaling::Common => {
+            let n = energies.len().max(1) as f64;
+            let mean = energies.iter().sum::<f64>() / n;
+            let std = (energies.iter().map(|e| (e - mean).powi(2)).sum::<f64>() / n).sqrt();
+            let scale = if std > 0.0 { (1.0 / std.sqrt()) as f32 } else { 1.0 };
+            clips.iter().map(|&v| v * scale).collect()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Kilosort4 scales every clip to unit norm; EMUsort scales all by one factor (their ratios kept).
+    #[test]
+    fn clip_scaling_follows_each_sorter() {
+        let nt = 4;
+        let clips = [3.0f32, 0.0, 4.0, 0.0, /* norm 5 */ 0.0, 6.0, 0.0, 8.0 /* norm 10 */];
+        let per = scale_clips(&clips, nt, ClipScaling::PerClip);
+        for clip in per.chunks_exact(nt) {
+            assert!((clip.iter().map(|v| v * v).sum::<f32>() - 1.0).abs() < 1e-6, "{clip:?}");
+        }
+        let common = scale_clips(&clips, nt, ClipScaling::Common);
+        // Energies 25 and 100: std 37.5, factor 1 / sqrt(37.5); the second clip stays twice the first
+        let factor = 1.0 / 37.5f32.sqrt();
+        assert!(common.iter().zip(&clips).all(|(s, c)| (s - c * factor).abs() < 1e-6), "{common:?}");
+    }
 
     #[test]
     fn isolated_peaks_become_clips() {
@@ -216,8 +262,9 @@ mod tests {
         let (channels, samples, nt) = (3usize, 400usize, 21usize);
         let mut x = vec![0.0f32; channels * samples];
         x[samples + 200] = -12.0;
+        // 6 samples apart: both are local maxima (±5 samples), neither is isolated (±nt/2)
         x[100] = -10.0;
-        x[105] = -11.0;
+        x[106] = -11.0;
         let mut clips = Vec::new();
         let n = extract_clips(&x, channels, samples, &ClipOptions { nt, nt0min: 7, thresholds: vec![6.0] }, &mut clips);
         assert_eq!(n, 1, "only the isolated peak");

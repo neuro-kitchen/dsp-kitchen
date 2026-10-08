@@ -2,22 +2,31 @@
 //! paper and the published defaults — the upstream GPL-3.0 code is not ported.
 //!
 //! Implemented stages: universal templates (`wPCA` / `wTEMP`) learned from the recording or loaded
-//! from the predefined `wTEMP.npz` ([`templates`]), and universal-template spike detection with
-//! `wPCA` features on the device ([`detect`]), driven over a whole recording by [`runner`]
-//! (preprocessing fit: CAR, high-pass, local whitening). Not yet: drift correction, graph-based
-//! clustering, learned-template deconvolution, merging. See the book's *Sorters* pages.
+//! from the predefined `wTEMP.npz` ([`templates`]), universal-template spike detection with `wPCA`
+//! features on the device ([`detect`]), and the first graph-based clustering of those spikes into
+//! units ([`clustering`]), driven over a whole recording by [`runner`] (preprocessing fit: CAR,
+//! high-pass, local whitening). Not yet: drift correction, learned-template deconvolution,
+//! re-clustering, merging. See the book's *Sorters* pages.
 
+pub mod clustering;
 pub mod detect;
+pub mod learned;
+pub mod matching;
 mod kernels;
 pub mod runner;
 pub mod templates;
 
+pub use clustering::{cluster_spikes, ClusteringOptions, SpikeClusters};
+pub use matching::{TemplateMatcher, MAX_PEELS};
+pub use learned::{learned_templates, LearnedTemplates, TemplateMergeOptions};
 pub use detect::{detect_universal, CentreOptions, TemplateCentres, UniversalDetector, UniversalSpike};
 pub use runner::{
     fit_kilosort4_preprocessing, fit_preprocessing, run_plan, ChannelDelays, FitSettings, FittedPreprocessing, Kilosort4Result,
     RunPlan,
 };
-pub use templates::{extract_clips, learn_universal_templates, learn_universal_templates_with_progress, ClipOptions, LearnOptions, UniversalTemplates};
+pub use templates::{
+    extract_clips, learn_universal_templates, learn_universal_templates_with_progress, ClipOptions, ClipScaling, LearnOptions, UniversalTemplates,
+};
 
 use crate::provenance::{ArtifactSource, Attributed, Paper, Provenance, ProvenanceKind, UpstreamCode};
 
@@ -51,6 +60,12 @@ pub struct Kilosort4Config {
     pub whitening_range: usize,
     /// Samples per batch.
     pub batch_size: usize,
+    /// Clustering of the detected spikes into units ([`clustering`]).
+    pub clustering: ClusteringOptions,
+    /// Alignment and merging of the units' templates into the learned templates ([`learned`]).
+    pub template_merge: TemplateMergeOptions,
+    /// Matching pursuit rounds per window of learned-template matching ([`matching`]).
+    pub max_peels: usize,
     /// Same input on the same device gives the same spikes: the autotuned choices that change the
     /// numbers (IIR time blocks, matrix-product routine) are pinned for the run
     /// ([`dsp_core::compute::pin_tuned_choices`]). Off, the tuner may pick differently between runs
@@ -75,6 +90,9 @@ impl Default for Kilosort4Config {
             highpass_cutoff_hz: 300.0,
             whitening_range: 32,
             batch_size: 60_000,
+            clustering: ClusteringOptions::default(),
+            template_merge: TemplateMergeOptions::default(),
+            max_peels: MAX_PEELS,
             reproducible: true,
         }
     }
@@ -91,7 +109,13 @@ impl Kilosort4Config {
     }
 
     pub fn learn_options(&self) -> LearnOptions {
-        LearnOptions { n_pcs: self.n_pcs, n_templates: self.n_templates, outlier_min_cluster_size: None, seed: 0 }
+        LearnOptions {
+            n_pcs: self.n_pcs,
+            n_templates: self.n_templates,
+            clip_scaling: ClipScaling::PerClip,
+            outlier_min_cluster_size: None,
+            seed: 0,
+        }
     }
 }
 
