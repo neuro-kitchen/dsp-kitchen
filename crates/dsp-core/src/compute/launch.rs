@@ -148,7 +148,7 @@ mod tests {
 
     #[test]
     fn geometries_cover_their_ranges_within_limits() {
-        let client = cubecl::Device::Wgpu(WgpuDevice::default()).client();
+        let client = crate::compute::open_device(cubecl::Device::Wgpu(WgpuDevice::default()));
         let max = client.properties().hardware.max_cube_count;
         let within = |c: &CubeCount| matches!(c, CubeCount::Static(x, y, z) if *x <= max.0 && *y <= max.1 && *z <= max.2);
 

@@ -10,7 +10,6 @@ use std::time::Instant;
 
 use cubecl::device::{WgpuDevice, WgpuDeviceKind};
 use cubecl::prelude::*;
-use cubecl::Device;
 use dsp_base::core::buffer;
 use dsp_base::linalg::{symmetric_eigen_batched, EigenOptions, SymmetricEigen};
 
@@ -69,6 +68,6 @@ fn bench(device: &str, client: &Client) {
 #[ignore = "benchmark: run with --ignored --nocapture"]
 fn bench_eigensolver() {
     for (name, kind) in [("dGPU", WgpuDeviceKind::DiscreteGpu(0)), ("iGPU", WgpuDeviceKind::IntegratedGpu(0))] {
-        bench(name, &Device::Wgpu(WgpuDevice::new(kind)).client());
+        bench(name, &dsp_core::compute::open_device(cubecl::Device::Wgpu(WgpuDevice::new(kind))));
     }
 }

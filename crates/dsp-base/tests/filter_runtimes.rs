@@ -48,7 +48,7 @@ fn check(client: &Client) {
 #[test]
 fn wgpu_runtime() {
     use cubecl::device::WgpuDevice;
-    check(&cubecl::Device::Wgpu(WgpuDevice::default()).client());
+    check(&dsp_core::compute::open_device(cubecl::Device::Wgpu(WgpuDevice::default())));
 }
 
 #[cfg(feature = "cpu")]
