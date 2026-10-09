@@ -17,7 +17,7 @@ pub struct SyntheticParams {
     pub duration_sec: f64,
     /// Noise RMS.
     pub noise_uv: f32,
-    /// 60 Hz hum amplitude.
+    /// Line-noise (60 Hz hum) amplitude.
     pub line_noise_uv: f32,
     /// Number of units (0 = no spikes).
     pub units: usize,
@@ -56,7 +56,41 @@ struct Unit {
 
 /// Channels on each side of a unit's center that receive its spikes.
 const SPREAD: f32 = 4.0;
+/// Width (channels) of the Gaussian fall-off of a spike's amplitude across channels.
 const SPREAD_SIGMA: f32 = 1.5;
+
+/// Spike waveform: window before and after the trough (s), and the trough's Gaussian width (s).
+const WAVEFORM_PRE_SEC: f64 = 0.000_5;
+const WAVEFORM_POST_SEC: f64 = 0.001_5;
+const TROUGH_WIDTH_SEC: f32 = 0.000_25;
+/// The positive rebound after the trough: amplitude (relative to the trough), and its delay and
+/// width in trough widths.
+const REBOUND_AMPLITUDE: f32 = 0.3;
+const REBOUND_DELAY: f32 = 2.0;
+const REBOUND_WIDTH: f32 = 1.5;
+
+/// Units' mean firing rates are uniform in `MIN_RATE_HZ .. MIN_RATE_HZ + RATE_SPAN_HZ` (2–20 Hz),
+/// their peak amplitudes in `MIN_AMPLITUDE_UV .. + AMPLITUDE_SPAN_UV` (60–200 µV).
+const MIN_RATE_HZ: f32 = 2.0;
+const RATE_SPAN_HZ: f32 = 18.0;
+const MIN_AMPLITUDE_UV: f32 = 60.0;
+const AMPLITUDE_SPAN_UV: f32 = 140.0;
+/// Probability that a slot holds a spike; slots last `1 / (2 · rate)`, so `rate` spikes per second
+/// on average.
+const FIRE_PROBABILITY: f32 = 0.5;
+/// A slot spans at least this many waveforms, so spikes of one unit never overlap.
+const MIN_SLOT_WAVEFORMS: u64 = 2;
+
+/// Line-noise frequency (Hz) and the phase step between channels (cycles per channel).
+const LINE_FREQUENCY_HZ: f64 = 60.0;
+const LINE_PHASE_PER_CHANNEL: f64 = 0.1;
+
+/// Salts that separate the random streams (units, spike slots, channel noise) drawn from one seed.
+const UNIT_SALT: u64 = 0x9e37_79b9;
+const SLOT_SALT: u64 = 0xa24b_aed4_963e_e407;
+const CHANNEL_SALT: u64 = 0xd6e8_feb8_6659_fd93;
+/// Bit offset of the unit index in a slot's random key.
+const UNIT_KEY_SHIFT: u32 = 48;
 
 pub struct SyntheticRecording {
     info: RecordingInfo,
@@ -82,24 +116,23 @@ impl SyntheticRecording {
         info.metadata.insert("source".into(), "procedural".into());
 
         let sr = params.sample_rate_hz;
-        let (pre, post) = ((sr * 0.0005).round() as usize, (sr * 0.0015).round() as usize);
+        let (pre, post) = ((sr * WAVEFORM_PRE_SEC).round() as usize, (sr * WAVEFORM_POST_SEC).round() as usize);
         let template = (0..pre + post)
             .map(|i| {
-                let t = (i as f32 - pre as f32) / (sr as f32 * 0.00025);
-                -(-0.5 * t * t).exp() + 0.3 * (-0.5 * ((t - 2.0) / 1.5).powi(2)).exp()
+                let t = (i as f32 - pre as f32) / (sr as f32 * TROUGH_WIDTH_SEC);
+                -(-0.5 * t * t).exp() + REBOUND_AMPLITUDE * (-0.5 * ((t - REBOUND_DELAY) / REBOUND_WIDTH).powi(2)).exp()
             })
             .collect();
 
         let units = (0..params.units)
             .map(|u| {
-                let h = splitmix(params.seed ^ (u as u64 + 1).wrapping_mul(0x9e37_79b9));
-                let rate_hz = 2.0 + unit_frac(h) * 18.0;
+                let h = splitmix(params.seed ^ (u as u64 + 1).wrapping_mul(UNIT_SALT));
+                let rate_hz = MIN_RATE_HZ + unit_frac(h) * RATE_SPAN_HZ;
                 Unit {
                     center: (u as f32 + 0.5) * params.channels as f32 / params.units as f32,
-                    amplitude_uv: 60.0 + unit_frac(h >> 16) * 140.0,
-                    // Slots of 1/(2·rate) with p = 0.5 average `rate` spikes per second
-                    slot: ((sr / (2.0 * rate_hz as f64)) as u64).max((pre + post) as u64 * 2),
-                    fire_prob: 0.5,
+                    amplitude_uv: MIN_AMPLITUDE_UV + unit_frac(h >> 16) * AMPLITUDE_SPAN_UV,
+                    slot: ((sr / (2.0 * rate_hz as f64)) as u64).max((pre + post) as u64 * MIN_SLOT_WAVEFORMS),
+                    fire_prob: FIRE_PROBABILITY,
                 }
             })
             .collect();
@@ -130,7 +163,7 @@ impl SyntheticRecording {
         let first = range.start / u.slot;
         let last = (range.end - 1) / u.slot;
         for k in first..=last {
-            let h = splitmix(self.params.seed ^ ((unit as u64) << 48) ^ k.wrapping_mul(0xa24b_aed4_963e_e407));
+            let h = splitmix(self.params.seed ^ ((unit as u64) << UNIT_KEY_SHIFT) ^ k.wrapping_mul(SLOT_SALT));
             if unit_frac(h) >= u.fire_prob {
                 continue;
             }
@@ -164,12 +197,12 @@ impl RecordingSource for SyntheticRecording {
             return Ok(());
         }
         let p = &self.params;
-        let omega = std::f64::consts::TAU * 60.0 / p.sample_rate_hz;
+        let omega = std::f64::consts::TAU * LINE_FREQUENCY_HZ / p.sample_rate_hz;
 
         // Background: noise + hum
         for (dst, &ch) in out.chunks_exact_mut(n).zip(channels) {
-            let phase = (ch as f64 * 0.1).fract() * std::f64::consts::TAU;
-            let ch_seed = p.seed ^ (ch as u64).wrapping_mul(0xd6e8_feb8_6659_fd93);
+            let phase = (ch as f64 * LINE_PHASE_PER_CHANNEL).fract() * std::f64::consts::TAU;
+            let ch_seed = p.seed ^ (ch as u64).wrapping_mul(CHANNEL_SALT);
             for (i, o) in dst.iter_mut().enumerate() {
                 let s = samples.start + i as u64;
                 let hum = p.line_noise_uv * (omega * s as f64 + phase).sin() as f32;

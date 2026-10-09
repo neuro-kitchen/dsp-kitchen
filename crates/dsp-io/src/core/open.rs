@@ -103,7 +103,7 @@ pub(crate) mod tests {
         for (i, &c) in channels.iter().enumerate() {
             let ch = &info.channels[c];
             let b = info.format.bytes();
-            crate::container::binary::codec::decode_run(info.format, &bytes[i * n * b..(i + 1) * n * b], &mut decoded[i * n..(i + 1) * n], ch.gain, ch.offset);
+            info.format.decode(&bytes[i * n * b..(i + 1) * n * b], &mut decoded[i * n..(i + 1) * n], ch.gain, ch.offset);
         }
         assert_eq!(decoded, values, "{}", info.name);
     }
