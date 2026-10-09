@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand};
 use dsp_core::ComputeTarget;
 
 #[derive(Parser, Debug)]
-#[command(name = "dsp-cli", version, about = "dsp-kitchen from the command line: devices, recordings, benchmarks, streaming, model hub")]
+#[command(name = "dsp-cli", version, about = "dsp-kitchen from the command line: devices, recordings, detection, sorting, benchmarks, streaming, model hub")]
 struct Cli {
     /// Compute runtime: wgpu, cpu, cuda or hip, among those compiled in (default: the first
     /// compiled in, GPUs first; `doctor` shows which work on this machine)
@@ -33,6 +33,12 @@ enum Command {
     Open(commands::open::OpenArgs),
     /// Show a probe layout preset
     Probe(commands::probe::ProbeArgs),
+    /// Detect spikes in a whole recording and write them as a sorting (one unit per channel)
+    Detect(commands::detect::DetectArgs),
+    /// Spike-sort a recording with Kilosort4 or EMUsort and write the sorting
+    Sort(commands::sort::SortArgs),
+    /// Convert a sorting between formats (Phy, .sorting.zarr, NWB units)
+    Convert(commands::convert::ConvertArgs),
     /// Write a synthetic recording (noise, line noise, drifting units)
     Generate(commands::generate::GenerateArgs),
     /// Time processing on the selected runtime
@@ -69,6 +75,9 @@ async fn main() -> anyhow::Result<()> {
         Command::Inspect(args) => commands::inspect::run(cli.target()?, args),
         Command::Open(args) => commands::open::run(args),
         Command::Probe(args) => commands::probe::run(args),
+        Command::Detect(args) => commands::detect::run(cli.target()?, args),
+        Command::Sort(args) => commands::sort::run(cli.target()?, args),
+        Command::Convert(args) => commands::convert::run(args),
         Command::Generate(args) => commands::generate::run(args),
         Command::Benchmark(args) => commands::benchmark::run(cli.target()?, args),
         Command::Serve(args) => commands::net::serve::run(args).await,

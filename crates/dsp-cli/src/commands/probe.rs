@@ -4,10 +4,10 @@ use clap::{Args, ValueEnum};
 use dsp_io::neuro::probe::{self, SensorLayout};
 
 /// Default electrode pitch of the HD-EMG grid presets (µm).
-const DEFAULT_HDEMG_PITCH_UM: f32 = 8_000.0;
+pub const DEFAULT_HDEMG_PITCH_UM: f32 = 8_000.0;
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum Preset {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum Preset {
     Neuropixels1,
     Neuropixels2,
     Tetrode,
@@ -26,15 +26,22 @@ pub struct ProbeArgs {
     pitch_um: f32,
 }
 
+impl Preset {
+    /// The preset's layout; `pitch_um` sets the HD-EMG grids' electrode pitch.
+    pub fn layout(self, pitch_um: f32) -> SensorLayout {
+        match self {
+            Preset::Neuropixels1 => probe::neuropixels_1_0(),
+            Preset::Neuropixels2 => probe::neuropixels_2_0(),
+            Preset::Tetrode => probe::tetrode(),
+            Preset::Utah => probe::utah_array(),
+            Preset::Hdemg4x8 => probe::hdemg_4x8(pitch_um),
+            Preset::Hdemg8x8 => probe::hdemg_8x8(pitch_um),
+        }
+    }
+}
+
 pub fn run(args: &ProbeArgs) -> anyhow::Result<()> {
-    let layout: SensorLayout = match args.preset {
-        Preset::Neuropixels1 => probe::neuropixels_1_0(),
-        Preset::Neuropixels2 => probe::neuropixels_2_0(),
-        Preset::Tetrode => probe::tetrode(),
-        Preset::Utah => probe::utah_array(),
-        Preset::Hdemg4x8 => probe::hdemg_4x8(args.pitch_um),
-        Preset::Hdemg8x8 => probe::hdemg_8x8(args.pitch_um),
-    };
+    let layout = args.preset.layout(args.pitch_um);
     let sites = layout.sites();
     let span = |coord: fn(&probe::SensorSite) -> f32| {
         let (lo, hi) = sites.iter().map(coord).fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), v| (a.min(v), b.max(v)));

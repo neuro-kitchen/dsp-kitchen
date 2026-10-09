@@ -1,6 +1,6 @@
 [package]
 name = "dsp-cli"
-description = "Command line for dsp-kitchen: devices, recordings, benchmarks, streaming, model hub"
+description = "Command line for dsp-kitchen: devices, recordings, detection, sorting, benchmarks, streaming, model hub"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -13,19 +13,19 @@ path = "src/main.rs"
 [features]
 default = ["wgpu", "hub"]
 # CubeCL runtimes (chosen at run time with --runtime among those compiled in)
-wgpu = ["dsp-core/wgpu", "dsp-base/wgpu"]
-cpu = ["dsp-core/cpu", "dsp-base/cpu", "dsp-synapse/cpu"]
-cuda = ["dsp-core/cuda", "dsp-base/cuda", "dsp-synapse/cuda"]
+wgpu = ["dsp-core/wgpu", "dsp-base/wgpu", "dsp-synapse-ml/wgpu"]
+cpu = ["dsp-core/cpu", "dsp-base/cpu", "dsp-synapse/cpu", "dsp-synapse-ml/cpu"]
+cuda = ["dsp-core/cuda", "dsp-base/cuda", "dsp-synapse/cuda", "dsp-synapse-ml/cuda"]
 hip = ["dsp-core/hip", "dsp-base/hip", "dsp-synapse/hip"]
 # `hub` command: verified downloads of published artifacts (network access)
-hub = ["dep:dsp-synapse-ml", "dsp-synapse-ml/hub", "dep:dsp-synapse-hub"]
+hub = ["dsp-synapse-ml/hub", "dep:dsp-synapse-hub"]
 
 [dependencies]
 dsp-core = { workspace = true, features = ["compute"] }
 dsp-base.workspace = true
 dsp-io = { workspace = true, features = ["neuro"] }
 dsp-synapse.workspace = true
-dsp-synapse-ml = { workspace = true, default-features = false, optional = true }
+dsp-synapse-ml = { workspace = true, default-features = false }
 dsp-synapse-hub = { workspace = true, optional = true }
 dsp-stream.workspace = true
 dsp-view = { workspace = true, default-features = false }
