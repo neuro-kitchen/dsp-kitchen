@@ -25,9 +25,11 @@ use cubecl::server::Handle;
 use dsp_core::{ChunkSchedule, DspError, DspResult, HaloWindow, ProgressSink, RecordingSource, SampleFormat, WindowLoader};
 use dsp_io::neuro::probe::SensorLayout;
 use dsp_synapse::core::{SortedUnit, SortingOutput, WaveformTemplate};
-use dsp_synapse::QualityCriteria;
+use dsp_synapse::metrics::{acg_refractory, composite_score, CompositeScoreOptions, RefractoryOptions};
+use dsp_synapse::{QualityCriteria, UnitQualityLabel};
 
 use super::clustering::{cluster_spikes, SpikeClusters};
+use super::merges::global_merges;
 use super::learned::{learned_templates, LearnedTemplates};
 use super::matching::TemplateMatcher;
 use super::detect::{TemplateCentres, UniversalDetector, UniversalSpike};
@@ -35,10 +37,13 @@ use super::templates::{extract_clips, learn_universal_templates_with_progress, L
 use super::Kilosort4Config;
 use crate::sorters::emusort::delays::{ChannelAligner, ChannelDelayEstimator};
 
-/// Butterworth order of the high-pass filter, matching upstream Kilosort4.
-pub const HIGHPASS_ORDER: usize = 3;
+/// Butterworth order of the band-pass (per edge): Kilosort4's high-pass order.
+pub const BANDPASS_ORDER: usize = 3;
 
-/// Regularization added to covariance eigenvalues before local whitening.
+/// Regularization added to covariance eigenvalues before local whitening. Checked 2026-10-08
+/// against Kilosort4's saved `whitening_mat_dat.npy` (test Neuropixels file): the covariance
+/// eigenvalues it implies are 11–277 (int16 units²), so ε changes them by < 10⁻⁷ and any ε ≤ 10⁻³
+/// whitens the same.
 pub const WHITENING_EPSILON: f32 = 1e-6;
 
 /// Progress stages of a run (reported in this order; a run reports only the ones it has), and
@@ -50,9 +55,11 @@ pub const STAGE_DETECTION: &str = "Detecting spikes";
 pub const STAGE_CLUSTERING: &str = "Clustering spikes";
 pub const STAGE_MATCHING: &str = "Matching templates";
 pub const STAGE_RECLUSTERING: &str = "Clustering matched spikes";
+pub const STAGE_MERGES: &str = "Merging units";
 const SECTIONS: &str = "sections";
 const WINDOWS: &str = "windows";
 const STEPS: &str = "steps";
+const UNITS: &str = "units";
 
 /// Sorter name of a Kilosort4 run in [`SortingOutput`].
 pub const KILOSORT4_SORTER: &str = "kilosort4";
@@ -140,6 +147,11 @@ pub struct RunPlan {
 }
 
 impl RunPlan {
+    /// This plan for a recording at `sample_rate_hz` ([`Kilosort4Config::resolved`]).
+    pub fn resolved(&self, sample_rate_hz: f64) -> Self {
+        Self { config: self.config.resolved(sample_rate_hz), ..self.clone() }
+    }
+
     pub fn kilosort4(config: &Kilosort4Config) -> Self {
         Self {
             sorter: KILOSORT4_SORTER,
@@ -166,7 +178,12 @@ pub struct FitSettings {
     pub total_samples: u64,
     pub sample_rate_hz: f64,
     pub do_car: bool,
-    pub highpass_cutoff_hz: f64,
+    pub do_bandpass: bool,
+    pub bandpass_low_hz: f64,
+    pub bandpass_high_hz: Option<f64>,
+    pub do_notch: bool,
+    pub notch_hz: f64,
+    pub notch_q: f64,
     pub nt: usize,
     pub batch_size: usize,
     pub nskip: usize,
@@ -183,7 +200,12 @@ impl FitSettings {
             total_samples: info.samples,
             sample_rate_hz: info.sample_rate_hz(),
             do_car: ks.do_car,
-            highpass_cutoff_hz: ks.highpass_cutoff_hz,
+            do_bandpass: ks.do_bandpass,
+            bandpass_low_hz: ks.bandpass_low_hz,
+            bandpass_high_hz: ks.bandpass_high_hz,
+            do_notch: ks.do_notch,
+            notch_hz: ks.notch_hz,
+            notch_q: ks.notch_q,
             nt: ks.nt,
             batch_size: ks.batch_size,
             nskip: ks.nskip,
@@ -199,7 +221,7 @@ impl FitSettings {
 pub struct FittedPreprocessing {
     /// What it was fitted with.
     pub settings: FitSettings,
-    /// Filtering (optional CAR, high-pass) then local whitening.
+    /// Filtering (each optional: CAR, band-pass, notch) then local whitening.
     pub pipeline: Pipeline,
     pub whitening: SpatialWhitening,
     pub channel_delays: Option<ChannelDelays>,
@@ -224,6 +246,12 @@ pub struct Kilosort4Result {
     pub first_clusters: SpikeClusters,
     /// The units' templates aligned and merged: what learned-template matching would use.
     pub learned: LearnedTemplates,
+    /// Global merges applied to the final units ([`Kilosort4Config::global_merge`]).
+    pub merges: usize,
+    /// Spikes removed as duplicates ([`Kilosort4Config::duplicate_spike_ms`]).
+    pub duplicates: usize,
+    /// The auto-correlogram test that labels units *good* (refractory) or *mua*.
+    pub label_refractory: RefractoryOptions,
     /// `(x, y)` µm of every template centre (`UniversalSpike::centre` indexes it).
     pub centre_positions: Vec<[f32; 2]>,
     /// Recording channel nearest to every template centre.
@@ -243,6 +271,10 @@ impl Kilosort4Result {
     /// template is its mean PC features projected back through `wPCA` (`[channels, nt]`, whitened
     /// units) on the channels its spikes cover; its primary channel is the one where that template
     /// is largest. Amplitudes are in whitened σ, not µV, so no noise floor is given (SNR undefined).
+    /// Every unit carries EMUsort's composite score (`composite_score`; SNR taken as the median
+    /// whitened amplitude, noise being σ = 1 after whitening).
+    /// A unit is labelled *good* when its auto-correlogram is refractory
+    /// ([`dsp_synapse::metrics::acg_refractory`]), else *mua* (Phy's `cluster_KSLabel`).
     pub fn to_sorting_output(&self, probe: Option<SensorLayout>) -> SortingOutput {
         let (clusters, n_centres) = (&self.clusters, self.centre_positions.len());
         let (nt, n_pcs, channels) = (self.templates.nt, clusters.n_pcs, clusters.channels);
@@ -272,8 +304,17 @@ impl Kilosort4Result {
                         })
                         .map(|r| t.channel_ids[r])
                 });
+                let mut sorted = s.clone();
+                sorted.sort_unstable();
+                let good = acg_refractory(&sorted, self.sample_rate_hz, &self.label_refractory).1;
                 let criteria = QualityCriteria::default();
-                SortedUnit::from_spikes_with(unit_id, primary, s, a, l, template, self.sample_rate_hz, self.total_samples, None, criteria)
+                let mut unit = SortedUnit::from_spikes_with(unit_id, primary, s, a, l, template, self.sample_rate_hz, self.total_samples, None, criteria);
+                unit.quality_label = if good { UnitQualityLabel::SingleUnit } else { UnitQualityLabel::MultiUnit };
+                // SNR in whitened space: noise is σ = 1 there, so the median amplitude is the SNR
+                let snr = median_abs(&unit.amplitudes_uv);
+                unit.composite_score =
+                    composite_score(&unit.spike_samples, &unit.amplitudes_uv, snr, self.total_samples, self.sample_rate_hz, &CompositeScoreOptions::default()).score;
+                unit
             })
             .collect();
         SortingOutput::new(self.sorter, self.sample_rate_hz, self.total_samples, probe, units, None)
@@ -311,6 +352,7 @@ pub fn fit_preprocessing(
     plan: &RunPlan,
     progress: &dyn ProgressSink,
 ) -> DspResult<FittedPreprocessing> {
+    let plan = &plan.resolved(source.info().sample_rate_hz());
     let _pinned = plan.config.reproducible.then(dsp_core::compute::pin_tuned_choices);
     fit_with_stages(client, source, probe, plan, &Stages::new(progress, &[(STAGE_FIT, WINDOWS)]))
 }
@@ -332,11 +374,7 @@ fn fit_with_stages(
         )));
     }
 
-    let mut stages = Vec::new();
-    if ks.do_car {
-        stages.push(PipelineStage::CommonAverageReference);
-    }
-    stages.push(PipelineStage::Filter(FilterSpec::butterworth(HIGHPASS_ORDER, FilterBand::Highpass(ks.highpass_cutoff_hz))));
+    let mut stages = filter_stages(ks);
     let filtering = Pipeline::with_stages(stages.clone());
     let (settle_left, settle_right) = filtering.settling(fs).map_err(filter_error)?;
     let margin = (ks.nt + plan.max_channel_delay.unwrap_or(0)) as u64;
@@ -420,6 +458,7 @@ pub fn run_plan(
 ) -> DspResult<Kilosort4Result> {
     let info = source.info();
     let (channels, total, fs) = (info.channel_count(), info.samples, info.sample_rate_hz());
+    let plan = &plan.resolved(fs);
     let ks = &plan.config;
     // Held for the whole run (fit, learning, detection), on this thread
     let _pinned = ks.reproducible.then(dsp_core::compute::pin_tuned_choices);
@@ -434,6 +473,9 @@ pub fn run_plan(
     names.push((STAGE_CLUSTERING, SECTIONS));
     names.push((STAGE_MATCHING, WINDOWS));
     names.push((STAGE_RECLUSTERING, SECTIONS));
+    if ks.global_merge.enabled {
+        names.push((STAGE_MERGES, UNITS));
+    }
     let stages = Stages::new(progress, &names);
     let fitted = match &plan.fitted {
         Some(fitted) if fitted.settings == FitSettings::of(plan, info) => fitted.clone(),
@@ -526,7 +568,9 @@ pub fn run_plan(
     // 4. Clustering into units (features on the host since detection; each section goes up once)
     let mut seeded = ks.clustering;
     seeded.graph.seed = plan.learn.seed;
-    let clusters = cluster_spikes(client, &spikes, &centres, probe, channels, templates.n_pcs, &seeded, &mut |done, total| {
+    // The first clustering uses bimodality only (paper); the clustering of the matched spikes also
+    // keeps halves with a refractory cross-correlogram together
+    let clusters = cluster_spikes(client, &spikes, &centres, probe, channels, templates.n_pcs, &seeded, None, &mut |done, total| {
         stages.report(STAGE_CLUSTERING, done, total)
     });
     // 5. Learned templates (aligned, near-duplicates merged)
@@ -554,14 +598,40 @@ pub fn run_plan(
             Ok(true)
         })?;
         drop(matcher);
-        let reclustered = cluster_spikes(client, &matched, &centres, probe, channels, templates.n_pcs, &seeded, &mut |d, total| {
+        let reclustered = cluster_spikes(client, &matched, &centres, probe, channels, templates.n_pcs, &seeded, Some(fs), &mut |d, total| {
             stages.report(STAGE_RECLUSTERING, d, total)
         });
         (matched, reclustered, spikes, clusters)
     };
 
+    // 7. Global merges: units whose waveforms are alike and whose spikes are mutually refractory
+    let (clusters, merges) = if ks.global_merge.enabled {
+        stages.report(STAGE_MERGES, 0, clusters.n_units as u64);
+        let samples: Vec<u64> = spikes.iter().map(|s| s.sample as u64).collect();
+        let merged = global_merges(client, &clusters, &samples, &templates, fs, &ks.global_merge);
+        stages.report(STAGE_MERGES, clusters.n_units as u64, clusters.n_units as u64);
+        (merged.clusters, merged.merges)
+    } else {
+        (clusters, 0)
+    };
+
+    // 8. Duplicates: a unit's spikes closer than `duplicate_spike_ms` to its previous kept spike
+    let window = (ks.duplicate_spike_ms * fs / 1000.0).round() as u64;
+    let keep = duplicate_mask(&spikes, &clusters.labels, window);
+    let duplicates = keep.iter().filter(|&&k| !k).count();
+    let (spikes, clusters) = if duplicates == 0 {
+        (spikes, clusters)
+    } else {
+        let labels = clusters.labels.iter().zip(&keep).filter(|(_, k)| **k).map(|(&l, _)| l).collect();
+        let spikes = spikes.into_iter().zip(&keep).filter(|(_, k)| **k).map(|(s, _)| s).collect();
+        (spikes, SpikeClusters { labels, ..clusters })
+    };
+
     Ok(Kilosort4Result {
         sorter: plan.sorter,
+        merges,
+        duplicates,
+        label_refractory: ks.clustering.refractory,
         fitted,
         templates,
         spikes,
@@ -578,10 +648,95 @@ pub fn run_plan(
     })
 }
 
+/// Median of `|v|` (NaN when empty).
+fn median_abs(v: &[f32]) -> f64 {
+    let mut a: Vec<f64> = v.iter().map(|x| x.abs() as f64).collect();
+    if a.is_empty() {
+        return f64::NAN;
+    }
+    a.sort_by(f64::total_cmp);
+    let m = a.len() / 2;
+    if a.len() % 2 == 0 { 0.5 * (a[m - 1] + a[m]) } else { a[m] }
+}
+
+/// The filter chain of `ks`: its three switches, in this order: common average reference,
+/// band-pass (a high-pass when there is no upper edge), notch. Invalid settings (an edge at or above Nyquist) are reported when the chain is
+/// designed for the recording's rate, not dropped.
+pub fn filter_stages(ks: &Kilosort4Config) -> Vec<PipelineStage> {
+    let mut stages = Vec::new();
+    if ks.do_car {
+        stages.push(PipelineStage::CommonAverageReference);
+    }
+    if ks.do_bandpass {
+        let band = match ks.bandpass_high_hz {
+            Some(high) => FilterBand::Bandpass(ks.bandpass_low_hz, high),
+            None => FilterBand::Highpass(ks.bandpass_low_hz),
+        };
+        stages.push(PipelineStage::Filter(FilterSpec::butterworth(BANDPASS_ORDER, band)));
+    }
+    if ks.do_notch {
+        stages.push(PipelineStage::Filter(FilterSpec::notch(ks.notch_hz, ks.notch_q)));
+    }
+    stages
+}
+
+/// Which spikes to keep: per unit, in time order, a spike within `window` samples of the unit's
+/// previous kept spike is a duplicate (matching pursuit re-matching a template's own residual).
+/// `window = 0` keeps everything.
+fn duplicate_mask(spikes: &[UniversalSpike], labels: &[u32], window: u64) -> Vec<bool> {
+    let mut keep = vec![true; spikes.len()];
+    if window == 0 {
+        return keep;
+    }
+    let mut order: Vec<usize> = (0..spikes.len()).collect();
+    order.sort_by_key(|&i| (labels[i], spikes[i].sample, i));
+    let mut last: Option<(u32, u64)> = None;
+    for i in order {
+        let (u, t) = (labels[i], spikes[i].sample as u64);
+        match last {
+            Some((lu, lt)) if lu == u && t - lt <= window => keep[i] = false,
+            _ => last = Some((u, t)),
+        }
+    }
+    keep
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use dsp_core::compute::{ComputeTarget, ComputeTask};
+
+    /// Each sorter's defaults give its chain; every switch off gives none; an edge past Nyquist is
+    /// an error, not dropped.
+    #[test]
+    fn filter_switches_build_the_chain() {
+        let band = |low, high| PipelineStage::Filter(FilterSpec::butterworth(BANDPASS_ORDER, FilterBand::Bandpass(low, high)));
+        let open = Kilosort4Config { bandpass_high_hz: None, ..Default::default() };
+        assert_eq!(
+            filter_stages(&open)[1],
+            PipelineStage::Filter(FilterSpec::butterworth(BANDPASS_ORDER, FilterBand::Highpass(300.0))),
+            "no upper edge: a high-pass"
+        );
+        assert_eq!(filter_stages(&Kilosort4Config::default()), vec![PipelineStage::CommonAverageReference, band(300.0, 6000.0)]);
+        let emusort = crate::sorters::EmusortConfig::default().kilosort4();
+        assert_eq!(filter_stages(&emusort), vec![band(300.0, 5000.0)]);
+        let with_notch = Kilosort4Config { do_notch: true, ..emusort };
+        assert_eq!(filter_stages(&with_notch)[1], PipelineStage::Filter(FilterSpec::notch(60.0, 30.0)));
+        let off = Kilosort4Config { do_car: false, do_bandpass: false, do_notch: false, ..Default::default() };
+        assert!(filter_stages(&off).is_empty());
+        let past_nyquist = Pipeline::with_stages(filter_stages(&Kilosort4Config::default()));
+        assert!(past_nyquist.validate(10_000.0).is_err(), "6 kHz is above the 5 kHz Nyquist of 10 kHz");
+    }
+
+    #[test]
+    fn duplicates_are_close_spikes_of_one_unit() {
+        let spike = |sample: usize| UniversalSpike { sample, centre: 0, amplitude: 1.0, template: 0, size: 0, x_um: 0.0, y_um: 0.0, features: Vec::new() };
+        // Unit 0: 100, 105 (duplicate), 109 (9 after the kept 100: duplicate), 200; unit 1: 104
+        let spikes: Vec<UniversalSpike> = [105, 100, 104, 200, 109].into_iter().map(spike).collect();
+        let labels = [0u32, 0, 1, 0, 0];
+        assert_eq!(duplicate_mask(&spikes, &labels, 10), vec![false, true, true, true, false]);
+        assert_eq!(duplicate_mask(&spikes, &labels, 0), vec![true; 5]);
+    }
     use dsp_io::neuro::synthetic::{SyntheticParams, SyntheticRecording};
 
     /// µV per stored step of the int16 test recording.
