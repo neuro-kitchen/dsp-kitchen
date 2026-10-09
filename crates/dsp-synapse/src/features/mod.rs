@@ -6,9 +6,12 @@ use dsp_core::{DspError, DspResult};
 use crate::core::{FeatureEmbedder, SnippetBatch, WaveformSnippet};
 
 pub mod conduction;
+pub mod kernels;
+pub mod local_svd;
 pub mod morphology;
 pub mod wavelet;
 
+pub use local_svd::{ChannelNeighbourhoods, LocalSvd, LocalSvdOptions};
 pub use conduction::{ConductionVelocityEstimate, estimate_hdemg_conduction_velocity};
 pub use morphology::{SpikeMorphology, compute_morphology};
 pub use wavelet::{WaveletFeatureEmbedder, haar_dwt_multilevel_1d};
