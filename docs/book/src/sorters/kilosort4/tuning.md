@@ -9,8 +9,8 @@ checks at the end of this page.
 
 | Parameter | Lower | Higher |
 |---|---|---|
-| `th_universal` (`Th_universal`, 9) | more candidates reach clustering: smaller units found, more noise clusters | fewer, larger units; small units missed |
-| `th_learned` (`Th_learned`, 8) | template matching keeps weaker matches: more spikes per unit, more contamination; if units show gaps over time, lower it | cleaner, sparser units |
+| `th_universal` (`Th_universal`, 10; upstream 9) | more candidates reach clustering: smaller units found, more noise clusters | fewer, larger units; small units missed |
+| `th_learned` (`Th_learned`, 9; upstream 8) | template matching keeps weaker matches: more spikes per unit, more contamination; if units show gaps over time, lower it | cleaner, sparser units |
 | `th_single_ch` (`Th_single_ch`, `[6]`) | more (noisier) clips to learn the universal templates from | fewer, cleaner clips; too few and the templates miss shapes |
 
 Thresholds are in whitened σ: they only mean the same thing across recordings if the preprocessing
@@ -60,7 +60,9 @@ refractory criteria for splits and merges.
 
 | Parameter | Effect |
 |---|---|
-| `highpass_cutoff_hz` (300 Hz) | lower keeps slower waveform components and more low-frequency noise. |
+| `bandpass_low_hz` (300 Hz) | lower keeps slower waveform components and more low-frequency noise. |
+| `bandpass_high_hz` (6000 Hz) | lower removes more high-frequency noise and sharp waveform detail; must stay below Nyquist. |
+| `do_notch` (`false`) | a line-noise notch; after the 300 Hz edge, 60 Hz is already strongly attenuated, and the notch slows every pass. |
 | `do_car` (`true`) | the common average reference removes signals shared by all channels; turn it off when real signals span most channels (EMG). |
 | `nskip` (25) | every `nskip`-th batch fits the whitening and learns the templates; lower uses more data (slower, more representative). On a short recording, one batch may be all it uses. |
 | `batch_size` (60 000) | samples per batch (2 s at 30 kHz). Rarely worth changing. |

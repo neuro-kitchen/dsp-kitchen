@@ -40,8 +40,9 @@ files.
 
 > O'Connell S., Michaels J. A., Wang R., Mamidipaka S., Venkatesh M., Aresh N., Pachitariu M.,
 > Pruszynski J. A., Sober S. J., Pandarinath C. *High performance sorting of motor unit action
-> potentials with EMUsort.* openRxiv (bioRxiv) (2026), CC-BY 4.0.
-> [doi:10.64898/2026.01.06.697952](https://doi.org/10.64898/2026.01.06.697952)
+> potentials with EMUsort.* eLife 15:RP110417 (2026), reviewed preprint, CC-BY 4.0.
+> [doi:10.7554/eLife.110417.1](https://doi.org/10.7554/eLife.110417.1). Preprint: bioRxiv,
+> [doi:10.64898/2026.01.06.697952](https://doi.org/10.64898/2026.01.06.697952).
 
 ```bibtex
 @article{oconnell2026emusort,
@@ -49,9 +50,11 @@ files.
   author  = {O'Connell, Sean and Michaels, Jonathan A and Wang, Runming and Mamidipaka, Sahit and
              Venkatesh, Manikandan and Aresh, Nevin and Pachitariu, Marius and Pruszynski, J Andrew
              and Sober, Samuel J and Pandarinath, Chethan},
-  journal = {openRxiv},
+  journal = {eLife},
   year    = {2026},
-  doi     = {10.64898/2026.01.06.697952}
+  volume  = {15},
+  pages   = {RP110417},
+  doi     = {10.7554/eLife.110417.1}
 }
 ```
 

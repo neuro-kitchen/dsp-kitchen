@@ -112,9 +112,7 @@ score(ks_spikes, gt, "Kilosort4")
 
 # %% [4] EMUsort over the Delayed Recording
 emu_config = emusort.Config()
-emu_config.kilosort4.whitening_range = min(
-    emu_config.kilosort4.whitening_range, CHANNELS
-)
+emu_config.whitening_range = min(emu_config.whitening_range, CHANNELS)
 t0 = time.perf_counter()
 emu = emusort.run(rec_delayed, probe, emu_config)
 print(f"\n{emu} ({time.perf_counter() - t0:.1f} s)")

@@ -16,6 +16,8 @@ playground/
 
 ```bash
 uv pip install maturin && maturin develop     # builds dsp_kitchen (default features: wgpu, hub)
+maturin develop --profile validate           # faster rebuilds while checking results (not for timings)
+maturin develop --release                    # for benchmark timings
 uv pip install matplotlib                     # optional, for the plots
 python playground/base/01_filtering_methods.py
 ```

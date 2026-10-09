@@ -109,7 +109,7 @@ and `format.rs` (a unit struct implementing `Format`). See
 ### `generic`
 | Format | Files | Notes |
 |---|---|---|
-| `raw` (`Raw`) | `rec.bin` + JSON sidecar `rec.meta` | Memory-mapped. Sidecar: `channels`, `sample_rate_hz`, `format`, `order`, `gain_uv`, `offset_uv`, `header_bytes`, optional `samples`. `write_raw` writes data + sidecar. |
+| `raw` (`Raw`) | `rec.bin` + JSON sidecar `rec.meta` | Memory-mapped. Sidecar: `channels`, `sample_rate_hz`, `format`, `order`, `gain`, `offset`, `unit` (default µV), `header_bytes`, optional `samples`; older sidecars (`gain_uv`, `offset_uv`) are read as µV. `write_raw` writes data + sidecar. |
 | `zarr-traces` (`ZarrTraces`) | Zarr v3 store with `/traces` | `[channels, samples]` or `[samples, channels]` (by dimension names); root attrs `sample_rate_hz`. `write_zarr`, `DEFAULT_CHUNK_SAMPLES`. |
 
 ### `neuro` (feature `neuro`)

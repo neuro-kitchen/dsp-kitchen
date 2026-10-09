@@ -5,17 +5,26 @@ are. **D** = a decision needed from the user. Checked against the code's current
 *Limitations* sections); items the records list but later work resolved are not repeated here.
 
 Task lists with their own detail: `GPU_TASKS.md` (GPU review; task 8 partly open), `SORTER_TASKS.md`
-(everything missing from Kilosort4 and EMUsort).
+(everything missing from Kilosort4 and EMUsort), `NEW_SORTERS_PLAN.md` (MountainSort 5, SpyKING CIRCUS 2,
+Tridesclous 2), `DOCS_TASKS.md` (done).
 
 ## Decisions
 
 | Item | Crate | Source |
 |---|---|---|
-| **D** New CLI commands `detect`, `sort`, `convert` (CLI15) | dsp-cli | `dsp-cli/README.md`, `REVIEW.md` |
 | **D** Client authentication (mutual TLS) for streaming (ST8 / SR6) | dsp-stream | `dsp-stream/REVIEW.md` |
 | **D** Scope of remote execution (SR7): what a server may run for a client | dsp-stream | `dsp-stream/REVIEW.md` |
-| **D** Is the HD-EMG test recording (`nwb/15-25-33_meps.nwb.zarr`) shareable? | playground | `playground/REVIEW.md` |
 | **D** EMUsort linear channel map (S8) | dsp-synapse-ml | `SORTER_TASKS.md` |
+
+Done 2026-10-08 (phase 1): raw sidecar and Zarr traces store their unit (`gain`, `offset`,
+`unit`; old `gain_uv` files still read as µV; `write_zarr` stores were read back as dimensionless:
+fixed); `decode_run` removed for `SampleFormat::decode`; `WHITENING_EPSILON` checked against
+Kilosort4's saved whitening (eigenvalues 11–277: ε irrelevant below 10⁻³); `SyntheticRecording`
+literals named; `TimeRange` kept (deliberate, see the book).
+
+Decided 2026-10-08: CLI15 → `detect`, `sort kilosort4|emusort`, `convert` added (clap, every
+setting a flag with its default; `sort … --show-config`). Nothing in `data/` is shareable (HD-EMG
+included): tests and docs must not depend on it being published.
 
 ## Work
 
@@ -25,24 +34,17 @@ Task lists with their own detail: `GPU_TASKS.md` (GPU review; task 8 partly open
 | Remote `SignalBackend` over dsp-stream's `Session` | dsp-view, dsp-app | `dsp-view/README.md` |
 | Live acquisition producers (the parked `dsp-stream/buffer/ring.rs` may serve; delete it if not) | dsp-stream | book `crates/dsp-stream.md` |
 | Subscribe to a subset of channels | dsp-stream | book `crates/dsp-stream.md` |
-| Generate the Python stub with `pyo3-stub-gen` (PY14) | dsp_kitchen_py | `dsp_kitchen_py/README.md` |
 | Bind `PipelineWorkspace` for chunk-by-chunk Python streaming (PY4) | dsp_kitchen_py | `dsp_kitchen_py/README.md` |
 | ONNX model runtime (`burn-onnx`, device-resident weights) once a model artifact is validated; parked `catalog/`, `runtime/kernels/` | dsp-synapse-ml | `dsp-synapse-ml/README.md` (step 4) |
-| Raw sidecar schema still names µV (`gain_uv`); storing a unit is a schema change | dsp-io | `dsp-io/README.md` |
-| `decode_run` duplicates dsp-core `SampleFormat::decode` | dsp-io | `dsp-io/README.md` |
 | NWB `ProbeSource` (electrode positions); `.npz` zip64; `.sorting.zarr` vs SpikeInterface's layout | dsp-io | book `crates/dsp-io.md` |
-| `TimeRange` unused | dsp-core | book `crates/dsp-core.md` |
 | Host-side: FastICA iterations, PPCA EM, ZCA assembly, trimmed / IQR noise | dsp-base | book `crates/dsp-base.md` |
 | Host-side: localizers (one spike at a time), `cluster_kde_merge`; NEO / matched filter negative-only and greedy (SP7) | dsp-synapse | `dsp-synapse/README.md`, book |
 | Drift registration with a single reference bin | dsp-synapse | book `crates/dsp-synapse.md` |
 | Clip extraction for template learning on the host | dsp-synapse-ml | book `crates/dsp-synapse-ml.md` |
 | `gh://` cannot fetch Git-LFS / release assets; blocking downloads | dsp-synapse-hub | book `crates/dsp-synapse-hub.md` |
-| Verify `WHITENING_EPSILON = 1e-6` against Kilosort4 | dsp-synapse-ml | `playground/README.md` |
-| Name the literals in dsp-io's `SyntheticRecording` | dsp-io | `playground/README.md` |
 | Run the remaining end-of-cleanup tests (dsp-view suites, app UI test) | several | `dsp-view/README.md` |
 
 ## Watching
 
-- One intermittent native crash ("corrupted double-linked list", 1 in 10 runs of an EMUsort script)
-  and a one-off "NVVM compilation failed: 3" at exit of a wgpu run
-  (`.knowledge/dsp-kitchen-gpu-lessons.md`, section 7).
+- Fixed 2026-10-09: the exit crash/hang (devices are now shut down at exit; see
+  `.knowledge/dsp-kitchen-gpu-lessons.md` section 7). Watch for recurrences on other drivers.

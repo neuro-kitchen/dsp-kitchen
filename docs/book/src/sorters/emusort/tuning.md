@@ -68,9 +68,47 @@ channels; lower `min_template_size` (e.g. 4 µm: about 2–12 channels) when MUA
 | `remove_channel_delays` (on), ±2 ms | longer conduction delays need a larger bound |
 | `remove_spike_outliers` (on), `hdbscan_min_cluster_size` (20) | outliers (artefacts) out of the template learning |
 | `n_templates`, `n_pcs` (9, 9) | richer MUAP shapes than Kilosort4's 6, 6 |
-| `acg_threshold` (0.2), `ccg_threshold` (0.25) | raise `ccg_threshold` to merge more, lower `acg_threshold` to split more (not implemented here yet) |
+| `acg_threshold` (0.2), `ccg_threshold` (0.25) | raise `ccg_threshold` to merge more, lower `acg_threshold` to split more (here `clustering.refractory`, Rust only so far) |
 | recording length | more than 2 minutes (over 200 spikes per unit); beyond 10–20 minutes MUAP shapes may drift |
 | drift correction | off (`nblocks = 0`): fewer than 64 channels |
+
+## Line-noise notch: off by default
+
+EMUsort's paper filters with a 60 Hz notch. Here the notch is a setting (`do_notch`, `notch_hz`,
+`notch_q`), **off by default**, because the band-pass already removes 60 Hz and the notch slows
+every run.
+
+**The band-pass already removes 60 Hz.** A Butterworth high-pass edge of order `N` at `fc` passes a
+frequency `f` below it with gain `1/√(1 + (fc/f)^(2N))`; ours is order 3 at 300 Hz, applied forward
+and backward (the gain squared):
+
+| Frequency | Attenuation by the 300 Hz edge |
+|---|---|
+| 60 Hz (line) | 84 dB (≈ 16 000×) |
+| 120 Hz (2nd harmonic) | 48 dB |
+| 180 Hz (3rd) | 27 dB |
+| 240 Hz (4th) | 14 dB |
+| 300 Hz and above (5th, 6th, …) | pass, notch or not |
+
+A 60 Hz notch removes only the fundamental, which is already gone; the harmonics that reach the band
+(300, 360, … Hz) pass with or without it. If a recording shows line peaks there, a notch at those
+frequencies (or a comb) is the tool, or a common reference (line noise is usually shared by all
+channels). Kilosort4 does not notch either.
+
+**Why the notch costs ~45% more time.** A narrow notch rings for a long time: at 60 Hz with `Q = 30`
+(2 Hz wide) it settles over ~1 s. Every window of the recording is read with margins on both sides
+long enough for its filters to settle, so the notch adds ~1 s on each side of every ~2.5 s batch
+(each batch reads 1.83× its length instead of 1.01×), in each of the four passes over the recording
+(fit, template clips, detection, matching). On the 200 s HD-EMG test segment (warm runs):
+
+| | Run | Spikes | Units | Units with > 1% / > 5% ISIs < 2 ms |
+|---|---|---|---|---|
+| no notch (default) | 16.4 s, 12.2× real time | 129 817 | 66 | 28 / 9 |
+| 60 Hz notch | 23.9 s, 8.4× real time | 125 254 | 64 | 29 / 10 |
+
+**When to turn it on**: strong line pickup that survives the band (a lower band edge, e.g.
+`bandpass_low_hz` near 100 Hz, or saturating 60 Hz). Set `notch_hz` to 50 outside the Americas;
+a lower `notch_q` (a wider notch) settles faster.
 
 ## Notes on our implementation
 

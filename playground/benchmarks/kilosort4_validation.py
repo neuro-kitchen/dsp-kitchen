@@ -14,6 +14,7 @@
 # `data/kilosort4/saved_results/` (see playground/README.md). Results: the book's *Benchmarks*.
 
 # %% [1] Settings
+import ast
 import csv
 import sys
 from pathlib import Path
@@ -46,6 +47,12 @@ if RERUN or not ZARR_OUT.exists():
     if rec.channels != probe.total_channels:
         rec = rec.slice_samples(channels=probe.channel_ids())
     config = kilosort4.Config()
+    # `--set name=value` overrides a setting (e.g. `--set global_merges=False`)
+    for arg in sys.argv[1:]:
+        if "=" in arg and not arg.startswith("--"):
+            name, value = arg.split("=", 1)
+            setattr(config, name, ast.literal_eval(value))
+            print(f"setting {name} = {getattr(config, name)!r}")
     config.whitening_range = min(config.whitening_range, probe.total_channels)
     result = kilosort4.run(rec, probe, config, progress=ProgressBar())
     print(f"{result} | {result.n_units} units | reproducible={result.reproducible} | device: {result.device}")
@@ -123,6 +130,8 @@ for k in np.unique(ks_units):
 rows = np.array(rows)
 good = np.array([labels.get(int(k)) == "good" for k in rows[:, 0]])
 print(f"\n[Units] ours {len(ours_n)} vs Kilosort4 {len(rows)} ({good.sum()} good); Kilosort4 spikes found in time and place: {np.mean(match >= 0):.3f}")
+our_good = sum(ours_phy.unit_metrics(u)["quality_label"] in ("SingleUnit", "good") for u in ours_phy.unit_ids())
+print(f"  our labels: {our_good} good of {len(ours_n)} (Kilosort4: {good.sum()} of {len(rows)})")
 for name, sel in (("all", np.ones(len(rows), bool)), ("good", good)):
     r = rows[sel]
 

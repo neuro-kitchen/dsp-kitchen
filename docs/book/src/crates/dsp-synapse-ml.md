@@ -87,7 +87,7 @@ use dsp_synapse_ml::{Attributed, sorters::Emusort};
 let p = Emusort::default().provenance();
 println!("{}", p.citation());
 // O’Connell … Pandarinath (2026). High performance sorting of motor unit action potentials
-// with EMUsort. openRxiv (bioRxiv). https://doi.org/10.64898/2026.01.06.697952.
+// with EMUsort. eLife 15:RP110417 (2026). https://doi.org/10.7554/eLife.110417.1.
 // Code: https://github.com/snel-repo/EMUsort (a06bb60 …, GPL-3.0)
 ```
 
