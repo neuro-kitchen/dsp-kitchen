@@ -8,11 +8,14 @@
 #    ~10 ms), presence over the segment, firing rate, template norm.
 # 4. **Templates**: how many learned templates the units yield, and the most similar pairs left.
 #
-#     uv run python playground/benchmarks/emusort_checks.py [segment seconds, default 200]
+#     uv run python playground/benchmarks/emusort_checks.py [segment seconds, default 200] [name=value ...]
+#
+# `name=value` overrides a setting (e.g. `do_notch=False global_merges=False`).
 #
 # Data (local, git-ignored): `data/nwb/15-25-33_meps.nwb.zarr` (HDEMG series).
 
 # %% [1] Settings
+import ast
 import os
 import sys
 import time
@@ -28,7 +31,9 @@ DATA_DIR = Path(os.environ.get("DSP_KITCHEN_DATA", Path(__file__).resolve().pare
 NWB_PATH = DATA_DIR / "nwb" / "15-25-33_meps.nwb.zarr"
 GRID_ROWS, GRID_COLS, ELECTRODE_PITCH_UM = 4, 8, 100.0
 #: Segment sorted (s): long enough for stable units, short enough to iterate on.
-SEGMENT_SEC = float(sys.argv[1]) if len(sys.argv) > 1 else 200.0
+POSITIONAL = [a for a in sys.argv[1:] if "=" not in a]
+OVERRIDES = [a for a in sys.argv[1:] if "=" in a]
+SEGMENT_SEC = float(POSITIONAL[0]) if POSITIONAL else 200.0
 #: Spikes closer than this in one unit violate a motor unit's refractory period.
 REFRACTORY_MS = 2.0
 #: Presence: share of 10 s bins where the unit fires.
@@ -38,6 +43,14 @@ hdemg = next((s["id"] for s in list_sources(str(NWB_PATH)) if "HDEMG" in s["id"]
 rec = Recording(str(NWB_PATH), source=hdemg).slice_time(start_sec=0.0, end_sec=SEGMENT_SEC)
 probe = syn.ProbeLayout.hdemg_grid("HD-EMG 4x8", GRID_ROWS, GRID_COLS, ELECTRODE_PITCH_UM)
 config = emusort.Config()
+for arg in OVERRIDES:
+    name, value = arg.split("=", 1)
+    *path, field = name.split(".")
+    target = config
+    for part in path:
+        target = getattr(target, part)
+    setattr(target, field, ast.literal_eval(value))
+    print(f"setting {name} = {getattr(target, field)!r}")
 fs = rec.sample_rate
 print(f"{rec}\n{config}")
 
@@ -55,11 +68,13 @@ def run():
 
 
 result, wall, stages = run()
-again, _, _ = run()
+again, wall_warm, stages_warm = run()
 spikes, spikes_again = result.spikes(), again.spikes()
 delays, reference = result.channel_delays
 print(f"\n[Run] {SEGMENT_SEC:.0f} s of {rec.channels} channels in {wall:.1f} s ({SEGMENT_SEC / wall:.1f}× real time)")
-print("  " + ", ".join(f"{k} {v:.2f} s" for k, v in stages.items()))
+print("  cold: " + ", ".join(f"{k} {v:.2f} s" for k, v in stages.items()))
+print(f"[Run, warm] {wall_warm:.1f} s ({SEGMENT_SEC / wall_warm:.1f}× real time)")
+print("  warm: " + ", ".join(f"{k} {v:.2f} s" for k, v in stages_warm.items()))
 print(f"  channel delays vs channel {reference}: {delays}")
 print(f"  {len(spikes['sample']):,} spikes, {result.n_units} units, {result.n_learned_templates} learned templates")
 same = np.array_equal(spikes["sample"], spikes_again["sample"]) and np.array_equal(spikes["unit"], spikes_again["unit"])

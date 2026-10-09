@@ -4,10 +4,11 @@
 //! file (`rec.bin` → `rec.meta`):
 //! ```json
 //! { "channels": 32, "sample_rate_hz": 30000.0, "format": "int16", "order": "time_major",
-//!   "gain_uv": 0.195, "header_bytes": 0 }
+//!   "gain": 0.195, "unit": "microvolt", "header_bytes": 0 }
 //! ```
-//! `format` defaults to `float32` and `order` to `channel_major` (the files written by
-//! `dsp-cli generate` before `dsp-io` existed).
+//! A value is `stored · gain + offset`, in `unit`. `format` defaults to `float32`, `order` to
+//! `channel_major` and `unit` to µV; sidecars written before the unit was stored (`gain_uv`,
+//! `offset_uv`, always µV) are read unchanged.
 
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
@@ -19,7 +20,7 @@ use dsp_core::{DspError, DspResult, MemoryOrder, RecordingInfo, RecordingSource,
 use memmap2::Mmap;
 use serde::{Deserialize, Serialize};
 
-use crate::container::binary::codec::{decode_frames, decode_run, encode, scale_frames, select_stored};
+use crate::container::binary::codec::{decode_frames, encode, scale_frames, select_stored};
 
 mod format;
 pub use format::Raw;
@@ -33,11 +34,14 @@ pub struct RawParams {
     pub format: SampleFormat,
     #[serde(default = "default_order", with = "order_name")]
     pub order: MemoryOrder,
-    /// Stored value → µV.
-    #[serde(default = "default_gain")]
-    pub gain_uv: f32,
-    #[serde(default)]
-    pub offset_uv: f32,
+    /// Stored value → `unit`: `stored · gain + offset`.
+    #[serde(default = "default_gain", alias = "gain_uv")]
+    pub gain: f32,
+    #[serde(default, alias = "offset_uv")]
+    pub offset: f32,
+    /// Unit of the scaled values.
+    #[serde(default = "default_unit")]
+    pub unit: SignalUnit,
     /// Bytes to skip before the first sample.
     #[serde(default)]
     pub header_bytes: u64,
@@ -55,10 +59,14 @@ fn default_order() -> MemoryOrder {
 fn default_gain() -> f32 {
     1.0
 }
+/// Sidecars without a unit predate it and are µV.
+fn default_unit() -> SignalUnit {
+    SignalUnit::Microvolt
+}
 
 impl RawParams {
     pub fn new(channels: usize, sample_rate_hz: f64, format: SampleFormat, order: MemoryOrder) -> Self {
-        Self { channels, sample_rate_hz, format, order, gain_uv: 1.0, offset_uv: 0.0, header_bytes: 0, samples: None }
+        Self { channels, sample_rate_hz, format, order, gain: 1.0, offset: 0.0, unit: default_unit(), header_bytes: 0, samples: None }
     }
 
     /// Sidecar path for a data file: same name with a `.meta` extension.
@@ -120,10 +128,9 @@ impl RawRecording {
 
         let name = path.file_name().map_or_else(|| "recording".into(), |n| n.to_string_lossy().into_owned());
         let info = RecordingInfo::new(name, params.channels, samples, SampleRate::new(params.sample_rate_hz)?, params.format, params.order);
-        // The sidecar's gain and offset are µV by its schema
-        let mut info = info.with_gain(params.gain_uv, SignalUnit::Microvolt);
+        let mut info = info.with_gain(params.gain, params.unit.clone());
         for c in &mut info.channels {
-            c.offset = params.offset_uv;
+            c.offset = params.offset;
         }
         Ok(Self { info, map, header: params.header_bytes as usize })
     }
@@ -186,7 +193,7 @@ impl RecordingSource for RawRecording {
         let n = check_read(&self.info, &all, &samples, out.len())?;
         let (fmt, frame) = (self.info.format, nch * self.info.format.bytes());
         let start = samples.start as usize;
-        decode_run(fmt, &self.data()[start * frame..(start + n) * frame], out, 1.0, 0.0);
+        fmt.decode(&self.data()[start * frame..(start + n) * frame], out, 1.0, 0.0);
         scale_frames(&self.info, out);
         Ok(MemoryOrder::TimeMajor)
     }
@@ -207,7 +214,7 @@ impl RecordingSource for RawRecording {
                 for (dst, &ch) in out.chunks_exact_mut(n).zip(channels) {
                     let c = &self.info.channels[ch];
                     let base = (ch * total + start) * bps;
-                    decode_run(fmt, &data[base..base + n * bps], dst, c.gain, c.offset);
+                    fmt.decode(&data[base..base + n * bps], dst, c.gain, c.offset);
                 }
             }
             MemoryOrder::TimeMajor => {
@@ -223,14 +230,15 @@ impl RecordingSource for RawRecording {
     }
 }
 
-/// Streams `source` into a raw binary file plus JSON sidecar, `chunk_samples` at a time.
-/// `params.channels`, `sample_rate_hz` and `samples` are taken from the source.
+/// Streams `source` into a raw binary file plus JSON sidecar, `chunk_samples` at a time, storing
+/// `value / gain`. `params.channels`, `sample_rate_hz`, `samples` and `unit` (the first channel's)
+/// are taken from the source.
 pub fn write_raw(
     source: &dyn RecordingSource,
     path: &Path,
     format: SampleFormat,
     order: MemoryOrder,
-    gain_uv: f32,
+    gain: f32,
     chunk_samples: usize,
     mut progress: impl FnMut(u64, u64),
 ) -> DspResult<RawParams> {
@@ -256,7 +264,7 @@ pub fn write_raw(
                 bytes.clear();
                 for s in 0..n {
                     for ch in 0..nch {
-                        encode(format, buf[ch * n + s], gain_uv, 0.0, &mut bytes);
+                        encode(format, buf[ch * n + s], gain, 0.0, &mut bytes);
                     }
                 }
                 w.write_all(&bytes)?;
@@ -274,7 +282,7 @@ pub fn write_raw(
                     source.read(&[ch], s0..s1, &mut buf)?;
                     bytes.clear();
                     for &v in &buf {
-                        encode(format, v, gain_uv, 0.0, &mut bytes);
+                        encode(format, v, gain, 0.0, &mut bytes);
                     }
                     w.write_all(&bytes)?;
                     s0 = s1;
@@ -287,7 +295,8 @@ pub fn write_raw(
 
     let params = RawParams {
         samples: Some(total),
-        gain_uv,
+        gain,
+        unit: info.channels.first().map_or_else(default_unit, |c| c.unit.clone()),
         ..RawParams::new(nch, info.sample_rate_hz(), format, order)
     };
     params.write_sidecar(path)?;
@@ -384,7 +393,7 @@ mod tests {
         fs::write(&path, &bytes).unwrap();
         let mut p = RawParams::new(2, 1000.0, SampleFormat::I16, MemoryOrder::TimeMajor);
         p.header_bytes = 4;
-        p.gain_uv = 0.5;
+        p.gain = 0.5;
         let rec = RawRecording::open_with(&path, &p).unwrap();
         let mut out = [0.0; 4];
         rec.read(&[0, 1], 0..2, &mut out).unwrap();

@@ -41,7 +41,8 @@ pub fn spatial_dedup_survival_kernel(
     mask_words: u32,
     window_samples: u32,
 ) {
-    let i = ABSOLUTE_POS_X;
+    // Flattened position: the elementwise geometry may shape the cube in two dimensions
+    let i = ABSOLUTE_POS as u32;
     if i < num_spikes {
         let t_i = sample_indices[i as usize];
         let ch_i = channel_ids[i as usize];
@@ -53,14 +54,28 @@ pub fn spatial_dedup_survival_kernel(
             w += 1u32;
         }
 
-        // First crossing within the window before `i`
+        // First crossing within the window before `i`. The loops test their bound before reading:
+        // a short-circuit `&&` whose right side reads memory fails SPIR-V validation (CubeCL 0.11,
+        // "use not dominated by definition"), so the conditions are explicit breaks.
         let mut j = i;
-        while j > 0u32 && sample_indices[(j - 1u32) as usize] + window_samples >= t_i {
+        loop {
+            if j == 0u32 {
+                break;
+            }
+            if sample_indices[(j - 1u32) as usize] + window_samples < t_i {
+                break;
+            }
             j -= 1u32;
         }
 
         let mut keep = 1u32;
-        while j < num_spikes && sample_indices[j as usize] <= t_i + window_samples {
+        loop {
+            if j >= num_spikes {
+                break;
+            }
+            if sample_indices[j as usize] > t_i + window_samples {
+                break;
+            }
             let ch_j = channel_ids[j as usize];
             let slot = neighbour_slot(nbr_offsets, nbr_channels, ch_i, ch_j);
             if slot != NO_SLOT {

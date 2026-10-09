@@ -49,7 +49,7 @@ config = emusort.Config()
 # MUAPs outlast Kilosort4's 61-sample (2.5 ms at 24.4 kHz) window: measured on this recording,
 # 121 samples (5 ms) removes the truncated templates and their re-matched late phases (see the
 # book's EMUsort parameters page); nt0min follows (int(20 · nt / 61))
-config.kilosort4.nt = 121
+config.nt = 121
 print(f"\n{rec}\n{config}")
 
 # %% [2] EMUsort over the Recording
@@ -72,9 +72,8 @@ for row in sorting.summary_table()[:5]:
 
 # %% [4] Plot
 if HAS_PLT:
-    ks4 = config.kilosort4
     fig, axes = plt.subplots(1, 3, figsize=(16, 4.5))
-    t_ms = (np.arange(ks4.nt) - ks4.resolved_nt0min()) / rec.sample_rate * 1e3
+    t_ms = (np.arange(config.nt) - config.resolved_nt0min()) / rec.sample_rate * 1e3
     for row in result.templates.wtemp:
         axes[0].plot(t_ms, row, linewidth=1.2)
     axes[0].set_title("Universal templates (learned)", fontweight="bold")

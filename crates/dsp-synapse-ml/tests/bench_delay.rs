@@ -22,7 +22,7 @@ const ITERATIONS: usize = 5;
 #[test]
 #[ignore = "benchmark: run with --ignored --nocapture"]
 fn bench_delay_estimation() {
-    let client = Device::Wgpu(WgpuDevice::new(WgpuDeviceKind::DiscreteGpu(0))).client();
+    let client = dsp_core::compute::open_device(Device::Wgpu(WgpuDevice::new(WgpuDeviceKind::DiscreteGpu(0))));
     let row_len = WINDOW + 2 * HALO;
     let x: Vec<f32> = (0..CHANNELS * row_len).map(|i| ((i * 7919) % 1013) as f32 * 0.01 - 5.0).collect();
     let handle = buffer::upload(&client, &x);

@@ -71,7 +71,7 @@ fn window(seed: usize) -> Vec<f32> {
 #[test]
 #[ignore = "benchmark: run with --ignored --nocapture"]
 fn bench_universal_detection() {
-    let client = Device::Wgpu(WgpuDevice::new(WgpuDeviceKind::DiscreteGpu(0))).client();
+    let client = dsp_core::compute::open_device(Device::Wgpu(WgpuDevice::new(WgpuDeviceKind::DiscreteGpu(0))));
     let centres = TemplateCentres::new(&probe(), &CentreOptions::default()).expect("centres");
     let templates = UniversalTemplates { nt: NT, n_pcs: N_PCS, n_templates: N_TEMPLATES, wpca: shapes(N_PCS), wtemp: shapes(N_TEMPLATES) };
     let mut detector = UniversalDetector::new(&client, CHANNELS, WINDOW, &centres, &templates, TH_UNIVERSAL, NT0MIN).expect("detector");

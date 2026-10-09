@@ -143,7 +143,7 @@ fn spanning_tree_labels(
 
     // 1. Nearest neighbours: `list` = min_samples + 1 entries, core distance at min_samples − 1
     let list = mcs + 1;
-    let best_d = buffer::upload(client, &vec![f32::MAX; n * list]);
+    let best_d = buffer::filled::<f32>(client, n * list, f32::MAX);
     let best_j = buffer::zeros::<u32>(client, n * list);
     let core = buffer::empty::<f32>(client, n);
     let geom = LaunchGeometry::tiles(client, n, shared_bytes_per_unit(d));

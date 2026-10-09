@@ -24,7 +24,14 @@ pub fn kriging_runs_kernel<F: Float>(
     let out_ch = channel_position();
     if t < num_samples && out_ch < num_channels {
         let mut r = 0u32;
-        while r + 1u32 < num_runs && run_starts[(r + 1u32) as usize] <= t {
+        // Explicit breaks: a short-circuit `&&` reading memory fails SPIR-V validation (CubeCL 0.11)
+        loop {
+            if r + 1u32 >= num_runs {
+                break;
+            }
+            if run_starts[(r + 1u32) as usize] > t {
+                break;
+            }
             r += 1u32;
         }
         let row = (run_slots[r as usize] * num_channels + out_ch) * width;

@@ -21,8 +21,8 @@ use crate::sorting::similarity::compute_template_similarity_matrix;
 const SIMILARITY_MAX_LAG: usize = 5;
 
 /// `cluster_info.tsv` columns written for a [`SortingOutput`].
-const INFO_COLUMNS: [&str; 8] =
-    ["cluster_id", "ch", "firing_rate", "snr", "isi_viol", "presence_ratio", "amplitude_cutoff", "group"];
+const INFO_COLUMNS: [&str; 9] =
+    ["cluster_id", "ch", "firing_rate", "snr", "isi_viol", "presence_ratio", "amplitude_cutoff", "composite_score", "group"];
 
 /// Computes `similar_templates` from the templates when the folder has none.
 pub fn fill_similarity(folder: &mut PhyFolder) {
@@ -68,6 +68,7 @@ pub fn from_sorting_output(so: &SortingOutput) -> PhyFolder {
                 format!("{:.4}", u.isi_violation_ratio),
                 format!("{:.3}", u.presence_ratio),
                 format!("{:.3}", u.amplitude_cutoff),
+                format!("{:.3}", u.composite_score),
                 u.quality_label.as_str().to_string(),
             ];
             let row = INFO_COLUMNS[1..].iter().map(|c| c.to_string()).zip(cells).collect();

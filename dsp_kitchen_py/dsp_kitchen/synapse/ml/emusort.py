@@ -11,7 +11,7 @@ Examples
 --------
 >>> from dsp_kitchen.synapse.ml import emusort
 >>> config = emusort.Config()
->>> config.kilosort4.nt = 121              # 5 ms at 24.4 kHz: match the MUAP width
+>>> config.nt = 121                        # 5 ms at 24.4 kHz: match the MUAP width
 >>> result = emusort.run(recording, probe, config)
 >>> delays, reference = result.channel_delays
 """
@@ -53,8 +53,8 @@ def run(
     probe : ProbeLayout
         Contact positions (µm) of the recording's channels.
     config : Config
-        Settings (see ``Config``; Kilosort4's settings under ``config.kilosort4``). Check
-        ``config.kilosort4.nt`` against the MUAP width of the data: it counts samples.
+        Settings (see ``Config``: every setting, with EMUsort's defaults). Check ``config.nt``
+        against the MUAP width of the data: it counts samples.
     preprocessing_from : Kilosort4Result, optional
         An earlier result on the same recording with the same fit settings: its preprocessing and
         channel delays are reused.

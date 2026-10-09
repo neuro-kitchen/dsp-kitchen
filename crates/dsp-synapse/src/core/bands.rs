@@ -10,6 +10,9 @@ pub enum NeuralBand {
     Lfp,
     /// Sharp-wave ripple band: 150 – 250 Hz.
     Ripple,
+    /// Intramuscular EMG (motor-unit action potentials) band: 300 – 5,000 Hz (EMUsort's 5 kHz upper
+    /// edge, O'Connell et al. 2026, with a 300 Hz lower edge).
+    Emg,
 }
 
 impl NeuralBand {
@@ -18,6 +21,7 @@ impl NeuralBand {
             NeuralBand::Ap => 300.0,
             NeuralBand::Lfp => 0.5,
             NeuralBand::Ripple => 150.0,
+            NeuralBand::Emg => 300.0,
         }
     }
 
@@ -26,6 +30,7 @@ impl NeuralBand {
             NeuralBand::Ap => 6000.0,
             NeuralBand::Lfp => 300.0,
             NeuralBand::Ripple => 250.0,
+            NeuralBand::Emg => 5000.0,
         }
     }
 
