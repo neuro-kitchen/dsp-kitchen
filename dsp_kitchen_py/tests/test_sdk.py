@@ -115,7 +115,10 @@ def test_metrics_follow_spikeinterface_conventions():
     assert isi["violation_count"] == 0 and isi["firing_rate_hz"] == pytest.approx(10.0)
     acg = dk.synapse.compute_autocorrelogram(spikes, fs=FS)
     assert acg["bin_ms"] == 1.0 and acg["window_ms"] == 50.0
-    assert dk.synapse.compute_presence_ratio(spikes, 300_000, fs=FS) == pytest.approx(1.0)
+    # 10 s of a 10 Hz unit: present in every 1 s bin; shorter than one 60 s bin (the default): no
+    # ratio, as SpikeInterface
+    assert dk.synapse.compute_presence_ratio(spikes, 300_000, fs=FS, bin_duration_sec=1.0) == pytest.approx(1.0)
+    assert np.isnan(dk.synapse.compute_presence_ratio(spikes, 300_000, fs=FS))
 
 
 def test_sorting_round_trips_through_every_format():
@@ -142,11 +145,16 @@ def test_sorter_provenance_and_defaults():
     ks = dk.synapse.ml.kilosort4
     assert "10.1038/s41592-024-02232-7" in ks.provenance().citation()
     config = ks.Config()
-    assert (config.nt, config.th_universal, config.n_pcs) == (61, 9.0, 6)
+    assert (config.nt, config.th_universal, config.n_pcs) == (61, 10.0, 6)
     emu = dk.synapse.ml.emusort.Config()
-    assert emu.kilosort4.th_single_ch == [6.0, 9.0, 12.0, 15.0] and not emu.kilosort4.do_car
-    assert "10.64898/2026.01.06.697952" in dk.synapse.ml.emusort.provenance().citation()
-    with pytest.raises(ValueError):
+    assert emu.th_single_ch == [6.0, 9.0, 12.0, 15.0] and not emu.do_car and not emu.do_notch
+    assert (emu.n_pcs, emu.bandpass_high_hz) == (9, 5000.0)
+    # EMUsort's config is flat: no nested Kilosort4 config can bring Kilosort4's defaults in
+    assert not hasattr(emu, "kilosort4")
+    with pytest.raises(TypeError):
+        dk.synapse.ml.emusort.Config(kilosort4=dk.synapse.ml.kilosort4.Config())
+    assert "10.7554/eLife.110417.1" in dk.synapse.ml.emusort.provenance().citation()
+    with pytest.raises(TypeError):
         ks.Config(not_a_setting=1)
 
 

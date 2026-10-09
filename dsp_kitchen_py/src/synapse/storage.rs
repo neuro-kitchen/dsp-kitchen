@@ -232,7 +232,8 @@ impl PySortingOutput {
     /// -------
     /// dict
     ///     `unit_id`, `primary_channel`, `quality_label`, `snr`, `firing_rate_hz` (Hz),
-    ///     `isi_violation_ratio`, `presence_ratio`, `amplitude_cutoff`, `num_spikes`.
+    ///     `isi_violation_ratio`, `presence_ratio`, `amplitude_cutoff`, `composite_score` (EMUsort's
+    ///     score in [0, 1]; NaN when the sorter does not compute it), `num_spikes`.
     pub fn unit_metrics<'py>(&self, py: Python<'py>, unit_id: usize) -> PyResult<Bound<'py, PyDict>> {
         let unit = self
             .inner
@@ -248,6 +249,7 @@ impl PySortingOutput {
         dict.set_item("isi_violation_ratio", unit.isi_violation_ratio)?;
         dict.set_item("presence_ratio", unit.presence_ratio)?;
         dict.set_item("amplitude_cutoff", unit.amplitude_cutoff)?;
+        dict.set_item("composite_score", unit.composite_score)?;
         dict.set_item("num_spikes", unit.spike_samples.len())?;
         Ok(dict)
     }

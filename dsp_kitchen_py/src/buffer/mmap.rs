@@ -118,8 +118,8 @@ impl PyMmapRecording {
                 let format = SampleFormat::parse(dtype)
                     .ok_or_else(|| PyValueError::new_err(format!("unsupported dtype '{dtype}'")))?;
                 let mut params = RawParams::new(channels, rate, format, parse_order(order)?);
-                params.gain_uv = gain;
-                params.offset_uv = offset;
+                params.gain = gain;
+                params.offset = offset;
                 params.header_bytes = header_bytes;
                 params.samples = samples;
                 RawRecording::open_with(p, &params)

@@ -32,81 +32,102 @@ use crate::runtime::target;
 // Configuration
 // ------------------------------------------------------------------------------------------------
 
-/// Kilosort4 settings, under their upstream names (`kilosort/parameters.py`) where there is one.
-///
-/// Every argument defaults to Kilosort4's published default; thresholds are in whitened σ, lengths
-/// of time in **samples** (they depend on the sampling rate), distances in µm. Change any setting
-/// by keyword, or later as an attribute.
-///
-/// Examples
-/// --------
-/// >>> from dsp_kitchen.synapse.ml import kilosort4
-/// >>> config = kilosort4.Config(nt=121, th_learned=7.0)
-/// >>> config.highpass_cutoff_hz = 250.0
-#[gen_stub_pyclass]
-#[pyclass(name = "Kilosort4Config", get_all, set_all, skip_from_py_object)]
-#[derive(Clone)]
-pub struct PyKilosort4Config {
-    /// Samples per waveform window (odd; `nt` upstream). In samples, so it depends on the sampling rate: 61 is 2 ms at 30 kHz.
-    nt: usize,
-    /// Sample of the window the waveform trough is aligned to; `None`: `int(20 · nt / 61)` (about a third of `nt`).
-    nt0min: Option<usize>,
-    /// Universal-template detection threshold, in whitened σ (`Th_universal`).
-    th_universal: f32,
-    /// Learned-template matching threshold, in whitened σ (`Th_learned`).
-    th_learned: f32,
-    /// Single-channel thresholds of the clips the universal templates are learned from, in whitened σ (`Th_single_ch`; EMUsort pools several).
-    th_single_ch: Vec<f32>,
-    /// Learn `wPCA` / `wTEMP` from the recording; `False`: Kilosort4's predefined `wTEMP.npz`.
-    templates_from_data: bool,
-    /// Universal templates (`wTEMP` rows) learned.
-    n_templates: usize,
-    /// Temporal principal components (`wPCA` rows) learned; also the features per channel.
-    n_pcs: usize,
-    /// Every `nskip`-th batch fits the whitening and learns the templates.
-    nskip: usize,
-    /// Vertical spacing of the template positions, µm; `None`: the median vertical contact spacing.
-    dmin: Option<f32>,
-    /// Horizontal spacing of the template positions, µm.
-    dminx: f32,
-    /// Template positions farther than this from every contact are dropped, µm.
-    max_channel_distance: f32,
-    /// Width of the smallest spatial template (Gaussian σ), µm; the others are its multiples.
-    min_template_size: f32,
-    /// Spatial template widths tried: `min_template_size · (1 … template_sizes)`.
-    template_sizes: usize,
-    /// Channels per template position (and per spike's features).
-    nearest_chans: usize,
-    /// Neighbouring template positions in the local-maximum test of detection.
-    nearest_templates: usize,
-    /// Subtract the common average across channels before filtering (`do_CAR`).
-    do_car: bool,
-    /// High-pass cutoff, Hz.
-    highpass_cutoff_hz: f64,
-    /// Channels in each local whitening neighbourhood.
-    whitening_range: usize,
-    /// Samples per batch (60 000 is 2 s at 30 kHz).
-    batch_size: usize,
-    /// Every `cluster_downsampling`-th spike is a right node of the clustering graph (1: all; larger: faster, coarser).
-    cluster_downsampling: usize,
-    /// Neighbours of every spike in the clustering graph.
-    cluster_neighbors: usize,
-    /// At most this many right nodes per probe section, so long recordings keep the same neighbourhood scale.
-    max_cluster_subset: usize,
-    /// Pin the autotuned choices that change the numbers: the same input on the same device gives the same sort.
-    reproducible: bool,
+/// Lists the settings both sorter configs expose, once (name, type, doc), and hands them to
+/// `$callback`: `Kilosort4Config` and `EmusortConfig` are generated from this list, each with its own
+/// sorter's defaults, so the two always expose the same settings.
+macro_rules! with_shared_settings {
+    ($callback:ident ! { $($args:tt)* }) => {
+        $callback! { $($args)* shared: [
+        /// Samples per waveform window (odd; `nt` upstream). In samples, so it depends on the sampling rate: 61 is 2 ms at 30 kHz.
+        nt: usize,
+        /// Waveform length in ms: when set, `nt` is `round(nt_ms · fs / 1000)` made odd for each recording, so one value fits every sampling rate; `None`: `nt` as given.
+        nt_ms: Option<f64>,
+        /// Sample of the window the waveform trough is aligned to; `None`: `int(20 · nt / 61)` (about a third of `nt`).
+        nt0min: Option<usize>,
+        /// Universal-template detection threshold, in whitened σ (`Th_universal`; Kilosort4: 10 for the 300–6000 Hz band, upstream's 9 with a high-pass only; EMUsort: 9).
+        th_universal: f32,
+        /// Learned-template matching threshold, in whitened σ (`Th_learned`; Kilosort4: 9 for the 300–6000 Hz band, upstream's 8; EMUsort: 8).
+        th_learned: f32,
+        /// Single-channel thresholds of the clips the universal templates are learned from, in whitened σ (`Th_single_ch`; EMUsort pools several).
+        th_single_ch: Vec<f32>,
+        /// Learn `wPCA` / `wTEMP` from the recording; `False`: Kilosort4's predefined `wTEMP.npz`.
+        templates_from_data: bool,
+        /// Universal templates (`wTEMP` rows) learned.
+        n_templates: usize,
+        /// Temporal principal components (`wPCA` rows) learned; also the features per channel.
+        n_pcs: usize,
+        /// Every `nskip`-th batch fits the whitening and learns the templates.
+        nskip: usize,
+        /// Vertical spacing of the template positions, µm; `None`: the median vertical contact spacing.
+        dmin: Option<f32>,
+        /// Horizontal spacing of the template positions, µm.
+        dminx: f32,
+        /// Template positions farther than this from every contact are dropped, µm.
+        max_channel_distance: f32,
+        /// Width of the smallest spatial template (Gaussian σ), µm; the others are its multiples.
+        min_template_size: f32,
+        /// Spatial template widths tried: `min_template_size · (1 … template_sizes)`.
+        template_sizes: usize,
+        /// Channels per template position (and per spike's features).
+        nearest_chans: usize,
+        /// Neighbouring template positions in the local-maximum test of detection.
+        nearest_templates: usize,
+        /// Subtract the common average across channels before filtering (`do_CAR`).
+        do_car: bool,
+        /// Butterworth band-pass `bandpass_low_hz … bandpass_high_hz` (order 3 per edge, zero phase); `False`: no Butterworth (data already filtered).
+        do_bandpass: bool,
+        /// Lower band edge, Hz (Kilosort4 and EMUsort: 300; upstream Kilosort4's `highpass_cutoff`).
+        bandpass_low_hz: f64,
+        /// Upper band edge, Hz, below Nyquist (Kilosort4: 6000, the action-potential band; EMUsort: 5000, the EMG band); `None`: no upper edge, a high-pass at `bandpass_low_hz` (upstream Kilosort4's filter).
+        bandpass_high_hz: Option<f64>,
+        /// Line-noise notch after the band (off by default: the 300 Hz edge already attenuates 60 Hz by ~84 dB, and the notch's ~1 s settling makes every run ~45% slower).
+        do_notch: bool,
+        /// Notch frequency, Hz (60; 50 outside the Americas).
+        notch_hz: f64,
+        /// Quality factor of the notch (−3 dB bandwidth `notch_hz / notch_q`).
+        notch_q: f64,
+        /// Channels in each local whitening neighbourhood.
+        whitening_range: usize,
+        /// Samples per batch (60 000 is 2 s at 30 kHz).
+        batch_size: usize,
+        /// Every `cluster_downsampling`-th spike is a right node of the clustering graph (1: all; larger: faster, coarser).
+        cluster_downsampling: usize,
+        /// Neighbours of every spike in the clustering graph.
+        cluster_neighbors: usize,
+        /// At most this many right nodes per probe section, so long recordings keep the same neighbourhood scale.
+        max_cluster_subset: usize,
+        /// Merge final units whose waveforms are alike and whose spikes are mutually refractory (Kilosort4's global merges).
+        global_merges: bool,
+        /// In the final clustering, split a node whose halves have a refractory cross-correlogram (the paper's text); `False` (ours): keep them together as one neuron.
+        split_refractory_halves: bool,
+        /// Waveform similarity (correlation over lags) a pair needs to be tested for a global merge.
+        merge_similarity: f64,
+        /// A unit's spikes within this many ms of its previous spike are duplicates and removed (`duplicate_spike_ms`; 0 keeps them).
+        duplicate_spike_ms: f64,
+        /// Pin the autotuned choices that change the numbers: the same input on the same device gives the same sort.
+        reproducible: bool,
+        ] }
+    };
 }
 
-/// Kilosort4's defaults in their Python form: the source of every default of `Kilosort4Config(...)`.
-fn defaults() -> PyKilosort4Config {
-    PyKilosort4Config::from(&Kilosort4Config::default())
+/// The shared settings as plain values, between a Python config class and the Rust settings.
+macro_rules! shared_settings_struct {
+    (shared: [ $( $(#[$sm:meta])* $f:ident : $t:ty ),* $(,)? ]) => {
+        #[derive(Clone)]
+        struct SharedSettings {
+            $( $(#[$sm])* $f: $t, )*
+        }
+    };
 }
+with_shared_settings!(shared_settings_struct! {});
 
-impl From<&Kilosort4Config> for PyKilosort4Config {
-    fn from(c: &Kilosort4Config) -> Self {
+impl SharedSettings {
+    /// From a sorter's Rust settings.
+    fn of(c: &Kilosort4Config) -> Self {
         let o = &c.centres;
         Self {
             nt: c.nt,
+            nt_ms: c.nt_ms,
             nt0min: c.nt0min,
             th_universal: c.th_universal,
             th_learned: c.th_learned,
@@ -123,211 +144,234 @@ impl From<&Kilosort4Config> for PyKilosort4Config {
             nearest_chans: o.nearest_chans,
             nearest_templates: o.nearest_templates,
             do_car: c.do_car,
-            highpass_cutoff_hz: c.highpass_cutoff_hz,
+            do_bandpass: c.do_bandpass,
+            bandpass_low_hz: c.bandpass_low_hz,
+            bandpass_high_hz: c.bandpass_high_hz,
+            do_notch: c.do_notch,
+            notch_hz: c.notch_hz,
+            notch_q: c.notch_q,
             whitening_range: c.whitening_range,
+            batch_size: c.batch_size,
             cluster_downsampling: c.clustering.graph.subset_stride,
             cluster_neighbors: c.clustering.graph.neighbours,
             max_cluster_subset: c.clustering.graph.max_subset,
+            global_merges: c.global_merge.enabled,
+            split_refractory_halves: c.clustering.split_refractory_halves,
+            merge_similarity: c.global_merge.min_similarity,
+            duplicate_spike_ms: c.duplicate_spike_ms,
             reproducible: c.reproducible,
-            batch_size: c.batch_size,
         }
+    }
+
+    /// `base` (the sorter's Rust defaults, for the settings Python does not expose) with these
+    /// settings applied.
+    fn apply(&self, mut c: Kilosort4Config) -> Kilosort4Config {
+        c.nt = self.nt;
+        c.nt_ms = self.nt_ms;
+        c.nt0min = self.nt0min;
+        c.th_universal = self.th_universal;
+        c.th_learned = self.th_learned;
+        c.th_single_ch = self.th_single_ch.clone();
+        c.templates_from_data = self.templates_from_data;
+        c.n_templates = self.n_templates;
+        c.n_pcs = self.n_pcs;
+        c.nskip = self.nskip;
+        c.centres = CentreOptions {
+            dmin: self.dmin,
+            dminx: self.dminx,
+            max_channel_distance: self.max_channel_distance,
+            min_template_size: self.min_template_size,
+            template_sizes: self.template_sizes,
+            nearest_chans: self.nearest_chans,
+            nearest_templates: self.nearest_templates,
+        };
+        c.do_car = self.do_car;
+        c.do_bandpass = self.do_bandpass;
+        c.bandpass_low_hz = self.bandpass_low_hz;
+        c.bandpass_high_hz = self.bandpass_high_hz;
+        c.do_notch = self.do_notch;
+        c.notch_hz = self.notch_hz;
+        c.notch_q = self.notch_q;
+        c.whitening_range = self.whitening_range;
+        c.batch_size = self.batch_size;
+        c.clustering.graph.subset_stride = self.cluster_downsampling;
+        c.clustering.graph.neighbours = self.cluster_neighbors;
+        c.clustering.graph.max_subset = self.max_cluster_subset;
+        c.clustering.split_refractory_halves = self.split_refractory_halves;
+        c.global_merge.enabled = self.global_merges;
+        c.global_merge.min_similarity = self.merge_similarity;
+        c.duplicate_spike_ms = self.duplicate_spike_ms;
+        c.reproducible = self.reproducible;
+        c
+    }
+}
+
+/// A sorter's Python config class: the shared settings and the sorter's own (`own`), every one an
+/// attribute and a keyword argument whose default (`defaults`) shows in the signature.
+macro_rules! sorter_config_class {
+    (
+        $(#[$cm:meta])*
+        class $Py:ident as $name:literal;
+        defaults: $defaults:path;
+        own: [ $( $(#[$om:meta])* $own:ident : $ot:ty ),* $(,)? ];
+        methods: { $($methods:tt)* }
+        shared: [ $( $(#[$sm:meta])* $f:ident : $t:ty ),* $(,)? ]
+    ) => {
+        $(#[$cm])*
+        #[gen_stub_pyclass]
+        #[pyclass(name = $name, get_all, set_all, skip_from_py_object)]
+        #[derive(Clone)]
+        pub struct $Py {
+            $( $(#[$sm])* $f: $t, )*
+            $( $(#[$om])* $own: $ot, )*
+        }
+
+        impl $Py {
+            fn shared(&self) -> SharedSettings {
+                SharedSettings { $( $f: self.$f.clone(), )* }
+            }
+
+            #[allow(clippy::too_many_arguments)]
+            fn from_parts(shared: SharedSettings, $( $own: $ot ),*) -> Self {
+                Self { $( $f: shared.$f, )* $( $own, )* }
+            }
+        }
+
+        #[gen_stub_pymethods]
+        #[pymethods]
+        impl $Py {
+            /// The sorter's defaults, changed by keyword (see the class and attribute docs).
+            #[new]
+            #[pyo3(signature = (*, $( $f = $defaults().$f, )* $( $own = $defaults().$own ),*))]
+            #[allow(clippy::too_many_arguments)]
+            fn new($( $f: $t, )* $( $own: $ot ),*) -> Self {
+                Self { $( $f, )* $( $own, )* }
+            }
+
+            $($methods)*
+        }
+    };
+}
+
+with_shared_settings!(sorter_config_class! {
+    /// Kilosort4 settings, under their upstream names (`kilosort/parameters.py`) where there is one.
+    ///
+    /// Every argument defaults to our Kilosort4's default; thresholds are in whitened σ, lengths of
+    /// time in **samples** (they depend on the sampling rate), distances in µm. Change any setting
+    /// by keyword, or later as an attribute.
+    ///
+    /// Examples
+    /// --------
+    /// >>> from dsp_kitchen.synapse.ml import kilosort4
+    /// >>> config = kilosort4.Config(nt=121, th_learned=7.0)
+    /// >>> config.bandpass_low_hz = 250.0
+    class PyKilosort4Config as "Kilosort4Config";
+    defaults: kilosort4_defaults;
+    own: [];
+    methods: {
+        /// Sample of a waveform its peak is aligned to (`nt0min`, or upstream's rule from `nt`).
+        fn resolved_nt0min(&self) -> usize {
+            self.to_rust().nt0min()
+        }
+
+        fn __repr__(&self) -> String {
+            format!("Kilosort4Config(nt={}, th_universal={}, n_templates={}, n_pcs={}, ...)", self.nt, self.th_universal, self.n_templates, self.n_pcs)
+        }
+    }
+});
+
+/// Kilosort4's defaults in their Python form: the source of every default of `Kilosort4Config(...)`.
+fn kilosort4_defaults() -> PyKilosort4Config {
+    PyKilosort4Config::from(&Kilosort4Config::default())
+}
+
+impl From<&Kilosort4Config> for PyKilosort4Config {
+    fn from(c: &Kilosort4Config) -> Self {
+        Self::from_parts(SharedSettings::of(c))
     }
 }
 
 impl PyKilosort4Config {
     fn to_rust(&self) -> Kilosort4Config {
-        Kilosort4Config {
-            nt: self.nt,
-            nt0min: self.nt0min,
-            th_universal: self.th_universal,
-            th_learned: self.th_learned,
-            th_single_ch: self.th_single_ch.clone(),
-            templates_from_data: self.templates_from_data,
-            n_templates: self.n_templates,
-            n_pcs: self.n_pcs,
-            nskip: self.nskip,
-            centres: CentreOptions {
-                dmin: self.dmin,
-                dminx: self.dminx,
-                max_channel_distance: self.max_channel_distance,
-                min_template_size: self.min_template_size,
-                template_sizes: self.template_sizes,
-                nearest_chans: self.nearest_chans,
-                nearest_templates: self.nearest_templates,
-            },
-            do_car: self.do_car,
-            highpass_cutoff_hz: self.highpass_cutoff_hz,
-            whitening_range: self.whitening_range,
-            batch_size: self.batch_size,
-            clustering: {
-                let mut c = dsp_synapse_ml::sorters::kilosort4::ClusteringOptions::default();
-                c.graph.subset_stride = self.cluster_downsampling;
-                c.graph.neighbours = self.cluster_neighbors;
-                c.graph.max_subset = self.max_cluster_subset;
-                c
-            },
-            template_merge: Default::default(),
-            max_peels: dsp_synapse_ml::sorters::kilosort4::MAX_PEELS,
-            reproducible: self.reproducible,
-        }
+        self.shared().apply(Kilosort4Config::default())
     }
 }
 
-#[gen_stub_pymethods]
-#[pymethods]
-impl PyKilosort4Config {
-    /// Kilosort4's defaults, changed by keyword (see the class and attribute docs).
-    #[new]
-    #[pyo3(signature = (*, nt = defaults().nt, nt0min = defaults().nt0min, th_universal = defaults().th_universal, th_learned = defaults().th_learned, th_single_ch = defaults().th_single_ch, templates_from_data = defaults().templates_from_data, n_templates = defaults().n_templates, n_pcs = defaults().n_pcs, nskip = defaults().nskip, dmin = defaults().dmin, dminx = defaults().dminx, max_channel_distance = defaults().max_channel_distance, min_template_size = defaults().min_template_size, template_sizes = defaults().template_sizes, nearest_chans = defaults().nearest_chans, nearest_templates = defaults().nearest_templates, do_car = defaults().do_car, highpass_cutoff_hz = defaults().highpass_cutoff_hz, whitening_range = defaults().whitening_range, batch_size = defaults().batch_size, cluster_downsampling = defaults().cluster_downsampling, cluster_neighbors = defaults().cluster_neighbors, max_cluster_subset = defaults().max_cluster_subset, reproducible = defaults().reproducible))]
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        nt: usize,
-        nt0min: Option<usize>,
-        th_universal: f32,
-        th_learned: f32,
-        th_single_ch: Vec<f32>,
-        templates_from_data: bool,
-        n_templates: usize,
-        n_pcs: usize,
-        nskip: usize,
-        dmin: Option<f32>,
-        dminx: f32,
-        max_channel_distance: f32,
-        min_template_size: f32,
-        template_sizes: usize,
-        nearest_chans: usize,
-        nearest_templates: usize,
-        do_car: bool,
-        highpass_cutoff_hz: f64,
-        whitening_range: usize,
-        batch_size: usize,
-        cluster_downsampling: usize,
-        cluster_neighbors: usize,
-        max_cluster_subset: usize,
-        reproducible: bool,
-    ) -> Self {
-        Self {
-            nt,
-            nt0min,
-            th_universal,
-            th_learned,
-            th_single_ch,
-            templates_from_data,
-            n_templates,
-            n_pcs,
-            nskip,
-            dmin,
-            dminx,
-            max_channel_distance,
-            min_template_size,
-            template_sizes,
-            nearest_chans,
-            nearest_templates,
-            do_car,
-            highpass_cutoff_hz,
-            whitening_range,
-            batch_size,
-            cluster_downsampling,
-            cluster_neighbors,
-            max_cluster_subset,
-            reproducible,
-        }
-    }
-
-    /// Sample of a waveform its peak is aligned to (`nt0min`, or upstream's rule from `nt`).
-    fn resolved_nt0min(&self) -> usize {
-        self.to_rust().nt0min()
-    }
-
-    fn __repr__(&self) -> String {
-        format!("Kilosort4Config(nt={}, th_universal={}, n_templates={}, n_pcs={}, ...)", self.nt, self.th_universal, self.n_templates, self.n_pcs)
-    }
-}
-
-/// EMUsort settings: its Kilosort4 settings (`kilosort4`, with EMUsort's defaults) and its own.
-///
-/// EMUsort's Kilosort4 defaults differ from Kilosort4's: 9 universal templates and 9 PCs, clip
-/// thresholds `[6, 9, 12, 15]`, `nskip = 2`, no common average reference. Edit them in place
-/// (`config.kilosort4.nt = 121`): `kilosort4` is shared, not a copy.
-///
-/// Examples
-/// --------
-/// >>> from dsp_kitchen.synapse.ml import emusort
-/// >>> config = emusort.Config(hdbscan_min_cluster_size=30)
-/// >>> config.kilosort4.nt = 121          # 5 ms at 24.4 kHz: match the MUAP width
-#[gen_stub_pyclass]
-#[pyclass(name = "EmusortConfig", get_all, set_all, skip_from_py_object)]
-pub struct PyEmusortConfig {
-    /// Kilosort4 settings of the run (EMUsort's defaults; see the class docs).
-    kilosort4: Py<PyKilosort4Config>,
-    /// Estimate the delay of every channel against a reference channel (±2 ms) and remove it
-    /// before detection (`remove_chan_delays`).
-    remove_channel_delays: bool,
-    /// Remove HDBSCAN outliers from the clips before k-means learns the universal templates
-    /// (`remove_spike_outliers`).
-    remove_spike_outliers: bool,
-    /// HDBSCAN `min_cluster_size` of the outlier removal.
-    hdbscan_min_cluster_size: usize,
-}
-
-impl PyEmusortConfig {
-    fn to_rust(&self, py: Python<'_>) -> EmusortConfig {
-        EmusortConfig {
-            kilosort4: self.kilosort4.borrow(py).to_rust(),
-            remove_channel_delays: self.remove_channel_delays,
-            remove_spike_outliers: self.remove_spike_outliers,
-            hdbscan_min_cluster_size: self.hdbscan_min_cluster_size,
-        }
-    }
-}
-
-#[gen_stub_pymethods]
-#[pymethods]
-impl PyEmusortConfig {
-    /// EMUsort's defaults (paper and upstream), changed by keyword. `kilosort4=None`: EMUsort's
-    /// Kilosort4 defaults (start from `EmusortConfig().kilosort4` to change a few).
-    #[new]
-    #[pyo3(signature = (*, kilosort4 = None, remove_channel_delays = EmusortConfig::default().remove_channel_delays, remove_spike_outliers = EmusortConfig::default().remove_spike_outliers, hdbscan_min_cluster_size = EmusortConfig::default().hdbscan_min_cluster_size))]
-    fn new(
-        py: Python<'_>,
-        kilosort4: Option<Py<PyKilosort4Config>>,
-        remove_channel_delays: bool,
-        remove_spike_outliers: bool,
-        hdbscan_min_cluster_size: usize,
-    ) -> PyResult<Self> {
-        let kilosort4 = match kilosort4 {
-            Some(k) => k,
-            None => Py::new(py, PyKilosort4Config::from(&EmusortConfig::default().kilosort4))?,
-        };
-        Ok(Self { kilosort4, remove_channel_delays, remove_spike_outliers, hdbscan_min_cluster_size })
-    }
-
-    /// Largest channel delay searched (±2 ms, EMUsort's `fs / 500`), in samples.
+with_shared_settings!(sorter_config_class! {
+    /// EMUsort settings: every setting of the run, with EMUsort's defaults (paper and upstream).
     ///
-    /// Parameters
-    /// ----------
-    /// fs : float
-    ///     Sampling rate, Hz.
-    fn max_delay_samples(&self, py: Python<'_>, fs: f64) -> usize {
-        self.to_rust(py).max_delay_samples(fs)
-    }
+    /// The settings shared with Kilosort4 mean the same as in `Kilosort4Config`, but default to
+    /// EMUsort's values: 9 universal templates and 9 PCs, clip thresholds `[6, 9, 12, 15]`,
+    /// `nskip = 2`, no common average reference, the EMG band 300–5000 Hz, no notch. EMUsort's own
+    /// settings come last. There is no nested Kilosort4 config to replace: a run always uses what
+    /// is here.
+    ///
+    /// Examples
+    /// --------
+    /// >>> from dsp_kitchen.synapse.ml import emusort
+    /// >>> config = emusort.Config(hdbscan_min_cluster_size=30)
+    /// >>> config.nt = 121                    # 5 ms at 24.4 kHz: match the MUAP width
+    class PyEmusortConfig as "EmusortConfig";
+    defaults: emusort_defaults;
+    own: [
+        /// Estimate the delay of every channel against a reference channel (±2 ms) and remove it
+        /// before detection (`remove_chan_delays`).
+        remove_channel_delays: bool,
+        /// Remove HDBSCAN outliers from the clips before k-means learns the universal templates
+        /// (`remove_spike_outliers`).
+        remove_spike_outliers: bool,
+        /// HDBSCAN `min_cluster_size` of the outlier removal.
+        hdbscan_min_cluster_size: usize,
+    ];
+    methods: {
+        /// Sample of a waveform its peak is aligned to (`nt0min`, or upstream's rule from `nt`).
+        fn resolved_nt0min(&self) -> usize {
+            self.to_rust().kilosort4().nt0min()
+        }
 
-    fn __repr__(&self) -> String {
-        format!("EmusortConfig(remove_channel_delays={}, remove_spike_outliers={}, hdbscan_min_cluster_size={}, kilosort4=...)", self.remove_channel_delays, self.remove_spike_outliers, self.hdbscan_min_cluster_size)
+        /// Largest channel delay searched (±2 ms, EMUsort's `fs / 500`), in samples.
+        ///
+        /// Parameters
+        /// ----------
+        /// fs : float
+        ///     Sampling rate, Hz.
+        fn max_delay_samples(&self, fs: f64) -> usize {
+            self.to_rust().max_delay_samples(fs)
+        }
+
+        fn __repr__(&self) -> String {
+            format!(
+                "EmusortConfig(nt={}, n_templates={}, n_pcs={}, do_car={}, remove_channel_delays={}, remove_spike_outliers={}, ...)",
+                self.nt, self.n_templates, self.n_pcs, self.do_car, self.remove_channel_delays, self.remove_spike_outliers
+            )
+        }
+    }
+});
+
+/// EMUsort's defaults in their Python form: the source of every default of `EmusortConfig(...)`.
+fn emusort_defaults() -> PyEmusortConfig {
+    let c = EmusortConfig::default();
+    PyEmusortConfig::from_parts(SharedSettings::of(&c.kilosort4()), c.remove_channel_delays, c.remove_spike_outliers, c.hdbscan_min_cluster_size)
+}
+
+impl PyEmusortConfig {
+    fn to_rust(&self) -> EmusortConfig {
+        let base = EmusortConfig::default().kilosort4();
+        EmusortConfig::from_kilosort4(self.shared().apply(base), self.remove_channel_delays, self.remove_spike_outliers, self.hdbscan_min_cluster_size)
     }
 }
 
 /// Kilosort4 settings of a `Kilosort4Config` or an `EmusortConfig`, and the template-learning
 /// options of that sorter.
-fn sorter_settings(py: Python<'_>, config: &Bound<'_, PyAny>) -> PyResult<(Kilosort4Config, LearnOptions)> {
+fn sorter_settings(config: &Bound<'_, PyAny>) -> PyResult<(Kilosort4Config, LearnOptions)> {
     if let Ok(c) = config.cast::<PyKilosort4Config>() {
         let c = c.borrow().to_rust();
         let learn = c.learn_options();
         return Ok((c, learn));
     }
     if let Ok(c) = config.cast::<PyEmusortConfig>() {
-        let c = c.borrow().to_rust(py);
-        return Ok((c.kilosort4.clone(), c.learn_options()));
+        let c = c.borrow().to_rust();
+        return Ok((c.kilosort4(), c.learn_options()));
     }
     Err(PyValueError::new_err("config must be a Kilosort4Config or an EmusortConfig"))
 }
@@ -403,7 +447,7 @@ impl PyUniversalTemplates {
 #[pyfunction]
 #[gen_stub(override_return_type(type_repr = "numpy.typing.NDArray[numpy.float32]", imports = ("numpy", "numpy.typing")))]
 fn extract_clips<'py>(py: Python<'py>, batch: Bound<'py, PyAny>, #[gen_stub(override_type(type_repr = "Kilosort4Config | EmusortConfig"))] config: Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
-    let options = if let Ok(c) = config.cast::<PyEmusortConfig>() { c.borrow().to_rust(py).clip_options() } else { sorter_settings(py, &config)?.0.clip_options() };
+    let options = if let Ok(c) = config.cast::<PyEmusortConfig>() { c.borrow().to_rust().clip_options() } else { sorter_settings(&config)?.0.clip_options() };
     let input = F32Array::new(&batch)?;
     let (channels, samples) = input.channels_samples(None)?;
     let x = input.slice();
@@ -438,7 +482,7 @@ fn learn_universal_templates(py: Python<'_>, clips: Bound<'_, PyAny>, #[gen_stub
             learn(&client, self.0, self.1, &self.2)
         }
     }
-    let (ks, options) = sorter_settings(py, &config)?;
+    let (ks, options) = sorter_settings(&config)?;
     let input = F32Array::new(&clips)?;
     let [_, nt] = *input.shape() else { return Err(PyValueError::new_err("clips must be [clips, nt]")) };
     if nt != ks.nt {
@@ -472,8 +516,8 @@ impl PyTemplateCentres {
     ///     Gives the spacing and sizes: `dmin`, `dminx`, `min_template_size`, `template_sizes`,
     ///     `nearest_chans`, `nearest_templates`.
     #[new]
-    fn new(py: Python<'_>, probe: PyRef<'_, PyProbeLayout>, #[gen_stub(override_type(type_repr = "Kilosort4Config | EmusortConfig"))] config: Bound<'_, PyAny>) -> PyResult<Self> {
-        let (ks, _) = sorter_settings(py, &config)?;
+    fn new(probe: PyRef<'_, PyProbeLayout>, #[gen_stub(override_type(type_repr = "Kilosort4Config | EmusortConfig"))] config: Bound<'_, PyAny>) -> PyResult<Self> {
+        let (ks, _) = sorter_settings(&config)?;
         Ok(Self { inner: TemplateCentres::new(&probe.inner, &ks.centres).map_err(value_error)? })
     }
 
@@ -535,7 +579,7 @@ fn detect_universal<'py>(py: Python<'py>, batch: Bound<'py, PyAny>, centres: PyR
             detect(&client, &handle, self.channels, self.samples, self.centres, self.templates, self.th, self.nt0min)
         }
     }
-    let (ks, _) = sorter_settings(py, &config)?;
+    let (ks, _) = sorter_settings(&config)?;
     let input = F32Array::new(&batch)?;
     let (channels, samples) = input.channels_samples(None)?;
     let target = target(runtime)?;
@@ -581,7 +625,7 @@ fn run_emusort_py(
     let Ok(config) = config.cast::<PyEmusortConfig>() else {
         return Err(PyValueError::new_err("config must be an EmusortConfig"));
     };
-    let plan = RunPlan::emusort(&config.borrow().to_rust(py), recording.inner.info().sample_rate_hz());
+    let plan = RunPlan::emusort(&config.borrow().to_rust(), recording.inner.info().sample_rate_hz());
     run_plan_py(py, &recording, &probe, plan, preprocessing_from, progress, runtime)
 }
 
@@ -675,6 +719,16 @@ impl PyKilosort4Result {
     #[getter]
     fn n_learned_templates(&self) -> usize {
         self.inner.learned.n
+    }
+    /// Global merges applied to the final units (`config.global_merges`).
+    #[getter]
+    fn merges(&self) -> usize {
+        self.inner.merges
+    }
+    /// Spikes removed as duplicates (`config.duplicate_spike_ms`).
+    #[getter]
+    fn duplicates(&self) -> usize {
+        self.inner.duplicates
     }
     /// Whether the run pinned its result-changing tuned choices (`config.reproducible`).
     #[getter]
@@ -796,7 +850,7 @@ fn create_kilosort4_preprocessing_py(
         }
     }
     let source = recording.inner.clone();
-    let ks_config = sorter_settings(py, &config)?.0;
+    let ks_config = sorter_settings(&config)?.0;
     let (layout, target) = (probe.inner.clone(), target(runtime)?);
     let inner = py.detach(|| target.run(Task(source.as_ref(), &layout, &ks_config)))
         .map_err(runtime_error)?
@@ -821,7 +875,7 @@ fn run_kilosort4_py(
     progress: Option<Py<PyAny>>,
     runtime: Option<&str>,
 ) -> PyResult<PyKilosort4Result> {
-    let mut plan = RunPlan::kilosort4(&sorter_settings(py, &config)?.0);
+    let mut plan = RunPlan::kilosort4(&sorter_settings(&config)?.0);
     plan.templates = templates.map(|t| t.inner.clone());
     run_plan_py(py, &recording, &probe, plan, preprocessing_from, progress, runtime)
 }

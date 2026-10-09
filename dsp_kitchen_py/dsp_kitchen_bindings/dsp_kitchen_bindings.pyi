@@ -258,188 +258,19 @@ class DeduplicatedSpike:
 @typing.final
 class EmusortConfig:
     r"""
-    EMUsort settings: its Kilosort4 settings (`kilosort4`, with EMUsort's defaults) and its own.
+    EMUsort settings: every setting of the run, with EMUsort's defaults (paper and upstream).
     
-    EMUsort's Kilosort4 defaults differ from Kilosort4's: 9 universal templates and 9 PCs, clip
-    thresholds `[6, 9, 12, 15]`, `nskip = 2`, no common average reference. Edit them in place
-    (`config.kilosort4.nt = 121`): `kilosort4` is shared, not a copy.
+    The settings shared with Kilosort4 mean the same as in `Kilosort4Config`, but default to
+    EMUsort's values: 9 universal templates and 9 PCs, clip thresholds `[6, 9, 12, 15]`,
+    `nskip = 2`, no common average reference, the EMG band 300–5000 Hz, no notch. EMUsort's own
+    settings come last. There is no nested Kilosort4 config to replace: a run always uses what
+    is here.
     
     Examples
     --------
     >>> from dsp_kitchen.synapse.ml import emusort
     >>> config = emusort.Config(hdbscan_min_cluster_size=30)
-    >>> config.kilosort4.nt = 121          # 5 ms at 24.4 kHz: match the MUAP width
-    """
-    @property
-    def kilosort4(self) -> Kilosort4Config:
-        r"""
-        Kilosort4 settings of the run (EMUsort's defaults; see the class docs).
-        """
-    @kilosort4.setter
-    def kilosort4(self, value: Kilosort4Config) -> None:
-        r"""
-        Kilosort4 settings of the run (EMUsort's defaults; see the class docs).
-        """
-    @property
-    def remove_channel_delays(self) -> builtins.bool:
-        r"""
-        Estimate the delay of every channel against a reference channel (±2 ms) and remove it
-        before detection (`remove_chan_delays`).
-        """
-    @remove_channel_delays.setter
-    def remove_channel_delays(self, value: builtins.bool) -> None:
-        r"""
-        Estimate the delay of every channel against a reference channel (±2 ms) and remove it
-        before detection (`remove_chan_delays`).
-        """
-    @property
-    def remove_spike_outliers(self) -> builtins.bool:
-        r"""
-        Remove HDBSCAN outliers from the clips before k-means learns the universal templates
-        (`remove_spike_outliers`).
-        """
-    @remove_spike_outliers.setter
-    def remove_spike_outliers(self, value: builtins.bool) -> None:
-        r"""
-        Remove HDBSCAN outliers from the clips before k-means learns the universal templates
-        (`remove_spike_outliers`).
-        """
-    @property
-    def hdbscan_min_cluster_size(self) -> builtins.int:
-        r"""
-        HDBSCAN `min_cluster_size` of the outlier removal.
-        """
-    @hdbscan_min_cluster_size.setter
-    def hdbscan_min_cluster_size(self, value: builtins.int) -> None:
-        r"""
-        HDBSCAN `min_cluster_size` of the outlier removal.
-        """
-    def __new__(cls, *, kilosort4: typing.Optional[Kilosort4Config] = None, remove_channel_delays: builtins.bool = True, remove_spike_outliers: builtins.bool = True, hdbscan_min_cluster_size: builtins.int = 20) -> EmusortConfig:
-        r"""
-        EMUsort's defaults (paper and upstream), changed by keyword. `kilosort4=None`: EMUsort's
-        Kilosort4 defaults (start from `EmusortConfig().kilosort4` to change a few).
-        """
-    def max_delay_samples(self, fs: builtins.float) -> builtins.int:
-        r"""
-        Largest channel delay searched (±2 ms, EMUsort's `fs / 500`), in samples.
-        
-        Parameters
-        ----------
-        fs : float
-            Sampling rate, Hz.
-        """
-    def __repr__(self) -> builtins.str: ...
-
-@typing.final
-class FastICA:
-    r"""
-    Independent component analysis (FastICA, scikit-learn's defaults): whitening on the device,
-    fixed-point iterations on the host.
-    
-    Parameters
-    ----------
-    n_components : int, optional
-        Sources estimated; default: as many as channels.
-    fun : {"logcosh", "cube", "skew"}, default "logcosh"
-        Contrast function (`logcosh` for general sources, `cube` for super-Gaussian ones, `skew` for
-        skewed ones).
-    max_iter : int, default 200
-    tol : float, default 1e-4
-        Convergence tolerance on the unmixing vectors.
-    """
-    @property
-    def unmixing(self) -> numpy.typing.NDArray[numpy.float32]:
-        r"""
-        Unmixing matrix, `[components, channels]` float32 (`sources = W · (x − mean)`).
-        """
-    def __new__(cls, n_components: typing.Optional[builtins.int] = None, *, fun: builtins.str = 'logcosh', max_iter: builtins.int = 200, tol: builtins.float = 9.999999747378752e-05) -> FastICA:
-        r"""
-        See the class docs.
-        """
-    def fit(self, data: typing.Any, *, runtime: typing.Optional[builtins.str] = None) -> FastICA:
-        r"""
-        Fits the model on `data` and returns it, so calls chain (`FastICA(3).fit(x).transform(x)`).
-        
-        Parameters
-        ----------
-        data : numpy.ndarray
-            `[channels, samples]`: channels are the features, samples the observations (the transpose
-            of scikit-learn's `[n_samples, n_features]`).
-        runtime : str, optional
-            Compute runtime (`"wgpu"`, `"cuda"`, `"cpu"`, …); default: the current one.
-        """
-    def transform(self, data: typing.Any) -> numpy.typing.NDArray[numpy.float32]:
-        r"""
-        Estimated sources of `data`, `[components, samples]` float32.
-        
-        Parameters
-        ----------
-        data : numpy.ndarray
-            `[channels, samples]`, with the channels the model was fitted on.
-        """
-    def __repr__(self) -> builtins.str: ...
-
-@typing.final
-class GaussianSmooth:
-    r"""
-    Zero-phase Gaussian smoothing along time (as `scipy.ndimage.gaussian_filter1d`): a pipeline stage.
-    
-    Parameters
-    ----------
-    sigma_samples : float
-        Standard deviation of the Gaussian, **samples**; the kernel is cut at 4 σ.
-    edge : {"zeros", "odd", "reflect", "nearest"}, default "reflect"
-        Values assumed beyond the ends: zeros; odd (point-symmetric, `2·x₀ − x`); reflect (mirrored,
-        the edge sample repeated: `d c b a | a b c d`); nearest (the edge sample repeated).
-    """
-    def __new__(cls, sigma_samples: builtins.float, *, edge: typing.Optional[builtins.str] = None) -> GaussianSmooth:
-        r"""
-        See the class docs.
-        """
-    def __repr__(self) -> builtins.str: ...
-
-@typing.final
-class HighpassFilter:
-    r"""
-    Butterworth high-pass filter: a pipeline stage (see `Pipeline`).
-    
-    Parameters
-    ----------
-    cutoff_hz : float
-        Cutoff, Hz.
-    order : int, default 5
-        Butterworth order **per edge**, as scipy (`butter`): a band filter of order 5 has 10 poles.
-    direction : {"forward-backward", "forward"}, default "forward-backward"
-        `"forward-backward"`: zero phase (as `scipy.signal.sosfiltfilt`; the effective order doubles).
-        `"forward"`: causal (as `sosfilt`).
-    start : {"rest", "steady-state"}, default "rest"
-        `"rest"`: the input is taken as zero before the first sample (a DC level gives a step
-        transient). `"steady-state"`: from the first sample's steady state (as `sosfilt_zi`).
-    
-    Examples
-    --------
-    >>> y = Pipeline([HighpassFilter(300.0, order=3)]).run(x, fs=30000.0)
-    """
-    def __new__(cls, cutoff_hz: builtins.float, *, order: builtins.int = 5, direction: builtins.str = 'forward-backward', start: builtins.str = 'rest') -> HighpassFilter:
-        r"""
-        See the class docs.
-        """
-    def __repr__(self) -> builtins.str: ...
-
-@typing.final
-class Kilosort4Config:
-    r"""
-    Kilosort4 settings, under their upstream names (`kilosort/parameters.py`) where there is one.
-    
-    Every argument defaults to Kilosort4's published default; thresholds are in whitened σ, lengths
-    of time in **samples** (they depend on the sampling rate), distances in µm. Change any setting
-    by keyword, or later as an attribute.
-    
-    Examples
-    --------
-    >>> from dsp_kitchen.synapse.ml import kilosort4
-    >>> config = kilosort4.Config(nt=121, th_learned=7.0)
-    >>> config.highpass_cutoff_hz = 250.0
+    >>> config.nt = 121                    # 5 ms at 24.4 kHz: match the MUAP width
     """
     @property
     def nt(self) -> builtins.int:
@@ -450,6 +281,16 @@ class Kilosort4Config:
     def nt(self, value: builtins.int) -> None:
         r"""
         Samples per waveform window (odd; `nt` upstream). In samples, so it depends on the sampling rate: 61 is 2 ms at 30 kHz.
+        """
+    @property
+    def nt_ms(self) -> typing.Optional[builtins.float]:
+        r"""
+        Waveform length in ms: when set, `nt` is `round(nt_ms · fs / 1000)` made odd for each recording, so one value fits every sampling rate; `None`: `nt` as given.
+        """
+    @nt_ms.setter
+    def nt_ms(self, value: typing.Optional[builtins.float]) -> None:
+        r"""
+        Waveform length in ms: when set, `nt` is `round(nt_ms · fs / 1000)` made odd for each recording, so one value fits every sampling rate; `None`: `nt` as given.
         """
     @property
     def nt0min(self) -> typing.Optional[builtins.int]:
@@ -464,22 +305,22 @@ class Kilosort4Config:
     @property
     def th_universal(self) -> builtins.float:
         r"""
-        Universal-template detection threshold, in whitened σ (`Th_universal`).
+        Universal-template detection threshold, in whitened σ (`Th_universal`; Kilosort4: 10 for the 300–6000 Hz band, upstream's 9 with a high-pass only; EMUsort: 9).
         """
     @th_universal.setter
     def th_universal(self, value: builtins.float) -> None:
         r"""
-        Universal-template detection threshold, in whitened σ (`Th_universal`).
+        Universal-template detection threshold, in whitened σ (`Th_universal`; Kilosort4: 10 for the 300–6000 Hz band, upstream's 9 with a high-pass only; EMUsort: 9).
         """
     @property
     def th_learned(self) -> builtins.float:
         r"""
-        Learned-template matching threshold, in whitened σ (`Th_learned`).
+        Learned-template matching threshold, in whitened σ (`Th_learned`; Kilosort4: 9 for the 300–6000 Hz band, upstream's 8; EMUsort: 8).
         """
     @th_learned.setter
     def th_learned(self, value: builtins.float) -> None:
         r"""
-        Learned-template matching threshold, in whitened σ (`Th_learned`).
+        Learned-template matching threshold, in whitened σ (`Th_learned`; Kilosort4: 9 for the 300–6000 Hz band, upstream's 8; EMUsort: 8).
         """
     @property
     def th_single_ch(self) -> builtins.list[builtins.float]:
@@ -612,14 +453,64 @@ class Kilosort4Config:
         Subtract the common average across channels before filtering (`do_CAR`).
         """
     @property
-    def highpass_cutoff_hz(self) -> builtins.float:
+    def do_bandpass(self) -> builtins.bool:
         r"""
-        High-pass cutoff, Hz.
+        Butterworth band-pass `bandpass_low_hz … bandpass_high_hz` (order 3 per edge, zero phase); `False`: no Butterworth (data already filtered).
         """
-    @highpass_cutoff_hz.setter
-    def highpass_cutoff_hz(self, value: builtins.float) -> None:
+    @do_bandpass.setter
+    def do_bandpass(self, value: builtins.bool) -> None:
         r"""
-        High-pass cutoff, Hz.
+        Butterworth band-pass `bandpass_low_hz … bandpass_high_hz` (order 3 per edge, zero phase); `False`: no Butterworth (data already filtered).
+        """
+    @property
+    def bandpass_low_hz(self) -> builtins.float:
+        r"""
+        Lower band edge, Hz (Kilosort4 and EMUsort: 300; upstream Kilosort4's `highpass_cutoff`).
+        """
+    @bandpass_low_hz.setter
+    def bandpass_low_hz(self, value: builtins.float) -> None:
+        r"""
+        Lower band edge, Hz (Kilosort4 and EMUsort: 300; upstream Kilosort4's `highpass_cutoff`).
+        """
+    @property
+    def bandpass_high_hz(self) -> typing.Optional[builtins.float]:
+        r"""
+        Upper band edge, Hz, below Nyquist (Kilosort4: 6000, the action-potential band; EMUsort: 5000, the EMG band); `None`: no upper edge, a high-pass at `bandpass_low_hz` (upstream Kilosort4's filter).
+        """
+    @bandpass_high_hz.setter
+    def bandpass_high_hz(self, value: typing.Optional[builtins.float]) -> None:
+        r"""
+        Upper band edge, Hz, below Nyquist (Kilosort4: 6000, the action-potential band; EMUsort: 5000, the EMG band); `None`: no upper edge, a high-pass at `bandpass_low_hz` (upstream Kilosort4's filter).
+        """
+    @property
+    def do_notch(self) -> builtins.bool:
+        r"""
+        Line-noise notch after the band (off by default: the 300 Hz edge already attenuates 60 Hz by ~84 dB, and the notch's ~1 s settling makes every run ~45% slower).
+        """
+    @do_notch.setter
+    def do_notch(self, value: builtins.bool) -> None:
+        r"""
+        Line-noise notch after the band (off by default: the 300 Hz edge already attenuates 60 Hz by ~84 dB, and the notch's ~1 s settling makes every run ~45% slower).
+        """
+    @property
+    def notch_hz(self) -> builtins.float:
+        r"""
+        Notch frequency, Hz (60; 50 outside the Americas).
+        """
+    @notch_hz.setter
+    def notch_hz(self, value: builtins.float) -> None:
+        r"""
+        Notch frequency, Hz (60; 50 outside the Americas).
+        """
+    @property
+    def notch_q(self) -> builtins.float:
+        r"""
+        Quality factor of the notch (−3 dB bandwidth `notch_hz / notch_q`).
+        """
+    @notch_q.setter
+    def notch_q(self, value: builtins.float) -> None:
+        r"""
+        Quality factor of the notch (−3 dB bandwidth `notch_hz / notch_q`).
         """
     @property
     def whitening_range(self) -> builtins.int:
@@ -672,6 +563,46 @@ class Kilosort4Config:
         At most this many right nodes per probe section, so long recordings keep the same neighbourhood scale.
         """
     @property
+    def global_merges(self) -> builtins.bool:
+        r"""
+        Merge final units whose waveforms are alike and whose spikes are mutually refractory (Kilosort4's global merges).
+        """
+    @global_merges.setter
+    def global_merges(self, value: builtins.bool) -> None:
+        r"""
+        Merge final units whose waveforms are alike and whose spikes are mutually refractory (Kilosort4's global merges).
+        """
+    @property
+    def split_refractory_halves(self) -> builtins.bool:
+        r"""
+        In the final clustering, split a node whose halves have a refractory cross-correlogram (the paper's text); `False` (ours): keep them together as one neuron.
+        """
+    @split_refractory_halves.setter
+    def split_refractory_halves(self, value: builtins.bool) -> None:
+        r"""
+        In the final clustering, split a node whose halves have a refractory cross-correlogram (the paper's text); `False` (ours): keep them together as one neuron.
+        """
+    @property
+    def merge_similarity(self) -> builtins.float:
+        r"""
+        Waveform similarity (correlation over lags) a pair needs to be tested for a global merge.
+        """
+    @merge_similarity.setter
+    def merge_similarity(self, value: builtins.float) -> None:
+        r"""
+        Waveform similarity (correlation over lags) a pair needs to be tested for a global merge.
+        """
+    @property
+    def duplicate_spike_ms(self) -> builtins.float:
+        r"""
+        A unit's spikes within this many ms of its previous spike are duplicates and removed (`duplicate_spike_ms`; 0 keeps them).
+        """
+    @duplicate_spike_ms.setter
+    def duplicate_spike_ms(self, value: builtins.float) -> None:
+        r"""
+        A unit's spikes within this many ms of its previous spike are duplicates and removed (`duplicate_spike_ms`; 0 keeps them).
+        """
+    @property
     def reproducible(self) -> builtins.bool:
         r"""
         Pin the autotuned choices that change the numbers: the same input on the same device gives the same sort.
@@ -681,9 +612,513 @@ class Kilosort4Config:
         r"""
         Pin the autotuned choices that change the numbers: the same input on the same device gives the same sort.
         """
-    def __new__(cls, *, nt: builtins.int = 61, nt0min: typing.Optional[builtins.int] = None, th_universal: builtins.float = 9.0, th_learned: builtins.float = 8.0, th_single_ch: typing.Sequence[builtins.float] = [6.0], templates_from_data: builtins.bool = True, n_templates: builtins.int = 6, n_pcs: builtins.int = 6, nskip: builtins.int = 25, dmin: typing.Optional[builtins.float] = None, dminx: builtins.float = 32.0, max_channel_distance: builtins.float = 32.0, min_template_size: builtins.float = 10.0, template_sizes: builtins.int = 5, nearest_chans: builtins.int = 10, nearest_templates: builtins.int = 100, do_car: builtins.bool = True, highpass_cutoff_hz: builtins.float = 300.0, whitening_range: builtins.int = 32, batch_size: builtins.int = 60000, cluster_downsampling: builtins.int = 20, cluster_neighbors: builtins.int = 10, max_cluster_subset: builtins.int = 25000, reproducible: builtins.bool = True) -> Kilosort4Config:
+    @property
+    def remove_channel_delays(self) -> builtins.bool:
         r"""
-        Kilosort4's defaults, changed by keyword (see the class and attribute docs).
+        Estimate the delay of every channel against a reference channel (±2 ms) and remove it
+        before detection (`remove_chan_delays`).
+        """
+    @remove_channel_delays.setter
+    def remove_channel_delays(self, value: builtins.bool) -> None:
+        r"""
+        Estimate the delay of every channel against a reference channel (±2 ms) and remove it
+        before detection (`remove_chan_delays`).
+        """
+    @property
+    def remove_spike_outliers(self) -> builtins.bool:
+        r"""
+        Remove HDBSCAN outliers from the clips before k-means learns the universal templates
+        (`remove_spike_outliers`).
+        """
+    @remove_spike_outliers.setter
+    def remove_spike_outliers(self, value: builtins.bool) -> None:
+        r"""
+        Remove HDBSCAN outliers from the clips before k-means learns the universal templates
+        (`remove_spike_outliers`).
+        """
+    @property
+    def hdbscan_min_cluster_size(self) -> builtins.int:
+        r"""
+        HDBSCAN `min_cluster_size` of the outlier removal.
+        """
+    @hdbscan_min_cluster_size.setter
+    def hdbscan_min_cluster_size(self, value: builtins.int) -> None:
+        r"""
+        HDBSCAN `min_cluster_size` of the outlier removal.
+        """
+    def __new__(cls, *, nt: builtins.int = 61, nt_ms: typing.Optional[builtins.float] = None, nt0min: typing.Optional[builtins.int] = None, th_universal: builtins.float = 9.0, th_learned: builtins.float = 8.0, th_single_ch: typing.Sequence[builtins.float] = [6.0, 9.0, 12.0, 15.0], templates_from_data: builtins.bool = True, n_templates: builtins.int = 9, n_pcs: builtins.int = 9, nskip: builtins.int = 2, dmin: typing.Optional[builtins.float] = None, dminx: builtins.float = 32.0, max_channel_distance: builtins.float = 32.0, min_template_size: builtins.float = 10.0, template_sizes: builtins.int = 5, nearest_chans: builtins.int = 10, nearest_templates: builtins.int = 100, do_car: builtins.bool = False, do_bandpass: builtins.bool = True, bandpass_low_hz: builtins.float = 300.0, bandpass_high_hz: typing.Optional[builtins.float] = 5000.0, do_notch: builtins.bool = False, notch_hz: builtins.float = 60.0, notch_q: builtins.float = 30.0, whitening_range: builtins.int = 32, batch_size: builtins.int = 60000, cluster_downsampling: builtins.int = 20, cluster_neighbors: builtins.int = 10, max_cluster_subset: builtins.int = 25000, global_merges: builtins.bool = True, split_refractory_halves: builtins.bool = False, merge_similarity: builtins.float = 0.5, duplicate_spike_ms: builtins.float = 0.25, reproducible: builtins.bool = True, remove_channel_delays: builtins.bool = True, remove_spike_outliers: builtins.bool = True, hdbscan_min_cluster_size: builtins.int = 20) -> EmusortConfig:
+        r"""
+        The sorter's defaults, changed by keyword (see the class and attribute docs).
+        """
+    def resolved_nt0min(self) -> builtins.int:
+        r"""
+        Sample of a waveform its peak is aligned to (`nt0min`, or upstream's rule from `nt`).
+        """
+    def max_delay_samples(self, fs: builtins.float) -> builtins.int:
+        r"""
+        Largest channel delay searched (±2 ms, EMUsort's `fs / 500`), in samples.
+        
+        Parameters
+        ----------
+        fs : float
+            Sampling rate, Hz.
+        """
+    def __repr__(self) -> builtins.str: ...
+
+@typing.final
+class FastICA:
+    r"""
+    Independent component analysis (FastICA, scikit-learn's defaults): whitening on the device,
+    fixed-point iterations on the host.
+    
+    Parameters
+    ----------
+    n_components : int, optional
+        Sources estimated; default: as many as channels.
+    fun : {"logcosh", "cube", "skew"}, default "logcosh"
+        Contrast function (`logcosh` for general sources, `cube` for super-Gaussian ones, `skew` for
+        skewed ones).
+    max_iter : int, default 200
+    tol : float, default 1e-4
+        Convergence tolerance on the unmixing vectors.
+    """
+    @property
+    def unmixing(self) -> numpy.typing.NDArray[numpy.float32]:
+        r"""
+        Unmixing matrix, `[components, channels]` float32 (`sources = W · (x − mean)`).
+        """
+    def __new__(cls, n_components: typing.Optional[builtins.int] = None, *, fun: builtins.str = 'logcosh', max_iter: builtins.int = 200, tol: builtins.float = 9.999999747378752e-05) -> FastICA:
+        r"""
+        See the class docs.
+        """
+    def fit(self, data: typing.Any, *, runtime: typing.Optional[builtins.str] = None) -> FastICA:
+        r"""
+        Fits the model on `data` and returns it, so calls chain (`FastICA(3).fit(x).transform(x)`).
+        
+        Parameters
+        ----------
+        data : numpy.ndarray
+            `[channels, samples]`: channels are the features, samples the observations (the transpose
+            of scikit-learn's `[n_samples, n_features]`).
+        runtime : str, optional
+            Compute runtime (`"wgpu"`, `"cuda"`, `"cpu"`, …); default: the current one.
+        """
+    def transform(self, data: typing.Any) -> numpy.typing.NDArray[numpy.float32]:
+        r"""
+        Estimated sources of `data`, `[components, samples]` float32.
+        
+        Parameters
+        ----------
+        data : numpy.ndarray
+            `[channels, samples]`, with the channels the model was fitted on.
+        """
+    def __repr__(self) -> builtins.str: ...
+
+@typing.final
+class GaussianSmooth:
+    r"""
+    Zero-phase Gaussian smoothing along time (as `scipy.ndimage.gaussian_filter1d`): a pipeline stage.
+    
+    Parameters
+    ----------
+    sigma_samples : float
+        Standard deviation of the Gaussian, **samples**; the kernel is cut at 4 σ.
+    edge : {"zeros", "odd", "reflect", "nearest"}, default "reflect"
+        Values assumed beyond the ends: zeros; odd (point-symmetric, `2·x₀ − x`); reflect (mirrored,
+        the edge sample repeated: `d c b a | a b c d`); nearest (the edge sample repeated).
+    """
+    def __new__(cls, sigma_samples: builtins.float, *, edge: typing.Optional[builtins.str] = None) -> GaussianSmooth:
+        r"""
+        See the class docs.
+        """
+    def __repr__(self) -> builtins.str: ...
+
+@typing.final
+class HighpassFilter:
+    r"""
+    Butterworth high-pass filter: a pipeline stage (see `Pipeline`).
+    
+    Parameters
+    ----------
+    cutoff_hz : float
+        Cutoff, Hz.
+    order : int, default 5
+        Butterworth order **per edge**, as scipy (`butter`): a band filter of order 5 has 10 poles.
+    direction : {"forward-backward", "forward"}, default "forward-backward"
+        `"forward-backward"`: zero phase (as `scipy.signal.sosfiltfilt`; the effective order doubles).
+        `"forward"`: causal (as `sosfilt`).
+    start : {"rest", "steady-state"}, default "rest"
+        `"rest"`: the input is taken as zero before the first sample (a DC level gives a step
+        transient). `"steady-state"`: from the first sample's steady state (as `sosfilt_zi`).
+    
+    Examples
+    --------
+    >>> y = Pipeline([HighpassFilter(300.0, order=3)]).run(x, fs=30000.0)
+    """
+    def __new__(cls, cutoff_hz: builtins.float, *, order: builtins.int = 5, direction: builtins.str = 'forward-backward', start: builtins.str = 'rest') -> HighpassFilter:
+        r"""
+        See the class docs.
+        """
+    def __repr__(self) -> builtins.str: ...
+
+@typing.final
+class Kilosort4Config:
+    r"""
+    Kilosort4 settings, under their upstream names (`kilosort/parameters.py`) where there is one.
+    
+    Every argument defaults to our Kilosort4's default; thresholds are in whitened σ, lengths of
+    time in **samples** (they depend on the sampling rate), distances in µm. Change any setting
+    by keyword, or later as an attribute.
+    
+    Examples
+    --------
+    >>> from dsp_kitchen.synapse.ml import kilosort4
+    >>> config = kilosort4.Config(nt=121, th_learned=7.0)
+    >>> config.bandpass_low_hz = 250.0
+    """
+    @property
+    def nt(self) -> builtins.int:
+        r"""
+        Samples per waveform window (odd; `nt` upstream). In samples, so it depends on the sampling rate: 61 is 2 ms at 30 kHz.
+        """
+    @nt.setter
+    def nt(self, value: builtins.int) -> None:
+        r"""
+        Samples per waveform window (odd; `nt` upstream). In samples, so it depends on the sampling rate: 61 is 2 ms at 30 kHz.
+        """
+    @property
+    def nt_ms(self) -> typing.Optional[builtins.float]:
+        r"""
+        Waveform length in ms: when set, `nt` is `round(nt_ms · fs / 1000)` made odd for each recording, so one value fits every sampling rate; `None`: `nt` as given.
+        """
+    @nt_ms.setter
+    def nt_ms(self, value: typing.Optional[builtins.float]) -> None:
+        r"""
+        Waveform length in ms: when set, `nt` is `round(nt_ms · fs / 1000)` made odd for each recording, so one value fits every sampling rate; `None`: `nt` as given.
+        """
+    @property
+    def nt0min(self) -> typing.Optional[builtins.int]:
+        r"""
+        Sample of the window the waveform trough is aligned to; `None`: `int(20 · nt / 61)` (about a third of `nt`).
+        """
+    @nt0min.setter
+    def nt0min(self, value: typing.Optional[builtins.int]) -> None:
+        r"""
+        Sample of the window the waveform trough is aligned to; `None`: `int(20 · nt / 61)` (about a third of `nt`).
+        """
+    @property
+    def th_universal(self) -> builtins.float:
+        r"""
+        Universal-template detection threshold, in whitened σ (`Th_universal`; Kilosort4: 10 for the 300–6000 Hz band, upstream's 9 with a high-pass only; EMUsort: 9).
+        """
+    @th_universal.setter
+    def th_universal(self, value: builtins.float) -> None:
+        r"""
+        Universal-template detection threshold, in whitened σ (`Th_universal`; Kilosort4: 10 for the 300–6000 Hz band, upstream's 9 with a high-pass only; EMUsort: 9).
+        """
+    @property
+    def th_learned(self) -> builtins.float:
+        r"""
+        Learned-template matching threshold, in whitened σ (`Th_learned`; Kilosort4: 9 for the 300–6000 Hz band, upstream's 8; EMUsort: 8).
+        """
+    @th_learned.setter
+    def th_learned(self, value: builtins.float) -> None:
+        r"""
+        Learned-template matching threshold, in whitened σ (`Th_learned`; Kilosort4: 9 for the 300–6000 Hz band, upstream's 8; EMUsort: 8).
+        """
+    @property
+    def th_single_ch(self) -> builtins.list[builtins.float]:
+        r"""
+        Single-channel thresholds of the clips the universal templates are learned from, in whitened σ (`Th_single_ch`; EMUsort pools several).
+        """
+    @th_single_ch.setter
+    def th_single_ch(self, value: typing.Sequence[builtins.float]) -> None:
+        r"""
+        Single-channel thresholds of the clips the universal templates are learned from, in whitened σ (`Th_single_ch`; EMUsort pools several).
+        """
+    @property
+    def templates_from_data(self) -> builtins.bool:
+        r"""
+        Learn `wPCA` / `wTEMP` from the recording; `False`: Kilosort4's predefined `wTEMP.npz`.
+        """
+    @templates_from_data.setter
+    def templates_from_data(self, value: builtins.bool) -> None:
+        r"""
+        Learn `wPCA` / `wTEMP` from the recording; `False`: Kilosort4's predefined `wTEMP.npz`.
+        """
+    @property
+    def n_templates(self) -> builtins.int:
+        r"""
+        Universal templates (`wTEMP` rows) learned.
+        """
+    @n_templates.setter
+    def n_templates(self, value: builtins.int) -> None:
+        r"""
+        Universal templates (`wTEMP` rows) learned.
+        """
+    @property
+    def n_pcs(self) -> builtins.int:
+        r"""
+        Temporal principal components (`wPCA` rows) learned; also the features per channel.
+        """
+    @n_pcs.setter
+    def n_pcs(self, value: builtins.int) -> None:
+        r"""
+        Temporal principal components (`wPCA` rows) learned; also the features per channel.
+        """
+    @property
+    def nskip(self) -> builtins.int:
+        r"""
+        Every `nskip`-th batch fits the whitening and learns the templates.
+        """
+    @nskip.setter
+    def nskip(self, value: builtins.int) -> None:
+        r"""
+        Every `nskip`-th batch fits the whitening and learns the templates.
+        """
+    @property
+    def dmin(self) -> typing.Optional[builtins.float]:
+        r"""
+        Vertical spacing of the template positions, µm; `None`: the median vertical contact spacing.
+        """
+    @dmin.setter
+    def dmin(self, value: typing.Optional[builtins.float]) -> None:
+        r"""
+        Vertical spacing of the template positions, µm; `None`: the median vertical contact spacing.
+        """
+    @property
+    def dminx(self) -> builtins.float:
+        r"""
+        Horizontal spacing of the template positions, µm.
+        """
+    @dminx.setter
+    def dminx(self, value: builtins.float) -> None:
+        r"""
+        Horizontal spacing of the template positions, µm.
+        """
+    @property
+    def max_channel_distance(self) -> builtins.float:
+        r"""
+        Template positions farther than this from every contact are dropped, µm.
+        """
+    @max_channel_distance.setter
+    def max_channel_distance(self, value: builtins.float) -> None:
+        r"""
+        Template positions farther than this from every contact are dropped, µm.
+        """
+    @property
+    def min_template_size(self) -> builtins.float:
+        r"""
+        Width of the smallest spatial template (Gaussian σ), µm; the others are its multiples.
+        """
+    @min_template_size.setter
+    def min_template_size(self, value: builtins.float) -> None:
+        r"""
+        Width of the smallest spatial template (Gaussian σ), µm; the others are its multiples.
+        """
+    @property
+    def template_sizes(self) -> builtins.int:
+        r"""
+        Spatial template widths tried: `min_template_size · (1 … template_sizes)`.
+        """
+    @template_sizes.setter
+    def template_sizes(self, value: builtins.int) -> None:
+        r"""
+        Spatial template widths tried: `min_template_size · (1 … template_sizes)`.
+        """
+    @property
+    def nearest_chans(self) -> builtins.int:
+        r"""
+        Channels per template position (and per spike's features).
+        """
+    @nearest_chans.setter
+    def nearest_chans(self, value: builtins.int) -> None:
+        r"""
+        Channels per template position (and per spike's features).
+        """
+    @property
+    def nearest_templates(self) -> builtins.int:
+        r"""
+        Neighbouring template positions in the local-maximum test of detection.
+        """
+    @nearest_templates.setter
+    def nearest_templates(self, value: builtins.int) -> None:
+        r"""
+        Neighbouring template positions in the local-maximum test of detection.
+        """
+    @property
+    def do_car(self) -> builtins.bool:
+        r"""
+        Subtract the common average across channels before filtering (`do_CAR`).
+        """
+    @do_car.setter
+    def do_car(self, value: builtins.bool) -> None:
+        r"""
+        Subtract the common average across channels before filtering (`do_CAR`).
+        """
+    @property
+    def do_bandpass(self) -> builtins.bool:
+        r"""
+        Butterworth band-pass `bandpass_low_hz … bandpass_high_hz` (order 3 per edge, zero phase); `False`: no Butterworth (data already filtered).
+        """
+    @do_bandpass.setter
+    def do_bandpass(self, value: builtins.bool) -> None:
+        r"""
+        Butterworth band-pass `bandpass_low_hz … bandpass_high_hz` (order 3 per edge, zero phase); `False`: no Butterworth (data already filtered).
+        """
+    @property
+    def bandpass_low_hz(self) -> builtins.float:
+        r"""
+        Lower band edge, Hz (Kilosort4 and EMUsort: 300; upstream Kilosort4's `highpass_cutoff`).
+        """
+    @bandpass_low_hz.setter
+    def bandpass_low_hz(self, value: builtins.float) -> None:
+        r"""
+        Lower band edge, Hz (Kilosort4 and EMUsort: 300; upstream Kilosort4's `highpass_cutoff`).
+        """
+    @property
+    def bandpass_high_hz(self) -> typing.Optional[builtins.float]:
+        r"""
+        Upper band edge, Hz, below Nyquist (Kilosort4: 6000, the action-potential band; EMUsort: 5000, the EMG band); `None`: no upper edge, a high-pass at `bandpass_low_hz` (upstream Kilosort4's filter).
+        """
+    @bandpass_high_hz.setter
+    def bandpass_high_hz(self, value: typing.Optional[builtins.float]) -> None:
+        r"""
+        Upper band edge, Hz, below Nyquist (Kilosort4: 6000, the action-potential band; EMUsort: 5000, the EMG band); `None`: no upper edge, a high-pass at `bandpass_low_hz` (upstream Kilosort4's filter).
+        """
+    @property
+    def do_notch(self) -> builtins.bool:
+        r"""
+        Line-noise notch after the band (off by default: the 300 Hz edge already attenuates 60 Hz by ~84 dB, and the notch's ~1 s settling makes every run ~45% slower).
+        """
+    @do_notch.setter
+    def do_notch(self, value: builtins.bool) -> None:
+        r"""
+        Line-noise notch after the band (off by default: the 300 Hz edge already attenuates 60 Hz by ~84 dB, and the notch's ~1 s settling makes every run ~45% slower).
+        """
+    @property
+    def notch_hz(self) -> builtins.float:
+        r"""
+        Notch frequency, Hz (60; 50 outside the Americas).
+        """
+    @notch_hz.setter
+    def notch_hz(self, value: builtins.float) -> None:
+        r"""
+        Notch frequency, Hz (60; 50 outside the Americas).
+        """
+    @property
+    def notch_q(self) -> builtins.float:
+        r"""
+        Quality factor of the notch (−3 dB bandwidth `notch_hz / notch_q`).
+        """
+    @notch_q.setter
+    def notch_q(self, value: builtins.float) -> None:
+        r"""
+        Quality factor of the notch (−3 dB bandwidth `notch_hz / notch_q`).
+        """
+    @property
+    def whitening_range(self) -> builtins.int:
+        r"""
+        Channels in each local whitening neighbourhood.
+        """
+    @whitening_range.setter
+    def whitening_range(self, value: builtins.int) -> None:
+        r"""
+        Channels in each local whitening neighbourhood.
+        """
+    @property
+    def batch_size(self) -> builtins.int:
+        r"""
+        Samples per batch (60 000 is 2 s at 30 kHz).
+        """
+    @batch_size.setter
+    def batch_size(self, value: builtins.int) -> None:
+        r"""
+        Samples per batch (60 000 is 2 s at 30 kHz).
+        """
+    @property
+    def cluster_downsampling(self) -> builtins.int:
+        r"""
+        Every `cluster_downsampling`-th spike is a right node of the clustering graph (1: all; larger: faster, coarser).
+        """
+    @cluster_downsampling.setter
+    def cluster_downsampling(self, value: builtins.int) -> None:
+        r"""
+        Every `cluster_downsampling`-th spike is a right node of the clustering graph (1: all; larger: faster, coarser).
+        """
+    @property
+    def cluster_neighbors(self) -> builtins.int:
+        r"""
+        Neighbours of every spike in the clustering graph.
+        """
+    @cluster_neighbors.setter
+    def cluster_neighbors(self, value: builtins.int) -> None:
+        r"""
+        Neighbours of every spike in the clustering graph.
+        """
+    @property
+    def max_cluster_subset(self) -> builtins.int:
+        r"""
+        At most this many right nodes per probe section, so long recordings keep the same neighbourhood scale.
+        """
+    @max_cluster_subset.setter
+    def max_cluster_subset(self, value: builtins.int) -> None:
+        r"""
+        At most this many right nodes per probe section, so long recordings keep the same neighbourhood scale.
+        """
+    @property
+    def global_merges(self) -> builtins.bool:
+        r"""
+        Merge final units whose waveforms are alike and whose spikes are mutually refractory (Kilosort4's global merges).
+        """
+    @global_merges.setter
+    def global_merges(self, value: builtins.bool) -> None:
+        r"""
+        Merge final units whose waveforms are alike and whose spikes are mutually refractory (Kilosort4's global merges).
+        """
+    @property
+    def split_refractory_halves(self) -> builtins.bool:
+        r"""
+        In the final clustering, split a node whose halves have a refractory cross-correlogram (the paper's text); `False` (ours): keep them together as one neuron.
+        """
+    @split_refractory_halves.setter
+    def split_refractory_halves(self, value: builtins.bool) -> None:
+        r"""
+        In the final clustering, split a node whose halves have a refractory cross-correlogram (the paper's text); `False` (ours): keep them together as one neuron.
+        """
+    @property
+    def merge_similarity(self) -> builtins.float:
+        r"""
+        Waveform similarity (correlation over lags) a pair needs to be tested for a global merge.
+        """
+    @merge_similarity.setter
+    def merge_similarity(self, value: builtins.float) -> None:
+        r"""
+        Waveform similarity (correlation over lags) a pair needs to be tested for a global merge.
+        """
+    @property
+    def duplicate_spike_ms(self) -> builtins.float:
+        r"""
+        A unit's spikes within this many ms of its previous spike are duplicates and removed (`duplicate_spike_ms`; 0 keeps them).
+        """
+    @duplicate_spike_ms.setter
+    def duplicate_spike_ms(self, value: builtins.float) -> None:
+        r"""
+        A unit's spikes within this many ms of its previous spike are duplicates and removed (`duplicate_spike_ms`; 0 keeps them).
+        """
+    @property
+    def reproducible(self) -> builtins.bool:
+        r"""
+        Pin the autotuned choices that change the numbers: the same input on the same device gives the same sort.
+        """
+    @reproducible.setter
+    def reproducible(self, value: builtins.bool) -> None:
+        r"""
+        Pin the autotuned choices that change the numbers: the same input on the same device gives the same sort.
+        """
+    def __new__(cls, *, nt: builtins.int = 61, nt_ms: typing.Optional[builtins.float] = None, nt0min: typing.Optional[builtins.int] = None, th_universal: builtins.float = 10.0, th_learned: builtins.float = 9.0, th_single_ch: typing.Sequence[builtins.float] = [6.0], templates_from_data: builtins.bool = True, n_templates: builtins.int = 6, n_pcs: builtins.int = 6, nskip: builtins.int = 25, dmin: typing.Optional[builtins.float] = None, dminx: builtins.float = 32.0, max_channel_distance: builtins.float = 32.0, min_template_size: builtins.float = 10.0, template_sizes: builtins.int = 5, nearest_chans: builtins.int = 10, nearest_templates: builtins.int = 100, do_car: builtins.bool = True, do_bandpass: builtins.bool = True, bandpass_low_hz: builtins.float = 300.0, bandpass_high_hz: typing.Optional[builtins.float] = 6000.0, do_notch: builtins.bool = False, notch_hz: builtins.float = 60.0, notch_q: builtins.float = 30.0, whitening_range: builtins.int = 32, batch_size: builtins.int = 60000, cluster_downsampling: builtins.int = 20, cluster_neighbors: builtins.int = 10, max_cluster_subset: builtins.int = 25000, global_merges: builtins.bool = True, split_refractory_halves: builtins.bool = False, merge_similarity: builtins.float = 0.5, duplicate_spike_ms: builtins.float = 0.25, reproducible: builtins.bool = True) -> Kilosort4Config:
+        r"""
+        The sorter's defaults, changed by keyword (see the class and attribute docs).
         """
     def resolved_nt0min(self) -> builtins.int:
         r"""
@@ -732,6 +1167,16 @@ class Kilosort4Result:
     def n_learned_templates(self) -> builtins.int:
         r"""
         Learned templates: the units' templates aligned, near-duplicates merged.
+        """
+    @property
+    def merges(self) -> builtins.int:
+        r"""
+        Global merges applied to the final units (`config.global_merges`).
+        """
+    @property
+    def duplicates(self) -> builtins.int:
+        r"""
+        Spikes removed as duplicates (`config.duplicate_spike_ms`).
         """
     @property
     def reproducible(self) -> builtins.bool:
@@ -1757,7 +2202,8 @@ class SortingOutput:
         -------
         dict
             `unit_id`, `primary_channel`, `quality_label`, `snr`, `firing_rate_hz` (Hz),
-            `isi_violation_ratio`, `presence_ratio`, `amplitude_cutoff`, `num_spikes`.
+            `isi_violation_ratio`, `presence_ratio`, `amplitude_cutoff`, `composite_score` (EMUsort's
+            score in [0, 1]; NaN when the sorter does not compute it), `num_spikes`.
         """
     def summary_table(self) -> list:
         r"""
