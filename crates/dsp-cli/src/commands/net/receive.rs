@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use clap::Args;
-use dsp_core::{MemoryOrder, RecordingInfo, SampleFormat, SignalUnit};
+use dsp_core::{MemoryOrder, RecordingInfo, SampleFormat};
 use dsp_io::RawParams;
 use dsp_stream::protocol::wire::SignalFrame;
 use dsp_stream::{client_config, ServerTrust, Session};
@@ -85,13 +85,14 @@ impl Saver {
     fn new(path: &Path, info: &RecordingInfo) -> anyhow::Result<Self> {
         let first = &info.channels[0];
         let uniform = info.channels.iter().all(|c| c.gain == first.gain && c.offset == first.offset && c.unit == first.unit);
-        let stored = uniform && first.unit == SignalUnit::Microvolt;
+        let stored = uniform;
         let format = if stored { info.format } else { SampleFormat::F32 };
         let mut params = RawParams::new(info.channel_count(), info.sample_rate_hz(), format, MemoryOrder::TimeMajor);
+        params.unit = first.unit.clone();
         if stored {
-            (params.gain_uv, params.offset_uv) = (first.gain, first.offset);
-        } else if info.channels.iter().any(|c| c.unit != SignalUnit::Microvolt) {
-            println!("Note: the raw sidecar records µV; this stream's units ({}) are saved as values only", first.unit.symbol());
+            (params.gain, params.offset) = (first.gain, first.offset);
+        } else if info.channels.iter().any(|c| c.unit != first.unit) {
+            println!("Note: the raw sidecar records one unit; this stream's channels differ, saved as {}", first.unit.symbol());
         }
         Ok(Self { out: BufWriter::new(File::create(path).with_context(|| format!("creating {}", path.display()))?), path: path.to_path_buf(), params, stored, samples: 0 })
     }
