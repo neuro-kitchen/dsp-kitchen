@@ -11,11 +11,11 @@ use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
 
 use crate::array::{runtime_error, to_numpy, value_error, F32Array};
 use crate::filter::fir::PyGaussianSmooth;
-use crate::filter::iir::{PyBandpassFilter, PyBandstopFilter, PyChebyshevFilter, PyHighpassFilter, PyLowpassFilter, PyNotchFilter};
+use crate::filter::iir::{PyBandpassFilter, PyBandstopFilter, PyBesselFilter, PyChebyshevFilter, PyHighpassFilter, PyLowpassFilter, PyNotchFilter};
 use crate::filter::non_linear::{PyMedianFilter, PyTeagerKaiser};
 use crate::math::{PyClamp, PyScale, PySubtractBaseline};
 use crate::runtime::target;
-use crate::spatial::{PyCommonAverageReference, PySpatialWhitening, PySurfaceLaplacian};
+use crate::spatial::{PyCommonAverageReference, PyCommonMedianReference, PySpatialWhitening, PySurfaceLaplacian};
 
 /// Rate given to pipelines whose stages do not depend on it (only filters do).
 const RATE_NOT_USED_HZ: f64 = 1.0;
@@ -40,10 +40,12 @@ fn stage_of(item: &Bound<'_, PyAny>) -> PyResult<PipelineStage> {
         PyBandstopFilter => PyBandstopFilter::stage,
         PyNotchFilter => PyNotchFilter::stage,
         PyChebyshevFilter => PyChebyshevFilter::stage,
+        PyBesselFilter => PyBesselFilter::stage,
         PyGaussianSmooth => |s: &PyGaussianSmooth| s.stage.clone(),
         PyMedianFilter => |s: &PyMedianFilter| s.stage.clone(),
         PyTeagerKaiser => |s: &PyTeagerKaiser| s.stage.clone(),
         PyCommonAverageReference => |_: &PyCommonAverageReference| PipelineStage::CommonAverageReference,
+        PyCommonMedianReference => |_: &PyCommonMedianReference| PipelineStage::CommonMedianReference,
         PySpatialWhitening => |s: &PySpatialWhitening| PipelineStage::SpatialWhitening(s.inner.clone()),
         PySurfaceLaplacian => |s: &PySurfaceLaplacian| PipelineStage::SurfaceLaplacian(s.inner.clone()),
     );
@@ -97,8 +99,8 @@ pub(crate) fn run_stage<'py>(py: Python<'py>, stage: PipelineStage, data: &Bound
 /// Processing stages run one after the other on the device; intermediate results never leave it.
 ///
 /// Stages: filters (`BandpassFilter`, `HighpassFilter`, `LowpassFilter`, `BandstopFilter`,
-/// `NotchFilter`, `ChebyshevFilter`, `GaussianSmooth`, `MedianFilter`, `TeagerKaiser`), spatial
-/// operators (`CommonAverageReference`, `SpatialWhitening`, `SurfaceLaplacian`) and pointwise ones
+/// `NotchFilter`, `ChebyshevFilter`, `BesselFilter`, `GaussianSmooth`, `MedianFilter`, `TeagerKaiser`), spatial
+/// operators (`CommonAverageReference`, `CommonMedianReference`, `SpatialWhitening`, `SurfaceLaplacian`) and pointwise ones
 /// (`Scale`, `SubtractBaseline`, `Clamp`). A sorter's fitted preprocessing is a `Pipeline` too
 /// (`result.preprocessing`).
 ///

@@ -22,6 +22,8 @@ __all__ = [
     "MedianFilter",
     "MmapRecording",
     "ModelHub",
+    "Mountainsort5Config",
+    "Mountainsort5Result",
     "NotchFilter",
     "PCA",
     "PPCA",
@@ -94,9 +96,11 @@ __all__ = [
     "lowpass_filter",
     "match_spikes_matching_pursuit",
     "median_filter",
+    "mountainsort5_provenance",
     "notch_filter",
     "run",
     "run_emusort",
+    "run_mountainsort5",
     "save_sorting",
     "scale_samples",
     "set_runtime",
@@ -1475,6 +1479,476 @@ class ModelHub:
         r"""
         Deletes every downloaded file; bytes freed.
         """
+
+@typing.final
+class Mountainsort5Config:
+    r"""
+    MountainSort 5 settings, under the package's names (`Scheme1SortingParameters`,
+    `Scheme2SortingParameters`) and SpikeInterface's wrapper's.
+    
+    Every argument defaults to MountainSort 5's default; thresholds are in whitened units,
+    snippet lengths in **samples**, distances in µm. Change any setting by keyword, or later
+    as an attribute.
+    
+    Examples
+    --------
+    >>> from dsp_kitchen.synapse.ml import mountainsort5
+    >>> config = mountainsort5.Config(detect_threshold=6.0)
+    >>> config.scheme = 1
+    """
+    @property
+    def scheme(self) -> builtins.int:
+        r"""
+        `2`: train on a stretch, then classify every spike (the default); `1`: one pass.
+        """
+    @scheme.setter
+    def scheme(self, value: builtins.int) -> None:
+        r"""
+        `2`: train on a stretch, then classify every spike (the default); `1`: one pass.
+        """
+    @property
+    def do_car(self) -> builtins.bool:
+        r"""
+        Common average reference before filtering (not in SpikeInterface's wrapper).
+        """
+    @do_car.setter
+    def do_car(self, value: builtins.bool) -> None:
+        r"""
+        Common average reference before filtering (not in SpikeInterface's wrapper).
+        """
+    @property
+    def do_bandpass(self) -> builtins.bool:
+        r"""
+        Band-pass the recording (Butterworth order 5, forward-backward).
+        """
+    @do_bandpass.setter
+    def do_bandpass(self, value: builtins.bool) -> None:
+        r"""
+        Band-pass the recording (Butterworth order 5, forward-backward).
+        """
+    @property
+    def bandpass_low_hz(self) -> builtins.float:
+        r"""
+        Lower band edge, Hz.
+        """
+    @bandpass_low_hz.setter
+    def bandpass_low_hz(self, value: builtins.float) -> None:
+        r"""
+        Lower band edge, Hz.
+        """
+    @property
+    def bandpass_high_hz(self) -> typing.Optional[builtins.float]:
+        r"""
+        Upper band edge, Hz; `None`: a high-pass at `bandpass_low_hz`.
+        """
+    @bandpass_high_hz.setter
+    def bandpass_high_hz(self, value: typing.Optional[builtins.float]) -> None:
+        r"""
+        Upper band edge, Hz; `None`: a high-pass at `bandpass_low_hz`.
+        """
+    @property
+    def do_notch(self) -> builtins.bool:
+        r"""
+        Line-noise notch after the band-pass.
+        """
+    @do_notch.setter
+    def do_notch(self, value: builtins.bool) -> None:
+        r"""
+        Line-noise notch after the band-pass.
+        """
+    @property
+    def notch_hz(self) -> builtins.float:
+        r"""
+        Notch frequency, Hz.
+        """
+    @notch_hz.setter
+    def notch_hz(self, value: builtins.float) -> None:
+        r"""
+        Notch frequency, Hz.
+        """
+    @property
+    def notch_q(self) -> builtins.float:
+        r"""
+        Notch quality factor.
+        """
+    @notch_q.setter
+    def notch_q(self, value: builtins.float) -> None:
+        r"""
+        Notch quality factor.
+        """
+    @property
+    def do_whiten(self) -> builtins.bool:
+        r"""
+        Global ZCA whitening (MountainSort 5 expects whitened data).
+        """
+    @do_whiten.setter
+    def do_whiten(self, value: builtins.bool) -> None:
+        r"""
+        Global ZCA whitening (MountainSort 5 expects whitened data).
+        """
+    @property
+    def whitening_chunks(self) -> builtins.int:
+        r"""
+        Chunks the whitening is fitted on (evenly spaced).
+        """
+    @whitening_chunks.setter
+    def whitening_chunks(self, value: builtins.int) -> None:
+        r"""
+        Chunks the whitening is fitted on (evenly spaced).
+        """
+    @property
+    def whitening_chunk_samples(self) -> builtins.int:
+        r"""
+        Samples per whitening chunk.
+        """
+    @whitening_chunk_samples.setter
+    def whitening_chunk_samples(self, value: builtins.int) -> None:
+        r"""
+        Samples per whitening chunk.
+        """
+    @property
+    def whitening_epsilon(self) -> builtins.float:
+        r"""
+        Regularisation added to the covariance eigenvalues.
+        """
+    @whitening_epsilon.setter
+    def whitening_epsilon(self, value: builtins.float) -> None:
+        r"""
+        Regularisation added to the covariance eigenvalues.
+        """
+    @property
+    def detect_threshold(self) -> builtins.float:
+        r"""
+        Detection threshold (whitened units); scheme 2's classification phase.
+        """
+    @detect_threshold.setter
+    def detect_threshold(self, value: builtins.float) -> None:
+        r"""
+        Detection threshold (whitened units); scheme 2's classification phase.
+        """
+    @property
+    def detect_sign(self) -> builtins.int:
+        r"""
+        `-1` negative peaks, `1` positive, `0` both.
+        """
+    @detect_sign.setter
+    def detect_sign(self, value: builtins.int) -> None:
+        r"""
+        `-1` negative peaks, `1` positive, `0` both.
+        """
+    @property
+    def detect_time_radius_ms(self) -> builtins.float:
+        r"""
+        Events closer than this compete (ms).
+        """
+    @detect_time_radius_ms.setter
+    def detect_time_radius_ms(self, value: builtins.float) -> None:
+        r"""
+        Events closer than this compete (ms).
+        """
+    @property
+    def scheme1_detect_channel_radius_um(self) -> typing.Optional[builtins.float]:
+        r"""
+        Scheme 1's detection neighbourhood (µm; `None`: every channel).
+        """
+    @scheme1_detect_channel_radius_um.setter
+    def scheme1_detect_channel_radius_um(self, value: typing.Optional[builtins.float]) -> None:
+        r"""
+        Scheme 1's detection neighbourhood (µm; `None`: every channel).
+        """
+    @property
+    def phase1_detect_channel_radius_um(self) -> typing.Optional[builtins.float]:
+        r"""
+        Scheme 2's training-phase detection neighbourhood (µm).
+        """
+    @phase1_detect_channel_radius_um.setter
+    def phase1_detect_channel_radius_um(self, value: typing.Optional[builtins.float]) -> None:
+        r"""
+        Scheme 2's training-phase detection neighbourhood (µm).
+        """
+    @property
+    def phase1_detect_threshold(self) -> builtins.float:
+        r"""
+        Scheme 2's training-phase threshold.
+        """
+    @phase1_detect_threshold.setter
+    def phase1_detect_threshold(self, value: builtins.float) -> None:
+        r"""
+        Scheme 2's training-phase threshold.
+        """
+    @property
+    def phase1_detect_time_radius_ms(self) -> builtins.float:
+        r"""
+        Scheme 2's training-phase time radius (ms).
+        """
+    @phase1_detect_time_radius_ms.setter
+    def phase1_detect_time_radius_ms(self, value: builtins.float) -> None:
+        r"""
+        Scheme 2's training-phase time radius (ms).
+        """
+    @property
+    def detect_channel_radius_um(self) -> typing.Optional[builtins.float]:
+        r"""
+        Scheme 2's classification-phase detection neighbourhood (µm).
+        """
+    @detect_channel_radius_um.setter
+    def detect_channel_radius_um(self, value: typing.Optional[builtins.float]) -> None:
+        r"""
+        Scheme 2's classification-phase detection neighbourhood (µm).
+        """
+    @property
+    def snippet_t1(self) -> builtins.int:
+        r"""
+        Snippet samples before the event.
+        """
+    @snippet_t1.setter
+    def snippet_t1(self, value: builtins.int) -> None:
+        r"""
+        Snippet samples before the event.
+        """
+    @property
+    def snippet_t2(self) -> builtins.int:
+        r"""
+        Snippet samples after the event.
+        """
+    @snippet_t2.setter
+    def snippet_t2(self, value: builtins.int) -> None:
+        r"""
+        Snippet samples after the event.
+        """
+    @property
+    def snippet_mask_radius_um(self) -> typing.Optional[builtins.float]:
+        r"""
+        Snippet channels: within this distance of the event's channel (µm; `None`: all).
+        """
+    @snippet_mask_radius_um.setter
+    def snippet_mask_radius_um(self, value: typing.Optional[builtins.float]) -> None:
+        r"""
+        Snippet channels: within this distance of the event's channel (µm; `None`: all).
+        """
+    @property
+    def npca_per_channel(self) -> builtins.int:
+        r"""
+        PCA components per channel of the first clustering.
+        """
+    @npca_per_channel.setter
+    def npca_per_channel(self, value: builtins.int) -> None:
+        r"""
+        PCA components per channel of the first clustering.
+        """
+    @property
+    def npca_per_subdivision(self) -> builtins.int:
+        r"""
+        PCA components of each isosplit6 subdivision.
+        """
+    @npca_per_subdivision.setter
+    def npca_per_subdivision(self, value: builtins.int) -> None:
+        r"""
+        PCA components of each isosplit6 subdivision.
+        """
+    @property
+    def skip_alignment(self) -> builtins.bool:
+        r"""
+        Skip the template alignment step.
+        """
+    @skip_alignment.setter
+    def skip_alignment(self, value: builtins.bool) -> None:
+        r"""
+        Skip the template alignment step.
+        """
+    @property
+    def isocut_threshold(self) -> builtins.float:
+        r"""
+        isosplit6: dip scores below this merge two clusters.
+        """
+    @isocut_threshold.setter
+    def isocut_threshold(self, value: builtins.float) -> None:
+        r"""
+        isosplit6: dip scores below this merge two clusters.
+        """
+    @property
+    def min_cluster_size(self) -> builtins.int:
+        r"""
+        isosplit6: smaller clusters always merge.
+        """
+    @min_cluster_size.setter
+    def min_cluster_size(self, value: builtins.int) -> None:
+        r"""
+        isosplit6: smaller clusters always merge.
+        """
+    @property
+    def k_init(self) -> builtins.int:
+        r"""
+        isosplit6: initial parcels.
+        """
+    @k_init.setter
+    def k_init(self, value: builtins.int) -> None:
+        r"""
+        isosplit6: initial parcels.
+        """
+    @property
+    def max_iterations_per_pass(self) -> builtins.int:
+        r"""
+        isosplit6: iterations per pass.
+        """
+    @max_iterations_per_pass.setter
+    def max_iterations_per_pass(self, value: builtins.int) -> None:
+        r"""
+        isosplit6: iterations per pass.
+        """
+    @property
+    def training_duration_sec(self) -> typing.Optional[builtins.float]:
+        r"""
+        Scheme 2's training stretch (s; `None`: the whole recording).
+        """
+    @training_duration_sec.setter
+    def training_duration_sec(self, value: typing.Optional[builtins.float]) -> None:
+        r"""
+        Scheme 2's training stretch (s; `None`: the whole recording).
+        """
+    @property
+    def training_sampling(self) -> builtins.str:
+        r"""
+        `"uniform"`: 10 s chunks spread over the recording; `"initial"`: the start.
+        """
+    @training_sampling.setter
+    def training_sampling(self, value: builtins.str) -> None:
+        r"""
+        `"uniform"`: 10 s chunks spread over the recording; `"initial"`: the start.
+        """
+    @property
+    def max_num_snippets_per_training_batch(self) -> builtins.int:
+        r"""
+        Noise snippets, and snippets per unit and channel, of the classifiers.
+        """
+    @max_num_snippets_per_training_batch.setter
+    def max_num_snippets_per_training_batch(self, value: builtins.int) -> None:
+        r"""
+        Noise snippets, and snippets per unit and channel, of the classifiers.
+        """
+    @property
+    def classifier_npca(self) -> typing.Optional[builtins.int]:
+        r"""
+        Classifier PCA components (`None`: `max(12, 3 · mask channels)`).
+        """
+    @classifier_npca.setter
+    def classifier_npca(self, value: typing.Optional[builtins.int]) -> None:
+        r"""
+        Classifier PCA components (`None`: `max(12, 3 · mask channels)`).
+        """
+    @property
+    def classification_chunk_sec(self) -> typing.Optional[builtins.float]:
+        r"""
+        Seconds per window (`None`: 10⁸ values / channels, upstream's chunk).
+        """
+    @classification_chunk_sec.setter
+    def classification_chunk_sec(self, value: typing.Optional[builtins.float]) -> None:
+        r"""
+        Seconds per window (`None`: 10⁸ values / channels, upstream's chunk).
+        """
+    @property
+    def pca_exact_cap(self) -> builtins.int:
+        r"""
+        Above this many features PCA is randomized.
+        """
+    @pca_exact_cap.setter
+    def pca_exact_cap(self, value: builtins.int) -> None:
+        r"""
+        Above this many features PCA is randomized.
+        """
+    @property
+    def seed(self) -> builtins.int:
+        r"""
+        Seed of the randomized PCA.
+        """
+    @seed.setter
+    def seed(self, value: builtins.int) -> None:
+        r"""
+        Seed of the randomized PCA.
+        """
+    def __new__(cls, *, scheme: builtins.int = 2, do_car: builtins.bool = False, do_bandpass: builtins.bool = True, bandpass_low_hz: builtins.float = 300.0, bandpass_high_hz: typing.Optional[builtins.float] = 6000.0, do_notch: builtins.bool = False, notch_hz: builtins.float = 60.0, notch_q: builtins.float = 30.0, do_whiten: builtins.bool = True, whitening_chunks: builtins.int = 20, whitening_chunk_samples: builtins.int = 10000, whitening_epsilon: builtins.float = 9.99999993922529e-09, detect_threshold: builtins.float = 5.5, detect_sign: builtins.int = -1, detect_time_radius_ms: builtins.float = 0.5, scheme1_detect_channel_radius_um: typing.Optional[builtins.float] = 150.0, phase1_detect_channel_radius_um: typing.Optional[builtins.float] = 200.0, phase1_detect_threshold: builtins.float = 5.5, phase1_detect_time_radius_ms: builtins.float = 1.5, detect_channel_radius_um: typing.Optional[builtins.float] = 50.0, snippet_t1: builtins.int = 20, snippet_t2: builtins.int = 20, snippet_mask_radius_um: typing.Optional[builtins.float] = 250.0, npca_per_channel: builtins.int = 3, npca_per_subdivision: builtins.int = 10, skip_alignment: builtins.bool = False, isocut_threshold: builtins.float = 2.0, min_cluster_size: builtins.int = 10, k_init: builtins.int = 200, max_iterations_per_pass: builtins.int = 500, training_duration_sec: typing.Optional[builtins.float] = 300.0, training_sampling: builtins.str = 'uniform', max_num_snippets_per_training_batch: builtins.int = 200, classifier_npca: typing.Optional[builtins.int] = None, classification_chunk_sec: typing.Optional[builtins.float] = None, pca_exact_cap: builtins.int = 8000, seed: builtins.int = 0) -> Mountainsort5Config:
+        r"""
+        MountainSort 5's defaults, changed by keyword (see the class and attribute docs).
+        """
+    def __repr__(self) -> builtins.str: ...
+
+@typing.final
+class Mountainsort5Result:
+    r"""
+    Result of a MountainSort 5 run (`mountainsort5.run`).
+    
+    Spike times are recording samples (moved to their unit's template peak), amplitudes the whitened
+    trace at the detection, channels the detection channel. Templates are the units' median snippets
+    (whitened).
+    
+    Examples
+    --------
+    >>> result = mountainsort5.run(recording, probe, mountainsort5.Config())
+    >>> result.n_units
+    >>> spikes = result.spikes()
+    >>> sorting = result.to_sorting_output(probe)
+    """
+    @property
+    def sorter(self) -> builtins.str:
+        r"""
+        `"mountainsort5"`.
+        """
+    @property
+    def n_units(self) -> builtins.int:
+        r"""
+        Units found.
+        """
+    @property
+    def sample_rate_hz(self) -> builtins.float:
+        r"""
+        Sampling rate of the recording, Hz.
+        """
+    @property
+    def total_samples(self) -> builtins.int:
+        r"""
+        Samples in the recording.
+        """
+    @property
+    def phase1_spikes(self) -> builtins.int:
+        r"""
+        Spikes of the first phase (scheme 2: the training stretch; scheme 1: all).
+        """
+    @property
+    def preprocessing(self) -> Pipeline:
+        r"""
+        The preprocessing the sorter saw (filters, whitening) as a reusable `Pipeline`.
+        """
+    @property
+    def templates(self) -> numpy.typing.NDArray[numpy.float32]:
+        r"""
+        Unit templates, `[n_units, snippet_t1 + snippet_t2, channels]` float32 (whitened; zeros off
+        the channels a template was computed on).
+        """
+    @property
+    def peak_channels(self) -> builtins.list[builtins.int]:
+        r"""
+        Channel of each unit's template minimum.
+        """
+    def spikes(self) -> dict:
+        r"""
+        The spikes, one entry per spike in every array.
+        
+        Returns
+        -------
+        dict
+            `sample` (recording sample), `unit`, `amplitude` (whitened), `channel` (detection
+            channel).
+        """
+    def to_sorting_output(self, probe: typing.Optional[ProbeLayout] = None) -> SortingOutput:
+        r"""
+        The units in `SortingOutput` form, for export (`save_sorting`: Phy, zarr) and inspection.
+        
+        Parameters
+        ----------
+        probe : ProbeLayout, optional
+            Geometry stored with the units (channel positions in exports).
+        """
+    def __repr__(self) -> builtins.str: ...
 
 @typing.final
 class NotchFilter:
@@ -3927,6 +4401,11 @@ def median_filter(data: typing.Any, width: builtins.int = 9, *, edge: typing.Opt
         Float32, same shape as `data`.
     """
 
+def mountainsort5_provenance() -> Provenance:
+    r"""
+    Provenance of the MountainSort 5 port.
+    """
+
 def notch_filter(data: typing.Any, freq_hz: builtins.float, q: builtins.float, *, fs: builtins.float, direction: builtins.str = 'forward-backward', start: builtins.str = 'rest', runtime: typing.Optional[builtins.str] = None) -> numpy.typing.NDArray[numpy.float32]:
     r"""
     Second-order notch filter of an array (as `scipy.signal.iirnotch`).
@@ -3970,6 +4449,12 @@ def run_emusort(recording: Recording, probe: ProbeLayout, config: EmusortConfig,
     r"""
     EMUsort over a whole recording, without a progress bar. Prefer `dsp_kitchen.synapse.ml.emusort.run`,
     which documents every argument and shows progress.
+    """
+
+def run_mountainsort5(recording: Recording, probe: ProbeLayout, config: Mountainsort5Config, *, progress: typing.Optional[typing.Any] = None, runtime: typing.Optional[builtins.str] = None) -> Mountainsort5Result:
+    r"""
+    MountainSort 5 over a whole recording, without a progress bar. Prefer
+    `dsp_kitchen.synapse.ml.mountainsort5.run`, which documents every argument and shows progress.
     """
 
 def save_sorting(sorting: SortingOutput, path: builtins.str, format: typing.Optional[builtins.str] = None) -> None:

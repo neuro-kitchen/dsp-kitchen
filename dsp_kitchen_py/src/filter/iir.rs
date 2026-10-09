@@ -18,6 +18,7 @@ fn spec(design: FilterDesign, direction: &str, start: &str) -> PyResult<FilterSp
     let base = match design {
         FilterDesign::Butterworth { order, band } => FilterSpec::butterworth(order, band),
         FilterDesign::Chebyshev1 { order, ripple_db, band } => FilterSpec::chebyshev1(order, ripple_db, band),
+        FilterDesign::Bessel { order, band } => FilterSpec::bessel(order, band),
         FilterDesign::Notch { freq_hz, q } => FilterSpec::notch(freq_hz, q),
         FilterDesign::Sos(sos) => FilterSpec::sos(sos),
     };
@@ -28,6 +29,7 @@ fn repr(class: &str, s: &FilterSpec) -> String {
     let design = match &s.design {
         FilterDesign::Butterworth { order, band } => format!("{band:?}, order={order}"),
         FilterDesign::Chebyshev1 { order, ripple_db, band } => format!("{band:?}, order={order}, ripple_db={ripple_db}"),
+        FilterDesign::Bessel { order, band } => format!("{band:?}, order={order}"),
         FilterDesign::Notch { freq_hz, q } => format!("freq_hz={freq_hz}, q={q}"),
         FilterDesign::Sos(sos) => format!("{} sections", sos.sections.len()),
     };
@@ -190,6 +192,46 @@ Examples
 --------
 >>> y = Pipeline([ChebyshevFilter(4, 0.5, \"highpass\", 300.0)]).run(x, fs=30000.0)"
 );
+
+filter_class!(
+    PyBesselFilter,
+    "BesselFilter",
+    "Bessel filter (as `scipy.signal.bessel`, phase-normalised): a pipeline stage (see `Pipeline`).
+
+Parameters
+----------
+order : int
+    Filter order (per edge for band filters, as scipy).
+btype : {\"lowpass\", \"highpass\", \"bandpass\", \"bandstop\"}
+low_hz : float
+    Cutoff, Hz (the lower edge for band filters).
+high_hz : float, optional
+    Upper edge, Hz (band filters only).
+direction : {\"forward-backward\", \"forward\"}, default \"forward-backward\"
+    `\"forward-backward\"`: zero phase (as `scipy.signal.sosfiltfilt`; the effective order doubles).
+    `\"forward\"`: causal (as `sosfilt`).
+start : {\"rest\", \"steady-state\"}, default \"rest\"
+    `\"rest\"`: the input is taken as zero before the first sample. `\"steady-state\"`: from the
+    first sample's steady state (as `sosfilt_zi`).
+
+Examples
+--------
+>>> y = Pipeline([BesselFilter(2, \"bandpass\", 150.0, 7000.0)]).run(x, fs=30000.0)"
+);
+
+#[gen_stub_pymethods]
+#[pymethods]
+impl PyBesselFilter {
+    /// See the class docs.
+    #[new]
+    #[pyo3(signature = (order, btype, low_hz, high_hz=None, *, direction=DEFAULT_DIRECTION, start=DEFAULT_START))]
+    fn new(order: usize, btype: &str, low_hz: f64, high_hz: Option<f64>, direction: &str, start: &str) -> PyResult<Self> {
+        Ok(Self { spec: spec(FilterDesign::Bessel { order, band: band(btype, low_hz, high_hz)? }, direction, start)? })
+    }
+    fn __repr__(&self) -> String {
+        repr("BesselFilter", &self.spec)
+    }
+}
 
 #[gen_stub_pymethods]
 #[pymethods]
@@ -483,6 +525,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyBandstopFilter>()?;
     m.add_class::<PyNotchFilter>()?;
     m.add_class::<PyChebyshevFilter>()?;
+    m.add_class::<PyBesselFilter>()?;
     m.add_function(wrap_pyfunction!(bandpass_filter, m)?)?;
     m.add_function(wrap_pyfunction!(highpass_filter, m)?)?;
     m.add_function(wrap_pyfunction!(lowpass_filter, m)?)?;

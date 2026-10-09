@@ -632,7 +632,7 @@ fn run_emusort_py(
 /// A Python callable receiving `(stage, step, steps, done, total, unit)` for each progress report
 /// of a run (called with the GIL re-taken; its errors are printed, not raised, so a bar cannot
 /// stop a run).
-struct PyProgress(Py<PyAny>);
+pub(crate) struct PyProgress(pub(crate) Py<PyAny>);
 
 impl dsp_core::ProgressSink for PyProgress {
     fn report(&self, e: &dsp_core::ProgressEvent<'_>) {
@@ -991,7 +991,7 @@ fn apply_channel_delays<'py>(py: Python<'py>, batch: Bound<'py, PyAny>, delays: 
 #[gen_stub_pyclass]
 #[pyclass(name = "Provenance", skip_from_py_object)]
 pub struct PyProvenance {
-    inner: Provenance,
+    pub(crate) inner: Provenance,
 }
 
 #[gen_stub_pymethods]
