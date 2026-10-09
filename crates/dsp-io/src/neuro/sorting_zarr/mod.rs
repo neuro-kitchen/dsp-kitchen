@@ -31,6 +31,9 @@ fn nan_f32<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
     Ok(Option::<f32>::deserialize(d)?.unwrap_or(f32::NAN))
 }
 
+fn nan() -> f64 {
+    f64::NAN
+}
 fn nan_f64<'de, D: Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
     Ok(Option::<f64>::deserialize(d)?.unwrap_or(f64::NAN))
 }
@@ -52,6 +55,9 @@ pub struct SortingZarrUnit {
     pub presence_ratio: f64,
     #[serde(default, deserialize_with = "nan_f64")]
     pub amplitude_cutoff: f64,
+    /// Composite quality score (EMUsort); NaN when not computed, and in older stores.
+    #[serde(default = "nan", deserialize_with = "nan_f64")]
+    pub composite_score: f64,
     pub num_spikes: usize,
 }
 
@@ -179,6 +185,7 @@ mod tests {
                     isi_violation_ratio: 0.0,
                     presence_ratio: 1.0,
                     amplitude_cutoff: 0.0,
+                    composite_score: 0.9,
                     num_spikes: 2,
                 }],
             },
