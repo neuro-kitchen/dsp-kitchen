@@ -1,7 +1,7 @@
 # Benchmarks
 
 Processing times of our sorters on the two test recordings, and how their output compares with
-Kilosort4's own results where those exist. Kilosort4's and EMUsort's processing times are not given:
+Kilosort4's own results where those exist (MountainSort 5 included, as a second sorter). Kilosort4's and EMUsort's processing times are not given:
 we have no run of the originals on this machine, and a time recorded on other hardware would not be
 comparable.
 
@@ -120,6 +120,33 @@ Two fixes came out of these checks: duplicate detections at bit-identical neighb
 94 000 spikes, 53% of a median unit's intervals under 2 ms) and the template length (see
 [EMUsort parameters](emusort/parameters.md)).
 
+## MountainSort 5: agreement with Kilosort4's results
+
+There is no MountainSort 5 reference for this recording: its units are compared with Kilosort4's
+saved results as a second sorter on the same data (`mountainsort5_validation.py`, defaults: scheme 2;
+the 45 s recording is shorter than the 300 s training stretch, so phase 1 sorts all of it). Build:
+`--profile validate` (optimised, not `--release`).
+
+| | MountainSort 5 (ours) | Kilosort4 (saved) |
+|---|---|---|
+| Spikes | 35 121 | 138 666 |
+| Units (good by the auto-correlogram) | 165 (138) | 267 (127) |
+| Kilosort4 spikes found in time (±0.4 ms) and place (60 µm) | 0.29 | |
+| Spike times, ours − Kilosort4 | peak at 0 samples | |
+| Kilosort4's good units: found / not split / precision / accuracy (median) | 0.83 / 0.95 / 0.91 / 0.59 | |
+| Kilosort4's good units with accuracy ≥ 0.8 / ≥ 0.5 | 0.36 / 0.58 | |
+
+MountainSort 5 finds a quarter of Kilosort4's spikes. Its detection is a single-channel threshold at
+5.5 σ after **global** whitening: on this probe the whitened noise has σ = 1.00 (checked), and global
+whitening halves the rate of 5.5 σ crossings compared with each channel's own noise. Kilosort4 matches
+learned templates and reaches smaller spikes. Where MountainSort 5 does find a unit, it agrees with
+Kilosort4's (median precision 0.91, rarely split).
+
+Time: 404 s (6.7 min) for 45 s of 383 channels. Phase-1 clustering is 297 s: the subdivision tree is
+lopsided (single linkage peels a few clusters off almost all 39 649 spikes at each level, so PCA and
+isosplit6 run again on nearly every spike, level after level), as in upstream; the per-channel
+classifiers take about 90 s; detection, training snippets and classification 17 s.
+
 ## Running the benchmarks
 
 ```bash
@@ -127,6 +154,7 @@ uv run python playground/benchmarks/kilosort4_validation.py     # export round t
 uv run python playground/benchmarks/kilosort4_experiments.py    # learned vs Kilosort4's templates
 uv run python playground/benchmarks/kilosort4_benchmark.py      # speed per stage and runtime
 uv run python playground/benchmarks/emusort_checks.py 200       # EMUsort on a 200 s segment
+uv run python playground/benchmarks/mountainsort5_validation.py --rerun   # MountainSort 5 vs Kilosort4 (~7 min)
 ```
 
 `playground/benchmarks/ks4_reference.py` holds the shared comparison (Kilosort4's saved results, the
