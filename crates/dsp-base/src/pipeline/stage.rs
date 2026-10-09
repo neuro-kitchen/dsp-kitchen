@@ -18,6 +18,8 @@ pub enum PipelineStage {
     Filter(FilterSpec),
     /// Common Average Referencing across all channels
     CommonAverageReference,
+    /// Common median reference: the median over all channels subtracted at every sample
+    CommonMedianReference,
     /// Spatial whitening ($\mathbf{W}_{\text{ZCA}}$ or Local $K$-NN) across channels
     SpatialWhitening(SpatialWhitening),
     /// 2D Surface Laplacian (double-differential spatial filter) across channels
@@ -62,6 +64,11 @@ impl PipelineStage {
     /// Common Average Referencing across all channels.
     pub fn common_average_reference() -> Self {
         Self::CommonAverageReference
+    }
+
+    /// Common median reference across all channels.
+    pub fn common_median_reference() -> Self {
+        Self::CommonMedianReference
     }
 
     /// Explicit second-order sections, zero phase.
@@ -114,6 +121,7 @@ impl PipelineStage {
             | PipelineStage::SubtractBaseline { .. }
             | PipelineStage::Clamp { .. }
             | PipelineStage::CommonAverageReference
+            | PipelineStage::CommonMedianReference
             | PipelineStage::SpatialWhitening(_)
             | PipelineStage::SurfaceLaplacian(_) => (0, 0),
         })

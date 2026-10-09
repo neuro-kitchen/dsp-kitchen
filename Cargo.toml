@@ -105,3 +105,11 @@ opt-level = 3
 # debug builds. Only wgpu-core's internal checks are off; ours stay on.
 [profile.dev.package.wgpu-core]
 debug-assertions = false
+
+# wgpu-types picks the instance flags: with debug assertions, `InstanceFlags::default()` turns on the
+# Vulkan validation layer (CubeCL does not read `WGPU_VALIDATION`). The layer wraps device teardown
+# and widened the exit race with NVIDIA's background shader compiler (SIGABRT in libnvidia-gpucomp
+# during `vkDestroyDevice`, 2026-10-09). Debug builds now run like release ones; validation is
+# opt-in through cubecl-wgpu's `vulkan-validate` feature.
+[profile.dev.package.wgpu-types]
+debug-assertions = false

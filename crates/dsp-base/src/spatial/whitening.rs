@@ -40,6 +40,15 @@ impl SpatialWhitening {
         Self { num_channels: channels, matrix: matrix.iter().map(|&w| w as f32).collect() }
     }
 
+    /// Global ZCA whitening from a `[channels, channels]` covariance (row-major), for callers that
+    /// accumulate it over many chunks (e.g. [`crate::linalg::SecondMomentAccumulator`]).
+    pub fn zca_from_covariance<F: DspFloat>(client: &Client, cov: &[f64], channels: usize, epsilon: f32) -> Self {
+        assert_eq!(cov.len(), channels * channels, "covariance must be [channels, channels]");
+        let eig = crate::linalg::symmetric_eigen_host::<F>(client, cov, channels, EigenOptions::default());
+        let matrix = zca_from_eigen(&eig, epsilon.max(MIN_WHITENING_EPSILON) as f64);
+        Self { num_channels: channels, matrix: matrix.iter().map(|&w| w as f32).collect() }
+    }
+
     /// Fits a local `K`-nearest-neighbour ZCA whitening matrix (Kilosort4 style) given sensor
     /// `positions` (`(x, y)` per channel) and host `data` (`[channels, samples]`).
     ///
@@ -109,6 +118,32 @@ impl SpatialWhitening {
         Self { num_channels: channels, matrix }
     }
 
+    /// Local ZCA whitening by radius (SpikeInterface's `whiten(mode="local")`): each channel `c` is
+    /// whitened over the channels within `radius_um` of it (`positions`, `(x, y)` µm), row `c` of
+    /// the local ZCA matrix of that neighbourhood's covariance (`cov`, `[channels, channels]`
+    /// row-major). The neighbourhoods differ in size, so each is decomposed on the host
+    /// ([`crate::linalg::symmetric_eigen_cpu`], `f64`).
+    pub fn local_radius_from_covariance(cov: &[f64], channels: usize, positions: &[[f32; 2]], radius_um: f32, epsilon: f32) -> Self {
+        assert_eq!(positions.len(), channels, "Positions length must equal channels");
+        assert_eq!(cov.len(), channels * channels, "covariance must be [channels, channels]");
+        let eps = epsilon.max(MIN_WHITENING_EPSILON) as f64;
+        let mut matrix = vec![0.0f32; channels * channels];
+        for c in 0..channels {
+            let nb: Vec<usize> = (0..channels)
+                .filter(|&j| (positions[c][0] - positions[j][0]).hypot(positions[c][1] - positions[j][1]) <= radius_um)
+                .collect();
+            let k = nb.len();
+            let local: Vec<f64> = nb.iter().flat_map(|&a| nb.iter().map(move |&b| cov[a * channels + b])).collect();
+            let eig = crate::linalg::symmetric_eigen_cpu(&local, k);
+            let zca = zca_from_eigen(&eig, eps);
+            let own = nb.iter().position(|&j| j == c).unwrap_or(0);
+            for (lj, &gj) in nb.iter().enumerate() {
+                matrix[c * channels + gj] = zca[own * k + lj] as f32;
+            }
+        }
+        Self { num_channels: channels, matrix }
+    }
+
     /// Applies the spatial whitening matrix `[C, C]` to `data` (`[C, S]`) on the CPU.
     pub fn apply_cpu(&self, data: &[f32], channels: usize, samples: usize) -> Vec<f32> {
         assert_eq!(channels, self.num_channels);
@@ -169,6 +204,30 @@ fn zca_from_eigen(eig: &SymmetricEigen, epsilon: f64) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Radius neighbourhoods: with a radius covering every channel, the global ZCA; each row only
+    /// touches its neighbours otherwise.
+    #[test]
+    fn local_radius_whitening() {
+        let (n, s) = (5usize, 4000usize);
+        let pos: Vec<[f32; 2]> = (0..n).map(|c| [0.0, 20.0 * c as f32]).collect();
+        let data: Vec<f32> = (0..n * s).map(|i| (((i * 7919) % 1013) as f32 / 101.3 - 5.0) + ((i % s) as f32 * 0.37).sin() * 3.0).collect();
+        let cov = host_covariance(&data, n, s);
+        let all = SpatialWhitening::local_radius_from_covariance(&cov, n, &pos, 1000.0, 1e-9);
+        let eig = crate::linalg::symmetric_eigen_cpu(&cov, n);
+        let global = zca_from_eigen(&eig, 1e-9);
+        for (a, b) in all.matrix.iter().zip(&global) {
+            assert!((*a as f64 - b).abs() < 1e-4 * b.abs().max(1e-3), "{a} vs {b}");
+        }
+        let local = SpatialWhitening::local_radius_from_covariance(&cov, n, &pos, 25.0, 1e-9);
+        for c in 0..n {
+            for j in 0..n {
+                if c.abs_diff(j) > 1 {
+                    assert_eq!(local.matrix[c * n + j], 0.0, "row {c} reaches channel {j}");
+                }
+            }
+        }
+    }
 
     /// Host covariance (`/ samples`), the reference for the whitened output.
     fn host_covariance(data: &[f32], channels: usize, samples: usize) -> Vec<f64> {
