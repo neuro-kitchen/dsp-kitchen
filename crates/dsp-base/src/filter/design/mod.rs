@@ -8,7 +8,7 @@ mod butterworth;
 mod notch;
 mod sos;
 
-pub use butterworth::{butterworth_sos, chebyshev1_sos};
+pub use butterworth::{bessel_sos, butterworth_sos, chebyshev1_sos};
 pub use notch::notch_sos;
 pub use sos::{Section, Sos, DEFAULT_SETTLING_TOLERANCE};
 
@@ -54,6 +54,8 @@ pub enum FilterDesign {
     Butterworth { order: usize, band: FilterBand },
     /// Chebyshev type I of any order with `ripple_db` of pass-band ripple (`cheby1`).
     Chebyshev1 { order: usize, ripple_db: f64, band: FilterBand },
+    /// Bessel of any order (per edge for band filters), phase-normalised (`scipy.signal.bessel`).
+    Bessel { order: usize, band: FilterBand },
     /// Second-order notch at `freq_hz` with quality factor `q` (`iirnotch`).
     Notch { freq_hz: f64, q: f64 },
     /// Explicit second-order sections, already designed for the target sample rate.
@@ -96,6 +98,11 @@ impl FilterSpec {
         Self { design: FilterDesign::Chebyshev1 { order, ripple_db, band }, mode: FilterMode::default(), start: FilterStart::default() }
     }
 
+    /// Bessel of `order` per edge (phase-normalised, as `scipy.signal.bessel`), zero phase.
+    pub fn bessel(order: usize, band: FilterBand) -> Self {
+        Self { design: FilterDesign::Bessel { order, band }, mode: FilterMode::default(), start: FilterStart::default() }
+    }
+
     pub fn notch(freq_hz: f64, q: f64) -> Self {
         Self { design: FilterDesign::Notch { freq_hz, q }, mode: FilterMode::default(), start: FilterStart::default() }
     }
@@ -106,7 +113,7 @@ impl FilterSpec {
 
     /// Returns the same filter with `order` (Butterworth / Chebyshev; ignored for notch / explicit SOS).
     pub fn with_order(mut self, new_order: usize) -> Self {
-        if let FilterDesign::Butterworth { order, .. } | FilterDesign::Chebyshev1 { order, .. } = &mut self.design {
+        if let FilterDesign::Butterworth { order, .. } | FilterDesign::Chebyshev1 { order, .. } | FilterDesign::Bessel { order, .. } = &mut self.design {
             *order = new_order;
         }
         self
@@ -134,6 +141,7 @@ impl FilterSpec {
         match &self.design {
             FilterDesign::Butterworth { order, band } => butterworth_sos(*order, *band, sample_rate),
             FilterDesign::Chebyshev1 { order, ripple_db, band } => chebyshev1_sos(*order, *ripple_db, *band, sample_rate),
+            FilterDesign::Bessel { order, band } => bessel_sos(*order, *band, sample_rate),
             FilterDesign::Notch { freq_hz, q } => notch_sos(*freq_hz, *q, sample_rate),
             FilterDesign::Sos(sos) => {
                 sos.validate()?;

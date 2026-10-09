@@ -1,6 +1,6 @@
 //! IIR design: analog prototype → band transform → bilinear transform → SOS pairing, following
-//! `scipy.signal.iirfilter(..., output="sos")` step by step for Butterworth (`butter`) and
-//! Chebyshev type I (`cheby1`) prototypes.
+//! `scipy.signal.iirfilter(..., output="sos")` step by step for Butterworth (`butter`), Chebyshev
+//! type I (`cheby1`) and Bessel (`bessel`, phase-normalised) prototypes.
 
 use num_complex::Complex64 as C;
 use std::f64::consts::PI;
@@ -36,6 +36,20 @@ pub fn chebyshev1_sos(order: usize, ripple_db: f64, band: FilterBand, sample_rat
         return Err(FilterError::InvalidRipple(ripple_db));
     }
     design_sos(chebyshev1_prototype(order, ripple_db), band, sample_rate)
+}
+
+/// Designs a Bessel filter of `order` (per band edge) as second-order sections
+/// (`scipy.signal.iirfilter(..., ftype="bessel")`, `norm="phase"`: the phase response at the cutoff
+/// is that of a Butterworth filter).
+///
+/// # Errors
+///
+/// [`FilterError`] when the design is invalid at `sample_rate` (as [`butterworth_sos`]).
+pub fn bessel_sos(order: usize, band: FilterBand, sample_rate: f64) -> Result<Sos, FilterError> {
+    if order == 0 {
+        return Err(FilterError::InvalidOrder);
+    }
+    design_sos(bessel_prototype(order), band, sample_rate)
 }
 
 /// Turns an analog low-pass prototype into digital second-order sections for `band`.
@@ -111,6 +125,86 @@ fn chebyshev1_prototype(n: usize, ripple_db: f64) -> Zpk {
         k /= (1.0 + eps * eps).sqrt();
     }
     (Vec::new(), p, k)
+}
+
+/// Analog Bessel prototype (`besselap(n, norm="phase")`): the roots of the reverse Bessel
+/// polynomial `θₙ(s) = Σₖ aₖ sᵏ`, `aₖ = (2n − k)! / (2ⁿ⁻ᵏ k! (n − k)!)`, scaled by `a₀^(−1/n)`;
+/// unit gain at DC.
+fn bessel_prototype(n: usize) -> Zpk {
+    // Coefficients, constant first; a_n = 1
+    let mut a = vec![0.0f64; n + 1];
+    for (k, ak) in a.iter_mut().enumerate() {
+        let mut v = 1.0f64;
+        // (2n − k)! / ((n − k)! k!) / 2^(n − k)
+        for j in (n - k + 1)..=(2 * n - k) {
+            v *= j as f64;
+        }
+        for j in 1..=k {
+            v /= j as f64;
+        }
+        *ak = v / 2f64.powi((n - k) as i32);
+    }
+    let roots = polynomial_roots(&a);
+    let scale = a[0].powf(-1.0 / n as f64);
+    (Vec::new(), roots.into_iter().map(|r| r * scale).collect(), 1.0)
+}
+
+/// Roots of the monic real polynomial with coefficients `a` (constant first, `a[n] = 1`), by the
+/// Aberth–Ehrlich iteration; conjugate pairs are made exact.
+fn polynomial_roots(a: &[f64]) -> Vec<C> {
+    let n = a.len() - 1;
+    let eval = |x: C| -> (C, C) {
+        // Horner: value and derivative
+        let mut v = C::new(a[n], 0.0);
+        let mut d = C::new(0.0, 0.0);
+        for k in (0..n).rev() {
+            d = d * x + v;
+            v = v * x + a[k];
+        }
+        (v, d)
+    };
+    // Start on a circle of the roots' mean radius, off the real axis
+    let radius = a[0].abs().powf(1.0 / n as f64).max(1e-3);
+    let mut z: Vec<C> = (0..n).map(|i| C::from_polar(radius, 2.0 * PI * (i as f64 + 0.25) / n as f64 + 0.4)).collect();
+    for _ in 0..500 {
+        let mut moved = 0.0f64;
+        for i in 0..n {
+            let (v, d) = eval(z[i]);
+            if v.norm() == 0.0 {
+                continue;
+            }
+            let ratio = v / d;
+            let sum: C = (0..n).filter(|&j| j != i).map(|j| C::new(1.0, 0.0) / (z[i] - z[j])).sum();
+            let step = ratio / (C::new(1.0, 0.0) - ratio * sum);
+            z[i] -= step;
+            moved = moved.max(step.norm() / z[i].norm().max(1e-300));
+        }
+        if moved < 1e-15 {
+            break;
+        }
+    }
+    // Exact conjugate pairs and real roots (the polynomial is real)
+    let mut out: Vec<C> = Vec::with_capacity(n);
+    let mut used = vec![false; n];
+    for i in 0..n {
+        if used[i] {
+            continue;
+        }
+        used[i] = true;
+        if z[i].im.abs() <= 1e-12 * z[i].norm() {
+            out.push(C::new(z[i].re, 0.0));
+            continue;
+        }
+        let j = (0..n).filter(|&j| !used[j]).min_by(|&p, &q| (z[p] - z[i].conj()).norm().total_cmp(&(z[q] - z[i].conj()).norm()));
+        let mate = j.map_or(z[i].conj(), |j| {
+            used[j] = true;
+            z[j]
+        });
+        let avg = C::new(0.5 * (z[i].re + mate.re), 0.5 * (z[i].im.abs() + mate.im.abs()));
+        out.push(avg);
+        out.push(avg.conj());
+    }
+    out
 }
 
 fn prod_neg(v: &[C]) -> C {
@@ -311,6 +405,43 @@ mod tests {
             acc * (s.b[0] + s.b[1] * zi + s.b[2] * zi * zi) / (s.a[0] + s.a[1] * zi + s.a[2] * zi * zi)
         });
         20.0 * h.norm().log10()
+    }
+
+    /// Against `scipy.signal` (1.16): `besselap(4, norm="phase")` poles and `iirfilter(..., ftype="bessel",
+    /// output="sos")` designs.
+    #[test]
+    fn bessel_matches_scipy() {
+        let (_, p, k) = bessel_prototype(4);
+        assert_eq!(k, 1.0);
+        let mut got: Vec<(f64, f64)> = p.iter().map(|c| (c.re, c.im)).collect();
+        got.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let want = [(-0.6572111716718827, -0.830161435004873), (-0.9047587967882447, -0.27091873300387465), (-0.9047587967882447, 0.27091873300387465), (-0.6572111716718827, 0.830161435004873)];
+        for (g, w) in got.iter().zip(&want) {
+            assert!((g.0 - w.0).abs() < 1e-12 && (g.1 - w.1).abs() < 1e-12, "{got:?}");
+        }
+        let check = |sos: Sos, want: &[[f64; 6]]| {
+            assert_eq!(sos.sections.len(), want.len());
+            for (s, w) in sos.sections.iter().zip(want) {
+                let g = [s.b[0], s.b[1], s.b[2], s.a[0], s.a[1], s.a[2]];
+                for (x, y) in g.iter().zip(w) {
+                    assert!((x - y).abs() < 1e-10, "{g:?} vs {w:?}");
+                }
+            }
+        };
+        check(
+            bessel_sos(2, FilterBand::Bandpass(150.0, 7000.0), 30_000.0).unwrap(),
+            &[
+                [0.2325830124045049, 0.4651660248090098, 0.2325830124045049, 1.0, -0.14107737906492532, 0.08076761375697504],
+                [1.0, -2.0, 1.0, 1.0, -1.9451447780657138, 0.9461570854214661],
+            ],
+        );
+        check(
+            bessel_sos(4, FilterBand::Highpass(300.0), 30_000.0).unwrap(),
+            &[
+                [0.9049501460290307, -1.8099002920580614, 0.9049501460290307, 1.0, -1.8761020026477615, 0.8802610643350448],
+                [1.0, -2.0, 1.0, 1.0, -1.9255922361704076, 0.9289878665177176],
+            ],
+        );
     }
 
     #[test]
