@@ -12,6 +12,8 @@ pub enum ProvenanceKind {
     ReimplementedFromPaper,
     /// Published weights / arrays run as released.
     UpstreamWeights,
+    /// Algorithm ported from the upstream source (permissive license), stage by stage.
+    PortedFromCode,
 }
 
 /// The publication to cite.

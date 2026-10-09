@@ -24,9 +24,10 @@ use dsp_core::progress::Stages;
 use cubecl::server::Handle;
 use dsp_core::{ChunkSchedule, DspError, DspResult, HaloWindow, ProgressSink, RecordingSource, SampleFormat, WindowLoader};
 use dsp_io::neuro::probe::SensorLayout;
-use dsp_synapse::core::{SortedUnit, SortingOutput, WaveformTemplate};
-use dsp_synapse::metrics::{acg_refractory, composite_score, CompositeScoreOptions, RefractoryOptions};
-use dsp_synapse::{QualityCriteria, UnitQualityLabel};
+use dsp_synapse::core::{SortingOutput, WaveformTemplate};
+
+use crate::sorters::result::{AmplitudeScale, SorterResult};
+use dsp_synapse::metrics::{CompositeScoreOptions, RefractoryOptions};
 
 use super::clustering::{cluster_spikes, SpikeClusters};
 use super::merges::global_merges;
@@ -74,7 +75,7 @@ fn filter_error(e: dsp_base::filter::FilterError) -> DspError {
 /// of `f32`, and the gain / offset are applied on the device, not on the host thread), else as
 /// scaled `f32`; preprocessed by `workspace` and, with channel delays, aligned. Every pass of a
 /// run goes through it, so a window crosses to the device once, in its compact form.
-struct DeviceWindows<'a> {
+pub(crate) struct DeviceWindows<'a> {
     loader: WindowLoader<'a>,
     stored: Option<SampleFormat>,
     workspace: PipelineWorkspace<f32>,
@@ -82,7 +83,7 @@ struct DeviceWindows<'a> {
 }
 
 impl<'a> DeviceWindows<'a> {
-    fn new(source: &'a dyn RecordingSource, mut workspace: PipelineWorkspace<f32>, aligner: Option<ChannelAligner>) -> Self {
+    pub(crate) fn new(source: &'a dyn RecordingSource, mut workspace: PipelineWorkspace<f32>, aligner: Option<ChannelAligner>) -> Self {
         let info = source.info();
         // Stored reads only pay off for integer formats, and not every source implements them
         let probe = |format: SampleFormat| source.read_stored(&[0], 0..1, &mut vec![0u8; format.bytes()]).is_ok();
@@ -98,7 +99,7 @@ impl<'a> DeviceWindows<'a> {
     /// Calls `f(window, prepared)` for every window of `windows` in order (`prepared`: the
     /// `[channels, window.read_len()]` preprocessed window on the device, valid until the next
     /// call), until `f` returns `false`.
-    fn for_each_while(&mut self, windows: &[HaloWindow], mut f: impl FnMut(&HaloWindow, &Handle) -> DspResult<bool>) -> DspResult<()> {
+    pub(crate) fn for_each_while(&mut self, windows: &[HaloWindow], mut f: impl FnMut(&HaloWindow, &Handle) -> DspResult<bool>) -> DspResult<()> {
         let Self { loader, stored, workspace, aligner } = self;
         let mut finish = |window: &HaloWindow, handle: Handle| {
             let handle = match aligner.as_mut() {
@@ -266,58 +267,37 @@ pub struct Kilosort4Result {
 }
 
 impl Kilosort4Result {
-    /// One unit per cluster ([`Kilosort4Result::clusters`]), in [`SortingOutput`] form. Spike
-    /// locations are the response-weighted centre of mass `(x, y)` (µm). A unit's
-    /// template is its mean PC features projected back through `wPCA` (`[channels, nt]`, whitened
-    /// units) on the channels its spikes cover; its primary channel is the one where that template
-    /// is largest. Amplitudes are in whitened σ, not µV, so no noise floor is given (SNR undefined).
-    /// Every unit carries EMUsort's composite score (`composite_score`; SNR taken as the median
-    /// whitened amplitude, noise being σ = 1 after whitening).
-    /// A unit is labelled *good* when its auto-correlogram is refractory
-    /// ([`dsp_synapse::metrics::acg_refractory`]), else *mua* (Phy's `cluster_KSLabel`).
-    pub fn to_sorting_output(&self, probe: Option<SensorLayout>) -> SortingOutput {
+    /// The run as a [`SorterResult`]: one unit per cluster ([`Kilosort4Result::clusters`]); spike
+    /// locations are the response-weighted centre of mass `(x, y)` (µm); a unit's template is its
+    /// mean PC features projected back through `wPCA` (`[channels, nt]`, whitened units) on the
+    /// channels its spikes cover. Amplitudes are whitened σ ([`AmplitudeScale::Whitened`]).
+    pub fn sorter_result(&self) -> SorterResult {
         let (clusters, n_centres) = (&self.clusters, self.centre_positions.len());
-        let (nt, n_pcs, channels) = (self.templates.nt, clusters.n_pcs, clusters.channels);
-        let n_units = clusters.n_units;
-        let mut samples: Vec<Vec<u64>> = vec![Vec::new(); n_units];
-        let mut amps: Vec<Vec<f32>> = vec![Vec::new(); n_units];
-        let mut locs: Vec<Vec<[f32; 3]>> = vec![Vec::new(); n_units];
-        for (spike, &u) in self.spikes.iter().zip(&clusters.labels).filter(|(s, u)| s.centre < n_centres && (**u as usize) < n_units) {
-            let u = u as usize;
-            samples[u].push(spike.sample as u64);
-            amps[u].push(spike.amplitude);
-            locs[u].push([spike.x_um, spike.y_um, 0.0]);
+        let (nt, n_pcs, channels, n_units) = (self.templates.nt, clusters.n_pcs, clusters.channels, clusters.n_units);
+        let kept: Vec<(&UniversalSpike, u32)> =
+            self.spikes.iter().zip(clusters.labels.iter().copied()).filter(|(s, u)| s.centre < n_centres && (*u as usize) < n_units).collect();
+        let mut counts = vec![0usize; n_units];
+        kept.iter().for_each(|(_, u)| counts[*u as usize] += 1);
+        SorterResult {
+            sorter: self.sorter.to_string(),
+            sample_rate_hz: self.sample_rate_hz,
+            total_samples: self.total_samples,
+            n_units,
+            spike_samples: kept.iter().map(|(s, _)| s.sample as u64).collect(),
+            spike_units: kept.iter().map(|(_, u)| *u).collect(),
+            spike_amplitudes: kept.iter().map(|(s, _)| s.amplitude).collect(),
+            spike_locations: kept.iter().map(|(s, _)| [s.x_um, s.y_um, 0.0]).collect(),
+            templates: (0..n_units).map(|u| self.unit_waveform(u, nt, n_pcs, channels, counts[u])).collect(),
+            amplitude_scale: AmplitudeScale::Whitened,
+            label_refractory: self.label_refractory,
+            composite: CompositeScoreOptions::default(),
         }
-        let units = samples
-            .into_iter()
-            .zip(amps)
-            .zip(locs)
-            .enumerate()
-            .filter(|(_, ((s, _), _))| !s.is_empty())
-            .map(|(unit_id, ((s, a), l))| {
-                let template = self.unit_waveform(unit_id, nt, n_pcs, channels, s.len());
-                let primary = template.as_ref().and_then(|t| {
-                    (0..t.channel_ids.len())
-                        .max_by(|&i, &j| {
-                            let norm = |r: usize| t.mean[r * nt..(r + 1) * nt].iter().map(|v| v * v).sum::<f32>();
-                            norm(i).total_cmp(&norm(j))
-                        })
-                        .map(|r| t.channel_ids[r])
-                });
-                let mut sorted = s.clone();
-                sorted.sort_unstable();
-                let good = acg_refractory(&sorted, self.sample_rate_hz, &self.label_refractory).1;
-                let criteria = QualityCriteria::default();
-                let mut unit = SortedUnit::from_spikes_with(unit_id, primary, s, a, l, template, self.sample_rate_hz, self.total_samples, None, criteria);
-                unit.quality_label = if good { UnitQualityLabel::SingleUnit } else { UnitQualityLabel::MultiUnit };
-                // SNR in whitened space: noise is σ = 1 there, so the median amplitude is the SNR
-                let snr = median_abs(&unit.amplitudes_uv);
-                unit.composite_score =
-                    composite_score(&unit.spike_samples, &unit.amplitudes_uv, snr, self.total_samples, self.sample_rate_hz, &CompositeScoreOptions::default()).score;
-                unit
-            })
-            .collect();
-        SortingOutput::new(self.sorter, self.sample_rate_hz, self.total_samples, probe, units, None)
+    }
+
+    /// One unit per cluster, in [`SortingOutput`] form ([`Self::sorter_result`],
+    /// [`SorterResult::to_sorting_output`]: primary channel, *good* / *mua* labels, composite score).
+    pub fn to_sorting_output(&self, probe: Option<SensorLayout>) -> SortingOutput {
+        self.sorter_result().to_sorting_output(probe)
     }
 
     /// Unit `u`'s waveform: its mean features `[channels, n_pcs]` times `wPCA` (`[n_pcs, nt]`), on
@@ -648,16 +628,6 @@ pub fn run_plan(
     })
 }
 
-/// Median of `|v|` (NaN when empty).
-fn median_abs(v: &[f32]) -> f64 {
-    let mut a: Vec<f64> = v.iter().map(|x| x.abs() as f64).collect();
-    if a.is_empty() {
-        return f64::NAN;
-    }
-    a.sort_by(f64::total_cmp);
-    let m = a.len() / 2;
-    if a.len() % 2 == 0 { 0.5 * (a[m - 1] + a[m]) } else { a[m] }
-}
 
 /// The filter chain of `ks`: its three switches, in this order: common average reference,
 /// band-pass (a high-pass when there is no upper edge), notch. Invalid settings (an edge at or above Nyquist) are reported when the chain is

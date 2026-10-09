@@ -29,4 +29,5 @@ serde.workspace = true
 serde_json.workspace = true
 anyhow = { workspace = true, optional = true }
 dsp-synapse-hub = { workspace = true, optional = true }
+rayon.workspace = true
 tracing.workspace = true
