@@ -41,6 +41,11 @@ pub const MISSING_LOCATION: [f32; 3] = [f32::NAN; 3];
 pub mod serde_nan {
     use serde::{Deserialize, Deserializer};
 
+    /// Default of a metric missing from a file: not computed.
+    pub fn nan() -> f64 {
+        f64::NAN
+    }
+
     pub fn deserialize_f64<'de, D>(deserializer: D) -> Result<f64, D::Error>
     where
         D: Deserializer<'de>,
@@ -90,6 +95,10 @@ pub struct SortedUnit {
     /// Estimated fraction of missing spikes below detection threshold (`[0.0, 0.5]`).
     #[serde(default, deserialize_with = "serde_nan::deserialize_f64")]
     pub amplitude_cutoff: f64,
+    /// EMUsort's composite quality score in `[0, 1]` ([`crate::metrics::composite_score`]); NaN when
+    /// the sorter does not compute it.
+    #[serde(default = "serde_nan::nan", deserialize_with = "serde_nan::deserialize_f64")]
+    pub composite_score: f64,
 }
 
 impl PartialEq for SortedUnit {
@@ -109,6 +118,7 @@ impl PartialEq for SortedUnit {
             && f64_eq(self.isi_violation_ratio, other.isi_violation_ratio)
             && f64_eq(self.presence_ratio, other.presence_ratio)
             && f64_eq(self.amplitude_cutoff, other.amplitude_cutoff)
+            && f64_eq(self.composite_score, other.composite_score)
     }
 }
 
@@ -238,6 +248,7 @@ impl SortedUnit {
             isi_violation_ratio: isi.isi_violations_ratio,
             presence_ratio: presence,
             amplitude_cutoff: amp_cutoff,
+            composite_score: f64::NAN,
         }
     }
 

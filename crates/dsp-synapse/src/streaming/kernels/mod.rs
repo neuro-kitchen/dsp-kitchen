@@ -107,7 +107,7 @@ mod tests {
         }
 
         let device = WgpuDevice::default();
-        let client = cubecl::Device::Wgpu(device).client();
+        let client = dsp_core::compute::open_device(cubecl::Device::Wgpu(device));
         let trace_handle = client.create_from_slice(f32::as_bytes(&trace));
         let heights_handle = client.create_from_slice(f32::as_bytes(&detection_heights(&sigmas, threshold_factor)));
         let knn_handle = client.create_from_slice(u32::as_bytes(&knn_table));
@@ -196,7 +196,7 @@ mod tests {
             }
             trace[ch * samples + 1_003] = -90.0;
         }
-        let client = cubecl::Device::Wgpu(WgpuDevice::default()).client();
+        let client = dsp_core::compute::open_device(cubecl::Device::Wgpu(WgpuDevice::default()));
         let trace_h = client.create_from_slice(f32::as_bytes(&trace));
         let heights_h = client.create_from_slice(f32::as_bytes(&detection_heights(&[5.0f32; 3], 5.0)));
         let detect = |start: usize, end: usize| {
@@ -240,7 +240,7 @@ mod tests {
             .enumerate()
             .flat_map(|(i, _)| (0..len).map(move |t| 10_000.0 + (i as f32) + t as f32 * 0.5))
             .collect();
-        let client = cubecl::Device::Wgpu(WgpuDevice::default()).client();
+        let client = dsp_core::compute::open_device(cubecl::Device::Wgpu(WgpuDevice::default()));
         let snip_h = client.create_from_slice(f32::as_bytes(&snippets));
         let stats = execute_reduce_templates_in_vram(
             &client, &snip_h, &primaries, channels, k, len,
