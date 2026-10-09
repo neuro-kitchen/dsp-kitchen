@@ -43,7 +43,8 @@ of the progress report:
 4. **Clustering** of the detected spikes, section by section (stage 4 below), and the **learned
    templates** (stage 5).
 5. **Matching**: every window again, matched against the learned templates (stage 6).
-6. **Clustering of the matched spikes** into the final units (stage 7).
+6. **Clustering of the matched spikes** into the final units (stage 7), then the **global merges**
+   (stage 8); duplicate spikes are removed and units labelled (stage 9).
 
 | Result (`Kilosort4Result`) | |
 |---|---|
@@ -52,8 +53,9 @@ of the progress report:
 | `detected`, `first_clusters` | the universal-template spikes and their first clustering |
 | `learned` | the learned templates (`LearnedTemplates`) |
 | `spikes`, `clusters` | the matched spikes (sample, template, amplitude, position, features) and their units |
+| `merges`, `duplicates` | global merges applied, spikes removed as duplicates |
 | `reproducible`, `device` | whether the run pinned its result-changing tuned choices, and the device it ran on |
-| `to_sorting_output(probe)` | one unit per cluster: spike times, amplitudes (whitened σ), positions, and a waveform template (mean PC features × `wPCA`); primary channel where that template is largest; no SNR (amplitudes are whitened σ) |
+| `to_sorting_output(probe)` | one unit per cluster: spike times, amplitudes (whitened σ), positions, and a waveform template (mean PC features × `wPCA`); primary channel where that template is largest; label *good* / *mua* from the unit's auto-correlogram (stage 9); EMUsort's composite score; no SNR in µV (amplitudes are whitened σ) |
 
 A run reuses an earlier run's preprocessing (`RunPlan::fitted`, Python `preprocessing_from=result`)
 when the fit settings match, e.g. to compare learned and predefined templates without a second fit.
@@ -65,8 +67,12 @@ and units (checked run to run on both test recordings).
 
 ## 1. Preprocessing — *implemented (approximation)*
 
-High-pass at `highpass_cutoff_hz = 300` Hz (`HIGHPASS_ORDER` = 3, forward-backward), common
-average reference when `do_car` (a mean; upstream may use a median), and local whitening over
+Three switches build the filter chain, in this order: common average reference (`do_car`; a mean,
+upstream may use a median), one Butterworth band-pass (`do_bandpass`, `bandpass_low_hz` …
+`bandpass_high_hz`, `BANDPASS_ORDER` = 3 per edge, forward-backward), and a line-noise notch
+(`do_notch`, `notch_hz`, `notch_q`). Kilosort4's defaults: CAR on, the action-potential band
+300–6000 Hz (`NeuralBand::Ap`), notch off. **Upstream Kilosort4 high-passes at 300 Hz with no upper
+edge**; the 6 kHz upper edge is ours (decided 2026-10-09). Then local whitening over
 the `whitening_range = 32` nearest channels from the uncentred second moment `X Xᵀ / n` of each
 fit window's interior, averaged with equal weight per window, as upstream `get_whitening_matrix`
 (`SecondMomentAccumulator`, `SpatialWhitening::local_knn_from_covariance`, `WHITENING_EPSILON`).
@@ -166,14 +172,42 @@ matching pursuit* and *Extracting PC features with background subtraction*:
 Choices of ours: a template's average norm is its mean waveform's norm; a matched spike is placed at
 its template's position (centre of mass of its channel energies).
 
-## 7. Clustering of the matched spikes — *implemented (device), partly*
+## 7. Clustering of the matched spikes — *implemented (device)*
 
-The matched spikes' features are clustered as in stage 4, giving the final units. Not yet: the
-paper's refractory cross-correlogram criterion (a pair whose CCG is refractory is never split).
+The matched spikes' features are clustered as in stage 4, giving the final units, with the paper's
+second criterion: before a node's bimodality is tested, its halves' **cross-correlogram** is
+(`dsp_synapse::metrics::ccg_refractory`). The paper's *Refractory auto- and cross-correlograms*: 1 ms
+bins over ±0.5 s; with `n_k` the coincidences in the central `−k..k` bins and `R` the baseline per
+bin (the larger shoulder), `R12 = min_k n_k / ((2k+1)·R)` and `Q12 = min_k ½(1 + erf((n_k − λ_k) /
+√(ε + 2λ_k)))`, `λ_k = (2k+1)·R`; a CCG is refractory when `R12 < 0.25` and `Q12 < 0.05`.
 
-## 8. Not yet
+**A refractory pair is not split.** The paper's text says the opposite ("If the pair of units has a
+refractory cross-correlogram, then the split is always performed"). Two halves that never fire
+within a few ms of each other behave as one neuron, which is how the paper's own global merges use
+the same test ("A merge is performed if the CCG is refractory"), so we keep them together.
+Choices of ours where the paper is silent: `k` up to 10 bins (10 ms) and shoulders beyond 250 ms
+(`RefractoryOptions`).
 
-- **Global merges** (paper: units sorted by size; pairs with waveform similarity above 0.5 merged
-  when their CCG is refractory) and **duplicate-spike removal** (`duplicate_spike_ms`).
+## 8. Global merges — *implemented*
+
+`kilosort4::merges::global_merges`, from the paper's *Global merges*: units are taken in decreasing
+spike count; every unit still in the pool whose waveform similarity (correlation maximized over
+lags, computed in PC space on the device as for the learned templates) exceeds
+`global_merge.min_similarity = 0.5` is tested, most similar first, and merged when their CCG is
+refractory; a merged unit is tested again, and a unit that merges with nothing is complete and
+leaves the pool. Choice of ours: a merged template is the spike-count-weighted mean (no shift).
+
+## 9. Duplicates and labels — *implemented*
+
+- **Duplicates**: a unit's spike within `duplicate_spike_ms = 0.25` ms of its previous kept spike is
+  removed (matching pursuit re-matching a template's own residual). EMUsort's
+  `duplicate_spike_bins = 7` is the same setting in samples (0.23 ms at 30 kHz).
+- **Labels**: a unit is *good* when its auto-correlogram is refractory (`R12 < 0.2`, `Q12 < 0.2`;
+  the paper's Methods say 0.1, Kilosort4 runs with `acg_threshold = 0.2`), else *mua*; written to Phy's `cluster_KSLabel.tsv` and `cluster_group.tsv`.
+- **Composite score**: EMUsort's per-unit score (see the [EMUsort pipeline](../emusort/pipeline.md)),
+  written to `cluster_info.tsv` (`composite_score`).
+
+## 10. Not yet
+
 - **Drift correction.** On the Neuropixels test recording Kilosort4's own correction is ±0.5 µm
   (`ops['dshift']`), so it does not explain any difference there.

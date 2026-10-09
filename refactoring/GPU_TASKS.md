@@ -14,7 +14,7 @@ crate cleanup.
 | 5 | Eigensolver tolerance aware of `F` and `n` | **done 2026-10-07** (Demmel–Veselić pair test; measured: no speed change, review hypothesis wrong) | dsp-base |
 | 6 | 32-bit device index guard + README warning | **done 2026-10-07** (`device_elements`, buffer backstop, README) | dsp-core, dsp-base, all kernels, README |
 | 7 | HDBSCAN scaling (exact pruning) | **done 2026-10-07** (+ hang fix: bounded insertion; 500k clips in 52 s) | dsp-synapse |
-| 8 | Smaller kernel inefficiencies | **partly done** (correlation tiled; rest open: delay CC, plane reductions, zeros fill, transpose via cubecl-std) | dsp-base, dsp-synapse-ml, dsp-view |
+| 8 | Smaller kernel inefficiencies | **mostly done 2026-10-08** (correlation tiled; zeros and `f32::MAX` fills on the device; delay-CC symmetry rejected: not exact at batch edges, would leave upstream semantics). Open: plane reductions and the transpose choice, to be measured with `tests/bench_reduce.rs` first | dsp-base, dsp-synapse-ml, dsp-view |
 | 9 | Reproducible sorts | **done 2026-10-08** (`pin_tuned_choices`, `Kilosort4Config::reproducible`; identical spikes and units run to run) | dsp-core, dsp-base, dsp-synapse(-ml) |
 
 ---

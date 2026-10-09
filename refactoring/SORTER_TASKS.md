@@ -9,17 +9,35 @@ Table 5 and Methods); the upstream code is GPL-3.0 and is not ported. Same worki
 
 | # | Task | Sorters | Decision | Depends on |
 |---|------|---------|----------|------------|
-| S1 | Auto- and cross-correlograms with the paper's refractory test | both | to do (building block) | — |
-| S2 | Refractory criterion in the clustering splits | both | to do | S1 |
-| S3 | Global merges (stage 5) | both | to do | S1 |
-| S4 | Duplicate-spike removal | both | to do | — |
-| S5 | Unit labels (*good* / *mua*) | both | to do | S1 |
-| S6 | EMUsort filtering: one 300–5000 Hz band-pass + optional notch | EMUsort | **decided** (user) | — |
-| S7 | Template window in milliseconds (`nt` from `fs`) | both | **decided**: keep `nt = 121` for the HD-EMG data; ms option proposed | — |
+| S1 | Auto- and cross-correlograms with the paper's refractory test | both | **implemented** (`dsp_synapse::metrics::refractory`, host; testing) | — |
+| S2 | Refractory criterion in the clustering splits | both | **implemented** (final clustering only; refractory halves kept together, see note) | S1 |
+| S3 | Global merges (stage 5) | both | **implemented** (`kilosort4::merges`) | S1 |
+| S4 | Duplicate-spike removal | both | **implemented** (`duplicate_spike_ms = 0.25`, both sorters) | — |
+| S5 | Unit labels (*good* / *mua*) | both | **implemented** (ACG test → Phy `cluster_KSLabel`) | S1 |
+| S6 | EMUsort filtering: one 300–5000 Hz band-pass + optional notch | EMUsort | **implemented** (`lowpass_cutoff_hz`, `notch_hz`, `notch_q`; Kilosort4 unchanged) | — |
+| S7 | Template window in milliseconds (`nt` from `fs`) | both | **implemented** (`nt_ms`, optional; `nt = 121` kept for the HD-EMG script) | — |
 | S8 | EMUsort linear channel map (2 µm) | EMUsort | **to decide** | — |
-| S9 | EMUsort composite score | EMUsort | to do | S1 (S5) |
+| S9 | EMUsort composite score | EMUsort | **implemented** (`metrics::composite`; per unit in `SortingOutput`, Phy `cluster_info`); not yet the `cluster_score_threshold` filter | S1 (S5) |
 | S10 | Drift correction (stage 0) | Kilosort4 | later (not needed for the test data) | — |
-| S11 | EMUsort citation → eLife reviewed preprint | EMUsort | to do (small) | — |
+| S11 | EMUsort citation → eLife reviewed preprint | EMUsort | **done** | — |
+
+**Decided (user, 2026-10-08):** global merges stay on by default (paper); refractory halves stay
+together (`split_refractory_halves = false`). The EMUsort regression (below) is investigated in
+phase 3 (`NEW_SORTERS_PLAN.md`, E1).
+
+**What Kilosort4 actually ran with** (`saved_results/ops.npy` of the test recording, 2026-10-08):
+`acg_threshold = 0.2`, `ccg_threshold = 0.25`, `duplicate_spike_bins = 15` (0.5 ms at 30 kHz).
+Our defaults: ACG 0.2 (as run; the paper's Methods text says 0.1), CCG 0.25, `duplicate_spike_ms =
+0.25` (Kilosort4's current documented default; the validation uses 0.5 to match the saved run).
+Kilosort4's docs add that its refractory estimates "normally ignore the central 1 ms" of the
+correlogram; ours include the central bin (difference to check if labels stay too generous).
+
+**Corrections from the paper's text (read 2026-10-08, PMC11093732):** the Methods give an ACG
+threshold `R12 < 0.1` with `Q12 < 0.2` (Kilosort4 runs with 0.2, above); *good* units have a refractory-violation rate < 0.2. The
+paper does not give the range of `k` or the shoulders: ours are `k ≤ 10` bins and shoulders beyond
+250 ms (`RefractoryOptions`). **The paper says a pair with a refractory CCG is "always" split**
+(*Split/merge criteria*); we keep such halves together (one neuron), consistent with the paper's
+global merges ("a merge is performed if the CCG is refractory"). To confirm on the saved results.
 
 **Rule for every task (user, 2026-10-08):** each new parameter is exposed to the user with its
 default visible before they run anything: a field of the Rust config with the value in `Default`, and a
