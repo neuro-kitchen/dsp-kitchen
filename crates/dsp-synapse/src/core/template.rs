@@ -278,3 +278,206 @@ pub fn compute_mean_template(snippets: &[WaveformSnippet]) -> Option<WaveformTem
     Some(WaveformTemplate::with_count(first.channel_ids.clone(), n_s, used.len(), mean, std))
 }
 
+/// Every unit's waveform template from labelled peaks, accumulated over windows of a recording on
+/// the device: for each `(unit, channel, sample)` the Welford mean and `M₂` of the unit's spikes,
+/// read straight from the window (no snippets are cut). The state stays on the device between
+/// windows (only the per-unit counts are on the host), and Welford's update continues across them,
+/// so any split into windows gives the same templates. Dense: every channel.
+pub struct UnitTemplateAccumulator {
+    client: cubecl::prelude::Client,
+    n_units: usize,
+    channels: usize,
+    n_before: usize,
+    width: usize,
+    counts: Vec<u32>,
+    mean: cubecl::server::Handle,
+    m2: cubecl::server::Handle,
+}
+
+impl UnitTemplateAccumulator {
+    /// Templates of `n_units` units on `channels` channels, `width` samples starting `n_before`
+    /// before each peak.
+    pub fn new(client: &cubecl::prelude::Client, n_units: usize, channels: usize, n_before: usize, width: usize) -> Self {
+        let len = n_units * channels * width;
+        Self {
+            client: client.clone(),
+            n_units,
+            channels,
+            n_before,
+            width,
+            counts: vec![0; n_units],
+            mean: dsp_base::core::buffer::zeros::<f32>(client, len),
+            m2: dsp_base::core::buffer::zeros::<f32>(client, len),
+        }
+    }
+
+    /// Adds the spikes of one window: `data` is `[channels, samples]` `f32` on the device, spike
+    /// `i` at sample `peak_samples[i]` of it, of unit `labels[i]` (negative or ≥ `n_units`: left
+    /// out). Callers leave `n_before` / `width − n_before` of margin (past the window, the edge
+    /// sample is read).
+    ///
+    /// # Panics
+    ///
+    /// If `peak_samples` and `labels` differ in length.
+    pub fn add(&mut self, data: &cubecl::server::Handle, samples: usize, peak_samples: &[u32], labels: &[i32]) {
+        use cubecl::prelude::*;
+        use dsp_base::core::buffer;
+
+        assert_eq!(peak_samples.len(), labels.len(), "one label per peak");
+        let units = self.n_units;
+        // Counting sort of the spikes by unit (spike order kept within a unit)
+        let mut offsets = vec![0u32; units + 1];
+        for &l in labels {
+            if l >= 0 && (l as usize) < units {
+                offsets[l as usize + 1] += 1;
+            }
+        }
+        for u in 0..units {
+            offsets[u + 1] += offsets[u];
+        }
+        if offsets[units] == 0 || self.channels == 0 || self.width == 0 {
+            return;
+        }
+        let mut cursor = offsets.clone();
+        let mut order = vec![0u32; offsets[units] as usize];
+        for (i, &l) in labels.iter().enumerate() {
+            if l >= 0 && (l as usize) < units {
+                order[cursor[l as usize] as usize] = i as u32;
+                cursor[l as usize] += 1;
+            }
+        }
+        let client = &self.client;
+        let total = units * self.channels * self.width;
+        let geom = dsp_core::compute::LaunchGeometry::elementwise(client, total);
+        // SAFETY: every array is passed with the length it was created with
+        unsafe {
+            super::kernels::accumulate_unit_templates_kernel::launch::<f32>(
+                client,
+                geom.cube_count,
+                geom.cube_dim,
+                BufferArg::from_raw_parts(data.clone(), self.channels * samples),
+                BufferArg::from_raw_parts(buffer::upload(client, peak_samples), peak_samples.len()),
+                BufferArg::from_raw_parts(buffer::upload(client, &order), order.len()),
+                BufferArg::from_raw_parts(buffer::upload(client, &offsets), offsets.len()),
+                BufferArg::from_raw_parts(buffer::upload(client, &self.counts), units),
+                BufferArg::from_raw_parts(self.mean.clone(), total),
+                BufferArg::from_raw_parts(self.m2.clone(), total),
+                units as u32,
+                self.channels as u32,
+                samples as u32,
+                self.n_before as u32,
+                self.width as u32,
+            );
+        }
+        for u in 0..units {
+            self.counts[u] += offsets[u + 1] - offsets[u];
+        }
+    }
+
+    /// Spikes accumulated per unit.
+    pub fn counts(&self) -> &[u32] {
+        &self.counts
+    }
+
+    /// The means on the device, `[units, channels, width]` `f32` (e.g. for template matching).
+    pub fn device_mean(&self) -> &cubecl::server::Handle {
+        &self.mean
+    }
+
+    /// Every unit's dense template (`channel_ids` `0..channels`, std with [`TEMPLATE_STD_DDOF`]),
+    /// `None` for a unit without spikes. One download.
+    pub fn templates(&self) -> Vec<Option<WaveformTemplate>> {
+        use dsp_base::core::buffer;
+
+        let total = self.n_units * self.channels * self.width;
+        let mean = buffer::download_prefix::<f32>(&self.client, self.mean.clone(), total);
+        let m2 = buffer::download_prefix::<f32>(&self.client, self.m2.clone(), total);
+        let per = self.channels * self.width;
+        (0..self.n_units)
+            .map(|u| {
+                let n = self.counts[u] as u64;
+                (n > 0).then(|| {
+                    let denom = n.saturating_sub(TEMPLATE_STD_DDOF).max(1) as f32;
+                    let std = m2[u * per..(u + 1) * per].iter().map(|&v| (v.max(0.0) / denom).sqrt()).collect();
+                    WaveformTemplate::with_count((0..self.channels).collect(), self.width, n as usize, mean[u * per..(u + 1) * per].to_vec(), std)
+                })
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod unit_template_tests {
+    use super::*;
+    use dsp_base::core::buffer;
+    use dsp_core::compute::ComputeTarget;
+
+    /// Two units with known shapes on 3 channels, plus small deterministic noise; spike times on a
+    /// fixed grid. Returns `(data, samples, peak_samples, labels, shapes)`.
+    fn recording() -> (Vec<f32>, usize, Vec<u32>, Vec<i32>, [Vec<f32>; 2]) {
+        let (channels, samples, width, n_before) = (3usize, 40_000usize, 20usize, 5usize);
+        let shapes = [
+            (0..channels * width).map(|i| { let (c, t) = (i / width, i % width); -(10.0 - 3.0 * c as f32) * (-0.5 * ((t as f32 - 5.0) / 2.0).powi(2)).exp() }).collect::<Vec<f32>>(),
+            (0..channels * width).map(|i| { let (c, t) = (i / width, i % width); 4.0 * (c as f32 + 1.0) * (-0.5 * ((t as f32 - 8.0) / 3.0).powi(2)).exp() }).collect::<Vec<f32>>(),
+        ];
+        let mut data: Vec<f32> = (0..channels * samples).map(|i| ((i * 7919 % 101) as f32 - 50.0) / 500.0).collect();
+        let (mut peaks, mut labels) = (Vec::new(), Vec::new());
+        for k in 0..300 {
+            let t0 = 100 + k * 120;
+            let u = k % 3; // 2 = unassigned (label −1): adds signal but not to a template
+            let shape: Vec<f32> = if u < 2 { shapes[u].clone() } else { shapes[0].iter().map(|v| v * 5.0).collect() };
+            for c in 0..channels {
+                for t in 0..width {
+                    data[c * samples + t0 + t] += shape[c * width + t];
+                }
+            }
+            peaks.push((t0 + n_before) as u32);
+            labels.push(if u < 2 { u as i32 } else { -1 });
+        }
+        (data, samples, peaks, labels, shapes)
+    }
+
+    #[test]
+    fn templates_recover_the_units_and_ignore_unassigned_spikes() {
+        let Ok(target) = ComputeTarget::from_env() else { return };
+        let client = target.client().unwrap();
+        let (data, samples, peaks, labels, shapes) = recording();
+        let handle = buffer::upload(&client, &data);
+        let mut acc = UnitTemplateAccumulator::new(&client, 2, 3, 5, 20);
+        acc.add(&handle, samples, &peaks, &labels);
+        assert_eq!(acc.counts(), &[100, 100]);
+        let t = acc.templates();
+        for u in 0..2 {
+            let tmpl = t[u].as_ref().unwrap();
+            assert_eq!((tmpl.count, tmpl.channel_ids.len(), tmpl.num_samples), (100, 3, 20));
+            let err = tmpl.mean.iter().zip(&shapes[u]).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+            assert!(err < 0.05, "unit {u}: max error {err}");
+            assert!(tmpl.std.iter().all(|&s| s < 0.2), "unit {u}: std is the noise only");
+        }
+    }
+
+    /// Splitting the spikes into windows gives the same templates as one window.
+    #[test]
+    fn windows_add_up_to_the_whole() {
+        let Ok(target) = ComputeTarget::from_env() else { return };
+        let client = target.client().unwrap();
+        let (data, samples, peaks, labels, _) = recording();
+        let handle = buffer::upload(&client, &data);
+        let mut whole = UnitTemplateAccumulator::new(&client, 2, 3, 5, 20);
+        whole.add(&handle, samples, &peaks, &labels);
+        let mut parts = UnitTemplateAccumulator::new(&client, 2, 3, 5, 20);
+        let half = peaks.len() / 2;
+        parts.add(&handle, samples, &peaks[..half], &labels[..half]);
+        parts.add(&handle, samples, &peaks[half..], &labels[half..]);
+        let (a, b) = (whole.templates(), parts.templates());
+        for u in 0..2 {
+            let (a, b) = (a[u].as_ref().unwrap(), b[u].as_ref().unwrap());
+            assert_eq!(a.count, b.count);
+            assert!(a.mean.iter().zip(&b.mean).all(|(x, y)| (x - y).abs() < 1e-5));
+            assert!(a.std.iter().zip(&b.std).all(|(x, y)| (x - y).abs() < 1e-4));
+        }
+        // A unit without spikes has no template
+        let empty = UnitTemplateAccumulator::new(&client, 3, 3, 5, 20);
+        assert!(empty.templates().iter().all(Option::is_none));
+    }
+}

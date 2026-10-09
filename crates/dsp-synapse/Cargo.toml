@@ -16,6 +16,7 @@ dsp-core = { workspace = true, features = ["compute"] }
 dsp-base.workspace = true
 dsp-io = { workspace = true, features = ["zarr", "neuro"] }
 cubecl = { workspace = true, features = ["wgpu"] }
+rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
