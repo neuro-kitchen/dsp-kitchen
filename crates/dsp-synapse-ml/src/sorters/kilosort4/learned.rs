@@ -97,7 +97,7 @@ fn shift_template(a: &mut [f32], lag: isize, wpca: &[f32], np: usize, nt: usize)
 
 /// Every pair's best lagged inner product (`[units, units]`; the diagonal: squared norms), on the
 /// device. Crosses the bus: the templates up, the `units²` maxima down.
-fn pair_similarities(client: &Client, features: &[f32], units: usize, channels: usize, np: usize, wtw: &[f32], lags: usize) -> Vec<f32> {
+pub(crate) fn pair_similarities(client: &Client, features: &[f32], units: usize, channels: usize, np: usize, wtw: &[f32], lags: usize) -> Vec<f32> {
     // X[(u·np + p), ch]
     let rows = units * np;
     let mut x = vec![0.0f32; rows * channels];

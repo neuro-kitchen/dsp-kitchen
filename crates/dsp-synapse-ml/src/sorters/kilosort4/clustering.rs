@@ -14,8 +14,10 @@
 //!    whose merges come in decreasing `γ̂`.
 //! 4. **Decisions**, from the top: a node is split when `γ̂ < modularity_split`, or when its two
 //!    halves are bimodal along their weighted regression axis (score ≥ `bimodality_split`); the
-//!    halves of a split node are decided in turn, an unsplit node is one unit. (Refractory cross-
-//!    correlograms, the paper's other criterion, are not used in this first clustering.)
+//!    halves of a split node are decided in turn, an unsplit node is one unit. When the run gives a
+//!    sample rate (the clustering of the matched spikes; the paper uses only bimodality for the
+//!    first clustering), the halves' cross-correlogram is tested first
+//!    ([`dsp_synapse::metrics::ccg_refractory`]): a refractory CCG keeps them together.
 //! 5. **Templates:** each unit's mean features, on all channels (`[units, channels, n_pcs]`).
 //!
 //! **Bimodality** (on the device): the axis `u` and bias `b` minimizing `Σ w_y (uᵀx + b − y)²` with
@@ -24,6 +26,12 @@
 //! host in `f64` with a small ridge); projections binned in 400 bins over `[−2, 2]`, smoothed by
 //! a Gaussian of 4 bins; trough `x_min` in bins 175–225, peaks `x₁`, `x₂` on either side; score
 //! `1 − max(x_min/x₁, x_min/x₂)`.
+//!
+//! **Refractory halves are not split.** The paper's text reads "If the pair of units has a
+//! refractory cross-correlogram, then the split is always performed". We do the opposite: two
+//! halves that (almost) never fire within a few ms of each other behave as one neuron, the reading
+//! the paper's own global merges use ("A merge is performed if the CCG is refractory"). Checked
+//! against Kilosort4's saved results (`playground/benchmarks/kilosort4_validation.py`).
 //!
 //! Choices of ours where the paper is silent: the bias `b` (the paper's axis passes through the
 //! origin, but spike features are not centred: without it a half sitting at the origin projects
@@ -37,6 +45,7 @@ use dsp_base::core::buffer;
 use dsp_base::linalg::{matmul, MatrixView};
 use dsp_core::compute::LaunchGeometry;
 use dsp_io::neuro::probe::SensorLayout;
+use dsp_synapse::metrics::{ccg_refractory, RefractoryOptions};
 use dsp_synapse::sorting::kernels::bipartite::{relabel_kernel, NO_LABEL};
 use dsp_synapse::sorting::{bipartite_clustering, cluster_sums, BipartiteOptions, DevicePoints};
 
@@ -63,11 +72,24 @@ pub struct ClusteringOptions {
     pub modularity_split: f64,
     /// Nodes whose halves score at least this bimodality are split.
     pub bimodality_split: f64,
+    /// Cross-correlogram test of a node's halves (when a sample rate is given to [`cluster_spikes`]).
+    pub refractory: RefractoryOptions,
+    /// What a refractory CCG between a node's halves does: `false` (ours) keeps them together, one
+    /// neuron; `true` follows the paper's text literally ("the split is always performed").
+    pub split_refractory_halves: bool,
 }
 
 impl Default for ClusteringOptions {
     fn default() -> Self {
-        Self { section_um: 40.0, min_section_spikes: 1000, graph: BipartiteOptions::default(), modularity_split: 0.2, bimodality_split: 0.6 }
+        Self {
+            section_um: 40.0,
+            min_section_spikes: 1000,
+            graph: BipartiteOptions::default(),
+            modularity_split: 0.2,
+            bimodality_split: 0.6,
+            refractory: RefractoryOptions::default(),
+            split_refractory_halves: false,
+        }
     }
 }
 
@@ -329,9 +351,16 @@ fn leaves(merges: &[Merge], nc: usize, node: usize, out: &mut Vec<usize>) {
     }
 }
 
-/// Top-down decisions (module docs): the units, as groups of leaves. `split(neg, pos)` scores a
-/// node's bimodality.
-fn decide(merges: &[Merge], nc: usize, opts: &ClusteringOptions, split: &mut dyn FnMut(&[usize], &[usize]) -> f64) -> Vec<Vec<usize>> {
+/// Top-down decisions (module docs): the units, as groups of leaves. `refractory(a, b)` tells
+/// whether two halves' cross-correlogram is refractory (they stay one unit), `split(neg, pos)`
+/// scores a node's bimodality.
+fn decide(
+    merges: &[Merge],
+    nc: usize,
+    opts: &ClusteringOptions,
+    refractory: &mut dyn FnMut(&[usize], &[usize]) -> bool,
+    split: &mut dyn FnMut(&[usize], &[usize]) -> f64,
+) -> Vec<Vec<usize>> {
     let mut units = Vec::new();
     if nc == 0 {
         return units;
@@ -346,7 +375,14 @@ fn decide(merges: &[Merge], nc: usize, opts: &ClusteringOptions, split: &mut dyn
         let (mut a, mut b) = (Vec::new(), Vec::new());
         leaves(merges, nc, m.a, &mut a);
         leaves(merges, nc, m.b, &mut b);
-        if m.gamma < opts.modularity_split || split(&a, &b) >= opts.bimodality_split {
+        let split_node = if m.gamma < opts.modularity_split {
+            true
+        } else if refractory(&a, &b) {
+            opts.split_refractory_halves
+        } else {
+            split(&a, &b) >= opts.bimodality_split
+        };
+        if split_node {
             stack.push(m.b);
             stack.push(m.a);
         } else {
@@ -359,7 +395,10 @@ fn decide(merges: &[Merge], nc: usize, opts: &ClusteringOptions, split: &mut dyn
 }
 
 /// Clusters `spikes` (their `features`, `[centres.n_chans, n_pcs]` each) into units, section by
-/// section (module docs). `probe` gives each channel's shank; `channels` is the recording's.
+/// section (module docs). `probe` gives each channel's shank; `channels` is the recording's. With
+/// `sample_rate_hz`, a node whose halves have a refractory cross-correlogram is not split (spike
+/// `sample`s must then be recording samples).
+#[allow(clippy::too_many_arguments)]
 pub fn cluster_spikes(
     client: &Client,
     spikes: &[UniversalSpike],
@@ -368,6 +407,7 @@ pub fn cluster_spikes(
     channels: usize,
     n_pcs: usize,
     opts: &ClusteringOptions,
+    sample_rate_hz: Option<f64>,
     progress: &mut dyn FnMut(u64, u64),
 ) -> SpikeClusters {
     let (n_chans, n_centres) = (centres.n_chans, centres.n_centres());
@@ -438,7 +478,30 @@ pub fn cluster_spikes(
             let sizes = graph.sizes.clone();
             let tree = merge_tree(&graph.edges, nc);
             let section = Section::new(client, &points, &graph.labels, sizes);
-            let groups = decide(&tree, nc, opts, &mut |a, b| section.bimodality(a, b));
+            // Spike times of each leaf, for the halves' cross-correlograms (one label download)
+            let leaf_times: Vec<Vec<u64>> = match sample_rate_hz {
+                Some(_) => {
+                    let leaf = buffer::download_prefix::<u32>(client, graph.labels.clone(), n);
+                    let mut times = vec![Vec::new(); nc];
+                    for (&i, &l) in members.iter().zip(&leaf) {
+                        if let Some(t) = times.get_mut(l as usize) {
+                            t.push(spikes[i].sample as u64);
+                        }
+                    }
+                    times
+                }
+                None => Vec::new(),
+            };
+            let train = |group: &[usize]| {
+                let mut t: Vec<u64> = group.iter().flat_map(|&l| leaf_times[l].iter().copied()).collect();
+                t.sort_unstable();
+                t
+            };
+            let mut refractory = |a: &[usize], b: &[usize]| match sample_rate_hz {
+                Some(fs) => ccg_refractory(&train(a), &train(b), fs, &opts.refractory).1,
+                None => false,
+            };
+            let groups = decide(&tree, nc, opts, &mut refractory, &mut |a, b| section.bimodality(a, b));
             let mut map = vec![NO_LABEL; nc];
             for (u, group) in groups.iter().enumerate() {
                 group.iter().for_each(|&leaf| map[leaf] = u as u32);
@@ -572,8 +635,24 @@ mod tests {
         let tree = [Merge { a: 0, b: 1, gamma: 5.0 }, Merge { a: 2, b: 3, gamma: 4.0 }, Merge { a: 4, b: 5, gamma: 0.1 }];
         let opts = ClusteringOptions::default();
         // Bimodal only for (0 | 1)
-        let mut units = decide(&tree, 4, &opts, &mut |a, b| if a == [0] && b == [1] { 0.9 } else { 0.1 });
+        let mut units = decide(&tree, 4, &opts, &mut |_, _| false, &mut |a, b| if a == [0] && b == [1] { 0.9 } else { 0.1 });
         units.sort();
         assert_eq!(units, vec![vec![0], vec![1], vec![2, 3]]);
+    }
+
+    /// Bimodal halves whose cross-correlogram is refractory (one neuron) stay one unit; a low
+    /// `γ̂` still splits.
+    #[test]
+    fn refractory_halves_are_not_split() {
+        let tree = [Merge { a: 0, b: 1, gamma: 5.0 }, Merge { a: 2, b: 3, gamma: 4.0 }, Merge { a: 4, b: 5, gamma: 0.1 }];
+        let opts = ClusteringOptions::default();
+        // Every node is bimodal; (0 | 1) is refractory
+        let mut units = decide(&tree, 4, &opts, &mut |a, b| a == [0] && b == [1], &mut |_, _| 0.9);
+        units.sort();
+        assert_eq!(units, vec![vec![0, 1], vec![2], vec![3]]);
+        // The root (γ̂ below the threshold) splits even when refractory
+        let mut units = decide(&tree, 4, &opts, &mut |_, _| true, &mut |_, _| 0.9);
+        units.sort();
+        assert_eq!(units, vec![vec![0, 1], vec![2, 3]]);
     }
 }
