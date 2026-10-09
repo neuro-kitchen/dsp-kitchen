@@ -83,7 +83,7 @@ fn cpu_extractors_put_trough_on_centre() {
 }
 
 fn gpu_extract(trace: &[f32], spikes: &[DeduplicatedSpike]) -> Option<(Vec<f32>, Vec<usize>, usize)> {
-    let client = cubecl::Device::Wgpu(WgpuDevice::default()).client();
+    let client = dsp_core::compute::open_device(cubecl::Device::Wgpu(WgpuDevice::default()));
     let trace_h = client.create_from_slice(f32::as_bytes(trace));
     let knn_h = client.create_from_slice(u32::as_bytes(&precompute_knn_table(&tetrode(), CHANNELS, K)));
     let out = execute_extract_sinc_in_vram::<f32>(

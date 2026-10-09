@@ -40,6 +40,7 @@ pub fn from_sorting_output(so: &SortingOutput) -> SortingZarr {
             isi_violation_ratio: u.isi_violation_ratio,
             presence_ratio: u.presence_ratio,
             amplitude_cutoff: u.amplitude_cutoff,
+            composite_score: u.composite_score,
             num_spikes: u.spike_samples.len(),
         })
         .collect();
@@ -106,6 +107,7 @@ pub fn to_sorting_output(store: &SortingZarr) -> SortingOutput {
                 isi_violation_ratio: meta.isi_violation_ratio,
                 presence_ratio: meta.presence_ratio,
                 amplitude_cutoff: meta.amplitude_cutoff,
+                composite_score: meta.composite_score,
             }
         })
         .collect();

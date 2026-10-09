@@ -119,7 +119,7 @@ fn key(spikes: &[DeduplicatedSpike]) -> Vec<(u64, usize, Vec<usize>)> {
 /// Filter the whole recording in one chunk, detect and deduplicate on the host.
 fn whole_recording(rec: &MemoryRecording, cfg: &StreamingDetectionConfig) -> Vec<DeduplicatedSpike> {
     let n = rec.info().samples as usize;
-    let client = cubecl::Device::Wgpu(WgpuDevice::default()).client();
+    let client = dsp_core::compute::open_device(cubecl::Device::Wgpu(WgpuDevice::default()));
     let mut ws = PipelineWorkspace::new(client, pipeline(), CHANNELS, n, FS).unwrap();
     let halos = cfg.compute_halos(FS, &pipeline()).unwrap();
     let sigmas = calibrate_noise(rec, &mut ws, cfg, halos).unwrap();
