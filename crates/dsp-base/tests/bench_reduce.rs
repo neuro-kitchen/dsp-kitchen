@@ -9,7 +9,6 @@
 use cubecl::device::{WgpuDevice, WgpuDeviceKind};
 use cubecl::prelude::*;
 use cubecl::zspace::{Shape, Strides};
-use cubecl::Device;
 use dsp_base::core::buffer;
 use dsp_base::math::execute_channel_noise_std;
 use dsp_core::compute::bench::time_device;
@@ -51,6 +50,6 @@ fn bench(device: &str, client: &Client) {
 #[ignore = "benchmark: run with --ignored --nocapture"]
 fn bench_reductions() {
     for (name, kind) in [("dGPU", WgpuDeviceKind::DiscreteGpu(0)), ("iGPU", WgpuDeviceKind::IntegratedGpu(0))] {
-        bench(name, &Device::Wgpu(WgpuDevice::new(kind)).client());
+        bench(name, &dsp_core::compute::open_device(cubecl::Device::Wgpu(WgpuDevice::new(kind))));
     }
 }

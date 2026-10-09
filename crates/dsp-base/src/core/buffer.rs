@@ -55,6 +55,25 @@ pub fn zeros<E: CubeElement + Scalar>(client: &Client, len: usize) -> Handle {
     cubecl::std::tensor::TensorHandle::zeros(client, [len.max(1)], E::elem_type_native()).handle
 }
 
+/// Device buffer of `len` copies of `value`, filled on the device: nothing is uploaded.
+pub fn filled<F: crate::core::DspFloat>(client: &Client, len: usize, value: F) -> Handle {
+    let out = empty::<F>(client, len);
+    if len > 0 {
+        let geom = dsp_core::compute::LaunchGeometry::elementwise(client, len);
+        unsafe {
+            super::kernels::fill_kernel::launch::<F>(
+                client,
+                geom.cube_count,
+                geom.cube_dim,
+                BufferArg::from_raw_parts(out.clone(), len),
+                value,
+                len as u32,
+            );
+        }
+    }
+    out
+}
+
 /// Host copy of a device buffer of `E` (waits for the queued work that writes it).
 pub fn download<E: CubeElement>(client: &Client, handle: Handle) -> Vec<E> {
     E::from_bytes(&client.read_one_unchecked(handle)).to_vec()
@@ -85,4 +104,18 @@ pub fn download_range<E: CubeElement>(client: &Client, handle: Handle, start: us
 /// `handle` without its last `unused` elements of `E` (a view of a buffer larger than the data).
 pub fn truncate<E: CubeElement>(handle: Handle, unused: usize) -> Handle {
     handle.offset_end((unused * size_of::<E>()) as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fills_every_element(client: &Client) {
+        // Not a multiple of any cube size, so the last cube is partial
+        let len = 1_000_003;
+        let v: Vec<f32> = download(client, filled::<f32>(client, len, f32::MAX));
+        assert_eq!(v.len(), len);
+        assert!(v.iter().all(|&x| x == f32::MAX), "{}", client.name());
+    }
+    runtime_test!(test_filled, fills_every_element);
 }

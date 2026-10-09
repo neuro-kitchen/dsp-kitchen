@@ -23,7 +23,7 @@ fn recording(n: usize) -> Vec<f32> {
 }
 
 fn workspace(pipeline: &Pipeline, samples: usize, stateful: bool) -> PipelineWorkspace<f32> {
-    let client = cubecl::Device::Wgpu(WgpuDevice::default()).client();
+    let client = dsp_core::compute::open_device(cubecl::Device::Wgpu(WgpuDevice::default()));
     if stateful {
         PipelineWorkspace::new_stateful(client, pipeline.clone(), CHANNELS, samples, FS).unwrap()
     } else {
@@ -132,7 +132,7 @@ fn stateful_chunks_are_exact_for_forward_filters() {
 #[test]
 fn stateful_workspace_rejects_forward_backward() {
     let pipeline = Pipeline::with_stages(vec![PipelineStage::bandpass(300.0, 6000.0)]);
-    let client = cubecl::Device::Wgpu(WgpuDevice::default()).client();
+    let client = dsp_core::compute::open_device(cubecl::Device::Wgpu(WgpuDevice::default()));
     assert!(PipelineWorkspace::<f32>::new_stateful(client, pipeline, 2, 100, FS).is_err());
 }
 
