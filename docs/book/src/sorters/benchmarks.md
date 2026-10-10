@@ -67,32 +67,33 @@ found spikes.
 
 | | Ours | Kilosort4 |
 |---|---|---|
-| Spikes | 132 241 | 138 666 |
-| Units | 293 | 267 |
-| Kilosort4 spikes found (time and place) | 89.3% | |
+| Spikes | 130 551 | 138 666 |
+| Units (good by the refractory labels) | 291 (152) | 267 (127) |
+| Kilosort4 spikes found (time and place) | 86.6% | |
 
 Per Kilosort4 unit (median, 25th percentile in brackets):
 
 | | All 267 units | 127 good units |
 |---|---|---|
-| Spikes found | 0.95 (0.85) | 1.00 (0.97) |
-| Of those, in one unit of ours (not split) | 0.91 (0.68) | 0.97 (0.87) |
-| That unit's spikes that are this unit's (precision) | 0.85 (0.57) | 0.94 (0.56) |
-| Accuracy `found / (n_ks + n_ours − found)` | 0.62 (0.39) | 0.82 (0.49) |
-| Units with accuracy ≥ 0.8 / ≥ 0.5 | 30% / 64% | 53% / 73% |
+| Spikes found | 0.95 (0.82) | 1.00 (0.97) |
+| Of those, in one unit of ours (not split) | 0.91 (0.73) | 0.98 (0.93) |
+| That unit's spikes that are this unit's (precision) | 0.82 (0.53) | 0.95 (0.52) |
+| Accuracy `found / (n_ks + n_ours − found)` | 0.57 (0.39) | 0.82 (0.45) |
+| Units with accuracy ≥ 0.8 / ≥ 0.5 | 30% / 60% | 52% / 72% |
 
 The export round trip passes: the Phy folder and the `.sorting.zarr` read back the same spikes and
 units, and the Phy folder has every file Kilosort4 writes (templates included) except Kilosort's
-internal ones. Per channel, 88.8% of Kilosort4's spikes have one of ours within ±0.4 ms and 40 µm,
-93.1% of ours have one of Kilosort4's, and the time differences peak at 0. A matched spike is placed
-at its template's position, so ours sit on fewer channels (189) than Kilosort4's per-spike positions
+internal ones. Per channel, 86.2% of Kilosort4's spikes have one of ours within ±0.4 ms and 40 µm,
+91.5% of ours have one of Kilosort4's, and the time differences peak at 0. A matched spike is placed
+at its template's position, so ours sit on fewer channels (197) than Kilosort4's per-spike positions
 (350).
 
 How each stage moved the good units' median accuracy: universal-template detection with one unit per
 universal template is not comparable (6 "units"); with the first clustering, 0.46; with learned-
 template matching and the clustering of its spikes, 0.82. The remaining gap is mostly units whose
 precision is low (a quarter of the good units below 0.55: two neurons in one unit), which the
-refractory criteria and the global merges (not yet implemented) address.
+refractory criteria and the global merges were meant to address; with both in place (numbers above,
+rerun 2026-10-09) the good units' median precision is 0.95, its 25th percentile still 0.52.
 
 Earlier stages, checked against the same results:
 
@@ -147,6 +148,61 @@ lopsided (single linkage peels a few clusters off almost all 39 649 spikes at ea
 isosplit6 run again on nearly every spike, level after level), as in upstream; the per-channel
 classifiers take about 90 s; detection, training snippets and classification 17 s.
 
+## SpyKING CIRCUS 2: agreement with Kilosort4's results
+
+As for MountainSort 5 (`spykingcircus2_validation.py`, defaults; spike locations: each unit's main
+channel). Not yet in this port: motion correction.
+
+| | SpyKING CIRCUS 2 (ours) | Kilosort4 (saved) |
+|---|---|---|
+| Spikes | 120 469 | 138 666 |
+| Units (good by the auto-correlogram) | 452 (249) | 267 (127) |
+| Peaks detected / clustered | 90 067 / 90 067 | |
+| Final merges | 4 (456 → 452 units) | |
+| Kilosort4 spikes found in time (±0.4 ms) and place (60 µm) | 0.71 | |
+| Spike times, ours − Kilosort4 | peak at 0 samples | |
+| Kilosort4's good units: found / not split / precision / accuracy (median) | 0.99 / 0.94 / 0.93 / 0.70 | |
+| Kilosort4's good units with accuracy ≥ 0.8 / ≥ 0.5 | 0.43 / 0.65 | |
+
+Time: 44 s for 45 s of 383 channels (about real time): preprocessing, prototype, detection and
+features 4 s, clustering 6 s, matching 20 s (scalar products on the device a batch of windows at a
+time, the pursuits in parallel on the host; 118 s with one window at a time), final merges and the
+rest the remainder. More units than Kilosort4: the final merges join only units with at least 100
+spikes and little refractory contamination, few of them on a 45 s recording.
+
+## Tridesclous 2: agreement with Kilosort4's results
+
+As for SpyKING CIRCUS 2 (`tridesclous2_validation.py`, defaults).
+
+| | Tridesclous 2 (ours) | Kilosort4 (saved) |
+|---|---|---|
+| Spikes | 83 110 | 138 666 |
+| Units (good by the auto-correlogram) | 562 (371) | 267 (127) |
+| Peaks detected / clustered | 57 924 / 57 924 | |
+| Final merges | 1 | |
+| Kilosort4 spikes found in time (±0.4 ms) and place (60 µm) | 0.59 | |
+| Spike times, ours − Kilosort4 | peak at 0 samples | |
+| Kilosort4's good units: found / not split / precision / accuracy (median) | 0.98 / 0.90 / 0.98 / 0.80 | |
+| Kilosort4's good units with accuracy ≥ 0.8 / ≥ 0.5 | 0.50 / 0.78 | |
+
+Time: 41 s for 45 s of 383 channels (detection 2 s, features 2 s, clustering 3 s, templates 1 s,
+peeling 19 s with the windows in parallel, final merge 1 s; the rest is loading and setup).
+Over all 267 Kilosort4 units: found 0.76, precision 0.96, accuracy 0.48 (median).
+
+## Summary on the Kilosort4 recording
+
+| Sorter | Time (s) | Spikes | Units | KS4 good: found / precision / accuracy (median) | KS4 good with accuracy ≥ 0.8 |
+|---|---|---|---|---|---|
+| Kilosort4 (ours)¹ | — | 130 551 | 291 | 1.00 / 0.95 / 0.82 | 0.52 |
+| MountainSort 5 | 404 | 35 121 | 165 | 0.83 / 0.91 / 0.59 | 0.36 |
+| SpyKING CIRCUS 2 | 44 | 120 469 | 452 | 0.99 / 0.93 / 0.70 | 0.43 |
+| Tridesclous 2 | 41 | 83 110 | 562 | 0.98 / 0.98 / 0.80 | 0.50 |
+
+Kilosort4 is the reference here, so these measure agreement with it, not accuracy against ground
+truth. SpyKING CIRCUS 2 and Tridesclous 2 split units more than Kilosort4 (452 and 562 units).
+
+¹ Matched within 40 µm (the other rows: 60 µm), from the Kilosort4 section above.
+
 ## Running the benchmarks
 
 ```bash
@@ -155,6 +211,8 @@ uv run python playground/benchmarks/kilosort4_experiments.py    # learned vs Kil
 uv run python playground/benchmarks/kilosort4_benchmark.py      # speed per stage and runtime
 uv run python playground/benchmarks/emusort_checks.py 200       # EMUsort on a 200 s segment
 uv run python playground/benchmarks/mountainsort5_validation.py --rerun   # MountainSort 5 vs Kilosort4 (~7 min)
+uv run python playground/benchmarks/spykingcircus2_validation.py --rerun  # SpyKING CIRCUS 2 vs Kilosort4 (~1 min)
+uv run python playground/benchmarks/tridesclous2_validation.py --rerun    # Tridesclous 2 vs Kilosort4 (~1 min)
 ```
 
 `playground/benchmarks/ks4_reference.py` holds the shared comparison (Kilosort4's saved results, the

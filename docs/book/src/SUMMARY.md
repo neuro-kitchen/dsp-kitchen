@@ -43,6 +43,14 @@
   - [Pipeline](sorters/mountainsort5/pipeline.md)
   - [Parameters](sorters/mountainsort5/parameters.md)
   - [Tuning](sorters/mountainsort5/tuning.md)
+- [SpyKING CIRCUS 2](sorters/spykingcircus2/intro.md)
+  - [Pipeline](sorters/spykingcircus2/pipeline.md)
+  - [Parameters](sorters/spykingcircus2/parameters.md)
+  - [Tuning](sorters/spykingcircus2/tuning.md)
+- [Tridesclous 2](sorters/tridesclous2/intro.md)
+  - [Pipeline](sorters/tridesclous2/pipeline.md)
+  - [Parameters](sorters/tridesclous2/parameters.md)
+  - [Tuning](sorters/tridesclous2/tuning.md)
 - [Benchmarks](sorters/benchmarks.md)
 
 # Guides

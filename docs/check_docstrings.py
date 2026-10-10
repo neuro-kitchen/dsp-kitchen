@@ -40,7 +40,7 @@ IGNORED = {
 # Checks that do not apply to some objects
 DUNDER_WITHOUT_DOCS = {"__repr__", "__len__", "__str__", "__eq__", "__hash__", "__iter__"}
 # Native entry points documented on their typed Python wrappers (`dsp_kitchen.synapse.ml.*.run`)
-DOCUMENTED_ON_WRAPPER = {"run", "run_emusort"}
+DOCUMENTED_ON_WRAPPER = {"run", "run_emusort", "run_mountainsort5", "run_spykingcircus2", "run_tridesclous2"}
 
 
 def qualified_names(tree: ast.Module) -> dict[int, tuple[str, ast.AST]]:
