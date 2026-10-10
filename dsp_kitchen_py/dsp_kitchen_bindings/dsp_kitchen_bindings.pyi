@@ -8,9 +8,11 @@ import typing
 __all__ = [
     "BandpassFilter",
     "BandstopFilter",
+    "BesselFilter",
     "ChebyshevFilter",
     "Clamp",
     "CommonAverageReference",
+    "CommonMedianReference",
     "DeduplicatedSpike",
     "EmusortConfig",
     "FastICA",
@@ -35,6 +37,8 @@ __all__ = [
     "SortingOutput",
     "SpatialWhitening",
     "SpikeEvent",
+    "Spykingcircus2Config",
+    "Spykingcircus2Result",
     "StreamingDetectionResult",
     "SubtractBaseline",
     "SurfaceLaplacian",
@@ -42,6 +46,8 @@ __all__ = [
     "TeagerKaiser",
     "TemplateCentres",
     "TemplateFilter",
+    "Tridesclous2Config",
+    "Tridesclous2Result",
     "UniversalTemplates",
     "WaveformSnippet",
     "apply_channel_delays",
@@ -52,6 +58,7 @@ __all__ = [
     "cluster_gmm",
     "cluster_kde_merge",
     "common_average_reference",
+    "common_median_reference",
     "compare_sortings",
     "compare_spike_trains",
     "compute_amplitude_cutoff",
@@ -101,11 +108,15 @@ __all__ = [
     "run",
     "run_emusort",
     "run_mountainsort5",
+    "run_spykingcircus2",
+    "run_tridesclous2",
     "save_sorting",
     "scale_samples",
     "set_runtime",
+    "spykingcircus2_provenance",
     "subtract_template",
     "teager_kaiser_filter",
+    "tridesclous2_provenance",
 ]
 
 @typing.final
@@ -160,6 +171,37 @@ class BandstopFilter:
     >>> y = Pipeline([BandstopFilter(45.0, 55.0)]).run(x, fs=30000.0)
     """
     def __new__(cls, low_hz: builtins.float, high_hz: builtins.float, *, order: builtins.int = 5, direction: builtins.str = 'forward-backward', start: builtins.str = 'rest') -> BandstopFilter:
+        r"""
+        See the class docs.
+        """
+    def __repr__(self) -> builtins.str: ...
+
+@typing.final
+class BesselFilter:
+    r"""
+    Bessel filter (as `scipy.signal.bessel`, phase-normalised): a pipeline stage (see `Pipeline`).
+    
+    Parameters
+    ----------
+    order : int
+        Filter order (per edge for band filters, as scipy).
+    btype : {"lowpass", "highpass", "bandpass", "bandstop"}
+    low_hz : float
+        Cutoff, Hz (the lower edge for band filters).
+    high_hz : float, optional
+        Upper edge, Hz (band filters only).
+    direction : {"forward-backward", "forward"}, default "forward-backward"
+        `"forward-backward"`: zero phase (as `scipy.signal.sosfiltfilt`; the effective order doubles).
+        `"forward"`: causal (as `sosfilt`).
+    start : {"rest", "steady-state"}, default "rest"
+        `"rest"`: the input is taken as zero before the first sample. `"steady-state"`: from the
+        first sample's steady state (as `sosfilt_zi`).
+    
+    Examples
+    --------
+    >>> y = Pipeline([BesselFilter(2, "bandpass", 150.0, 7000.0)]).run(x, fs=30000.0)
+    """
+    def __new__(cls, order: builtins.int, btype: builtins.str, low_hz: builtins.float, high_hz: typing.Optional[builtins.float] = None, *, direction: builtins.str = 'forward-backward', start: builtins.str = 'rest') -> BesselFilter:
         r"""
         See the class docs.
         """
@@ -227,6 +269,24 @@ class CommonAverageReference:
     >>> y = Pipeline([CommonAverageReference(), HighpassFilter(300.0)]).run(x, fs=30000.0)
     """
     def __new__(cls) -> CommonAverageReference:
+        r"""
+        See the class docs.
+        """
+    def __repr__(self) -> builtins.str: ...
+
+@typing.final
+class CommonMedianReference:
+    r"""
+    Common median reference: a pipeline stage subtracting, at every sample, the median over
+    channels (SpikeInterface's `common_reference(operator="median")`).
+    
+    Less pulled than the mean by a few channels with large spikes or artefacts.
+    
+    Examples
+    --------
+    >>> y = Pipeline([CommonMedianReference(), HighpassFilter(300.0)]).run(x, fs=30000.0)
+    """
+    def __new__(cls) -> CommonMedianReference:
         r"""
         See the class docs.
         """
@@ -1597,14 +1657,14 @@ class Mountainsort5Config:
         Chunks the whitening is fitted on (evenly spaced).
         """
     @property
-    def whitening_chunk_samples(self) -> builtins.int:
+    def whitening_chunk_ms(self) -> builtins.float:
         r"""
-        Samples per whitening chunk.
+        Length of each whitening chunk, ms.
         """
-    @whitening_chunk_samples.setter
-    def whitening_chunk_samples(self, value: builtins.int) -> None:
+    @whitening_chunk_ms.setter
+    def whitening_chunk_ms(self, value: builtins.float) -> None:
         r"""
-        Samples per whitening chunk.
+        Length of each whitening chunk, ms.
         """
     @property
     def whitening_epsilon(self) -> builtins.float:
@@ -1866,7 +1926,7 @@ class Mountainsort5Config:
         r"""
         Seed of the randomized PCA.
         """
-    def __new__(cls, *, scheme: builtins.int = 2, do_car: builtins.bool = False, do_bandpass: builtins.bool = True, bandpass_low_hz: builtins.float = 300.0, bandpass_high_hz: typing.Optional[builtins.float] = 6000.0, do_notch: builtins.bool = False, notch_hz: builtins.float = 60.0, notch_q: builtins.float = 30.0, do_whiten: builtins.bool = True, whitening_chunks: builtins.int = 20, whitening_chunk_samples: builtins.int = 10000, whitening_epsilon: builtins.float = 9.99999993922529e-09, detect_threshold: builtins.float = 5.5, detect_sign: builtins.int = -1, detect_time_radius_ms: builtins.float = 0.5, scheme1_detect_channel_radius_um: typing.Optional[builtins.float] = 150.0, phase1_detect_channel_radius_um: typing.Optional[builtins.float] = 200.0, phase1_detect_threshold: builtins.float = 5.5, phase1_detect_time_radius_ms: builtins.float = 1.5, detect_channel_radius_um: typing.Optional[builtins.float] = 50.0, snippet_t1: builtins.int = 20, snippet_t2: builtins.int = 20, snippet_mask_radius_um: typing.Optional[builtins.float] = 250.0, npca_per_channel: builtins.int = 3, npca_per_subdivision: builtins.int = 10, skip_alignment: builtins.bool = False, isocut_threshold: builtins.float = 2.0, min_cluster_size: builtins.int = 10, k_init: builtins.int = 200, max_iterations_per_pass: builtins.int = 500, training_duration_sec: typing.Optional[builtins.float] = 300.0, training_sampling: builtins.str = 'uniform', max_num_snippets_per_training_batch: builtins.int = 200, classifier_npca: typing.Optional[builtins.int] = None, classification_chunk_sec: typing.Optional[builtins.float] = None, pca_exact_cap: builtins.int = 8000, seed: builtins.int = 0) -> Mountainsort5Config:
+    def __new__(cls, *, scheme: builtins.int = 2, do_car: builtins.bool = False, do_bandpass: builtins.bool = True, bandpass_low_hz: builtins.float = 300.0, bandpass_high_hz: typing.Optional[builtins.float] = 6000.0, do_notch: builtins.bool = False, notch_hz: builtins.float = 60.0, notch_q: builtins.float = 30.0, do_whiten: builtins.bool = True, whitening_chunks: builtins.int = 20, whitening_chunk_ms: builtins.float = 500.0, whitening_epsilon: builtins.float = 1.0000000168623835e-16, detect_threshold: builtins.float = 5.5, detect_sign: builtins.int = -1, detect_time_radius_ms: builtins.float = 0.5, scheme1_detect_channel_radius_um: typing.Optional[builtins.float] = 150.0, phase1_detect_channel_radius_um: typing.Optional[builtins.float] = 200.0, phase1_detect_threshold: builtins.float = 5.5, phase1_detect_time_radius_ms: builtins.float = 1.5, detect_channel_radius_um: typing.Optional[builtins.float] = 50.0, snippet_t1: builtins.int = 20, snippet_t2: builtins.int = 20, snippet_mask_radius_um: typing.Optional[builtins.float] = 250.0, npca_per_channel: builtins.int = 3, npca_per_subdivision: builtins.int = 10, skip_alignment: builtins.bool = False, isocut_threshold: builtins.float = 2.0, min_cluster_size: builtins.int = 10, k_init: builtins.int = 200, max_iterations_per_pass: builtins.int = 500, training_duration_sec: typing.Optional[builtins.float] = 300.0, training_sampling: builtins.str = 'uniform', max_num_snippets_per_training_batch: builtins.int = 200, classifier_npca: typing.Optional[builtins.int] = None, classification_chunk_sec: typing.Optional[builtins.float] = None, pca_exact_cap: builtins.int = 8000, seed: builtins.int = 0) -> Mountainsort5Config:
         r"""
         MountainSort 5's defaults, changed by keyword (see the class and attribute docs).
         """
@@ -2109,8 +2169,8 @@ class Pipeline:
     Processing stages run one after the other on the device; intermediate results never leave it.
     
     Stages: filters (`BandpassFilter`, `HighpassFilter`, `LowpassFilter`, `BandstopFilter`,
-    `NotchFilter`, `ChebyshevFilter`, `GaussianSmooth`, `MedianFilter`, `TeagerKaiser`), spatial
-    operators (`CommonAverageReference`, `SpatialWhitening`, `SurfaceLaplacian`) and pointwise ones
+    `NotchFilter`, `ChebyshevFilter`, `BesselFilter`, `GaussianSmooth`, `MedianFilter`, `TeagerKaiser`), spatial
+    operators (`CommonAverageReference`, `CommonMedianReference`, `SpatialWhitening`, `SurfaceLaplacian`) and pointwise ones
     (`Scale`, `SubtractBaseline`, `Clamp`). A sorter's fitted preprocessing is a `Pipeline` too
     (`result.preprocessing`).
     
@@ -2872,6 +2932,555 @@ class SpikeEvent:
     def __repr__(self) -> builtins.str: ...
 
 @typing.final
+class Spykingcircus2Config:
+    r"""
+    SpyKING CIRCUS 2 settings: SpikeInterface's `_default_params` and the defaults of the
+    components it calls.
+    
+    Every argument defaults to SpyKING CIRCUS 2's default; lengths of time in ms, distances
+    in µm. Change any setting by keyword, or later as an attribute.
+    
+    Examples
+    --------
+    >>> from dsp_kitchen.synapse.ml import spykingcircus2
+    >>> config = spykingcircus2.Config(detect_threshold=6.0)
+    """
+    @property
+    def ms_before(self) -> builtins.float:
+        r"""
+        Waveform window before the peak, ms.
+        """
+    @ms_before.setter
+    def ms_before(self, value: builtins.float) -> None:
+        r"""
+        Waveform window before the peak, ms.
+        """
+    @property
+    def ms_after(self) -> builtins.float:
+        r"""
+        Waveform window after the peak, ms.
+        """
+    @ms_after.setter
+    def ms_after(self, value: builtins.float) -> None:
+        r"""
+        Waveform window after the peak, ms.
+        """
+    @property
+    def radius_um(self) -> builtins.float:
+        r"""
+        Feature neighbourhood, µm (detection uses half of it).
+        """
+    @radius_um.setter
+    def radius_um(self, value: builtins.float) -> None:
+        r"""
+        Feature neighbourhood, µm (detection uses half of it).
+        """
+    @property
+    def do_bandpass(self) -> builtins.bool:
+        r"""
+        Bessel band-pass (forward-backward).
+        """
+    @do_bandpass.setter
+    def do_bandpass(self, value: builtins.bool) -> None:
+        r"""
+        Bessel band-pass (forward-backward).
+        """
+    @property
+    def bandpass_low_hz(self) -> builtins.float:
+        r"""
+        Lower band edge, Hz.
+        """
+    @bandpass_low_hz.setter
+    def bandpass_low_hz(self, value: builtins.float) -> None:
+        r"""
+        Lower band edge, Hz.
+        """
+    @property
+    def bandpass_high_hz(self) -> typing.Optional[builtins.float]:
+        r"""
+        Upper band edge, Hz; `None`: a high-pass at `bandpass_low_hz`.
+        """
+    @bandpass_high_hz.setter
+    def bandpass_high_hz(self, value: typing.Optional[builtins.float]) -> None:
+        r"""
+        Upper band edge, Hz; `None`: a high-pass at `bandpass_low_hz`.
+        """
+    @property
+    def filter_order(self) -> builtins.int:
+        r"""
+        Bessel order (per edge).
+        """
+    @filter_order.setter
+    def filter_order(self, value: builtins.int) -> None:
+        r"""
+        Bessel order (per edge).
+        """
+    @property
+    def do_common_reference(self) -> builtins.bool:
+        r"""
+        Common median reference (on recordings of at least `common_reference_min_channels`).
+        """
+    @do_common_reference.setter
+    def do_common_reference(self, value: builtins.bool) -> None:
+        r"""
+        Common median reference (on recordings of at least `common_reference_min_channels`).
+        """
+    @property
+    def common_reference_min_channels(self) -> builtins.int:
+        r"""
+        Fewest channels the common median reference is applied to.
+        """
+    @common_reference_min_channels.setter
+    def common_reference_min_channels(self, value: builtins.int) -> None:
+        r"""
+        Fewest channels the common median reference is applied to.
+        """
+    @property
+    def do_whiten(self) -> builtins.bool:
+        r"""
+        Whitening.
+        """
+    @do_whiten.setter
+    def do_whiten(self, value: builtins.bool) -> None:
+        r"""
+        Whitening.
+        """
+    @property
+    def whitening_radius_um(self) -> typing.Optional[builtins.float]:
+        r"""
+        Local whitening radius, µm; `None`: global.
+        """
+    @whitening_radius_um.setter
+    def whitening_radius_um(self, value: typing.Optional[builtins.float]) -> None:
+        r"""
+        Local whitening radius, µm; `None`: global.
+        """
+    @property
+    def whitening_chunks(self) -> builtins.int:
+        r"""
+        Chunks the whitening is fitted on (evenly spaced).
+        """
+    @whitening_chunks.setter
+    def whitening_chunks(self, value: builtins.int) -> None:
+        r"""
+        Chunks the whitening is fitted on (evenly spaced).
+        """
+    @property
+    def whitening_chunk_ms(self) -> builtins.float:
+        r"""
+        Length of each whitening chunk, ms.
+        """
+    @whitening_chunk_ms.setter
+    def whitening_chunk_ms(self, value: builtins.float) -> None:
+        r"""
+        Length of each whitening chunk, ms.
+        """
+    @property
+    def whitening_epsilon(self) -> builtins.float:
+        r"""
+        Regularisation added to the covariance eigenvalues.
+        """
+    @whitening_epsilon.setter
+    def whitening_epsilon(self, value: builtins.float) -> None:
+        r"""
+        Regularisation added to the covariance eigenvalues.
+        """
+    @property
+    def noise_chunks(self) -> builtins.int:
+        r"""
+        Chunks the noise levels are measured on.
+        """
+    @noise_chunks.setter
+    def noise_chunks(self, value: builtins.int) -> None:
+        r"""
+        Chunks the noise levels are measured on.
+        """
+    @property
+    def noise_chunk_ms(self) -> builtins.float:
+        r"""
+        Length of each noise chunk, ms.
+        """
+    @noise_chunk_ms.setter
+    def noise_chunk_ms(self, value: builtins.float) -> None:
+        r"""
+        Length of each noise chunk, ms.
+        """
+    @property
+    def detect_threshold(self) -> builtins.float:
+        r"""
+        Detection threshold (× noise).
+        """
+    @detect_threshold.setter
+    def detect_threshold(self, value: builtins.float) -> None:
+        r"""
+        Detection threshold (× noise).
+        """
+    @property
+    def prototype_peaks(self) -> builtins.int:
+        r"""
+        Peaks the detection prototype is the median of.
+        """
+    @prototype_peaks.setter
+    def prototype_peaks(self, value: builtins.int) -> None:
+        r"""
+        Peaks the detection prototype is the median of.
+        """
+    @property
+    def matched_filter_chunks(self) -> builtins.int:
+        r"""
+        Chunks the matched filter's thresholds are fitted on.
+        """
+    @matched_filter_chunks.setter
+    def matched_filter_chunks(self, value: builtins.int) -> None:
+        r"""
+        Chunks the matched filter's thresholds are fitted on.
+        """
+    @property
+    def n_peaks_per_channel(self) -> builtins.int:
+        r"""
+        Peaks clustered per channel (`max(min_n_peaks, n_peaks_per_channel · channels)`).
+        """
+    @n_peaks_per_channel.setter
+    def n_peaks_per_channel(self, value: builtins.int) -> None:
+        r"""
+        Peaks clustered per channel (`max(min_n_peaks, n_peaks_per_channel · channels)`).
+        """
+    @property
+    def min_n_peaks(self) -> builtins.int:
+        r"""
+        Fewest peaks clustered.
+        """
+    @min_n_peaks.setter
+    def min_n_peaks(self, value: builtins.int) -> None:
+        r"""
+        Fewest peaks clustered.
+        """
+    @property
+    def svd_components(self) -> builtins.int:
+        r"""
+        SVD components per channel.
+        """
+    @svd_components.setter
+    def svd_components(self, value: builtins.int) -> None:
+        r"""
+        SVD components per channel.
+        """
+    @property
+    def svd_peaks_fit(self) -> builtins.int:
+        r"""
+        Peaks the SVD is fitted on.
+        """
+    @svd_peaks_fit.setter
+    def svd_peaks_fit(self, value: builtins.int) -> None:
+        r"""
+        Peaks the SVD is fitted on.
+        """
+    @property
+    def split_radius_um(self) -> builtins.float:
+        r"""
+        Split neighbourhood, µm.
+        """
+    @split_radius_um.setter
+    def split_radius_um(self, value: builtins.float) -> None:
+        r"""
+        Split neighbourhood, µm.
+        """
+    @property
+    def split_depth(self) -> builtins.int:
+        r"""
+        Split recursion depth.
+        """
+    @split_depth.setter
+    def split_depth(self, value: builtins.int) -> None:
+        r"""
+        Split recursion depth.
+        """
+    @property
+    def min_cluster_size(self) -> builtins.int:
+        r"""
+        HDBSCAN's smallest cluster.
+        """
+    @min_cluster_size.setter
+    def min_cluster_size(self, value: builtins.int) -> None:
+        r"""
+        HDBSCAN's smallest cluster.
+        """
+    @property
+    def split_pca_features(self) -> builtins.int:
+        r"""
+        Dimensions each split clusters in.
+        """
+    @split_pca_features.setter
+    def split_pca_features(self, value: builtins.int) -> None:
+        r"""
+        Dimensions each split clusters in.
+        """
+    @property
+    def sparsify_threshold(self) -> builtins.float:
+        r"""
+        Template channels: peak-to-peak / noise at least this.
+        """
+    @sparsify_threshold.setter
+    def sparsify_threshold(self, value: builtins.float) -> None:
+        r"""
+        Template channels: peak-to-peak / noise at least this.
+        """
+    @property
+    def min_snr(self) -> builtins.float:
+        r"""
+        Templates without a channel of this SNR are dropped.
+        """
+    @min_snr.setter
+    def min_snr(self, value: builtins.float) -> None:
+        r"""
+        Templates without a channel of this SNR are dropped.
+        """
+    @property
+    def max_jitter_ms(self) -> builtins.float:
+        r"""
+        Templates whose trough is farther than this from the peak (ms) are dropped.
+        """
+    @max_jitter_ms.setter
+    def max_jitter_ms(self, value: builtins.float) -> None:
+        r"""
+        Templates whose trough is farther than this from the peak (ms) are dropped.
+        """
+    @property
+    def mean_sd_ratio_threshold(self) -> builtins.float:
+        r"""
+        Templates whose mean max-std / noise exceeds this are dropped.
+        """
+    @mean_sd_ratio_threshold.setter
+    def mean_sd_ratio_threshold(self, value: builtins.float) -> None:
+        r"""
+        Templates whose mean max-std / noise exceeds this are dropped.
+        """
+    @property
+    def merge_similarity(self) -> builtins.float:
+        r"""
+        Templates more similar than this merge.
+        """
+    @merge_similarity.setter
+    def merge_similarity(self, value: builtins.float) -> None:
+        r"""
+        Templates more similar than this merge.
+        """
+    @property
+    def merge_num_shifts(self) -> builtins.int:
+        r"""
+        Lags (samples) the template similarity tries each side.
+        """
+    @merge_num_shifts.setter
+    def merge_num_shifts(self, value: builtins.int) -> None:
+        r"""
+        Lags (samples) the template similarity tries each side.
+        """
+    @property
+    def min_firing_rate(self) -> builtins.float:
+        r"""
+        Units firing less than this (Hz) are dropped.
+        """
+    @min_firing_rate.setter
+    def min_firing_rate(self, value: builtins.float) -> None:
+        r"""
+        Units firing less than this (Hz) are dropped.
+        """
+    @property
+    def omp_min_amplitude(self) -> builtins.float:
+        r"""
+        Smallest matching amplitude kept.
+        """
+    @omp_min_amplitude.setter
+    def omp_min_amplitude(self, value: builtins.float) -> None:
+        r"""
+        Smallest matching amplitude kept.
+        """
+    @property
+    def omp_max_failures(self) -> builtins.int:
+        r"""
+        Matching rounds without a new spike before it stops.
+        """
+    @omp_max_failures.setter
+    def omp_max_failures(self, value: builtins.int) -> None:
+        r"""
+        Matching rounds without a new spike before it stops.
+        """
+    @property
+    def omp_rank(self) -> builtins.int:
+        r"""
+        Rank of the templates in the matching.
+        """
+    @omp_rank.setter
+    def omp_rank(self, value: builtins.int) -> None:
+        r"""
+        Rank of the templates in the matching.
+        """
+    @property
+    def omp_vicinity(self) -> builtins.int:
+        r"""
+        Matching neighbourhood, template widths.
+        """
+    @omp_vicinity.setter
+    def omp_vicinity(self, value: builtins.int) -> None:
+        r"""
+        Matching neighbourhood, template widths.
+        """
+    @property
+    def final_merges(self) -> builtins.bool:
+        r"""
+        Final cleaning (`auto_merge_units`, cross-contamination presets).
+        """
+    @final_merges.setter
+    def final_merges(self, value: builtins.bool) -> None:
+        r"""
+        Final cleaning (`auto_merge_units`, cross-contamination presets).
+        """
+    @property
+    def final_merge_max_distance_um(self) -> builtins.float:
+        r"""
+        Furthest apart (µm) two units' locations may be to merge.
+        """
+    @final_merge_max_distance_um.setter
+    def final_merge_max_distance_um(self, value: builtins.float) -> None:
+        r"""
+        Furthest apart (µm) two units' locations may be to merge.
+        """
+    @property
+    def final_merge_censor_ms(self) -> builtins.float:
+        r"""
+        Merged trains drop spikes closer than this, ms.
+        """
+    @final_merge_censor_ms.setter
+    def final_merge_censor_ms(self, value: builtins.float) -> None:
+        r"""
+        Merged trains drop spikes closer than this, ms.
+        """
+    @property
+    def final_merge_sparsity_overlap(self) -> builtins.float:
+        r"""
+        Units merge only when their channels overlap (intersection / union) at least this much.
+        """
+    @final_merge_sparsity_overlap.setter
+    def final_merge_sparsity_overlap(self, value: builtins.float) -> None:
+        r"""
+        Units merge only when their channels overlap (intersection / union) at least this much.
+        """
+    @property
+    def final_merge_max_lag_ms(self) -> builtins.float:
+        r"""
+        Template similarity lag each side, ms.
+        """
+    @final_merge_max_lag_ms.setter
+    def final_merge_max_lag_ms(self, value: builtins.float) -> None:
+        r"""
+        Template similarity lag each side, ms.
+        """
+    @property
+    def chunk_sec(self) -> builtins.float:
+        r"""
+        Window length, s.
+        """
+    @chunk_sec.setter
+    def chunk_sec(self, value: builtins.float) -> None:
+        r"""
+        Window length, s.
+        """
+    @property
+    def seed(self) -> builtins.int:
+        r"""
+        Seed of the shuffles and selections.
+        """
+    @seed.setter
+    def seed(self, value: builtins.int) -> None:
+        r"""
+        Seed of the shuffles and selections.
+        """
+    def __new__(cls, *, ms_before: builtins.float = 0.5, ms_after: builtins.float = 1.5, radius_um: builtins.float = 100.0, do_bandpass: builtins.bool = True, bandpass_low_hz: builtins.float = 150.0, bandpass_high_hz: typing.Optional[builtins.float] = 7000.0, filter_order: builtins.int = 2, do_common_reference: builtins.bool = True, common_reference_min_channels: builtins.int = 32, do_whiten: builtins.bool = True, whitening_radius_um: typing.Optional[builtins.float] = 100.0, whitening_chunks: builtins.int = 20, whitening_chunk_ms: builtins.float = 500.0, whitening_epsilon: builtins.float = 1.0000000168623835e-16, noise_chunks: builtins.int = 20, noise_chunk_ms: builtins.float = 500.0, detect_threshold: builtins.float = 5.0, prototype_peaks: builtins.int = 10000, matched_filter_chunks: builtins.int = 5, n_peaks_per_channel: builtins.int = 5000, min_n_peaks: builtins.int = 100000, svd_components: builtins.int = 5, svd_peaks_fit: builtins.int = 5000, split_radius_um: builtins.float = 75.0, split_depth: builtins.int = 3, min_cluster_size: builtins.int = 20, split_pca_features: builtins.int = 3, sparsify_threshold: builtins.float = 1.0, min_snr: builtins.float = 5.0, max_jitter_ms: builtins.float = 0.2, mean_sd_ratio_threshold: builtins.float = 3.0, merge_similarity: builtins.float = 0.8, merge_num_shifts: builtins.int = 3, min_firing_rate: builtins.float = 0.1, omp_min_amplitude: builtins.float = 0.6000000238418579, omp_max_failures: builtins.int = 5, omp_rank: builtins.int = 5, omp_vicinity: builtins.int = 2, final_merges: builtins.bool = True, final_merge_max_distance_um: builtins.float = 50.0, final_merge_censor_ms: builtins.float = 3.0, final_merge_sparsity_overlap: builtins.float = 0.5, final_merge_max_lag_ms: builtins.float = 0.1, chunk_sec: builtins.float = 1.0, seed: builtins.int = 42) -> Spykingcircus2Config:
+        r"""
+        SpyKING CIRCUS 2's defaults, changed by keyword (see the class and attribute docs).
+        """
+    def __repr__(self) -> builtins.str: ...
+
+@typing.final
+class Spykingcircus2Result:
+    r"""
+    Result of a SpyKING CIRCUS 2 run (`spykingcircus2.run`).
+    
+    Spikes are template matches: recording sample of the template's peak, unit, scaling (the
+    template's amplitude multiplier). Templates are whitened.
+    
+    Examples
+    --------
+    >>> result = spykingcircus2.run(recording, probe, spykingcircus2.Config())
+    >>> result.n_units
+    >>> sorting = result.to_sorting_output(probe)
+    """
+    @property
+    def sorter(self) -> builtins.str:
+        r"""
+        `"spykingcircus2"`.
+        """
+    @property
+    def n_units(self) -> builtins.int:
+        r"""
+        Units found.
+        """
+    @property
+    def sample_rate_hz(self) -> builtins.float:
+        r"""
+        Sampling rate of the recording, Hz.
+        """
+    @property
+    def final_merges(self) -> builtins.int:
+        r"""
+        Units merged by the final cleaning.
+        """
+    @property
+    def peaks(self) -> tuple[builtins.int, builtins.int]:
+        r"""
+        Peaks detected, and how many of them were clustered.
+        """
+    @property
+    def noise_levels(self) -> builtins.list[builtins.float]:
+        r"""
+        Noise level of every channel (whitened units).
+        """
+    @property
+    def prototype(self) -> builtins.list[builtins.float]:
+        r"""
+        The detection prototype waveform.
+        """
+    @property
+    def preprocessing(self) -> Pipeline:
+        r"""
+        The preprocessing the sorter saw (filters, reference, whitening) as a reusable `Pipeline`.
+        """
+    @property
+    def templates(self) -> numpy.typing.NDArray[numpy.float32]:
+        r"""
+        Unit templates, `[n_units, samples, channels]` float32 (whitened; zeros off each unit's channels).
+        """
+    def spikes(self) -> dict:
+        r"""
+        The spikes, one entry per spike in every array.
+        
+        Returns
+        -------
+        dict
+            `sample` (recording sample), `unit`, `scaling` (matching amplitude).
+        """
+    def to_sorting_output(self, probe: typing.Optional[ProbeLayout] = None) -> SortingOutput:
+        r"""
+        The units in `SortingOutput` form, for export (`save_sorting`: Phy, zarr) and inspection.
+        
+        Parameters
+        ----------
+        probe : ProbeLayout, optional
+            Geometry stored with the units (channel positions in exports).
+        """
+    def __repr__(self) -> builtins.str: ...
+
+@typing.final
 class StreamingDetectionResult:
     r"""
     Result of `detect_recording`: the deduplicated spikes of a whole recording, the noise levels it
@@ -3174,6 +3783,700 @@ class TemplateFilter:
     def __repr__(self) -> builtins.str: ...
 
 @typing.final
+class Tridesclous2Config:
+    r"""
+    Tridesclous 2 settings: SpikeInterface's `_default_params` and the defaults of the
+    components it calls.
+    
+    Every argument defaults to Tridesclous 2's default; lengths of time in ms, distances
+    in µm. Change any setting by keyword, or later as an attribute.
+    
+    Examples
+    --------
+    >>> from dsp_kitchen.synapse.ml import tridesclous2
+    >>> config = tridesclous2.Config(detect_threshold=6.0)
+    """
+    @property
+    def do_bandpass(self) -> builtins.bool:
+        r"""
+        Bessel band-pass (forward-backward).
+        """
+    @do_bandpass.setter
+    def do_bandpass(self, value: builtins.bool) -> None:
+        r"""
+        Bessel band-pass (forward-backward).
+        """
+    @property
+    def bandpass_low_hz(self) -> builtins.float:
+        r"""
+        Lower band edge, Hz.
+        """
+    @bandpass_low_hz.setter
+    def bandpass_low_hz(self, value: builtins.float) -> None:
+        r"""
+        Lower band edge, Hz.
+        """
+    @property
+    def bandpass_high_hz(self) -> typing.Optional[builtins.float]:
+        r"""
+        Upper band edge, Hz; `None`: a high-pass at `bandpass_low_hz`.
+        """
+    @bandpass_high_hz.setter
+    def bandpass_high_hz(self, value: typing.Optional[builtins.float]) -> None:
+        r"""
+        Upper band edge, Hz; `None`: a high-pass at `bandpass_low_hz`.
+        """
+    @property
+    def filter_order(self) -> builtins.int:
+        r"""
+        Bessel order (per edge).
+        """
+    @filter_order.setter
+    def filter_order(self, value: builtins.int) -> None:
+        r"""
+        Bessel order (per edge).
+        """
+    @property
+    def do_common_reference(self) -> builtins.bool:
+        r"""
+        Common median reference (on recordings of at least `common_reference_min_channels`).
+        """
+    @do_common_reference.setter
+    def do_common_reference(self, value: builtins.bool) -> None:
+        r"""
+        Common median reference (on recordings of at least `common_reference_min_channels`).
+        """
+    @property
+    def common_reference_min_channels(self) -> builtins.int:
+        r"""
+        Fewest channels the common median reference is applied to.
+        """
+    @common_reference_min_channels.setter
+    def common_reference_min_channels(self, value: builtins.int) -> None:
+        r"""
+        Fewest channels the common median reference is applied to.
+        """
+    @property
+    def do_whiten(self) -> builtins.bool:
+        r"""
+        Whitening.
+        """
+    @do_whiten.setter
+    def do_whiten(self, value: builtins.bool) -> None:
+        r"""
+        Whitening.
+        """
+    @property
+    def whitening_radius_um(self) -> typing.Optional[builtins.float]:
+        r"""
+        Local whitening radius, µm; `None`: global.
+        """
+    @whitening_radius_um.setter
+    def whitening_radius_um(self, value: typing.Optional[builtins.float]) -> None:
+        r"""
+        Local whitening radius, µm; `None`: global.
+        """
+    @property
+    def whitening_chunks(self) -> builtins.int:
+        r"""
+        Chunks the whitening is fitted on (evenly spaced).
+        """
+    @whitening_chunks.setter
+    def whitening_chunks(self, value: builtins.int) -> None:
+        r"""
+        Chunks the whitening is fitted on (evenly spaced).
+        """
+    @property
+    def whitening_chunk_ms(self) -> builtins.float:
+        r"""
+        Length of each whitening chunk, ms.
+        """
+    @whitening_chunk_ms.setter
+    def whitening_chunk_ms(self, value: builtins.float) -> None:
+        r"""
+        Length of each whitening chunk, ms.
+        """
+    @property
+    def whitening_epsilon(self) -> builtins.float:
+        r"""
+        Regularisation added to the covariance eigenvalues.
+        """
+    @whitening_epsilon.setter
+    def whitening_epsilon(self, value: builtins.float) -> None:
+        r"""
+        Regularisation added to the covariance eigenvalues.
+        """
+    @property
+    def noise_chunks(self) -> builtins.int:
+        r"""
+        Chunks the noise levels are measured on.
+        """
+    @noise_chunks.setter
+    def noise_chunks(self, value: builtins.int) -> None:
+        r"""
+        Chunks the noise levels are measured on.
+        """
+    @property
+    def noise_chunk_ms(self) -> builtins.float:
+        r"""
+        Length of each noise chunk, ms.
+        """
+    @noise_chunk_ms.setter
+    def noise_chunk_ms(self, value: builtins.float) -> None:
+        r"""
+        Length of each noise chunk, ms.
+        """
+    @property
+    def detect_threshold(self) -> builtins.float:
+        r"""
+        Detection threshold (× noise), also the peeler's.
+        """
+    @detect_threshold.setter
+    def detect_threshold(self, value: builtins.float) -> None:
+        r"""
+        Detection threshold (× noise), also the peeler's.
+        """
+    @property
+    def detection_radius_um(self) -> builtins.float:
+        r"""
+        Detection neighbourhood, µm.
+        """
+    @detection_radius_um.setter
+    def detection_radius_um(self, value: builtins.float) -> None:
+        r"""
+        Detection neighbourhood, µm.
+        """
+    @property
+    def detection_exclude_sweep_ms(self) -> builtins.float:
+        r"""
+        Detection exclusion window, ms.
+        """
+    @detection_exclude_sweep_ms.setter
+    def detection_exclude_sweep_ms(self, value: builtins.float) -> None:
+        r"""
+        Detection exclusion window, ms.
+        """
+    @property
+    def n_peaks_per_channel(self) -> builtins.int:
+        r"""
+        Peaks clustered per channel (`max(min_n_peaks, n_peaks_per_channel · channels)`).
+        """
+    @n_peaks_per_channel.setter
+    def n_peaks_per_channel(self, value: builtins.int) -> None:
+        r"""
+        Peaks clustered per channel (`max(min_n_peaks, n_peaks_per_channel · channels)`).
+        """
+    @property
+    def min_n_peaks(self) -> builtins.int:
+        r"""
+        Fewest peaks clustered.
+        """
+    @min_n_peaks.setter
+    def min_n_peaks(self, value: builtins.int) -> None:
+        r"""
+        Fewest peaks clustered.
+        """
+    @property
+    def clustering_ms_before(self) -> builtins.float:
+        r"""
+        Clustering waveform window before the peak, ms.
+        """
+    @clustering_ms_before.setter
+    def clustering_ms_before(self, value: builtins.float) -> None:
+        r"""
+        Clustering waveform window before the peak, ms.
+        """
+    @property
+    def clustering_ms_after(self) -> builtins.float:
+        r"""
+        Clustering waveform window after the peak, ms.
+        """
+    @clustering_ms_after.setter
+    def clustering_ms_after(self, value: builtins.float) -> None:
+        r"""
+        Clustering waveform window after the peak, ms.
+        """
+    @property
+    def features_radius_um(self) -> builtins.float:
+        r"""
+        SVD feature neighbourhood, µm.
+        """
+    @features_radius_um.setter
+    def features_radius_um(self, value: builtins.float) -> None:
+        r"""
+        SVD feature neighbourhood, µm.
+        """
+    @property
+    def n_svd_components_per_channel(self) -> builtins.int:
+        r"""
+        SVD components per channel.
+        """
+    @n_svd_components_per_channel.setter
+    def n_svd_components_per_channel(self, value: builtins.int) -> None:
+        r"""
+        SVD components per channel.
+        """
+    @property
+    def svd_peaks_fit(self) -> builtins.int:
+        r"""
+        Peaks the SVD is fitted on.
+        """
+    @svd_peaks_fit.setter
+    def svd_peaks_fit(self, value: builtins.int) -> None:
+        r"""
+        Peaks the SVD is fitted on.
+        """
+    @property
+    def split_radius_um(self) -> builtins.float:
+        r"""
+        Split neighbourhood, µm.
+        """
+    @split_radius_um.setter
+    def split_radius_um(self, value: builtins.float) -> None:
+        r"""
+        Split neighbourhood, µm.
+        """
+    @property
+    def clustering_recursive_depth(self) -> builtins.int:
+        r"""
+        Split recursion depth.
+        """
+    @clustering_recursive_depth.setter
+    def clustering_recursive_depth(self, value: builtins.int) -> None:
+        r"""
+        Split recursion depth.
+        """
+    @property
+    def min_size_split(self) -> builtins.int:
+        r"""
+        Smallest cluster that is split.
+        """
+    @min_size_split.setter
+    def min_size_split(self, value: builtins.int) -> None:
+        r"""
+        Smallest cluster that is split.
+        """
+    @property
+    def n_pca_features(self) -> builtins.int:
+        r"""
+        Dimensions each split clusters in.
+        """
+    @n_pca_features.setter
+    def n_pca_features(self, value: builtins.int) -> None:
+        r"""
+        Dimensions each split clusters in.
+        """
+    @property
+    def isosplit_n_init(self) -> builtins.int:
+        r"""
+        isosplit's initial k-means clusters (lowered for small sets).
+        """
+    @isosplit_n_init.setter
+    def isosplit_n_init(self, value: builtins.int) -> None:
+        r"""
+        isosplit's initial k-means clusters (lowered for small sets).
+        """
+    @property
+    def isosplit_min_cluster_size(self) -> builtins.int:
+        r"""
+        isosplit's smallest cluster.
+        """
+    @isosplit_min_cluster_size.setter
+    def isosplit_min_cluster_size(self, value: builtins.int) -> None:
+        r"""
+        isosplit's smallest cluster.
+        """
+    @property
+    def isosplit_max_iterations_per_pass(self) -> builtins.int:
+        r"""
+        isosplit iterations per pass.
+        """
+    @isosplit_max_iterations_per_pass.setter
+    def isosplit_max_iterations_per_pass(self, value: builtins.int) -> None:
+        r"""
+        isosplit iterations per pass.
+        """
+    @property
+    def isocut_threshold(self) -> builtins.float:
+        r"""
+        isosplit: dip scores below this merge.
+        """
+    @isocut_threshold.setter
+    def isocut_threshold(self, value: builtins.float) -> None:
+        r"""
+        isosplit: dip scores below this merge.
+        """
+    @property
+    def clustering_sparsify_threshold(self) -> builtins.float:
+        r"""
+        Clustering templates' channels: peak-to-peak / noise at least this.
+        """
+    @clustering_sparsify_threshold.setter
+    def clustering_sparsify_threshold(self, value: builtins.float) -> None:
+        r"""
+        Clustering templates' channels: peak-to-peak / noise at least this.
+        """
+    @property
+    def clustering_min_snr(self) -> builtins.float:
+        r"""
+        Clustering templates without a channel of this SNR are dropped.
+        """
+    @clustering_min_snr.setter
+    def clustering_min_snr(self, value: builtins.float) -> None:
+        r"""
+        Clustering templates without a channel of this SNR are dropped.
+        """
+    @property
+    def merge_similarity(self) -> builtins.float:
+        r"""
+        Templates more similar than this merge.
+        """
+    @merge_similarity.setter
+    def merge_similarity(self, value: builtins.float) -> None:
+        r"""
+        Templates more similar than this merge.
+        """
+    @property
+    def merge_similarity_lag_ms(self) -> builtins.float:
+        r"""
+        Template similarity lag each side, ms.
+        """
+    @merge_similarity_lag_ms.setter
+    def merge_similarity_lag_ms(self, value: builtins.float) -> None:
+        r"""
+        Template similarity lag each side, ms.
+        """
+    @property
+    def min_firing_rate(self) -> builtins.float:
+        r"""
+        Units firing less than this (Hz) are dropped.
+        """
+    @min_firing_rate.setter
+    def min_firing_rate(self, value: builtins.float) -> None:
+        r"""
+        Units firing less than this (Hz) are dropped.
+        """
+    @property
+    def ms_before(self) -> builtins.float:
+        r"""
+        Matching templates' window before the peak, ms.
+        """
+    @ms_before.setter
+    def ms_before(self, value: builtins.float) -> None:
+        r"""
+        Matching templates' window before the peak, ms.
+        """
+    @property
+    def ms_after(self) -> builtins.float:
+        r"""
+        Matching templates' window after the peak, ms.
+        """
+    @ms_after.setter
+    def ms_after(self, value: builtins.float) -> None:
+        r"""
+        Matching templates' window after the peak, ms.
+        """
+    @property
+    def template_radius_um(self) -> builtins.float:
+        r"""
+        Matching templates' channels: within this of the unit's peaks' barycentre, µm.
+        """
+    @template_radius_um.setter
+    def template_radius_um(self, value: builtins.float) -> None:
+        r"""
+        Matching templates' channels: within this of the unit's peaks' barycentre, µm.
+        """
+    @property
+    def template_sparsify_threshold(self) -> builtins.float:
+        r"""
+        Matching templates' channels: peak-to-peak / noise at least this.
+        """
+    @template_sparsify_threshold.setter
+    def template_sparsify_threshold(self, value: builtins.float) -> None:
+        r"""
+        Matching templates' channels: peak-to-peak / noise at least this.
+        """
+    @property
+    def template_min_snr_ptp(self) -> builtins.float:
+        r"""
+        Matching templates without a channel of this SNR are dropped.
+        """
+    @template_min_snr_ptp.setter
+    def template_min_snr_ptp(self, value: builtins.float) -> None:
+        r"""
+        Matching templates without a channel of this SNR are dropped.
+        """
+    @property
+    def template_max_jitter_ms(self) -> builtins.float:
+        r"""
+        Templates whose trough is farther than this from the peak (ms) are dropped.
+        """
+    @template_max_jitter_ms.setter
+    def template_max_jitter_ms(self, value: builtins.float) -> None:
+        r"""
+        Templates whose trough is farther than this from the peak (ms) are dropped.
+        """
+    @property
+    def peeler_exclude_sweep_ms(self) -> builtins.float:
+        r"""
+        Peeler detection exclusion window, ms.
+        """
+    @peeler_exclude_sweep_ms.setter
+    def peeler_exclude_sweep_ms(self, value: builtins.float) -> None:
+        r"""
+        Peeler detection exclusion window, ms.
+        """
+    @property
+    def peeler_detection_radius_um(self) -> builtins.float:
+        r"""
+        Peeler detection neighbourhood, µm.
+        """
+    @peeler_detection_radius_um.setter
+    def peeler_detection_radius_um(self, value: builtins.float) -> None:
+        r"""
+        Peeler detection neighbourhood, µm.
+        """
+    @property
+    def peeler_cluster_radius_um(self) -> builtins.float:
+        r"""
+        Candidate units: main channel within this of the peak, µm.
+        """
+    @peeler_cluster_radius_um.setter
+    def peeler_cluster_radius_um(self, value: builtins.float) -> None:
+        r"""
+        Candidate units: main channel within this of the peak, µm.
+        """
+    @property
+    def peeler_amplitude_fitting_radius_um(self) -> builtins.float:
+        r"""
+        Neighbouring spikes fitted together within this, µm.
+        """
+    @peeler_amplitude_fitting_radius_um.setter
+    def peeler_amplitude_fitting_radius_um(self, value: builtins.float) -> None:
+        r"""
+        Neighbouring spikes fitted together within this, µm.
+        """
+    @property
+    def peeler_sample_shift(self) -> builtins.int:
+        r"""
+        Shifts tried each side, samples.
+        """
+    @peeler_sample_shift.setter
+    def peeler_sample_shift(self, value: builtins.int) -> None:
+        r"""
+        Shifts tried each side, samples.
+        """
+    @property
+    def peeler_ms_before(self) -> builtins.float:
+        r"""
+        Short template window before the peak, ms.
+        """
+    @peeler_ms_before.setter
+    def peeler_ms_before(self, value: builtins.float) -> None:
+        r"""
+        Short template window before the peak, ms.
+        """
+    @property
+    def peeler_ms_after(self) -> builtins.float:
+        r"""
+        Short template window after the peak, ms.
+        """
+    @peeler_ms_after.setter
+    def peeler_ms_after(self, value: builtins.float) -> None:
+        r"""
+        Short template window after the peak, ms.
+        """
+    @property
+    def peeler_max_loop(self) -> builtins.int:
+        r"""
+        Peeling levels with the fast detector.
+        """
+    @peeler_max_loop.setter
+    def peeler_max_loop(self, value: builtins.int) -> None:
+        r"""
+        Peeling levels with the fast detector.
+        """
+    @property
+    def peeler_amplitude_min(self) -> builtins.float:
+        r"""
+        Smallest amplitude kept.
+        """
+    @peeler_amplitude_min.setter
+    def peeler_amplitude_min(self, value: builtins.float) -> None:
+        r"""
+        Smallest amplitude kept.
+        """
+    @property
+    def peeler_amplitude_max(self) -> builtins.float:
+        r"""
+        Largest amplitude subtracted.
+        """
+    @peeler_amplitude_max.setter
+    def peeler_amplitude_max(self, value: builtins.float) -> None:
+        r"""
+        Largest amplitude subtracted.
+        """
+    @property
+    def peeler_fine_detector(self) -> builtins.bool:
+        r"""
+        A last level with the matched-filter detector.
+        """
+    @peeler_fine_detector.setter
+    def peeler_fine_detector(self, value: builtins.bool) -> None:
+        r"""
+        A last level with the matched-filter detector.
+        """
+    @property
+    def fine_detector_chunks(self) -> builtins.int:
+        r"""
+        Chunks the fine detector's thresholds are fitted on.
+        """
+    @fine_detector_chunks.setter
+    def fine_detector_chunks(self, value: builtins.int) -> None:
+        r"""
+        Chunks the fine detector's thresholds are fitted on.
+        """
+    @property
+    def final_merges(self) -> builtins.bool:
+        r"""
+        Final cleaning (`auto_merge_units`, cross-contamination presets).
+        """
+    @final_merges.setter
+    def final_merges(self, value: builtins.bool) -> None:
+        r"""
+        Final cleaning (`auto_merge_units`, cross-contamination presets).
+        """
+    @property
+    def final_merge_max_distance_um(self) -> builtins.float:
+        r"""
+        Furthest apart (µm) two units' locations may be to merge.
+        """
+    @final_merge_max_distance_um.setter
+    def final_merge_max_distance_um(self, value: builtins.float) -> None:
+        r"""
+        Furthest apart (µm) two units' locations may be to merge.
+        """
+    @property
+    def final_merge_censor_ms(self) -> builtins.float:
+        r"""
+        Merged trains drop spikes closer than this, ms.
+        """
+    @final_merge_censor_ms.setter
+    def final_merge_censor_ms(self, value: builtins.float) -> None:
+        r"""
+        Merged trains drop spikes closer than this, ms.
+        """
+    @property
+    def final_merge_sparsity_overlap(self) -> builtins.float:
+        r"""
+        Units merge only when their channels overlap (intersection / union) at least this much.
+        """
+    @final_merge_sparsity_overlap.setter
+    def final_merge_sparsity_overlap(self, value: builtins.float) -> None:
+        r"""
+        Units merge only when their channels overlap (intersection / union) at least this much.
+        """
+    @property
+    def chunk_sec(self) -> builtins.float:
+        r"""
+        Window length, s.
+        """
+    @chunk_sec.setter
+    def chunk_sec(self, value: builtins.float) -> None:
+        r"""
+        Window length, s.
+        """
+    @property
+    def seed(self) -> builtins.int:
+        r"""
+        Seed of the selections and k-means.
+        """
+    @seed.setter
+    def seed(self, value: builtins.int) -> None:
+        r"""
+        Seed of the selections and k-means.
+        """
+    def __new__(cls, *, do_bandpass: builtins.bool = True, bandpass_low_hz: builtins.float = 150.0, bandpass_high_hz: typing.Optional[builtins.float] = 6000.0, filter_order: builtins.int = 2, do_common_reference: builtins.bool = True, common_reference_min_channels: builtins.int = 32, do_whiten: builtins.bool = True, whitening_radius_um: typing.Optional[builtins.float] = 100.0, whitening_chunks: builtins.int = 20, whitening_chunk_ms: builtins.float = 500.0, whitening_epsilon: builtins.float = 1.0000000168623835e-16, noise_chunks: builtins.int = 20, noise_chunk_ms: builtins.float = 500.0, detect_threshold: builtins.float = 5.0, detection_radius_um: builtins.float = 150.0, detection_exclude_sweep_ms: builtins.float = 1.5, n_peaks_per_channel: builtins.int = 5000, min_n_peaks: builtins.int = 20000, clustering_ms_before: builtins.float = 0.5, clustering_ms_after: builtins.float = 1.5, features_radius_um: builtins.float = 120.0, n_svd_components_per_channel: builtins.int = 5, svd_peaks_fit: builtins.int = 5000, split_radius_um: builtins.float = 60.0, clustering_recursive_depth: builtins.int = 3, min_size_split: builtins.int = 25, n_pca_features: builtins.int = 6, isosplit_n_init: builtins.int = 15, isosplit_min_cluster_size: builtins.int = 10, isosplit_max_iterations_per_pass: builtins.int = 500, isocut_threshold: builtins.float = 2.0, clustering_sparsify_threshold: builtins.float = 1.5, clustering_min_snr: builtins.float = 3.5, merge_similarity: builtins.float = 0.8, merge_similarity_lag_ms: builtins.float = 0.5, min_firing_rate: builtins.float = 0.1, ms_before: builtins.float = 1.0, ms_after: builtins.float = 2.5, template_radius_um: builtins.float = 100.0, template_sparsify_threshold: builtins.float = 1.5, template_min_snr_ptp: builtins.float = 3.5, template_max_jitter_ms: builtins.float = 0.2, peeler_exclude_sweep_ms: builtins.float = 0.8, peeler_detection_radius_um: builtins.float = 80.0, peeler_cluster_radius_um: builtins.float = 150.0, peeler_amplitude_fitting_radius_um: builtins.float = 150.0, peeler_sample_shift: builtins.int = 2, peeler_ms_before: builtins.float = 0.5, peeler_ms_after: builtins.float = 0.8, peeler_max_loop: builtins.int = 2, peeler_amplitude_min: builtins.float = 0.7, peeler_amplitude_max: builtins.float = 1.4, peeler_fine_detector: builtins.bool = True, fine_detector_chunks: builtins.int = 5, final_merges: builtins.bool = True, final_merge_max_distance_um: builtins.float = 50.0, final_merge_censor_ms: builtins.float = 3.0, final_merge_sparsity_overlap: builtins.float = 0.5, chunk_sec: builtins.float = 1.0, seed: builtins.int = 0) -> Tridesclous2Config:
+        r"""
+        Tridesclous 2's defaults, changed by keyword (see the class and attribute docs).
+        """
+    def __repr__(self) -> builtins.str: ...
+
+@typing.final
+class Tridesclous2Result:
+    r"""
+    Result of a Tridesclous 2 run (`tridesclous2.run`).
+    
+    Spikes are template matches: recording sample of the template's peak, unit, scaling (the
+    template's amplitude multiplier). Templates are whitened.
+    
+    Examples
+    --------
+    >>> result = tridesclous2.run(recording, probe, tridesclous2.Config())
+    >>> result.n_units
+    >>> sorting = result.to_sorting_output(probe)
+    """
+    @property
+    def sorter(self) -> builtins.str:
+        r"""
+        `"tridesclous2"`.
+        """
+    @property
+    def n_units(self) -> builtins.int:
+        r"""
+        Units found.
+        """
+    @property
+    def sample_rate_hz(self) -> builtins.float:
+        r"""
+        Sampling rate of the recording, Hz.
+        """
+    @property
+    def final_merges(self) -> builtins.int:
+        r"""
+        Units merged by the final cleaning.
+        """
+    @property
+    def peaks(self) -> tuple[builtins.int, builtins.int]:
+        r"""
+        Peaks detected, and how many of them were clustered.
+        """
+    @property
+    def noise_levels(self) -> builtins.list[builtins.float]:
+        r"""
+        Noise level of every channel (whitened units).
+        """
+    @property
+    def preprocessing(self) -> Pipeline:
+        r"""
+        The preprocessing the sorter saw (filters, reference, whitening) as a reusable `Pipeline`.
+        """
+    @property
+    def templates(self) -> numpy.typing.NDArray[numpy.float32]:
+        r"""
+        Unit templates, `[n_units, samples, channels]` float32 (whitened; zeros off each unit's channels).
+        """
+    def spikes(self) -> dict:
+        r"""
+        The spikes, one entry per spike in every array.
+        
+        Returns
+        -------
+        dict
+            `sample` (recording sample), `unit`, `scaling` (matching amplitude).
+        """
+    def to_sorting_output(self, probe: typing.Optional[ProbeLayout] = None) -> SortingOutput:
+        r"""
+        The units in `SortingOutput` form, for export (`save_sorting`: Phy, zarr) and inspection.
+        
+        Parameters
+        ----------
+        probe : ProbeLayout, optional
+            Geometry stored with the units (channel positions in exports).
+        """
+    def __repr__(self) -> builtins.str: ...
+
+@typing.final
 class UniversalTemplates:
     r"""
     Kilosort4's universal templates: `wpca` (`[n_pcs, nt]`) and `wtemp` (`[n_templates, nt]`).
@@ -3419,6 +4722,23 @@ def cluster_kde_merge(features: typing.Any, *, initial_k: builtins.int, dip_thre
 def common_average_reference(data: typing.Any, *, runtime: typing.Optional[builtins.str] = None) -> numpy.typing.NDArray[numpy.float32]:
     r"""
     Common average reference of an array: every sample minus the mean over channels.
+    
+    Parameters
+    ----------
+    data : numpy.ndarray
+        `[channels, samples]`, converted to float32.
+    runtime : str, optional
+        Compute runtime (`"wgpu"`, `"cuda"`, `"cpu"`, …); default: the current one.
+    
+    Returns
+    -------
+    numpy.ndarray
+        Float32, same shape as `data`.
+    """
+
+def common_median_reference(data: typing.Any, *, runtime: typing.Optional[builtins.str] = None) -> numpy.typing.NDArray[numpy.float32]:
+    r"""
+    Common median reference of an array: every sample minus the median over channels.
     
     Parameters
     ----------
@@ -4457,6 +5777,18 @@ def run_mountainsort5(recording: Recording, probe: ProbeLayout, config: Mountain
     `dsp_kitchen.synapse.ml.mountainsort5.run`, which documents every argument and shows progress.
     """
 
+def run_spykingcircus2(recording: Recording, probe: ProbeLayout, config: Spykingcircus2Config, *, progress: typing.Optional[typing.Any] = None, runtime: typing.Optional[builtins.str] = None) -> Spykingcircus2Result:
+    r"""
+    SpyKING CIRCUS 2 over a whole recording, without a progress bar. Prefer
+    `dsp_kitchen.synapse.ml.spykingcircus2.run`, which documents every argument and shows progress.
+    """
+
+def run_tridesclous2(recording: Recording, probe: ProbeLayout, config: Tridesclous2Config, *, progress: typing.Optional[typing.Any] = None, runtime: typing.Optional[builtins.str] = None) -> Tridesclous2Result:
+    r"""
+    Tridesclous 2 over a whole recording, without a progress bar. Prefer
+    `dsp_kitchen.synapse.ml.tridesclous2.run`, which documents every argument and shows progress.
+    """
+
 def save_sorting(sorting: SortingOutput, path: builtins.str, format: typing.Optional[builtins.str] = None) -> None:
     r"""
     Writes a sorting to `path`.
@@ -4499,6 +5831,11 @@ def set_runtime(name: typing.Optional[builtins.str]) -> None:
     name : str or None
         `"wgpu"`, `"cpu"`, `"cuda"` or `"hip"` (one of `available_runtimes()`); `None`: back to the
         default (`DSP_KITCHEN_RUNTIME`, else the first compiled in).
+    """
+
+def spykingcircus2_provenance() -> Provenance:
+    r"""
+    Provenance of the SpyKING CIRCUS 2 port.
     """
 
 def subtract_template(data: typing.Any, template: typing.Any, event_indices: typing.Sequence[builtins.int], center_offset: builtins.int = 0, max_lag: builtins.int = 8, dynamic_scaling: builtins.bool = True) -> numpy.typing.NDArray[numpy.float32]:
@@ -4544,5 +5881,10 @@ def teager_kaiser_filter(data: typing.Any, *, edge: typing.Optional[builtins.str
     -------
     numpy.ndarray
         Float32, same shape as `data`.
+    """
+
+def tridesclous2_provenance() -> Provenance:
+    r"""
+    Provenance of the Tridesclous 2 port.
     """
 
