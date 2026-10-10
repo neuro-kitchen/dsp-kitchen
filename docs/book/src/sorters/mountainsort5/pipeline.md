@@ -94,7 +94,7 @@ SpikeInterface's `whiten`), `ε = 10⁻¹⁶` as SpikeInterface for µV data (fl
 
 | Where | Upstream | Here | Why |
 |---|---|---|---|
-| Whitening chunks | 20 random chunks of 10 000 samples | 20 evenly spaced chunks | reproducible without a seed |
+| Whitening chunks | 20 random chunks of 500 ms | 20 evenly spaced chunks of 500 ms | reproducible without a seed |
 | Equal samples in a detection window | every sample of a flat run is a detection | the first | device peak finder; exact ties of filtered floats |
 | Two events at one sample | NumPy's unstable sort decides | the lowest channel | reproducible |
 | Scheme 2 training stretch | chunks concatenated into one recording | each chunk its own segment (margins at its ends, no event across a junction) | no artificial waveform at the junctions |
