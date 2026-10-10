@@ -4,9 +4,11 @@
 //! Implemented stages: universal templates (`wPCA` / `wTEMP`) learned from the recording or loaded
 //! from the predefined `wTEMP.npz` ([`templates`]), universal-template spike detection with `wPCA`
 //! features on the device ([`detect`]), and the first graph-based clustering of those spikes into
-//! units ([`clustering`]), driven over a whole recording by [`runner`] (preprocessing fit: CAR,
-//! high-pass, local whitening). Not yet: drift correction, learned-template deconvolution,
-//! re-clustering, merging. See the book's *Sorters* pages.
+//! units ([`clustering`]), learned templates ([`learned`]), learned-template matching
+//! ([`matching`]), the clustering of the matched spikes with the refractory criterion, global
+//! merges ([`merges`]), duplicate-spike removal and good / mua labels, driven over a whole
+//! recording by [`runner`] (preprocessing fit: CAR, high-pass, local whitening). Not yet: drift
+//! correction. See the book's *Sorters* pages.
 
 pub mod clustering;
 pub mod detect;

@@ -161,6 +161,7 @@ impl Mountainsort5Config {
                     min_cluster_size: self.min_cluster_size,
                     k_init: self.k_init,
                     max_iterations_per_pass: self.max_iterations_per_pass,
+                    variant: dsp_synapse::sorting::IsosplitVariant::Isosplit6,
                 },
                 pca: self.pca(),
             },
