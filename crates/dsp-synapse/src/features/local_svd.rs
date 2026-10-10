@@ -174,6 +174,50 @@ impl LocalSvd {
         Self { components, n_components: opts.n_components, n_before, width, n_fit }
     }
 
+    /// [`Self::fit`] from waveform rows already gathered (row-major `[count, width]`, each on its
+    /// peak's own channel, the peak at `n_before`), on the host in `f64`: for callers whose fit
+    /// peaks span several device buffers. Same shape check, signs and component signs.
+    ///
+    /// # Panics
+    ///
+    /// If fewer rows than `n_components` pass the shape check.
+    pub fn fit_rows(rows: &[f32], width: usize, n_before: usize, n_components: usize) -> Self {
+        let mut g = vec![0.0f64; width * width];
+        let mut n_fit = 0usize;
+        for row in rows.chunks_exact(width) {
+            // First index of the largest |sample| must be the peak
+            let best = (0..width).fold(0usize, |b, t| if row[t].abs() > row[b].abs() { t } else { b });
+            if best != n_before || row[n_before] == 0.0 {
+                continue;
+            }
+            let sign = if row[n_before] > 0.0 { 1.0 } else { -1.0 };
+            n_fit += 1;
+            for a in 0..width {
+                let ra = sign * row[a] as f64;
+                for b in a..width {
+                    g[a * width + b] += ra * sign * row[b] as f64;
+                }
+            }
+        }
+        assert!(n_fit >= n_components, "{n_fit} peaks pass the shape check, fewer than {n_components} components");
+        for a in 0..width {
+            for b in 0..a {
+                g[a * width + b] = g[b * width + a];
+            }
+        }
+        let eig = dsp_base::linalg::symmetric_eigen_cpu(&g, width);
+        let mut components = vec![0.0f32; n_components * width];
+        for c in 0..n_components {
+            let col: Vec<f64> = (0..width).map(|t| eig.vectors[t * width + c]).collect();
+            let big = col.iter().copied().fold(0.0f64, |m, v| if v.abs() > m.abs() { v } else { m });
+            let sign = if big < 0.0 { -1.0 } else { 1.0 };
+            for t in 0..width {
+                components[c * width + t] = (sign * col[t]) as f32;
+            }
+        }
+        Self { components, n_components, n_before, width, n_fit }
+    }
+
     /// Features of every peak on its neighbourhood: a `[peaks, n_components, max_neighbours]`
     /// device buffer of `f32` (module docs).
     ///
@@ -242,6 +286,27 @@ mod tests {
         let a = (0..width).map(|t| { let d = t as f32 - n_before as f32; -(-0.5 * (d / 2.0).powi(2)).exp() }).collect();
         let b = (0..width).map(|t| { let d = t as f32 - n_before as f32 - 8.0; 0.3 * (-0.5 * (d / 4.0).powi(2)).exp() }).collect();
         [a, b]
+    }
+
+    /// The host fit spans mixes of two shapes and drops rows whose largest sample is off the peak.
+    #[test]
+    fn host_fit_spans_the_rows() {
+        let (n_before, width) = (15usize, 60usize);
+        let [a, b] = shapes(width, n_before);
+        let mut rows = Vec::new();
+        for i in 0..100 {
+            let (u, v) = (2.0 + (i % 7) as f32, ((i % 5) as f32 - 2.0) * 0.5);
+            rows.extend((0..width).map(|t| u * a[t] + v * b[t]));
+        }
+        // Off-peak row: dropped
+        rows.extend((0..width).map(|t| if t == 40 { 9.0 } else { 0.0 }));
+        let svd = LocalSvd::fit_rows(&rows, width, n_before, 2);
+        assert_eq!(svd.n_fit, 100);
+        for row in rows.chunks_exact(width).take(100) {
+            let proj: Vec<f32> = (0..2).map(|c| (0..width).map(|t| row[t] * svd.components[c * width + t]).sum()).collect();
+            let resid: f32 = (0..width).map(|t| (row[t] - proj[0] * svd.components[t] - proj[1] * svd.components[width + t]).powi(2)).sum();
+            assert!(resid < 1e-6, "{resid}");
+        }
     }
 
     #[test]

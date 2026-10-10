@@ -33,12 +33,23 @@ pub struct IsosplitOptions {
     /// Initial parcels.
     pub k_init: usize,
     pub max_iterations_per_pass: usize,
+    pub variant: IsosplitVariant,
 }
 
 impl Default for IsosplitOptions {
     fn default() -> Self {
-        Self { isocut_threshold: 2.0, min_cluster_size: 10, k_init: 200, max_iterations_per_pass: 500 }
+        Self { isocut_threshold: 2.0, min_cluster_size: 10, k_init: 200, max_iterations_per_pass: 500, variant: IsosplitVariant::Isosplit6 }
     }
+}
+
+/// Which implementation's details the loop follows (module docs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IsosplitVariant {
+    /// `magland/isosplit6` (MountainSort 5).
+    #[default]
+    Isosplit6,
+    /// SpikeInterface's `isosplit_isocut.py` (Tridesclous 2), quirks included.
+    SpikeInterface,
 }
 
 /// Points a parcel is split among (upstream `split_factor`).
@@ -60,17 +71,105 @@ pub fn isosplit6(x: &[f64], n: usize, m: usize, opts: &IsosplitOptions) -> Vec<u
     if n == 0 {
         return Vec::new();
     }
-    let mut labels = parcelate(x, n, m, opts.min_cluster_size, opts.k_init);
+    let labels = parcelate(x, n, m, opts.min_cluster_size, opts.k_init);
+    iterate(x, m, labels, opts)
+}
+
+/// SpikeInterface's `isosplit` (`IsosplitVariant::SpikeInterface` details, module docs) from
+/// `initial` labels (any values; made continuous in increasing order): labels `0..K`.
+///
+/// # Panics
+///
+/// If `x.len() != n · m` or `initial.len() != n`.
+pub fn isosplit_from_labels(x: &[f64], n: usize, m: usize, initial: &[u32], opts: &IsosplitOptions) -> Vec<u32> {
+    assert_eq!(x.len(), n * m, "x must be [n, m]");
+    assert_eq!(initial.len(), n, "one initial label per point");
+    if n == 0 {
+        return Vec::new();
+    }
+    let mut set: Vec<u32> = initial.to_vec();
+    set.sort_unstable();
+    set.dedup();
+    let labels: Vec<u32> = initial.iter().map(|l| set.binary_search(l).unwrap() as u32 + 1).collect();
+    iterate(x, m, labels, opts).into_iter().map(|l| l - 1).collect()
+}
+
+/// SciPy `kmeans2(x, k, minit="points", seed)` (10 iterations): `k` distinct points drawn at
+/// random start the centroids; each iteration assigns every point to its nearest centroid (the
+/// first on ties) and moves each centroid to its points' mean (an empty one stays). Returns the
+/// last assignment. Our random stream, not NumPy's.
+pub fn kmeans2_points(x: &[f64], n: usize, m: usize, k: usize, seed: u64) -> Vec<u32> {
+    let k = k.clamp(1, n.max(1));
+    let mut state = seed;
+    let mut next = || {
+        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    };
+    let mut pool: Vec<usize> = (0..n).collect();
+    for i in 0..k {
+        let j = i + (next() % (n - i) as u64) as usize;
+        pool.swap(i, j);
+    }
+    let mut centroids: Vec<f64> = pool[..k].iter().flat_map(|&i| x[i * m..(i + 1) * m].iter().copied()).collect();
+    let mut labels = vec![0u32; n];
+    for _ in 0..10 {
+        for i in 0..n {
+            let p = &x[i * m..(i + 1) * m];
+            let mut best = (0u32, f64::INFINITY);
+            for c in 0..k {
+                let d: f64 = (0..m).map(|j| (p[j] - centroids[c * m + j]).powi(2)).sum();
+                if d < best.1 {
+                    best = (c as u32, d);
+                }
+            }
+            labels[i] = best.0;
+        }
+        let mut sums = vec![0.0f64; k * m];
+        let mut counts = vec![0usize; k];
+        for i in 0..n {
+            let c = labels[i] as usize;
+            counts[c] += 1;
+            for j in 0..m {
+                sums[c * m + j] += x[i * m + j];
+            }
+        }
+        for c in 0..k {
+            if counts[c] > 0 {
+                for j in 0..m {
+                    centroids[c * m + j] = sums[c * m + j] / counts[c] as f64;
+                }
+            }
+        }
+    }
+    labels
+}
+
+/// SpikeInterface's `isosplit(X, n_init, ...)`: `n_init` lowered when too large for the sample
+/// (`max(1, n / (2 · min_cluster_size))`), [`kmeans2_points`], then [`isosplit_from_labels`].
+pub fn isosplit_si(x: &[f64], n: usize, m: usize, n_init: usize, seed: u64, opts: &IsosplitOptions) -> Vec<u32> {
+    let mcs = opts.min_cluster_size.max(1);
+    let n_init = if n_init >= n || n_init > n / mcs { (n / (2 * mcs)).max(1) } else { n_init };
+    let init = kmeans2_points(x, n, m, n_init, seed);
+    isosplit_from_labels(x, n, m, &init, &IsosplitOptions { variant: IsosplitVariant::SpikeInterface, ..*opts })
+}
+
+/// The passes and iterations from labels `1..=K` (module docs); labels `1..=K'` renumbered.
+fn iterate(x: &[f64], m: usize, mut labels: Vec<u32>, opts: &IsosplitOptions) -> Vec<u32> {
+    let si = opts.variant == IsosplitVariant::SpikeInterface;
     let kmax = *labels.iter().max().unwrap_or(&0) as usize;
     let all = vec![true; kmax];
     let mut centroids = vec![0.0; m * kmax];
     let mut covmats = vec![0.0; m * m * kmax];
     let mut members = members_of(&labels, kmax);
     compute_centroids(&mut centroids, x, m, &members, &all);
-    compute_covmats(&mut covmats, x, m, &members, &centroids, &all);
-    let mut active: Vec<usize> = (1..=kmax).collect();
+    compute_covmats(&mut covmats, x, m, &members, &centroids, &all, si);
+    let mut active: Vec<usize> = (1..=kmax).filter(|&k| !members[k - 1].is_empty()).collect();
     let mut compared = vec![false; kmax * kmax];
-    let mut final_pass = false;
+    // SpikeInterface starts on the final pass: a first pass that merges nothing ends the loop
+    let mut final_pass = si;
     loop {
         let mut something_merged = false;
         let mut changed_in_pass = vec![false; kmax];
@@ -99,7 +198,7 @@ pub fn isosplit6(x: &[f64], n: usize, m: usize, opts: &IsosplitOptions) -> Vec<u
                 compared[(k2 - 1) * kmax + (k1 - 1)] = true;
             }
             compute_centroids(&mut centroids, x, m, &members, &changed_in_iteration);
-            compute_covmats(&mut covmats, x, m, &members, &centroids, &changed_in_iteration);
+            compute_covmats(&mut covmats, x, m, &members, &centroids, &changed_in_iteration, si);
             let new_active: Vec<usize> = (1..=kmax).filter(|&k| !members[k - 1].is_empty()).collect();
             if new_active.len() < active.len() {
                 something_merged = true;
@@ -251,7 +350,7 @@ fn compute_centroids(centroids: &mut [f64], x: &[f64], m: usize, members: &[Vec<
 const COV_CHUNK: usize = 2048;
 
 /// Covariances (divided by the count) of the clusters flagged in `which`.
-fn compute_covmats(covmats: &mut [f64], x: &[f64], m: usize, members: &[Vec<usize>], centroids: &[f64], which: &[bool]) {
+fn compute_covmats(covmats: &mut [f64], x: &[f64], m: usize, members: &[Vec<usize>], centroids: &[f64], which: &[bool], double_diagonal: bool) {
     use rayon::prelude::*;
     for (k, idx) in members.iter().enumerate() {
         if !which[k] {
@@ -290,6 +389,10 @@ fn compute_covmats(covmats: &mut [f64], x: &[f64], m: usize, members: &[Vec<usiz
                 let v = if idx.is_empty() { 0.0 } else { upper[a * m + b] / n };
                 cov[a * m + b] = v;
                 cov[b * m + a] = v;
+            }
+            // SpikeInterface adds each diagonal term twice (its loop over m2 ≥ m1 writes both halves)
+            if double_diagonal {
+                cov[a * m + a] *= 2.0;
             }
         }
     }
@@ -375,8 +478,11 @@ fn compare_pairs(
                 v.iter_mut().for_each(|t| *t /= norm);
             }
             let proj: Vec<f64> = inds1.iter().chain(inds2.iter()).map(|&i| (0..m).map(|d| v[d] * x[i * m + d]).sum()).collect();
-            let (dipscore, cutpoint) = isocut6(&proj);
-            Some((dipscore < opts.isocut_threshold, proj.iter().map(|&p| if p < cutpoint { 1u8 } else { 2 }).collect()))
+            let si = opts.variant == IsosplitVariant::SpikeInterface;
+            let (dipscore, cutpoint) = isocut_variant(&proj, si);
+            // SpikeInterface labels the side below the cut 2 (`(proj < cut) + 1`)
+            let side = proj.iter().map(|&p| if (p < cutpoint) != si { 1u8 } else { 2 }).collect();
+            Some((dipscore < opts.isocut_threshold, side))
         })
         .collect();
     for (&(k1, k2), test) in pairs.iter().zip(tests) {
@@ -389,6 +495,14 @@ fn compare_pairs(
             changed[k1 - 1] = true;
             changed[k2 - 1] = true;
         } else {
+            if opts.variant == IsosplitVariant::SpikeInterface {
+                // "Pure swapping" guard: no redistribution when the moves add up to a whole cluster
+                let m1 = (0..inds1.len()).filter(|&j| side[j] == 2).count();
+                let m2 = (0..inds2.len()).filter(|&j| side[inds1.len() + j] == 1).count();
+                if m1 as f64 / inds1.len() as f64 + m2 as f64 / inds2.len() as f64 >= 1.0 {
+                    continue;
+                }
+            }
             let mut moved = false;
             for (j, &i) in inds1.iter().enumerate() {
                 if side[j] == 2 {
@@ -462,6 +576,12 @@ fn gauss_jordan(a: &mut [f64], m: usize) -> Option<Vec<f64>> {
 
 /// `(dip score, cut point)` of 1-D samples (module docs; upstream `isocut6`).
 pub fn isocut6(samples: &[f64]) -> (f64, f64) {
+    isocut_variant(samples, false)
+}
+
+/// [`isocut6`], or SpikeInterface's `isocut` (`si`): its up-down fit gives the split index to the
+/// right part, and a dip-score tie between the two sides picks the right one.
+pub fn isocut_variant(samples: &[f64], si: bool) -> (f64, f64) {
     let n = samples.len();
     let mut x = samples.to_vec();
     x.sort_by(f64::total_cmp);
@@ -471,12 +591,12 @@ pub fn isocut6(samples: &[f64]) -> (f64, f64) {
     let spacings: Vec<f64> = x.windows(2).map(|w| w[1] - w[0]).collect();
     let multiplicities = vec![1.0; n - 1];
     let log_densities: Vec<f64> = spacings.iter().map(|&s| if s != 0.0 { (1.0 / s).ln() } else { ZERO_SPACING_DENSITY.ln() }).collect();
-    let fit = isotonic_updown(&log_densities, &multiplicities);
+    let fit = isotonic_updown_variant(&log_densities, &multiplicities, si);
     let fit_times_spacings: Vec<f64> = fit.iter().zip(&spacings).map(|(f, s)| f.exp() * s).collect();
     let peak = index_of_max(&fit);
-    let (dipscore, lo, hi) = ks5(&multiplicities, &fit_times_spacings, peak);
+    let (dipscore, lo, hi) = ks5(&multiplicities, &fit_times_spacings, peak, si);
     let resid: Vec<f64> = (lo..=hi).map(|i| log_densities[i] - fit[i]).collect();
-    let resid_fit = isotonic_downup(&resid, &vec![1.0; resid.len()]);
+    let resid_fit = isotonic_downup_variant(&resid, &vec![1.0; resid.len()], si);
     let cut = index_of_min(&resid_fit);
     (dipscore, (x[lo + cut] + x[lo + cut + 1]) / 2.0)
 }
@@ -506,9 +626,10 @@ fn ks4(c1: &[f64], c2: &[f64]) -> f64 {
 }
 
 /// Upstream `compute_ks5`: `(score, critical range lo, hi)` over ranges halving from the peak.
-fn ks5(c1: &[f64], c2: &[f64], peak: usize) -> (f64, usize, usize) {
+fn ks5(c1: &[f64], c2: &[f64], peak: usize, right_on_tie: bool) -> (f64, usize, usize) {
     let n = c1.len();
     let (mut lo, mut hi, mut best) = (0, n - 1, -1.0);
+    let mut left_best = f64::NEG_INFINITY;
     let mut len = peak + 1;
     loop {
         let score = ks4(&c1[..len], &c2[..len]);
@@ -520,20 +641,30 @@ fn ks5(c1: &[f64], c2: &[f64], peak: usize) -> (f64, usize, usize) {
             break;
         }
     }
+    left_best = left_best.max(best);
+    let mut right_best = f64::NEG_INFINITY;
+    let (mut right_lo, mut right_hi) = (0, n - 1);
     let r1: Vec<f64> = c1.iter().rev().copied().collect();
     let r2: Vec<f64> = c2.iter().rev().copied().collect();
     let mut len = n - peak;
     loop {
         let score = ks4(&r1[..len], &r2[..len]);
-        if score > best {
-            (lo, hi, best) = (n - len, n - 1, score);
+        if score > right_best {
+            (right_lo, right_hi, right_best) = (n - len, n - 1, score);
         }
         len /= 2;
         if !(len >= 4 || len == n - peak) {
             break;
         }
     }
-    (best, lo, hi)
+    // isosplit6: the right side wins only when strictly better; SpikeInterface: unless the left is
+    // strictly better
+    let right_wins = if right_on_tie { !(left_best > right_best) } else { right_best > left_best };
+    if right_wins {
+        (right_best, right_lo, right_hi)
+    } else {
+        (left_best, lo, hi)
+    }
 }
 
 /// Upstream `jisotonic5`: the non-decreasing least-squares fit of `a` (weights `w`) by pooling
@@ -578,6 +709,30 @@ fn isotonic(a: &[f64], w: &[f64]) -> (Vec<f64>, Vec<f64>) {
     (out, mse)
 }
 
+/// [`isotonic_updown`], or SpikeInterface's version (`si`: the left fit stops before the best
+/// split index, the right one starts at it).
+fn isotonic_updown_variant(a: &[f64], w: &[f64], si: bool) -> Vec<f64> {
+    if !si {
+        return isotonic_updown(a, w);
+    }
+    let n = a.len();
+    let ar: Vec<f64> = a.iter().rev().copied().collect();
+    let wr: Vec<f64> = w.iter().rev().copied().collect();
+    let (_, mse1) = isotonic(a, w);
+    let (_, mse2) = isotonic(&ar, &wr);
+    let total: Vec<f64> = (0..n).map(|j| mse1[j] + mse2[n - 1 - j]).collect();
+    let best = index_of_min(&total);
+    let (y1, _) = isotonic(&a[..best], &w[..best]);
+    let neg: Vec<f64> = a[best..].iter().map(|v| -v).collect();
+    let (y2, _) = isotonic(&neg, &w[best..]);
+    y1.into_iter().chain(y2.into_iter().map(|v| -v)).collect()
+}
+
+fn isotonic_downup_variant(a: &[f64], w: &[f64], si: bool) -> Vec<f64> {
+    let neg: Vec<f64> = a.iter().map(|v| -v).collect();
+    isotonic_updown_variant(&neg, w, si).into_iter().map(|v| -v).collect()
+}
+
 /// Upstream `jisotonic5_updown`: the best fit rising then falling.
 fn isotonic_updown(a: &[f64], w: &[f64]) -> Vec<f64> {
     let n = a.len();
@@ -597,11 +752,6 @@ fn isotonic_updown(a: &[f64], w: &[f64]) -> Vec<f64> {
     out
 }
 
-/// Upstream `jisotonic5_downup`: the best fit falling then rising.
-fn isotonic_downup(a: &[f64], w: &[f64]) -> Vec<f64> {
-    let neg: Vec<f64> = a.iter().map(|v| -v).collect();
-    isotonic_updown(&neg, w).into_iter().map(|v| -v).collect()
-}
 
 #[cfg(test)]
 mod tests {
@@ -620,6 +770,25 @@ mod tests {
         fn next(&mut self) -> f64 {
             let (u, v) = (self.uniform(), self.uniform());
             (-2.0 * u.ln()).sqrt() * (std::f64::consts::TAU * v).cos()
+        }
+    }
+
+    /// Against SpikeInterface's `isosplit_isocut.isosplit` run on the same points and initial labels:
+    /// set `ISOSPLIT_SI_REF` to the JSON its reference script writes (cases of `x`, `n`, `m`, `init`,
+    /// `out`).
+    #[test]
+    #[ignore = "needs ISOSPLIT_SI_REF (a SpikeInterface run)"]
+    fn spikeinterface_variant_matches_upstream() {
+        let path = std::env::var("ISOSPLIT_SI_REF").expect("ISOSPLIT_SI_REF");
+        let cases: Vec<serde_json::Value> = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let opts = IsosplitOptions { variant: IsosplitVariant::SpikeInterface, ..Default::default() };
+        for (ci, c) in cases.iter().enumerate() {
+            let x: Vec<f64> = c["x"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+            let (n, m) = (c["n"].as_u64().unwrap() as usize, c["m"].as_u64().unwrap() as usize);
+            let init: Vec<u32> = c["init"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+            let want: Vec<u32> = c["out"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+            let got = isosplit_from_labels(&x, n, m, &init, &opts);
+            assert_eq!(got, want, "case {ci}");
         }
     }
 
