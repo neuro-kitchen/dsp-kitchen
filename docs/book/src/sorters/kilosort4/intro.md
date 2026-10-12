@@ -20,9 +20,9 @@ the published defaults** (the upstream code is GPL-3.0 and is not ported).
 | Graph-based clustering of the detected spikes (bipartite k-NN graph, merging tree, bimodality splits) | implemented (device) |
 | Learned templates: the units' templates aligned and near-duplicates merged | implemented (device) |
 | Learned-template matching with matching pursuit, background-subtracted features | implemented (device) |
-| Clustering of the matched spikes into the final units | implemented (device; without the CCG criterion) |
+| Clustering of the matched spikes into the final units, with the refractory (CCG) criterion | implemented (device) |
 | Export as a `SortingOutput` (one unit per cluster, with its waveform template) | implemented |
-| Refractory (CCG) split criterion, global merges, duplicate-spike removal | not yet |
+| Global merges (waveform similarity + refractory CCG), duplicate-spike removal, good / mua labels | implemented |
 | Drift correction | not yet |
 
 ## Universal templates

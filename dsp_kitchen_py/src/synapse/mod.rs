@@ -6,6 +6,9 @@ pub mod detection;
 pub mod extraction;
 pub mod metrics;
 pub mod ml;
+pub mod mountainsort5;
+pub mod spykingcircus2;
+pub mod tridesclous2;
 pub mod probe;
 pub mod sorting;
 pub mod spatial;
@@ -25,5 +28,8 @@ pub fn register(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()
     comparison::register(m)?;
     storage::register(m)?;
     streaming::register(m)?;
-    ml::register(m)
+    ml::register(m)?;
+    mountainsort5::register(m)?;
+    spykingcircus2::register(m)?;
+    tridesclous2::register(m)
 }

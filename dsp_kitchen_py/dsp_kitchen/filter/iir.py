@@ -1,12 +1,13 @@
 """
 IIR filters (scipy semantics): Butterworth of any order (per edge for band filters), Chebyshev
-type I and notch; ``direction="forward-backward"`` (zero phase, default) or ``"forward"``;
+type I, Bessel (phase-normalised) and notch; ``direction="forward-backward"`` (zero phase, default) or ``"forward"``;
 ``start="rest"`` (default) or ``"steady-state"``. Functions need ``fs`` (Hz).
 """
 
 from dsp_kitchen_bindings import (
     BandpassFilter,
     BandstopFilter,
+    BesselFilter,
     ChebyshevFilter,
     HighpassFilter,
     LowpassFilter,
@@ -21,6 +22,7 @@ from dsp_kitchen_bindings import (
 __all__ = [
     "BandpassFilter",
     "BandstopFilter",
+    "BesselFilter",
     "ChebyshevFilter",
     "HighpassFilter",
     "LowpassFilter",

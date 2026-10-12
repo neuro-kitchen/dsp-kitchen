@@ -11,7 +11,7 @@ use crate::filter::fir::gaussian::GAUSSIAN_TRUNCATE;
 use crate::filter::iir::DeviceFilter;
 use crate::filter::{execute_fir_centered, execute_median, execute_teager_kaiser, gaussian_kernel_1d, FilterMode};
 use crate::math::{execute_clamp, execute_scaling, execute_unpack_stored, stored_word_bytes, write_stored_owned};
-use crate::spatial::{execute_direct_car, DeviceSpatialMatrix};
+use crate::spatial::{execute_common_median, execute_direct_car, DeviceSpatialMatrix};
 use dsp_core::{DspError, DspResult, SampleFormat};
 
 /// How consecutive chunks relate to each other.
@@ -234,6 +234,9 @@ impl<F: DspFloat> PipelineWorkspace<F> {
                     }
                     PipelineStage::CommonAverageReference => {
                         execute_direct_car::<F>(client, &current_in, &out, channels, samples)
+                    }
+                    PipelineStage::CommonMedianReference => {
+                        execute_common_median::<F>(client, &current_in, &out, channels, samples)
                     }
                     PipelineStage::Median { width, edge } => {
                         execute_median::<F>(client, &current_in, &out, channels, samples, *width, *edge)

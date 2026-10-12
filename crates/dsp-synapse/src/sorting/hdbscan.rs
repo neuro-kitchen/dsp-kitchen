@@ -120,7 +120,16 @@ pub fn hdbscan_points_with_progress(
     min_cluster_size: usize,
     progress: &mut dyn FnMut(u64, u64),
 ) -> Vec<i32> {
-    spanning_tree_labels(client, points, min_cluster_size, true, progress)
+    spanning_tree_labels(client, points, min_cluster_size, false, true, progress)
+}
+
+/// [`hdbscan`] with the `hdbscan` package's `allow_single_cluster` (SpikeInterface's splits set it):
+/// excess-of-mass selection may also keep the root, i.e. the points as one cluster. When it does,
+/// a point is labelled 0 only if it leaves the root at the root's largest `λ` (the package's
+/// labelling), else noise.
+pub fn hdbscan_allow_single(client: &Client, x: &[f32], n: usize, d: usize, min_cluster_size: usize) -> Vec<i32> {
+    let points = DevicePoints::upload(client, x, n, d);
+    spanning_tree_labels(client, &points, min_cluster_size, true, true, &mut |_, _| {})
 }
 
 /// Steps 1–3; `prune = false` scans every point in every round (the reference the shortcuts are
@@ -129,6 +138,7 @@ fn spanning_tree_labels(
     client: &Client,
     points: &DevicePoints,
     min_cluster_size: usize,
+    allow_single: bool,
     prune: bool,
     progress: &mut dyn FnMut(u64, u64),
 ) -> Vec<i32> {
@@ -307,11 +317,11 @@ fn spanning_tree_labels(
         }
     }
     report(total);
-    labels_from_spanning_tree(n, mcs, edges)
+    labels_from_spanning_tree(n, mcs, edges, allow_single)
 }
 
 /// Step 3: labels from the minimum spanning tree `edges` (`(a, b, distance)`, `n − 1` of them).
-fn labels_from_spanning_tree(n: usize, mcs: usize, mut edges: Vec<(usize, usize, f64)>) -> Vec<i32> {
+fn labels_from_spanning_tree(n: usize, mcs: usize, mut edges: Vec<(usize, usize, f64)>, allow_single: bool) -> Vec<i32> {
     edges.sort_by(|a, b| a.2.total_cmp(&b.2));
 
     // 3a. Single-linkage hierarchy: node n + i merges two components at edges[i].2
@@ -413,13 +423,14 @@ fn labels_from_spanning_tree(n: usize, mcs: usize, mut edges: Vec<(usize, usize,
 
     // 3c. Excess of mass: children are created after their parent, so walk ids downwards
     let mut selected = vec![true; n_clusters];
-    selected[0] = false; // no single root cluster
+    selected[0] = allow_single; // the root is a candidate only with `allow_single`
     let mut kids: Vec<Vec<usize>> = vec![Vec::new(); n_clusters];
     for &(p, c, _, _) in &cluster_rows {
         kids[p].push(c);
     }
     let mut subtree = stability.clone();
-    for c in (1..n_clusters).rev() {
+    let first = if allow_single { 0 } else { 1 };
+    for c in (first..n_clusters).rev() {
         let kid_sum: f64 = kids[c].iter().map(|&k| subtree[k]).sum();
         if !kids[c].is_empty() && kid_sum > stability[c] {
             selected[c] = false;
@@ -441,11 +452,15 @@ fn labels_from_spanning_tree(n: usize, mcs: usize, mut edges: Vec<(usize, usize,
         label_of_cluster[c] = i as i32;
     }
     let mut labels = vec![-1i32; n];
-    for &(p, point, _) in &point_rows {
+    // The root as the only cluster: only the points leaving it at its largest λ keep the label
+    let root_max = point_rows.iter().filter(|r| r.0 == 0).map(|r| r.2).chain(cluster_rows.iter().filter(|r| r.0 == 0).map(|r| r.2)).fold(f64::NEG_INFINITY, f64::max);
+    for &(p, point, lambda) in &point_rows {
         let mut c = p;
         while c != usize::MAX {
             if selected[c] {
-                labels[point] = label_of_cluster[c];
+                if c != 0 || lambda >= root_max {
+                    labels[point] = label_of_cluster[c];
+                }
                 break;
             }
             c = cluster_parent[c];
@@ -532,6 +547,24 @@ mod tests {
     }
 
     #[test]
+    fn allow_single_keeps_one_blob_whole() {
+        // One elongated blob: without the option HDBSCAN must split it; with it, the root may stay
+        let mut state = 3u64;
+        let mut rnd = || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((state >> 11) as f64 / (1u64 << 53) as f64) as f32
+        };
+        let n = 400;
+        let x: Vec<f32> = (0..n).flat_map(|_| [rnd(), rnd()]).collect();
+        let tree = super::tests::spanning_tree_host(&x, n, 2, 20);
+        let single = labels_from_spanning_tree(n, 20, tree.clone(), true);
+        let k_single = single.iter().copied().max().unwrap_or(-1) + 1;
+        let k = labels_from_spanning_tree(n, 20, tree, false).iter().copied().max().unwrap_or(-1) + 1;
+        assert!(k_single <= 1, "uniform square kept as at most one cluster: {k_single}");
+        assert!(k != 1, "without the option the root is never chosen: {k}");
+    }
+
+    #[test]
     fn two_blobs_and_an_outlier() {
         let Ok(target) = ComputeTarget::from_env() else { return };
         let labels = target.run(Labels(blobs(), 51, 2, 5)).expect("target run");
@@ -552,8 +585,8 @@ mod tests {
             type Output = (Vec<i32>, Vec<i32>);
             fn run(self, client: Client) -> Self::Output {
                 let points = DevicePoints::upload(&client, &self.0, self.1, self.2);
-                let pruned = spanning_tree_labels(&client, &points, self.3, true, &mut |_, _| {});
-                let full = spanning_tree_labels(&client, &points, self.3, false, &mut |_, _| {});
+                let pruned = spanning_tree_labels(&client, &points, self.3, false, true, &mut |_, _| {});
+                let full = spanning_tree_labels(&client, &points, self.3, false, false, &mut |_, _| {});
                 (pruned, full)
             }
         }
@@ -604,7 +637,7 @@ mod tests {
             })
             .collect();
         let host_edges = spanning_tree_host(&x, n, d, mcs);
-        let want = labels_from_spanning_tree(n, mcs, host_edges);
+        let want = labels_from_spanning_tree(n, mcs, host_edges, false);
         let got = target.run(Labels(x.clone(), n, d, mcs)).expect("target run");
         // Equal mutual-reachability weights are common (`max(core_i, core_j, d) = core_i` for
         // every close neighbour with a smaller core distance): Prim (the host) and Borůvka (the

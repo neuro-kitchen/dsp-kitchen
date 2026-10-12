@@ -48,3 +48,8 @@ included): tests and docs must not depend on it being published.
 
 - Fixed 2026-10-09: the exit crash/hang (devices are now shut down at exit; see
   `.knowledge/dsp-kitchen-gpu-lessons.md` section 7). Watch for recurrences on other drivers.
+- Second form of the exit race (2026-10-09): NVIDIA's background shader compile racing
+  `vkDestroyDevice` under the Vulkan validation layer, rare, first debug runs after a rebuild. Debug
+  builds no longer load the layer (`[profile.dev.package.wgpu-types] debug-assertions = false`);
+  10/10 cold-cache runs clean. If it recurs (e.g. release / Python), the remaining gap is a driver
+  compile outliving the device: no Vulkan call waits for it.
