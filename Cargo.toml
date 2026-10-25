@@ -100,6 +100,12 @@ incremental = true
 [profile.validate.package."*"]
 opt-level = 3
 
+# Debug builds and tests: line tables only (panics and backtraces still name file and line), not
+# full debug info, which filled `target/` (363 GB of debug builds, 2026-10-21). For a debugger
+# session, `CARGO_PROFILE_DEV_DEBUG=full`.
+[profile.dev]
+debug = "line-tables-only"
+
 # wgpu-core's lock tracing (debug assertions only) keeps a thread-local that is already gone when a
 # CubeCL device runner shuts down, so the shutdown at exit (dsp-core `shutdown_devices`) aborted in
 # debug builds. Only wgpu-core's internal checks are off; ours stay on.
