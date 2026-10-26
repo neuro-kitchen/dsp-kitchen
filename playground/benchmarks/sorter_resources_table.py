@@ -27,7 +27,7 @@ reports = [json.loads((OUTPUT / f"sorter_resources_{key}.json").read_text()) for
 SURFACE, PRIMARY, SECONDARY, MUTED, RULE = "#fcfcfb", "#0b0b0b", "#52514e", "#8a8984", "#e4e3df"
 BAR, BAR_TRACK = "#2a78d6", "#eceae6"
 SANS, MONO = "Open Sans", "Source Code Pro"
-DPI = 150
+DPI = 300
 
 
 def duration(sec):
