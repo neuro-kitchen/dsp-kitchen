@@ -5,9 +5,9 @@ use num_traits::NumCast;
 ///
 /// Kernels take `F: Float`; host dispatchers take `F: DspFloat` so they can size, upload and read
 /// buffers of `F`. `f32` runs on every runtime; `f64` and `f16` only where the runtime supports them.
-pub trait DspFloat: Float + CubeElement {}
+pub trait DspFloat: Float + CubeElement + LaunchArg<RuntimeArg = Self> {}
 
-impl<F: Float + CubeElement> DspFloat for F {}
+impl<F: Float + CubeElement + LaunchArg<RuntimeArg = F>> DspFloat for F {}
 
 /// `value` as `F` (rounded to its precision).
 pub fn cast<F: DspFloat>(value: f64) -> F {

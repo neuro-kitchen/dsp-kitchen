@@ -1,3 +1,15 @@
+//! Filters for `[channels, samples]` signals on the device.
+//!
+//! - [`design`]: IIR designs (Butterworth, Chebyshev, notch) as second-order sections, checked
+//!   against `scipy.signal`; [`FilterSpec`] describes one, [`FilterError`] explains a bad one.
+//! - [`iir`]: running sections over channels ([`DeviceFilter`]), causal or zero-phase.
+//! - [`fir`]: convolutions and Gaussian smoothing.
+//! - [`non_linear`]: median filters and the Teager–Kaiser energy operator.
+//! - [`template`]: subtracting a waveform template at known events (e.g. stimulation artefacts).
+//!
+//! Most uses go through [`Pipeline`](crate::Pipeline) and its [`PipelineStage`](crate::PipelineStage)
+//! constructors (`bandpass`, `notch`, …), which chain filters without leaving the device.
+
 pub mod design;
 pub mod iir;
 pub mod fir;
@@ -32,14 +44,14 @@ mod tests {
             .collect()
     }
 
-    fn median_widths<R: Runtime>(client: &ComputeClient<R>) {
+    fn median_widths(client: &Client) {
         let samples = 40;
         let x: Vec<f32> = (0..samples).map(|i| ((i * 37 % 11) as f32) - 5.0 + if i == 20 { 500.0 } else { 0.0 }).collect();
         let input = buffer::upload(client, &x);
         for width in [1usize, 3, 7, 9, 15] {
-            let output = buffer::empty::<R, f32>(client, samples);
-            execute_median::<R, f32>(client, &input, &output, 1, samples, width, EdgeMode::Zeros);
-            assert_eq!(buffer::download::<R, f32>(client, output), medfilt(&x, width), "{} width {width}", R::name(client));
+            let output = buffer::empty::<f32>(client, samples);
+            execute_median::<f32>(client, &input, &output, 1, samples, width, EdgeMode::Zeros);
+            assert_eq!(buffer::download::<f32>(client, output), medfilt(&x, width), "{} width {width}", client.name());
         }
     }
     runtime_test!(test_median_matches_medfilt, median_widths);

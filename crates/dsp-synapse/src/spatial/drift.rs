@@ -7,6 +7,24 @@
 use serde::{Deserialize, Serialize};
 use dsp_base::math::{cross_correlation, peak_lag};
 
+/// Shortest time bin (s) and smallest depth bin (µm) the drift is estimated on.
+const MIN_TIME_BIN_SEC: f64 = 0.1;
+const MIN_DEPTH_BIN_UM: f32 = 1.0;
+/// Fewest depth bins of an activity profile.
+const MIN_DEPTH_BINS: usize = 4;
+/// 3-tap smoothing of each depth profile before registration (interior bins).
+const PROFILE_SMOOTHING: [f32; 3] = [0.25, 0.5, 0.25];
+/// Time span below which two bin centres count as equal when interpolating (s).
+const TIME_EPS_SEC: f64 = 1e-9;
+/// Depth span below which two block centres count as equal when interpolating (µm).
+const DEPTH_EPS_UM: f32 = 1e-6;
+/// Non-rigid blocks: half-width as a fraction of the block step (0.65 → windows 1.3 steps wide,
+/// overlapping neighbours by 30 % of a step on each side), at least `MIN_BLOCK_HALF_BINS` bins;
+/// the depth span covers at least `MIN_SPAN_BINS` bins.
+const BLOCK_HALF_WIDTH_FRACTION: f32 = 0.65;
+const MIN_BLOCK_HALF_BINS: f32 = 2.0;
+const MIN_SPAN_BINS: f32 = 4.0;
+
 /// Estimated vertical probe drift trace and 2D activity histogram.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DriftEstimate {
@@ -41,7 +59,7 @@ impl DriftEstimate {
             .clamp(1, n - 1);
         let t0 = self.time_bin_centers_sec[pos - 1];
         let t1 = self.time_bin_centers_sec[pos];
-        let alpha = ((t_sec - t0) / (t1 - t0).max(1e-9)) as f32;
+        let alpha = ((t_sec - t0) / (t1 - t0).max(TIME_EPS_SEC)) as f32;
         self.drift_um[pos - 1] * (1.0 - alpha) + self.drift_um[pos] * alpha
     }
 }
@@ -58,10 +76,10 @@ pub fn estimate_rigid_drift(
     depth_bin_size_um: f32,
     max_drift_um: f32,
 ) -> DriftEstimate {
-    let dt = time_bin_sec.max(0.1);
-    let dz = depth_bin_size_um.max(1.0);
+    let dt = time_bin_sec.max(MIN_TIME_BIN_SEC);
+    let dz = depth_bin_size_um.max(MIN_DEPTH_BIN_UM);
     let num_time_bins = ((total_duration_sec / dt).ceil() as usize).max(1);
-    let num_depth_bins = (((depth_max_um - depth_min_um).max(dz) / dz).ceil() as usize).max(4);
+    let num_depth_bins = (((depth_max_um - depth_min_um).max(dz) / dz).ceil() as usize).max(MIN_DEPTH_BINS);
 
     let mut activity_map = vec![0.0f32; num_time_bins * num_depth_bins];
     let n_spikes = spike_times_sec
@@ -81,14 +99,13 @@ pub fn estimate_rigid_drift(
         activity_map[t_bin * num_depth_bins + z_bin] += (1.0 + amp).ln();
     }
 
-    // Smooth each depth profile with a [0.25, 0.5, 0.25] 3-tap kernel to stabilize sub-bin registration
+    // Smooth each depth profile (PROFILE_SMOOTHING) to stabilize sub-bin registration
     let mut smoothed = activity_map.clone();
     for tb in 0..num_time_bins {
         let off = tb * num_depth_bins;
         for zb in 1..(num_depth_bins - 1) {
-            smoothed[off + zb] = 0.25 * activity_map[off + zb - 1]
-                + 0.50 * activity_map[off + zb]
-                + 0.25 * activity_map[off + zb + 1];
+            let [a, b, c] = PROFILE_SMOOTHING;
+            smoothed[off + zb] = a * activity_map[off + zb - 1] + b * activity_map[off + zb] + c * activity_map[off + zb + 1];
         }
     }
 
@@ -162,7 +179,7 @@ impl NonRigidDriftEstimate {
                 .clamp(1, t_len - 1);
             let t0 = self.time_bin_centers_sec[pos - 1];
             let t1 = self.time_bin_centers_sec[pos];
-            let alpha = ((t_sec - t0) / (t1 - t0).max(1e-9)) as f32;
+            let alpha = ((t_sec - t0) / (t1 - t0).max(TIME_EPS_SEC)) as f32;
             row[pos - 1] * (1.0 - alpha) + row[pos] * alpha
         };
 
@@ -179,7 +196,7 @@ impl NonRigidDriftEstimate {
             .clamp(1, b - 1);
         let y0 = self.block_centers_um[b_pos - 1];
         let y1 = self.block_centers_um[b_pos];
-        let beta = (y_um - y0) / (y1 - y0).max(1e-6);
+        let beta = (y_um - y0) / (y1 - y0).max(DEPTH_EPS_UM);
         interp_time(b_pos - 1) * (1.0 - beta) + interp_time(b_pos) * beta
     }
 }
@@ -200,10 +217,10 @@ pub fn estimate_nonrigid_drift(
     num_depth_blocks: usize,
 ) -> NonRigidDriftEstimate {
     let b_count = num_depth_blocks.max(1);
-    let span = (depth_max_um - depth_min_um).max(depth_bin_size_um * 4.0);
+    let span = (depth_max_um - depth_min_um).max(depth_bin_size_um * MIN_SPAN_BINS);
     let block_step = span / (b_count as f32);
-    // Use 25% overlap on each side so boundary transitions are smooth
-    let half_window = (block_step * 0.65).max(depth_bin_size_um * 2.0);
+    // Overlapping blocks so boundary transitions are smooth
+    let half_window = (block_step * BLOCK_HALF_WIDTH_FRACTION).max(depth_bin_size_um * MIN_BLOCK_HALF_BINS);
 
     let mut block_centers_um = Vec::with_capacity(b_count);
     let mut block_drift_um = Vec::new();

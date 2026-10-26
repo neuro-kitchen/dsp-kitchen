@@ -60,7 +60,7 @@ pub fn compute_psth(
     post_ms: f64,
     bin_width_ms: f64,
 ) -> PsthResult {
-    let dt_ms = bin_width_ms.max(0.1);
+    let dt_ms = bin_width_ms.max(MIN_PSTH_BIN_MS);
     let span_ms = (pre_ms + post_ms).max(dt_ms);
     let num_bins = ((span_ms / dt_ms).round() as usize).max(1);
     let dt_sec = dt_ms * 1e-3;
@@ -132,6 +132,12 @@ pub fn compute_psth(
         bin_width_ms: dt_ms,
     }
 }
+
+/// Narrowest PSTH bin (ms).
+const MIN_PSTH_BIN_MS: f64 = 0.1;
+/// Baseline σ floor (µV) of MEP onset detection, and smallest onset threshold (in baseline σ).
+const MIN_BASELINE_SD_UV: f32 = 1e-4;
+const MIN_THRESHOLD_SIGMA: f32 = 1.0;
 
 /// Degrees-of-freedom correction of the across-trial SD of [`compute_stimulus_triggered_average`]:
 /// 1 (sample SD; zero with a single trial).
@@ -242,12 +248,13 @@ pub fn quantify_mep(
             let n = base_vals.len() as f32;
             let m = base_vals.iter().sum::<f32>() / n;
             let v = base_vals.iter().map(|&x| (x - m) * (x - m)).sum::<f32>() / n;
-            (m, v.sqrt().max(1e-4))
+            (m, v.sqrt().max(MIN_BASELINE_SD_UV))
         } else {
-            (0.0, 1.0)
+            // No pre-stimulus samples: no baseline, so no onset can be found
+            (0.0, f32::NAN)
         };
 
-        let thresh = threshold_sigma.max(1.0) * base_sd;
+        let thresh = threshold_sigma.max(MIN_THRESHOLD_SIGMA) * base_sd;
         let mut onset_latency_ms = f32::NAN;
         let mut min_v = f32::INFINITY;
         let mut max_v = f32::NEG_INFINITY;
@@ -280,7 +287,8 @@ pub fn quantify_mep(
                 rect_sum * dt_ms,
             )
         } else {
-            (0.0, 0.0, 0.0)
+            // Empty response window: undefined
+            (f32::NAN, f32::NAN, f32::NAN)
         };
 
         out.push(MepMetrics {

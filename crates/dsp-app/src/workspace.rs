@@ -1,6 +1,6 @@
 //! The workspaces of the title bar (Blender style): each is a stage of the work on the open
 //! recording, with its own arrangement of views. Explore is built; the others say what they will
-//! hold.
+//! hold (Curation is parked in `refactoring/dsp-app/` while the app is rewired).
 
 use gpui_kit::assets::IconName;
 use serde::{Deserialize, Serialize};
@@ -49,7 +49,10 @@ impl Workspace {
                 "Build a processing pipeline as a graph: filters, re-referencing, detection and sorting \
                  steps snap together, and each step's output can be shown in a view.",
             ),
-            Workspace::Curation => None,
+            Workspace::Curation => Some(
+                "Inspect and judge sorting results: clusters, waveforms, correlograms and amplitudes, \
+                 with merges and splits recorded for the sorting files.",
+            ),
         }
     }
 

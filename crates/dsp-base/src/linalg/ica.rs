@@ -51,8 +51,8 @@ impl FastIcaModel {
     /// (covariance and eigendecomposition) runs on the device in `F`; the fixed-point iterations on
     /// the host.
     #[allow(clippy::too_many_arguments)]
-    pub fn fit<R: Runtime, F: DspFloat>(
-        client: &ComputeClient<R>,
+    pub fn fit<F: DspFloat>(
+        client: &Client,
         data: &[f32],
         channels: usize,
         samples: usize,
@@ -67,9 +67,9 @@ impl FastIcaModel {
 
         let inv_s = 1.0 / (samples as f32);
         // 1. Center and compute the PCA whitening matrix K of shape [num_components, channels]
-        let (cov, mean) = covariance_of_host::<R, F>(client, data, channels, samples);
+        let (cov, mean) = covariance_of_host::<F>(client, data, channels, samples);
         let mean: Vec<f32> = mean.iter().map(|&m| m as f32).collect();
-        let eig = symmetric_eigen::<R, F>(client, &cov, channels, EigenOptions::default());
+        let eig = symmetric_eigen::<F>(client, &cov, channels, EigenOptions::default());
         let mut k_whiten = vec![0.0f32; num_components * channels];
         for comp in 0..num_components {
             let scale = 1.0 / eig.values[comp].max(MIN_WHITENING_EIGENVALUE).sqrt();
@@ -189,7 +189,7 @@ impl FastIcaModel {
 mod tests {
     use super::*;
 
-    fn separates<R: Runtime>(client: &ComputeClient<R>) {
+    fn separates(client: &Client) {
         let samples = 2000;
         let mut s1 = vec![0.0f32; samples];
         let mut s2 = vec![0.0f32; samples];
@@ -210,7 +210,7 @@ mod tests {
             x[samples + t] = -0.5 * s1[t] + 0.9 * s2[t];
         }
 
-        let ica = FastIcaModel::fit::<R, f32>(client, &x, 2, samples, 2, IcaContrast::Cube, 100, 1e-5);
+        let ica = FastIcaModel::fit::<f32>(client, &x, 2, samples, 2, IcaContrast::Cube, 100, 1e-5);
         let y = ica.transform_cpu(&x, 2, samples);
 
         let corr = |a: &[f32], b: &[f32]| -> f32 {

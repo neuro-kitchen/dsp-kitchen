@@ -35,7 +35,7 @@ pub const fn coeffs_len(n_sections: usize) -> usize {
 /// - `phase = 0` (only when `num_blocks > 1`), blocks `0..num_blocks − 1`: run from zero state
 ///   (block 0 from the true initial state) and store the end state as the next block's start in
 ///   `block_states`; block 0 also stores the true initial state and offset in slot 0.
-/// - between the phases [`sos_block_scan_kernel`] turns the stored zero-start end states into true
+/// - between the phases [`fn@sos_block_scan_kernel`] turns the stored zero-start end states into true
 ///   start states.
 /// - `phase = 1`, all blocks: run from the block's start state and write logical samples
 ///   `[out_start, out_start + out_len)` to `output` (row length `out_len`); the last block writes
@@ -52,11 +52,11 @@ pub const fn coeffs_len(n_sections: usize) -> usize {
 #[cube(launch)]
 #[allow(clippy::too_many_arguments)]
 pub fn sos_block_kernel<F: Float>(
-    input: &Array<F>,
-    output: &mut Array<F>,
-    coeffs: &Array<F>,
-    state: &mut Array<F>,
-    block_states: &mut Array<F>,
+    input: &[F],
+    output: &mut [F],
+    coeffs: &[F],
+    state: &mut [F],
+    block_states: &mut [F],
     num_channels: u32,
     in_len: u32,
     pad: u32,
@@ -172,7 +172,7 @@ pub fn sos_block_kernel<F: Float>(
     }
 }
 
-/// Turns the zero-start end states left by phase 0 of [`sos_block_kernel`] into true block start
+/// Turns the zero-start end states left by phase 0 of [`fn@sos_block_kernel`] into true block start
 /// states, one unit per channel walking its blocks in order: `start[b] = Aᴸ · start[b − 1] +
 /// start[b]` for `b ≥ 2` (slot 1 already holds block 0's true end state). `transition_delta` is
 /// `Aᴸ − I` (row-major `[2·n_sections][2·n_sections]`) for the cascade's zero-input transition over
@@ -180,8 +180,8 @@ pub fn sos_block_kernel<F: Float>(
 /// `prev + (s + (Aᴸ − I)·prev)` keeps rounding on the small part only.
 #[cube(launch)]
 pub fn sos_block_scan_kernel<F: Float>(
-    block_states: &mut Array<F>,
-    transition_delta: &Array<F>,
+    block_states: &mut [F],
+    transition_delta: &[F],
     num_channels: u32,
     num_blocks: u32,
     #[comptime] n_sections: usize,

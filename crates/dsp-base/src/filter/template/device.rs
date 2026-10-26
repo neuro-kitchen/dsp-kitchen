@@ -12,108 +12,8 @@ use cubecl::server::Handle;
 use dsp_core::compute::LaunchGeometry;
 
 use super::subtraction::{TemplateFilter, MIN_TEMPLATE_ENERGY};
+use super::kernels::{template_scores_kernel, template_subtract_kernel};
 use crate::core::{buffer, cast, cast_f32, DspFloat};
-
-/// Joint cross-correlation of the template with the signal for every `(event, lag)` of a layer:
-/// `scores[e · lags + l] = Σ_c Σ_t x[c, s + t] · T[c, t]` with `s = starts[e] + l − max_lag`, or `−∞`
-/// when the window leaves the signal. One unit per `(event, lag)`.
-#[cube(launch)]
-#[allow(clippy::too_many_arguments)]
-pub fn template_scores_kernel<F: Float>(
-    signal: &Array<F>,
-    template: &Array<F>,
-    starts: &Array<i32>,
-    scores: &mut Array<F>,
-    channels: u32,
-    samples: u32,
-    template_len: u32,
-    num_events: u32,
-    lags: u32,
-    max_lag: u32,
-) {
-    let unit = ABSOLUTE_POS as u32;
-    if unit < num_events * lags {
-        let e = unit / lags;
-        let l = unit - e * lags;
-        let s = starts[e as usize] + i32::cast_from(l) - i32::cast_from(max_lag);
-        let mut score = F::new(f32::NEG_INFINITY);
-        if s >= 0i32 && s + i32::cast_from(template_len) <= i32::cast_from(samples) {
-            let s = u32::cast_from(s);
-            score = F::new(0.0f32);
-            let mut c = 0u32;
-            while c < channels {
-                let (sig, tpl) = ((c * samples + s) as usize, (c * template_len) as usize);
-                let mut t = 0u32;
-                while t < template_len {
-                    score += signal[sig + t as usize] * template[tpl + t as usize];
-                    t += 1u32;
-                }
-                c += 1u32;
-            }
-        }
-        scores[unit as usize] = score;
-    }
-}
-
-/// Subtracts the aligned, scaled template of every event of a layer from one channel: the best lag
-/// is the first maximum of the event's scores (as the host search), `α = max(⟨x, T_c⟩ / ‖T_c‖², 0)`
-/// with dynamic scaling, else 1. Channels whose template energy is below `min_energy` are skipped.
-/// One unit per `(event, channel)`.
-#[cube(launch)]
-#[allow(clippy::too_many_arguments)]
-pub fn template_subtract_kernel<F: Float + CubeElement>(
-    signal: &mut Array<F>,
-    template: &Array<F>,
-    energies: &Array<F>,
-    starts: &Array<i32>,
-    scores: &Array<F>,
-    channels: u32,
-    samples: u32,
-    template_len: u32,
-    num_events: u32,
-    lags: u32,
-    max_lag: u32,
-    dynamic_scaling: u32,
-    min_energy: F,
-) {
-    let unit = ABSOLUTE_POS as u32;
-    if unit < num_events * channels {
-        let e = unit / channels;
-        let c = unit - e * channels;
-
-        let mut best = 0u32;
-        let mut best_score = F::new(f32::NEG_INFINITY);
-        let mut l = 0u32;
-        while l < lags {
-            let score = scores[(e * lags + l) as usize];
-            if score > best_score {
-                best_score = score;
-                best = l;
-            }
-            l += 1u32;
-        }
-        let energy = energies[c as usize];
-        if best_score > F::new(f32::NEG_INFINITY) && energy > min_energy {
-            let s = u32::cast_from(starts[e as usize] + i32::cast_from(best) - i32::cast_from(max_lag));
-            let (sig, tpl) = ((c * samples + s) as usize, (c * template_len) as usize);
-            let mut alpha = F::new(1.0f32);
-            if dynamic_scaling != 0u32 {
-                let mut dot = F::new(0.0f32);
-                let mut t = 0u32;
-                while t < template_len {
-                    dot += signal[sig + t as usize] * template[tpl + t as usize];
-                    t += 1u32;
-                }
-                alpha = F::max(dot / energy, F::new(0.0f32));
-            }
-            let mut t = 0u32;
-            while t < template_len {
-                signal[sig + t as usize] -= alpha * template[tpl + t as usize];
-                t += 1u32;
-            }
-        }
-    }
-}
 
 /// Layer of every event (in input order): one after the latest earlier event whose search window
 /// (`template_len + 2 · max_lag` samples) overlaps it.
@@ -138,9 +38,9 @@ impl TemplateFilter {
     /// Subtracts the template at every event from a `[channels, samples]` device buffer of `F` in
     /// place, with the same alignment, scaling and event order as [`Self::apply_multichannel`]
     /// (a single-channel template works on a single-channel signal).
-    pub fn apply_device<R: Runtime, F: DspFloat>(
+    pub fn apply_device<F: DspFloat>(
         &self,
-        client: &ComputeClient<R>,
+        client: &Client,
         signal: &Handle,
         channels: usize,
         samples: usize,
@@ -166,18 +66,18 @@ impl TemplateFilter {
                 starts.iter().zip(&event_layer).filter(|(_, l)| **l == layer).map(|(s, _)| *s as i32).collect();
             let n = layer_starts.len();
             let starts_h = buffer::upload(client, &layer_starts);
-            let scores = buffer::empty::<R, F>(client, n * lags);
+            let scores = buffer::empty::<F>(client, n * lags);
 
             let geom = LaunchGeometry::elementwise(client, n * lags);
             unsafe {
-                template_scores_kernel::launch::<F, R>(
+                template_scores_kernel::launch::<F>(
                     client,
                     geom.cube_count,
                     geom.cube_dim,
-                    ArrayArg::from_raw_parts(signal.clone(), channels * samples),
-                    ArrayArg::from_raw_parts(template.clone(), channels * t_len),
-                    ArrayArg::from_raw_parts(starts_h.clone(), n),
-                    ArrayArg::from_raw_parts(scores.clone(), n * lags),
+                    BufferArg::from_raw_parts(signal.clone(), channels * samples),
+                    BufferArg::from_raw_parts(template.clone(), channels * t_len),
+                    BufferArg::from_raw_parts(starts_h.clone(), n),
+                    BufferArg::from_raw_parts(scores.clone(), n * lags),
                     channels as u32,
                     samples as u32,
                     t_len as u32,
@@ -188,15 +88,15 @@ impl TemplateFilter {
             }
             let geom = LaunchGeometry::elementwise(client, n * channels);
             unsafe {
-                template_subtract_kernel::launch::<F, R>(
+                template_subtract_kernel::launch::<F>(
                     client,
                     geom.cube_count,
                     geom.cube_dim,
-                    ArrayArg::from_raw_parts(signal.clone(), channels * samples),
-                    ArrayArg::from_raw_parts(template.clone(), channels * t_len),
-                    ArrayArg::from_raw_parts(energies.clone(), channels),
-                    ArrayArg::from_raw_parts(starts_h, n),
-                    ArrayArg::from_raw_parts(scores, n * lags),
+                    BufferArg::from_raw_parts(signal.clone(), channels * samples),
+                    BufferArg::from_raw_parts(template.clone(), channels * t_len),
+                    BufferArg::from_raw_parts(energies.clone(), channels),
+                    BufferArg::from_raw_parts(starts_h, n),
+                    BufferArg::from_raw_parts(scores, n * lags),
                     channels as u32,
                     samples as u32,
                     t_len as u32,
@@ -221,7 +121,7 @@ mod tests {
         assert_eq!(layers(&[0, 5, 30, 8], 10), vec![0, 1, 0, 2]);
     }
 
-    fn matches_host<R: Runtime>(client: &ComputeClient<R>) {
+    fn matches_host(client: &Client) {
         let (channels, samples, t_len) = (3usize, 400usize, 9usize);
         let template: Vec<f32> = (0..channels * t_len).map(|i| ((i * 37) % 17) as f32 - 8.0).collect();
         let filter = TemplateFilter::new_multichannel(template.clone(), channels, t_len, 4).with_max_lag(3);
@@ -242,10 +142,10 @@ mod tests {
         filter.apply_multichannel(&mut host, channels, samples, &events);
 
         let device = buffer::upload(client, &signal);
-        filter.apply_device::<R, f32>(client, &device, channels, samples, &events);
-        let got = buffer::download::<R, f32>(client, device);
+        filter.apply_device::<f32>(client, &device, channels, samples, &events);
+        let got = buffer::download::<f32>(client, device);
         for (i, (g, h)) in got.iter().zip(&host).enumerate() {
-            assert!((g - h).abs() < 1e-3, "{} sample {i}: {g} vs {h}", R::name(client));
+            assert!((g - h).abs() < 1e-3, "{} sample {i}: {g} vs {h}", client.name());
         }
     }
     runtime_test!(test_template_device_matches_host, matches_host);

@@ -1,0 +1,120 @@
+// dsp-stream session protocol, version 1.
+//
+// One QUIC connection (ALPN "dsp-stream/1") per client. Every message is a 4-byte big-endian
+// length followed by the protobuf encoding; receivers reject lengths above their limit before
+// allocating.
+//
+// Streams:
+//   control  bidirectional, opened by the client: ClientHello → Header, then Subscribe.
+//   signal   unidirectional, opened by the server after Subscribe: SignalFrame, ….
+//   view     bidirectional, one per request, opened by the client: ViewRequest → EnvelopeFrame.
+// Views travel on their own streams so they never wait behind signal data.
+
+syntax = "proto3";
+
+package dsp_stream.v1;
+
+// An exact fraction (sample rates in Hz, times in seconds).
+message Ratio {
+  uint64 numerator = 1;
+  uint64 denominator = 2;
+}
+
+// Numeric type of stored samples (little-endian).
+enum SampleFormat {
+  SAMPLE_FORMAT_UNSPECIFIED = 0;
+  SAMPLE_FORMAT_I8 = 1;
+  SAMPLE_FORMAT_I16 = 2;
+  SAMPLE_FORMAT_U16 = 3;
+  SAMPLE_FORMAT_I32 = 4;
+  SAMPLE_FORMAT_F32 = 5;
+  SAMPLE_FORMAT_F64 = 6;
+}
+
+enum Unit {
+  UNIT_UNSPECIFIED = 0;
+  UNIT_VOLT = 1;
+  UNIT_MILLIVOLT = 2;
+  UNIT_MICROVOLT = 3;
+  UNIT_AMPERE = 4;
+  UNIT_MILLIAMPERE = 5;
+  UNIT_MICROAMPERE = 6;
+  UNIT_DIMENSIONLESS = 7;
+  // Any other unit, by its symbol in Channel.unit_symbol.
+  UNIT_OTHER = 8;
+}
+
+// One channel: value = stored · gain + offset, in unit.
+message Channel {
+  string name = 1;
+  float gain = 2;
+  float offset = 3;
+  Unit unit = 4;
+  string unit_symbol = 5;
+}
+
+// client → server, first message on the control stream.
+message ClientHello {
+  uint32 protocol_version = 1;
+}
+
+// server → client, the answer to ClientHello: what is being streamed.
+message Header {
+  uint32 protocol_version = 1;
+  string name = 2;
+  repeated Channel channels = 3;
+  Ratio sample_rate_hz = 4;
+  SampleFormat format = 5;
+  // Samples per channel; 0 for a live source of unknown length.
+  uint64 samples = 6;
+  // Time of sample 0 from the acquisition start.
+  Ratio start_time_s = 7;
+  map<string, string> metadata = 8;
+}
+
+// client → server on the control stream: start the signal stream at sample first_sample.
+message Subscribe {
+  uint64 first_sample = 1;
+}
+
+// server → client on the signal stream: samples first_sample .. first_sample + samples of
+// every channel, channel-major, stored as Header.format.
+message SignalFrame {
+  uint64 sequence = 1;
+  uint64 first_sample = 2;
+  uint32 samples = 3;
+  bytes data = 4;
+  // Server clock when sent (Unix nanoseconds), for latency measurements.
+  uint64 sent_unix_ns = 5;
+}
+
+// client → server, the only message on a view stream.
+message ViewRequest {
+  repeated uint32 channels = 1;
+  uint64 start = 2;
+  uint64 end = 3;
+  uint32 width = 4;
+}
+
+// [min, max] per column, row per requested channel: min_max[2 · (row · width + column)] is the
+// min and the next value the max. NaN where nothing is known yet or every sample is NaN.
+message Columns {
+  repeated float min_max = 1;
+  // False while some columns wait for the server's pyramid: ask again later.
+  bool complete = 2;
+}
+
+// The samples themselves (fewer samples than columns), row per requested channel.
+message Samples {
+  repeated float values = 1;
+}
+
+// server → client, the answer on a view stream.
+message EnvelopeFrame {
+  oneof content {
+    Columns columns = 1;
+    Samples samples = 2;
+    // The request could not be served (e.g. out of range).
+    string error = 3;
+  }
+}

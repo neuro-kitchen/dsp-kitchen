@@ -17,7 +17,6 @@ use crate::engine::time::hover::{HoverReply, HoverRequest};
 use crate::engine::time::renderer::{render_on_worker, TimeViewKind};
 use crate::engine::time::view::{HoverTarget, TimeView, ViewId};
 use crate::store::{AppEvent, Store};
-use dsp_base::resampler::summary::BASE as SUMMARY_BASE;
 
 use super::services::{Services, RENDER_SLOT};
 
@@ -33,6 +32,8 @@ pub struct Shown {
 struct Delivered {
     shown: Shown,
     scale: Option<f32>,
+    /// Every column was available (else redraw as the pyramid builds).
+    complete: bool,
     elapsed: Duration,
     samples_per_px: f64,
 }
@@ -53,6 +54,8 @@ pub struct TraceVm {
     /// Displayed in its tab group (hidden views do not render).
     active: bool,
     scheduled: bool,
+    /// The frame on screen has columns the pyramid had not built yet.
+    incomplete: bool,
     pub hover: String,
     frames: async_channel::Sender<Delivered>,
     hover_reply: HoverReply,
@@ -95,7 +98,7 @@ impl TraceVm {
         let sub = cx.subscribe(&store, |vm, store, event, cx| match event {
             AppEvent::WindowMoved | AppEvent::PaletteChanged => vm.request_render(cx),
             AppEvent::PlaybackChanged => cx.notify(),
-            AppEvent::SummaryProgress(source) if *source == vm.view.source && vm.zoomed_out(store.read(cx).timeline.visible_window_sec, cx) => vm.request_render(cx),
+            AppEvent::PyramidProgress(source) if *source == vm.view.source && vm.incomplete => vm.request_render(cx),
             AppEvent::SelectionChanged(source) if *source == vm.view.source && !vm.view.pinned_selection => {
                 let channels = store.read(cx).selection(source).to_vec();
                 let total = store.read(cx).sources().map_or(0, |s| s.entry(source).channels);
@@ -111,6 +114,7 @@ impl TraceVm {
             retired: None,
             active: true,
             scheduled: false,
+            incomplete: false,
             hover: String::new(),
             frames,
             hover_reply,
@@ -161,46 +165,35 @@ impl TraceVm {
         });
     }
 
-    /// Whether a window of `window_sec` draws from the min/max summary (more samples per pixel
-    /// column than its finest bucket) rather than raw samples.
-    fn zoomed_out(&self, window_sec: f64, cx: &App) -> bool {
-        let Some(sources) = self.sources(cx) else { return false };
-        let rate = sources.entry(&self.view.source).sample_rate;
-        window_sec * rate >= SUMMARY_BASE as f64 * self.view.canvas_width.max(1) as f64
-    }
-
     fn submit(&mut self, cx: &mut Context<Self>) {
         if !self.active || !self.view.needs_render || self.view.canvas_width == 0 || self.view.canvas_height == 0 {
             return;
         }
         let Some(sources) = self.sources(cx) else { return };
         self.view.needs_render = false;
-        // The summary fills in the background, nearest what this view shows first
+        // The pyramid builds in the background, nearest what this view shows first
         let (source_id, focus) = (self.view.source.clone(), self.store.read(cx).timeline.window_start_sec);
-        self.store.update(cx, |s, cx| s.summarize(&source_id, focus, cx));
+        self.store.update(cx, |s, cx| s.focus_pyramid(&source_id, focus, cx));
         let store = self.store.read(cx);
         let dataset = sources.get(&self.view.source);
-        let lod = dataset.lod();
-        self.view.has_lod = lod.is_some();
         let on_default = sources.index_of(&self.view.source) == sources.index_of("");
         let events = match &store.recording {
             Some(r) if on_default => r.events.clone(),
             _ => Default::default(),
         };
-        let source: Arc<dyn dsp_core::RecordingSource> = dataset.clone();
-        let req = self.view.render_request(&store.timeline, source, lod, Some(dataset.summary()), events, store.palette());
+        let req = self.view.render_request(&store.timeline, dataset.signal().clone(), events, store.palette());
         let samples_per_px = req.window_sec * dataset.sample_rate / req.width.max(1) as f64;
         let (start, window) = (req.window_start_sec, req.window_sec);
         let tx = self.frames.clone();
         let work = Box::new(move |cancel: &std::sync::atomic::AtomicBool| {
             let t0 = Instant::now();
-            let Some((frame, scale)) = render_on_worker(&req, cancel) else { return };
+            let Some((frame, scale, complete)) = render_on_worker(&req, cancel) else { return };
             let (w, h) = (frame.width, frame.height);
             let Some(buffer) = image::RgbaImage::from_raw(w, h, frame.into_bgra()) else { return };
             // Converted here, on the work thread: the UI thread only shows it
             let image = Arc::new(RenderImage::new(vec![image::Frame::new(buffer)]));
             let shown = Shown { image, start, window };
-            let _ = tx.try_send(Delivered { shown, scale: Some(scale), elapsed: t0.elapsed(), samples_per_px });
+            let _ = tx.try_send(Delivered { shown, scale: Some(scale), complete, elapsed: t0.elapsed(), samples_per_px });
         });
         cx.global::<Services>().pool.request(JobKey::new(self.view.id, RENDER_SLOT), work);
     }
@@ -210,6 +203,7 @@ impl TraceVm {
             // The scale bar follows the scale the frame was drawn with
             self.view.amp_scale = scale;
         }
+        self.incomplete = !d.complete;
         if let Some(old) = self.retired.take() {
             cx.drop_image(old, None);
         }

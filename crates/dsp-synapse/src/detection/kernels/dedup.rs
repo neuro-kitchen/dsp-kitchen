@@ -1,73 +1,97 @@
 use cubecl::prelude::*;
 
-/// CubeCL parallel locally-exclusive spatial deduplication survival kernel.
+/// `neighbour_slot` of a channel outside the radius.
+pub const NO_SLOT: u32 = u32::MAX;
+
+/// Slot of `channel` in channel `ch`'s neighbour row (`nbr_offsets[ch]..nbr_offsets[ch + 1]` of
+/// `nbr_channels`), or [`NO_SLOT`] when it is not within the radius.
+#[cube]
+fn neighbour_slot(nbr_offsets: &[u32], nbr_channels: &[u32], ch: u32, channel: u32) -> u32 {
+    let start: u32 = nbr_offsets[ch as usize];
+    let end: u32 = nbr_offsets[(ch + 1u32) as usize];
+    let mut slot = NO_SLOT.runtime();
+    let mut k = start;
+    while k < end {
+        if nbr_channels[k as usize] == channel {
+            slot = k - start;
+        }
+        k += 1u32;
+    }
+    slot
+}
+
+/// Locally exclusive spatial deduplication, one unit per crossing `i`.
 ///
-/// Given sorted spike events `(sample_indices, channel_ids, peak_magnitudes)` (`|amplitude|`) of length `num_spikes`
-/// and a flattened `[num_channels, num_channels]` pairwise distance matrix `dist_matrix_um`,
-/// each unit `i = ABSOLUTE_POS` checks neighboring spikes within `window_samples` and `radius_um`
-/// and sets `survives[i] = 1` if no stronger crossing (larger magnitude, then earlier, then lower
-/// channel) beats event `i`, or `0` otherwise.
+/// Crossings are sorted by `(sample, channel)`; `peak_magnitudes` holds `|amplitude|`. Every
+/// crossing `j` within `window_samples` of `i` whose channel is a radius neighbour of `i`'s
+/// (the CSR table `nbr_offsets` / `nbr_channels`, built once per probe) sets bit `slot` of
+/// `participating[i · mask_words ..]`. `survives[i] = 0` when such a `j` is stronger (larger
+/// magnitude, then earlier, then lower channel), else `1`.
 /// Dispatched via [`dsp_core::compute::LaunchGeometry::elementwise`].
 #[cube(launch)]
 pub fn spatial_dedup_survival_kernel(
-    sample_indices: &Array<u32>,
-    channel_ids: &Array<u32>,
-    peak_magnitudes: &Array<f32>,
-    dist_matrix_um: &Array<f32>,
-    survives: &mut Array<u32>,
-    num_spikes: usize,
-    num_channels: u32,
-    radius_um: f32,
+    sample_indices: &[u32],
+    channel_ids: &[u32],
+    peak_magnitudes: &[f32],
+    nbr_offsets: &[u32],
+    nbr_channels: &[u32],
+    survives: &mut [u32],
+    participating: &mut [u32],
+    num_spikes: u32,
+    mask_words: u32,
     window_samples: u32,
 ) {
-    let i = ABSOLUTE_POS;
+    // Flattened position: the elementwise geometry may shape the cube in two dimensions
+    let i = ABSOLUTE_POS as u32;
     if i < num_spikes {
-        let t_i = sample_indices[i];
-        let ch_i = channel_ids[i];
-        let amp_i = peak_magnitudes[i];
+        let t_i = sample_indices[i as usize];
+        let ch_i = channel_ids[i as usize];
+        let amp_i = peak_magnitudes[i as usize];
+        let mask_base = i * mask_words;
+        let mut w = 0u32;
+        while w < mask_words {
+            participating[(mask_base + w) as usize] = 0u32;
+            w += 1u32;
+        }
+
+        // First crossing within the window before `i`. The loops test their bound before reading:
+        // a short-circuit `&&` whose right side reads memory fails SPIR-V validation (CubeCL 0.11,
+        // "use not dominated by definition"), so the conditions are explicit breaks.
+        let mut j = i;
+        loop {
+            if j == 0u32 {
+                break;
+            }
+            if sample_indices[(j - 1u32) as usize] + window_samples < t_i {
+                break;
+            }
+            j -= 1u32;
+        }
 
         let mut keep = 1u32;
-
-        // Scan backward while within window_samples
-        let mut j = i;
-        while j > 0usize {
-            j = j - 1usize;
-            let t_j = sample_indices[j];
-            if t_i > t_j + window_samples {
+        loop {
+            if j >= num_spikes {
                 break;
             }
-            let ch_j = channel_ids[j];
-            let d = dist_matrix_um[(ch_i * num_channels + ch_j) as usize];
-            if d <= radius_um {
-                let amp_j = peak_magnitudes[j];
-                let j_beats_i = amp_j > amp_i
-                    || (amp_j == amp_i && (t_j < t_i || (t_j == t_i && ch_j < ch_i)));
-                if j_beats_i {
-                    keep = 0u32;
-                }
-            }
-        }
-
-        // Scan forward while within window_samples
-        let mut k = i + 1usize;
-        while k < num_spikes {
-            let t_k = sample_indices[k];
-            if t_k > t_i + window_samples {
+            if sample_indices[j as usize] > t_i + window_samples {
                 break;
             }
-            let ch_k = channel_ids[k];
-            let d = dist_matrix_um[(ch_i * num_channels + ch_k) as usize];
-            if d <= radius_um {
-                let amp_k = peak_magnitudes[k];
-                let k_beats_i = amp_k > amp_i
-                    || (amp_k == amp_i && (t_k < t_i || (t_k == t_i && ch_k < ch_i)));
-                if k_beats_i {
-                    keep = 0u32;
+            let ch_j = channel_ids[j as usize];
+            let slot = neighbour_slot(nbr_offsets, nbr_channels, ch_i, ch_j);
+            if slot != NO_SLOT {
+                let word = (mask_base + slot / 32u32) as usize;
+                participating[word] = participating[word] | (1u32 << (slot % 32u32));
+                if j != i {
+                    let t_j = sample_indices[j as usize];
+                    let amp_j = peak_magnitudes[j as usize];
+                    let j_beats_i = amp_j > amp_i || (amp_j == amp_i && (t_j < t_i || (t_j == t_i && ch_j < ch_i)));
+                    if j_beats_i {
+                        keep = 0u32;
+                    }
                 }
             }
-            k = k + 1usize;
+            j += 1u32;
         }
-
-        survives[i] = keep;
+        survives[i as usize] = keep;
     }
 }

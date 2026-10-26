@@ -12,7 +12,7 @@ pub const MIN_TEMPLATE_ENERGY: f32 = 1e-12;
 /// Configurable template subtraction filter.
 #[derive(Debug, Clone)]
 pub struct TemplateFilter {
-    /// Prototype waveform template [samples] or [channels, samples].
+    /// Prototype waveform template, `[samples]` or `[channels, samples]`.
     pub template: Vec<f32>,
     /// Number of channels in the template (1 for single-channel).
     pub template_channels: usize,

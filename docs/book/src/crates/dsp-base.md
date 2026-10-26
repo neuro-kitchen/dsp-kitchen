@@ -1,13 +1,5 @@
 # dsp-base
 
-> **Status:** cleaned on 2026-10-05 (`versions/v0.14`) in six steps: visualization code parked,
-> `core/` and named constants, generic kernels with scipy edge modes, missing kernels, device
-> eigensolver, autotuned optimizations. Extended the same day with the generic primitives the
-> dsp-synapse review found re-implemented there: peak finding, lag cross-correlation, fractional
-> delay, running moments, Cholesky. `cargo check -p dsp-base --tests` passes; **only the Cholesky
-> tests have been run** (tests and benchmarks wait for the final pass). Changes are tracked in
-> `refactoring/dsp-base/README.md`.
-
 ## Intent
 
 Deterministic signal-processing primitives for multi-channel signals, running on any CubeCL runtime:
@@ -31,7 +23,7 @@ them on the device without host round-trips between steps.
   `dsp-app`.
 - File formats or recordings I/O (`dsp-io`).
 - Domain models (spikes, units, probes): neuro layers above.
-- Runtime selection or launch geometry (`dsp-core::compute`); algorithms take a `ComputeClient<R>`
+- Runtime selection or launch geometry (`dsp-core::compute`); algorithms take a cubecl `Client`
   and never inspect the device.
 
 ## Features
@@ -45,10 +37,10 @@ them on the device without host round-trips between steps.
 
 Every device algorithm in this crate follows the same rules:
 
-1. **Generic float.** Kernels take `F: Float` (`F: Float + CubeElement` when a scalar argument is of
-   type `F`); dispatchers take `<R: Runtime, F: DspFloat>`. Coefficients are designed in f64 on the
+1. **Generic float.** Kernels take `F: Float` (`F: Float + CubeElement + LaunchArg` when a scalar
+   argument is of type `F`); dispatchers take `<F: DspFloat>` and a `&Client`. Coefficients are designed in f64 on the
    host and rounded to `F` once (`core::cast`). Types that hold device data default to `f32`
-   (`DeviceFilter<F = f32>`, `PipelineWorkspace<R, F = f32>`), but defaults do not drive inference:
+   (`DeviceFilter<F = f32>`, `PipelineWorkspace<F = f32>`), but defaults do not drive inference:
    callers write `::<f32>`.
 2. **Typed buffers.** Sizes come from the element type (`core::buffer`), never a literal byte count.
    Reused device buffers go through `core::Scratch`.
@@ -94,11 +86,11 @@ Every device algorithm in this crate follows the same rules:
 dsp-base/src/
 ├── core/                 shared device building blocks
 │   ├── float.rs          DspFloat, cast / cast_all / cast_f32 / to_f64
-│   ├── buffer.rs         bytes, empty, upload, zeros, download, truncate
+│   ├── buffer.rs         bytes, empty, upload, zeros, download, download_prefix, download_range, truncate
 │   ├── scratch.rs        Scratch (grow-only reusable buffer)
 │   ├── edge.rs           EdgeMode, read_extended, read_extended_strided
 │   ├── layout.rs         transpose
-│   └── reduce.rs         row_mean_std, row_min_max (one cube per row)
+│   └── reduce.rs         row_mean_std, row_abs_kth (one cube per row)
 ├── filter/
 │   ├── design/           FilterSpec / FilterDesign / FilterBand / FilterMode / FilterStart,
 │   │                     Butterworth + Chebyshev I (butterworth.rs), notch, Sos (settling, host reference)
@@ -128,7 +120,8 @@ dsp-base/src/
 | `Scratch` | Device buffer reallocated only when a call needs more. |
 | `EdgeMode`, `read_extended(_strided)` | One edge policy for every stencil. |
 | `layout::transpose` | `[rows, cols]` → `[cols, rows]`. |
-| `reduce::row_mean_std`, `row_min_max` | Parallel per-row reductions (Welford + Chan merge in shared memory). |
+| `reduce::row_mean_std` | Per-row mean / standard deviation (Welford + Chan merge in shared memory). (Min / max envelopes are in dsp-view.) |
+| `reduce::row_abs_kth` | Per-row k-th smallest `|x|` over a column range (value bisection, exact sample value). |
 
 ### `filter`
 | Item | Purpose |
@@ -158,7 +151,8 @@ dsp-base/src/
 | `PeakOptions`, `Interval`, `Polarity` | Conditions as `min` / `max` intervals; maxima, minima (maxima of `−x`) or both (conditions on magnitude). |
 | `DistanceRule` | `Scipy` (default): largest first, removed peaks remove nothing — a chain can reach beyond `distance`. `LocallyExclusive`: kept unless a larger peak is nearer than `distance` — depends only on neighbours, so chunked processing with `distance` of context equals the whole-signal result. |
 | `local_extrema`, `select_by_distance` | The building blocks, for detectors that score candidates differently. |
-| `find_peak_candidates::<R, F>` → `PeakCandidates` | Device: local extrema above a per-channel height, counted, scanned and compacted on the device (autotuned block length) so only candidates are downloaded; plateaus → first sample. |
+| `find_peak_candidates::<F>` → `PeakCandidates` | Device: local extrema above a per-channel height, counted, scanned and compacted on the device (autotuned block length) so only candidates are downloaded; plateaus → first sample. |
+| `find_peak_candidates_on_device::<F>` → `DevicePeakCandidates` | The same, left on the device (sample, value and channel buffers, unordered within a channel) for further kernels; only the per-channel counts are read back. |
 
 ### `spatial`
 | Item | Purpose |
@@ -171,14 +165,16 @@ dsp-base/src/
 ### `linalg`
 | Item | Purpose |
 |---|---|
-| `covariance`, `covariance_of_host` | Device covariance (`/ samples`) and means, sample-split for parallelism. |
-| `symmetric_eigen(_batched / _host)`, `EigenOptions`, `SymmetricEigen` | Parallel cyclic Jacobi; relative tolerance; shared-memory or global path by size. |
+| `covariance`, `covariance_of_host` | Device covariance (`/ samples`) and means, sample-split for parallelism. `covariance_of_host` is an entry point for host data only. |
+| `SecondMomentAccumulator` | Mean over batches of the uncentred `X Xᵀ / n` (Kilosort4's whitening covariance), accumulated on the device from a column range of each batch (e.g. a window's interior), scratch kept between batches; one download in `finish`, or `into_sum` to keep it on the device. |
+| `symmetric_eigen(_batched / _host)`, `EigenOptions`, `SymmetricEigen` | Parallel cyclic Jacobi; relative tolerance; shared-memory or global path by size. `symmetric_eigen` reads a device matrix; `_host` uploads one. |
 | `PcaModel`, `PpcaModel`, `FastIcaModel` | Fits take a client (device covariance + eigensolver); `to_device` → `DeviceProjection`. |
 | `cholesky`, `spd_inverse_logdet`, `cholesky_solve` | Host, f64, exact: SPD factor, inverse with `ln det`, multi-RHS solve (`None` when not positive definite). |
 
 ### `math`
 `execute_scaling`, `execute_clamp`, `execute_unpack_stored` +
-`upload_stored`, `execute_channel_mean_std`; host: `estimate_noise_std` / `_rms` / `_trimmed`,
+`upload_stored`, `execute_channel_mean_std`, `execute_channel_noise_std` (MAD σ per channel on the
+device, only the σ downloaded); host: `estimate_noise_std` / `_rms` / `_trimmed`,
 `interquartile_range`, `peak_to_peak`, `standard_error`, `percentile`, `histogram`, `bin_centers`,
 windows (`hann`, `hamming`, `blackman`, `gaussian`, `kaiser`, `sinc`, `bessel_i0`; Blackman-Harris
 coefficients are public constants shared with device code), `cross_correlation` / `lagged_dot` /
@@ -190,21 +186,12 @@ coefficients are public constants shared with device code), `cross_correlation` 
 |---|---|
 | `PipelineStage` | `Scale`, `SubtractBaseline`, `Clamp`, `Filter`, `CommonAverageReference`, `SpatialWhitening`, `SurfaceLaplacian`, `GaussianSmooth`, `Median`, `TeagerKaiser`; `settling(fs)`. |
 | `Pipeline` | Stage list; `settling`, `validate`, one-off `execute`. |
-| `PipelineWorkspace<R, F>` | Designs, weights and ping-pong buffers kept on the device; `process_handle`, `process_chunk(_in_vram)`, `process_stored_chunk_in_vram`; `ChunkMode::{Independent, Stateful}`. |
+| `PipelineWorkspace<F>` | Designs, weights and ping-pong buffers kept on the device; `process_handle`, `process_chunk(_in_vram)`, `process_stored_chunk_in_vram`; `ChunkMode::{Independent, Stateful}`. |
 
-## Open items
+## Limitations
 
-- **Run everything**: unit and integration tests on every available runtime; first autotune runs
-  decide the IIR layout / block count and FIR kernel per device.
-- **Regenerate the scipy fixture** (`tests/scipy_reference.py`, now also writes `forward_rest`);
-  needs scipy in the venv.
-- **Downstream fixes** (`dsp-synapse`, `dsp-synapse-ml`, `dsp-cli`, `dsp_kitchen_py`, `dsp-app`): see
-  `refactoring/dsp-base/README.md`.
-- **Still on the host**: FastICA iterations, PPCA EM projection / reconstruction, ZCA assembly from
-  eigenpairs, median-based noise estimators.
-- Parked (no users): per-channel baseline kernel, precomputed-average CAR, causal exponential /
-  alpha kernels, `SpatialReferenceConfig` — see `refactoring/dsp-base/README.md`.
-- `filter/template/subtraction.rs` keeps its own full-overlap lag search (a different operation
-  from `math::cross_correlation`).
-- `butterworth.rs` now holds the shared IIR design path (Butterworth and Chebyshev I); a rename to
-  `iir_design.rs` would read better.
+- Still on the host: FastICA iterations, PPCA EM projection / reconstruction, ZCA assembly from
+  eigenpairs, the trimmed / IQR noise estimators, Cholesky (small systems by design).
+- `filter/template/subtraction.rs` searches full-overlap lags only (a different operation from
+  `math::cross_correlation`).
+- `butterworth.rs` holds the shared IIR design path (Butterworth and Chebyshev I).

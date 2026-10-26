@@ -16,16 +16,6 @@ macro_rules! with_format {
     };
 }
 
-/// Decodes `out.len()` contiguous samples from `bytes` into µV.
-pub(crate) fn decode_run(format: SampleFormat, bytes: &[u8], out: &mut [f32], gain: f32, offset: f32) {
-    fn run<const B: usize>(bytes: &[u8], out: &mut [f32], gain: f32, offset: f32, value: impl Fn([u8; B]) -> f32) {
-        for (o, b) in out.iter_mut().zip(bytes.chunks_exact(B)) {
-            *o = value(b.try_into().expect("B bytes")) * gain + offset;
-        }
-    }
-    with_format!(format, run(bytes, out, gain, offset))
-}
-
 /// Applies each channel's gain and offset to time-major stored values (`out[t · channels + c]`)
 /// of `info`'s channels, giving µV.
 pub(crate) fn scale_frames(info: &RecordingInfo, out: &mut [f32]) {
@@ -33,14 +23,14 @@ pub(crate) fn scale_frames(info: &RecordingInfo, out: &mut [f32]) {
     if ch.is_empty() {
         return;
     }
-    let (g, o) = (ch[0].gain_uv, ch[0].offset_uv);
-    if ch.iter().all(|c| c.gain_uv == g && c.offset_uv == o) {
+    let (g, o) = (ch[0].gain, ch[0].offset);
+    if ch.iter().all(|c| c.gain == g && c.offset == o) {
         if (g, o) != (1.0, 0.0) {
             out.iter_mut().for_each(|v| *v = *v * g + o);
         }
         return;
     }
-    let (gains, offsets): (Vec<f32>, Vec<f32>) = ch.iter().map(|c| (c.gain_uv, c.offset_uv)).unzip();
+    let (gains, offsets): (Vec<f32>, Vec<f32>) = ch.iter().map(|c| (c.gain, c.offset)).unzip();
     for frame in out.chunks_exact_mut(ch.len()) {
         for ((v, g), o) in frame.iter_mut().zip(&gains).zip(&offsets) {
             *v = *v * g + o;
@@ -138,7 +128,7 @@ mod tests {
             encode(SampleFormat::I16, v, 0.5, 0.0, &mut bytes);
         }
         let mut out = [0.0f32; 4];
-        decode_run(SampleFormat::I16, &bytes, &mut out, 0.5, 0.0);
+        SampleFormat::I16.decode(&bytes, &mut out, 0.5, 0.0);
         assert_eq!(out, [-5.0, 0.0, 7.5, i16::MAX as f32 * 0.5]);
 
         // Two interleaved frames of three channels; channels 2 and 0 requested.
@@ -158,14 +148,14 @@ mod tests {
                 encode(format, v, 1.0, 0.0, &mut b);
             }
             let mut back = [0.0f32; 3];
-            decode_run(format, &b, &mut back, 1.0, 0.0);
+            format.decode(&b, &mut back, 1.0, 0.0);
             assert_eq!(back, [0.0, 42.0, 100.0], "{format:?}");
         }
 
         let mut f = Vec::new();
         encode(SampleFormat::F32, 3.25, 1.0, 0.0, &mut f);
         let mut v = [0.0f32];
-        decode_run(SampleFormat::F32, &f, &mut v, 1.0, 0.0);
+        SampleFormat::F32.decode(&f, &mut v, 1.0, 0.0);
         assert_eq!(v, [3.25]);
     }
 }

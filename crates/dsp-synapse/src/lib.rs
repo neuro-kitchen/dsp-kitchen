@@ -3,6 +3,51 @@
 //! Allen/IBL quality metrics, sorter comparison, and neural frequency bands.
 //!
 //! Probe geometry (layouts, presets, nearest-site queries) lives in `dsp_io::neuro::probe`.
+//!
+//! # Where things are
+//!
+//! | Step | Module | Start with |
+//! |---|---|---|
+//! | Find spikes | [`detection`] | [`detect_spikes_multichannel`], [`deduplicate_spikes_spatial`] |
+//! | Whole recordings, bounded memory | [`streaming`] | [`streaming::StreamingDetector`] |
+//! | Cut waveforms | [`extraction`] | [`extract_snippets_multichannel`] |
+//! | Features | [`features`] | [`PcaFeatureEmbedder`] |
+//! | Positions and drift | [`spatial`] | [`PeakLocalizer`] implementations |
+//! | Cluster into units | [`sorting`] | k-means, GMM, HDBSCAN, bipartite modularity |
+//! | Quality and comparison | [`metrics`] | ISI violations, presence, amplitude cutoff; sorter agreement |
+//! | Results on disk | [`storage`] | [`SortingOutput`] (Phy, Zarr, NWB) |
+//!
+//! Complete sorters (Kilosort4, EMUsort) are in `dsp-synapse-ml`.
+//!
+//! # Example
+//!
+//! Detect threshold crossings, then keep one spike per event: a spike seen on neighbouring
+//! channels is one spike, assigned to the channel where it is largest.
+//!
+//! ```
+//! use dsp_io::neuro::probe::{Position3D, SensorLayout, SensorSite};
+//! use dsp_synapse::{deduplicate_spikes_spatial, detect_spikes_multichannel, SpikePolarity, SpikeSpacing};
+//!
+//! // 4 channels on a line, 20 µm apart
+//! let sites = (0..4).map(|c| SensorSite::new(c, Position3D::new(0.0, 20.0 * c as f32, 0.0), 0)).collect();
+//! let layout = SensorLayout::new("linear", sites);
+//!
+//! // Small noise, and one spike at sample 500: −80 µV on channel 1, −40 µV on its neighbour
+//! let (channels, samples) = (4, 1_000);
+//! let mut x: Vec<f32> = (0..channels * samples).map(|i| ((i * 7_919) % 200) as f32 / 100.0 - 1.0).collect();
+//! x[samples + 500] = -80.0;
+//! x[2 * samples + 500] = -40.0;
+//!
+//! // Troughs below −5 σ (σ per channel, from the median absolute deviation), ≥ 1 ms apart at 30 kHz
+//! let crossings = detect_spikes_multichannel(&x, channels, samples, 5.0, SpikePolarity::Negative, SpikeSpacing::new(30));
+//! assert_eq!(crossings.len(), 2); // the same spike, on two channels
+//!
+//! // Crossings within 50 µm and 10 samples of a larger one belong to it
+//! let spikes = deduplicate_spikes_spatial(&crossings, &layout, 50.0, 10);
+//! assert_eq!(spikes.len(), 1);
+//! assert_eq!(spikes[0].primary_channel, 1);
+//! assert_eq!(spikes[0].participating_channels, vec![1, 2]);
+//! ```
 
 pub mod core;
 pub mod detection;
@@ -23,7 +68,7 @@ pub use core::{
 pub use detection::{
     AdaptiveThresholdDetector, DistanceRule, MatchedFilterSpikeDetector, NeoSpikeDetector,
     SpikePolarity, SpikeSpacing, ThresholdSpikeDetector, canonical_biphasic_prototype,
-    compute_neo_energy_1d, deduplicate_spikes_spatial, deduplicate_spikes_spatial_gpu,
+    DedupNeighbours, compute_neo_energy_1d, deduplicate_spikes_spatial, deduplicate_spikes_spatial_gpu,
     detect_spikes_matched_filter, detect_spikes_multichannel, detect_spikes_neo,
     detect_spikes_with_sigma, detection_heights, estimate_noise_std, execute_detect_spikes_in_vram,
 };
@@ -49,21 +94,22 @@ pub use metrics::{
 };
 pub use sorting::{
     ConvolutiveBssDecomposer, DensityPeaksResult, GmmClusterer, GmmCovarianceKind, GmmResult,
-    IsoSplitResult, MotorUnitPulseTrain, OmpSpikeMatcher, cluster_density_peaks,
-    cluster_density_peaks_capped, cluster_gmm_bic, cluster_isosplit,
-    compute_template_similarity_matrix, match_spikes_omp, match_spikes_omp_on,
+    KdeMergeResult, MotorUnitPulseTrain, MatchingPursuitMatcher, cluster_density_peaks,
+    cluster_density_peaks_capped, cluster_gmm_bic, cluster_kde_merge,
+    compute_template_similarity_matrix, match_spikes_matching_pursuit,
     suggest_template_merges, template_max_cosine_similarity,
 };
 pub use spatial::{
     CenterOfMassLocalizer, DipoleEstimate, DipoleLocalizer, DriftEstimate, GridConvolutionLocalizer,
-    MonopolarTriangulator, NonRigidDriftEstimate, compute_kriging_weight_matrix,
+    KRIGING_REGULARIZATION, MonopolarTriangulator, NonRigidDriftEstimate, TraceKriging,
+    compute_kriging_weight_matrix,
     correct_snippet_batch_drift_kriging, correct_traces_drift_kriging, estimate_nonrigid_drift,
     estimate_rigid_drift, localize_spike_center_of_mass, localize_spike_dipole,
     localize_spike_grid_convolution, localize_spike_monopolar,
 };
 pub use streaming::{
-    BatchTemplateStats, SINC_RESAMPLE_MARGIN, StreamingSortConfig, StreamingSortResult,
-    StreamingSpikeRunner, TemplateAccumulator, execute_reduce_templates_in_vram,
+    BatchTemplateStats, SINC_RESAMPLE_MARGIN, StreamingDetectionConfig, StreamingDetectionResult,
+    StreamingDetector, TemplateAccumulator, execute_reduce_templates_in_vram,
     reduce_channel_templates_kernel,
 };
 pub use storage::{

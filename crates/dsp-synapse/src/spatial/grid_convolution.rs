@@ -1,8 +1,9 @@
 //! Grid Convolution Spike Source Localization (`grid_convolution.rs`).
 //!
-//! Evaluates a 3D grid of synthetic monopole footprints around the primary channel
-//! and computes an exponentially weighted soft-argmax over cosine similarity scores
-//! (matching `spikeinterface.sortingcomponents.peak_localization.GridConvolution`).
+//! Evaluates a 3D grid of synthetic monopole footprints around the primary channel and computes an
+//! exponentially weighted soft-argmax over the cosine similarity of each footprint with the spike's
+//! peak-to-peak amplitudes. Inspired by SpikeInterface's `GridConvolution`, which convolves
+//! prototype waveforms instead; results differ.
 
 use dsp_io::neuro::probe::SensorLayout;
 use crate::extraction::SnippetBatch;

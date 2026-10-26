@@ -8,66 +8,46 @@ use cubecl::prelude::*;
 use dsp_core::compute::LaunchGeometry;
 use dsp_core::{DspError, DspResult, SampleFormat};
 
+use super::kernels::unpack::{FLOAT, SIGNED, UNSIGNED};
+use super::kernels::unpack_stored_kernel;
 use crate::core::DspFloat;
 
 /// Bytes per upload word (WGSL has no 8- or 16-bit integers).
 const WORD_BYTES: usize = size_of::<u32>();
 
-/// How a stored value's bits are read.
-const SIGNED: u32 = 0;
-const UNSIGNED: u32 = 1;
-const FLOAT: u32 = 2;
-
-/// Converts `total` stored values (`bytes` each, packed little-endian into `words`, channel-major
-/// rows of `num_samples`) to `output[i] = value · gains[ch] + offsets[ch]`. One unit per value
-/// (`ABSOLUTE_POS`).
-#[cube(launch)]
-pub fn unpack_stored_kernel<F: Float>(
-    words: &Array<u32>,
-    gains: &Array<F>,
-    offsets: &Array<F>,
-    output: &mut Array<F>,
-    num_samples: u32,
-    total: u32,
-    #[comptime] bytes: u32,
-    #[comptime] kind: u32,
-) {
-    let idx = ABSOLUTE_POS as u32;
-    if idx < total {
-        let ch = idx / num_samples;
-        let per_word = comptime!(4 / bytes);
-        let bits = comptime!(bytes * 8);
-        let raw = if comptime!(bytes == 4) {
-            words[idx as usize]
-        } else {
-            let word = words[(idx / per_word) as usize];
-            let shift = (idx % per_word) * bits;
-            (word >> shift) & comptime!((1u32 << (bytes * 8)) - 1)
-        };
-        let value = if comptime!(kind == FLOAT) {
-            F::cast_from(f32::reinterpret(raw))
-        } else if comptime!(kind == UNSIGNED) {
-            F::cast_from(raw)
-        } else if comptime!(bytes == 4) {
-            // Two's complement: negate the magnitude so small negative values stay exact
-            if raw >= 0x8000_0000u32 { -F::cast_from((!raw) + 1u32) } else { F::cast_from(raw) }
-        } else {
-            let half = comptime!(1u32 << (bytes * 8 - 1));
-            if raw >= half { F::cast_from(raw) - F::cast_from(comptime!(1u32 << (bytes * 8))) } else { F::cast_from(raw) }
-        };
-        output[idx as usize] = value * gains[ch as usize] + offsets[ch as usize];
-    }
-}
 
 /// Device buffer of `stored` little-endian values as 32-bit words for [`execute_unpack_stored`].
-/// Uploaded as is when it fills whole words (no host copy); otherwise padded through
-/// [`stored_words`]. Words are read little-endian on the device, which every CubeCL target is.
-pub fn upload_stored<R: Runtime>(client: &ComputeClient<R>, stored: &[u8]) -> cubecl::server::Handle {
-    if stored.len() % WORD_BYTES == 0 && !stored.is_empty() {
-        client.create_from_slice(stored)
-    } else {
-        client.create_from_slice(u32::as_bytes(&stored_words(stored)))
-    }
+/// Uploaded as is when it fills whole words; otherwise padded through [`stored_words`]. Words are
+/// read little-endian on the device, which every CubeCL target is.
+pub fn upload_stored(client: &Client, stored: &[u8]) -> cubecl::server::Handle {
+    client.create(cubecl::bytes::Bytes::from_bytes_vec(stored_bytes(stored)))
+}
+
+/// Bytes needed for `stored` as whole 32-bit words.
+pub fn stored_word_bytes(stored_len: usize) -> usize {
+    stored_len.div_ceil(WORD_BYTES).max(1) * WORD_BYTES
+}
+
+/// Writes `stored` (as [`upload_stored`] lays it out) to the start of the existing device buffer
+/// `handle` (at least [`stored_word_bytes`] bytes): no allocation, see [`crate::core::buffer::write`].
+pub fn write_stored(client: &Client, handle: &cubecl::server::Handle, stored: &[u8]) {
+    client.write(handle, cubecl::bytes::Bytes::from_bytes_vec(stored_bytes(stored)));
+}
+
+/// [`write_stored`] taking ownership of `stored` (padded in place to whole words): no copy when it
+/// already fills whole words.
+pub fn write_stored_owned(client: &Client, handle: &cubecl::server::Handle, mut stored: Vec<u8>) {
+    let words = stored_word_bytes(stored.len());
+    stored.resize(words, 0);
+    client.write(handle, cubecl::bytes::Bytes::from_elems(stored));
+}
+
+/// `stored` padded to whole 32-bit words (copied once).
+fn stored_bytes(stored: &[u8]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(stored_word_bytes(stored.len()));
+    bytes.extend_from_slice(stored);
+    bytes.resize(stored_word_bytes(stored.len()), 0);
+    bytes
 }
 
 /// Uploads-ready words for `stored` little-endian values (padded to whole 32-bit words).
@@ -83,9 +63,13 @@ pub fn stored_words(stored: &[u8]) -> Vec<u32> {
 /// [`stored_words`]) into scaled `F` values in `output` using per-channel `gains` / `offsets` (device
 /// buffers of `channels` values of `F`). `float64` storage is not unpacked on the device; convert
 /// those on the host.
+///
+/// # Errors
+///
+/// [`DspError::UnsupportedFormat`] for `float64` storage.
 #[allow(clippy::too_many_arguments)]
-pub fn execute_unpack_stored<R: Runtime, F: DspFloat>(
-    client: &ComputeClient<R>,
+pub fn execute_unpack_stored<F: DspFloat>(
+    client: &Client,
     words: &cubecl::server::Handle,
     format: SampleFormat,
     gains: &cubecl::server::Handle,
@@ -108,14 +92,14 @@ pub fn execute_unpack_stored<R: Runtime, F: DspFloat>(
     }
     let geom = LaunchGeometry::elementwise(client, total);
     unsafe {
-        unpack_stored_kernel::launch::<F, R>(
+        unpack_stored_kernel::launch::<F>(
             client,
             geom.cube_count,
             geom.cube_dim,
-            ArrayArg::from_raw_parts(words.clone(), (total * bytes as usize).div_ceil(WORD_BYTES)),
-            ArrayArg::from_raw_parts(gains.clone(), channels),
-            ArrayArg::from_raw_parts(offsets.clone(), channels),
-            ArrayArg::from_raw_parts(output.clone(), total),
+            BufferArg::from_raw_parts(words.clone(), (total * bytes as usize).div_ceil(WORD_BYTES)),
+            BufferArg::from_raw_parts(gains.clone(), channels),
+            BufferArg::from_raw_parts(offsets.clone(), channels),
+            BufferArg::from_raw_parts(output.clone(), total),
             samples as u32,
             total as u32,
             bytes,

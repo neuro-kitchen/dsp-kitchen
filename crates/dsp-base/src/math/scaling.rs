@@ -5,8 +5,8 @@ use super::kernels::scale_samples_kernel;
 use crate::core::DspFloat;
 
 /// `output = input · scale_factor + offset` over `total_elements` values.
-pub fn execute_scaling<R: Runtime, F: DspFloat>(
-    client: &ComputeClient<R>,
+pub fn execute_scaling<F: DspFloat>(
+    client: &Client,
     input: &cubecl::server::Handle,
     output: &cubecl::server::Handle,
     total_elements: usize,
@@ -15,12 +15,12 @@ pub fn execute_scaling<R: Runtime, F: DspFloat>(
 ) {
     let geom = LaunchGeometry::elementwise(client, total_elements);
     unsafe {
-        scale_samples_kernel::launch::<F, R>(
+        scale_samples_kernel::launch::<F>(
             client,
             geom.cube_count,
             geom.cube_dim,
-            ArrayArg::from_raw_parts(input.clone(), total_elements),
-            ArrayArg::from_raw_parts(output.clone(), total_elements),
+            BufferArg::from_raw_parts(input.clone(), total_elements),
+            BufferArg::from_raw_parts(output.clone(), total_elements),
             scale_factor,
             offset,
         );

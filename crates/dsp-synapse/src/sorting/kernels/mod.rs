@@ -1,3 +1,8 @@
-pub mod omp;
+pub mod bipartite;
+pub mod gmm;
+pub mod hdbscan;
+pub mod matching_pursuit;
+pub mod points;
 
-pub use omp::{omp_score_kernel, omp_subtract_kernel};
+pub use gmm::{gmm_e_step_kernel, gmm_mean_sums_kernel, gmm_scatter_kernel};
+pub use matching_pursuit::{mp_gather_picks_kernel, mp_score_kernel, mp_subtract_kernel};

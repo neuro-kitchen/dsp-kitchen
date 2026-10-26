@@ -1,13 +1,12 @@
 //! The out-of-core sorter returns the same spikes for any batch size, and the same as one pass over
 //! the whole recording (filter → detect → deduplicate).
 
-use cubecl::Runtime;
-use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
+use cubecl::device::WgpuDevice;
 use dsp_base::pipeline::{Pipeline, PipelineStage, PipelineWorkspace};
 use dsp_io::neuro::probe::{Position3D, SensorLayout, SensorSite};
 use dsp_core::{MemoryRecording, RecordingSource};
 use dsp_synapse::detection::{DeduplicatedSpike, SpikeSpacing, deduplicate_spikes_spatial, detect_spikes_with_sigma};
-use dsp_synapse::streaming::{StreamingSortConfig, StreamingSpikeRunner, calibrate_noise};
+use dsp_synapse::streaming::{StreamingDetectionConfig, StreamingDetector, calibrate_noise};
 
 const FS: f64 = 30_000.0;
 const CHANNELS: usize = 16;
@@ -100,12 +99,17 @@ fn recording() -> MemoryRecording {
     MemoryRecording::new("synthetic", data, CHANNELS, FS).unwrap()
 }
 
+/// The first compiled-in runtime (the library never chooses one itself).
+fn default_target() -> dsp_core::ComputeTarget {
+    dsp_core::ComputeTarget::available().into_iter().next().expect("no CubeCL runtime compiled in")
+}
+
 fn pipeline() -> Pipeline {
     Pipeline::with_stages(vec![PipelineStage::bandpass(300.0, 6000.0)])
 }
 
-fn config(batch_sec: f64) -> StreamingSortConfig {
-    StreamingSortConfig { batch_duration_sec: batch_sec, spatial_radius_um: 40.0, ..Default::default() }
+fn config(batch_sec: f64) -> StreamingDetectionConfig {
+    StreamingDetectionConfig { batch_duration_sec: batch_sec, spatial_radius_um: 40.0, ..Default::default() }
 }
 
 fn key(spikes: &[DeduplicatedSpike]) -> Vec<(u64, usize, Vec<usize>)> {
@@ -113,10 +117,10 @@ fn key(spikes: &[DeduplicatedSpike]) -> Vec<(u64, usize, Vec<usize>)> {
 }
 
 /// Filter the whole recording in one chunk, detect and deduplicate on the host.
-fn whole_recording(rec: &MemoryRecording, cfg: &StreamingSortConfig) -> Vec<DeduplicatedSpike> {
+fn whole_recording(rec: &MemoryRecording, cfg: &StreamingDetectionConfig) -> Vec<DeduplicatedSpike> {
     let n = rec.info().samples as usize;
-    let client = WgpuRuntime::client(&WgpuDevice::default());
-    let mut ws = PipelineWorkspace::<WgpuRuntime>::new(client, pipeline(), CHANNELS, n, FS).unwrap();
+    let client = dsp_core::compute::open_device(cubecl::Device::Wgpu(WgpuDevice::default()));
+    let mut ws = PipelineWorkspace::new(client, pipeline(), CHANNELS, n, FS).unwrap();
     let halos = cfg.compute_halos(FS, &pipeline()).unwrap();
     let sigmas = calibrate_noise(rec, &mut ws, cfg, halos).unwrap();
     let mut filtered = vec![0.0; rec.data().len()];
@@ -141,7 +145,7 @@ fn spikes_are_identical_for_any_batch_size_and_whole_recording() {
 
     let mut templates = Vec::new();
     for batch in [1.0, 3.7, 10.0] {
-        let result = StreamingSpikeRunner::new(config(batch)).run(&rec, &pipeline(), &layout).unwrap();
+        let result = StreamingDetector::new(config(batch)).run_with(default_target(), &rec, &pipeline(), &layout).unwrap();
         assert_eq!(key(&result.spikes), key(&reference), "batch {batch} s differs from the whole-recording run");
         for (a, b) in result.spikes.iter().zip(&reference) {
             assert!((a.peak_amplitude_uv - b.peak_amplitude_uv).abs() < 0.05, "amplitude differs at {}", a.sample_index);
@@ -185,12 +189,15 @@ fn every_runtime_returns_the_same_spikes() {
     let rec = recording();
     let reference = whole_recording(&rec, &config(10.0));
     for target in ComputeTarget::available() {
-        let result = StreamingSpikeRunner::new(config(3.7)).run_with(target, &rec, &pipeline(), &probe()).unwrap();
+        let result = StreamingDetector::new(config(3.7)).run_with(target, &rec, &pipeline(), &probe()).unwrap();
         assert_eq!(key(&result.spikes), key(&reference), "{target}");
     }
 }
 
-/// int16 recording (0.25 µV per unit, per-channel offsets) with native stored reads.
+/// µV per stored step of the int16 test recording.
+const I16_GAIN: f32 = 0.25;
+
+/// int16 recording ([`I16_GAIN`] µV per unit, per-channel offsets) with native stored reads.
 struct I16Recording {
     info: dsp_core::RecordingInfo,
     data: Vec<i16>,
@@ -202,7 +209,7 @@ impl I16Recording {
         let mut values = vec![0.0f32; CHANNELS * n];
         rec.read(&(0..CHANNELS).collect::<Vec<_>>(), 0..n as u64, &mut values).unwrap();
         let offsets: Vec<f32> = (0..CHANNELS).map(|c| -300.0 + 20.0 * c as f32).collect();
-        let data = values.iter().enumerate().map(|(i, v)| ((v - offsets[i / n]) / 0.25).round() as i16).collect();
+        let data = values.iter().enumerate().map(|(i, v)| ((v - offsets[i / n]) / I16_GAIN).round() as i16).collect();
         let mut info = dsp_core::RecordingInfo::new(
             "i16",
             CHANNELS,
@@ -211,9 +218,9 @@ impl I16Recording {
             dsp_core::SampleFormat::I16,
             dsp_core::MemoryOrder::ChannelMajor,
         )
-        .with_gain_uv(0.25);
+        .with_gain(I16_GAIN, dsp_core::SignalUnit::Microvolt);
         for (c, ch) in info.channels.iter_mut().enumerate() {
-            ch.offset_uv = offsets[c];
+            ch.offset = offsets[c];
         }
         Self { info, data }
     }
@@ -229,7 +236,7 @@ impl RecordingSource for I16Recording {
         for (dst, &c) in out.chunks_exact_mut(n.max(1)).zip(channels) {
             let row = &self.data[c * total + samples.start as usize..c * total + samples.end as usize];
             for (o, &v) in dst.iter_mut().zip(row) {
-                *o = v as f32 * 0.25 + self.info.channels[c].offset_uv;
+                *o = v as f32 * I16_GAIN + self.info.channels[c].offset;
             }
         }
         Ok(())
@@ -265,7 +272,7 @@ fn stored_int16_upload_gives_the_same_spikes_as_f32_upload() {
     let rec = I16Recording::from(&recording());
     assert!(F32Only(&rec).read_stored(&[0], 0..1, &mut [0u8; 2]).is_err(), "wrapper has no stored reads");
     for target in ComputeTarget::available() {
-        let runner = StreamingSpikeRunner::new(config(3.7));
+        let runner = StreamingDetector::new(config(3.7));
         let stored = runner.run_with(target, &rec, &pipeline(), &probe()).unwrap();
         let f32_path = runner.run_with(target, &F32Only(&rec), &pipeline(), &probe()).unwrap();
         assert!(!stored.spikes.is_empty());

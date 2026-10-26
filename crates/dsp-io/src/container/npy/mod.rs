@@ -12,6 +12,9 @@ use std::path::Path;
 
 use dsp_core::{DspError, DspResult};
 
+mod npz;
+pub use npz::{read_npz, read_npz_entries};
+
 const MAGIC: &[u8; 6] = b"\x93NUMPY";
 
 fn io(e: std::io::Error) -> DspError {
@@ -195,8 +198,16 @@ fn to_c_order<T: Copy + Default>(data: Vec<T>, shape: &[usize]) -> Vec<T> {
 /// Reads any numeric `.npy` array as `T`, in C order.
 pub fn read_npy<T: NpyElement>(path: &Path) -> DspResult<NpyArray<T>> {
     let file = File::open(path).map_err(|e| DspError::Io(format!("{}: {e}", path.display())))?;
-    let mut r = BufReader::new(file);
-    let h = read_header(&mut r, path)?;
+    read_npy_from(&mut BufReader::new(file), path)
+}
+
+/// [`read_npy`] of an in-memory `.npy` (e.g. an `.npz` entry); `label` names it in errors.
+pub fn read_npy_bytes<T: NpyElement>(bytes: &[u8], label: &Path) -> DspResult<NpyArray<T>> {
+    read_npy_from(&mut std::io::Cursor::new(bytes), label)
+}
+
+fn read_npy_from<T: NpyElement>(r: &mut impl Read, path: &Path) -> DspResult<NpyArray<T>> {
+    let h = read_header(r, path)?;
     let size = dtype_size(&h.descr).ok_or_else(|| malformed(path, format!("unsupported dtype '{}'", h.descr)))?;
     let mut bytes = vec![0u8; h.len() * size];
     r.read_exact(&mut bytes).map_err(|e| malformed(path, format!("truncated data: {e}")))?;

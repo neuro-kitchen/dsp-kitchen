@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::{AppContext as _, Context, EventEmitter, Task};
 
-use dsp_base::resampler::Progress;
+use dsp_view::Progress;
 use crate::engine::data::{Dataset, SourceSet, SpikeEventStore};
 use crate::engine::palette::Palette;
 use crate::engine::time::timeline::TimelineState;
@@ -34,8 +34,8 @@ pub enum AppEvent {
     WorkspaceChanged,
     /// Plot colours changed (theme or "dark plots"): views redraw.
     PaletteChanged,
-    /// More of a source's min/max summary is ready (zoomed-out views of it redraw).
-    SummaryProgress(String),
+    /// More of a source's min/max pyramid is built (views of it that drew empty columns redraw).
+    PyramidProgress(String),
     /// The status line or the recent list changed.
     Status,
 }
@@ -44,7 +44,6 @@ pub enum AppEvent {
 pub struct Recording {
     pub sources: Arc<SourceSet>,
     pub name: String,
-    pub path: Option<PathBuf>,
     /// Spike events shown on traces and in the timeline overview (empty until an extraction runs).
     pub events: Arc<SpikeEventStore>,
 }
@@ -55,13 +54,14 @@ impl Recording {
             Some(p) => p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned()),
             None => sources.default_entry().name.clone(),
         };
-        Self { sources: Arc::new(sources), name, path, events: Arc::new(SpikeEventStore::default()) }
+        Self { sources: Arc::new(sources), name, events: Arc::new(SpikeEventStore::default()) }
     }
 
     /// `32 ch · 30.0 kHz · 5 min 00 s` of the default source.
     pub fn summary(&self) -> String {
         let e = self.sources.default_entry();
-        let rate = if e.sample_rate >= 1000.0 { format!("{:.1} kHz", e.sample_rate / 1000.0) } else { format!("{:.1} Hz", e.sample_rate) };
+        let hz = e.sample_rate.rate_hz();
+        let rate = if hz >= 1000.0 { format!("{:.1} kHz", hz / 1000.0) } else { format!("{hz:.1} Hz") };
         format!("{} ch · {rate} · {}", e.channels, duration(self.sources.extent_sec()))
     }
 }
@@ -83,8 +83,8 @@ pub struct Store {
     clock: Option<Task<()>>,
     /// The app is drawn dark (the user's choice or the system's).
     dark: bool,
-    /// Summary progress per source id: (samples summarized, of all).
-    pub summaries: HashMap<String, (u64, u64)>,
+    /// Pyramid progress per source id being built: (samples built, of all).
+    pub pyramids: HashMap<String, (u64, u64)>,
 }
 
 impl EventEmitter<AppEvent> for Store {}
@@ -103,7 +103,7 @@ impl Store {
             render_info: String::new(),
             clock: None,
             dark: true,
-            summaries: HashMap::new(),
+            pyramids: HashMap::new(),
         }
     }
 
@@ -170,7 +170,7 @@ impl Store {
         }
     }
 
-    #[allow(dead_code)] // Curation opens sortings (step 7)
+    #[allow(dead_code)] // Curation (parked) opens sortings
     pub fn push_recent_sorting(&mut self, path: &Path) {
         self.session.push_recent_sorting(path);
         self.save_session();
@@ -239,7 +239,7 @@ impl Store {
         self.stop_clock();
         self.timeline = TimelineState::new(recording.sources.extent_sec());
         self.selection = recording.sources.entries().iter().map(|e| (e.id.clone(), (0..e.channels).collect())).collect();
-        self.summaries.clear();
+        self.pyramids.clear();
         self.status = format!("Opened {} ({})", recording.name, recording.summary());
         self.recording = Some(recording);
         self.save_session();
@@ -255,59 +255,50 @@ impl Store {
         }
     }
 
-    /// Summarizes `source` in the background (once per recording), nearest `focus_sec` first;
-    /// later calls move the focus to where the views look now.
-    pub fn summarize(&mut self, source: &str, focus_sec: f64, cx: &mut Context<Self>) {
+    /// Views of `source` look at `focus_sec`: its backend builds the min/max pyramid there first
+    /// (the build starts on the first call; later calls move the focus). Progress is followed
+    /// once per source and emitted as [`AppEvent::PyramidProgress`].
+    pub fn focus_pyramid(&mut self, source: &str, focus_sec: f64, cx: &mut Context<Self>) {
         let Some(sources) = self.sources().cloned() else { return };
         let ds = sources.get(source);
-        let focus = ((focus_sec - ds.start_time_sec) * ds.sample_rate).max(0.0) as u64;
-        if self.summaries.contains_key(source) {
-            ds.summarize(focus, Arc::new(|_| {}));
+        let signal = ds.signal().clone();
+        let progress = signal.progress();
+        if progress.done >= progress.total {
             return;
         }
-        if ds.lod().is_some() {
-            return;
-        }
-        self.summaries.insert(source.to_string(), (0, ds.total_samples as u64));
-        let (tx, rx) = async_channel::unbounded::<Progress>();
-        let id = source.to_string();
-        cx.spawn(async move |this, cx| {
-            while let Ok(p) = rx.recv().await {
-                let alive = this.update(cx, |s, cx| {
-                    if let Some(entry) = s.summaries.get_mut(&id) {
-                        *entry = (p.done, p.total);
-                        cx.emit(AppEvent::SummaryProgress(id.clone()));
+        if !self.pyramids.contains_key(source) {
+            self.pyramids.insert(source.to_string(), (progress.done, progress.total));
+            let (tx, rx) = async_channel::unbounded::<Progress>();
+            let id = source.to_string();
+            cx.spawn(async move |this, cx| {
+                while let Ok(p) = rx.recv().await {
+                    let alive = this.update(cx, |s, cx| {
+                        if let Some(entry) = s.pyramids.get_mut(&id) {
+                            *entry = (p.done, p.total);
+                            cx.emit(AppEvent::PyramidProgress(id.clone()));
+                        }
+                    });
+                    if alive.is_err() {
+                        break;
                     }
-                });
-                if alive.is_err() {
-                    break;
                 }
-            }
-        })
-        .detach();
-        ds.summarize(
-            focus,
-            Arc::new(move |p| {
+            })
+            .detach();
+            signal.watch(Arc::new(move |p| {
                 let _ = tx.try_send(p);
-            }),
-        );
+            }));
+        }
+        let focus = ((focus_sec - ds.start_time_sec) * ds.sample_rate).max(0.0) as u64;
+        signal.focus(focus);
     }
 
-    /// `Summarizing 12 / 45 s` while the default source's summary fills.
-    pub fn summary_label(&self) -> Option<String> {
+    /// `Building overview 12 / 45 s` while the default source's pyramid builds.
+    pub fn pyramid_label(&self) -> Option<String> {
         let sources = self.sources()?;
         let e = sources.default_entry();
-        let &(done, total) = self.summaries.get(&e.id)?;
-        (done < total && e.sample_rate > 0.0).then(|| format!("Summarizing {:.0} / {:.0} s", done as f64 / e.sample_rate, total as f64 / e.sample_rate))
-    }
-
-    /// Builds the min/max cache files of the recording's sources on background threads; views
-    /// use them from their next frame on (zoomed-out windows then read a few levels, not every
-    /// sample).
-    pub fn build_caches(&mut self, cx: &mut Context<Self>) {
-        let Some(r) = &self.recording else { return };
-        r.sources.build_caches();
-        self.set_status("Building min/max caches in the background…", cx);
+        let &(done, total) = self.pyramids.get(&e.id)?;
+        let hz = e.sample_rate.rate_hz();
+        (done < total && hz > 0.0).then(|| format!("Building overview {:.0} / {:.0} s", done as f64 / hz, total as f64 / hz))
     }
 
     // ------------------------------------------------------------------------

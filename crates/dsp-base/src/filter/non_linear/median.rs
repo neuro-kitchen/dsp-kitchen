@@ -18,8 +18,8 @@ pub const MEDIAN_DEFAULT_EDGE: EdgeMode = EdgeMode::Zeros;
 ///
 /// # Panics
 /// If `width` is even, zero, or larger than [`MAX_MEDIAN_WIDTH`].
-pub fn execute_median<R: Runtime, F: DspFloat>(
-    client: &ComputeClient<R>,
+pub fn execute_median<F: DspFloat>(
+    client: &Client,
     input: &cubecl::server::Handle,
     output: &cubecl::server::Handle,
     channels: usize,
@@ -31,12 +31,12 @@ pub fn execute_median<R: Runtime, F: DspFloat>(
     let geom = LaunchGeometry::channels_samples(client, channels, samples);
     let total_elements = channels * samples;
     unsafe {
-        median_filter_kernel::launch::<F, R>(
+        median_filter_kernel::launch::<F>(
             client,
             geom.cube_count,
             geom.cube_dim,
-            ArrayArg::from_raw_parts(input.clone(), total_elements),
-            ArrayArg::from_raw_parts(output.clone(), total_elements),
+            BufferArg::from_raw_parts(input.clone(), total_elements),
+            BufferArg::from_raw_parts(output.clone(), total_elements),
             channels as u32,
             samples as u32,
             width as u32,
@@ -46,12 +46,12 @@ pub fn execute_median<R: Runtime, F: DspFloat>(
 }
 
 /// 9-point running median with [`MEDIAN_DEFAULT_EDGE`] (the branch-free `med9` network).
-pub fn execute_median_9p<R: Runtime, F: DspFloat>(
-    client: &ComputeClient<R>,
+pub fn execute_median_9p<F: DspFloat>(
+    client: &Client,
     input: &cubecl::server::Handle,
     output: &cubecl::server::Handle,
     channels: usize,
     samples: usize,
 ) {
-    execute_median::<R, F>(client, input, output, channels, samples, 2 * MEDIAN9_RADIUS + 1, MEDIAN_DEFAULT_EDGE);
+    execute_median::<F>(client, input, output, channels, samples, 2 * MEDIAN9_RADIUS + 1, MEDIAN_DEFAULT_EDGE);
 }

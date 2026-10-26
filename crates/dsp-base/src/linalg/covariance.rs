@@ -1,89 +1,107 @@
-//! Channel covariance `C = (X − μ)(X − μ)ᵀ / samples` of a `[channels, samples]` device buffer.
+//! Channel covariance `C = (X − μ)(X − μ)ᵀ / samples` of a `[channels, samples]` device buffer, and
+//! the uncentred second moment `X Xᵀ / samples` accumulated over many buffers on the device
+//! ([`SecondMomentAccumulator`]).
 //!
-//! Three launches: per-channel means ([`reduce::row_mean_std`]), partial sums of every channel pair
-//! over sample splits (one unit per `(pair, split)`), then the sum of the splits per pair written to
-//! both halves of the symmetric matrix. Splitting the samples keeps every unit busy for small
-//! channel counts and bounds how many terms any single sum adds.
+//! Both are products of the samples with themselves ([`fn@super::matmul`]). [`fn@split_rows_kernel`]
+//! first copies the samples (centred for the covariance) into a split-major buffer `[splits,
+//! channels, COVARIANCE_SPLIT_SAMPLES]`, the last split zero-padded; one batched product then gives
+//! every split's `X_s X_sᵀ`: no single sum adds more than [`COVARIANCE_SPLIT_SAMPLES`] terms, and
+//! few channels still give the device enough independent work. [`fn@sum_slices_kernel`] adds the
+//! partial products, divides by the true sample count and writes (or adds to) the result.
+//!
+//! The copy is what keeps the product's batches outermost: a strided view whose batch stride is
+//! smaller than its row stride (splits interleaved inside the rows) is computed wrongly by
+//! cubek-matmul when the row stride is odd.
+
+use std::ops::Range;
 
 use cubecl::prelude::*;
 use cubecl::server::Handle;
 use dsp_core::compute::LaunchGeometry;
 
-use crate::core::{buffer, reduce, DspFloat};
+use super::kernels::{split_rows_kernel, sum_slices_kernel};
+use super::matmul::{matmul, MatrixView};
+use crate::core::{buffer, cast, reduce, DspFloat, Scratch};
 
-/// Samples one unit sums before the splits are merged.
+/// Samples each partial product adds before the partial products are summed.
 pub const COVARIANCE_SPLIT_SAMPLES: usize = 4096;
 
-/// `partial[split · pairs + p] = Σ_t (x[i, t] − μ_i)(x[j, t] − μ_j)` over the split's samples, for
-/// the pair `(pair_i[p], pair_j[p])`. One unit per `(pair, split)` (`ABSOLUTE_POS`).
-#[cube(launch)]
-#[allow(clippy::too_many_arguments)]
-pub fn covariance_partial_kernel<F: Float>(
-    input: &Array<F>,
-    means: &Array<F>,
-    pair_i: &Array<u32>,
-    pair_j: &Array<u32>,
-    partial: &mut Array<F>,
-    samples: u32,
-    pairs: u32,
-    splits: u32,
-    split_len: u32,
-) {
-    let unit = ABSOLUTE_POS as u32;
-    if unit < pairs * splits {
-        let split = unit / pairs;
-        let p = unit - split * pairs;
-        let (i, j) = (pair_i[p as usize], pair_j[p as usize]);
-        let (mi, mj) = (means[i as usize], means[j as usize]);
-        let (base_i, base_j) = ((i * samples) as usize, (j * samples) as usize);
-        let end = u32::min((split + 1u32) * split_len, samples);
-        let mut acc = F::new(0.0f32);
-        let mut t = split * split_len;
-        while t < end {
-            acc += (input[base_i + t as usize] - mi) * (input[base_j + t as usize] - mj);
-            t += 1u32;
-        }
-        partial[unit as usize] = acc;
-    }
+/// Device buffers of the split products, grown on demand and reused.
+#[derive(Debug, Default)]
+struct SplitBuffers {
+    /// `[splits, channels, COVARIANCE_SPLIT_SAMPLES]` split-major samples.
+    splits: Scratch,
+    /// `[splits, channels, channels]` partial products.
+    partial: Scratch,
 }
 
-/// Sums the splits of every pair, divides by `samples` and writes `cov[i, j]` and `cov[j, i]`.
-/// One unit per pair.
-#[cube(launch)]
-pub fn covariance_merge_kernel<F: Float>(
-    partial: &Array<F>,
-    pair_i: &Array<u32>,
-    pair_j: &Array<u32>,
-    cov: &mut Array<F>,
-    channels: u32,
-    samples: u32,
-    pairs: u32,
-    splits: u32,
-) {
-    let p = ABSOLUTE_POS as u32;
-    if p < pairs {
-        let mut acc = F::new(0.0f32);
-        let mut s = 0u32;
-        while s < splits {
-            acc += partial[(s * pairs + p) as usize];
-            s += 1u32;
-        }
-        let value = acc / F::cast_from(u32::max(samples, 1u32));
-        let (i, j) = (pair_i[p as usize], pair_j[p as usize]);
-        cov[(i * channels + j) as usize] = value;
-        cov[(j * channels + i) as usize] = value;
-    }
+/// Where the samples come from: columns `cols` of `channels` rows `row_len` apart, centred on
+/// `means` when given.
+struct Samples<'a> {
+    input: &'a Handle,
+    channels: usize,
+    row_len: usize,
+    cols: Range<usize>,
+    means: Option<&'a Handle>,
 }
 
-/// The `i ≤ j` channel pairs, as two index arrays.
-fn upper_pairs(channels: usize) -> (Vec<u32>, Vec<u32>) {
-    (0..channels as u32).flat_map(|i| (i..channels as u32).map(move |j| (i, j))).unzip()
+/// `out (=|+=) x xᵀ / n` for the `[channels, n]` samples `src`, through split products.
+fn gram<F: DspFloat>(client: &Client, src: Samples<'_>, buffers: &mut SplitBuffers, out: &Handle, accumulate: bool) {
+    let Samples { input, channels, row_len, cols, means } = src;
+    let n = cols.len();
+    let splits = n.div_ceil(COVARIANCE_SPLIT_SAMPLES).max(1);
+    let (len, split_len) = (channels * channels, channels * COVARIANCE_SPLIT_SAMPLES);
+    let total = splits * split_len;
+    let split_major = buffers.splits.get::<F>(client, total);
+    let partial = buffers.partial.get::<F>(client, splits * len);
+    let centred = means.is_some();
+    // Uncentred, the kernel never reads `means`: bind `out` (`F`, ≥ `channels` values)
+    let means = means.unwrap_or(out).clone();
+
+    let geom = LaunchGeometry::elementwise(client, total);
+    // SAFETY: `input` holds `channels · row_len` and `means` ≥ `channels` values of `F`;
+    // `split_major` holds `total`
+    unsafe {
+        split_rows_kernel::launch::<F>(
+            client,
+            geom.cube_count,
+            geom.cube_dim,
+            BufferArg::from_raw_parts(input.clone(), channels * row_len),
+            BufferArg::from_raw_parts(means, channels),
+            BufferArg::from_raw_parts(split_major.clone(), total),
+            cols.start as u32,
+            row_len as u32,
+            n as u32,
+            channels as u32,
+            COVARIANCE_SPLIT_SAMPLES as u32,
+            total as u32,
+            centred,
+        );
+    }
+    let x = MatrixView::batched_row_major(&split_major, total, splits, channels, COVARIANCE_SPLIT_SAMPLES);
+    matmul::<F>(client, &x, &x.transposed(), &partial, splits * len);
+
+    let geom = LaunchGeometry::elementwise(client, len);
+    // SAFETY: `partial` holds `splits · len` and `out` `len` values of `F`
+    unsafe {
+        sum_slices_kernel::launch::<F>(
+            client,
+            geom.cube_count,
+            geom.cube_dim,
+            BufferArg::from_raw_parts(partial, splits * len),
+            BufferArg::from_raw_parts(out.clone(), len),
+            len as u32,
+            splits as u32,
+            cast::<F>(1.0 / n.max(1) as f64),
+            accumulate,
+        );
+    }
 }
 
 /// Covariance (`/ samples`) of a `[channels, samples]` buffer of `F` into `out_cov`
 /// (`[channels, channels]`, row-major) and the channel means into `out_mean` (`channels` values).
-pub fn covariance<R: Runtime, F: DspFloat>(
-    client: &ComputeClient<R>,
+pub fn covariance<F: DspFloat>(
+    client: &Client,
     input: &Handle,
     out_cov: &Handle,
     out_mean: &Handle,
@@ -93,59 +111,77 @@ pub fn covariance<R: Runtime, F: DspFloat>(
     if channels == 0 {
         return;
     }
-    let std_scratch = buffer::empty::<R, F>(client, channels);
-    reduce::row_mean_std::<R, F>(client, input, out_mean, &std_scratch, channels, samples);
+    let std_scratch = buffer::empty::<F>(client, channels);
+    reduce::row_mean_std::<F>(client, input, out_mean, &std_scratch, channels, samples);
+    let src = Samples { input, channels, row_len: samples, cols: 0..samples, means: Some(out_mean) };
+    gram::<F>(client, src, &mut SplitBuffers::default(), out_cov, false);
+}
 
-    let (pi, pj) = upper_pairs(channels);
-    let pairs = pi.len();
-    let splits = samples.div_ceil(COVARIANCE_SPLIT_SAMPLES).max(1);
-    let (pair_i, pair_j) = (buffer::upload(client, &pi), buffer::upload(client, &pj));
-    let partial = buffer::empty::<R, F>(client, pairs * splits);
+/// Mean over batches of the uncentred second moment `X Xᵀ / samples`, accumulated on the device:
+/// every [`Self::add`] adds one batch (columns of a device buffer, e.g. the interior of a
+/// halo-padded window) with equal weight, and only [`Self::finish`] downloads the
+/// `[channels, channels]` result. This is the whitening covariance of Kilosort4 / EMUsort
+/// (`CC += X Xᵀ / n` per batch, `CC / k`), for high-passed data whose mean is ~0.
+pub struct SecondMomentAccumulator<F: DspFloat> {
+    client: Client,
+    channels: usize,
+    sum: Handle,
+    batches: usize,
+    buffers: SplitBuffers,
+    _float: std::marker::PhantomData<F>,
+}
 
-    let geom = LaunchGeometry::elementwise(client, pairs * splits);
-    unsafe {
-        covariance_partial_kernel::launch::<F, R>(
-            client,
-            geom.cube_count,
-            geom.cube_dim,
-            ArrayArg::from_raw_parts(input.clone(), channels * samples),
-            ArrayArg::from_raw_parts(out_mean.clone(), channels),
-            ArrayArg::from_raw_parts(pair_i.clone(), pairs),
-            ArrayArg::from_raw_parts(pair_j.clone(), pairs),
-            ArrayArg::from_raw_parts(partial.clone(), pairs * splits),
-            samples as u32,
-            pairs as u32,
-            splits as u32,
-            COVARIANCE_SPLIT_SAMPLES as u32,
-        );
+impl<F: DspFloat> SecondMomentAccumulator<F> {
+    pub fn new(client: &Client, channels: usize) -> Self {
+        Self {
+            client: client.clone(),
+            channels,
+            sum: buffer::zeros::<F>(client, channels * channels),
+            batches: 0,
+            buffers: SplitBuffers::default(),
+            _float: std::marker::PhantomData,
+        }
     }
-    let geom = LaunchGeometry::elementwise(client, pairs);
-    unsafe {
-        covariance_merge_kernel::launch::<F, R>(
-            client,
-            geom.cube_count,
-            geom.cube_dim,
-            ArrayArg::from_raw_parts(partial, pairs * splits),
-            ArrayArg::from_raw_parts(pair_i, pairs),
-            ArrayArg::from_raw_parts(pair_j, pairs),
-            ArrayArg::from_raw_parts(out_cov.clone(), channels * channels),
-            channels as u32,
-            samples as u32,
-            pairs as u32,
-            splits as u32,
-        );
+
+    /// Adds columns `cols` of a `[channels, row_len]` device buffer of `F` as one batch. Empty
+    /// column ranges are ignored.
+    pub fn add(&mut self, input: &Handle, row_len: usize, cols: Range<usize>) {
+        assert!(cols.end <= row_len, "columns {cols:?} outside rows of {row_len}");
+        if self.channels == 0 || cols.is_empty() {
+            return;
+        }
+        let src = Samples { input, channels: self.channels, row_len, cols, means: None };
+        gram::<F>(&self.client, src, &mut self.buffers, &self.sum, true);
+        self.batches += 1;
+    }
+
+    /// Batches added so far.
+    pub fn batches(&self) -> usize {
+        self.batches
+    }
+
+    /// The device `[channels, channels]` sum over batches of `X Xᵀ / n` (row-major, `F`), for
+    /// device consumers such as [`crate::linalg::symmetric_eigen`]: nothing is read back.
+    pub fn into_sum(self) -> Handle {
+        self.sum
+    }
+
+    /// The `[channels, channels]` mean second moment (row-major); zeros before any batch.
+    pub fn finish(self) -> Vec<f64> {
+        let k = self.batches.max(1) as f64;
+        buffer::download::<F>(&self.client, self.sum).into_iter().map(|v| crate::core::to_f64(v) / k).collect()
     }
 }
 
 /// Covariance and means of host data (`[channels, samples]`, uploaded as `F`): the covariance stays
 /// on the device (ready for [`crate::linalg::symmetric_eigen`]), the means come back to the host.
-pub fn covariance_of_host<R: Runtime, F: DspFloat>(client: &ComputeClient<R>, data: &[f32], channels: usize, samples: usize) -> (Handle, Vec<f64>) {
+pub fn covariance_of_host<F: DspFloat>(client: &Client, data: &[f32], channels: usize, samples: usize) -> (Handle, Vec<f64>) {
     assert_eq!(data.len(), channels * samples, "data size mismatch");
     let input = buffer::upload(client, &crate::core::cast_f32::<F>(data));
-    let cov = buffer::empty::<R, F>(client, channels * channels);
-    let mean = buffer::empty::<R, F>(client, channels);
-    covariance::<R, F>(client, &input, &cov, &mean, channels, samples);
-    let mean = buffer::download::<R, F>(client, mean).into_iter().map(crate::core::to_f64).collect();
+    let cov = buffer::empty::<F>(client, channels * channels);
+    let mean = buffer::empty::<F>(client, channels);
+    covariance::<F>(client, &input, &cov, &mean, channels, samples);
+    let mean = buffer::download::<F>(client, mean).into_iter().map(crate::core::to_f64).collect();
     (cov, mean)
 }
 
@@ -153,8 +189,8 @@ pub fn covariance_of_host<R: Runtime, F: DspFloat>(client: &ComputeClient<R>, da
 mod tests {
     use super::*;
 
-    fn matches_host<R: Runtime>(client: &ComputeClient<R>) {
-        for (channels, samples) in [(1usize, 10usize), (5, 9_000), (17, 1_234)] {
+    fn matches_host(client: &Client) {
+        for (channels, samples) in [(1usize, 10usize), (5, 9_000), (5, 9_001), (17, 1_234)] {
             let data: Vec<f32> = (0..channels * samples)
                 .map(|i| {
                     let (c, t) = ((i / samples) as f32, (i % samples) as f32);
@@ -162,9 +198,9 @@ mod tests {
                 })
                 .collect();
             let input = buffer::upload(client, &data);
-            let (cov, mean) = (buffer::empty::<R, f32>(client, channels * channels), buffer::empty::<R, f32>(client, channels));
-            covariance::<R, f32>(client, &input, &cov, &mean, channels, samples);
-            let cov = buffer::download::<R, f32>(client, cov);
+            let (cov, mean) = (buffer::empty::<f32>(client, channels * channels), buffer::empty::<f32>(client, channels));
+            covariance::<f32>(client, &input, &cov, &mean, channels, samples);
+            let cov = buffer::download::<f32>(client, cov);
 
             let m: Vec<f64> = (0..channels).map(|c| data[c * samples..(c + 1) * samples].iter().map(|v| *v as f64).sum::<f64>() / samples as f64).collect();
             for i in 0..channels {
@@ -174,10 +210,64 @@ mod tests {
                         .sum::<f64>()
                         / samples as f64;
                     let got = cov[i * channels + j] as f64;
-                    assert!((got - want).abs() < 1e-3 * want.abs().max(1.0), "{} {channels}x{samples} [{i},{j}]: {got} vs {want}", R::name(client));
+                    assert!((got - want).abs() < 1e-3 * want.abs().max(1.0), "{} {channels}x{samples} [{i},{j}]: {got} vs {want}", client.name());
                 }
             }
         }
     }
     runtime_test!(test_covariance_matches_host, matches_host);
+
+    /// Two batches of different lengths, read from the interior columns of padded rows.
+    fn second_moment_matches_host(client: &Client) {
+        let channels = 3;
+        let batches = [(40usize, 5..35usize), (25, 3..20)];
+        let mut acc = SecondMomentAccumulator::<f32>::new(client, channels);
+        let mut want = vec![0.0f64; channels * channels];
+        for (b, (row_len, cols)) in batches.iter().enumerate() {
+            let data: Vec<f32> = (0..channels * row_len).map(|i| ((i * 31 + b * 7) % 17) as f32 - 8.0).collect();
+            acc.add(&buffer::upload(client, &data), *row_len, cols.clone());
+            for i in 0..channels {
+                for j in 0..channels {
+                    let s: f64 = cols.clone().map(|t| data[i * row_len + t] as f64 * data[j * row_len + t] as f64).sum();
+                    want[i * channels + j] += s / cols.len() as f64 / batches.len() as f64;
+                }
+            }
+        }
+        assert_eq!(acc.batches(), 2);
+        for (k, (got, want)) in acc.finish().iter().zip(&want).enumerate() {
+            assert!((got - want).abs() < 1e-3 * want.abs().max(1.0), "{} [{k}]: {got} vs {want}", client.name());
+        }
+    }
+    runtime_test!(test_second_moment_matches_host, second_moment_matches_host);
+
+    /// On runtimes with `f64`, both paths compute in `f64`: they match the host to ~1e-12, which an
+    /// `f32` step anywhere (≈1e-7 relative) would miss.
+    fn keeps_f64(client: &Client) {
+        if !client.properties().supports_type(f64::elem_type_native()) {
+            return;
+        }
+        let (channels, samples) = (5usize, 9_001usize);
+        let data: Vec<f64> = (0..channels * samples).map(|i| ((i * 7919) % 1013) as f64 / 7.0 + (i / samples) as f64 * 1e3).collect();
+        let m: Vec<f64> = (0..channels).map(|c| data[c * samples..(c + 1) * samples].iter().sum::<f64>() / samples as f64).collect();
+        let input = buffer::upload(client, &data);
+        let (cov, mean) = (buffer::empty::<f64>(client, channels * channels), buffer::empty::<f64>(client, channels));
+        covariance::<f64>(client, &input, &cov, &mean, channels, samples);
+        let cov = buffer::download::<f64>(client, cov);
+
+        let mut acc = SecondMomentAccumulator::<f64>::new(client, channels);
+        acc.add(&input, samples, 3..samples);
+        let moment = acc.finish();
+        for i in 0..channels {
+            for j in 0..channels {
+                let row = |c: usize| &data[c * samples..(c + 1) * samples];
+                let want: f64 = row(i).iter().zip(row(j)).map(|(a, b)| (a - m[i]) * (b - m[j])).sum::<f64>() / samples as f64;
+                let got = cov[i * channels + j];
+                assert!((got - want).abs() < 1e-12 * want.abs().max(1.0), "{} f64 cov [{i},{j}]: {got} vs {want}", client.name());
+                let want: f64 = row(i)[3..].iter().zip(&row(j)[3..]).map(|(a, b)| a * b).sum::<f64>() / (samples - 3) as f64;
+                let got = moment[i * channels + j];
+                assert!((got - want).abs() < 1e-12 * want.abs().max(1.0), "{} f64 moment [{i},{j}]: {got} vs {want}", client.name());
+            }
+        }
+    }
+    runtime_test!(test_covariance_keeps_f64, keeps_f64);
 }

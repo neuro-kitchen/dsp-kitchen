@@ -1,0 +1,16 @@
+[package]
+name = "dsp-synapse-hub"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Verified download and local cache of published model / sorter artifacts (hf://, gh://, zenodo://, https://, file://)"
+
+[dependencies]
+anyhow.workspace = true
+dirs.workspace = true
+hex.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true

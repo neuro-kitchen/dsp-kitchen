@@ -224,7 +224,7 @@ impl RecordingSource for MtscompRecording {
                 let c = &self.info.channels[ch];
                 let src = &chunk[ch * ns + src0..ch * ns + src0 + len];
                 for (o, &v) in dst[dst0..dst0 + len].iter_mut().zip(src) {
-                    *o = v as f32 * c.gain_uv + c.offset_uv;
+                    *o = v as f32 * c.gain + c.offset;
                 }
             }
         }

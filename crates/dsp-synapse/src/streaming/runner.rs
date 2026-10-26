@@ -1,27 +1,27 @@
-//! Out-of-core streaming spike sorting runner connecting `RecordingSource`, `PipelineWorkspace`,
-//! boundary-safe `HaloWindow`s, and online Welford `TemplateAccumulator`s.
+//! Out-of-core streaming spike detection: `RecordingSource` → `PipelineWorkspace` filtering in
+//! halo windows → device threshold detection → exact streaming deduplication → device snippet
+//! extraction → per-channel templates (`TemplateAccumulator`). No clustering: templates and
+//! spike lists are per primary channel.
 
-use cubecl::prelude::ComputeClient;
-use cubecl::{CubeElement, Runtime};
+use cubecl::prelude::Client;
+use cubecl::CubeElement;
 use dsp_core::compute::{ComputeTarget, ComputeTask};
 
+use dsp_base::math::execute_channel_noise_std;
 use dsp_base::pipeline::{Pipeline, PipelineWorkspace};
-use dsp_core::{ChunkSchedule, DspError, DspResult, HaloWindow, RecordingSource, SampleFormat};
+use dsp_core::{ChunkSchedule, DspError, DspResult, HaloWindow, RecordingSource, SampleFormat, WindowLoader};
 use dsp_io::neuro::probe::{precompute_knn_table, SensorLayout};
-use dsp_io::PrefetchReader;
 
 use crate::core::{DeduplicatedSpike, SortedUnit, SortingOutput, WaveformTemplate};
-use crate::detection::{
-    SpikeSpacing, StreamingDedup, detection_heights, estimate_noise_std, execute_detect_spikes_in_vram,
-};
+use crate::detection::{SpikeSpacing, StreamingDedup, detection_heights, execute_detect_spikes_in_vram};
 use crate::extraction::{execute_extract_sinc_in_vram, extraction_margin};
 use super::accumulator::TemplateAccumulator;
-use super::config::StreamingSortConfig;
+use super::config::StreamingDetectionConfig;
 use super::kernels::execute_reduce_templates_in_vram;
 
 /// Result of running out-of-core threshold spike sorting over a recording.
 #[derive(Debug, Clone)]
-pub struct StreamingSortResult {
+pub struct StreamingDetectionResult {
     /// Number of channels in the recording.
     pub channels: usize,
     /// Total samples processed across the recording.
@@ -44,9 +44,9 @@ pub struct StreamingSortResult {
     pub spikes: Vec<DeduplicatedSpike>,
 }
 
-impl StreamingSortResult {
-    /// Converts this channel-grouped streaming sort result into a canonical [`SortingOutput`]
-    /// where each active primary channel with $\ge 1$ spike becomes a [`SortedUnit`].
+impl StreamingDetectionResult {
+    /// This result as a [`SortingOutput`] with **one unit per primary channel** that has spikes
+    /// (a channel-level summary, not a spike sorting: unit metrics describe channels).
     pub fn to_sorting_output(
         &self,
         sorter_name: impl Into<String>,
@@ -67,7 +67,8 @@ impl StreamingSortResult {
                 continue;
             }
             let template = self.channel_templates.get(ch).and_then(|t| t.clone());
-            let noise_sd = self.channel_sigmas_uv.get(ch).copied().unwrap_or(10.0);
+            // No calibrated σ (not expected): NaN rather than an invented noise level
+            let noise_sd = self.channel_sigmas_uv.get(ch).copied().unwrap_or(f32::NAN);
             units.push(SortedUnit::from_spikes(
                 ch,
                 ch,
@@ -92,44 +93,37 @@ impl StreamingSortResult {
     }
 }
 
-/// Out-of-core streaming spike sorter.
-pub struct StreamingSpikeRunner {
-    config: StreamingSortConfig,
+/// Out-of-core streaming spike detector with per-channel templates (see the module docs).
+pub struct StreamingDetector {
+    config: StreamingDetectionConfig,
 }
 
-impl StreamingSpikeRunner {
-    pub fn new(config: StreamingSortConfig) -> Self {
+impl StreamingDetector {
+    pub fn new(config: StreamingDetectionConfig) -> Self {
         Self { config }
     }
 
-    /// Streams `source` out-of-core on the runtime selected by [`ComputeTarget::from_env`].
-    pub fn run(
-        &self,
-        source: &dyn RecordingSource,
-        pipeline: &Pipeline,
-        probe: &SensorLayout,
-    ) -> DspResult<StreamingSortResult> {
-        let target = ComputeTarget::from_env().map_err(|e| DspError::ComputeError(e.to_string()))?;
-        self.run_with(target, source, pipeline, probe)
-    }
-
     /// Streams `source` out-of-core on `target`.
+    ///
+    /// # Errors
+    ///
+    /// [`DspError::ComputeError`] when `target` is not available; otherwise as [`Self::run_on`].
     pub fn run_with(
         &self,
         target: ComputeTarget,
         source: &dyn RecordingSource,
         pipeline: &Pipeline,
         probe: &SensorLayout,
-    ) -> DspResult<StreamingSortResult> {
+    ) -> DspResult<StreamingDetectionResult> {
         struct Task<'a> {
-            runner: &'a StreamingSpikeRunner,
+            runner: &'a StreamingDetector,
             source: &'a dyn RecordingSource,
             pipeline: &'a Pipeline,
             probe: &'a SensorLayout,
         }
         impl ComputeTask for Task<'_> {
-            type Output = DspResult<StreamingSortResult>;
-            fn run<R: Runtime>(self, client: ComputeClient<R>) -> Self::Output {
+            type Output = DspResult<StreamingDetectionResult>;
+            fn run(self, client: Client) -> Self::Output {
                 self.runner.run_on(client, self.source, self.pipeline, self.probe)
             }
         }
@@ -141,13 +135,17 @@ impl StreamingSpikeRunner {
     /// Streams `source` out-of-core in halo-padded batches using double-buffered I/O prefetching
     /// and a persistent `PipelineWorkspace` on `client`'s runtime, returning global spikes and
     /// per-channel templates.
-    pub fn run_on<R: Runtime>(
+    ///
+    /// # Errors
+    ///
+    /// When the pipeline is invalid at the recording's rate, or reading `source` fails.
+    pub fn run_on(
         &self,
-        client: ComputeClient<R>,
+        client: Client,
         source: &dyn RecordingSource,
         pipeline: &Pipeline,
         probe: &SensorLayout,
-    ) -> DspResult<StreamingSortResult> {
+    ) -> DspResult<StreamingDetectionResult> {
         let info = source.info();
         let channels = info.channel_count();
         let total_samples = info.samples;
@@ -168,7 +166,7 @@ impl StreamingSpikeRunner {
             right_halo,
         );
 
-        let mut workspace = PipelineWorkspace::<R>::new(
+        let mut workspace = PipelineWorkspace::new(
             client,
             pipeline.clone(),
             channels,
@@ -217,8 +215,8 @@ impl StreamingSpikeRunner {
             && total_samples > 0
             && source.read_stored(&[0], 0..1, &mut vec![0u8; info.format.bytes()]).is_ok();
         if stored {
-            let gains: Vec<f32> = info.channels.iter().map(|c| c.gain_uv).collect();
-            let offsets: Vec<f32> = info.channels.iter().map(|c| c.offset_uv).collect();
+            let gains: Vec<f32> = info.channels.iter().map(|c| c.gain).collect();
+            let offsets: Vec<f32> = info.channels.iter().map(|c| c.offset).collect();
             workspace.set_stored_scaling(&gains, &offsets);
         }
         let client = workspace.client().clone();
@@ -233,7 +231,7 @@ impl StreamingSpikeRunner {
             let det_end = win.valid_global.end.min(detect_range.end);
             if det_start < det_end {
                 let local = |g: u64| (g - read_start) as usize;
-                let crossings = execute_detect_spikes_in_vram::<R>(
+                let crossings = execute_detect_spikes_in_vram(
                     &client,
                     &filt_handle,
                     &heights_handle,
@@ -264,7 +262,7 @@ impl StreamingSpikeRunner {
                 .collect();
 
             // 4. Extract Blackman-Harris sinc-realigned snippets and reduce moments directly in VRAM
-            if let Some(extracted) = execute_extract_sinc_in_vram::<R, f32>(
+            if let Some(extracted) = execute_extract_sinc_in_vram::<f32>(
                 &client,
                 &filt_handle,
                 &knn_handle,
@@ -277,7 +275,7 @@ impl StreamingSpikeRunner {
                 self.config.apply_sinc_shift,
             ) {
                 debug_assert_eq!(extracted.dropped, 0, "finalized spikes lie inside the window");
-                let batch_stats = execute_reduce_templates_in_vram::<R>(
+                let batch_stats = execute_reduce_templates_in_vram(
                     &client,
                     &extracted.snippets,
                     &extracted.primaries,
@@ -313,14 +311,14 @@ impl StreamingSpikeRunner {
         };
 
         // 1. Filter each padded chunk in VRAM (persistent ping-pong buffers, no host readback)
-        let reader = PrefetchReader::new(source, schedule);
+        let loader = WindowLoader::new(source);
         if stored {
-            reader.for_each_window_stored(|win, bytes| {
+            loader.stream_stored(schedule.windows(), |win, bytes| {
                 let filt_handle = workspace.process_stored_chunk_in_vram(bytes, info.format, win.read_len())?;
                 process(win, filt_handle)
             })?;
         } else {
-            reader.for_each_window(|win, raw_padded| {
+            loader.stream(schedule.windows(), |win, raw_padded| {
                 let filt_handle = workspace.process_chunk_in_vram(raw_padded, win.read_len());
                 process(win, filt_handle)
             })?;
@@ -328,7 +326,7 @@ impl StreamingSpikeRunner {
 
         let channel_templates = accumulators.iter().map(|a| a.finalize()).collect();
 
-        Ok(StreamingSortResult {
+        Ok(StreamingDetectionResult {
             channels,
             total_samples,
             sample_rate_hz: fs,
@@ -346,38 +344,40 @@ impl StreamingSpikeRunner {
 /// Per-channel noise floor σ (Quiroga MAD) as the median over `config.calibration_chunks` chunks
 /// spread evenly across the recording (total `config.calibration_duration_sec`). Each chunk is
 /// filtered with `halos` of context so its interior is settled. Independent of the batch size.
-pub fn calibrate_noise<R: Runtime>(
+///
+/// # Errors
+///
+/// When reading `source` fails.
+pub fn calibrate_noise(
     source: &dyn RecordingSource,
-    workspace: &mut PipelineWorkspace<R>,
-    config: &StreamingSortConfig,
+    workspace: &mut PipelineWorkspace,
+    config: &StreamingDetectionConfig,
     halos: (u64, u64),
 ) -> DspResult<Vec<f32>> {
     let info = source.info();
     let (channels, total, fs) = (info.channel_count(), info.samples, info.sample_rate_hz());
-    let all_ch: Vec<usize> = (0..channels).collect();
     let mut per_chunk: Vec<Vec<f32>> = vec![Vec::new(); channels];
-
-    for chunk in config.calibration_chunks(fs, total) {
-        let read = chunk.start.saturating_sub(halos.0)..(chunk.end + halos.1).min(total);
-        let n = (read.end - read.start) as usize;
-        let mut raw = vec![0.0f32; channels * n];
-        source.read(&all_ch, read.clone(), &mut raw)?;
-        let mut filt = vec![0.0f32; raw.len()];
-        workspace.process_chunk(&raw, n, &mut filt);
-        let interior = (chunk.start - read.start) as usize..(chunk.end - read.start) as usize;
-        let sigmas: Vec<f32> = std::thread::scope(|s| {
-            let handles: Vec<_> = (0..channels)
-                .map(|ch| {
-                    let row = &filt[ch * n + interior.start..ch * n + interior.end];
-                    s.spawn(move || estimate_noise_std(row))
-                })
-                .collect();
-            handles.into_iter().map(|h| h.join().expect("noise worker")).collect()
-        });
+    let windows: Vec<HaloWindow> = config
+        .calibration_chunks(fs, total)
+        .into_iter()
+        .enumerate()
+        .map(|(index, chunk)| HaloWindow::around(index, chunk, halos.0, halos.1, total))
+        .collect();
+    WindowLoader::new(source).stream(&windows, |window, raw| {
+        // Filtered chunk stays on the device; only one σ per channel is downloaded
+        let filt = workspace.process_chunk_in_vram(raw, window.read_len());
+        let sigmas = execute_channel_noise_std::<f32>(
+            workspace.client(),
+            &filt,
+            channels,
+            window.read_len(),
+            window.valid_local.clone(),
+        );
         for (acc, sigma) in per_chunk.iter_mut().zip(sigmas) {
-            acc.push(sigma);
+            acc.push(sigma as f32);
         }
-    }
+        Ok(())
+    })?;
 
     Ok(per_chunk
         .into_iter()

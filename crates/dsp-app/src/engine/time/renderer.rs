@@ -7,25 +7,22 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use dsp_base::resampler::minmax::{finish, fold_block, Block, Columns, EMPTY};
 use dsp_base::math::percentile;
-use dsp_base::resampler::summary::BASE as SUMMARY_BASE;
-use dsp_base::resampler::{min_max_decimate_into, MinMaxCache, MinMaxSummary};
-use dsp_core::{MemoryOrder, RecordingSource};
+use dsp_core::SignalUnit;
+use dsp_view::{min_max_decimate_into, Envelope, SignalBackend, View};
 
-use dsp_base::math::nice_step;
 use crate::engine::canvas::{Canvas, Frame};
+use crate::engine::ticks::nice_step;
 use crate::engine::palette::Palette;
 use crate::engine::data::SpikeEventStore;
 
-/// Amplitude (µV) that maps to `LANE_FILL` of a lane's half-height at gain 1x, when a view is
-/// not auto-scaled.
-pub const NOMINAL_UV: f32 = 80.0;
-/// Fraction of the lane half-height used by `NOMINAL_UV`.
+/// Voltage that fills `LANE_FILL` of a lane's half-height at gain 1x when a view is not
+/// auto-scaled (80 µV: a large extracellular spike).
+pub const NOMINAL_VOLTS: f64 = 80e-6;
+/// The same for signals that are not voltages (no natural size: auto-scale is the useful mode).
+pub const NOMINAL_OTHER: f32 = 1.0;
+/// Fraction of the lane half-height used by the nominal amplitude.
 const LANE_FILL: f32 = 0.84;
-/// Most values (channels × samples) held by one raw read while streaming a window: bounds the
-/// scratch memory, not the work (every sample of the window is still read once).
-const BLOCK_VALUES: usize = 1 << 22;
 
 /// Time-module view kinds: how the plot area visualizes channels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -40,12 +37,9 @@ pub enum TimeViewKind {
 /// Everything needed to draw one frame of one view. Sendable to the worker thread.
 #[derive(Clone)]
 pub struct RenderRequest {
-    pub source: Arc<dyn RecordingSource>,
-    /// Complete min/max cache file of `source` for zoomed-out windows.
-    pub lod: Option<Arc<MinMaxCache>>,
-    /// Session min/max summary of `source`, filled as needed for zoomed-out windows (raw reads
-    /// without either).
-    pub summary: Option<Arc<MinMaxSummary>>,
+    /// The signal shown: asked for the envelope of the visible window (zoomed out from its
+    /// pyramid, zoomed in from the samples).
+    pub signal: Arc<dyn SignalBackend>,
     pub events: Arc<SpikeEventStore>,
     /// Physical pixel size of the plot area.
     pub width: u32,
@@ -60,7 +54,9 @@ pub struct RenderRequest {
     /// Session time of the source's first sample (sources can start at different times).
     pub start_time_sec: f64,
     pub amplitude_scale: f32,
-    /// Fit the amplitude to the visible data (else [`NOMINAL_UV`] fills a lane).
+    /// Amplitude (signal unit) filling a lane when not auto-scaled ([`nominal_amplitude`]).
+    pub nominal: f32,
+    /// Fit the amplitude to the visible data (else `nominal` fills a lane).
     pub auto_scale: bool,
     /// Subtract each channel's offset over the window (center of its interquartile range).
     pub remove_dc: bool,
@@ -81,20 +77,25 @@ thread_local! {
 }
 
 /// Renders `req` with this thread's reusable renderer (call from a work thread): the frame and
-/// the amplitude scale it was drawn with. Zoomed-out windows draw from the min/max summary as far
-/// as it is filled (the rest stays empty until the background summarizer reaches it); `None` when
-/// a newer frame for the view cancelled this one.
-pub fn render_on_worker(req: &RenderRequest, cancel: &AtomicBool) -> Option<(Frame, f32)> {
+/// the amplitude scale it was drawn with, and whether every column was available. Zoomed-out
+/// windows draw from the signal's pyramid as far as it is built (the rest stays empty until its
+/// builder reaches it: draw again on progress while incomplete); `None` when a newer frame for
+/// the view cancelled this one.
+pub fn render_on_worker(req: &RenderRequest, cancel: &AtomicBool) -> Option<(Frame, f32, bool)> {
     if cancel.load(Ordering::Relaxed) {
         return None;
     }
-    Some(RENDERER.with(|r| r.borrow_mut().render_scaled(req)))
+    Some(RENDERER.with(|r| {
+        let mut r = r.borrow_mut();
+        let (frame, scale) = r.render_scaled(req);
+        (frame, scale, r.complete)
+    }))
 }
 
 /// Visible sample range of `req`'s source and the pixel columns `x0..x1` it covers (sources can
 /// start later or end earlier than the window); `None` when nothing is visible.
 fn visible(req: &RenderRequest) -> Option<(usize, usize, usize, usize)> {
-    let info = req.source.info();
+    let info = req.signal.info();
     let samples = info.samples as usize;
     if samples == 0 || info.channel_count() == 0 || req.window_sec <= 0.0 {
         return None;
@@ -107,6 +108,18 @@ fn visible(req: &RenderRequest) -> Option<(usize, usize, usize, usize)> {
     let (x0, x1) = if b > a { (((a - s0) / (s1 - s0) * w_px).round() as usize, ((b - s0) / (s1 - s0) * w_px).round() as usize) } else { (0, 0) };
     let (start, end) = (a.round() as usize, (b.round() as usize).max(a.round() as usize));
     Some((start, end, x0, x1.min(req.width.max(1) as usize)))
+}
+
+/// Nominal amplitude of a signal in `unit`: [`NOMINAL_VOLTS`] in that unit for voltages, else
+/// [`NOMINAL_OTHER`].
+pub fn nominal_amplitude(unit: &SignalUnit) -> f32 {
+    let volts_per_unit = match unit {
+        SignalUnit::Volt => 1.0,
+        SignalUnit::Millivolt => 1e-3,
+        SignalUnit::Microvolt => 1e-6,
+        _ => return NOMINAL_OTHER,
+    };
+    (NOMINAL_VOLTS / volts_per_unit) as f32
 }
 
 /// Pixels per unit for a lane of `lane_h` pixels, where `nominal` units fill `LANE_FILL` of
@@ -125,9 +138,9 @@ pub fn scale_bar_value(lane_h: f32, k: f32) -> f32 {
 
 /// Auto-scale: the previous scale while the visible amplitude stays within 50–125 % of it,
 /// else the new amplitude.
-fn choose_scale(amplitude: f32, hint: f32) -> f32 {
+fn choose_scale(amplitude: f32, hint: f32, nominal: f32) -> f32 {
     if amplitude.is_nan() || amplitude <= 0.0 || !amplitude.is_finite() {
-        return if hint > 0.0 { hint } else { NOMINAL_UV };
+        return if hint > 0.0 { hint } else { nominal };
     }
     if hint > 0.0 && amplitude >= 0.5 * hint && amplitude <= 1.25 * hint { hint } else { amplitude }
 }
@@ -142,10 +155,10 @@ pub struct WaveformRenderer {
     /// Channels actually read, and the row each one fills.
     read_channels: Vec<usize>,
     read_rows: Vec<usize>,
-    /// Raw samples of the read channels, channel-major.
-    block: Vec<f32>,
-    /// Cache envelope of the read channels, row-major.
-    cached: Vec<[f32; 2]>,
+    /// The signal's answer for the read channels (its buffer reused across frames).
+    answer: Option<Envelope>,
+    /// Whether the last frame had every column it needed (false while the pyramid builds).
+    complete: bool,
     heat: Vec<f32>,
     /// Scratch for medians and percentiles.
     stats: Vec<f32>,
@@ -158,9 +171,9 @@ impl WaveformRenderer {
     }
 
     /// Renders and returns the amplitude scale used (units filling a lane at gain 1). Zoomed out,
-    /// columns come from the cache file or the summary (pages not summarized draw empty).
+    /// columns come from the signal's pyramid (pages not built yet draw empty).
     pub fn render_scaled(&mut self, req: &RenderRequest) -> (Frame, f32) {
-        let source = req.source.as_ref();
+        let signal = req.signal.as_ref();
         let width = req.width.max(1);
         let height = req.height.max(1);
         let mut pixel_buffer = Frame::new(width, height);
@@ -180,7 +193,7 @@ impl WaveformRenderer {
             }
         }
 
-        self.envelope(source, req.lod.as_deref(), req.summary.as_deref(), &req.channels, start, end, x1.saturating_sub(x0));
+        self.envelope(signal, &req.channels, start, end, x1.saturating_sub(x0));
         self.place_columns(req.channels.len(), x0, x1, canvas.width);
         let scale = self.adjust(req, canvas.width);
         let has_samples = end > start;
@@ -211,7 +224,7 @@ impl WaveformRenderer {
     /// Removes each row's offset (when asked: the midpoint of the 25th and 75th percentiles of
     /// its column midpoints — robust to spikes and unbiased for two-level signals) and returns
     /// the amplitude scale: the 99th percentile of |value| over the visible rows (auto-scale),
-    /// else [`NOMINAL_UV`].
+    /// else the request's nominal amplitude.
     fn adjust(&mut self, req: &RenderRequest, width: usize) -> f32 {
         let rows = req.channels.len();
         if req.remove_dc {
@@ -228,34 +241,26 @@ impl WaveformRenderer {
             }
         }
         if !req.auto_scale {
-            return NOMINAL_UV;
+            return req.nominal;
         }
         self.stats.clear();
         for r in (0..rows).filter(|&r| self.valid[r]) {
             self.stats.extend(self.env[r * width..(r + 1) * width].iter().filter(|v| v[0].is_finite()).map(|v| v[0].abs().max(v[1].abs())));
         }
-        choose_scale(percentile(&mut self.stats, 99.0).unwrap_or(0.0), req.scale_hint)
+        choose_scale(percentile(&mut self.stats, 99.0).unwrap_or(0.0), req.scale_hint, req.nominal)
     }
 
     /// Fills `env` with the `[min, max]` of every requested row per pixel column over
-    /// `start..end`. Zoomed out, the complete min/max cache file, else the session summary
-    /// (filled in the background by its `Summarizer`), supplies bucket-aligned columns; zoomed in, or
-    /// without either, raw samples are read (see [`Self::stream_raw`]). Every sample of the
-    /// window lands in a column, so no peak is dropped.
-    #[allow(clippy::too_many_arguments)]
-    fn envelope(
-        &mut self,
-        source: &dyn RecordingSource,
-        lod: Option<&MinMaxCache>,
-        summary: Option<&MinMaxSummary>,
-        rows: &[usize],
-        start: usize,
-        end: usize,
-        width: usize,
-    ) {
-        let total = source.info().channel_count();
+    /// `start..end`, as the signal answers the view (zoomed out from its pyramid, else from the
+    /// samples, streamed in bounded blocks). A window of fewer samples than columns comes back as
+    /// samples and is spread over the columns. Every sample of the window lands in a column, so no
+    /// peak is dropped. Rows of channels the signal lacks, and every row when it cannot answer,
+    /// stay NaN (drawn empty).
+    fn envelope(&mut self, signal: &dyn SignalBackend, rows: &[usize], start: usize, end: usize, width: usize) {
+        let total = signal.info().channel_count();
+        self.complete = true;
         self.env.clear();
-        self.env.resize(rows.len() * width, [0.0, 0.0]);
+        self.env.resize(rows.len() * width, [f32::NAN, f32::NAN]);
         self.valid.clear();
         self.valid.extend(rows.iter().map(|&c| c < total));
         self.read_channels.clear();
@@ -264,75 +269,28 @@ impl WaveformRenderer {
             self.read_channels.push(c);
             self.read_rows.push(r);
         }
-        let nch = self.read_channels.len();
-        if nch == 0 || end <= start || width == 0 {
+        if self.read_channels.is_empty() || end <= start || width == 0 {
             return;
         }
-
-        if let Some(cache) = lod {
-            self.cached.resize(nch * width, [0.0, 0.0]);
-            match cache.envelope(&self.read_channels, start as u64, end as u64, width, &mut self.cached) {
-                Ok(true) => {
-                    for (k, &r) in self.read_rows.iter().enumerate() {
-                        self.env[r * width..(r + 1) * width].copy_from_slice(&self.cached[k * width..(k + 1) * width]);
-                    }
-                    return;
+        let view = View { channels: self.read_channels.clone(), start: start as u64, end: end as u64, width };
+        let answer = self.answer.get_or_insert_with(|| Envelope::Samples(Vec::new()));
+        if let Err(e) = signal.view(&view, answer) {
+            tracing::warn!("cannot draw samples {start}..{end}: {e}");
+            return;
+        }
+        match answer {
+            Envelope::Columns { values, complete } => {
+                self.complete = *complete;
+                for (k, &r) in self.read_rows.iter().enumerate() {
+                    self.env[r * width..(r + 1) * width].copy_from_slice(&values[k * width..(k + 1) * width]);
                 }
-                Ok(false) => {}
-                Err(e) => tracing::warn!("min/max cache read failed, reading raw samples: {e}"),
             }
-        }
-
-        if let Some(summary) = summary.filter(|_| (end - start) as u64 >= SUMMARY_BASE * width as u64) {
-            self.cached.resize(nch * width, [0.0, 0.0]);
-            summary.envelope(&self.read_channels, start as u64, end as u64, width, &mut self.cached);
-            for (k, &r) in self.read_rows.iter().enumerate() {
-                self.env[r * width..(r + 1) * width].copy_from_slice(&self.cached[k * width..(k + 1) * width]);
+            Envelope::Samples(samples) => {
+                let n = end - start;
+                for (k, &r) in self.read_rows.iter().enumerate() {
+                    min_max_decimate_into(&samples[k * n..(k + 1) * n], &mut self.env[r * width..(r + 1) * width]);
+                }
             }
-            return;
-        }
-
-        self.stream_raw(source, start, end, width, BLOCK_VALUES);
-    }
-
-    /// Raw-sample envelope of `start..end` (the read channels into their rows of `env`). A window
-    /// of at most `block_values` values is read at once; a longer one is streamed in blocks aligned
-    /// to the source's storage chunks, so each chunk is read and decoded once per frame, and every
-    /// block is folded into the columns it overlaps. Columns no read reached stay NaN (empty).
-    fn stream_raw(&mut self, source: &dyn RecordingSource, start: usize, end: usize, width: usize, block_values: usize) {
-        let (n, nch) = (end - start, self.read_channels.len());
-        if n * nch <= block_values || n <= width {
-            self.block.resize(n * nch, 0.0);
-            if source.read(&self.read_channels, start as u64..end as u64, &mut self.block).is_err() {
-                self.block.fill(0.0);
-            }
-            for (k, &r) in self.read_rows.iter().enumerate() {
-                min_max_decimate_into(&self.block[k * n..(k + 1) * n], &mut self.env[r * width..(r + 1) * width]);
-            }
-            return;
-        }
-
-        // Here n > width, so every column holds at least one sample
-        let columns = Columns::Even { start: start as u64, len: n as u64, width };
-        self.cached.clear();
-        self.cached.resize(nch * width, EMPTY);
-        let chunk = source.chunk_samples().filter(|&c| c > 0).map_or(1, |c| c as usize);
-        let step = ((block_values / nch) / chunk).max(1) * chunk;
-        let mut b0 = start;
-        while b0 < end {
-            // Blocks end on chunk boundaries (the first one may start inside a chunk)
-            let b1 = (b0 / chunk * chunk + step).min(end);
-            let len = b1 - b0;
-            self.block.resize(len * nch, 0.0);
-            if source.read(&self.read_channels, b0 as u64..b1 as u64, &mut self.block).is_ok() {
-                let block = Block { data: &self.block, order: MemoryOrder::ChannelMajor, channels: nch, samples: len, first: b0 as u64 };
-                fold_block(&block, 0..len, columns, &mut self.cached);
-            }
-            b0 = b1;
-        }
-        finish(&mut self.cached);
-        for (k, &r) in self.read_rows.iter().enumerate() {
-            self.env[r * width..(r + 1) * width].copy_from_slice(&self.cached[k * width..(k + 1) * width]);
         }
     }
 
@@ -471,15 +429,13 @@ mod tests {
 
     /// Request for `mode` over `ds`: traces show the first 4 channels, heatmap every channel.
     fn request(ds: Dataset, mode: TimeViewKind) -> RenderRequest {
-        let events = Arc::new(SpikeEventStore::detect(&ds));
+        let events = Arc::new(SpikeEventStore::detect(ds.signal().as_ref()));
         let channels = match mode {
             TimeViewKind::Traces => (0..4.min(ds.total_channels)).collect(),
             TimeViewKind::Heatmap => (0..ds.total_channels).collect(),
         };
         RenderRequest {
-            lod: None,
-            summary: None,
-            source: Arc::new(ds),
+            signal: ds.signal().clone(),
             events,
             width: 800,
             height: 400,
@@ -490,6 +446,7 @@ mod tests {
             window_sec: 0.100,
             start_time_sec: 0.0,
             amplitude_scale: 1.0,
+            nominal: nominal_amplitude(&SignalUnit::Microvolt),
             auto_scale: false,
             remove_dc: false,
             scale_hint: 0.0,
@@ -545,7 +502,7 @@ mod tests {
         assert!((replaced - 100.0).abs() < 1.0);
         // Not auto-scaled: the nominal range
         let (_, fixed) = r.render_scaled(&RenderRequest { auto_scale: false, ..base });
-        assert_eq!(fixed, NOMINAL_UV);
+        assert_eq!(fixed, nominal_amplitude(&SignalUnit::Microvolt));
     }
 
     #[test]
@@ -572,12 +529,12 @@ mod tests {
 
     /// In-memory source that reports a storage chunk size and records every read range.
     struct Chunked {
-        inner: Dataset,
+        inner: dsp_core::MemoryRecording,
         chunk: u64,
-        reads: std::sync::Mutex<Vec<std::ops::Range<u64>>>,
+        reads: Arc<std::sync::Mutex<Vec<std::ops::Range<u64>>>>,
     }
 
-    impl RecordingSource for Chunked {
+    impl dsp_core::RecordingSource for Chunked {
         fn info(&self) -> &dsp_core::RecordingInfo {
             self.inner.info()
         }
@@ -591,19 +548,20 @@ mod tests {
     }
 
     #[test]
-    fn test_streamed_envelope_is_exact_and_reads_each_chunk_once() {
+    fn test_raw_windows_are_exact_and_read_each_chunk_once() {
+        // Zoomed in below the pyramid's base: the envelope comes from the samples
         let (nch, total, width) = (3usize, 10_000usize, 37usize);
         let data: Vec<f32> = (0..nch * total).map(|i| ((i * 7919) % 1013) as f32 - 500.0).collect();
-        let src = Chunked { inner: Dataset::from_samples("chunked", data.clone(), nch, 1000.0), chunk: 300, reads: Default::default() };
+        let reads = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let inner = dsp_core::MemoryRecording::new("chunked", data.clone(), nch, 1000.0).unwrap();
+        let src = Chunked { inner, chunk: 300, reads: reads.clone() };
+        let ds = Dataset::local(Arc::new(src), None).unwrap();
         let (start, end) = (1_234usize, 9_876usize);
+        assert!(((end - start) / width) < dsp_view::MEMORY_BASE as usize, "a raw window");
 
         let mut r = WaveformRenderer::default();
         let rows = [2usize, 0];
-        r.env.resize(rows.len() * width, [0.0, 0.0]);
-        r.read_channels = rows.to_vec();
-        r.read_rows = vec![0, 1];
-        // Room for 4 chunks of 2 channels per read
-        r.stream_raw(&src, start, end, width, 2 * 4 * 300 + 17);
+        r.envelope(ds.signal().as_ref(), &rows, start, end, width);
 
         let n = end - start;
         for (k, &ch) in rows.iter().enumerate() {
@@ -614,8 +572,7 @@ mod tests {
                 assert_eq!(r.env[k * width + x], exact, "row {k} column {x}");
             }
         }
-        let reads = src.reads.lock().unwrap();
-        assert!(reads.len() > 1, "the window is streamed");
+        let reads = reads.lock().unwrap();
         assert_eq!(reads.first().unwrap().start, start as u64);
         assert_eq!(reads.last().unwrap().end, end as u64);
         for w in reads.windows(2) {
@@ -638,10 +595,11 @@ mod tests {
             ("mock_signal_384ch.bin", TimeViewKind::Heatmap, 1.0),
         ];
         for (file, mode, window_sec) in cases {
-            let Ok(ds) = Dataset::open(&root.join(file)) else {
+            let Ok(sources) = crate::engine::data::SourceSet::open(&root.join(file)) else {
                 println!("skip {file} (not found)");
                 continue;
             };
+            let ds = Dataset::new(sources.default_dataset().signal().clone(), None);
             let mut r = WaveformRenderer::default();
             let mut req = RenderRequest { width: 1136, height: 550, window_sec, ..request(ds, mode) };
             if mode == TimeViewKind::Traces {

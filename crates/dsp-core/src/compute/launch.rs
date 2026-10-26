@@ -35,20 +35,20 @@ pub fn row_position() -> u32 {
 impl LaunchGeometry {
     /// One unit per element, indexed with the linear `ABSOLUTE_POS`. The cubes are spread over the
     /// runtime's cube-count dimensions, so kernels must bound-check `ABSOLUTE_POS`.
-    pub fn elementwise<R: Runtime>(client: &ComputeClient<R>, num_elements: usize) -> Self {
+    pub fn elementwise(client: &Client, num_elements: usize) -> Self {
         let n = num_elements.max(1);
         let cube_dim = CubeDim::new(client, n);
         let cube_count = cubecl::calculate_cube_count_elemwise(client, n, cube_dim);
         Self { cube_dim, cube_count }
     }
 
-    /// One unit per `(channel, sample)` of a `[channels, samples]` buffer: [`sample_position`]
-    /// and [`channel_position`]. The cube's x size is the runtime's plane, so a plane walks
+    /// One unit per `(channel, sample)` of a `[channels, samples]` buffer: [`fn@sample_position`]
+    /// and [`fn@channel_position`]. The cube's x size is the runtime's plane, so a plane walks
     /// neighbouring samples of one channel.
     ///
     /// # Panics
     /// If the channels or samples need more cubes than the runtime's whole grid holds.
-    pub fn channels_samples<R: Runtime>(client: &ComputeClient<R>, channels: usize, samples: usize) -> Self {
+    pub fn channels_samples(client: &Client, channels: usize, samples: usize) -> Self {
         let cube_dim = CubeDim::new(client, channels.max(1) * samples.max(1));
         let (x, z) = Self::spill(client, samples, cube_dim.x);
         let y = (channels.max(1) as u32).div_ceil(cube_dim.y);
@@ -59,8 +59,8 @@ impl LaunchGeometry {
         Self { cube_dim, cube_count: CubeCount::Static(x, y, z) }
     }
 
-    /// One unit per sample for kernels that walk all channels of a sample ([`sample_position`]).
-    pub fn per_sample<R: Runtime>(client: &ComputeClient<R>, samples: usize) -> Self {
+    /// One unit per sample for kernels that walk all channels of a sample ([`fn@sample_position`]).
+    pub fn per_sample(client: &Client, samples: usize) -> Self {
         let cube_dim = Self::flat(client, samples);
         let (x, z) = Self::spill(client, samples, cube_dim.x);
         Self { cube_dim, cube_count: CubeCount::Static(x, 1, z) }
@@ -68,12 +68,12 @@ impl LaunchGeometry {
 
     /// One unit per channel for kernels that walk each channel sequentially in time:
     /// `ABSOLUTE_POS_X` = channel, bound-checked by the kernel.
-    pub fn per_channel<R: Runtime>(client: &ComputeClient<R>, channels: usize) -> Self {
+    pub fn per_channel(client: &Client, channels: usize) -> Self {
         let cube_dim = Self::flat(client, channels);
         Self { cube_dim, cube_count: CubeCount::Static((channels.max(1) as u32).div_ceil(cube_dim.x), 1, 1) }
     }
 
-    /// One cube per row of a `[rows, cols]` buffer, for cube-wide reductions: [`row_position`] is the
+    /// One cube per row of a `[rows, cols]` buffer, for cube-wide reductions: [`fn@row_position`] is the
     /// row (cubes along x, continuing along y past the grid's x limit) and `UNIT_POS_X` strides along
     /// it. The cube is the runtime's cube for `cols` units flattened onto x and rounded down to a
     /// power of two, so tree reductions can halve it; kernels size shared memory with
@@ -81,7 +81,7 @@ impl LaunchGeometry {
     ///
     /// # Panics
     /// If the rows need more cubes than the runtime's whole grid holds.
-    pub fn per_row<R: Runtime>(client: &ComputeClient<R>, rows: usize, cols: usize) -> Self {
+    pub fn per_row(client: &Client, rows: usize, cols: usize) -> Self {
         let units = Self::flat(client, cols).x;
         let cube_dim = CubeDim::new_1d(1 << (u32::BITS - 1 - units.max(1).leading_zeros()));
         let (x, y) = Self::spill(client, rows, 1);
@@ -89,21 +89,42 @@ impl LaunchGeometry {
         Self { cube_dim, cube_count: CubeCount::Static(x, y, 1) }
     }
 
+    /// One unit per point of `points`, in 1-D cubes of a power-of-two number of units (the
+    /// runtime's cube flattened onto x, shrunk until `shared_bytes_per_unit` per unit fits the
+    /// device's shared memory) for kernels that share tiles of points in shared memory: the point
+    /// is `row_position() * CUBE_DIM_X + UNIT_POS_X`, and kernels size shared memory with
+    /// `cube_dim.x` (passed as a comptime value). Every unit of a cube takes part in the tile loads,
+    /// so kernels bound-check the point only around their own work.
+    ///
+    /// # Panics
+    /// If one unit's shared memory exceeds the device's, or the points need more cubes than the
+    /// runtime's whole grid holds.
+    pub fn tiles(client: &Client, points: usize, shared_bytes_per_unit: usize) -> Self {
+        let shared = client.properties().hardware.max_shared_memory_size;
+        let fit = shared / shared_bytes_per_unit.max(1);
+        assert!(fit >= 1, "{shared_bytes_per_unit} bytes of shared memory per unit exceed the device's {shared}");
+        let units = Self::flat(client, points).x.min(u32::try_from(fit).unwrap_or(u32::MAX));
+        let units = 1 << (u32::BITS - 1 - units.max(1).leading_zeros());
+        let (x, y) = Self::spill(client, points, units);
+        assert!(y <= client.properties().hardware.max_cube_count.1, "{points} points exceed the runtime's cube grid");
+        Self { cube_dim: CubeDim::new_1d(units), cube_count: CubeCount::Static(x, y, 1) }
+    }
+
     /// Units that execute in lock-step (the runtime's plane / warp / subgroup size; 1 where every
     /// unit runs on its own, as on the CPU runtime). It is the x size of
     /// [`Self::channels_samples`] cubes, so consecutive `sample_position`s of a plane share a cube.
-    pub fn plane_lanes<R: Runtime>(client: &ComputeClient<R>) -> u32 {
+    pub fn plane_lanes(client: &Client) -> u32 {
         client.properties().hardware.plane_size_max.max(1)
     }
 
     /// The runtime's cube for `work` units, flattened onto x (for kernels indexed along x only).
-    fn flat<R: Runtime>(client: &ComputeClient<R>, work: usize) -> CubeDim {
+    fn flat(client: &Client, work: usize) -> CubeDim {
         CubeDim::new_1d(CubeDim::new(client, work.max(1)).num_elems())
     }
 
     /// Cube counts `(x, overflow)` covering `units` along x with `per_cube` units per cube; the
     /// overflow count continues past the grid's x limit (along z for samples, y for rows).
-    fn spill<R: Runtime>(client: &ComputeClient<R>, units: usize, per_cube: u32) -> (u32, u32) {
+    fn spill(client: &Client, units: usize, per_cube: u32) -> (u32, u32) {
         let max = client.properties().hardware.max_cube_count;
         let cubes = (units.max(1) as u64).div_ceil(per_cube as u64);
         let x = cubes.min(max.0 as u64);
@@ -116,7 +137,7 @@ impl LaunchGeometry {
 #[cfg(all(test, feature = "wgpu"))]
 mod tests {
     use super::*;
-    use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
+    use cubecl::device::WgpuDevice;
 
     fn cubes(count: &CubeCount) -> u64 {
         match count {
@@ -127,7 +148,7 @@ mod tests {
 
     #[test]
     fn geometries_cover_their_ranges_within_limits() {
-        let client = WgpuRuntime::client(&WgpuDevice::default());
+        let client = crate::compute::open_device(cubecl::Device::Wgpu(WgpuDevice::default()));
         let max = client.properties().hardware.max_cube_count;
         let within = |c: &CubeCount| matches!(c, CubeCount::Static(x, y, z) if *x <= max.0 && *y <= max.1 && *z <= max.2);
 

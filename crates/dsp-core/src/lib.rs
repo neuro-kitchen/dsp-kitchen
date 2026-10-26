@@ -7,6 +7,7 @@ pub mod buffer;
 #[cfg(feature = "compute")]
 pub mod compute;
 pub mod device;
+pub mod progress;
 pub mod recording;
 pub mod window;
 
@@ -16,7 +17,8 @@ pub use mask::ChannelMask;
 pub use time::{RationalTime, SampleRate, TimeRange};
 pub use buffer::{BufferLayout, MemoryOrder, SignalChunk};
 pub use recording::{
-    ChannelInfo, MemoryRecording, RecordingInfo, RecordingSource, SampleFormat, SignalUnit,
+    ChannelInfo, MemoryRecording, RecordingInfo, RecordingSource, SampleFormat, SignalUnit, MICROVOLTS_PER_VOLT,
     SlicedRecording,
 };
-pub use window::{ChunkSchedule, HaloWindow};
+pub use progress::{NoProgress, ProgressEvent, ProgressSink};
+pub use window::{ChunkSchedule, HaloWindow, WindowLoader};

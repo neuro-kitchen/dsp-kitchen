@@ -1,6 +1,4 @@
 .worktrees
-playground/data/
-playground/sorters/phy_*
 data/
 .env
 .knowledge
@@ -255,3 +253,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+playground/output/
+
+# Python API reference build (Zensical); docs/build.sh copies it into target/site/
+docs/api/python/site/

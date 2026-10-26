@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dsp-kitchen documentation</title>
+<meta name="description" content="dsp-kitchen: signal processing and spike sorting for multi-channel electrophysiology, on any GPU or the CPU. Guide, Python API and Rust API.">
+<style>
+  :root {
+    --bg: #fbfbfa; --surface: #ffffff; --text: #1d1f22; --muted: #5b616b;
+    --border: #e3e5e8; --accent: #2457c5; --accent-soft: #e8eefb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141619; --surface: #1c1f23; --text: #e6e8eb; --muted: #a0a6b0;
+      --border: #2c3036; --accent: #7aa2ff; --accent-soft: #1f2a44;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 64rem; margin: 0 auto; padding: 3rem 1rem 4rem; }
+  header h1 { font-size: 2rem; margin: 0 0 .5rem; letter-spacing: -.01em; }
+  header p { color: var(--muted); margin: 0; max-width: 46rem; }
+  h2 { font-size: 1rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 2.5rem 0 1rem; }
+  .grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr)); }
+  a.card {
+    display: block; padding: 1.1rem 1.2rem; border: 1px solid var(--border); border-radius: .6rem;
+    background: var(--surface); color: inherit; text-decoration: none;
+  }
+  a.card:hover, a.card:focus-visible { border-color: var(--accent); outline: none; box-shadow: 0 0 0 3px var(--accent-soft); }
+  a.card strong { display: block; color: var(--accent); margin-bottom: .25rem; }
+  a.card span { color: var(--muted); font-size: .95rem; }
+  ul.crates { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: .5rem; }
+  ul.crates a {
+    display: inline-block; padding: .3rem .7rem; border: 1px solid var(--border); border-radius: 999px;
+    background: var(--surface); color: var(--accent); text-decoration: none; font: .9rem/1.4 ui-monospace, monospace;
+  }
+  ul.crates a:hover, ul.crates a:focus-visible { border-color: var(--accent); outline: none; }
+  footer { margin-top: 3rem; color: var(--muted); font-size: .9rem; }
+  footer a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>dsp-kitchen</h1>
+    <p>Signal processing and spike sorting for multi-channel electrophysiology (neural probes, muscle
+      arrays), running on any GPU or the CPU. Use it from Python or Rust.</p>
+  </header>
+
+  <h2>Learn</h2>
+  <div class="grid">
+    <a class="card" href="guide/introduction.html"><strong>Introduction</strong>
+      <span>What dsp-kitchen is, how it is organized, and where to start.</span></a>
+    <a class="card" href="guide/sorters/index.html"><strong>Spike sorters</strong>
+      <span>Kilosort4 and EMUsort: how they work, their parameters, how to tune them.</span></a>
+    <a class="card" href="guide/sorters/benchmarks.html"><strong>Benchmarks</strong>
+      <span>Processing times and agreement with Kilosort4's own results.</span></a>
+    <a class="card" href="guide/architecture.html"><strong>Architecture and crates</strong>
+      <span>The crates, what each owns, and how data moves between host and device.</span></a>
+    <a class="card" href="guide/gpu/index.html"><strong>GPU engineering</strong>
+      <span>Case studies: why the kernels are built the way they are, with measurements.</span></a>
+  </div>
+
+  <h2>Look up</h2>
+  <div class="grid">
+    <a class="card" href="api/python/"><strong>Python API</strong>
+      <span>Every class and function of <code>dsp_kitchen</code>: arguments, types, defaults, units, returns.</span></a>
+    <a class="card" href="api/rust/dsp_base/index.html"><strong>Rust API</strong>
+      <span>The crates' reference (rustdoc), for building on dsp-kitchen in Rust.</span></a>
+  </div>
+
+  <h2>Rust crates</h2>
+  <ul class="crates">
+    <li><a href="api/rust/dsp_core/index.html">dsp-core</a></li>
+    <li><a href="api/rust/dsp_io/index.html">dsp-io</a></li>
+    <li><a href="api/rust/dsp_base/index.html">dsp-base</a></li>
+    <li><a href="api/rust/dsp_synapse/index.html">dsp-synapse</a></li>
+    <li><a href="api/rust/dsp_synapse_ml/index.html">dsp-synapse-ml</a></li>
+    <li><a href="api/rust/dsp_synapse_hub/index.html">dsp-synapse-hub</a></li>
+    <li><a href="api/rust/dsp_stream/index.html">dsp-stream</a></li>
+    <li><a href="api/rust/dsp_view/index.html">dsp-view</a></li>
+  </ul>
+
+  <footer>
+    Under development: APIs change. Source and issues:
+    <a href="https://github.com/neuro-kitchen/dsp-kitchen">github.com/neuro-kitchen/dsp-kitchen</a>.
+  </footer>
+</main>
+</body>
+</html>

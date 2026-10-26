@@ -4,8 +4,8 @@
 //! recording without knowing how it is stored, and [`Format`], so [`open`] can pick the reader
 //! from the path ([`registry::formats`]).
 //!
-//! - [`core`]: the [`Format`] trait, detection and opening, source listing, chunk cache,
-//!   out-of-core window prefetching ([`PrefetchReader`]).
+//! - [`core`]: the [`Format`] trait, detection and opening, source listing, chunk cache.
+//!   Out-of-core window streaming is `dsp_core::WindowLoader`.
 //! - [`container`]: storage containers shared by every format (binary codecs, …).
 //! - [`generic`]: domain-independent recording formats (raw binary, Zarr `/traces`).
 //! - [`neuro`] (feature `neuro`): neural-recording formats (NWB, SpikeGLX, mtscomp), probe
@@ -19,7 +19,7 @@ pub mod neuro;
 pub mod registry;
 
 pub use crate::core::{
-    default_source, detect, open, open_source, sources, CachedRecording, Format, PrefetchReader, SourceEntry, SourceKind,
+    default_source, detect, open, open_source, sources, CachedRecording, Format, SourceEntry, SourceKind,
 };
 pub use generic::raw::{write_raw, RawParams, RawRecording};
 #[cfg(feature = "zarr")]

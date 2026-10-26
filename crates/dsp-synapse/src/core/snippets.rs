@@ -133,8 +133,9 @@ impl SnippetBatch {
         &self.channel_ids[start..start + self.num_channels]
     }
 
-    /// Converts a slice of `WaveformSnippet` into a contiguous `SnippetBatch`.
-    pub fn from_snippets(snippets: &[WaveformSnippet]) -> Option<Self> {
+    /// Converts a slice of `WaveformSnippet` into a contiguous `SnippetBatch` whose snippets are
+    /// aligned so their peak sits at sample `peak_index`.
+    pub fn from_snippets(snippets: &[WaveformSnippet], peak_index: usize) -> Option<Self> {
         if snippets.is_empty() {
             return None;
         }
@@ -166,6 +167,7 @@ impl SnippetBatch {
             num_spikes: actual_spikes,
             num_channels,
             num_samples,
+            peak_index,
             primary_channels,
             center_samples,
             subsample_offsets,

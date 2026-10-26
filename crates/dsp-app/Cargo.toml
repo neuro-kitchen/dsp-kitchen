@@ -14,7 +14,10 @@ path = "src/main.rs"
 dsp-core.workspace = true
 dsp-base.workspace = true
 dsp-synapse.workspace = true
-dsp-io.workspace = true
+# NWB / SpikeGLX / mtscomp, probe geometry, synthetic recordings
+dsp-io = { workspace = true, features = ["neuro"] }
+# Envelopes, pyramids and the signal backend; host only (the app draws on the CPU)
+dsp-view = { workspace = true, default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 clap.workspace = true

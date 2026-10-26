@@ -2,20 +2,32 @@ use std::path::Path;
 use std::sync::Arc;
 
 use dsp_core::{MemoryOrder, RecordingSource, SampleFormat};
-use dsp_io::raw::{RawParams, RawRecording};
+use dsp_io::{RawParams, RawRecording};
 use numpy::ndarray::{ArrayView1, ArrayView2, ShapeBuilder};
 use numpy::{Element, PyArray};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pymethods};
 use pyo3::types::IntoPyDict;
 
 use super::recording::read_to_numpy;
 
-/// Memory-mapped raw binary recording (dsp-io `RawRecording`).
+/// Bytes in a MiB (for `repr`).
+const BYTES_PER_MIB: f64 = 1_048_576.0;
+
+/// A raw binary recording, memory-mapped (dsp-io `RawRecording`).
 ///
 /// The layout comes from the JSON sidecar next to the file (`rec.bin` → `rec.meta`) or from the
-/// arguments. `read()` returns µV `float32` copies; `to_numpy()` is a zero-copy, read-only view of
-/// the stored samples that keeps this recording (and its mapping) alive.
+/// arguments. `read()` returns float32 copies in µV (gain and offset applied); `to_numpy()` is a
+/// zero-copy, read-only view of the stored samples that keeps this recording (and its mapping) alive.
+///
+/// Examples
+/// --------
+/// >>> from dsp_kitchen.io import MmapRecording
+/// >>> rec = MmapRecording("data.bin", 384, 30000.0, dtype="int16", gain=2.34)
+/// >>> raw = rec.to_numpy()          # [channels, samples] int16, no copy
+/// >>> x = rec.read(0, 30000)        # [channels, samples] float32, µV
+#[gen_stub_pyclass]
 #[pyclass(name = "MmapRecording", frozen, skip_from_py_object)]
 pub struct PyMmapRecording {
     path: String,
@@ -24,8 +36,8 @@ pub struct PyMmapRecording {
 
 fn parse_order(order: &str) -> PyResult<MemoryOrder> {
     match order {
-        "channel_major" | "C" => Ok(MemoryOrder::ChannelMajor),
-        "time_major" | "F" => Ok(MemoryOrder::TimeMajor),
+        "channel_major" => Ok(MemoryOrder::ChannelMajor),
+        "time_major" => Ok(MemoryOrder::TimeMajor),
         other => Err(PyValueError::new_err(format!(
             "order must be 'channel_major' or 'time_major', got '{other}'"
         ))),
@@ -60,11 +72,33 @@ impl PyMmapRecording {
     }
 }
 
+#[gen_stub_pymethods]
 #[pymethods]
 impl PyMmapRecording {
-    /// Opens `path`. Without `channels` / `sample_rate` the JSON sidecar describes the layout.
+    /// Opens a raw binary file.
+    ///
+    /// Parameters
+    /// ----------
+    /// path : str
+    /// channels : int, optional
+    ///     Channels; with `sample_rate`, describes the layout. Without them, the JSON sidecar next to the
+    ///     file (`rec.bin` → `rec.meta`) does.
+    /// sample_rate : float, optional
+    ///     Hz.
+    /// dtype : {"int8", "int16", "uint16", "int32", "float32", "float64"}, default "float32"
+    ///     Stored sample type (NumPy spellings such as `"<i2"` also work).
+    /// order : {"channel_major", "time_major"}, default "channel_major"
+    ///     `"channel_major"`: all samples of channel 0, then channel 1, …; `"time_major"`: interleaved.
+    /// gain : float, default 1.0
+    ///     µV per stored step.
+    /// offset : float, default 0.0
+    ///     µV added after the gain.
+    /// header_bytes : int, default 0
+    ///     Bytes before the first sample.
+    /// samples : int, optional
+    ///     Samples per channel; default: from the file size.
     #[new]
-    #[pyo3(signature = (path, channels=None, sample_rate=None, dtype="float32", order="channel_major", gain_uv=1.0, offset_uv=0.0, header_bytes=0, samples=None))]
+    #[pyo3(signature = (path, channels=None, sample_rate=None, *, dtype="float32", order="channel_major", gain=1.0, offset=0.0, header_bytes=0, samples=None))]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         path: &str,
@@ -72,8 +106,8 @@ impl PyMmapRecording {
         sample_rate: Option<f64>,
         dtype: &str,
         order: &str,
-        gain_uv: f32,
-        offset_uv: f32,
+        gain: f32,
+        offset: f32,
         header_bytes: u64,
         samples: Option<u64>,
     ) -> PyResult<Self> {
@@ -84,8 +118,8 @@ impl PyMmapRecording {
                 let format = SampleFormat::parse(dtype)
                     .ok_or_else(|| PyValueError::new_err(format!("unsupported dtype '{dtype}'")))?;
                 let mut params = RawParams::new(channels, rate, format, parse_order(order)?);
-                params.gain_uv = gain_uv;
-                params.offset_uv = offset_uv;
+                params.gain = gain;
+                params.offset = offset;
                 params.header_bytes = header_bytes;
                 params.samples = samples;
                 RawRecording::open_with(p, &params)
@@ -100,26 +134,31 @@ impl PyMmapRecording {
         Ok(Self { path: path.to_string(), inner: Arc::new(inner) })
     }
 
+    /// Path of the file.
     #[getter]
     pub fn path(&self) -> &str {
         &self.path
     }
 
+    /// Number of channels.
     #[getter]
     pub fn channels(&self) -> usize {
         self.inner.info().channels.len()
     }
 
+    /// Samples per channel.
     #[getter]
     pub fn samples(&self) -> u64 {
         self.inner.info().samples
     }
 
+    /// Sampling rate, Hz.
     #[getter]
     pub fn sample_rate(&self) -> f64 {
         self.inner.info().sample_rate_hz()
     }
 
+    /// `(channels, samples)`.
     #[getter]
     pub fn shape(&self) -> (usize, u64) {
         (self.channels(), self.samples())
@@ -131,13 +170,23 @@ impl PyMmapRecording {
         self.inner.info().format.name()
     }
 
+    /// Size of the stored samples, bytes.
     #[getter]
     pub fn total_bytes(&self) -> usize {
         self.inner.stored_bytes().len()
     }
 
-    /// Reads µV `float32` `[channels, samples]` for `[start_sample, end_sample)` (default: 1 s).
+    /// Reads samples `[start_sample, end_sample)` (default: one second) as `[channels, samples]` float32
+    /// in µV (gain and offset applied; a copy).
+    ///
+    /// Parameters
+    /// ----------
+    /// start_sample : int, default 0
+    /// end_sample : int, optional
+    /// channels : list of int, optional
+    ///     Channel indices; default: all.
     #[pyo3(signature = (start_sample=0, end_sample=None, channels=None))]
+    #[gen_stub(override_return_type(type_repr = "numpy.typing.NDArray[numpy.float32]", imports = ("numpy", "numpy.typing")))]
     pub fn read<'py>(
         &self,
         py: Python<'py>,
@@ -174,13 +223,17 @@ impl PyMmapRecording {
 
     fn __repr__(&self) -> String {
         format!(
-            "MmapRecording(path='{}', shape=({}, {}), dtype={}, sample_rate={:.1}Hz, size={:.2}MB)",
+            "MmapRecording(path='{}', shape=({}, {}), dtype={}, sample_rate={:.1}Hz, size={:.2} MiB)",
             self.path,
             self.channels(),
             self.samples(),
             self.dtype(),
             self.sample_rate(),
-            self.total_bytes() as f64 / 1_048_576.0
+            self.total_bytes() as f64 / BYTES_PER_MIB
         )
     }
+}
+
+pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyMmapRecording>()
 }

@@ -1,8 +1,9 @@
 //! Zarr v3 recordings (`zarrs`), read by chunk.
 //!
 //! Layout written by [`write_zarr`]: root group attributes `sample_rate_hz`, `channels`,
-//! `samples`; array `/traces` of shape `[channels, samples]` (`float32` or `int16` with a
-//! `gain_uv` array attribute), chunked `[channels, chunk_samples]`. Arrays stored
+//! `samples`; array `/traces` of shape `[channels, samples]` (`float32`, or `int16` with a
+//! `gain` array attribute), chunked `[channels, chunk_samples]`, with a `unit` array attribute
+//! (`"microvolt"`, …; a legacy `gain_uv` attribute means µV). Arrays stored
 //! `[samples, channels]` (dimension names `["samples", "channels"]` or `["time", ...]`) are
 //! read too.
 
@@ -10,7 +11,7 @@ use std::ops::Range;
 use std::path::Path;
 
 use dsp_core::recording::{check_read, check_read_stored};
-use dsp_core::{DspError, DspResult, MemoryOrder, RecordingInfo, RecordingSource, SampleFormat, SampleRate};
+use dsp_core::{DspError, DspResult, MemoryOrder, RecordingInfo, RecordingSource, SampleFormat, SampleRate, SignalUnit};
 use serde_json::{json, Value};
 use zarrs::array::{Array, ArrayBuilder, ArrayBytes, data_type};
 
@@ -70,10 +71,17 @@ impl ZarrRecording {
             .or_else(|| attrs.get("sampling_frequency"))
             .and_then(Value::as_f64)
             .ok_or_else(|| DspError::InvalidConfig(format!("{} has no sample_rate_hz attribute", path.display())))?;
-        let gain = array.attributes().get("gain_uv").and_then(Value::as_f64).unwrap_or(1.0) as f32;
+        // `gain` + `unit` attributes; a legacy `gain_uv` declares µV; neither: values as stored
+        let array_attrs = array.attributes();
+        let unit_attr = array_attrs.get("unit").and_then(|u| serde_json::from_value::<SignalUnit>(u.clone()).ok());
+        let (gain, unit) = match (array_attrs.get("gain").and_then(Value::as_f64), array_attrs.get("gain_uv").and_then(Value::as_f64)) {
+            (Some(g), _) => (g as f32, unit_attr.unwrap_or_default()),
+            (None, Some(g)) => (g as f32, SignalUnit::Microvolt),
+            (None, None) => (1.0, unit_attr.unwrap_or_default()),
+        };
 
         let name = path.file_name().map_or_else(|| "recording.zarr".into(), |n| n.to_string_lossy().into_owned());
-        let mut info = RecordingInfo::new(name, channels, samples, SampleRate::new(rate)?, format, order).with_gain_uv(gain);
+        let mut info = RecordingInfo::new(name, channels, samples, SampleRate::new(rate)?, format, order).with_gain(gain, unit);
         info.metadata.insert("format".into(), "zarr v3".into());
         let time_axis = if order == MemoryOrder::TimeMajor { 0 } else { 1 };
         let chunk_samples = array.chunk_shape(&[0, 0]).ok().map(|c| c[time_axis].get());
@@ -143,7 +151,7 @@ impl RecordingSource for ZarrRecording {
             MemoryOrder::TimeMajor => scale_frames(&self.info, out),
             MemoryOrder::ChannelMajor => {
                 for (row, c) in out.chunks_exact_mut(n).zip(&self.info.channels) {
-                    row.iter_mut().for_each(|v| *v = *v * c.gain_uv + c.offset_uv);
+                    row.iter_mut().for_each(|v| *v = *v * c.gain + c.offset);
                 }
             }
         }
@@ -186,14 +194,15 @@ impl RecordingSource for ZarrRecording {
             let c = &self.info.channels[ch];
             let row = &block[(ch - lo) * n..(ch - lo + 1) * n];
             for (o, &v) in dst.iter_mut().zip(row) {
-                *o = v * c.gain_uv + c.offset_uv;
+                *o = v * c.gain + c.offset;
             }
         }
         Ok(())
     }
 }
 
-/// Streams `source` into a new Zarr v3 store (`float32`, µV), `chunk_samples` per chunk.
+/// Streams `source` into a new Zarr v3 store (`float32`, in the source's unit: the first
+/// channel's), `chunk_samples` per chunk.
 pub fn write_zarr(
     source: &dyn RecordingSource,
     path: &Path,
@@ -214,10 +223,12 @@ pub fn write_zarr(
     root.store_metadata().map_err(|e| err("root metadata")(e.to_string()))?;
 
     let chunk = (chunk_samples.max(1) as u64).min(total.max(1));
-    let array = ArrayBuilder::new(vec![nch as u64, total], vec![nch as u64, chunk], data_type::float32(), 0.0f32)
+    let mut array = ArrayBuilder::new(vec![nch as u64, total], vec![nch as u64, chunk], data_type::float32(), 0.0f32)
         .dimension_names(["channels", "samples"].into())
         .build(store, ARRAY_PATH)
         .map_err(|e| err("array")(e.to_string()))?;
+    let unit = info.channels.first().map(|c| c.unit.clone()).unwrap_or_default();
+    array.attributes_mut().insert("unit".into(), serde_json::to_value(&unit).map_err(|e| err("unit")(e.to_string()))?);
     array.store_metadata().map_err(|e| err("array metadata")(e.to_string()))?;
 
     let channels: Vec<usize> = (0..nch).collect();

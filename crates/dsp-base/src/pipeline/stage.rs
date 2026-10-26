@@ -18,6 +18,8 @@ pub enum PipelineStage {
     Filter(FilterSpec),
     /// Common Average Referencing across all channels
     CommonAverageReference,
+    /// Common median reference: the median over all channels subtracted at every sample
+    CommonMedianReference,
     /// Spatial whitening ($\mathbf{W}_{\text{ZCA}}$ or Local $K$-NN) across channels
     SpatialWhitening(SpatialWhitening),
     /// 2D Surface Laplacian (double-differential spatial filter) across channels
@@ -28,7 +30,7 @@ pub enum PipelineStage {
     /// Running median over an odd `width` (≤ `MAX_MEDIAN_WIDTH`); width 9 runs the branch-free
     /// `med9` network. Samples past the ends come from `edge`.
     Median { width: usize, edge: EdgeMode },
-    /// Discrete Teager-Kaiser Energy Operator: $\Psi[x_t] = x_t^2 - x_{t-1}x_{t+1}$; the neighbours
+    /// Discrete Teager-Kaiser Energy Operator: `Ψ[xₜ] = xₜ² − xₜ₋₁·xₜ₊₁`; the neighbours
     /// of the end samples come from `edge`.
     TeagerKaiser { edge: EdgeMode },
 }
@@ -57,6 +59,16 @@ impl PipelineStage {
     /// Second-order notch (`iirnotch`), zero phase.
     pub fn notch(freq_hz: f64, q: f64) -> Self {
         Self::Filter(FilterSpec::notch(freq_hz, q))
+    }
+
+    /// Common Average Referencing across all channels.
+    pub fn common_average_reference() -> Self {
+        Self::CommonAverageReference
+    }
+
+    /// Common median reference across all channels.
+    pub fn common_median_reference() -> Self {
+        Self::CommonMedianReference
     }
 
     /// Explicit second-order sections, zero phase.
@@ -92,6 +104,10 @@ impl PipelineStage {
     /// - `GaussianSmooth`: the kernel radius ([`gaussian_radius`] at [`GAUSSIAN_TRUNCATE`]) each side.
     /// - `Median`: `width / 2` each side; `TeagerKaiser`: 1 each side.
     /// - Pointwise / spatial stages: none.
+    ///
+    /// # Errors
+    ///
+    /// [`FilterError`] when a filter stage's design is invalid at `sample_rate`.
     pub fn settling(&self, sample_rate: f64) -> Result<(usize, usize), FilterError> {
         Ok(match self {
             PipelineStage::Filter(spec) => spec.settling(sample_rate)?,
@@ -105,6 +121,7 @@ impl PipelineStage {
             | PipelineStage::SubtractBaseline { .. }
             | PipelineStage::Clamp { .. }
             | PipelineStage::CommonAverageReference
+            | PipelineStage::CommonMedianReference
             | PipelineStage::SpatialWhitening(_)
             | PipelineStage::SurfaceLaplacian(_) => (0, 0),
         })

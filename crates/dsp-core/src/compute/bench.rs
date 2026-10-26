@@ -8,13 +8,13 @@ use std::time::{Duration, Instant};
 use cubecl::prelude::*;
 
 /// Waits until every operation queued on `client` has finished.
-pub fn sync<R: Runtime>(client: &ComputeClient<R>) {
+pub fn sync(client: &Client) {
     cubecl::future::block_on(client.sync()).expect("device sync");
 }
 
 /// Runs `f` once as warm-up (kernel compilation, allocation), then `iters` times, and returns the
 /// median wall time per iteration including device completion.
-pub fn time_device<R: Runtime>(client: &ComputeClient<R>, iters: usize, mut f: impl FnMut()) -> Duration {
+pub fn time_device(client: &Client, iters: usize, mut f: impl FnMut()) -> Duration {
     f();
     sync(client);
     let mut times: Vec<Duration> = (0..iters.max(1))

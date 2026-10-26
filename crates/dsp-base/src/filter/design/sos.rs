@@ -88,6 +88,11 @@ impl Sos {
     }
 
     /// Checks that sections are finite, normalized (`a0 = 1`) and stable.
+    ///
+    /// # Errors
+    ///
+    /// [`FilterError::InvalidSections`] when there are no sections, a coefficient is not finite,
+    /// `a0 ≠ 1`, or a pole lies on or outside the unit circle.
     pub fn validate(&self) -> Result<(), FilterError> {
         let ok = !self.sections.is_empty()
             && self.sections.iter().all(|s| {

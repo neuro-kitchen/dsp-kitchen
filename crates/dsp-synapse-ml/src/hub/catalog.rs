@@ -1,7 +1,7 @@
 //! Model Hub catalog loader supporting the embedded JSON catalog (`catalog/models.json`)
 //! and optional user catalog overrides.
 
-use anyhow::{Context, Result};
+use dsp_core::{DspError, DspResult as Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -33,7 +33,7 @@ impl ModelCatalog {
     /// file pointed to by `DSP_KITCHEN_HUB_CATALOG` if set.
     pub fn load_default() -> Result<Self> {
         let mut catalog = Self::from_json_str(EMBEDDED_MODELS_JSON)
-            .context("failed to parse embedded catalog/models.json")?;
+            .map_err(|e| DspError::InvalidConfig(format!("embedded catalog/models.json: {e}")))?;
 
         if let Ok(custom_path) = std::env::var("DSP_KITCHEN_HUB_CATALOG") {
             let trimmed = custom_path.trim();
@@ -54,7 +54,7 @@ impl ModelCatalog {
             return Ok(Self { models: doc.models });
         }
         let models: Vec<ModelManifest> =
-            serde_json::from_str(json).context("invalid model catalog JSON")?;
+            serde_json::from_str(json).map_err(|e| DspError::InvalidConfig(format!("invalid model catalog JSON: {e}")))?;
         Ok(Self { models })
     }
 
@@ -62,9 +62,9 @@ impl ModelCatalog {
     /// Models with matching `id` replace existing entries; new IDs are appended.
     pub fn merge_file(&mut self, path: &Path) -> Result<()> {
         let content = std::fs::read_to_string(path)
-            .with_context(|| format!("failed to read user catalog override {}", path.display()))?;
+            .map_err(|e| DspError::Io(format!("user catalog override {}: {e}", path.display())))?;
         let other = Self::from_json_str(&content)
-            .with_context(|| format!("failed to parse user catalog override {}", path.display()))?;
+            .map_err(|e| DspError::InvalidConfig(format!("user catalog override {}: {e}", path.display())))?;
         self.merge(other);
         Ok(())
     }

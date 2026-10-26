@@ -4,7 +4,8 @@ use crate::extraction::WaveformSnippet;
 /// Morphological feature metrics extracted from an action potential waveform.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SpikeMorphology {
-    pub peak_amplitude_uv: f32,
+    /// Trough (most negative sample) of the primary channel (µV).
+    pub trough_amplitude_uv: f32,
     pub trough_to_peak_samples: f32,
     pub half_width_samples: f32,
     pub repolarization_slope: f32,
@@ -63,7 +64,7 @@ pub fn compute_morphology(snippet: &WaveformSnippet) -> Option<SpikeMorphology> 
     };
 
     Some(SpikeMorphology {
-        peak_amplitude_uv: trough_val,
+        trough_amplitude_uv: trough_val,
         trough_to_peak_samples: trough_to_peak,
         half_width_samples: half_width,
         repolarization_slope: repol_slope,
@@ -86,7 +87,7 @@ mod tests {
             waveform: vec![0.0, -200.0, 0.0, 0.0, 0.0, 0.0, -50.0, -20.0, 30.0, 0.0],
         };
         let m = compute_morphology(&snippet).unwrap();
-        assert_eq!(m.peak_amplitude_uv, -50.0);
+        assert_eq!(m.trough_amplitude_uv, -50.0);
         assert_eq!(m.trough_to_peak_samples, 2.0);
     }
 }

@@ -33,11 +33,11 @@ pub struct PpcaModel {
 impl PpcaModel {
     /// Fits PPCA in closed form (maximum likelihood from the covariance eigendecomposition) on host
     /// data `[channels, samples]`; covariance and eigendecomposition on the device in `F`.
-    pub fn fit<R: Runtime, F: DspFloat>(client: &ComputeClient<R>, data: &[f32], channels: usize, samples: usize, num_components: usize) -> Self {
+    pub fn fit<F: DspFloat>(client: &Client, data: &[f32], channels: usize, samples: usize, num_components: usize) -> Self {
         assert!(channels > 0 && samples > 0, "Channels and samples must be > 0");
         let num_components = num_components.clamp(1, channels);
-        let (cov, mean) = covariance_of_host::<R, F>(client, data, channels, samples);
-        let eig = symmetric_eigen::<R, F>(client, &cov, channels, EigenOptions::default());
+        let (cov, mean) = covariance_of_host::<F>(client, data, channels, samples);
+        let eig = symmetric_eigen::<F>(client, &cov, channels, EigenOptions::default());
 
         // Tipping & Bishop (1999) Eq. 8: sigma_ML^2 is the average of the discarded eigenvalues
         let noise_variance = if num_components < channels {
@@ -76,8 +76,8 @@ impl PpcaModel {
 
     /// Fits PPCA via Expectation-Maximization (EM) with an observation mask (`[channels, samples]`,
     /// `true` = observed, `false` = missing/outside local neighborhood).
-    pub fn fit_em_masked<R: Runtime, F: DspFloat>(
-        client: &ComputeClient<R>,
+    pub fn fit_em_masked<F: DspFloat>(
+        client: &Client,
         data: &[f32],
         observed_mask: &[bool],
         channels: usize,
@@ -112,7 +112,7 @@ impl PpcaModel {
             }
         }
 
-        let mut model = Self::fit::<R, F>(client, &imputed, channels, samples, num_components);
+        let mut model = Self::fit::<F>(client, &imputed, channels, samples, num_components);
         for _iter in 0..max_iters.max(1) {
             // E-step: project current imputed data to posterior latent expectations Z = E[z | x]
             let z = model.project_cpu(&imputed, channels, samples);
@@ -127,7 +127,7 @@ impl PpcaModel {
                 }
             }
             // M-step: re-estimate closed-form subspace on completed sufficient statistics
-            model = Self::fit::<R, F>(client, &imputed, channels, samples, num_components);
+            model = Self::fit::<F>(client, &imputed, channels, samples, num_components);
         }
         model
     }
@@ -173,22 +173,22 @@ impl PpcaModel {
     }
 
     /// The projection with its weights uploaded once as `F`, for repeated calls.
-    pub fn to_device<R: Runtime, F: DspFloat>(&self, client: &ComputeClient<R>) -> DeviceProjection {
-        DeviceProjection::upload::<R, F>(client, &self.posterior_projection, &self.mean, self.num_channels, self.num_components)
+    pub fn to_device<F: DspFloat>(&self, client: &Client) -> DeviceProjection {
+        DeviceProjection::upload::<F>(client, &self.posterior_projection, &self.mean, self.num_channels, self.num_components)
     }
 
     /// One-off device projection of `[channels, samples]` into `[num_components, samples]` (uploads
     /// the weights; use [`Self::to_device`] for repeated calls).
-    pub fn project_gpu<R: Runtime, F: DspFloat>(
+    pub fn project_gpu<F: DspFloat>(
         &self,
-        client: &ComputeClient<R>,
+        client: &Client,
         input_handle: &cubecl::server::Handle,
         output_handle: &cubecl::server::Handle,
         channels: usize,
         samples: usize,
     ) {
         assert_eq!(channels, self.num_channels);
-        self.to_device::<R, F>(client).project::<R, F>(client, input_handle, output_handle, samples);
+        self.to_device::<F>(client).project::<F>(client, input_handle, output_handle, samples);
     }
 }
 
@@ -196,7 +196,7 @@ impl PpcaModel {
 mod tests {
     use super::*;
 
-    fn recovers<R: Runtime>(client: &ComputeClient<R>) {
+    fn recovers(client: &Client) {
         let channels = 5;
         let samples = 3000;
         let true_sigma2 = 0.25f32; // sigma = 0.5
@@ -221,7 +221,7 @@ mod tests {
             }
         }
 
-        let ppca = PpcaModel::fit::<R, f32>(client, &data, channels, samples, 1);
+        let ppca = PpcaModel::fit::<f32>(client, &data, channels, samples, 1);
         assert!((ppca.noise_variance - true_sigma2).abs() < 0.05, "noise_var={}", ppca.noise_variance);
 
         // Norm of W_ML should be close to ||w_true|| = sqrt(9 + 4 + 1) = sqrt(14) = 3.7417
