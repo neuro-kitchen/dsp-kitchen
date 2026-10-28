@@ -6,14 +6,12 @@ import numpy
 import numpy.typing
 import typing
 from . import filter
+from . import spatial
 __all__ = [
-    "GAUSSIAN_DEFAULT_EDGE",
-    "MAX_MEDIAN_WIDTH",
-    "MEDIAN_DEFAULT_EDGE",
     "Pipeline",
     "Stage",
-    "TEAGER_KAISER_DEFAULT_EDGE",
     "filter",
+    "spatial",
     "stage_car",
     "stage_clamp",
     "stage_cmr",
@@ -27,10 +25,6 @@ __all__ = [
     "stage_teager_kaiser",
 ]
 
-GAUSSIAN_DEFAULT_EDGE: builtins.str
-MAX_MEDIAN_WIDTH: builtins.int
-MEDIAN_DEFAULT_EDGE: builtins.str
-TEAGER_KAISER_DEFAULT_EDGE: builtins.str
 @typing.final
 class Pipeline:
     r"""

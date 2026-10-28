@@ -7,13 +7,15 @@ from collections.abc import Sequence
 import numpy as np
 
 from dspk._native import ops as _ops
-from dspk.ops.filter import DEFAULT_ORDER
+from dspk.ops.filter import (
+    DEFAULT_ORDER,
+    GAUSSIAN_DEFAULT_EDGE,
+    MAX_MEDIAN_WIDTH,
+    MEDIAN_DEFAULT_EDGE,
+    TEAGER_KAISER_DEFAULT_EDGE,
+)
 
 Stage = _ops.Stage
-MEDIAN_DEFAULT_EDGE: str = _ops.MEDIAN_DEFAULT_EDGE
-GAUSSIAN_DEFAULT_EDGE: str = _ops.GAUSSIAN_DEFAULT_EDGE
-TEAGER_KAISER_DEFAULT_EDGE: str = _ops.TEAGER_KAISER_DEFAULT_EDGE
-MAX_MEDIAN_WIDTH: int = _ops.MAX_MEDIAN_WIDTH
 
 
 def scale(alpha: float, beta: float = 0.0) -> Stage:

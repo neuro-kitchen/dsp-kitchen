@@ -3,13 +3,11 @@
 //! device: one upload, every stage, one download.
 //!
 //! Native functions take every argument; the Python wrappers (`dspk.ops.stage`) hold the defaults,
-//! taken from the constants exported here.
+//! taken from the constants `dspk.ops.filter` exports.
 
 use std::sync::Mutex;
 
-use dspk_ops::core::EdgeMode;
-use dspk_ops::filter::fir::GAUSSIAN_DEFAULT_EDGE;
-use dspk_ops::filter::non_linear::{MAX_MEDIAN_WIDTH, MEDIAN_DEFAULT_EDGE, TEAGER_KAISER_DEFAULT_EDGE};
+use dspk_ops::filter::non_linear::MAX_MEDIAN_WIDTH;
 use dspk_ops::filter::{FilterDesign, FilterMode, FilterSpec};
 use dspk_ops::pipeline::PipelineWorkspace;
 use dspk_ops::{Pipeline as RustPipeline, PipelineStage};
@@ -19,27 +17,9 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 
-use super::filter::{band, design, mode, sos_from_numpy, start};
+use super::filter::{band, design, edge, mode, sos_from_numpy, start};
 use crate::runtime;
 
-fn edge(name: &str) -> PyResult<EdgeMode> {
-    match name {
-        "zeros" => Ok(EdgeMode::Zeros),
-        "odd" => Ok(EdgeMode::Odd),
-        "reflect" => Ok(EdgeMode::Reflect),
-        "nearest" => Ok(EdgeMode::Nearest),
-        other => Err(PyValueError::new_err(format!("unknown edge {other:?} (zeros, odd, reflect, nearest)"))),
-    }
-}
-
-fn edge_name(edge: EdgeMode) -> &'static str {
-    match edge {
-        EdgeMode::Zeros => "zeros",
-        EdgeMode::Odd => "odd",
-        EdgeMode::Reflect => "reflect",
-        EdgeMode::Nearest => "nearest",
-    }
-}
 
 /// One pipeline stage (build with the functions of `dspk.ops.stage`).
 #[gen_stub_pyclass]
@@ -238,10 +218,6 @@ impl Pipeline {
     }
 }
 
-pyo3_stub_gen::module_variable!("dspk._native.ops", "MEDIAN_DEFAULT_EDGE", String);
-pyo3_stub_gen::module_variable!("dspk._native.ops", "GAUSSIAN_DEFAULT_EDGE", String);
-pyo3_stub_gen::module_variable!("dspk._native.ops", "TEAGER_KAISER_DEFAULT_EDGE", String);
-pyo3_stub_gen::module_variable!("dspk._native.ops", "MAX_MEDIAN_WIDTH", usize);
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Stage>()?;
@@ -257,9 +233,5 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(stage_gaussian_smooth, m)?)?;
     m.add_function(wrap_pyfunction!(stage_median, m)?)?;
     m.add_function(wrap_pyfunction!(stage_teager_kaiser, m)?)?;
-    m.add("MEDIAN_DEFAULT_EDGE", edge_name(MEDIAN_DEFAULT_EDGE))?;
-    m.add("GAUSSIAN_DEFAULT_EDGE", edge_name(GAUSSIAN_DEFAULT_EDGE))?;
-    m.add("TEAGER_KAISER_DEFAULT_EDGE", edge_name(TEAGER_KAISER_DEFAULT_EDGE))?;
-    m.add("MAX_MEDIAN_WIDTH", MAX_MEDIAN_WIDTH)?;
     Ok(())
 }
