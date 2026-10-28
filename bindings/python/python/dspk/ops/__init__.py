@@ -1,8 +1,71 @@
 """Signal-processing operations of dspk-ops, run on the chosen runtime (see ``dspk.runtime``).
 
-Each call uploads its input, runs on the device and returns NumPy.
+One-shot functions (``dspk.ops.filter``) upload their input, run and return NumPy. A
+:class:`Pipeline` chains :mod:`dspk.ops.stage` stages on the device: one upload, every stage, one
+download per chunk, with filter designs and device buffers kept between chunks.
 """
 
-from dspk.ops import filter
+from __future__ import annotations
 
-__all__ = ["filter"]
+from collections.abc import Sequence
+
+import numpy as np
+
+from dspk._native import ops as _ops
+from dspk.ops import filter, stage
+
+
+class Pipeline:
+    """Stages run on the device over ``(channels, samples)`` chunks.
+
+    ``stream=False``: every chunk on its own (zero-phase filters allowed; give chunks the context of
+    :attr:`settling`). ``stream=True``: chunks are consecutive pieces of one signal; filter state
+    carries over, so chunked output equals whole-signal output (forward filters only).
+    """
+
+    def __init__(
+        self,
+        stages: Sequence[stage.Stage],
+        sample_rate: float,
+        *,
+        stream: bool = False,
+        runtime: str | None = None,
+    ) -> None:
+        self._native = _ops.Pipeline(list(stages), sample_rate, stream=stream, runtime=runtime)
+
+    def process(self, data) -> np.ndarray:
+        """Runs every stage over ``data`` ``(channels, samples)``; returns float32 of the same shape."""
+        array = np.ascontiguousarray(data, dtype=np.float32)
+        if array.ndim != 2:
+            raise ValueError(f"data must be 2-D (channels, samples), got shape {array.shape}")
+        return self._native.process(array)
+
+    def reset(self) -> None:
+        """Forgets the device workspace: the next chunk starts a new stream."""
+        self._native.reset()
+
+    @property
+    def settling(self) -> tuple[int, int]:
+        """Context ``(left, right)`` in samples a chunk needs to match whole-signal output."""
+        return self._native.settling
+
+    @property
+    def sample_rate(self) -> float:
+        return self._native.sample_rate
+
+    @property
+    def stream(self) -> bool:
+        return self._native.stream
+
+    @property
+    def runtime(self) -> str:
+        return self._native.runtime
+
+    def __len__(self) -> int:
+        return len(self._native)
+
+    def __repr__(self) -> str:
+        return repr(self._native)
+
+
+__all__ = ["Pipeline", "filter", "stage"]

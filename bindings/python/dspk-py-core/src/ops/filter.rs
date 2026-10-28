@@ -19,7 +19,7 @@ fn filter_err(e: FilterError) -> PyErr {
     PyValueError::new_err(e.to_string())
 }
 
-fn band(kind: &str, cutoff: &[f64]) -> PyResult<FilterBand> {
+pub(super) fn band(kind: &str, cutoff: &[f64]) -> PyResult<FilterBand> {
     match (kind, cutoff) {
         ("lowpass", [f]) => Ok(FilterBand::Lowpass(*f)),
         ("highpass", [f]) => Ok(FilterBand::Highpass(*f)),
@@ -31,7 +31,7 @@ fn band(kind: &str, cutoff: &[f64]) -> PyResult<FilterBand> {
     }
 }
 
-fn design(name: &str, order: usize, band: FilterBand, ripple_db: Option<f64>) -> PyResult<FilterDesign> {
+pub(super) fn design(name: &str, order: usize, band: FilterBand, ripple_db: Option<f64>) -> PyResult<FilterDesign> {
     match (name, ripple_db) {
         ("butterworth", None) => Ok(FilterDesign::Butterworth { order, band }),
         ("bessel", None) => Ok(FilterDesign::Bessel { order, band }),
@@ -42,7 +42,7 @@ fn design(name: &str, order: usize, band: FilterBand, ripple_db: Option<f64>) ->
     }
 }
 
-fn mode(name: &str) -> PyResult<FilterMode> {
+pub(super) fn mode(name: &str) -> PyResult<FilterMode> {
     match name {
         "forward_backward" => Ok(FilterMode::ForwardBackward),
         "forward" => Ok(FilterMode::Forward),
@@ -50,7 +50,7 @@ fn mode(name: &str) -> PyResult<FilterMode> {
     }
 }
 
-fn start(name: &str) -> PyResult<FilterStart> {
+pub(super) fn start(name: &str) -> PyResult<FilterStart> {
     match name {
         "rest" => Ok(FilterStart::Rest),
         "steady_state" => Ok(FilterStart::SteadyState),
@@ -63,7 +63,7 @@ fn sos_to_numpy<'py>(py: Python<'py>, sos: &Sos) -> Bound<'py, PyArray2<f64>> {
     Array2::from_shape_vec((sos.len(), 6), rows).expect("6 coefficients per section").into_pyarray(py)
 }
 
-fn sos_from_numpy(sos: PyReadonlyArray2<'_, f64>) -> PyResult<Sos> {
+pub(super) fn sos_from_numpy(sos: PyReadonlyArray2<'_, f64>) -> PyResult<Sos> {
     let view = sos.as_array();
     if view.ncols() != 6 {
         return Err(PyValueError::new_err(format!("sos must have shape (sections, 6), got {:?}", view.dim())));
