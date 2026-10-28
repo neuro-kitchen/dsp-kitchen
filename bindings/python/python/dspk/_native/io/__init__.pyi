@@ -110,15 +110,17 @@ def sources(path: builtins.str | os.PathLike | pathlib.Path) -> builtins.list[So
     Every source of the file at `path`, from its metadata only.
     """
 
-def write_raw(data: numpy.typing.NDArray[numpy.float32], path: builtins.str | os.PathLike | pathlib.Path, sample_rate: builtins.float, *, format: builtins.str = 'float32', order: builtins.str = 'channel_major', gain: builtins.float = 1.0, unit: builtins.str = '', chunk_samples: builtins.int = 65536) -> None:
+def write_raw(data: typing.Any, path: builtins.str | os.PathLike | pathlib.Path, sample_rate: builtins.float, *, format: typing.Optional[builtins.str] = None, order: builtins.str = 'channel_major', gain: builtins.float = 1.0, unit: builtins.str = '', chunk_samples: builtins.int = 65536) -> None:
     r"""
     Writes `data` `(channels, samples)` as raw binary at `path` with its JSON sidecar.
     
-    `format`: stored type; values are stored as `round(value / gain)` for integer formats.
+    Integer `data` is the stored integers (`value = stored · gain`); float `data` the values.
+    `format`: stored type (default: `data`'s dtype; then integers are written as they are). Float
+    values stored in an integer format become `round(value / gain)`.
     `order`: `"channel_major"` or `"time_major"`. `unit`: symbol of the values (`""`: dimensionless).
     """
 
-def write_zarr(data: numpy.typing.NDArray[numpy.float32], path: builtins.str | os.PathLike | pathlib.Path, sample_rate: builtins.float, *, unit: builtins.str = '', chunk_samples: builtins.int = 65536) -> None:
+def write_zarr(data: typing.Any, path: builtins.str | os.PathLike | pathlib.Path, sample_rate: builtins.float, *, unit: builtins.str = '', chunk_samples: builtins.int = 65536) -> None:
     r"""
     Writes `data` `(channels, samples)` as a Zarr store at `path` (`/traces`, `float32`).
     """

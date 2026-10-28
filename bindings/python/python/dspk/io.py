@@ -21,8 +21,17 @@ formats = _io.formats
 WRITE_CHUNK_SAMPLES: int = _io.WRITE_CHUNK_SAMPLES
 
 
+#: NumPy array dtypes written as they are; other dtypes and Python lists become float32 first.
+STORED_DTYPES = ("int8", "int16", "uint16", "int32", "float32", "float64")
+
+
 def _as_channels(data) -> np.ndarray:
-    array = np.ascontiguousarray(data, dtype=np.float32)
+    """``data`` as a C-contiguous ``(channels, samples)`` array: a NumPy array in its own dtype when
+    dspk stores that dtype (little-endian), anything else (lists, other dtypes) as float32."""
+    array = np.asarray(data)
+    keep = isinstance(data, np.ndarray) and array.dtype.name in STORED_DTYPES
+    dtype = array.dtype.newbyteorder("<") if keep else np.dtype(np.float32)
+    array = np.ascontiguousarray(array, dtype=dtype)
     if array.ndim != 2:
         raise ValueError(f"data must be 2-D (channels, samples), got shape {array.shape}")
     return array
@@ -33,7 +42,7 @@ def write_raw(
     path: str | PathLike,
     sample_rate: float,
     *,
-    format: str = "float32",  # noqa: A002
+    format: str | None = None,  # noqa: A002
     order: str = "channel_major",
     gain: float = 1.0,
     unit: str = "",
@@ -41,8 +50,11 @@ def write_raw(
 ) -> None:
     """Writes ``data`` ``(channels, samples)`` as raw binary at ``path`` with its JSON sidecar.
 
-    Integer ``format``\\ s store ``round(value / gain)``; ``order`` is ``"channel_major"`` or
-    ``"time_major"``; ``unit`` is the symbol of the values (``""``: dimensionless).
+    Integer ``data`` is the stored integers, ``value = stored * gain`` (an int16 amplifier array and
+    its volts per bit); float ``data`` is the values. ``format`` defaults to ``data``'s dtype, so
+    integers are written as they are, with no conversion; float values stored in an integer
+    ``format`` become ``round(value / gain)``. ``order`` is ``"channel_major"`` or ``"time_major"``;
+    ``unit`` is the symbol of the values (``""``: dimensionless).
     """
     _io.write_raw(
         _as_channels(data), path, sample_rate,
@@ -63,6 +75,6 @@ def write_zarr(
 
 
 __all__ = [
-    "Recording", "Source", "WRITE_CHUNK_SAMPLES",
+    "STORED_DTYPES", "Recording", "Source", "WRITE_CHUNK_SAMPLES",
     "formats", "open", "sources", "write_raw", "write_zarr",
 ]

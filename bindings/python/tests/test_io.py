@@ -73,3 +73,27 @@ def test_errors(tmp_path, signal):
     dspk.io.write_raw(signal, path, SAMPLE_RATE)
     with pytest.raises(IndexError):
         dspk.io.open(path).read(channels=[9])
+
+
+@pytest.mark.parametrize("order", ["channel_major", "time_major"])
+def test_integer_arrays_are_written_as_they_are(tmp_path, order):
+    rng = np.random.default_rng(4)
+    stored = rng.integers(-30_000, 30_000, size=(3, 5_000)).astype(np.int16)
+    path = tmp_path / "amp.bin"
+    dspk.io.write_raw(stored, path, SAMPLE_RATE, order=order, gain=0.195, unit="µV")
+    rec = dspk.io.open(path)
+    assert rec.format == "int16"
+    raw = np.fromfile(path, dtype="<i2")
+    on_disk = raw.reshape(3, -1) if order == "channel_major" else raw.reshape(-1, 3).T
+    np.testing.assert_array_equal(on_disk, stored)  # the integers themselves, no float round trip
+    np.testing.assert_allclose(rec.read(), stored.astype(np.float32) * np.float32(0.195), rtol=1e-6)
+
+
+def test_float_dtypes_and_lists(tmp_path):
+    x = np.random.default_rng(5).standard_normal((2, 100))
+    dspk.io.write_raw(x, tmp_path / "f64.bin", SAMPLE_RATE)
+    assert dspk.io.open(tmp_path / "f64.bin").format == "float64"
+    dspk.io.write_raw(x.tolist(), tmp_path / "list.bin", SAMPLE_RATE)
+    assert dspk.io.open(tmp_path / "list.bin").format == "float32"
+    dspk.io.write_raw(x.astype(np.int64), tmp_path / "i64.bin", SAMPLE_RATE)
+    assert dspk.io.open(tmp_path / "i64.bin").format == "float32", "int64 is not stored: float32"

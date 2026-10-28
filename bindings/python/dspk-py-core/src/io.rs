@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use dspk_core::{MemoryOrder, RecordingInfo, RecordingSource, SampleFormat, SampleRate, SignalUnit};
-use dspk_core::recording::check_read;
+use dspk_core::recording::{check_read, check_read_stored};
 use numpy::ndarray::Array2;
 use numpy::{IntoPyArray, PyArray2, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
@@ -174,19 +174,43 @@ pub fn formats() -> Vec<&'static str> {
 /// A NumPy array `(channels, samples)` seen as a recording, so the Rust writers can read it.
 struct ArrayRecording {
     info: RecordingInfo,
-    data: Vec<f32>,
+    /// Channel-major little-endian values of `info.format`.
+    stored: Vec<u8>,
+}
+
+/// A NumPy `(channels, samples)` array in a dtype dspk stores, as its format and little-endian
+/// bytes (no conversion).
+fn stored_array(data: &Bound<'_, PyAny>) -> PyResult<(SampleFormat, usize, usize, Vec<u8>)> {
+    macro_rules! try_dtype {
+        ($t:ty, $format:expr) => {
+            if let Ok(a) = data.extract::<PyReadonlyArray2<'_, $t>>() {
+                let view = a.as_array();
+                let (c, n) = view.dim();
+                return Ok(($format, c, n, view.iter().flat_map(|v| v.to_le_bytes()).collect()));
+            }
+        };
+    }
+    try_dtype!(i8, SampleFormat::I8);
+    try_dtype!(i16, SampleFormat::I16);
+    try_dtype!(u16, SampleFormat::U16);
+    try_dtype!(i32, SampleFormat::I32);
+    try_dtype!(f32, SampleFormat::F32);
+    try_dtype!(f64, SampleFormat::F64);
+    Err(PyValueError::new_err("data must be a 2-D int8, int16, uint16, int32, float32 or float64 array (channels, samples)"))
 }
 
 impl ArrayRecording {
-    fn new(data: PyReadonlyArray2<'_, f32>, sample_rate: f64, unit: &str) -> PyResult<Self> {
-        let view = data.as_array();
-        let (channels, samples) = view.dim();
+    /// `data` as stored values: integer arrays are the stored integers (`value = stored · gain`),
+    /// float arrays the values themselves (`gain` 1).
+    fn new(data: &Bound<'_, PyAny>, sample_rate: f64, gain: f32, unit: &str) -> PyResult<Self> {
+        let (format, channels, samples, stored) = stored_array(data)?;
         if channels == 0 {
             return Err(PyValueError::new_err("data has no channels (expected shape (channels, samples))"));
         }
-        let info = RecordingInfo::new("array", channels, samples as u64, SampleRate::new(sample_rate).map_err(to_py)?, SampleFormat::F32, MemoryOrder::ChannelMajor)
-            .with_gain(1.0, parse_unit(unit));
-        Ok(Self { info, data: view.iter().copied().collect() })
+        let gain = if matches!(format, SampleFormat::F32 | SampleFormat::F64) { 1.0 } else { gain };
+        let info = RecordingInfo::new("array", channels, samples as u64, SampleRate::new(sample_rate).map_err(to_py)?, format, MemoryOrder::ChannelMajor)
+            .with_gain(gain, parse_unit(unit));
+        Ok(Self { info, stored })
     }
 }
 
@@ -197,10 +221,21 @@ impl RecordingSource for ArrayRecording {
 
     fn read(&self, channels: &[usize], samples: Range<u64>, out: &mut [f32]) -> dspk_core::DspResult<()> {
         let n = check_read(&self.info, channels, &samples, out.len())?;
-        let total = self.info.samples as usize;
+        let (total, width) = (self.info.samples as usize, self.info.format.bytes());
         for (dst, &ch) in out.chunks_exact_mut(n.max(1)).zip(channels) {
-            let base = ch * total + samples.start as usize;
-            dst.copy_from_slice(&self.data[base..base + n]);
+            let at = (ch * total + samples.start as usize) * width;
+            let c = &self.info.channels[ch];
+            self.info.format.decode(&self.stored[at..at + n * width], dst, c.gain, c.offset);
+        }
+        Ok(())
+    }
+
+    fn read_stored(&self, channels: &[usize], samples: Range<u64>, out: &mut [u8]) -> dspk_core::DspResult<()> {
+        let n = check_read_stored(&self.info, channels, &samples, out.len())?;
+        let (total, width) = (self.info.samples as usize, self.info.format.bytes());
+        for (dst, &ch) in out.chunks_exact_mut((n * width).max(1)).zip(channels) {
+            let at = (ch * total + samples.start as usize) * width;
+            dst.copy_from_slice(&self.stored[at..at + n * width]);
         }
         Ok(())
     }
@@ -235,15 +270,31 @@ fn parse_order(name: &str) -> PyResult<MemoryOrder> {
 
 /// Writes `data` `(channels, samples)` as raw binary at `path` with its JSON sidecar.
 ///
-/// `format`: stored type; values are stored as `round(value / gain)` for integer formats.
+/// Integer `data` is the stored integers (`value = stored · gain`); float `data` the values.
+/// `format`: stored type (default: `data`'s dtype; then integers are written as they are). Float
+/// values stored in an integer format become `round(value / gain)`.
 /// `order`: `"channel_major"` or `"time_major"`. `unit`: symbol of the values (`""`: dimensionless).
 #[gen_stub_pyfunction(module = "dspk._native.io")]
 #[pyfunction]
-#[pyo3(signature = (data, path, sample_rate, *, format="float32", order="channel_major", gain=1.0, unit="", chunk_samples=WRITE_CHUNK_SAMPLES))]
+#[pyo3(signature = (data, path, sample_rate, *, format=None, order="channel_major", gain=1.0, unit="", chunk_samples=WRITE_CHUNK_SAMPLES))]
 #[allow(clippy::too_many_arguments)]
-pub fn write_raw(py: Python<'_>, data: PyReadonlyArray2<'_, f32>, path: PathBuf, sample_rate: f64, format: &str, order: &str, gain: f32, unit: &str, chunk_samples: usize) -> PyResult<()> {
-    let (format, order) = (parse_format(format)?, parse_order(order)?);
-    let source = ArrayRecording::new(data, sample_rate, unit)?;
+pub fn write_raw(
+    py: Python<'_>,
+    data: &Bound<'_, PyAny>,
+    path: PathBuf,
+    sample_rate: f64,
+    format: Option<&str>,
+    order: &str,
+    gain: f32,
+    unit: &str,
+    chunk_samples: usize,
+) -> PyResult<()> {
+    let source = ArrayRecording::new(data, sample_rate, gain, unit)?;
+    let format = match format {
+        Some(name) => parse_format(name)?,
+        None => source.info.format,
+    };
+    let order = parse_order(order)?;
     py.detach(|| dspk_io::write_raw(&source, &path, format, order, gain, chunk_samples, |_, _| {})).map_err(to_py)?;
     Ok(())
 }
@@ -252,8 +303,8 @@ pub fn write_raw(py: Python<'_>, data: PyReadonlyArray2<'_, f32>, path: PathBuf,
 #[gen_stub_pyfunction(module = "dspk._native.io")]
 #[pyfunction]
 #[pyo3(signature = (data, path, sample_rate, *, unit="", chunk_samples=WRITE_CHUNK_SAMPLES))]
-pub fn write_zarr(py: Python<'_>, data: PyReadonlyArray2<'_, f32>, path: PathBuf, sample_rate: f64, unit: &str, chunk_samples: usize) -> PyResult<()> {
-    let source = ArrayRecording::new(data, sample_rate, unit)?;
+pub fn write_zarr(py: Python<'_>, data: &Bound<'_, PyAny>, path: PathBuf, sample_rate: f64, unit: &str, chunk_samples: usize) -> PyResult<()> {
+    let source = ArrayRecording::new(data, sample_rate, 1.0, unit)?;
     py.detach(|| dspk_io::write_zarr(&source, &path, chunk_samples, |_, _| {})).map_err(to_py)
 }
 

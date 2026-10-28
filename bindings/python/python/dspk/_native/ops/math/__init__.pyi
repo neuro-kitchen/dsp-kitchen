@@ -13,10 +13,7 @@ __all__ = [
 ]
 
 MAD_TO_SIGMA: builtins.float
-def channel_mean_std(data: numpy.typing.NDArray[numpy.float32], *, runtime: typing.Optional[builtins.str]) -> tuple[numpy.typing.NDArray[numpy.float32], numpy.typing.NDArray[numpy.float32]]:
-    r"""
-    Per-channel mean and population standard deviation of `data` `(channels, samples)`.
-    """
+def channel_mean_std(data: numpy.typing.NDArray[numpy.float32], *, runtime: typing.Optional[builtins.str]) -> tuple[numpy.typing.NDArray[numpy.float32], numpy.typing.NDArray[numpy.float32]]: ...
 
 def channel_noise_std(data: numpy.typing.NDArray[numpy.float32], *, runtime: typing.Optional[builtins.str]) -> numpy.typing.NDArray[numpy.float64]:
     r"""
