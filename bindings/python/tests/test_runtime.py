@@ -6,7 +6,7 @@ import dspk
 
 
 def test_version_matches_the_crates():
-    assert dspk.__version__ == "0.0.2"
+    assert dspk.__version__ == "0.0.3"
 
 
 def test_available_lists_compiled_runtimes_gpus_first():
