@@ -1,0 +1,40 @@
+# Weekly version updates; security updates are on in the repository settings and come separately.
+# Minor and patch updates are grouped into one pull request per ecosystem, majors come one by one.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      cargo-minor-patch:
+        update-types: [minor, patch]
+    ignore:
+      # pyo3-stub-gen 0.23 requires pyo3 < 0.30; numpy follows pyo3's minor version
+      - dependency-name: pyo3
+        versions: [">=0.30"]
+      - dependency-name: numpy
+        versions: [">=0.30"]
+
+  # The development environment (uv.lock at the root)
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      python-minor-patch:
+        update-types: [minor, patch]
+
+  # Actions are pinned to commit SHAs; Dependabot updates the SHA and the version comment
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]
