@@ -3104,6 +3104,7 @@ dependencies = [
 name = "dspk-pipeline"
 version = "0.0.2"
 dependencies = [
+ "cubecl",
  "dspk-core",
  "dspk-io",
  "dspk-ops",

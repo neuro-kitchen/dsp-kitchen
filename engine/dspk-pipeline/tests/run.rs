@@ -349,3 +349,60 @@ fn fir_runs_in_window_mode_and_equals_the_whole_recording() {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
+
+/// The chain's stages on the whole recording, then resample_poly over the whole result, on `target`.
+fn whole_then_resample(stages_spec: &PipelineSpec, target: ComputeTarget, up: usize, down: usize) -> Vec<f32> {
+    let staged = whole_recording(stages_spec, target, false);
+    let client = target.client().unwrap();
+    let input = dspk_ops::core::buffer::upload(&client, &staged);
+    let out_len = dspk_ops::resampler::resample_poly_len(SAMPLES, up, down);
+    let out = dspk_ops::core::buffer::empty::<f32>(&client, CHANNELS * out_len);
+    dspk_ops::resampler::resample_poly::<f32>(&client, &input, &out, CHANNELS, SAMPLES, up, down, &Default::default(), dspk_ops::core::EdgeMode::Zeros);
+    dspk_ops::core::buffer::download_prefix::<f32>(&client, out, CHANNELS * out_len)
+}
+
+#[test]
+fn resample_at_the_end_equals_resampling_the_whole_recording() {
+    for target in targets() {
+        let dir = scratch(&format!("resample_{}", target.name()));
+        write_input(&dir);
+        for (up, down) in [(1usize, 3usize), (2, 3)] {
+            let exec = format!(r#", "execution": {{"chunk_samples": {CHUNK}, "runtime": "{}"}}"#, target.name());
+            let with_resample = spec(
+                &format!(r#""c": {{"op": "car"}}, "r": {{"op": "resample", "up": {up}, "down": {down}}},"#),
+                r#"[["in", "c"], ["c", "r"], ["r", "out"]]"#,
+                &exec,
+            );
+            let stages_only = spec(r#""c": {"op": "car"},"#, r#"[["in", "c"], ["c", "out"]]"#, &exec);
+            let report = run(&with_resample, &dir).unwrap();
+            let out_len = dspk_ops::resampler::resample_poly_len(SAMPLES, up, down);
+            assert_eq!(report.samples, out_len as u64);
+            assert!((report.sample_rate_hz - FS * up as f64 / down as f64).abs() < 1e-9);
+            assert_eq!(dspk_io::open(&dir.join("out.bin")).unwrap().info().sample_rate_hz(), report.sample_rate_hz);
+            let expected = whole_then_resample(&stages_only, target, up, down);
+            let err = max_rel_err(&read_all(&dir.join("out.bin")), &expected);
+            assert!(err < 1e-6, "{} {up}/{down}: windows vs whole recording, {err:.2e}", target.name());
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[test]
+fn resample_is_refused_where_it_cannot_be_exact() {
+    let dir = scratch("resample_refused");
+    write_input(&dir);
+    let not_last = spec(
+        r#""r": {"op": "resample", "up": 1, "down": 2}, "c": {"op": "car"},"#,
+        r#"[["in", "r"], ["r", "c"], ["c", "out"]]"#,
+        "",
+    );
+    assert!(run(&not_last, &dir).unwrap_err().to_string().contains("last node"));
+    let mut misaligned = spec(r#""r": {"op": "resample", "up": 1, "down": 3},"#, r#"[["in", "r"], ["r", "out"]]"#, "");
+    if let Some(dspk_pipeline::Node::Read { start, .. }) = misaligned.nodes.get_mut("in") {
+        *start = Some(100);
+    }
+    assert!(run(&misaligned, &dir).unwrap_err().to_string().contains("multiple"));
+    let stream = spec(r#""r": {"op": "resample", "up": 1, "down": 2},"#, r#"[["in", "r"], ["r", "out"]]"#, r#", "execution": {"mode": "stream"}"#);
+    assert!(run(&stream, &dir).unwrap_err().to_string().contains("stream"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}

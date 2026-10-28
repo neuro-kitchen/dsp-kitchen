@@ -15,7 +15,11 @@ use std::time::Instant;
 use dspk_core::compute::device_elements;
 use dspk_core::{ChunkSchedule, ComputeTarget, DspResult, HaloWindow, MemoryOrder, RecordingSource, SampleFormat, WindowLoader};
 use dspk_io::{RawParams, RawRecording};
-use dspk_ops::core::buffer;
+use cubecl::prelude::Client;
+use cubecl::server::Handle;
+use dspk_ops::core::{buffer, EdgeMode};
+use dspk_ops::resampler::poly::RESAMPLE_POLY_HALF_LEN_PER_RATE;
+use dspk_ops::resampler::{resample_poly, resample_poly_len, FirWindow, ResampleFilter};
 use dspk_ops::filter::FilterMode;
 use dspk_ops::math::stored_word_bytes;
 use dspk_ops::pipeline::PipelineWorkspace;
@@ -58,7 +62,7 @@ pub struct RunReport {
     /// `true` when stored integers were uploaded and scaled on the device.
     pub stored_upload: bool,
     pub channels: usize,
-    /// Samples per channel written (`stop - start`).
+    /// Samples per channel written (`stop - start`, resampled when the chain ends with `resample`).
     pub samples: u64,
     pub sample_rate_hz: f64,
     pub windows: usize,
@@ -92,9 +96,19 @@ pub fn run_with(
     let (input, output) = (base_dir.join(input), base_dir.join(output));
 
     let mut stages = Vec::with_capacity(chain.stages.len());
-    for (id, node) in &chain.stages {
+    let mut resample = None;
+    for (i, (id, node)) in chain.stages.iter().enumerate() {
         let stage = node.stage().map_err(|e| PipelineError::Invalid(format!("node {id:?}: {e}")))?;
-        stages.push(stage.expect("processing nodes have a stage"));
+        match (node, stage) {
+            (Node::Resample { up, down, beta, edge }, _) => {
+                if i + 1 != chain.stages.len() {
+                    return Err(PipelineError::Invalid(format!("node {id:?}: resample must be the last node before write")));
+                }
+                resample = Some(Resample::new(*up, *down, *beta, (*edge).into()));
+            }
+            (_, Some(stage)) => stages.push(stage),
+            (_, None) => unreachable!("every other processing node has a stage"),
+        }
     }
     let pipeline = Pipeline::with_stages(stages);
 
@@ -106,9 +120,26 @@ pub fn run_with(
     let unit = info.channels[channels[0]].unit.clone();
     pipeline.validate(sample_rate).map_err(|e| PipelineError::Invalid(e.to_string()))?;
 
-    let mode = resolve_mode(spec.execution.mode, &pipeline, sample_rate)?;
+    let mut mode = resolve_mode(spec.execution.mode, &pipeline, sample_rate)?;
     let stored_upload = resolve_upload(spec.execution.upload, stored_format)?;
-    let chunk = spec.execution.chunk_samples.max(1);
+    let mut chunk = spec.execution.chunk_samples.max(1);
+    let (mut out_rate, mut out_samples) = (sample_rate, range.end - range.start);
+    if let Some(r) = &resample {
+        // Independent windows aligned to `down`, with the stages' context plus the resampling
+        // filter's reach: each output sample sees the input a whole-recording run would
+        if spec.execution.mode == ExecMode::Stream {
+            return Err(PipelineError::Invalid("execution.mode = \"stream\" is not possible with resample: use \"windows\" or \"auto\"".into()));
+        }
+        if range.start % r.down as u64 != 0 {
+            return Err(PipelineError::Invalid(format!("read: start {} must be a multiple of the resample's down ({})", range.start, r.down)));
+        }
+        let (left, right) = pipeline.settling(sample_rate).map_err(|e| PipelineError::Invalid(e.to_string()))?;
+        let align = |x: usize| x.div_ceil(r.down) * r.down;
+        mode = ExecutedMode::Windows { left: align(left + r.reach), right: align(right + r.reach) };
+        chunk = align(chunk);
+        out_rate = sample_rate * r.up as f64 / r.down as f64;
+        out_samples = resample_poly_len((range.end - range.start) as usize, r.up, r.down) as u64;
+    }
     let (left, right) = match mode {
         ExecutedMode::Stream => (0, 0),
         ExecutedMode::Windows { left, right } => (left, right),
@@ -148,53 +179,67 @@ pub fn run_with(
 
     let mut bytes = DataMovement::default();
     let mut frames = Vec::new();
-    // The window's own samples of a processed `[channels, read_len]` block, channel-major →
-    // time-major, appended to the output
-    let mut emit = |win: &HaloWindow, processed: &[f32], bytes: &mut DataMovement| -> DspResult<()> {
-        let n = win.read_len();
-        let valid = win.valid_local.clone();
+    // Columns `cols` of a processed `[channels, row_len]` block, channel-major → time-major,
+    // appended to the output
+    let mut emit = |rows: &[f32], row_len: usize, cols: std::ops::Range<usize>, bytes: &mut DataMovement| -> DspResult<()> {
         frames.clear();
-        frames.reserve(valid.len() * nch * 4);
-        for t in valid {
+        frames.reserve(cols.len() * nch * 4);
+        for t in cols {
             for c in 0..nch {
-                frames.extend_from_slice(&processed[c * n + t].to_le_bytes());
+                frames.extend_from_slice(&rows[c * row_len + t].to_le_bytes());
             }
         }
         writer.write_all(&frames)?;
         bytes.written += frames.len() as u64;
         Ok(())
     };
+    // Downloads a processed window (resampled on the device first, when the chain ends with one)
+    // and appends the samples it owns
+    let origin = range.start;
+    let mut finish = |win: &HaloWindow, handle: Handle, client: &Client, bytes: &mut DataMovement| -> DspResult<()> {
+        let n = win.read_len();
+        let (rows, row_len, cols) = match &resample {
+            None => (buffer::download_prefix::<f32>(client, handle, nch * n), n, win.valid_local.clone()),
+            Some(r) => {
+                let out_len = resample_poly_len(n, r.up, r.down);
+                let out = buffer::empty::<f32>(client, nch * out_len);
+                resample_poly::<f32>(client, &handle, &out, nch, n, r.up, r.down, &r.filter, r.edge);
+                // Output j of the window is input `read_start + j · down / up`
+                let first = ((win.valid_global.start - win.read_global.start) as usize) * r.up / r.down;
+                let to_end = resample_poly_len((win.valid_global.end - origin) as usize, r.up, r.down);
+                let start = ((win.valid_global.start - origin) as usize) * r.up / r.down;
+                let count = to_end - start;
+                (buffer::download_prefix::<f32>(client, out, nch * out_len), out_len, first..(first + count).min(out_len))
+            }
+        };
+        bytes.downloaded += (rows.len() * 4) as u64;
+        emit(&rows, row_len, cols, bytes)
+    };
     let loader = WindowLoader::with_channels(source.as_ref(), channels.clone());
     let read_bytes = |win: &HaloWindow| (nch * win.read_len() * stored_format.bytes()) as u64;
     if stored_upload {
         loader.stream_stored_owned_while(schedule.windows(), |win, stored| {
-            let n = win.read_len();
             bytes.read += read_bytes(win);
             bytes.uploaded += stored_word_bytes(stored.len()) as u64;
-            let handle = workspace.process_owned_stored_chunk_in_vram(stored, stored_format, n)?;
-            let processed = buffer::download_prefix::<f32>(workspace.client(), handle, nch * n);
-            bytes.downloaded += (processed.len() * 4) as u64;
-            emit(win, &processed, &mut bytes)?;
+            let handle = workspace.process_owned_stored_chunk_in_vram(stored, stored_format, win.read_len())?;
+            finish(win, handle, workspace.client(), &mut bytes)?;
             Ok(true)
         })?;
     } else {
-        let mut processed = Vec::new();
         loader.stream(schedule.windows(), |win, samples| {
-            let n = win.read_len();
             bytes.read += read_bytes(win);
             bytes.uploaded += (samples.len() * 4) as u64;
-            processed.resize(nch * n, 0.0f32);
-            workspace.process_chunk(samples, n, &mut processed);
-            bytes.downloaded += (processed.len() * 4) as u64;
-            emit(win, &processed, &mut bytes)
+            let handle = workspace.process_chunk_in_vram(samples, win.read_len());
+            finish(win, handle, workspace.client(), &mut bytes)
         })?;
     }
+    drop(finish);
     drop(emit);
     writer.flush().map_err(|e| PipelineError::Io(format!("{}: {e}", raw_path.display())))?;
     drop(writer);
 
-    let samples = range.end - range.start;
-    let mut params = RawParams::new(nch, sample_rate, SampleFormat::F32, MemoryOrder::TimeMajor);
+    let samples = out_samples;
+    let mut params = RawParams::new(nch, out_rate, SampleFormat::F32, MemoryOrder::TimeMajor);
     params.unit = unit;
     params.samples = Some(samples);
     params.write_sidecar(&raw_path)?;
@@ -217,7 +262,7 @@ pub fn run_with(
         stored_upload,
         channels: nch,
         samples,
-        sample_rate_hz: sample_rate,
+        sample_rate_hz: out_rate,
         windows: schedule.len(),
         bytes,
         output,
@@ -230,6 +275,29 @@ fn provenance_path(output: &Path) -> PathBuf {
     let mut name = output.file_name().unwrap_or_default().to_os_string();
     name.push(PROVENANCE_SUFFIX);
     output.with_file_name(name)
+}
+
+/// A trailing `resample` node, reduced to coprime factors.
+struct Resample {
+    up: usize,
+    down: usize,
+    filter: ResampleFilter,
+    edge: EdgeMode,
+    /// Input samples the resampling filter reaches on each side of an output sample.
+    reach: usize,
+}
+
+impl Resample {
+    fn new(up: usize, down: usize, beta: f64, edge: EdgeMode) -> Self {
+        let g = gcd(up, down);
+        let (up, down) = (up / g, down / g);
+        let half_len = RESAMPLE_POLY_HALF_LEN_PER_RATE * up.max(down);
+        Self { up, down, filter: ResampleFilter::Window(FirWindow::Kaiser { beta }), edge, reach: half_len.div_ceil(up) + 1 }
+    }
+}
+
+fn gcd(a: usize, b: usize) -> usize {
+    if b == 0 { a } else { gcd(b, a % b) }
 }
 
 /// `picked` (in its order, no repeats), or every channel.

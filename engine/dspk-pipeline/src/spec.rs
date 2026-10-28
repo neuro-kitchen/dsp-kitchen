@@ -14,6 +14,8 @@ use dspk_ops::filter::design::DEFAULT_BUTTERWORTH_ORDER;
 use dspk_ops::filter::fir::{FIR_DEFAULT_EDGE, GAUSSIAN_DEFAULT_EDGE};
 use dspk_ops::filter::non_linear::{MEDIAN_DEFAULT_EDGE, TEAGER_KAISER_DEFAULT_EDGE};
 use dspk_ops::filter::{FilterBand, FilterDesign, FilterMode, FilterSpec, FilterStart, Section, Sos};
+use dspk_ops::resampler::poly::{RESAMPLE_POLY_DEFAULT_EDGE, RESAMPLE_POLY_WINDOW};
+use dspk_ops::resampler::FirWindow;
 use dspk_ops::PipelineStage;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -123,6 +125,17 @@ pub enum Node {
         #[serde(default)]
         centered: bool,
         #[serde(default = "default_fir_edge")]
+        edge: Edge,
+    },
+    /// Resampling by `up / down` (`scipy.signal.resample_poly`: polyphase FIR, Kaiser `beta`
+    /// window); must be the last node before `write`. The output's sample rate is
+    /// `rate · up / down`; with a `read` range, its `start` must be a multiple of `down`.
+    Resample {
+        up: usize,
+        down: usize,
+        #[serde(default = "default_resample_beta")]
+        beta: f64,
+        #[serde(default = "default_resample_edge")]
         edge: Edge,
     },
     /// Common average reference.
@@ -256,6 +269,15 @@ fn default_order() -> usize {
 }
 fn default_chunk_samples() -> usize {
     DEFAULT_CHUNK_SAMPLES
+}
+fn default_resample_beta() -> f64 {
+    match RESAMPLE_POLY_WINDOW {
+        FirWindow::Kaiser { beta } => beta,
+        FirWindow::Hamming => unreachable!("resample_poly's default window is Kaiser"),
+    }
+}
+fn default_resample_edge() -> Edge {
+    Edge::from(RESAMPLE_POLY_DEFAULT_EDGE)
 }
 fn default_fir_edge() -> Edge {
     Edge::from(FIR_DEFAULT_EDGE)
@@ -409,13 +431,20 @@ impl PipelineSpec {
 }
 
 impl Node {
-    /// The dspk-ops stage of a processing node (`None` for `read` and `write`).
+    /// The dspk-ops stage of a processing node (`None` for `read`, `write` and `resample`, which the
+    /// executor runs itself).
     pub fn stage(&self) -> Result<Option<PipelineStage>, PipelineError> {
         let filter = |design: FilterDesign, mode: Mode, start: Start| {
             Ok(Some(PipelineStage::Filter(FilterSpec { design, mode: mode.into(), start: start.into() })))
         };
         match self {
             Node::Read { .. } | Node::Write { .. } => Ok(None),
+            Node::Resample { up, down, .. } => {
+                if *up == 0 || *down == 0 {
+                    return Err(PipelineError::Invalid(format!("resample: up and down must be at least 1, got {up} / {down}")));
+                }
+                Ok(None)
+            }
             Node::Scale { alpha, beta } => Ok(Some(PipelineStage::Scale { alpha: *alpha, beta: *beta })),
             Node::SubtractBaseline { baseline } => Ok(Some(PipelineStage::SubtractBaseline { baseline: *baseline })),
             Node::Clamp { min, max } => {
