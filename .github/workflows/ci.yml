@@ -4,8 +4,9 @@
 name: ci
 
 on:
+  # Pull requests cover the versions/* branches; pushes to main check what was merged
   push:
-    branches: [main, "versions/**"]
+    branches: [main]
   pull_request:
 
 permissions:
@@ -32,6 +33,12 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           cache-directories: ~/.local/share/tracel
+      # dspk-app's GUI stack (GPUI) builds against these system libraries on Linux
+      - name: System libraries for dspk-app
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends \
+            libfontconfig-dev libfreetype-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev
       - name: Check the workspace (dspk-cli is not maintained yet)
         run: cargo check --workspace --exclude dspk-cli --all-targets
       - name: Unit tests of the host-side crates
