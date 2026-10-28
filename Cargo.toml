@@ -24,7 +24,7 @@ members = [
 
 
 [workspace.package]
-version = "0.0.1"
+version = "0.0.2"
 edition = "2024"
 authors = ["jesusdpa1 <17010046+jesusdpa1@users.noreply.github.com>"]
 license = "MIT OR Apache-2.0"
@@ -34,15 +34,15 @@ keywords = ["dsp", "gpu", "signal-processing", "cubecl", "electrophysiology"]
 categories = ["science", "algorithms", "concurrency"]
 
 [workspace.dependencies]
-dspk-core = { path = "crates/dspk-core", version = "0.0.1", default-features = false }
-dspk-ops = { path = "crates/dspk-ops", version = "0.0.1", default-features = false }
-dspk-synapse-io = { path = "synapse/dspk-synapse-io", version = "0.0.1", default-features = false }
-dspk-synapse = { path = "synapse/dspk-synapse", version = "0.0.1", default-features = false }
-dspk-synapse-ml = { path = "synapse/dspk-synapse-ml", version = "0.0.1", default-features = false }
-dspk-synapse-hub = { path = "synapse/dspk-synapse-hub", version = "0.0.1", default-features = false }
-dspk-stream = { path = "serve/dspk-stream", version = "0.0.1", default-features = false }
-dspk-view = { path = "serve/dspk-view", version = "0.0.1", default-features = false }
-dspk-io = { path = "crates/dspk-io", version = "0.0.1", default-features = false }
+dspk-core = { path = "crates/dspk-core", version = "0.0.2", default-features = false }
+dspk-ops = { path = "crates/dspk-ops", version = "0.0.2", default-features = false }
+dspk-synapse-io = { path = "synapse/dspk-synapse-io", version = "0.0.2", default-features = false }
+dspk-synapse = { path = "synapse/dspk-synapse", version = "0.0.2", default-features = false }
+dspk-synapse-ml = { path = "synapse/dspk-synapse-ml", version = "0.0.2", default-features = false }
+dspk-synapse-hub = { path = "synapse/dspk-synapse-hub", version = "0.0.2", default-features = false }
+dspk-stream = { path = "serve/dspk-stream", version = "0.0.2", default-features = false }
+dspk-view = { path = "serve/dspk-view", version = "0.0.2", default-features = false }
+dspk-io = { path = "crates/dspk-io", version = "0.0.2", default-features = false }
 dspk-py-core = { path = "bindings/python/dspk-py-core", default-features = false }
 
 # Compute & Tensors
