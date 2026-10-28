@@ -12,6 +12,7 @@ use numpy::ndarray::Array2;
 use numpy::{IntoPyArray, PyArray2, PyReadonlyArray2};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3_stub_gen::derive::gen_stub_pyfunction;
 
 use crate::runtime;
 
@@ -96,6 +97,7 @@ fn run<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, spec: FilterSpec, 
 ///
 /// `band`: lowpass, highpass (one `cutoff` in Hz), bandpass, bandstop (`(low, high)` in Hz).
 /// `design`: butterworth, chebyshev1 (needs `ripple_db`), bessel.
+#[gen_stub_pyfunction(module = "dspk._native.ops.filter")]
 #[pyfunction]
 #[pyo3(signature = (band, cutoff, sample_rate, *, order=DEFAULT_BUTTERWORTH_ORDER, design="butterworth", ripple_db=None))]
 pub fn sos<'py>(py: Python<'py>, band: &str, cutoff: Vec<f64>, sample_rate: f64, order: usize, design: &str, ripple_db: Option<f64>) -> PyResult<Bound<'py, PyArray2<f64>>> {
@@ -104,6 +106,7 @@ pub fn sos<'py>(py: Python<'py>, band: &str, cutoff: Vec<f64>, sample_rate: f64,
 }
 
 /// Designs an IIR filter and applies it to `data` `(channels, samples)` on the device.
+#[gen_stub_pyfunction(module = "dspk._native.ops.filter")]
 #[pyfunction]
 #[pyo3(signature = (data, sample_rate, band, cutoff, *, order=DEFAULT_BUTTERWORTH_ORDER, design="butterworth", ripple_db=None, mode="forward_backward", start="rest", runtime=None))]
 #[allow(clippy::too_many_arguments)]
@@ -126,6 +129,7 @@ pub fn iir<'py>(
 
 /// Second-order notch at `freq` Hz with quality factor `q` (`scipy.signal.iirnotch`), applied on
 /// the device.
+#[gen_stub_pyfunction(module = "dspk._native.ops.filter")]
 #[pyfunction]
 #[pyo3(signature = (data, sample_rate, freq, q, *, mode="forward_backward", start="rest", runtime=None))]
 #[allow(clippy::too_many_arguments)]
@@ -135,6 +139,7 @@ pub fn notch<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, sample_rate:
 }
 
 /// Applies second-order sections `sos` `(sections, 6)` (scipy layout) to `data` on the device.
+#[gen_stub_pyfunction(module = "dspk._native.ops.filter")]
 #[pyfunction]
 #[pyo3(signature = (data, sos, *, mode="forward_backward", start="rest", runtime=None))]
 pub fn sosfilt<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, sos: PyReadonlyArray2<'_, f64>, mode: &str, start: &str, runtime: Option<&str>) -> PyResult<Bound<'py, PyArray2<f32>>> {
@@ -145,10 +150,14 @@ pub fn sosfilt<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, sos: PyRea
 
 /// Samples after which the impulse response of `sos` has decayed below the settling tolerance:
 /// the odd padding of each edge in `mode="forward_backward"` (at most `samples - 1`).
+#[gen_stub_pyfunction(module = "dspk._native.ops.filter")]
 #[pyfunction]
 pub fn settling_samples(sos: PyReadonlyArray2<'_, f64>) -> PyResult<usize> {
     Ok(sos_from_numpy(sos)?.settling_samples(DEFAULT_SETTLING_TOLERANCE))
 }
+
+pyo3_stub_gen::module_variable!("dspk._native.ops.filter", "DEFAULT_ORDER", usize);
+pyo3_stub_gen::module_variable!("dspk._native.ops.filter", "SETTLING_TOLERANCE", f64);
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sos, m)?)?;

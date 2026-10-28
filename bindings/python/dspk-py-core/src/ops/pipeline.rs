@@ -17,6 +17,7 @@ use numpy::ndarray::Array2;
 use numpy::{IntoPyArray, PyArray2, PyReadonlyArray2};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 
 use super::filter::{band, design, mode, sos_from_numpy, start};
 use crate::runtime;
@@ -41,12 +42,14 @@ fn edge_name(edge: EdgeMode) -> &'static str {
 }
 
 /// One pipeline stage (build with the functions of `dspk.ops.stage`).
-#[pyclass(module = "dspk.ops", frozen, from_py_object)]
+#[gen_stub_pyclass]
+#[pyclass(module = "dspk._native.ops", frozen, from_py_object)]
 #[derive(Clone)]
 pub struct Stage {
     inner: PipelineStage,
 }
 
+#[gen_stub_pymethods]
 #[pymethods]
 impl Stage {
     fn __repr__(&self) -> String {
@@ -58,16 +61,19 @@ fn stage(inner: PipelineStage) -> Stage {
     Stage { inner }
 }
 
+#[gen_stub_pyfunction(module = "dspk._native.ops")]
 #[pyfunction]
 fn stage_scale(alpha: f32, beta: f32) -> Stage {
     stage(PipelineStage::Scale { alpha, beta })
 }
 
+#[gen_stub_pyfunction(module = "dspk._native.ops")]
 #[pyfunction]
 fn stage_subtract_baseline(baseline: f32) -> Stage {
     stage(PipelineStage::SubtractBaseline { baseline })
 }
 
+#[gen_stub_pyfunction(module = "dspk._native.ops")]
 #[pyfunction]
 fn stage_clamp(min: f32, max: f32) -> PyResult<Stage> {
     if min > max {
@@ -76,6 +82,7 @@ fn stage_clamp(min: f32, max: f32) -> PyResult<Stage> {
     Ok(stage(PipelineStage::Clamp { min, max }))
 }
 
+#[gen_stub_pyfunction(module = "dspk._native.ops")]
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
 fn stage_iir(band: &str, cutoff: Vec<f64>, order: usize, design: &str, ripple_db: Option<f64>, mode: &str, start: &str) -> PyResult<Stage> {
@@ -83,28 +90,33 @@ fn stage_iir(band: &str, cutoff: Vec<f64>, order: usize, design: &str, ripple_db
     Ok(stage(PipelineStage::Filter(spec)))
 }
 
+#[gen_stub_pyfunction(module = "dspk._native.ops")]
 #[pyfunction]
 fn stage_notch(freq: f64, q: f64, mode: &str, start: &str) -> PyResult<Stage> {
     let spec = FilterSpec { design: FilterDesign::Notch { freq_hz: freq, q }, mode: self::mode(mode)?, start: self::start(start)? };
     Ok(stage(PipelineStage::Filter(spec)))
 }
 
+#[gen_stub_pyfunction(module = "dspk._native.ops")]
 #[pyfunction]
 fn stage_sos(sos: PyReadonlyArray2<'_, f64>, mode: &str, start: &str) -> PyResult<Stage> {
     let spec = FilterSpec { design: FilterDesign::Sos(sos_from_numpy(sos)?), mode: self::mode(mode)?, start: self::start(start)? };
     Ok(stage(PipelineStage::Filter(spec)))
 }
 
+#[gen_stub_pyfunction(module = "dspk._native.ops")]
 #[pyfunction]
 fn stage_car() -> Stage {
     stage(PipelineStage::CommonAverageReference)
 }
 
+#[gen_stub_pyfunction(module = "dspk._native.ops")]
 #[pyfunction]
 fn stage_cmr() -> Stage {
     stage(PipelineStage::CommonMedianReference)
 }
 
+#[gen_stub_pyfunction(module = "dspk._native.ops")]
 #[pyfunction]
 fn stage_gaussian_smooth(sigma_samples: f32, edge: &str) -> PyResult<Stage> {
     if !(sigma_samples > 0.0) {
@@ -113,6 +125,7 @@ fn stage_gaussian_smooth(sigma_samples: f32, edge: &str) -> PyResult<Stage> {
     Ok(stage(PipelineStage::GaussianSmooth { sigma_samples, edge: self::edge(edge)? }))
 }
 
+#[gen_stub_pyfunction(module = "dspk._native.ops")]
 #[pyfunction]
 fn stage_median(width: usize, edge: &str) -> PyResult<Stage> {
     if width % 2 == 0 || width > MAX_MEDIAN_WIDTH {
@@ -121,6 +134,7 @@ fn stage_median(width: usize, edge: &str) -> PyResult<Stage> {
     Ok(stage(PipelineStage::Median { width, edge: self::edge(edge)? }))
 }
 
+#[gen_stub_pyfunction(module = "dspk._native.ops")]
 #[pyfunction]
 fn stage_teager_kaiser(edge: &str) -> PyResult<Stage> {
     Ok(stage(PipelineStage::TeagerKaiser { edge: self::edge(edge)? }))
@@ -131,7 +145,8 @@ fn stage_teager_kaiser(edge: &str) -> PyResult<Stage> {
 /// `stream=False`: every chunk on its own (zero-phase filters allowed; give chunks enough context,
 /// see `settling`). `stream=True`: chunks are consecutive pieces of one signal; filter state carries
 /// over, so chunked output equals whole-signal output (forward filters only).
-#[pyclass(module = "dspk.ops", frozen)]
+#[gen_stub_pyclass]
+#[pyclass(module = "dspk._native.ops", frozen)]
 pub struct Pipeline {
     stages: RustPipeline,
     sample_rate: f64,
@@ -141,6 +156,7 @@ pub struct Pipeline {
     workspace: Mutex<Option<(usize, PipelineWorkspace<f32>)>>,
 }
 
+#[gen_stub_pymethods]
 #[pymethods]
 impl Pipeline {
     #[new]
@@ -221,6 +237,11 @@ impl Pipeline {
         format!("Pipeline({} stages, sample_rate={} Hz, stream={}, runtime={})", self.stages.len(), self.sample_rate, self.stream, self.target.name())
     }
 }
+
+pyo3_stub_gen::module_variable!("dspk._native.ops", "MEDIAN_DEFAULT_EDGE", String);
+pyo3_stub_gen::module_variable!("dspk._native.ops", "GAUSSIAN_DEFAULT_EDGE", String);
+pyo3_stub_gen::module_variable!("dspk._native.ops", "TEAGER_KAISER_DEFAULT_EDGE", String);
+pyo3_stub_gen::module_variable!("dspk._native.ops", "MAX_MEDIAN_WIDTH", usize);
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Stage>()?;

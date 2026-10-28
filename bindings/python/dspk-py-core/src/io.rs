@@ -13,6 +13,7 @@ use numpy::ndarray::Array2;
 use numpy::{IntoPyArray, PyArray2, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 
 use crate::error::to_py;
 
@@ -21,11 +22,13 @@ pub const WRITE_CHUNK_SAMPLES: usize = 65_536;
 
 /// A recording opened from a file. Reads return scaled `float32` values in each channel's unit,
 /// shape `(channels, samples)`.
-#[pyclass(module = "dspk.io", frozen)]
+#[gen_stub_pyclass]
+#[pyclass(module = "dspk._native.io", frozen)]
 pub struct Recording {
     inner: Arc<dyn RecordingSource>,
 }
 
+#[gen_stub_pymethods]
 #[pymethods]
 impl Recording {
     #[getter]
@@ -106,7 +109,8 @@ impl Recording {
 }
 
 /// One source of a file (most files have one; containers such as NWB have several).
-#[pyclass(module = "dspk.io", frozen, get_all)]
+#[gen_stub_pyclass]
+#[pyclass(module = "dspk._native.io", frozen, get_all)]
 pub struct Source {
     /// Id to pass to `open(path, source=...)`.
     id: String,
@@ -120,6 +124,7 @@ pub struct Source {
     unit: String,
 }
 
+#[gen_stub_pymethods]
 #[pymethods]
 impl Source {
     fn __repr__(&self) -> String {
@@ -128,6 +133,7 @@ impl Source {
 }
 
 /// Opens the recording at `path`: its default source, or `source` (an id from `sources(path)`).
+#[gen_stub_pyfunction(module = "dspk._native.io")]
 #[pyfunction]
 #[pyo3(signature = (path, source=None))]
 pub fn open(path: PathBuf, source: Option<&str>) -> PyResult<Recording> {
@@ -140,6 +146,7 @@ pub fn open(path: PathBuf, source: Option<&str>) -> PyResult<Recording> {
 }
 
 /// Every source of the file at `path`, from its metadata only.
+#[gen_stub_pyfunction(module = "dspk._native.io")]
 #[pyfunction]
 pub fn sources(path: PathBuf) -> PyResult<Vec<Source>> {
     Ok(dspk_io::sources(&path)
@@ -158,6 +165,7 @@ pub fn sources(path: PathBuf) -> PyResult<Vec<Source>> {
 }
 
 /// Names of the formats `open` recognizes, in detection order.
+#[gen_stub_pyfunction(module = "dspk._native.io")]
 #[pyfunction]
 pub fn formats() -> Vec<&'static str> {
     dspk_io::formats().iter().map(|f| f.name()).collect()
@@ -229,6 +237,7 @@ fn parse_order(name: &str) -> PyResult<MemoryOrder> {
 ///
 /// `format`: stored type; values are stored as `round(value / gain)` for integer formats.
 /// `order`: `"channel_major"` or `"time_major"`. `unit`: symbol of the values (`""`: dimensionless).
+#[gen_stub_pyfunction(module = "dspk._native.io")]
 #[pyfunction]
 #[pyo3(signature = (data, path, sample_rate, *, format="float32", order="channel_major", gain=1.0, unit="", chunk_samples=WRITE_CHUNK_SAMPLES))]
 #[allow(clippy::too_many_arguments)]
@@ -240,12 +249,15 @@ pub fn write_raw(py: Python<'_>, data: PyReadonlyArray2<'_, f32>, path: PathBuf,
 }
 
 /// Writes `data` `(channels, samples)` as a Zarr store at `path` (`/traces`, `float32`).
+#[gen_stub_pyfunction(module = "dspk._native.io")]
 #[pyfunction]
 #[pyo3(signature = (data, path, sample_rate, *, unit="", chunk_samples=WRITE_CHUNK_SAMPLES))]
 pub fn write_zarr(py: Python<'_>, data: PyReadonlyArray2<'_, f32>, path: PathBuf, sample_rate: f64, unit: &str, chunk_samples: usize) -> PyResult<()> {
     let source = ArrayRecording::new(data, sample_rate, unit)?;
     py.detach(|| dspk_io::write_zarr(&source, &path, chunk_samples, |_, _| {})).map_err(to_py)
 }
+
+pyo3_stub_gen::module_variable!("dspk._native.io", "WRITE_CHUNK_SAMPLES", usize);
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Recording>()?;

@@ -8,6 +8,7 @@ use std::sync::Mutex;
 use dspk_core::ComputeTarget;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3_stub_gen::derive::gen_stub_pyfunction;
 
 /// The runtime chosen with `set`, if any.
 static SELECTED: Mutex<Option<ComputeTarget>> = Mutex::new(None);
@@ -28,12 +29,14 @@ pub fn target(explicit: Option<&str>) -> PyResult<ComputeTarget> {
 }
 
 /// Names of the runtimes compiled into this build, in preference order (GPUs first).
+#[gen_stub_pyfunction(module = "dspk._native.runtime")]
 #[pyfunction]
 pub fn available() -> Vec<&'static str> {
     ComputeTarget::available().into_iter().map(ComputeTarget::name).collect()
 }
 
 /// The runtime calls use when they are not given `runtime=`.
+#[gen_stub_pyfunction(module = "dspk._native.runtime")]
 #[pyfunction]
 pub fn current() -> PyResult<&'static str> {
     Ok(target(None)?.name())
@@ -43,6 +46,7 @@ pub fn current() -> PyResult<&'static str> {
 ///
 /// `name`: `"wgpu"`, `"cpu"`, `"cuda"` or `"hip"` (one of `available()`); `None` goes back to the
 /// default (`DSPK_RUNTIME`, else the first compiled in).
+#[gen_stub_pyfunction(module = "dspk._native.runtime")]
 #[pyfunction]
 #[pyo3(signature = (name))]
 pub fn set(name: Option<&str>) -> PyResult<()> {

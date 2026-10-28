@@ -10,3 +10,13 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }
+
+pyo3_stub_gen::module_variable!("dspk._native", "__version__", String);
+
+/// Stub information for `src/bin/stub_gen.rs`, read from `bindings/python/pyproject.toml` (one
+/// level above this crate: module name, Python source folder).
+pub fn stub_info() -> pyo3_stub_gen::Result<pyo3_stub_gen::StubInfo> {
+    let manifest_dir: &std::path::Path = env!("CARGO_MANIFEST_DIR").as_ref();
+    let project = manifest_dir.parent().expect("dspk-py sits in bindings/python");
+    pyo3_stub_gen::StubInfo::from_pyproject_toml(project.join("pyproject.toml"))
+}

@@ -9,7 +9,8 @@ publish = false
 
 [lib]
 name = "_native"
-crate-type = ["cdylib"]
+# rlib as well: the `stub_gen` binary links it
+crate-type = ["cdylib", "rlib"]
 
 [features]
 # Our builds compile wgpu, cuda and cpu in; hip compiles but is untested (no AMD GPU)
@@ -25,3 +26,4 @@ hip = ["dspk-py-core/hip"]
 dspk-py-core.workspace = true
 # abi3: one wheel per platform serves every CPython >= 3.10
 pyo3 = { workspace = true, features = ["abi3-py310"] }
+pyo3-stub-gen.workspace = true
