@@ -3101,6 +3101,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dspk-pipeline"
+version = "0.0.2"
+dependencies = [
+ "dspk-core",
+ "dspk-io",
+ "dspk-ops",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "toml 1.1.8+spec-1.1.0",
+]
+
+[[package]]
 name = "dspk-py"
 version = "0.0.2"
 dependencies = [

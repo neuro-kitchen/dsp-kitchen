@@ -6,6 +6,8 @@ members = [
     "crates/dspk-core",
     "crates/dspk-io",
     "crates/dspk-ops",
+    # Pipeline engine
+    "engine/dspk-pipeline",
     # Electrophysiology
     "synapse/dspk-synapse-io",
     "synapse/dspk-synapse",
@@ -43,6 +45,7 @@ dspk-synapse-hub = { path = "synapse/dspk-synapse-hub", version = "0.0.2", defau
 dspk-stream = { path = "serve/dspk-stream", version = "0.0.2", default-features = false }
 dspk-view = { path = "serve/dspk-view", version = "0.0.2", default-features = false }
 dspk-io = { path = "crates/dspk-io", version = "0.0.2", default-features = false }
+dspk-pipeline = { path = "engine/dspk-pipeline", version = "0.0.2", default-features = false }
 dspk-py-core = { path = "bindings/python/dspk-py-core", default-features = false }
 
 # Compute & Tensors
@@ -93,6 +96,9 @@ tokio = { version = "1.54.1", features = ["full"] }
 # Serialization & Utilities
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+# Pipeline specs: TOML input, JSON Schema of the spec types
+toml = "1.1.8"
+schemars = "1.2.3"
 thiserror = "2.0.21"
 anyhow = "1.0.104"
 num-traits = "0.2.19"

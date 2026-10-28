@@ -1,0 +1,30 @@
+[package]
+name = "dspk-pipeline"
+description = "dspk pipelines as data: a versioned node-graph spec (JSON, or TOML to write by hand) and an executor that streams a recording through dspk-ops stages on the device"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+# New crate: not released until its spec has settled
+publish = false
+
+[features]
+default = ["wgpu"]
+wgpu = ["dspk-core/wgpu", "dspk-ops/wgpu"]
+cpu = ["dspk-core/cpu", "dspk-ops/cpu"]
+cuda = ["dspk-core/cuda", "dspk-ops/cuda"]
+hip = ["dspk-core/hip", "dspk-ops/hip"]
+
+[dependencies]
+dspk-core = { workspace = true, features = ["compute"] }
+dspk-io = { workspace = true, features = ["zarr"] }
+dspk-ops.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+toml.workspace = true
