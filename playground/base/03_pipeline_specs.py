@@ -35,7 +35,7 @@ spec = {
     "edges": [["raw", "notch"], ["notch", "hp"], ["hp", "car"], ["car", "out"]],
 }
 print(json.dumps(dspk.pipeline.canonical(spec)["nodes"]["hp"], indent=1))  # defaults written out
-report = dspk.pipeline.run(spec, base_dir=OUT)
+(report,) = dspk.pipeline.run(spec, base_dir=OUT)
 print({k: report[k] for k in ("mode", "runtime", "windows", "seconds")})
 print(dspk.io.open(report["output"]))
 
@@ -71,7 +71,7 @@ path = "filtered_from_toml.zarr"
 format = "zarr"
 """
 )
-report_toml = dspk.pipeline.run(OUT / "filter.toml")
+(report_toml,) = dspk.pipeline.run(OUT / "filter.toml")
 same = np.array_equal(dspk.io.open(report["output"]).read(), dspk.io.open(report_toml["output"]).read())
 print("TOML run equals the JSON run:", same)
 

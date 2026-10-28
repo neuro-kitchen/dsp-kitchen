@@ -3108,6 +3108,7 @@ dependencies = [
  "dspk-core",
  "dspk-io",
  "dspk-ops",
+ "glob",
  "schemars",
  "serde",
  "serde_json",

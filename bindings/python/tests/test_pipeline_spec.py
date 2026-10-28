@@ -37,7 +37,7 @@ def spec(out="out.bin", fmt="raw", **execution):
 
 @pytest.mark.parametrize("runtime", RUNTIMES)
 def test_run_equals_the_stream_pipeline(tmp_path, recording, runtime):
-    report = dspk.pipeline.run(spec(runtime=runtime), base_dir=tmp_path)
+    (report,) = dspk.pipeline.run(spec(runtime=runtime), base_dir=tmp_path)
     assert (report["mode"], report["runtime"], report["windows"]) == ("stream", runtime, 6)
     got = dspk.io.open(tmp_path / "out.bin").read()
     expected = Pipeline([stage.car(), stage.iir("highpass", 300.0, mode="forward")], FS, stream=True, runtime=runtime).process(recording)
@@ -65,7 +65,7 @@ def test_toml_file_and_default_runtime(tmp_path, recording):
         format = "zarr"
         """
     )
-    report = dspk.pipeline.run(tmp_path / "p.toml")
+    (report,) = dspk.pipeline.run(tmp_path / "p.toml")
     assert report["runtime"] == dspk.runtime.current()  # no execution.runtime: dspk.runtime decides
     got = dspk.io.open(tmp_path / "car.zarr").read()
     np.testing.assert_allclose(got, recording - recording.mean(axis=0, keepdims=True), atol=1e-3)
@@ -101,7 +101,7 @@ def test_subset_range_and_stored_upload(tmp_path, runtime):
         "edges": [["in", "hp"], ["hp", "out"]],
         "execution": {"chunk_samples": 6_000, "runtime": runtime},
     }
-    report = dspk.pipeline.run(s, base_dir=tmp_path)
+    (report,) = dspk.pipeline.run(s, base_dir=tmp_path)
     assert (report["channels"], report["samples"], report["stored_upload"]) == (2, 20_000, True)
     b = report["bytes"]
     assert b["uploaded"] < b["downloaded"]  # int16 up, float32 down
@@ -112,3 +112,32 @@ def test_subset_range_and_stored_upload(tmp_path, runtime):
     # The run scales int16 on the device, the reference on the host: float32 rounding (~1e-6),
     # carried through the filter, so the limit is 1e-5, below the 2e-5 of the filter tests
     assert np.max(np.abs(got - expected)) / np.max(np.abs(expected)) < 1e-5
+
+
+def test_batch_and_merge(tmp_path):
+    t = np.arange(10_000) / FS
+    for name, f in [("a", 300.0), ("b", 700.0), ("c", 1_100.0)]:
+        data = np.stack([np.sin(2 * np.pi * f * (c + 1) * t) for c in range(2)]).astype(np.float32)
+        dspk.io.write_raw(data, tmp_path / f"{name}.bin", FS)
+    batch = {
+        "dspk_pipeline": 1,
+        "nodes": {"in": {"op": "read", "path": "*.bin"}, "c": {"op": "car"}, "out": {"op": "write", "path": "out/{stem}.bin"}},
+        "edges": [["in", "c"], ["c", "out"]],
+    }
+    reports = dspk.pipeline.run(batch, base_dir=tmp_path)
+    assert [r["output"].name for r in reports] == ["a.bin", "b.bin", "c.bin"]
+    merge = {
+        "dspk_pipeline": 1,
+        "nodes": {
+            "in": {"op": "read", "inputs": [{"merge": [{"path": "a.bin"}, {"path": "b.bin", "channels": [1]}]}]},
+            "out": {"op": "write", "path": "ab.bin"},
+        },
+        "edges": [["in", "out"]],
+    }
+    (report,) = dspk.pipeline.run(merge, base_dir=tmp_path)
+    got = dspk.io.open(tmp_path / "ab.bin").read()
+    expected = np.concatenate([dspk.io.open(tmp_path / "a.bin").read(), dspk.io.open(tmp_path / "b.bin").read(channels=[1])])
+    np.testing.assert_array_equal(got, expected)
+    batch["nodes"]["out"]["path"] = "same.bin"
+    with pytest.raises(ValueError, match="stem"):
+        dspk.pipeline.run(batch, base_dir=tmp_path)

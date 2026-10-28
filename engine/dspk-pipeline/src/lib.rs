@@ -21,7 +21,7 @@ mod spec;
 
 pub use run::{run, run_with, DataMovement, ExecutedMode, RunReport, PROVENANCE_SUFFIX};
 pub use spec::{
-    Band, Chain, Design, Edge, ExecMode, Execution, Mode, Node, OutputFormat, PipelineSpec, Start, Upload,
+    Band, Chain, Design, Edge, ExecMode, Execution, Input, MergePart, Mode, Node, OutputFormat, PipelineSpec, Start, Upload,
     DEFAULT_CHUNK_SAMPLES, SPEC_VERSION,
 };
 

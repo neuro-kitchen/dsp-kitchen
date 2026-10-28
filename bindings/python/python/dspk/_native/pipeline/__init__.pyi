@@ -20,10 +20,10 @@ def canonical(text: builtins.str, toml: builtins.bool = False) -> builtins.str:
     written out).
     """
 
-def run(text: builtins.str, base_dir: builtins.str | os.PathLike | pathlib.Path, toml: builtins.bool = False) -> dict:
+def run(text: builtins.str, base_dir: builtins.str | os.PathLike | pathlib.Path, toml: builtins.bool = False) -> builtins.list[dict]:
     r"""
     Runs a spec (JSON text, or TOML with `toml=True`); relative paths resolve against `base_dir`.
-    Returns the run report as a dict (mode, halo, runtime, stored_upload, channels, samples,
+    Returns one report per input, each a dict (mode, halo, runtime, stored_upload, channels, samples,
     sample_rate, windows, bytes {read, uploaded, downloaded, written}, output, provenance, seconds).
     """
 

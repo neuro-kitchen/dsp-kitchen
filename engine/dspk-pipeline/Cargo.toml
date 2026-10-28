@@ -23,6 +23,7 @@ hip = ["dspk-core/hip", "dspk-ops/hip"]
 dspk-core = { workspace = true, features = ["compute"] }
 dspk-io = { workspace = true, features = ["zarr"] }
 dspk-ops.workspace = true
+glob.workspace = true
 cubecl.workspace = true
 schemars.workspace = true
 serde.workspace = true

@@ -42,12 +42,12 @@ pub fn canonical(text: &str, toml: bool) -> PyResult<String> {
 }
 
 /// Runs a spec (JSON text, or TOML with `toml=True`); relative paths resolve against `base_dir`.
-/// Returns the run report as a dict (mode, halo, runtime, stored_upload, channels, samples,
+/// Returns one report per input, each a dict (mode, halo, runtime, stored_upload, channels, samples,
 /// sample_rate, windows, bytes {read, uploaded, downloaded, written}, output, provenance, seconds).
 #[gen_stub_pyfunction(module = "dspk._native.pipeline")]
 #[pyfunction]
 #[pyo3(signature = (text, base_dir, toml=false))]
-pub fn run<'py>(py: Python<'py>, text: &str, base_dir: PathBuf, toml: bool) -> PyResult<Bound<'py, PyDict>> {
+pub fn run<'py>(py: Python<'py>, text: &str, base_dir: PathBuf, toml: bool) -> PyResult<Vec<Bound<'py, PyDict>>> {
     let mut spec = parse(text, toml)?;
     let target = match &spec.execution.runtime {
         Some(name) => runtime::target(Some(name))?,
@@ -56,7 +56,11 @@ pub fn run<'py>(py: Python<'py>, text: &str, base_dir: PathBuf, toml: bool) -> P
     spec.execution.runtime = Some(target.name().to_string());
     // Opens the device first so a runtime without one raises RuntimeError (the engine reuses it)
     runtime::open_client(target).map_err(PyRuntimeError::new_err)?;
-    let report = py.detach(|| dspk_pipeline::run(&spec, &base_dir)).map_err(to_py)?;
+    let reports = py.detach(|| dspk_pipeline::run(&spec, &base_dir)).map_err(to_py)?;
+    reports.into_iter().map(|report| report_dict(py, report)).collect()
+}
+
+fn report_dict<'py>(py: Python<'py>, report: dspk_pipeline::RunReport) -> PyResult<Bound<'py, PyDict>> {
     let out = PyDict::new(py);
     let (mode, left, right) = match report.mode {
         ExecutedMode::Stream => ("stream", 0, 0),

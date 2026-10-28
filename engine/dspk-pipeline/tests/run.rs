@@ -6,7 +6,15 @@ use std::path::{Path, PathBuf};
 use dspk_core::{ComputeTarget, MemoryOrder, MemoryRecording, SampleFormat};
 use dspk_ops::filter::design::DEFAULT_SETTLING_TOLERANCE;
 use dspk_ops::pipeline::PipelineWorkspace;
-use dspk_pipeline::{run, ExecutedMode, PipelineError, PipelineSpec, PROVENANCE_SUFFIX};
+use dspk_pipeline::{ExecutedMode, PipelineError, PipelineSpec, RunReport, PROVENANCE_SUFFIX};
+
+/// Runs a single-input spec.
+fn run(spec: &PipelineSpec, dir: &Path) -> Result<RunReport, PipelineError> {
+    dspk_pipeline::run(spec, dir).map(|mut reports| {
+        assert_eq!(reports.len(), 1, "one input");
+        reports.remove(0)
+    })
+}
 
 const FS: f64 = 30_000.0;
 const CHANNELS: usize = 6;
@@ -404,5 +412,106 @@ fn resample_is_refused_where_it_cannot_be_exact() {
     assert!(run(&misaligned, &dir).unwrap_err().to_string().contains("multiple"));
     let stream = spec(r#""r": {"op": "resample", "up": 1, "down": 2},"#, r#"[["in", "r"], ["r", "out"]]"#, r#", "execution": {"mode": "stream"}"#);
     assert!(run(&stream, &dir).unwrap_err().to_string().contains("stream"));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+fn write_raw_rec(path: &Path, channels: usize, samples: usize, seed: f32, format: SampleFormat) -> MemoryRecording {
+    let data = (0..channels * samples).map(|i| 100.0 * ((i as f32 * 0.013 + seed).sin())).collect();
+    let rec = MemoryRecording::new("r", data, channels, FS).unwrap();
+    dspk_io::write_raw(&rec, path, format, MemoryOrder::ChannelMajor, 0.05, 10_000, |_, _| {}).unwrap();
+    rec
+}
+
+#[test]
+fn a_glob_runs_the_pipeline_once_per_file() {
+    let target = targets()[0];
+    let dir = scratch("batch");
+    for (name, seed) in [("day_a", 0.1), ("day_b", 0.7), ("day_c", 1.3)] {
+        write_raw_rec(&dir.join(format!("{name}.bin")), 3, 20_000, seed, SampleFormat::F32);
+    }
+    let text = |write: &str| {
+        format!(
+            r#"{{"dspk_pipeline": 1,
+                "nodes": {{"in": {{"op": "read", "path": "day_*.bin"}}, "c": {{"op": "car"}}, "out": {{"op": "write", "path": "{write}"}}}},
+                "edges": [["in", "c"], ["c", "out"]],
+                "execution": {{"runtime": "{}"}}}}"#,
+            target.name()
+        )
+    };
+    let spec = PipelineSpec::from_json(&text("out/{stem}.bin")).unwrap();
+    let reports = dspk_pipeline::run(&spec, &dir).unwrap();
+    assert_eq!(reports.len(), 3);
+    for (report, name) in reports.iter().zip(["day_a", "day_b", "day_c"]) {
+        assert_eq!(report.output, dir.join(format!("out/{name}.bin")));
+        // Each output equals that file run on its own; provenance names the concrete file
+        let single = PipelineSpec::from_json(&text(&format!("single_{name}.bin")).replace("day_*.bin", &format!("{name}.bin"))).unwrap();
+        run(&single, &dir).unwrap();
+        assert_eq!(read_all(&report.output), read_all(&dir.join(format!("single_{name}.bin"))));
+        let saved = PipelineSpec::load(&report.provenance).unwrap();
+        let Some(dspk_pipeline::Node::Read { path: Some(p), .. }) = saved.nodes.get("in") else { panic!("provenance read") };
+        assert_eq!(p, &dir.join(format!("{name}.bin")));
+    }
+    let err = dspk_pipeline::run(&PipelineSpec::from_json(&text("same.bin")).unwrap(), &dir).unwrap_err();
+    assert!(err.to_string().contains("{stem}"), "{err}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_merge_reads_several_recordings_side_by_side() {
+    for target in targets() {
+        let dir = scratch(&format!("merge_{}", target.name()));
+        let a = write_raw_rec(&dir.join("probe.bin"), 4, 20_000, 0.2, SampleFormat::I16);
+        let b = write_raw_rec(&dir.join("emg.bin"), 3, 20_000, 0.9, SampleFormat::I16);
+        let spec = PipelineSpec::from_json(&format!(
+            r#"{{"dspk_pipeline": 1,
+                "nodes": {{"in": {{"op": "read", "inputs": [{{"merge": [{{"path": "probe.bin", "channels": [3, 0]}}, {{"path": "emg.bin"}}]}}]}},
+                           "hp": {{"op": "iir", "band": "highpass", "cutoff": [300.0], "mode": "forward"}},
+                           "out": {{"op": "write", "path": "merged.bin"}}}},
+                "edges": [["in", "hp"], ["hp", "out"]],
+                "execution": {{"chunk_samples": {CHUNK}, "runtime": "{}"}}}}"#,
+            target.name()
+        ))
+        .unwrap();
+        let report = run(&spec, &dir).unwrap();
+        assert_eq!(report.channels, 5);
+        assert!(report.stored_upload, "both parts are int16: stored integers still upload");
+        // Reference: the stored (quantized) values of the picked channels, concatenated
+        let stored = |path: &str, chans: &[usize]| {
+            let rec = dspk_io::open(&dir.join(path)).unwrap();
+            let mut out = vec![0.0f32; chans.len() * 20_000];
+            rec.read(chans, 0..20_000, &mut out).unwrap();
+            out
+        };
+        let mut joined = stored("probe.bin", &[3, 0]);
+        joined.extend(stored("emg.bin", &[0, 1, 2]));
+        let expected = stream_once(&spec, target, &joined, 5);
+        let err = max_rel_err(&read_all(&dir.join("merged.bin")), &expected);
+        assert!(err < 1e-5, "{}: merge vs concatenation, {err:.2e}", target.name());
+        let _ = (a, b);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[test]
+fn a_batch_of_merges_uses_the_index() {
+    let target = targets()[0];
+    let dir = scratch("batch_merge");
+    for name in ["a1", "a2", "b1", "b2"] {
+        write_raw_rec(&dir.join(format!("{name}.bin")), 2, 10_000, name.len() as f32, SampleFormat::F32);
+    }
+    let spec = PipelineSpec::from_json(&format!(
+        r#"{{"dspk_pipeline": 1,
+            "nodes": {{"in": {{"op": "read", "inputs": [{{"merge": [{{"path": "a1.bin"}}, {{"path": "a2.bin"}}]}},
+                                                        {{"merge": [{{"path": "b1.bin"}}, {{"path": "b2.bin"}}]}}]}},
+                       "out": {{"op": "write", "path": "session_{{index}}_{{stem}}.bin"}}}},
+            "edges": [["in", "out"]],
+            "execution": {{"runtime": "{}"}}}}"#,
+        target.name()
+    ))
+    .unwrap();
+    let reports = dspk_pipeline::run(&spec, &dir).unwrap();
+    let names: Vec<_> = reports.iter().map(|r| r.output.file_name().unwrap().to_string_lossy().to_string()).collect();
+    assert_eq!(names, ["session_0_a1+a2.bin", "session_1_b1+b2.bin"]);
+    assert!(reports.iter().all(|r| r.channels == 4));
     std::fs::remove_dir_all(&dir).unwrap();
 }

@@ -49,11 +49,17 @@ pub struct PipelineSpec {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Node {
-    /// A recording file (any format `dspk_io::open` recognizes). Relative paths are relative to the
-    /// spec file.
+    /// The input recording(s): `path` (one file, or a glob such as `sessions/*.bin`, which runs the
+    /// pipeline once per match) or `inputs` (a list of paths / globs and merges, run one after the
+    /// other). A merge reads several recordings as one, channels side by side. Relative paths are
+    /// relative to the spec file. With several inputs the write path needs `{stem}` or `{index}`.
     Read {
-        path: PathBuf,
-        /// Source id within the file (`dspk_io::sources`); default: the file's default source.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<PathBuf>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        inputs: Option<Vec<Input>>,
+        /// Source id within the file (`dspk_io::sources`; with `path` only); default: the file's
+        /// default source.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source: Option<String>,
         /// Channels to read, in this order; default: all.
@@ -159,6 +165,30 @@ pub enum Node {
         #[serde(default = "default_teager_kaiser_edge")]
         edge: Edge,
     },
+}
+
+/// One input of a `read` node: a path (or glob), or several recordings merged side by side.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum Input {
+    Path(PathBuf),
+    Merge {
+        /// The recordings, in channel order; same sample rate and length.
+        merge: Vec<MergePart>,
+    },
+}
+
+/// One recording of a merge.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MergePart {
+    pub path: PathBuf,
+    /// Source id within the file; default: the file's default source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// Channels taken from this recording, in order; default: all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channels: Option<Vec<usize>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
@@ -401,6 +431,21 @@ impl PipelineSpec {
             }
         }
         let (read, write) = (reads[0], writes[0]);
+        if let Node::Read { path, inputs, source, .. } = &self.nodes[read] {
+            match (path, inputs) {
+                (Some(_), None) => {}
+                (None, Some(list)) if !list.is_empty() => {
+                    if source.is_some() {
+                        return invalid("read: `source` goes with `path`; give each merge part its own `source`".into());
+                    }
+                    if list.iter().any(|i| matches!(i, Input::Merge { merge } if merge.is_empty())) {
+                        return invalid("read: a merge needs at least one recording".into());
+                    }
+                }
+                (None, Some(_)) => return invalid("read: inputs is empty".into()),
+                _ => return invalid("read: give exactly one of `path` and `inputs`".into()),
+            }
+        }
         if has_input.contains(read) {
             return invalid(format!("the read node {read:?} cannot have an input"));
         }
@@ -428,6 +473,86 @@ impl PipelineSpec {
             write: node(write),
         })
     }
+}
+
+/// One concrete input after glob expansion: the recordings it reads (one, or a merge) and its stem.
+#[derive(Debug, Clone)]
+struct Concrete {
+    parts: Vec<MergePart>,
+    merged: bool,
+}
+
+impl PipelineSpec {
+    /// One spec per input, globs expanded against `base_dir` (sorted), `{stem}` / `{index}` in the
+    /// write path filled in. Each is a valid single-input spec: what the executor runs and writes
+    /// next to that output as provenance.
+    pub fn expand_inputs(&self, base_dir: &Path) -> Result<Vec<PipelineSpec>, PipelineError> {
+        let chain = self.chain()?;
+        let (read_id, write_id) = (chain.read.0.to_string(), chain.write.0.to_string());
+        let Node::Read { path, inputs, source, .. } = chain.read.1 else { unreachable!("chain starts with read") };
+        let Node::Write { path: out_path, .. } = chain.write.1 else { unreachable!("chain ends with write") };
+        let items: Vec<Input> = match (path, inputs) {
+            (Some(p), None) => vec![Input::Path(p.clone())],
+            (None, Some(list)) => list.clone(),
+            _ => unreachable!("checked by chain"),
+        };
+        let mut concrete = Vec::new();
+        for item in items {
+            match item {
+                Input::Path(p) => {
+                    for path in expand_glob(base_dir, &p)? {
+                        concrete.push(Concrete { parts: vec![MergePart { path, source: source.clone(), channels: None }], merged: false });
+                    }
+                }
+                Input::Merge { merge } => concrete.push(Concrete { parts: merge, merged: true }),
+            }
+        }
+        let template = out_path.to_string_lossy().to_string();
+        if concrete.len() > 1 && !template.contains("{stem}") && !template.contains("{index}") {
+            return Err(PipelineError::Invalid(format!(
+                "{} inputs would all write {template:?}: put {{stem}} or {{index}} in the write path",
+                concrete.len()
+            )));
+        }
+        Ok(concrete
+            .into_iter()
+            .enumerate()
+            .map(|(index, input)| {
+                let stem = input.parts.iter().map(|p| p.path.file_stem().unwrap_or_default().to_string_lossy().to_string()).collect::<Vec<_>>().join("+");
+                let mut one = self.clone();
+                if let Some(Node::Read { path, inputs, source, .. }) = one.nodes.get_mut(&read_id) {
+                    if input.merged {
+                        (*path, *inputs, *source) = (None, Some(vec![Input::Merge { merge: input.parts }]), None);
+                    } else {
+                        let part = input.parts.into_iter().next().expect("one part");
+                        (*path, *inputs, *source) = (Some(part.path), None, part.source);
+                    }
+                }
+                if let Some(Node::Write { path, .. }) = one.nodes.get_mut(&write_id) {
+                    *path = PathBuf::from(template.replace("{stem}", &stem).replace("{index}", &index.to_string()));
+                }
+                one
+            })
+            .collect())
+    }
+}
+
+/// `pattern` itself when it has no wildcard, else its matches (sorted) relative to `base_dir`.
+fn expand_glob(base_dir: &Path, pattern: &Path) -> Result<Vec<PathBuf>, PipelineError> {
+    let text = pattern.to_string_lossy();
+    if !text.contains(['*', '?', '[']) {
+        return Ok(vec![pattern.to_path_buf()]);
+    }
+    let full = base_dir.join(pattern);
+    let mut found: Vec<PathBuf> = glob::glob(&full.to_string_lossy())
+        .map_err(|e| PipelineError::Invalid(format!("read: bad pattern {text:?}: {e}")))?
+        .filter_map(Result::ok)
+        .collect();
+    found.sort();
+    if found.is_empty() {
+        return Err(PipelineError::Invalid(format!("read: no file matches {text:?} (in {})", base_dir.display())));
+    }
+    Ok(found)
 }
 
 impl Node {

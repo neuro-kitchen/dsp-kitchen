@@ -98,6 +98,8 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 # Pipeline specs: TOML input, JSON Schema of the spec types
 toml = "1.1.8"
+# Pipeline specs: input globs
+glob = "0.3.4"
 schemars = "1.2.3"
 thiserror = "2.0.21"
 anyhow = "1.0.104"

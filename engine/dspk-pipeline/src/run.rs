@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use dspk_core::compute::device_elements;
 use dspk_core::{ChunkSchedule, ComputeTarget, DspResult, HaloWindow, MemoryOrder, RecordingSource, SampleFormat, WindowLoader};
-use dspk_io::{RawParams, RawRecording};
+use dspk_io::{MergedRecording, RawParams, RawRecording};
 use cubecl::prelude::Client;
 use cubecl::server::Handle;
 use dspk_ops::core::{buffer, EdgeMode};
@@ -25,7 +25,7 @@ use dspk_ops::math::stored_word_bytes;
 use dspk_ops::pipeline::PipelineWorkspace;
 use dspk_ops::{Pipeline, PipelineStage};
 
-use crate::spec::{ExecMode, Node, OutputFormat, PipelineSpec, Upload};
+use crate::spec::{ExecMode, Input, Node, OutputFormat, PipelineSpec, Upload};
 use crate::PipelineError;
 
 /// Appended to the output path for the canonical spec written next to it (provenance).
@@ -73,27 +73,38 @@ pub struct RunReport {
     pub seconds: f64,
 }
 
-/// Runs `spec`, resolving relative paths against `base_dir`, opening the input with
-/// `dspk_io::open` (generic formats).
-pub fn run(spec: &PipelineSpec, base_dir: &Path) -> Result<RunReport, PipelineError> {
+/// Runs `spec` once per input, resolving relative paths against `base_dir`, opening recordings
+/// with `dspk_io::open` (generic formats). One report per input, in order.
+pub fn run(spec: &PipelineSpec, base_dir: &Path) -> Result<Vec<RunReport>, PipelineError> {
     run_with(spec, base_dir, |path, source| match source {
         Some(id) => dspk_io::open_source(path, id),
         None => dspk_io::open(path),
     })
 }
 
-/// [`run`] with the input opened by `open` (e.g. a crate that adds formats, such as
+/// [`run`] with recordings opened by `open` (e.g. a crate that adds formats, such as
 /// `dspk-synapse-io`).
 pub fn run_with(
     spec: &PipelineSpec,
     base_dir: &Path,
     open: impl Fn(&Path, Option<&str>) -> DspResult<Box<dyn RecordingSource>>,
+) -> Result<Vec<RunReport>, PipelineError> {
+    spec.expand_inputs(base_dir)?.iter().map(|one| run_input(one, base_dir, &open)).collect()
+}
+
+/// One input of an expanded spec (a `path`, or a single merge).
+fn run_input(
+    spec: &PipelineSpec,
+    base_dir: &Path,
+    open: &impl Fn(&Path, Option<&str>) -> DspResult<Box<dyn RecordingSource>>,
 ) -> Result<RunReport, PipelineError> {
     let started = Instant::now();
     let chain = spec.chain()?;
-    let Node::Read { path: input, source, channels: picked, start, stop } = chain.read.1 else { unreachable!("chain starts with read") };
+    let Node::Read { path: input, inputs, source, channels: picked, start, stop } = chain.read.1 else {
+        unreachable!("chain starts with read")
+    };
     let Node::Write { path: output, format } = chain.write.1 else { unreachable!("chain ends with write") };
-    let (input, output) = (base_dir.join(input), base_dir.join(output));
+    let output = base_dir.join(output);
 
     let mut stages = Vec::with_capacity(chain.stages.len());
     let mut resample = None;
@@ -112,7 +123,17 @@ pub fn run_with(
     }
     let pipeline = Pipeline::with_stages(stages);
 
-    let source = open(&input, source.as_deref())?;
+    let source: Box<dyn RecordingSource> = match (input, inputs.as_deref()) {
+        (Some(path), None) => open(&base_dir.join(path), source.as_deref())?,
+        (None, Some([Input::Merge { merge }])) => {
+            let parts = merge
+                .iter()
+                .map(|p| Ok((open(&base_dir.join(&p.path), p.source.as_deref())?, p.channels.clone())))
+                .collect::<DspResult<Vec<_>>>()?;
+            Box::new(MergedRecording::new(parts)?)
+        }
+        _ => unreachable!("expand_inputs leaves one path or one merge"),
+    };
     let info = source.info();
     let (total, sample_rate, stored_format) = (info.samples, info.sample_rate_hz(), info.format);
     let channels = select_channels(picked.as_deref(), info.channel_count())?;

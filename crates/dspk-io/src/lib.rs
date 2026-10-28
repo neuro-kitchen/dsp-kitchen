@@ -19,7 +19,7 @@ pub mod registry;
 pub mod test_support;
 
 pub use crate::core::{
-    default_source, detect, open, open_source, sources, CachedRecording, Format, SourceEntry, SourceKind,
+    default_source, detect, open, open_source, sources, CachedRecording, Format, MergedRecording, SourceEntry, SourceKind,
 };
 pub use generic::raw::{write_raw, RawParams, RawRecording};
 #[cfg(feature = "zarr")]

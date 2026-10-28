@@ -1,6 +1,7 @@
 """Pipelines as data: a versioned node-graph spec, checked and run by dspk-pipeline.
 
-A spec is a dict (or a ``.json`` / ``.toml`` file)::
+A spec is a dict (or a ``.json`` / ``.toml`` file); one spec can run over many inputs (globs,
+lists) and read several recordings as one (merges)::
 
     {"dspk_pipeline": 1,
      "nodes": {"raw": {"op": "read", "path": "recording.bin"},
@@ -51,11 +52,17 @@ def load(path: str | PathLike) -> Spec:
     return canonical(Path(path))
 
 
-def run(spec: Spec | str | PathLike, base_dir: str | PathLike | None = None) -> dict[str, Any]:
-    """Runs ``spec``; relative paths resolve against ``base_dir`` (default: the spec file's folder,
-    or the working directory for a dict). Returns the run report: mode, halo, runtime,
-    stored_upload, channels, samples, sample_rate, windows, output, provenance, seconds, and
-    ``bytes`` (read from the input, uploaded, downloaded, written)."""
+def run(spec: Spec | str | PathLike, base_dir: str | PathLike | None = None) -> list[dict[str, Any]]:
+    """Runs ``spec`` once per input; relative paths resolve against ``base_dir`` (default: the spec
+    file's folder, or the working directory for a dict).
+
+    Inputs: ``read.path`` (a file or a glob such as ``"sessions/*.bin"``) or ``read.inputs`` (paths,
+    globs and ``{"merge": [...]}`` items, a merge reading several recordings side by side). With
+    several inputs the write path needs ``{stem}`` or ``{index}``.
+
+    Returns one report per input: mode, halo, runtime, stored_upload, channels, samples,
+    sample_rate, windows, output, provenance, seconds, and ``bytes`` (read from the input,
+    uploaded, downloaded, written)."""
     text, toml, folder = _text(spec)
     return _pipeline.run(text, Path(base_dir) if base_dir is not None else folder, toml=toml)
 
