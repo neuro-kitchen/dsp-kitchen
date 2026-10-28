@@ -12,4 +12,6 @@ pub mod net;
 pub mod open;
 pub mod probe;
 pub mod recording;
+pub mod run;
 pub mod sort;
+pub mod spec;

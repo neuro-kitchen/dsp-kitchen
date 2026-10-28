@@ -537,6 +537,29 @@ impl PipelineSpec {
     }
 }
 
+impl PipelineSpec {
+    /// Replaces what the read node reads (e.g. paths given on a command line): one plain path
+    /// becomes `path`, anything else `inputs`. The read node's `source` is kept with a single path.
+    pub fn set_inputs(&mut self, new: Vec<Input>) -> Result<(), PipelineError> {
+        let id = self.chain()?.read.0.to_string();
+        let Some(Node::Read { path, inputs, source, .. }) = self.nodes.get_mut(&id) else { unreachable!("read node") };
+        match new.as_slice() {
+            [] => return Err(PipelineError::Invalid("read: no inputs given".into())),
+            [Input::Path(p)] => (*path, *inputs) = (Some(p.clone()), None),
+            _ => (*path, *inputs, *source) = (None, Some(new), None),
+        }
+        Ok(())
+    }
+
+    /// Replaces the write node's path (`{stem}` / `{index}` still apply).
+    pub fn set_output(&mut self, new: PathBuf) -> Result<(), PipelineError> {
+        let id = self.chain()?.write.0.to_string();
+        let Some(Node::Write { path, .. }) = self.nodes.get_mut(&id) else { unreachable!("write node") };
+        *path = new;
+        Ok(())
+    }
+}
+
 /// `pattern` itself when it has no wildcard, else its matches (sorted) relative to `base_dir`.
 fn expand_glob(base_dir: &Path, pattern: &Path) -> Result<Vec<PathBuf>, PipelineError> {
     let text = pattern.to_string_lossy();

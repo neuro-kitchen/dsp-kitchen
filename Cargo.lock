@@ -3041,12 +3041,15 @@ dependencies = [
 name = "dspk-cli"
 version = "0.0.2"
 dependencies = [
+ "anstream",
+ "anstyle",
  "anyhow",
  "clap",
  "cubecl",
  "dspk-core",
  "dspk-io",
  "dspk-ops",
+ "dspk-pipeline",
  "dspk-stream",
  "dspk-synapse",
  "dspk-synapse-hub",

@@ -3,12 +3,18 @@
 
 mod commands;
 mod progress;
+mod style;
 
 use clap::{Parser, Subcommand};
 use dspk_core::ComputeTarget;
 
 #[derive(Parser, Debug)]
-#[command(name = "dspk", version, about = "dspk from the command line: devices, recordings, detection, sorting, benchmarks, streaming, model hub")]
+#[command(
+    name = "dspk",
+    version,
+    about = "dspk from the command line: pipelines, devices, recordings, detection, sorting, benchmarks, streaming, model hub",
+    styles = style::clap_styles()
+)]
 struct Cli {
     /// Compute runtime: wgpu, cpu, cuda or hip, among those compiled in (default: the first
     /// compiled in, GPUs first; `doctor` shows which work on this machine)
@@ -25,6 +31,10 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Run a pipeline spec (.json or .toml) over its inputs, or inputs given here
+    Run(commands::run::RunArgs),
+    /// Check a pipeline spec, or print the spec's JSON Schema
+    Spec(commands::spec::SpecArgs),
     /// What this build can do here: version, features, runtimes and their devices
     Doctor,
     /// Launch geometries the selected runtime gives for a channels × samples buffer
@@ -67,10 +77,22 @@ impl Cli {
 const DEFAULT_LOG_LEVEL: tracing::Level = tracing::Level::WARN;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() {
     let cli = Cli::parse();
     tracing_subscriber::fmt().with_max_level(if cli.verbose { tracing::Level::DEBUG } else { DEFAULT_LOG_LEVEL }).init();
+    if let Err(e) = dispatch(&cli).await {
+        anstream::eprintln!("{} {e}", style::paint(style::ERROR, "error:"));
+        for cause in e.chain().skip(1) {
+            anstream::eprintln!("  {} {cause}", style::paint(style::DIM, "caused by:"));
+        }
+        std::process::exit(1);
+    }
+}
+
+async fn dispatch(cli: &Cli) -> anyhow::Result<()> {
     match &cli.command {
+        Command::Run(args) => commands::run::run(cli.runtime.as_deref(), args).await,
+        Command::Spec(args) => commands::spec::run(args),
         Command::Doctor => commands::doctor::run(),
         Command::Inspect(args) => commands::inspect::run(cli.target()?, args),
         Command::Open(args) => commands::open::run(args),
