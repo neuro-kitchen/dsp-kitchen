@@ -26,4 +26,5 @@ dev = [
     "ipywidgets>=8.1.9",
     "pytest>=9.2.0",
     "ruff>=0.16.9",
+    "scipy>=1.15.3",
 ]

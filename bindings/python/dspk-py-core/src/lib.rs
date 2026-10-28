@@ -4,11 +4,12 @@
 
 pub mod error;
 pub mod io;
+pub mod ops;
 pub mod runtime;
 
 use pyo3::prelude::*;
 
-/// Adds the `runtime` and `io` submodules (and, later, `ops`) to the extension module `m`.
+/// Adds the `runtime`, `io` and `ops` submodules to the extension module `m`.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let runtime = PyModule::new(m.py(), "runtime")?;
     runtime::register(&runtime)?;
@@ -16,5 +17,8 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let io = PyModule::new(m.py(), "io")?;
     io::register(&io)?;
     m.add_submodule(&io)?;
+    let ops = PyModule::new(m.py(), "ops")?;
+    ops::register(&ops)?;
+    m.add_submodule(&ops)?;
     Ok(())
 }
