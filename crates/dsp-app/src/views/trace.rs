@@ -16,7 +16,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
     canvas, div, point, px, relative, rgb, size, App, Bounds, Context, Corners, CursorStyle, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, InteractiveElement as _,
-    IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, ScrollWheelEvent, SharedString, StatefulInteractiveElement as _,
+    IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, ScrollEvent, SharedString, StatefulInteractiveElement as _,
     Styled as _, Subscription, WeakEntity, Window,
 };
 
@@ -113,7 +113,7 @@ impl TracePanel {
         self.drag = None;
     }
 
-    fn on_wheel(&mut self, e: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_wheel(&mut self, e: &ScrollEvent, _: &mut Window, cx: &mut Context<Self>) {
         let d = e.delta.pixel_delta(px(20.));
         let (dx, dy) = (d.x.as_f32(), d.y.as_f32());
         let (fx, _) = self.fractions(e.position);
@@ -249,7 +249,7 @@ impl Render for TracePanel {
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_down))
             .on_mouse_move(cx.listener(Self::on_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_up))
-            .on_scroll_wheel(cx.listener(Self::on_wheel))
+            .on_scroll(cx.listener(Self::on_wheel))
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                 if !hovered {
                     this.pointer = None;

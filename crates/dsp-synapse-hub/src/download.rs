@@ -165,6 +165,10 @@ pub fn check_remote_link(weights_url: &str) -> Result<RemoteLinkCheck> {
 }
 
 fn build_http_client(timeout: Duration) -> Result<reqwest::blocking::Client> {
+    // reqwest 0.13 is built with `rustls-no-provider` (its `rustls` feature would add aws-lc-rs, a C
+    // build, beside the `ring` provider dsp-stream uses), so a provider must be installed before the
+    // first client. `Err` only means one is already installed (by us or the host process).
+    let _ = rustls::crypto::ring::default_provider().install_default();
     reqwest::blocking::Client::builder()
         .user_agent(concat!("dsp-kitchen-hub/", env!("CARGO_PKG_VERSION")))
         .timeout(timeout)
@@ -189,4 +193,16 @@ fn copy_and_hash<R: Read, W: Write>(
         *bytes_written += n as u64;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// reqwest's `rustls-no-provider` panics at client construction without an installed provider.
+    #[test]
+    fn http_client_builds_with_ring_provider() {
+        build_http_client(Duration::from_secs(1)).unwrap();
+        build_http_client(Duration::from_secs(1)).unwrap();
+    }
 }
