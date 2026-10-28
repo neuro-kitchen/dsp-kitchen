@@ -98,6 +98,18 @@ fn stage_fir(taps: Vec<f32>, centered: bool, edge: &str) -> PyResult<Stage> {
 
 #[gen_stub_pyfunction(module = "dspk._native.ops")]
 #[pyfunction]
+fn stage_whiten(whitening: PyRef<'_, super::spatial::Whitening>) -> Stage {
+    stage(PipelineStage::SpatialWhitening(whitening.model.clone()))
+}
+
+#[gen_stub_pyfunction(module = "dspk._native.ops")]
+#[pyfunction]
+fn stage_laplacian(laplacian: PyRef<'_, super::spatial::Laplacian>) -> Stage {
+    stage(PipelineStage::SurfaceLaplacian(laplacian.model.clone()))
+}
+
+#[gen_stub_pyfunction(module = "dspk._native.ops")]
+#[pyfunction]
 fn stage_car() -> Stage {
     stage(PipelineStage::CommonAverageReference)
 }
@@ -201,6 +213,17 @@ impl Pipeline {
                     return Err(format!("this pipeline processes {ch} channels; got {channels} (call reset() first)"));
                 }
             } else {
+                // Fitted spatial stages hold a channel count; dspk-ops asserts it
+                for stage in self.stages.stages() {
+                    let fitted = match stage {
+                        PipelineStage::SpatialWhitening(w) => Some(("whitening", w.num_channels)),
+                        PipelineStage::SurfaceLaplacian(l) => Some(("laplacian", l.num_channels)),
+                        _ => None,
+                    };
+                    if let Some((name, n)) = fitted.filter(|(_, n)| *n != channels) {
+                        return Err(format!("this pipeline's {name} stage is for {n} channels; got {channels}"));
+                    }
+                }
                 let client = runtime::open_client(self.target)?;
                 let stages = self.stages.clone();
                 let workspace = if self.stream {
@@ -241,6 +264,8 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(stage_notch, m)?)?;
     m.add_function(wrap_pyfunction!(stage_sos, m)?)?;
     m.add_function(wrap_pyfunction!(stage_fir, m)?)?;
+    m.add_function(wrap_pyfunction!(stage_whiten, m)?)?;
+    m.add_function(wrap_pyfunction!(stage_laplacian, m)?)?;
     m.add_function(wrap_pyfunction!(stage_car, m)?)?;
     m.add_function(wrap_pyfunction!(stage_cmr, m)?)?;
     m.add_function(wrap_pyfunction!(stage_gaussian_smooth, m)?)?;

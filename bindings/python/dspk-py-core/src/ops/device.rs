@@ -33,10 +33,25 @@ pub(crate) fn run_resized<'py, Op>(
 where
     Op: FnOnce(&Client, &Handle, &Handle, usize, usize) -> Result<(), String> + Send,
 {
+    let channels = data.as_array().dim().0;
+    run_shaped(py, data, runtime, (channels, out_samples), op)
+}
+
+/// [`run`] for operations whose output is `out_shape` `(rows, columns)` (projections, resampling).
+pub(crate) fn run_shaped<'py, Op>(
+    py: Python<'py>,
+    data: PyReadonlyArray2<'_, f32>,
+    runtime: Option<&str>,
+    out_shape: (usize, usize),
+    op: Op,
+) -> PyResult<Bound<'py, PyArray2<f32>>>
+where
+    Op: FnOnce(&Client, &Handle, &Handle, usize, usize) -> Result<(), String> + Send,
+{
     let target = runtime::target(runtime)?;
     let (channels, samples) = data.as_array().dim();
     let values: Vec<f32> = data.as_array().iter().copied().collect();
-    let out_len = channels * out_samples;
+    let out_len = out_shape.0 * out_shape.1;
     let out = py
         .detach(move || -> Result<Vec<f32>, String> {
             let client = runtime::open_client(target)?;
@@ -46,7 +61,7 @@ where
             Ok(buffer::download_prefix::<f32>(&client, output, out_len))
         })
         .map_err(PyRuntimeError::new_err)?;
-    Ok(Array2::from_shape_vec((channels, out_samples), out).expect("one value per output value").into_pyarray(py))
+    Ok(Array2::from_shape_vec(out_shape, out).expect("one value per output value").into_pyarray(py))
 }
 
 /// Uploads `data` and runs `op(client, input, channels, samples)` for a result that is not an

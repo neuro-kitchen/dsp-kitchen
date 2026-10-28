@@ -6,9 +6,65 @@ import numpy
 import numpy.typing
 import typing
 __all__ = [
+    "DEFAULT_WHITENING_EPSILON",
+    "Laplacian",
+    "Whitening",
     "car",
     "cmr",
 ]
+
+DEFAULT_WHITENING_EPSILON: builtins.float
+@typing.final
+class Laplacian:
+    r"""
+    Surface Laplacian `(channels, channels)`: each channel minus the mean of its neighbours (grid)
+    or a distance-weighted mean of its `k` nearest (positions), applied on the device.
+    """
+    @property
+    def matrix(self) -> numpy.typing.NDArray[numpy.float32]: ...
+    @staticmethod
+    def from_grid(rows: builtins.int, cols: builtins.int) -> Laplacian:
+        r"""
+        5-point Laplacian on a `rows × cols` grid (channel `row * cols + col`).
+        """
+    @staticmethod
+    def from_positions(positions: numpy.typing.NDArray[numpy.float32], k: builtins.int) -> Laplacian:
+        r"""
+        Distance-weighted Hjorth Laplacian over each channel's `k` nearest (`positions` `(channels, 2)`).
+        """
+    def apply(self, data: numpy.typing.NDArray[numpy.float32], *, runtime: typing.Optional[builtins.str]) -> numpy.typing.NDArray[numpy.float32]:
+        r"""
+        `matrix @ data` on the device.
+        """
+
+@typing.final
+class Whitening:
+    r"""
+    Spatial whitening `(channels, channels)`, fitted on the device (global ZCA, or local ZCA over
+    each channel's nearest neighbours), applied on the device.
+    """
+    @property
+    def matrix(self) -> numpy.typing.NDArray[numpy.float32]: ...
+    @staticmethod
+    def fit_zca(data: numpy.typing.NDArray[numpy.float32], *, epsilon: builtins.float, runtime: typing.Optional[builtins.str]) -> Whitening:
+        r"""
+        Global ZCA `U (Λ + ε)^-1/2 Uᵀ` of `data` `(channels, samples)`.
+        """
+    @staticmethod
+    def fit_local_knn(data: numpy.typing.NDArray[numpy.float32], positions: numpy.typing.NDArray[numpy.float32], k: builtins.int, *, epsilon: builtins.float, runtime: typing.Optional[builtins.str]) -> Whitening:
+        r"""
+        Local ZCA: each channel whitened over its `k` nearest channels (`positions` `(channels, 2)`),
+        as Kilosort4.
+        """
+    @staticmethod
+    def from_matrix(matrix: numpy.typing.NDArray[numpy.float32]) -> Whitening:
+        r"""
+        A whitening from an explicit `(channels, channels)` matrix.
+        """
+    def apply(self, data: numpy.typing.NDArray[numpy.float32], *, runtime: typing.Optional[builtins.str]) -> numpy.typing.NDArray[numpy.float32]:
+        r"""
+        `matrix @ data` on the device.
+        """
 
 def car(data: numpy.typing.NDArray[numpy.float32], *, runtime: typing.Optional[builtins.str]) -> numpy.typing.NDArray[numpy.float32]:
     r"""

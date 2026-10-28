@@ -6,6 +6,7 @@ import numpy
 import numpy.typing
 import typing
 from . import filter
+from . import linalg
 from . import math
 from . import peaks
 from . import resample
@@ -14,6 +15,7 @@ __all__ = [
     "Pipeline",
     "Stage",
     "filter",
+    "linalg",
     "math",
     "peaks",
     "resample",
@@ -24,12 +26,14 @@ __all__ = [
     "stage_fir",
     "stage_gaussian_smooth",
     "stage_iir",
+    "stage_laplacian",
     "stage_median",
     "stage_notch",
     "stage_scale",
     "stage_sos",
     "stage_subtract_baseline",
     "stage_teager_kaiser",
+    "stage_whiten",
 ]
 
 @typing.final
@@ -87,6 +91,8 @@ def stage_gaussian_smooth(sigma_samples: builtins.float, edge: builtins.str) -> 
 
 def stage_iir(band: builtins.str, cutoff: typing.Sequence[builtins.float], order: builtins.int, design: builtins.str, ripple_db: typing.Optional[builtins.float], mode: builtins.str, start: builtins.str) -> Stage: ...
 
+def stage_laplacian(laplacian: spatial.Laplacian) -> Stage: ...
+
 def stage_median(width: builtins.int, edge: builtins.str) -> Stage: ...
 
 def stage_notch(freq: builtins.float, q: builtins.float, mode: builtins.str, start: builtins.str) -> Stage: ...
@@ -98,4 +104,6 @@ def stage_sos(sos: numpy.typing.NDArray[numpy.float64], mode: builtins.str, star
 def stage_subtract_baseline(baseline: builtins.float) -> Stage: ...
 
 def stage_teager_kaiser(edge: builtins.str) -> Stage: ...
+
+def stage_whiten(whitening: spatial.Whitening) -> Stage: ...
 

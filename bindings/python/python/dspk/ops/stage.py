@@ -66,6 +66,16 @@ def fir(taps, *, centered: bool = False, edge: str = FIR_DEFAULT_EDGE) -> Stage:
     return _ops.stage_fir([float(t) for t in np.ravel(taps)], centered, edge)
 
 
+def whiten(whitening) -> Stage:
+    """A fitted :class:`dspk.ops.spatial.Whitening` as a stage (channels must match)."""
+    return _ops.stage_whiten(whitening._native)
+
+
+def laplacian(laplacian) -> Stage:  # noqa: F811 (name of the operation)
+    """A :class:`dspk.ops.spatial.Laplacian` as a stage (channels must match)."""
+    return _ops.stage_laplacian(laplacian._native)
+
+
 def car() -> Stage:
     """Common average reference: the mean over channels subtracted at every sample."""
     return _ops.stage_car()
@@ -93,6 +103,6 @@ def teager_kaiser(*, edge: str = TEAGER_KAISER_DEFAULT_EDGE) -> Stage:
 
 __all__ = [
     "GAUSSIAN_DEFAULT_EDGE", "MAX_MEDIAN_WIDTH", "MEDIAN_DEFAULT_EDGE", "Stage", "TEAGER_KAISER_DEFAULT_EDGE",
-    "FIR_DEFAULT_EDGE", "car", "clamp", "cmr", "fir", "gaussian_smooth", "iir", "median", "notch", "scale", "sos", "subtract_baseline",
+    "FIR_DEFAULT_EDGE", "car", "clamp", "cmr", "fir", "gaussian_smooth", "laplacian", "whiten", "iir", "median", "notch", "scale", "sos", "subtract_baseline",
     "teager_kaiser",
 ]
