@@ -94,7 +94,7 @@ impl FirInputs {
 /// [`FirInputs::run`] with the kernel CubeCL's autotuner found fastest for this device, element type,
 /// filter shape and problem size. Benchmarks write to a scratch output.
 fn tuned<F: DspFloat>(inputs: FirInputs) {
-    static TUNER: LocalTuner<String, String> = local_tuner!("fir-kernel");
+    static TUNER: LocalTuner<String, String> = local_tuner!("fir-kernel-v1");
     let client = inputs.client.clone();
     let id = tune_id(&client);
     let set = TUNER.init(&id, || {

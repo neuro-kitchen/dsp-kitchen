@@ -46,7 +46,9 @@ dspk-io = { path = "crates/dspk-io", version = "0.0.1", default-features = false
 dspk-py-core = { path = "bindings/python/dspk-py-core", default-features = false }
 
 # Compute & Tensors
-cubecl = { version = "0.11.3", default-features = false, features = ["std", "stdlib"] }
+# `persistence`: autotune decisions and compiled kernels survive the process (dspk-core
+# `configure_runtime` keeps them in the user cache directory)
+cubecl = { version = "0.11.3", default-features = false, features = ["std", "stdlib", "persistence"] }
 # Kernel library on CubeCL (matmul); CubeCL itself has no matmul since 0.11
 cubek-matmul = "0.3.1"
 cubek-std = "0.3.1"

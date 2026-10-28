@@ -123,7 +123,7 @@ fn count_candidates<F: DspFloat>(i: &CountInputs, block: u32) -> CountPass {
 /// [`count_candidates`] with the block length CubeCL's autotuner found fastest for this device,
 /// element type and problem size.
 fn tuned_count<F: DspFloat>(inputs: CountInputs) -> CountPass {
-    static TUNER: LocalTuner<String, String> = local_tuner!("peak-candidates");
+    static TUNER: LocalTuner<String, String> = local_tuner!("peak-candidates-v1");
     let client = inputs.client.clone();
     let id = tune_id(&client);
     let set = TUNER.init(&id, || {
