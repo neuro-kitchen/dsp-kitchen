@@ -1,4 +1,5 @@
 .worktrees
+.claude
 data/
 .data/
 .docs-old/
