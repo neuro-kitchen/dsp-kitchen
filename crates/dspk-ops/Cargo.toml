@@ -1,0 +1,31 @@
+[package]
+name = "dspk-ops"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Signal-processing operations for dspk, written once in CubeCL: filters, resampling, linear algebra, statistics, peak finding, spatial operators"
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["wgpu"]
+wgpu = ["dspk-core/wgpu"]
+cpu = ["dspk-core/cpu"]
+cuda = ["dspk-core/cuda"]
+hip = ["dspk-core/hip"]
+
+[dependencies]
+dspk-core = { workspace = true, features = ["compute"] }
+cubecl.workspace = true
+cubek-matmul.workspace = true
+cubek-std.workspace = true
+thiserror.workspace = true
+num-complex.workspace = true
+num-traits.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

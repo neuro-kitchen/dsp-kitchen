@@ -1,43 +1,52 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/dsp-core",
-    "crates/dsp-base",
-    "crates/dsp-synapse",
-    "crates/dsp-synapse-ml",
-    "crates/dsp-synapse-hub",
-    "crates/dsp-stream",
-    "crates/dsp-view",
-    "crates/dsp-io",
-    "crates/dsp-cli",
-    "crates/dsp-app",
-    "dsp_kitchen_py",
+    # DSP library
+    "crates/dspk",
+    "crates/dspk-core",
+    "crates/dspk-io",
+    "crates/dspk-ops",
+    # Electrophysiology
+    "synapse/dspk-synapse-io",
+    "synapse/dspk-synapse",
+    "synapse/dspk-synapse-ml",
+    "synapse/dspk-synapse-hub",
+    # Serving
+    "serve/dspk-view",
+    "serve/dspk-stream",
+    # Front ends
+    "app/dspk-cli",
+    "app/dspk-app",
 ]
 
 
 [workspace.package]
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
-authors = ["dsp-kitchen contributors"]
+authors = ["jesusdpa1 <17010046+jesusdpa1@users.noreply.github.com>"]
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/neuro-kitchen/dsp-kitchen"
+readme = "README.md"
+keywords = ["dsp", "gpu", "signal-processing", "cubecl", "electrophysiology"]
+categories = ["science", "algorithms", "concurrency"]
 
 [workspace.dependencies]
-dsp-core = { path = "crates/dsp-core" }
-dsp-base = { path = "crates/dsp-base" }
-dsp-synapse = { path = "crates/dsp-synapse" }
-dsp-synapse-ml = { path = "crates/dsp-synapse-ml" }
-dsp-synapse-hub = { path = "crates/dsp-synapse-hub" }
-dsp-stream = { path = "crates/dsp-stream" }
-dsp-view = { path = "crates/dsp-view" }
-dsp-io = { path = "crates/dsp-io" }
-dsp_kitchen_py = { path = "dsp_kitchen_py" }
+dspk-core = { path = "crates/dspk-core", version = "0.0.1", default-features = false }
+dspk-ops = { path = "crates/dspk-ops", version = "0.0.1", default-features = false }
+dspk-synapse-io = { path = "synapse/dspk-synapse-io", version = "0.0.1", default-features = false }
+dspk-synapse = { path = "synapse/dspk-synapse", version = "0.0.1", default-features = false }
+dspk-synapse-ml = { path = "synapse/dspk-synapse-ml", version = "0.0.1", default-features = false }
+dspk-synapse-hub = { path = "synapse/dspk-synapse-hub", version = "0.0.1", default-features = false }
+dspk-stream = { path = "serve/dspk-stream", version = "0.0.1", default-features = false }
+dspk-view = { path = "serve/dspk-view", version = "0.0.1", default-features = false }
+dspk-io = { path = "crates/dspk-io", version = "0.0.1", default-features = false }
 
 # Compute & Tensors
-cubecl = { version = "0.11.0", default-features = false, features = ["std", "stdlib"] }
+cubecl = { version = "0.11.3", default-features = false, features = ["std", "stdlib"] }
 # Kernel library on CubeCL (matmul); CubeCL itself has no matmul since 0.11
-cubek-matmul = "0.3.0"
-cubek-std = "0.3.0"
-burn-tensor = "0.22.0"
+cubek-matmul = "0.3.1"
+cubek-std = "0.3.1"
+burn-tensor = "0.22.1"
 onnx-ir = "0.22.0"
 safetensors = "0.8.0"
 bytemuck = { version = "1.25.2", features = ["derive"] }
@@ -47,16 +56,16 @@ clap = { version = "4.6.7", features = ["derive", "cargo", "env"] }
 
 # IPC & Transport
 shared_memory = "0.12.4"
-memmap2 = "0.9.11"
+memmap2 = "0.9.12"
 flate2 = "1.1.10"
 zarrs = { version = "0.23.14", default-features = false, features = ["filesystem", "blosc", "crc32c", "gzip", "sharding", "zstd"] }
 quinn = "0.11.12"
-tonic = "0.14.6"
+tonic = "0.14.8"
 prost = "0.14.4"
 prost-build = "0.14.4"
-protox = "0.9.1"
+protox = "0.10.0"
 rcgen = "0.14.10"
-rustls = { version = "0.23.45", default-features = false, features = ["ring", "std"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std"] }
 rustls-pki-types = "1.15.1"
 
 # UI & Graphics
@@ -71,11 +80,11 @@ numpy = "0.29.0"
 
 # Concurrency & Async
 rayon = "1.12.0"
-tokio = { version = "1.53.1", features = ["full"] }
+tokio = { version = "1.54.1", features = ["full"] }
 
 # Serialization & Utilities
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
+serde_json = "1.0.154"
 thiserror = "2.0.21"
 anyhow = "1.0.104"
 num-traits = "0.2.19"
@@ -83,10 +92,10 @@ num-complex = "0.4.6"
 num-rational = { version = "0.4.2", features = ["serde"] }
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
-sha2 = "0.10.9"
+sha2 = "0.11.1"
 hex = "0.4.3"
-dirs = "6.0.0"
-reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "blocking", "json"] }
+dirs = "7.0.0"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "blocking", "json"] }
 
 # Lighter build for checking results from Python (`maturin develop --profile validate`): our crates
 # lightly optimized and incremental (fast rebuilds after a change), dependencies (CubeCL, wgpu, …)
@@ -107,7 +116,7 @@ opt-level = 3
 debug = "line-tables-only"
 
 # wgpu-core's lock tracing (debug assertions only) keeps a thread-local that is already gone when a
-# CubeCL device runner shuts down, so the shutdown at exit (dsp-core `shutdown_devices`) aborted in
+# CubeCL device runner shuts down, so the shutdown at exit (dspk-core `shutdown_devices`) aborted in
 # debug builds. Only wgpu-core's internal checks are off; ours stay on.
 [profile.dev.package.wgpu-core]
 debug-assertions = false

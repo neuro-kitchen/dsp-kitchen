@@ -1,0 +1,29 @@
+[package]
+name = "dspk-stream"
+description = "Network sessions for continuous multi-channel signals: QUIC + TLS, protobuf messages"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+dspk-core.workspace = true
+# Host envelopes only: a server answers views from its recording and pyramid
+dspk-view = { workspace = true, default-features = false }
+prost.workspace = true
+quinn.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+rustls-pki-types = { workspace = true, features = ["std"] }
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[build-dependencies]
+# protox compiles the .proto in pure Rust, so building needs no `protoc`
+prost-build.workspace = true
+protox.workspace = true

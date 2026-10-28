@@ -1,0 +1,26 @@
+[package]
+name = "dspk-io"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Recording file formats for dspk: raw binary and Zarr traces, format detection, chunk caching"
+
+[features]
+default = ["zarr"]
+zarr = ["dep:zarrs"]
+# Shared test assertions (`test_support`) for crates that implement more formats.
+test-support = []
+
+[dependencies]
+dspk-core.workspace = true
+memmap2.workspace = true
+flate2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+zarrs = { workspace = true, optional = true }

@@ -1,0 +1,46 @@
+[package]
+name = "dspk-app"
+description = "DSP App: electrophysiology workbench (GPUI + gpui-kit): workspaces of docked views on one timeline"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "dspk-app"
+path = "src/main.rs"
+
+[features]
+# Our builds compile wgpu, cuda and cpu in; hip compiles but is untested (no AMD GPU)
+default = ["wgpu", "cuda", "cpu"]
+wgpu = ["dspk-core/wgpu", "dspk-ops/wgpu", "dspk-synapse/wgpu"]
+cpu = ["dspk-core/cpu", "dspk-ops/cpu", "dspk-synapse/cpu"]
+cuda = ["dspk-core/cuda", "dspk-ops/cuda", "dspk-synapse/cuda"]
+hip = ["dspk-core/hip", "dspk-ops/hip", "dspk-synapse/hip"]
+
+[dependencies]
+dspk-core.workspace = true
+dspk-ops.workspace = true
+dspk-synapse.workspace = true
+# NWB / SpikeGLX / mtscomp, probe geometry, synthetic recordings
+dspk-io = { workspace = true, features = ["zarr"] }
+dspk-synapse-io = { workspace = true, features = ["zarr"] }
+# Envelopes, pyramids and the signal backend; host only (the app draws on the CPU)
+dspk-view = { workspace = true, default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+image.workspace = true
+bytemuck.workspace = true
+# Declared here, not in the root manifest: the GPUI port changes nothing outside this crate.
+# Pinned exactly: gpui-kit pins a weekly GPUI snapshot (gpui-pre); update deliberately.
+gpui-kit = "=0.8.1"
+async-channel = "2.5.0"
+
+[dev-dependencies]
+# Headless UI tests (`#[gpui_kit::test]`, `gpui_kit::test::TestWindowExt`)
+gpui-kit = { version = "=0.8.1", features = ["test-support"] }
