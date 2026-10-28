@@ -25,7 +25,7 @@ pub struct ModelHub {
 }
 
 impl ModelHub {
-    /// Embedded catalog (plus `DSP_KITCHEN_HUB_CATALOG`) and the default cache.
+    /// Embedded catalog (plus `DSPK_HUB_CATALOG`) and the default cache.
     pub fn new() -> Result<Self> {
         Ok(Self { catalog: ModelCatalog::load_default()?, hub: Hub::from_env_or_default() })
     }
@@ -43,7 +43,7 @@ impl ModelHub {
     }
 
     fn manifest(&self, model_id: &str) -> Result<&ModelManifest> {
-        self.catalog.get(model_id).ok_or_else(|| anyhow!("unknown model id '{model_id}' in the dsp-synapse-ml catalog"))
+        self.catalog.get(model_id).ok_or_else(|| anyhow!("unknown model id '{model_id}' in the dspk-synapse-ml catalog"))
     }
 
     fn entry_for(&self, manifest: &ModelManifest) -> ModelHubEntry {

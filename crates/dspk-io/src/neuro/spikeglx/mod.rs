@@ -328,7 +328,7 @@ snsApLfSy=2,0,1\n~imroTbl=(24,2)(0 0 0 0 0)(1 0 0 0 1)\n~snsGeomMap=(NP2014,4,25
 
     #[test]
     fn test_open_bin_with_meta() {
-        let dir = std::env::temp_dir().join(format!("dsp_io_sglx_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("dspk_io_sglx_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let bin = dir.join("rec_g0_t0.imec0.ap.bin");
         // 2 samples x 5 channels interleaved

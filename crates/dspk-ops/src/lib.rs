@@ -17,7 +17,7 @@
 //!
 //! Data is a `[channels, samples]` buffer, channel-major. Functions take a cubecl `Client`, from
 //! [`dspk_core::compute::ComputeTarget`]: `ComputeTarget::from_env()?.client()?` picks the runtime
-//! named by `DSP_KITCHEN_RUNTIME`, otherwise the first compiled in. See [`Pipeline`] for a complete
+//! named by `DSPK_RUNTIME`, otherwise the first compiled in. See [`Pipeline`] for a complete
 //! example.
 
 #[cfg(test)]

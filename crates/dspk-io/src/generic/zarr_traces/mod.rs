@@ -219,7 +219,7 @@ pub fn write_zarr(
     attrs.insert("sample_rate_hz".into(), json!(info.sample_rate_hz()));
     attrs.insert("channels".into(), json!(nch));
     attrs.insert("samples".into(), json!(total));
-    attrs.insert("created_by".into(), json!("dsp-kitchen (dsp-io, zarrs)"));
+    attrs.insert("created_by".into(), json!("dspk (dspk-io, zarrs)"));
     root.store_metadata().map_err(|e| err("root metadata")(e.to_string()))?;
 
     let chunk = (chunk_samples.max(1) as u64).min(total.max(1));
@@ -252,7 +252,7 @@ mod tests {
 
     #[test]
     fn test_zarr_roundtrip_chunked() {
-        let path = std::env::temp_dir().join(format!("dsp_io_zarr_{}.zarr", std::process::id()));
+        let path = std::env::temp_dir().join(format!("dspk_io_zarr_{}.zarr", std::process::id()));
         let _ = std::fs::remove_dir_all(&path);
 
         let data: Vec<f32> = (0..4).flat_map(|c| (0..1200).map(move |s| (c * 10_000 + s) as f32)).collect();

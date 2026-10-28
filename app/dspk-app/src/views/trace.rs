@@ -325,7 +325,7 @@ impl Focusable for TracePanel {
 
 impl BasePanel for TracePanel {
     fn panel_name(&self) -> &'static str {
-        "dsp-app.time-view"
+        "dspk-app.time-view"
     }
 
     fn set_active(&mut self, active: bool, _: &mut Window, cx: &mut Context<Self>) {

@@ -398,7 +398,7 @@ impl DspApp {
 impl Render for DspApp {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
-            .id("dsp-app")
+            .id("dspk-app")
             .track_focus(&self.focus)
             .size_full()
             .relative()
@@ -608,9 +608,9 @@ mod tests {
             window.render_frame(cx);
             assert!(window.try_find("show-channels").is_none());
             // The hide button sits at the panel's outer (left) edge
-            let hide = window.find("dsp-app.channels.toggle").bounds();
+            let hide = window.find("dspk-app.channels.toggle").bounds();
             assert!(hide.origin.x < px(40.), "{hide:?}");
-            window.click("dsp-app.channels.toggle", cx);
+            window.click("dspk-app.channels.toggle", cx);
         })
         .unwrap();
         cx.run_until_parked();

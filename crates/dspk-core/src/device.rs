@@ -1,7 +1,7 @@
 //! Which compute runtime runs the DSP kernels.
 //!
 //! [`ComputeTarget`] is the one name for a runtime across the workspace: the CLI flag, Python
-//! argument, app setting and the `DSP_KITCHEN_RUNTIME` environment variable all resolve to it.
+//! argument, app setting and the `DSPK_RUNTIME` environment variable all resolve to it.
 //! Choosing a target needs no GPU libraries; running work on it is [`crate::compute`] (the
 //! `compute` feature). Which targets can run depends on the enabled runtime features (`wgpu`,
 //! `cpu`, `cuda`, `hip`).
@@ -11,7 +11,7 @@ use thiserror::Error;
 
 /// Environment variable that overrides [`ComputeTarget::from_env`]'s default (`wgpu`, `cpu`,
 /// `cuda`, `hip`).
-pub const RUNTIME_ENV: &str = "DSP_KITCHEN_RUNTIME";
+pub const RUNTIME_ENV: &str = "DSPK_RUNTIME";
 
 /// A CubeCL runtime and its default device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -74,7 +74,7 @@ impl ComputeTarget {
         Self::ALL.into_iter().filter(|t| t.is_available()).collect()
     }
 
-    /// `DSP_KITCHEN_RUNTIME` when set, else the first compiled-in runtime.
+    /// `DSPK_RUNTIME` when set, else the first compiled-in runtime.
     pub fn from_env() -> Result<Self, ComputeError> {
         match std::env::var(RUNTIME_ENV) {
             Ok(name) if !name.trim().is_empty() => Self::parse(&name)?.checked(),

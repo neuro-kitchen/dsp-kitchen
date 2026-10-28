@@ -281,7 +281,7 @@ mod tests {
 
     #[test]
     fn test_decodes_across_chunks_with_wrapping() {
-        let dir = std::env::temp_dir().join(format!("dsp_io_mts_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("dspk_io_mts_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         // Large steps force int16 wrap-around in the differences
         let data: Vec<Vec<i16>> = (0..3)

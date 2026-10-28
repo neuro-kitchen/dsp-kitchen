@@ -1,4 +1,4 @@
-//! Foundational primitives, timestamps, buffers, and masks for `dsp-kitchen`.
+//! Foundational primitives, timestamps, buffers, and masks for `dspk`.
 
 pub mod error;
 pub mod time;

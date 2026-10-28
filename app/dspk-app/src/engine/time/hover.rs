@@ -44,7 +44,7 @@ impl HoverReader {
     pub fn spawn() -> Self {
         let (tx, rx) = mpsc::channel::<HoverRequest>();
         thread::Builder::new()
-            .name("dsp-app-hover".into())
+            .name("dspk-app-hover".into())
             .spawn(move || {
                 // Exits when the sender (owned by the UI) is dropped
                 while let Ok(mut req) = rx.recv() {

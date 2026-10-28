@@ -1,7 +1,7 @@
 //! Sortings on disk ↔ [`SortingOutput`]. The files are read and written by `dspk-io`
 //! (`dspk_io::neuro::{phy, nwb, sorting_zarr}`); this module converts them:
 //! - **Phy / Kilosort** folder (directory with `spike_times.npy`)
-//! - **`.sorting.zarr`**: dsp-kitchen's own store
+//! - **`.sorting.zarr`**: dspk's own store
 //! - **NWB `/units`** table in a `.nwb.zarr` store
 //!
 //! [`load_spikes`] reads any of them spike by spike (a `PhyFolder`: what curation works on).

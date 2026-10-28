@@ -11,7 +11,7 @@ use crate::neuro::{nwb::NwbUnitsTable, sorting_zarr::SortingZarr};
 pub enum SortingFormat {
     /// Phy / Kilosort folder of `.npy` arrays and `.tsv` tables.
     Phy,
-    /// dsp-kitchen `.sorting.zarr` store.
+    /// dspk `.sorting.zarr` store.
     SortingZarr,
     /// NWB `/units` table in a `.nwb.zarr` store.
     NwbUnits,

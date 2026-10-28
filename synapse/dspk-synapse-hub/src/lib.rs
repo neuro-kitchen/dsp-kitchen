@@ -61,7 +61,7 @@ pub struct Hub {
 }
 
 impl Hub {
-    /// Cache at `$DSP_KITCHEN_HUB_DIR` or the user cache directory.
+    /// Cache at `$DSPK_HUB_DIR` or the user cache directory.
     pub fn from_env_or_default() -> Self {
         Self { cache: HubCache::from_env_or_default() }
     }

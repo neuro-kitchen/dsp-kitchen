@@ -324,7 +324,7 @@ mod tests {
 
     #[test]
     fn test_reads_series_scaled_and_transposed() {
-        let path = std::env::temp_dir().join(format!("dsp_io_nwb_{}.nwb.zarr", std::process::id()));
+        let path = std::env::temp_dir().join(format!("dspk_io_nwb_{}.nwb.zarr", std::process::id()));
         write_store(&path);
         assert!(is_nwb_zarr(&path));
         let series: Vec<String> = list_series(&path).into_iter().map(|s| s.path).collect();
@@ -360,7 +360,7 @@ mod tests {
 
     #[test]
     fn test_reads_int8_int32_and_float64_series() {
-        let path = std::env::temp_dir().join(format!("dsp_io_nwb_types_{}.nwb.zarr", std::process::id()));
+        let path = std::env::temp_dir().join(format!("dspk_io_nwb_types_{}.nwb.zarr", std::process::id()));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).unwrap();
         let s: ReadableWritableListableStorage = Arc::new(FilesystemStore::new(&path).unwrap());

@@ -185,7 +185,7 @@ mod tests {
 
     #[test]
     fn test_opens_raw_file_through_dsp_io() {
-        let dir = std::env::temp_dir().join(format!("dsp_app_ds_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("dspk_app_ds_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("rec.bin");
         let values: Vec<f32> = (0..12).map(|v| v as f32).collect();

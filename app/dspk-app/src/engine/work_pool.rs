@@ -73,7 +73,7 @@ impl WorkPool {
         let shared = Arc::new(Shared { queue: Mutex::new(Queue::default()), ready: Condvar::new() });
         for i in 0..threads.max(1) {
             let shared = shared.clone();
-            thread::Builder::new().name(format!("dsp-app-work-{i}")).spawn(move || work(&shared)).expect("failed to spawn a work thread");
+            thread::Builder::new().name(format!("dspk-app-work-{i}")).spawn(move || work(&shared)).expect("failed to spawn a work thread");
         }
         Self { shared, latest: Mutex::default() }
     }

@@ -1,6 +1,6 @@
 [package]
 name = "dspk-cli"
-description = "Command line for dsp-kitchen: devices, recordings, detection, sorting, benchmarks, streaming, model hub"
+description = "Command line for dspk: devices, recordings, detection, sorting, benchmarks, streaming, model hub"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

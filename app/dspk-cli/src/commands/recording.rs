@@ -89,7 +89,7 @@ fn seconds_to_samples(sec: f64, fs: f64) -> u64 {
 pub enum Format {
     /// Phy / Kilosort folder (`.npy` arrays, `.tsv` tables)
     Phy,
-    /// dsp-kitchen `.sorting.zarr` store
+    /// dspk `.sorting.zarr` store
     Zarr,
     /// NWB `/units` table in a `.nwb.zarr` store
     Nwb,

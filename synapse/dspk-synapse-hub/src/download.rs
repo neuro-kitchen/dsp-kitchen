@@ -170,7 +170,7 @@ fn build_http_client(timeout: Duration) -> Result<reqwest::blocking::Client> {
     // first client. `Err` only means one is already installed (by us or the host process).
     let _ = rustls::crypto::ring::default_provider().install_default();
     reqwest::blocking::Client::builder()
-        .user_agent(concat!("dsp-kitchen-hub/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("dspk-hub/", env!("CARGO_PKG_VERSION")))
         .timeout(timeout)
         .build()
         .context("failed to build HTTP client")

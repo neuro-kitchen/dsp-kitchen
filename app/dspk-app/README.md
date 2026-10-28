@@ -1,6 +1,6 @@
 # `dspk-app`: electrophysiology workbench (GPUI)
 
-Desktop app of `dsp-kitchen`, built on GPUI and gpui-kit: workspaces (Explore · Sorting ·
+Desktop app of `dspk`, built on GPUI and gpui-kit: workspaces (Explore · Sorting ·
 Pipeline · Curation) of docked views on one shared timeline. Explore is built; Curation's data
 layer is built and tested, its views come next; Sorting and Pipeline show what they will hold.
 

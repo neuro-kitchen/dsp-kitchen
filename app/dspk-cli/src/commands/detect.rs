@@ -13,7 +13,7 @@ use dspk_synapse::{DistanceRule, SpikePolarity};
 use super::recording::{OutputArgs, RecordingArgs};
 
 /// Sorter name recorded in the output.
-const SORTER_NAME: &str = "dsp-synapse streaming detection";
+const SORTER_NAME: &str = "dspk-synapse streaming detection";
 /// Default band-pass of the preprocessing (Hz).
 const DEFAULT_BAND_LOW_HZ: f64 = 300.0;
 const DEFAULT_BAND_HIGH_HZ: f64 = 5_000.0;

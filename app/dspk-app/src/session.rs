@@ -119,7 +119,7 @@ impl Session {
     }
 
     pub fn path() -> Option<PathBuf> {
-        Some(Self::config_dir()?.join("dsp-app").join("workbench.json"))
+        Some(Self::config_dir()?.join("dspk-app").join("workbench.json"))
     }
 
     /// The saved session; else the Slint app's recent files; else an empty one.
@@ -167,7 +167,7 @@ mod tests {
     use super::*;
 
     fn scratch(name: &str) -> PathBuf {
-        let p = std::env::temp_dir().join(format!("dsp-app-session-{name}-{}", std::process::id()));
+        let p = std::env::temp_dir().join(format!("dspk-app-session-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
         p

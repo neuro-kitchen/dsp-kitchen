@@ -1,4 +1,4 @@
-//! `dspk-cli`: a thin command line over the dsp-kitchen crates. Each command lives in its own
+//! `dspk-cli`: a thin command line over the dspk crates. Each command lives in its own
 //! module with its own arguments; this file only parses and dispatches.
 
 mod commands;
@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand};
 use dspk_core::ComputeTarget;
 
 #[derive(Parser, Debug)]
-#[command(name = "dspk", version, about = "dsp-kitchen from the command line: devices, recordings, detection, sorting, benchmarks, streaming, model hub")]
+#[command(name = "dspk", version, about = "dspk from the command line: devices, recordings, detection, sorting, benchmarks, streaming, model hub")]
 struct Cli {
     /// Compute runtime: wgpu, cpu, cuda or hip, among those compiled in (default: the first
     /// compiled in, GPUs first; `doctor` shows which work on this machine)

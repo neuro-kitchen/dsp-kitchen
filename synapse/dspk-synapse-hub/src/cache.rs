@@ -1,4 +1,4 @@
-//! Local cache of downloaded artifacts (`~/.cache/dsp-kitchen/hub/` or `DSP_KITCHEN_HUB_DIR`):
+//! Local cache of downloaded artifacts (`~/.cache/dspk/hub/` or `DSPK_HUB_DIR`):
 //! `models/<family>/<slug>/<file>` plus an `index.json` recording each installed file's hash and
 //! size, so status checks never re-read the files ([`HubCache::verify`] does).
 
@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use crate::Artifact;
 
 /// Environment variable overriding the cache root.
-pub const HUB_DIR_ENV: &str = "DSP_KITCHEN_HUB_DIR";
+pub const HUB_DIR_ENV: &str = "DSPK_HUB_DIR";
 
 /// Read buffer of the hashing loop.
 const HASH_CHUNK_BYTES: usize = 64 * 1024;
@@ -69,7 +69,7 @@ pub struct HubCache {
 }
 
 impl HubCache {
-    /// `$DSP_KITCHEN_HUB_DIR`, else `<user cache>/dsp-kitchen/hub`.
+    /// `$DSPK_HUB_DIR`, else `<user cache>/dspk/hub`.
     pub fn from_env_or_default() -> Self {
         if let Ok(dir) = std::env::var(HUB_DIR_ENV)
             && !dir.trim().is_empty()
@@ -79,7 +79,7 @@ impl HubCache {
         let base = dirs::cache_dir()
             .or_else(|| dirs::home_dir().map(|h| h.join(".cache")))
             .unwrap_or_else(|| PathBuf::from(".cache"));
-        Self::new(base.join("dsp-kitchen").join("hub"))
+        Self::new(base.join("dspk").join("hub"))
     }
 
     pub fn new(root_dir: impl Into<PathBuf>) -> Self {

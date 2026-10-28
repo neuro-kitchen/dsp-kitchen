@@ -1,4 +1,4 @@
-//! Recording file formats for `dsp-kitchen`.
+//! Recording file formats for `dspk`.
 //!
 //! Every format implements [`dspk_core::RecordingSource`], so callers read bounded chunks of any
 //! recording without knowing how it is stored, and [`Format`], so [`open`] can pick the reader

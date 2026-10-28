@@ -30,12 +30,12 @@ pub struct ModelCatalog {
 
 impl ModelCatalog {
     /// Loads the embedded default catalog compiled into `dspk-synapse-ml`, plus any override
-    /// file pointed to by `DSP_KITCHEN_HUB_CATALOG` if set.
+    /// file pointed to by `DSPK_HUB_CATALOG` if set.
     pub fn load_default() -> Result<Self> {
         let mut catalog = Self::from_json_str(EMBEDDED_MODELS_JSON)
             .map_err(|e| DspError::InvalidConfig(format!("embedded catalog/models.json: {e}")))?;
 
-        if let Ok(custom_path) = std::env::var("DSP_KITCHEN_HUB_CATALOG") {
+        if let Ok(custom_path) = std::env::var("DSPK_HUB_CATALOG") {
             let trimmed = custom_path.trim();
             if !trimmed.is_empty() {
                 let p = Path::new(trimmed);

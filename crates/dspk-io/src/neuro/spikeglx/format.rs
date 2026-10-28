@@ -108,7 +108,7 @@ mod tests {
 
     #[test]
     fn test_spikeglx_run_streams() {
-        let dir = std::env::temp_dir().join(format!("dsp_io_sglx_run_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("dspk_io_sglx_run_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let meta = |ch: usize, rate: &str, ty: &str| {

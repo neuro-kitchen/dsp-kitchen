@@ -8,7 +8,7 @@ pub mod convert;
 
 /// Messages generated from `proto/dspk_stream.proto` (package `dspk_stream.v1`).
 pub mod wire {
-    include!(concat!(env!("OUT_DIR"), "/dsp_stream.v1.rs"));
+    include!(concat!(env!("OUT_DIR"), "/dspk_stream.v1.rs"));
 }
 
 /// Protocol version sent in `ClientHello` and `Header`; peers of another version are refused.
@@ -16,7 +16,7 @@ pub const PROTOCOL_VERSION: u32 = 1;
 
 /// TLS application protocol (ALPN): names the protocol and its version, so QUIC refuses peers
 /// speaking another one before any message is exchanged.
-pub const ALPN: &[u8] = b"dsp-stream/1";
+pub const ALPN: &[u8] = b"dspk-stream/1";
 
 /// Bytes of the big-endian length before every message.
 pub const LENGTH_PREFIX_BYTES: usize = 4;

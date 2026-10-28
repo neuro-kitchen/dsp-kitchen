@@ -138,7 +138,7 @@ pub struct ChannelsPanel {
     _subs: Vec<Subscription>,
 }
 
-side_panel!(ChannelsPanel, "dsp-app.channels", "Channels");
+side_panel!(ChannelsPanel, "dspk-app.channels", "Channels");
 
 impl ChannelsPanel {
     pub fn new(explore: Entity<ExploreVm>, dock: DockToggle, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -393,7 +393,7 @@ pub struct SettingsPanel {
     _subs: Vec<Subscription>,
 }
 
-side_panel!(SettingsPanel, "dsp-app.view-settings", "View settings");
+side_panel!(SettingsPanel, "dspk-app.view-settings", "View settings");
 
 impl SettingsPanel {
     pub fn new(explore: Entity<ExploreVm>, dock: DockToggle, cx: &mut Context<Self>) -> Self {
@@ -559,7 +559,7 @@ pub struct TimelinePanel {
     _sub: Subscription,
 }
 
-side_panel!(TimelinePanel, "dsp-app.timeline", "Timeline");
+side_panel!(TimelinePanel, "dspk-app.timeline", "Timeline");
 
 impl TimelinePanel {
     pub fn new(store: Entity<Store>, dock: DockToggle, cx: &mut Context<Self>) -> Self {

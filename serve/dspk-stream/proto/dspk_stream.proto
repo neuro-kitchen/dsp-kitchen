@@ -1,6 +1,6 @@
-// dsp-stream session protocol, version 1.
+// dspk-stream session protocol, version 1.
 //
-// One QUIC connection (ALPN "dsp-stream/1") per client. Every message is a 4-byte big-endian
+// One QUIC connection (ALPN "dspk-stream/1") per client. Every message is a 4-byte big-endian
 // length followed by the protobuf encoding; receivers reject lengths above their limit before
 // allocating.
 //
@@ -12,7 +12,7 @@
 
 syntax = "proto3";
 
-package dsp_stream.v1;
+package dspk_stream.v1;
 
 // An exact fraction (sample rates in Hz, times in seconds).
 message Ratio {

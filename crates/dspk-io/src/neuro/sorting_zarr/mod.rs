@@ -1,4 +1,4 @@
-//! `.sorting.zarr`: dsp-kitchen's own self-contained sorting store (Zarr v3). Not a SpikeInterface
+//! `.sorting.zarr`: dspk's own self-contained sorting store (Zarr v3). Not a SpikeInterface
 //! layout.
 //!
 //! - root `zarr.json` attributes: the [`SortingZarrManifest`] (`dsp_format`, sorter, sample rate,

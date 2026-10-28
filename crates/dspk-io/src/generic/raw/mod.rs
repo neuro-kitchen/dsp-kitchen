@@ -344,7 +344,7 @@ mod tests {
     use dspk_core::MemoryRecording;
 
     fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("dsp_io_raw_{}_{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("dspk_io_raw_{}_{name}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir.join("rec.bin")

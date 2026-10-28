@@ -106,7 +106,7 @@ fn main() -> Result<()> {
             titlebar: Some(TitlebarOptions { title: Some("DSP App".into()), ..TitleBar::title_bar_options() }),
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(1400.), px(880.)), cx))),
             window_min_size: Some(size(px(760.), px(520.))),
-            app_id: Some("org.dsp-kitchen.dsp-app".into()),
+            app_id: Some("org.neuro-kitchen.dspk-app".into()),
             ..TitleBar::window_options()
         };
         let s = store.clone();

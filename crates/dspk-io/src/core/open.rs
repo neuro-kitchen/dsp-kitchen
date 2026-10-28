@@ -50,7 +50,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_open_detects_formats() {
-        let dir = std::env::temp_dir().join(format!("dsp_io_open_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("dspk_io_open_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let src = SyntheticRecording::new(SyntheticParams { channels: 4, duration_sec: 0.1, ..Default::default() }).unwrap();
 
@@ -75,7 +75,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_single_recording_is_one_source() {
-        let dir = std::env::temp_dir().join(format!("dsp_io_src_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("dspk_io_src_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let src = SyntheticRecording::new(SyntheticParams { channels: 3, duration_sec: 0.1, ..Default::default() }).unwrap();
         let bin = dir.join("rec.bin");
@@ -124,7 +124,7 @@ pub(crate) mod tests {
 
     #[test]
     fn stored_reads_match_scaled_reads() {
-        let dir = std::env::temp_dir().join(format!("dsp_io_stored_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("dspk_io_stored_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let src = SyntheticRecording::new(SyntheticParams { channels: 5, duration_sec: 0.1, ..Default::default() }).unwrap();
         let channels = [4usize, 0, 2];
