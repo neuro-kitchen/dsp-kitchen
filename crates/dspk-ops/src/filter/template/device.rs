@@ -1,4 +1,5 @@
-//! Template subtraction on the device, equal to [`super::subtract_template_multichannel`].
+//! Template subtraction on the device: the one implementation (the host reference used by the tests
+//! lives in `reference.rs`).
 //!
 //! The host subtracts events one by one: an event's alignment sees the residual left by earlier
 //! events whose windows overlap it. Here events are grouped into layers — an event goes one layer
