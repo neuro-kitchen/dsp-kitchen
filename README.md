@@ -57,4 +57,4 @@ values (e.g. 384 channels × 11.1 million samples). Larger requests are refused 
 
 ## License
 
-MIT OR Apache-2.0.
+MIT OR Apache-2.0, at your option ([LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE)).
