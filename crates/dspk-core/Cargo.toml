@@ -4,9 +4,14 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+description = "Core types for dspk: recordings, buffers, time, masks, windows, and the CubeCL compute layer with run-time device choice (wgpu, CUDA, HIP, CPU)"
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [features]
-default = []
+default = ["wgpu"]
 # The compute layer (CubeCL); off for crates that only need the core types (e.g. dspk-io).
 compute = ["dep:cubecl"]
 wgpu = ["compute", "cubecl/wgpu"]

@@ -4,9 +4,12 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+# Not published yet: the synapse names may change; app and CLI are not libraries
+publish = false
 
 [features]
-default = []
+default = ["wgpu"]
+wgpu = ["dspk-ops/wgpu"]
 cpu = ["dspk-ops/cpu"]
 cuda = ["dspk-ops/cuda"]
 hip = ["dspk-ops/hip"]
@@ -15,8 +18,8 @@ hip = ["dspk-ops/hip"]
 dspk-core = { workspace = true, features = ["compute"] }
 dspk-ops.workspace = true
 dspk-io = { workspace = true, features = ["zarr"] }
-dspk-synapse-io.workspace = true
-cubecl = { workspace = true, features = ["wgpu"] }
+dspk-synapse-io = { workspace = true, features = ["zarr"] }
+cubecl.workspace = true
 rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true

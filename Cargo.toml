@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     # DSP library
+    "crates/dspk",
     "crates/dspk-core",
     "crates/dspk-io",
     "crates/dspk-ops",
@@ -20,21 +21,25 @@ members = [
 
 
 [workspace.package]
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
-authors = ["dsp-kitchen contributors"]
+authors = ["jesusdpa1 <17010046+jesusdpa1@users.noreply.github.com>"]
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/neuro-kitchen/dsp-kitchen"
+readme = "README.md"
+keywords = ["dsp", "gpu", "signal-processing", "cubecl", "electrophysiology"]
+categories = ["science", "algorithms", "concurrency"]
 
 [workspace.dependencies]
-dspk-core = { path = "crates/dspk-core" }
-dspk-ops = { path = "crates/dspk-ops" }
-dspk-synapse-io = { path = "synapse/dspk-synapse-io" }
-dspk-synapse = { path = "synapse/dspk-synapse" }
-dspk-synapse-ml = { path = "synapse/dspk-synapse-ml" }
-dspk-synapse-hub = { path = "synapse/dspk-synapse-hub" }
-dspk-stream = { path = "serve/dspk-stream" }
-dspk-view = { path = "serve/dspk-view" }
-dspk-io = { path = "crates/dspk-io" }
+dspk-core = { path = "crates/dspk-core", version = "0.0.1", default-features = false }
+dspk-ops = { path = "crates/dspk-ops", version = "0.0.1", default-features = false }
+dspk-synapse-io = { path = "synapse/dspk-synapse-io", version = "0.0.1", default-features = false }
+dspk-synapse = { path = "synapse/dspk-synapse", version = "0.0.1", default-features = false }
+dspk-synapse-ml = { path = "synapse/dspk-synapse-ml", version = "0.0.1", default-features = false }
+dspk-synapse-hub = { path = "synapse/dspk-synapse-hub", version = "0.0.1", default-features = false }
+dspk-stream = { path = "serve/dspk-stream", version = "0.0.1", default-features = false }
+dspk-view = { path = "serve/dspk-view", version = "0.0.1", default-features = false }
+dspk-io = { path = "crates/dspk-io", version = "0.0.1", default-features = false }
 
 # Compute & Tensors
 cubecl = { version = "0.11.3", default-features = false, features = ["std", "stdlib"] }

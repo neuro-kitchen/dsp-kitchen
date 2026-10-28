@@ -1,0 +1,32 @@
+[package]
+name = "dspk"
+description = "Multi-channel signal processing on any GPU or the CPU, written once in CubeCL: filters, resampling, linear algebra, recordings, viewing and streaming"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["wgpu", "zarr"]
+# CubeCL runtimes compiled in; the device is chosen at run time (`dspk::core::ComputeTarget`)
+wgpu = ["dspk-core/wgpu", "dspk-ops/wgpu", "dspk-view?/wgpu"]
+cpu = ["dspk-core/cpu", "dspk-ops/cpu", "dspk-view?/cpu"]
+cuda = ["dspk-core/cuda", "dspk-ops/cuda", "dspk-view?/cuda"]
+hip = ["dspk-core/hip", "dspk-ops/hip", "dspk-view?/hip"]
+# Zarr recordings in `dspk::io`
+zarr = ["dspk-io/zarr"]
+# Envelopes and pyramids for viewing (`dspk::view`)
+view = ["dep:dspk-view"]
+# Network sessions (`dspk::stream`)
+stream = ["view", "dep:dspk-stream"]
+
+[dependencies]
+dspk-core = { workspace = true, features = ["compute"] }
+dspk-io.workspace = true
+dspk-ops.workspace = true
+dspk-view = { workspace = true, optional = true }
+dspk-stream = { workspace = true, optional = true }

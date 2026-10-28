@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+# Not published yet: the synapse names may change; app and CLI are not libraries
+publish = false
 description = "Verified download and local cache of published model / sorter artifacts (hf://, gh://, zenodo://, https://, file://)"
 
 [dependencies]

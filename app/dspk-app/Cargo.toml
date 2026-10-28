@@ -5,18 +5,27 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+publish = false
 
 [[bin]]
 name = "dspk-app"
 path = "src/main.rs"
+
+[features]
+# Our builds compile wgpu, cuda and cpu in; hip compiles but is untested (no AMD GPU)
+default = ["wgpu", "cuda", "cpu"]
+wgpu = ["dspk-core/wgpu", "dspk-ops/wgpu", "dspk-synapse/wgpu"]
+cpu = ["dspk-core/cpu", "dspk-ops/cpu", "dspk-synapse/cpu"]
+cuda = ["dspk-core/cuda", "dspk-ops/cuda", "dspk-synapse/cuda"]
+hip = ["dspk-core/hip", "dspk-ops/hip", "dspk-synapse/hip"]
 
 [dependencies]
 dspk-core.workspace = true
 dspk-ops.workspace = true
 dspk-synapse.workspace = true
 # NWB / SpikeGLX / mtscomp, probe geometry, synthetic recordings
-dspk-io.workspace = true
-dspk-synapse-io.workspace = true
+dspk-io = { workspace = true, features = ["zarr"] }
+dspk-synapse-io = { workspace = true, features = ["zarr"] }
 # Envelopes, pyramids and the signal backend; host only (the app draws on the CPU)
 dspk-view = { workspace = true, default-features = false }
 serde.workspace = true

@@ -5,26 +5,28 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+publish = false
 
 [[bin]]
 name = "dspk"
 path = "src/main.rs"
 
 [features]
-default = ["wgpu", "hub"]
+# Our builds compile wgpu, cuda and cpu in; hip compiles but is untested (no AMD GPU)
+default = ["wgpu", "cuda", "cpu", "hub"]
 # CubeCL runtimes (chosen at run time with --runtime among those compiled in)
-wgpu = ["dspk-core/wgpu", "dspk-ops/wgpu", "dspk-synapse-ml/wgpu"]
+wgpu = ["dspk-core/wgpu", "dspk-ops/wgpu", "dspk-synapse/wgpu", "dspk-synapse-ml/wgpu"]
 cpu = ["dspk-core/cpu", "dspk-ops/cpu", "dspk-synapse/cpu", "dspk-synapse-ml/cpu"]
 cuda = ["dspk-core/cuda", "dspk-ops/cuda", "dspk-synapse/cuda", "dspk-synapse-ml/cuda"]
-hip = ["dspk-core/hip", "dspk-ops/hip", "dspk-synapse/hip"]
+hip = ["dspk-core/hip", "dspk-ops/hip", "dspk-synapse/hip", "dspk-synapse-ml/hip"]
 # `hub` command: verified downloads of published artifacts (network access)
 hub = ["dspk-synapse-ml/hub", "dep:dspk-synapse-hub"]
 
 [dependencies]
 dspk-core = { workspace = true, features = ["compute"] }
 dspk-ops.workspace = true
-dspk-io.workspace = true
-dspk-synapse-io.workspace = true
+dspk-io = { workspace = true, features = ["zarr"] }
+dspk-synapse-io = { workspace = true, features = ["zarr"] }
 dspk-synapse.workspace = true
 dspk-synapse-ml = { workspace = true, default-features = false }
 dspk-synapse-hub = { workspace = true, optional = true }

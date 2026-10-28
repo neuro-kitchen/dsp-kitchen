@@ -1,95 +1,60 @@
-# dsp-kitchen
+# dspk
 
 > [!WARNING]
-> **Under development.** Every crate and the Python bindings build; in `dspk-app`, Explore is
-> rewired to the reorganized crates and Curation is parked. Kilosort4 and EMUsort run over whole recordings
-> on the GPU (preprocessing, universal templates, detection, clustering, learned-template matching);
-> their refractory criteria, final merges and drift correction are not implemented yet (see the book's
-> *Sorters* pages and *Benchmarks*). Nothing here is released; APIs change.
->
-> **Device size limit.** GPU kernels index buffers with 32-bit integers (WebGPU has no 64-bit
-> integers, and one kernel source serves every runtime). One window or batch on the device can
-> hold at most 2³² − 1 values (≈ 4.29 · 10⁹), e.g. 384 channels × 11.1 million samples. Larger
-> requests (a very large `batch_size`) are refused with an error rather than computed wrongly;
-> use smaller batches.
+> **Early development (0.0.x).** APIs change between releases. Documentation is being rewritten.
 
-GPU-accelerated digital signal processing for multi-channel recordings, in Rust, with a focus on
-neural and muscle electrophysiology: filtering, resampling, spatial operators, spike detection,
-waveform extraction, localization, drift correction, clustering, quality metrics, and spike
-sorters reimplemented from their papers (Kilosort4, EMUsort).
+Multi-channel signal processing written once in [CubeCL](https://github.com/tracel-ai/cubecl) and
+run on any GPU (wgpu: Vulkan, Metal, DirectX 12; CUDA; ROCm / HIP) or the CPU, with the device
+chosen at run time. Processing stages keep data on the device between them, so a recording
+crosses disk → RAM → device memory as few times as possible.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/img/dsp-app_main-darkmode.png">
-  <source media="(prefers-color-scheme: light)" srcset="assets/img/dsp-app_main-lightmode.png">
-  <img alt="dspk-app, the Explore workspace: 385 channels of a Neuropixels recording as traces and a heatmap, the channel list, view settings and the timeline" src="assets/img/dsp-app_main-darkmode.png">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/neuro-kitchen/dsp-kitchen/main/assets/img/dsp-app_main-darkmode.png">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/neuro-kitchen/dsp-kitchen/main/assets/img/dsp-app_main-lightmode.png">
+  <img alt="dspk-app: 385 channels of a Neuropixels recording as traces and a heatmap, with the channel list, view settings and timeline" src="https://raw.githubusercontent.com/neuro-kitchen/dsp-kitchen/main/assets/img/dsp-app_main-darkmode.png">
 </picture>
 
-*`dspk-app`, the desktop workbench: a Neuropixels recording (385 channels, 30 kHz) as traces and
-a heatmap on one timeline, drawn from min/max pyramids built in the background.*
-
-**Documentation:** the mdBook in [`docs/book`](docs/book/src/introduction.md)
-(`mdbook build docs/book` → `target/book`; published at
-<https://neuro-kitchen.github.io/dsp-kitchen/>).
-
-## Highlights
-
-- **Any GPU or the CPU, chosen at run time.** Device code is written once as
-  [CubeCL](https://github.com/tracel-ai/cubecl) kernels and runs on WebGPU (Vulkan, Metal,
-  DirectX 12), CUDA, ROCm / HIP or the CPU. Libraries take a compute client and never pick a
-  device; entry points choose with `ComputeTarget` (`DSP_KITCHEN_RUNTIME`). Device-dependent
-  choices are autotuned per device.
-- **Minimal data transport.** Processing pipelines keep data on the device between stages;
-  integer recordings upload as stored and are scaled there; detection, matching and clustering
-  compact their results on the device so only spikes, statistics or parameters come back;
-  constant data is uploaded once per run; recordings are read out of core with background
-  prefetching (`dspk_core::WindowLoader`), so host memory stays bounded.
-- **Sorters from their papers.** Kilosort4 and EMUsort (one shared runner) stream a whole
-  recording through preprocessing, universal-template learning and detection on the device, in
-  Rust or from Python.
-- **scipy / numpy semantics** for defaults where an equivalent exists, and exact chunked
-  processing: any batch size gives the whole-recording result.
-- **Provenance.** Every sorter and model names the paper (DOI), code, license and downloaded
-  files it comes from.
+*`dspk-app` (desktop workbench, not on crates.io): a Neuropixels recording (385 channels, 30 kHz)
+drawn from min/max pyramids built by `dspk-view`.*
 
 ## Crates
 
-| Crate | Role |
+| Crate | Contents |
 |---|---|
-| `dspk-core` | Exact time and sample rates, buffers, errors, the `RecordingSource` contract, out-of-core window streaming, compute-runtime selection. |
-| `dspk-io` | Recording formats and containers (`.npy`, `.npz`, Zarr), NWB / SpikeGLX / mtscomp, probe geometry, sorting files (Phy, NWB units, `.sorting.zarr`). |
-| `dspk-ops` | DSP primitives on the device: IIR / FIR / non-linear filters, resampling, spatial operators, linear algebra, peak finding, statistics, device pipelines. |
-| `dspk-synapse` | Spike detection, deduplication, extraction, features, localization, drift, clustering, template matching, metrics, streaming detection. |
-| `dspk-synapse-ml` | Sorters from papers (Kilosort4, EMUsort) and pretrained models, with provenance. |
-| `dspk-synapse-hub` | Verified download and cache of published artifacts. |
-| `dspk-stream` | Network sessions for continuous signals (QUIC + TLS, protobuf): exact header, stored samples, views. |
-| `dspk-view` | Preparing signals for viewing, locally or remotely: min/max envelopes and pyramids. |
-| `dspk-app` | Desktop workbench (GPUI, the screenshot above): the UI over dspk-view's signal backend. |
-| `dspk-cli`, `dsp_kitchen_py` | Command line, Python bindings. |
+| `dspk` | Entry crate: re-exports the crates below; features choose what is included. |
+| `dspk-core` | Recordings (`RecordingSource`), buffers, exact time and sample rates, windows, compute targets. |
+| `dspk-io` | Raw binary and Zarr recordings, format detection, chunk cache, `.npy`/`.npz`/Zarr containers. |
+| `dspk-ops` | IIR / FIR / non-linear filters, resampling, spatial operators, linear algebra, statistics, peak finding, device pipelines. |
+| `dspk-view` | Min/max envelopes and pyramids for viewing, local or remote. |
+| `dspk-stream` | Network sessions for continuous signals (QUIC + TLS, protobuf). |
 
-## Building
+Electrophysiology (spike detection, sorters, neural file formats) lives in the `synapse/` crates of
+the repository and is not published yet.
 
-Requires a recent stable Rust toolchain (edition 2024).
+## Runtimes
 
-```bash
-cargo build --workspace
-cargo run -p dspk-app --release -- <recording>   # desktop workbench
-cargo build -p dspk-core --features cuda     # runtimes are features: wgpu (default), cuda, hip, cpu
+Runtimes are crate features; the device is picked at run time with `dspk::core::ComputeTarget`
+(or the `DSPK_RUNTIME` environment variable) among those compiled in.
+
+```toml
+[dependencies]
+dspk = "0.0.1"                                               # wgpu (default)
+# dspk = { version = "0.0.1", features = ["cuda", "cpu"] }   # add CUDA and the CPU runtime
 ```
 
-Python (`dsp_kitchen`, default features `wgpu` and `hub`):
+| Feature | Runtime | Tested |
+|---|---|---|
+| `wgpu` (default) | WebGPU: Vulkan, Metal, DirectX 12 | NVIDIA RTX 2070 Max-Q, Intel UHD 630 (Vulkan) |
+| `cuda` | NVIDIA CUDA | NVIDIA RTX 2070 Max-Q |
+| `cpu` | CubeCL CPU runtime (MLIR / LLVM) | x86-64 |
+| `hip` | AMD ROCm / HIP | compiles; **untested** (no AMD GPU available) |
 
-```bash
-cd dsp_kitchen_py && maturin develop
-python ../playground/sorters/kilosort4_universal_templates.py   # examples: see playground/README.md
-```
+CUDA and HIP are loaded at run time, so building with them needs no toolkit installed.
 
-## Citing
-
-If you use a sorter, cite its authors — see
-[Citations](docs/book/src/reference/citations.md). In code:
-`dspk_synapse_ml::Attributed::provenance()` and `Provenance::citation()`.
+**Device size limit.** Kernels index with 32-bit integers (WebGPU has no 64-bit integers, and one
+kernel source serves every runtime): one window or batch on the device holds at most 2³² − 1
+values (e.g. 384 channels × 11.1 million samples). Larger requests are refused with an error.
 
 ## License
 
-MIT OR Apache-2.0 (see [LICENSE](LICENSE)). Sorters are written from their papers; upstream
-implementations under other licenses (e.g. GPL-3.0) are not included.
+MIT OR Apache-2.0.

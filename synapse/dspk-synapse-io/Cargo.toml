@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+# Not published yet: the synapse names may change; app and CLI are not libraries
+publish = false
 description = "Neural-recording and spike-sorting file formats for dspk: NWB, SpikeGLX, mtscomp, Phy, probe geometry"
 
 [features]
