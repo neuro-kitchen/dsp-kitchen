@@ -165,7 +165,7 @@ impl ComputeTask for Check {
 
 #[test]
 fn dispatchers_match_host_reference_on_every_runtime() {
-    let targets = ComputeTarget::available();
+    let targets = ComputeTarget::for_tests();
     assert!(!targets.is_empty());
     for target in targets {
         target.run(Check).unwrap();

@@ -11,6 +11,10 @@
 //! `libnvidia-gpucomp`, with the main thread inside `exit()`). Every device a client is made for is
 //! recorded, and an exit handler, registered after each device is opened (so it runs before the
 //! handlers of the libraries and layers loaded until then), shuts them down: [`shutdown_devices`].
+//!
+//! **Autotune decisions and compiled kernels persist across processes** ([`configure_runtime`]):
+//! without it every process re-tuned (about a minute on a GPU, several with the CPU runtime) and
+//! recompiled every kernel.
 
 use std::sync::Mutex;
 
@@ -21,6 +25,35 @@ use cubecl::Device;
 
 use crate::device::{ComputeError, ComputeTarget};
 
+/// Environment variable: `0` turns off the compiled-kernel cache (autotune decisions still persist).
+pub const KERNEL_CACHE_ENV: &str = "DSPK_KERNEL_CACHE";
+
+/// Environment variable: directory for CubeCL's caches (autotune decisions, compiled kernels);
+/// default: the user cache directory.
+pub const CACHE_DIR_ENV: &str = "DSPK_CACHE_DIR";
+
+/// Sets CubeCL's runtime configuration once, before the first device opens: compiled kernels are
+/// cached (CubeCL's default is off), and the caches live in the user cache directory (or
+/// `DSPK_CACHE_DIR`) instead of the `target/` of whichever Cargo project the process runs in.
+/// A `cubecl.toml` or CubeCL's own environment variables still apply. Called by
+/// [`ComputeTarget::device`] and [`open_device`]; harmless to call again.
+pub fn configure_runtime() {
+    use cubecl::config::cache::CacheConfig;
+    use cubecl::config::{CubeClRuntimeConfig, RuntimeConfig};
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let mut config = CubeClRuntimeConfig::from_current_dir().override_from_env();
+        config.compilation.cache = std::env::var(KERNEL_CACHE_ENV).map_or(true, |v| v.trim() != "0");
+        match std::env::var_os(CACHE_DIR_ENV) {
+            Some(dir) if !dir.is_empty() => config.environment.path = CacheConfig::Directory(dir.into()),
+            _ if matches!(config.environment.path, CacheConfig::Target) => config.environment.path = CacheConfig::Global,
+            _ => {}
+        }
+        // `false` when a configuration was already set (e.g. by the embedding application): keep it
+        let _ = CubeClRuntimeConfig::try_set(config);
+    });
+}
+
 /// Work to run on whichever runtime a [`ComputeTarget`] selects.
 pub trait ComputeTask {
     type Output;
@@ -30,6 +63,7 @@ pub trait ComputeTask {
 impl ComputeTarget {
     /// The default device of this runtime, if it is compiled in.
     pub fn device(self) -> Result<Device, ComputeError> {
+        configure_runtime();
         Ok(match self.checked()? {
             Self::Wgpu => Device::Wgpu(WgpuDevice::default()),
             Self::Cpu => Device::Cpu(CpuDevice),
@@ -84,6 +118,7 @@ fn opened(device: &Device) {
 /// The client of `device`, recorded so that [`shutdown_devices`] shuts it down at exit. Use this
 /// instead of `Device::client` wherever a specific device is opened (e.g. one GPU of several).
 pub fn open_device(device: Device) -> Client {
+    configure_runtime();
     let client = device.client();
     opened(&device);
     client
@@ -124,7 +159,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn shutdown_stops_the_device_threads() {
-        let Some(target) = ComputeTarget::available().into_iter().find(|t| *t != ComputeTarget::Cpu) else { return };
+        let Some(target) = ComputeTarget::for_tests().into_iter().find(|t| *t != ComputeTarget::Cpu) else { return };
         let client = target.client().unwrap();
         let data: Vec<u8> = (0..64u8).collect();
         let handle = client.create(cubecl::bytes::Bytes::from_bytes_vec(data.clone()));
@@ -140,7 +175,7 @@ mod tests {
 
     #[test]
     fn runs_on_available_targets_and_refuses_missing_ones() {
-        for target in ComputeTarget::available() {
+        for target in ComputeTarget::for_tests() {
             assert!(!target.run(RuntimeName).unwrap().is_empty());
         }
         for target in ComputeTarget::ALL.into_iter().filter(|t| !t.is_available()) {

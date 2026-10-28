@@ -269,7 +269,7 @@ pub fn matmul<F: DspFloat>(client: &Client, lhs: &MatrixView, rhs: &MatrixView, 
         return;
     }
 
-    static TUNER: LocalTuner<String, String> = local_tuner!("matmul-exact");
+    static TUNER: LocalTuner<String, String> = local_tuner!("matmul-exact-v1");
     let id = tune_id(client);
     let cpu_lanes = LaunchGeometry::plane_lanes(client) == 1;
     let set = TUNER.init(&id, move || {

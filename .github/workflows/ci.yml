@@ -1,0 +1,71 @@
+# Checks every push and pull request. GitHub runners have no GPU, so tests run on the CubeCL CPU
+# runtime only (DSPK_TEST_RUNTIMES=cpu; CUDA and wgpu are compiled in but not exercised). The full
+# suite on wgpu and CUDA runs locally on a GPU machine before a release.
+name: ci
+
+on:
+  # Pull requests cover the versions/* branches; pushes to main check what was merged
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  DSPK_TEST_RUNTIMES: cpu
+
+jobs:
+  rust:
+    name: Rust (check, CPU-runtime tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      # ~/.local/share/tracel: the LLVM bundle the CPU runtime downloads at build time
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          cache-directories: ~/.local/share/tracel
+      # dspk-app's GUI stack (GPUI) builds against these system libraries on Linux
+      - name: System libraries for dspk-app
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends \
+            libfontconfig-dev libfreetype-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev
+      - name: Check the workspace (dspk-cli is not maintained yet)
+        run: cargo check --workspace --exclude dspk-cli --all-targets
+      - name: Unit tests of the host-side crates
+        run: >
+          cargo test -p dspk-core -p dspk-io -p dspk-synapse-io -p dspk-synapse-hub -p dspk-view -p dspk-stream
+          --features dspk-core/cpu,dspk-view/cpu --lib
+      - name: Every dspk-ops operation against host references
+        run: cargo test -p dspk-ops --features cpu --test kernel_runtimes --test filter_runtimes
+      - name: Device buffer writes
+        run: cargo test -p dspk-ops --features cpu --lib core::buffer
+
+  python:
+    name: Python (build, tests vs scipy, stubs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          cache-directories: ~/.local/share/tracel
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - name: Development environment
+        run: uv sync
+      - name: Build and install dspk
+        working-directory: bindings/python
+        run: uv run --project ../.. maturin develop --profile validate
+      - name: Tests
+        run: uv run python -m pytest bindings/python/tests -q

@@ -492,7 +492,7 @@ impl<F: DspFloat> PassInputs<F> {
 /// this device, element type, filter order and problem size. Benchmarks write to scratch output and
 /// state buffers.
 fn tuned_pass<F: DspFloat>(inputs: PassInputs<F>) {
-    static TUNER: LocalTuner<String, String> = local_tuner!("sos-blocks");
+    static TUNER: LocalTuner<String, String> = local_tuner!("sos-blocks-v1");
     let client = inputs.client.clone();
     let id = tune_id(&client);
     let set = TUNER.init(&id, || {

@@ -17,11 +17,14 @@ members = [
     # Front ends
     "app/dspk-cli",
     "app/dspk-app",
+    # Bindings
+    "bindings/python/dspk-py-core",
+    "bindings/python/dspk-py",
 ]
 
 
 [workspace.package]
-version = "0.0.1"
+version = "0.0.2"
 edition = "2024"
 authors = ["jesusdpa1 <17010046+jesusdpa1@users.noreply.github.com>"]
 license = "MIT OR Apache-2.0"
@@ -31,18 +34,21 @@ keywords = ["dsp", "gpu", "signal-processing", "cubecl", "electrophysiology"]
 categories = ["science", "algorithms", "concurrency"]
 
 [workspace.dependencies]
-dspk-core = { path = "crates/dspk-core", version = "0.0.1", default-features = false }
-dspk-ops = { path = "crates/dspk-ops", version = "0.0.1", default-features = false }
-dspk-synapse-io = { path = "synapse/dspk-synapse-io", version = "0.0.1", default-features = false }
-dspk-synapse = { path = "synapse/dspk-synapse", version = "0.0.1", default-features = false }
-dspk-synapse-ml = { path = "synapse/dspk-synapse-ml", version = "0.0.1", default-features = false }
-dspk-synapse-hub = { path = "synapse/dspk-synapse-hub", version = "0.0.1", default-features = false }
-dspk-stream = { path = "serve/dspk-stream", version = "0.0.1", default-features = false }
-dspk-view = { path = "serve/dspk-view", version = "0.0.1", default-features = false }
-dspk-io = { path = "crates/dspk-io", version = "0.0.1", default-features = false }
+dspk-core = { path = "crates/dspk-core", version = "0.0.2", default-features = false }
+dspk-ops = { path = "crates/dspk-ops", version = "0.0.2", default-features = false }
+dspk-synapse-io = { path = "synapse/dspk-synapse-io", version = "0.0.2", default-features = false }
+dspk-synapse = { path = "synapse/dspk-synapse", version = "0.0.2", default-features = false }
+dspk-synapse-ml = { path = "synapse/dspk-synapse-ml", version = "0.0.2", default-features = false }
+dspk-synapse-hub = { path = "synapse/dspk-synapse-hub", version = "0.0.2", default-features = false }
+dspk-stream = { path = "serve/dspk-stream", version = "0.0.2", default-features = false }
+dspk-view = { path = "serve/dspk-view", version = "0.0.2", default-features = false }
+dspk-io = { path = "crates/dspk-io", version = "0.0.2", default-features = false }
+dspk-py-core = { path = "bindings/python/dspk-py-core", default-features = false }
 
 # Compute & Tensors
-cubecl = { version = "0.11.3", default-features = false, features = ["std", "stdlib"] }
+# `persistence`: autotune decisions and compiled kernels survive the process (dspk-core
+# `configure_runtime` keeps them in the user cache directory)
+cubecl = { version = "0.11.3", default-features = false, features = ["std", "stdlib", "persistence"] }
 # Kernel library on CubeCL (matmul); CubeCL itself has no matmul since 0.11
 cubek-matmul = "0.3.1"
 cubek-std = "0.3.1"
@@ -77,6 +83,8 @@ rfd = "0.17.2"
 # Python Interop
 pyo3 = { version = "0.29.3" }
 numpy = "0.29.0"
+# `.pyi` stubs of the Python extension (requires pyo3 < 0.30)
+pyo3-stub-gen = "0.23.1"
 
 # Concurrency & Async
 rayon = "1.12.0"

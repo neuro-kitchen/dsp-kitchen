@@ -466,7 +466,7 @@ mod tests {
                 buffer::download::<f32>(&client, output)
             }
         }
-        for target in ComputeTarget::available() {
+        for target in ComputeTarget::for_tests() {
             let device = target.run(Task(&data, &layout, &drift, n, samples, fs)).expect("runtime");
             let err = device.iter().zip(&host).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
             assert!(err < 1e-3, "device vs host {err}");

@@ -137,7 +137,6 @@ impl LaunchGeometry {
 #[cfg(all(test, feature = "wgpu"))]
 mod tests {
     use super::*;
-    use cubecl::device::WgpuDevice;
 
     fn cubes(count: &CubeCount) -> u64 {
         match count {
@@ -148,24 +147,31 @@ mod tests {
 
     #[test]
     fn geometries_cover_their_ranges_within_limits() {
-        let client = crate::compute::open_device(cubecl::Device::Wgpu(WgpuDevice::default()));
+        let targets = crate::ComputeTarget::for_tests();
+        assert!(!targets.is_empty(), "no CubeCL runtime to test (compiled in and allowed by DSPK_TEST_RUNTIMES)");
+        for target in targets {
+            geometries_cover(&target.client().expect("compiled-in runtime"));
+        }
+    }
+
+    fn geometries_cover(client: &Client) {
         let max = client.properties().hardware.max_cube_count;
         let within = |c: &CubeCount| matches!(c, CubeCount::Static(x, y, z) if *x <= max.0 && *y <= max.1 && *z <= max.2);
 
         // 384 channels × 10 s at 30 kHz: more cubes than one dimension allows.
         let n = 384 * 330_000;
-        let geom = LaunchGeometry::elementwise(&client, n);
+        let geom = LaunchGeometry::elementwise(client, n);
         assert!(within(&geom.cube_count) && cubes(&geom.cube_count) * geom.cube_dim.num_elems() as u64 >= n as u64);
 
         // Samples beyond one grid dimension spill into z.
         for samples in [30_001usize, 5_000_000] {
-            let geom = LaunchGeometry::channels_samples(&client, 385, samples);
+            let geom = LaunchGeometry::channels_samples(client, 385, samples);
             let CubeCount::Static(x, y, z) = geom.cube_count else { unreachable!() };
             assert!(within(&geom.cube_count));
             assert!(x as u64 * z as u64 * geom.cube_dim.x as u64 >= samples as u64 && y * geom.cube_dim.y >= 385);
-            assert_eq!(geom.cube_dim.x, LaunchGeometry::plane_lanes(&client));
+            assert_eq!(geom.cube_dim.x, LaunchGeometry::plane_lanes(client), "{}", client.name());
         }
-        let geom = LaunchGeometry::per_channel(&client, 385);
+        let geom = LaunchGeometry::per_channel(client, 385);
         assert!(cubes(&geom.cube_count) * geom.cube_dim.num_elems() as u64 >= 385);
     }
 }

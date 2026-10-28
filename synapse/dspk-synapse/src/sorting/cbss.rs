@@ -291,7 +291,7 @@ mod tests {
                 ConvolutiveBssDecomposer::new(3, 4, 20.0).decompose(&client, self.0, self.1, self.2, self.3)
             }
         }
-        for target in dspk_core::compute::ComputeTarget::available() {
+        for target in dspk_core::compute::ComputeTarget::for_tests() {
             let units = target.run(Decompose(&data, channels, samples, fs)).unwrap();
             assert!(units.len() >= 2, "{}: expected at least 2 motor units, got {}", target.name(), units.len());
             assert!(units[0].cov_isi < 0.15, "cov_isi={}", units[0].cov_isi);

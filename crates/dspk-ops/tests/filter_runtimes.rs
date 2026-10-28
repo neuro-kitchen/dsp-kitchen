@@ -48,6 +48,9 @@ fn check(client: &Client) {
 #[test]
 fn wgpu_runtime() {
     use cubecl::device::WgpuDevice;
+    if !dspk_core::ComputeTarget::for_tests().contains(&dspk_core::ComputeTarget::Wgpu) {
+        return;
+    }
     check(&dspk_core::compute::open_device(cubecl::Device::Wgpu(WgpuDevice::default())));
 }
 
@@ -55,5 +58,8 @@ fn wgpu_runtime() {
 #[test]
 fn cpu_runtime() {
     use cubecl::device::CpuDevice;
+    if !dspk_core::ComputeTarget::for_tests().contains(&dspk_core::ComputeTarget::Cpu) {
+        return;
+    }
     check(&cubecl::Device::Cpu(CpuDevice).client());
 }

@@ -38,8 +38,8 @@ Runtimes are crate features; the device is picked at run time with `dspk::core::
 
 ```toml
 [dependencies]
-dspk = "0.0.1"                                               # wgpu (default)
-# dspk = { version = "0.0.1", features = ["cuda", "cpu"] }   # add CUDA and the CPU runtime
+dspk = "0.0.2"                                               # wgpu (default)
+# dspk = { version = "0.0.2", features = ["cuda", "cpu"] }   # add CUDA and the CPU runtime
 ```
 
 | Feature | Runtime | Tested |
@@ -50,6 +50,29 @@ dspk = "0.0.1"                                               # wgpu (default)
 | `hip` | AMD ROCm / HIP | compiles; **untested** (no AMD GPU available) |
 
 CUDA and HIP are loaded at run time, so building with them needs no toolkit installed.
+
+Autotune decisions and compiled kernels are cached across processes in the user cache directory
+(`DSPK_CACHE_DIR` moves it; `DSPK_KERNEL_CACHE=0` turns the kernel cache off): the first run on a
+device tunes, later runs start in about a second.
+
+## Python
+
+```bash
+pip install dspk
+```
+
+```python
+import dspk
+from dspk.ops import Pipeline, stage
+
+dspk.runtime.available()                      # e.g. ['wgpu', 'cuda', 'cpu']
+pipe = Pipeline([stage.car(), stage.iir("bandpass", (300, 6000), mode="forward")],
+                sample_rate=30_000, stream=True)
+out = pipe.process(chunk)                     # (channels, samples) in, same shape out, on the GPU
+```
+
+Wheels for Linux x86_64 and Windows x64 (wgpu, CUDA, CPU runtime) and macOS arm64 (wgpu, CPU);
+CPython ≥ 3.10. See [bindings/python](bindings/python/README.md).
 
 **Device size limit.** Kernels index with 32-bit integers (WebGPU has no 64-bit integers, and one
 kernel source serves every runtime): one window or batch on the device holds at most 2³² − 1

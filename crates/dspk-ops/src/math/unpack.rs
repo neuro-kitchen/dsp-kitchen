@@ -31,7 +31,7 @@ pub fn stored_word_bytes(stored_len: usize) -> usize {
 /// Writes `stored` (as [`upload_stored`] lays it out) to the start of the existing device buffer
 /// `handle` (at least [`stored_word_bytes`] bytes): no allocation, see [`crate::core::buffer::write`].
 pub fn write_stored(client: &Client, handle: &cubecl::server::Handle, stored: &[u8]) {
-    client.write(handle, cubecl::bytes::Bytes::from_bytes_vec(stored_bytes(stored)));
+    crate::core::buffer::write_bytes(client, handle, cubecl::bytes::Bytes::from_bytes_vec(stored_bytes(stored)));
 }
 
 /// [`write_stored`] taking ownership of `stored` (padded in place to whole words): no copy when it
@@ -39,7 +39,7 @@ pub fn write_stored(client: &Client, handle: &cubecl::server::Handle, stored: &[
 pub fn write_stored_owned(client: &Client, handle: &cubecl::server::Handle, mut stored: Vec<u8>) {
     let words = stored_word_bytes(stored.len());
     stored.resize(words, 0);
-    client.write(handle, cubecl::bytes::Bytes::from_elems(stored));
+    crate::core::buffer::write_bytes(client, handle, cubecl::bytes::Bytes::from_elems(stored));
 }
 
 /// `stored` padded to whole 32-bit words (copied once).

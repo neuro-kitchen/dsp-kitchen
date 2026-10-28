@@ -38,14 +38,26 @@ pub fn upload<E: CubeElement>(client: &Client, data: &[E]) -> Handle {
 /// kernels have read it.
 pub fn write<E: CubeElement>(client: &Client, handle: &Handle, data: &[E]) {
     bytes::<E>(data.len());
-    client.write(handle, Bytes::from_elems(data.to_vec()));
+    write_bytes(client, handle, Bytes::from_elems(data.to_vec()));
 }
 
 /// [`fn@write`] taking ownership of `data`: the bytes move into the transfer without a copy (useful
 /// when the buffer was filled on another thread, e.g. a read-ahead loader).
 pub fn write_owned<E: CubeElement>(client: &Client, handle: &Handle, data: Vec<E>) {
     bytes::<E>(data.len());
-    client.write(handle, Bytes::from_elems(data));
+    write_bytes(client, handle, Bytes::from_elems(data));
+}
+
+/// Writes `data` to the start of `handle`, narrowed to `data`'s length: a reused buffer is often
+/// larger than the chunk written into it, and the CPU runtime copies the whole bound range (a write
+/// shorter than its handle panics there; wgpu and CUDA accept it).
+///
+/// # Panics
+/// If `data` is longer than the bytes `handle` addresses.
+pub fn write_bytes(client: &Client, handle: &Handle, data: Bytes) {
+    let (len, used) = (data.len() as u64, handle.size_in_used());
+    assert!(len <= used, "writing {len} bytes into a device buffer of {used}");
+    client.write(&handle.clone().offset_end(used - len), data);
 }
 
 /// Device buffer of `len` zeros, filled on the device (cubecl-std's zero kernel): nothing is
@@ -118,4 +130,17 @@ mod tests {
         assert!(v.iter().all(|&x| x == f32::MAX), "{}", client.name());
     }
     runtime_test!(test_filled, fills_every_element);
+
+    /// A chunk shorter than the reused buffer it is written into (a tail chunk): only its own
+    /// elements change, on every runtime (the CPU runtime once panicked on the length mismatch).
+    fn short_write_into_larger_buffer(client: &Client) {
+        let handle = upload::<f32>(client, &[7.0; 100]);
+        write(client, &handle, &[1.0f32; 10]);
+        write_owned(client, &handle, vec![2.0f32; 3]);
+        let v: Vec<f32> = download(client, handle);
+        assert_eq!(&v[..3], &[2.0; 3], "{}", client.name());
+        assert_eq!(&v[3..10], &[1.0; 7], "{}", client.name());
+        assert!(v[10..].iter().all(|&x| x == 7.0), "{}", client.name());
+    }
+    runtime_test!(test_short_write, short_write_into_larger_buffer);
 }

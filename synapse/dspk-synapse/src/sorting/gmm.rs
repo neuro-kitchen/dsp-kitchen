@@ -574,7 +574,7 @@ mod tests {
                 cluster_gmm_bic(&client, self.0, self.1, self.2, 1, 6)
             }
         }
-        let targets = dspk_core::compute::ComputeTarget::available();
+        let targets = dspk_core::compute::ComputeTarget::for_tests();
         assert!(!targets.is_empty(), "no CubeCL runtime compiled in");
         for target in targets {
         let res = target.run(Task(&features, n, d)).expect("runtime");
