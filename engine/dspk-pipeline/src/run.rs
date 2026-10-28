@@ -272,11 +272,13 @@ fn resolve_upload(requested: Upload, format: SampleFormat) -> Result<bool, Pipel
 }
 
 /// `stream` needs every filter forward (zero-phase needs future samples) and no stencil stage
-/// (median, Gaussian, Teager–Kaiser read neighbours across window edges and carry no state).
+/// (median, Gaussian, Teager–Kaiser, FIR read neighbours across window edges and carry no state;
+/// for FIR, window mode with its halo is exact).
 fn resolve_mode(requested: ExecMode, pipeline: &Pipeline, sample_rate: f64) -> Result<ExecutedMode, PipelineError> {
     let blocker = pipeline.stages().iter().find_map(|stage| match stage {
         PipelineStage::Filter(spec) if spec.mode == FilterMode::ForwardBackward => Some("a zero-phase (forward_backward) filter"),
         PipelineStage::Median { .. } => Some("a median stage"),
+        PipelineStage::Fir { .. } => Some("a fir stage"),
         PipelineStage::GaussianSmooth { .. } => Some("a gaussian_smooth stage"),
         PipelineStage::TeagerKaiser { .. } => Some("a teager_kaiser stage"),
         _ => None,

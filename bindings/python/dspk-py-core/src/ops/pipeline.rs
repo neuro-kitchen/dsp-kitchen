@@ -86,6 +86,18 @@ fn stage_sos(sos: PyReadonlyArray2<'_, f64>, mode: &str, start: &str) -> PyResul
 
 #[gen_stub_pyfunction(module = "dspk._native.ops")]
 #[pyfunction]
+fn stage_fir(taps: Vec<f32>, centered: bool, edge: &str) -> PyResult<Stage> {
+    if taps.is_empty() {
+        return Err(PyValueError::new_err("taps is empty"));
+    }
+    if centered && taps.len() % 2 == 0 {
+        return Err(PyValueError::new_err(format!("centered FIR needs an odd number of taps, got {}", taps.len())));
+    }
+    Ok(stage(PipelineStage::Fir { taps, centered, edge: self::edge(edge)? }))
+}
+
+#[gen_stub_pyfunction(module = "dspk._native.ops")]
+#[pyfunction]
 fn stage_car() -> Stage {
     stage(PipelineStage::CommonAverageReference)
 }
@@ -228,6 +240,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(stage_iir, m)?)?;
     m.add_function(wrap_pyfunction!(stage_notch, m)?)?;
     m.add_function(wrap_pyfunction!(stage_sos, m)?)?;
+    m.add_function(wrap_pyfunction!(stage_fir, m)?)?;
     m.add_function(wrap_pyfunction!(stage_car, m)?)?;
     m.add_function(wrap_pyfunction!(stage_cmr, m)?)?;
     m.add_function(wrap_pyfunction!(stage_gaussian_smooth, m)?)?;

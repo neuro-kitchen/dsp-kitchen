@@ -326,3 +326,26 @@ fn bad_read_options_are_refused() {
     }
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn fir_runs_in_window_mode_and_equals_the_whole_recording() {
+    let taps: Vec<f32> = dspk_ops::resampler::firwin(31, 0.2, dspk_ops::resampler::FirWindow::Hamming).into_iter().map(|t| t as f32).collect();
+    let taps_json = serde_json::to_string(&taps).unwrap();
+    for target in targets() {
+        let dir = scratch(&format!("fir_{}", target.name()));
+        write_input(&dir);
+        for centered in [false, true] {
+            let spec = spec(
+                &format!(r#""f": {{"op": "fir", "taps": {taps_json}, "centered": {centered}}},"#),
+                r#"[["in", "f"], ["f", "out"]]"#,
+                &format!(r#", "execution": {{"chunk_samples": {CHUNK}, "runtime": "{}"}}"#, target.name()),
+            );
+            let report = run(&spec, &dir).unwrap();
+            let expected_halo = if centered { (15, 15) } else { (30, 0) };
+            assert_eq!(report.mode, ExecutedMode::Windows { left: expected_halo.0, right: expected_halo.1 });
+            let err = max_rel_err(&read_all(&dir.join("out.bin")), &whole_recording(&spec, target, false));
+            assert!(err < 1e-6, "{} centered={centered}: windows vs whole recording, {err:.2e}", target.name());
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}

@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use dspk_ops::core::EdgeMode;
 use dspk_ops::filter::design::DEFAULT_BUTTERWORTH_ORDER;
-use dspk_ops::filter::fir::GAUSSIAN_DEFAULT_EDGE;
+use dspk_ops::filter::fir::{FIR_DEFAULT_EDGE, GAUSSIAN_DEFAULT_EDGE};
 use dspk_ops::filter::non_linear::{MEDIAN_DEFAULT_EDGE, TEAGER_KAISER_DEFAULT_EDGE};
 use dspk_ops::filter::{FilterBand, FilterDesign, FilterMode, FilterSpec, FilterStart, Section, Sos};
 use dspk_ops::PipelineStage;
@@ -115,6 +115,15 @@ pub enum Node {
         mode: Mode,
         #[serde(default)]
         start: Start,
+    },
+    /// FIR filter with explicit `taps` (design them with `dspk.ops.filter.firwin` or scipy):
+    /// causal, or `centered` (odd number of taps around each sample).
+    Fir {
+        taps: Vec<f32>,
+        #[serde(default)]
+        centered: bool,
+        #[serde(default = "default_fir_edge")]
+        edge: Edge,
     },
     /// Common average reference.
     Car {},
@@ -247,6 +256,9 @@ fn default_order() -> usize {
 }
 fn default_chunk_samples() -> usize {
     DEFAULT_CHUNK_SAMPLES
+}
+fn default_fir_edge() -> Edge {
+    Edge::from(FIR_DEFAULT_EDGE)
 }
 fn default_gaussian_edge() -> Edge {
     Edge::from(GAUSSIAN_DEFAULT_EDGE)
@@ -435,6 +447,15 @@ impl Node {
                 let sos = Sos::new(sections.iter().map(|r| Section { b: [r[0], r[1], r[2]], a: [r[3], r[4], r[5]] }).collect());
                 sos.validate().map_err(|e| PipelineError::Invalid(format!("sos: {e}")))?;
                 filter(FilterDesign::Sos(sos), *mode, *start)
+            }
+            Node::Fir { taps, centered, edge } => {
+                if taps.is_empty() {
+                    return Err(PipelineError::Invalid("fir: taps is empty".into()));
+                }
+                if *centered && taps.len() % 2 == 0 {
+                    return Err(PipelineError::Invalid(format!("fir: centered needs an odd number of taps, got {}", taps.len())));
+                }
+                Ok(Some(PipelineStage::Fir { taps: taps.clone(), centered: *centered, edge: (*edge).into() }))
             }
             Node::Car {} => Ok(Some(PipelineStage::CommonAverageReference)),
             Node::Cmr {} => Ok(Some(PipelineStage::CommonMedianReference)),

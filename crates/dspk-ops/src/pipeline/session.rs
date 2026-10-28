@@ -9,7 +9,7 @@ use crate::core::{buffer, cast, cast_f32, DspFloat, EdgeMode};
 use crate::filter::design::FilterError;
 use crate::filter::fir::gaussian::GAUSSIAN_TRUNCATE;
 use crate::filter::iir::DeviceFilter;
-use crate::filter::{execute_fir_centered, execute_median, execute_teager_kaiser, gaussian_kernel_1d, FilterMode};
+use crate::filter::{execute_fir, execute_fir_centered, execute_median, execute_teager_kaiser, gaussian_kernel_1d, FilterMode};
 use crate::math::{execute_clamp, execute_scaling, execute_unpack_stored, stored_word_bytes, write_stored_owned};
 use crate::spatial::{execute_common_median, execute_direct_car, DeviceSpatialMatrix};
 use dspk_core::{DspError, DspResult, SampleFormat};
@@ -34,6 +34,7 @@ enum Planned<F: DspFloat> {
     Filter { filter: DeviceFilter<F>, state: Handle },
     SpatialMatrix(DeviceSpatialMatrix),
     CenteredFir { taps: Handle, radius: usize, edge: EdgeMode },
+    CausalFir { taps: Handle, num_taps: usize, edge: EdgeMode },
 }
 
 /// Pre-allocated device workspace for running a [`Pipeline`] over many chunks of `F` values.
@@ -120,6 +121,16 @@ impl<F: DspFloat> PipelineWorkspace<F> {
                     assert_eq!(lap.num_channels, channels, "SurfaceLaplacian channel mismatch");
                     plan.push(Planned::SpatialMatrix(DeviceSpatialMatrix::upload::<F>(&client, &lap.matrix, channels)));
                 }
+                PipelineStage::Fir { taps, centered, edge } => {
+                    assert!(!taps.is_empty(), "FIR stage without taps");
+                    let handle = buffer::upload(&client, &cast_f32::<F>(taps));
+                    if *centered {
+                        assert!(taps.len() % 2 == 1, "centered FIR needs an odd number of taps, got {}", taps.len());
+                        plan.push(Planned::CenteredFir { taps: handle, radius: taps.len() / 2, edge: *edge });
+                    } else {
+                        plan.push(Planned::CausalFir { taps: handle, num_taps: taps.len(), edge: *edge });
+                    }
+                }
                 PipelineStage::GaussianSmooth { sigma_samples, edge } => {
                     let (taps, radius) = gaussian_kernel_1d(*sigma_samples, GAUSSIAN_TRUNCATE);
                     plan.push(Planned::CenteredFir { taps: buffer::upload(&client, &cast_f32::<F>(&taps)), radius, edge: *edge });
@@ -183,7 +194,7 @@ impl<F: DspFloat> PipelineWorkspace<F> {
             .iter()
             .map(|p| match p {
                 Planned::Filter { filter, .. } => filter.scratch_len(self.channels, samples),
-                Planned::Stage(_) | Planned::SpatialMatrix(_) | Planned::CenteredFir { .. } => 0,
+                Planned::Stage(_) | Planned::SpatialMatrix(_) | Planned::CenteredFir { .. } | Planned::CausalFir { .. } => 0,
             })
             .max()
             .unwrap_or(0);
@@ -222,6 +233,9 @@ impl<F: DspFloat> PipelineWorkspace<F> {
                 Planned::CenteredFir { taps, radius, edge } => {
                     execute_fir_centered::<F>(client, &current_in, &out, taps, channels, samples, *radius, *edge);
                 }
+                Planned::CausalFir { taps, num_taps, edge } => {
+                    execute_fir::<F>(client, &current_in, &out, taps, channels, samples, *num_taps, *edge);
+                }
                 Planned::Stage(stage) => match stage {
                     PipelineStage::Scale { alpha, beta } => {
                         execute_scaling::<F>(client, &current_in, &out, total, cast(*alpha as f64), cast(*beta as f64))
@@ -247,7 +261,8 @@ impl<F: DspFloat> PipelineWorkspace<F> {
                     PipelineStage::Filter(_)
                     | PipelineStage::SpatialWhitening(_)
                     | PipelineStage::SurfaceLaplacian(_)
-                    | PipelineStage::GaussianSmooth { .. } => {
+                    | PipelineStage::GaussianSmooth { .. }
+                    | PipelineStage::Fir { .. } => {
                         unreachable!("pre-planned stage")
                     }
                 },

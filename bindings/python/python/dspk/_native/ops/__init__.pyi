@@ -21,6 +21,7 @@ __all__ = [
     "stage_car",
     "stage_clamp",
     "stage_cmr",
+    "stage_fir",
     "stage_gaussian_smooth",
     "stage_iir",
     "stage_median",
@@ -79,6 +80,8 @@ def stage_car() -> Stage: ...
 def stage_clamp(min: builtins.float, max: builtins.float) -> Stage: ...
 
 def stage_cmr() -> Stage: ...
+
+def stage_fir(taps: typing.Sequence[builtins.float], centered: builtins.bool, edge: builtins.str) -> Stage: ...
 
 def stage_gaussian_smooth(sigma_samples: builtins.float, edge: builtins.str) -> Stage: ...
 
