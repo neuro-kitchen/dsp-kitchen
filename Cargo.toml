@@ -2,19 +2,19 @@
 resolver = "2"
 members = [
     # DSP library
-    "crates/dsp-core",
-    "crates/dsp-io",
-    "crates/dsp-base",
+    "crates/dspk-core",
+    "crates/dspk-io",
+    "crates/dspk-ops",
     # Electrophysiology
-    "synapse/dsp-synapse",
-    "synapse/dsp-synapse-ml",
-    "synapse/dsp-synapse-hub",
+    "synapse/dspk-synapse",
+    "synapse/dspk-synapse-ml",
+    "synapse/dspk-synapse-hub",
     # Serving
-    "serve/dsp-view",
-    "serve/dsp-stream",
+    "serve/dspk-view",
+    "serve/dspk-stream",
     # Front ends
-    "app/dsp-cli",
-    "app/dsp-app",
+    "app/dspk-cli",
+    "app/dspk-app",
 ]
 
 
@@ -25,14 +25,14 @@ authors = ["dsp-kitchen contributors"]
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-dsp-core = { path = "crates/dsp-core" }
-dsp-base = { path = "crates/dsp-base" }
-dsp-synapse = { path = "synapse/dsp-synapse" }
-dsp-synapse-ml = { path = "synapse/dsp-synapse-ml" }
-dsp-synapse-hub = { path = "synapse/dsp-synapse-hub" }
-dsp-stream = { path = "serve/dsp-stream" }
-dsp-view = { path = "serve/dsp-view" }
-dsp-io = { path = "crates/dsp-io" }
+dspk-core = { path = "crates/dspk-core" }
+dspk-ops = { path = "crates/dspk-ops" }
+dspk-synapse = { path = "synapse/dspk-synapse" }
+dspk-synapse-ml = { path = "synapse/dspk-synapse-ml" }
+dspk-synapse-hub = { path = "synapse/dspk-synapse-hub" }
+dspk-stream = { path = "serve/dspk-stream" }
+dspk-view = { path = "serve/dspk-view" }
+dspk-io = { path = "crates/dspk-io" }
 
 # Compute & Tensors
 cubecl = { version = "0.11.3", default-features = false, features = ["std", "stdlib"] }
@@ -109,7 +109,7 @@ opt-level = 3
 debug = "line-tables-only"
 
 # wgpu-core's lock tracing (debug assertions only) keeps a thread-local that is already gone when a
-# CubeCL device runner shuts down, so the shutdown at exit (dsp-core `shutdown_devices`) aborted in
+# CubeCL device runner shuts down, so the shutdown at exit (dspk-core `shutdown_devices`) aborted in
 # debug builds. Only wgpu-core's internal checks are off; ours stay on.
 [profile.dev.package.wgpu-core]
 debug-assertions = false

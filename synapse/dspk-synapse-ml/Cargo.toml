@@ -1,0 +1,33 @@
+[package]
+name = "dspk-synapse-ml"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Neuro spike sorters reimplemented from their papers (Kilosort4, EMUsort) and pretrained models, each with its provenance"
+
+[features]
+default = ["wgpu", "flex"]
+wgpu = ["burn-tensor/wgpu", "cubecl/wgpu", "dspk-ops/wgpu"]
+flex = ["burn-tensor/flex"]
+# Resolve catalog ids to verified local files (network access through dspk-synapse-hub)
+hub = ["dep:dspk-synapse-hub", "dep:anyhow"]
+cpu = ["cubecl/cpu", "dspk-ops/cpu"]
+cuda = ["cubecl/cuda", "dspk-ops/cuda"]
+
+[dependencies]
+dspk-core = { workspace = true, features = ["compute"] }
+dspk-ops.workspace = true
+dspk-synapse.workspace = true
+dspk-io = { workspace = true, features = ["neuro"] }
+burn-tensor.workspace = true
+onnx-ir.workspace = true
+safetensors.workspace = true
+cubecl.workspace = true
+bytemuck.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow = { workspace = true, optional = true }
+dspk-synapse-hub = { workspace = true, optional = true }
+rayon.workspace = true
+tracing.workspace = true

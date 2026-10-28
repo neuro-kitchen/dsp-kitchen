@@ -1,7 +1,7 @@
 # dsp-kitchen
 
 > [!WARNING]
-> **Under development.** Every crate and the Python bindings build; in `dsp-app`, Explore is
+> **Under development.** Every crate and the Python bindings build; in `dspk-app`, Explore is
 > rewired to the reorganized crates and Curation is parked. Kilosort4 and EMUsort run over whole recordings
 > on the GPU (preprocessing, universal templates, detection, clustering, learned-template matching);
 > their refractory criteria, final merges and drift correction are not implemented yet (see the book's
@@ -21,10 +21,10 @@ sorters reimplemented from their papers (Kilosort4, EMUsort).
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/img/dsp-app_main-darkmode.png">
   <source media="(prefers-color-scheme: light)" srcset="assets/img/dsp-app_main-lightmode.png">
-  <img alt="dsp-app, the Explore workspace: 385 channels of a Neuropixels recording as traces and a heatmap, the channel list, view settings and the timeline" src="assets/img/dsp-app_main-darkmode.png">
+  <img alt="dspk-app, the Explore workspace: 385 channels of a Neuropixels recording as traces and a heatmap, the channel list, view settings and the timeline" src="assets/img/dsp-app_main-darkmode.png">
 </picture>
 
-*`dsp-app`, the desktop workbench: a Neuropixels recording (385 channels, 30 kHz) as traces and
+*`dspk-app`, the desktop workbench: a Neuropixels recording (385 channels, 30 kHz) as traces and
 a heatmap on one timeline, drawn from min/max pyramids built in the background.*
 
 **Documentation:** the mdBook in [`docs/book`](docs/book/src/introduction.md)
@@ -42,7 +42,7 @@ a heatmap on one timeline, drawn from min/max pyramids built in the background.*
   integer recordings upload as stored and are scaled there; detection, matching and clustering
   compact their results on the device so only spikes, statistics or parameters come back;
   constant data is uploaded once per run; recordings are read out of core with background
-  prefetching (`dsp_core::WindowLoader`), so host memory stays bounded.
+  prefetching (`dspk_core::WindowLoader`), so host memory stays bounded.
 - **Sorters from their papers.** Kilosort4 and EMUsort (one shared runner) stream a whole
   recording through preprocessing, universal-template learning and detection on the device, in
   Rust or from Python.
@@ -55,16 +55,16 @@ a heatmap on one timeline, drawn from min/max pyramids built in the background.*
 
 | Crate | Role |
 |---|---|
-| `dsp-core` | Exact time and sample rates, buffers, errors, the `RecordingSource` contract, out-of-core window streaming, compute-runtime selection. |
-| `dsp-io` | Recording formats and containers (`.npy`, `.npz`, Zarr), NWB / SpikeGLX / mtscomp, probe geometry, sorting files (Phy, NWB units, `.sorting.zarr`). |
-| `dsp-base` | DSP primitives on the device: IIR / FIR / non-linear filters, resampling, spatial operators, linear algebra, peak finding, statistics, device pipelines. |
-| `dsp-synapse` | Spike detection, deduplication, extraction, features, localization, drift, clustering, template matching, metrics, streaming detection. |
-| `dsp-synapse-ml` | Sorters from papers (Kilosort4, EMUsort) and pretrained models, with provenance. |
-| `dsp-synapse-hub` | Verified download and cache of published artifacts. |
-| `dsp-stream` | Network sessions for continuous signals (QUIC + TLS, protobuf): exact header, stored samples, views. |
-| `dsp-view` | Preparing signals for viewing, locally or remotely: min/max envelopes and pyramids. |
-| `dsp-app` | Desktop workbench (GPUI, the screenshot above): the UI over dsp-view's signal backend. |
-| `dsp-cli`, `dsp_kitchen_py` | Command line, Python bindings. |
+| `dspk-core` | Exact time and sample rates, buffers, errors, the `RecordingSource` contract, out-of-core window streaming, compute-runtime selection. |
+| `dspk-io` | Recording formats and containers (`.npy`, `.npz`, Zarr), NWB / SpikeGLX / mtscomp, probe geometry, sorting files (Phy, NWB units, `.sorting.zarr`). |
+| `dspk-ops` | DSP primitives on the device: IIR / FIR / non-linear filters, resampling, spatial operators, linear algebra, peak finding, statistics, device pipelines. |
+| `dspk-synapse` | Spike detection, deduplication, extraction, features, localization, drift, clustering, template matching, metrics, streaming detection. |
+| `dspk-synapse-ml` | Sorters from papers (Kilosort4, EMUsort) and pretrained models, with provenance. |
+| `dspk-synapse-hub` | Verified download and cache of published artifacts. |
+| `dspk-stream` | Network sessions for continuous signals (QUIC + TLS, protobuf): exact header, stored samples, views. |
+| `dspk-view` | Preparing signals for viewing, locally or remotely: min/max envelopes and pyramids. |
+| `dspk-app` | Desktop workbench (GPUI, the screenshot above): the UI over dspk-view's signal backend. |
+| `dspk-cli`, `dsp_kitchen_py` | Command line, Python bindings. |
 
 ## Building
 
@@ -72,8 +72,8 @@ Requires a recent stable Rust toolchain (edition 2024).
 
 ```bash
 cargo build --workspace
-cargo run -p dsp-app --release -- <recording>   # desktop workbench
-cargo build -p dsp-core --features cuda     # runtimes are features: wgpu (default), cuda, hip, cpu
+cargo run -p dspk-app --release -- <recording>   # desktop workbench
+cargo build -p dspk-core --features cuda     # runtimes are features: wgpu (default), cuda, hip, cpu
 ```
 
 Python (`dsp_kitchen`, default features `wgpu` and `hub`):
@@ -87,7 +87,7 @@ python ../playground/sorters/kilosort4_universal_templates.py   # examples: see 
 
 If you use a sorter, cite its authors — see
 [Citations](docs/book/src/reference/citations.md). In code:
-`dsp_synapse_ml::Attributed::provenance()` and `Provenance::citation()`.
+`dspk_synapse_ml::Attributed::provenance()` and `Provenance::citation()`.
 
 ## License
 

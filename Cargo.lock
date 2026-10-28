@@ -3005,18 +3005,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "117240f60069e65410b3ae1bb213295bd828f707b5bec6596a1afc8793ce0cbc"
 
 [[package]]
-name = "dsp-app"
+name = "dspk-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-channel",
  "bytemuck",
  "clap",
- "dsp-base",
- "dsp-core",
- "dsp-io",
- "dsp-synapse",
- "dsp-view",
+ "dspk-core",
+ "dspk-io",
+ "dspk-ops",
+ "dspk-synapse",
+ "dspk-view",
  "gpui-kit",
  "image",
  "serde",
@@ -3026,35 +3026,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "dsp-base"
-version = "0.1.0"
-dependencies = [
- "cubecl",
- "cubek-matmul",
- "cubek-std",
- "dsp-core",
- "num-complex",
- "num-traits",
- "serde_json",
- "thiserror 2.0.21",
- "tracing",
-]
-
-[[package]]
-name = "dsp-cli"
+name = "dspk-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
  "cubecl",
- "dsp-base",
- "dsp-core",
- "dsp-io",
- "dsp-stream",
- "dsp-synapse",
- "dsp-synapse-hub",
- "dsp-synapse-ml",
- "dsp-view",
+ "dspk-core",
+ "dspk-io",
+ "dspk-ops",
+ "dspk-stream",
+ "dspk-synapse",
+ "dspk-synapse-hub",
+ "dspk-synapse-ml",
+ "dspk-view",
  "serde",
  "serde_json",
  "tokio",
@@ -3063,7 +3048,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "dsp-core"
+name = "dspk-core"
 version = "0.1.0"
 dependencies = [
  "cubecl",
@@ -3075,10 +3060,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "dsp-io"
+name = "dspk-io"
 version = "0.1.0"
 dependencies = [
- "dsp-core",
+ "dspk-core",
  "flate2",
  "memmap2",
  "serde",
@@ -3088,11 +3073,26 @@ dependencies = [
 ]
 
 [[package]]
-name = "dsp-stream"
+name = "dspk-ops"
 version = "0.1.0"
 dependencies = [
- "dsp-core",
- "dsp-view",
+ "cubecl",
+ "cubek-matmul",
+ "cubek-std",
+ "dspk-core",
+ "num-complex",
+ "num-traits",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
+name = "dspk-stream"
+version = "0.1.0"
+dependencies = [
+ "dspk-core",
+ "dspk-view",
  "prost",
  "prost-build",
  "protox",
@@ -3106,13 +3106,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "dsp-synapse"
+name = "dspk-synapse"
 version = "0.1.0"
 dependencies = [
  "cubecl",
- "dsp-base",
- "dsp-core",
- "dsp-io",
+ "dspk-core",
+ "dspk-io",
+ "dspk-ops",
  "rayon",
  "serde",
  "serde_json",
@@ -3122,7 +3122,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "dsp-synapse-hub"
+name = "dspk-synapse-hub"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -3136,18 +3136,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "dsp-synapse-ml"
+name = "dspk-synapse-ml"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "burn-tensor",
  "bytemuck",
  "cubecl",
- "dsp-base",
- "dsp-core",
- "dsp-io",
- "dsp-synapse",
- "dsp-synapse-hub",
+ "dspk-core",
+ "dspk-io",
+ "dspk-ops",
+ "dspk-synapse",
+ "dspk-synapse-hub",
  "onnx-ir",
  "rayon",
  "safetensors 0.8.0",
@@ -3157,11 +3157,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "dsp-view"
+name = "dspk-view"
 version = "0.1.0"
 dependencies = [
  "cubecl",
- "dsp-core",
+ "dspk-core",
  "memmap2",
  "rayon",
  "tracing",
