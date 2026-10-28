@@ -1,5 +1,7 @@
 .worktrees
 data/
+.data/
+.docs-old/
 .env
 .knowledge
 .tasks
