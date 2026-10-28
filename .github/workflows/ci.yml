@@ -49,6 +49,8 @@ jobs:
         run: cargo test -p dspk-ops --features cpu --test kernel_runtimes --test filter_runtimes
       - name: Device buffer writes
         run: cargo test -p dspk-ops --features cpu --lib core::buffer
+      - name: Pipeline engine (specs; stream and window runs against the whole recording)
+        run: cargo test -p dspk-pipeline --features cpu --test run
 
   python:
     name: Python (build, tests vs scipy, stubs)
