@@ -6,8 +6,8 @@ members = [
     "crates/dsp-synapse",
     "crates/dsp-synapse-ml",
     "crates/dsp-synapse-hub",
-    "crates/dsp-stream",
-    "crates/dsp-view",
+    "serve/dsp-stream",
+    "serve/dsp-view",
     "crates/dsp-io",
     "app/dsp-cli",
     "app/dsp-app",
@@ -27,8 +27,8 @@ dsp-base = { path = "crates/dsp-base" }
 dsp-synapse = { path = "crates/dsp-synapse" }
 dsp-synapse-ml = { path = "crates/dsp-synapse-ml" }
 dsp-synapse-hub = { path = "crates/dsp-synapse-hub" }
-dsp-stream = { path = "crates/dsp-stream" }
-dsp-view = { path = "crates/dsp-view" }
+dsp-stream = { path = "serve/dsp-stream" }
+dsp-view = { path = "serve/dsp-view" }
 dsp-io = { path = "crates/dsp-io" }
 dsp_kitchen_py = { path = "dsp_kitchen_py" }
 
