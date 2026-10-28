@@ -22,3 +22,8 @@ def selected_runtimes() -> list[str]:
 
 
 RUNTIMES = selected_runtimes()
+
+# Tests that do not pass runtime= use the first selected runtime (not the first compiled in, which
+# may have no device here: wgpu on a CI runner)
+if RUNTIMES:
+    dspk.runtime.set(RUNTIMES[0])

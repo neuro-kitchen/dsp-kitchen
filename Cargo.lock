@@ -3113,6 +3113,7 @@ dependencies = [
 name = "dspk-py-core"
 version = "0.0.2"
 dependencies = [
+ "cubecl",
  "dspk-core",
  "dspk-io",
  "dspk-ops",

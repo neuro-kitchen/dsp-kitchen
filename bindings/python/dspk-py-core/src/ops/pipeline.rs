@@ -209,7 +209,7 @@ impl Pipeline {
                     return Err(format!("this pipeline processes {ch} channels; got {channels} (call reset() first)"));
                 }
             } else {
-                let client = self.target.client().map_err(|e| e.to_string())?;
+                let client = runtime::open_client(self.target)?;
                 let stages = self.stages.clone();
                 let workspace = if self.stream {
                     PipelineWorkspace::new_stateful(client, stages, channels, samples, self.sample_rate)

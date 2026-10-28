@@ -17,6 +17,7 @@ hip = ["dspk-core/hip", "dspk-ops/hip"]
 dspk-core = { workspace = true, features = ["compute"] }
 dspk-io = { workspace = true, features = ["zarr"] }
 dspk-ops.workspace = true
+cubecl.workspace = true
 pyo3.workspace = true
 numpy.workspace = true
 pyo3-stub-gen.workspace = true

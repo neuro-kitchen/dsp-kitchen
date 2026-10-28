@@ -28,6 +28,28 @@ pub fn target(explicit: Option<&str>) -> PyResult<ComputeTarget> {
     ComputeTarget::from_env().map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
+/// A client for `target`'s default device, or a message saying why it could not be opened.
+///
+/// CubeCL panics (on its device thread, then on ours) when a compiled-in runtime has no device,
+/// e.g. wgpu on a machine without a GPU or Vulkan driver. The panic is caught here so Python gets
+/// an ordinary `RuntimeError` that names the runtime and the way out, not a `PanicException`.
+pub fn open_client(target: ComputeTarget) -> Result<cubecl::prelude::Client, String> {
+    let opened = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| target.client()));
+    match opened {
+        Ok(Ok(client)) => Ok(client),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => {
+            let others: Vec<&str> = available().into_iter().filter(|n| *n != target.name()).collect();
+            Err(format!(
+                "could not open a {name} device (no GPU or driver for it on this machine?); choose another runtime with \
+                 dspk.runtime.set(...) or runtime=... (compiled in: {others})",
+                name = target.name(),
+                others = if others.is_empty() { "none other".to_string() } else { others.join(", ") },
+            ))
+        }
+    }
+}
+
 /// Names of the runtimes compiled into this build, in preference order (GPUs first).
 #[gen_stub_pyfunction(module = "dspk._native.runtime")]
 #[pyfunction]

@@ -83,7 +83,7 @@ fn run<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, spec: FilterSpec, 
     let values: Vec<f32> = data.as_array().iter().copied().collect();
     let out = py
         .detach(move || -> Result<Vec<f32>, String> {
-            let client = target.client().map_err(|e| e.to_string())?;
+            let client = runtime::open_client(target)?;
             let input = buffer::upload(&client, &values);
             let output = buffer::empty::<f32>(&client, values.len());
             execute_filter::<f32>(&client, &spec, sample_rate, &input, &output, channels, samples).map_err(|e| e.to_string())?;
