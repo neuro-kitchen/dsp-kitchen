@@ -15,8 +15,6 @@ members = [
     # Front ends
     "app/dsp-cli",
     "app/dsp-app",
-    # Bindings
-    "dsp_kitchen_py",
 ]
 
 
@@ -35,7 +33,6 @@ dsp-synapse-hub = { path = "synapse/dsp-synapse-hub" }
 dsp-stream = { path = "serve/dsp-stream" }
 dsp-view = { path = "serve/dsp-view" }
 dsp-io = { path = "crates/dsp-io" }
-dsp_kitchen_py = { path = "dsp_kitchen_py" }
 
 # Compute & Tensors
 cubecl = { version = "0.11.3", default-features = false, features = ["std", "stdlib"] }
