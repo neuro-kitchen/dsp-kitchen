@@ -46,6 +46,34 @@ pub fn channel_position() -> u32 {
     ABSOLUTE_POS_Y
 }
 
+/// The columns `start..end` (every `step`-th) a unit walks in a [`LaunchGeometry::per_row`] cube
+/// of `units` units over a row of `cols`:
+///
+/// - **GPUs**: `unit, unit + units, …` — neighbouring units on neighbouring columns (coalesced).
+/// - **CPU runtime** (`PLANE_DIM == 1`, every unit its own thread): one contiguous run of
+///   `⌈cols / units⌉` columns per unit, for the same reason as [`fn@element_position`].
+///
+/// Either way the units cover every column once, so per-unit partial results merge the same.
+#[derive(CubeType)]
+pub struct RowShare {
+    pub start: u32,
+    pub end: u32,
+    pub step: u32,
+}
+
+/// This unit's [`RowShare`] of a row of `cols` columns.
+#[cube]
+pub fn row_share(cols: u32, #[comptime] units: u32) -> RowShare {
+    let unit = UNIT_POS_X;
+    // Field by field: a CubeCL `if` cannot yield a struct
+    let contiguous = PLANE_DIM == 1u32;
+    let chunk = (cols + units - 1u32) / units;
+    let start = if contiguous { u32::min(unit * chunk, cols) } else { unit };
+    let end = if contiguous { u32::min(start + chunk, cols) } else { cols };
+    let step = if contiguous { 1u32 } else { units };
+    RowShare { start, end, step }
+}
+
 /// Row reduced by the cube in a [`LaunchGeometry::per_row`] launch (uniform across the cube).
 #[cube]
 pub fn row_position() -> u32 {

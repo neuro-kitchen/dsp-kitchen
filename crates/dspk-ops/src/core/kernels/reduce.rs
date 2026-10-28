@@ -1,5 +1,5 @@
 use cubecl::prelude::*;
-use dspk_core::compute::row_position;
+use dspk_core::compute::{row_position, row_share};
 
 /// Merges unit `b`'s `(count, mean, m2)` into unit `a`'s (Chan et al. parallel variance).
 #[cube]
@@ -32,18 +32,19 @@ pub fn row_mean_std_kernel<F: Float>(
         let unit = UNIT_POS_X;
         let base = (row * cols) as usize;
 
-        // Welford over this unit's strided share
+        // Welford over this unit's share of the row
         let mut n = F::new(0.0f32);
         let mut mean = F::new(0.0f32);
         let mut m2 = F::new(0.0f32);
-        let mut col = unit;
-        while col < cols {
+        let share = row_share(cols, units);
+        let mut col = share.start;
+        while col < share.end {
             let x = input[base + col as usize];
             n += F::new(1.0f32);
             let delta = x - mean;
             mean += delta / n;
             m2 += delta * (x - mean);
-            col += units;
+            col += share.step;
         }
 
         let mut count_s = Shared::<[F]>::new_slice(comptime!(units as usize));
