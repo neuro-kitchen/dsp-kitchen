@@ -1,4 +1,5 @@
 use cubecl::prelude::*;
+use dspk_core::compute::element_position;
 use dspk_core::compute::negative_infinity;
 
 /// Joint cross-correlation of the template with the signal for every `(event, lag)` of a layer:
@@ -18,7 +19,7 @@ pub fn template_scores_kernel<F: Float>(
     lags: u32,
     max_lag: u32,
 ) {
-    let unit = ABSOLUTE_POS as u32;
+    let unit = element_position() as u32;
     if unit < num_events * lags {
         let e = unit / lags;
         let l = unit - e * lags;
@@ -63,7 +64,7 @@ pub fn template_subtract_kernel<F: Float + CubeElement + LaunchArg>(
     dynamic_scaling: u32,
     min_energy: F,
 ) {
-    let unit = ABSOLUTE_POS as u32;
+    let unit = element_position() as u32;
     if unit < num_events * channels {
         let e = unit / channels;
         let c = unit - e * channels;

@@ -1,8 +1,9 @@
 use cubecl::prelude::*;
+use dspk_core::compute::element_position;
 
 /// `output[r, t] = input[offset + r · row_stride + t] − mean[r]` for `t < cols`: rows of a strided
 /// buffer, centred, into a contiguous `[rows, cols]` buffer. The offset is applied in the kernel, so
-/// the input binds at the buffer's start. One unit per output element (`ABSOLUTE_POS`).
+/// the input binds at the buffer's start. One unit per output element ([`fn@element_position`]).
 #[cube(launch)]
 #[allow(clippy::too_many_arguments)]
 pub fn center_rows_kernel<F: Float>(
@@ -14,7 +15,7 @@ pub fn center_rows_kernel<F: Float>(
     cols: u32,
     total: u32,
 ) {
-    let e = ABSOLUTE_POS as u32;
+    let e = element_position() as u32;
     if e < total {
         let r = e / cols;
         let t = e - r * cols;

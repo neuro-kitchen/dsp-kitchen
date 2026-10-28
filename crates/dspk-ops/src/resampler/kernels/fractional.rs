@@ -1,4 +1,5 @@
 use cubecl::prelude::*;
+use dspk_core::compute::element_position;
 
 use crate::math::windows::{BLACKMAN_HARRIS_A0, BLACKMAN_HARRIS_A1, BLACKMAN_HARRIS_A2, BLACKMAN_HARRIS_A3, SINC_ZERO};
 
@@ -25,7 +26,7 @@ pub fn windowed_sinc_weight<F: Float>(tau: F, half_width: F) -> F {
 /// `taps[i · (2·radius + 1) ..]`.
 #[cube(launch)]
 pub fn fractional_delay_taps_kernel<F: Float>(shifts: &[F], taps: &mut [F], count: u32, #[comptime] radius: u32) {
-    let i = ABSOLUTE_POS as u32;
+    let i = element_position() as u32;
     if i < count {
         let n = 2 * radius + 1;
         let shift = shifts[i as usize];

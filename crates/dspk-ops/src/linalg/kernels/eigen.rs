@@ -6,6 +6,7 @@
 //! what lets Jacobi compute small eigenvalues to high relative accuracy.
 
 use cubecl::prelude::*;
+use dspk_core::compute::element_position;
 use dspk_core::compute::row_position;
 
 /// Pair `k` of round `round` in the circle-method schedule of `m` (even) players.
@@ -75,7 +76,7 @@ pub fn jacobi_rotations_kernel<F: Float + CubeElement + LaunchArg>(
     round: u32,
     tolerance: F,
 ) {
-    let unit = ABSOLUTE_POS as u32;
+    let unit = element_position() as u32;
     let half = m / 2u32;
     if unit < batch * half {
         let b = unit / half;
@@ -109,7 +110,7 @@ pub fn jacobi_rows_kernel<F: Float>(
     batch: u32,
     n: u32,
 ) {
-    let e = ABSOLUTE_POS as u32;
+    let e = element_position() as u32;
     if e < batch * n * n {
         let b = e / (n * n);
         let r = e - b * n * n;
@@ -135,7 +136,7 @@ pub fn jacobi_cols_kernel<F: Float>(
     batch: u32,
     n: u32,
 ) {
-    let e = ABSOLUTE_POS as u32;
+    let e = element_position() as u32;
     if e < batch * n * n {
         let b = e / (n * n);
         let r = e - b * n * n;
