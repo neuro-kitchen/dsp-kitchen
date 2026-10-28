@@ -12,7 +12,7 @@ from collections.abc import Sequence
 import numpy as np
 
 from dspk._native import ops as _ops
-from dspk.ops import filter, spatial, stage
+from dspk.ops import filter, math, peaks, resample, spatial, stage
 
 
 class Pipeline:
@@ -68,4 +68,4 @@ class Pipeline:
         return repr(self._native)
 
 
-__all__ = ["Pipeline", "filter", "spatial", "stage"]
+__all__ = ["Pipeline", "filter", "math", "peaks", "resample", "spatial", "stage"]

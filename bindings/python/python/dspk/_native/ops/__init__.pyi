@@ -6,11 +6,17 @@ import numpy
 import numpy.typing
 import typing
 from . import filter
+from . import math
+from . import peaks
+from . import resample
 from . import spatial
 __all__ = [
     "Pipeline",
     "Stage",
     "filter",
+    "math",
+    "peaks",
+    "resample",
     "spatial",
     "stage_car",
     "stage_clamp",
