@@ -515,3 +515,40 @@ fn a_batch_of_merges_uses_the_index() {
     assert!(reports.iter().all(|r| r.channels == 4));
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn plan_matches_the_run_and_a_cancel_removes_the_output() {
+    let target = targets()[0];
+    let dir = scratch("plan_cancel");
+    write_raw_rec(&dir.join("x.bin"), 3, 50_000, 0.3, SampleFormat::I16);
+    let text = |out: &str| {
+        format!(
+            r#"{{"dspk_pipeline": 1,
+                "nodes": {{"in": {{"op": "read", "path": "x.bin"}},
+                           "f": {{"op": "iir", "band": "highpass", "cutoff": [300.0]}},
+                           "out": {{"op": "write", "path": "{out}"}}}},
+                "edges": [["in", "f"], ["f", "out"]],
+                "execution": {{"chunk_samples": 8000, "runtime": "{}"}}}}"#,
+            target.name()
+        )
+    };
+    let spec = PipelineSpec::from_json(&text("y.bin")).unwrap();
+    let plans = dspk_pipeline::plan(&spec, &dir).unwrap();
+    assert!(!dir.join("y.bin").exists(), "plan writes nothing");
+    let report = run(&spec, &dir).unwrap();
+    let plan = &plans[0];
+    assert_eq!((plan.mode, plan.windows, plan.stored_upload), (report.mode, report.windows, report.stored_upload));
+    assert_eq!((plan.bytes_read, plan.bytes_uploaded), (report.bytes.read, report.bytes.uploaded));
+
+    let cancelled = PipelineSpec::from_json(&text("z.bin")).unwrap();
+    let mut calls = 0;
+    let err = dspk_pipeline::run_with(&cancelled, &dir, dspk_pipeline::default_open, |p| {
+        calls += 1;
+        p.windows_done < 2
+    })
+    .unwrap_err();
+    assert!(matches!(err, PipelineError::Cancelled), "{err}");
+    assert_eq!(calls, 2);
+    assert!(!dir.join("z.bin").exists());
+    std::fs::remove_dir_all(&dir).unwrap();
+}

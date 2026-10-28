@@ -16,7 +16,7 @@ use crate::ops::device;
 #[pyfunction]
 #[pyo3(signature = (data, width, *, edge, runtime))]
 pub fn median<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, width: usize, edge: &str, runtime: Option<&str>) -> PyResult<Bound<'py, PyArray2<f32>>> {
-    if width % 2 == 0 || width > MAX_MEDIAN_WIDTH {
+    if width.is_multiple_of(2) || width > MAX_MEDIAN_WIDTH {
         return Err(PyValueError::new_err(format!("median width must be odd and at most {MAX_MEDIAN_WIDTH}, got {width}")));
     }
     let edge = self::edge(edge)?;

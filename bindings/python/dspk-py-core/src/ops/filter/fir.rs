@@ -54,7 +54,7 @@ pub fn fir<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, taps: PyReadon
     if taps.is_empty() {
         return Err(PyValueError::new_err("taps is empty"));
     }
-    if centered && taps.len() % 2 == 0 {
+    if centered && taps.len().is_multiple_of(2) {
         return Err(PyValueError::new_err(format!("centered FIR needs an odd number of taps, got {}", taps.len())));
     }
     let edge = self::edge(edge)?;

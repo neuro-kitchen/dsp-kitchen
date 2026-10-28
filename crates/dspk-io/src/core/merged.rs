@@ -10,6 +10,9 @@ use std::ops::Range;
 use dspk_core::recording::{check_read, check_read_stored};
 use dspk_core::{DspError, DspResult, MemoryOrder, RecordingInfo, RecordingSource, SampleFormat};
 
+/// A recording and the channels taken from it (`None`: all, in order).
+pub type MergeInput = (Box<dyn RecordingSource>, Option<Vec<usize>>);
+
 /// Channels of several recordings, side by side.
 pub struct MergedRecording {
     parts: Vec<Box<dyn RecordingSource>>,
@@ -26,7 +29,7 @@ impl MergedRecording {
     /// # Errors
     /// [`DspError::InvalidConfig`] when there are no parts, a part's channel does not exist, or the
     /// parts differ in sample rate or length.
-    pub fn new(parts: Vec<(Box<dyn RecordingSource>, Option<Vec<usize>>)>) -> DspResult<Self> {
+    pub fn new(parts: Vec<MergeInput>) -> DspResult<Self> {
         let Some((first, _)) = parts.first() else {
             return Err(DspError::InvalidConfig("merge: no recordings".into()));
         };
@@ -113,8 +116,8 @@ impl RecordingSource for MergedRecording {
             let n = check_read_stored(&self.info, channels, &samples, out.len())?;
             let mut values = vec![0.0f32; channels.len() * n];
             self.read(channels, samples, &mut values)?;
-            for (dst, v) in out.chunks_exact_mut(4).zip(values) {
-                dst.copy_from_slice(&v.to_le_bytes());
+            for (dst, v) in out.as_chunks_mut::<4>().0.iter_mut().zip(values) {
+                *dst = v.to_le_bytes();
             }
             return Ok(());
         }

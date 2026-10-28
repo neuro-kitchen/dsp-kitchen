@@ -12,33 +12,21 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use dspk_core::compute::device_elements;
-use dspk_core::{ChunkSchedule, ComputeTarget, DspResult, HaloWindow, MemoryOrder, RecordingSource, SampleFormat, WindowLoader};
-use dspk_io::{MergedRecording, RawParams, RawRecording};
 use cubecl::prelude::Client;
 use cubecl::server::Handle;
-use dspk_ops::core::{buffer, EdgeMode};
-use dspk_ops::resampler::poly::RESAMPLE_POLY_HALF_LEN_PER_RATE;
-use dspk_ops::resampler::{resample_poly, resample_poly_len, FirWindow, ResampleFilter};
-use dspk_ops::filter::FilterMode;
+use dspk_core::{ComputeTarget, DspResult, HaloWindow, MemoryOrder, RecordingSource, SampleFormat, WindowLoader};
+use dspk_io::{RawParams, RawRecording};
+use dspk_ops::core::buffer;
 use dspk_ops::math::stored_word_bytes;
 use dspk_ops::pipeline::PipelineWorkspace;
-use dspk_ops::{Pipeline, PipelineStage};
+use dspk_ops::resampler::{resample_poly, resample_poly_len};
 
-use crate::spec::{ExecMode, Input, Node, OutputFormat, PipelineSpec, Upload};
+use crate::prepare::{default_open, prepare, ExecutedMode, Prepared};
+use crate::spec::{OutputFormat, PipelineSpec};
 use crate::PipelineError;
 
 /// Appended to the output path for the canonical spec written next to it (provenance).
 pub const PROVENANCE_SUFFIX: &str = ".pipeline.json";
-
-/// How the chain was run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExecutedMode {
-    /// Windows in order with filter state carried: equal to processing the whole range at once.
-    Stream,
-    /// Independent windows with `left` / `right` halos of context.
-    Windows { left: usize, right: usize },
-}
 
 /// Bytes moved by a run, step by step (window halos included: they are read, uploaded and
 /// downloaded with their window).
@@ -73,102 +61,58 @@ pub struct RunReport {
     pub seconds: f64,
 }
 
+/// Where a run is, passed to the observer after each window.
+#[derive(Debug, Clone, Copy)]
+pub struct Progress {
+    /// Input being processed (0-based) and the number of inputs.
+    pub input: usize,
+    pub inputs: usize,
+    /// Windows of this input done, and its total.
+    pub windows_done: usize,
+    pub windows: usize,
+    pub bytes: DataMovement,
+}
+
 /// Runs `spec` once per input, resolving relative paths against `base_dir`, opening recordings
 /// with `dspk_io::open` (generic formats). One report per input, in order.
 pub fn run(spec: &PipelineSpec, base_dir: &Path) -> Result<Vec<RunReport>, PipelineError> {
-    run_with(spec, base_dir, |path, source| match source {
-        Some(id) => dspk_io::open_source(path, id),
-        None => dspk_io::open(path),
-    })
+    run_with(spec, base_dir, default_open, |_| true)
 }
 
 /// [`run`] with recordings opened by `open` (e.g. a crate that adds formats, such as
-/// `dspk-synapse-io`).
+/// `dspk-synapse-io`) and `observe` called after each window: returning `false` cancels the run
+/// ([`PipelineError::Cancelled`]; the unfinished output is removed, finished inputs stay).
 pub fn run_with(
     spec: &PipelineSpec,
     base_dir: &Path,
     open: impl Fn(&Path, Option<&str>) -> DspResult<Box<dyn RecordingSource>>,
+    mut observe: impl FnMut(&Progress) -> bool,
 ) -> Result<Vec<RunReport>, PipelineError> {
-    spec.expand_inputs(base_dir)?.iter().map(|one| run_input(one, base_dir, &open)).collect()
+    let specs = spec.expand_inputs(base_dir)?;
+    let inputs = specs.len();
+    let mut reports = Vec::with_capacity(inputs);
+    for (input, one) in specs.iter().enumerate() {
+        let prepared = prepare(one, base_dir, &open)?;
+        reports.push(execute(one, prepared, |windows_done, windows, bytes| {
+            observe(&Progress { input, inputs, windows_done, windows, bytes })
+        })?);
+    }
+    Ok(reports)
 }
 
-/// One input of an expanded spec (a `path`, or a single merge).
-fn run_input(
+/// Runs one prepared input on the device.
+fn execute(
     spec: &PipelineSpec,
-    base_dir: &Path,
-    open: &impl Fn(&Path, Option<&str>) -> DspResult<Box<dyn RecordingSource>>,
+    p: Prepared,
+    mut observe: impl FnMut(usize, usize, DataMovement) -> bool,
 ) -> Result<RunReport, PipelineError> {
     let started = Instant::now();
-    let chain = spec.chain()?;
-    let Node::Read { path: input, inputs, source, channels: picked, start, stop } = chain.read.1 else {
-        unreachable!("chain starts with read")
-    };
-    let Node::Write { path: output, format } = chain.write.1 else { unreachable!("chain ends with write") };
-    let output = base_dir.join(output);
-
-    let mut stages = Vec::with_capacity(chain.stages.len());
-    let mut resample = None;
-    for (i, (id, node)) in chain.stages.iter().enumerate() {
-        let stage = node.stage().map_err(|e| PipelineError::Invalid(format!("node {id:?}: {e}")))?;
-        match (node, stage) {
-            (Node::Resample { up, down, beta, edge }, _) => {
-                if i + 1 != chain.stages.len() {
-                    return Err(PipelineError::Invalid(format!("node {id:?}: resample must be the last node before write")));
-                }
-                resample = Some(Resample::new(*up, *down, *beta, (*edge).into()));
-            }
-            (_, Some(stage)) => stages.push(stage),
-            (_, None) => unreachable!("every other processing node has a stage"),
-        }
-    }
-    let pipeline = Pipeline::with_stages(stages);
-
-    let source: Box<dyn RecordingSource> = match (input, inputs.as_deref()) {
-        (Some(path), None) => open(&base_dir.join(path), source.as_deref())?,
-        (None, Some([Input::Merge { merge }])) => {
-            let parts = merge
-                .iter()
-                .map(|p| Ok((open(&base_dir.join(&p.path), p.source.as_deref())?, p.channels.clone())))
-                .collect::<DspResult<Vec<_>>>()?;
-            Box::new(MergedRecording::new(parts)?)
-        }
-        _ => unreachable!("expand_inputs leaves one path or one merge"),
-    };
+    let Prepared {
+        source, pipeline, resample, channels, range, unit, sample_rate, stored_format, stored_upload, mode, chunk, schedule,
+        out_rate, out_samples, output, format, ..
+    } = p;
     let info = source.info();
-    let (total, sample_rate, stored_format) = (info.samples, info.sample_rate_hz(), info.format);
-    let channels = select_channels(picked.as_deref(), info.channel_count())?;
-    let range = select_range(*start, *stop, total)?;
-    let unit = info.channels[channels[0]].unit.clone();
-    pipeline.validate(sample_rate).map_err(|e| PipelineError::Invalid(e.to_string()))?;
-
-    let mut mode = resolve_mode(spec.execution.mode, &pipeline, sample_rate)?;
-    let stored_upload = resolve_upload(spec.execution.upload, stored_format)?;
-    let mut chunk = spec.execution.chunk_samples.max(1);
-    let (mut out_rate, mut out_samples) = (sample_rate, range.end - range.start);
-    if let Some(r) = &resample {
-        // Independent windows aligned to `down`, with the stages' context plus the resampling
-        // filter's reach: each output sample sees the input a whole-recording run would
-        if spec.execution.mode == ExecMode::Stream {
-            return Err(PipelineError::Invalid("execution.mode = \"stream\" is not possible with resample: use \"windows\" or \"auto\"".into()));
-        }
-        if range.start % r.down as u64 != 0 {
-            return Err(PipelineError::Invalid(format!("read: start {} must be a multiple of the resample's down ({})", range.start, r.down)));
-        }
-        let (left, right) = pipeline.settling(sample_rate).map_err(|e| PipelineError::Invalid(e.to_string()))?;
-        let align = |x: usize| x.div_ceil(r.down) * r.down;
-        mode = ExecutedMode::Windows { left: align(left + r.reach), right: align(right + r.reach) };
-        chunk = align(chunk);
-        out_rate = sample_rate * r.up as f64 / r.down as f64;
-        out_samples = resample_poly_len((range.end - range.start) as usize, r.up, r.down) as u64;
-    }
-    let (left, right) = match mode {
-        ExecutedMode::Stream => (0, 0),
-        ExecutedMode::Windows { left, right } => (left, right),
-    };
-    let schedule = ChunkSchedule::new(range.clone(), chunk as u64, left as u64, right as u64, total);
     let nch = channels.len();
-    device_elements("pipeline window [channels, samples]", &[nch, schedule.max_read_samples()])?;
-
     let target = match &spec.execution.runtime {
         Some(name) => ComputeTarget::parse(name).and_then(ComputeTarget::checked),
         None => ComputeTarget::from_env(),
@@ -237,6 +181,9 @@ fn run_input(
         emit(&rows, row_len, cols, bytes)
     };
     let loader = WindowLoader::with_channels(source.as_ref(), channels.clone());
+    let total_windows = schedule.len();
+    let mut done = 0;
+    let mut cancelled = false;
     let read_bytes = |win: &HaloWindow| (nch * win.read_len() * stored_format.bytes()) as u64;
     if stored_upload {
         loader.stream_stored_owned_while(schedule.windows(), |win, stored| {
@@ -244,20 +191,29 @@ fn run_input(
             bytes.uploaded += stored_word_bytes(stored.len()) as u64;
             let handle = workspace.process_owned_stored_chunk_in_vram(stored, stored_format, win.read_len())?;
             finish(win, handle, workspace.client(), &mut bytes)?;
-            Ok(true)
+            done += 1;
+            cancelled = !observe(done, total_windows, bytes);
+            Ok(!cancelled)
         })?;
     } else {
-        loader.stream(schedule.windows(), |win, samples| {
+        loader.stream_while(schedule.windows(), |win, samples| {
             bytes.read += read_bytes(win);
             bytes.uploaded += (samples.len() * 4) as u64;
             let handle = workspace.process_chunk_in_vram(samples, win.read_len());
-            finish(win, handle, workspace.client(), &mut bytes)
+            finish(win, handle, workspace.client(), &mut bytes)?;
+            done += 1;
+            cancelled = !observe(done, total_windows, bytes);
+            Ok(!cancelled)
         })?;
     }
     drop(finish);
     drop(emit);
     writer.flush().map_err(|e| PipelineError::Io(format!("{}: {e}", raw_path.display())))?;
     drop(writer);
+    if cancelled {
+        let _ = std::fs::remove_file(&raw_path);
+        return Err(PipelineError::Cancelled);
+    }
 
     let samples = out_samples;
     let mut params = RawParams::new(nch, out_rate, SampleFormat::F32, MemoryOrder::TimeMajor);
@@ -265,7 +221,7 @@ fn run_input(
     params.samples = Some(samples);
     params.write_sidecar(&raw_path)?;
 
-    if *format == OutputFormat::Zarr {
+    if format == OutputFormat::Zarr {
         let raw = RawRecording::open(&raw_path)?;
         dspk_io::write_zarr(&raw, &output, chunk, |_, _| {})?;
         drop(raw);
@@ -296,91 +252,4 @@ fn provenance_path(output: &Path) -> PathBuf {
     let mut name = output.file_name().unwrap_or_default().to_os_string();
     name.push(PROVENANCE_SUFFIX);
     output.with_file_name(name)
-}
-
-/// A trailing `resample` node, reduced to coprime factors.
-struct Resample {
-    up: usize,
-    down: usize,
-    filter: ResampleFilter,
-    edge: EdgeMode,
-    /// Input samples the resampling filter reaches on each side of an output sample.
-    reach: usize,
-}
-
-impl Resample {
-    fn new(up: usize, down: usize, beta: f64, edge: EdgeMode) -> Self {
-        let g = gcd(up, down);
-        let (up, down) = (up / g, down / g);
-        let half_len = RESAMPLE_POLY_HALF_LEN_PER_RATE * up.max(down);
-        Self { up, down, filter: ResampleFilter::Window(FirWindow::Kaiser { beta }), edge, reach: half_len.div_ceil(up) + 1 }
-    }
-}
-
-fn gcd(a: usize, b: usize) -> usize {
-    if b == 0 { a } else { gcd(b, a % b) }
-}
-
-/// `picked` (in its order, no repeats), or every channel.
-fn select_channels(picked: Option<&[usize]>, count: usize) -> Result<Vec<usize>, PipelineError> {
-    let Some(picked) = picked else { return Ok((0..count).collect()) };
-    if picked.is_empty() {
-        return Err(PipelineError::Invalid("read: channels is empty".into()));
-    }
-    let mut seen = vec![false; count];
-    for &c in picked {
-        if c >= count {
-            return Err(PipelineError::Invalid(format!("read: channel {c} does not exist (the recording has {count})")));
-        }
-        if std::mem::replace(&mut seen[c], true) {
-            return Err(PipelineError::Invalid(format!("read: channel {c} is listed twice")));
-        }
-    }
-    Ok(picked.to_vec())
-}
-
-fn select_range(start: Option<u64>, stop: Option<u64>, total: u64) -> Result<std::ops::Range<u64>, PipelineError> {
-    let (start, stop) = (start.unwrap_or(0), stop.unwrap_or(total));
-    if start >= stop || stop > total {
-        return Err(PipelineError::Invalid(format!("read: samples {start}..{stop} are not a non-empty range within 0..{total}")));
-    }
-    Ok(start..stop)
-}
-
-/// Stored upload works for integer storage; float32 gains nothing; float64 has no device unpacking.
-fn resolve_upload(requested: Upload, format: SampleFormat) -> Result<bool, PipelineError> {
-    let integer = !matches!(format, SampleFormat::F32 | SampleFormat::F64);
-    match requested {
-        Upload::Auto => Ok(integer),
-        Upload::Scaled => Ok(false),
-        Upload::Stored if format == SampleFormat::F64 => {
-            Err(PipelineError::Invalid("execution.upload = \"stored\": float64 recordings cannot be scaled on the device".into()))
-        }
-        Upload::Stored => Ok(true),
-    }
-}
-
-/// `stream` needs every filter forward (zero-phase needs future samples) and no stencil stage
-/// (median, Gaussian, Teager–Kaiser, FIR read neighbours across window edges and carry no state;
-/// for FIR, window mode with its halo is exact).
-fn resolve_mode(requested: ExecMode, pipeline: &Pipeline, sample_rate: f64) -> Result<ExecutedMode, PipelineError> {
-    let blocker = pipeline.stages().iter().find_map(|stage| match stage {
-        PipelineStage::Filter(spec) if spec.mode == FilterMode::ForwardBackward => Some("a zero-phase (forward_backward) filter"),
-        PipelineStage::Median { .. } => Some("a median stage"),
-        PipelineStage::Fir { .. } => Some("a fir stage"),
-        PipelineStage::GaussianSmooth { .. } => Some("a gaussian_smooth stage"),
-        PipelineStage::TeagerKaiser { .. } => Some("a teager_kaiser stage"),
-        _ => None,
-    });
-    let windows = || {
-        let (left, right) = pipeline.settling(sample_rate).map_err(|e| PipelineError::Invalid(e.to_string()))?;
-        Ok(ExecutedMode::Windows { left, right })
-    };
-    match (requested, blocker) {
-        (ExecMode::Stream, Some(what)) => Err(PipelineError::Invalid(format!(
-            "execution.mode = \"stream\" is not possible with {what}: use \"windows\" or \"auto\""
-        ))),
-        (ExecMode::Stream, None) | (ExecMode::Auto, None) => Ok(ExecutedMode::Stream),
-        (ExecMode::Windows, _) | (ExecMode::Auto, Some(_)) => windows(),
-    }
 }

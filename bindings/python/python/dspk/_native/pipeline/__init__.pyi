@@ -4,10 +4,12 @@
 import builtins
 import os
 import pathlib
+import typing
 __all__ = [
     "DEFAULT_CHUNK_SAMPLES",
     "SPEC_VERSION",
     "canonical",
+    "plan",
     "run",
     "schema",
 ]
@@ -20,11 +22,21 @@ def canonical(text: builtins.str, toml: builtins.bool = False) -> builtins.str:
     written out).
     """
 
-def run(text: builtins.str, base_dir: builtins.str | os.PathLike | pathlib.Path, toml: builtins.bool = False) -> builtins.list[dict]:
+def plan(text: builtins.str, base_dir: builtins.str | os.PathLike | pathlib.Path, toml: builtins.bool = False) -> builtins.list[dict]:
+    r"""
+    What running a spec would do, per input, without touching the device: dicts with input, output,
+    mode, halo, stored_upload, channels, input_samples, input_rate, output_samples, output_rate,
+    windows, max_window_samples, bytes {read, uploaded}.
+    """
+
+def run(text: builtins.str, base_dir: builtins.str | os.PathLike | pathlib.Path, toml: builtins.bool = False, progress: typing.Optional[typing.Any] = None) -> builtins.list[dict]:
     r"""
     Runs a spec (JSON text, or TOML with `toml=True`); relative paths resolve against `base_dir`.
     Returns one report per input, each a dict (mode, halo, runtime, stored_upload, channels, samples,
     sample_rate, windows, bytes {read, uploaded, downloaded, written}, output, provenance, seconds).
+    
+    `progress(input, inputs, windows_done, windows)` is called after each window; returning `False`
+    cancels (KeyboardInterrupt, the unfinished output removed). Ctrl+C cancels too.
     """
 
 def schema() -> builtins.str:

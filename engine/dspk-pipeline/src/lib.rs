@@ -15,11 +15,16 @@
 //!   stored integers, scaled on the device), runs every stage on the device, downloads once and
 //!   appends the result to the output; the canonical spec is written next to the output as
 //!   provenance (`<output>.pipeline.json`). The report counts the bytes moved at each step.
+//! - One spec runs over many inputs (globs, lists) and may read several recordings as one (merge).
+//! - [`plan`] says what a run would do (mode, halos, windows, bytes) without touching the device;
+//!   [`run_with`] reports progress after each window and can cancel.
 
+mod prepare;
 mod run;
 mod spec;
 
-pub use run::{run, run_with, DataMovement, ExecutedMode, RunReport, PROVENANCE_SUFFIX};
+pub use prepare::{default_open, plan, plan_with, ExecutedMode, Plan};
+pub use run::{run, run_with, DataMovement, Progress, RunReport, PROVENANCE_SUFFIX};
 pub use spec::{
     Band, Chain, Design, Edge, ExecMode, Execution, Input, MergePart, Mode, Node, OutputFormat, PipelineSpec, Start, Upload,
     DEFAULT_CHUNK_SAMPLES, SPEC_VERSION,
@@ -38,4 +43,6 @@ pub enum PipelineError {
     Dsp(#[from] dspk_core::DspError),
     #[error("compute runtime: {0}")]
     Compute(String),
+    #[error("cancelled")]
+    Cancelled,
 }

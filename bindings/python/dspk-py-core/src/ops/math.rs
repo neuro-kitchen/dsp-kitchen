@@ -14,10 +14,13 @@ use pyo3_stub_gen::derive::gen_stub_pyfunction;
 use super::device;
 
 /// Per-channel mean and population standard deviation of `data` `(channels, samples)`.
+/// Two per-channel vectors (means and standard deviations).
+type PerChannel<'py> = (Bound<'py, PyArray1<f32>>, Bound<'py, PyArray1<f32>>);
+
 #[gen_stub_pyfunction(module = "dspk._native.ops.math")]
 #[pyfunction]
 #[pyo3(signature = (data, *, runtime))]
-pub fn channel_mean_std<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, runtime: Option<&str>) -> PyResult<(Bound<'py, PyArray1<f32>>, Bound<'py, PyArray1<f32>>)> {
+pub fn channel_mean_std<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, runtime: Option<&str>) -> PyResult<PerChannel<'py>> {
     let (mean, std) = device::with_input(py, data, runtime, |client, input, channels, samples| {
         let (mean, std) = (buffer::empty::<f32>(client, channels), buffer::empty::<f32>(client, channels));
         execute_channel_mean_std::<f32>(client, input, &mean, &std, channels, samples);

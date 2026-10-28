@@ -90,7 +90,7 @@ fn stage_fir(taps: Vec<f32>, centered: bool, edge: &str) -> PyResult<Stage> {
     if taps.is_empty() {
         return Err(PyValueError::new_err("taps is empty"));
     }
-    if centered && taps.len() % 2 == 0 {
+    if centered && taps.len().is_multiple_of(2) {
         return Err(PyValueError::new_err(format!("centered FIR needs an odd number of taps, got {}", taps.len())));
     }
     Ok(stage(PipelineStage::Fir { taps, centered, edge: self::edge(edge)? }))
@@ -132,7 +132,7 @@ fn stage_gaussian_smooth(sigma_samples: f32, edge: &str) -> PyResult<Stage> {
 #[gen_stub_pyfunction(module = "dspk._native.ops")]
 #[pyfunction]
 fn stage_median(width: usize, edge: &str) -> PyResult<Stage> {
-    if width % 2 == 0 || width > MAX_MEDIAN_WIDTH {
+    if width.is_multiple_of(2) || width > MAX_MEDIAN_WIDTH {
         return Err(PyValueError::new_err(format!("median width must be odd and at most {MAX_MEDIAN_WIDTH}, got {width}")));
     }
     Ok(stage(PipelineStage::Median { width, edge: self::edge(edge)? }))

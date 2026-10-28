@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 from os import PathLike
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from dspk._native import pipeline as _pipeline
 
@@ -52,7 +52,23 @@ def load(path: str | PathLike) -> Spec:
     return canonical(Path(path))
 
 
-def run(spec: Spec | str | PathLike, base_dir: str | PathLike | None = None) -> list[dict[str, Any]]:
+def plan(spec: Spec | str | PathLike, base_dir: str | PathLike | None = None) -> list[dict[str, Any]]:
+    """What :func:`run` would do for each input, without touching the device: input, output, mode,
+    halo, stored_upload, channels, input/output samples and rates, windows, max_window_samples and
+    ``bytes`` (read, uploaded). Raises ``ValueError`` for what ``run`` would refuse."""
+    text, toml, folder = _text(spec)
+    return _pipeline.plan(text, Path(base_dir) if base_dir is not None else folder, toml=toml)
+
+
+Progress = Callable[[int, int, int, int], "bool | None"]
+
+
+def run(
+    spec: Spec | str | PathLike,
+    base_dir: str | PathLike | None = None,
+    *,
+    progress: Progress | None = None,
+) -> list[dict[str, Any]]:
     """Runs ``spec`` once per input; relative paths resolve against ``base_dir`` (default: the spec
     file's folder, or the working directory for a dict).
 
@@ -62,9 +78,13 @@ def run(spec: Spec | str | PathLike, base_dir: str | PathLike | None = None) -> 
 
     Returns one report per input: mode, halo, runtime, stored_upload, channels, samples,
     sample_rate, windows, output, provenance, seconds, and ``bytes`` (read from the input,
-    uploaded, downloaded, written)."""
+    uploaded, downloaded, written).
+
+    ``progress(input, inputs, windows_done, windows)`` is called after each window; returning
+    ``False`` cancels with ``KeyboardInterrupt`` (the unfinished output is removed, finished inputs
+    stay). Ctrl+C cancels the same way."""
     text, toml, folder = _text(spec)
-    return _pipeline.run(text, Path(base_dir) if base_dir is not None else folder, toml=toml)
+    return _pipeline.run(text, Path(base_dir) if base_dir is not None else folder, toml=toml, progress=progress)
 
 
 def schema() -> dict[str, Any]:
@@ -72,4 +92,4 @@ def schema() -> dict[str, Any]:
     return json.loads(_pipeline.schema())
 
 
-__all__ = ["DEFAULT_CHUNK_SAMPLES", "SPEC_VERSION", "Spec", "canonical", "load", "run", "schema"]
+__all__ = ["DEFAULT_CHUNK_SAMPLES", "SPEC_VERSION", "Progress", "Spec", "canonical", "load", "plan", "run", "schema"]

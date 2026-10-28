@@ -141,3 +141,36 @@ def test_batch_and_merge(tmp_path):
     batch["nodes"]["out"]["path"] = "same.bin"
     with pytest.raises(ValueError, match="stem"):
         dspk.pipeline.run(batch, base_dir=tmp_path)
+
+
+def test_plan_progress_and_cancel(tmp_path):
+    data = np.random.default_rng(3).standard_normal((3, 100_000)).astype(np.float32)
+    dspk.io.write_raw(data, tmp_path / "x.bin", FS)
+    s = {
+        "dspk_pipeline": 1,
+        "nodes": {
+            "in": {"op": "read", "path": "x.bin"},
+            "hp": {"op": "iir", "band": "highpass", "cutoff": [300.0], "mode": "forward"},
+            "out": {"op": "write", "path": "y.bin"},
+        },
+        "edges": [["in", "hp"], ["hp", "out"]],
+        "execution": {"chunk_samples": 30_000},
+    }
+    (p,) = dspk.pipeline.plan(s, base_dir=tmp_path)
+    assert (p["mode"], p["windows"], p["channels"], p["output_samples"]) == ("stream", 4, 3, 100_000)
+    assert p["bytes"]["read"] == 3 * 100_000 * 4
+    assert not (tmp_path / "y.bin").exists(), "plan writes nothing"
+    seen = []
+    (report,) = dspk.pipeline.run(s, base_dir=tmp_path, progress=lambda *a: seen.append(a))
+    assert seen[-1] == (0, 1, 4, 4) and len(seen) == 4
+    assert report["windows"] == p["windows"] and report["bytes"]["read"] == p["bytes"]["read"]
+    s["nodes"]["out"]["path"] = "z.bin"
+    with pytest.raises(KeyboardInterrupt):
+        dspk.pipeline.run(s, base_dir=tmp_path, progress=lambda i, n, done, total: done < 2)
+    assert not (tmp_path / "z.bin").exists(), "a cancelled output is removed"
+
+    def boom(*_):
+        raise ZeroDivisionError("from the callback")
+
+    with pytest.raises(ZeroDivisionError, match="from the callback"):
+        dspk.pipeline.run(s, base_dir=tmp_path, progress=boom)
