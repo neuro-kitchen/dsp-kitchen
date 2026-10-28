@@ -1,6 +1,6 @@
 //! The workspaces of the title bar (Blender style): each is a stage of the work on the open
 //! recording, with its own arrangement of views. Explore is built; the others say what they will
-//! hold (Curation is parked in `refactoring/dsp-app/` while the app is rewired).
+//! hold (Curation is parked in `.refactoring/dsp-app/` while the app is rewired).
 
 use gpui_kit::assets::IconName;
 use serde::{Deserialize, Serialize};

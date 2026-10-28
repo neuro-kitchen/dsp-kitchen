@@ -1,6 +1,6 @@
 //! Pretrained networks run as their authors released them (artifacts through the catalog,
 //! [`crate::hub`]). None has a validated artifact yet: their catalog entries are parked until
-//! verified (see `refactoring/dsp-synapse-ml/`). Sorters reimplemented from papers live in
+//! verified (see `.refactoring/dsp-synapse-ml/`). Sorters reimplemented from papers live in
 //! [`crate::sorters`].
 
 pub mod dartsort;

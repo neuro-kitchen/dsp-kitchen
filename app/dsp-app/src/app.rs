@@ -78,7 +78,7 @@ impl DspApp {
     }
 
     /// Opens the recording at `path` in Explore. (Sorting folders open in Curation, parked in
-    /// `refactoring/dsp-app/`.)
+    /// `.refactoring/dsp-app/`.)
     pub fn open_any(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.store.update(cx, |s, cx| s.open(path, cx));
     }
