@@ -9,8 +9,8 @@ members = [
     "crates/dsp-stream",
     "crates/dsp-view",
     "crates/dsp-io",
-    "crates/dsp-cli",
-    "crates/dsp-app",
+    "app/dsp-cli",
+    "app/dsp-app",
     "dsp_kitchen_py",
 ]
 
