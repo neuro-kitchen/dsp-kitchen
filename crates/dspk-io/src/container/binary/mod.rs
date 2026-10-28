@@ -1,3 +1,3 @@
 //! Little-endian binary samples.
 
-pub(crate) mod codec;
+pub mod codec;

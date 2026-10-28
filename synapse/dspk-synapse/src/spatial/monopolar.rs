@@ -4,7 +4,7 @@
 //! $$\hat{V}_k(x, y, z, \alpha) = \frac{\alpha}{\sqrt{(x - x_k)^2 + (y - y_k)^2 + (z - z_k)^2}}$$
 //! using damped Gauss-Newton (Levenberg-Marquardt) iterations initialized at the Center-of-Mass.
 
-use dspk_io::neuro::probe::SensorLayout;
+use dspk_synapse_io::probe::SensorLayout;
 use crate::extraction::SnippetBatch;
 use crate::core::PeakLocalizer;
 use dspk_ops::math::peak_to_peak;
@@ -211,7 +211,7 @@ impl PeakLocalizer for MonopolarTriangulator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dspk_io::neuro::probe::neuropixels_2_0;
+    use dspk_synapse_io::probe::neuropixels_2_0;
 
     #[test]
     fn test_monopolar_triangulation_recovers_3d_source() {

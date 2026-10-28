@@ -21,7 +21,7 @@ use dspk_ops::pipeline::{Pipeline, PipelineStage, PipelineWorkspace};
 use dspk_ops::spatial::SpatialWhitening;
 use dspk_core::progress::Stages;
 use dspk_core::{ChunkSchedule, DspError, DspResult, HaloWindow, ProgressSink, RecordingSource};
-use dspk_io::neuro::probe::SensorLayout;
+use dspk_synapse_io::probe::SensorLayout;
 use dspk_synapse::core::{SortingOutput, UnitTemplateAccumulator, WaveformTemplate};
 use dspk_synapse::features::{ChannelNeighbourhoods, LocalSvd};
 use dspk_synapse::metrics::{CompositeScoreOptions, RefractoryOptions};
@@ -487,7 +487,7 @@ pub fn run(client: &Client, source: &dyn RecordingSource, probe: &SensorLayout, 
 mod tests {
     use super::*;
     use dspk_core::compute::ComputeTarget;
-    use dspk_io::neuro::synthetic::{SyntheticParams, SyntheticRecording};
+    use dspk_synapse_io::synthetic::{SyntheticParams, SyntheticRecording};
 
     /// Recovers well-separated synthetic units.
     #[test]

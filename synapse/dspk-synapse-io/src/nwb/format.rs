@@ -5,8 +5,8 @@ use std::path::Path;
 use dspk_core::{DspResult, RationalTime, RecordingSource, SampleRate, SignalUnit};
 
 use super::acquisition::{is_nwb_zarr, list_series, NwbZarrRecording, SeriesEntry};
-use crate::core::sources::{SourceEntry, SourceKind};
-use crate::core::Format;
+use dspk_io::core::sources::{SourceEntry, SourceKind};
+use dspk_io::core::Format;
 
 pub struct Nwb;
 

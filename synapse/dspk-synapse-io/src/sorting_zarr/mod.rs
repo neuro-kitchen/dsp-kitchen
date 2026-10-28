@@ -16,12 +16,12 @@ use dspk_core::{DspError, DspResult};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
-use crate::container::npy::NpyArray;
-use crate::container::zarr::{
+use dspk_io::container::npy::NpyArray;
+use dspk_io::container::zarr::{
     has_array, open_rw_store, read_array, read_node_json, read_optional_array, write_array_f32, write_array_i32,
     write_array_u64, write_group,
 };
-use crate::neuro::probe::SensorLayout;
+use crate::probe::SensorLayout;
 
 /// `dsp_format` written to the manifest.
 pub const SORTING_ZARR_FORMAT: &str = "sorting_analyzer_v1";

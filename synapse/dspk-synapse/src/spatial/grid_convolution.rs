@@ -5,7 +5,7 @@
 //! peak-to-peak amplitudes. Inspired by SpikeInterface's `GridConvolution`, which convolves
 //! prototype waveforms instead; results differ.
 
-use dspk_io::neuro::probe::SensorLayout;
+use dspk_synapse_io::probe::SensorLayout;
 use crate::extraction::SnippetBatch;
 use crate::core::PeakLocalizer;
 use dspk_ops::math::peak_to_peak;

@@ -2,7 +2,7 @@
 //! localization, drift estimation, kriging, clustering, template matching, correlograms,
 //! Allen/IBL quality metrics, sorter comparison, and neural frequency bands.
 //!
-//! Probe geometry (layouts, presets, nearest-site queries) lives in `dspk_io::neuro::probe`.
+//! Probe geometry (layouts, presets, nearest-site queries) lives in `dspk_synapse_io::probe`.
 //!
 //! # Where things are
 //!
@@ -25,7 +25,7 @@
 //! channels is one spike, assigned to the channel where it is largest.
 //!
 //! ```
-//! use dspk_io::neuro::probe::{Position3D, SensorLayout, SensorSite};
+//! use dspk_synapse_io::probe::{Position3D, SensorLayout, SensorSite};
 //! use dspk_synapse::{deduplicate_spikes_spatial, detect_spikes_multichannel, SpikePolarity, SpikeSpacing};
 //!
 //! // 4 channels on a line, 20 µm apart

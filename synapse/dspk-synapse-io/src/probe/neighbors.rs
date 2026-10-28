@@ -56,7 +56,7 @@ pub fn precompute_knn_table(layout: &SensorLayout, num_channels: usize, k: usize
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::neuro::probe::neuropixels_1_0;
+    use crate::probe::neuropixels_1_0;
 
     #[test]
     fn test_nearest_neighbors() {
@@ -73,7 +73,7 @@ mod tests {
 
     #[test]
     fn test_table_for_non_contiguous_layout() {
-        use crate::neuro::probe::{Position3D, SensorSite};
+        use crate::probe::{Position3D, SensorSite};
         // Sites for channels 0, 2 and 5 only, in a recording of 6 channels.
         let layout = SensorLayout::new(
             "sparse",

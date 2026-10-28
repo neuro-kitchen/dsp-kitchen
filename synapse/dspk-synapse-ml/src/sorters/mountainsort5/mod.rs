@@ -222,7 +222,7 @@ impl Mountainsort5 {
         &self,
         client: &cubecl::prelude::Client,
         source: &dyn dspk_core::RecordingSource,
-        probe: &dspk_io::neuro::probe::SensorLayout,
+        probe: &dspk_synapse_io::probe::SensorLayout,
     ) -> dspk_core::DspResult<Mountainsort5Result> {
         run(client, source, probe, &self.config, &dspk_core::NoProgress)
     }
@@ -231,7 +231,7 @@ impl Mountainsort5 {
         &self,
         client: &cubecl::prelude::Client,
         source: &dyn dspk_core::RecordingSource,
-        probe: &dspk_io::neuro::probe::SensorLayout,
+        probe: &dspk_synapse_io::probe::SensorLayout,
         progress: &dyn dspk_core::ProgressSink,
     ) -> dspk_core::DspResult<Mountainsort5Result> {
         run(client, source, probe, &self.config, progress)

@@ -13,7 +13,7 @@
 
 use cubecl::prelude::Client;
 use dspk_core::{DspResult, RecordingSource};
-use dspk_io::neuro::probe::SensorLayout;
+use dspk_synapse_io::probe::SensorLayout;
 
 use dspk_synapse::NeuralBand;
 
@@ -347,7 +347,7 @@ mod tests {
     #[test]
     fn emusort_runs_on_synthetic_recording() {
         use dspk_core::compute::{ComputeTarget, ComputeTask};
-        use dspk_io::neuro::synthetic::{SyntheticParams, SyntheticRecording};
+        use dspk_synapse_io::synthetic::{SyntheticParams, SyntheticRecording};
 
         let rec = SyntheticRecording::new(SyntheticParams { channels: 4, duration_sec: 1.0, sample_rate_hz: 30_000.0, ..Default::default() })
             .expect("synthetic recording");

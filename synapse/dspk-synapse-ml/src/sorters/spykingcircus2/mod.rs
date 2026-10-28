@@ -170,7 +170,7 @@ impl Spykingcircus2 {
         &self,
         client: &cubecl::prelude::Client,
         source: &dyn dspk_core::RecordingSource,
-        probe: &dspk_io::neuro::probe::SensorLayout,
+        probe: &dspk_synapse_io::probe::SensorLayout,
     ) -> dspk_core::DspResult<Spykingcircus2Result> {
         run(client, source, probe, &self.config, &dspk_core::NoProgress)
     }

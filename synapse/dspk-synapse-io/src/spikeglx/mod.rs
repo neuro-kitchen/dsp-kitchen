@@ -9,11 +9,11 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::neuro::probe::{Position3D, SensorLayout, SensorSite};
+use crate::probe::{Position3D, SensorLayout, SensorSite};
 use dspk_core::{ChannelInfo, DspError, DspResult, MemoryOrder, RecordingInfo, RecordingSource, SampleFormat, SignalUnit, MICROVOLTS_PER_VOLT};
 
-use crate::neuro::mtscomp::MtscompRecording;
-use crate::generic::raw::{RawParams, RawRecording};
+use crate::mtscomp::MtscompRecording;
+use dspk_io::generic::raw::{RawParams, RawRecording};
 
 mod format;
 pub use format::SpikeGlx;

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use clap::Args;
 use dspk_core::{ProgressEvent, ProgressSink, RecordingSource};
-use dspk_io::{SyntheticParams, SyntheticRecording};
+use dspk_synapse_io::{SyntheticParams, SyntheticRecording};
 use dspk_stream::{serve_recording, server_config, Pacing, ServeOptions, Server, ServerIdentity};
 use dspk_view::{Pyramid, PyramidBuilder, MEMORY_BASE};
 
@@ -61,8 +61,8 @@ pub struct ServeArgs {
 pub async fn run(args: &ServeArgs) -> anyhow::Result<()> {
     let (source, pyramid): (Arc<dyn RecordingSource>, Pyramid) = match &args.recording {
         Some(path) => {
-            let source: Arc<dyn RecordingSource> = Arc::from(dspk_io::open(path).with_context(|| format!("opening {}", path.display()))?);
-            let entries = dspk_io::sources(path)?;
+            let source: Arc<dyn RecordingSource> = Arc::from(dspk_synapse_io::open(path).with_context(|| format!("opening {}", path.display()))?);
+            let entries = dspk_synapse_io::sources(path)?;
             let id = dspk_io::default_source(&entries).map(|e| e.id.clone()).unwrap_or_default();
             let (pyramid, _) = Pyramid::open_or_create(source.as_ref(), Some((path.as_path(), id.as_str())))?;
             (source, pyramid)

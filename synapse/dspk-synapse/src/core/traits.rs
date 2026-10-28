@@ -5,7 +5,7 @@
 //! unexpected input shape, an unsupported operator) and callers, including Python, get the error.
 
 use dspk_core::DspResult;
-use dspk_io::neuro::probe::SensorLayout;
+use dspk_synapse_io::probe::SensorLayout;
 use super::events::{MatchedSpike, SpikeEvent};
 use super::snippets::SnippetBatch;
 use super::template::WaveformTemplate;

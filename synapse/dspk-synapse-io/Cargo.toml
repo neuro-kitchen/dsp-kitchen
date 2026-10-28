@@ -1,0 +1,24 @@
+[package]
+name = "dspk-synapse-io"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Neural-recording and spike-sorting file formats for dspk: NWB, SpikeGLX, mtscomp, Phy, probe geometry"
+
+[features]
+default = ["zarr"]
+zarr = ["dspk-io/zarr", "dep:zarrs"]
+
+[dependencies]
+dspk-core.workspace = true
+dspk-io = { workspace = true, default-features = false }
+flate2.workspace = true
+memmap2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+zarrs = { workspace = true, optional = true }
+
+[dev-dependencies]
+dspk-io = { workspace = true, default-features = false, features = ["test-support"] }

@@ -1,5 +1,5 @@
 //! Sortings on disk ↔ [`SortingOutput`]. The files are read and written by `dspk-io`
-//! (`dspk_io::neuro::{phy, nwb, sorting_zarr}`); this module converts them:
+//! (`dspk_synapse_io::{phy, nwb, sorting_zarr}`); this module converts them:
 //! - **Phy / Kilosort** folder (directory with `spike_times.npy`)
 //! - **`.sorting.zarr`**: dspk's own store
 //! - **NWB `/units`** table in a `.nwb.zarr` store
@@ -13,7 +13,7 @@ pub mod sorting_zarr;
 use std::path::Path;
 
 use dspk_core::{DspError, DspResult};
-use dspk_io::neuro::{detect_sorting, SortingFormat};
+use dspk_synapse_io::{detect_sorting, SortingFormat};
 
 use crate::core::SortingOutput;
 

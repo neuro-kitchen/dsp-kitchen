@@ -18,7 +18,7 @@ macro_rules! with_format {
 
 /// Applies each channel's gain and offset to time-major stored values (`out[t · channels + c]`)
 /// of `info`'s channels, giving µV.
-pub(crate) fn scale_frames(info: &RecordingInfo, out: &mut [f32]) {
+pub fn scale_frames(info: &RecordingInfo, out: &mut [f32]) {
     let ch = &info.channels;
     if ch.is_empty() {
         return;
@@ -41,7 +41,7 @@ pub(crate) fn scale_frames(info: &RecordingInfo, out: &mut [f32]) {
 /// Decodes `channels` (`(stored channel, gain, offset)`) of `n` interleaved frames of `frame_bytes`
 /// each into channel-major µV rows of `out` (`out[i · n + s]`). Every frame is read once for all
 /// requested channels.
-pub(crate) fn decode_frames(
+pub fn decode_frames(
     format: SampleFormat,
     frames: &[u8],
     frame_bytes: usize,
@@ -69,7 +69,7 @@ pub(crate) fn decode_frames(
 
 /// Copies the stored values of block columns `cols` into channel-major `out` (`bytes` per value).
 /// The block is `[n][width]` values when `time_major`, else `[width][n]`.
-pub(crate) fn select_stored(block: &[u8], time_major: bool, width: usize, n: usize, cols: &[usize], bytes: usize, out: &mut [u8]) {
+pub fn select_stored(block: &[u8], time_major: bool, width: usize, n: usize, cols: &[usize], bytes: usize, out: &mut [u8]) {
     fn frames<const B: usize>(block: &[u8], width: usize, n: usize, cols: &[usize], out: &mut [u8]) {
         let (block, _) = block.as_chunks::<B>();
         let (out, _) = out.as_chunks_mut::<B>();
@@ -95,7 +95,7 @@ pub(crate) fn select_stored(block: &[u8], time_major: bool, width: usize, n: usi
 }
 
 /// Decoded values in memory order to little-endian (a no-op on little-endian hosts).
-pub(crate) fn native_to_le(values: &mut [u8], bytes: usize) {
+pub fn native_to_le(values: &mut [u8], bytes: usize) {
     if cfg!(target_endian = "big") {
         for v in values.chunks_exact_mut(bytes) {
             v.reverse();
@@ -105,7 +105,7 @@ pub(crate) fn native_to_le(values: &mut [u8], bytes: usize) {
 
 /// Appends `value_uv` to `dst` as a stored sample (integers are rounded and saturated).
 #[inline(always)]
-pub(crate) fn encode(format: SampleFormat, value_uv: f32, gain: f32, offset: f32, dst: &mut Vec<u8>) {
+pub fn encode(format: SampleFormat, value_uv: f32, gain: f32, offset: f32, dst: &mut Vec<u8>) {
     let stored = (value_uv - offset) / gain;
     match format {
         SampleFormat::I8 => dst.extend_from_slice(&(stored.round() as i8).to_le_bytes()),

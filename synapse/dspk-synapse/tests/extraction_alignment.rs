@@ -9,7 +9,7 @@ use dspk_synapse::extraction::{
 };
 use dspk_ops::math::parabolic_vertex_offset;
 use dspk_synapse::extraction::execute_extract_sinc_in_vram;
-use dspk_io::neuro::probe::{precompute_knn_table, tetrode};
+use dspk_synapse_io::probe::{precompute_knn_table, tetrode};
 
 const CHANNELS: usize = 4;
 const SAMPLES: usize = 4_000;

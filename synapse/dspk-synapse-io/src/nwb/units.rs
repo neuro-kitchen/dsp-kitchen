@@ -17,12 +17,12 @@ use std::path::{Path, PathBuf};
 use dspk_core::{DspError, DspResult};
 use serde_json::{json, Map, Value};
 
-use crate::container::npy::NpyArray;
-use crate::container::zarr::{
+use dspk_io::container::npy::NpyArray;
+use dspk_io::container::zarr::{
     has_array, open_rw_store, read_array, read_node_attributes, read_optional_array, write_array_f32,
     write_array_f64, write_array_i64, write_array_u64, write_group,
 };
-use crate::neuro::probe::SensorLayout;
+use crate::probe::SensorLayout;
 
 /// The `/units` table of an NWB store, column by column. See the module docs.
 #[derive(Debug, Clone, PartialEq, Default)]

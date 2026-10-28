@@ -7,7 +7,7 @@
 //! at each candidate $\mathbf{r}_0$) combined with a compass (pattern) search over $\mathbf{r}_0$:
 //! ± step along each axis, keeping improvements, halving the step when none helps.
 
-use dspk_io::neuro::probe::SensorLayout;
+use dspk_synapse_io::probe::SensorLayout;
 use serde::{Deserialize, Serialize};
 use crate::core::{PeakLocalizer, SnippetBatch};
 use dspk_ops::math::peak_to_peak;
@@ -203,7 +203,7 @@ impl PeakLocalizer for DipoleLocalizer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dspk_io::neuro::probe::neuropixels_2_0;
+    use dspk_synapse_io::probe::neuropixels_2_0;
 
     #[test]
     fn test_dipole_localizer_recovers_3d_position_and_orientation() {

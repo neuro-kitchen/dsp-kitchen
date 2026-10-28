@@ -5,8 +5,8 @@ use std::path::Path;
 use dspk_core::{DspResult, RecordingSource};
 
 use super::MtscompRecording;
-use crate::core::sources::{require_main, single_source, SourceEntry};
-use crate::core::Format;
+use dspk_io::core::sources::{require_main, single_source, SourceEntry};
+use dspk_io::core::Format;
 
 pub struct Mtscomp;
 

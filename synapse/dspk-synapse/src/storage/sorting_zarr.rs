@@ -1,13 +1,13 @@
 //! `.sorting.zarr` stores ↔ [`SortingOutput`]. The store itself is read and written by
-//! [`dspk_io::neuro::sorting_zarr::SortingZarr`]; it keeps every unit metric, so nothing is
+//! [`dspk_synapse_io::sorting_zarr::SortingZarr`]; it keeps every unit metric, so nothing is
 //! recomputed on load.
 
 use std::path::Path;
 
 use dspk_core::DspResult;
 use dspk_io::container::npy::NpyArray;
-use dspk_io::neuro::sorting_zarr::{SortingZarr, SortingZarrManifest, SortingZarrUnit, SORTING_ZARR_FORMAT};
-use dspk_io::neuro::templates::TemplateAxisOrder;
+use dspk_synapse_io::sorting_zarr::{SortingZarr, SortingZarrManifest, SortingZarrUnit, SORTING_ZARR_FORMAT};
+use dspk_synapse_io::templates::TemplateAxisOrder;
 use serde_json::Value;
 
 use crate::core::{pack_templates, unpack_template, SortedUnit, SortingOutput, UnitQualityLabel};
@@ -139,7 +139,7 @@ pub fn load_sorting_zarr(dir: &Path) -> DspResult<SortingOutput> {
 mod tests {
     use super::*;
     use crate::core::WaveformTemplate;
-    use dspk_io::neuro::probe::{Position3D, SensorLayout, SensorSite};
+    use dspk_synapse_io::probe::{Position3D, SensorLayout, SensorSite};
 
     #[test]
     fn test_sorting_zarr_roundtrip() {

@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use dspk_core::{DspResult, RecordingSource};
-use dspk_io::neuro::probe::{SensorLayout, SensorSite};
-use dspk_io::{SyntheticParams, SyntheticRecording};
+use dspk_synapse_io::probe::{SensorLayout, SensorSite};
+use dspk_synapse_io::{SyntheticParams, SyntheticRecording};
 use dspk_view::envelope::mean_range;
 use dspk_view::{Envelope, LocalSignal, SignalBackend, View};
 
@@ -193,7 +193,7 @@ mod tests {
         std::fs::write(&path, bytes).unwrap();
         std::fs::write(path.with_extension("meta"), r#"{"channels": 3, "sample_rate_hz": 1000.0}"#).unwrap();
 
-        let source: Arc<dyn RecordingSource> = Arc::from(dspk_io::open(&path).unwrap());
+        let source: Arc<dyn RecordingSource> = Arc::from(dspk_synapse_io::open(&path).unwrap());
         let ds = Dataset::local(source, None).unwrap();
         assert_eq!(ds.total_samples, 4);
         assert_eq!(ds.sample(1, 2), 6.0);

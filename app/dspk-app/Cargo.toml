@@ -15,7 +15,8 @@ dspk-core.workspace = true
 dspk-ops.workspace = true
 dspk-synapse.workspace = true
 # NWB / SpikeGLX / mtscomp, probe geometry, synthetic recordings
-dspk-io = { workspace = true, features = ["neuro"] }
+dspk-io.workspace = true
+dspk-synapse-io.workspace = true
 # Envelopes, pyramids and the signal backend; host only (the app draws on the CPU)
 dspk-view = { workspace = true, default-features = false }
 serde.workspace = true

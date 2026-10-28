@@ -44,7 +44,7 @@ use cubecl::server::Handle;
 use dspk_ops::core::buffer;
 use dspk_ops::linalg::{matmul, MatrixView};
 use dspk_core::compute::LaunchGeometry;
-use dspk_io::neuro::probe::SensorLayout;
+use dspk_synapse_io::probe::SensorLayout;
 use dspk_synapse::metrics::{ccg_refractory, RefractoryOptions};
 use dspk_synapse::sorting::kernels::bipartite::{relabel_kernel, NO_LABEL};
 use dspk_synapse::sorting::{bipartite_clustering, cluster_sums, BipartiteOptions, DevicePoints};

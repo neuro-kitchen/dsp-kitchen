@@ -1,4 +1,4 @@
-use dspk_io::neuro::probe::{Position3D, SensorLayout};
+use dspk_synapse_io::probe::{Position3D, SensorLayout};
 pub use crate::core::{DeduplicatedSpike, SpikeEvent};
 
 /// Deduplicates multi-channel spike events across space and time ("locally exclusive" rule, as
@@ -316,7 +316,7 @@ pub fn deduplicate_spikes_spatial_gpu(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dspk_io::neuro::probe::SensorSite;
+    use dspk_synapse_io::probe::SensorSite;
 
     #[test]
     fn test_spatial_deduplication() {

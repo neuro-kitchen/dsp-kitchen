@@ -8,8 +8,8 @@ use anyhow::{bail, Context};
 use clap::{Args, ValueEnum};
 use dspk_core::recording::SlicedRecording;
 use dspk_core::RecordingSource;
-use dspk_io::neuro::SortingFormat;
-use dspk_io::SensorLayout;
+use dspk_synapse_io::SortingFormat;
+use dspk_synapse_io::SensorLayout;
 use dspk_synapse::SortingOutput;
 
 use super::probe::{Preset, DEFAULT_HDEMG_PITCH_UM};
@@ -49,11 +49,11 @@ impl RecordingArgs {
         let id = match &self.source {
             Some(id) => id.clone(),
             None => {
-                let list = dspk_io::sources(path)?;
+                let list = dspk_synapse_io::sources(path)?;
                 dspk_io::default_source(&list).with_context(|| format!("{} has no sources", path.display()))?.id.clone()
             }
         };
-        let full: Arc<dyn RecordingSource> = Arc::from(dspk_io::open_source(path, &id)?);
+        let full: Arc<dyn RecordingSource> = Arc::from(dspk_synapse_io::open_source(path, &id)?);
         let info = full.info();
         let (fs, total) = (info.sample_rate_hz(), info.samples);
         let start = seconds_to_samples(self.start_sec, fs).min(total);
@@ -69,7 +69,7 @@ impl RecordingArgs {
             if start == 0 && end == total { full } else { Arc::new(SlicedRecording::new(full, start..end, None)?) };
         let probe = match self.probe {
             Some(preset) => preset.layout(self.pitch_um),
-            None => dspk_io::probe_of(path, &id)?.with_context(|| {
+            None => dspk_synapse_io::probe_of(path, &id)?.with_context(|| {
                 format!("{} carries no probe geometry: choose one with --probe", path.display())
             })?,
         };

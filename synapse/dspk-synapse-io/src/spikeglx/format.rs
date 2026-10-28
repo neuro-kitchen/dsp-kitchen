@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 use dspk_core::{DspError, DspResult, RationalTime, RecordingSource, SampleFormat, SampleRate, SignalUnit};
 
 use super::{probe_layout, SpikeGlxMeta};
-use crate::core::sources::{SourceEntry, SourceKind};
-use crate::core::Format;
-use crate::neuro::probe::{ProbeSource, SensorLayout};
+use dspk_io::core::sources::{SourceEntry, SourceKind};
+use dspk_io::core::Format;
+use crate::probe::{ProbeSource, SensorLayout};
 
 pub struct SpikeGlx;
 
@@ -104,7 +104,7 @@ fn stream_name(file: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::default_source;
+    use dspk_io::core::default_source;
 
     #[test]
     fn test_spikeglx_run_streams() {

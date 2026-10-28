@@ -3,7 +3,7 @@
 //! Computes the amplitude-weighted centroid of $K$-nearest neighbor electrode positions:
 //! $$\mathbf{r}_{\text{CoM}} = \frac{\sum_{k=1}^K a_k^p \mathbf{r}_k}{\sum_{k=1}^K a_k^p}$$
 
-use dspk_io::neuro::probe::SensorLayout;
+use dspk_synapse_io::probe::SensorLayout;
 use crate::extraction::SnippetBatch;
 use dspk_ops::math::peak_to_peak;
 

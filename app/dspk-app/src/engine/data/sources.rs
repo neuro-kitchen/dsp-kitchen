@@ -24,7 +24,7 @@ pub struct SourceSet {
 impl SourceSet {
     /// Lists `path`'s sources and opens the default one (the largest electrical signal).
     pub fn open(path: &Path) -> Result<Self> {
-        let entries = dspk_io::sources(path).with_context(|| format!("Failed to open {}", path.display()))?;
+        let entries = dspk_synapse_io::sources(path).with_context(|| format!("Failed to open {}", path.display()))?;
         let default_id = dspk_io::default_source(&entries).map(|e| e.id.clone()).unwrap_or_default();
         let default = entries.iter().position(|e| e.id == default_id).unwrap_or(0);
         let set = Self { path: Some(path.to_path_buf()), opened: Mutex::new(vec![None; entries.len()]), entries, default };
@@ -88,10 +88,10 @@ impl SourceSet {
         }
         let path = self.path.as_deref().context("in-memory source set has one source")?;
         let entry = &self.entries[i];
-        let rec = dspk_io::open_source(path, &entry.id).with_context(|| format!("Failed to open source {}", entry.name))?;
+        let rec = dspk_synapse_io::open_source(path, &entry.id).with_context(|| format!("Failed to open source {}", entry.name))?;
         let source = Arc::from(CachedRecording::wrap(rec, CHUNK_CACHE_BYTES));
         let signal = dspk_view::LocalSignal::open(source, Some((path, &entry.id))).with_context(|| format!("Failed to prepare {} for viewing", entry.name))?;
-        let probe = dspk_io::neuro::probe::probe_of(path, &entry.id).unwrap_or_else(|e| {
+        let probe = dspk_synapse_io::probe::probe_of(path, &entry.id).unwrap_or_else(|e| {
             tracing::warn!("no probe geometry for {}: {e}", entry.name);
             None
         });

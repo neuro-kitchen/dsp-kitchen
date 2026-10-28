@@ -23,7 +23,8 @@ hub = ["dspk-synapse-ml/hub", "dep:dspk-synapse-hub"]
 [dependencies]
 dspk-core = { workspace = true, features = ["compute"] }
 dspk-ops.workspace = true
-dspk-io = { workspace = true, features = ["neuro"] }
+dspk-io.workspace = true
+dspk-synapse-io.workspace = true
 dspk-synapse.workspace = true
 dspk-synapse-ml = { workspace = true, default-features = false }
 dspk-synapse-hub = { workspace = true, optional = true }

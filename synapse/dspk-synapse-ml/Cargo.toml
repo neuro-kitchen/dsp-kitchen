@@ -19,7 +19,8 @@ cuda = ["cubecl/cuda", "dspk-ops/cuda"]
 dspk-core = { workspace = true, features = ["compute"] }
 dspk-ops.workspace = true
 dspk-synapse.workspace = true
-dspk-io = { workspace = true, features = ["neuro"] }
+dspk-io.workspace = true
+dspk-synapse-io.workspace = true
 burn-tensor.workspace = true
 onnx-ir.workspace = true
 safetensors.workspace = true

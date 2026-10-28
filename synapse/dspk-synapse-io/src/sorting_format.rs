@@ -2,9 +2,9 @@
 
 use std::path::Path;
 
-use crate::neuro::phy::PhyFolder;
+use crate::phy::PhyFolder;
 #[cfg(feature = "zarr")]
-use crate::neuro::{nwb::NwbUnitsTable, sorting_zarr::SortingZarr};
+use crate::{nwb::NwbUnitsTable, sorting_zarr::SortingZarr};
 
 /// Spike-sorting file formats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

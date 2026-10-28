@@ -23,7 +23,7 @@ use dspk_ops::pipeline::{Pipeline, PipelineStage, PipelineWorkspace};
 use dspk_ops::spatial::SpatialWhitening;
 use dspk_core::progress::Stages;
 use dspk_core::{DspError, DspResult, HaloWindow, ProgressSink, RecordingSource};
-use dspk_io::neuro::probe::SensorLayout;
+use dspk_synapse_io::probe::SensorLayout;
 use dspk_synapse::core::{SortingOutput, WaveformTemplate};
 use dspk_synapse::metrics::{CompositeScoreOptions, RefractoryOptions};
 
@@ -468,7 +468,7 @@ pub fn run(client: &Client, source: &dyn RecordingSource, probe: &SensorLayout, 
 mod tests {
     use super::*;
     use dspk_core::compute::ComputeTarget;
-    use dspk_io::neuro::synthetic::{SyntheticParams, SyntheticRecording};
+    use dspk_synapse_io::synthetic::{SyntheticParams, SyntheticRecording};
 
     /// Best accuracy of each ground-truth unit against the sorted units (spikes within `tol`
     /// samples match): `matches / (n_true + n_sorted − matches)`.

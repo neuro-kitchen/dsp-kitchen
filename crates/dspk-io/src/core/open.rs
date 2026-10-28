@@ -10,11 +10,17 @@ use crate::registry::formats;
 
 /// The format of `path`: the first compiled-in [`Format`] that detects it.
 pub fn detect(path: &Path) -> DspResult<&'static dyn Format> {
+    detect_in(formats(), path)
+}
+
+/// The format of `path`: the first of `formats` that detects it. For crates that add formats to
+/// the generic ones (e.g. `dspk-synapse-io`).
+pub fn detect_in(formats: &[&'static dyn Format], path: &Path) -> DspResult<&'static dyn Format> {
     if !path.exists() {
         return Err(DspError::Io(format!("{} does not exist", path.display())));
     }
-    formats().iter().copied().find(|f| f.detect(path)).ok_or_else(|| {
-        let names: Vec<&str> = formats().iter().map(|f| f.name()).collect();
+    formats.iter().copied().find(|f| f.detect(path)).ok_or_else(|| {
+        let names: Vec<&str> = formats.iter().map(|f| f.name()).collect();
         DspError::UnsupportedFormat(format!(
             "cannot tell the format of {} (compiled-in formats: {}; a raw binary file needs a JSON sidecar)",
             path.display(),
@@ -38,21 +44,32 @@ pub fn open_source(path: &Path, id: &str) -> DspResult<Box<dyn RecordingSource>>
     detect(path)?.open(path, id)
 }
 
-#[cfg(all(test, feature = "neuro"))]
-pub(crate) mod tests {
+#[cfg(test)]
+mod tests {
     use super::*;
     use dspk_core::{MemoryOrder, SampleFormat};
+    #[cfg(feature = "zarr")]
     use crate::core::CachedRecording;
     use crate::generic::raw::write_raw;
     #[cfg(feature = "zarr")]
     use crate::generic::zarr_traces::write_zarr;
-    use crate::neuro::synthetic::{SyntheticParams, SyntheticRecording};
+    use crate::test_support::{assert_native_matches, assert_stored_matches};
+    use dspk_core::MemoryRecording;
+
+    /// `channels` × 3 000 samples at 30 kHz: a different sine per channel, in µV.
+    fn source(channels: usize) -> MemoryRecording {
+        const SAMPLES: usize = 3_000;
+        let data = (0..channels)
+            .flat_map(|c| (0..SAMPLES).map(move |t| 100.0 * ((t as f32) * 0.01 * (c + 1) as f32).sin()))
+            .collect();
+        MemoryRecording::new("source", data, channels, 30_000.0).unwrap()
+    }
 
     #[test]
     fn test_open_detects_formats() {
         let dir = std::env::temp_dir().join(format!("dspk_io_open_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let src = SyntheticRecording::new(SyntheticParams { channels: 4, duration_sec: 0.1, ..Default::default() }).unwrap();
+        let src = source(4);
 
         let bin = dir.join("rec.bin");
         write_raw(&src, &bin, SampleFormat::I16, MemoryOrder::TimeMajor, 0.25, 1000, |_, _| {}).unwrap();
@@ -77,56 +94,25 @@ pub(crate) mod tests {
     fn test_single_recording_is_one_source() {
         let dir = std::env::temp_dir().join(format!("dspk_io_src_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let src = SyntheticRecording::new(SyntheticParams { channels: 3, duration_sec: 0.1, ..Default::default() }).unwrap();
+        let src = source(3);
         let bin = dir.join("rec.bin");
         write_raw(&src, &bin, SampleFormat::F32, MemoryOrder::ChannelMajor, 1.0, 1000, |_, _| {}).unwrap();
 
         let list = sources(&bin).unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!((list[0].id.as_str(), list[0].channels), (crate::core::sources::MAIN, 3));
-        // Raw sidecars give gains in µV
-        assert_eq!(list[0].unit, dspk_core::SignalUnit::Microvolt);
+        // The sidecar keeps the source's unit
+        assert_eq!(list[0].unit, src.info().channels[0].unit);
         assert_eq!(open_source(&bin, crate::core::sources::MAIN).unwrap().info().channel_count(), 3);
         assert!(open_source(&bin, "nope").is_err());
         std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    /// `read_stored` decoded with each channel's gain and offset equals `read`.
-    pub(crate) fn assert_stored_matches(rec: &dyn RecordingSource, channels: &[usize], samples: std::ops::Range<u64>) {
-        let info = rec.info();
-        let n = (samples.end - samples.start) as usize;
-        let mut values = vec![0.0f32; channels.len() * n];
-        rec.read(channels, samples.clone(), &mut values).unwrap();
-        let mut bytes = vec![0u8; channels.len() * n * info.format.bytes()];
-        rec.read_stored(channels, samples, &mut bytes).unwrap();
-        let mut decoded = vec![0.0f32; values.len()];
-        for (i, &c) in channels.iter().enumerate() {
-            let ch = &info.channels[c];
-            let b = info.format.bytes();
-            info.format.decode(&bytes[i * n * b..(i + 1) * n * b], &mut decoded[i * n..(i + 1) * n], ch.gain, ch.offset);
-        }
-        assert_eq!(decoded, values, "{}", info.name);
-    }
-
-    /// `read_native`, put back in channel-major order, equals `read` of every channel.
-    pub(crate) fn assert_native_matches(rec: &dyn RecordingSource, samples: std::ops::Range<u64>) {
-        let (nch, n) = (rec.info().channel_count(), (samples.end - samples.start) as usize);
-        let all: Vec<usize> = (0..nch).collect();
-        let mut values = vec![0.0f32; nch * n];
-        rec.read(&all, samples.clone(), &mut values).unwrap();
-        let mut native = vec![0.0f32; nch * n];
-        let order = rec.read_native(samples, &mut native).unwrap();
-        if order == MemoryOrder::TimeMajor {
-            native = (0..nch).flat_map(|c| (0..n).map(move |t| (c, t))).map(|(c, t)| native[t * nch + c]).collect();
-        }
-        assert_eq!(native, values, "{} {order:?}", rec.info().name);
     }
 
     #[test]
     fn stored_reads_match_scaled_reads() {
         let dir = std::env::temp_dir().join(format!("dspk_io_stored_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let src = SyntheticRecording::new(SyntheticParams { channels: 5, duration_sec: 0.1, ..Default::default() }).unwrap();
+        let src = source(5);
         let channels = [4usize, 0, 2];
 
         for (name, format, order, gain) in [
@@ -146,7 +132,7 @@ pub(crate) mod tests {
             assert_stored_matches(&sliced, &[2, 0], 10..900);
         }
 
-        // Synthetic f32 µV with unit gain: the default implementation
+        // In-memory f32 µV with unit gain: the default implementation
         assert_stored_matches(&src, &channels, 0..500);
 
         #[cfg(feature = "zarr")]

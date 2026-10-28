@@ -7,7 +7,7 @@
 //! refractory ([`dspk_synapse::metrics::acg_refractory`]), else *mua* (Phy's `cluster_KSLabel`); it
 //! carries EMUsort's composite score, whose SNR follows [`AmplitudeScale`].
 
-use dspk_io::neuro::probe::SensorLayout;
+use dspk_synapse_io::probe::SensorLayout;
 use dspk_synapse::core::{SortedUnit, SortingOutput, WaveformTemplate};
 use dspk_synapse::metrics::{acg_refractory, composite_score, CompositeScoreOptions, RefractoryOptions};
 use dspk_synapse::{QualityCriteria, UnitQualityLabel};

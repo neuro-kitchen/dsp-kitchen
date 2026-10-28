@@ -4,12 +4,13 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+description = "Recording file formats for dspk: raw binary and Zarr traces, format detection, chunk caching"
 
 [features]
 default = ["zarr"]
 zarr = ["dep:zarrs"]
-# Neural-recording formats (NWB, SpikeGLX, mtscomp), probe geometry, synthetic recordings.
-neuro = []
+# Shared test assertions (`test_support`) for crates that implement more formats.
+test-support = []
 
 [dependencies]
 dspk-core.workspace = true

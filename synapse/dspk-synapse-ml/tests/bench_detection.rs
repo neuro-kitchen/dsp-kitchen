@@ -11,7 +11,7 @@ use std::time::Instant;
 use cubecl::device::{WgpuDevice, WgpuDeviceKind};
 use cubecl::Device;
 use dspk_ops::core::buffer;
-use dspk_io::neuro::probe::SensorLayout;
+use dspk_synapse_io::probe::SensorLayout;
 use dspk_synapse_ml::sorters::kilosort4::{CentreOptions, TemplateCentres, UniversalDetector, UniversalTemplates};
 
 /// Channels (two columns of a Neuropixels-like probe), their spacing, and the window length.

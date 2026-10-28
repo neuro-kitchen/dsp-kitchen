@@ -28,7 +28,7 @@ pub struct OpenArgs {
 pub fn run(args: &OpenArgs) -> anyhow::Result<()> {
     let (path, read_sec) = (args.path.as_path(), args.read_sec);
     let t = Instant::now();
-    let rec = dspk_io::open(path)?;
+    let rec = dspk_synapse_io::open(path)?;
     let open_ms = t.elapsed().as_secs_f64() * MS_PER_S;
     let info = rec.info();
 
@@ -41,9 +41,9 @@ pub fn run(args: &OpenArgs) -> anyhow::Result<()> {
     println!("Stored as:     {:?}, {:?} ({:.2} GB uncompressed)", info.format, info.order, info.data_bytes() as f64 / BYTES_PER_GB);
     let first: Vec<String> = info.channels.iter().take(LISTED_CHANNELS).map(|c| format!("{} ({:.4} {} per step)", c.name, c.gain, c.unit.symbol())).collect();
     println!("Channels:      {} ... {}", first.join(", "), info.channels.last().map_or("", |c| c.name.as_str()));
-    let source = dspk_io::sources(path)?;
+    let source = dspk_synapse_io::sources(path)?;
     let probe = match dspk_io::default_source(&source) {
-        Some(entry) => dspk_io::probe_of(path, &entry.id)?,
+        Some(entry) => dspk_synapse_io::probe_of(path, &entry.id)?,
         None => None,
     };
     if let Some(layout) = &probe {

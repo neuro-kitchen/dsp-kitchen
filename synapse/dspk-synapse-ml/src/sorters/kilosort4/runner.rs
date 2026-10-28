@@ -23,7 +23,7 @@ use dspk_ops::spatial::SpatialWhitening;
 use dspk_core::progress::Stages;
 use cubecl::server::Handle;
 use dspk_core::{ChunkSchedule, DspError, DspResult, HaloWindow, ProgressSink, RecordingSource, SampleFormat, WindowLoader};
-use dspk_io::neuro::probe::SensorLayout;
+use dspk_synapse_io::probe::SensorLayout;
 use dspk_synapse::core::{SortingOutput, WaveformTemplate};
 
 use crate::sorters::result::{AmplitudeScale, SorterResult};
@@ -707,7 +707,7 @@ mod tests {
         assert_eq!(duplicate_mask(&spikes, &labels, 10), vec![false, true, true, true, false]);
         assert_eq!(duplicate_mask(&spikes, &labels, 0), vec![true; 5]);
     }
-    use dspk_io::neuro::synthetic::{SyntheticParams, SyntheticRecording};
+    use dspk_synapse_io::synthetic::{SyntheticParams, SyntheticRecording};
 
     /// µV per stored step of the int16 test recording.
     const I16_GAIN: f32 = 0.25;

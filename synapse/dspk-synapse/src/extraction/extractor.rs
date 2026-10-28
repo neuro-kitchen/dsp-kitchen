@@ -1,5 +1,5 @@
 use dspk_core::RecordingSource;
-use dspk_io::neuro::probe::{find_k_nearest_neighbors, SensorLayout};
+use dspk_synapse_io::probe::{find_k_nearest_neighbors, SensorLayout};
 use crate::core::{DeduplicatedSpike, SnippetBatch, SpikeEvent, WaveformSnippet};
 use dspk_ops::math::parabolic_vertex_offset;
 use dspk_ops::resampler::fractional_delay;
@@ -248,7 +248,7 @@ mod tests {
     }
 
     use super::*;
-    use dspk_io::neuro::probe::tetrode;
+    use dspk_synapse_io::probe::tetrode;
 
     #[test]
     fn test_snippet_batch_extraction_and_indexing() {

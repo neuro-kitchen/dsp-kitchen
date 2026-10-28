@@ -1,14 +1,14 @@
 //! Phy / Kilosort folders ↔ [`SortingOutput`]. The folder itself (files, tables, `params.py`) is
-//! read and written by [`dspk_io::neuro::phy::PhyFolder`]; this module converts and fills what the
+//! read and written by [`dspk_synapse_io::phy::PhyFolder`]; this module converts and fills what the
 //! files may lack (template similarity).
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use dspk_core::{DspError, DspResult};
-use dspk_io::neuro::phy::{ClusterId, ClusterTables, PhyFolder, PhyParams};
-use dspk_io::neuro::probe::SensorLayout;
-use dspk_io::neuro::templates::{DenseTemplates, TemplateAxisOrder};
+use dspk_synapse_io::phy::{ClusterId, ClusterTables, PhyFolder, PhyParams};
+use dspk_synapse_io::probe::SensorLayout;
+use dspk_synapse_io::templates::{DenseTemplates, TemplateAxisOrder};
 
 use crate::core::{
     dense_waveform, pack_templates, unpack_template, RecordingMeta, SortedUnit, SortingOutput,
@@ -261,7 +261,7 @@ pub fn load_spikes(path: &Path) -> DspResult<PhyFolder> {
 mod tests {
     use super::*;
     use dspk_io::container::npy::write_npy;
-    use dspk_io::neuro::probe::{Position3D, SensorSite};
+    use dspk_synapse_io::probe::{Position3D, SensorSite};
     use std::path::PathBuf;
 
     fn scratch(name: &str) -> PathBuf {

@@ -226,7 +226,7 @@ impl Kilosort4 {
         &self,
         client: &cubecl::prelude::Client,
         source: &dyn dspk_core::RecordingSource,
-        probe: &dspk_io::neuro::probe::SensorLayout,
+        probe: &dspk_synapse_io::probe::SensorLayout,
     ) -> dspk_core::DspResult<Kilosort4Result> {
         self.run_with_progress(client, source, probe, &dspk_core::NoProgress)
     }
@@ -236,7 +236,7 @@ impl Kilosort4 {
         &self,
         client: &cubecl::prelude::Client,
         source: &dyn dspk_core::RecordingSource,
-        probe: &dspk_io::neuro::probe::SensorLayout,
+        probe: &dspk_synapse_io::probe::SensorLayout,
         progress: &dyn dspk_core::ProgressSink,
     ) -> dspk_core::DspResult<Kilosort4Result> {
         run_plan(client, source, probe, &RunPlan::kilosort4(&self.config), progress)

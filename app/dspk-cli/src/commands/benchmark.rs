@@ -24,8 +24,8 @@ use dspk_ops::spatial::execute_direct_car;
 use dspk_core::compute::bench::{sync, time_device};
 use dspk_core::compute::{ComputeTarget, ComputeTask};
 use dspk_core::{MemoryOrder, MemoryRecording, RecordingSource, SampleFormat};
-use dspk_io::neuro::probe::{precompute_knn_table, Position3D, SensorLayout, SensorSite};
-use dspk_io::{SyntheticParams, SyntheticRecording};
+use dspk_synapse_io::probe::{precompute_knn_table, Position3D, SensorLayout, SensorSite};
+use dspk_synapse_io::{SyntheticParams, SyntheticRecording};
 use dspk_synapse::sorting::matching_pursuit::{
     DEFAULT_MAX_AMPLITUDE_SCALE, DEFAULT_MAX_PASSES, DEFAULT_MIN_AMPLITUDE_SCALE, DEFAULT_MIN_EXPLAINED_ENERGY_UV2,
 };

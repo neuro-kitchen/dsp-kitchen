@@ -434,7 +434,7 @@ impl TemplateMatcher {
 mod tests {
     use super::*;
     use dspk_core::compute::ComputeTarget;
-    use dspk_io::neuro::probe::SensorLayout;
+    use dspk_synapse_io::probe::SensorLayout;
 
     /// A small probe, PCs (smooth bumps, orthonormalized) and two learned templates.
     fn setup(client: &Client) -> (TemplateCentres, UniversalTemplates, LearnedTemplates) {

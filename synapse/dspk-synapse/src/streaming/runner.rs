@@ -10,7 +10,7 @@ use dspk_core::compute::{ComputeTarget, ComputeTask};
 use dspk_ops::math::execute_channel_noise_std;
 use dspk_ops::pipeline::{Pipeline, PipelineWorkspace};
 use dspk_core::{ChunkSchedule, DspError, DspResult, HaloWindow, RecordingSource, SampleFormat, WindowLoader};
-use dspk_io::neuro::probe::{precompute_knn_table, SensorLayout};
+use dspk_synapse_io::probe::{precompute_knn_table, SensorLayout};
 
 use crate::core::{DeduplicatedSpike, SortedUnit, SortingOutput, WaveformTemplate};
 use crate::detection::{SpikeSpacing, StreamingDedup, detection_heights, execute_detect_spikes_in_vram};

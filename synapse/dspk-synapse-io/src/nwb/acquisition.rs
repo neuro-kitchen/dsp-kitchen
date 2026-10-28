@@ -15,8 +15,8 @@ use dspk_core::{DspError, DspResult, MemoryOrder, RationalTime, RecordingInfo, R
 use serde_json::Value;
 use zarrs::array::{Array, ArrayBytes};
 
-use crate::container::binary::codec::{native_to_le, scale_frames, select_stored};
-use crate::container::zarr::{read_all, read_node_json};
+use dspk_io::container::binary::codec::{native_to_le, scale_frames, select_stored};
+use dspk_io::container::zarr::{read_all, read_node_json};
 use zarrs::filesystem::FilesystemStore;
 use zarrs::storage::ReadableStorageTraits;
 
@@ -337,8 +337,8 @@ mod tests {
         let mut out = vec![0.0; 2 * 3];
         rec.read(&[2, 0], 1..4, &mut out).unwrap();
         assert_eq!(out, vec![12.0, 22.0, 32.0, 10.0, 20.0, 30.0]);
-        crate::core::tests::assert_stored_matches(rec.as_ref(), &[2, 0], 1..4);
-        crate::core::tests::assert_native_matches(rec.as_ref(), 1..4);
+        dspk_io::test_support::assert_stored_matches(rec.as_ref(), &[2, 0], 1..4);
+        dspk_io::test_support::assert_native_matches(rec.as_ref(), 1..4);
 
         let listed: Vec<(String, dspk_core::SignalUnit, f64, f64)> = crate::sources(&path)
             .unwrap()
@@ -397,7 +397,7 @@ mod tests {
             let mut out = vec![0.0; 2 * 3];
             rec.read(&[2, 0], 1..4, &mut out).unwrap();
             assert_eq!(out, vec![8.0, 18.0, 28.0, 10.0, 20.0, 30.0], "{name}");
-            crate::core::tests::assert_stored_matches(&rec, &[2, 0], 1..4);
+            dspk_io::test_support::assert_stored_matches(&rec, &[2, 0], 1..4);
         }
         std::fs::remove_dir_all(&path).unwrap();
     }

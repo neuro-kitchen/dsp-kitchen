@@ -1,7 +1,7 @@
 //! `probe`: a probe layout preset (dspk-io `neuro::probe`).
 
 use clap::{Args, ValueEnum};
-use dspk_io::neuro::probe::{self, SensorLayout};
+use dspk_synapse_io::probe::{self, SensorLayout};
 
 /// Default electrode pitch of the HD-EMG grid presets (µm).
 pub const DEFAULT_HDEMG_PITCH_UM: f32 = 8_000.0;

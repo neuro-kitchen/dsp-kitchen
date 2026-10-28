@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use clap::{Args, ValueEnum};
 use dspk_core::{MemoryOrder, RecordingSource, SampleFormat};
-use dspk_io::{SyntheticParams, SyntheticRecording};
+use dspk_synapse_io::{SyntheticParams, SyntheticRecording};
 
 /// Defaults: a Neuropixels-sized probe for one second at 30 kHz.
 const DEFAULT_CHANNELS: usize = 384;
@@ -153,7 +153,7 @@ pub fn run(a: &GenerateArgs) -> anyhow::Result<()> {
     println!("Written in {:.1} s", started.elapsed().as_secs_f64());
 
     // Reopen through format detection
-    let reopened = dspk_io::open(&path)?;
+    let reopened = dspk_synapse_io::open(&path)?;
     let i = reopened.info();
     println!("Reopened: {} channels × {} samples at {} Hz ({:?})", i.channel_count(), i.samples, i.sample_rate_hz(), i.format);
     Ok(())

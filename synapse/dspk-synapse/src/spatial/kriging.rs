@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use dspk_ops::linalg::cholesky_solve;
 use dspk_core::{DspError, DspResult};
-use dspk_io::neuro::probe::SensorLayout;
+use dspk_synapse_io::probe::SensorLayout;
 use crate::extraction::SnippetBatch;
 use super::drift::DriftEstimate;
 
@@ -393,7 +393,7 @@ mod tests {
     }
 
     fn linear_probe(n: usize, pitch: f32) -> SensorLayout {
-        use dspk_io::neuro::probe::{Position3D, SensorSite};
+        use dspk_synapse_io::probe::{Position3D, SensorSite};
         SensorLayout::new("line", (0..n).map(|c| SensorSite::new(c, Position3D::new(0.0, c as f32 * pitch, 0.0), 0)).collect())
     }
 

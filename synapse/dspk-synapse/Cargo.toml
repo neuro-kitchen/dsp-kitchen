@@ -14,7 +14,8 @@ hip = ["dspk-ops/hip"]
 [dependencies]
 dspk-core = { workspace = true, features = ["compute"] }
 dspk-ops.workspace = true
-dspk-io = { workspace = true, features = ["zarr", "neuro"] }
+dspk-io = { workspace = true, features = ["zarr"] }
+dspk-synapse-io.workspace = true
 cubecl = { workspace = true, features = ["wgpu"] }
 rayon.workspace = true
 serde.workspace = true

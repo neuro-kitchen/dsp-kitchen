@@ -9,7 +9,7 @@ mod tests {
     use super::*;
     use cubecl::device::WgpuDevice;
     use cubecl::CubeElement;
-    use dspk_io::neuro::probe::{precompute_knn_table, Position3D, SensorLayout, SensorSite};
+    use dspk_synapse_io::probe::{precompute_knn_table, Position3D, SensorLayout, SensorSite};
     use crate::detection::{
         SpikePolarity, SpikeSpacing, deduplicate_spikes_spatial, detect_spikes_with_sigma,
         detection_heights, execute_detect_spikes_in_vram,
