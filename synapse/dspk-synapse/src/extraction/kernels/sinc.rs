@@ -3,6 +3,7 @@
 //! (`dspk_ops::resampler::fractional_delay_taps_device`), one unit per output sample applies them.
 
 use cubecl::prelude::*;
+use dspk_core::compute::element_position;
 use dspk_ops::core::{buffer, DspFloat};
 use dspk_ops::resampler::fractional_delay_taps_device;
 use dspk_core::compute::LaunchGeometry;
@@ -24,7 +25,7 @@ pub fn trough_shift_kernel<F: Float>(
     num_samples: u32,
     num_spikes: u32,
 ) {
-    let i = ABSOLUTE_POS as u32;
+    let i = element_position() as u32;
     if i < num_spikes {
         let base = primary_channels[i as usize] * num_samples + center_samples[i as usize];
         let y_prev = trace[(base - 1u32) as usize];
@@ -59,7 +60,7 @@ pub fn extract_snippets_kernel<F: Float>(
     apply_shift: u32,
     #[comptime] radius: u32,
 ) {
-    let tid = ABSOLUTE_POS as u32;
+    let tid = element_position() as u32;
     let per_spike = k_neighbors * snippet_len;
     if tid < num_spikes * per_spike {
         let spike = tid / per_spike;

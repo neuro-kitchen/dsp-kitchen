@@ -1,8 +1,9 @@
 use cubecl::prelude::*;
+use dspk_core::compute::element_position;
 
 /// Scores every template start against the multi-channel residual for one matching-pursuit pass.
 ///
-/// One unit per start sample `s` (`ABSOLUTE_POS`). For each unit `u` it correlates the residual
+/// One unit per start sample `s` ([`fn@element_position`]). For each unit `u` it correlates the residual
 /// window `[s, s + t_len)` with the template's rows (`row_offsets[u]..row_offsets[u + 1]` into
 /// `row_channels` / `row_data`), fits the amplitude `a = dot / ‖W_u‖²` and, when `a` lies in
 /// `[min_scale, max_scale]`, the energy reduction `2·a·dot − a²·‖W_u‖²`. Writes the best unit,
@@ -24,7 +25,7 @@ pub fn mp_score_kernel(
     min_scale: f32,
     max_scale: f32,
 ) {
-    let s = ABSOLUTE_POS as u32;
+    let s = element_position() as u32;
     if s < num_starts {
         let mut gain_best = 0.0f32;
         let mut unit_best = 0u32;
@@ -63,7 +64,7 @@ pub fn mp_score_kernel(
 }
 
 /// Subtracts the picked, scaled templates from the residual. One unit per
-/// `(pick, row slot, sample)` (`ABSOLUTE_POS`, `max_rows` slots per pick; slots beyond a unit's
+/// `(pick, row slot, sample)` ([`fn@element_position`], `max_rows` slots per pick; slots beyond a unit's
 /// row count do nothing). Picks of one pass are at least `t_len` apart, so writes never overlap.
 #[cube(launch)]
 pub fn mp_subtract_kernel(
@@ -79,7 +80,7 @@ pub fn mp_subtract_kernel(
     max_rows: u32,
     t_len: u32,
 ) {
-    let id = ABSOLUTE_POS as u32;
+    let id = element_position() as u32;
     let per_pick = max_rows * t_len;
     if id < num_picks * per_pick {
         let p = id / per_pick;
@@ -109,7 +110,7 @@ pub fn mp_gather_picks_kernel(
     out_gain_next: &mut [f32],
     picks: u32,
 ) {
-    let i = ABSOLUTE_POS as u32;
+    let i = element_position() as u32;
     if i < picks {
         let s = starts[i as usize];
         out_units[i as usize] = best_unit[s as usize];

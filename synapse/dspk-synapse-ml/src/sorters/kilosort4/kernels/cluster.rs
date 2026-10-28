@@ -3,6 +3,7 @@
 //! merge-tree node a cluster is on: [`SIDE_NONE`], [`SIDE_NEG`] (`y = −1`) or [`SIDE_POS`] (`y = +1`).
 
 use cubecl::prelude::*;
+use dspk_core::compute::element_position;
 use dspk_ops::core::DspFloat;
 
 // Kernels compare against the literals 0 / 1 / 2 (see `weigh_node_kernel`)
@@ -15,7 +16,7 @@ pub const SIDE_POS: u32 = 2;
 /// (`x` zeroed: channels a spike does not cover stay 0). One unit per `(i, c, p)`.
 #[cube(launch)]
 pub fn embed_section_kernel<F: Float>(feat: &[F], slots: &[u32], x: &mut [F], n: u32, nc: u32, np: u32) {
-    let unit = ABSOLUTE_POS as u32;
+    let unit = element_position() as u32;
     if unit < n * nc * np {
         let i = unit / (nc * np);
         let rest = unit - i * nc * np;
@@ -44,7 +45,7 @@ pub fn weigh_node_kernel<F: DspFloat>(
     root_w_neg: F,
     root_w_pos: F,
 ) {
-    let i = ABSOLUTE_POS as u32;
+    let i = element_position() as u32;
     if i < n {
         let label = labels[i as usize];
         // From a literal: a mutable variable started from a constant is compile-time in CubeCL
@@ -90,7 +91,7 @@ pub fn projection_histogram_kernel<F: DspFloat>(
     lo: F,
     hi: F,
 ) {
-    let i = ABSOLUTE_POS as u32;
+    let i = element_position() as u32;
     if i < n {
         let label = labels[i as usize];
         if label < c {

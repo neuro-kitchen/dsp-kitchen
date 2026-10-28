@@ -3,13 +3,14 @@
 //! template products run `−(nt−1) ..= nt−1` (`L = 2·nt − 1`, index `lag + nt − 1`).
 
 use cubecl::prelude::*;
+use dspk_core::compute::element_position;
 use dspk_ops::core::DspFloat;
 
 /// Best template per sample by explained variance at its average norm, `V = 2·μ·c − μ²` (`c` the
 /// score): `vmax[t]`, `best[t]` (template) and `amp[t] = c`. One unit per sample.
 #[cube(launch)]
 pub fn best_template_kernel<F: Float>(s: &[F], mu: &[F], vmax: &mut [F], best: &mut [u32], amp: &mut [F], n: u32, samples: u32) {
-    let t = ABSOLUTE_POS as u32;
+    let t = element_position() as u32;
     if t < samples {
         let mut bv = F::min_value();
         let mut bj = 0u32;
@@ -37,7 +38,7 @@ pub fn best_template_kernel<F: Float>(s: &[F], mu: &[F], vmax: &mut [F], best: &
 #[cube(launch)]
 #[allow(clippy::too_many_arguments)]
 pub fn mark_peaks_kernel<F: DspFloat>(vmax: &[F], amp: &[F], peak: &mut [F], samples: u32, pool: u32, lo: u32, hi: u32, th: F) {
-    let t = ABSOLUTE_POS as u32;
+    let t = element_position() as u32;
     if t < samples {
         let v = vmax[t as usize];
         let mut keep = t >= lo && t < hi && amp[t as usize] >= th && v > F::new(0.0f32);
@@ -83,7 +84,7 @@ pub fn subtract_scores_kernel<F: Float>(
     pool: u32,
     class: u32,
 ) {
-    let unit = ABSOLUTE_POS as u32;
+    let unit = element_position() as u32;
     if unit < spikes * n * lags {
         let k = unit / (n * lags);
         let rest = unit - k * n * lags;
@@ -119,7 +120,7 @@ pub fn subtract_data_kernel<F: Float>(
     pool: u32,
     class: u32,
 ) {
-    let unit = ABSOLUTE_POS as u32;
+    let unit = element_position() as u32;
     if unit < spikes * channels * nt {
         let k = unit / (channels * nt);
         let rest = unit - k * channels * nt;
@@ -139,7 +140,7 @@ pub fn subtract_data_kernel<F: Float>(
 /// Spikes of a round: `out_best[k] = best[times[k]]`, `out_amp[k] = amp[times[k]]`. One unit per spike.
 #[cube(launch)]
 pub fn gather_spikes_kernel<F: Float>(times: &[u32], best: &[u32], amp: &[F], out_best: &mut [u32], out_amp: &mut [F], spikes: u32) {
-    let k = ABSOLUTE_POS as u32;
+    let k = element_position() as u32;
     if k < spikes {
         let t = times[k as usize];
         out_best[k as usize] = best[t as usize];
@@ -151,7 +152,7 @@ pub fn gather_spikes_kernel<F: Float>(times: &[u32], best: &[u32], amp: &[F], ou
 /// (`= Σ_τ ŵ_i[τ] · ŵ_j[τ + lag]` over all channels). One unit per `(i, j, l)`.
 #[cube(launch)]
 pub fn template_products_kernel<F: Float>(utu: &[F], wtw: &[F], ctc: &mut [F], n: u32, np: u32, lags: u32) {
-    let unit = ABSOLUTE_POS as u32;
+    let unit = element_position() as u32;
     if unit < n * n * lags {
         let i = unit / (n * lags);
         let rest = unit - i * n * lags;
@@ -175,7 +176,7 @@ pub fn template_products_kernel<F: Float>(utu: &[F], wtw: &[F], ctc: &mut [F], n
 /// `dst[i] = src[i]`. One unit per value.
 #[cube(launch)]
 pub fn copy_kernel<F: Float>(src: &[F], dst: &mut [F], n: u32) {
-    let i = ABSOLUTE_POS as u32;
+    let i = element_position() as u32;
     if i < n {
         dst[i as usize] = src[i as usize];
     }
@@ -201,7 +202,7 @@ pub fn gather_features_kernel<F: Float>(
     channels: u32,
     samples: u32,
 ) {
-    let unit = ABSOLUTE_POS as u32;
+    let unit = element_position() as u32;
     if unit < spikes * nc * np {
         let k = unit / (nc * np);
         let rest = unit - k * nc * np;

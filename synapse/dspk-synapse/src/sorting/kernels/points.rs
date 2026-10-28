@@ -3,6 +3,7 @@
 //! the dspk-ops row reductions (per-feature moments, second moment) apply unchanged.
 
 use cubecl::prelude::*;
+use dspk_core::compute::element_position;
 
 /// `‖x_a − x_b‖²` of points `a` and `b` of a feature-major `[d, n]` buffer.
 #[cube]
@@ -65,7 +66,7 @@ pub fn nearest_centre_kernel<F: Float>(
     d: u32,
     k: u32,
 ) {
-    let i = ABSOLUTE_POS as u32;
+    let i = element_position() as u32;
     if i < n {
         let mut best = F::max_value();
         let mut best_c = 0u32;
@@ -105,7 +106,7 @@ pub fn cluster_sums_kernel<F: Float>(
     split_len: u32,
     splits: u32,
 ) {
-    let unit = ABSOLUTE_POS as u32;
+    let unit = element_position() as u32;
     if unit < splits * k * d {
         let s = unit / (k * d);
         let rest = unit - s * k * d;
@@ -139,7 +140,7 @@ pub fn closest_update_kernel<F: Float>(
     n: u32,
     d: u32,
 ) {
-    let i = ABSOLUTE_POS as u32;
+    let i = element_position() as u32;
     if i < n {
         updated[i as usize] = F::min(closest[i as usize], point_sq_dist::<F>(x, i, candidate, n, d));
     }
@@ -148,7 +149,7 @@ pub fn closest_update_kernel<F: Float>(
 /// `sums[b] = Σ values[b · block .. min((b + 1) · block, n)]`. One unit per block.
 #[cube(launch)]
 pub fn block_sums_kernel<F: Float>(values: &[F], sums: &mut [F], n: u32, block: u32, blocks: u32) {
-    let b = ABSOLUTE_POS as u32;
+    let b = element_position() as u32;
     if b < blocks {
         let end = u32::min((b + 1u32) * block, n);
         let mut acc = F::new(0.0f32);
@@ -165,7 +166,7 @@ pub fn block_sums_kernel<F: Float>(values: &[F], sums: &mut [F], n: u32, block: 
 /// feature-major `[d, m]` buffer. One unit per `(f, j)`.
 #[cube(launch)]
 pub fn gather_points_kernel<F: Float>(x: &[F], index: &[u32], out: &mut [F], n: u32, m: u32, d: u32) {
-    let unit = ABSOLUTE_POS as u32;
+    let unit = element_position() as u32;
     if unit < m * d {
         let f = unit / m;
         let j = unit - f * m;

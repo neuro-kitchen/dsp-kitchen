@@ -1,4 +1,5 @@
 use cubecl::prelude::*;
+use dspk_core::compute::element_position;
 
 /// `neighbour_slot` of a channel outside the radius.
 pub const NO_SLOT: u32 = u32::MAX;
@@ -42,7 +43,7 @@ pub fn spatial_dedup_survival_kernel(
     window_samples: u32,
 ) {
     // Flattened position: the elementwise geometry may shape the cube in two dimensions
-    let i = ABSOLUTE_POS as u32;
+    let i = element_position() as u32;
     if i < num_spikes {
         let t_i = sample_indices[i as usize];
         let ch_i = channel_ids[i as usize];

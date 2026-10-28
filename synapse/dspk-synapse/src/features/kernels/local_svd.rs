@@ -1,6 +1,7 @@
 //! Kernels of [`crate::features::local_svd`].
 
 use cubecl::prelude::*;
+use dspk_core::compute::element_position;
 
 /// Padding of a neighbourhood row: no channel.
 pub const NO_CHANNEL: u32 = u32::MAX;
@@ -32,7 +33,7 @@ pub fn gather_fit_waveforms_kernel<F: Float>(
     n_before: u32,
     width: u32,
 ) {
-    let i = ABSOLUTE_POS as u32;
+    let i = element_position() as u32;
     if i < n_peaks {
         let ch = peak_channels[i as usize];
         let t0 = peak_samples[i as usize] as i32 - n_before as i32;
@@ -87,7 +88,7 @@ pub fn project_local_kernel<F: Float>(
     n_components: u32,
     max_neighbours: u32,
 ) {
-    let q = ABSOLUTE_POS as u32;
+    let q = element_position() as u32;
     if q < n_peaks * n_components * max_neighbours {
         let w = q % max_neighbours;
         let c = (q / max_neighbours) % n_components;

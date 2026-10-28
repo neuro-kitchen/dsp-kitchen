@@ -1,6 +1,7 @@
 //! Kernels of [`crate::sorters::mountainsort5::detect`].
 
 use cubecl::prelude::*;
+use dspk_core::compute::element_position;
 
 /// Padding of a neighbourhood row (as [`dspk_synapse::features::ChannelNeighbourhoods`]).
 pub const NO_CHANNEL: u32 = u32::MAX;
@@ -40,7 +41,7 @@ pub fn locally_exclusive_kernel<F: Float>(
     hi: u32,
     mode: u32,
 ) {
-    let i = ABSOLUTE_POS as u32;
+    let i = element_position() as u32;
     if i < n_cand {
         let t = cand_samples[i as usize];
         let ch = cand_channels[i as usize];

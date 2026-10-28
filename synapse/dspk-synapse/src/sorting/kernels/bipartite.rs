@@ -5,6 +5,7 @@
 //! Counters are global `Atomic<u32>` reached by reference (`Atomic::fetch_add(&c[i], 1)`).
 
 use cubecl::prelude::*;
+use dspk_core::compute::element_position;
 use dspk_ops::core::DspFloat;
 
 /// Label of a node outside every cluster (a right node no left node of a kept cluster reaches).
@@ -13,7 +14,7 @@ pub const NO_LABEL: u32 = u32::MAX;
 /// `out[i] = Σ_f x[f, i]²`. One unit per point.
 #[cube(launch)]
 pub fn sq_norms_kernel<F: Float>(x: &[F], out: &mut [F], n: u32, d: u32) {
-    let i = ABSOLUTE_POS as u32;
+    let i = element_position() as u32;
     if i < n {
         let mut acc = F::new(0.0f32);
         let mut f = 0u32;
@@ -43,7 +44,7 @@ pub fn select_neighbours_kernel<F: Float>(
     m: u32,
     #[comptime] k: u32,
 ) {
-    let r = ABSOLUTE_POS as u32;
+    let r = element_position() as u32;
     if r < rows {
         let row = row0 + r;
         let last = comptime!(k - 1);
@@ -88,7 +89,7 @@ pub fn select_neighbours_kernel<F: Float>(
 /// `counts[v] += 1` for every value `v = values[i] < bins` (`counts` zeroed by the caller).
 #[cube(launch)]
 pub fn count_values_kernel(values: &[u32], counts: &mut [Atomic<u32>], n: u32, bins: u32) {
-    let i = ABSOLUTE_POS as u32;
+    let i = element_position() as u32;
     if i < n {
         let v = values[i as usize];
         if v < bins {
@@ -101,7 +102,7 @@ pub fn count_values_kernel(values: &[u32], counts: &mut [Atomic<u32>], n: u32, b
 /// right node's left neighbours sit in each cluster. One unit per edge.
 #[cube(launch)]
 pub fn right_counts_kernel(nb: &[u32], left: &[u32], counts: &mut [Atomic<u32>], edges: u32, k: u32, c: u32) {
-    let e = ABSOLUTE_POS as u32;
+    let e = element_position() as u32;
     if e < edges {
         let t = e / k;
         let label = left[t as usize];
@@ -125,7 +126,7 @@ pub fn right_assign_kernel<F: DspFloat>(
     c: u32,
     penalty: F,
 ) {
-    let r = ABSOLUTE_POS as u32;
+    let r = element_position() as u32;
     if r < m {
         let deg = F::cast_from(degree[r as usize]);
         let mut best = F::min_value();
@@ -151,7 +152,7 @@ pub fn right_assign_kernel<F: DspFloat>(
 /// `sums[right[r]] += degree[r]` for every labelled right node (`sums` zeroed).
 #[cube(launch)]
 pub fn degree_sums_kernel(labels: &[u32], degree: &[u32], sums: &mut [Atomic<u32>], m: u32, c: u32) {
-    let r = ABSOLUTE_POS as u32;
+    let r = element_position() as u32;
     if r < m {
         let label = labels[r as usize];
         if label < c {
@@ -176,7 +177,7 @@ pub fn left_assign_kernel<F: DspFloat>(
     penalty: F,
     #[comptime] k: u32,
 ) {
-    let t = ABSOLUTE_POS as u32;
+    let t = element_position() as u32;
     if t < n {
         let mut labels = Array::<u32>::new(comptime!(k as usize));
         #[unroll]
@@ -216,7 +217,7 @@ pub fn left_assign_kernel<F: DspFloat>(
 /// `labels[i] = map[labels[i]]` (labels past the map become [`NO_LABEL`]).
 #[cube(launch)]
 pub fn relabel_kernel(labels: &mut [u32], map: &[u32], n: u32, c: u32) {
-    let i = ABSOLUTE_POS as u32;
+    let i = element_position() as u32;
     if i < n {
         let label = labels[i as usize];
         if label < c {
@@ -231,7 +232,7 @@ pub fn relabel_kernel(labels: &mut [u32], map: &[u32], n: u32, c: u32) {
 /// (`[c, c]`, zeroed). One unit per edge.
 #[cube(launch)]
 pub fn cluster_edges_kernel(nb: &[u32], left: &[u32], right: &[u32], edges: &mut [Atomic<u32>], n_edges: u32, k: u32, c: u32) {
-    let e = ABSOLUTE_POS as u32;
+    let e = element_position() as u32;
     if e < n_edges {
         let a = left[(e / k) as usize];
         let b = right[nb[e as usize] as usize];
@@ -257,7 +258,7 @@ pub fn trial_potentials_kernel<F: Float>(
     block: u32,
     blocks: u32,
 ) {
-    let unit = ABSOLUTE_POS as u32;
+    let unit = element_position() as u32;
     if unit < trials * blocks {
         let t = unit / blocks;
         let b = unit - t * blocks;
@@ -296,7 +297,7 @@ pub fn draw_candidates_kernel<F: Float>(
     trials: u32,
     s: u32,
 ) {
-    let t = ABSOLUTE_POS as u32;
+    let t = element_position() as u32;
     if t < trials {
         let mut total = F::new(0.0f32);
         let mut b = 0u32;
@@ -346,7 +347,7 @@ pub fn draw_candidates_kernel<F: Float>(
 /// `chosen[0]` receive its point. One unit.
 #[cube(launch)]
 pub fn pick_seed_kernel<F: Float>(partial: &[F], cand: &[u32], seeds: &mut [u32], chosen: &mut [u32], trials: u32, blocks: u32, s: u32) {
-    if ABSOLUTE_POS == 0 {
+    if element_position() == 0 {
         let mut best = F::max_value();
         let mut best_t = 0u32;
         let mut t = 0u32;
@@ -371,7 +372,7 @@ pub fn pick_seed_kernel<F: Float>(partial: &[F], cand: &[u32], seeds: &mut [u32]
 /// `closest[i] = min(closest[i], ‖x_i − x_{chosen[0]}‖²)`, in place. One unit per point.
 #[cube(launch)]
 pub fn closest_update_chosen_kernel<F: Float>(x: &[F], closest: &mut [F], chosen: &[u32], n: u32, d: u32) {
-    let i = ABSOLUTE_POS as u32;
+    let i = element_position() as u32;
     if i < n {
         let c = chosen[0];
         let mut dist = F::new(0.0f32);

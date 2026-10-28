@@ -6,6 +6,7 @@
 //! features (`[n_train, n_comp]`) at `feat_off[c]`.
 
 use cubecl::prelude::*;
+use dspk_core::compute::element_position;
 
 /// One unit per `(event e, component k)` with `k < max_comp`: the projection of event `e`'s masked
 /// snippet (`snippets`, `[events, width, max_neighbours]`) on component `k` of its channel's
@@ -27,7 +28,7 @@ pub fn project_classifier_kernel<F: Float>(
     max_neighbours: u32,
     max_comp: u32,
 ) {
-    let e2 = ABSOLUTE_POS as u32;
+    let e2 = element_position() as u32;
     if e2 < total {
         let k = e2 % max_comp;
         let e = e2 / max_comp;
@@ -70,7 +71,7 @@ pub fn second_nearest_kernel<F: Float>(
     n_events: u32,
     max_comp: u32,
 ) {
-    let e = ABSOLUTE_POS as u32;
+    let e = element_position() as u32;
     if e < n_events {
         let ch = ev_channels[e as usize];
         let nc = n_comp[ch as usize];
