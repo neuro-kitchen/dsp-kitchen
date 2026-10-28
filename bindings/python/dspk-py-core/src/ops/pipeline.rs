@@ -5,8 +5,10 @@
 //! Native functions take every argument; the Python wrappers (`dspk.ops.stage`) hold the defaults,
 //! taken from the constants `dspk.ops.filter` exports.
 
+use crate::ops::device::DeviceInput;
 use std::sync::Mutex;
 
+use dspk_ops::core::buffer;
 use dspk_ops::filter::non_linear::MAX_MEDIAN_WIDTH;
 use dspk_ops::filter::{FilterDesign, FilterMode, FilterSpec};
 use dspk_ops::pipeline::PipelineWorkspace;
@@ -202,10 +204,10 @@ impl Pipeline {
         self.stages.len()
     }
 
-    /// Runs every stage over `data` `(channels, samples)` on the device; returns the result.
-    fn process<'py>(&self, py: Python<'py>, data: PyReadonlyArray2<'_, f32>) -> PyResult<Bound<'py, PyArray2<f32>>> {
-        let (channels, samples) = data.as_array().dim();
-        let values: Vec<f32> = data.as_array().iter().copied().collect();
+    /// Runs every stage over `data` `(channels, samples)` on the device; returns the result
+    /// (float32). Integer arrays cross as their integers and are converted on the device.
+    fn process<'py>(&self, py: Python<'py>, data: DeviceInput) -> PyResult<Bound<'py, PyArray2<f32>>> {
+        let (channels, samples) = data.dim();
         let out = py.detach(|| -> Result<Vec<f32>, String> {
             let mut slot = self.workspace.lock().map_err(|_| "pipeline lock poisoned".to_string())?;
             if let Some((ch, _)) = slot.as_ref() {
@@ -235,9 +237,15 @@ impl Pipeline {
                 *slot = Some((channels, workspace));
             }
             let (_, workspace) = slot.as_mut().expect("created above");
-            let mut out = vec![0.0f32; values.len()];
-            workspace.process_chunk(&values, samples, &mut out);
-            Ok(out)
+            // Integer arrays cross as their stored integers and are converted on the device
+            let handle = match data.stored() {
+                Some((format, bytes)) => {
+                    workspace.set_stored_scaling(&vec![1.0; channels], &vec![0.0; channels]);
+                    workspace.process_stored_chunk_in_vram(bytes, format, samples).map_err(|e| e.to_string())?
+                }
+                None => workspace.process_chunk_in_vram(&data.host_f32(), samples),
+            };
+            Ok(buffer::download_prefix::<f32>(workspace.client(), handle, data.len()))
         });
         let out = out.map_err(|e| if e.starts_with("this pipeline") { PyValueError::new_err(e) } else { PyRuntimeError::new_err(e) })?;
         Ok(Array2::from_shape_vec((channels, samples), out).expect("one value per input value").into_pyarray(py))

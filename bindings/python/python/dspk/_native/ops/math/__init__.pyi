@@ -13,9 +13,9 @@ __all__ = [
 ]
 
 MAD_TO_SIGMA: builtins.float
-def channel_mean_std(data: numpy.typing.NDArray[numpy.float32], *, runtime: typing.Optional[builtins.str]) -> tuple[numpy.typing.NDArray[numpy.float32], numpy.typing.NDArray[numpy.float32]]: ...
+def channel_mean_std(data: numpy.typing.NDArray[typing.Any], *, runtime: typing.Optional[builtins.str]) -> tuple[numpy.typing.NDArray[numpy.float32], numpy.typing.NDArray[numpy.float32]]: ...
 
-def channel_noise_std(data: numpy.typing.NDArray[numpy.float32], *, runtime: typing.Optional[builtins.str]) -> numpy.typing.NDArray[numpy.float64]:
+def channel_noise_std(data: numpy.typing.NDArray[typing.Any], *, runtime: typing.Optional[builtins.str]) -> numpy.typing.NDArray[numpy.float64]:
     r"""
     Robust noise level per channel: `median(|x|) / MAD_TO_SIGMA` (the median is the element at
     index `samples // 2` of the sorted magnitudes).

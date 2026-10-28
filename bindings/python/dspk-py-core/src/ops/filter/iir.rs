@@ -5,6 +5,7 @@
 //! state of its first sample. `mode="forward"` is causal, like `sosfilt`, started at rest (`zi`
 //! absent) or, with `start="steady_state"`, from `sosfilt_zi · x[0]`.
 
+use crate::ops::device::DeviceInput;
 use dspk_ops::filter::design::{DEFAULT_BUTTERWORTH_ORDER, DEFAULT_SETTLING_TOLERANCE};
 use dspk_ops::filter::{execute_filter, FilterDesign, FilterMode, FilterSpec, FilterStart, Sos};
 use numpy::ndarray::Array2;
@@ -27,7 +28,7 @@ fn sos_to_numpy<'py>(py: Python<'py>, sos: &Sos) -> Bound<'py, PyArray2<f64>> {
 
 
 /// Filters `data` `(channels, samples)` with `spec` on `runtime` (see `dspk.runtime`).
-fn run<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, spec: FilterSpec, sample_rate: f64, runtime: Option<&str>) -> PyResult<Bound<'py, PyArray2<f32>>> {
+fn run<'py>(py: Python<'py>, data: DeviceInput, spec: FilterSpec, sample_rate: f64, runtime: Option<&str>) -> PyResult<Bound<'py, PyArray2<f32>>> {
     spec.design(sample_rate).map_err(filter_err)?;
     device::run(py, data, runtime, move |client, input, output, channels, samples| {
         execute_filter::<f32>(client, &spec, sample_rate, input, output, channels, samples).map_err(|e| e.to_string())
@@ -53,7 +54,7 @@ pub fn sos<'py>(py: Python<'py>, band: &str, cutoff: Vec<f64>, sample_rate: f64,
 #[allow(clippy::too_many_arguments)]
 pub fn iir<'py>(
     py: Python<'py>,
-    data: PyReadonlyArray2<'_, f32>,
+    data: DeviceInput,
     sample_rate: f64,
     band: &str,
     cutoff: Vec<f64>,
@@ -74,7 +75,7 @@ pub fn iir<'py>(
 #[pyfunction]
 #[pyo3(signature = (data, sample_rate, freq, q, *, mode="forward_backward", start="rest", runtime=None))]
 #[allow(clippy::too_many_arguments)]
-pub fn notch<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, sample_rate: f64, freq: f64, q: f64, mode: &str, start: &str, runtime: Option<&str>) -> PyResult<Bound<'py, PyArray2<f32>>> {
+pub fn notch<'py>(py: Python<'py>, data: DeviceInput, sample_rate: f64, freq: f64, q: f64, mode: &str, start: &str, runtime: Option<&str>) -> PyResult<Bound<'py, PyArray2<f32>>> {
     let spec = FilterSpec { design: FilterDesign::Notch { freq_hz: freq, q }, mode: self::mode(mode)?, start: self::start(start)? };
     run(py, data, spec, sample_rate, runtime)
 }
@@ -83,7 +84,7 @@ pub fn notch<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, sample_rate:
 #[gen_stub_pyfunction(module = "dspk._native.ops.filter")]
 #[pyfunction]
 #[pyo3(signature = (data, sos, *, mode="forward_backward", start="rest", runtime=None))]
-pub fn sosfilt<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, sos: PyReadonlyArray2<'_, f64>, mode: &str, start: &str, runtime: Option<&str>) -> PyResult<Bound<'py, PyArray2<f32>>> {
+pub fn sosfilt<'py>(py: Python<'py>, data: DeviceInput, sos: PyReadonlyArray2<'_, f64>, mode: &str, start: &str, runtime: Option<&str>) -> PyResult<Bound<'py, PyArray2<f32>>> {
     let spec = FilterSpec { design: FilterDesign::Sos(sos_from_numpy(sos)?), mode: self::mode(mode)?, start: self::start(start)? };
     // Explicit sections are already designed for their sample rate; any positive rate passes
     run(py, data, spec, 1.0, runtime)

@@ -3,9 +3,10 @@
 //! The scipy-style filters of `find_peaks` (distance, prominence, width) run on the host in
 //! dspk-ops and are bound once they run on the device.
 
+use crate::ops::device::DeviceInput;
 use dspk_ops::core::buffer;
 use dspk_ops::peaks::{find_peak_candidates, Polarity};
-use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1, PyReadonlyArray2};
+use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3_stub_gen::derive::gen_stub_pyfunction;
@@ -22,14 +23,14 @@ type Table<'py> = (Bound<'py, PyArray1<u32>>, Bound<'py, PyArray1<u32>>, Bound<'
 #[gen_stub_pyfunction(module = "dspk._native.ops.peaks")]
 #[pyfunction]
 #[pyo3(signature = (data, heights, *, polarity, runtime))]
-pub fn candidates<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, heights: PyReadonlyArray1<'_, f32>, polarity: &str, runtime: Option<&str>) -> PyResult<Table<'py>> {
+pub fn candidates<'py>(py: Python<'py>, data: DeviceInput, heights: PyReadonlyArray1<'_, f32>, polarity: &str, runtime: Option<&str>) -> PyResult<Table<'py>> {
     let polarity = match polarity {
         "positive" => Polarity::Positive,
         "negative" => Polarity::Negative,
         "both" => Polarity::Both,
         other => return Err(PyValueError::new_err(format!("unknown polarity {other:?} (positive, negative, both)"))),
     };
-    let channels = data.as_array().dim().0;
+    let channels = data.dim().0;
     let heights: Vec<f32> = heights.as_array().iter().copied().collect();
     if heights.len() != channels {
         return Err(PyValueError::new_err(format!("heights has {} values, data has {channels} channels", heights.len())));

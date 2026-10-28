@@ -1,10 +1,11 @@
 //! FIR filters and Gaussian smoothing on the device (`dspk_ops::filter::fir`), and `firwin` design.
 
+use crate::ops::device::DeviceInput;
 use dspk_ops::core::buffer;
 use dspk_ops::filter::fir::gaussian::GAUSSIAN_TRUNCATE;
 use dspk_ops::filter::{execute_fir, execute_fir_centered, execute_gaussian_smooth, FIR_DEFAULT_EDGE, GAUSSIAN_DEFAULT_EDGE};
 use dspk_ops::resampler::{firwin as design_firwin, FirWindow};
-use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
+use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3_stub_gen::derive::gen_stub_pyfunction;
@@ -49,7 +50,7 @@ pub fn firwin<'py>(py: Python<'py>, num_taps: usize, cutoff: f64, sample_rate: O
 #[gen_stub_pyfunction(module = "dspk._native.ops.filter")]
 #[pyfunction]
 #[pyo3(signature = (data, taps, *, centered, edge, runtime))]
-pub fn fir<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, taps: PyReadonlyArray1<'_, f32>, centered: bool, edge: &str, runtime: Option<&str>) -> PyResult<Bound<'py, PyArray2<f32>>> {
+pub fn fir<'py>(py: Python<'py>, data: DeviceInput, taps: PyReadonlyArray1<'_, f32>, centered: bool, edge: &str, runtime: Option<&str>) -> PyResult<Bound<'py, PyArray2<f32>>> {
     let taps: Vec<f32> = taps.as_array().iter().copied().collect();
     if taps.is_empty() {
         return Err(PyValueError::new_err("taps is empty"));
@@ -74,7 +75,7 @@ pub fn fir<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, taps: PyReadon
 #[gen_stub_pyfunction(module = "dspk._native.ops.filter")]
 #[pyfunction]
 #[pyo3(signature = (data, sigma_samples, *, edge, runtime))]
-pub fn gaussian_smooth<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, sigma_samples: f32, edge: &str, runtime: Option<&str>) -> PyResult<Bound<'py, PyArray2<f32>>> {
+pub fn gaussian_smooth<'py>(py: Python<'py>, data: DeviceInput, sigma_samples: f32, edge: &str, runtime: Option<&str>) -> PyResult<Bound<'py, PyArray2<f32>>> {
     if !(sigma_samples > 0.0) {
         return Err(PyValueError::new_err(format!("sigma_samples must be positive, got {sigma_samples}")));
     }

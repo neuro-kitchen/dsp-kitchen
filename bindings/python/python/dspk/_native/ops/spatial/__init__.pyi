@@ -32,7 +32,7 @@ class Laplacian:
         r"""
         Distance-weighted Hjorth Laplacian over each channel's `k` nearest (`positions` `(channels, 2)`).
         """
-    def apply(self, data: numpy.typing.NDArray[numpy.float32], *, runtime: typing.Optional[builtins.str]) -> numpy.typing.NDArray[numpy.float32]:
+    def apply(self, data: numpy.typing.NDArray[typing.Any], *, runtime: typing.Optional[builtins.str]) -> numpy.typing.NDArray[numpy.float32]:
         r"""
         `matrix @ data` on the device.
         """
@@ -46,12 +46,12 @@ class Whitening:
     @property
     def matrix(self) -> numpy.typing.NDArray[numpy.float32]: ...
     @staticmethod
-    def fit_zca(data: numpy.typing.NDArray[numpy.float32], *, epsilon: builtins.float, runtime: typing.Optional[builtins.str]) -> Whitening:
+    def fit_zca(data: numpy.typing.NDArray[typing.Any], *, epsilon: builtins.float, runtime: typing.Optional[builtins.str]) -> Whitening:
         r"""
         Global ZCA `U (Λ + ε)^-1/2 Uᵀ` of `data` `(channels, samples)`.
         """
     @staticmethod
-    def fit_local_knn(data: numpy.typing.NDArray[numpy.float32], positions: numpy.typing.NDArray[numpy.float32], k: builtins.int, *, epsilon: builtins.float, runtime: typing.Optional[builtins.str]) -> Whitening:
+    def fit_local_knn(data: numpy.typing.NDArray[typing.Any], positions: numpy.typing.NDArray[numpy.float32], k: builtins.int, *, epsilon: builtins.float, runtime: typing.Optional[builtins.str]) -> Whitening:
         r"""
         Local ZCA: each channel whitened over its `k` nearest channels (`positions` `(channels, 2)`),
         as Kilosort4.
@@ -61,17 +61,17 @@ class Whitening:
         r"""
         A whitening from an explicit `(channels, channels)` matrix.
         """
-    def apply(self, data: numpy.typing.NDArray[numpy.float32], *, runtime: typing.Optional[builtins.str]) -> numpy.typing.NDArray[numpy.float32]:
+    def apply(self, data: numpy.typing.NDArray[typing.Any], *, runtime: typing.Optional[builtins.str]) -> numpy.typing.NDArray[numpy.float32]:
         r"""
         `matrix @ data` on the device.
         """
 
-def car(data: numpy.typing.NDArray[numpy.float32], *, runtime: typing.Optional[builtins.str]) -> numpy.typing.NDArray[numpy.float32]:
+def car(data: numpy.typing.NDArray[typing.Any], *, runtime: typing.Optional[builtins.str]) -> numpy.typing.NDArray[numpy.float32]:
     r"""
     Common average reference: the mean over channels subtracted at every sample.
     """
 
-def cmr(data: numpy.typing.NDArray[numpy.float32], *, runtime: typing.Optional[builtins.str]) -> numpy.typing.NDArray[numpy.float32]:
+def cmr(data: numpy.typing.NDArray[typing.Any], *, runtime: typing.Optional[builtins.str]) -> numpy.typing.NDArray[numpy.float32]:
     r"""
     Common median reference: the median over channels subtracted at every sample.
     """

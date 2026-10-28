@@ -27,11 +27,11 @@ class Pca:
     @property
     def explained_variance_ratio(self) -> numpy.typing.NDArray[numpy.float32]: ...
     @staticmethod
-    def fit(data: numpy.typing.NDArray[numpy.float32], n_components: builtins.int, *, runtime: typing.Optional[builtins.str]) -> Pca:
+    def fit(data: numpy.typing.NDArray[typing.Any], n_components: builtins.int, *, runtime: typing.Optional[builtins.str]) -> Pca:
         r"""
         Fits `n_components` components on `data` `(channels, samples)`.
         """
-    def transform(self, data: numpy.typing.NDArray[numpy.float32], *, runtime: typing.Optional[builtins.str]) -> numpy.typing.NDArray[numpy.float32]:
+    def transform(self, data: numpy.typing.NDArray[typing.Any], *, runtime: typing.Optional[builtins.str]) -> numpy.typing.NDArray[numpy.float32]:
         r"""
         Projects `data` `(channels, samples)` onto the components: `(n_components, samples)`.
         """
@@ -55,11 +55,11 @@ class Ppca:
         Isotropic noise variance σ².
         """
     @staticmethod
-    def fit(data: numpy.typing.NDArray[numpy.float32], n_components: builtins.int, *, runtime: typing.Optional[builtins.str]) -> Ppca:
+    def fit(data: numpy.typing.NDArray[typing.Any], n_components: builtins.int, *, runtime: typing.Optional[builtins.str]) -> Ppca:
         r"""
         Fits `n_components` latent dimensions on `data` `(channels, samples)`.
         """
-    def transform(self, data: numpy.typing.NDArray[numpy.float32], *, runtime: typing.Optional[builtins.str]) -> numpy.typing.NDArray[numpy.float32]:
+    def transform(self, data: numpy.typing.NDArray[typing.Any], *, runtime: typing.Optional[builtins.str]) -> numpy.typing.NDArray[numpy.float32]:
         r"""
         Posterior mean `E[z | x]` of `data` `(channels, samples)`: `(n_components, samples)`.
         """

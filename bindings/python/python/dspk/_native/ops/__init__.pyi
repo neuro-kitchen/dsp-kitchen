@@ -62,9 +62,10 @@ class Pipeline:
         """
     def __new__(cls, stages: typing.Sequence[Stage], sample_rate: builtins.float, *, stream: builtins.bool, runtime: typing.Optional[builtins.str]) -> Pipeline: ...
     def __len__(self) -> builtins.int: ...
-    def process(self, data: numpy.typing.NDArray[numpy.float32]) -> numpy.typing.NDArray[numpy.float32]:
+    def process(self, data: numpy.typing.NDArray[typing.Any]) -> numpy.typing.NDArray[numpy.float32]:
         r"""
-        Runs every stage over `data` `(channels, samples)` on the device; returns the result.
+        Runs every stage over `data` `(channels, samples)` on the device; returns the result
+        (float32). Integer arrays cross as their integers and are converted on the device.
         """
     def reset(self) -> None:
         r"""

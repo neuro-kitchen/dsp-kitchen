@@ -1,11 +1,12 @@
 //! `dspk.ops.resample`: sample-rate changes on the device (`dspk_ops::resampler`), with
 //! `scipy.signal.decimate` / `resample_poly` semantics.
 
+use crate::ops::device::DeviceInput;
 use dspk_ops::filter::FilterError;
 use dspk_ops::resampler::decimate::{DECIMATE_DEFAULT, DECIMATE_FIR_TAPS_PER_FACTOR, DECIMATE_IIR_CUTOFF};
 use dspk_ops::resampler::poly::{RESAMPLE_POLY_DEFAULT_EDGE, RESAMPLE_POLY_HALF_LEN_PER_RATE, RESAMPLE_POLY_WINDOW};
 use dspk_ops::resampler::{decimate as dev_decimate, decimate_len, resample_poly as dev_resample_poly, resample_poly_len, DecimateFilter, FirWindow, ResampleFilter};
-use numpy::{PyArray2, PyReadonlyArray2};
+use numpy::{PyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3_stub_gen::derive::gen_stub_pyfunction;
@@ -26,7 +27,7 @@ use super::filter::{edge, edge_name};
 #[allow(clippy::too_many_arguments)]
 pub fn decimate<'py>(
     py: Python<'py>,
-    data: PyReadonlyArray2<'_, f32>,
+    data: DeviceInput,
     q: usize,
     ftype: &str,
     order: usize,
@@ -42,7 +43,7 @@ pub fn decimate<'py>(
         "fir" => DecimateFilter::Fir { taps_per_factor },
         other => return Err(PyValueError::new_err(format!("unknown ftype {other:?} (iir, fir)"))),
     };
-    let out_samples = decimate_len(data.as_array().dim().1, q);
+    let out_samples = decimate_len(data.dim().1, q);
     device::run_resized(py, data, runtime, out_samples, move |client, input, output, channels, samples| {
         dev_decimate::<f32>(client, input, output, channels, samples, q, filter).map(|_| ()).map_err(|e: FilterError| e.to_string())
     })
@@ -57,7 +58,7 @@ pub fn decimate<'py>(
 #[allow(clippy::too_many_arguments)]
 pub fn resample_poly<'py>(
     py: Python<'py>,
-    data: PyReadonlyArray2<'_, f32>,
+    data: DeviceInput,
     up: usize,
     down: usize,
     beta: f64,
@@ -69,7 +70,7 @@ pub fn resample_poly<'py>(
     }
     let edge = self::edge(edge)?;
     let filter = ResampleFilter::Window(FirWindow::Kaiser { beta });
-    let out_samples = resample_poly_len(data.as_array().dim().1, up, down);
+    let out_samples = resample_poly_len(data.dim().1, up, down);
     device::run_resized(py, data, runtime, out_samples, move |client, input, output, channels, samples| {
         dev_resample_poly::<f32>(client, input, output, channels, samples, up, down, &filter, edge);
         Ok(())

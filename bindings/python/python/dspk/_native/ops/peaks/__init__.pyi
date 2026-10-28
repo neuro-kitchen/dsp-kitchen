@@ -9,7 +9,7 @@ __all__ = [
     "candidates",
 ]
 
-def candidates(data: numpy.typing.NDArray[numpy.float32], heights: numpy.typing.NDArray[numpy.float32], *, polarity: builtins.str, runtime: typing.Optional[builtins.str]) -> tuple[numpy.typing.NDArray[numpy.uint32], numpy.typing.NDArray[numpy.uint32], numpy.typing.NDArray[numpy.float32]]:
+def candidates(data: numpy.typing.NDArray[typing.Any], heights: numpy.typing.NDArray[numpy.float32], *, polarity: builtins.str, runtime: typing.Optional[builtins.str]) -> tuple[numpy.typing.NDArray[numpy.uint32], numpy.typing.NDArray[numpy.uint32], numpy.typing.NDArray[numpy.float32]]:
     r"""
     Local extrema of `data` `(channels, samples)` whose value reaches the channel's `heights`
     entry: `polarity="positive"` local maxima (`value ≥ height`), `"negative"` local minima

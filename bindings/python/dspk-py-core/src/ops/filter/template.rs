@@ -1,5 +1,6 @@
 //! Template subtraction on the device (`dspk_ops::filter::TemplateFilter::apply_device`).
 
+use crate::ops::device::DeviceInput;
 use dspk_ops::filter::template::DEFAULT_MAX_LAG;
 use dspk_ops::filter::TemplateFilter;
 use numpy::{PyArray2, PyReadonlyArray1, PyReadonlyArray2};
@@ -19,7 +20,7 @@ use crate::ops::device;
 #[allow(clippy::too_many_arguments)]
 pub fn subtract_template<'py>(
     py: Python<'py>,
-    data: PyReadonlyArray2<'_, f32>,
+    data: DeviceInput,
     template: PyReadonlyArray2<'_, f32>,
     events: PyReadonlyArray1<'_, u64>,
     center_offset: usize,
@@ -28,7 +29,7 @@ pub fn subtract_template<'py>(
     runtime: Option<&str>,
 ) -> PyResult<Bound<'py, PyArray2<f32>>> {
     let (t_channels, t_samples) = template.as_array().dim();
-    let channels = data.as_array().dim().0;
+    let channels = data.dim().0;
     if t_channels != channels {
         return Err(PyValueError::new_err(format!("template has {t_channels} channels, data has {channels}")));
     }

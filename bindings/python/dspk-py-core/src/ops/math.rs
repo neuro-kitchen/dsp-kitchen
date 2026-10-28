@@ -3,10 +3,11 @@
 //! Only device implementations are bound; the host-only statistics of dspk-ops (percentile, IQR,
 //! peak-to-peak, trimmed noise, histogram, cross-correlation) follow once they run on the device.
 
+use crate::ops::device::DeviceInput;
 use dspk_ops::core::buffer;
 use dspk_ops::math::stats::MAD_TO_SIGMA;
 use dspk_ops::math::{execute_channel_mean_std, execute_channel_noise_std, gaussian_window, hamming_window, hann_window, kaiser_window};
-use numpy::{IntoPyArray, PyArray1, PyReadonlyArray2};
+use numpy::{IntoPyArray, PyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3_stub_gen::derive::gen_stub_pyfunction;
@@ -20,7 +21,7 @@ type PerChannel<'py> = (Bound<'py, PyArray1<f32>>, Bound<'py, PyArray1<f32>>);
 #[gen_stub_pyfunction(module = "dspk._native.ops.math")]
 #[pyfunction]
 #[pyo3(signature = (data, *, runtime))]
-pub fn channel_mean_std<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, runtime: Option<&str>) -> PyResult<PerChannel<'py>> {
+pub fn channel_mean_std<'py>(py: Python<'py>, data: DeviceInput, runtime: Option<&str>) -> PyResult<PerChannel<'py>> {
     let (mean, std) = device::with_input(py, data, runtime, |client, input, channels, samples| {
         let (mean, std) = (buffer::empty::<f32>(client, channels), buffer::empty::<f32>(client, channels));
         execute_channel_mean_std::<f32>(client, input, &mean, &std, channels, samples);
@@ -34,7 +35,7 @@ pub fn channel_mean_std<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, r
 #[gen_stub_pyfunction(module = "dspk._native.ops.math")]
 #[pyfunction]
 #[pyo3(signature = (data, *, runtime))]
-pub fn channel_noise_std<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, runtime: Option<&str>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+pub fn channel_noise_std<'py>(py: Python<'py>, data: DeviceInput, runtime: Option<&str>) -> PyResult<Bound<'py, PyArray1<f64>>> {
     let noise = device::with_input(py, data, runtime, |client, input, channels, samples| {
         Ok(execute_channel_noise_std::<f32>(client, input, channels, samples, 0..samples))
     })?;

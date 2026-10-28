@@ -24,7 +24,7 @@ DECIMATE_IIR_CUTOFF: builtins.float
 RESAMPLE_POLY_BETA: builtins.float
 RESAMPLE_POLY_DEFAULT_EDGE: builtins.str
 RESAMPLE_POLY_HALF_LEN_PER_RATE: builtins.int
-def decimate(data: numpy.typing.NDArray[numpy.float32], q: builtins.int, *, ftype: builtins.str, order: builtins.int, ripple_db: builtins.float, taps_per_factor: builtins.int, runtime: typing.Optional[builtins.str]) -> numpy.typing.NDArray[numpy.float32]:
+def decimate(data: numpy.typing.NDArray[typing.Any], q: builtins.int, *, ftype: builtins.str, order: builtins.int, ripple_db: builtins.float, taps_per_factor: builtins.int, runtime: typing.Optional[builtins.str]) -> numpy.typing.NDArray[numpy.float32]:
     r"""
     Down-samples `data` `(channels, samples)` by `q` behind an anti-alias filter, as
     `scipy.signal.decimate(x, q, ftype=..., zero_phase=True)`.
@@ -35,7 +35,7 @@ def decimate(data: numpy.typing.NDArray[numpy.float32], q: builtins.int, *, ftyp
     `resample_poly`.
     """
 
-def resample_poly(data: numpy.typing.NDArray[numpy.float32], up: builtins.int, down: builtins.int, *, beta: builtins.float, edge: builtins.str, runtime: typing.Optional[builtins.str]) -> numpy.typing.NDArray[numpy.float32]:
+def resample_poly(data: numpy.typing.NDArray[typing.Any], up: builtins.int, down: builtins.int, *, beta: builtins.float, edge: builtins.str, runtime: typing.Optional[builtins.str]) -> numpy.typing.NDArray[numpy.float32]:
     r"""
     Resamples `data` `(channels, samples)` by `up / down` with a polyphase FIR, as
     `scipy.signal.resample_poly` (output sample 0 on input sample 0; Kaiser `beta` window,

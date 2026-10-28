@@ -1,6 +1,7 @@
 //! `dspk.ops.spatial`: operations across channels on the device (`dspk_ops::spatial`): common
 //! references, whitening and surface Laplacian.
 
+use crate::ops::device::DeviceInput;
 use dspk_ops::spatial::{execute_common_median, execute_direct_car, SpatialWhitening, SurfaceLaplacian, DEFAULT_WHITENING_EPSILON};
 use numpy::{IntoPyArray, PyArray2, PyReadonlyArray2};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -15,7 +16,7 @@ use crate::runtime;
 #[gen_stub_pyfunction(module = "dspk._native.ops.spatial")]
 #[pyfunction]
 #[pyo3(signature = (data, *, runtime))]
-pub fn car<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, runtime: Option<&str>) -> PyResult<Bound<'py, PyArray2<f32>>> {
+pub fn car<'py>(py: Python<'py>, data: DeviceInput, runtime: Option<&str>) -> PyResult<Bound<'py, PyArray2<f32>>> {
     device::run(py, data, runtime, |client, input, output, channels, samples| {
         execute_direct_car::<f32>(client, input, output, channels, samples);
         Ok(())
@@ -26,7 +27,7 @@ pub fn car<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, runtime: Optio
 #[gen_stub_pyfunction(module = "dspk._native.ops.spatial")]
 #[pyfunction]
 #[pyo3(signature = (data, *, runtime))]
-pub fn cmr<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, runtime: Option<&str>) -> PyResult<Bound<'py, PyArray2<f32>>> {
+pub fn cmr<'py>(py: Python<'py>, data: DeviceInput, runtime: Option<&str>) -> PyResult<Bound<'py, PyArray2<f32>>> {
     device::run(py, data, runtime, |client, input, output, channels, samples| {
         execute_common_median::<f32>(client, input, output, channels, samples);
         Ok(())
@@ -56,9 +57,9 @@ impl Whitening {
     /// Global ZCA `U (Λ + ε)^-1/2 Uᵀ` of `data` `(channels, samples)`.
     #[staticmethod]
     #[pyo3(signature = (data, *, epsilon, runtime))]
-    fn fit_zca(py: Python<'_>, data: PyReadonlyArray2<'_, f32>, epsilon: f32, runtime: Option<&str>) -> PyResult<Self> {
-        let (channels, samples) = data.as_array().dim();
-        let values: Vec<f32> = data.as_array().iter().copied().collect();
+    fn fit_zca(py: Python<'_>, data: DeviceInput, epsilon: f32, runtime: Option<&str>) -> PyResult<Self> {
+        let (channels, samples) = data.dim();
+        let values: Vec<f32> = data.host_f32();
         let target = runtime::target(runtime)?;
         let model = py
             .detach(move || runtime::open_client(target).map(|c| SpatialWhitening::fit_zca::<f32>(&c, &values, channels, samples, epsilon)))
@@ -70,13 +71,13 @@ impl Whitening {
     /// as Kilosort4.
     #[staticmethod]
     #[pyo3(signature = (data, positions, k, *, epsilon, runtime))]
-    fn fit_local_knn(py: Python<'_>, data: PyReadonlyArray2<'_, f32>, positions: PyReadonlyArray2<'_, f32>, k: usize, epsilon: f32, runtime: Option<&str>) -> PyResult<Self> {
-        let (channels, samples) = data.as_array().dim();
+    fn fit_local_knn(py: Python<'_>, data: DeviceInput, positions: PyReadonlyArray2<'_, f32>, k: usize, epsilon: f32, runtime: Option<&str>) -> PyResult<Self> {
+        let (channels, samples) = data.dim();
         let positions = positions_of(&positions, channels)?;
         if k == 0 || k > channels {
             return Err(PyValueError::new_err(format!("k must be in 1..={channels}, got {k}")));
         }
-        let values: Vec<f32> = data.as_array().iter().copied().collect();
+        let values: Vec<f32> = data.host_f32();
         let target = runtime::target(runtime)?;
         let model = py
             .detach(move || {
@@ -99,7 +100,7 @@ impl Whitening {
 
     /// `matrix @ data` on the device.
     #[pyo3(signature = (data, *, runtime))]
-    fn apply<'py>(&self, py: Python<'py>, data: PyReadonlyArray2<'_, f32>, runtime: Option<&str>) -> PyResult<Bound<'py, PyArray2<f32>>> {
+    fn apply<'py>(&self, py: Python<'py>, data: DeviceInput, runtime: Option<&str>) -> PyResult<Bound<'py, PyArray2<f32>>> {
         check_channels(&data, self.model.num_channels)?;
         let model = self.model.clone();
         device::run(py, data, runtime, move |client, input, output, channels, samples| {
@@ -144,7 +145,7 @@ impl Laplacian {
 
     /// `matrix @ data` on the device.
     #[pyo3(signature = (data, *, runtime))]
-    fn apply<'py>(&self, py: Python<'py>, data: PyReadonlyArray2<'_, f32>, runtime: Option<&str>) -> PyResult<Bound<'py, PyArray2<f32>>> {
+    fn apply<'py>(&self, py: Python<'py>, data: DeviceInput, runtime: Option<&str>) -> PyResult<Bound<'py, PyArray2<f32>>> {
         check_channels(&data, self.model.num_channels)?;
         let model = self.model.clone();
         device::run(py, data, runtime, move |client, input, output, channels, samples| {
