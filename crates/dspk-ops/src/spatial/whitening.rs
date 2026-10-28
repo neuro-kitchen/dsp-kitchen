@@ -6,6 +6,10 @@ use crate::linalg::{covariance_of_host, symmetric_eigen, symmetric_eigen_batched
 /// Floor of the whitening regularization `ε` added to every eigenvalue.
 pub const MIN_WHITENING_EPSILON: f32 = 1e-12;
 
+/// Default regularization `ε` for callers without their own (Kilosort4's value; the
+/// SpikeInterface-derived sorters pass their own).
+pub const DEFAULT_WHITENING_EPSILON: f32 = 1e-6;
+
 /// Spatial whitening transformation across an electrode array (`[channels, channels]` row-major).
 ///
 /// Supports both:

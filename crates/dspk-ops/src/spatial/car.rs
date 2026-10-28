@@ -64,21 +64,32 @@ mod tests {
     use super::*;
     use crate::core::buffer;
 
-    fn medians(client: &Client) {
-        for channels in [1usize, 4, 5, 37] {
+    /// Exact against a sorted reference, in `F` (signed fractional values, so the key's sign
+    /// handling and both middle values of an even count are exercised).
+    fn medians_of<F: DspFloat + std::fmt::Debug>(client: &Client) {
+        for channels in [1usize, 4, 5, 37, 384] {
             let samples = 300;
-            let x: Vec<f32> = (0..channels * samples).map(|i| ((i * 7919) % 211) as f32 - 100.0).collect();
-            let out = buffer::empty::<f32>(client, x.len());
-            execute_common_median::<f32>(client, &buffer::upload(client, &x), &out, channels, samples);
-            let got = buffer::download::<f32>(client, out);
+            let x: Vec<F> = (0..channels * samples).map(|i| crate::core::cast::<F>(((i * 7919) % 211) as f64 * 0.37 - 40.0)).collect();
+            let out = buffer::empty::<F>(client, x.len());
+            execute_common_median::<F>(client, &buffer::upload(client, &x), &out, channels, samples);
+            let got = buffer::download::<F>(client, out);
+            let half = crate::core::cast::<F>(0.5);
             for s in 0..samples {
-                let mut col: Vec<f32> = (0..channels).map(|c| x[c * samples + s]).collect();
-                col.sort_by(f32::total_cmp);
-                let m = if channels % 2 == 1 { col[channels / 2] } else { 0.5 * (col[channels / 2 - 1] + col[channels / 2]) };
+                let mut col: Vec<F> = (0..channels).map(|c| x[c * samples + s]).collect();
+                col.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
+                let m = if channels % 2 == 1 { col[channels / 2] } else { (col[channels / 2 - 1] + col[channels / 2]) * half };
                 for c in 0..channels {
                     assert_eq!(got[c * samples + s], x[c * samples + s] - m, "{channels} channels, sample {s}");
                 }
             }
+        }
+    }
+
+    fn medians(client: &Client) {
+        medians_of::<f32>(client);
+        // float64 where the runtime has it (not WebGPU)
+        if client.properties().supports_type(f64::elem_type_native()) {
+            medians_of::<f64>(client);
         }
     }
     runtime_test!(test_common_median_reference, medians);

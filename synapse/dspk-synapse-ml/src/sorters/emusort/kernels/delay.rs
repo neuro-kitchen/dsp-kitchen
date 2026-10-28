@@ -1,5 +1,5 @@
 use cubecl::prelude::*;
-use dspk_core::compute::{channel_position, sample_position};
+use dspk_core::compute::{element_position, channel_position, sample_position};
 
 /// `output[ch, t] = input[ch, (t + shift[ch]) mod samples]`, `shift[ch] ≥ 0`.
 #[cube(launch)]
@@ -106,7 +106,7 @@ pub fn delay_cc_tile_kernel<F: Float>(
 /// li` (tiles summed in order). One unit per `q`.
 #[cube(launch)]
 pub fn delay_cc_accumulate_kernel<F: Float>(partial: &[F], cc: &mut [F], triples: u32, lags: u32, tiles: u32, samples: u32) {
-    let q = ABSOLUTE_POS as u32;
+    let q = element_position() as u32;
     if q < triples {
         let (pair, li) = (q / lags, q % lags);
         let mut acc = F::new(0.0f32);

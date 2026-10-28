@@ -7,13 +7,16 @@ from collections.abc import Sequence
 import numpy as np
 
 from dspk._native import ops as _ops
-from dspk.ops.filter import DEFAULT_ORDER
+from dspk.ops.filter import (
+    DEFAULT_ORDER,
+    FIR_DEFAULT_EDGE,
+    GAUSSIAN_DEFAULT_EDGE,
+    MAX_MEDIAN_WIDTH,
+    MEDIAN_DEFAULT_EDGE,
+    TEAGER_KAISER_DEFAULT_EDGE,
+)
 
 Stage = _ops.Stage
-MEDIAN_DEFAULT_EDGE: str = _ops.MEDIAN_DEFAULT_EDGE
-GAUSSIAN_DEFAULT_EDGE: str = _ops.GAUSSIAN_DEFAULT_EDGE
-TEAGER_KAISER_DEFAULT_EDGE: str = _ops.TEAGER_KAISER_DEFAULT_EDGE
-MAX_MEDIAN_WIDTH: int = _ops.MAX_MEDIAN_WIDTH
 
 
 def scale(alpha: float, beta: float = 0.0) -> Stage:
@@ -56,6 +59,23 @@ def sos(sections: np.ndarray, *, mode: str = "forward_backward", start: str = "r
     return _ops.stage_sos(np.ascontiguousarray(sections, dtype=np.float64), mode, start)
 
 
+def fir(taps, *, centered: bool = False, edge: str = FIR_DEFAULT_EDGE) -> Stage:
+    """FIR filter with explicit ``taps`` (e.g. from :func:`dspk.ops.filter.firwin`): causal, or
+    ``centered`` (odd number of taps). In ``Pipeline(stream=True)`` chunk edges are not carried
+    across; run it on independent chunks with ``settling`` of context, which is exact for a FIR."""
+    return _ops.stage_fir([float(t) for t in np.ravel(taps)], centered, edge)
+
+
+def whiten(whitening) -> Stage:
+    """A fitted :class:`dspk.ops.spatial.Whitening` as a stage (channels must match)."""
+    return _ops.stage_whiten(whitening._native)
+
+
+def laplacian(laplacian) -> Stage:  # noqa: F811 (name of the operation)
+    """A :class:`dspk.ops.spatial.Laplacian` as a stage (channels must match)."""
+    return _ops.stage_laplacian(laplacian._native)
+
+
 def car() -> Stage:
     """Common average reference: the mean over channels subtracted at every sample."""
     return _ops.stage_car()
@@ -83,6 +103,6 @@ def teager_kaiser(*, edge: str = TEAGER_KAISER_DEFAULT_EDGE) -> Stage:
 
 __all__ = [
     "GAUSSIAN_DEFAULT_EDGE", "MAX_MEDIAN_WIDTH", "MEDIAN_DEFAULT_EDGE", "Stage", "TEAGER_KAISER_DEFAULT_EDGE",
-    "car", "clamp", "cmr", "gaussian_smooth", "iir", "median", "notch", "scale", "sos", "subtract_baseline",
+    "FIR_DEFAULT_EDGE", "car", "clamp", "cmr", "fir", "gaussian_smooth", "laplacian", "whiten", "iir", "median", "notch", "scale", "sos", "subtract_baseline",
     "teager_kaiser",
 ]

@@ -6,6 +6,7 @@
 //! none is used.
 
 use cubecl::prelude::*;
+use dspk_core::compute::element_position;
 use dspk_core::compute::row_position;
 
 use super::points::{load_own, load_tile, tile_sq_dist};
@@ -111,7 +112,7 @@ pub fn knn_candidate_kernel<F: Float>(
     #[comptime] list: u32,
     #[comptime] within: u32,
 ) {
-    let i = ABSOLUTE_POS as u32;
+    let i = element_position() as u32;
     if i < n {
         let (ci, core_i) = (component[i as usize], core[i as usize]);
         let mut bw = F::max_value();

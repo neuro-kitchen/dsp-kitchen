@@ -8,7 +8,6 @@ mod common;
 
 use common::*;
 use cubecl::prelude::*;
-use cubecl::device::WgpuDevice;
 use dspk_ops::filter::{DeviceFilter, FilterBand, FilterMode, FilterSpec, FilterStart, Sos};
 
 #[test]
@@ -57,16 +56,15 @@ fn host_reference_matches_sosfilt_and_sosfiltfilt() {
     }
 }
 
-fn run_device(sos: &Sos, mode: FilterMode, start: FilterStart, x: &[f64], channels: usize) -> Vec<Vec<f64>> {
-    let client = dspk_core::compute::open_device(cubecl::Device::Wgpu(WgpuDevice::default()));
+fn run_device(client: &Client, sos: &Sos, mode: FilterMode, start: FilterStart, x: &[f64], channels: usize) -> Vec<Vec<f64>> {
     let n = x.len();
     let data: Vec<f32> = (0..channels).flat_map(|c| x.iter().map(move |v| (*v as f32) * (1.0 + c as f32))).collect();
     let input = client.create_from_slice(f32::as_bytes(&data));
     let output = client.empty(data.len() * 4);
-    let filter = DeviceFilter::<f32>::from_sos(&client, sos.clone(), mode).with_start(start);
+    let filter = DeviceFilter::<f32>::from_sos(client, sos.clone(), mode).with_start(start);
     let scratch = client.empty((filter.scratch_len(channels, n) * 4).max(4));
     let state = client.empty(channels * filter.state_len() * 4);
-    filter.apply(&client, &input, &output, &scratch, &state, channels, n);
+    filter.apply(client, &input, &output, &scratch, &state, channels, n);
     let out = f32::from_bytes(&client.read_one_unchecked(output)).to_vec();
     out.chunks(n)
         .enumerate()
@@ -76,6 +74,7 @@ fn run_device(sos: &Sos, mode: FilterMode, start: FilterStart, x: &[f64], channe
 
 #[test]
 fn device_kernel_matches_scipy() {
+    let clients = test_clients();
     let fx = fixtures();
     let (fs, n) = (fx["fs"].as_f64().unwrap(), fx["n"].as_u64().unwrap() as usize);
     let x = test_signal(n, fs);
@@ -90,10 +89,12 @@ fn device_kernel_matches_scipy() {
             (FilterMode::ForwardBackward, FilterStart::Rest, "forward_backward"),
         ] {
             let expected = floats(&case[key]);
-            for (c, got) in run_device(&sos, mode, start, &x, 3).iter().enumerate() {
-                let err = max_abs_diff(got, &expected);
-                // f32 data and state: error relative to the input amplitude (500 µV DC + signal).
-                assert!(err < 2e-5 * scale, "{name} {key} channel {c}: max error {err}");
+            for client in &clients {
+                for (c, got) in run_device(client, &sos, mode, start, &x, 3).iter().enumerate() {
+                    let err = max_abs_diff(got, &expected);
+                    // f32 data and state: error relative to the input amplitude (500 µV DC + signal).
+                    assert!(err < 2e-5 * scale, "{} {name} {key} channel {c}: max error {err}", client.name());
+                }
             }
         }
     }
@@ -107,6 +108,7 @@ const REST_LOW_CUTOFF_TOLERANCE: f64 = 2e-4;
 #[test]
 fn device_low_cutoffs_match_f64_reference() {
     // Poles next to z = 1: plain f32 direct form II is off by tens of µV here.
+    let clients = test_clients();
     let fs = 30_000.0;
     let x = test_signal(60_000, fs);
     let scale = max_abs(&x);
@@ -126,20 +128,22 @@ fn device_low_cutoffs_match_f64_reference() {
             (FilterMode::Forward, FilterStart::SteadyState, &expected_steady),
             (FilterMode::ForwardBackward, FilterStart::Rest, &expected_fb),
         ] {
-            let got = &run_device(&sos, mode, start, &x, 1)[0];
-            let err = max_abs_diff(got, expected) / scale;
-            // Steady-state starts and zero-phase passes sit at the f32 rounding floor (measured
-            // 1.89e-5–1.97e-5 of the peak for the 0.5 Hz high-pass; plain f32 direct form II is
-            // ~1e-2). A forward pass from rest feeds the −500 DC level in as a step, whose slow
-            // response exposes how rounding the coefficients to f32 moves poles next to z = 1:
-            // the f64 state-variable filter with those rounded coefficients is itself ~1.1e-4 off
-            // this reference (measured on the high-pass), so those passes get their own limit.
-            let limit = if start == FilterStart::Rest && mode == FilterMode::Forward && name != "notch 60 Hz Q30" {
-                REST_LOW_CUTOFF_TOLERANCE
-            } else {
-                LOW_CUTOFF_TOLERANCE
-            };
-            assert!(err < limit, "{name} {mode:?} {start:?}: max error {err:.2e} of the peak (limit {limit:.1e})");
+            for client in &clients {
+                let got = &run_device(client, &sos, mode, start, &x, 1)[0];
+                let err = max_abs_diff(got, expected) / scale;
+                // Steady-state starts and zero-phase passes sit at the f32 rounding floor (measured
+                // 1.89e-5–1.97e-5 of the peak for the 0.5 Hz high-pass; plain f32 direct form II is
+                // ~1e-2). A forward pass from rest feeds the −500 DC level in as a step, whose slow
+                // response exposes how rounding the coefficients to f32 moves poles next to z = 1:
+                // the f64 state-variable filter with those rounded coefficients is itself ~1.1e-4 off
+                // this reference (measured on the high-pass), so those passes get their own limit.
+                let limit = if start == FilterStart::Rest && mode == FilterMode::Forward && name != "notch 60 Hz Q30" {
+                    REST_LOW_CUTOFF_TOLERANCE
+                } else {
+                    LOW_CUTOFF_TOLERANCE
+                };
+                assert!(err < limit, "{} {name} {mode:?} {start:?}: max error {err:.2e} of the peak (limit {limit:.1e})", client.name());
+            }
         }
     }
 }

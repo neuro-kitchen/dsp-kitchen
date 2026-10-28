@@ -4,7 +4,7 @@
 //! table `iC2[j, centre]` (`[n_neighbours, n_centres]`).
 
 use cubecl::prelude::*;
-use dspk_core::compute::{channel_position, sample_position};
+use dspk_core::compute::{element_position, channel_position, sample_position};
 
 /// `B[ch, k, t] = Σ_j x[ch, t − nt/2 + j] · w[k, j]` (zero outside the row), summed over `j` in
 /// order: every channel correlated with every template, a filter bank. One unit per `(ch, t)`
@@ -265,7 +265,7 @@ pub fn spike_features_kernel<F: Float>(
     nt: u32,
     n_spikes: u32,
 ) {
-    let unit = ABSOLUTE_POS as u32;
+    let unit = element_position() as u32;
     if unit < n_spikes * n_chans {
         let i = unit / n_chans;
         let c = unit - i * n_chans;

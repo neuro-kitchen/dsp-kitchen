@@ -85,3 +85,12 @@ pub fn max_abs_diff(a: &[f64], b: &[f64]) -> f64 {
     assert_eq!(a.len(), b.len());
     a.iter().zip(b).fold(0.0, |m, (x, y)| m.max((x - y).abs()))
 }
+
+/// A client for every runtime the tests run on ([`dspk_core::ComputeTarget::for_tests`]: compiled
+/// in, limited by `DSPK_TEST_RUNTIMES`), opened through dspk so CubeCL's caches go to the user cache
+/// directory.
+pub fn test_clients() -> Vec<cubecl::prelude::Client> {
+    let targets = dspk_core::ComputeTarget::for_tests();
+    assert!(!targets.is_empty(), "no runtime to test (compiled in and allowed by DSPK_TEST_RUNTIMES)");
+    targets.into_iter().map(|t| t.client().unwrap_or_else(|e| panic!("{}: {e}", t.name()))).collect()
+}

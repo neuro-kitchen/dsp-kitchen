@@ -7,22 +7,71 @@ import numpy.typing
 import typing
 __all__ = [
     "DEFAULT_ORDER",
+    "FIR_DEFAULT_EDGE",
+    "GAUSSIAN_DEFAULT_EDGE",
+    "GAUSSIAN_TRUNCATE",
+    "MAX_MEDIAN_WIDTH",
+    "MEDIAN_DEFAULT_EDGE",
     "SETTLING_TOLERANCE",
+    "TEAGER_KAISER_DEFAULT_EDGE",
+    "TEMPLATE_DEFAULT_MAX_LAG",
+    "fir",
+    "firwin",
+    "gaussian_smooth",
     "iir",
+    "median",
     "notch",
     "settling_samples",
     "sos",
     "sosfilt",
+    "subtract_template",
+    "teager_kaiser",
 ]
 
 DEFAULT_ORDER: builtins.int
+FIR_DEFAULT_EDGE: builtins.str
+GAUSSIAN_DEFAULT_EDGE: builtins.str
+GAUSSIAN_TRUNCATE: builtins.float
+MAX_MEDIAN_WIDTH: builtins.int
+MEDIAN_DEFAULT_EDGE: builtins.str
 SETTLING_TOLERANCE: builtins.float
-def iir(data: numpy.typing.NDArray[numpy.float32], sample_rate: builtins.float, band: builtins.str, cutoff: typing.Sequence[builtins.float], *, order: builtins.int = 5, design: builtins.str = 'butterworth', ripple_db: typing.Optional[builtins.float] = None, mode: builtins.str = 'forward_backward', start: builtins.str = 'rest', runtime: typing.Optional[builtins.str] = None) -> numpy.typing.NDArray[numpy.float32]:
+TEAGER_KAISER_DEFAULT_EDGE: builtins.str
+TEMPLATE_DEFAULT_MAX_LAG: builtins.int
+def fir(data: numpy.typing.NDArray[typing.Any], taps: numpy.typing.NDArray[numpy.float32], *, centered: builtins.bool, edge: builtins.str, runtime: typing.Optional[builtins.str]) -> numpy.typing.NDArray[numpy.float32]:
+    r"""
+    FIR filtering of `data` `(channels, samples)` with `taps` on the device.
+    
+    `centered=False`: causal, `y[t] = Σ taps[k] · x[t − k]` (`scipy.signal.lfilter(taps, 1, x)` with
+    `edge="zeros"`). `centered=True`: odd number of taps centred on each sample (zero phase for
+    symmetric taps). Samples past the ends come from `edge`.
+    """
+
+def firwin(num_taps: builtins.int, cutoff: builtins.float, *, sample_rate: typing.Optional[builtins.float], window: builtins.str, beta: typing.Optional[builtins.float]) -> numpy.typing.NDArray[numpy.float64]:
+    r"""
+    Low-pass FIR taps (`scipy.signal.firwin` with one cutoff), unit DC gain.
+    
+    `cutoff` is in Hz when `sample_rate` is given, else a fraction of Nyquist in `(0, 1]`.
+    `window`: `"hamming"` (firwin's default) or `"kaiser"` (needs `beta`).
+    """
+
+def gaussian_smooth(data: numpy.typing.NDArray[typing.Any], sigma_samples: builtins.float, *, edge: builtins.str, runtime: typing.Optional[builtins.str]) -> numpy.typing.NDArray[numpy.float32]:
+    r"""
+    Zero-phase Gaussian smoothing of standard deviation `sigma_samples`, cut at `GAUSSIAN_TRUNCATE`
+    σ (`scipy.ndimage.gaussian_filter1d` with the same `truncate` and `mode` = `edge`).
+    """
+
+def iir(data: numpy.typing.NDArray[typing.Any], sample_rate: builtins.float, band: builtins.str, cutoff: typing.Sequence[builtins.float], *, order: builtins.int = 5, design: builtins.str = 'butterworth', ripple_db: typing.Optional[builtins.float] = None, mode: builtins.str = 'forward_backward', start: builtins.str = 'rest', runtime: typing.Optional[builtins.str] = None) -> numpy.typing.NDArray[numpy.float32]:
     r"""
     Designs an IIR filter and applies it to `data` `(channels, samples)` on the device.
     """
 
-def notch(data: numpy.typing.NDArray[numpy.float32], sample_rate: builtins.float, freq: builtins.float, q: builtins.float, *, mode: builtins.str = 'forward_backward', start: builtins.str = 'rest', runtime: typing.Optional[builtins.str] = None) -> numpy.typing.NDArray[numpy.float32]:
+def median(data: numpy.typing.NDArray[typing.Any], width: builtins.int, *, edge: builtins.str, runtime: typing.Optional[builtins.str]) -> numpy.typing.NDArray[numpy.float32]:
+    r"""
+    Running median over an odd `width` (≤ `MAX_MEDIAN_WIDTH`) along time; with `edge="zeros"` this
+    is `scipy.signal.medfilt`.
+    """
+
+def notch(data: numpy.typing.NDArray[typing.Any], sample_rate: builtins.float, freq: builtins.float, q: builtins.float, *, mode: builtins.str = 'forward_backward', start: builtins.str = 'rest', runtime: typing.Optional[builtins.str] = None) -> numpy.typing.NDArray[numpy.float32]:
     r"""
     Second-order notch at `freq` Hz with quality factor `q` (`scipy.signal.iirnotch`), applied on
     the device.
@@ -42,8 +91,22 @@ def sos(band: builtins.str, cutoff: typing.Sequence[builtins.float], sample_rate
     `design`: butterworth, chebyshev1 (needs `ripple_db`), bessel.
     """
 
-def sosfilt(data: numpy.typing.NDArray[numpy.float32], sos: numpy.typing.NDArray[numpy.float64], *, mode: builtins.str = 'forward_backward', start: builtins.str = 'rest', runtime: typing.Optional[builtins.str] = None) -> numpy.typing.NDArray[numpy.float32]:
+def sosfilt(data: numpy.typing.NDArray[typing.Any], sos: numpy.typing.NDArray[numpy.float64], *, mode: builtins.str = 'forward_backward', start: builtins.str = 'rest', runtime: typing.Optional[builtins.str] = None) -> numpy.typing.NDArray[numpy.float32]:
     r"""
     Applies second-order sections `sos` `(sections, 6)` (scipy layout) to `data` on the device.
+    """
+
+def subtract_template(data: numpy.typing.NDArray[typing.Any], template: numpy.typing.NDArray[numpy.float32], events: numpy.typing.NDArray[numpy.uint64], center_offset: builtins.int, *, max_lag: builtins.int, dynamic_scaling: builtins.bool, runtime: typing.Optional[builtins.str]) -> numpy.typing.NDArray[numpy.float32]:
+    r"""
+    Subtracts `template` `(channels, template_samples)` from `data` `(channels, samples)` at every
+    event (sample indices). The template's sample `center_offset` sits on the event; each event is
+    aligned by cross-correlation within `±max_lag` samples and, with `dynamic_scaling`, scaled by
+    least squares. Overlapping events are subtracted in their order, as one after another.
+    """
+
+def teager_kaiser(data: numpy.typing.NDArray[typing.Any], *, edge: builtins.str, runtime: typing.Optional[builtins.str]) -> numpy.typing.NDArray[numpy.float32]:
+    r"""
+    Teager–Kaiser energy `x[t]² − x[t−1] · x[t+1]` along time; the neighbours of the end samples
+    come from `edge`.
     """
 

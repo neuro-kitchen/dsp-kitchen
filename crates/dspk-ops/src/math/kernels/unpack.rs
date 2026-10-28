@@ -1,4 +1,5 @@
 use cubecl::prelude::*;
+use dspk_core::compute::element_position;
 
 /// How a stored value's bits are read (`kind` of [`fn@unpack_stored_kernel`]).
 pub const SIGNED: u32 = 0;
@@ -7,7 +8,7 @@ pub const FLOAT: u32 = 2;
 
 /// Converts `total` stored values (`bytes` each, packed little-endian into `words`, channel-major
 /// rows of `num_samples`) to `output[i] = value · gains[ch] + offsets[ch]`. One unit per value
-/// (`ABSOLUTE_POS`).
+/// ([`fn@element_position`]).
 #[cube(launch)]
 pub fn unpack_stored_kernel<F: Float>(
     words: &[u32],
@@ -19,7 +20,7 @@ pub fn unpack_stored_kernel<F: Float>(
     #[comptime] bytes: u32,
     #[comptime] kind: u32,
 ) {
-    let idx = ABSOLUTE_POS as u32;
+    let idx = element_position() as u32;
     if idx < total {
         let ch = idx / num_samples;
         let per_word = comptime!(4 / bytes);

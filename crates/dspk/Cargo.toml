@@ -11,7 +11,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [features]
-default = ["wgpu", "zarr"]
+default = ["wgpu", "cuda", "cpu", "zarr"]
 # CubeCL runtimes compiled in; the device is chosen at run time (`dspk::core::ComputeTarget`)
 wgpu = ["dspk-core/wgpu", "dspk-ops/wgpu", "dspk-view?/wgpu"]
 cpu = ["dspk-core/cpu", "dspk-ops/cpu", "dspk-view?/cpu"]

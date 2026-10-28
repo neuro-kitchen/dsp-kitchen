@@ -24,7 +24,7 @@ pub use fir::{
     execute_gaussian_smooth, gaussian_kernel_1d, gaussian_smooth_1d, FIR_DEFAULT_EDGE, GAUSSIAN_DEFAULT_EDGE,
 };
 pub use non_linear::{execute_median, execute_median_9p, execute_teager_kaiser};
-pub use template::{TemplateFilter, subtract_template_1d, subtract_template_multichannel};
+pub use template::TemplateFilter;
 
 #[cfg(test)]
 mod tests {

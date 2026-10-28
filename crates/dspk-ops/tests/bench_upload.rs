@@ -2,15 +2,13 @@
 //! 92 MB), each ending in a device sync. Ignored by default:
 //!
 //! ```text
-//! cargo test -p dspk-ops --release --test bench_upload -- --ignored --nocapture
+//! cargo test -p dspk-ops --profile validate --test bench_upload -- --ignored --nocapture
 //! ```
 
 use std::time::Instant;
 
 use cubecl::bytes::Bytes;
-use cubecl::device::{WgpuDevice, WgpuDeviceKind};
 use cubecl::prelude::*;
-use cubecl::Device;
 use dspk_core::compute::bench::sync;
 
 const CHANNELS: usize = 384;
@@ -32,13 +30,10 @@ fn time(client: &Client, mut f: impl FnMut()) -> f64 {
 #[test]
 #[ignore = "benchmark: run with --ignored --nocapture"]
 fn bench_uploads() {
-    let mut devices = vec![("wgpu", Device::Wgpu(WgpuDevice::new(WgpuDeviceKind::DiscreteGpu(0))))];
-    if cfg!(feature = "cuda") {
-        devices.push(("cuda", Device::Cuda(cubecl::device::CudaDevice::default())));
-    }
-    for (name, device) in devices {
-        println!("{name}:");
-        uploads(&device.client());
+    // Every runtime the tests run on (`DSPK_TEST_RUNTIMES`), opened through dspk
+    for target in dspk_core::ComputeTarget::for_tests() {
+        println!("{}:", target.name());
+        uploads(&target.client().expect("compiled-in runtime"));
     }
 }
 

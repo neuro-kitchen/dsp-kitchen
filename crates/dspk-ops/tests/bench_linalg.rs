@@ -77,6 +77,7 @@ fn bench_dense_linalg() {
         devices.push(("cpu", Device::Cpu(CpuDevice)));
     }
     for (name, device) in devices {
-        bench(name, &device.client());
+        // Opened through dspk: CubeCL caches in the user cache directory, not target/
+        bench(name, &dspk_core::compute::open_device(device));
     }
 }

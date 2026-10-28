@@ -1,4 +1,5 @@
 use cubecl::prelude::*;
+use dspk_core::compute::element_position;
 use dspk_core::compute::LaunchGeometry;
 
 /// CubeCL kernel reducing extracted `[num_spikes, k_neighbors, snippet_len]` snippets in VRAM into
@@ -17,7 +18,7 @@ pub fn reduce_channel_templates_kernel(
     num_channels: u32,
     elems_per_spike: u32,
 ) {
-    let tid = ABSOLUTE_POS as u32;
+    let tid = element_position() as u32;
     if tid < num_channels * elems_per_spike {
         let ch = tid / elems_per_spike;
         let rem = tid - ch * elems_per_spike;

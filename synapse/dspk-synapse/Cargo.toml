@@ -8,7 +8,7 @@ license.workspace = true
 publish = false
 
 [features]
-default = ["wgpu"]
+default = ["wgpu", "cuda", "cpu"]
 wgpu = ["dspk-ops/wgpu"]
 cpu = ["dspk-ops/cpu"]
 cuda = ["dspk-ops/cuda"]

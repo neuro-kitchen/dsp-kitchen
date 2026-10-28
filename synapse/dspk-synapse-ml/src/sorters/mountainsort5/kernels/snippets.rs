@@ -1,6 +1,7 @@
 //! Kernels of [`crate::sorters::mountainsort5::snippets`].
 
 use cubecl::prelude::*;
+use dspk_core::compute::element_position;
 
 use super::detect::NO_CHANNEL;
 
@@ -21,7 +22,7 @@ pub fn gather_snippets_kernel<F: Float>(
     max_neighbours: u32,
     n_before: u32,
 ) {
-    let e = ABSOLUTE_POS as u32;
+    let e = element_position() as u32;
     if e < total {
         let k = e % max_neighbours;
         let s = (e / max_neighbours) % width;
@@ -51,7 +52,7 @@ pub fn scatter_snippets_kernel<F: Float>(
     max_neighbours: u32,
     channels: u32,
 ) {
-    let e = ABSOLUTE_POS as u32;
+    let e = element_position() as u32;
     if e < total {
         let k = e % max_neighbours;
         let s = (e / max_neighbours) % width;

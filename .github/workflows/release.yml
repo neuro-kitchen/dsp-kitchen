@@ -60,7 +60,9 @@ jobs:
         with:
           working-directory: bindings/python
           target: ${{ matrix.target }}
-          manylinux: "2_28"
+          # 2_34: CubeCL's CPU runtime downloads a prebuilt LLVM that needs glibc >= 2.34 (2_28 fails
+          # with "GLIBC_2.33 not found"); the wheel runs on Ubuntu 22.04+, Debian 12+, RHEL 9+
+          manylinux: "2_34"
           # --strip: symbols off (≈ 188 → 139 MiB extension, wheel ≈ 47 MiB with the CPU runtime's LLVM)
           args: --release --strip --out dist --no-default-features --features ${{ matrix.features }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

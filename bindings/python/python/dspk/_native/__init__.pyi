@@ -4,10 +4,12 @@
 import builtins
 from . import io
 from . import ops
+from . import pipeline
 from . import runtime
 __all__ = [
     "io",
     "ops",
+    "pipeline",
     "runtime",
 ]
 

@@ -1,5 +1,5 @@
 //! The SOS kernel gives the same result on every CubeCL runtime (one launch geometry, no
-//! device-specific paths). Run with `--features cpu` to include the CPU runtime.
+//! device-specific paths): every runtime compiled in, limited by `DSPK_TEST_RUNTIMES`.
 
 mod common;
 
@@ -45,21 +45,10 @@ fn check(client: &Client) {
     }
 }
 
+/// Every runtime the tests run on (`DSPK_TEST_RUNTIMES`), each opened through dspk.
 #[test]
-fn wgpu_runtime() {
-    use cubecl::device::WgpuDevice;
-    if !dspk_core::ComputeTarget::for_tests().contains(&dspk_core::ComputeTarget::Wgpu) {
-        return;
+fn every_runtime() {
+    for client in test_clients() {
+        check(&client);
     }
-    check(&dspk_core::compute::open_device(cubecl::Device::Wgpu(WgpuDevice::default())));
-}
-
-#[cfg(feature = "cpu")]
-#[test]
-fn cpu_runtime() {
-    use cubecl::device::CpuDevice;
-    if !dspk_core::ComputeTarget::for_tests().contains(&dspk_core::ComputeTarget::Cpu) {
-        return;
-    }
-    check(&cubecl::Device::Cpu(CpuDevice).client());
 }

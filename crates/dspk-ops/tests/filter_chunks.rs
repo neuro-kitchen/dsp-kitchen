@@ -8,7 +8,7 @@
 mod common;
 
 use common::*;
-use cubecl::device::WgpuDevice;
+use cubecl::prelude::Client;
 use dspk_ops::filter::{FilterMode, FilterSpec, FilterStart};
 use dspk_ops::pipeline::{Pipeline, PipelineStage, PipelineWorkspace};
 
@@ -22,8 +22,8 @@ fn recording(n: usize) -> Vec<f32> {
         .collect()
 }
 
-fn workspace(pipeline: &Pipeline, samples: usize, stateful: bool) -> PipelineWorkspace<f32> {
-    let client = dspk_core::compute::open_device(cubecl::Device::Wgpu(WgpuDevice::default()));
+fn workspace(client: &Client, pipeline: &Pipeline, samples: usize, stateful: bool) -> PipelineWorkspace<f32> {
+    let client = client.clone();
     if stateful {
         PipelineWorkspace::new_stateful(client, pipeline.clone(), CHANNELS, samples, FS).unwrap()
     } else {
@@ -31,9 +31,9 @@ fn workspace(pipeline: &Pipeline, samples: usize, stateful: bool) -> PipelineWor
     }
 }
 
-fn whole(pipeline: &Pipeline, x: &[f32], n: usize) -> Vec<f32> {
+fn whole(client: &Client, pipeline: &Pipeline, x: &[f32], n: usize) -> Vec<f32> {
     let mut out = vec![0.0; x.len()];
-    workspace(pipeline, n, false).process_chunk(x, n, &mut out);
+    workspace(client, pipeline, n, false).process_chunk(x, n, &mut out);
     out
 }
 
@@ -42,9 +42,9 @@ fn slice(x: &[f32], n: usize, range: std::ops::Range<usize>) -> Vec<f32> {
 }
 
 /// Independent halo windows of `batch` samples, halos from `Pipeline::settling`.
-fn halo_windows(pipeline: &Pipeline, x: &[f32], n: usize, batch: usize) -> Vec<f32> {
+fn halo_windows(client: &Client, pipeline: &Pipeline, x: &[f32], n: usize, batch: usize) -> Vec<f32> {
     let (left, right) = pipeline.settling(FS).unwrap();
-    let mut ws = workspace(pipeline, batch + left + right, false);
+    let mut ws = workspace(client, pipeline, batch + left + right, false);
     let mut out = vec![0.0; x.len()];
     let mut start = 0;
     while start < n {
@@ -63,8 +63,8 @@ fn halo_windows(pipeline: &Pipeline, x: &[f32], n: usize, batch: usize) -> Vec<f
     out
 }
 
-fn stateful_chunks(pipeline: &Pipeline, x: &[f32], n: usize, batch: usize) -> Vec<f32> {
-    let mut ws = workspace(pipeline, batch, true);
+fn stateful_chunks(client: &Client, pipeline: &Pipeline, x: &[f32], n: usize, batch: usize) -> Vec<f32> {
+    let mut ws = workspace(client, pipeline, batch, true);
     let mut out = vec![0.0; x.len()];
     let mut start = 0;
     while start < n {
@@ -98,18 +98,21 @@ fn filters() -> Vec<(&'static str, FilterSpec, usize)> {
 
 #[test]
 fn halo_windows_match_whole_recording() {
-    for (name, spec, n) in filters() {
-        // Forward windows start from the steady state: from rest each window would also absorb the
-        // step to its DC level, which the settling model (impulse tail) does not bound tightly.
-        for mode in [FilterMode::Forward, FilterMode::ForwardBackward] {
-            let spec = spec.clone().with_mode(mode).with_start(FilterStart::SteadyState);
-            let pipeline = Pipeline::with_stages(vec![PipelineStage::Filter(spec)]);
-            let x = recording(n);
-            let reference = whole(&pipeline, &x, n);
-            let amp = amplitude(&x);
-            for batch in [4_096, 7_919, 30_000] {
-                let err = max_err(&halo_windows(&pipeline, &x, n, batch), &reference);
-                assert!(err < 5e-4 * amp, "{name} {mode:?} batch {batch}: max error {err} (amplitude {amp})");
+    for client in &test_clients() {
+        for (name, spec, n) in filters() {
+            // Forward windows start from the steady state: from rest each window would also absorb
+            // the step to its DC level, which the settling model (impulse tail) does not bound tightly.
+            for mode in [FilterMode::Forward, FilterMode::ForwardBackward] {
+                let spec = spec.clone().with_mode(mode).with_start(FilterStart::SteadyState);
+                let pipeline = Pipeline::with_stages(vec![PipelineStage::Filter(spec)]);
+                let x = recording(n);
+                let reference = whole(client, &pipeline, &x, n);
+                let amp = amplitude(&x);
+                for batch in [4_096, 7_919, 30_000] {
+                    let err = max_err(&halo_windows(client, &pipeline, &x, n, batch), &reference);
+                    let runtime = client.name();
+                    assert!(err < 5e-4 * amp, "{runtime} {name} {mode:?} batch {batch}: max error {err} (amplitude {amp})");
+                }
             }
         }
     }
@@ -117,14 +120,16 @@ fn halo_windows_match_whole_recording() {
 
 #[test]
 fn stateful_chunks_are_exact_for_forward_filters() {
-    for (name, spec, n) in filters() {
-        let pipeline = Pipeline::with_stages(vec![PipelineStage::Filter(spec.with_mode(FilterMode::Forward))]);
-        let x = recording(n);
-        let reference = whole(&pipeline, &x, n);
-        let amp = amplitude(&x);
-        for batch in [1_000, 7_919, 30_000] {
-            let err = max_err(&stateful_chunks(&pipeline, &x, n, batch), &reference);
-            assert!(err < 1e-5 * amp, "{name} batch {batch}: max error {err}");
+    for client in &test_clients() {
+        for (name, spec, n) in filters() {
+            let pipeline = Pipeline::with_stages(vec![PipelineStage::Filter(spec.with_mode(FilterMode::Forward))]);
+            let x = recording(n);
+            let reference = whole(client, &pipeline, &x, n);
+            let amp = amplitude(&x);
+            for batch in [1_000, 7_919, 30_000] {
+                let err = max_err(&stateful_chunks(client, &pipeline, &x, n, batch), &reference);
+                assert!(err < 1e-5 * amp, "{} {name} batch {batch}: max error {err}", client.name());
+            }
         }
     }
 }
@@ -132,8 +137,9 @@ fn stateful_chunks_are_exact_for_forward_filters() {
 #[test]
 fn stateful_workspace_rejects_forward_backward() {
     let pipeline = Pipeline::with_stages(vec![PipelineStage::bandpass(300.0, 6000.0)]);
-    let client = dspk_core::compute::open_device(cubecl::Device::Wgpu(WgpuDevice::default()));
-    assert!(PipelineWorkspace::<f32>::new_stateful(client, pipeline, 2, 100, FS).is_err());
+    for client in test_clients() {
+        assert!(PipelineWorkspace::<f32>::new_stateful(client, pipeline.clone(), 2, 100, FS).is_err());
+    }
 }
 
 #[test]
@@ -142,11 +148,13 @@ fn dc_offset_gives_no_step_transient() {
     // passes start from the steady state (forward-backward always does).
     let n = 3_000;
     let x = vec![-500.0f32; CHANNELS * n];
-    for mode in [FilterMode::Forward, FilterMode::ForwardBackward] {
-        let spec = FilterSpec::highpass(300.0).with_mode(mode).with_start(FilterStart::SteadyState);
-        let pipeline = Pipeline::with_stages(vec![PipelineStage::Filter(spec)]);
-        let y = whole(&pipeline, &x, n);
-        assert!(amplitude(&y) < 1e-2, "{mode:?}: residual {}", amplitude(&y));
+    for client in &test_clients() {
+        for mode in [FilterMode::Forward, FilterMode::ForwardBackward] {
+            let spec = FilterSpec::highpass(300.0).with_mode(mode).with_start(FilterStart::SteadyState);
+            let pipeline = Pipeline::with_stages(vec![PipelineStage::Filter(spec)]);
+            let y = whole(client, &pipeline, &x, n);
+            assert!(amplitude(&y) < 1e-2, "{} {mode:?}: residual {}", client.name(), amplitude(&y));
+        }
     }
 }
 
@@ -177,11 +185,13 @@ fn forward_from_rest_has_the_sosfilt_step_transient() {
     let spec = FilterSpec::highpass(300.0).with_mode(FilterMode::Forward);
     let sos = spec.design(FS).unwrap();
     let pipeline = Pipeline::with_stages(vec![PipelineStage::Filter(spec)]);
-    let y = whole(&pipeline, &x, n);
     let expected = sos.filter(&vec![-500.0f64; n], false);
-    for c in 0..CHANNELS {
-        let err = y[c * n..(c + 1) * n].iter().zip(&expected).fold(0.0f64, |m, (a, b)| m.max((*a as f64 - b).abs()));
-        assert!(err < 1e-2, "channel {c}: max error {err}");
+    for client in &test_clients() {
+        let y = whole(client, &pipeline, &x, n);
+        for c in 0..CHANNELS {
+            let err = y[c * n..(c + 1) * n].iter().zip(&expected).fold(0.0f64, |m, (a, b)| m.max((*a as f64 - b).abs()));
+            assert!(err < 1e-2, "{} channel {c}: max error {err}", client.name());
+        }
+        assert!(y[0].abs() > 100.0, "the step must show at the first sample");
     }
-    assert!(y[0].abs() > 100.0, "the step must show at the first sample");
 }

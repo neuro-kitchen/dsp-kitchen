@@ -2,6 +2,7 @@
 //! Shapes: features `[n, d]`, means `[k, d]`, precisions `[k, d, d]`, responsibilities `[n, k]`.
 
 use cubecl::prelude::*;
+use dspk_core::compute::element_position;
 use dspk_core::compute::negative_infinity;
 
 /// One unit per spike `i`: `lp_c = log_norms[c] − ½ (x − μ_c)ᵀ P_c (x − μ_c)` for every component,
@@ -21,7 +22,7 @@ pub fn gmm_e_step_kernel<F: Float>(
     d: u32,
     k: u32,
 ) {
-    let i = ABSOLUTE_POS as u32;
+    let i = element_position() as u32;
     if i < n {
         let x = i * d;
         let mut best = negative_infinity::<F>();
@@ -88,7 +89,7 @@ pub fn gmm_mean_sums_kernel<F: Float>(
     k: u32,
     masked: u32,
 ) {
-    let unit = ABSOLUTE_POS as u32;
+    let unit = element_position() as u32;
     if unit < k * d {
         let c = unit / d;
         let f = unit - c * d;
@@ -128,7 +129,7 @@ pub fn gmm_scatter_kernel<F: Float>(
     k: u32,
     diagonal: u32,
 ) {
-    let unit = ABSOLUTE_POS as u32;
+    let unit = element_position() as u32;
     if unit < k * d * d {
         let c = unit / (d * d);
         let rem = unit - c * d * d;

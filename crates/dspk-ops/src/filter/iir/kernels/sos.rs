@@ -1,4 +1,5 @@
 use cubecl::prelude::*;
+use dspk_core::compute::element_position;
 
 use crate::core::edge::EDGE_ODD;
 use crate::core::read_extended_strided;
@@ -30,7 +31,7 @@ pub const fn coeffs_len(n_sections: usize) -> usize {
 /// The logical sequence (the channel's `in_len` samples extended by `pad` odd-reflected samples on
 /// each side, walked backwards when `reverse != 0`) is split into `num_blocks` blocks of
 /// `block_len` steps. The cascade is linear, so blocks run in parallel (one unit per
-/// `(channel, block)`, `ABSOLUTE_POS = block · num_channels + channel`):
+/// `(channel, block)`, [`fn@element_position`] `= block · num_channels + channel`):
 ///
 /// - `phase = 0` (only when `num_blocks > 1`), blocks `0..num_blocks − 1`: run from zero state
 ///   (block 0 from the true initial state) and store the end state as the next block's start in
@@ -75,7 +76,7 @@ pub fn sos_block_kernel<F: Float>(
     #[comptime] n_sections: usize,
 ) {
     let active_blocks = if comptime!(phase == 0) { num_blocks - 1u32 } else { num_blocks };
-    let unit = ABSOLUTE_POS as u32;
+    let unit = element_position() as u32;
     if unit < num_channels * active_blocks {
         let b = unit / num_channels;
         let ch = unit - b * num_channels;

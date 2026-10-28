@@ -232,7 +232,8 @@ impl RecordingSource for RawRecording {
 
 /// Streams `source` into a raw binary file plus JSON sidecar, `chunk_samples` at a time, storing
 /// `value / gain`. `params.channels`, `sample_rate_hz`, `samples` and `unit` (the first channel's)
-/// are taken from the source.
+/// are taken from the source. When `format` and `gain` are the source's own (zero offset), the
+/// stored values are copied as they are.
 pub fn write_raw(
     source: &dyn RecordingSource,
     path: &Path,
@@ -252,6 +253,14 @@ pub fn write_raw(
     let chunk = chunk_samples.max(1) as u64;
     let mut buf = Vec::new();
     let mut bytes = Vec::new();
+
+    // Same format and scale as the source: copy the stored values (exact, no float round trip).
+    // An empty stored read tells whether the source serves stored values at all.
+    let passthrough = format == info.format && info.channels.iter().all(|c| c.gain == gain && c.offset == 0.0);
+    if passthrough && source.read_stored(&[], 0..0, &mut []).is_ok() {
+        copy_stored(source, &mut w, order, chunk, &mut progress)?;
+        return finish_raw(w, path, info, total, format, order, gain);
+    }
 
     match order {
         MemoryOrder::TimeMajor => {
@@ -291,13 +300,75 @@ pub fn write_raw(
             }
         }
     }
-    w.flush()?;
+    finish_raw(w, path, info, total, format, order, gain)
+}
 
+/// Writes `source`'s stored values in `order`, `chunk` samples per channel at a time.
+fn copy_stored(
+    source: &dyn RecordingSource,
+    w: &mut BufWriter<File>,
+    order: MemoryOrder,
+    chunk: u64,
+    progress: &mut impl FnMut(u64, u64),
+) -> DspResult<()> {
+    let info = source.info();
+    let (nch, total, width) = (info.channels.len(), info.samples, info.format.bytes());
+    let channels: Vec<usize> = (0..nch).collect();
+    let mut stored = Vec::new();
+    match order {
+        MemoryOrder::TimeMajor => {
+            let mut frames = Vec::new();
+            let mut s0 = 0;
+            while s0 < total {
+                let s1 = (s0 + chunk).min(total);
+                let n = (s1 - s0) as usize;
+                stored.resize(nch * n * width, 0u8);
+                source.read_stored(&channels, s0..s1, &mut stored)?;
+                frames.clear();
+                for t in 0..n {
+                    for ch in 0..nch {
+                        let at = (ch * n + t) * width;
+                        frames.extend_from_slice(&stored[at..at + width]);
+                    }
+                }
+                w.write_all(&frames)?;
+                progress(s1, total);
+                s0 = s1;
+            }
+        }
+        MemoryOrder::ChannelMajor => {
+            for ch in 0..nch {
+                let mut s0 = 0;
+                while s0 < total {
+                    let s1 = (s0 + chunk).min(total);
+                    stored.resize((s1 - s0) as usize * width, 0u8);
+                    source.read_stored(&[ch], s0..s1, &mut stored)?;
+                    w.write_all(&stored)?;
+                    s0 = s1;
+                }
+                progress((ch as u64 + 1) * total / nch as u64, total);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Flushes a written raw file and writes its sidecar.
+fn finish_raw(
+    mut w: BufWriter<File>,
+    path: &Path,
+    info: &dspk_core::RecordingInfo,
+    total: u64,
+    format: SampleFormat,
+    order: MemoryOrder,
+    gain: f32,
+) -> DspResult<RawParams> {
+    w.flush()?;
     let params = RawParams {
         samples: Some(total),
         gain,
         unit: info.channels.first().map_or_else(default_unit, |c| c.unit.clone()),
-        ..RawParams::new(nch, info.sample_rate_hz(), format, order)
+        ..RawParams::new(info.channels.len(), info.sample_rate_hz(), format, order)
     };
     params.write_sidecar(path)?;
     Ok(params)
@@ -354,6 +425,33 @@ mod tests {
         // 3 channels x 1000 samples, value = ch * 1000 + sample (exact in i16 with gain 1)
         let data = (0..3).flat_map(|c| (0..1000).map(move |s| (c * 1000 + s) as f32)).collect();
         MemoryRecording::new("src", data, 3, 30_000.0).unwrap()
+    }
+
+    #[test]
+    fn an_int16_recording_is_rewritten_byte_for_byte() {
+        // int16 with a non-trivial gain, written channel-major; rewritten as int16 at the same gain
+        // in both orders: the stored integers are copied, not decoded and re-quantized
+        let first = temp("passthrough_src");
+        write_raw(&source(), &first, SampleFormat::I16, MemoryOrder::ChannelMajor, 1.0, 64, |_, _| {}).unwrap();
+        let mut params = RawParams::from_sidecar(&first).unwrap();
+        params.gain = 0.195;
+        params.write_sidecar(&first).unwrap();
+        let rec = RawRecording::open(&first).unwrap();
+        let stored = fs::read(&first).unwrap();
+        for order in [MemoryOrder::ChannelMajor, MemoryOrder::TimeMajor] {
+            let out = first.with_file_name(format!("copy_{order:?}.bin"));
+            write_raw(&rec, &out, SampleFormat::I16, order, 0.195, 100, |_, _| {}).unwrap();
+            let copied = fs::read(&out).unwrap();
+            let expected: Vec<u8> = match order {
+                MemoryOrder::ChannelMajor => stored.clone(),
+                MemoryOrder::TimeMajor => {
+                    let at = |c: usize, t: usize| &stored[(c * 1000 + t) * 2..(c * 1000 + t) * 2 + 2];
+                    (0..1000).flat_map(|t| (0..3).flat_map(move |c| at(c, t).to_vec())).collect()
+                }
+            };
+            assert_eq!(copied, expected, "{order:?}");
+            assert_eq!(RawParams::from_sidecar(&out).unwrap().gain, 0.195);
+        }
     }
 
     #[test]

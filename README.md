@@ -38,22 +38,43 @@ Runtimes are crate features; the device is picked at run time with `dspk::core::
 
 ```toml
 [dependencies]
-dspk = "0.0.2"                                               # wgpu (default)
-# dspk = { version = "0.0.2", features = ["cuda", "cpu"] }   # add CUDA and the CPU runtime
+dspk = "0.0.3"                                                                  # wgpu, cuda and cpu (default)
+# dspk = { version = "0.0.3", default-features = false, features = ["wgpu", "zarr"] }  # wgpu only
 ```
 
 | Feature | Runtime | Tested |
 |---|---|---|
 | `wgpu` (default) | WebGPU: Vulkan, Metal, DirectX 12 | NVIDIA RTX 2070 Max-Q, Intel UHD 630 (Vulkan) |
-| `cuda` | NVIDIA CUDA | NVIDIA RTX 2070 Max-Q |
-| `cpu` | CubeCL CPU runtime (MLIR / LLVM) | x86-64 |
+| `cuda` (default) | NVIDIA CUDA | NVIDIA RTX 2070 Max-Q |
+| `cpu` (default) | CubeCL CPU runtime (MLIR / LLVM) | x86-64 |
 | `hip` | AMD ROCm / HIP | compiles; **untested** (no AMD GPU available) |
 
-CUDA and HIP are loaded at run time, so building with them needs no toolkit installed.
+CUDA and HIP are loaded at run time, so building with them needs no toolkit installed. The CPU
+runtime downloads a prebuilt LLVM on its first build (cached in `~/.local/share/tracel`); leave it
+out with `default-features = false` for a lighter build. All three are the default because the
+library, its tests, the CLI and the Python package are built and tested together that way.
 
-Autotune decisions and compiled kernels are cached across processes in the user cache directory
-(`DSPK_CACHE_DIR` moves it; `DSPK_KERNEL_CACHE=0` turns the kernel cache off): the first run on a
-device tunes, later runs start in about a second.
+### Kernel and autotune cache
+
+Autotune decisions and compiled kernels are cached across processes: the first run on a device
+tunes and compiles, later runs start in about a second. The cache is one SQLite database,
+`default.db` (with its `-wal` / `-tshm` journal files), in CubeCL's folder of the user cache
+directory:
+
+| OS | Location |
+|---|---|
+| Linux, macOS | `$XDG_CACHE_HOME/cubecl/`, by default `~/.cache/cubecl/` |
+| Windows | `%LOCALAPPDATA%\cubecl\` |
+| No user directory (no `HOME`, minimal containers) | the temporary directory, `cubecl/` |
+
+- `DSPK_CACHE_DIR=/some/dir` puts it in that directory instead (shared machines, CI caches,
+  read-only home directories).
+- `DSPK_KERNEL_CACHE=0` turns the compiled-kernel cache off; autotune decisions still persist.
+- Deleting the folder is safe: the next run tunes and compiles again. It grows with every runtime,
+  device and kernel variant used (about 130 MB after the full test suite on wgpu, CUDA and CPU).
+- A `cubecl.toml` in the working directory, or CubeCL's own environment variables, still apply.
+- Code that opens a device through CubeCL directly instead of dspk gets CubeCL's default:
+  `target/environment/` of the nearest Cargo project, or the user cache directory outside one.
 
 ## Python
 

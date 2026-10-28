@@ -3,6 +3,7 @@
 //! (`L = 2·nt − 1` of them, index `lag + nt − 1`).
 
 use cubecl::prelude::*;
+use dspk_core::compute::element_position;
 
 /// Alignment scores: `out[(u · K + k) · L + l] = max_ch |Σ_p a[u, ch, p] · proto[p, k, l]|`, where
 /// `proto[p, k, l] = Σ_t wpca[p, t] · wtemp[k, t − lag]` (unit `u`'s match with prototype `k` at that
@@ -10,7 +11,7 @@ use cubecl::prelude::*;
 #[cube(launch)]
 #[allow(clippy::too_many_arguments)]
 pub fn prototype_match_kernel<F: Float>(a: &[F], proto: &[F], out: &mut [F], units: u32, channels: u32, np: u32, k: u32, lags: u32) {
-    let unit = ABSOLUTE_POS as u32;
+    let unit = element_position() as u32;
     if unit < units * k * lags {
         let u = unit / (k * lags);
         let rest = unit - u * k * lags;
@@ -39,7 +40,7 @@ pub fn prototype_match_kernel<F: Float>(a: &[F], proto: &[F], out: &mut [F], uni
 /// One unit per `(a, b)`.
 #[cube(launch)]
 pub fn pair_similarity_kernel<F: Float>(utu: &[F], wtw: &[F], out: &mut [F], units: u32, np: u32, lags: u32) {
-    let unit = ABSOLUTE_POS as u32;
+    let unit = element_position() as u32;
     if unit < units * units {
         let a = unit / units;
         let b = unit - a * units;

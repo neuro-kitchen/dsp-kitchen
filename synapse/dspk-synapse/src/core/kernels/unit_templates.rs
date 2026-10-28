@@ -1,6 +1,7 @@
 //! Kernel of [`crate::core::template::UnitTemplateAccumulator`].
 
 use cubecl::prelude::*;
+use dspk_core::compute::element_position;
 
 /// One unit per `(unit u, channel c, sample t)` slot of `[units, channels, width]`: continues the
 /// slot's Welford mean and `M₂` over the window's spikes of unit `u`
@@ -23,7 +24,7 @@ pub fn accumulate_unit_templates_kernel<F: Float>(
     n_before: u32,
     width: u32,
 ) {
-    let q = ABSOLUTE_POS as u32;
+    let q = element_position() as u32;
     if q < n_units * channels * width {
         let t = q % width;
         let c = (q / width) % channels;

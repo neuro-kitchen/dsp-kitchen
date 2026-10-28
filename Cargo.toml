@@ -6,6 +6,8 @@ members = [
     "crates/dspk-core",
     "crates/dspk-io",
     "crates/dspk-ops",
+    # Pipeline engine
+    "engine/dspk-pipeline",
     # Electrophysiology
     "synapse/dspk-synapse-io",
     "synapse/dspk-synapse",
@@ -24,7 +26,7 @@ members = [
 
 
 [workspace.package]
-version = "0.0.2"
+version = "0.0.3"
 edition = "2024"
 authors = ["jesusdpa1 <17010046+jesusdpa1@users.noreply.github.com>"]
 license = "MIT OR Apache-2.0"
@@ -34,15 +36,16 @@ keywords = ["dsp", "gpu", "signal-processing", "cubecl", "electrophysiology"]
 categories = ["science", "algorithms", "concurrency"]
 
 [workspace.dependencies]
-dspk-core = { path = "crates/dspk-core", version = "0.0.2", default-features = false }
-dspk-ops = { path = "crates/dspk-ops", version = "0.0.2", default-features = false }
-dspk-synapse-io = { path = "synapse/dspk-synapse-io", version = "0.0.2", default-features = false }
-dspk-synapse = { path = "synapse/dspk-synapse", version = "0.0.2", default-features = false }
-dspk-synapse-ml = { path = "synapse/dspk-synapse-ml", version = "0.0.2", default-features = false }
-dspk-synapse-hub = { path = "synapse/dspk-synapse-hub", version = "0.0.2", default-features = false }
-dspk-stream = { path = "serve/dspk-stream", version = "0.0.2", default-features = false }
-dspk-view = { path = "serve/dspk-view", version = "0.0.2", default-features = false }
-dspk-io = { path = "crates/dspk-io", version = "0.0.2", default-features = false }
+dspk-core = { path = "crates/dspk-core", version = "0.0.3", default-features = false }
+dspk-ops = { path = "crates/dspk-ops", version = "0.0.3", default-features = false }
+dspk-synapse-io = { path = "synapse/dspk-synapse-io", version = "0.0.3", default-features = false }
+dspk-synapse = { path = "synapse/dspk-synapse", version = "0.0.3", default-features = false }
+dspk-synapse-ml = { path = "synapse/dspk-synapse-ml", version = "0.0.3", default-features = false }
+dspk-synapse-hub = { path = "synapse/dspk-synapse-hub", version = "0.0.3", default-features = false }
+dspk-stream = { path = "serve/dspk-stream", version = "0.0.3", default-features = false }
+dspk-view = { path = "serve/dspk-view", version = "0.0.3", default-features = false }
+dspk-io = { path = "crates/dspk-io", version = "0.0.3", default-features = false }
+dspk-pipeline = { path = "engine/dspk-pipeline", version = "0.0.3", default-features = false }
 dspk-py-core = { path = "bindings/python/dspk-py-core", default-features = false }
 
 # Compute & Tensors
@@ -59,6 +62,9 @@ bytemuck = { version = "1.25.2", features = ["derive"] }
 
 # CLI & Configuration
 clap = { version = "4.6.7", features = ["derive", "cargo", "env"] }
+# CLI colours (clap's own; stripped when not a terminal or with NO_COLOR)
+anstream = "1.0.0"
+anstyle = "1.0.14"
 
 # IPC & Transport
 shared_memory = "0.12.4"
@@ -93,6 +99,11 @@ tokio = { version = "1.54.1", features = ["full"] }
 # Serialization & Utilities
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+# Pipeline specs: TOML input, JSON Schema of the spec types
+toml = "1.1.8"
+# Pipeline specs: input globs
+glob = "0.3.4"
+schemars = "1.2.3"
 thiserror = "2.0.21"
 anyhow = "1.0.104"
 num-traits = "0.2.19"
@@ -105,17 +116,25 @@ hex = "0.4.3"
 dirs = "7.0.0"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "blocking", "json"] }
 
-# Lighter build for checking results from Python (`maturin develop --profile validate`): our crates
-# lightly optimized and incremental (fast rebuilds after a change), dependencies (CubeCL, wgpu, …)
-# fully optimized and cached. Timings for the benchmarks use `--release`.
+# The one development build (Author, 2026-10-28: one compilation, not one per profile and feature
+# set): tests, benchmarks, the CLI and the Python extension all use `--profile validate`, with the
+# crates' default features (wgpu, cuda and cpu together). Our crates lightly optimized, incremental
+# and with debug assertions and overflow checks (what tests need); dependencies (CubeCL, wgpu, …)
+# fully optimized, without assertions, and cached. GPU kernels are compiled by CubeCL at run time,
+# so device timings do not depend on this profile.
 [profile.validate]
 inherits = "release"
 opt-level = 1
 codegen-units = 256
 incremental = true
+debug-assertions = true
+overflow-checks = true
+debug = "line-tables-only"
 
 [profile.validate.package."*"]
 opt-level = 3
+debug-assertions = false
+overflow-checks = false
 
 # Debug builds and tests: line tables only (panics and backtraces still name file and line), not
 # full debug info, which filled `target/` (363 GB of debug builds, 2026-10-21). For a debugger

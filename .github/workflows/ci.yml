@@ -39,16 +39,19 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends \
             libfontconfig-dev libfreetype-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev
-      - name: Check the workspace (dspk-cli is not maintained yet)
-        run: cargo check --workspace --exclude dspk-cli --all-targets
+      # Every crate builds with wgpu + cuda + cpu by default (one feature set, so steps share builds)
+      - name: Check the workspace
+        run: cargo check --workspace --all-targets
       - name: Unit tests of the host-side crates
         run: >
           cargo test -p dspk-core -p dspk-io -p dspk-synapse-io -p dspk-synapse-hub -p dspk-view -p dspk-stream
-          --features dspk-core/cpu,dspk-view/cpu --lib
+          --lib
       - name: Every dspk-ops operation against host references
-        run: cargo test -p dspk-ops --features cpu --test kernel_runtimes --test filter_runtimes
+        run: cargo test -p dspk-ops --test kernel_runtimes --test filter_runtimes
       - name: Device buffer writes
-        run: cargo test -p dspk-ops --features cpu --lib core::buffer
+        run: cargo test -p dspk-ops --lib core::buffer
+      - name: Pipeline engine (specs; stream and window runs against the whole recording)
+        run: cargo test -p dspk-pipeline --test run
 
   python:
     name: Python (build, tests vs scipy, stubs)

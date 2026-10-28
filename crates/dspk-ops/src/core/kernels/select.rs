@@ -1,5 +1,5 @@
 use cubecl::prelude::*;
-use dspk_core::compute::row_position;
+use dspk_core::compute::{row_position, row_share};
 
 /// Bits of one radix digit of [`fn@row_abs_kth_radix_kernel`].
 pub const RADIX_BITS: u32 = 8;
@@ -61,14 +61,15 @@ pub fn row_abs_kth_radix_kernel<F: Float, K: Int>(
             }
             sync_cube();
             let (prefix, mask) = (fixed[0], fixed[1]);
-            let mut col = unit;
-            while col < cols {
+            let share = row_share(cols, units);
+            let mut col = share.start;
+            while col < share.end {
                 let key = K::reinterpret(F::abs(input[(base + col) as usize]));
                 if (key & mask) == prefix {
                     let digit = u32::cast_from((key >> shift) & digit_mask);
                     Atomic::fetch_add(&hist[digit as usize], 1u32);
                 }
-                col += units;
+                col += share.step;
             }
             sync_cube();
             if unit == 0u32 {

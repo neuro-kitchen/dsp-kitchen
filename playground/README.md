@@ -1,31 +1,41 @@
 # playground
 
-Examples of the `dsp_kitchen` Python SDK, written as `# %%` cells (run them as scripts or open
-them as notebooks in VS Code / Jupyter).
+Examples of the `dspk` Python package, written as `# %%` cells (run them as scripts or open them as
+notebooks in VS Code / Jupyter). Figures and files go to `playground/output/` (git-ignored).
 
 ```text
 playground/
-├── base/       01 filtering · 02 math, common reference, PCA on every runtime · 03 pipelines, probes, recordings
-├── synapse/    01 detection walkthrough · 02 streaming detection of a whole recording · 03 detection vs ground truth
-├── benchmarks/ kilosort4_validation · kilosort4_experiments · kilosort4_benchmark (vs Kilosort4's saved results) · emusort_checks (no ground truth) · sorter_resources (+ _table: time and memory of a sorter run)
-├── sorters/    00 Kilosort4 + EMUsort on synthetic ground truth · emusort_hdemg (EMUsort on HD-EMG) · kilosort4_universal_templates (Neuropixels) · inspection (interactive unit viewer)
+├── base/       01 IIR filters vs scipy on every runtime · 02 pipelines on the device and streaming · 03 pipelines as data (JSON / TOML specs)
+├── synapse/    detection walkthroughs                    (old `dsp_kitchen` API: waits for the synapse bindings)
+├── sorters/    Kilosort4 + EMUsort examples             (old `dsp_kitchen` API: waits for the synapse bindings)
+├── benchmarks/ sorter validation and resources          (old `dsp_kitchen` API: waits for the synapse bindings)
 └── output/     anything the scripts write (git-ignored)
 ```
 
 ## Setup
 
+From the repository root:
+
 ```bash
-uv pip install maturin && maturin develop     # builds dsp_kitchen (default features: wgpu, hub)
-maturin develop --profile validate           # faster rebuilds while checking results (not for timings)
-maturin develop --release                    # for benchmark timings
-uv pip install matplotlib                     # optional, for the plots
-python playground/base/01_filtering_methods.py
+uv sync                                                             # development environment
+cd bindings/python && uv run --project ../.. maturin develop --profile validate && cd ../..
+uv run python playground/base/01_filters_vs_scipy.py
 ```
+
+Use `maturin develop --release` instead for timings (`--profile validate` optimizes the dependencies
+but not dspk itself).
+
+## Not in the new bindings yet
+
+The previous `base/` scripts (FIR and template filters, PCA and other linear algebra, spatial
+whitening, class-style filters, probe layouts) used parts the rewritten bindings do not cover yet;
+they are parked in `.refactoring/playground/base-old/` and in git history. Probe layouts belong to
+the synapse bindings.
 
 ## Data
 
 Test data is local and not in the repository: it lives in `<repository>/data/` (git-ignored), or
-in the folder named by `DSP_KITCHEN_DATA`.
+in the folder named by `DSP_KITCHEN_DATA` (scripts on the old API).
 
 | Path under `data/` | Used by |
 |---|---|
@@ -33,9 +43,9 @@ in the folder named by `DSP_KITCHEN_DATA`.
 | `kilosort4/ZFM-02370_mini.imec0.ap.short.bin` + `.meta` (Neuropixels 1.0, SpikeGLX) | `sorters/kilosort4_universal_templates`, `benchmarks/kilosort4_*`, `benchmarks/sorter_resources` |
 | `kilosort4/saved_results/` (Kilosort4's output for that file, Phy folder) | `sorters/kilosort4_universal_templates`, `benchmarks/kilosort4_*` (through `benchmarks/ks4_reference.py`) |
 
-`base/01`, `base/02`, `synapse/03` and `sorters/00` need no data (synthetic signals, or
-`dsp_kitchen.io.SyntheticRecording` with ground truth). `base/03` and `synapse/01` fall back to
-synthetic data when the recording is absent.
+The `base/` scripts need no data (synthetic signals). `synapse/03` and `sorters/00` use
+`dsp_kitchen.io.SyntheticRecording`; `synapse/01` falls back to synthetic data when the recording is
+absent.
 
 ## What the sorter examples show
 

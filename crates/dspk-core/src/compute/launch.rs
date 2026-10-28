@@ -12,6 +12,26 @@ pub struct LaunchGeometry {
     pub cube_count: CubeCount,
 }
 
+/// Element of the unit in a [`LaunchGeometry::elementwise`] launch; kernels bound-check it.
+///
+/// - **GPUs** (a cube is a plane or more wide): `ABSOLUTE_POS`, neighbouring units on neighbouring
+///   elements, so a plane's reads coalesce.
+/// - **Runtimes that run each unit of a cube on its own thread and loop it over every cube**
+///   (CubeCL's CPU runtime: cubes one unit wide along x, one unit per core along y): unit `u` takes
+///   the contiguous run `u · cubes .. (u + 1) · cubes`. With `ABSOLUTE_POS` the threads would
+///   interleave element by element (`u, u + units, …`), sharing cache lines and leaving nothing
+///   contiguous to vectorize: the CPU's streaming kernels ran at 3 GB/s (2026-10-28, 12 cores).
+///
+/// Both cover `0..units · cubes`, so the results are the same; only the order differs.
+#[cube]
+pub fn element_position() -> usize {
+    if CUBE_DIM_X == 1 && CUBE_DIM > 1 {
+        UNIT_POS as usize * CUBE_COUNT + CUBE_POS
+    } else {
+        ABSOLUTE_POS
+    }
+}
+
 /// Sample index of the unit in a [`LaunchGeometry::channels_samples`] or
 /// [`LaunchGeometry::per_sample`] launch. Samples run along x and continue along z when they need
 /// more cubes than one grid dimension holds; kernels bound-check the result.
@@ -26,6 +46,34 @@ pub fn channel_position() -> u32 {
     ABSOLUTE_POS_Y
 }
 
+/// The columns `start..end` (every `step`-th) a unit walks in a [`LaunchGeometry::per_row`] cube
+/// of `units` units over a row of `cols`:
+///
+/// - **GPUs**: `unit, unit + units, …` — neighbouring units on neighbouring columns (coalesced).
+/// - **CPU runtime** (`PLANE_DIM == 1`, every unit its own thread): one contiguous run of
+///   `⌈cols / units⌉` columns per unit, for the same reason as [`fn@element_position`].
+///
+/// Either way the units cover every column once, so per-unit partial results merge the same.
+#[derive(CubeType)]
+pub struct RowShare {
+    pub start: u32,
+    pub end: u32,
+    pub step: u32,
+}
+
+/// This unit's [`RowShare`] of a row of `cols` columns.
+#[cube]
+pub fn row_share(cols: u32, #[comptime] units: u32) -> RowShare {
+    let unit = UNIT_POS_X;
+    // Field by field: a CubeCL `if` cannot yield a struct
+    let contiguous = PLANE_DIM == 1u32;
+    let chunk = (cols + units - 1u32) / units;
+    let start = if contiguous { u32::min(unit * chunk, cols) } else { unit };
+    let end = if contiguous { u32::min(start + chunk, cols) } else { cols };
+    let step = if contiguous { 1u32 } else { units };
+    RowShare { start, end, step }
+}
+
 /// Row reduced by the cube in a [`LaunchGeometry::per_row`] launch (uniform across the cube).
 #[cube]
 pub fn row_position() -> u32 {
@@ -33,8 +81,9 @@ pub fn row_position() -> u32 {
 }
 
 impl LaunchGeometry {
-    /// One unit per element, indexed with the linear `ABSOLUTE_POS`. The cubes are spread over the
-    /// runtime's cube-count dimensions, so kernels must bound-check `ABSOLUTE_POS`.
+    /// One unit per element, indexed with [`fn@element_position`] (contiguous runs per thread on
+    /// the CPU runtime, `ABSOLUTE_POS` elsewhere). The cubes are spread over the runtime's
+    /// cube-count dimensions, so kernels must bound-check the position.
     pub fn elementwise(client: &Client, num_elements: usize) -> Self {
         let n = num_elements.max(1);
         let cube_dim = CubeDim::new(client, n);

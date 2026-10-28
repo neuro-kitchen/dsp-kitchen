@@ -3,13 +3,13 @@
 //! device: one upload, every stage, one download.
 //!
 //! Native functions take every argument; the Python wrappers (`dspk.ops.stage`) hold the defaults,
-//! taken from the constants exported here.
+//! taken from the constants `dspk.ops.filter` exports.
 
+use crate::ops::device::DeviceInput;
 use std::sync::Mutex;
 
-use dspk_ops::core::EdgeMode;
-use dspk_ops::filter::fir::GAUSSIAN_DEFAULT_EDGE;
-use dspk_ops::filter::non_linear::{MAX_MEDIAN_WIDTH, MEDIAN_DEFAULT_EDGE, TEAGER_KAISER_DEFAULT_EDGE};
+use dspk_ops::core::buffer;
+use dspk_ops::filter::non_linear::MAX_MEDIAN_WIDTH;
 use dspk_ops::filter::{FilterDesign, FilterMode, FilterSpec};
 use dspk_ops::pipeline::PipelineWorkspace;
 use dspk_ops::{Pipeline as RustPipeline, PipelineStage};
@@ -19,27 +19,9 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 
-use super::filter::{band, design, mode, sos_from_numpy, start};
+use super::filter::{band, design, edge, mode, sos_from_numpy, start};
 use crate::runtime;
 
-fn edge(name: &str) -> PyResult<EdgeMode> {
-    match name {
-        "zeros" => Ok(EdgeMode::Zeros),
-        "odd" => Ok(EdgeMode::Odd),
-        "reflect" => Ok(EdgeMode::Reflect),
-        "nearest" => Ok(EdgeMode::Nearest),
-        other => Err(PyValueError::new_err(format!("unknown edge {other:?} (zeros, odd, reflect, nearest)"))),
-    }
-}
-
-fn edge_name(edge: EdgeMode) -> &'static str {
-    match edge {
-        EdgeMode::Zeros => "zeros",
-        EdgeMode::Odd => "odd",
-        EdgeMode::Reflect => "reflect",
-        EdgeMode::Nearest => "nearest",
-    }
-}
 
 /// One pipeline stage (build with the functions of `dspk.ops.stage`).
 #[gen_stub_pyclass]
@@ -106,6 +88,30 @@ fn stage_sos(sos: PyReadonlyArray2<'_, f64>, mode: &str, start: &str) -> PyResul
 
 #[gen_stub_pyfunction(module = "dspk._native.ops")]
 #[pyfunction]
+fn stage_fir(taps: Vec<f32>, centered: bool, edge: &str) -> PyResult<Stage> {
+    if taps.is_empty() {
+        return Err(PyValueError::new_err("taps is empty"));
+    }
+    if centered && taps.len().is_multiple_of(2) {
+        return Err(PyValueError::new_err(format!("centered FIR needs an odd number of taps, got {}", taps.len())));
+    }
+    Ok(stage(PipelineStage::Fir { taps, centered, edge: self::edge(edge)? }))
+}
+
+#[gen_stub_pyfunction(module = "dspk._native.ops")]
+#[pyfunction]
+fn stage_whiten(whitening: PyRef<'_, super::spatial::Whitening>) -> Stage {
+    stage(PipelineStage::SpatialWhitening(whitening.model.clone()))
+}
+
+#[gen_stub_pyfunction(module = "dspk._native.ops")]
+#[pyfunction]
+fn stage_laplacian(laplacian: PyRef<'_, super::spatial::Laplacian>) -> Stage {
+    stage(PipelineStage::SurfaceLaplacian(laplacian.model.clone()))
+}
+
+#[gen_stub_pyfunction(module = "dspk._native.ops")]
+#[pyfunction]
 fn stage_car() -> Stage {
     stage(PipelineStage::CommonAverageReference)
 }
@@ -128,7 +134,7 @@ fn stage_gaussian_smooth(sigma_samples: f32, edge: &str) -> PyResult<Stage> {
 #[gen_stub_pyfunction(module = "dspk._native.ops")]
 #[pyfunction]
 fn stage_median(width: usize, edge: &str) -> PyResult<Stage> {
-    if width % 2 == 0 || width > MAX_MEDIAN_WIDTH {
+    if width.is_multiple_of(2) || width > MAX_MEDIAN_WIDTH {
         return Err(PyValueError::new_err(format!("median width must be odd and at most {MAX_MEDIAN_WIDTH}, got {width}")));
     }
     Ok(stage(PipelineStage::Median { width, edge: self::edge(edge)? }))
@@ -198,10 +204,10 @@ impl Pipeline {
         self.stages.len()
     }
 
-    /// Runs every stage over `data` `(channels, samples)` on the device; returns the result.
-    fn process<'py>(&self, py: Python<'py>, data: PyReadonlyArray2<'_, f32>) -> PyResult<Bound<'py, PyArray2<f32>>> {
-        let (channels, samples) = data.as_array().dim();
-        let values: Vec<f32> = data.as_array().iter().copied().collect();
+    /// Runs every stage over `data` `(channels, samples)` on the device; returns the result
+    /// (float32). Integer arrays cross as their integers and are converted on the device.
+    fn process<'py>(&self, py: Python<'py>, data: DeviceInput) -> PyResult<Bound<'py, PyArray2<f32>>> {
+        let (channels, samples) = data.dim();
         let out = py.detach(|| -> Result<Vec<f32>, String> {
             let mut slot = self.workspace.lock().map_err(|_| "pipeline lock poisoned".to_string())?;
             if let Some((ch, _)) = slot.as_ref() {
@@ -209,6 +215,17 @@ impl Pipeline {
                     return Err(format!("this pipeline processes {ch} channels; got {channels} (call reset() first)"));
                 }
             } else {
+                // Fitted spatial stages hold a channel count; dspk-ops asserts it
+                for stage in self.stages.stages() {
+                    let fitted = match stage {
+                        PipelineStage::SpatialWhitening(w) => Some(("whitening", w.num_channels)),
+                        PipelineStage::SurfaceLaplacian(l) => Some(("laplacian", l.num_channels)),
+                        _ => None,
+                    };
+                    if let Some((name, n)) = fitted.filter(|(_, n)| *n != channels) {
+                        return Err(format!("this pipeline's {name} stage is for {n} channels; got {channels}"));
+                    }
+                }
                 let client = runtime::open_client(self.target)?;
                 let stages = self.stages.clone();
                 let workspace = if self.stream {
@@ -220,9 +237,15 @@ impl Pipeline {
                 *slot = Some((channels, workspace));
             }
             let (_, workspace) = slot.as_mut().expect("created above");
-            let mut out = vec![0.0f32; values.len()];
-            workspace.process_chunk(&values, samples, &mut out);
-            Ok(out)
+            // Integer arrays cross as their stored integers and are converted on the device
+            let handle = match data.stored() {
+                Some((format, bytes)) => {
+                    workspace.set_stored_scaling(&vec![1.0; channels], &vec![0.0; channels]);
+                    workspace.process_stored_chunk_in_vram(bytes, format, samples).map_err(|e| e.to_string())?
+                }
+                None => workspace.process_chunk_in_vram(&data.host_f32(), samples),
+            };
+            Ok(buffer::download_prefix::<f32>(workspace.client(), handle, data.len()))
         });
         let out = out.map_err(|e| if e.starts_with("this pipeline") { PyValueError::new_err(e) } else { PyRuntimeError::new_err(e) })?;
         Ok(Array2::from_shape_vec((channels, samples), out).expect("one value per input value").into_pyarray(py))
@@ -238,10 +261,6 @@ impl Pipeline {
     }
 }
 
-pyo3_stub_gen::module_variable!("dspk._native.ops", "MEDIAN_DEFAULT_EDGE", String);
-pyo3_stub_gen::module_variable!("dspk._native.ops", "GAUSSIAN_DEFAULT_EDGE", String);
-pyo3_stub_gen::module_variable!("dspk._native.ops", "TEAGER_KAISER_DEFAULT_EDGE", String);
-pyo3_stub_gen::module_variable!("dspk._native.ops", "MAX_MEDIAN_WIDTH", usize);
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Stage>()?;
@@ -252,14 +271,13 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(stage_iir, m)?)?;
     m.add_function(wrap_pyfunction!(stage_notch, m)?)?;
     m.add_function(wrap_pyfunction!(stage_sos, m)?)?;
+    m.add_function(wrap_pyfunction!(stage_fir, m)?)?;
+    m.add_function(wrap_pyfunction!(stage_whiten, m)?)?;
+    m.add_function(wrap_pyfunction!(stage_laplacian, m)?)?;
     m.add_function(wrap_pyfunction!(stage_car, m)?)?;
     m.add_function(wrap_pyfunction!(stage_cmr, m)?)?;
     m.add_function(wrap_pyfunction!(stage_gaussian_smooth, m)?)?;
     m.add_function(wrap_pyfunction!(stage_median, m)?)?;
     m.add_function(wrap_pyfunction!(stage_teager_kaiser, m)?)?;
-    m.add("MEDIAN_DEFAULT_EDGE", edge_name(MEDIAN_DEFAULT_EDGE))?;
-    m.add("GAUSSIAN_DEFAULT_EDGE", edge_name(GAUSSIAN_DEFAULT_EDGE))?;
-    m.add("TEAGER_KAISER_DEFAULT_EDGE", edge_name(TEAGER_KAISER_DEFAULT_EDGE))?;
-    m.add("MAX_MEDIAN_WIDTH", MAX_MEDIAN_WIDTH)?;
     Ok(())
 }

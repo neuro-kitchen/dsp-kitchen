@@ -12,7 +12,8 @@ from collections.abc import Sequence
 import numpy as np
 
 from dspk._native import ops as _ops
-from dspk.ops import filter, stage
+from dspk.ops.filter._common import _channels
+from dspk.ops import filter, linalg, math, peaks, resample, spatial, stage
 
 
 class Pipeline:
@@ -34,11 +35,9 @@ class Pipeline:
         self._native = _ops.Pipeline(list(stages), sample_rate, stream=stream, runtime=runtime)
 
     def process(self, data) -> np.ndarray:
-        """Runs every stage over ``data`` ``(channels, samples)``; returns float32 of the same shape."""
-        array = np.ascontiguousarray(data, dtype=np.float32)
-        if array.ndim != 2:
-            raise ValueError(f"data must be 2-D (channels, samples), got shape {array.shape}")
-        return self._native.process(array)
+        """Runs every stage over ``data`` ``(channels, samples)``; returns float32 of the same shape.
+        Integer arrays cross to the device as their integers and are converted there."""
+        return self._native.process(_channels(data))
 
     def reset(self) -> None:
         """Forgets the device workspace: the next chunk starts a new stream."""
@@ -68,4 +67,4 @@ class Pipeline:
         return repr(self._native)
 
 
-__all__ = ["Pipeline", "filter", "stage"]
+__all__ = ["Pipeline", "filter", "linalg", "math", "peaks", "resample", "spatial", "stage"]

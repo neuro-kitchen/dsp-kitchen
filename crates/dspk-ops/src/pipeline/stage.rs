@@ -1,6 +1,7 @@
 use crate::filter::design::{FilterError, FilterSpec, Sos};
 use crate::core::EdgeMode;
 use crate::filter::fir::gaussian::{gaussian_radius, GAUSSIAN_DEFAULT_EDGE, GAUSSIAN_TRUNCATE};
+use crate::filter::fir::FIR_DEFAULT_EDGE;
 use crate::filter::non_linear::{MEDIAN9_RADIUS, MEDIAN_DEFAULT_EDGE, TEAGER_KAISER_DEFAULT_EDGE};
 use crate::spatial::{SpatialWhitening, SurfaceLaplacian};
 
@@ -24,6 +25,9 @@ pub enum PipelineStage {
     SpatialWhitening(SpatialWhitening),
     /// 2D Surface Laplacian (double-differential spatial filter) across channels
     SurfaceLaplacian(SurfaceLaplacian),
+    /// FIR filter with explicit `taps`: causal (`y[t] = Σ taps[k] · x[t − k]`) or `centered` (odd
+    /// number of taps around each sample); samples past the ends come from `edge`.
+    Fir { taps: Vec<f32>, centered: bool, edge: EdgeMode },
     /// Zero-phase 1D Gaussian temporal smoothing with standard deviation `sigma_samples`, cut at
     /// `GAUSSIAN_TRUNCATE` σ; samples past the ends come from `edge`.
     GaussianSmooth { sigma_samples: f32, edge: EdgeMode },
@@ -77,6 +81,11 @@ impl PipelineStage {
     }
 
     /// Zero-phase Gaussian smoothing with reflected edges (`scipy.ndimage.gaussian_filter1d`).
+    /// Causal FIR filter with `taps` and zero history before the first sample (`lfilter(taps, 1, x)`).
+    pub fn fir(taps: Vec<f32>) -> Self {
+        Self::Fir { taps, centered: false, edge: FIR_DEFAULT_EDGE }
+    }
+
     pub fn gaussian_smooth(sigma_samples: f32) -> Self {
         Self::GaussianSmooth { sigma_samples, edge: GAUSSIAN_DEFAULT_EDGE }
     }
@@ -116,6 +125,9 @@ impl PipelineStage {
                 (r, r)
             }
             PipelineStage::Median { width, .. } => (width / 2, width / 2),
+            // Finite memory: this much context gives the whole-signal result exactly
+            PipelineStage::Fir { taps, centered: false, .. } => (taps.len().saturating_sub(1), 0),
+            PipelineStage::Fir { taps, centered: true, .. } => (taps.len() / 2, taps.len() / 2),
             PipelineStage::TeagerKaiser { .. } => (1, 1),
             PipelineStage::Scale { .. }
             | PipelineStage::SubtractBaseline { .. }

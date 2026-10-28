@@ -1,12 +1,13 @@
 //! Kernels of [`crate::sorters::components::matched`].
 
 use cubecl::prelude::*;
+use dspk_core::compute::element_position;
 
 /// One unit per element `(c, i)` of `out` (`[channels, samples]`): `Σₖ proto[k] · x[c, i + k]`
 /// for `i + len ≤ samples` (the correlation's valid part), 0 past it.
 #[cube(launch)]
 pub fn correlate_prototype_kernel<F: Float>(x: &[F], proto: &[F], out: &mut [F], samples: u32, len: u32, total: u32) {
-    let e = ABSOLUTE_POS as u32;
+    let e = element_position() as u32;
     if e < total {
         let c = e / samples;
         let i = e - c * samples;
@@ -36,7 +37,7 @@ pub fn spatial_sum_kernel<F: Float>(
     samples: u32,
     total: u32,
 ) {
-    let e = ABSOLUTE_POS as u32;
+    let e = element_position() as u32;
     if e < total {
         let r = e / samples;
         let i = e - r * samples;
@@ -54,7 +55,7 @@ pub fn spatial_sum_kernel<F: Float>(
 /// `out[i] = x[channels[i] · samples + at[i]]`: values of a `[channels, samples]` buffer at points.
 #[cube(launch)]
 pub fn gather_points_kernel<F: Float>(x: &[F], channels: &[u32], at: &[u32], out: &mut [F], samples: u32, n: u32) {
-    let i = ABSOLUTE_POS as u32;
+    let i = element_position() as u32;
     if i < n {
         out[i as usize] = x[(channels[i as usize] * samples + at[i as usize]) as usize];
     }
@@ -75,7 +76,7 @@ pub fn omp_scalar_products_kernel<F: Float>(
     peaks: u32,
     total: u32,
 ) {
-    let e = ABSOLUTE_POS as u32;
+    let e = element_position() as u32;
     if e < total {
         let t = e / peaks;
         let i = e - t * peaks;

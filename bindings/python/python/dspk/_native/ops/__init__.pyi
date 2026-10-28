@@ -6,31 +6,36 @@ import numpy
 import numpy.typing
 import typing
 from . import filter
+from . import linalg
+from . import math
+from . import peaks
+from . import resample
+from . import spatial
 __all__ = [
-    "GAUSSIAN_DEFAULT_EDGE",
-    "MAX_MEDIAN_WIDTH",
-    "MEDIAN_DEFAULT_EDGE",
     "Pipeline",
     "Stage",
-    "TEAGER_KAISER_DEFAULT_EDGE",
     "filter",
+    "linalg",
+    "math",
+    "peaks",
+    "resample",
+    "spatial",
     "stage_car",
     "stage_clamp",
     "stage_cmr",
+    "stage_fir",
     "stage_gaussian_smooth",
     "stage_iir",
+    "stage_laplacian",
     "stage_median",
     "stage_notch",
     "stage_scale",
     "stage_sos",
     "stage_subtract_baseline",
     "stage_teager_kaiser",
+    "stage_whiten",
 ]
 
-GAUSSIAN_DEFAULT_EDGE: builtins.str
-MAX_MEDIAN_WIDTH: builtins.int
-MEDIAN_DEFAULT_EDGE: builtins.str
-TEAGER_KAISER_DEFAULT_EDGE: builtins.str
 @typing.final
 class Pipeline:
     r"""
@@ -57,9 +62,10 @@ class Pipeline:
         """
     def __new__(cls, stages: typing.Sequence[Stage], sample_rate: builtins.float, *, stream: builtins.bool, runtime: typing.Optional[builtins.str]) -> Pipeline: ...
     def __len__(self) -> builtins.int: ...
-    def process(self, data: numpy.typing.NDArray[numpy.float32]) -> numpy.typing.NDArray[numpy.float32]:
+    def process(self, data: numpy.typing.NDArray[typing.Any]) -> numpy.typing.NDArray[numpy.float32]:
         r"""
-        Runs every stage over `data` `(channels, samples)` on the device; returns the result.
+        Runs every stage over `data` `(channels, samples)` on the device; returns the result
+        (float32). Integer arrays cross as their integers and are converted on the device.
         """
     def reset(self) -> None:
         r"""
@@ -80,9 +86,13 @@ def stage_clamp(min: builtins.float, max: builtins.float) -> Stage: ...
 
 def stage_cmr() -> Stage: ...
 
+def stage_fir(taps: typing.Sequence[builtins.float], centered: builtins.bool, edge: builtins.str) -> Stage: ...
+
 def stage_gaussian_smooth(sigma_samples: builtins.float, edge: builtins.str) -> Stage: ...
 
 def stage_iir(band: builtins.str, cutoff: typing.Sequence[builtins.float], order: builtins.int, design: builtins.str, ripple_db: typing.Optional[builtins.float], mode: builtins.str, start: builtins.str) -> Stage: ...
+
+def stage_laplacian(laplacian: spatial.Laplacian) -> Stage: ...
 
 def stage_median(width: builtins.int, edge: builtins.str) -> Stage: ...
 
@@ -95,4 +105,6 @@ def stage_sos(sos: numpy.typing.NDArray[numpy.float64], mode: builtins.str, star
 def stage_subtract_baseline(baseline: builtins.float) -> Stage: ...
 
 def stage_teager_kaiser(edge: builtins.str) -> Stage: ...
+
+def stage_whiten(whitening: spatial.Whitening) -> Stage: ...
 

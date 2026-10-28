@@ -1,11 +1,12 @@
 use cubecl::prelude::*;
+use dspk_core::compute::element_position;
 
 /// Copies columns `0..cols` of `rows` strided rows into a split-major buffer `[splits, rows,
 /// split]`: `output[(s · rows + r) · split + j] = input[offset + r · row_stride + t] − mean[r]` with
 /// `t = s · split + j`, zero where `t ≥ cols` (the padded end of the last split; zero columns add
 /// nothing to a product with itself). `centred = false` skips the mean (`mean` is not read). The
 /// offset is applied here, so the input binds at the buffer's start. One unit per output element
-/// (`ABSOLUTE_POS`).
+/// ([`fn@element_position`]).
 #[cube(launch)]
 #[allow(clippy::too_many_arguments)]
 pub fn split_rows_kernel<F: Float>(
@@ -20,7 +21,7 @@ pub fn split_rows_kernel<F: Float>(
     total: u32,
     #[comptime] centred: bool,
 ) {
-    let e = ABSOLUTE_POS as u32;
+    let e = element_position() as u32;
     if e < total {
         let j = e % split;
         let sr = e / split;
@@ -39,7 +40,7 @@ pub fn split_rows_kernel<F: Float>(
 }
 
 /// `out[e] = scale · Σ_s partial[s · len + e]` over the `slices` partial products; `accumulate`
-/// adds to `out` instead of overwriting it. One unit per element (`ABSOLUTE_POS`).
+/// adds to `out` instead of overwriting it. One unit per element ([`fn@element_position`]).
 #[cube(launch)]
 pub fn sum_slices_kernel<F: Float + CubeElement + LaunchArg>(
     partial: &[F],
@@ -49,7 +50,7 @@ pub fn sum_slices_kernel<F: Float + CubeElement + LaunchArg>(
     scale: F,
     #[comptime] accumulate: bool,
 ) {
-    let e = ABSOLUTE_POS as u32;
+    let e = element_position() as u32;
     if e < len {
         let mut acc = F::new(0.0f32);
         let mut s = 0u32;

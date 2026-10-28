@@ -15,18 +15,12 @@ from collections.abc import Sequence
 import numpy as np
 
 from dspk._native import ops as _ops
+from dspk.ops.filter._common import _channels
 
 _filter = _ops.filter
 
 DEFAULT_ORDER: int = _filter.DEFAULT_ORDER
 SETTLING_TOLERANCE: float = _filter.SETTLING_TOLERANCE
-
-
-def _channels(data) -> np.ndarray:
-    array = np.ascontiguousarray(data, dtype=np.float32)
-    if array.ndim != 2:
-        raise ValueError(f"data must be 2-D (channels, samples), got shape {array.shape}")
-    return array
 
 
 def _cutoff(cutoff: float | Sequence[float]) -> list[float]:
