@@ -234,3 +234,95 @@ fn zarr_output_matches_raw_and_provenance_is_written() {
     assert_eq!(PipelineSpec::load(&report.provenance).unwrap(), zarr);
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// The chain over `data` (`[channels, samples]` channel-major) as one chunk, streamed, on `target`.
+fn stream_once(spec: &PipelineSpec, target: ComputeTarget, data: &[f32], channels: usize) -> Vec<f32> {
+    let chain = spec.chain().unwrap();
+    let pipeline = dspk_ops::Pipeline::with_stages(chain.stages.iter().map(|(_, n)| n.stage().unwrap().unwrap()).collect());
+    let samples = data.len() / channels;
+    let mut ws = PipelineWorkspace::<f32>::new_stateful(target.client().unwrap(), pipeline, channels, samples, FS).unwrap();
+    let mut out = vec![0.0f32; data.len()];
+    ws.process_chunk(data, samples, &mut out);
+    out
+}
+
+#[test]
+fn a_channel_subset_and_sample_range_equal_the_stages_on_that_slice() {
+    let (picked, range) = ([4usize, 1, 2], 5_000..41_000);
+    for target in targets() {
+        let dir = scratch(&format!("subset_{}", target.name()));
+        let rec = write_input(&dir);
+        let spec = PipelineSpec::from_json(&format!(
+            r#"{{"dspk_pipeline": 1,
+                "nodes": {{"in": {{"op": "read", "path": "in.bin", "channels": [4, 1, 2], "start": {}, "stop": {}}},
+                           "c": {{"op": "car"}},
+                           "hp": {{"op": "iir", "band": "highpass", "cutoff": [300.0], "mode": "forward"}},
+                           "out": {{"op": "write", "path": "out.bin"}}}},
+                "edges": [["in", "c"], ["c", "hp"], ["hp", "out"]],
+                "execution": {{"chunk_samples": {CHUNK}, "runtime": "{}"}}}}"#,
+            range.start, range.end, target.name()
+        ))
+        .unwrap();
+        let report = run(&spec, &dir).unwrap();
+        assert_eq!((report.channels, report.samples), (3, (range.end - range.start) as u64));
+        let slice: Vec<f32> = picked.iter().flat_map(|&c| rec.data()[c * SAMPLES + range.start..c * SAMPLES + range.end].to_vec()).collect();
+        let expected = stream_once(&spec, target, &slice, picked.len());
+        let err = max_rel_err(&read_all(&dir.join("out.bin")), &expected);
+        assert!(err < 1e-6, "{}: subset vs slice, max error {err:.2e}", target.name());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[test]
+fn int16_recordings_upload_stored_integers_with_the_same_result() {
+    for target in targets() {
+        let dir = scratch(&format!("stored_{}", target.name()));
+        let rec = recording();
+        dspk_io::write_raw(&rec, &dir.join("in.bin"), SampleFormat::I16, MemoryOrder::TimeMajor, 0.25, 10_000, |_, _| {}).unwrap();
+        let run_with_upload = |upload: &str, out: &str| {
+            let spec = spec(
+                r#""hp": {"op": "iir", "band": "highpass", "cutoff": [300.0], "mode": "forward"},"#,
+                r#"[["in", "hp"], ["hp", "out"]]"#,
+                &format!(r#", "execution": {{"chunk_samples": {CHUNK}, "runtime": "{}", "upload": "{upload}"}}"#, target.name()),
+            );
+            let mut spec = spec;
+            if let Some(dspk_pipeline::Node::Write { path, .. }) = spec.nodes.get_mut("out") {
+                *path = out.into();
+            }
+            run(&spec, &dir).unwrap()
+        };
+        let stored = run_with_upload("auto", "stored.bin");
+        let scaled = run_with_upload("scaled", "scaled.bin");
+        assert!(stored.stored_upload && !scaled.stored_upload);
+        // int16 = 2 bytes a sample against 4 for float32 (plus at most 3 bytes of word padding a window)
+        let windows = stored.windows as u64;
+        assert!(stored.bytes.uploaded <= scaled.bytes.uploaded / 2 + 3 * windows, "{:?} vs {:?}", stored.bytes, scaled.bytes);
+        assert_eq!(stored.bytes.read, scaled.bytes.read);
+        assert_eq!((stored.bytes.downloaded, stored.bytes.written), (scaled.bytes.downloaded, scaled.bytes.written));
+        let err = max_rel_err(&read_all(&dir.join("stored.bin")), &read_all(&dir.join("scaled.bin")));
+        assert!(err < 1e-6, "{}: stored vs scaled upload, max error {err:.2e}", target.name());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+#[test]
+fn bad_read_options_are_refused() {
+    let dir = scratch("read_opts");
+    write_input(&dir);
+    for (read, want) in [
+        (r#""channels": [0, 9]"#, "does not exist"),
+        (r#""channels": [1, 1]"#, "listed twice"),
+        (r#""channels": []"#, "empty"),
+        (r#""start": 100, "stop": 100"#, "non-empty range"),
+        (&format!(r#""stop": {}"#, SAMPLES + 1), "non-empty range"),
+    ] {
+        let spec = PipelineSpec::from_json(&format!(
+            r#"{{"dspk_pipeline": 1, "nodes": {{"in": {{"op": "read", "path": "in.bin", {read}}}, "out": {{"op": "write", "path": "o.bin"}}}},
+                "edges": [["in", "out"]]}}"#
+        ))
+        .unwrap();
+        let err = run(&spec, &dir).unwrap_err().to_string();
+        assert!(err.contains(want), "{read}: expected {want:?}, got {err:?}");
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
+}

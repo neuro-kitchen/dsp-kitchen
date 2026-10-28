@@ -11,17 +11,18 @@
 //!
 //! - JSON is canonical; TOML is accepted for hand-written files ([`PipelineSpec::load`]); the JSON
 //!   Schema of the spec is [`PipelineSpec::json_schema`].
-//! - The executor reads windows with read-ahead, uploads each window once, runs every stage on the
-//!   device, downloads once and appends the result to the output; the canonical spec is written
-//!   next to the output as provenance (`<output>.pipeline.json`).
+//! - The executor reads windows with read-ahead, uploads each window once (integer recordings as
+//!   stored integers, scaled on the device), runs every stage on the device, downloads once and
+//!   appends the result to the output; the canonical spec is written next to the output as
+//!   provenance (`<output>.pipeline.json`). The report counts the bytes moved at each step.
 
 mod run;
 mod spec;
 
-pub use run::{run, run_with, ExecutedMode, RunReport, PROVENANCE_SUFFIX};
+pub use run::{run, run_with, DataMovement, ExecutedMode, RunReport, PROVENANCE_SUFFIX};
 pub use spec::{
-    Band, Chain, Design, Edge, ExecMode, Execution, Mode, Node, OutputFormat, PipelineSpec, Start, DEFAULT_CHUNK_SAMPLES,
-    SPEC_VERSION,
+    Band, Chain, Design, Edge, ExecMode, Execution, Mode, Node, OutputFormat, PipelineSpec, Start, Upload,
+    DEFAULT_CHUNK_SAMPLES, SPEC_VERSION,
 };
 
 /// Why a pipeline could not be read, checked or run.

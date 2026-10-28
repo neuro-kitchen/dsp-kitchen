@@ -54,6 +54,16 @@ pub enum Node {
         /// Source id within the file (`dspk_io::sources`); default: the file's default source.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source: Option<String>,
+        /// Channels to read, in this order; default: all.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        channels: Option<Vec<usize>>,
+        /// First sample to process (samples, not seconds, so a range is exact); default: 0.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        start: Option<u64>,
+        /// Sample after the last one to process; default: the end of the recording. Halos of
+        /// window mode may read real data outside `start..stop`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stop: Option<u64>,
     },
     /// The output file. Relative paths are relative to the spec file.
     Write {
@@ -197,11 +207,26 @@ pub struct Execution {
     /// `wgpu`, `cuda`, `hip`, `cpu`; default: `DSPK_RUNTIME`, else the first compiled in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<String>,
+    #[serde(default)]
+    pub upload: Upload,
+}
+
+/// What crosses to the device. `stored`: the recording's stored integers, scaled on the device
+/// (int16 moves half the bytes of float32). `scaled`: float32 values scaled on the host. `auto`:
+/// `stored` for integer recordings, `scaled` otherwise (float32 is the same either way; float64 is
+/// scaled on the host).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Upload {
+    #[default]
+    Auto,
+    Stored,
+    Scaled,
 }
 
 impl Default for Execution {
     fn default() -> Self {
-        Self { mode: ExecMode::default(), chunk_samples: DEFAULT_CHUNK_SAMPLES, runtime: None }
+        Self { mode: ExecMode::default(), chunk_samples: DEFAULT_CHUNK_SAMPLES, runtime: None, upload: Upload::default() }
     }
 }
 

@@ -2,9 +2,10 @@
 //! output file.
 //!
 //! Every window crosses to the device once and back once ([`PipelineWorkspace`]: filters designed
-//! and uploaded once, device buffers reused). The next window is read while the current one runs
-//! ([`WindowLoader`]). Results are appended to a raw float32 time-major file; Zarr output is
-//! converted from it at the end.
+//! and uploaded once, device buffers reused). Integer recordings cross as their stored integers and
+//! are scaled on the device. The next window is read while the current one runs ([`WindowLoader`]).
+//! Results are appended to a raw float32 time-major file; Zarr output is converted from it at the
+//! end. [`DataMovement`] counts the bytes of each step.
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -12,13 +13,15 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use dspk_core::compute::device_elements;
-use dspk_core::{ChunkSchedule, ComputeTarget, DspResult, MemoryOrder, RecordingSource, SampleFormat, WindowLoader};
+use dspk_core::{ChunkSchedule, ComputeTarget, DspResult, HaloWindow, MemoryOrder, RecordingSource, SampleFormat, WindowLoader};
 use dspk_io::{RawParams, RawRecording};
+use dspk_ops::core::buffer;
 use dspk_ops::filter::FilterMode;
+use dspk_ops::math::stored_word_bytes;
 use dspk_ops::pipeline::PipelineWorkspace;
 use dspk_ops::{Pipeline, PipelineStage};
 
-use crate::spec::{ExecMode, Node, OutputFormat, PipelineSpec};
+use crate::spec::{ExecMode, Node, OutputFormat, PipelineSpec, Upload};
 use crate::PipelineError;
 
 /// Appended to the output path for the canonical spec written next to it (provenance).
@@ -27,10 +30,24 @@ pub const PROVENANCE_SUFFIX: &str = ".pipeline.json";
 /// How the chain was run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutedMode {
-    /// Windows in order with filter state carried: equal to processing the whole recording at once.
+    /// Windows in order with filter state carried: equal to processing the whole range at once.
     Stream,
     /// Independent windows with `left` / `right` halos of context.
     Windows { left: usize, right: usize },
+}
+
+/// Bytes moved by a run, step by step (window halos included: they are read, uploaded and
+/// downloaded with their window).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DataMovement {
+    /// Stored bytes read from the input recording.
+    pub read: u64,
+    /// Bytes uploaded to the device.
+    pub uploaded: u64,
+    /// Bytes downloaded from the device.
+    pub downloaded: u64,
+    /// Bytes written to the output (float32).
+    pub written: u64,
 }
 
 /// What a run did.
@@ -38,10 +55,14 @@ pub enum ExecutedMode {
 pub struct RunReport {
     pub mode: ExecutedMode,
     pub runtime: &'static str,
+    /// `true` when stored integers were uploaded and scaled on the device.
+    pub stored_upload: bool,
     pub channels: usize,
+    /// Samples per channel written (`stop - start`).
     pub samples: u64,
     pub sample_rate_hz: f64,
     pub windows: usize,
+    pub bytes: DataMovement,
     pub output: PathBuf,
     /// The canonical spec written next to the output.
     pub provenance: PathBuf,
@@ -66,7 +87,7 @@ pub fn run_with(
 ) -> Result<RunReport, PipelineError> {
     let started = Instant::now();
     let chain = spec.chain()?;
-    let Node::Read { path: input, source } = chain.read.1 else { unreachable!("chain starts with read") };
+    let Node::Read { path: input, source, channels: picked, start, stop } = chain.read.1 else { unreachable!("chain starts with read") };
     let Node::Write { path: output, format } = chain.write.1 else { unreachable!("chain ends with write") };
     let (input, output) = (base_dir.join(input), base_dir.join(output));
 
@@ -79,18 +100,22 @@ pub fn run_with(
 
     let source = open(&input, source.as_deref())?;
     let info = source.info();
-    let (channels, total, sample_rate) = (info.channel_count(), info.samples, info.sample_rate_hz());
-    let unit = info.channels.first().map(|c| c.unit.clone()).unwrap_or_default();
+    let (total, sample_rate, stored_format) = (info.samples, info.sample_rate_hz(), info.format);
+    let channels = select_channels(picked.as_deref(), info.channel_count())?;
+    let range = select_range(*start, *stop, total)?;
+    let unit = info.channels[channels[0]].unit.clone();
     pipeline.validate(sample_rate).map_err(|e| PipelineError::Invalid(e.to_string()))?;
 
     let mode = resolve_mode(spec.execution.mode, &pipeline, sample_rate)?;
+    let stored_upload = resolve_upload(spec.execution.upload, stored_format)?;
     let chunk = spec.execution.chunk_samples.max(1);
     let (left, right) = match mode {
         ExecutedMode::Stream => (0, 0),
         ExecutedMode::Windows { left, right } => (left, right),
     };
-    let schedule = ChunkSchedule::full_recording(total, chunk as u64, left as u64, right as u64);
-    device_elements("pipeline window [channels, samples]", &[channels, schedule.max_read_samples()])?;
+    let schedule = ChunkSchedule::new(range.clone(), chunk as u64, left as u64, right as u64, total);
+    let nch = channels.len();
+    device_elements("pipeline window [channels, samples]", &[nch, schedule.max_read_samples()])?;
 
     let target = match &spec.execution.runtime {
         Some(name) => ComputeTarget::parse(name).and_then(ComputeTarget::checked),
@@ -100,10 +125,15 @@ pub fn run_with(
     let client = target.client().map_err(|e| PipelineError::Compute(e.to_string()))?;
     let capacity = schedule.max_read_samples().max(1);
     let mut workspace = match mode {
-        ExecutedMode::Stream => PipelineWorkspace::<f32>::new_stateful(client, pipeline, channels, capacity, sample_rate),
-        ExecutedMode::Windows { .. } => PipelineWorkspace::<f32>::new(client, pipeline, channels, capacity, sample_rate),
+        ExecutedMode::Stream => PipelineWorkspace::<f32>::new_stateful(client, pipeline, nch, capacity, sample_rate),
+        ExecutedMode::Windows { .. } => PipelineWorkspace::<f32>::new(client, pipeline, nch, capacity, sample_rate),
     }
     .map_err(|e| PipelineError::Invalid(e.to_string()))?;
+    if stored_upload {
+        let gains: Vec<f32> = channels.iter().map(|&c| info.channels[c].gain).collect();
+        let offsets: Vec<f32> = channels.iter().map(|&c| info.channels[c].offset).collect();
+        workspace.set_stored_scaling(&gains, &offsets);
+    }
 
     // Raw float32, time-major; Zarr is converted from it at the end
     let raw_path = match format {
@@ -116,30 +146,57 @@ pub fn run_with(
     let file = File::create(&raw_path).map_err(|e| PipelineError::Io(format!("{}: {e}", raw_path.display())))?;
     let mut writer = BufWriter::new(file);
 
-    let mut processed = Vec::new();
+    let mut bytes = DataMovement::default();
     let mut frames = Vec::new();
-    WindowLoader::new(source.as_ref()).stream(schedule.windows(), |win, samples| {
+    // The window's own samples of a processed `[channels, read_len]` block, channel-major →
+    // time-major, appended to the output
+    let mut emit = |win: &HaloWindow, processed: &[f32], bytes: &mut DataMovement| -> DspResult<()> {
         let n = win.read_len();
-        processed.resize(channels * n, 0.0f32);
-        workspace.process_chunk(samples, n, &mut processed);
-        // The window's own samples, channel-major → time-major
         let valid = win.valid_local.clone();
         frames.clear();
-        frames.reserve(valid.len() * channels * 4);
+        frames.reserve(valid.len() * nch * 4);
         for t in valid {
-            for c in 0..channels {
+            for c in 0..nch {
                 frames.extend_from_slice(&processed[c * n + t].to_le_bytes());
             }
         }
         writer.write_all(&frames)?;
+        bytes.written += frames.len() as u64;
         Ok(())
-    })?;
+    };
+    let loader = WindowLoader::with_channels(source.as_ref(), channels.clone());
+    let read_bytes = |win: &HaloWindow| (nch * win.read_len() * stored_format.bytes()) as u64;
+    if stored_upload {
+        loader.stream_stored_owned_while(schedule.windows(), |win, stored| {
+            let n = win.read_len();
+            bytes.read += read_bytes(win);
+            bytes.uploaded += stored_word_bytes(stored.len()) as u64;
+            let handle = workspace.process_owned_stored_chunk_in_vram(stored, stored_format, n)?;
+            let processed = buffer::download_prefix::<f32>(workspace.client(), handle, nch * n);
+            bytes.downloaded += (processed.len() * 4) as u64;
+            emit(win, &processed, &mut bytes)?;
+            Ok(true)
+        })?;
+    } else {
+        let mut processed = Vec::new();
+        loader.stream(schedule.windows(), |win, samples| {
+            let n = win.read_len();
+            bytes.read += read_bytes(win);
+            bytes.uploaded += (samples.len() * 4) as u64;
+            processed.resize(nch * n, 0.0f32);
+            workspace.process_chunk(samples, n, &mut processed);
+            bytes.downloaded += (processed.len() * 4) as u64;
+            emit(win, &processed, &mut bytes)
+        })?;
+    }
+    drop(emit);
     writer.flush().map_err(|e| PipelineError::Io(format!("{}: {e}", raw_path.display())))?;
     drop(writer);
 
-    let mut params = RawParams::new(channels, sample_rate, SampleFormat::F32, MemoryOrder::TimeMajor);
+    let samples = range.end - range.start;
+    let mut params = RawParams::new(nch, sample_rate, SampleFormat::F32, MemoryOrder::TimeMajor);
     params.unit = unit;
-    params.samples = Some(total);
+    params.samples = Some(samples);
     params.write_sidecar(&raw_path)?;
 
     if *format == OutputFormat::Zarr {
@@ -157,10 +214,12 @@ pub fn run_with(
     Ok(RunReport {
         mode,
         runtime: target.name(),
-        channels,
-        samples: total,
+        stored_upload,
+        channels: nch,
+        samples,
         sample_rate_hz: sample_rate,
         windows: schedule.len(),
+        bytes,
         output,
         provenance,
         seconds: started.elapsed().as_secs_f64(),
@@ -171,6 +230,45 @@ fn provenance_path(output: &Path) -> PathBuf {
     let mut name = output.file_name().unwrap_or_default().to_os_string();
     name.push(PROVENANCE_SUFFIX);
     output.with_file_name(name)
+}
+
+/// `picked` (in its order, no repeats), or every channel.
+fn select_channels(picked: Option<&[usize]>, count: usize) -> Result<Vec<usize>, PipelineError> {
+    let Some(picked) = picked else { return Ok((0..count).collect()) };
+    if picked.is_empty() {
+        return Err(PipelineError::Invalid("read: channels is empty".into()));
+    }
+    let mut seen = vec![false; count];
+    for &c in picked {
+        if c >= count {
+            return Err(PipelineError::Invalid(format!("read: channel {c} does not exist (the recording has {count})")));
+        }
+        if std::mem::replace(&mut seen[c], true) {
+            return Err(PipelineError::Invalid(format!("read: channel {c} is listed twice")));
+        }
+    }
+    Ok(picked.to_vec())
+}
+
+fn select_range(start: Option<u64>, stop: Option<u64>, total: u64) -> Result<std::ops::Range<u64>, PipelineError> {
+    let (start, stop) = (start.unwrap_or(0), stop.unwrap_or(total));
+    if start >= stop || stop > total {
+        return Err(PipelineError::Invalid(format!("read: samples {start}..{stop} are not a non-empty range within 0..{total}")));
+    }
+    Ok(start..stop)
+}
+
+/// Stored upload works for integer storage; float32 gains nothing; float64 has no device unpacking.
+fn resolve_upload(requested: Upload, format: SampleFormat) -> Result<bool, PipelineError> {
+    let integer = !matches!(format, SampleFormat::F32 | SampleFormat::F64);
+    match requested {
+        Upload::Auto => Ok(integer),
+        Upload::Scaled => Ok(false),
+        Upload::Stored if format == SampleFormat::F64 => {
+            Err(PipelineError::Invalid("execution.upload = \"stored\": float64 recordings cannot be scaled on the device".into()))
+        }
+        Upload::Stored => Ok(true),
+    }
 }
 
 /// `stream` needs every filter forward (zero-phase needs future samples) and no stencil stage

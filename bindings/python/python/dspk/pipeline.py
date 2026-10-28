@@ -53,8 +53,9 @@ def load(path: str | PathLike) -> Spec:
 
 def run(spec: Spec | str | PathLike, base_dir: str | PathLike | None = None) -> dict[str, Any]:
     """Runs ``spec``; relative paths resolve against ``base_dir`` (default: the spec file's folder,
-    or the working directory for a dict). Returns the run report (mode, runtime, windows, output,
-    provenance, seconds, ...)."""
+    or the working directory for a dict). Returns the run report: mode, halo, runtime,
+    stored_upload, channels, samples, sample_rate, windows, output, provenance, seconds, and
+    ``bytes`` (read from the input, uploaded, downloaded, written)."""
     text, toml, folder = _text(spec)
     return _pipeline.run(text, Path(base_dir) if base_dir is not None else folder, toml=toml)
 

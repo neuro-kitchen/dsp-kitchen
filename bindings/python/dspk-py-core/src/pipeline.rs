@@ -42,7 +42,8 @@ pub fn canonical(text: &str, toml: bool) -> PyResult<String> {
 }
 
 /// Runs a spec (JSON text, or TOML with `toml=True`); relative paths resolve against `base_dir`.
-/// Returns the run report as a dict.
+/// Returns the run report as a dict (mode, halo, runtime, stored_upload, channels, samples,
+/// sample_rate, windows, bytes {read, uploaded, downloaded, written}, output, provenance, seconds).
 #[gen_stub_pyfunction(module = "dspk._native.pipeline")]
 #[pyfunction]
 #[pyo3(signature = (text, base_dir, toml=false))]
@@ -64,6 +65,13 @@ pub fn run<'py>(py: Python<'py>, text: &str, base_dir: PathBuf, toml: bool) -> P
     out.set_item("mode", mode)?;
     out.set_item("halo", (left, right))?;
     out.set_item("runtime", report.runtime)?;
+    out.set_item("stored_upload", report.stored_upload)?;
+    let bytes = PyDict::new(py);
+    bytes.set_item("read", report.bytes.read)?;
+    bytes.set_item("uploaded", report.bytes.uploaded)?;
+    bytes.set_item("downloaded", report.bytes.downloaded)?;
+    bytes.set_item("written", report.bytes.written)?;
+    out.set_item("bytes", bytes)?;
     out.set_item("channels", report.channels)?;
     out.set_item("samples", report.samples)?;
     out.set_item("sample_rate", report.sample_rate_hz)?;

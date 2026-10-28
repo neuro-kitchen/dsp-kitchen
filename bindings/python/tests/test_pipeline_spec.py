@@ -84,3 +84,31 @@ def test_canonical_fills_defaults_and_refuses_bad_specs():
         dspk.pipeline.canonical(bad)
     schema = dspk.pipeline.schema()
     assert "dspk_pipeline" in json.dumps(schema)
+
+
+@pytest.mark.parametrize("runtime", RUNTIMES)
+def test_subset_range_and_stored_upload(tmp_path, runtime):
+    t = np.arange(30_000) / FS
+    data = np.stack([200 * np.sin(2 * np.pi * 500 * (c + 1) * t) for c in range(5)]).astype(np.float32)
+    dspk.io.write_raw(data, tmp_path / "in.bin", FS, format="int16", order="time_major", gain=0.05)
+    s = {
+        "dspk_pipeline": 1,
+        "nodes": {
+            "in": {"op": "read", "path": "in.bin", "channels": [3, 0], "start": 1_000, "stop": 21_000},
+            "hp": {"op": "iir", "band": "highpass", "cutoff": [300.0], "mode": "forward"},
+            "out": {"op": "write", "path": "out.bin"},
+        },
+        "edges": [["in", "hp"], ["hp", "out"]],
+        "execution": {"chunk_samples": 6_000, "runtime": runtime},
+    }
+    report = dspk.pipeline.run(s, base_dir=tmp_path)
+    assert (report["channels"], report["samples"], report["stored_upload"]) == (2, 20_000, True)
+    b = report["bytes"]
+    assert b["uploaded"] < b["downloaded"]  # int16 up, float32 down
+    assert b["written"] == 2 * 20_000 * 4
+    stored = dspk.io.open(tmp_path / "in.bin").read(channels=[3, 0], start=1_000, stop=21_000)
+    expected = Pipeline([stage.iir("highpass", 300.0, mode="forward")], FS, stream=True, runtime=runtime).process(stored)
+    got = dspk.io.open(tmp_path / "out.bin").read()
+    # The run scales int16 on the device, the reference on the host: float32 rounding (~1e-6),
+    # carried through the filter, so the limit is 1e-5, below the 2e-5 of the filter tests
+    assert np.max(np.abs(got - expected)) / np.max(np.abs(expected)) < 1e-5
