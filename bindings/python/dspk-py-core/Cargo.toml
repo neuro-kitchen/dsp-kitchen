@@ -8,15 +8,16 @@ license.workspace = true
 publish = false
 
 [features]
-wgpu = ["dspk-core/wgpu", "dspk-ops/wgpu"]
-cpu = ["dspk-core/cpu", "dspk-ops/cpu"]
-cuda = ["dspk-core/cuda", "dspk-ops/cuda"]
-hip = ["dspk-core/hip", "dspk-ops/hip"]
+wgpu = ["dspk-core/wgpu", "dspk-ops/wgpu", "dspk-pipeline/wgpu"]
+cpu = ["dspk-core/cpu", "dspk-ops/cpu", "dspk-pipeline/cpu"]
+cuda = ["dspk-core/cuda", "dspk-ops/cuda", "dspk-pipeline/cuda"]
+hip = ["dspk-core/hip", "dspk-ops/hip", "dspk-pipeline/hip"]
 
 [dependencies]
 dspk-core = { workspace = true, features = ["compute"] }
 dspk-io = { workspace = true, features = ["zarr"] }
 dspk-ops.workspace = true
+dspk-pipeline.workspace = true
 cubecl.workspace = true
 pyo3.workspace = true
 numpy.workspace = true

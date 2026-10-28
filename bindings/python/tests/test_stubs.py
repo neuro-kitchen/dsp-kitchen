@@ -14,7 +14,10 @@ import pytest
 import dspk._native
 
 STUBS = Path(dspk.__file__).parent / "_native"
-MODULES = ["dspk._native", "dspk._native.io", "dspk._native.ops", "dspk._native.ops.filter", "dspk._native.runtime"]
+MODULES = [
+    "dspk._native", "dspk._native.io", "dspk._native.ops", "dspk._native.ops.filter", "dspk._native.pipeline",
+    "dspk._native.runtime",
+]
 
 
 def runtime_module(name: str):

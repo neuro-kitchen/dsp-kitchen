@@ -3131,6 +3131,7 @@ dependencies = [
  "dspk-core",
  "dspk-io",
  "dspk-ops",
+ "dspk-pipeline",
  "numpy",
  "pyo3",
  "pyo3-stub-gen",
