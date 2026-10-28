@@ -10,7 +10,7 @@ from dspk.ops import Pipeline, stage
 
 FS = 30_000.0
 TOLERANCE = 2e-5  # of the signal peak, as the filter tests
-RUNTIMES = dspk.runtime.available()
+from conftest import RUNTIMES
 
 
 @pytest.fixture(scope="module")

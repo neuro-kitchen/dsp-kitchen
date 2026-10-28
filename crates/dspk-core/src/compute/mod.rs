@@ -18,7 +18,7 @@ mod special;
 mod target;
 pub mod tune;
 
-pub use crate::device::{ComputeError, ComputeTarget, RUNTIME_ENV};
+pub use crate::device::{ComputeError, ComputeTarget, RUNTIME_ENV, TEST_RUNTIMES_ENV};
 pub use target::{open_device, shutdown_devices};
 pub use limits::{device_elements, MAX_DEVICE_ELEMENTS};
 pub use pinning::{pin_tuned_choices, tuned_choices_pinned, PinnedChoices};

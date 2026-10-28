@@ -101,7 +101,7 @@ fn recording() -> MemoryRecording {
 
 /// The first compiled-in runtime (the library never chooses one itself).
 fn default_target() -> dspk_core::ComputeTarget {
-    dspk_core::ComputeTarget::available().into_iter().next().expect("no CubeCL runtime compiled in")
+    dspk_core::ComputeTarget::for_tests().into_iter().next().expect("no CubeCL runtime compiled in")
 }
 
 fn pipeline() -> Pipeline {
@@ -188,7 +188,7 @@ fn every_runtime_returns_the_same_spikes() {
     use dspk_core::ComputeTarget;
     let rec = recording();
     let reference = whole_recording(&rec, &config(10.0));
-    for target in ComputeTarget::available() {
+    for target in ComputeTarget::for_tests() {
         let result = StreamingDetector::new(config(3.7)).run_with(target, &rec, &pipeline(), &probe()).unwrap();
         assert_eq!(key(&result.spikes), key(&reference), "{target}");
     }
@@ -271,7 +271,7 @@ fn stored_int16_upload_gives_the_same_spikes_as_f32_upload() {
     use dspk_core::ComputeTarget;
     let rec = I16Recording::from(&recording());
     assert!(F32Only(&rec).read_stored(&[0], 0..1, &mut [0u8; 2]).is_err(), "wrapper has no stored reads");
-    for target in ComputeTarget::available() {
+    for target in ComputeTarget::for_tests() {
         let runner = StreamingDetector::new(config(3.7));
         let stored = runner.run_with(target, &rec, &pipeline(), &probe()).unwrap();
         let f32_path = runner.run_with(target, &F32Only(&rec), &pipeline(), &probe()).unwrap();

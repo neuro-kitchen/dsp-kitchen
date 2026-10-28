@@ -127,7 +127,7 @@ impl ComputeTask for Check {
 
 #[test]
 fn block_parallel_pass_matches_reference_on_every_runtime() {
-    for target in ComputeTarget::available() {
+    for target in ComputeTarget::for_tests() {
         target.run(Check).unwrap();
     }
 }
@@ -163,7 +163,7 @@ fn pinned_choices_match_the_fixed_split() {
             assert_eq!(pinned, explicit, "{}", client.name());
         }
     }
-    for target in ComputeTarget::available() {
+    for target in ComputeTarget::for_tests() {
         target.run(Pinned).expect("compiled-in runtime");
     }
 }

@@ -14,7 +14,7 @@ FS = 30_000.0
 DEVICE_TOLERANCE = 2e-5  # of the signal peak
 DESIGN_RTOL = 1e-8
 
-RUNTIMES = dspk.runtime.available()
+from conftest import RUNTIMES
 
 
 @pytest.fixture(scope="module")

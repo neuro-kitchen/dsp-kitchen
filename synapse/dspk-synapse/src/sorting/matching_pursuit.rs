@@ -281,7 +281,7 @@ mod tests {
                 match_spikes_matching_pursuit(&client, self.0, self.1, self.2, self.3, min_scale, self.4, self.5, 4)
             }
         }
-        let targets = ComputeTarget::available();
+        let targets = ComputeTarget::for_tests();
         assert!(!targets.is_empty(), "no CubeCL runtime compiled in");
         targets.into_iter().map(|t| t.run(Task(raw, channels, samples, templates, max_scale, floor)).expect("runtime")).collect()
     }

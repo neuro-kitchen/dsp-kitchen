@@ -120,7 +120,7 @@ mod tests {
 
     #[test]
     fn device_envelope_matches_host_fold() {
-        let targets = ComputeTarget::available();
+        let targets = ComputeTarget::for_tests();
         assert!(!targets.is_empty(), "no CubeCL runtime compiled in");
         for target in targets {
             target.run(Matches).expect("compiled-in runtime");

@@ -124,7 +124,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn shutdown_stops_the_device_threads() {
-        let Some(target) = ComputeTarget::available().into_iter().find(|t| *t != ComputeTarget::Cpu) else { return };
+        let Some(target) = ComputeTarget::for_tests().into_iter().find(|t| *t != ComputeTarget::Cpu) else { return };
         let client = target.client().unwrap();
         let data: Vec<u8> = (0..64u8).collect();
         let handle = client.create(cubecl::bytes::Bytes::from_bytes_vec(data.clone()));
@@ -140,7 +140,7 @@ mod tests {
 
     #[test]
     fn runs_on_available_targets_and_refuses_missing_ones() {
-        for target in ComputeTarget::available() {
+        for target in ComputeTarget::for_tests() {
             assert!(!target.run(RuntimeName).unwrap().is_empty());
         }
         for target in ComputeTarget::ALL.into_iter().filter(|t| !t.is_available()) {

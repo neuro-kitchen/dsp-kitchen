@@ -457,7 +457,7 @@ mod tests {
                 })
                 .collect();
             let cpu_out = deduplicate_spikes_spatial(&spikes, &layout, radius, 10);
-            let targets = ComputeTarget::available();
+            let targets = ComputeTarget::for_tests();
             assert!(!targets.is_empty(), "no CubeCL runtime compiled in");
             for target in targets {
                 let gpu_out = target.run(Task(&spikes, &layout, radius, 10)).expect("runtime");
