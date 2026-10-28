@@ -11,7 +11,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [features]
-default = ["wgpu"]
+default = ["wgpu", "cuda", "cpu"]
 # The compute layer (CubeCL); off for crates that only need the core types (e.g. dspk-io).
 compute = ["dep:cubecl"]
 wgpu = ["compute", "cubecl/wgpu"]

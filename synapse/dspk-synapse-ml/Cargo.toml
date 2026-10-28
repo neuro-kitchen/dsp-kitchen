@@ -9,7 +9,7 @@ publish = false
 description = "Neuro spike sorters reimplemented from their papers (Kilosort4, EMUsort) and pretrained models, each with its provenance"
 
 [features]
-default = ["wgpu", "flex"]
+default = ["wgpu", "cuda", "cpu", "flex"]
 wgpu = ["burn-tensor/wgpu", "cubecl/wgpu", "dspk-ops/wgpu", "dspk-synapse/wgpu"]
 flex = ["burn-tensor/flex"]
 # Resolve catalog ids to verified local files (network access through dspk-synapse-hub)

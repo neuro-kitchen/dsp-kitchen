@@ -116,17 +116,25 @@ hex = "0.4.3"
 dirs = "7.0.0"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "blocking", "json"] }
 
-# Lighter build for checking results from Python (`maturin develop --profile validate`): our crates
-# lightly optimized and incremental (fast rebuilds after a change), dependencies (CubeCL, wgpu, …)
-# fully optimized and cached. Timings for the benchmarks use `--release`.
+# The one development build (Author, 2026-10-28: one compilation, not one per profile and feature
+# set): tests, benchmarks, the CLI and the Python extension all use `--profile validate`, with the
+# crates' default features (wgpu, cuda and cpu together). Our crates lightly optimized, incremental
+# and with debug assertions and overflow checks (what tests need); dependencies (CubeCL, wgpu, …)
+# fully optimized, without assertions, and cached. GPU kernels are compiled by CubeCL at run time,
+# so device timings do not depend on this profile.
 [profile.validate]
 inherits = "release"
 opt-level = 1
 codegen-units = 256
 incremental = true
+debug-assertions = true
+overflow-checks = true
+debug = "line-tables-only"
 
 [profile.validate.package."*"]
 opt-level = 3
+debug-assertions = false
+overflow-checks = false
 
 # Debug builds and tests: line tables only (panics and backtraces still name file and line), not
 # full debug info, which filled `target/` (363 GB of debug builds, 2026-10-21). For a debugger

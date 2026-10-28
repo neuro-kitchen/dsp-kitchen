@@ -11,7 +11,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [features]
-default = ["wgpu"]
+default = ["wgpu", "cuda", "cpu"]
 wgpu = ["dspk-core/wgpu"]
 cpu = ["dspk-core/cpu"]
 cuda = ["dspk-core/cuda"]

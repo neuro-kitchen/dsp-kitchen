@@ -13,7 +13,7 @@ categories.workspace = true
 publish = false
 
 [features]
-default = ["wgpu"]
+default = ["wgpu", "cuda", "cpu"]
 wgpu = ["dspk-core/wgpu", "dspk-ops/wgpu"]
 cpu = ["dspk-core/cpu", "dspk-ops/cpu"]
 cuda = ["dspk-core/cuda", "dspk-ops/cuda"]

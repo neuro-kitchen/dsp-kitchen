@@ -11,7 +11,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [features]
-default = ["wgpu"]
+default = ["wgpu", "cuda", "cpu"]
 ## Envelopes of samples already on a CubeCL device.
 device = ["dep:cubecl", "dspk-core/compute"]
 wgpu = ["device", "dspk-core/wgpu"]

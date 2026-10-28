@@ -38,18 +38,21 @@ Runtimes are crate features; the device is picked at run time with `dspk::core::
 
 ```toml
 [dependencies]
-dspk = "0.0.2"                                               # wgpu (default)
-# dspk = { version = "0.0.2", features = ["cuda", "cpu"] }   # add CUDA and the CPU runtime
+dspk = "0.0.2"                                                                  # wgpu, cuda and cpu (default)
+# dspk = { version = "0.0.2", default-features = false, features = ["wgpu", "zarr"] }  # wgpu only
 ```
 
 | Feature | Runtime | Tested |
 |---|---|---|
 | `wgpu` (default) | WebGPU: Vulkan, Metal, DirectX 12 | NVIDIA RTX 2070 Max-Q, Intel UHD 630 (Vulkan) |
-| `cuda` | NVIDIA CUDA | NVIDIA RTX 2070 Max-Q |
-| `cpu` | CubeCL CPU runtime (MLIR / LLVM) | x86-64 |
+| `cuda` (default) | NVIDIA CUDA | NVIDIA RTX 2070 Max-Q |
+| `cpu` (default) | CubeCL CPU runtime (MLIR / LLVM) | x86-64 |
 | `hip` | AMD ROCm / HIP | compiles; **untested** (no AMD GPU available) |
 
-CUDA and HIP are loaded at run time, so building with them needs no toolkit installed.
+CUDA and HIP are loaded at run time, so building with them needs no toolkit installed. The CPU
+runtime downloads a prebuilt LLVM on its first build (cached in `~/.local/share/tracel`); leave it
+out with `default-features = false` for a lighter build. All three are the default because the
+library, its tests, the CLI and the Python package are built and tested together that way.
 
 ### Kernel and autotune cache
 
