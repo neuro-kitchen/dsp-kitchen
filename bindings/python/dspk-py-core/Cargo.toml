@@ -1,0 +1,20 @@
+[package]
+name = "dspk-py-core"
+description = "Python bindings of dspk-core, dspk-io and dspk-ops (classes and functions registered into the `dspk` extension)"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+wgpu = ["dspk-core/wgpu", "dspk-ops/wgpu"]
+cpu = ["dspk-core/cpu", "dspk-ops/cpu"]
+cuda = ["dspk-core/cuda", "dspk-ops/cuda"]
+hip = ["dspk-core/hip", "dspk-ops/hip"]
+
+[dependencies]
+dspk-core = { workspace = true, features = ["compute"] }
+dspk-io = { workspace = true, features = ["zarr"] }
+dspk-ops.workspace = true
+pyo3.workspace = true

@@ -1,13 +1,9 @@
-[build-system]
-requires = ["maturin>=1.5,<2.0"]
-build-backend = "maturin"
-
 [project]
-name = "dsp-kitchen"
+name = "dspk-dev"
 version = "0.1.0"
-description = "High-throughput real-time digital signal processing library in Rust for large-scale neuroscience electrophysiology"
+description = "Development environment of the dspk repository (playground scripts, maturin); the Python package is bindings/python"
 readme = "README.md"
-authors = [{ name = "jesusdpa1", email = "jpenalozaa2@gmail.com" }]
+authors = [{ name = "jesusdpa1" }]
 requires-python = ">=3.10"
 dependencies = [
     "matplotlib>=3.10.9",
@@ -16,15 +12,18 @@ dependencies = [
     "polars>=2.0.0",
 ]
 
-[tool.maturin]
-manifest-path = "dsp_kitchen_py/Cargo.toml"
-module-name = "dsp_kitchen_bindings.dsp_kitchen_bindings"
-python-source = "dsp_kitchen_py"
-features = ["extension-module"]
+[tool.uv]
+# Not a package: `maturin develop` (bindings/python) installs dspk into this environment
+package = false
 
 [tool.ruff]
-src = ["dsp_kitchen_py/dsp_kitchen_bindings", "dsp_kitchen_py/dsp_kitchen"]
+src = ["bindings/python/python"]
 
 
 [dependency-groups]
-dev = ["ipykernel>=7.3.0", "ipywidgets>=8.1.9", "ruff>=0.16.9"]
+dev = [
+    "ipykernel>=7.3.0",
+    "ipywidgets>=8.1.9",
+    "pytest>=9.2.0",
+    "ruff>=0.16.9",
+]

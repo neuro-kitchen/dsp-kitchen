@@ -17,6 +17,9 @@ members = [
     # Front ends
     "app/dspk-cli",
     "app/dspk-app",
+    # Bindings
+    "bindings/python/dspk-py-core",
+    "bindings/python/dspk-py",
 ]
 
 
@@ -40,6 +43,7 @@ dspk-synapse-hub = { path = "synapse/dspk-synapse-hub", version = "0.0.1", defau
 dspk-stream = { path = "serve/dspk-stream", version = "0.0.1", default-features = false }
 dspk-view = { path = "serve/dspk-view", version = "0.0.1", default-features = false }
 dspk-io = { path = "crates/dspk-io", version = "0.0.1", default-features = false }
+dspk-py-core = { path = "bindings/python/dspk-py-core", default-features = false }
 
 # Compute & Tensors
 cubecl = { version = "0.11.3", default-features = false, features = ["std", "stdlib"] }

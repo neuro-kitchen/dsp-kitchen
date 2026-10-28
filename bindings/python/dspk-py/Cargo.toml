@@ -1,0 +1,27 @@
+[package]
+name = "dspk-py"
+description = "The `dspk` Python extension: one native module that registers every binding crate"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "_native"
+crate-type = ["cdylib"]
+
+[features]
+# Our builds compile wgpu, cuda and cpu in; hip compiles but is untested (no AMD GPU)
+default = ["wgpu", "cuda", "cpu"]
+# Set by maturin when it builds the wheel; off for `cargo` builds of the workspace (linker)
+extension-module = ["pyo3/extension-module"]
+wgpu = ["dspk-py-core/wgpu"]
+cpu = ["dspk-py-core/cpu"]
+cuda = ["dspk-py-core/cuda"]
+hip = ["dspk-py-core/hip"]
+
+[dependencies]
+dspk-py-core.workspace = true
+# abi3: one wheel per platform serves every CPython >= 3.10
+pyo3 = { workspace = true, features = ["abi3-py310"] }

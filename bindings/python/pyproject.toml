@@ -1,0 +1,22 @@
+[build-system]
+requires = ["maturin>=1.15,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "dspk"
+dynamic = ["version"]
+description = "Multi-channel signal processing on any GPU or the CPU, written once in CubeCL"
+readme = "README.md"
+authors = [{ name = "jesusdpa1" }]
+license = "MIT OR Apache-2.0"
+requires-python = ">=3.10"
+dependencies = ["numpy>=2.2"]
+
+[project.urls]
+Repository = "https://github.com/neuro-kitchen/dsp-kitchen"
+
+[tool.maturin]
+manifest-path = "dspk-py/Cargo.toml"
+module-name = "dspk._native"
+python-source = "python"
+features = ["extension-module"]
