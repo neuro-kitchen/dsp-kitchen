@@ -7,7 +7,7 @@ use std::path::Path;
 
 use super::manifest::ModelManifest;
 
-/// Embedded default JSON catalog shipped in `crates/dsp-synapse-ml/catalog/models.json`.
+/// Embedded default JSON catalog shipped in `synapse/dsp-synapse-ml/catalog/models.json`.
 pub const EMBEDDED_MODELS_JSON: &str = include_str!("../../catalog/models.json");
 
 /// Top-level JSON catalog document structure.

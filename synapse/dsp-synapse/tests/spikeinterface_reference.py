@@ -6,9 +6,9 @@
 
 Run from the repository root:
 
-    uv run crates/dsp-synapse/tests/spikeinterface_reference.py
+    uv run synapse/dsp-synapse/tests/spikeinterface_reference.py
 
-Writes crates/dsp-synapse/tests/fixtures/quality_metrics.json with the inputs and SpikeInterface's
+Writes synapse/dsp-synapse/tests/fixtures/quality_metrics.json with the inputs and SpikeInterface's
 outputs of isi_violations, rp_contamination (Llobet), amplitude_cutoff and presence_ratio.
 """
 

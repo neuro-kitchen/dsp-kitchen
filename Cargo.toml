@@ -1,16 +1,21 @@
 [workspace]
 resolver = "2"
 members = [
+    # DSP library
     "crates/dsp-core",
-    "crates/dsp-base",
-    "crates/dsp-synapse",
-    "crates/dsp-synapse-ml",
-    "crates/dsp-synapse-hub",
-    "serve/dsp-stream",
-    "serve/dsp-view",
     "crates/dsp-io",
+    "crates/dsp-base",
+    # Electrophysiology
+    "synapse/dsp-synapse",
+    "synapse/dsp-synapse-ml",
+    "synapse/dsp-synapse-hub",
+    # Serving
+    "serve/dsp-view",
+    "serve/dsp-stream",
+    # Front ends
     "app/dsp-cli",
     "app/dsp-app",
+    # Bindings
     "dsp_kitchen_py",
 ]
 
@@ -24,9 +29,9 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 dsp-core = { path = "crates/dsp-core" }
 dsp-base = { path = "crates/dsp-base" }
-dsp-synapse = { path = "crates/dsp-synapse" }
-dsp-synapse-ml = { path = "crates/dsp-synapse-ml" }
-dsp-synapse-hub = { path = "crates/dsp-synapse-hub" }
+dsp-synapse = { path = "synapse/dsp-synapse" }
+dsp-synapse-ml = { path = "synapse/dsp-synapse-ml" }
+dsp-synapse-hub = { path = "synapse/dsp-synapse-hub" }
 dsp-stream = { path = "serve/dsp-stream" }
 dsp-view = { path = "serve/dsp-view" }
 dsp-io = { path = "crates/dsp-io" }
