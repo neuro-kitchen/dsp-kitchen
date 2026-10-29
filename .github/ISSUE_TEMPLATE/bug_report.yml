@@ -1,0 +1,69 @@
+name: Bug report
+description: Something fails, crashes, hangs or errors
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Results that run but look wrong (vs scipy, or an upstream sorter) have
+        their own form: **Wrong or different results**.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, what you got. Paste the error message.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: The smallest code, command or pipeline spec that shows it. Synthetic data (`dspk generate`, NumPy) is best; say how large your recording is if it matters.
+      render: text
+    validations:
+      required: true
+  - type: dropdown
+    id: interface
+    attributes:
+      label: Used through
+      multiple: true
+      options:
+        - Python (`pip install dspk`)
+        - Rust crates
+        - "`dspk` command line"
+        - "`dspk-sorters` / `dspk sort`"
+        - Desktop app
+    validations:
+      required: true
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtime
+      multiple: true
+      options:
+        - wgpu (Vulkan / Metal / DirectX 12)
+        - CUDA
+        - CPU runtime
+        - HIP / ROCm
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: dspk version
+      placeholder: "0.0.4 (dspk.__version__, dspk --version, or Cargo.lock)"
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, GPU and driver version, Python version. `dspk doctor` prints most of it.
+      render: text
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Anything else printed. With the CLI, `--verbose` adds debug logs; for a crash, `RUST_BACKTRACE=1`.
+      render: text

@@ -1,0 +1,32 @@
+name: Feature request
+description: An operation, format, sorter, binding or improvement you need
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What you want to do
+      description: The task, not only the function. What do you use today (scipy, SpikeInterface, MATLAB, …)?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What dspk could offer
+      description: The function, stage, pipeline node, CLI command or Python binding you have in mind, with its parameters if you know them.
+  - type: dropdown
+    id: interface
+    attributes:
+      label: Where you would use it
+      multiple: true
+      options:
+        - Python
+        - Rust crates
+        - Command line / pipeline specs
+        - Spike sorting
+        - Desktop app
+  - type: textarea
+    id: references
+    attributes:
+      label: References
+      description: Papers, upstream code or documentation the behaviour should follow (with their licences, if code).
