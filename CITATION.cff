@@ -1,0 +1,27 @@
+cff-version: 1.2.0
+message: "If you use dspk in your work, please cite it as below."
+type: software
+title: "dspk: multi-channel signal processing on any GPU or the CPU"
+abstract: >-
+  Multi-channel signal processing written once in CubeCL and run on any GPU (wgpu: Vulkan, Metal,
+  DirectX 12; CUDA; ROCm / HIP) or the CPU, with the device chosen at run time: filters,
+  resampling, spatial references, linear algebra, statistics, pipelines as data, and spike sorters
+  (Kilosort4, EMUsort, MountainSort 5, SpyKING CIRCUS 2, Tridesclous 2) on the device.
+authors:
+  - given-names: Jesus
+    family-names: Penaloza Aponte
+    orcid: "https://orcid.org/0000-0001-5903-2291"
+repository-code: "https://github.com/neuro-kitchen/dsp-kitchen"
+license:
+  - MIT
+  - Apache-2.0
+version: 0.0.4
+date-released: "2026-10-29"
+keywords:
+  - signal processing
+  - GPU
+  - CubeCL
+  - electrophysiology
+  - spike sorting
+  - Rust
+  - Python

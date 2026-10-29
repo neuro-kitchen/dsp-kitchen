@@ -1,0 +1,50 @@
+name: Wrong or different results
+description: It runs, but the output differs from scipy, NumPy, an upstream sorter, or another runtime
+labels: ["results"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        dspk aims to match its references: scipy / NumPy for signal operations (float32 on the
+        device, so differences around 1e-6 of the signal's peak are expected), and the published
+        behaviour of each sorter. Every runtime should give the same result up to rounding.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Filter / resampling / signal operation
+        - Spatial reference, whitening, linear algebra
+        - Pipeline spec (`dspk run`, `dspk.pipeline`)
+        - Spike sorter
+        - Reading or writing a format
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: compare
+    attributes:
+      label: What you compared
+      description: The dspk call and the reference call (e.g. `dspk.ops.filter.iir(...)` vs `scipy.signal.sosfiltfilt(...)`), with their parameters.
+      render: python
+    validations:
+      required: true
+  - type: textarea
+    id: difference
+    attributes:
+      label: How large is the difference
+      description: Max absolute / relative error, or for sorters units and spikes found vs expected. A plot helps.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: dspk version and runtime
+      placeholder: "0.0.4, CUDA (does another runtime give the same result?)"
+    validations:
+      required: true
+  - type: textarea
+    id: data
+    attributes:
+      label: Data
+      description: How to get data that shows it (synthetic is best). Do not attach recordings you may not share.
