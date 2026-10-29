@@ -12,6 +12,7 @@ use dspk_core::compute::bench::time_device;
 use dspk_core::ComputeTarget;
 use dspk_ops::core::{buffer, EdgeMode};
 use dspk_ops::filter::fir::{execute_fir_centered_with, execute_fir_with, FirKernel};
+use dspk_ops::resampler::{resample_poly_len, resample_poly_with, ResampleFilter, ResampleKernel};
 
 const ITERATIONS: usize = 7;
 const CHANNELS: usize = 384;
@@ -44,6 +45,16 @@ fn bench(client: &Client) {
             });
             let shape = if centered { "centred" } else { "causal" };
             println!("  FIR {TAPS} taps, {shape:7} {:28} {:8.2} ms", format!("{kernel:?}"), t.as_secs_f64() * 1e3);
+        }
+    }
+    for (up, down) in [(1usize, 3usize), (2, 3), (3, 1)] {
+        let resampled = buffer::empty::<f32>(client, CHANNELS * resample_poly_len(SAMPLES, up, down));
+        let kernels = std::iter::once(ResampleKernel::Direct).chain(widths.iter().map(|&width| ResampleKernel::Vectorized { width }));
+        for kernel in kernels {
+            let t = time_device(client, ITERATIONS, || {
+                resample_poly_with::<f32>(client, &x, &resampled, CHANNELS, SAMPLES, up, down, &ResampleFilter::default(), EdgeMode::Zeros, Some(kernel));
+            });
+            println!("  resample {up}/{down}{:13} {:28} {:8.2} ms", "", format!("{kernel:?}"), t.as_secs_f64() * 1e3);
         }
     }
 }

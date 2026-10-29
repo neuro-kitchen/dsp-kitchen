@@ -159,6 +159,8 @@ fn tuned<F: DspFloat>(inputs: FirInputs) {
     let client = inputs.client.clone();
     let id = tune_id(&client);
     let widths: Vec<usize> = client.io_optimized_vector_sizes(size_of::<F>()).filter(|&w| w > 1).collect();
+    // CubeCL's CPU runtime emulates shared memory: Tiled takes seconds there, even just to time it
+    let cpu = client.name() == "cpu";
     let set = TUNER.init(&id, move || {
         let key = |p: &FirInputs| {
             // `a`: the power of two dividing the row (up to 16), which decides the vector widths that run
@@ -166,7 +168,7 @@ fn tuned<F: DspFloat>(inputs: FirInputs) {
         };
         let scratch = |_: &String, p: &FirInputs| FirInputs { output: buffer::empty::<F>(&p.client, p.channels * p.samples), ..p.clone() };
         let set: TunableSet<String, FirInputs, ()> = TunableSet::new(key, scratch);
-        let kernels = [FirKernel::Direct, FirKernel::Tiled].into_iter().chain(widths.iter().map(|&width| FirKernel::Vectorized { width }));
+        let kernels = [FirKernel::Direct, FirKernel::Tiled].into_iter().filter(|&k| !(k == FirKernel::Tiled && cpu)).chain(widths.iter().map(|&width| FirKernel::Vectorized { width }));
         kernels.fold(set, |set, kernel| {
             set.with(Tunable::new(&format!("{kernel:?}"), move |p: FirInputs| {
                 p.run::<F>(kernel);
