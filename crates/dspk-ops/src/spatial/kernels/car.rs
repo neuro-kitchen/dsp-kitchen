@@ -86,3 +86,76 @@ pub fn common_median_kernel<F: Float>(
         }
     }
 }
+
+/// Common median reference by **bitonic sort**: one cube per sample ([`fn@dspk_core::compute::row_position`]);
+/// its units load the sample's channels into a shared column padded to `padded` (a power of two)
+/// with the largest finite value (WGSL has no infinity literal; padding only ever sorts after the
+/// channels), sort it with Batcher's bitonic network (`log₂ P · (log₂ P + 1) / 2` steps, each unit
+/// doing `P / (2 · units)` compare-exchanges per step, one barrier per step), take the two middle
+/// values (NumPy's median) and subtract their mean from the original samples.
+///
+/// The alternative to [`fn@common_median_kernel`]'s rank counting (`C` comparisons per value, no
+/// barriers): the autotuner picks per device; barriers are cheap on GPUs and costly on the CPU
+/// runtime.
+#[cube(launch)]
+pub fn common_median_bitonic_kernel<F: Float>(
+    input: &[F],
+    output: &mut [F],
+    num_channels: u32,
+    num_samples: u32,
+    #[comptime] padded: u32,
+    #[comptime] units: u32,
+) {
+    let s = dspk_core::compute::row_position();
+    // Shared memory declared outside any branch (CubeCL lowering)
+    let mut col = Shared::<[F]>::new_slice(comptime!(padded as usize));
+    // `s` is uniform across the cube, so every unit takes the same branch
+    if s < num_samples {
+        let unit = UNIT_POS_X;
+        let mut i = unit;
+        while i < padded {
+            // A statement, not an `if` expression: both arms of a select would be evaluated, and
+            // the read is out of bounds for padding rows
+            let mut v = F::max_value();
+            if i < num_channels {
+                v = input[(i * num_samples + s) as usize];
+            }
+            col[i as usize] = v;
+            i += units;
+        }
+        sync_cube();
+        // Runtime counters: a `let mut` from a constant would be comptime and could not halve
+        let k = RuntimeCell::<u32>::new(2u32);
+        while k.read() <= padded {
+            let kk = k.read();
+            let j = RuntimeCell::<u32>::new(kk / 2u32);
+            while j.read() > 0u32 {
+                let jj = j.read();
+                let mut a_i = unit;
+                while a_i < padded {
+                    let b_i = a_i ^ jj;
+                    if b_i > a_i {
+                        let (a, b) = (col[a_i as usize], col[b_i as usize]);
+                        let ascending = (a_i & kk) == 0u32;
+                        let swap = if ascending { a > b } else { a < b };
+                        if swap {
+                            col[a_i as usize] = b;
+                            col[b_i as usize] = a;
+                        }
+                    }
+                    a_i += units;
+                }
+                sync_cube();
+                j.store(jj / 2u32);
+            }
+            k.store(kk * 2u32);
+        }
+        let median = (col[((num_channels - 1u32) / 2u32) as usize] + col[(num_channels / 2u32) as usize]) * F::new(0.5f32);
+        let mut c = unit;
+        while c < num_channels {
+            let idx = (c * num_samples + s) as usize;
+            output[idx] = input[idx] - median;
+            c += units;
+        }
+    }
+}

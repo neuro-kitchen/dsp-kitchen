@@ -21,7 +21,7 @@ use dspk_ops::filter::{execute_fir, execute_fir_centered, execute_filter, execut
 use dspk_ops::math::{execute_channel_mean_std, execute_channel_noise_std, execute_clamp, execute_scaling};
 use dspk_ops::peaks::{find_peak_candidates_on_device, Polarity};
 use dspk_ops::resampler::{firwin, resample_poly, resample_poly_len, FirWindow, ResampleFilter};
-use dspk_ops::spatial::{execute_common_median, execute_direct_car};
+use dspk_ops::spatial::{execute_common_median, execute_common_median_with, execute_direct_car, CmrKernel};
 
 /// Timed runs per kernel (after one warm-up).
 const ITERATIONS: usize = 7;
@@ -92,8 +92,12 @@ fn bench(target: ComputeTarget, client: &Client) -> Vec<Row> {
     time("clamp", rw, 0.0, &mut || execute_clamp::<f32>(client, &x, &out, n, -1.0, 1.0));
     time("car (mean)", rw, 0.0, &mut || execute_direct_car::<f32>(client, &x, &out, CHANNELS, SAMPLES));
     // Per sample, every channel is ranked against every other: 2 · C² per sample = 2 · C per value
-    time("cmr (median)", rw, rank_ops(CHANNELS as f64) / CHANNELS as f64, &mut || {
-        execute_common_median::<f32>(client, &x, &out, CHANNELS, SAMPLES)
+    time("cmr (median, autotuned)", rw, 0.0, &mut || execute_common_median::<f32>(client, &x, &out, CHANNELS, SAMPLES));
+    time("cmr: rank counting", rw, rank_ops(CHANNELS as f64) / CHANNELS as f64, &mut || {
+        execute_common_median_with::<f32>(client, &x, &out, CHANNELS, SAMPLES, Some(CmrKernel::Rank))
+    });
+    time("cmr: bitonic sort", rw, 0.0, &mut || {
+        execute_common_median_with::<f32>(client, &x, &out, CHANNELS, SAMPLES, Some(CmrKernel::Bitonic))
     });
     for (name, passes, spec) in [
         ("iir bandpass 5, forward", 1.0, FilterSpec::butterworth(5, FilterBand::Bandpass(300.0, 6000.0)).with_mode(FilterMode::Forward)),
