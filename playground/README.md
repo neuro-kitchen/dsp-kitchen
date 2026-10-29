@@ -8,9 +8,11 @@ playground/
 ├── base/       01 IIR filters vs scipy on every runtime · 02 pipelines on the device and streaming · 03 pipelines as data (JSON / TOML specs)
 ├── synapse/    detection walkthroughs                    (old `dsp_kitchen` API: waits for the synapse bindings)
 ├── sorters/    Kilosort4 + EMUsort examples             (old `dsp_kitchen` API: waits for the synapse bindings)
-├── benchmarks/ sorter validation and resources          (old `dsp_kitchen` API: waits for the synapse bindings)
 └── output/     anything the scripts write (git-ignored)
 ```
+
+Only `base/` runs on the current `dspk` package (checked 2026-10-29 on wgpu, CUDA and CPU).
+Benchmarks and validations against other tools live in [`benchmarks/`](../benchmarks/README.md).
 
 ## Setup
 
@@ -39,9 +41,9 @@ in the folder named by `DSP_KITCHEN_DATA` (scripts on the old API).
 
 | Path under `data/` | Used by |
 |---|---|
-| `nwb/15-25-33_meps.nwb.zarr` (HD-EMG, 4 × 8 grid, `HDEMG` series) | `base/03`, `synapse/01`, `synapse/02`, `sorters/emusort_hdemg`, `benchmarks/emusort_checks`, `benchmarks/sorter_resources` |
-| `kilosort4/ZFM-02370_mini.imec0.ap.short.bin` + `.meta` (Neuropixels 1.0, SpikeGLX) | `sorters/kilosort4_universal_templates`, `benchmarks/kilosort4_*`, `benchmarks/sorter_resources` |
-| `kilosort4/saved_results/` (Kilosort4's output for that file, Phy folder) | `sorters/kilosort4_universal_templates`, `benchmarks/kilosort4_*` (through `benchmarks/ks4_reference.py`) |
+| `nwb/15-25-33_meps.nwb.zarr` (HD-EMG, 4 × 8 grid, `HDEMG` series) | `base/03`, `synapse/01`, `synapse/02`, `sorters/emusort_hdemg`, `benchmarks/sorters/emusort_checks`, `benchmarks/sorters/sorter_resources` |
+| `kilosort4/ZFM-02370_mini.imec0.ap.short.bin` + `.meta` (Neuropixels 1.0, SpikeGLX) | `sorters/kilosort4_universal_templates`, `benchmarks/sorters/kilosort4_*`, `benchmarks/sorters/sorter_resources` |
+| `kilosort4/saved_results/` (Kilosort4's output for that file, Phy folder) | `sorters/kilosort4_universal_templates`, `benchmarks/sorters/*_validation`, `kilosort4_*` (through `benchmarks/sorters/ks4_reference.py`) |
 
 The `base/` scripts need no data (synthetic signals). `synapse/03` and `sorters/00` use
 `dsp_kitchen.io.SyntheticRecording`; `synapse/01` falls back to synthetic data when the recording is

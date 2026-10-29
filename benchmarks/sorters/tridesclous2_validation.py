@@ -13,7 +13,7 @@
 # reading the exported sorting of an earlier run.
 #
 # Data (local, git-ignored): `data/kilosort4/ZFM-02370_mini.imec0.ap.short.bin` (+ `.meta`),
-# `data/kilosort4/saved_results/` (see playground/README.md). Results: the book's *Benchmarks*.
+# `data/kilosort4/saved_results/` (see benchmarks/README.md). Results: the book's *Benchmarks*.
 
 # %% [1] Settings
 import ast
@@ -32,7 +32,7 @@ from dsp_kitchen.synapse.ml import tridesclous2
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ks4_reference import BIN_PATH, KS4_RESULTS, Reference, compare  # noqa: E402
 
-OUTPUT = Path(__file__).resolve().parents[1] / "output" / "tridesclous2_validation"
+OUTPUT = Path(__file__).resolve().parent / "results" / "tridesclous2_validation"
 ZARR_OUT = OUTPUT / "ours.sorting.zarr"
 #: Spikes match within this time (samples at 30 kHz: 12) and distance (ours: the unit's main
 #: channel's position, Kilosort4: its estimated position).

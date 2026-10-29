@@ -8,9 +8,9 @@
 #
 # Spike times are compared as reported: both sorters report waveform troughs.
 #
-#     uv run python playground/benchmarks/kilosort4_experiments.py learned ks4-templates
+#     uv run python benchmarks/sorters/kilosort4_experiments.py learned ks4-templates
 #
-# Each run's spikes are cached in `playground/output/kilosort4_experiments/` (`--rerun` re-sorts).
+# Each run's spikes are cached in `benchmarks/sorters/results/kilosort4_experiments/` (`--rerun` re-sorts).
 
 # %% [1] Settings
 import sys
@@ -25,7 +25,7 @@ from dsp_kitchen.synapse.ml import kilosort4
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ks4_reference import BIN_PATH, KS4_RESULTS, Reference, best_cosine, compare  # noqa: E402
 
-OUTPUT = Path(__file__).resolve().parents[1] / "output" / "kilosort4_experiments"
+OUTPUT = Path(__file__).resolve().parent / "results" / "kilosort4_experiments"
 STEPS = [a for a in sys.argv[1:] if not a.startswith("--")] or ["learned", "ks4-templates"]
 RERUN = "--rerun" in sys.argv
 

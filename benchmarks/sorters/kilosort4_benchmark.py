@@ -19,7 +19,7 @@
 # - Ours does not yet have Kilosort4's refractory criteria, final merges and drift correction.
 #
 # Data (local, git-ignored): `data/kilosort4/ZFM-02370_mini.imec0.ap.short.bin` (+ `.meta`),
-# `data/kilosort4/saved_results/` (see playground/README.md).
+# `data/kilosort4/saved_results/` (see benchmarks/README.md).
 
 # %% [1] Settings, Recording, Probe
 import json
@@ -48,7 +48,7 @@ DATA_DIR = Path(
 )
 BIN_PATH = DATA_DIR / "kilosort4" / "ZFM-02370_mini.imec0.ap.short.bin"
 KS4_RESULTS = DATA_DIR / "kilosort4" / "saved_results"
-OUTPUT = Path(__file__).resolve().parents[1] / "output"
+OUTPUT = Path(__file__).resolve().parent / "results"
 
 #: Runtimes to time (default: the current one; e.g. `dk.runtime.available()` for all).
 RUNTIMES = [dk.runtime.current()]

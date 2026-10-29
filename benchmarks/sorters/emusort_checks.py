@@ -8,7 +8,7 @@
 #    ~10 ms), presence over the segment, firing rate, template norm.
 # 4. **Templates**: how many learned templates the units yield, and the most similar pairs left.
 #
-#     uv run python playground/benchmarks/emusort_checks.py [segment seconds, default 200] [name=value ...]
+#     uv run python benchmarks/sorters/emusort_checks.py [segment seconds, default 200] [name=value ...]
 #
 # `name=value` overrides a setting (e.g. `do_notch=False global_merges=False`).
 #

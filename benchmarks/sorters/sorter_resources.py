@@ -8,12 +8,12 @@
 #    idle reading before the run; NVIDIA only, left out without `nvidia-smi`), sampled every 50 ms.
 # 3. **Reproducibility**: whether every run gives the same spikes and units.
 #
-#     uv run python playground/benchmarks/sorter_resources.py emusort                 # whole recording
-#     uv run python playground/benchmarks/sorter_resources.py emusort --seconds 200
-#     uv run python playground/benchmarks/sorter_resources.py ks4
+#     uv run python benchmarks/sorters/sorter_resources.py emusort                 # whole recording
+#     uv run python benchmarks/sorters/sorter_resources.py emusort --seconds 200
+#     uv run python benchmarks/sorters/sorter_resources.py ks4
 #
 # One sorter per process, so the peak RSS is that sorter's. Results go to
-# `playground/output/sorter_resources_<sorter>.json`; `sorter_resources_table.py` draws them.
+# `benchmarks/sorters/results/sorter_resources_<sorter>.json`; `sorter_resources_table.py` draws them.
 # Build with `maturin develop --release` for timings.
 #
 # Data (local, git-ignored): `data/kilosort4/ZFM-02370_mini.imec0.ap.short.bin` (+ `saved_results/`
@@ -42,7 +42,7 @@ KS4_BIN = DATA_DIR / "kilosort4" / "ZFM-02370_mini.imec0.ap.short.bin"
 KS4_RESULTS = DATA_DIR / "kilosort4" / "saved_results"
 NWB_PATH = DATA_DIR / "nwb" / "15-25-33_meps.nwb.zarr"
 GRID_ROWS, GRID_COLS, ELECTRODE_PITCH_UM = 4, 8, 100.0
-OUTPUT = Path(__file__).resolve().parents[1] / "output"
+OUTPUT = Path(__file__).resolve().parent / "results"
 #: Memory sampling period (s).
 SAMPLE_SEC = 0.05
 

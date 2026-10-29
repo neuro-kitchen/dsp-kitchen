@@ -1,18 +1,19 @@
 # %% [markdown]
-# # MountainSort 5 validation: our output vs Kilosort4's saved results
-# There is no MountainSort 5 reference on this recording: its units are compared with Kilosort4's
+# # SpyKING CIRCUS 2 validation: our output vs Kilosort4's saved results
+# There is no SpyKING CIRCUS 2 reference on this recording: its units are compared with Kilosort4's
 # (`data/kilosort4/saved_results/`), as a second, independent sorter on the same data.
+# Spike locations are each unit's main channel (deepest template trough).
 # 1. **Spikes per channel**: spikes compared by *where* (the contact nearest each spike: ours is the
-#    detection channel) and *when* (±`MATCH_MS`); the time-difference histogram should peak near 0
+#    unit's main channel) and *when* (±`MATCH_MS`); the time-difference histogram should peak near 0
 #    (both report the waveform's peak).
 # 2. **Units**: each Kilosort4 unit against the unit of ours holding most of its spikes, matched in
 #    time **and** place.
 #
-# `--set name=value` changes a setting (e.g. `--set scheme=1`); `--rerun` sorts again instead of
+# `--set name=value` changes a setting (e.g. `--set detect_threshold=6.0`); `--rerun` sorts again instead of
 # reading the exported sorting of an earlier run.
 #
 # Data (local, git-ignored): `data/kilosort4/ZFM-02370_mini.imec0.ap.short.bin` (+ `.meta`),
-# `data/kilosort4/saved_results/` (see playground/README.md). Results: the book's *Benchmarks*.
+# `data/kilosort4/saved_results/` (see benchmarks/README.md). Results: the book's *Benchmarks*.
 
 # %% [1] Settings
 import ast
@@ -26,14 +27,14 @@ import numpy as np
 import dsp_kitchen.synapse as syn
 from dsp_kitchen.io import Recording
 from dsp_kitchen.progress import ProgressBar
-from dsp_kitchen.synapse.ml import mountainsort5
+from dsp_kitchen.synapse.ml import spykingcircus2
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ks4_reference import BIN_PATH, KS4_RESULTS, Reference, compare  # noqa: E402
 
-OUTPUT = Path(__file__).resolve().parents[1] / "output" / "mountainsort5_validation"
+OUTPUT = Path(__file__).resolve().parent / "results" / "spykingcircus2_validation"
 ZARR_OUT = OUTPUT / "ours.sorting.zarr"
-#: Spikes match within this time (samples at 30 kHz: 12) and distance (ours: the detection
+#: Spikes match within this time (samples at 30 kHz: 12) and distance (ours: the unit's main
 #: channel's position, Kilosort4: its estimated position).
 MATCH_SAMPLES, NEAR_UM = 12, 60.0
 RERUN = "--rerun" in sys.argv
@@ -47,15 +48,17 @@ if RERUN or not ZARR_OUT.exists():
     probe = syn.ProbeLayout.from_recording(str(BIN_PATH)) or syn.load_sorting(str(KS4_RESULTS)).probe
     if rec.channels != probe.total_channels:
         rec = rec.slice_samples(channels=probe.channel_ids())
-    config = mountainsort5.Config()
+    config = spykingcircus2.Config()
     for arg in sys.argv[1:]:
         if "=" in arg and not arg.startswith("--"):
             name, value = arg.split("=", 1)
             setattr(config, name, ast.literal_eval(value))
             print(f"setting {name} = {getattr(config, name)!r}")
     start = time.perf_counter()
-    result = mountainsort5.run(rec, probe, config, progress=ProgressBar())
+    result = spykingcircus2.run(rec, probe, config, progress=ProgressBar())
     print(f"{result} in {time.perf_counter() - start:.1f} s")
+    if hasattr(result, "final_merges"):
+        print(f"final merges: {result.final_merges}")
     sorting = result.to_sorting_output(probe)
     OUTPUT.mkdir(parents=True, exist_ok=True)
     syn.save_sorting(sorting, str(ZARR_OUT), format="sorting-zarr")

@@ -31,6 +31,34 @@ drawn from min/max pyramids built by `dspk-view`.*
 Electrophysiology (spike detection, sorters, neural file formats) lives in the `synapse/` crates of
 the repository and is not published yet.
 
+## Repository
+
+```text
+crates/       dspk, dspk-core, dspk-io, dspk-ops                    (published)
+serve/        dspk-view, dspk-stream                                (published)
+engine/       dspk-pipeline: pipelines as data (JSON / TOML specs), many inputs, merges
+synapse/      dspk-synapse (detection, clustering, matching, sorter building blocks, provenance),
+              dspk-synapse-io (ephys formats), dspk-synapse-hub (downloads),
+              dspk-synapse-ml (pretrained models)
+  sorters/    one crate per sorter: ks4 (Kilosort4 + EMUsort), ms5 (MountainSort 5),
+              sc2 (SpyKING CIRCUS 2), tdc2 (Tridesclous 2)
+app/          dspk-app (desktop workbench), dspk-cli (`dspk run`, `dspk sort`, …)
+bindings/     python: the `dspk` package on PyPI
+playground/   worked examples as `# %%` cells (see playground/README.md)
+benchmarks/   timings and validations against scipy and other sorters (see benchmarks/README.md)
+```
+
+Every crate builds with wgpu, CUDA and the CPU runtime by default. Development and tests use one
+profile:
+
+```bash
+cargo build --workspace --profile validate
+cargo test  --workspace --exclude dspk-app --exclude dspk-py --profile validate
+```
+
+Each kernel is tested on every runtime compiled in (`DSPK_TEST_RUNTIMES=cuda` limits a run to one).
+Timings against scipy and kernel benchmarks: [benchmarks](benchmarks/README.md).
+
 ## Runtimes
 
 Runtimes are crate features; the device is picked at run time with `dspk::core::ComputeTarget`
@@ -101,4 +129,16 @@ values (e.g. 384 channels × 11.1 million samples). Larger requests are refused 
 
 ## License
 
-MIT OR Apache-2.0, at your option ([LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE)).
+MIT OR Apache-2.0, at your option ([LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE)),
+except the sorter crates that follow their upstream's licence:
+
+| Crate | Licence | Why |
+|---|---|---|
+| `dspk-ks4` (Kilosort4, EMUsort) | GPL-3.0-only | Kilosort4 and EMUsort are GPL-3.0 |
+| `dspk-ms5` (MountainSort 5) | Apache-2.0 | MountainSort 5 and isosplit6 are Apache-2.0 |
+| `dspk-sc2`, `dspk-tdc2` | MIT OR Apache-2.0 (+ SpikeInterface's MIT notice) | ported from SpikeInterface (MIT) |
+| `dspk-synapse` | (MIT OR Apache-2.0) AND Apache-2.0 | isosplit6 port; SpikeInterface components |
+
+Each sorter crate carries its upstream licence and a `NOTICE.md`. The published crates never depend
+on `dspk-ks4`; the `dspk-cli` binary does, so a CLI built with Kilosort4 is distributed under
+GPL-3.0 as a whole.

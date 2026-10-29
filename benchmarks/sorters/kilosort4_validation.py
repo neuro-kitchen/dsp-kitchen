@@ -11,7 +11,7 @@
 #    in time **and** place (time alone matches by chance at this spike density).
 #
 # Data (local, git-ignored): `data/kilosort4/ZFM-02370_mini.imec0.ap.short.bin` (+ `.meta`),
-# `data/kilosort4/saved_results/` (see playground/README.md). Results: the book's *Benchmarks*.
+# `data/kilosort4/saved_results/` (see benchmarks/README.md). Results: the book's *Benchmarks*.
 
 # %% [1] Settings
 import ast
@@ -29,7 +29,7 @@ from dsp_kitchen.synapse.ml import kilosort4
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ks4_reference import BIN_PATH, KS4_RESULTS, Reference, compare, read_params  # noqa: E402
 
-OUTPUT = Path(__file__).resolve().parents[1] / "output" / "kilosort4_validation"
+OUTPUT = Path(__file__).resolve().parent / "results" / "kilosort4_validation"
 PHY_OUT = OUTPUT / "phy"
 ZARR_OUT = OUTPUT / "ours.sorting.zarr"
 #: Spikes match within this time (samples at 30 kHz: 12) and distance.

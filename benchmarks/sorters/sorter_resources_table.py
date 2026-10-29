@@ -4,10 +4,10 @@
 # time, speed against real time, peak GPU memory and host RAM, spikes and units, reproducibility,
 # and the warm run's time per stage on one shared scale.
 #
-#     uv run python playground/benchmarks/sorter_resources_table.py
+#     uv run python benchmarks/sorters/sorter_resources_table.py
 #
-# Reads `playground/output/sorter_resources_{ks4,emusort}.json`, writes
-# `playground/output/sorter_resources.png`.
+# Reads `benchmarks/sorters/results/sorter_resources_{ks4,emusort}.json`, writes
+# `benchmarks/sorters/results/sorter_resources.png`.
 
 # %% [1] Reports
 import json
@@ -19,7 +19,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.patches import FancyBboxPatch
 
-OUTPUT = Path(__file__).resolve().parents[1] / "output"
+OUTPUT = Path(__file__).resolve().parent / "results"
 COLUMNS = [("ks4", "Kilosort4"), ("emusort", "EMUsort")]
 reports = [json.loads((OUTPUT / f"sorter_resources_{key}.json").read_text()) for key, _ in COLUMNS]
 
