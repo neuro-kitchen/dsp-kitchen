@@ -104,8 +104,29 @@ jobs:
           cache-directories: ~/.local/share/tracel
       - uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
         id: auth
-      - name: Publish (dependency order; publish = false crates are skipped)
-        run: cargo publish --workspace
+      # Dependency order; publish = false crates are skipped. Crates already on crates.io at this
+      # version are left out, so "Re-run failed jobs" finishes a partial publish (cargo stops on
+      # the first crate that exists: v0.0.3 published three of six, then a re-run could not
+      # continue). Every published crate needs a trusted publisher on crates.io (this repository,
+      # workflow release.yml, environment crates-io), or its upload is refused with 403.
+      - name: Publish the crates not yet on crates.io
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "dspk") | .version')
+          skip=()
+          left=0
+          for crate in $(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.publish != []) | .name'); do
+            if curl -sf -A "dspk-release (github.com/neuro-kitchen/dsp-kitchen)" "https://crates.io/api/v1/crates/$crate/$version" > /dev/null; then
+              echo "$crate $version is already on crates.io: skipped"
+              skip+=(--exclude "$crate")
+            else
+              left=$((left + 1))
+            fi
+          done
+          if [ "$left" -eq 0 ]; then
+            echo "every crate is already published at $version"
+            exit 0
+          fi
+          cargo publish --workspace "${skip[@]}"
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
