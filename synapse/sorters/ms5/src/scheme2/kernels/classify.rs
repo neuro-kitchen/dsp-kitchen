@@ -1,4 +1,4 @@
-//! Kernels of [`crate::sorters::mountainsort5::scheme2`]: the per-channel classifiers.
+//! Kernels of [`crate::scheme2`]: the per-channel classifiers.
 //!
 //! Classifier tables, concatenated over channels: channel `c` has `n_mask[c]` mask channels,
 //! `n_comp[c]` components and `n_train[c]` training points; its mean (`T · n_mask` values) starts

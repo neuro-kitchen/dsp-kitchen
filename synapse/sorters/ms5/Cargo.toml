@@ -1,0 +1,26 @@
+[package]
+name = "dspk-ms5"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+# A port of MountainSort 5 (Apache-2.0): the port stays under the same licence
+license = "Apache-2.0"
+# Not published yet: published together with the other sorter crates
+publish = false
+description = "MountainSort 5 spike sorter, ported from flatironinstitute/mountainsort5 to GPU kernels (CubeCL)"
+
+[features]
+default = ["wgpu", "cuda", "cpu"]
+wgpu = ["dspk-core/wgpu", "dspk-ops/wgpu", "dspk-synapse/wgpu", "dspk-sort/wgpu"]
+cpu = ["dspk-core/cpu", "dspk-ops/cpu", "dspk-synapse/cpu", "dspk-sort/cpu"]
+cuda = ["dspk-core/cuda", "dspk-ops/cuda", "dspk-synapse/cuda", "dspk-sort/cuda"]
+hip = ["dspk-core/hip", "dspk-ops/hip", "dspk-synapse/hip", "dspk-sort/hip"]
+
+[dependencies]
+dspk-core = { workspace = true, features = ["compute"] }
+dspk-ops.workspace = true
+dspk-synapse.workspace = true
+dspk-synapse-io.workspace = true
+dspk-sort.workspace = true
+cubecl.workspace = true
+rayon.workspace = true

@@ -13,8 +13,8 @@
 //! nearest training point in `m`'s feature space (the first may be the snippet itself); its time
 //! moves by `−offset`; label 0 is dropped; a unit's spikes within the time radius after one of its
 //! kept spikes are dropped ([`remove_duplicate_events`]). Projections and the nearest-neighbour
-//! search run on the device ([`fn@super::kernels::project_classifier_kernel`],
-//! [`fn@super::kernels::second_nearest_kernel`]).
+//! search run on the device ([`fn@self::kernels::project_classifier_kernel`],
+//! [`fn@self::kernels::second_nearest_kernel`]).
 //!
 //! Choices of ours. The classifiers' PCA is randomized (scikit-learn's iteration count) even below
 //! 8000 features, where upstream's is exact: the nearest-neighbour distances depend only on the
@@ -25,6 +25,8 @@
 //! channels only (upstream: every channel where its whole-probe template reaches the level; farther
 //! than the mask radius from the peak it does not on spike data).
 
+pub mod kernels;
+
 use cubecl::prelude::*;
 use cubecl::server::Handle;
 use dspk_ops::core::buffer;
@@ -32,7 +34,7 @@ use dspk_ops::linalg::{DeviceRows, TopComponents, TopComponentsOptions};
 use dspk_core::compute::LaunchGeometry;
 use dspk_synapse::features::ChannelNeighbourhoods;
 
-use super::kernels::{project_classifier_kernel, second_nearest_kernel};
+use self::kernels::{project_classifier_kernel, second_nearest_kernel};
 use super::snippets::MaskedSnippets;
 
 /// Training settings of the classifiers (MountainSort 5 defaults in [`Default`]).

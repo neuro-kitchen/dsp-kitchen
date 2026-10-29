@@ -5,6 +5,8 @@
 //! form is rebuilt on the device a batch at a time for PCA ([`SnippetRows`], flattened `s · M + m`
 //! as upstream's `reshape((L, T * M))`).
 
+pub mod kernels;
+
 use cubecl::prelude::*;
 use cubecl::server::Handle;
 use dspk_ops::core::buffer;
@@ -12,7 +14,8 @@ use dspk_ops::linalg::RowSource;
 use dspk_core::compute::LaunchGeometry;
 use dspk_synapse::features::ChannelNeighbourhoods;
 
-use super::kernels::{gather_snippets_kernel, scatter_snippets_kernel, NO_CHANNEL};
+use self::kernels::{gather_snippets_kernel, scatter_snippets_kernel};
+use crate::detect::kernels::NO_CHANNEL;
 
 /// Masked snippets of many events (module docs).
 #[derive(Debug, Clone)]

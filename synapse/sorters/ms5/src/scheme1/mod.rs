@@ -14,13 +14,15 @@
 //! concatenates the chunks into one recording; here each chunk is its own segment (no event
 //! straddles a junction, margins at both ends of every chunk).
 
+pub mod subdivision;
+
 use std::ops::Range;
 
 use cubecl::prelude::*;
 use dspk_ops::linalg::{TopComponents, TopComponentsOptions};
 
 use super::snippets::MaskedSnippets;
-use super::subdivision::{isosplit6_subdivision_with_progress, SubdivisionOptions};
+use self::subdivision::{isosplit6_subdivision_with_progress, SubdivisionOptions};
 use super::templates::{align_templates, median_templates, offsets_to_peak, peak_channels};
 
 /// Clustering settings of scheme 1 (MountainSort 5 defaults in [`Default`]).

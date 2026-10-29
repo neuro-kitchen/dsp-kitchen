@@ -1,9 +1,9 @@
-//! Kernels of [`crate::sorters::mountainsort5::snippets`].
+//! Kernels of [`crate::snippets`].
 
 use cubecl::prelude::*;
 use dspk_core::compute::element_position;
 
-use super::detect::NO_CHANNEL;
+use crate::detect::kernels::NO_CHANNEL;
 
 /// One unit per element `(j, s, k)` of `out` (`[events, width, max_neighbours]`): sample
 /// `ev_samples[j] − n_before + s` of the `k`-th neighbourhood channel of `ev_channels[j]` (`table`,

@@ -12,10 +12,12 @@
 //! On the device: threshold-reaching local extrema are found and compacted
 //! ([`dspk_ops::peaks::find_peak_candidates_on_device`]); a detection is always one, since its
 //! neighbouring samples on its own channel are not lower. One unit per candidate then scans its
-//! neighbourhood window in the trace ([`fn@super::kernels::locally_exclusive_kernel`]); only the
+//! neighbourhood window in the trace ([`fn@self::kernels::locally_exclusive_kernel`]); only the
 //! kept candidates' samples and channels are downloaded. Difference: a flat run of equal samples
 //! reports its first sample, where upstream reports every sample of the run (exact ties of
 //! filtered floats).
+
+pub mod kernels;
 
 use std::ops::Range;
 
@@ -26,7 +28,7 @@ use dspk_ops::peaks::{find_peak_candidates_on_device, Polarity};
 use dspk_core::compute::LaunchGeometry;
 use dspk_synapse::features::ChannelNeighbourhoods;
 
-use super::kernels::locally_exclusive_kernel;
+use self::kernels::locally_exclusive_kernel;
 
 /// Detection settings (MountainSort 5 scheme 1 defaults in [`Default`]).
 #[derive(Debug, Clone, Copy, PartialEq)]

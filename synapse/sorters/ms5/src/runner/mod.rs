@@ -34,7 +34,7 @@ use super::snippets::MaskedSnippets;
 use super::templates::median_templates;
 use super::{Mountainsort5Config, Scheme, TrainingSampling};
 use dspk_sort::DeviceWindows;
-use crate::sorters::result::{AmplitudeScale, SorterResult};
+use dspk_sort::result::{AmplitudeScale, SorterResult};
 
 /// Sorter name in [`SortingOutput`].
 pub const MOUNTAINSORT5_SORTER: &str = "mountainsort5";

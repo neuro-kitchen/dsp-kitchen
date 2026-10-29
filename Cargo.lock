@@ -3089,6 +3089,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "dspk-ms5"
+version = "0.0.3"
+dependencies = [
+ "cubecl",
+ "dspk-core",
+ "dspk-ops",
+ "dspk-sort",
+ "dspk-synapse",
+ "dspk-synapse-io",
+ "rayon",
+]
+
+[[package]]
 name = "dspk-ops"
 version = "0.0.3"
 dependencies = [
@@ -3226,6 +3239,7 @@ dependencies = [
  "cubecl",
  "dspk-core",
  "dspk-io",
+ "dspk-ms5",
  "dspk-ops",
  "dspk-sort",
  "dspk-synapse",

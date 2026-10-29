@@ -1,17 +1,15 @@
 //! MountainSort 5 (Chung et al., Neuron 2017; `flatironinstitute/mountainsort5`, Apache-2.0),
 //! ported from its source: locally exclusive detection ([`detect`]), masked snippets
-//! ([`snippets`]), PCA and the isosplit6 subdivision method ([`subdivision`],
+//! ([`snippets`]), PCA and the isosplit6 subdivision method ([`scheme1::subdivision`],
 //! [`dspk_synapse::sorting::isosplit6`]), median templates and alignment ([`templates`],
 //! [`scheme1`]), then per-channel classifiers over the whole recording ([`scheme2`]), driven by
 //! [`runner`]. Stages, settings and our choices: the book's MountainSort 5 pages.
 
 pub mod detect;
-pub mod kernels;
 pub mod runner;
 pub mod scheme1;
 pub mod scheme2;
 pub mod snippets;
-pub mod subdivision;
 pub mod templates;
 
 pub use detect::{DetectOptions, Detections, Detector};
@@ -19,12 +17,12 @@ pub use runner::{run, Mountainsort5Result, MOUNTAINSORT5_SORTER};
 pub use scheme1::{cluster_events, cluster_events_with_progress, ClusteringParams, Events, Scheme1Output};
 pub use scheme2::{ClassifierParams, Classifiers};
 pub use snippets::{MaskedSnippets, SnippetRows};
-pub use subdivision::{isosplit6_subdivision, isosplit6_subdivision_with_progress, SubdivisionOptions};
+pub use scheme1::subdivision::{isosplit6_subdivision, isosplit6_subdivision_with_progress, SubdivisionOptions};
 
 use dspk_ops::linalg::TopComponentsOptions;
 use dspk_synapse::sorting::IsosplitOptions;
 
-use crate::provenance::{Attributed, Paper, Provenance, ProvenanceKind, UpstreamCode};
+use dspk_synapse::provenance::{Attributed, Paper, Provenance, ProvenanceKind, UpstreamCode};
 
 /// One pass (scheme 1) or train on a stretch and classify everything (scheme 2, the default).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

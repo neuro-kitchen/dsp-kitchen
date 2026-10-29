@@ -1,4 +1,4 @@
-//! Kernels of [`crate::sorters::mountainsort5::detect`].
+//! Kernels of [`crate::detect`].
 
 use cubecl::prelude::*;
 use dspk_core::compute::element_position;
