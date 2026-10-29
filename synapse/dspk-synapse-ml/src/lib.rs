@@ -4,15 +4,17 @@
 //! - [`models`]: pretrained networks run as released (parked until their artifacts are verified).
 //! - [`hub`]: the catalog of published artifacts (with feature `hub`, downloads through
 //!   `dspk-synapse-hub`).
-//! - [`provenance`]: paper, code, license and download source of every sorter and model.
+//! - [`provenance`]: paper, code, license and download source of every sorter and model
+//!   (from `dspk-synapse`).
 //! - [`runtime`]: tensor execution for the pretrained models.
 
 pub mod hub;
 pub mod models;
-pub mod provenance;
 pub mod runtime;
 pub mod sorters;
 
+// Provenance lives in dspk-synapse (shared by the models here and the sorter crates)
+pub use dspk_synapse::provenance;
 pub use provenance::{ArtifactSource, Attributed, Paper, Provenance, ProvenanceKind, UpstreamCode};
 
 pub use hub::{

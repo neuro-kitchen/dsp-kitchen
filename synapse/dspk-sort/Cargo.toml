@@ -1,0 +1,23 @@
+[package]
+name = "dspk-sort"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+# Not published yet: published together with the sorter crates
+publish = false
+description = "What every dspk spike sorter shares: results, device window streaming, and components ported from SpikeInterface"
+
+[features]
+default = ["wgpu", "cuda", "cpu"]
+wgpu = ["dspk-core/wgpu", "dspk-ops/wgpu", "dspk-synapse/wgpu"]
+cpu = ["dspk-core/cpu", "dspk-ops/cpu", "dspk-synapse/cpu"]
+cuda = ["dspk-core/cuda", "dspk-ops/cuda", "dspk-synapse/cuda"]
+hip = ["dspk-core/hip", "dspk-ops/hip", "dspk-synapse/hip"]
+
+[dependencies]
+dspk-core = { workspace = true, features = ["compute"] }
+dspk-ops.workspace = true
+dspk-synapse.workspace = true
+dspk-synapse-io.workspace = true
+cubecl.workspace = true

@@ -3143,6 +3143,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "dspk-sort"
+version = "0.0.3"
+dependencies = [
+ "cubecl",
+ "dspk-core",
+ "dspk-ops",
+ "dspk-synapse",
+ "dspk-synapse-io",
+]
+
+[[package]]
 name = "dspk-stream"
 version = "0.0.3"
 dependencies = [
@@ -3216,6 +3227,7 @@ dependencies = [
  "dspk-core",
  "dspk-io",
  "dspk-ops",
+ "dspk-sort",
  "dspk-synapse",
  "dspk-synapse-hub",
  "dspk-synapse-io",

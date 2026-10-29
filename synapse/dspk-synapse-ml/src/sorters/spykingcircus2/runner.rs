@@ -45,7 +45,7 @@ use crate::sorters::components::{
     auto_merge, clean_templates, merge_by_similarity, prototype, remove_small_clusters, split_clusters, templates_from_svd, AutoMergeOptions, CircusOmp, CleanOptions, LocallyExclusiveDetector,
     MatchedFilter, MatchedFilterOptions, OmpOptions, PeakSign, SparseFeatures, SplitOptions, Templates,
 };
-use crate::sorters::kilosort4::runner::DeviceWindows;
+use dspk_sort::DeviceWindows;
 use crate::sorters::mountainsort5::MaskedSnippets;
 use crate::sorters::result::{AmplitudeScale, SorterResult};
 

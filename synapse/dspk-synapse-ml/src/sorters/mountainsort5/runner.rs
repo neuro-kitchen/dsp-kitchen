@@ -33,7 +33,7 @@ use super::scheme2::{noise_times, remove_duplicate_events, subsample_indices, Cl
 use super::snippets::MaskedSnippets;
 use super::templates::median_templates;
 use super::{Mountainsort5Config, Scheme, TrainingSampling};
-use crate::sorters::kilosort4::runner::DeviceWindows;
+use dspk_sort::DeviceWindows;
 use crate::sorters::result::{AmplitudeScale, SorterResult};
 
 /// Sorter name in [`SortingOutput`].

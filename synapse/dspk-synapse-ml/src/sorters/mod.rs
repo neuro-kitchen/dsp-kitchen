@@ -10,17 +10,17 @@
 //!
 //! Pretrained networks run as released live in [`crate::models`].
 
-pub mod components;
 pub mod emusort;
 pub mod kilosort4;
 pub mod mountainsort5;
-pub mod result;
 pub mod spykingcircus2;
 pub mod tridesclous2;
 
 pub use emusort::{Emusort, EmusortConfig};
 pub use kilosort4::{Kilosort4, Kilosort4Config, Kilosort4Result};
 pub use mountainsort5::{Mountainsort5, Mountainsort5Config, Mountainsort5Result};
+// Shared with every sorter crate
+pub use dspk_sort::{components, result};
 pub use result::{AmplitudeScale, SorterResult};
 pub use spykingcircus2::{Spykingcircus2, Spykingcircus2Config, Spykingcircus2Result};
 pub use tridesclous2::{Tridesclous2, Tridesclous2Config, Tridesclous2Result};

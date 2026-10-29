@@ -189,6 +189,13 @@ pub struct ChannelAligner {
     shifts: Option<(usize, Handle)>,
 }
 
+/// EMUsort's alignment as [`DeviceWindows`](dspk_sort::DeviceWindows)' per-window step.
+impl dspk_sort::WindowAligner for ChannelAligner {
+    fn align(&mut self, window: &Handle, samples: usize) -> Handle {
+        ChannelAligner::align(self, window, samples)
+    }
+}
+
 impl ChannelAligner {
     /// Aligner for batches of at most `max_samples` samples per channel.
     pub fn new(client: &Client, delays: Vec<isize>, max_samples: usize) -> Self {

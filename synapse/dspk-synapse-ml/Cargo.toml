@@ -10,18 +10,19 @@ description = "Neuro spike sorters reimplemented from their papers (Kilosort4, E
 
 [features]
 default = ["wgpu", "cuda", "cpu", "flex"]
-wgpu = ["burn-tensor/wgpu", "cubecl/wgpu", "dspk-ops/wgpu", "dspk-synapse/wgpu"]
+wgpu = ["burn-tensor/wgpu", "cubecl/wgpu", "dspk-ops/wgpu", "dspk-synapse/wgpu", "dspk-sort/wgpu"]
 flex = ["burn-tensor/flex"]
 # Resolve catalog ids to verified local files (network access through dspk-synapse-hub)
 hub = ["dep:dspk-synapse-hub", "dep:anyhow"]
-cpu = ["cubecl/cpu", "dspk-ops/cpu", "dspk-synapse/cpu"]
-cuda = ["cubecl/cuda", "dspk-ops/cuda", "dspk-synapse/cuda"]
-hip = ["cubecl/hip", "dspk-ops/hip", "dspk-synapse/hip"]
+cpu = ["cubecl/cpu", "dspk-ops/cpu", "dspk-synapse/cpu", "dspk-sort/cpu"]
+cuda = ["cubecl/cuda", "dspk-ops/cuda", "dspk-synapse/cuda", "dspk-sort/cuda"]
+hip = ["cubecl/hip", "dspk-ops/hip", "dspk-synapse/hip", "dspk-sort/hip"]
 
 [dependencies]
 dspk-core = { workspace = true, features = ["compute"] }
 dspk-ops.workspace = true
 dspk-synapse.workspace = true
+dspk-sort.workspace = true
 dspk-io = { workspace = true, features = ["zarr"] }
 dspk-synapse-io = { workspace = true, features = ["zarr"] }
 burn-tensor.workspace = true

@@ -22,11 +22,12 @@ use dspk_ops::pipeline::{Pipeline, PipelineStage, PipelineWorkspace};
 use dspk_ops::spatial::SpatialWhitening;
 use dspk_core::progress::Stages;
 use cubecl::server::Handle;
-use dspk_core::{ChunkSchedule, DspError, DspResult, HaloWindow, ProgressSink, RecordingSource, SampleFormat, WindowLoader};
+use dspk_core::{ChunkSchedule, DspError, DspResult, HaloWindow, ProgressSink, RecordingSource};
 use dspk_synapse_io::probe::SensorLayout;
 use dspk_synapse::core::{SortingOutput, WaveformTemplate};
 
 use crate::sorters::result::{AmplitudeScale, SorterResult};
+use dspk_sort::windows::{DeviceWindows, WindowAligner};
 use dspk_synapse::metrics::{CompositeScoreOptions, RefractoryOptions};
 
 use super::clustering::{cluster_spikes, SpikeClusters};
@@ -67,60 +68,6 @@ pub const KILOSORT4_SORTER: &str = "kilosort4";
 
 fn filter_error(e: dspk_ops::filter::FilterError) -> DspError {
     DspError::InvalidConfig(e.to_string())
-}
-
-/// Windows of a recording on their way to the device: read on a background thread into a buffer
-/// the upload then takes over (no copy on the calling thread), uploaded as
-/// the source's **stored** values when it can provide them (integers: `int16` moves half the bytes
-/// of `f32`, and the gain / offset are applied on the device, not on the host thread), else as
-/// scaled `f32`; preprocessed by `workspace` and, with channel delays, aligned. Every pass of a
-/// run goes through it, so a window crosses to the device once, in its compact form.
-pub(crate) struct DeviceWindows<'a> {
-    loader: WindowLoader<'a>,
-    stored: Option<SampleFormat>,
-    workspace: PipelineWorkspace<f32>,
-    aligner: Option<ChannelAligner>,
-}
-
-impl<'a> DeviceWindows<'a> {
-    pub(crate) fn new(source: &'a dyn RecordingSource, mut workspace: PipelineWorkspace<f32>, aligner: Option<ChannelAligner>) -> Self {
-        let info = source.info();
-        // Stored reads only pay off for integer formats, and not every source implements them
-        let probe = |format: SampleFormat| source.read_stored(&[0], 0..1, &mut vec![0u8; format.bytes()]).is_ok();
-        let stored = (info.format != SampleFormat::F32 && info.samples > 0 && info.channel_count() > 0 && probe(info.format))
-            .then_some(info.format);
-        if stored.is_some() {
-            let (gains, offsets): (Vec<f32>, Vec<f32>) = info.channels.iter().map(|c| (c.gain, c.offset)).unzip();
-            workspace.set_stored_scaling(&gains, &offsets);
-        }
-        Self { loader: WindowLoader::new(source), stored, workspace, aligner }
-    }
-
-    /// Calls `f(window, prepared)` for every window of `windows` in order (`prepared`: the
-    /// `[channels, window.read_len()]` preprocessed window on the device, valid until the next
-    /// call), until `f` returns `false`.
-    pub(crate) fn for_each_while(&mut self, windows: &[HaloWindow], mut f: impl FnMut(&HaloWindow, &Handle) -> DspResult<bool>) -> DspResult<()> {
-        let Self { loader, stored, workspace, aligner } = self;
-        let mut finish = |window: &HaloWindow, handle: Handle| {
-            let handle = match aligner.as_mut() {
-                Some(aligner) => aligner.align(&handle, window.read_len()),
-                None => handle,
-            };
-            f(window, &handle)
-        };
-        // Owned windows: the reading thread allocates and fills each one, and it moves into the
-        // upload without a copy here, so this thread's time goes to queueing device work
-        match *stored {
-            Some(format) => loader.stream_stored_owned_while(windows, |window, bytes| {
-                let handle = workspace.process_owned_stored_chunk_in_vram(bytes, format, window.read_len())?;
-                finish(window, handle)
-            }),
-            None => loader.stream_owned_while(windows, |window, raw| {
-                let handle = workspace.process_owned_chunk_in_vram(raw, window.read_len());
-                finish(window, handle)
-            }),
-        }
-    }
 }
 
 /// Every `nskip`-th window, as upstream (`range(0, n_batches, nskip)`): a recording of `nskip`
@@ -474,7 +421,7 @@ pub fn run_plan(
         PipelineWorkspace::<f32>::new(client.clone(), fitted.pipeline.clone(), channels, max_window, fs).map_err(filter_error)?;
     let aligner = fitted.channel_delays.as_ref().map(|d| ChannelAligner::new(client, d.delays.clone(), max_window));
     // Preprocessed (and delay-aligned) windows, on the device
-    let mut device = DeviceWindows::new(source, workspace, aligner);
+    let mut device = DeviceWindows::new(source, workspace, aligner.map(|a| Box::new(a) as Box<dyn WindowAligner>));
 
     // 2. Universal templates
     let templates = if ks.templates_from_data {
@@ -675,6 +622,7 @@ fn duplicate_mask(spikes: &[UniversalSpike], labels: &[u32], window: u64) -> Vec
 mod tests {
     use super::*;
     use dspk_core::compute::{ComputeTarget, ComputeTask};
+    use dspk_core::SampleFormat;
 
     /// Each sorter's defaults give its chain; every switch off gives none; an edge past Nyquist is
     /// an error, not dropped.

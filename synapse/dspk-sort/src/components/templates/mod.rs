@@ -24,6 +24,11 @@
 //! - [`remove_small_clusters`]: units with fewer than `int(duration · min_firing_rate /
 //!   subsampling_factor)` peaks dropped.
 
+
+pub mod prototype;
+
+pub use prototype::prototype;
+
 use std::collections::BTreeMap;
 
 use dspk_synapse::features::ChannelNeighbourhoods;
