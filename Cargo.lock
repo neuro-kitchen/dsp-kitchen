@@ -3097,7 +3097,6 @@ dependencies = [
  "dspk-core",
  "dspk-io",
  "dspk-ops",
- "dspk-sort",
  "dspk-synapse",
  "dspk-synapse-io",
  "dspk-synapse-ml",
@@ -3111,7 +3110,6 @@ dependencies = [
  "cubecl",
  "dspk-core",
  "dspk-ops",
- "dspk-sort",
  "dspk-synapse",
  "dspk-synapse-io",
  "rayon",
@@ -3179,21 +3177,9 @@ dependencies = [
  "dspk-core",
  "dspk-ms5",
  "dspk-ops",
- "dspk-sort",
  "dspk-synapse",
  "dspk-synapse-io",
  "rayon",
-]
-
-[[package]]
-name = "dspk-sort"
-version = "0.0.3"
-dependencies = [
- "cubecl",
- "dspk-core",
- "dspk-ops",
- "dspk-synapse",
- "dspk-synapse-io",
 ]
 
 [[package]]
@@ -3289,7 +3275,6 @@ dependencies = [
  "dspk-core",
  "dspk-ms5",
  "dspk-ops",
- "dspk-sort",
  "dspk-synapse",
  "dspk-synapse-io",
  "rayon",

@@ -4,13 +4,13 @@
 //!
 //! [`SorterResult::to_sorting_output`]: one unit per non-empty unit id. Its primary channel is the
 //! template channel with the most energy; it is labelled *good* when its auto-correlogram is
-//! refractory ([`dspk_synapse::metrics::acg_refractory`]), else *mua* (Phy's `cluster_KSLabel`); it
+//! refractory ([`crate::metrics::acg_refractory`]), else *mua* (Phy's `cluster_KSLabel`); it
 //! carries EMUsort's composite score, whose SNR follows [`AmplitudeScale`].
 
 use dspk_synapse_io::probe::SensorLayout;
-use dspk_synapse::core::{SortedUnit, SortingOutput, WaveformTemplate};
-use dspk_synapse::metrics::{acg_refractory, composite_score, CompositeScoreOptions, RefractoryOptions};
-use dspk_synapse::{QualityCriteria, UnitQualityLabel};
+use crate::core::{SortedUnit, SortingOutput, WaveformTemplate};
+use crate::metrics::{acg_refractory, composite_score, CompositeScoreOptions, RefractoryOptions};
+use crate::{QualityCriteria, UnitQualityLabel};
 
 /// What the spike amplitudes (and templates) are measured in, which sets each unit's SNR.
 #[derive(Debug, Clone, PartialEq)]

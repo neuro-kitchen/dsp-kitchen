@@ -55,6 +55,7 @@ pub mod extraction;
 pub mod features;
 pub mod metrics;
 pub mod provenance;
+pub mod sorter;
 pub mod sorting;
 pub mod spatial;
 pub mod storage;

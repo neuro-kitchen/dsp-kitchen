@@ -1,4 +1,4 @@
-//! Kernels of [`crate::components::detection::matched`].
+//! Kernels of [`crate::sorter::components::detection::matched`].
 
 use cubecl::prelude::*;
 use dspk_core::compute::element_position;

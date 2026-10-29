@@ -18,5 +18,5 @@ and so is this crate (`LICENSE`, the GPL-3.0 text as shipped by Kilosort).
 
 Written from the papers and upstream's published defaults, with upstream's behaviour compared
 against its code (named functions, defaults and stage order in the comments); no upstream source
-is copied. The computation is new (GPU kernels per stage, windows streamed through `dspk-sort`).
+is copied. The computation is new (GPU kernels per stage, windows streamed through `dspk-synapse::sorter`).
 Licensing it under GPL-3.0 keeps it within upstream's terms either way.

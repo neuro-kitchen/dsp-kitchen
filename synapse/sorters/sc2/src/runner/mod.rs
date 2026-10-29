@@ -23,8 +23,8 @@
 //! Spike amplitudes are the matching's amplitude times the template's trough on its main channel
 //! (whitened units); locations that channel's position.
 
-use dspk_sort::stats::median;
-use dspk_sort::{snippet_fits, spread_windows};
+use dspk_synapse::sorter::stats::median;
+use dspk_synapse::sorter::{snippet_fits, spread_windows};
 use std::ops::Range;
 
 use cubecl::prelude::Client;
@@ -43,13 +43,13 @@ use dspk_synapse::metrics::{CompositeScoreOptions, RefractoryOptions};
 use dspk_synapse::sorting::{hdbscan_allow_single, subsample_peaks, SubsampleOptions};
 
 use super::Spykingcircus2Config;
-use dspk_sort::components::{
+use dspk_synapse::sorter::components::{
     auto_merge, clean_templates, merge_by_similarity, prototype, remove_small_clusters, split_clusters, templates_from_svd, AutoMergeOptions, CircusOmp, CleanOptions, LocallyExclusiveDetector,
     MatchedFilter, MatchedFilterOptions, OmpOptions, PeakSign, SparseFeatures, SplitOptions, Templates,
 };
-use dspk_sort::DeviceWindows;
+use dspk_synapse::sorter::DeviceWindows;
 use dspk_ms5::MaskedSnippets;
-use dspk_sort::result::{AmplitudeScale, SorterResult};
+use dspk_synapse::sorter::result::{AmplitudeScale, SorterResult};
 
 /// Sorter name in [`SortingOutput`].
 pub const SPYKINGCIRCUS2_SORTER: &str = "spykingcircus2";

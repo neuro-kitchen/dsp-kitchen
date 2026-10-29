@@ -1,4 +1,4 @@
-//! Kernels of [`crate::components::matching::omp`].
+//! Kernels of [`crate::sorter::components::matching::omp`].
 
 use cubecl::prelude::*;
 use dspk_core::compute::element_position;

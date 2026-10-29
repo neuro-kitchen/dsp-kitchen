@@ -26,8 +26,8 @@ use dspk_core::{ChunkSchedule, DspError, DspResult, HaloWindow, ProgressSink, Re
 use dspk_synapse_io::probe::SensorLayout;
 use dspk_synapse::core::{SortingOutput, WaveformTemplate};
 
-use dspk_sort::result::{AmplitudeScale, SorterResult};
-use dspk_sort::windows::{DeviceWindows, WindowAligner};
+use dspk_synapse::sorter::result::{AmplitudeScale, SorterResult};
+use dspk_synapse::sorter::windows::{DeviceWindows, WindowAligner};
 use dspk_synapse::metrics::{CompositeScoreOptions, RefractoryOptions};
 
 use super::clustering::{cluster_spikes, SpikeClusters};

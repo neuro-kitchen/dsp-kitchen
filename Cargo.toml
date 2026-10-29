@@ -12,7 +12,6 @@ members = [
     "synapse/dspk-synapse-io",
     "synapse/dspk-synapse",
     "synapse/dspk-synapse-ml",
-    "synapse/dspk-sort",
     "synapse/sorters/ms5",
     "synapse/sorters/sc2",
     "synapse/sorters/tdc2",
@@ -46,7 +45,6 @@ dspk-ops = { path = "crates/dspk-ops", version = "0.0.3", default-features = fal
 dspk-synapse-io = { path = "synapse/dspk-synapse-io", version = "0.0.3", default-features = false }
 dspk-synapse = { path = "synapse/dspk-synapse", version = "0.0.3", default-features = false }
 dspk-synapse-ml = { path = "synapse/dspk-synapse-ml", version = "0.0.3", default-features = false }
-dspk-sort = { path = "synapse/dspk-sort", version = "0.0.3", default-features = false }
 dspk-ms5 = { path = "synapse/sorters/ms5", version = "0.0.3", default-features = false }
 dspk-sc2 = { path = "synapse/sorters/sc2", version = "0.0.3", default-features = false }
 dspk-tdc2 = { path = "synapse/sorters/tdc2", version = "0.0.3", default-features = false }

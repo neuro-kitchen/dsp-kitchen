@@ -23,7 +23,7 @@
 use std::collections::VecDeque;
 
 use dspk_ops::linalg::symmetric_eigen_cpu;
-use dspk_synapse::features::ChannelNeighbourhoods;
+use crate::features::ChannelNeighbourhoods;
 
 /// Settings of [`split_clusters`] (SpyKING CIRCUS 2's in [`Default`]).
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -33,8 +33,8 @@ use super::scheme2::{noise_times, remove_duplicate_events, subsample_indices, Cl
 use super::snippets::MaskedSnippets;
 use super::templates::median_templates;
 use super::{Mountainsort5Config, Scheme, TrainingSampling};
-use dspk_sort::DeviceWindows;
-use dspk_sort::result::{AmplitudeScale, SorterResult};
+use dspk_synapse::sorter::DeviceWindows;
+use dspk_synapse::sorter::result::{AmplitudeScale, SorterResult};
 
 /// Sorter name in [`SortingOutput`].
 pub const MOUNTAINSORT5_SORTER: &str = "mountainsort5";

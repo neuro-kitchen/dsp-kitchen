@@ -13,6 +13,6 @@
 The stages (`detect`, `snippets`, `scheme1` with the isosplit6 subdivision, `scheme2`
 classifiers, `templates`) follow upstream's `core/` and `schemes/` modules; the computation is
 rewritten for the GPU (CubeCL kernels next to each stage), and recording windows are streamed to
-the device through `dspk-sort`. Defaults are upstream's; differences are listed in each module.
+the device through `dspk-synapse::sorter`. Defaults are upstream's; differences are listed in each module.
 
 This port is distributed under the Apache License 2.0 (`LICENSE`), the same as upstream.

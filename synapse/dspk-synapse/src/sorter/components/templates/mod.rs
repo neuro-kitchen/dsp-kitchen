@@ -31,7 +31,7 @@ pub use prototype::prototype;
 
 use std::collections::BTreeMap;
 
-use dspk_synapse::features::ChannelNeighbourhoods;
+use crate::features::ChannelNeighbourhoods;
 
 /// Dense templates `[units, width, channels]` with their unit ids and sparsity.
 #[derive(Debug, Clone, PartialEq)]

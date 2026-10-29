@@ -29,7 +29,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::components::templates::Templates;
+use crate::sorter::components::templates::Templates;
 
 /// Settings of [`auto_merge`] (SpyKING CIRCUS 2's in [`Default`]).
 #[derive(Debug, Clone, PartialEq)]
@@ -83,7 +83,7 @@ pub struct AutoMerged {
 pub fn auto_merge(samples: &[u64], units: Vec<Vec<usize>>, templates: Templates, positions: &[[f32; 2]], fs: f64, total: u64, opts: &AutoMergeOptions) -> AutoMerged {
     let mut units = units;
     let mut t = templates;
-    let mut sim = crate::components::templates::template_similarity(&t, opts.num_shifts).0;
+    let mut sim = crate::sorter::components::templates::template_similarity(&t, opts.num_shifts).0;
     let mut loc: Vec<[f64; 2]> = (0..t.len()).map(|u| centre_of_mass(&t, u, positions)).collect();
     let mut merges = 0;
     for &thresh in &opts.template_diff_thresholds {

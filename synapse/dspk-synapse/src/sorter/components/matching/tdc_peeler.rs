@@ -23,9 +23,9 @@
 
 use dspk_ops::linalg::symmetric_eigen_cpu;
 
-use crate::components::detection::exclusive::{locally_exclusive, Candidate};
-use crate::components::detection::matched::convolution_weights;
-use crate::components::templates::Templates;
+use crate::sorter::components::detection::exclusive::{locally_exclusive, Candidate};
+use crate::sorter::components::detection::matched::convolution_weights;
+use crate::sorter::components::templates::Templates;
 
 /// Settings of [`TdcPeeler`] (upstream defaults in [`Default`]).
 #[derive(Debug, Clone, Copy, PartialEq)]

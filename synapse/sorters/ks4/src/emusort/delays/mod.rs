@@ -191,8 +191,8 @@ pub struct ChannelAligner {
     shifts: Option<(usize, Handle)>,
 }
 
-/// EMUsort's alignment as [`DeviceWindows`](dspk_sort::DeviceWindows)' per-window step.
-impl dspk_sort::WindowAligner for ChannelAligner {
+/// EMUsort's alignment as [`DeviceWindows`](dspk_synapse::sorter::DeviceWindows)' per-window step.
+impl dspk_synapse::sorter::WindowAligner for ChannelAligner {
     fn align(&mut self, window: &Handle, samples: usize) -> Handle {
         ChannelAligner::align(self, window, samples)
     }

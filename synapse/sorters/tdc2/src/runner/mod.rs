@@ -28,15 +28,15 @@ use dspk_synapse::metrics::{CompositeScoreOptions, RefractoryOptions};
 use dspk_synapse::sorting::{isosplit_si, subsample_peaks, IsosplitOptions, IsosplitVariant, SubsampleOptions};
 
 use super::Tridesclous2Config;
-use dspk_sort::components::{
+use dspk_synapse::sorter::components::{
     auto_merge, clean_templates, fine_prototype, merge_by_similarity, remove_small_clusters, split_clusters, templates_from_svd, AutoMergeOptions, CleanOptions,
     FineFilter, LocallyExclusiveDetector, PeakSign, SparseFeatures, SplitOptions, TdcPeeler, TdcPeelerOptions, Templates,
 };
-use dspk_sort::DeviceWindows;
+use dspk_synapse::sorter::DeviceWindows;
 use dspk_ms5::MaskedSnippets;
-use dspk_sort::result::{AmplitudeScale, SorterResult};
-use dspk_sort::stats::median;
-use dspk_sort::{snippet_fits, spread_windows};
+use dspk_synapse::sorter::result::{AmplitudeScale, SorterResult};
+use dspk_synapse::sorter::stats::median;
+use dspk_synapse::sorter::{snippet_fits, spread_windows};
 
 /// Sorter name in [`SortingOutput`].
 pub const TRIDESCLOUS2_SORTER: &str = "tridesclous2";
