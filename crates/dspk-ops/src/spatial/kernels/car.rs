@@ -1,5 +1,5 @@
 use cubecl::prelude::*;
-use dspk_core::compute::sample_position;
+use dspk_core::compute::{element_position, sample_position};
 
 /// Single-pass Common Average Referencing: one unit per sample ([`fn@sample_position`]) averages that
 /// sample over all channels and subtracts the average, with no intermediate buffer. Units of a plane
@@ -156,6 +156,50 @@ pub fn common_median_bitonic_kernel<F: Float>(
             let idx = (c * num_samples + s) as usize;
             output[idx] = input[idx] - median;
             c += units;
+        }
+    }
+}
+
+/// Common median reference by rank counting on `N` consecutive samples per unit (`num_samples` a
+/// multiple of `N`): channel `c` of the unit's samples is one aligned vector load, and each lane
+/// counts, for every channel value, the channels below and equal to it, as
+/// [`fn@common_median_kernel`] does for one sample. Same comparisons, same median `(m₁ + m₂) / 2`,
+/// so the output is bit-identical; no shared memory or barriers (CubeCL's CPU runtime maps the
+/// vectors to SIMD).
+#[cube(launch)]
+pub fn common_median_vector_kernel<F: Float, N: Size>(input: &[Vector<F, N>], output: &mut [Vector<F, N>], num_channels: u32, vectors_per_row: u32) {
+    let v = element_position();
+    if v < vectors_per_row as usize {
+        let row = vectors_per_row as usize;
+        let one = Vector::<u32, N>::new(1u32);
+        let zero = Vector::<u32, N>::new(0u32);
+        let k1 = Vector::<u32, N>::new((num_channels - 1u32) / 2u32);
+        let k2 = Vector::<u32, N>::new(num_channels / 2u32);
+        let mut mid1 = Vector::<F, N>::new(F::new(0.0f32));
+        let mut mid2 = Vector::<F, N>::new(F::new(0.0f32));
+        let mut c = 0u32;
+        while c < num_channels {
+            let x = input[c as usize * row + v];
+            let mut less = zero;
+            let mut equal = zero;
+            let mut j = 0u32;
+            while j < num_channels {
+                let y = input[j as usize * row + v];
+                less += select_many(y.less_than(&x), one, zero);
+                equal += select_many(y.equal(&x), one, zero);
+                j += 1u32;
+            }
+            let upto = less + equal;
+            mid1 = select_many(k1.greater_equal(&less).vec_and(k1.less_than(&upto)), x, mid1);
+            mid2 = select_many(k2.greater_equal(&less).vec_and(k2.less_than(&upto)), x, mid2);
+            c += 1u32;
+        }
+        let median = (mid1 + mid2) * Vector::new(F::new(0.5f32));
+        c = 0u32;
+        while c < num_channels {
+            let idx = c as usize * row + v;
+            output[idx] = input[idx] - median;
+            c += 1u32;
         }
     }
 }

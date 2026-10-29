@@ -5,7 +5,7 @@ use dspk_core::compute::tune::{size_class, tune_id};
 use dspk_core::compute::LaunchGeometry;
 
 use crate::core::{buffer, DspFloat};
-pub use super::kernels::{common_median_bitonic_kernel, common_median_kernel, direct_car_kernel};
+pub use super::kernels::{common_median_bitonic_kernel, common_median_kernel, common_median_vector_kernel, direct_car_kernel};
 
 /// High-level host dispatcher for direct, single-pass Common Average Referencing (CAR).
 /// Computes and subtracts the common average directly in VRAM without auxiliary buffers.
@@ -32,7 +32,7 @@ pub fn execute_direct_car<F: DspFloat>(
     }
 }
 
-/// How [`execute_common_median`] finds each sample's median over channels. Both are exact and give
+/// How [`execute_common_median`] finds each sample's median over channels. All are exact and give
 /// the same output; which is faster depends on the device, so the autotuner picks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CmrKernel {
@@ -41,6 +41,10 @@ pub enum CmrKernel {
     /// Bitonic sort in shared memory ([`common_median_bitonic_kernel`]): about `log₂² C / 2` steps
     /// per sample, one barrier each.
     Bitonic,
+    /// Rank counting on `width` consecutive samples per unit ([`common_median_vector_kernel`];
+    /// SIMD on the CPU runtime). Runs the widest width up to `width` that the runtime offers and
+    /// that divides the sample count, else `Rank`.
+    Vectorized { width: usize },
 }
 
 /// One common-median call (cloned per autotune candidate).
@@ -56,6 +60,29 @@ struct CmrInputs {
 impl CmrInputs {
     fn run<F: DspFloat>(&self, kernel: CmrKernel) {
         let client = &self.client;
+        if let CmrKernel::Vectorized { width } = kernel {
+            let width = client.io_optimized_vector_sizes(size_of::<F>()).filter(|&w| w > 1 && w <= width && self.samples % w == 0).max();
+            if let Some(width) = width {
+                let total = self.channels * self.samples;
+                let vectors = self.samples / width;
+                let geom = LaunchGeometry::elementwise(client, vectors);
+                // SAFETY: both buffers hold `channels · samples` values (`total / width` vectors)
+                unsafe {
+                    common_median_vector_kernel::launch::<F>(
+                        client,
+                        geom.cube_count,
+                        geom.cube_dim,
+                        width,
+                        BufferArg::from_raw_parts(self.input.clone(), total),
+                        BufferArg::from_raw_parts(self.output.clone(), total),
+                        self.channels as u32,
+                        vectors as u32,
+                    );
+                }
+                return;
+            }
+            return self.run::<F>(CmrKernel::Rank);
+        }
         let geom = LaunchGeometry::per_row(client, self.samples, self.channels);
         let total = self.channels * self.samples;
         let (c, s, units) = (self.channels as u32, self.samples as u32, geom.cube_dim.x);
@@ -64,7 +91,7 @@ impl CmrInputs {
             (BufferArg::from_raw_parts(self.input.clone(), total), BufferArg::from_raw_parts(self.output.clone(), total))
         };
         match kernel {
-            CmrKernel::Rank => common_median_kernel::launch::<F>(client, geom.cube_count, geom.cube_dim, input, output, c, s, c, units),
+            CmrKernel::Rank | CmrKernel::Vectorized { .. } => common_median_kernel::launch::<F>(client, geom.cube_count, geom.cube_dim, input, output, c, s, c, units),
             CmrKernel::Bitonic => {
                 let padded = self.channels.next_power_of_two() as u32;
                 common_median_bitonic_kernel::launch::<F>(client, geom.cube_count, geom.cube_dim, input, output, c, s, padded, units)
@@ -76,14 +103,19 @@ impl CmrInputs {
 /// [`CmrInputs::run`] with the kernel CubeCL's autotuner found fastest for this device, element type
 /// and problem size. Benchmarks write to a scratch output.
 fn tuned<F: DspFloat>(inputs: CmrInputs) {
-    static TUNER: LocalTuner<String, String> = local_tuner!("common-median-v1");
+    static TUNER: LocalTuner<String, String> = local_tuner!("common-median-v2");
     let client = inputs.client.clone();
     let id = tune_id(&client);
-    let set = TUNER.init(&id, || {
-        let key = |p: &CmrInputs| format!("{}-c{}-t{}", F::type_name(), size_class(p.channels), size_class(p.samples));
+    let widths: Vec<usize> = client.io_optimized_vector_sizes(size_of::<F>()).filter(|&w| w > 1).collect();
+    // CubeCL's CPU runtime emulates barriers: Bitonic takes seconds there, even just to time it
+    let cpu = client.name() == "cpu";
+    let set = TUNER.init(&id, move || {
+        // `a`: the power of two dividing the sample count (up to 16), which decides the widths that run
+        let key = |p: &CmrInputs| format!("{}-c{}-t{}-a{}", F::type_name(), size_class(p.channels), size_class(p.samples), p.samples.trailing_zeros().min(4));
         let scratch = |_: &String, p: &CmrInputs| CmrInputs { output: buffer::empty::<F>(&p.client, p.channels * p.samples), ..p.clone() };
         let set: TunableSet<String, CmrInputs, ()> = TunableSet::new(key, scratch);
-        [CmrKernel::Rank, CmrKernel::Bitonic].into_iter().fold(set, |set, kernel| {
+        let kernels = [CmrKernel::Rank, CmrKernel::Bitonic].into_iter().filter(|&k| !(k == CmrKernel::Bitonic && cpu)).chain(widths.iter().map(|&width| CmrKernel::Vectorized { width }));
+        kernels.fold(set, |set, kernel| {
             set.with(Tunable::new(&format!("{kernel:?}"), move |p: CmrInputs| {
                 p.run::<F>(kernel);
                 Ok::<_, String>(())
@@ -95,7 +127,7 @@ fn tuned<F: DspFloat>(inputs: CmrInputs) {
 
 /// Common median reference: subtracts the median over channels at every sample (SpikeInterface's
 /// `common_reference(operator="median")`), one cube per sample on the device, with the faster of
-/// [`CmrKernel`]'s two exact methods for this device.
+/// [`CmrKernel`]'s exact methods for this device.
 pub fn execute_common_median<F: DspFloat>(
     client: &Client,
     input: &cubecl::server::Handle,
@@ -133,8 +165,8 @@ mod tests {
     /// Exact against a sorted reference, in `F` (signed fractional values, so the key's sign
     /// handling and both middle values of an even count are exercised).
     fn medians_of<F: DspFloat + std::fmt::Debug>(client: &Client) {
-        for channels in [1usize, 4, 5, 37, 384] {
-            let samples = 300;
+        // 304 samples: every vector width divides; 300: widths above 4 fall back; 301: none divides
+        for (channels, samples) in [(1usize, 300usize), (4, 304), (5, 301), (37, 300), (384, 304)] {
             let x: Vec<F> = (0..channels * samples).map(|i| crate::core::cast::<F>(((i * 7919) % 211) as f64 * 0.37 - 40.0)).collect();
             let half = crate::core::cast::<F>(0.5);
             let expected: Vec<F> = (0..channels * samples)
@@ -146,7 +178,8 @@ mod tests {
                     x[c * samples + s] - m
                 })
                 .collect();
-            for kernel in [Some(CmrKernel::Rank), Some(CmrKernel::Bitonic), None] {
+            let vectorized = [2, 4, 8, 16].map(|width| Some(CmrKernel::Vectorized { width }));
+            for kernel in [Some(CmrKernel::Rank), Some(CmrKernel::Bitonic), None].into_iter().chain(vectorized) {
                 let out = buffer::empty::<F>(client, x.len());
                 execute_common_median_with::<F>(client, &buffer::upload(client, &x), &out, channels, samples, kernel);
                 let got = buffer::download::<F>(client, out);
