@@ -2,7 +2,6 @@
 //! with full sinc taps and safe handling of spikes at the buffer edges.
 
 use cubecl::prelude::*;
-use cubecl::device::WgpuDevice;
 use dspk_synapse::detection::DeduplicatedSpike;
 use dspk_synapse::extraction::{
     extract_snippet_batch_multichannel, extract_snippets_multichannel, snippet_fits,
@@ -82,8 +81,14 @@ fn cpu_extractors_put_trough_on_centre() {
     assert!(worst > 0.4, "unaligned residual {worst}");
 }
 
-fn gpu_extract(trace: &[f32], spikes: &[DeduplicatedSpike]) -> Option<(Vec<f32>, Vec<usize>, usize)> {
-    let client = dspk_core::compute::open_device(cubecl::Device::Wgpu(WgpuDevice::default()));
+/// A client for every runtime the tests run on (DSPK_TEST_RUNTIMES), opened through dspk.
+fn test_clients() -> Vec<Client> {
+    let targets = dspk_core::ComputeTarget::for_tests();
+    assert!(!targets.is_empty(), "no runtime to test (compiled in and allowed by DSPK_TEST_RUNTIMES)");
+    targets.into_iter().map(|t| t.client().unwrap_or_else(|e| panic!("{}: {e}", t.name()))).collect()
+}
+
+fn gpu_extract(client: &Client, trace: &[f32], spikes: &[DeduplicatedSpike]) -> Option<(Vec<f32>, Vec<usize>, usize)> {
     let trace_h = client.create_from_slice(f32::as_bytes(trace));
     let knn_h = client.create_from_slice(u32::as_bytes(&precompute_knn_table(&tetrode(), CHANNELS, K)));
     let out = execute_extract_sinc_in_vram::<f32>(
@@ -97,14 +102,16 @@ fn gpu_extract(trace: &[f32], spikes: &[DeduplicatedSpike]) -> Option<(Vec<f32>,
 fn gpu_kernel_matches_cpu_and_centres_trough() {
     let (trace, spikes, fracs) = setup();
     let cpu = extract_snippets_multichannel(&trace, CHANNELS, SAMPLES, &spikes, &tetrode(), K, PRE, POST, true);
-    let (gpu, kept, dropped) = gpu_extract(&trace, &spikes).unwrap();
-    assert_eq!((kept.len(), dropped), (fracs.len(), 0));
-    let stride = K * (PRE + POST);
-    for (i, snip) in cpu.iter().enumerate() {
-        let g = &gpu[i * stride..(i + 1) * stride];
-        let err = g.iter().zip(&snip.waveform).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
-        assert!(err < 1e-3, "spike {i}: GPU vs CPU max error {err}");
-        assert!(residual(&g[..PRE + POST]).abs() < 0.02);
+    for client in test_clients() {
+        let (gpu, kept, dropped) = gpu_extract(&client, &trace, &spikes).unwrap();
+        assert_eq!((kept.len(), dropped), (fracs.len(), 0));
+        let stride = K * (PRE + POST);
+        for (i, snip) in cpu.iter().enumerate() {
+            let g = &gpu[i * stride..(i + 1) * stride];
+            let err = g.iter().zip(&snip.waveform).fold(0.0f32, |m, (a, b)| m.max((a - b).abs()));
+            assert!(err < 1e-3, "{}: spike {i}: device vs host max error {err}", client.name());
+            assert!(residual(&g[..PRE + POST]).abs() < 0.02);
+        }
     }
 }
 
@@ -125,9 +132,11 @@ fn edge_spikes_are_skipped_and_counted() {
     let cpu_centers: Vec<usize> = cpu.iter().map(|s| s.center_sample as usize).collect();
     assert_eq!(cpu_centers, expected.iter().map(|&i| centers[i]).collect::<Vec<_>>());
 
-    let (_, kept, dropped) = gpu_extract(&trace, &spikes).unwrap();
-    assert_eq!(kept, expected);
-    assert_eq!(dropped, centers.len() - expected.len());
+    for client in test_clients() {
+        let (_, kept, dropped) = gpu_extract(&client, &trace, &spikes).unwrap();
+        assert_eq!(kept, expected, "{}", client.name());
+        assert_eq!(dropped, centers.len() - expected.len());
+    }
 }
 
 #[test]
