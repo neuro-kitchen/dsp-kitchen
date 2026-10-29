@@ -3156,6 +3156,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dspk-sc2"
+version = "0.0.3"
+dependencies = [
+ "cubecl",
+ "dspk-core",
+ "dspk-ms5",
+ "dspk-ops",
+ "dspk-sort",
+ "dspk-synapse",
+ "dspk-synapse-io",
+ "rayon",
+]
+
+[[package]]
 name = "dspk-sort"
 version = "0.0.3"
 dependencies = [
@@ -3241,16 +3255,32 @@ dependencies = [
  "dspk-io",
  "dspk-ms5",
  "dspk-ops",
+ "dspk-sc2",
  "dspk-sort",
  "dspk-synapse",
  "dspk-synapse-hub",
  "dspk-synapse-io",
+ "dspk-tdc2",
  "onnx-ir",
  "rayon",
  "safetensors 0.8.0",
  "serde",
  "serde_json",
  "tracing",
+]
+
+[[package]]
+name = "dspk-tdc2"
+version = "0.0.3"
+dependencies = [
+ "cubecl",
+ "dspk-core",
+ "dspk-ms5",
+ "dspk-ops",
+ "dspk-sort",
+ "dspk-synapse",
+ "dspk-synapse-io",
+ "rayon",
 ]
 
 [[package]]

@@ -12,8 +12,6 @@
 
 pub mod emusort;
 pub mod kilosort4;
-pub mod spykingcircus2;
-pub mod tridesclous2;
 
 pub use emusort::{Emusort, EmusortConfig};
 pub use kilosort4::{Kilosort4, Kilosort4Config, Kilosort4Result};
@@ -22,6 +20,8 @@ pub use mountainsort5::{Mountainsort5, Mountainsort5Config, Mountainsort5Result}
 pub use dspk_sort::{components, result};
 // Sorters in their own crates (each under its upstream's licence)
 pub use dspk_ms5 as mountainsort5;
+pub use dspk_sc2 as spykingcircus2;
+pub use dspk_tdc2 as tridesclous2;
 pub use result::{AmplitudeScale, SorterResult};
 pub use spykingcircus2::{Spykingcircus2, Spykingcircus2Config, Spykingcircus2Result};
 pub use tridesclous2::{Tridesclous2, Tridesclous2Config, Tridesclous2Result};

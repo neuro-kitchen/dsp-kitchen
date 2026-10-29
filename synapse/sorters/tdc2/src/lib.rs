@@ -2,7 +2,7 @@
 //! tridesclous2.py`, MIT, sorter version 2026.01), ported from its source: Bessel band-pass, common
 //! median reference, local whitening, `locally_exclusive` detection, local SVD features, iterative
 //! splits with SpikeInterface's isosplit, template cleaning and merging, mean templates, the
-//! `tdc-peeler` matching and the final merges ([`super::components`]), driven by [`runner`].
+//! `tdc-peeler` matching and the final merges ([`dspk_sort::components`]), driven by [`runner`].
 //!
 //! Not yet: motion correction (off by default upstream too). Stages and settings: the book's
 //! Tridesclous 2 pages.
@@ -11,7 +11,7 @@ pub mod runner;
 
 pub use runner::{run, Tridesclous2Result, TRIDESCLOUS2_SORTER};
 
-use crate::provenance::{Attributed, Paper, Provenance, ProvenanceKind, UpstreamCode};
+use dspk_synapse::provenance::{Attributed, Paper, Provenance, ProvenanceKind, UpstreamCode};
 
 /// Tridesclous 2 settings: SpikeInterface's `_default_params` and the defaults of the components it
 /// calls (book: Tridesclous 2 parameters).

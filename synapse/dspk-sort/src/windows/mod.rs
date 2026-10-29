@@ -66,3 +66,20 @@ impl<'a> DeviceWindows<'a> {
         }
     }
 }
+
+/// `count` evenly spaced windows of `len` samples, read with `halos`.
+pub fn spread_windows(total: u64, count: usize, len: u64, halos: (u64, u64)) -> Vec<HaloWindow> {
+    let len = len.clamp(1, total);
+    let n = count.max(1) as u64;
+    (0..n)
+        .map(|i| {
+            let start = if n > 1 { i * (total - len) / (n - 1) } else { 0 };
+            HaloWindow::around(i as usize, start..start + len, halos.0, halos.1, total)
+        })
+        .collect()
+}
+
+/// Local samples of a window's own range whose snippet `[s − before, s + after)` fits the buffer.
+pub fn snippet_fits(s: usize, before: usize, after: usize, len: usize) -> bool {
+    s >= before && s + after <= len
+}

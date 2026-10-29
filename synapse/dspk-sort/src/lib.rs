@@ -5,6 +5,7 @@
 //!   `SortingOutput`.
 //! - [`windows`]: recording windows streamed to the device and preprocessed there
 //!   ([`DeviceWindows`]), with an optional per-window step ([`WindowAligner`]).
+//! - [`stats`]: NumPy's median and other small helpers.
 //! - [`components`]: sorter building blocks ported from SpikeInterface's `sortingcomponents`
 //!   (MIT): matched-filter detection, circus-omp and tdc peelers, splits, merges, templates.
 //!
@@ -12,7 +13,8 @@
 
 pub mod components;
 pub mod result;
+pub mod stats;
 pub mod windows;
 
 pub use result::{AmplitudeScale, SorterResult};
-pub use windows::{DeviceWindows, WindowAligner};
+pub use windows::{snippet_fits, spread_windows, DeviceWindows, WindowAligner};

@@ -1,76 +1,94 @@
-//! Tridesclous 2 over a whole recording (`tridesclous2.py` `_run_from_folder`), halo windows through
-//! the device as the other runners.
+//! SpyKING CIRCUS 2 over a whole recording (`spyking_circus2.py` `_run_from_folder`), halo windows
+//! through the device as the other runners.
 //!
-//! 1. **Preprocessing**: Bessel band-pass 150–6000 Hz, common median reference (≥ 32 channels), local
-//!    whitening; noise levels (MAD).
-//! 2. **Detection**: `locally_exclusive` over every window; a uniform selection of
-//!    `max(min_n_peaks, n_peaks_per_channel · channels)` peaks.
-//! 3. **Clustering** (`iterative-isosplit`): local SVD features, [`split_clusters`] with
-//!    SpikeInterface's isosplit ([`isosplit_si`], clusters under `isosplit_min_cluster_size` → −1),
-//!    mean templates from the features, cleaning, merging by similarity, small clusters.
-//! 4. **Templates for matching**: each unit's channels within `template_radius_um` of its peaks'
-//!    channel barycentre; the mean waveform of its clustered peaks ([`UnitTemplateAccumulator`],
-//!    `ms_before` / `ms_after`), zeros off those channels; cleaning.
-//! 5. **Matching**: [`TdcPeeler`] per window (host; windows in parallel), with the fine detector.
-//! 6. **Final merges** ([`auto_merge`], thresholds 0.05 … 0.35, lag `merge_similarity_lag_ms`).
+//! 1. **Preprocessing**: Bessel band-pass, common median reference (≥ 32 channels), whitening
+//!    (local by radius) fitted on evenly spaced chunks (upstream: random chunks); noise levels: the
+//!    mean over chunks of each channel's median absolute deviation.
+//! 2. **Prototype**: `locally_exclusive` peaks (radius `radius_um / 2`, sweep `max(ms_before,
+//!    ms_after)`) over windows in a seeded shuffled order until `prototype_peaks`, their own-channel
+//!    waveforms, a uniform subset, [`fn@prototype`].
+//! 3. **Detection**: [`MatchedFilter`] over windows in a seeded shuffled order until `max(min_n_peaks,
+//!    n_peaks_per_channel · channels)` peaks (upstream stops after that many peaks over shuffled
+//!    chunks the same way), sorted by sample; a uniform selection of that many.
+//! 4. **Features**: the local SVD fitted on `svd_peaks_fit` of them ([`LocalSvd::fit_rows`]), every
+//!    selected peak transformed in its window.
+//! 5. **Clustering** (iterative HDBSCAN): [`split_clusters`] from the peak channels, templates from
+//!    the features, [`clean_templates`], [`merge_by_similarity`]; then upstream's sorter does
+//!    templates, cleaning and [`remove_small_clusters`] again.
+//! 6. **Matching**: [`CircusOmp`] per window (`chunk_sec` + margins), the window's spikes kept; the
+//!    products on the device a batch of windows at a time, their pursuits in parallel on the host.
+//! 7. **Final cleaning** ([`auto_merge`], `final_merges`): units merged by template similarity and
+//!    cross-contamination, merged trains censored.
+//!
+//! Spike amplitudes are the matching's amplitude times the template's trough on its main channel
+//! (whitened units); locations that channel's position.
+
+use dspk_sort::stats::median;
+use dspk_sort::{snippet_fits, spread_windows};
+use std::ops::Range;
 
 use cubecl::prelude::Client;
+use cubecl::server::Handle;
 use dspk_ops::core::buffer;
+use dspk_ops::filter::{FilterBand, FilterSpec};
 use dspk_ops::linalg::SecondMomentAccumulator;
 use dspk_ops::pipeline::{Pipeline, PipelineStage, PipelineWorkspace};
 use dspk_ops::spatial::SpatialWhitening;
 use dspk_core::progress::Stages;
 use dspk_core::{ChunkSchedule, DspError, DspResult, HaloWindow, ProgressSink, RecordingSource};
 use dspk_synapse_io::probe::SensorLayout;
-use dspk_synapse::core::{SortingOutput, UnitTemplateAccumulator, WaveformTemplate};
+use dspk_synapse::core::{SortingOutput, WaveformTemplate};
 use dspk_synapse::features::{ChannelNeighbourhoods, LocalSvd};
 use dspk_synapse::metrics::{CompositeScoreOptions, RefractoryOptions};
-use dspk_synapse::sorting::{isosplit_si, subsample_peaks, IsosplitOptions, IsosplitVariant, SubsampleOptions};
+use dspk_synapse::sorting::{hdbscan_allow_single, subsample_peaks, SubsampleOptions};
 
-use super::Tridesclous2Config;
-use crate::sorters::components::{
-    auto_merge, clean_templates, fine_prototype, merge_by_similarity, remove_small_clusters, split_clusters, templates_from_svd, AutoMergeOptions, CleanOptions,
-    FineFilter, LocallyExclusiveDetector, PeakSign, SparseFeatures, SplitOptions, TdcPeeler, TdcPeelerOptions, Templates,
+use super::Spykingcircus2Config;
+use dspk_sort::components::{
+    auto_merge, clean_templates, merge_by_similarity, prototype, remove_small_clusters, split_clusters, templates_from_svd, AutoMergeOptions, CircusOmp, CleanOptions, LocallyExclusiveDetector,
+    MatchedFilter, MatchedFilterOptions, OmpOptions, PeakSign, SparseFeatures, SplitOptions, Templates,
 };
 use dspk_sort::DeviceWindows;
-use crate::sorters::mountainsort5::MaskedSnippets;
-use crate::sorters::result::{AmplitudeScale, SorterResult};
-use crate::sorters::spykingcircus2::runner::{fits, median, spread_windows};
+use dspk_ms5::MaskedSnippets;
+use dspk_sort::result::{AmplitudeScale, SorterResult};
 
 /// Sorter name in [`SortingOutput`].
-pub const TRIDESCLOUS2_SORTER: &str = "tridesclous2";
+pub const SPYKINGCIRCUS2_SORTER: &str = "spykingcircus2";
 
 pub const STAGE_PREPROCESSING: &str = "Fitting preprocessing";
+pub const STAGE_PROTOTYPE: &str = "Learning the prototype";
 pub const STAGE_DETECTION: &str = "Detecting spikes";
 pub const STAGE_FEATURES: &str = "Computing features";
 pub const STAGE_CLUSTERING: &str = "Clustering";
-pub const STAGE_TEMPLATES: &str = "Estimating templates";
 pub const STAGE_MATCHING: &str = "Matching templates";
 pub const STAGE_MERGING: &str = "Merging units";
 
+/// `0.6744897501960817`: the MAD of a standard normal.
 const MAD_TO_SIGMA: f64 = 0.674_489_750_196_081_7;
 
-/// A Tridesclous 2 run.
+/// A SpyKING CIRCUS 2 run.
 #[derive(Debug, Clone)]
-pub struct Tridesclous2Result {
+pub struct Spykingcircus2Result {
     pub sample_rate_hz: f64,
     pub total_samples: u64,
     pub n_units: usize,
     pub spike_samples: Vec<u64>,
     pub spike_units: Vec<u32>,
-    /// The peeler's amplitude (a scale of the template).
+    /// The matching's amplitude (a scale of the template).
     pub spike_scalings: Vec<f32>,
     pub templates: Templates,
     pub nbefore: usize,
     pub noise_levels: Vec<f64>,
+    pub prototype: Vec<f32>,
+    /// Units merged by the final cleaning.
+    pub final_merges: usize,
+    /// Peaks detected / clustered.
     pub detected: usize,
     pub selected: usize,
-    pub final_merges: usize,
     pub positions: Vec<[f32; 2]>,
     pub pipeline: Pipeline,
 }
 
-impl Tridesclous2Result {
+impl Spykingcircus2Result {
     /// Main channel of each unit: its template's deepest trough.
     pub fn main_channels(&self) -> Vec<usize> {
         let t = &self.templates;
@@ -100,7 +118,7 @@ impl Tridesclous2Result {
             })
             .collect();
         SorterResult {
-            sorter: TRIDESCLOUS2_SORTER.into(),
+            sorter: SPYKINGCIRCUS2_SORTER.into(),
             sample_rate_hz: self.sample_rate_hz,
             total_samples: self.total_samples,
             n_units: self.n_units,
@@ -120,9 +138,8 @@ impl Tridesclous2Result {
     }
 }
 
-/// The filter chain of `cfg`: Bessel band-pass, common median reference on enough channels.
-pub fn filter_stages(cfg: &Tridesclous2Config, channels: usize) -> Vec<PipelineStage> {
-    use dspk_ops::filter::{FilterBand, FilterSpec};
+/// The filter chain of `cfg` (Bessel band-pass, common median reference on enough channels).
+pub fn filter_stages(cfg: &Spykingcircus2Config, channels: usize) -> Vec<PipelineStage> {
     let mut stages = Vec::new();
     if cfg.do_bandpass {
         let band = match cfg.bandpass_high_hz {
@@ -141,8 +158,23 @@ fn filter_error(e: dspk_ops::filter::FilterError) -> DspError {
     DspError::InvalidConfig(e.to_string())
 }
 
-/// Runs Tridesclous 2 (module docs).
-pub fn run(client: &Client, source: &dyn RecordingSource, probe: &SensorLayout, cfg: &Tridesclous2Config, progress: &dyn ProgressSink) -> DspResult<Tridesclous2Result> {
+/// A seeded shuffle of `0..n` (Fisher–Yates on splitmix64).
+pub(crate) fn shuffled(n: usize, seed: u64) -> Vec<usize> {
+    let mut v: Vec<usize> = (0..n).collect();
+    let mut state = seed;
+    for i in (1..n).rev() {
+        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        let j = ((z ^ (z >> 31)) % (i as u64 + 1)) as usize;
+        v.swap(i, j);
+    }
+    v
+}
+
+/// Runs SpyKING CIRCUS 2 (module docs).
+pub fn run(client: &Client, source: &dyn RecordingSource, probe: &SensorLayout, cfg: &Spykingcircus2Config, progress: &dyn ProgressSink) -> DspResult<Spykingcircus2Result> {
     let info = source.info();
     let (channels, total, fs) = (info.channel_count(), info.samples, info.sample_rate_hz());
     if probe.total_channels() != channels {
@@ -150,18 +182,18 @@ pub fn run(client: &Client, source: &dyn RecordingSource, probe: &SensorLayout, 
     }
     let positions: Vec<[f32; 2]> = probe.sites().iter().map(|s| [s.position.x_um, s.position.y_um]).collect();
     let ms = |v: f64| (v * fs / 1000.0) as usize;
-    let (cb, ca) = (ms(cfg.clustering_ms_before), ms(cfg.clustering_ms_after));
     let (nbefore, nafter) = (ms(cfg.ms_before), ms(cfg.ms_after));
     let width = nbefore + nafter;
     if total < (4 * width) as u64 {
         return Err(DspError::InvalidConfig(format!("{total} samples: too short for {width}-sample waveforms")));
     }
+    let sweep = ms(cfg.ms_before.max(cfg.ms_after));
     let names = [
         (STAGE_PREPROCESSING, "chunks"),
+        (STAGE_PROTOTYPE, "windows"),
         (STAGE_DETECTION, "windows"),
         (STAGE_FEATURES, "windows"),
         (STAGE_CLUSTERING, "steps"),
-        (STAGE_TEMPLATES, "windows"),
         (STAGE_MATCHING, "windows"),
         (STAGE_MERGING, "steps"),
     ];
@@ -172,11 +204,11 @@ pub fn run(client: &Client, source: &dyn RecordingSource, probe: &SensorLayout, 
     let filtering = Pipeline::with_stages(pipeline_stages.clone());
     let (settle_l, settle_r) = filtering.settling(fs).map_err(filter_error)?;
     let chunk = ((cfg.chunk_sec * fs) as u64).max(1);
-    // Peeler: 2 · max(nbefore, nafter) and the fine detector's sweep + prototype; detection sweeps
-    let margin = (4 * width + ms(cfg.detection_exclude_sweep_ms) + 2) as u64;
+    let margin = (3 * width + sweep + 2) as u64;
     let halos = (settle_l as u64 + margin, settle_r as u64 + margin);
     let max_read = (chunk + halos.0 + halos.1).min(total) as usize;
     dspk_core::compute::device_elements("a window of [channels, samples]", &[channels, max_read])?;
+    stages.report(STAGE_PREPROCESSING, 0, cfg.whitening_chunks as u64);
     if cfg.do_whiten {
         let windows = spread_windows(total, cfg.whitening_chunks, ms(cfg.whitening_chunk_ms) as u64, (settle_l as u64, settle_r as u64));
         let read = windows.iter().map(HaloWindow::read_len).max().unwrap_or(1);
@@ -200,6 +232,8 @@ pub fn run(client: &Client, source: &dyn RecordingSource, probe: &SensorLayout, 
     let pipeline = Pipeline::with_stages(pipeline_stages);
     let workspace = PipelineWorkspace::<f32>::new(client.clone(), pipeline.clone(), channels, max_read, fs).map_err(filter_error)?;
     let mut device = DeviceWindows::new(source, workspace, None);
+
+    // Noise levels: per chunk each channel's MAD, averaged over chunks
     let noise_windows = spread_windows(total, cfg.noise_chunks, ms(cfg.noise_chunk_ms) as u64, halos);
     let mut noise_sum = vec![0.0f64; channels];
     device.for_each_while(&noise_windows, |w, prepared| {
@@ -213,60 +247,111 @@ pub fn run(client: &Client, source: &dyn RecordingSource, probe: &SensorLayout, 
         Ok(true)
     })?;
     let noise_levels: Vec<f64> = noise_sum.iter().map(|s| s / noise_windows.len() as f64).collect();
+
     let schedule = ChunkSchedule::full_recording(total, chunk, halos.0, halos.1);
     let windows: Vec<HaloWindow> = schedule.windows().to_vec();
+    let order: Vec<HaloWindow> = shuffled(windows.len(), cfg.seed).into_iter().map(|i| windows[i].clone()).collect();
     let n_windows = windows.len() as u64;
 
-    // 2. Detection over the whole recording, uniform selection
-    let detector = LocallyExclusiveDetector::new(client, &positions, &noise_levels, cfg.detect_threshold, cfg.detection_radius_um, ms(cfg.detection_exclude_sweep_ms), PeakSign::Neg);
-    let mut peaks = Vec::new();
-    let mut done = 0u64;
-    device.for_each_while(&windows, |w, prepared| {
-        peaks.extend(detector.detect(client, prepared, w.read_len(), w.valid_local.clone(), w.read_global.start));
-        done += 1;
-        stages.report(STAGE_DETECTION, done, n_windows);
-        Ok(true)
+    // 2. Prototype
+    let detector = LocallyExclusiveDetector::new(client, &positions, &noise_levels, cfg.detect_threshold, cfg.radius_um / 2.0, sweep, PeakSign::Neg);
+    let mut waves = MaskedSnippets::new(&positions, Some(0.0), nbefore, nafter);
+    let mut scanned = 0u64;
+    device.for_each_while(&order, |w, prepared| {
+        let peaks = detector.detect(client, prepared, w.read_len(), w.valid_local.clone(), w.read_global.start);
+        let (s, c): (Vec<u32>, Vec<u32>) = peaks
+            .iter()
+            .map(|p| ((p.sample - w.read_global.start) as u32, p.channel))
+            .filter(|&(s, _)| snippet_fits(s as usize, nbefore, nafter, w.read_len()))
+            .unzip();
+        waves.extract(client, prepared, w.read_len(), &s, &c);
+        scanned += 1;
+        stages.report(STAGE_PROTOTYPE, scanned, n_windows);
+        Ok(waves.len() < cfg.prototype_peaks)
     })?;
-    let detected = peaks.len();
-    if detected == 0 {
+    stages.report(STAGE_PROTOTYPE, n_windows, n_windows);
+    if waves.is_empty() {
         return Err(DspError::InvalidConfig("no peak reached the detection threshold".into()));
     }
+    let rows: Vec<f32> = (0..waves.len()).flat_map(|i| waves.row(i).to_vec()).collect();
+    let chosen = subsample_peaks(&vec![0u64; waves.len()], &vec![0usize; waves.len()], &SubsampleOptions { n_peaks: cfg.prototype_peaks, per_channel: false, seed: cfg.seed });
+    let chosen_rows: Vec<f32> = chosen.iter().flat_map(|&i| rows[i * width..(i + 1) * width].iter().copied()).collect();
+    let proto = prototype(&chosen_rows, width, nbefore);
+    drop(waves);
+
+    // 3. Detection
+    let mf_opts = MatchedFilterOptions { detect_threshold: cfg.detect_threshold, exclude_sweep: sweep, radius_um: cfg.radius_um / 2.0, ..Default::default() };
+    let mut mf = MatchedFilter::new(client, &positions, &proto, nbefore, mf_opts);
+    let mut threshold_chunks: Vec<(Handle, usize)> = Vec::new();
+    let mf_windows = spread_windows(total, cfg.matched_filter_chunks, ms(500.0) as u64, halos);
+    device.for_each_while(&mf_windows, |w, prepared| {
+        // The valid part only, copied out of the reused window buffer
+        let x = buffer::download_prefix::<f32>(client, prepared.clone(), channels * w.read_len());
+        let v = w.valid_len();
+        let part: Vec<f32> = (0..channels).flat_map(|c| x[c * w.read_len() + w.valid_local.start..c * w.read_len() + w.valid_local.end].iter().copied()).collect();
+        threshold_chunks.push((buffer::upload(client, &part), v));
+        Ok(true)
+    })?;
+    mf.fit_thresholds(client, &threshold_chunks);
+    drop(threshold_chunks);
+    let n_peaks = cfg.min_n_peaks.max(cfg.n_peaks_per_channel * channels);
+    let mut peaks = Vec::new();
+    let mut scanned = 0u64;
+    device.for_each_while(&order, |w, prepared| {
+        peaks.extend(mf.detect(client, prepared, w.read_len(), w.valid_local.clone(), w.read_global.start));
+        scanned += 1;
+        stages.report(STAGE_DETECTION, scanned, n_windows);
+        Ok(peaks.len() < n_peaks)
+    })?;
+    stages.report(STAGE_DETECTION, n_windows, n_windows);
+    peaks.sort_by_key(|p| (p.sample, p.channel));
+    let detected = peaks.len();
     let all_samples: Vec<u64> = peaks.iter().map(|p| p.sample).collect();
     let all_channels: Vec<usize> = peaks.iter().map(|p| p.channel as usize).collect();
-    let n_peaks = cfg.min_n_peaks.max(cfg.n_peaks_per_channel * channels);
-    let chosen = subsample_peaks(&all_samples, &all_channels, &SubsampleOptions { n_peaks, per_channel: false, seed: cfg.seed });
-    let sel_samples: Vec<u64> = chosen.iter().map(|&i| all_samples[i]).collect();
-    let sel_channels: Vec<u32> = chosen.iter().map(|&i| all_channels[i] as u32).collect();
+    let selected_idx = subsample_peaks(&all_samples, &all_channels, &SubsampleOptions { n_peaks, per_channel: false, seed: cfg.seed });
+    let sel_samples: Vec<u64> = selected_idx.iter().map(|&i| all_samples[i]).collect();
+    let sel_channels: Vec<u32> = selected_idx.iter().map(|&i| all_channels[i] as u32).collect();
     let selected = sel_samples.len();
-    let in_window = |w: &HaloWindow, list: &[u64]| -> std::ops::Range<usize> { list.partition_point(|&s| s < w.valid_global.start)..list.partition_point(|&s| s < w.valid_global.end) };
+    if selected == 0 {
+        return Err(DspError::InvalidConfig("no peak detected".into()));
+    }
 
-    // 3. Clustering: SVD features, splits, templates, cleaning, merges, small clusters
+    // 4. Features: fit on a subset's own-channel waveforms, then every selected peak
     let fit_idx = subsample_peaks(&sel_samples, &sel_channels.iter().map(|&c| c as usize).collect::<Vec<_>>(), &SubsampleOptions { n_peaks: cfg.svd_peaks_fit, per_channel: false, seed: cfg.seed });
+    let mut fit_waves = MaskedSnippets::new(&positions, Some(0.0), nbefore, nafter);
+    let in_window = |w: &HaloWindow, list: &[u64]| -> Range<usize> {
+        let a = list.partition_point(|&s| s < w.valid_global.start);
+        let b = list.partition_point(|&s| s < w.valid_global.end);
+        a..b
+    };
     let fit_samples: Vec<u64> = fit_idx.iter().map(|&i| sel_samples[i]).collect();
     let fit_channels: Vec<u32> = fit_idx.iter().map(|&i| sel_channels[i]).collect();
-    let mut fit_waves = MaskedSnippets::new(&positions, Some(0.0), cb, ca);
+    let neighbourhoods = ChannelNeighbourhoods::within_radius(&positions, cfg.radius_um);
+    let nb = neighbourhoods.max_neighbours;
+    let comps = cfg.svd_components;
+    let mut features = vec![0.0f32; selected * comps * nb];
+    let mut done = 0u64;
+    // Pass A: the fit waveforms
     device.for_each_while(&windows, |w, prepared| {
         let r = in_window(w, &fit_samples);
         let (s, c): (Vec<u32>, Vec<u32>) = r
+            .clone()
             .map(|i| ((fit_samples[i] - w.read_global.start) as u32, fit_channels[i]))
-            .filter(|&(s, _)| fits(s as usize, cb, ca, w.read_len()))
+            .filter(|&(s, _)| snippet_fits(s as usize, nbefore, nafter, w.read_len()))
             .unzip();
         fit_waves.extract(client, prepared, w.read_len(), &s, &c);
         Ok(true)
     })?;
-    let comps = cfg.n_svd_components_per_channel;
     let fit_rows: Vec<f32> = (0..fit_waves.len()).flat_map(|i| fit_waves.row(i).to_vec()).collect();
-    let svd = LocalSvd::fit_rows(&fit_rows, cb + ca, cb, comps);
+    let svd = LocalSvd::fit_rows(&fit_rows, width, nbefore, comps);
     drop(fit_waves);
-    let neighbourhoods = ChannelNeighbourhoods::within_radius(&positions, cfg.features_radius_um);
-    let nb = neighbourhoods.max_neighbours;
-    let mut features = vec![0.0f32; selected * comps * nb];
-    let mut done = 0u64;
+    // Pass B: every selected peak's features
     device.for_each_while(&windows, |w, prepared| {
         let r = in_window(w, &sel_samples);
         if !r.is_empty() {
             let s: Vec<u32> = r.clone().map(|i| (sel_samples[i] - w.read_global.start) as u32).collect();
-            let h = svd.transform(client, prepared, channels, w.read_len(), &s, &sel_channels[r.clone()], &neighbourhoods);
+            let c: Vec<u32> = sel_channels[r.clone()].to_vec();
+            let h = svd.transform(client, prepared, channels, w.read_len(), &s, &c, &neighbourhoods);
             let f = buffer::download_prefix::<f32>(client, h, s.len() * comps * nb);
             features[r.start * comps * nb..r.end * comps * nb].copy_from_slice(&f);
         }
@@ -274,141 +359,70 @@ pub fn run(client: &Client, source: &dyn RecordingSource, probe: &SensorLayout, 
         stages.report(STAGE_FEATURES, done, n_windows);
         Ok(true)
     })?;
-    stages.report(STAGE_CLUSTERING, 0, 3);
+
+    // 5. Clustering
+    stages.report(STAGE_CLUSTERING, 0, 4);
     let sparse = SparseFeatures { data: &features, components: comps, mask: &neighbourhoods };
-    let split = SplitOptions {
-        split_radius_um: cfg.split_radius_um,
-        recursive: true,
-        recursive_depth: cfg.clustering_recursive_depth,
-        min_size_split: cfg.min_size_split,
-        n_pca_features: cfg.n_pca_features,
-        minimum_overlap_ratio: 0.25,
-    };
-    let iso = IsosplitOptions {
-        isocut_threshold: cfg.isocut_threshold,
-        min_cluster_size: cfg.isosplit_min_cluster_size,
-        max_iterations_per_pass: cfg.isosplit_max_iterations_per_pass,
-        variant: IsosplitVariant::SpikeInterface,
-        ..Default::default()
-    };
-    let (n_init, mcs, seed) = (cfg.isosplit_n_init, cfg.isosplit_min_cluster_size.max(1), cfg.seed);
-    let mut clusterer = |x: &[f32], n: usize, d: usize| -> Vec<i32> {
-        // LocalFeatureClustering's isosplit branch: n_init lowered for small sets, small clusters → −1
-        let n_init = if n_init > n / mcs { (n / (2 * mcs)).max(2) } else { n_init };
-        let x64: Vec<f64> = x.iter().map(|&v| v as f64).collect();
-        let labels = isosplit_si(&x64, n, d, n_init, seed, &iso);
-        let mut counts = std::collections::HashMap::new();
-        labels.iter().for_each(|&l| *counts.entry(l).or_insert(0usize) += 1);
-        labels.iter().map(|l| if counts[l] < mcs { -1 } else { *l as i32 }).collect()
-    };
+    let split = SplitOptions { split_radius_um: cfg.split_radius_um, recursive: true, recursive_depth: cfg.split_depth, min_size_split: 2 * cfg.min_cluster_size, n_pca_features: cfg.split_pca_features, minimum_overlap_ratio: 0.25 };
     let start: Vec<i64> = sel_channels.iter().map(|&c| c as i64).collect();
+    let mcs = cfg.min_cluster_size;
+    let mut clusterer = |x: &[f32], n: usize, d: usize| hdbscan_allow_single(client, x, n, d, mcs);
     let labels = split_clusters(&start, &sel_channels, &sparse, &positions, &split, &mut clusterer);
-    stages.report(STAGE_CLUSTERING, 1, 3);
-    let clean_opts = CleanOptions { sparsify_threshold: Some(cfg.clustering_sparsify_threshold), min_snr: Some(cfg.clustering_min_snr), max_jitter: Some(ms(cfg.template_max_jitter_ms)), remove_empty: true, mean_sd_ratio_threshold: f64::INFINITY };
-    let (t0, _) = templates_from_svd(&labels, &sel_channels, &features, &neighbourhoods, &svd.components, comps, cb + ca, channels, false);
-    let (cleaned, kept) = clean_templates(&t0, &noise_levels, cb, None, &clean_opts);
+    stages.report(STAGE_CLUSTERING, 1, 4);
+    let clean_opts = CleanOptions {
+        sparsify_threshold: Some(cfg.sparsify_threshold),
+        min_snr: Some(cfg.min_snr),
+        max_jitter: Some(ms(cfg.max_jitter_ms)),
+        remove_empty: true,
+        mean_sd_ratio_threshold: cfg.mean_sd_ratio_threshold,
+    };
+    let templates_of = |labels: &[i64]| templates_from_svd(labels, &sel_channels, &features, &neighbourhoods, &svd.components, comps, width, channels, true);
+    // Inside the clustering method: templates, cleaning, merges
+    let (t0, max_std) = templates_of(&labels);
+    let (cleaned, kept) = clean_templates(&t0, &noise_levels, nbefore, Some(&max_std), &clean_opts);
     let kept_ids: Vec<i64> = kept.iter().map(|&u| t0.unit_ids[u]).collect();
     let labels: Vec<i64> = labels.iter().map(|&l| if l >= 0 && !kept_ids.contains(&l) { -1 } else { l }).collect();
-    let merged = merge_by_similarity(&labels, &cleaned, cfg.merge_similarity, ms(cfg.merge_similarity_lag_ms), true);
+    let merged = merge_by_similarity(&labels, &cleaned, cfg.merge_similarity, cfg.merge_num_shifts, true);
+    stages.report(STAGE_CLUSTERING, 2, 4);
+    // The sorter: templates and cleaning again, small clusters
+    let (t1, max_std) = templates_of(&merged.labels);
+    let (cleaned, kept) = clean_templates(&t1, &noise_levels, nbefore, Some(&max_std), &clean_opts);
+    let kept_ids: Vec<i64> = kept.iter().map(|&u| t1.unit_ids[u]).collect();
+    let labels: Vec<i64> = merged.labels.iter().map(|&l| if l >= 0 && !kept_ids.contains(&l) { -1 } else { l }).collect();
     let duration = total as f64 / fs;
-    let (labels, keep_small) = remove_small_clusters(&merged.labels, duration, cfg.min_firing_rate, detected as f64 / selected as f64);
-    let unit_ids: Vec<i64> = merged.templates.unit_ids.iter().copied().filter(|id| keep_small.contains(id)).collect();
-    stages.report(STAGE_CLUSTERING, 3, 3);
+    let (_, keep_small) = remove_small_clusters(&labels, duration, cfg.min_firing_rate, detected as f64 / selected as f64);
+    let final_units: Vec<usize> = (0..cleaned.len()).filter(|&u| keep_small.contains(&cleaned.unit_ids[u])).collect();
+    let templates = cleaned.select(&final_units);
+    stages.report(STAGE_CLUSTERING, 4, 4);
 
-    // 4. Templates for matching: channels around each unit's peaks' barycentre, mean waveforms
-    let k0 = unit_ids.len();
-    let index_of = |l: i64| unit_ids.iter().position(|&u| u == l);
-    let unit_of: Vec<i32> = labels.iter().map(|&l| if l >= 0 { index_of(l).map_or(-1, |u| u as i32) } else { -1 }).collect();
-    let mut sparsity = vec![false; k0 * channels];
-    for u in 0..k0 {
-        let mut counts: std::collections::BTreeMap<u32, f64> = std::collections::BTreeMap::new();
-        for (i, &uu) in unit_of.iter().enumerate() {
-            if uu == u as i32 {
-                *counts.entry(sel_channels[i]).or_default() += 1.0;
-            }
-        }
-        let total_w: f64 = counts.values().sum();
-        let (mut bx, mut by) = (0.0f64, 0.0f64);
-        for (&c, &n) in &counts {
-            bx += positions[c as usize][0] as f64 * n / total_w;
-            by += positions[c as usize][1] as f64 * n / total_w;
-        }
-        for c in 0..channels {
-            sparsity[u * channels + c] = ((positions[c][0] as f64 - bx).hypot(positions[c][1] as f64 - by)) <= cfg.template_radius_um as f64;
-        }
-    }
-    let mut acc = UnitTemplateAccumulator::new(client, k0.max(1), channels, nbefore, width);
-    let mut done = 0u64;
-    device.for_each_while(&windows, |w, prepared| {
-        let r = in_window(w, &sel_samples);
-        let (s, l): (Vec<u32>, Vec<i32>) = r
-            .map(|i| ((sel_samples[i] - w.read_global.start) as u32, unit_of[i]))
-            .filter(|&(s, l)| l >= 0 && fits(s as usize, nbefore, nafter, w.read_len()))
-            .unzip();
-        acc.add(prepared, w.read_len(), &s, &l);
-        done += 1;
-        stages.report(STAGE_TEMPLATES, done, n_windows);
-        Ok(true)
-    })?;
-    let mean = buffer::download_prefix::<f32>(client, acc.device_mean().clone(), k0.max(1) * channels * width);
-    let mut data = vec![0.0f32; k0 * width * channels];
-    for u in 0..k0 {
-        for c in 0..channels {
-            if sparsity[u * channels + c] {
-                for s in 0..width {
-                    data[(u * width + s) * channels + c] = mean[(u * channels + c) * width + s];
-                }
-            }
-        }
-    }
-    let t1 = Templates { unit_ids: unit_ids.clone(), width, channels, data, sparsity };
-    let peel_clean = CleanOptions { sparsify_threshold: Some(cfg.template_sparsify_threshold), min_snr: Some(cfg.template_min_snr_ptp), max_jitter: Some(ms(cfg.template_max_jitter_ms)), remove_empty: true, mean_sd_ratio_threshold: f64::INFINITY };
-    let (templates, _) = clean_templates(&t1, &noise_levels, nbefore, None, &peel_clean);
+    // 6. Matching
     let k = templates.len();
-
-    // 5. Matching
-    let opts = TdcPeelerOptions {
-        exclude_sweep_ms: cfg.peeler_exclude_sweep_ms,
-        detect_threshold: cfg.detect_threshold,
-        detection_radius_um: cfg.peeler_detection_radius_um,
-        cluster_radius_um: cfg.peeler_cluster_radius_um,
-        amplitude_fitting_radius_um: cfg.peeler_amplitude_fitting_radius_um,
-        sample_shift: cfg.peeler_sample_shift,
-        ms_before: cfg.peeler_ms_before,
-        ms_after: cfg.peeler_ms_after,
-        max_peeler_loop: cfg.peeler_max_loop,
-        amplitude_limits: (cfg.peeler_amplitude_min, cfg.peeler_amplitude_max),
-        use_fine_detector: cfg.peeler_fine_detector,
-    };
-    let fine = match (cfg.peeler_fine_detector, fine_prototype(&templates, nbefore)) {
-        (true, Some(proto)) => {
-            let mut chunks = Vec::new();
-            device.for_each_while(&spread_windows(total, cfg.fine_detector_chunks, ms(500.0) as u64, halos), |w, prepared| {
-                let x = buffer::download_prefix::<f32>(client, prepared.clone(), channels * w.read_len());
-                let v = w.valid_len();
-                chunks.push(((0..channels).flat_map(|c| x[c * w.read_len() + w.valid_local.start..c * w.read_len() + w.valid_local.end].iter().copied()).collect::<Vec<f32>>(), v));
-                Ok(true)
-            })?;
-            Some(FineFilter::fit(&proto, nbefore, &positions, &chunks, cfg.detect_threshold))
-        }
-        _ => None,
-    };
-    let peeler = TdcPeeler::new(templates.clone(), nbefore, &positions, &noise_levels, fs, fine, opts);
+    let omp = CircusOmp::new(
+        client,
+        &templates.data,
+        &templates.sparsity,
+        k,
+        width,
+        channels,
+        nbefore,
+        OmpOptions { amplitudes: (cfg.omp_min_amplitude, f32::INFINITY), max_failures: cfg.omp_max_failures, rank: cfg.omp_rank, vicinity: cfg.omp_vicinity },
+    );
     let (mut spike_samples, mut spike_units, mut spike_scalings) = (Vec::new(), Vec::new(), Vec::new());
+    let mut done = 0u64;
     if k > 0 {
+        // The products of a batch of windows on the device, then their pursuits in parallel (the
+        // windows are independent), the spikes in window order
         let batch = rayon::current_num_threads().max(1);
         let mut pending: Vec<(HaloWindow, Vec<f32>)> = Vec::with_capacity(batch);
         let flush = |pending: &mut Vec<(HaloWindow, Vec<f32>)>, samples: &mut Vec<u64>, units: &mut Vec<u32>, scalings: &mut Vec<f32>| {
             use rayon::prelude::*;
             let found: Vec<Vec<(u64, u32, f32)>> = pending
                 .par_drain(..)
-                .map(|(w, mut x)| {
-                    let n = w.read_len();
-                    peeler
-                        .peel(&mut x, n)
+                .map(|(w, sp)| {
+                    omp.match_scalar_products(sp)
                         .into_iter()
-                        .filter(|s| s.sample >= 0 && w.valid_local.contains(&(s.sample as usize)))
-                        .map(|s| (w.read_global.start + s.sample as u64, s.unit as u32, s.amplitude as f32))
+                        .filter(|s| w.valid_local.contains(&s.sample))
+                        .map(|s| (w.read_global.start + s.sample as u64, s.template, s.amplitude))
                         .collect()
                 })
                 .collect();
@@ -418,9 +432,8 @@ pub fn run(client: &Client, source: &dyn RecordingSource, probe: &SensorLayout, 
                 scalings.push(a);
             }
         };
-        let mut done = 0u64;
         device.for_each_while(&windows, |w, prepared| {
-            pending.push((w.clone(), buffer::download_prefix::<f32>(client, prepared.clone(), channels * w.read_len())));
+            pending.push((w.clone(), omp.scalar_products(client, prepared, w.read_len())));
             if pending.len() == batch {
                 flush(&mut pending, &mut spike_samples, &mut spike_units, &mut spike_scalings);
             }
@@ -430,8 +443,7 @@ pub fn run(client: &Client, source: &dyn RecordingSource, probe: &SensorLayout, 
         })?;
         flush(&mut pending, &mut spike_samples, &mut spike_units, &mut spike_scalings);
     }
-
-    // 6. Final merges
+    // 7. Final cleaning
     let mut templates = templates;
     let mut final_merges = 0;
     if cfg.final_merges && k > 1 {
@@ -439,17 +451,17 @@ pub fn run(client: &Client, source: &dyn RecordingSource, probe: &SensorLayout, 
         let mut order: Vec<usize> = (0..spike_samples.len()).collect();
         order.sort_by_key(|&i| (spike_samples[i], spike_units[i]));
         let samples: Vec<u64> = order.iter().map(|&i| spike_samples[i]).collect();
+        let units_of: Vec<u32> = order.iter().map(|&i| spike_units[i]).collect();
         let scalings: Vec<f32> = order.iter().map(|&i| spike_scalings[i]).collect();
         let mut units: Vec<Vec<usize>> = vec![Vec::new(); k];
-        for (i, &oi) in order.iter().enumerate() {
-            units[spike_units[oi] as usize].push(i);
+        for (i, &u) in units_of.iter().enumerate() {
+            units[u as usize].push(i);
         }
         let opts = AutoMergeOptions {
-            template_diff_thresholds: (1..8).map(|i| 0.05 * i as f64).collect(),
             max_distance_um: cfg.final_merge_max_distance_um,
             censor_ms: cfg.final_merge_censor_ms,
             sparsity_overlap: cfg.final_merge_sparsity_overlap,
-            num_shifts: ms(cfg.merge_similarity_lag_ms),
+            num_shifts: (cfg.final_merge_max_lag_ms * fs / 1000.0) as usize,
             ..Default::default()
         };
         let merged = auto_merge(&samples, units, templates, &positions, fs, total, &opts);
@@ -465,19 +477,21 @@ pub fn run(client: &Client, source: &dyn RecordingSource, probe: &SensorLayout, 
         templates = merged.templates;
         stages.report(STAGE_MERGING, 1, 1);
     }
-    Ok(Tridesclous2Result {
+    let k = templates.len();
+    Ok(Spykingcircus2Result {
         sample_rate_hz: fs,
         total_samples: total,
-        n_units: templates.len(),
+        n_units: k,
+        final_merges,
         spike_samples,
         spike_units,
         spike_scalings,
         templates,
         nbefore,
         noise_levels,
+        prototype: proto,
         detected,
         selected,
-        final_merges,
         positions,
         pipeline,
     })
@@ -488,6 +502,16 @@ mod tests {
     use super::*;
     use dspk_core::compute::ComputeTarget;
     use dspk_synapse_io::synthetic::{SyntheticParams, SyntheticRecording};
+
+    #[test]
+    fn shuffle_is_a_seeded_permutation() {
+        let a = shuffled(50, 42);
+        let mut sorted = a.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, (0..50).collect::<Vec<_>>());
+        assert_eq!(a, shuffled(50, 42));
+        assert_ne!(a, shuffled(50, 43));
+    }
 
     /// Recovers well-separated synthetic units.
     #[test]
@@ -506,14 +530,16 @@ mod tests {
                 eprintln!("  {:>7.2} s {} {}/{}", start.elapsed().as_secs_f64(), e.stage, e.done, e.total);
             }
         };
-        let out = run(&client, &rec, &probe, &Tridesclous2Config::default(), &log).expect("run");
+        let out = run(&client, &rec, &probe, &Spykingcircus2Config::default(), &log).expect("run");
         let total = rec.info().samples;
         let acc: Vec<f64> = (0..rec.unit_count())
             .map(|g| {
                 let truth = rec.spike_times(g, 0..total);
                 (0..out.n_units)
                     .map(|u| {
-                        let mine: Vec<u64> = (0..out.spike_samples.len()).filter(|&i| out.spike_units[i] == u as u32).map(|i| out.spike_samples[i]).collect();
+                        let mine: Vec<u64> = (0..out.spike_samples.len()).filter(|&i| out.spike_units[i] == u as u32).map(|i| out.spike_samples[i]).collect::<Vec<_>>();
+                        let mut mine = mine;
+                        mine.sort_unstable();
                         let (mut j, mut hits) = (0usize, 0usize);
                         for &t in &truth {
                             while j < mine.len() && mine[j] + 30 < t {
@@ -529,7 +555,8 @@ mod tests {
                     .fold(0.0, f64::max)
             })
             .collect();
-        eprintln!("TDC2: {} units, {} spikes, detected {}, merges {}, accuracies {acc:.3?}", out.n_units, out.spike_samples.len(), out.detected, out.final_merges);
+        eprintln!("SC2: {} units, {} spikes, detected {}, accuracies {acc:.3?}", out.n_units, out.spike_samples.len(), out.detected);
         assert!(acc.iter().filter(|&&a| a >= 0.8).count() >= 5, "{acc:?}");
+        assert_eq!(out.to_sorting_output(Some(probe)).units.len() <= out.n_units, true);
     }
 }

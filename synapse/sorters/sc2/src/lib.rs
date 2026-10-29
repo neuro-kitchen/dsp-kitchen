@@ -2,7 +2,7 @@
 //! `sorters/internal/spyking_circus2.py`, MIT, sorter version 2025.12), ported from its source:
 //! Bessel band-pass, common median reference, local whitening, matched-filtering detection,
 //! uniform peak selection, local SVD features, iterative HDBSCAN splits, template cleaning and
-//! merging, circus-omp matching ([`super::components`]), driven by [`runner`].
+//! merging, circus-omp matching ([`dspk_sort::components`]), driven by [`runner`].
 //!
 //! Not yet: motion correction (upstream's default on dense probes: S10). Stages and settings: the
 //! book's SpyKING CIRCUS 2 pages.
@@ -11,7 +11,7 @@ pub mod runner;
 
 pub use runner::{run, Spykingcircus2Result, SPYKINGCIRCUS2_SORTER};
 
-use crate::provenance::{Attributed, Paper, Provenance, ProvenanceKind, UpstreamCode};
+use dspk_synapse::provenance::{Attributed, Paper, Provenance, ProvenanceKind, UpstreamCode};
 
 /// SpyKING CIRCUS 2 settings: SpikeInterface's `_default_params` and the defaults of the components
 /// it calls (book: SpyKING CIRCUS 2 parameters).
