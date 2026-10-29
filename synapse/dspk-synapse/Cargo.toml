@@ -3,7 +3,8 @@ name = "dspk-synapse"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-license.workspace = true
+# Our code MIT OR Apache-2.0; the isosplit6 port (src/sorting/isosplit.rs) Apache-2.0: NOTICE.md
+license = "(MIT OR Apache-2.0) AND Apache-2.0"
 # Not published yet: the synapse names may change; app and CLI are not libraries
 publish = false
 
