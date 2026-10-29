@@ -24,6 +24,9 @@ pub const SORTERS_BIN_ENV: &str = "DSPK_SORTERS_BIN";
 pub const DATA_DIR_ENV: &str = "DSPK_DATA_DIR";
 /// Where releases are downloaded from: `<base>/v<version>/<file>`.
 pub const RELEASE_BASE_URL: &str = "https://github.com/neuro-kitchen/dsp-kitchen/releases/download";
+/// Environment variable replacing [`RELEASE_BASE_URL`] (a mirror, or `file://` for offline
+/// installs and tests).
+pub const RELEASE_URL_ENV: &str = "DSPK_SORTERS_RELEASE_URL";
 /// The manifest file of a release.
 pub const MANIFEST_FILE: &str = "dspk-sorters-manifest.json";
 
@@ -100,23 +103,27 @@ pub fn locate(version: &str, beside: Option<&Path>) -> Option<PathBuf> {
     installed(version)
 }
 
-/// The release folder URL of `version`.
+/// The release folder URL of `version` (under `$DSPK_SORTERS_RELEASE_URL` when set).
 pub fn release_url(version: &str) -> String {
-    format!("{RELEASE_BASE_URL}/v{version}")
+    let base = std::env::var(RELEASE_URL_ENV).ok().filter(|b| !b.trim().is_empty()).unwrap_or_else(|| RELEASE_BASE_URL.to_string());
+    format!("{}/v{version}", base.trim().trim_end_matches('/'))
 }
 
 /// Downloads and parses the manifest of `version`'s release.
 pub fn fetch_manifest(version: &str) -> Result<SortersManifest> {
     let url = format!("{}/{MANIFEST_FILE}", release_url(version));
-    let client = build_http_client(Duration::from_secs(30))?;
-    let manifest: SortersManifest = client
-        .get(&url)
-        .send()
-        .with_context(|| format!("HTTP GET failed for {url}"))?
-        .error_for_status()
-        .with_context(|| format!("no sorter manifest at {url} (is v{version} released with dspk-sorters?)"))?
-        .json()
-        .with_context(|| format!("{url} is not a sorter manifest"))?;
+    let text = match url.strip_prefix("file://") {
+        Some(path) => std::fs::read_to_string(path).with_context(|| format!("no sorter manifest at {url}"))?,
+        None => build_http_client(Duration::from_secs(30))?
+            .get(&url)
+            .send()
+            .with_context(|| format!("HTTP GET failed for {url}"))?
+            .error_for_status()
+            .with_context(|| format!("no sorter manifest at {url} (is v{version} released with dspk-sorters?)"))?
+            .text()
+            .with_context(|| format!("failed to read {url}"))?,
+    };
+    let manifest: SortersManifest = serde_json::from_str(&text).with_context(|| format!("{url} is not a sorter manifest"))?;
     if manifest.version != version {
         bail!("{url} describes version {}, not {version}", manifest.version);
     }

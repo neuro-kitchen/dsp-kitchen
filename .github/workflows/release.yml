@@ -1,7 +1,8 @@
 # Release on a version tag (v0.0.2, ...): build and check everything, then publish to crates.io and
 # PyPI through trusted publishing (no stored tokens). The publish jobs run in the GitHub
 # environments `crates-io` and `pypi`, which only accept `v*` tags and wait for a required
-# reviewer's approval; the registries only accept tokens from these jobs.
+# reviewer's approval; the registries only accept tokens from these jobs. After both, the GitHub
+# release of the tag gets the dspk-sorters builds and their manifest (`dspk sorters install`).
 name: release
 
 on:
@@ -86,6 +87,53 @@ jobs:
           name: sdist
           path: bindings/python/dist
 
+  # Every sorter in one GPL-3.0 program, run by `dspk sort` as a separate process; released as files
+  # of the GitHub release (not on crates.io / PyPI), installed by `dspk sorters install`
+  sorters:
+    name: dspk-sorters (${{ matrix.target }})
+    needs: check
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # glibc 2.35 (Ubuntu 22.04+, Debian 12+); the CPU runtime's prebuilt LLVM needs >= 2.34
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            features: wgpu,cuda,cpu,hub
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            features: wgpu,cuda,cpu,hub
+          # No CUDA on macOS
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            features: wgpu,cpu,hub
+    env:
+      CARGO_PROFILE_RELEASE_STRIP: symbols
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: sorters-${{ matrix.target }}
+          cache-directories: ~/.local/share/tracel
+      - name: Build
+        run: cargo build --release --locked -p dspk-sorters --no-default-features --features ${{ matrix.features }}
+      - name: Name the file after its target
+        shell: bash
+        run: |
+          ext=""
+          if [ "${{ runner.os }}" = "Windows" ]; then ext=".exe"; fi
+          mkdir -p out
+          cp "target/release/dspk-sorters${ext}" "out/dspk-sorters-${{ matrix.target }}${ext}"
+          "out/dspk-sorters-${{ matrix.target }}${ext}" --version
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sorters-${{ matrix.target }}
+          path: out
+
   publish-crates:
     name: Publish to crates.io
     needs: [check, wheels, sdist]
@@ -138,8 +186,49 @@ jobs:
     permissions:
       id-token: write # trusted publishing
     steps:
+      # Wheels and the sdist only (the sorters' builds are artifacts too, for the GitHub release)
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
+          pattern: wheel-*
           path: dist
           merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: sdist
+          path: dist
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+
+  github-release:
+    name: GitHub release (dspk-sorters)
+    needs: [sorters, publish-crates, publish-pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release and attach files
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: sorters-*
+          path: out
+          merge-multiple: true
+      # `dspk sorters install` reads this: per target, the file, its SHA-256 and size
+      - name: Write the manifest
+        run: |
+          python3 - "${GITHUB_REF_NAME#v}" <<'PY'
+          import hashlib, json, os, sys
+          version, assets = sys.argv[1], {}
+          for name in sorted(os.listdir("out")):
+              path = os.path.join("out", name)
+              target = name.removeprefix("dspk-sorters-").removesuffix(".exe")
+              digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
+              assets[target] = {"file": name, "sha256": digest, "size": os.path.getsize(path)}
+          json.dump({"version": version, "assets": assets}, open("out/dspk-sorters-manifest.json", "w"), indent=2)
+          print(json.dumps(assets, indent=2))
+          PY
+      - name: Create the release and attach the files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1 ||
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --verify-tag \
+              --notes "dspk ${GITHUB_REF_NAME}: crates on crates.io, \`pip install dspk\`. The files below are \`dspk-sorters\` (every spike sorter, GPL-3.0 as a whole; source: this tag), installed by \`dspk sorters install\`."
+          gh release upload "$GITHUB_REF_NAME" out/* --repo "$GITHUB_REPOSITORY" --clobber
