@@ -22,6 +22,7 @@ members = [
     "serve/dspk-stream",
     # Front ends
     "app/dspk-cli",
+    "app/dspk-sorters",
     "app/dspk-app",
     # Bindings
     "bindings/python/dspk-py-core",

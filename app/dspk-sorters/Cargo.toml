@@ -1,0 +1,38 @@
+[package]
+name = "dspk-sorters"
+description = "Every spike sorter of dspk in one program: Kilosort4, EMUsort, MountainSort 5, SpyKING CIRCUS 2, Tridesclous 2"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+# Contains Kilosort4 and EMUsort (GPL-3.0): the program is GPL-3.0 as a whole. dspk runs it as a
+# separate program and never links it. Released as files of each GitHub release, not on crates.io.
+license = "GPL-3.0-only"
+publish = false
+
+[[bin]]
+name = "dspk-sorters"
+path = "src/main.rs"
+
+[features]
+default = ["wgpu", "cuda", "cpu", "hub"]
+wgpu = ["dspk-cli/wgpu", "dspk-ks4/wgpu", "dspk-ms5/wgpu", "dspk-sc2/wgpu", "dspk-tdc2/wgpu"]
+cpu = ["dspk-cli/cpu", "dspk-ks4/cpu", "dspk-ms5/cpu", "dspk-sc2/cpu", "dspk-tdc2/cpu"]
+cuda = ["dspk-cli/cuda", "dspk-ks4/cuda", "dspk-ms5/cuda", "dspk-sc2/cuda", "dspk-tdc2/cuda"]
+hip = ["dspk-cli/hip", "dspk-ks4/hip", "dspk-ms5/hip", "dspk-sc2/hip", "dspk-tdc2/hip"]
+# Kilosort4's predefined universal templates from the model hub (network access)
+hub = ["dspk-ks4/hub"]
+
+[dependencies]
+dspk-cli = { path = "../dspk-cli", default-features = false }
+dspk-core = { workspace = true, features = ["compute"] }
+dspk-synapse.workspace = true
+dspk-ks4 = { workspace = true, default-features = false }
+dspk-ms5 = { workspace = true, default-features = false }
+dspk-sc2 = { workspace = true, default-features = false }
+dspk-tdc2 = { workspace = true, default-features = false }
+cubecl.workspace = true
+clap.workspace = true
+anstream.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

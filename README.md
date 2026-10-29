@@ -42,7 +42,8 @@ synapse/      dspk-synapse (detection, clustering, matching, sorter building blo
               dspk-synapse-ml (pretrained models)
   sorters/    one crate per sorter: ks4 (Kilosort4 + EMUsort), ms5 (MountainSort 5),
               sc2 (SpyKING CIRCUS 2), tdc2 (Tridesclous 2)
-app/          dspk-app (desktop workbench), dspk-cli (`dspk run`, `dspk sort`, …)
+app/          dspk-app (desktop workbench), dspk-cli (`dspk run`, `dspk sort`, …),
+              dspk-sorters (every sorter in one program, GPL-3.0; run by `dspk sort`)
 bindings/     python: the `dspk` package on PyPI
 playground/   worked examples as `# %%` cells (see playground/README.md)
 benchmarks/   timings and validations against scipy and other sorters (see benchmarks/README.md)
@@ -162,10 +163,30 @@ CPython ≥ 3.10. See [bindings/python](bindings/python/README.md).
 kernel source serves every runtime): one window or batch on the device holds at most 2³² − 1
 values (e.g. 384 channels × 11.1 million samples). Larger requests are refused with an error.
 
+## Spike sorting
+
+Kilosort4, EMUsort, MountainSort 5, SpyKING CIRCUS 2 and Tridesclous 2 run on the GPU (or the CPU)
+in one separate program, `dspk-sorters`, released with each version. The `dspk` command line runs
+it as its own process:
+
+```bash
+dspk sorters install                                   # this version's build, SHA-256 checked
+dspk sort kilosort4 recording.bin -o sorted --format phy
+dspk sort kilosort4 --help                             # every setting and its default
+dspk-sorters licenses                                  # each sorter's licence and source
+```
+
+It is installed in the user data folder (`~/.local/share/dspk/sorters/<version>/` on Linux,
+`~/Library/Application Support/dspk/…` on macOS, `%LOCALAPPDATA%\dspk\…` on Windows;
+`DSPK_DATA_DIR` moves it, `DSPK_SORTERS_BIN` names another build). A source build finds the
+`dspk-sorters` built next to `dspk` (`cargo build -p dspk-sorters`).
+
 ## License
 
-MIT OR Apache-2.0, at your option ([LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE)),
-except the sorter crates that follow their upstream's licence:
+MIT OR Apache-2.0, at your option ([LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE)):
+the published crates, the `dspk` command line and the Python package.
+
+The sorters follow their upstreams' licences:
 
 | Crate | Licence | Why |
 |---|---|---|
@@ -173,7 +194,8 @@ except the sorter crates that follow their upstream's licence:
 | `dspk-ms5` (MountainSort 5) | Apache-2.0 | MountainSort 5 and isosplit6 are Apache-2.0 |
 | `dspk-sc2`, `dspk-tdc2` | MIT OR Apache-2.0 (+ SpikeInterface's MIT notice) | ported from SpikeInterface (MIT) |
 | `dspk-synapse` | (MIT OR Apache-2.0) AND Apache-2.0 | isosplit6 port; SpikeInterface components |
+| `dspk-sorters` (the program) | GPL-3.0-only | contains `dspk-ks4` |
 
-Each sorter crate carries its upstream licence and a `NOTICE.md`. The published crates never depend
-on `dspk-ks4`; the `dspk-cli` binary does, so a CLI built with Kilosort4 is distributed under
-GPL-3.0 as a whole.
+Each sorter crate carries its upstream licence and a `NOTICE.md`. Nothing MIT / Apache-licensed
+links `dspk-ks4`: `dspk sort` runs `dspk-sorters` as a separate program, whose source is this
+repository at the version's tag.

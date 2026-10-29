@@ -3048,7 +3048,6 @@ dependencies = [
  "cubecl",
  "dspk-core",
  "dspk-io",
- "dspk-ks4",
  "dspk-ops",
  "dspk-pipeline",
  "dspk-stream",
@@ -3180,6 +3179,25 @@ dependencies = [
  "dspk-synapse",
  "dspk-synapse-io",
  "rayon",
+]
+
+[[package]]
+name = "dspk-sorters"
+version = "0.0.4"
+dependencies = [
+ "anstream",
+ "anyhow",
+ "clap",
+ "cubecl",
+ "dspk-cli",
+ "dspk-core",
+ "dspk-ks4",
+ "dspk-ms5",
+ "dspk-sc2",
+ "dspk-synapse",
+ "dspk-tdc2",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

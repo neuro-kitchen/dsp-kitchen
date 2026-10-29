@@ -164,7 +164,7 @@ pub fn check_remote_link(weights_url: &str) -> Result<RemoteLinkCheck> {
     }
 }
 
-fn build_http_client(timeout: Duration) -> Result<reqwest::blocking::Client> {
+pub(crate) fn build_http_client(timeout: Duration) -> Result<reqwest::blocking::Client> {
     // reqwest 0.13 is built with `rustls-no-provider` (its `rustls` feature would add aws-lc-rs, a C
     // build, beside the `ring` provider dspk-stream uses), so a provider must be installed before the
     // first client. `Err` only means one is already installed (by us or the host process).

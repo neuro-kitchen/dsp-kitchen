@@ -1,18 +1,22 @@
-//! `sort`: Kilosort4 or EMUsort over a recording (dspk-synapse-ml), written as a sorting.
+//! One subcommand per sorter: the recording in, the sorting written.
 //!
-//! The settings people tune are flags whose defaults come from the sorter's config (`--help` shows
-//! them); `--show-config` prints every setting of the run, including those without a flag.
+//! Kilosort4 and EMUsort expose the settings people tune as flags whose defaults come from the
+//! sorter's config (`--help` shows them); MountainSort 5, SpyKING CIRCUS 2 and Tridesclous 2 run
+//! their published defaults. `--show-config` prints every setting of the run and exits.
 
 use std::path::PathBuf;
 use std::sync::LazyLock;
 use std::time::Instant;
 
 use clap::{Args, Subcommand};
+use dspk_cli::commands::recording::{OutputArgs, RecordingArgs};
+use dspk_cli::progress::TerminalProgress;
 use dspk_core::ComputeTarget;
 use dspk_ks4::{run_plan, EmusortConfig, Kilosort4Config, RunPlan, UniversalTemplates};
-
-use super::recording::{OutputArgs, RecordingArgs};
-use crate::progress::TerminalProgress;
+use dspk_ms5::Mountainsort5Config;
+use dspk_sc2::Spykingcircus2Config;
+use dspk_synapse::SortingOutput;
+use dspk_tdc2::Tridesclous2Config;
 
 static KILOSORT4: LazyLock<Kilosort4Config> = LazyLock::new(Kilosort4Config::default);
 static EMUSORT: LazyLock<EmusortConfig> = LazyLock::new(EmusortConfig::default);
@@ -172,22 +176,34 @@ pub struct EmusortArgs {
     hdbscan_min_cluster_size: usize,
 }
 
+/// What a sorter run with its published defaults takes.
+#[derive(Args, Debug)]
+pub struct DefaultsArgs {
+    #[command(flatten)]
+    recording: RecordingArgs,
+    #[command(flatten)]
+    output: OutputArgs,
+    /// Print every setting of the run and exit
+    #[arg(long)]
+    show_config: bool,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum SortCommand {
     /// Kilosort4 (Pachitariu et al. 2024): high-density extracellular probes
     Kilosort4(Kilosort4Args),
     /// EMUsort (O'Connell et al. 2026): high-density intramuscular arrays, motor units
     Emusort(EmusortArgs),
+    /// MountainSort 5 (Flatiron Institute): isosplit clustering, published defaults
+    Mountainsort5(DefaultsArgs),
+    /// SpyKING CIRCUS 2 (SpikeInterface): published defaults
+    Spykingcircus2(DefaultsArgs),
+    /// Tridesclous 2 (SpikeInterface): published defaults
+    Tridesclous2(DefaultsArgs),
 }
 
-#[derive(Args, Debug)]
-pub struct SortArgs {
-    #[command(subcommand)]
-    sorter: SortCommand,
-}
-
-pub fn run(target: ComputeTarget, args: &SortArgs) -> anyhow::Result<()> {
-    match &args.sorter {
+pub fn run(target: ComputeTarget, sorter: &SortCommand) -> anyhow::Result<()> {
+    match sorter {
         SortCommand::Kilosort4(a) => {
             let mut config = KILOSORT4.clone();
             a.settings.apply(&mut config);
@@ -209,7 +225,48 @@ pub fn run(target: ComputeTarget, args: &SortArgs) -> anyhow::Result<()> {
             }
             execute(target, &a.run, |fs| RunPlan::emusort(&config, fs))
         }
+        SortCommand::Mountainsort5(a) => {
+            let config = Mountainsort5Config::default();
+            run_defaults(target, a, "MountainSort 5", &config, |client, opened, progress| {
+                Ok(dspk_ms5::run(client, opened.source.as_ref(), &opened.probe, &config, progress)?.to_sorting_output(Some(opened.probe.clone())))
+            })
+        }
+        SortCommand::Spykingcircus2(a) => {
+            let config = Spykingcircus2Config::default();
+            run_defaults(target, a, "SpyKING CIRCUS 2", &config, |client, opened, progress| {
+                Ok(dspk_sc2::run(client, opened.source.as_ref(), &opened.probe, &config, progress)?.to_sorting_output(Some(opened.probe.clone())))
+            })
+        }
+        SortCommand::Tridesclous2(a) => {
+            let config = Tridesclous2Config::default();
+            run_defaults(target, a, "Tridesclous 2", &config, |client, opened, progress| {
+                Ok(dspk_tdc2::run(client, opened.source.as_ref(), &opened.probe, &config, progress)?.to_sorting_output(Some(opened.probe.clone())))
+            })
+        }
     }
+}
+
+/// Runs a sorter with its default `config` (`sort` turns the opened recording into a sorting)
+/// with a progress bar, then writes the sorting.
+fn run_defaults(
+    target: ComputeTarget,
+    args: &DefaultsArgs,
+    name: &str,
+    config: &dyn std::fmt::Debug,
+    sort: impl Fn(&cubecl::prelude::Client, &dspk_cli::commands::recording::Opened, &TerminalProgress) -> anyhow::Result<SortingOutput>,
+) -> anyhow::Result<()> {
+    if args.show_config {
+        println!("{config:#?}");
+        return Ok(());
+    }
+    let opened = args.recording.open()?;
+    let info = opened.source.info();
+    println!("{name} on {} channels × {:.1} s, {}", info.channel_count(), info.duration_sec(), target.name());
+    let client = target.client()?;
+    let t = Instant::now();
+    let sorting = sort(&client, &opened, &TerminalProgress::default())?;
+    println!("{} units, {} spikes in {:.1} s", sorting.num_units(), sorting.total_spikes(), t.elapsed().as_secs_f64());
+    args.output.save(&sorting)
 }
 
 /// Opens the recording, runs the plan (`plan(sample_rate_hz)`) with a progress bar, writes the sorting.
