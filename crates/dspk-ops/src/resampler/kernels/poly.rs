@@ -50,17 +50,35 @@ pub fn upfirdn_kernel<F: Float>(
         let up_i = i32::cast_from(up);
         let i0 = i32::cast_from(m) * i32::cast_from(down) + start;
         let phase = ((i0 % up_i) + up_i) % up_i;
+        let n_taps = i32::cast_from(num_taps);
+        let len = i32::cast_from(in_len);
         let mut acc = F::new(0.0f32);
+        // Tap `j = phase + k · up` reads input `s = (i0 − j) / up = s0 − k`: one exact division
+        // (`i0 − phase` is a multiple of `up`), then a decrement per tap
+        let s0 = (i0 - phase) / up_i;
+        let visits = if phase < n_taps { (n_taps - phase + up_i - 1) / up_i } else { 0i32 };
         let mut j = phase;
-        while j < i32::cast_from(num_taps) {
-            let s = (i0 - j) / up_i;
-            if s >= 0i32 && s < i32::cast_from(in_len) {
+        let mut s = s0;
+        if s0 < len && s0 - visits + 1 >= 0i32 {
+            // The whole window lies inside the row (nearly every output): no bounds checks
+            let mut k = 0i32;
+            while k < visits {
                 acc += taps[u32::cast_from(j) as usize] * input[base + u32::cast_from(s) as usize];
-            } else if comptime!(edge != EDGE_ZEROS) {
-                let ext = u32::cast_from(s + i32::cast_from(ext_pad));
-                acc += taps[u32::cast_from(j) as usize] * read_extended::<F>(input, base, in_len, ext_pad, ext, edge);
+                j += up_i;
+                s -= 1i32;
+                k += 1i32;
             }
-            j += up_i;
+        } else {
+            while j < n_taps {
+                if s >= 0i32 && s < len {
+                    acc += taps[u32::cast_from(j) as usize] * input[base + u32::cast_from(s) as usize];
+                } else if comptime!(edge != EDGE_ZEROS) {
+                    let ext = u32::cast_from(s + i32::cast_from(ext_pad));
+                    acc += taps[u32::cast_from(j) as usize] * read_extended::<F>(input, base, in_len, ext_pad, ext, edge);
+                }
+                j += up_i;
+                s -= 1i32;
+            }
         }
         output[(ch * out_len + m) as usize] = acc;
     }
