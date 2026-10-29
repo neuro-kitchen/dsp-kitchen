@@ -15,12 +15,12 @@ path = "src/main.rs"
 # Our builds compile wgpu, cuda and cpu in; hip compiles but is untested (no AMD GPU)
 default = ["wgpu", "cuda", "cpu", "hub"]
 # CubeCL runtimes (chosen at run time with --runtime among those compiled in)
-wgpu = ["dspk-core/wgpu", "dspk-ops/wgpu", "dspk-pipeline/wgpu", "dspk-synapse/wgpu", "dspk-synapse-ml/wgpu"]
-cpu = ["dspk-core/cpu", "dspk-ops/cpu", "dspk-pipeline/cpu", "dspk-synapse/cpu", "dspk-synapse-ml/cpu"]
-cuda = ["dspk-core/cuda", "dspk-ops/cuda", "dspk-pipeline/cuda", "dspk-synapse/cuda", "dspk-synapse-ml/cuda"]
-hip = ["dspk-core/hip", "dspk-ops/hip", "dspk-pipeline/hip", "dspk-synapse/hip", "dspk-synapse-ml/hip"]
+wgpu = ["dspk-core/wgpu", "dspk-ops/wgpu", "dspk-pipeline/wgpu", "dspk-synapse/wgpu", "dspk-synapse-ml/wgpu", "dspk-ks4/wgpu"]
+cpu = ["dspk-core/cpu", "dspk-ops/cpu", "dspk-pipeline/cpu", "dspk-synapse/cpu", "dspk-synapse-ml/cpu", "dspk-ks4/cpu"]
+cuda = ["dspk-core/cuda", "dspk-ops/cuda", "dspk-pipeline/cuda", "dspk-synapse/cuda", "dspk-synapse-ml/cuda", "dspk-ks4/cuda"]
+hip = ["dspk-core/hip", "dspk-ops/hip", "dspk-pipeline/hip", "dspk-synapse/hip", "dspk-synapse-ml/hip", "dspk-ks4/hip"]
 # `hub` command: verified downloads of published artifacts (network access)
-hub = ["dspk-synapse-ml/hub", "dep:dspk-synapse-hub"]
+hub = ["dspk-synapse-ml/hub", "dspk-ks4/hub", "dep:dspk-synapse-hub"]
 
 [dependencies]
 dspk-core = { workspace = true, features = ["compute"] }
@@ -29,6 +29,8 @@ dspk-io = { workspace = true, features = ["zarr"] }
 dspk-synapse-io = { workspace = true, features = ["zarr"] }
 dspk-synapse.workspace = true
 dspk-synapse-ml = { workspace = true, default-features = false }
+# Kilosort4 / EMUsort (GPL-3.0): a dspk binary built with them is distributed under GPL-3.0
+dspk-ks4 = { workspace = true, default-features = false }
 dspk-synapse-hub = { workspace = true, optional = true }
 dspk-pipeline.workspace = true
 dspk-stream.workspace = true

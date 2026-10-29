@@ -24,6 +24,8 @@
 //! Data movement per window: the window is on the device already; per round the spike count, then
 //! the round's spikes (time, template, amplitude); at the end their features. Everything else stays.
 
+pub mod kernels;
+
 use cubecl::prelude::*;
 use cubecl::server::Handle;
 use dspk_ops::core::buffer;
@@ -33,8 +35,8 @@ use dspk_core::compute::LaunchGeometry;
 use dspk_core::{DspError, DspResult};
 
 use super::detect::{TemplateCentres, UniversalSpike};
-use super::kernels::detect::correlate_templates_kernel;
-use super::kernels::matching::{
+use crate::detect::kernels::detect::correlate_templates_kernel;
+use self::kernels::matching::{
     best_template_kernel, copy_kernel, gather_features_kernel, gather_spikes_kernel, mark_peaks_kernel, subtract_data_kernel,
     subtract_scores_kernel, template_products_kernel,
 };

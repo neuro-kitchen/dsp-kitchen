@@ -12,17 +12,17 @@
 
 pub mod clustering;
 pub mod detect;
+pub mod emusort;
 pub mod learned;
 pub mod matching;
-pub mod merges;
-mod kernels;
 pub mod runner;
 pub mod templates;
 
 pub use clustering::{cluster_spikes, ClusteringOptions, SpikeClusters};
 pub use matching::{TemplateMatcher, MAX_PEELS};
-pub use merges::{global_merges, GlobalMergeOptions, MergedClusters};
+pub use clustering::merges::{global_merges, GlobalMergeOptions, MergedClusters};
 pub use learned::{learned_templates, LearnedTemplates, TemplateMergeOptions};
+pub use emusort::{Emusort, EmusortConfig};
 pub use detect::{detect_universal, CentreOptions, TemplateCentres, UniversalDetector, UniversalSpike};
 pub use runner::{
     fit_kilosort4_preprocessing, fit_preprocessing, run_plan, ChannelDelays, FitSettings, FittedPreprocessing, Kilosort4Result,
@@ -34,7 +34,7 @@ pub use templates::{
 
 use dspk_synapse::NeuralBand;
 
-use crate::provenance::{ArtifactSource, Attributed, Paper, Provenance, ProvenanceKind, UpstreamCode};
+use dspk_synapse::provenance::{ArtifactSource, Attributed, Paper, Provenance, ProvenanceKind, UpstreamCode};
 
 /// Shortest waveform `nt_ms` can give (samples).
 const MIN_NT: usize = 3;

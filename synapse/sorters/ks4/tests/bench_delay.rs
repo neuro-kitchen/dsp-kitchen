@@ -2,14 +2,14 @@
 //! cross-correlation of every channel pair), at HD-EMG size on the discrete GPU. Ignored by default:
 //!
 //! ```text
-//! cargo test -p dspk-synapse-ml --release --test bench_delay -- --ignored --nocapture
+//! cargo test -p dspk-ks4 --profile validate --test bench_delay -- --ignored --nocapture
 //! ```
 
 use cubecl::device::{WgpuDevice, WgpuDeviceKind};
 use cubecl::Device;
 use dspk_ops::core::buffer;
 use dspk_core::compute::bench::time_device;
-use dspk_synapse_ml::sorters::emusort::delays::ChannelDelayEstimator;
+use dspk_ks4::emusort::delays::ChannelDelayEstimator;
 
 /// HD-EMG grid channels, window samples (interior plus halos), halo, and ±2 ms of lag at 30 kHz.
 const CHANNELS: usize = 32;

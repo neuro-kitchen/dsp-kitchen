@@ -1,6 +1,7 @@
-//! `dspk-synapse-ml`: neuro models and sorters from the literature, each traceable to its authors.
+//! `dspk-synapse-ml`: pretrained neuro models from the literature, each traceable to its authors.
+//! The spike sorters live in their own crates (`synapse/sorters/`: `dspk-ks4`, `dspk-ms5`,
+//! `dspk-sc2`, `dspk-tdc2`), each under its upstream's licence.
 //!
-//! - [`sorters`]: spike sorters reimplemented from their papers (Kilosort4, EMUsort).
 //! - [`models`]: pretrained networks run as released (parked until their artifacts are verified).
 //! - [`hub`]: the catalog of published artifacts (with feature `hub`, downloads through
 //!   `dspk-synapse-hub`).
@@ -11,7 +12,6 @@
 pub mod hub;
 pub mod models;
 pub mod runtime;
-pub mod sorters;
 
 // Provenance lives in dspk-synapse (shared by the models here and the sorter crates)
 pub use dspk_synapse::provenance;
@@ -29,4 +29,3 @@ pub use models::{
     UnitRefineClassifier,
 };
 pub use runtime::{OnnxRuntimeSession, RuntimeTensor, burn_conv1d, burn_linear_2d, validate_tensor_port};
-pub use sorters::{Emusort, EmusortConfig, Kilosort4, Kilosort4Config, Kilosort4Result};

@@ -16,6 +16,7 @@ members = [
     "synapse/sorters/ms5",
     "synapse/sorters/sc2",
     "synapse/sorters/tdc2",
+    "synapse/sorters/ks4",
     "synapse/dspk-synapse-hub",
     # Serving
     "serve/dspk-view",
@@ -49,6 +50,7 @@ dspk-sort = { path = "synapse/dspk-sort", version = "0.0.3", default-features = 
 dspk-ms5 = { path = "synapse/sorters/ms5", version = "0.0.3", default-features = false }
 dspk-sc2 = { path = "synapse/sorters/sc2", version = "0.0.3", default-features = false }
 dspk-tdc2 = { path = "synapse/sorters/tdc2", version = "0.0.3", default-features = false }
+dspk-ks4 = { path = "synapse/sorters/ks4", version = "0.0.3", default-features = false }
 dspk-synapse-hub = { path = "synapse/dspk-synapse-hub", version = "0.0.3", default-features = false }
 dspk-stream = { path = "serve/dspk-stream", version = "0.0.3", default-features = false }
 dspk-view = { path = "serve/dspk-view", version = "0.0.3", default-features = false }

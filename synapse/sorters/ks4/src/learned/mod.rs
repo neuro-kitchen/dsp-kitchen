@@ -19,13 +19,15 @@
 //! merged templates are averaged without a relative shift (after alignment, templates of one neuron
 //! peak at the same lag).
 
+pub mod kernels;
+
 use cubecl::prelude::*;
 use dspk_ops::core::buffer;
 use dspk_ops::linalg::{matmul, MatrixView};
 use dspk_core::compute::LaunchGeometry;
 
 use super::clustering::SpikeClusters;
-use super::kernels::learned::{pair_similarity_kernel, prototype_match_kernel};
+use self::kernels::learned::{pair_similarity_kernel, prototype_match_kernel};
 use super::matching::lagged_pc_products;
 use super::templates::UniversalTemplates;
 

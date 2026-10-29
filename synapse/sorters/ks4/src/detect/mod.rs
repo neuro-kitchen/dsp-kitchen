@@ -19,6 +19,8 @@
 //! The data must be preprocessed as Kilosort4 expects (common reference, high-pass, whitening:
 //! thresholds are in whitened σ).
 
+pub mod kernels;
+
 use cubecl::prelude::*;
 use cubecl::server::Handle;
 use dspk_ops::core::buffer;
@@ -27,7 +29,7 @@ use dspk_core::compute::{device_elements, LaunchGeometry};
 use dspk_core::{DspError, DspResult};
 use dspk_synapse_io::probe::SensorLayout;
 
-use super::kernels::{
+use self::kernels::{
     centre_response_kernel, correlate_templates_kernel, local_peak_score_kernel, neighbour_max_kernel,
     spike_features_kernel,
 };

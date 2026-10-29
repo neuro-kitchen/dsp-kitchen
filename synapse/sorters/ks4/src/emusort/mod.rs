@@ -2,7 +2,7 @@
 //! from high-density intramuscular arrays (Myomatrix). Written from the paper and the published
 //! defaults — the upstream GPL-3.0 code is not ported.
 //!
-//! EMUsort is a Kilosort4 fork, so it reuses every stage of [`crate::sorters::kilosort4`] with
+//! EMUsort is a Kilosort4 fork, so it reuses every stage of [`crate`] with
 //! its own settings ([`EmusortConfig`]) and adds:
 //! - **channel-delay removal** on the device ([`delays::ChannelDelayEstimator`],
 //!   [`delays::ChannelAligner`]): the lag (within ±2 ms) aligning each channel with the reference
@@ -17,9 +17,9 @@ use dspk_synapse_io::probe::SensorLayout;
 
 use dspk_synapse::NeuralBand;
 
-use crate::provenance::{Attributed, Paper, Provenance, ProvenanceKind, UpstreamCode};
-use crate::sorters::kilosort4::runner::{run_plan, Kilosort4Result, RunPlan};
-use crate::sorters::kilosort4::{
+use dspk_synapse::provenance::{Attributed, Paper, Provenance, ProvenanceKind, UpstreamCode};
+use crate::runner::{run_plan, Kilosort4Result, RunPlan};
+use crate::{
     CentreOptions, ClipOptions, ClipScaling, ClusteringOptions, GlobalMergeOptions, Kilosort4Config, LearnOptions, TemplateMergeOptions,
 };
 
@@ -103,8 +103,8 @@ impl Default for EmusortConfig {
             nt_ms: ks.nt_ms,
             nt0min: ks.nt0min,
             // Measured on the HD-EMG data with the EMG band: upstream's thresholds
-            th_universal: crate::sorters::kilosort4::UPSTREAM_TH_UNIVERSAL,
-            th_learned: crate::sorters::kilosort4::UPSTREAM_TH_LEARNED,
+            th_universal: crate::UPSTREAM_TH_UNIVERSAL,
+            th_learned: crate::UPSTREAM_TH_LEARNED,
             th_single_ch: vec![6.0, 9.0, 12.0, 15.0],
             templates_from_data: true,
             n_templates: 9,
@@ -269,12 +269,11 @@ pub fn emusort_provenance() -> Provenance {
         }),
         code: UpstreamCode { url: "https://github.com/snel-repo/EMUsort".into(), license: Some("GPL-3.0".into()), version: "a06bb60 (Kilosort4 fork snel-repo/Kilosort4, base v4.0.18)".into() },
         artifacts: Vec::new(),
-        notes: "Preprint: bioRxiv, doi:10.64898/2026.01.06.697952. Written from the paper and the published defaults; GPL code not ported. Universal templates are always learned from the recording (no EMUsort artifacts exist). Implemented: channel-delay removal, HDBSCAN outlier removal, and the Kilosort4 stages of crate::sorters::kilosort4.".into(),
+        notes: "Preprint: bioRxiv, doi:10.64898/2026.01.06.697952. Written from the paper and the published defaults; GPL code not ported. Universal templates are always learned from the recording (no EMUsort artifacts exist). Implemented: channel-delay removal, HDBSCAN outlier removal, and the Kilosort4 stages of crate.".into(),
     }
 }
 
 pub mod delays;
-pub mod kernels;
 
 pub use delays::{delays_from_cross_correlation, ChannelAligner, ChannelDelayEstimator, DELAY_TILE_SAMPLES};
 

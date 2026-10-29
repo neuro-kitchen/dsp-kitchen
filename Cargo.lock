@@ -3048,6 +3048,7 @@ dependencies = [
  "cubecl",
  "dspk-core",
  "dspk-io",
+ "dspk-ks4",
  "dspk-ops",
  "dspk-pipeline",
  "dspk-stream",
@@ -3086,6 +3087,21 @@ dependencies = [
  "serde_json",
  "tracing",
  "zarrs",
+]
+
+[[package]]
+name = "dspk-ks4"
+version = "0.0.3"
+dependencies = [
+ "cubecl",
+ "dspk-core",
+ "dspk-io",
+ "dspk-ops",
+ "dspk-sort",
+ "dspk-synapse",
+ "dspk-synapse-io",
+ "dspk-synapse-ml",
+ "tracing",
 ]
 
 [[package]]
@@ -3253,14 +3269,10 @@ dependencies = [
  "cubecl",
  "dspk-core",
  "dspk-io",
- "dspk-ms5",
  "dspk-ops",
- "dspk-sc2",
- "dspk-sort",
  "dspk-synapse",
  "dspk-synapse-hub",
  "dspk-synapse-io",
- "dspk-tdc2",
  "onnx-ir",
  "rayon",
  "safetensors 0.8.0",

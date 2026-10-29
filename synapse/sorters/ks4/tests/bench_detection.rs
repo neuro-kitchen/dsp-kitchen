@@ -3,7 +3,7 @@
 //! Each window is uploaded and detected, as in a run. Ignored by default:
 //!
 //! ```text
-//! cargo test -p dspk-synapse-ml --release --test bench_detection -- --ignored --nocapture
+//! cargo test -p dspk-ks4 --profile validate --test bench_detection -- --ignored --nocapture
 //! ```
 
 use std::time::Instant;
@@ -12,7 +12,7 @@ use cubecl::device::{WgpuDevice, WgpuDeviceKind};
 use cubecl::Device;
 use dspk_ops::core::buffer;
 use dspk_synapse_io::probe::SensorLayout;
-use dspk_synapse_ml::sorters::kilosort4::{CentreOptions, TemplateCentres, UniversalDetector, UniversalTemplates};
+use dspk_ks4::{CentreOptions, TemplateCentres, UniversalDetector, UniversalTemplates};
 
 /// Channels (two columns of a Neuropixels-like probe), their spacing, and the window length.
 const CHANNELS: usize = 384;

@@ -1,7 +1,7 @@
 //! Pretrained networks run as their authors released them (artifacts through the catalog,
 //! [`crate::hub`]). None has a validated artifact yet: their catalog entries are parked until
-//! verified (see `.refactoring/dspk-synapse-ml/`). Sorters reimplemented from papers live in
-//! [`crate::sorters`].
+//! verified (see `.refactoring/dspk-synapse-ml/`). The spike sorters live in their own crates
+//! (`synapse/sorters/`).
 
 pub mod dartsort;
 pub mod spikenet2;

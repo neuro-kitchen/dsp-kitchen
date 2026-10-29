@@ -39,6 +39,9 @@
 //! kernel truncated at 4 σ with mirrored edges, a side without any projection mass scores 0 (not
 //! bimodal), merge-tree ties to the smallest pair.
 
+pub mod kernels;
+pub mod merges;
+
 use cubecl::prelude::*;
 use cubecl::server::Handle;
 use dspk_ops::core::buffer;
@@ -50,7 +53,7 @@ use dspk_synapse::sorting::kernels::bipartite::{relabel_kernel, NO_LABEL};
 use dspk_synapse::sorting::{bipartite_clustering, cluster_sums, BipartiteOptions, DevicePoints};
 
 use super::detect::{TemplateCentres, UniversalSpike};
-use super::kernels::cluster::{embed_section_kernel, projection_histogram_kernel, weigh_node_kernel, SIDE_NEG, SIDE_NONE, SIDE_POS};
+use self::kernels::cluster::{embed_section_kernel, projection_histogram_kernel, weigh_node_kernel, SIDE_NEG, SIDE_NONE, SIDE_POS};
 
 /// Bins of the regression-axis histogram, its range, smoothing (bins) and trough search range.
 const HIST_BINS: usize = 400;

@@ -11,6 +11,8 @@
 //! wraps). Lagged reads past the buffer edges repeat the edge sample, as upstream pads its first
 //! and last batches.
 
+pub mod kernels;
+
 use std::ops::Range;
 
 use cubecl::prelude::*;
@@ -18,7 +20,7 @@ use cubecl::server::Handle;
 use dspk_ops::core::{buffer, reduce, Scratch};
 use dspk_core::compute::LaunchGeometry;
 
-use super::kernels::{apply_channel_delays_kernel, delay_cc_accumulate_kernel, delay_cc_tile_kernel, delay_envelope_kernel};
+use self::kernels::{apply_channel_delays_kernel, delay_cc_accumulate_kernel, delay_cc_tile_kernel, delay_envelope_kernel};
 
 /// Samples of one tile of [`fn@delay_cc_tile_kernel`]: each lag's partial sum adds this many products
 /// (shorter sums than one over the whole batch), and the tile with its lag margin fits shared

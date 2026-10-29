@@ -26,18 +26,18 @@ use dspk_core::{ChunkSchedule, DspError, DspResult, HaloWindow, ProgressSink, Re
 use dspk_synapse_io::probe::SensorLayout;
 use dspk_synapse::core::{SortingOutput, WaveformTemplate};
 
-use crate::sorters::result::{AmplitudeScale, SorterResult};
+use dspk_sort::result::{AmplitudeScale, SorterResult};
 use dspk_sort::windows::{DeviceWindows, WindowAligner};
 use dspk_synapse::metrics::{CompositeScoreOptions, RefractoryOptions};
 
 use super::clustering::{cluster_spikes, SpikeClusters};
-use super::merges::global_merges;
+use crate::clustering::merges::global_merges;
 use super::learned::{learned_templates, LearnedTemplates};
 use super::matching::TemplateMatcher;
 use super::detect::{TemplateCentres, UniversalDetector, UniversalSpike};
 use super::templates::{extract_clips, learn_universal_templates_with_progress, LearnOptions, UniversalTemplates, MAX_CLIPS};
 use super::Kilosort4Config;
-use crate::sorters::emusort::delays::{ChannelAligner, ChannelDelayEstimator};
+use crate::emusort::delays::{ChannelAligner, ChannelDelayEstimator};
 
 /// Butterworth order of the band-pass (per edge): Kilosort4's high-pass order.
 pub const BANDPASS_ORDER: usize = 3;
@@ -365,7 +365,7 @@ fn predefined_templates(plan: &RunPlan) -> DspResult<UniversalTemplates> {
     }
     #[cfg(feature = "hub")]
     {
-        let (_, path) = crate::runtime::pull_model(super::KILOSORT4_WTEMP_MODEL_ID)?;
+        let (_, path) = dspk_synapse_ml::runtime::pull_model(super::KILOSORT4_WTEMP_MODEL_ID)?;
         UniversalTemplates::from_npz(&path)
     }
     #[cfg(not(feature = "hub"))]
@@ -636,7 +636,7 @@ mod tests {
             "no upper edge: a high-pass"
         );
         assert_eq!(filter_stages(&Kilosort4Config::default()), vec![PipelineStage::CommonAverageReference, band(300.0, 6000.0)]);
-        let emusort = crate::sorters::EmusortConfig::default().kilosort4();
+        let emusort = crate::emusort::EmusortConfig::default().kilosort4();
         assert_eq!(filter_stages(&emusort), vec![band(300.0, 5000.0)]);
         let with_notch = Kilosort4Config { do_notch: true, ..emusort };
         assert_eq!(filter_stages(&with_notch)[1], PipelineStage::Filter(FilterSpec::notch(60.0, 30.0)));
@@ -746,7 +746,7 @@ mod tests {
         impl ComputeTask for Task<'_> {
             type Output = DspResult<Kilosort4Result>;
             fn run(self, client: Client) -> Self::Output {
-                crate::sorters::Kilosort4::new(self.2.clone()).run(&client, self.0, self.1)
+                crate::Kilosort4::new(self.2.clone()).run(&client, self.0, self.1)
             }
         }
         let key = |r: &Kilosort4Result| r.spikes.iter().map(|s| (s.sample, s.centre, s.template)).collect::<Vec<_>>();
@@ -770,7 +770,7 @@ mod tests {
         impl ComputeTask for Task<'_> {
             type Output = DspResult<Kilosort4Result>;
             fn run(self, client: Client) -> Self::Output {
-                crate::sorters::Kilosort4::new(self.2.clone()).run(&client, self.0, self.1)
+                crate::Kilosort4::new(self.2.clone()).run(&client, self.0, self.1)
             }
         }
 

@@ -16,10 +16,10 @@
 use cubecl::prelude::Client;
 use dspk_synapse::metrics::{ccg_refractory, RefractoryOptions};
 
-use super::clustering::SpikeClusters;
-use super::learned::pair_similarities;
-use super::matching::lagged_pc_products;
-use super::templates::UniversalTemplates;
+use crate::clustering::SpikeClusters;
+use crate::learned::pair_similarities;
+use crate::matching::lagged_pc_products;
+use crate::templates::UniversalTemplates;
 
 /// Settings of [`global_merges`].
 #[derive(Debug, Clone, Copy, PartialEq)]

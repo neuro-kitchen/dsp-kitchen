@@ -9,8 +9,7 @@ use std::time::Instant;
 
 use clap::{Args, Subcommand};
 use dspk_core::ComputeTarget;
-use dspk_synapse_ml::sorters::kilosort4::{run_plan, RunPlan, UniversalTemplates};
-use dspk_synapse_ml::{EmusortConfig, Kilosort4Config};
+use dspk_ks4::{run_plan, EmusortConfig, Kilosort4Config, RunPlan, UniversalTemplates};
 
 use super::recording::{OutputArgs, RecordingArgs};
 use crate::progress::TerminalProgress;
