@@ -12,7 +12,7 @@
 #
 # `name=value` overrides a setting (e.g. `do_notch=False global_merges=False`).
 #
-# Data (local, git-ignored): `data/nwb/15-25-33_meps.nwb.zarr` (HDEMG series).
+# Data (local, git-ignored): `.data/nwb/15-25-33_meps.nwb.zarr` (HDEMG series).
 
 # %% [1] Settings
 import ast
@@ -27,7 +27,7 @@ import dsp_kitchen.synapse as syn
 from dsp_kitchen.io import Recording, list_sources
 from dsp_kitchen.synapse.ml import emusort
 
-DATA_DIR = Path(os.environ.get("DSP_KITCHEN_DATA", Path(__file__).resolve().parents[2] / "data"))
+DATA_DIR = Path(os.environ.get("DSP_KITCHEN_DATA", Path(__file__).resolve().parents[2] / ".data"))
 NWB_PATH = DATA_DIR / "nwb" / "15-25-33_meps.nwb.zarr"
 GRID_ROWS, GRID_COLS, ELECTRODE_PITCH_UM = 4, 8, 100.0
 #: Segment sorted (s): long enough for stable units, short enough to iterate on.

@@ -1,6 +1,6 @@
 # %% [markdown]
 # # Kilosort4 experiments: where does our output depart from Kilosort4's?
-# Settings-only experiments against `data/kilosort4/saved_results/` (no change to the sorter):
+# Settings-only experiments against `.data/kilosort4/saved_results/` (no change to the sorter):
 # - `learned`: our run as is; its universal templates vs the ones Kilosort4 learned
 #   (`ops['wPCA']`, `ops['wTEMP']`), then its spikes vs Kilosort4's.
 # - `ks4-templates`: our detection with Kilosort4's learned templates instead of ours: if the

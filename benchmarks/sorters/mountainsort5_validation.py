@@ -1,7 +1,7 @@
 # %% [markdown]
 # # MountainSort 5 validation: our output vs Kilosort4's saved results
 # There is no MountainSort 5 reference on this recording: its units are compared with Kilosort4's
-# (`data/kilosort4/saved_results/`), as a second, independent sorter on the same data.
+# (`.data/kilosort4/saved_results/`), as a second, independent sorter on the same data.
 # 1. **Spikes per channel**: spikes compared by *where* (the contact nearest each spike: ours is the
 #    detection channel) and *when* (±`MATCH_MS`); the time-difference histogram should peak near 0
 #    (both report the waveform's peak).
@@ -11,8 +11,8 @@
 # `--set name=value` changes a setting (e.g. `--set scheme=1`); `--rerun` sorts again instead of
 # reading the exported sorting of an earlier run.
 #
-# Data (local, git-ignored): `data/kilosort4/ZFM-02370_mini.imec0.ap.short.bin` (+ `.meta`),
-# `data/kilosort4/saved_results/` (see benchmarks/README.md). Results: the book's *Benchmarks*.
+# Data (local, git-ignored): `.data/kilosort4/ZFM-02370_mini.imec0.ap.short.bin` (+ `.meta`),
+# `.data/kilosort4/saved_results/` (see benchmarks/README.md). Results: the book's *Benchmarks*.
 
 # %% [1] Settings
 import ast

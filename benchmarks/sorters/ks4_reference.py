@@ -1,4 +1,4 @@
-"""Kilosort4's saved output (`data/kilosort4/saved_results/`, a Phy folder) as a reference, and the
+"""Kilosort4's saved output (`.data/kilosort4/saved_results/`, a Phy folder) as a reference, and the
 per-channel comparison of a spike set against it. Used by the Kilosort4 validation scripts.
 
 Spikes are compared by *where* (the channel nearest the spike's position, in Kilosort4's channel
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
-DATA_DIR = Path(os.environ.get("DSP_KITCHEN_DATA", Path(__file__).resolve().parents[2] / "data"))
+DATA_DIR = Path(os.environ.get("DSP_KITCHEN_DATA", Path(__file__).resolve().parents[2] / ".data"))
 BIN_PATH = DATA_DIR / "kilosort4" / "ZFM-02370_mini.imec0.ap.short.bin"
 KS4_RESULTS = DATA_DIR / "kilosort4" / "saved_results"
 

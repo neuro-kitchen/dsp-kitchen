@@ -1,7 +1,7 @@
 # %% [markdown]
 # # Kilosort4 validation: our output vs Kilosort4's saved results
 # Checks that our Kilosort4 produces output comparable with what Kilosort4 recorded in
-# `data/kilosort4/saved_results/` (a Phy folder), without running Kilosort4 itself:
+# `.data/kilosort4/saved_results/` (a Phy folder), without running Kilosort4 itself:
 # 1. **Export**: our sorting is written as a Phy folder and a `.sorting.zarr` and read back; every
 #    comparison below uses the read-back copy; the Phy files are checked against Kilosort4's.
 # 2. **Spikes per channel**: unit ids differ between sorters, so spikes are compared by *where*
@@ -10,8 +10,8 @@
 # 3. **Units**: each Kilosort4 unit against the unit of ours holding most of its spikes, matched
 #    in time **and** place (time alone matches by chance at this spike density).
 #
-# Data (local, git-ignored): `data/kilosort4/ZFM-02370_mini.imec0.ap.short.bin` (+ `.meta`),
-# `data/kilosort4/saved_results/` (see benchmarks/README.md). Results: the book's *Benchmarks*.
+# Data (local, git-ignored): `.data/kilosort4/ZFM-02370_mini.imec0.ap.short.bin` (+ `.meta`),
+# `.data/kilosort4/saved_results/` (see benchmarks/README.md). Results: the book's *Benchmarks*.
 
 # %% [1] Settings
 import ast

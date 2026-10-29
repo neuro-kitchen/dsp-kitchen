@@ -82,6 +82,31 @@ runtime downloads a prebuilt LLVM on its first build (cached in `~/.local/share/
 out with `default-features = false` for a lighter build. All three are the default because the
 library, its tests, the CLI and the Python package are built and tested together that way.
 
+### Performance
+
+Device time of one recording-sized block (384 channels × 60 000 samples, float32: 2 s of
+Neuropixels at 30 kHz), data already on the device, autotuned kernel; RTX 2070 Max-Q and an
+i7-9750H (6 cores, 12 threads) through CubeCL's CPU runtime:
+
+| Operation | CUDA | wgpu (Vulkan) | CPU runtime |
+|---|---|---|---|
+| IIR band-pass, 5th order, forward | 5.3 ms | 12.3 ms | 39 ms |
+| FIR, 63 taps, causal | 3.1 ms | 6.4 ms | 33 ms |
+| Running median, width 9 | 0.59 ms | 0.69 ms | 20 ms |
+| Common median reference | 10.3 ms | 16.5 ms | 239 ms |
+| Common average reference | 1.0 ms | 1.2 ms | 11 ms |
+| `resample_poly` 1 / 3 | 1.4 ms | 1.7 ms | 16 ms |
+
+Where a kernel has several exact implementations (direct, shared-memory tiles, sorting networks,
+vectors of 2–16 values per unit that the CPU runtime turns into SIMD), the autotuner times them
+on the device and keeps the fastest. The vector versions are bit-identical to the scalar ones;
+other alternatives (FIR tiles, IIR time blocks) agree to rounding;
+`dspk_core::compute::pin_tuned_choices` fixes the IIR block split and the matrix-multiply choice for
+runs that must reproduce bit for bit. Reproduce with
+`cargo test -p dspk-ops --profile validate --test bench_kernels -- --ignored --nocapture` (and
+`bench_vector` for every choice); timings against scipy from Python are in
+[benchmarks](benchmarks/README.md).
+
 ### Kernel and autotune cache
 
 Autotune decisions and compiled kernels are cached across processes: the first run on a device
@@ -103,6 +128,16 @@ directory:
 - A `cubecl.toml` in the working directory, or CubeCL's own environment variables, still apply.
 - Code that opens a device through CubeCL directly instead of dspk gets CubeCL's default:
   `target/environment/` of the nearest Cargo project, or the user cache directory outside one.
+
+> [!NOTE]
+> **Known issue: abort at exit on CUDA.** A process that compiled many kernels on CUDA can finish
+> its work and then abort while exiting (exit code 134):
+> `fatal runtime error: thread local panicked on drop, aborting`. Results written before the exit
+> are complete. The cause is upstream: the kernel cache's database (turso) is dropped during the
+> CUDA device thread's teardown ([tracel-ai/cubecl#1981](https://github.com/tracel-ai/cubecl/issues/1981)).
+> The next process may then see a panic inside `turso_core` once; running it again works. Until a
+> fix is released, `DSPK_KERNEL_CACHE=0` avoids it (the case that reproduces it then exits
+> cleanly), at the cost of compiling kernels again in every process.
 
 ## Python
 

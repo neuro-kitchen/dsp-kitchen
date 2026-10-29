@@ -1,7 +1,7 @@
 # %% [markdown]
 # # Tridesclous 2 validation: our output vs Kilosort4's saved results
 # There is no Tridesclous 2 reference on this recording: its units are compared with Kilosort4's
-# (`data/kilosort4/saved_results/`), as a second, independent sorter on the same data.
+# (`.data/kilosort4/saved_results/`), as a second, independent sorter on the same data.
 # Spike locations are each unit's main channel (deepest template trough).
 # 1. **Spikes per channel**: spikes compared by *where* (the contact nearest each spike: ours is the
 #    unit's main channel) and *when* (±`MATCH_MS`); the time-difference histogram should peak near 0
@@ -12,8 +12,8 @@
 # `--set name=value` changes a setting (e.g. `--set detect_threshold=6.0`); `--rerun` sorts again instead of
 # reading the exported sorting of an earlier run.
 #
-# Data (local, git-ignored): `data/kilosort4/ZFM-02370_mini.imec0.ap.short.bin` (+ `.meta`),
-# `data/kilosort4/saved_results/` (see benchmarks/README.md). Results: the book's *Benchmarks*.
+# Data (local, git-ignored): `.data/kilosort4/ZFM-02370_mini.imec0.ap.short.bin` (+ `.meta`),
+# `.data/kilosort4/saved_results/` (see benchmarks/README.md). Results: the book's *Benchmarks*.
 
 # %% [1] Settings
 import ast

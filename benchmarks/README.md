@@ -56,10 +56,10 @@ common median reference exactly); scipy 0.33–2.1 s, dspk 0.15–0.28 s on wgpu
 | `ks4_reference.py` | helper: Kilosort4's Phy folder as a reference, per-channel matching |
 | `isosplit_si_reference.py` | reference outputs of SpikeInterface's isosplit for the Rust test `spikeinterface_variant_matches_upstream` (`ISOSPLIT_SI_REF`) |
 
-Data is local and not in the repository: `<repository>/data/`, or the folder in
+Data is local and not in the repository: `<repository>/.data/`, or the folder in
 `DSP_KITCHEN_DATA`.
 
-| Path under `data/` | Used by |
+| Path under `.data/` | Used by |
 |---|---|
 | `kilosort4/ZFM-02370_mini.imec0.ap.short.bin` + `.meta` (Neuropixels 1.0, SpikeGLX) | `kilosort4_*`, `*_validation`, `sorter_resources` |
 | `kilosort4/saved_results/` (Kilosort4's output for that file, Phy folder) | `kilosort4_*`, `*_validation` (through `ks4_reference.py`) |

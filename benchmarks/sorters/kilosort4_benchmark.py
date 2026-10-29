@@ -3,7 +3,7 @@
 # Runs our Kilosort4 (preprocessing, universal templates, detection, clustering, learned-template
 # matching, clustering of the matches) over
 # the Neuropixels test recording and compares it with what Kilosort4 recorded in
-# `data/kilosort4/saved_results/`:
+# `.data/kilosort4/saved_results/`:
 # 1. **Speed**: wall time per stage on each chosen runtime (first run includes kernel
 #    compilation; later runs are warm), as a multiple of real time; Kilosort4's recorded total.
 # 2. **Whitening**: our matrix vs `whitening_mat_dat.npy` (same channels, same order), up to a
@@ -18,8 +18,8 @@
 #   it ran on (`torch_device` in `ops.npy`): another machine, so not comparable with ours.
 # - Ours does not yet have Kilosort4's refractory criteria, final merges and drift correction.
 #
-# Data (local, git-ignored): `data/kilosort4/ZFM-02370_mini.imec0.ap.short.bin` (+ `.meta`),
-# `data/kilosort4/saved_results/` (see benchmarks/README.md).
+# Data (local, git-ignored): `.data/kilosort4/ZFM-02370_mini.imec0.ap.short.bin` (+ `.meta`),
+# `.data/kilosort4/saved_results/` (see benchmarks/README.md).
 
 # %% [1] Settings, Recording, Probe
 import json
@@ -44,7 +44,7 @@ from dsp_kitchen.progress import ProgressBar
 from dsp_kitchen.synapse.ml import kilosort4
 
 DATA_DIR = Path(
-    os.environ.get("DSP_KITCHEN_DATA", Path(__file__).resolve().parents[2] / "data")
+    os.environ.get("DSP_KITCHEN_DATA", Path(__file__).resolve().parents[2] / ".data")
 )
 BIN_PATH = DATA_DIR / "kilosort4" / "ZFM-02370_mini.imec0.ap.short.bin"
 KS4_RESULTS = DATA_DIR / "kilosort4" / "saved_results"

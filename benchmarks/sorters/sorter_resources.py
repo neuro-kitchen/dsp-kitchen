@@ -16,8 +16,8 @@
 # `benchmarks/sorters/results/sorter_resources_<sorter>.json`; `sorter_resources_table.py` draws them.
 # Build with `maturin develop --release` for timings.
 #
-# Data (local, git-ignored): `data/kilosort4/ZFM-02370_mini.imec0.ap.short.bin` (+ `saved_results/`
-# for the probe), `data/nwb/15-25-33_meps.nwb.zarr` (HDEMG series).
+# Data (local, git-ignored): `.data/kilosort4/ZFM-02370_mini.imec0.ap.short.bin` (+ `saved_results/`
+# for the probe), `.data/nwb/15-25-33_meps.nwb.zarr` (HDEMG series).
 
 # %% [1] Settings, Recording, Probe
 import argparse
@@ -37,7 +37,7 @@ import dsp_kitchen as dk
 import dsp_kitchen.synapse as syn
 from dsp_kitchen.io import Recording, list_sources
 
-DATA_DIR = Path(os.environ.get("DSP_KITCHEN_DATA", Path(__file__).resolve().parents[2] / "data"))
+DATA_DIR = Path(os.environ.get("DSP_KITCHEN_DATA", Path(__file__).resolve().parents[2] / ".data"))
 KS4_BIN = DATA_DIR / "kilosort4" / "ZFM-02370_mini.imec0.ap.short.bin"
 KS4_RESULTS = DATA_DIR / "kilosort4" / "saved_results"
 NWB_PATH = DATA_DIR / "nwb" / "15-25-33_meps.nwb.zarr"

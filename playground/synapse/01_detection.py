@@ -8,7 +8,7 @@
 # 5. **Snippets**: nearest channels, realigned to the sub-sample trough (`syn.extract_snippets`)
 # 6. **PCA, template, SNR, ISI violations** on the busiest channel
 #
-# Data (local, git-ignored): `data/nwb/15-25-33_meps.nwb.zarr` (see playground/README.md) (HD-EMG, 4 × 8 grid);
+# Data (local, git-ignored): `.data/nwb/15-25-33_meps.nwb.zarr` (see playground/README.md) (HD-EMG, 4 × 8 grid);
 # synthetic noise is used when it is absent.
 
 # %% [1] Imports, Recording & Pre-processing
@@ -33,7 +33,7 @@ from dsp_kitchen.linalg import PCA
 
 # Test data lives outside the playground: `<repository>/data/`, or the folder in DSP_KITCHEN_DATA
 DATA_DIR = Path(
-    os.environ.get("DSP_KITCHEN_DATA", Path(__file__).resolve().parents[2] / "data")
+    os.environ.get("DSP_KITCHEN_DATA", Path(__file__).resolve().parents[2] / ".data")
 )
 NWB_PATH = DATA_DIR / "nwb" / "15-25-33_meps.nwb.zarr"
 GRID_ROWS, GRID_COLS = 4, 8
