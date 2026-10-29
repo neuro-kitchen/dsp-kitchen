@@ -17,37 +17,30 @@ crosses disk → RAM → device memory as few times as possible.
 *`dspk-app` (desktop workbench, not on crates.io): a Neuropixels recording (385 channels, 30 kHz)
 drawn from min/max pyramids built by `dspk-view`.*
 
-## Crates
+## Crates and folders
 
-| Crate | Contents |
-|---|---|
-| `dspk` | Entry crate: re-exports the crates below; features choose what is included. |
-| `dspk-core` | Recordings (`RecordingSource`), buffers, exact time and sample rates, windows, compute targets. |
-| `dspk-io` | Raw binary and Zarr recordings, format detection, chunk cache, `.npy`/`.npz`/Zarr containers. |
-| `dspk-ops` | IIR / FIR / non-linear filters, resampling, spatial operators, linear algebra, statistics, peak finding, device pipelines. |
-| `dspk-view` | Min/max envelopes and pyramids for viewing, local or remote. |
-| `dspk-stream` | Network sessions for continuous signals (QUIC + TLS, protobuf). |
-
-Electrophysiology (spike detection, sorters, neural file formats) lives in the `synapse/` crates of
-the repository and is not published yet.
-
-## Repository
-
-```text
-crates/       dspk, dspk-core, dspk-io, dspk-ops                    (published)
-serve/        dspk-view, dspk-stream                                (published)
-engine/       dspk-pipeline: pipelines as data (JSON / TOML specs), many inputs, merges
-synapse/      dspk-synapse (detection, clustering, matching, sorter building blocks, provenance),
-              dspk-synapse-io (ephys formats), dspk-synapse-hub (downloads),
-              dspk-synapse-ml (pretrained models)
-  sorters/    one crate per sorter: ks4 (Kilosort4 + EMUsort), ms5 (MountainSort 5),
-              sc2 (SpyKING CIRCUS 2), tdc2 (Tridesclous 2)
-app/          dspk-app (desktop workbench), dspk-cli (`dspk run`, `dspk sort`, …),
-              dspk-sorters (every sorter in one program, GPL-3.0; run by `dspk sort`)
-bindings/     python: the `dspk` package on PyPI
-playground/   worked examples as `# %%` cells (see playground/README.md)
-benchmarks/   timings and validations against scipy and other sorters (see benchmarks/README.md)
-```
+| Folder | Package | What it is | Published |
+|---|---|---|---|
+| `crates/` | `dspk` | Entry crate: re-exports the crates below, features choose what is included | crates.io |
+| | `dspk-core` | Recordings, buffers, exact time and sample rates, windows, compute targets | crates.io |
+| | `dspk-io` | Raw binary and Zarr recordings, format detection, chunk cache | crates.io |
+| | `dspk-ops` | Filters, resampling, spatial operators, linear algebra, statistics, peaks, device pipelines | crates.io |
+| `engine/` | `dspk-pipeline` | Pipelines as data (JSON / TOML specs): plan, many inputs, merges, provenance | crates.io |
+| `serve/` | `dspk-view` | Min/max envelopes and pyramids for viewing, local or remote | crates.io |
+| | `dspk-stream` | Network sessions for continuous signals (QUIC + TLS, protobuf) | crates.io |
+| `synapse/` | `dspk-synapse` | Detection, clustering, matching, sorter building blocks, provenance | not yet |
+| | `dspk-synapse-io` | Neural-recording and sorting formats: NWB, SpikeGLX, mtscomp, Phy, probe geometry | not yet |
+| | `dspk-synapse-hub` | Verified downloads: models, sorter arrays, the `dspk-sorters` program | not yet |
+| | `dspk-synapse-ml` | Pretrained models (DARTsort, SpikeNet2, UnitRefine), their runtime and catalog | not yet |
+| `synapse/sorters/` | `dspk-ks4` | Kilosort4 and EMUsort (GPL-3.0) | not yet |
+| | `dspk-ms5` | MountainSort 5 (Apache-2.0) | not yet |
+| | `dspk-sc2`, `dspk-tdc2` | SpyKING CIRCUS 2, Tridesclous 2 | not yet |
+| `app/` | `dspk-cli` | The `dspk` command line: `dspk run`, `dspk sort`, `dspk doctor`, … | built from source |
+| | `dspk-sorters` | Every sorter in one program (GPL-3.0), run by `dspk sort` | GitHub release |
+| | `dspk-app` | Desktop workbench | built from source |
+| `bindings/python/` | `dspk` | The Python package | PyPI |
+| `playground/` | | Worked examples as `# %%` cells and pipeline specs ([README](playground/README.md)) | |
+| `benchmarks/` | | Timings and validations against scipy and other sorters ([README](benchmarks/README.md)) | |
 
 Every crate builds with wgpu, CUDA and the CPU runtime by default. Development and tests use one
 profile:
