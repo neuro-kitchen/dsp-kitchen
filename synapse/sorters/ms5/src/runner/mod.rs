@@ -500,7 +500,6 @@ mod tests {
 
     /// Both schemes recover well-separated synthetic units (scheme 2 all of them).
     #[test]
-    #[cfg_attr(debug_assertions, ignore = "minutes unoptimised: run with --profile validate")]
     fn sorts_synthetic_units() {
         let Ok(target) = ComputeTarget::from_env() else { return };
         let client = target.client().expect("client");

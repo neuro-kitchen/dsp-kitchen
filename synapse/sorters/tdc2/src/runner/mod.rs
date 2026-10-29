@@ -35,7 +35,7 @@ use dspk_synapse::sorter::components::{
 use dspk_synapse::sorter::DeviceWindows;
 use dspk_ms5::MaskedSnippets;
 use dspk_synapse::sorter::result::{AmplitudeScale, SorterResult};
-use dspk_synapse::sorter::stats::median;
+use dspk_ops::math::execute_channel_mad;
 use dspk_synapse::sorter::{snippet_fits, spread_windows};
 
 /// Sorter name in [`SortingOutput`].
@@ -204,12 +204,10 @@ pub fn run(client: &Client, source: &dyn RecordingSource, probe: &SensorLayout, 
     let noise_windows = spread_windows(total, cfg.noise_chunks, ms(cfg.noise_chunk_ms) as u64, halos);
     let mut noise_sum = vec![0.0f64; channels];
     device.for_each_while(&noise_windows, |w, prepared| {
-        let x = buffer::download_prefix::<f32>(client, prepared.clone(), channels * w.read_len());
-        for (c, sum) in noise_sum.iter_mut().enumerate() {
-            let mut row: Vec<f32> = x[c * w.read_len() + w.valid_local.start..c * w.read_len() + w.valid_local.end].to_vec();
-            let med = median(&mut row) as f32;
-            let mut dev: Vec<f32> = row.iter().map(|v| (v - med).abs()).collect();
-            *sum += median(&mut dev) / MAD_TO_SIGMA;
+        // Each channel's MAD over the window's own samples, on the device (only the values return)
+        let mad = execute_channel_mad::<f32>(client, prepared, channels, w.read_len(), w.valid_local.clone());
+        for (sum, m) in noise_sum.iter_mut().zip(mad) {
+            *sum += m / MAD_TO_SIGMA;
         }
         Ok(true)
     })?;
@@ -492,7 +490,6 @@ mod tests {
 
     /// Recovers well-separated synthetic units.
     #[test]
-    #[cfg_attr(debug_assertions, ignore = "minutes unoptimised: run with --profile validate")]
     fn sorts_synthetic_units() {
         let Ok(target) = ComputeTarget::from_env() else { return };
         let client = target.client().expect("client");
