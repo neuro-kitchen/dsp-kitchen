@@ -9,6 +9,8 @@ description = "Multi-channel signal processing on any GPU or the CPU, written on
 readme = "README.md"
 authors = [{ name = "jesusdpa1" }]
 license = "MIT OR Apache-2.0"
+# Listed so the sdist packs them (PyPI rejects a declared License-File that is missing)
+license-files = ["LICENSE-MIT", "LICENSE-APACHE"]
 requires-python = ">=3.10"
 dependencies = ["numpy>=2.2"]
 

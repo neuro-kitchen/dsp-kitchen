@@ -6,12 +6,16 @@
 //!   file is committed (an artifact without a hash is refused); [`Hub::status`] reads the cache
 //!   index; [`Hub::verify`] re-hashes.
 //!
+//! - [`sorters`]: installs and finds the `dspk-sorters` program (every spike sorter, GPL-3.0),
+//!   released with each version and run as a separate program.
+//!
 //! Catalogs (which artifacts exist and whom to credit) belong to the crates that publish them,
 //! e.g. `dspk-synapse-ml`. All network access of the workspace's model code lives here.
 
 pub mod cache;
 pub mod download;
 pub mod providers;
+pub mod sorters;
 
 use std::path::PathBuf;
 

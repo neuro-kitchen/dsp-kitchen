@@ -15,4 +15,4 @@ pub mod poly;
 pub use decimate::{decimate, decimate_len, DecimateFilter, DECIMATE_DEFAULT};
 pub use design::{firwin, FirWindow};
 pub use fractional::{fractional_delay, fractional_delay_taps, fractional_delay_taps_device};
-pub use poly::{resample_poly, resample_poly_len, ResampleFilter, RESAMPLE_POLY_DEFAULT_EDGE};
+pub use poly::{resample_poly, resample_poly_len, resample_poly_with, ResampleFilter, ResampleKernel, RESAMPLE_POLY_DEFAULT_EDGE};

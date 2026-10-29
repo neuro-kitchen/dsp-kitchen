@@ -3006,7 +3006,7 @@ checksum = "117240f60069e65410b3ae1bb213295bd828f707b5bec6596a1afc8793ce0cbc"
 
 [[package]]
 name = "dspk"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "dspk-core",
  "dspk-io",
@@ -3017,7 +3017,7 @@ dependencies = [
 
 [[package]]
 name = "dspk-app"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -3039,7 +3039,7 @@ dependencies = [
 
 [[package]]
 name = "dspk-cli"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "anstream",
  "anstyle",
@@ -3065,7 +3065,7 @@ dependencies = [
 
 [[package]]
 name = "dspk-core"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "cubecl",
  "num-rational",
@@ -3077,7 +3077,7 @@ dependencies = [
 
 [[package]]
 name = "dspk-io"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "dspk-core",
  "flate2",
@@ -3089,8 +3089,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "dspk-ks4"
+version = "0.0.4"
+dependencies = [
+ "cubecl",
+ "dspk-core",
+ "dspk-io",
+ "dspk-ops",
+ "dspk-synapse",
+ "dspk-synapse-io",
+ "dspk-synapse-ml",
+ "tracing",
+]
+
+[[package]]
+name = "dspk-ms5"
+version = "0.0.4"
+dependencies = [
+ "cubecl",
+ "dspk-core",
+ "dspk-ops",
+ "dspk-synapse",
+ "dspk-synapse-io",
+ "rayon",
+]
+
+[[package]]
 name = "dspk-ops"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "cubecl",
  "cubek-matmul",
@@ -3105,7 +3131,7 @@ dependencies = [
 
 [[package]]
 name = "dspk-pipeline"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "cubecl",
  "dspk-core",
@@ -3121,7 +3147,7 @@ dependencies = [
 
 [[package]]
 name = "dspk-py"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "dspk-py-core",
  "pyo3",
@@ -3130,7 +3156,7 @@ dependencies = [
 
 [[package]]
 name = "dspk-py-core"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "cubecl",
  "dspk-core",
@@ -3143,8 +3169,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "dspk-sc2"
+version = "0.0.4"
+dependencies = [
+ "cubecl",
+ "dspk-core",
+ "dspk-ms5",
+ "dspk-ops",
+ "dspk-synapse",
+ "dspk-synapse-io",
+ "rayon",
+]
+
+[[package]]
+name = "dspk-sorters"
+version = "0.0.4"
+dependencies = [
+ "anstream",
+ "anyhow",
+ "clap",
+ "cubecl",
+ "dspk-cli",
+ "dspk-core",
+ "dspk-ks4",
+ "dspk-ms5",
+ "dspk-sc2",
+ "dspk-synapse",
+ "dspk-tdc2",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "dspk-stream"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "dspk-core",
  "dspk-view",
@@ -3162,7 +3220,7 @@ dependencies = [
 
 [[package]]
 name = "dspk-synapse"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "cubecl",
  "dspk-core",
@@ -3179,7 +3237,7 @@ dependencies = [
 
 [[package]]
 name = "dspk-synapse-hub"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "anyhow",
  "dirs 7.0.0",
@@ -3193,7 +3251,7 @@ dependencies = [
 
 [[package]]
 name = "dspk-synapse-io"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "dspk-core",
  "dspk-io",
@@ -3207,7 +3265,7 @@ dependencies = [
 
 [[package]]
 name = "dspk-synapse-ml"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "anyhow",
  "burn-tensor",
@@ -3228,8 +3286,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "dspk-tdc2"
+version = "0.0.4"
+dependencies = [
+ "cubecl",
+ "dspk-core",
+ "dspk-ms5",
+ "dspk-ops",
+ "dspk-synapse",
+ "dspk-synapse-io",
+ "rayon",
+]
+
+[[package]]
 name = "dspk-view"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "cubecl",
  "dspk-core",

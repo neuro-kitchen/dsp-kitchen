@@ -9,7 +9,7 @@
 #   deconvolution, which are not implemented here yet)
 #
 # Data (local, git-ignored), see playground/README.md:
-#   `data/kilosort4/ZFM-02370_mini.imec0.ap.short.bin` (+ `.meta`), `data/kilosort4/saved_results/`.
+#   `.data/kilosort4/ZFM-02370_mini.imec0.ap.short.bin` (+ `.meta`), `.data/kilosort4/saved_results/`.
 
 # %% [1] Recording, Probe & Settings
 import os
@@ -31,7 +31,7 @@ from dsp_kitchen.synapse.ml import kilosort4
 # %%
 # Test data lives outside the playground: `<repository>/data/`, or the folder in DSP_KITCHEN_DATA
 DATA_DIR = Path(
-    os.environ.get("DSP_KITCHEN_DATA", Path(__file__).resolve().parents[2] / "data")
+    os.environ.get("DSP_KITCHEN_DATA", Path(__file__).resolve().parents[2] / ".data")
 )
 BIN_PATH = DATA_DIR / "kilosort4" / "ZFM-02370_mini.imec0.ap.short.bin"
 KS4_RESULTS = DATA_DIR / "kilosort4" / "saved_results"

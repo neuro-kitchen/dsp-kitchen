@@ -9,7 +9,7 @@
 # 4. Universal-template detection
 #
 # Clustering, deconvolution and merging are not implemented yet.
-# Data (local, git-ignored): `data/nwb/15-25-33_meps.nwb.zarr` (see playground/README.md).
+# Data (local, git-ignored): `.data/nwb/15-25-33_meps.nwb.zarr` (see playground/README.md).
 
 # %% [1] Recording, Probe & Settings
 import os
@@ -30,7 +30,7 @@ from dsp_kitchen.synapse.ml import emusort
 
 # Test data lives outside the playground: `<repository>/data/`, or the folder in DSP_KITCHEN_DATA
 DATA_DIR = Path(
-    os.environ.get("DSP_KITCHEN_DATA", Path(__file__).resolve().parents[2] / "data")
+    os.environ.get("DSP_KITCHEN_DATA", Path(__file__).resolve().parents[2] / ".data")
 )
 NWB_PATH = DATA_DIR / "nwb" / "15-25-33_meps.nwb.zarr"
 GRID_ROWS, GRID_COLS = 4, 8

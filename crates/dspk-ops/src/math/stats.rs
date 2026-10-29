@@ -50,6 +50,44 @@ pub fn execute_channel_noise_std<F: DspFloat>(
         .collect()
 }
 
+/// Median absolute deviation `median(|x − median(x)|)` (unscaled, NumPy's median: the mean of the
+/// two middle values for an even count) of columns `cols` of every channel of the
+/// `[channels, samples]` device buffer `input`, on the device: the median per channel by signed
+/// radix select ([`reduce::row_kth`]), then the deviations' median ([`reduce::row_abs_dev_kth`]);
+/// only per-channel values cross to the host. SpikeInterface's `get_noise_levels(method="mad")`
+/// divides this by 0.6744897501960817. Empty `cols`: zeros.
+pub fn execute_channel_mad<F: DspFloat>(
+    client: &Client,
+    input: &cubecl::server::Handle,
+    channels: usize,
+    samples: usize,
+    cols: std::ops::Range<usize>,
+) -> Vec<f64> {
+    if cols.is_empty() || channels == 0 {
+        return vec![0.0; channels];
+    }
+    let n = cols.len();
+    let (k_lo, k_hi) = ((n - 1) / 2, n / 2);
+    // NumPy's median of a row: the middle value, or the mean of the two middle values
+    let median_of = |select: &dyn Fn(&cubecl::server::Handle, usize)| -> Vec<f64> {
+        let lo = crate::core::buffer::empty::<F>(client, channels);
+        select(&lo, k_lo);
+        let lo = crate::core::buffer::download::<F>(client, lo);
+        if k_hi == k_lo {
+            return lo.into_iter().map(crate::core::to_f64).collect();
+        }
+        let hi = crate::core::buffer::empty::<F>(client, channels);
+        select(&hi, k_hi);
+        let hi = crate::core::buffer::download::<F>(client, hi);
+        lo.into_iter().zip(hi).map(|(a, b)| 0.5 * (crate::core::to_f64(a) + crate::core::to_f64(b))).collect()
+    };
+    let medians = median_of(&|out, k| reduce::row_kth::<F>(client, input, out, channels, samples, cols.clone(), k));
+    // Deviations from the median as `F`, as a host computation in `F` would take them
+    let centers: Vec<F> = medians.iter().map(|&m| crate::core::cast::<F>(m)).collect();
+    let center = crate::core::buffer::upload(client, &centers);
+    median_of(&|out, k| reduce::row_abs_dev_kth::<F>(client, input, &center, out, channels, samples, cols.clone(), k))
+}
+
 /// Computes the root-mean-square (RMS) standard deviation around the sample mean:
 /// $\sigma_{\text{rms}} = \sqrt{\frac{1}{N} \sum_{i=1}^N (x_i - \mu)^2}$
 pub fn estimate_noise_rms(signal: &[f32]) -> f32 {
@@ -196,6 +234,30 @@ mod tests {
         assert!((trimmed_std - 5.0).abs() < 0.6, "trimmed_std={trimmed_std}");
         assert!((standard_error(10.0, 100) - 1.0).abs() < 1e-6);
     }
+
+    /// The device MAD equals the host computation SpyKING CIRCUS 2 / Tridesclous 2 did (NumPy
+    /// median in f64, deviations in f32), exactly, on odd and even windows and a column range.
+    fn channel_mad(client: &Client) {
+        fn host_median(v: &mut [f32]) -> f64 {
+            v.sort_by(f32::total_cmp);
+            let n = v.len();
+            if n % 2 == 1 { v[n / 2] as f64 } else { 0.5 * (v[n / 2 - 1] as f64 + v[n / 2] as f64) }
+        }
+        let (channels, samples) = (4usize, 3_001usize);
+        let data: Vec<f32> = (0..channels * samples).map(|i| ((i * 7919) % 1013) as f32 * 0.37 - 150.0 + (i / samples) as f32 * 11.0).collect();
+        let input = crate::core::buffer::upload(client, &data);
+        for cols in [0..samples, 0..samples - 1, 100..2_500, 7..8] {
+            let got = execute_channel_mad::<f32>(client, &input, channels, samples, cols.clone());
+            for c in 0..channels {
+                let mut row: Vec<f32> = data[c * samples + cols.start..c * samples + cols.end].to_vec();
+                let med = host_median(&mut row.clone()) as f32;
+                let mut dev: Vec<f32> = row.iter_mut().map(|v| (*v - med).abs()).collect();
+                assert_eq!(got[c], host_median(&mut dev), "{} cols {cols:?} channel {c}", client.name());
+            }
+        }
+        assert_eq!(execute_channel_mad::<f32>(client, &input, channels, samples, 0..0), vec![0.0; channels]);
+    }
+    runtime_test!(test_channel_mad_equals_the_host_computation, channel_mad);
 
     fn channel_mean_std(client: &Client) {
         let channels = 4;

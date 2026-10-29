@@ -2,10 +2,12 @@
 
 use cubecl::prelude::*;
 use cubecl::server::Handle;
+use cubecl::tune::{LocalTuner, Tunable, TunableSet, local_tuner};
 use dspk_core::compute::LaunchGeometry;
+use dspk_core::compute::tune::{size_class, tune_id};
 
 use super::design::{firwin, FirWindow};
-use super::kernels::upfirdn_kernel;
+use super::kernels::{upfirdn_kernel, upfirdn_vector_kernel};
 use crate::core::{buffer, cast_all, DspFloat, EdgeMode};
 
 /// `resample_poly`'s padding (`padtype="constant"`, zeros).
@@ -24,6 +26,17 @@ pub enum ResampleFilter {
     Window(FirWindow),
     /// Explicit taps at the up-sampled rate (odd length; centred).
     Taps(Vec<f64>),
+}
+
+/// Which polyphase kernel runs (every choice gives the same output).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResampleKernel {
+    /// One unit per output.
+    Direct,
+    /// `width` consecutive outputs per unit (`Vector<F, width>`; SIMD on the CPU runtime). Runs the
+    /// widest width up to `width` that the runtime offers and that divides the output row, else
+    /// `Direct`.
+    Vectorized { width: usize },
 }
 
 impl Default for ResampleFilter {
@@ -60,6 +73,23 @@ pub fn resample_poly<F: DspFloat>(
     filter: &ResampleFilter,
     edge: EdgeMode,
 ) -> usize {
+    resample_poly_with::<F>(client, input, output, channels, samples, up, down, filter, edge, None)
+}
+
+/// [`resample_poly`] with a fixed kernel (`None` = autotuned); for tests and benchmarks.
+#[allow(clippy::too_many_arguments)]
+pub fn resample_poly_with<F: DspFloat>(
+    client: &Client,
+    input: &Handle,
+    output: &Handle,
+    channels: usize,
+    samples: usize,
+    up: usize,
+    down: usize,
+    filter: &ResampleFilter,
+    edge: EdgeMode,
+    kernel: Option<ResampleKernel>,
+) -> usize {
     assert!(up > 0 && down > 0, "resample_poly factors must be positive");
     let g = gcd(up, down);
     let (up, down) = (up / g, down / g);
@@ -87,28 +117,143 @@ pub fn resample_poly<F: DspFloat>(
     let s_max = ((out_len as i64 - 1) * down as i64 + start).div_euclid(up as i64);
     let ext_pad = (-s_min).max(s_max - (samples as i64 - 1)).max(0) as usize;
 
-    let taps_h = buffer::upload(client, &cast_all::<F>(&taps));
-    let geom = LaunchGeometry::channels_samples(client, channels, out_len);
-    unsafe {
-        upfirdn_kernel::launch::<F>(
-            client,
-            geom.cube_count,
-            geom.cube_dim,
-            BufferArg::from_raw_parts(input.clone(), channels * samples),
-            BufferArg::from_raw_parts(taps_h, taps.len()),
-            BufferArg::from_raw_parts(output.clone(), channels * out_len),
-            channels as u32,
-            samples as u32,
-            out_len as u32,
-            taps.len() as u32,
-            up as u32,
-            down as u32,
-            start as i32,
-            ext_pad as u32,
-            edge.id(),
-        );
+    let inputs = PolyInputs {
+        client: client.clone(),
+        input: input.clone(),
+        output: output.clone(),
+        taps,
+        channels,
+        samples,
+        out_len,
+        up,
+        down,
+        start,
+        ext_pad,
+        edge,
+    };
+    match kernel {
+        Some(kernel) => inputs.run::<F>(kernel),
+        None => tuned::<F>(inputs),
     }
     out_len
+}
+
+/// One `resample_poly` call after design and alignment (cloned per autotune candidate).
+#[derive(Clone)]
+struct PolyInputs {
+    client: Client,
+    input: Handle,
+    output: Handle,
+    /// Scaled by `up`.
+    taps: Vec<f64>,
+    channels: usize,
+    samples: usize,
+    out_len: usize,
+    up: usize,
+    down: usize,
+    start: i64,
+    ext_pad: usize,
+    edge: EdgeMode,
+}
+
+impl PolyInputs {
+    fn run<F: DspFloat>(&self, kernel: ResampleKernel) {
+        let client = &self.client;
+        let width = match kernel {
+            ResampleKernel::Vectorized { width } => client
+                .io_optimized_vector_sizes(size_of::<F>())
+                .filter(|&w| w > 1 && w <= width && self.out_len % w == 0)
+                .max(),
+            ResampleKernel::Direct => None,
+        };
+        let (in_total, out_total) = (self.channels * self.samples, self.channels * self.out_len);
+        let args = (self.samples as u32, self.out_len as u32, self.taps.len() as u32, self.up as u32, self.down as u32, self.start as i32, self.ext_pad as u32, self.edge.id());
+        match width {
+            None => {
+                let taps_h = buffer::upload(client, &cast_all::<F>(&self.taps));
+                let geom = LaunchGeometry::channels_samples(client, self.channels, self.out_len);
+                // SAFETY: input holds `in_total`, output `out_total` values of `F`
+                unsafe {
+                    upfirdn_kernel::launch::<F>(
+                        client,
+                        geom.cube_count,
+                        geom.cube_dim,
+                        BufferArg::from_raw_parts(self.input.clone(), in_total),
+                        BufferArg::from_raw_parts(taps_h, self.taps.len()),
+                        BufferArg::from_raw_parts(self.output.clone(), out_total),
+                        self.channels as u32,
+                        args.0, args.1, args.2, args.3, args.4, args.5, args.6, args.7,
+                    );
+                }
+            }
+            Some(width) => {
+                let table = buffer::upload(client, &cast_all::<F>(&poly_table(&self.taps, self.down, width)));
+                let table_len = (self.taps.len() + (width - 1) * self.down) * width;
+                let geom = LaunchGeometry::elementwise(client, out_total / width);
+                // SAFETY: as above; `table` holds `table_len` values (`table_len / width` vectors)
+                unsafe {
+                    upfirdn_vector_kernel::launch::<F>(
+                        client,
+                        geom.cube_count,
+                        geom.cube_dim,
+                        width,
+                        BufferArg::from_raw_parts(self.input.clone(), in_total),
+                        BufferArg::from_raw_parts(table, table_len),
+                        BufferArg::from_raw_parts(self.output.clone(), out_total),
+                        args.0, args.1, args.2, args.3, args.4, args.5, args.6, args.7,
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The tap table of [`upfirdn_vector_kernel`]: `K + (width − 1) · down` vectors, lane `l` of vector
+/// `d + reach` holding `taps[d + l · down]` (zero outside), `reach = (width − 1) · down`.
+fn poly_table(taps: &[f64], down: usize, width: usize) -> Vec<f64> {
+    let reach = (width - 1) * down;
+    let mut table = Vec::with_capacity((taps.len() + reach) * width);
+    for e in 0..taps.len() + reach {
+        for l in 0..width {
+            let j = e as isize - reach as isize + (l * down) as isize;
+            table.push(if (0..taps.len() as isize).contains(&j) { taps[j as usize] } else { 0.0 });
+        }
+    }
+    table
+}
+
+/// [`PolyInputs::run`] with the kernel CubeCL's autotuner found fastest for this device, element
+/// type, rates, filter length and size. Benchmarks write to a scratch output.
+fn tuned<F: DspFloat>(inputs: PolyInputs) {
+    static TUNER: LocalTuner<String, String> = local_tuner!("resample-poly-v1");
+    let client = inputs.client.clone();
+    let id = tune_id(&client);
+    let widths: Vec<usize> = client.io_optimized_vector_sizes(size_of::<F>()).filter(|&w| w > 1).collect();
+    let set = TUNER.init(&id, move || {
+        let key = |p: &PolyInputs| {
+            // `a`: the power of two dividing the output row (up to 16), which decides the widths that run
+            format!(
+                "{}-u{}-d{}-k{}-c{}-t{}-a{}",
+                F::type_name(),
+                p.up,
+                p.down,
+                p.taps.len(),
+                size_class(p.channels),
+                size_class(p.out_len),
+                p.out_len.trailing_zeros().min(4)
+            )
+        };
+        let scratch = |_: &String, p: &PolyInputs| PolyInputs { output: buffer::empty::<F>(&p.client, p.channels * p.out_len), ..p.clone() };
+        let set: TunableSet<String, PolyInputs, ()> = TunableSet::new(key, scratch);
+        let kernels = std::iter::once(ResampleKernel::Direct).chain(widths.iter().map(|&width| ResampleKernel::Vectorized { width }));
+        kernels.fold(set, |set, kernel| {
+            set.with(Tunable::new(&format!("{kernel:?}"), move |p: PolyInputs| {
+                p.run::<F>(kernel);
+                Ok::<_, String>(())
+            }))
+        })
+    });
+    TUNER.execute(&id, &client, set, inputs)
 }
 
 #[cfg(test)]
@@ -151,4 +296,36 @@ mod tests {
         }
     }
     runtime_test!(test_resample_poly_matches_definition, matches_host);
+
+    /// The vectorized kernel is bit-identical to `Direct` (f32 / f64, rates up and down, every
+    /// edge, output rows divisible by the width or not).
+    fn vectorized_matches_direct_of<F: DspFloat + std::fmt::Debug>(client: &Client) {
+        let channels = 3;
+        for samples in [96usize, 997, 1_024] {
+            let x: Vec<F> = (0..channels * samples).map(|i| crate::core::cast::<F>(((i * 7919) % 211) as f64 * 0.37 - 40.0)).collect();
+            let input = buffer::upload(client, &x);
+            for (up, down) in [(1usize, 3usize), (3, 1), (2, 3), (1, 2), (160, 147)] {
+                for edge in [EdgeMode::Zeros, EdgeMode::Odd, EdgeMode::Reflect, EdgeMode::Nearest] {
+                    let out_len = resample_poly_len(samples, up, down);
+                    let run = |kernel| {
+                        let out = buffer::empty::<F>(client, channels * out_len);
+                        resample_poly_with::<F>(client, &input, &out, channels, samples, up, down, &ResampleFilter::default(), edge, Some(kernel));
+                        buffer::download::<F>(client, out)
+                    };
+                    let direct = run(ResampleKernel::Direct);
+                    for width in [2usize, 4, 8, 16] {
+                        assert_eq!(run(ResampleKernel::Vectorized { width }), direct, "{} {} {samples} samples {up}/{down} {edge:?} width {width}", client.name(), F::type_name());
+                    }
+                }
+            }
+        }
+    }
+
+    fn vectorized_matches_direct(client: &Client) {
+        vectorized_matches_direct_of::<f32>(client);
+        if client.properties().supports_type(f64::elem_type_native()) {
+            vectorized_matches_direct_of::<f64>(client);
+        }
+    }
+    runtime_test!(test_resample_poly_vectorized_matches_direct, vectorized_matches_direct);
 }

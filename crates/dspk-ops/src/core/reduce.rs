@@ -9,7 +9,7 @@ use cubecl::prelude::*;
 use cubecl::server::Handle;
 use dspk_core::compute::LaunchGeometry;
 
-use super::kernels::{row_abs_kth_radix_kernel, row_mean_std_kernel};
+use super::kernels::{row_kth_radix_kernel, row_mean_std_kernel, KEY_ABS, KEY_ABS_DEV, KEY_SIGNED};
 use super::DspFloat;
 
 /// Per-row mean and population standard deviation of a `[rows, cols]` buffer of `F` into `out_mean`
@@ -103,11 +103,48 @@ mod tests {
         }
     }
     runtime_test!(test_row_abs_kth_f64, abs_kth_f64);
+
+    /// Signed and deviation selection, exact against a host sort, for `F` (negatives, repeats,
+    /// odd / even lengths, a column sub-range).
+    fn signed_and_dev_kth_of<F: DspFloat + std::fmt::Debug>(client: &Client) {
+        let (rows, stride) = (3usize, 1_003usize);
+        let data: Vec<F> = (0..rows * stride).map(|i| crate::core::cast::<F>(((i * 7919) % 211) as f64 * 0.25 - 26.0)).collect();
+        let centers: Vec<F> = (0..rows).map(|r| crate::core::cast::<F>(r as f64 * 3.5 - 2.0)).collect();
+        let (input, center) = (buffer::upload(client, &data), buffer::upload(client, &centers));
+        let sorted_k = |mut v: Vec<F>, k: usize| {
+            v.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
+            v[k]
+        };
+        for cols in [0..1usize, 0..2, 5..1_000, 0..stride] {
+            for k in [0, cols.len() / 2, cols.len() - 1] {
+                let (signed, dev) = (buffer::empty::<F>(client, rows), buffer::empty::<F>(client, rows));
+                row_kth::<F>(client, &input, &signed, rows, stride, cols.clone(), k);
+                row_abs_dev_kth::<F>(client, &input, &center, &dev, rows, stride, cols.clone(), k);
+                let (signed, dev) = (buffer::download::<F>(client, signed), buffer::download::<F>(client, dev));
+                for r in 0..rows {
+                    let row = &data[r * stride + cols.start..r * stride + cols.end];
+                    assert_eq!(signed[r], sorted_k(row.to_vec(), k), "{} signed cols {cols:?} k {k} row {r}", client.name());
+                    // Host |d| (`.abs()` on `F` is CubeCL's kernel-only `abs`)
+                    let zero = crate::core::cast::<F>(0.0);
+                    let devs: Vec<F> = row.iter().map(|&v| v - centers[r]).map(|d| if d < zero { zero - d } else { d }).collect();
+                    assert_eq!(dev[r], sorted_k(devs, k), "{} deviation cols {cols:?} k {k} row {r}", client.name());
+                }
+            }
+        }
+    }
+
+    fn signed_and_dev_kth(client: &Client) {
+        signed_and_dev_kth_of::<f32>(client);
+        if client.properties().supports_type(f64::elem_type_native()) {
+            signed_and_dev_kth_of::<f64>(client);
+        }
+    }
+    runtime_test!(test_row_signed_and_deviation_kth_match_host, signed_and_dev_kth);
 }
 
 /// Per-row `k`-th smallest `|x|` (0-based, a sample value, exact) over columns `cols` of a buffer
 /// of `rows` rows `row_stride` apart, into `out` (`rows` values of `F`). `k < cols.len()`. A radix
-/// select over the bits of `|x|` ([`fn@row_abs_kth_radix_kernel`]): 4 passes over each row for
+/// select over the bits of `|x|` ([`fn@row_kth_radix_kernel`]): 4 passes over each row for
 /// `f32`, 8 for `f64`.
 ///
 /// # Panics
@@ -121,16 +158,70 @@ pub fn row_abs_kth<F: DspFloat>(
     cols: std::ops::Range<usize>,
     k: usize,
 ) {
+    row_kth_select::<F>(client, input, None, out, rows, row_stride, cols, k, KEY_ABS);
+}
+
+/// [`row_abs_kth`] of the signed values: the per-row `k`-th smallest `x` (a percentile, exact).
+pub fn row_kth<F: DspFloat>(
+    client: &Client,
+    input: &Handle,
+    out: &Handle,
+    rows: usize,
+    row_stride: usize,
+    cols: std::ops::Range<usize>,
+    k: usize,
+) {
+    row_kth_select::<F>(client, input, None, out, rows, row_stride, cols, k, KEY_SIGNED);
+}
+
+/// [`row_abs_kth`] of `|x − center[row]|` (`center`: `rows` values of `F`): the per-row `k`-th
+/// smallest deviation from a centre, written as the deviation.
+#[allow(clippy::too_many_arguments)]
+pub fn row_abs_dev_kth<F: DspFloat>(
+    client: &Client,
+    input: &Handle,
+    center: &Handle,
+    out: &Handle,
+    rows: usize,
+    row_stride: usize,
+    cols: std::ops::Range<usize>,
+    k: usize,
+) {
+    row_kth_select::<F>(client, input, Some(center), out, rows, row_stride, cols, k, KEY_ABS_DEV);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn row_kth_select<F: DspFloat>(
+    client: &Client,
+    input: &Handle,
+    center: Option<&Handle>,
+    out: &Handle,
+    rows: usize,
+    row_stride: usize,
+    cols: std::ops::Range<usize>,
+    k: usize,
+    mode: u32,
+) {
     assert!(k < cols.len() && cols.end <= row_stride, "selection outside the rows");
     let geom = LaunchGeometry::per_row(client, rows, cols.len());
     let args = (rows as u32, row_stride as u32, cols.start as u32, cols.len() as u32, k as u32, (8 * size_of::<F>()) as u32, geom.cube_dim.x);
-    // SAFETY: `input` holds `rows · row_stride` and `out` `rows` values of `F`
+    // Modes without a centre get a one-value placeholder the kernel never reads (never the output
+    // itself: one buffer bound twice, once written, is an aliased binding)
+    let (center, center_len) = match center {
+        Some(c) => (c.clone(), rows),
+        None => (crate::core::buffer::empty::<F>(client, 1), 1),
+    };
+    // SAFETY: `input` holds `rows · row_stride`, `center` and `out` `rows` values of `F`
     unsafe {
-        let (input, out) = (BufferArg::from_raw_parts(input.clone(), rows * row_stride), BufferArg::from_raw_parts(out.clone(), rows));
+        let (input, center, out) = (
+            BufferArg::from_raw_parts(input.clone(), rows * row_stride),
+            BufferArg::from_raw_parts(center, center_len),
+            BufferArg::from_raw_parts(out.clone(), rows),
+        );
         match size_of::<F>() {
-            4 => row_abs_kth_radix_kernel::launch::<F, u32>(client, geom.cube_count, geom.cube_dim, input, out, args.0, args.1, args.2, args.3, args.4, args.5, args.6),
-            8 => row_abs_kth_radix_kernel::launch::<F, u64>(client, geom.cube_count, geom.cube_dim, input, out, args.0, args.1, args.2, args.3, args.4, args.5, args.6),
-            other => panic!("row_abs_kth: no radix key for {other}-byte floats"),
+            4 => row_kth_radix_kernel::launch::<F, u32>(client, geom.cube_count, geom.cube_dim, input, center, out, args.0, args.1, args.2, args.3, args.4, args.5, args.6, mode),
+            8 => row_kth_radix_kernel::launch::<F, u64>(client, geom.cube_count, geom.cube_dim, input, center, out, args.0, args.1, args.2, args.3, args.4, args.5, args.6, mode),
+            other => panic!("row_kth: no radix key for {other}-byte floats"),
         }
     }
 }

@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 # Not published yet: the synapse names may change; app and CLI are not libraries
 publish = false
-description = "Neuro spike sorters reimplemented from their papers (Kilosort4, EMUsort) and pretrained models, each with its provenance"
+description = "Pretrained neuro models (DARTsort, SpikeNet2, UnitRefine), their runtime, and the catalog of published artifacts, each with its provenance"
 
 [features]
 default = ["wgpu", "cuda", "cpu", "flex"]

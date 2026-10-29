@@ -7,7 +7,7 @@ pub use template_reduce::{
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cubecl::device::WgpuDevice;
+    use cubecl::prelude::Client;
     use cubecl::CubeElement;
     use dspk_synapse_io::probe::{precompute_knn_table, Position3D, SensorLayout, SensorSite};
     use crate::detection::{
@@ -16,6 +16,12 @@ mod tests {
     };
     use crate::extraction::{execute_extract_sinc_in_vram, extract_snippets_multichannel};
     use crate::streaming::TemplateAccumulator;
+
+    fn test_clients() -> Vec<Client> {
+        let targets = dspk_core::ComputeTarget::for_tests();
+        assert!(!targets.is_empty(), "no runtime to test (compiled in and allowed by DSPK_TEST_RUNTIMES)");
+        targets.into_iter().map(|t| t.client().unwrap_or_else(|e| panic!("{}: {e}", t.name()))).collect()
+    }
 
     #[test]
     fn test_cubecl_vram_kernels_match_cpu_reference() {
@@ -106,79 +112,80 @@ mod tests {
             cpu_accs[snip.primary_channel].update(snip);
         }
 
-        let device = WgpuDevice::default();
-        let client = dspk_core::compute::open_device(cubecl::Device::Wgpu(device));
-        let trace_handle = client.create_from_slice(f32::as_bytes(&trace));
-        let heights_handle = client.create_from_slice(f32::as_bytes(&detection_heights(&sigmas, threshold_factor)));
-        let knn_handle = client.create_from_slice(u32::as_bytes(&knn_table));
+        // Every runtime the tests run on (DSPK_TEST_RUNTIMES), opened through dspk
+        for client in test_clients() {
+            let trace_handle = client.create_from_slice(f32::as_bytes(&trace));
+            let heights_handle = client.create_from_slice(f32::as_bytes(&detection_heights(&sigmas, threshold_factor)));
+            let knn_handle = client.create_from_slice(u32::as_bytes(&knn_table));
 
-        let gpu_spikes = execute_detect_spikes_in_vram(
-            &client,
-            &trace_handle,
-            &heights_handle,
-            channels,
-            samples,
-            0..samples,
-            0,
-            SpikePolarity::Negative,
-            spacing,
-        );
-        assert_eq!(gpu_spikes, cpu_spikes);
+            let gpu_spikes = execute_detect_spikes_in_vram(
+                &client,
+                &trace_handle,
+                &heights_handle,
+                channels,
+                samples,
+                0..samples,
+                0,
+                SpikePolarity::Negative,
+                spacing,
+            );
+            assert_eq!(gpu_spikes, cpu_spikes);
 
-        let gpu_dedup = deduplicate_spikes_spatial(&gpu_spikes, &probe, 150.0, refrac as u64);
-        let extracted = execute_extract_sinc_in_vram::<f32>(
-            &client,
-            &trace_handle,
-            &knn_handle,
-            channels,
-            samples,
-            &gpu_dedup,
-            k_neighbors,
-            pre_samples,
-            post_samples,
-            true,
-        )
-        .unwrap();
+            let gpu_dedup = deduplicate_spikes_spatial(&gpu_spikes, &probe, 150.0, refrac as u64);
+            let extracted = execute_extract_sinc_in_vram::<f32>(
+                &client,
+                &trace_handle,
+                &knn_handle,
+                channels,
+                samples,
+                &gpu_dedup,
+                k_neighbors,
+                pre_samples,
+                post_samples,
+                true,
+            )
+            .unwrap();
 
-        assert_eq!(extracted.dropped, 0);
-        let batch_stats = execute_reduce_templates_in_vram(
-            &client,
-            &extracted.snippets,
-            &extracted.primaries,
-            channels,
-            k_neighbors,
-            snippet_len,
-        );
+            assert_eq!(extracted.dropped, 0);
+            let batch_stats = execute_reduce_templates_in_vram(
+                &client,
+                &extracted.snippets,
+                &extracted.primaries,
+                channels,
+                k_neighbors,
+                snippet_len,
+            );
 
-        let elems_per_spike = k_neighbors * snippet_len;
-        let mut gpu_accs: Vec<TemplateAccumulator> = (0..channels)
-            .map(|ch| {
-                TemplateAccumulator::new(
-                    knn_table[ch * k_neighbors..(ch + 1) * k_neighbors]
-                        .iter()
-                        .map(|&c| c as usize)
-                        .collect(),
-                    snippet_len,
-                )
-            })
-            .collect();
-        for ch in 0..channels {
-            let cnt = batch_stats.counts[ch] as u64;
-            if cnt > 0 {
-                let s = ch * elems_per_spike;
-                let e = s + elems_per_spike;
-                gpu_accs[ch].merge_batch(cnt, &batch_stats.mean[s..e], &batch_stats.m2[s..e]);
-            }
-        }
-
-        for ch in 0..channels {
-            assert_eq!(gpu_accs[ch].count(), cpu_accs[ch].count());
-            if let (Some(g), Some(c)) = (gpu_accs[ch].finalize(), cpu_accs[ch].finalize()) {
-                for (gv, cv) in g.mean.iter().zip(c.mean.iter()) {
-                    assert!((gv - cv).abs() < 1e-2, "mean diff on ch {ch}: {gv} vs {cv}");
+            let elems_per_spike = k_neighbors * snippet_len;
+            let mut gpu_accs: Vec<TemplateAccumulator> = (0..channels)
+                .map(|ch| {
+                    TemplateAccumulator::new(
+                        knn_table[ch * k_neighbors..(ch + 1) * k_neighbors]
+                            .iter()
+                            .map(|&c| c as usize)
+                            .collect(),
+                        snippet_len,
+                    )
+                })
+                .collect();
+            for ch in 0..channels {
+                let cnt = batch_stats.counts[ch] as u64;
+                if cnt > 0 {
+                    let s = ch * elems_per_spike;
+                    let e = s + elems_per_spike;
+                    gpu_accs[ch].merge_batch(cnt, &batch_stats.mean[s..e], &batch_stats.m2[s..e]);
                 }
-                for (gv, cv) in g.std.iter().zip(c.std.iter()) {
-                    assert!((gv - cv).abs() < 1e-2, "std diff on ch {ch}: {gv} vs {cv}");
+            }
+
+            for ch in 0..channels {
+                assert_eq!(gpu_accs[ch].count(), cpu_accs[ch].count());
+                if let (Some(g), Some(c)) = (gpu_accs[ch].finalize(), cpu_accs[ch].finalize()) {
+                    for (gv, cv) in g.mean.iter().zip(c.mean.iter()) {
+                        assert!((gv - cv).abs() < 1e-2, "mean diff on ch {ch}: {gv} vs {cv}");
+                    }
+                    for (gv, cv) in g.std.iter().zip(c.std.iter()) {
+                        assert!((gv - cv).abs() < 1e-2, "std diff on ch {ch}: {gv} vs {cv}");
+                    }
                 }
             }
         }
@@ -196,39 +203,41 @@ mod tests {
             }
             trace[ch * samples + 1_003] = -90.0;
         }
-        let client = dspk_core::compute::open_device(cubecl::Device::Wgpu(WgpuDevice::default()));
-        let trace_h = client.create_from_slice(f32::as_bytes(&trace));
-        let heights_h = client.create_from_slice(f32::as_bytes(&detection_heights(&[5.0f32; 3], 5.0)));
-        let detect = |start: usize, end: usize| {
-            execute_detect_spikes_in_vram(
-                &client, &trace_h, &heights_h, channels, samples, start..end, 0, SpikePolarity::Negative, SpikeSpacing::new(refrac),
-            )
-        };
-        let full = detect(0, samples);
-        let expected: Vec<(usize, u64)> = {
-            let mut v: Vec<(usize, u64)> = (0..channels)
-                .flat_map(|ch| {
-                    (50 + ch..samples - 50)
-                        .step_by(40)
-                        .map(move |t| (ch, t as u64))
-                })
-                .collect();
-            v.sort_by_key(|&(ch, t)| (t, ch));
-            v
-        };
-        assert_eq!(
-            full.iter()
-                .map(|e| (e.channel_id, e.sample_index))
-                .collect::<Vec<_>>(),
-            expected
-        );
+        // Every runtime the tests run on (DSPK_TEST_RUNTIMES), opened through dspk
+        for client in test_clients() {
+            let trace_h = client.create_from_slice(f32::as_bytes(&trace));
+            let heights_h = client.create_from_slice(f32::as_bytes(&detection_heights(&[5.0f32; 3], 5.0)));
+            let detect = |start: usize, end: usize| {
+                execute_detect_spikes_in_vram(
+                    &client, &trace_h, &heights_h, channels, samples, start..end, 0, SpikePolarity::Negative, SpikeSpacing::new(refrac),
+                )
+            };
+            let full = detect(0, samples);
+            let expected: Vec<(usize, u64)> = {
+                let mut v: Vec<(usize, u64)> = (0..channels)
+                    .flat_map(|ch| {
+                        (50 + ch..samples - 50)
+                            .step_by(40)
+                            .map(move |t| (ch, t as u64))
+                    })
+                    .collect();
+                v.sort_by_key(|&(ch, t)| (t, ch));
+                v
+            };
+            assert_eq!(
+                full.iter()
+                    .map(|e| (e.channel_id, e.sample_index))
+                    .collect::<Vec<_>>(),
+                expected
+            );
 
-        let mut split = Vec::new();
-        for w in [0usize, 700, 1_005, 1_900, samples].windows(2) {
-            split.extend(detect(w[0], w[1]));
+            let mut split = Vec::new();
+            for w in [0usize, 700, 1_005, 1_900, samples].windows(2) {
+                split.extend(detect(w[0], w[1]));
+            }
+            split.sort_by_key(|s| (s.sample_index, s.channel_id));
+            assert_eq!(split, full);
         }
-        split.sort_by_key(|s| (s.sample_index, s.channel_id));
-        assert_eq!(split, full);
     }
 
     #[test]
@@ -240,32 +249,34 @@ mod tests {
             .enumerate()
             .flat_map(|(i, _)| (0..len).map(move |t| 10_000.0 + (i as f32) + t as f32 * 0.5))
             .collect();
-        let client = dspk_core::compute::open_device(cubecl::Device::Wgpu(WgpuDevice::default()));
-        let snip_h = client.create_from_slice(f32::as_bytes(&snippets));
-        let stats = execute_reduce_templates_in_vram(
-            &client, &snip_h, &primaries, channels, k, len,
-        );
-        assert_eq!(stats.counts, vec![2, 3]);
-        for ch in 0..channels {
-            let members: Vec<usize> = (0..primaries.len())
-                .filter(|&i| primaries[i] == ch as u32)
-                .collect();
-            for t in 0..len {
-                let vals: Vec<f64> = members
-                    .iter()
-                    .map(|&i| snippets[i * len + t] as f64)
+        // Every runtime the tests run on (DSPK_TEST_RUNTIMES), opened through dspk
+        for client in test_clients() {
+            let snip_h = client.create_from_slice(f32::as_bytes(&snippets));
+            let stats = execute_reduce_templates_in_vram(
+                &client, &snip_h, &primaries, channels, k, len,
+            );
+            assert_eq!(stats.counts, vec![2, 3]);
+            for ch in 0..channels {
+                let members: Vec<usize> = (0..primaries.len())
+                    .filter(|&i| primaries[i] == ch as u32)
                     .collect();
-                let mean = vals.iter().sum::<f64>() / vals.len() as f64;
-                let m2: f64 = vals.iter().map(|v| (v - mean).powi(2)).sum();
-                assert!(
-                    (stats.mean[ch * len + t] as f64 - mean).abs() < 1e-3,
-                    "mean ch {ch} t {t}"
-                );
-                assert!(
-                    (stats.m2[ch * len + t] as f64 - m2).abs() < 1e-2,
-                    "m2 ch {ch} t {t}: {} vs {m2}",
-                    stats.m2[ch * len + t]
-                );
+                for t in 0..len {
+                    let vals: Vec<f64> = members
+                        .iter()
+                        .map(|&i| snippets[i * len + t] as f64)
+                        .collect();
+                    let mean = vals.iter().sum::<f64>() / vals.len() as f64;
+                    let m2: f64 = vals.iter().map(|v| (v - mean).powi(2)).sum();
+                    assert!(
+                        (stats.mean[ch * len + t] as f64 - mean).abs() < 1e-3,
+                        "mean ch {ch} t {t}"
+                    );
+                    assert!(
+                        (stats.m2[ch * len + t] as f64 - m2).abs() < 1e-2,
+                        "m2 ch {ch} t {t}: {} vs {m2}",
+                        stats.m2[ch * len + t]
+                    );
+                }
             }
         }
     }

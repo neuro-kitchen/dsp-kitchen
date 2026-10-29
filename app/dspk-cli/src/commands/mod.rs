@@ -14,4 +14,5 @@ pub mod probe;
 pub mod recording;
 pub mod run;
 pub mod sort;
+pub mod sorters;
 pub mod spec;

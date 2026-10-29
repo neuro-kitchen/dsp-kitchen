@@ -1,11 +1,8 @@
 //! `dspk-cli`: a thin command line over the dspk crates. Each command lives in its own
 //! module with its own arguments; this file only parses and dispatches.
 
-mod commands;
-mod progress;
-mod style;
-
 use clap::{Parser, Subcommand};
+use dspk_cli::{commands, style};
 use dspk_core::ComputeTarget;
 
 #[derive(Parser, Debug)]
@@ -45,8 +42,11 @@ enum Command {
     Probe(commands::probe::ProbeArgs),
     /// Detect spikes in a whole recording and write them as a sorting (one unit per channel)
     Detect(commands::detect::DetectArgs),
-    /// Spike-sort a recording with Kilosort4 or EMUsort and write the sorting
+    /// Spike-sort a recording (Kilosort4, EMUsort, MountainSort 5, SpyKING CIRCUS 2, Tridesclous 2)
+    /// with the separate dspk-sorters program (GPL-3.0; `dspk sorters install`)
     Sort(commands::sort::SortArgs),
+    /// The dspk-sorters program `sort` runs: install it, or show which one is used
+    Sorters(commands::sorters::SortersArgs),
     /// Convert a sorting between formats (Phy, .sorting.zarr, NWB units)
     Convert(commands::convert::ConvertArgs),
     /// Write a synthetic recording (noise, line noise, drifting units)
@@ -98,7 +98,8 @@ async fn dispatch(cli: &Cli) -> anyhow::Result<()> {
         Command::Open(args) => commands::open::run(args),
         Command::Probe(args) => commands::probe::run(args),
         Command::Detect(args) => commands::detect::run(cli.target()?, args),
-        Command::Sort(args) => commands::sort::run(cli.target()?, args),
+        Command::Sort(args) => commands::sort::run(cli.runtime.as_deref(), cli.verbose, args),
+        Command::Sorters(args) => commands::sorters::run(args),
         Command::Convert(args) => commands::convert::run(args),
         Command::Generate(args) => commands::generate::run(args),
         Command::Benchmark(args) => commands::benchmark::run(cli.target()?, args),

@@ -31,6 +31,35 @@ drawn from min/max pyramids built by `dspk-view`.*
 Electrophysiology (spike detection, sorters, neural file formats) lives in the `synapse/` crates of
 the repository and is not published yet.
 
+## Repository
+
+```text
+crates/       dspk, dspk-core, dspk-io, dspk-ops                    (published)
+serve/        dspk-view, dspk-stream                                (published)
+engine/       dspk-pipeline: pipelines as data (JSON / TOML specs), many inputs, merges
+synapse/      dspk-synapse (detection, clustering, matching, sorter building blocks, provenance),
+              dspk-synapse-io (ephys formats), dspk-synapse-hub (downloads),
+              dspk-synapse-ml (pretrained models)
+  sorters/    one crate per sorter: ks4 (Kilosort4 + EMUsort), ms5 (MountainSort 5),
+              sc2 (SpyKING CIRCUS 2), tdc2 (Tridesclous 2)
+app/          dspk-app (desktop workbench), dspk-cli (`dspk run`, `dspk sort`, …),
+              dspk-sorters (every sorter in one program, GPL-3.0; run by `dspk sort`)
+bindings/     python: the `dspk` package on PyPI
+playground/   worked examples as `# %%` cells (see playground/README.md)
+benchmarks/   timings and validations against scipy and other sorters (see benchmarks/README.md)
+```
+
+Every crate builds with wgpu, CUDA and the CPU runtime by default. Development and tests use one
+profile:
+
+```bash
+cargo build --workspace --profile validate
+cargo test  --workspace --exclude dspk-app --exclude dspk-py --profile validate
+```
+
+Each kernel is tested on every runtime compiled in (`DSPK_TEST_RUNTIMES=cuda` limits a run to one).
+Timings against scipy and kernel benchmarks: [benchmarks](benchmarks/README.md).
+
 ## Runtimes
 
 Runtimes are crate features; the device is picked at run time with `dspk::core::ComputeTarget`
@@ -38,8 +67,8 @@ Runtimes are crate features; the device is picked at run time with `dspk::core::
 
 ```toml
 [dependencies]
-dspk = "0.0.3"                                                                  # wgpu, cuda and cpu (default)
-# dspk = { version = "0.0.3", default-features = false, features = ["wgpu", "zarr"] }  # wgpu only
+dspk = "0.0.4"                                                                  # wgpu, cuda and cpu (default)
+# dspk = { version = "0.0.4", default-features = false, features = ["wgpu", "zarr"] }  # wgpu only
 ```
 
 | Feature | Runtime | Tested |
@@ -53,6 +82,31 @@ CUDA and HIP are loaded at run time, so building with them needs no toolkit inst
 runtime downloads a prebuilt LLVM on its first build (cached in `~/.local/share/tracel`); leave it
 out with `default-features = false` for a lighter build. All three are the default because the
 library, its tests, the CLI and the Python package are built and tested together that way.
+
+### Performance
+
+Device time of one recording-sized block (384 channels × 60 000 samples, float32: 2 s of
+Neuropixels at 30 kHz), data already on the device, autotuned kernel; RTX 2070 Max-Q and an
+i7-9750H (6 cores, 12 threads) through CubeCL's CPU runtime:
+
+| Operation | CUDA | wgpu (Vulkan) | CPU runtime |
+|---|---|---|---|
+| IIR band-pass, 5th order, forward | 5.3 ms | 12.3 ms | 39 ms |
+| FIR, 63 taps, causal | 3.1 ms | 6.4 ms | 33 ms |
+| Running median, width 9 | 0.59 ms | 0.69 ms | 20 ms |
+| Common median reference | 10.3 ms | 16.5 ms | 239 ms |
+| Common average reference | 1.0 ms | 1.2 ms | 11 ms |
+| `resample_poly` 1 / 3 | 1.4 ms | 1.7 ms | 16 ms |
+
+Where a kernel has several exact implementations (direct, shared-memory tiles, sorting networks,
+vectors of 2–16 values per unit that the CPU runtime turns into SIMD), the autotuner times them
+on the device and keeps the fastest. The vector versions are bit-identical to the scalar ones;
+other alternatives (FIR tiles, IIR time blocks) agree to rounding;
+`dspk_core::compute::pin_tuned_choices` fixes the IIR block split and the matrix-multiply choice for
+runs that must reproduce bit for bit. Reproduce with
+`cargo test -p dspk-ops --profile validate --test bench_kernels -- --ignored --nocapture` (and
+`bench_vector` for every choice); timings against scipy from Python are in
+[benchmarks](benchmarks/README.md).
 
 ### Kernel and autotune cache
 
@@ -75,6 +129,16 @@ directory:
 - A `cubecl.toml` in the working directory, or CubeCL's own environment variables, still apply.
 - Code that opens a device through CubeCL directly instead of dspk gets CubeCL's default:
   `target/environment/` of the nearest Cargo project, or the user cache directory outside one.
+
+> [!NOTE]
+> **Abort at exit (upstream, worked around).** CubeCL drops its kernel-cache database (turso) while
+> a device thread ends, which can abort a process after its work: `fatal runtime error: thread
+> local panicked on drop, aborting` (exit code 134;
+> [tracel-ai/cubecl#1981](https://github.com/tracel-ai/cubecl/issues/1981)). dspk avoids it by ending
+> only wgpu devices at exit (their Vulkan drivers need it) and leaving CUDA and CPU device threads to
+> the process exit. Calling `dspk_core::compute::shutdown_devices` yourself can still hit it; so can
+> code that opens devices through CubeCL directly. `DSPK_KERNEL_CACHE=0` avoids it at the cost of
+> compiling kernels in every process.
 
 ## Python
 
@@ -99,6 +163,39 @@ CPython ≥ 3.10. See [bindings/python](bindings/python/README.md).
 kernel source serves every runtime): one window or batch on the device holds at most 2³² − 1
 values (e.g. 384 channels × 11.1 million samples). Larger requests are refused with an error.
 
+## Spike sorting
+
+Kilosort4, EMUsort, MountainSort 5, SpyKING CIRCUS 2 and Tridesclous 2 run on the GPU (or the CPU)
+in one separate program, `dspk-sorters`, released with each version. The `dspk` command line runs
+it as its own process:
+
+```bash
+dspk sorters install                                   # this version's build, SHA-256 checked
+dspk sort kilosort4 recording.bin -o sorted --format phy
+dspk sort kilosort4 --help                             # every setting and its default
+dspk-sorters licenses                                  # each sorter's licence and source
+```
+
+It is installed in the user data folder (`~/.local/share/dspk/sorters/<version>/` on Linux,
+`~/Library/Application Support/dspk/…` on macOS, `%LOCALAPPDATA%\dspk\…` on Windows;
+`DSPK_DATA_DIR` moves it, `DSPK_SORTERS_BIN` names another build). A source build finds the
+`dspk-sorters` built next to `dspk` (`cargo build -p dspk-sorters`).
+
 ## License
 
-MIT OR Apache-2.0, at your option ([LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE)).
+MIT OR Apache-2.0, at your option ([LICENSE-MIT](LICENSE-MIT), [LICENSE-APACHE](LICENSE-APACHE)):
+the published crates, the `dspk` command line and the Python package.
+
+The sorters follow their upstreams' licences:
+
+| Crate | Licence | Why |
+|---|---|---|
+| `dspk-ks4` (Kilosort4, EMUsort) | GPL-3.0-only | Kilosort4 and EMUsort are GPL-3.0 |
+| `dspk-ms5` (MountainSort 5) | Apache-2.0 | MountainSort 5 and isosplit6 are Apache-2.0 |
+| `dspk-sc2`, `dspk-tdc2` | MIT OR Apache-2.0 (+ SpikeInterface's MIT notice) | ported from SpikeInterface (MIT) |
+| `dspk-synapse` | (MIT OR Apache-2.0) AND Apache-2.0 | isosplit6 port; SpikeInterface components |
+| `dspk-sorters` (the program) | GPL-3.0-only | contains `dspk-ks4` |
+
+Each sorter crate carries its upstream licence and a `NOTICE.md`. Nothing MIT / Apache-licensed
+links `dspk-ks4`: `dspk sort` runs `dspk-sorters` as a separate program, whose source is this
+repository at the version's tag.

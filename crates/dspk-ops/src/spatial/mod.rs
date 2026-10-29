@@ -14,7 +14,10 @@ pub mod laplacian;
 pub mod sparse;
 pub mod whitening;
 
-pub use car::{common_median_kernel, direct_car_kernel, execute_common_median, execute_direct_car};
+pub use car::{
+    common_median_bitonic_kernel, common_median_kernel, direct_car_kernel, execute_common_median, execute_common_median_with,
+    execute_direct_car, execute_direct_car_with, CarKernel, CmrKernel,
+};
 pub use laplacian::SurfaceLaplacian;
 pub use sparse::{execute_sparse_rows_multiply, execute_spatial_matrix_multiply, DeviceSpatialMatrix, SparseRows, SPARSE_MAX_ROW_FILL};
 pub use whitening::{SpatialWhitening, DEFAULT_WHITENING_EPSILON, MIN_WHITENING_EPSILON};

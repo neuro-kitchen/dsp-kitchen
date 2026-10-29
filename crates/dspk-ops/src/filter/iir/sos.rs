@@ -11,7 +11,7 @@ use cubecl::tune::{LocalTuner, Tunable, TunableSet, local_tuner};
 use dspk_core::compute::LaunchGeometry;
 use dspk_core::compute::tune::{size_class, tune_id};
 
-use super::kernels::sos::{SVF_COEFFS, coeffs_len, sos_block_kernel, sos_block_scan_kernel};
+use super::kernels::sos::{SVF_COEFFS, coeffs_len, sos_block_kernel, sos_block_scan_kernel, sos_block_vector_kernel};
 use crate::core::{buffer, cast, cast_all, layout, to_f64, DspFloat, Scratch};
 use crate::filter::design::{FilterError, FilterMode, FilterSpec, FilterStart, Sos};
 
@@ -30,11 +30,15 @@ pub const PINNED_BLOCK_COUNT: usize = 16;
 /// Memory order a pass runs in. Channel-major rows are the buffers' own order; time-major runs on a
 /// transposed copy so the units of a plane (consecutive channels) read and write consecutive
 /// addresses, at the cost of two transposes. Which is faster depends on the device; the autotuner
-/// tries both.
+/// tries them all. Every layout gives the same output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PassLayout {
     ChannelMajor,
     TimeMajor,
+    /// Time-major with `width` consecutive channels per unit (`Vector<F, width>`, their recursions
+    /// in lockstep; SIMD on the CPU runtime). Runs the widest width up to `width` that the runtime
+    /// offers and that divides the channel count, else `TimeMajor`.
+    TimeMajorVectorized { width: usize },
 }
 
 /// Device buffers a filter reuses across passes: block start states and time-major staging. Kept per
@@ -418,6 +422,13 @@ impl<F: DspFloat> PassInputs<F> {
     fn run(&self, block_len: usize, layout: PassLayout) {
         let (client, f, p) = (&self.client, &self.filter, &self.pass);
         let n = f.n_sections();
+        let vector = match layout {
+            PassLayout::TimeMajorVectorized { width } => {
+                client.io_optimized_vector_sizes(size_of::<F>()).filter(|&w| w > 1 && w <= width && p.channels % w == 0).max()
+            }
+            _ => None,
+        };
+        let time_major = layout != PassLayout::ChannelMajor;
         let steps = self.steps();
         let block_len = block_len.clamp(1, steps.max(1));
         let blocks = steps.div_ceil(block_len).max(1);
@@ -425,9 +436,9 @@ impl<F: DspFloat> PassInputs<F> {
         let ws = workspaces.entry(std::thread::current().id()).or_default();
         let slots = ws.slots.get::<F>(client, p.channels * blocks * f.state_len());
         // Buffers the kernel reads and writes, and their (channel, time) strides
-        let (input, output, in_strides, out_strides) = match layout {
-            PassLayout::ChannelMajor => (p.input.clone(), p.output.clone(), (p.in_len, 1), (p.out_len, 1)),
-            PassLayout::TimeMajor => {
+        let (input, output, in_strides, out_strides) = match time_major {
+            false => (p.input.clone(), p.output.clone(), (p.in_len, 1), (p.out_len, 1)),
+            true => {
                 let input_t = ws.input_t.get::<F>(client, p.channels * p.in_len);
                 layout::transpose::<F>(client, &p.input, &input_t, p.channels, p.in_len);
                 let output_t = ws.output_t.get::<F>(client, p.channels * p.out_len);
@@ -436,6 +447,33 @@ impl<F: DspFloat> PassInputs<F> {
         };
         let launch = |phase: u32, active: usize| unsafe {
             // `phase` is a compile-time kernel parameter: each phase is its own specialised kernel
+            if let Some(width) = vector {
+                let groups = p.channels / width;
+                let geom = LaunchGeometry::elementwise(client, groups * active);
+                return sos_block_vector_kernel::launch::<F>(
+                    client,
+                    geom.cube_count,
+                    geom.cube_dim,
+                    width,
+                    BufferArg::from_raw_parts(input.clone(), p.channels * p.in_len),
+                    BufferArg::from_raw_parts(output.clone(), p.channels * p.out_len),
+                    BufferArg::from_raw_parts(f.coeffs.clone(), coeffs_len(n)),
+                    BufferArg::from_raw_parts(p.state.clone(), p.channels * f.state_len()),
+                    BufferArg::from_raw_parts(slots.clone(), (p.channels * blocks * f.state_len()).max(1)),
+                    groups as u32,
+                    p.in_len as u32,
+                    p.pad as u32,
+                    p.out_start as u32,
+                    p.out_len as u32,
+                    p.reverse as u32,
+                    p.carry as u32,
+                    p.rest as u32,
+                    block_len as u32,
+                    blocks as u32,
+                    phase,
+                    n,
+                );
+            }
             let geom = LaunchGeometry::elementwise(client, p.channels * active);
             sos_block_kernel::launch::<F>(
                 client,
@@ -482,7 +520,7 @@ impl<F: DspFloat> PassInputs<F> {
             }
         }
         launch(1, blocks);
-        if layout == PassLayout::TimeMajor {
+        if time_major {
             layout::transpose::<F>(client, &output, &p.output, p.out_len, p.channels);
         }
     }
@@ -492,12 +530,21 @@ impl<F: DspFloat> PassInputs<F> {
 /// this device, element type, filter order and problem size. Benchmarks write to scratch output and
 /// state buffers.
 fn tuned_pass<F: DspFloat>(inputs: PassInputs<F>) {
-    static TUNER: LocalTuner<String, String> = local_tuner!("sos-blocks-v1");
+    static TUNER: LocalTuner<String, String> = local_tuner!("sos-blocks-v2");
     let client = inputs.client.clone();
     let id = tune_id(&client);
-    let set = TUNER.init(&id, || {
+    let widths: Vec<usize> = client.io_optimized_vector_sizes(size_of::<F>()).filter(|&w| w > 1).collect();
+    let set = TUNER.init(&id, move || {
+        // `a`: the power of two dividing the channel count (up to 16), which decides the widths that run
         let key = |p: &PassInputs<F>| {
-            format!("{}-n{}-c{}-t{}", F::type_name(), p.filter.n_sections(), size_class(p.pass.channels), size_class(p.steps()))
+            format!(
+                "{}-n{}-c{}-t{}-a{}",
+                F::type_name(),
+                p.filter.n_sections(),
+                size_class(p.pass.channels),
+                size_class(p.steps()),
+                p.pass.channels.trailing_zeros().min(4)
+            )
         };
         let scratch = |_: &String, p: &PassInputs<F>| {
             let mut pass = p.pass.clone();
@@ -506,9 +553,8 @@ fn tuned_pass<F: DspFloat>(inputs: PassInputs<F>) {
             PassInputs { client: p.client.clone(), filter: p.filter.clone(), pass }
         };
         let set: TunableSet<String, PassInputs<F>, ()> = TunableSet::new(key, scratch);
-        let candidates = [PassLayout::ChannelMajor, PassLayout::TimeMajor]
-            .into_iter()
-            .flat_map(|layout| BLOCK_COUNT_CANDIDATES.into_iter().map(move |blocks| (layout, blocks)));
+        let layouts = [PassLayout::ChannelMajor, PassLayout::TimeMajor].into_iter().chain(widths.iter().map(|&width| PassLayout::TimeMajorVectorized { width }));
+        let candidates = layouts.flat_map(|layout| BLOCK_COUNT_CANDIDATES.into_iter().map(move |blocks| (layout, blocks)));
         candidates.fold(set, |set, (layout, blocks)| {
             set.with(Tunable::new(&format!("{layout:?}-blocks{blocks}"), move |p: PassInputs<F>| {
                 p.run(p.steps().div_ceil(blocks), layout);

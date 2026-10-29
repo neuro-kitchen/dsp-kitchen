@@ -54,6 +54,8 @@ pub mod detection;
 pub mod extraction;
 pub mod features;
 pub mod metrics;
+pub mod provenance;
+pub mod sorter;
 pub mod sorting;
 pub mod spatial;
 pub mod storage;
@@ -112,6 +114,7 @@ pub use streaming::{
     StreamingDetector, TemplateAccumulator, execute_reduce_templates_in_vram,
     reduce_channel_templates_kernel,
 };
+pub use provenance::{ArtifactSource, Attributed, Paper, Provenance, ProvenanceKind, UpstreamCode};
 pub use storage::{
     fill_similarity, load_nwb_units, load_phy_folder, load_sorting,
     load_sorting_zarr, load_spikes, save_nwb_units, save_phy_folder, save_sorting,

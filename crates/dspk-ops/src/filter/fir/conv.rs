@@ -1,6 +1,7 @@
-//! FIR dispatch: a direct kernel and a shared-memory tiled kernel per filter shape, chosen per device
-//! and problem size by CubeCL's autotuner (the tiled kernel only where its tile fits the runtime's
-//! shared memory).
+//! FIR dispatch: a direct kernel, a shared-memory tiled kernel and vectorized kernels (`N` outputs
+//! per unit, for each width the runtime offers) per filter shape, chosen per device and problem size
+//! by CubeCL's autotuner (the tiled kernel only where its tile fits the runtime's shared memory, a
+//! vector width only where it divides the row). Every choice gives the same output.
 
 use cubecl::prelude::*;
 use cubecl::server::Handle;
@@ -8,7 +9,10 @@ use cubecl::tune::{LocalTuner, Tunable, TunableSet, local_tuner};
 use dspk_core::compute::LaunchGeometry;
 use dspk_core::compute::tune::{size_class, tune_id};
 
-use super::kernels::{fir_centered_filter_kernel, fir_centered_tiled_kernel, fir_filter_kernel, fir_tiled_kernel};
+use super::kernels::{
+    fir_centered_filter_kernel, fir_centered_tiled_kernel, fir_centered_vector_kernel, fir_filter_kernel, fir_tiled_kernel, fir_vector_kernel,
+    fir_vector_table_kernel,
+};
 use crate::core::{buffer, DspFloat, EdgeMode};
 
 /// Edge handling of [`execute_fir`] matching `scipy.signal.lfilter` (zero history).
@@ -22,6 +26,9 @@ pub enum FirKernel {
     /// Cubes stage their samples and halo in shared memory first (falls back to `Direct` when the
     /// tile does not fit the runtime's shared memory).
     Tiled,
+    /// `width` consecutive outputs per unit (`Vector<F, width>`; SIMD on the CPU runtime). Runs the
+    /// widest width up to `width` that the runtime offers and that divides the row, else `Direct`.
+    Vectorized { width: usize },
 }
 
 /// Taps reaching back only (`y[t] = Σ taps[k] · x[t − k]`) or centred on the output sample.
@@ -60,6 +67,11 @@ struct FirInputs {
 
 impl FirInputs {
     fn run<F: DspFloat>(&self, kernel: FirKernel) {
+        if let FirKernel::Vectorized { width } = kernel {
+            if let Some(width) = vector_width::<F>(&self.client, self.samples, width) {
+                return self.run_vectorized::<F>(width);
+            }
+        }
         let (client, total) = (&self.client, self.channels * self.samples);
         let geom = LaunchGeometry::channels_samples(client, self.channels, self.samples);
         let (tile_x, tile_y) = (geom.cube_dim.x, geom.cube_dim.y);
@@ -91,19 +103,73 @@ impl FirInputs {
     }
 }
 
+impl FirInputs {
+    /// The vectorized kernels with `width` outputs per unit (`samples` a multiple of `width`).
+    fn run_vectorized<F: DspFloat>(&self, width: usize) {
+        let (client, total, num_taps) = (&self.client, self.channels * self.samples, self.shape.num_taps());
+        let table_len = (num_taps + width - 1) * width;
+        let table = buffer::empty::<F>(client, table_len);
+        let centered = matches!(self.shape, Shape::Centered { .. });
+        let geom = LaunchGeometry::elementwise(client, table_len);
+        // SAFETY: `taps` holds `num_taps` values of `F`, `table` `table_len`
+        unsafe {
+            fir_vector_table_kernel::launch::<F>(
+                client,
+                geom.cube_count,
+                geom.cube_dim,
+                BufferArg::from_raw_parts(self.taps.clone(), num_taps),
+                BufferArg::from_raw_parts(table.clone(), table_len),
+                num_taps as u32,
+                width as u32,
+                centered,
+            );
+        }
+        let geom = LaunchGeometry::elementwise(client, total / width);
+        // SAFETY: input and output hold `total` samples of `F` (`total / width` vectors), `table`
+        // `table_len` values
+        let (input, output, table) = unsafe {
+            (
+                BufferArg::from_raw_parts(self.input.clone(), total),
+                BufferArg::from_raw_parts(self.output.clone(), total),
+                BufferArg::from_raw_parts(table, table_len),
+            )
+        };
+        let (samples, edge) = (self.samples as u32, self.edge.id());
+        match self.shape {
+            Shape::Causal { num_taps } => fir_vector_kernel::launch::<F>(
+                client, geom.cube_count, geom.cube_dim, width, input, output, table, samples, num_taps as u32, edge,
+            ),
+            Shape::Centered { radius } => fir_centered_vector_kernel::launch::<F>(
+                client, geom.cube_count, geom.cube_dim, width, input, output, table, samples, radius as u32, edge,
+            ),
+        }
+    }
+}
+
+/// The widest vector width up to `at_most` (above 1) that `client` offers for `F` and that divides
+/// `samples`.
+fn vector_width<F: DspFloat>(client: &Client, samples: usize, at_most: usize) -> Option<usize> {
+    client.io_optimized_vector_sizes(size_of::<F>()).filter(|&w| w > 1 && w <= at_most && samples % w == 0).max()
+}
+
 /// [`FirInputs::run`] with the kernel CubeCL's autotuner found fastest for this device, element type,
 /// filter shape and problem size. Benchmarks write to a scratch output.
 fn tuned<F: DspFloat>(inputs: FirInputs) {
-    static TUNER: LocalTuner<String, String> = local_tuner!("fir-kernel-v1");
+    static TUNER: LocalTuner<String, String> = local_tuner!("fir-kernel-v2");
     let client = inputs.client.clone();
     let id = tune_id(&client);
-    let set = TUNER.init(&id, || {
+    let widths: Vec<usize> = client.io_optimized_vector_sizes(size_of::<F>()).filter(|&w| w > 1).collect();
+    // CubeCL's CPU runtime emulates shared memory: Tiled takes seconds there, even just to time it
+    let cpu = client.name() == "cpu";
+    let set = TUNER.init(&id, move || {
         let key = |p: &FirInputs| {
-            format!("{}-{:?}-c{}-t{}", F::type_name(), p.shape, size_class(p.channels), size_class(p.samples))
+            // `a`: the power of two dividing the row (up to 16), which decides the vector widths that run
+            format!("{}-{:?}-c{}-t{}-a{}", F::type_name(), p.shape, size_class(p.channels), size_class(p.samples), p.samples.trailing_zeros().min(4))
         };
         let scratch = |_: &String, p: &FirInputs| FirInputs { output: buffer::empty::<F>(&p.client, p.channels * p.samples), ..p.clone() };
         let set: TunableSet<String, FirInputs, ()> = TunableSet::new(key, scratch);
-        [FirKernel::Direct, FirKernel::Tiled].into_iter().fold(set, |set, kernel| {
+        let kernels = [FirKernel::Direct, FirKernel::Tiled].into_iter().filter(|&k| !(k == FirKernel::Tiled && cpu)).chain(widths.iter().map(|&width| FirKernel::Vectorized { width }));
+        kernels.fold(set, |set, kernel| {
             set.with(Tunable::new(&format!("{kernel:?}"), move |p: FirInputs| {
                 p.run::<F>(kernel);
                 Ok::<_, String>(())
@@ -239,4 +305,42 @@ mod tests {
         }
     }
     runtime_test!(test_fir_tiled_matches_direct, tiled_matches_direct);
+
+    /// Vectorized kernels are bit-identical to `Direct` for every edge and shape, for `f32` and
+    /// `f64`, rows divisible by the width or not (then `Direct` runs).
+    fn vectorized_matches_direct_of<F: DspFloat + std::fmt::Debug>(client: &Client) {
+        let channels = 3usize;
+        for samples in [64usize, 1_000, 1_003] {
+            let x: Vec<F> = (0..channels * samples).map(|i| crate::core::cast::<F>(((i * 7919) % 211) as f64 * 0.37 - 40.0)).collect();
+            let input = buffer::upload(client, &x);
+            for edge in [EdgeMode::Zeros, EdgeMode::Odd, EdgeMode::Reflect, EdgeMode::Nearest] {
+                for (centered, n) in [(false, 1usize), (false, 4), (false, 33), (true, 0), (true, 3), (true, 20)] {
+                    let num_taps = if centered { 2 * n + 1 } else { n };
+                    let taps: Vec<F> = (0..num_taps).map(|k| crate::core::cast::<F>(1.0 / (k as f64 + 1.3))).collect();
+                    let taps_h = buffer::upload(client, &taps);
+                    let run = |kernel| {
+                        let out = buffer::empty::<F>(client, x.len());
+                        if centered {
+                            execute_fir_centered_with::<F>(client, &input, &out, &taps_h, channels, samples, n, edge, Some(kernel));
+                        } else {
+                            execute_fir_with::<F>(client, &input, &out, &taps_h, channels, samples, n, edge, Some(kernel));
+                        }
+                        buffer::download::<F>(client, out)
+                    };
+                    let direct = run(FirKernel::Direct);
+                    for width in [2usize, 4, 8, 16] {
+                        assert_eq!(run(FirKernel::Vectorized { width }), direct, "{} {} samples {samples} {edge:?} centered {centered} n {n} width {width}", client.name(), F::type_name());
+                    }
+                }
+            }
+        }
+    }
+
+    fn vectorized_matches_direct(client: &Client) {
+        vectorized_matches_direct_of::<f32>(client);
+        if client.properties().supports_type(f64::elem_type_native()) {
+            vectorized_matches_direct_of::<f64>(client);
+        }
+    }
+    runtime_test!(test_fir_vectorized_matches_direct, vectorized_matches_direct);
 }

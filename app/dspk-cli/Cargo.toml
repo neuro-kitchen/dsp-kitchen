@@ -1,6 +1,6 @@
 [package]
 name = "dspk-cli"
-description = "Command line for dspk: pipelines, devices, recordings, detection, sorting, benchmarks, streaming, model hub"
+description = "Command line for dspk: pipelines, devices, recordings, detection, benchmarks, streaming, model hub; sorting through the separate dspk-sorters program"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -19,8 +19,8 @@ wgpu = ["dspk-core/wgpu", "dspk-ops/wgpu", "dspk-pipeline/wgpu", "dspk-synapse/w
 cpu = ["dspk-core/cpu", "dspk-ops/cpu", "dspk-pipeline/cpu", "dspk-synapse/cpu", "dspk-synapse-ml/cpu"]
 cuda = ["dspk-core/cuda", "dspk-ops/cuda", "dspk-pipeline/cuda", "dspk-synapse/cuda", "dspk-synapse-ml/cuda"]
 hip = ["dspk-core/hip", "dspk-ops/hip", "dspk-pipeline/hip", "dspk-synapse/hip", "dspk-synapse-ml/hip"]
-# `hub` command: verified downloads of published artifacts (network access)
-hub = ["dspk-synapse-ml/hub", "dep:dspk-synapse-hub"]
+# `hub` command: verified downloads of published model artifacts (network access)
+hub = ["dspk-synapse-ml/hub"]
 
 [dependencies]
 dspk-core = { workspace = true, features = ["compute"] }
@@ -29,7 +29,9 @@ dspk-io = { workspace = true, features = ["zarr"] }
 dspk-synapse-io = { workspace = true, features = ["zarr"] }
 dspk-synapse.workspace = true
 dspk-synapse-ml = { workspace = true, default-features = false }
-dspk-synapse-hub = { workspace = true, optional = true }
+# Never the sorter crates: Kilosort4 / EMUsort are GPL-3.0; `sort` runs the separate dspk-sorters
+# program instead (installed through dspk-synapse-hub)
+dspk-synapse-hub.workspace = true
 dspk-pipeline.workspace = true
 dspk-stream.workspace = true
 dspk-view = { workspace = true, default-features = false }

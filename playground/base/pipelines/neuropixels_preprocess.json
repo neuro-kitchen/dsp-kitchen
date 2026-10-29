@@ -1,0 +1,12 @@
+{
+  "dspk_pipeline": 1,
+  "name": "Neuropixels preprocessing: band-pass 300-6000 Hz (zero phase) + common median reference",
+  "nodes": {
+    "raw": { "op": "read", "path": "../../../.data/kilosort4/ZFM-02370_mini.imec0.ap.short.bin" },
+    "bandpass": { "op": "iir", "band": "bandpass", "cutoff": [300.0, 6000.0], "order": 5, "mode": "forward_backward" },
+    "cmr": { "op": "cmr" },
+    "out": { "op": "write", "path": "../../output/pipelines/neuropixels_preprocessed.zarr", "format": "zarr" }
+  },
+  "edges": [["raw", "bandpass"], ["bandpass", "cmr"], ["cmr", "out"]],
+  "execution": { "mode": "auto" }
+}

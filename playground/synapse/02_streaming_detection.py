@@ -8,7 +8,7 @@
 # 3. Noise calibration, detection, deduplication, realigned snippets and per-channel templates
 # 4. Templates plotted across the 4 × 8 grid
 #
-# Data (local, git-ignored): `data/nwb/15-25-33_meps.nwb.zarr` (see playground/README.md).
+# Data (local, git-ignored): `.data/nwb/15-25-33_meps.nwb.zarr` (see playground/README.md).
 
 # %% [1] Imports & Open the Recording
 import os
@@ -30,7 +30,7 @@ from dsp_kitchen.filter.iir import BandpassFilter, NotchFilter
 from dsp_kitchen.spatial import CommonAverageReference
 
 # Test data lives outside the playground: `<repository>/data/`, or the folder in DSP_KITCHEN_DATA
-DATA_DIR = Path(os.environ.get("DSP_KITCHEN_DATA", Path(__file__).resolve().parents[2] / "data"))
+DATA_DIR = Path(os.environ.get("DSP_KITCHEN_DATA", Path(__file__).resolve().parents[2] / ".data"))
 NWB_PATH = DATA_DIR / "nwb" / "15-25-33_meps.nwb.zarr"
 GRID_ROWS, GRID_COLS = 4, 8
 ELECTRODE_PITCH_UM = 100.0  # inter-electrode distance of the grid (set your array's)
