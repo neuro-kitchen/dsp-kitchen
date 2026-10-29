@@ -13,6 +13,7 @@ use dspk_core::ComputeTarget;
 use dspk_ops::core::{buffer, EdgeMode};
 use dspk_ops::filter::fir::{execute_fir_centered_with, execute_fir_with, FirKernel};
 use dspk_ops::filter::non_linear::{execute_median_with, MedianKernel};
+use dspk_ops::filter::{DeviceFilter, FilterBand, FilterMode, FilterSpec, PassLayout};
 use dspk_ops::resampler::{resample_poly_len, resample_poly_with, ResampleFilter, ResampleKernel};
 use dspk_ops::spatial::{execute_common_median_with, CmrKernel};
 
@@ -64,6 +65,18 @@ fn bench(client: &Client) {
         for kernel in kernels {
             let t = time_device(client, ITERATIONS, || execute_median_with::<f32>(client, &x, &out, CHANNELS, SAMPLES, width, EdgeMode::Zeros, Some(kernel)));
             println!("  median width {width:<11} {:28} {:8.2} ms", format!("{kernel:?}"), t.as_secs_f64() * 1e3);
+        }
+    }
+    // Fifth-order band-pass, forward; blocks per pass fixed so every layout gets the same split
+    let spec = FilterSpec::butterworth(5, FilterBand::Bandpass(300.0, 6000.0)).with_mode(FilterMode::Forward);
+    let layouts: Vec<PassLayout> = [PassLayout::ChannelMajor, PassLayout::TimeMajor].into_iter().chain(widths.iter().map(|&width| PassLayout::TimeMajorVectorized { width })).collect();
+    for blocks in [1usize, 16, 64] {
+        for &layout in &layouts {
+            let filter = DeviceFilter::<f32>::new(client, &spec, 30_000.0).unwrap().with_block_len(SAMPLES.div_ceil(blocks)).with_layout(layout);
+            let scratch = buffer::empty::<f32>(client, filter.scratch_len(CHANNELS, SAMPLES).max(1));
+            let state = buffer::empty::<f32>(client, CHANNELS * filter.state_len());
+            let t = time_device(client, ITERATIONS, || filter.apply(client, &x, &out, &scratch, &state, CHANNELS, SAMPLES));
+            println!("  iir bandpass 5, {blocks:>3} blocks {:28} {:8.2} ms", format!("{layout:?}"), t.as_secs_f64() * 1e3);
         }
     }
     let cpu = client.name() == "cpu";

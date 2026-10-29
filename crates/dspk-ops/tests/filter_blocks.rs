@@ -167,3 +167,62 @@ fn pinned_choices_match_the_fixed_split() {
         target.run(Pinned).expect("compiled-in runtime");
     }
 }
+
+/// The vectorized time-major layout (N channels per unit, in lockstep) is bit-identical to the
+/// scalar time-major layout: every mode, start, block length and chunked streaming, with channel
+/// counts every width divides (16) and only some (6), each channel a different signal.
+#[test]
+fn vectorized_layout_matches_time_major() {
+    struct Vectorized;
+    impl ComputeTask for Vectorized {
+        type Output = ();
+        fn run(self, client: Client) {
+            let rt = client.name().to_string();
+            let base = test_signal(5_003, FS);
+            let n = base.len();
+            for channels in [16usize, 6] {
+                let data: Vec<f32> = (0..channels).flat_map(|c| base.iter().enumerate().map(move |(t, v)| (*v * (1.0 + 0.1 * c as f64) + ((t * 31 + c * 7) % 13) as f64) as f32)).collect();
+                let input = client.create_from_slice(f32::as_bytes(&data));
+                let filter_out = |filter: &DeviceFilter<f32>, mode: FilterMode| -> Vec<f32> {
+                    let output = client.empty(channels * n * 4);
+                    let state = client.empty(channels * filter.state_len() * 4);
+                    if mode == FilterMode::Forward {
+                        // Three chunks: carried state across block-parallel passes
+                        let mut got = vec![0.0f32; channels * n];
+                        for (i, w) in [0usize, 1_001, 2_777, n].windows(2).enumerate() {
+                            let len = w[1] - w[0];
+                            let chunk: Vec<f32> = (0..channels).flat_map(|c| data[c * n + w[0]..c * n + w[1]].to_vec()).collect();
+                            let out = client.empty(channels * len * 4);
+                            filter.apply_stateful(&client, &client.create_from_slice(f32::as_bytes(&chunk)), &out, &state, channels, len, i == 0).unwrap();
+                            let part = f32::from_bytes(&client.read_one_unchecked(out)).to_vec();
+                            for c in 0..channels {
+                                got[c * n + w[0]..c * n + w[1]].copy_from_slice(&part[c * len..(c + 1) * len]);
+                            }
+                        }
+                        got
+                    } else {
+                        let scratch = client.empty((filter.scratch_len(channels, n) * 4).max(4));
+                        filter.apply(&client, &input, &output, &scratch, &state, channels, n);
+                        f32::from_bytes(&client.read_one_unchecked(output)).to_vec()
+                    }
+                };
+                for spec in specs() {
+                    for (mode, start) in [(FilterMode::Forward, FilterStart::Rest), (FilterMode::Forward, FilterStart::SteadyState), (FilterMode::ForwardBackward, FilterStart::Rest)] {
+                        let spec = spec.clone().with_mode(mode).with_start(start);
+                        for block in [usize::MAX, 7, 1_000] {
+                            let make = |layout| DeviceFilter::<f32>::new(&client, &spec, FS).unwrap().with_block_len(block).with_layout(layout);
+                            let scalar = filter_out(&make(PassLayout::TimeMajor), mode);
+                            for width in [2usize, 16] {
+                                let vectorized = filter_out(&make(PassLayout::TimeMajorVectorized { width }), mode);
+                                assert!(vectorized == scalar, "{rt} {channels} ch {spec:?} block {block} width {width}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for target in ComputeTarget::for_tests() {
+        target.run(Vectorized).expect("compiled-in runtime");
+    }
+}
