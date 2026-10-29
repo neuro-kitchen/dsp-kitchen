@@ -9,8 +9,6 @@ repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
-# New crate: not released until its spec has settled
-publish = false
 
 [features]
 default = ["wgpu", "cuda", "cpu"]
