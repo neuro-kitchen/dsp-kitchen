@@ -30,7 +30,7 @@ members = [
 
 
 [workspace.package]
-version = "0.0.3"
+version = "0.0.4"
 edition = "2024"
 authors = ["jesusdpa1 <17010046+jesusdpa1@users.noreply.github.com>"]
 license = "MIT OR Apache-2.0"
@@ -40,20 +40,20 @@ keywords = ["dsp", "gpu", "signal-processing", "cubecl", "electrophysiology"]
 categories = ["science", "algorithms", "concurrency"]
 
 [workspace.dependencies]
-dspk-core = { path = "crates/dspk-core", version = "0.0.3", default-features = false }
-dspk-ops = { path = "crates/dspk-ops", version = "0.0.3", default-features = false }
-dspk-synapse-io = { path = "synapse/dspk-synapse-io", version = "0.0.3", default-features = false }
-dspk-synapse = { path = "synapse/dspk-synapse", version = "0.0.3", default-features = false }
-dspk-synapse-ml = { path = "synapse/dspk-synapse-ml", version = "0.0.3", default-features = false }
-dspk-ms5 = { path = "synapse/sorters/ms5", version = "0.0.3", default-features = false }
-dspk-sc2 = { path = "synapse/sorters/sc2", version = "0.0.3", default-features = false }
-dspk-tdc2 = { path = "synapse/sorters/tdc2", version = "0.0.3", default-features = false }
-dspk-ks4 = { path = "synapse/sorters/ks4", version = "0.0.3", default-features = false }
-dspk-synapse-hub = { path = "synapse/dspk-synapse-hub", version = "0.0.3", default-features = false }
-dspk-stream = { path = "serve/dspk-stream", version = "0.0.3", default-features = false }
-dspk-view = { path = "serve/dspk-view", version = "0.0.3", default-features = false }
-dspk-io = { path = "crates/dspk-io", version = "0.0.3", default-features = false }
-dspk-pipeline = { path = "engine/dspk-pipeline", version = "0.0.3", default-features = false }
+dspk-core = { path = "crates/dspk-core", version = "0.0.4", default-features = false }
+dspk-ops = { path = "crates/dspk-ops", version = "0.0.4", default-features = false }
+dspk-synapse-io = { path = "synapse/dspk-synapse-io", version = "0.0.4", default-features = false }
+dspk-synapse = { path = "synapse/dspk-synapse", version = "0.0.4", default-features = false }
+dspk-synapse-ml = { path = "synapse/dspk-synapse-ml", version = "0.0.4", default-features = false }
+dspk-ms5 = { path = "synapse/sorters/ms5", version = "0.0.4", default-features = false }
+dspk-sc2 = { path = "synapse/sorters/sc2", version = "0.0.4", default-features = false }
+dspk-tdc2 = { path = "synapse/sorters/tdc2", version = "0.0.4", default-features = false }
+dspk-ks4 = { path = "synapse/sorters/ks4", version = "0.0.4", default-features = false }
+dspk-synapse-hub = { path = "synapse/dspk-synapse-hub", version = "0.0.4", default-features = false }
+dspk-stream = { path = "serve/dspk-stream", version = "0.0.4", default-features = false }
+dspk-view = { path = "serve/dspk-view", version = "0.0.4", default-features = false }
+dspk-io = { path = "crates/dspk-io", version = "0.0.4", default-features = false }
+dspk-pipeline = { path = "engine/dspk-pipeline", version = "0.0.4", default-features = false }
 dspk-py-core = { path = "bindings/python/dspk-py-core", default-features = false }
 
 # Compute & Tensors
