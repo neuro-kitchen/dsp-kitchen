@@ -5,10 +5,11 @@ use dspk_core::compute::tune::{size_class, tune_id};
 use dspk_core::compute::LaunchGeometry;
 
 use crate::core::{buffer, DspFloat};
-pub use super::kernels::{common_median_bitonic_kernel, common_median_kernel, common_median_vector_kernel, direct_car_kernel};
+pub use super::kernels::{common_median_bitonic_kernel, common_median_kernel, common_median_vector_kernel, direct_car_kernel, direct_car_vector_kernel};
 
 /// High-level host dispatcher for direct, single-pass Common Average Referencing (CAR).
-/// Computes and subtracts the common average directly in VRAM without auxiliary buffers.
+/// Computes and subtracts the common average directly in VRAM without auxiliary buffers, with the
+/// faster of [`CarKernel`]'s choices for this device (same output).
 pub fn execute_direct_car<F: DspFloat>(
     client: &Client,
     input: &cubecl::server::Handle,
@@ -16,20 +17,83 @@ pub fn execute_direct_car<F: DspFloat>(
     channels: usize,
     samples: usize,
 ) {
-    let geom = LaunchGeometry::per_sample(client, samples);
-    let total_elements = channels * samples;
+    execute_direct_car_with::<F>(client, input, output, channels, samples, None);
+}
 
-    unsafe {
-        direct_car_kernel::launch::<F>(
-            client,
-            geom.cube_count,
-            geom.cube_dim,
-            BufferArg::from_raw_parts(input.clone(), total_elements),
-            BufferArg::from_raw_parts(output.clone(), total_elements),
-            channels as u32,
-            samples as u32,
-        );
+/// Which common-average kernel runs (both give the same output).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CarKernel {
+    /// One unit per sample ([`direct_car_kernel`]).
+    Direct,
+    /// `width` consecutive samples per unit ([`direct_car_vector_kernel`]; SIMD on the CPU
+    /// runtime). Runs the widest width up to `width` that the runtime offers and that divides the
+    /// sample count, else `Direct`.
+    Vectorized { width: usize },
+}
+
+/// [`execute_direct_car`] with a fixed kernel (`None` = autotuned); for tests and benchmarks.
+pub fn execute_direct_car_with<F: DspFloat>(
+    client: &Client,
+    input: &cubecl::server::Handle,
+    output: &cubecl::server::Handle,
+    channels: usize,
+    samples: usize,
+    kernel: Option<CarKernel>,
+) {
+    if channels == 0 || samples == 0 {
+        return;
     }
+    let inputs = CmrInputs { client: client.clone(), input: input.clone(), output: output.clone(), channels, samples };
+    match kernel {
+        Some(kernel) => inputs.run_car::<F>(kernel),
+        None => tuned_car::<F>(inputs),
+    }
+}
+
+impl CmrInputs {
+    fn run_car<F: DspFloat>(&self, kernel: CarKernel) {
+        let client = &self.client;
+        let total = self.channels * self.samples;
+        let width = match kernel {
+            CarKernel::Vectorized { width } => client.io_optimized_vector_sizes(size_of::<F>()).filter(|&w| w > 1 && w <= width && self.samples % w == 0).max(),
+            CarKernel::Direct => None,
+        };
+        // SAFETY: both buffers hold `channels · samples` values of `F`
+        let (input, output) = unsafe { (BufferArg::from_raw_parts(self.input.clone(), total), BufferArg::from_raw_parts(self.output.clone(), total)) };
+        match width {
+            None => {
+                let geom = LaunchGeometry::per_sample(client, self.samples);
+                direct_car_kernel::launch::<F>(client, geom.cube_count, geom.cube_dim, input, output, self.channels as u32, self.samples as u32)
+            }
+            Some(width) => {
+                let vectors = self.samples / width;
+                let geom = LaunchGeometry::elementwise(client, vectors);
+                direct_car_vector_kernel::launch::<F>(client, geom.cube_count, geom.cube_dim, width, input, output, self.channels as u32, vectors as u32)
+            }
+        }
+    }
+}
+
+/// [`CmrInputs::run_car`] with the kernel CubeCL's autotuner found fastest for this device,
+/// element type and size. Benchmarks write to a scratch output.
+fn tuned_car<F: DspFloat>(inputs: CmrInputs) {
+    static TUNER: LocalTuner<String, String> = local_tuner!("common-average-v1");
+    let client = inputs.client.clone();
+    let id = tune_id(&client);
+    let widths: Vec<usize> = client.io_optimized_vector_sizes(size_of::<F>()).filter(|&w| w > 1).collect();
+    let set = TUNER.init(&id, move || {
+        let key = |p: &CmrInputs| format!("{}-c{}-t{}-a{}", F::type_name(), size_class(p.channels), size_class(p.samples), p.samples.trailing_zeros().min(4));
+        let scratch = |_: &String, p: &CmrInputs| CmrInputs { output: buffer::empty::<F>(&p.client, p.channels * p.samples), ..p.clone() };
+        let set: TunableSet<String, CmrInputs, ()> = TunableSet::new(key, scratch);
+        let kernels = std::iter::once(CarKernel::Direct).chain(widths.iter().map(|&width| CarKernel::Vectorized { width }));
+        kernels.fold(set, |set, kernel| {
+            set.with(Tunable::new(&format!("{kernel:?}"), move |p: CmrInputs| {
+                p.run_car::<F>(kernel);
+                Ok::<_, String>(())
+            }))
+        })
+    });
+    TUNER.execute(&id, &client, set, inputs)
 }
 
 /// How [`execute_common_median`] finds each sample's median over channels. All are exact and give
@@ -196,4 +260,23 @@ mod tests {
         }
     }
     runtime_test!(test_common_median_reference, medians);
+
+    /// The vectorized common average is bit-identical to `Direct` (sample counts every width
+    /// divides, some, none).
+    fn averages(client: &Client) {
+        for (channels, samples) in [(1usize, 300usize), (5, 304), (37, 301), (384, 304)] {
+            let x: Vec<f32> = (0..channels * samples).map(|i| ((i * 7919) % 211) as f32 * 0.37 - 40.0).collect();
+            let input = buffer::upload(client, &x);
+            let run = |kernel| {
+                let out = buffer::empty::<f32>(client, x.len());
+                execute_direct_car_with::<f32>(client, &input, &out, channels, samples, Some(kernel));
+                buffer::download::<f32>(client, out)
+            };
+            let direct = run(CarKernel::Direct);
+            for width in [2usize, 4, 16] {
+                assert_eq!(run(CarKernel::Vectorized { width }), direct, "{} {channels} ch {samples} samples width {width}", client.name());
+            }
+        }
+    }
+    runtime_test!(test_common_average_vectorized_matches_direct, averages);
 }

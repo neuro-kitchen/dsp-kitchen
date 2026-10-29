@@ -203,3 +203,27 @@ pub fn common_median_vector_kernel<F: Float, N: Size>(input: &[Vector<F, N>], ou
         }
     }
 }
+
+/// [`fn@direct_car_kernel`] on `N` consecutive samples per unit (`num_samples` a multiple of `N`):
+/// channel `c` of the unit's samples is one aligned vector load; channels are summed in the same
+/// order, so the output is bit-identical.
+#[cube(launch)]
+pub fn direct_car_vector_kernel<F: Float, N: Size>(input: &[Vector<F, N>], output: &mut [Vector<F, N>], num_channels: u32, vectors_per_row: u32) {
+    let v = element_position();
+    if v < vectors_per_row as usize {
+        let row = vectors_per_row as usize;
+        let mut sum = Vector::<F, N>::new(F::new(0.0f32));
+        let mut c = 0u32;
+        while c < num_channels {
+            sum += input[c as usize * row + v];
+            c += 1u32;
+        }
+        let avg = sum / Vector::new(F::cast_from(num_channels));
+        c = 0u32;
+        while c < num_channels {
+            let idx = c as usize * row + v;
+            output[idx] = input[idx] - avg;
+            c += 1u32;
+        }
+    }
+}

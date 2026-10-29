@@ -15,7 +15,7 @@ use dspk_ops::filter::fir::{execute_fir_centered_with, execute_fir_with, FirKern
 use dspk_ops::filter::non_linear::{execute_median_with, MedianKernel};
 use dspk_ops::filter::{DeviceFilter, FilterBand, FilterMode, FilterSpec, PassLayout};
 use dspk_ops::resampler::{resample_poly_len, resample_poly_with, ResampleFilter, ResampleKernel};
-use dspk_ops::spatial::{execute_common_median_with, CmrKernel};
+use dspk_ops::spatial::{execute_common_median_with, execute_direct_car_with, CarKernel, CmrKernel};
 
 const ITERATIONS: usize = 7;
 const CHANNELS: usize = 384;
@@ -78,6 +78,10 @@ fn bench(client: &Client) {
             let t = time_device(client, ITERATIONS, || filter.apply(client, &x, &out, &scratch, &state, CHANNELS, SAMPLES));
             println!("  iir bandpass 5, {blocks:>3} blocks {:28} {:8.2} ms", format!("{layout:?}"), t.as_secs_f64() * 1e3);
         }
+    }
+    for kernel in std::iter::once(CarKernel::Direct).chain(widths.iter().map(|&width| CarKernel::Vectorized { width })) {
+        let t = time_device(client, ITERATIONS, || execute_direct_car_with::<f32>(client, &x, &out, CHANNELS, SAMPLES, Some(kernel)));
+        println!("  common average reference {:28} {:8.2} ms", format!("{kernel:?}"), t.as_secs_f64() * 1e3);
     }
     let cpu = client.name() == "cpu";
     let kernels = [CmrKernel::Rank, CmrKernel::Bitonic].into_iter().filter(|&k| !(cpu && k == CmrKernel::Bitonic)).chain(widths.iter().map(|&width| CmrKernel::Vectorized { width }));
