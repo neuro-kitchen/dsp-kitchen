@@ -130,14 +130,14 @@ directory:
   `target/environment/` of the nearest Cargo project, or the user cache directory outside one.
 
 > [!NOTE]
-> **Known issue: abort at exit on CUDA.** A process that compiled many kernels on CUDA can finish
-> its work and then abort while exiting (exit code 134):
-> `fatal runtime error: thread local panicked on drop, aborting`. Results written before the exit
-> are complete. The cause is upstream: the kernel cache's database (turso) is dropped during the
-> CUDA device thread's teardown ([tracel-ai/cubecl#1981](https://github.com/tracel-ai/cubecl/issues/1981)).
-> The next process may then see a panic inside `turso_core` once; running it again works. Until a
-> fix is released, `DSPK_KERNEL_CACHE=0` avoids it (the case that reproduces it then exits
-> cleanly), at the cost of compiling kernels again in every process.
+> **Abort at exit (upstream, worked around).** CubeCL drops its kernel-cache database (turso) while
+> a device thread ends, which can abort a process after its work: `fatal runtime error: thread
+> local panicked on drop, aborting` (exit code 134;
+> [tracel-ai/cubecl#1981](https://github.com/tracel-ai/cubecl/issues/1981)). dspk avoids it by ending
+> only wgpu devices at exit (their Vulkan drivers need it) and leaving CUDA and CPU device threads to
+> the process exit. Calling `dspk_core::compute::shutdown_devices` yourself can still hit it; so can
+> code that opens devices through CubeCL directly. `DSPK_KERNEL_CACHE=0` avoids it at the cost of
+> compiling kernels in every process.
 
 ## Python
 

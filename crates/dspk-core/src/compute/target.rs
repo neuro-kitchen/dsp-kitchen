@@ -91,8 +91,13 @@ unsafe extern "C" {
     fn atexit(handler: extern "C" fn()) -> std::ffi::c_int;
 }
 
+/// The exit handler: shuts down the opened wgpu devices only. They must be destroyed before the
+/// process exits (NVIDIA's Vulkan shader-compiler threads otherwise race the teardown). The other
+/// runners are left running: ending a runner thread drops CubeCL's kernel-cache connection during
+/// thread-local teardown, where turso can abort the process ("thread local panicked on drop",
+/// tracel-ai/cubecl#1981); the process exit ends them without their thread-local destructors.
 extern "C" fn shutdown_at_exit() {
-    shutdown_devices();
+    shutdown_devices_where(|device| matches!(device, Device::Wgpu(_)));
 }
 
 /// Records `device`, newly opened, and registers [`shutdown_devices`] to run at exit. Called after
@@ -130,7 +135,17 @@ pub fn open_device(device: Device) -> Client {
 /// runner going (CubeCL waits up to 30 s for it, then leaves it), so drop them first. A later
 /// [`ComputeTarget::client`] opens the device again.
 pub fn shutdown_devices() {
-    let devices = std::mem::take(&mut *OPENED.lock().unwrap_or_else(|e| e.into_inner()));
+    shutdown_devices_where(|_| true);
+}
+
+/// [`shutdown_devices`] for the opened devices `select` accepts; the others stay recorded.
+fn shutdown_devices_where(select: impl Fn(&Device) -> bool) {
+    let devices: Vec<Device> = {
+        let mut opened = OPENED.lock().unwrap_or_else(|e| e.into_inner());
+        let (chosen, kept) = std::mem::take(&mut *opened).into_iter().partition(|d| select(d));
+        *opened = kept;
+        chosen
+    };
     for device in devices {
         // The runner is registered under the runtime's own id, not `Device`'s runtime-stamped one
         DeviceHandle::<()>::shutdown(cubecl::RuntimeId::strip(device.to_id()));
