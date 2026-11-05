@@ -7,7 +7,7 @@ use dspk_core::{DspResult, HaloWindow, RecordingSource, SampleFormat, WindowLoad
 use dspk_ops::pipeline::PipelineWorkspace;
 
 /// A step applied to every preprocessed window on the device before a sorter sees it (EMUsort's
-/// per-channel delay alignment, in `dspk-ks4`).
+/// per-channel delay alignment, in `dspk-sorter-kilosort`).
 pub trait WindowAligner {
     /// The aligned `[channels, samples]` window for `window` (`samples` per channel).
     fn align(&mut self, window: &Handle, samples: usize) -> Handle;

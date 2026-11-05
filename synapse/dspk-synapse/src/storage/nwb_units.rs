@@ -1,13 +1,13 @@
 //! NWB `/units` tables ↔ [`SortingOutput`]. The table itself is read and written by
-//! [`dspk_synapse_io::nwb::NwbUnitsTable`]; this module converts and computes the unit metrics the
+//! [`crate::io::nwb::NwbUnitsTable`]; this module converts and computes the unit metrics the
 //! table lacks.
 
 use std::path::Path;
 
 use dspk_core::DspResult;
 use dspk_io::container::npy::NpyArray;
-use dspk_synapse_io::nwb::NwbUnitsTable;
-use dspk_synapse_io::templates::TemplateAxisOrder;
+use crate::io::nwb::NwbUnitsTable;
+use crate::io::templates::TemplateAxisOrder;
 
 use crate::core::{
     pack_templates, unpack_template, RecordingMeta, SortedUnit, SortingOutput, UnitQualityLabel,

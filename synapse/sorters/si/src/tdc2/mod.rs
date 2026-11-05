@@ -186,7 +186,7 @@ impl Tridesclous2 {
         &self,
         client: &cubecl::prelude::Client,
         source: &dyn dspk_core::RecordingSource,
-        probe: &dspk_synapse_io::probe::SensorLayout,
+        probe: &dspk_synapse::io::probe::SensorLayout,
     ) -> dspk_core::DspResult<Tridesclous2Result> {
         run(client, source, probe, &self.config, &dspk_core::NoProgress)
     }

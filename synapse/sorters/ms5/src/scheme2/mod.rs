@@ -16,10 +16,12 @@
 //! search run on the device ([`fn@self::kernels::project_classifier_kernel`],
 //! [`fn@self::kernels::second_nearest_kernel`]).
 //!
-//! Choices of ours. The classifiers' PCA is randomized (scikit-learn's iteration count) even below
-//! 8000 features, where upstream's is exact: the nearest-neighbour distances depend only on the
-//! subspace the components span, which the randomized solver finds to its tolerance, and the exact
-//! solver costs a full eigendecomposition per channel (hundreds of components on a dense probe).
+//! Choices of ours. The classifiers' PCA is exact, as upstream's, but through the snippets' Gram
+//! matrix (a few hundred rows, fewer than the `T · |N(m)|` features: one small eigendecomposition
+//! per channel, `ClassifierParams::pca.dual_max_rows`, `Mountainsort5Config::classifier_dual_max_rows`); with more rows than that it is randomized
+//! (scikit-learn's iteration count): the nearest-neighbour distances depend only on the subspace
+//! the components span. The channels are fitted on several threads (`ClassifierParams::parallel`;
+//! each channel's arithmetic is the same either way).
 //! Memory: a unit's template is the median over its spikes on the channels within
 //! the snippet mask radius of its peak channel only, so a unit trains the classifiers of those
 //! channels only (upstream: every channel where its whole-probe template reaches the level; farther
@@ -49,12 +51,33 @@ pub struct ClassifierParams {
     /// `None`: `max(12, 3 · |N(m)|)`.
     pub classifier_npca: Option<usize>,
     pub pca: TopComponentsOptions,
+    /// Fit the channels' classifiers on several threads (same result; default `true`).
+    pub parallel: bool,
 }
 
 impl Default for ClassifierParams {
     fn default() -> Self {
-        Self { detect_threshold: 5.5, detect_sign: -1, max_num_snippets_per_training_batch: 200, classifier_npca: None, pca: TopComponentsOptions::default() }
+        Self {
+            detect_threshold: 5.5,
+            detect_sign: -1,
+            max_num_snippets_per_training_batch: 200,
+            classifier_npca: None,
+            pca: TopComponentsOptions::default(),
+            parallel: true,
+        }
     }
+}
+
+/// One channel's trained classifier, before the channels are concatenated.
+struct ChannelFit {
+    nm: usize,
+    k: usize,
+    labels: Vec<u32>,
+    offsets: Vec<i32>,
+    mean: Vec<f32>,
+    /// `[d, k]`.
+    components: Vec<f32>,
+    features: Vec<f32>,
 }
 
 /// Fraction of the threshold a template must reach on a channel (upstream's literal `0.4`).
@@ -151,7 +174,11 @@ impl Classifiers {
         let (mut means, mut components, mut features) = (Vec::new(), Vec::new(), Vec::new());
         let (mut mean_off, mut comp_off, mut feat_off) = (Vec::new(), Vec::new(), Vec::new());
         out.train_off.push(0);
-        for ch in 0..m {
+        // Each channel's classifier is independent: fitted on several threads (each thread has its
+        // own device stream, so the small PCAs overlap), assembled in channel order below. Every
+        // channel's arithmetic is the same as fitted alone.
+        use rayon::prelude::*;
+        let fit_channel = |ch: usize| -> ChannelFit {
             let nb: Vec<usize> = mask.of(ch).collect();
             let nm = nb.len();
             let d = t * nm;
@@ -196,20 +223,25 @@ impl Classifiers {
             let index: Vec<u32> = (0..l as u32).collect();
             let src = DeviceRows { data: &resident, len: rows.len(), dim: d, rows: &index };
             let pca = TopComponents::fit(client, &src, npca, &params.pca);
-            let feats = pca.transform(client, &src, params.pca.batch_elements);
+            let features = pca.transform(client, &src, params.pca.batch_elements);
+            // `[d, k]`: component c of feature f at f · k + c
+            let components = (0..d * pca.k).map(|e| pca.components[(e % pca.k) * d + e / pca.k]).collect();
+            ChannelFit { nm, k: pca.k, labels, offsets, mean: pca.mean, components, features }
+        };
+        let fits: Vec<ChannelFit> = if params.parallel { (0..m).into_par_iter().map(fit_channel).collect() } else { (0..m).map(fit_channel).collect() };
+        for fit in fits {
             mean_off.push(means.len() as u32);
             comp_off.push(components.len() as u32);
             feat_off.push(features.len() as u32);
-            means.extend_from_slice(&pca.mean);
-            // `[d, k]`: component c of feature f at f · k + c
-            components.extend((0..d * pca.k).map(|e| pca.components[(e % pca.k) * d + e / pca.k]));
-            features.extend_from_slice(&feats);
-            out.n_mask.push(nm as u32);
-            out.n_comp.push(pca.k as u32);
-            out.n_train.push(l as u32);
-            out.max_comp = out.max_comp.max(pca.k);
-            out.labels.extend(labels);
-            out.offsets.extend(offsets);
+            means.extend_from_slice(&fit.mean);
+            components.extend_from_slice(&fit.components);
+            features.extend_from_slice(&fit.features);
+            out.n_mask.push(fit.nm as u32);
+            out.n_comp.push(fit.k as u32);
+            out.n_train.push(fit.labels.len() as u32);
+            out.max_comp = out.max_comp.max(fit.k);
+            out.labels.extend(fit.labels);
+            out.offsets.extend(fit.offsets);
             out.train_off.push(out.labels.len() as u32);
         }
         let up = |v: &[u32]| buffer::upload(client, if v.is_empty() { &[0u32][..] } else { v });

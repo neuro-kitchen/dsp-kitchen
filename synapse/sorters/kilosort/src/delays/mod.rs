@@ -1,4 +1,4 @@
-//! EMUsort channel delays on the device: estimation ([`ChannelDelayEstimator`]) and removal
+//! Channel delays on the device (EMUsort's `remove_chan_delays`, a stage of the shared runner): estimation ([`ChannelDelayEstimator`]) and removal
 //! ([`ChannelAligner`]). Batches never leave the device; the estimator downloads its
 //! `[channels, channels, 2·max_lag + 1]` cross-correlation once, at the end.
 //!

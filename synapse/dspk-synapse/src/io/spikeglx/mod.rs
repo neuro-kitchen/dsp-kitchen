@@ -9,10 +9,10 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::probe::{Position3D, SensorLayout, SensorSite};
+use crate::io::probe::{Position3D, SensorLayout, SensorSite};
 use dspk_core::{ChannelInfo, DspError, DspResult, MemoryOrder, RecordingInfo, RecordingSource, SampleFormat, SignalUnit, MICROVOLTS_PER_VOLT};
 
-use crate::mtscomp::MtscompRecording;
+use crate::io::mtscomp::MtscompRecording;
 use dspk_io::generic::raw::{RawParams, RawRecording};
 
 mod format;
@@ -337,7 +337,7 @@ snsApLfSy=2,0,1\n~imroTbl=(24,2)(0 0 0 0 0)(1 0 0 0 1)\n~snsGeomMap=(NP2014,4,25
         std::fs::write(SpikeGlxMeta::path_for(&bin), META_3A).unwrap();
 
         assert!(SpikeGlxMeta::is_spikeglx(&bin));
-        let rec = crate::open(&bin).unwrap();
+        let rec = crate::io::open(&bin).unwrap();
         assert_eq!(rec.info().samples, 2);
         let mut out = [0.0; 2];
         rec.read(&[4], 0..2, &mut out).unwrap();

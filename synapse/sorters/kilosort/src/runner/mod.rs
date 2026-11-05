@@ -23,7 +23,7 @@ use dspk_ops::spatial::SpatialWhitening;
 use dspk_core::progress::Stages;
 use cubecl::server::Handle;
 use dspk_core::{ChunkSchedule, DspError, DspResult, HaloWindow, ProgressSink, RecordingSource};
-use dspk_synapse_io::probe::SensorLayout;
+use dspk_synapse::io::probe::SensorLayout;
 use dspk_synapse::core::{SortingOutput, WaveformTemplate};
 
 use dspk_synapse::sorter::result::{AmplitudeScale, SorterResult};
@@ -37,7 +37,7 @@ use super::matching::TemplateMatcher;
 use super::detect::{TemplateCentres, UniversalDetector, UniversalSpike};
 use super::templates::{extract_clips, learn_universal_templates_with_progress, LearnOptions, UniversalTemplates, MAX_CLIPS};
 use super::Kilosort4Config;
-use crate::emusort::delays::{ChannelAligner, ChannelDelayEstimator};
+use crate::delays::{ChannelAligner, ChannelDelayEstimator};
 
 /// Butterworth order of the band-pass (per edge): Kilosort4's high-pass order.
 pub const BANDPASS_ORDER: usize = 3;
@@ -66,7 +66,7 @@ const UNITS: &str = "units";
 /// Sorter name of a Kilosort4 run in [`SortingOutput`].
 pub const KILOSORT4_SORTER: &str = "kilosort4";
 
-fn filter_error(e: dspk_ops::filter::FilterError) -> DspError {
+fn filter_error(e: dspk_ops::filter::OpsError) -> DspError {
     DspError::InvalidConfig(e.to_string())
 }
 
@@ -365,7 +365,8 @@ fn predefined_templates(plan: &RunPlan) -> DspResult<UniversalTemplates> {
     }
     #[cfg(feature = "hub")]
     {
-        let (_, path) = dspk_synapse_ml::runtime::pull_model(super::KILOSORT4_WTEMP_MODEL_ID)?;
+        // Downloaded from upstream's location and checked by SHA-256 (dspk-hub catalog)
+        let path = dspk_hub::pull(dspk_hub::catalog::synapse::KILOSORT4_WTEMP).map_err(|e| DspError::Io(e.to_string()))?;
         UniversalTemplates::from_npz(&path)
     }
     #[cfg(not(feature = "hub"))]
@@ -636,10 +637,13 @@ mod tests {
             "no upper edge: a high-pass"
         );
         assert_eq!(filter_stages(&Kilosort4Config::default()), vec![PipelineStage::CommonAverageReference, band(300.0, 6000.0)]);
-        let emusort = crate::emusort::EmusortConfig::default().kilosort4();
-        assert_eq!(filter_stages(&emusort), vec![band(300.0, 5000.0)]);
-        let with_notch = Kilosort4Config { do_notch: true, ..emusort };
-        assert_eq!(filter_stages(&with_notch)[1], PipelineStage::Filter(FilterSpec::notch(60.0, 30.0)));
+        #[cfg(feature = "emusort")]
+        {
+            let emusort = crate::emusort::EmusortConfig::default().kilosort4();
+            assert_eq!(filter_stages(&emusort), vec![band(300.0, 5000.0)]);
+            let with_notch = Kilosort4Config { do_notch: true, ..emusort };
+            assert_eq!(filter_stages(&with_notch)[1], PipelineStage::Filter(FilterSpec::notch(60.0, 30.0)));
+        }
         let off = Kilosort4Config { do_car: false, do_bandpass: false, do_notch: false, ..Default::default() };
         assert!(filter_stages(&off).is_empty());
         let past_nyquist = Pipeline::with_stages(filter_stages(&Kilosort4Config::default()));
@@ -655,7 +659,7 @@ mod tests {
         assert_eq!(duplicate_mask(&spikes, &labels, 10), vec![false, true, true, true, false]);
         assert_eq!(duplicate_mask(&spikes, &labels, 0), vec![true; 5]);
     }
-    use dspk_synapse_io::synthetic::{SyntheticParams, SyntheticRecording};
+    use dspk_synapse::io::synthetic::{SyntheticParams, SyntheticRecording};
 
     /// µV per stored step of the int16 test recording.
     const I16_GAIN: f32 = 0.25;
@@ -732,6 +736,7 @@ mod tests {
 
     /// Uploading the stored int16 values (scaled on the device) finds the same spikes as uploading
     /// host-scaled `f32`.
+    #[cfg(feature = "ks4")]
     #[test]
     fn stored_upload_matches_f32_upload() {
         let synthetic = SyntheticRecording::new(SyntheticParams { channels: 4, duration_sec: 1.0, sample_rate_hz: 30_000.0, ..Default::default() })
@@ -758,6 +763,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "ks4")]
     #[test]
     fn kilosort4_runs_on_synthetic_recording() {
         let rec = SyntheticRecording::new(SyntheticParams { channels: 4, duration_sec: 1.0, sample_rate_hz: 30_000.0, ..Default::default() })

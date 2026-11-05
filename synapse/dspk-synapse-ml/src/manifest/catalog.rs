@@ -1,11 +1,11 @@
-//! Model Hub catalog loader supporting the embedded JSON catalog (`catalog/models.json`)
-//! and optional user catalog overrides.
+//! The catalog of model manifests (`catalog/models.json`, how to run each model) and optional user
+//! overrides (`DSPK_MODEL_CATALOG`). Downloads are the `dspk-hub` catalog's.
 
 use dspk_core::{DspError, DspResult as Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-use super::manifest::ModelManifest;
+use super::spec::ModelManifest;
 
 /// Embedded default JSON catalog shipped in `synapse/dspk-synapse-ml/catalog/models.json`.
 pub const EMBEDDED_MODELS_JSON: &str = include_str!("../../catalog/models.json");
@@ -30,12 +30,12 @@ pub struct ModelCatalog {
 
 impl ModelCatalog {
     /// Loads the embedded default catalog compiled into `dspk-synapse-ml`, plus any override
-    /// file pointed to by `DSPK_HUB_CATALOG` if set.
+    /// file pointed to by `DSPK_MODEL_CATALOG` if set.
     pub fn load_default() -> Result<Self> {
         let mut catalog = Self::from_json_str(EMBEDDED_MODELS_JSON)
             .map_err(|e| DspError::InvalidConfig(format!("embedded catalog/models.json: {e}")))?;
 
-        if let Ok(custom_path) = std::env::var("DSPK_HUB_CATALOG") {
+        if let Ok(custom_path) = std::env::var("DSPK_MODEL_CATALOG") {
             let trimmed = custom_path.trim();
             if !trimmed.is_empty() {
                 let p = Path::new(trimmed);

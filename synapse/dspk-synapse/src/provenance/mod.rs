@@ -10,6 +10,10 @@ use serde::{Deserialize, Serialize};
 pub enum ProvenanceKind {
     /// Algorithm written here from the paper (upstream code not ported).
     ReimplementedFromPaper,
+    /// Algorithm written here from the paper with its own architecture (GPU kernels, batching),
+    /// its behaviour matched to upstream's code by reading it (named functions, defaults, stage
+    /// order); no code copied. Distributed under upstream's licence.
+    ReimplementedFromPaperAndCode,
     /// Published weights / arrays run as released.
     UpstreamWeights,
     /// Algorithm ported from the upstream source (permissive license), stage by stage.

@@ -8,7 +8,7 @@ use dspk_core::{DspError, DspResult, RationalTime, RecordingSource, SampleFormat
 use super::{probe_layout, SpikeGlxMeta};
 use dspk_io::core::sources::{SourceEntry, SourceKind};
 use dspk_io::core::Format;
-use crate::probe::{ProbeSource, SensorLayout};
+use crate::io::probe::{ProbeSource, SensorLayout};
 
 pub struct SpikeGlx;
 
@@ -122,7 +122,7 @@ mod tests {
             std::fs::write(dir.join(file), vec![0u8; ch * 2 * 10]).unwrap();
             std::fs::write(SpikeGlxMeta::path_for(&dir.join(file)), meta(ch, rate, ty)).unwrap();
         }
-        let list = crate::sources(&dir.join("run_g0_t0.imec0.ap.bin")).unwrap();
+        let list = crate::io::sources(&dir.join("run_g0_t0.imec0.ap.bin")).unwrap();
         let names: Vec<(&str, SourceKind, f64)> = list.iter().map(|s| (s.name.as_str(), s.kind, s.sample_rate.rate_hz())).collect();
         assert_eq!(
             names,
@@ -130,7 +130,7 @@ mod tests {
         );
         assert_eq!(list[0].samples, 10);
         assert_eq!(default_source(&list).unwrap().name, "imec0.ap");
-        let lf = crate::open_source(&dir.join("run_g0_t0.imec0.ap.bin"), "run_g0_t0.imec0.lf.bin").unwrap();
+        let lf = crate::io::open_source(&dir.join("run_g0_t0.imec0.ap.bin"), "run_g0_t0.imec0.lf.bin").unwrap();
         assert_eq!(lf.info().sample_rate_hz(), 2500.0);
         std::fs::remove_dir_all(&dir).unwrap();
     }

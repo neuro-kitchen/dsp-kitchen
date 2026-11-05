@@ -1,5 +1,5 @@
-//! What every dspk spike sorter shares, so each sorter crate (`dspk-ks4`, `dspk-ms5`, `dspk-sc2`,
-//! `dspk-tdc2`) holds only its own algorithm, under its upstream's licence.
+//! What every dspk spike sorter shares, so each sorter crate (`dspk-sorter-kilosort`,
+//! `dspk-sorter-ms5`, `dspk-sorter-si`) holds only its own algorithms, under its upstream's licence.
 //!
 //! - [`result`]: the common result of a sort ([`SorterResult`]) and its conversion to a
 //!   `SortingOutput`.

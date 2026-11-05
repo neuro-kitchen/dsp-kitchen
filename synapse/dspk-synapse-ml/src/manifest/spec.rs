@@ -1,4 +1,6 @@
-//! Declarative model manifest, tensor I/O specification, and local status types for the Model Hub.
+//! Model manifests: what a published model is and how to run it (format, tensor I/O, provenance).
+//! Where its file is downloaded from, its SHA-256 and size are the `dspk-hub` catalog entry with
+//! the same id.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -95,15 +97,15 @@ pub struct ArraySpec {
     pub shape: Vec<usize>,
 }
 
-/// Catalog entry of a published artifact: what to download, how to verify it, what it holds, and
-/// whom to credit ([`Provenance`]).
+/// How to run a published model: its format, tensors and provenance. The file itself (URL,
+/// SHA-256, size) is the `dspk-hub` catalog entry with the same [`id`](Self::id).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelManifest {
-    /// Unique identifier `"<family>/<slug>"` (e.g. `"kilosort4/wtemp-v1"`).
+    /// Unique identifier `"<family>/<slug>"`, the id of the `dspk-hub` catalog entry.
     pub id: String,
     /// Human-readable title.
     pub name: String,
-    /// Sorter / model family slug (e.g. `"kilosort4"`).
+    /// Model family slug (e.g. `"dartsort"`).
     pub family: String,
     /// Pipeline task (`"detection"`, `"denoising"`, `"embedding"`, `"curation"`, …).
     pub task: String,
@@ -111,12 +113,6 @@ pub struct ModelManifest {
     pub format: ModelFormat,
     #[serde(default)]
     pub description: String,
-    /// Download URI (`hf://…`, `gh://…`, `zenodo://…`, `https://…`, or `file://…`).
-    pub weights_url: String,
-    /// Lowercase hex SHA-256 of the artifact (required: entries without one cannot be pulled).
-    pub sha256: String,
-    /// Artifact size in bytes (checked on download).
-    pub size_bytes: u64,
     /// Arrays of a multi-array artifact (`.npz`).
     #[serde(default)]
     pub arrays: Vec<ArraySpec>,
@@ -128,28 +124,4 @@ pub struct ModelManifest {
     pub sample_rate_hz: Option<f64>,
     /// Paper, code, license and download source to credit.
     pub provenance: Provenance,
-}
-
-impl ModelManifest {
-    /// File name of the artifact: the published name ([`Provenance::artifacts`]), else
-    /// `<slug>.<extension>`.
-    pub fn file_name(&self) -> String {
-        match self.provenance.artifacts.first() {
-            Some(a) => a.name.clone(),
-            None => format!("{}.{}", self.id.rsplit('/').next().unwrap_or(&self.id), self.format.extension()),
-        }
-    }
-
-    /// What `dspk-synapse-hub` downloads and verifies for this entry.
-    #[cfg(feature = "hub")]
-    pub fn artifact(&self) -> dspk_synapse_hub::Artifact {
-        dspk_synapse_hub::Artifact {
-            id: self.id.clone(),
-            family: self.family.clone(),
-            file_name: self.file_name(),
-            url: self.weights_url.clone(),
-            sha256: self.sha256.clone(),
-            size_bytes: self.size_bytes,
-        }
-    }
 }

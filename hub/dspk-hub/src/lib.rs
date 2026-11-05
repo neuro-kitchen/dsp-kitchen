@@ -1,27 +1,29 @@
-//! Verified download and local cache of published artifacts (model weights, sorter arrays).
+//! Verified download and local cache of published artifacts: data files and model weights that
+//! dspk crates use but do not ship (licences, size).
 //!
 //! - [`Artifact`]: what to fetch — id, family, file name, URI (`hf://`, `gh://`, `zenodo://`,
 //!   `https://`, `file://`, see [`providers`]), expected SHA-256 and size.
 //! - [`Hub`]: [`Hub::pull`] downloads into the [`HubCache`] and verifies hash and size before the
 //!   file is committed (an artifact without a hash is refused); [`Hub::status`] reads the cache
 //!   index; [`Hub::verify`] re-hashes.
+//! - [`catalog`]: which artifacts exist, where they come from and whom to credit, as data only.
+//!   Each domain is a feature (`synapse`: electrophysiology artifacts such as Kilosort4's
+//!   universal templates); [`pull`] fetches a catalog entry by id.
 //!
-//! - [`sorters`]: installs and finds the `dspk-sorters` program (every spike sorter, GPL-3.0),
-//!   released with each version and run as a separate program.
-//!
-//! Catalogs (which artifacts exist and whom to credit) belong to the crates that publish them,
-//! e.g. `dspk-synapse-ml`. All network access of the workspace's model code lives here.
+//! The crate depends on no other dspk crate: the catalogs describe files, the crates that read
+//! them (sorters, models) live elsewhere. All network access of the workspace's libraries is here.
 
 pub mod cache;
+pub mod catalog;
 pub mod download;
 pub mod providers;
-pub mod sorters;
 
 use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 
 pub use cache::{ArtifactStatus, CachedArtifactRecord, HubCache, HubCacheIndex, compute_file_sha256};
+pub use catalog::{Catalog, CatalogEntry, Credit, CreditCode, CreditPaper};
 pub use download::{DownloadOutcome, RemoteLinkCheck, check_remote_link, download_and_verify};
 pub use providers::{ProviderKind, resolve_gh_uri, resolve_hf_uri, resolve_weights_uri, resolve_zenodo_uri};
 
@@ -132,6 +134,14 @@ impl Hub {
     }
 }
 
+/// Downloads (unless installed) and verifies catalog entry `id` of [`Catalog::load_default`]
+/// into the default cache ([`Hub::from_env_or_default`]), returning its local path.
+pub fn pull(id: &str) -> Result<PathBuf> {
+    let catalog = Catalog::load_default()?;
+    let entry = catalog.get(id).ok_or_else(|| anyhow::anyhow!("unknown artifact id '{id}' (`dspk hub list` shows the catalog)"))?;
+    Hub::from_env_or_default().pull(&entry.artifact(), false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,7 +149,7 @@ mod tests {
 
     #[test]
     fn pull_verify_status_and_remove_a_local_artifact() {
-        let root = std::env::temp_dir().join(format!("dsp_synapse_hub_test_{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("dspk_hub_test_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let bytes = b"LOCAL_TEST_ARTIFACT_BYTES";

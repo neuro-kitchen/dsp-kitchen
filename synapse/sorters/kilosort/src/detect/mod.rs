@@ -27,7 +27,7 @@ use dspk_ops::core::buffer;
 use dspk_ops::peaks::{find_peak_candidates_on_device, Polarity};
 use dspk_core::compute::{device_elements, LaunchGeometry};
 use dspk_core::{DspError, DspResult};
-use dspk_synapse_io::probe::SensorLayout;
+use dspk_synapse::io::probe::SensorLayout;
 
 use self::kernels::{
     centre_response_kernel, correlate_templates_kernel, local_peak_score_kernel, neighbour_max_kernel,

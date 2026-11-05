@@ -2,7 +2,7 @@
 //! the whole recording (filter → detect → deduplicate).
 
 use dspk_ops::pipeline::{Pipeline, PipelineStage, PipelineWorkspace};
-use dspk_synapse_io::probe::{Position3D, SensorLayout, SensorSite};
+use dspk_synapse::io::probe::{Position3D, SensorLayout, SensorSite};
 use dspk_core::{MemoryRecording, RecordingSource};
 use dspk_synapse::detection::{DeduplicatedSpike, SpikeSpacing, deduplicate_spikes_spatial, detect_spikes_with_sigma};
 use dspk_synapse::streaming::{StreamingDetectionConfig, StreamingDetector, calibrate_noise};

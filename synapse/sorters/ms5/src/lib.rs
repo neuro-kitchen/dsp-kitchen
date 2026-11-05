@@ -1,11 +1,12 @@
 //! MountainSort 5 (Chung et al., Neuron 2017; `flatironinstitute/mountainsort5`, Apache-2.0),
 //! ported from its source: locally exclusive detection ([`detect`]), masked snippets
 //! ([`snippets`]), PCA and the isosplit6 subdivision method ([`scheme1::subdivision`],
-//! [`dspk_synapse::sorting::isosplit6`]), median templates and alignment ([`templates`],
+//! [`isosplit6`]: this crate's port of `magland/isosplit6`), median templates and alignment ([`templates`],
 //! [`scheme1`]), then per-channel classifiers over the whole recording ([`scheme2`]), driven by
 //! [`runner`]. Stages, settings and our choices: the book's MountainSort 5 pages.
 
 pub mod detect;
+pub mod isosplit6;
 pub mod runner;
 pub mod scheme1;
 pub mod scheme2;
@@ -20,7 +21,7 @@ pub use snippets::{MaskedSnippets, SnippetRows};
 pub use scheme1::subdivision::{isosplit6_subdivision, isosplit6_subdivision_with_progress, SubdivisionOptions};
 
 use dspk_ops::linalg::TopComponentsOptions;
-use dspk_synapse::sorting::IsosplitOptions;
+use crate::isosplit6::IsosplitOptions;
 
 use dspk_synapse::provenance::{Attributed, Paper, Provenance, ProvenanceKind, UpstreamCode};
 
@@ -97,7 +98,18 @@ pub struct Mountainsort5Config {
     pub classification_chunk_sec: Option<f64>,
     /// Above this many features PCA is randomized (scikit-learn's `covariance_eigh` cap).
     pub pca_exact_cap: usize,
+    /// The per-channel classifiers' PCA of at most this many snippets (fewer than their features)
+    /// is exact through the snippets' Gram matrix
+    /// (`dspk_ops::linalg::TopComponentsOptions::dual_max_rows`; upstream's is exact too, through
+    /// scikit-learn's covariance), else randomized. Measured on 2 s × 384 ch: classifiers 42 s →
+    /// 13 s. Not used for clustering: there the Gram matrix of thousands of events costs more than
+    /// the randomized solver. 0: never.
+    pub classifier_dual_max_rows: usize,
     pub seed: u64,
+    /// Independent work on several threads (each with its own device stream): the per-channel
+    /// classifiers and the halves of the isosplit6 subdivision. Same result either way; default
+    /// `true`.
+    pub parallel: bool,
 }
 
 impl Default for Mountainsort5Config {
@@ -139,7 +151,9 @@ impl Default for Mountainsort5Config {
             classifier_npca: None,
             classification_chunk_sec: None,
             pca_exact_cap: 8000,
+            classifier_dual_max_rows: 1024,
             seed: 0,
+            parallel: true,
         }
     }
 }
@@ -159,9 +173,9 @@ impl Mountainsort5Config {
                     min_cluster_size: self.min_cluster_size,
                     k_init: self.k_init,
                     max_iterations_per_pass: self.max_iterations_per_pass,
-                    variant: dspk_synapse::sorting::IsosplitVariant::Isosplit6,
                 },
                 pca: self.pca(),
+                parallel: self.parallel,
             },
             skip_alignment: self.skip_alignment,
             detect_sign: self.detect_sign,
@@ -176,7 +190,8 @@ impl Mountainsort5Config {
             max_num_snippets_per_training_batch: self.max_num_snippets_per_training_batch,
             classifier_npca: self.classifier_npca,
             // Randomized (module docs of `scheme2`): only the subspace matters to the distances
-            pca: TopComponentsOptions { exact_cap: 0, ..self.pca() },
+            pca: TopComponentsOptions { exact_cap: 0, dual_max_rows: self.classifier_dual_max_rows, ..self.pca() },
+            parallel: self.parallel,
         }
     }
 }
@@ -220,7 +235,7 @@ impl Mountainsort5 {
         &self,
         client: &cubecl::prelude::Client,
         source: &dyn dspk_core::RecordingSource,
-        probe: &dspk_synapse_io::probe::SensorLayout,
+        probe: &dspk_synapse::io::probe::SensorLayout,
     ) -> dspk_core::DspResult<Mountainsort5Result> {
         run(client, source, probe, &self.config, &dspk_core::NoProgress)
     }
@@ -229,7 +244,7 @@ impl Mountainsort5 {
         &self,
         client: &cubecl::prelude::Client,
         source: &dyn dspk_core::RecordingSource,
-        probe: &dspk_synapse_io::probe::SensorLayout,
+        probe: &dspk_synapse::io::probe::SensorLayout,
         progress: &dyn dspk_core::ProgressSink,
     ) -> dspk_core::DspResult<Mountainsort5Result> {
         run(client, source, probe, &self.config, progress)

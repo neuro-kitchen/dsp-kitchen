@@ -2,9 +2,8 @@
 
 use std::path::Path;
 
-use crate::phy::PhyFolder;
-#[cfg(feature = "zarr")]
-use crate::{nwb::NwbUnitsTable, sorting_zarr::SortingZarr};
+use crate::io::phy::PhyFolder;
+use crate::io::{nwb::NwbUnitsTable, sorting_zarr::SortingZarr};
 
 /// Spike-sorting file formats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,7 +37,6 @@ pub fn detect_sorting(path: &Path) -> SortingFormat {
     if PhyFolder::is_phy_folder(path) {
         return SortingFormat::Phy;
     }
-    #[cfg(feature = "zarr")]
     {
         if NwbUnitsTable::is_units_table(path) {
             return SortingFormat::NwbUnits;

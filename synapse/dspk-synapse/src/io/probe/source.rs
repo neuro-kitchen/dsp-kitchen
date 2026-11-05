@@ -15,7 +15,7 @@ pub trait ProbeSource: Format {
 }
 
 /// Formats that implement [`ProbeSource`], in detection order.
-static PROBE_SOURCES: &[&dyn ProbeSource] = &[&crate::spikeglx::SpikeGlx];
+static PROBE_SOURCES: &[&dyn ProbeSource] = &[&crate::io::spikeglx::SpikeGlx];
 
 /// Probe geometry of source `id` of `path`; `None` when its format carries none. Sites are numbered
 /// by the source's channels; apply [`SensorLayout::select_channels`] for a channel subset.

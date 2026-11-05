@@ -1,5 +1,6 @@
 //! Neural-recording formats (NWB, SpikeGLX, mtscomp), spike-sorting files (Phy / Kilosort, NWB
-//! units, `.sorting.zarr`), probe geometry, and synthetic recordings, on top of `dspk-io`.
+//! units, `.sorting.zarr`), probe geometry, and synthetic recordings, on top of `dspk-io`
+//! (host-side: no device needed).
 //!
 //! [`open`], [`detect`], [`sources`] and [`open_source`] know every format of `dspk-io` plus the
 //! neural ones ([`formats`]); `dspk_io::open` knows only the generic ones.
@@ -10,19 +11,16 @@ use dspk_core::{DspResult, RecordingSource};
 use dspk_io::{Format, SourceEntry};
 
 pub mod mtscomp;
-#[cfg(feature = "zarr")]
 pub mod nwb;
 pub mod phy;
 pub mod probe;
 mod sorting_format;
-#[cfg(feature = "zarr")]
 pub mod sorting_zarr;
 pub mod spikeglx;
 pub mod synthetic;
 pub mod templates;
 
 pub use mtscomp::MtscompRecording;
-#[cfg(feature = "zarr")]
 pub use nwb::NwbZarrRecording;
 pub use probe::{probe_of, Position3D, SensorLayout, SensorSite};
 pub use sorting_format::{detect_sorting, SortingFormat};
@@ -31,9 +29,7 @@ pub use synthetic::{SyntheticParams, SyntheticRecording};
 
 static FORMATS: &[&dyn Format] = &[
     // NWB before generic Zarr: an NWB store is also a Zarr store
-    #[cfg(feature = "zarr")]
     &nwb::Nwb,
-    #[cfg(feature = "zarr")]
     &dspk_io::generic::zarr_traces::ZarrTraces,
     // SpikeGLX before mtscomp: a SpikeGLX `.cbin` is read with its `.meta`
     &spikeglx::SpikeGlx,

@@ -9,21 +9,26 @@ pub mod onnx_engine;
 use std::path::PathBuf;
 use dspk_core::{DspError, DspResult};
 #[cfg(feature = "hub")]
-use crate::hub::ModelManifest;
-use crate::hub::TensorPortSpec;
+use crate::manifest::ModelManifest;
+use crate::manifest::TensorPortSpec;
 
 pub use burn_engine::{burn_conv1d, burn_linear_2d};
 pub use onnx_engine::{OnnxRuntimeSession, RuntimeTensor};
 
-/// Pulls and verifies `model_id` of the catalog (feature `hub`), returning its manifest and local
-/// path.
+/// The manifest of `model_id` (this crate's catalog) and its file, downloaded and verified through
+/// the `dspk-hub` catalog entry of the same id (feature `hub`).
 #[cfg(feature = "hub")]
 pub fn pull_model(model_id: &str) -> DspResult<(ModelManifest, PathBuf)> {
-    let hub = crate::hub::ModelHub::new().map_err(|e| DspError::Io(e.to_string()))?;
-    hub.pull(model_id, false).map_err(|e| DspError::Io(e.to_string()))
+    let catalog = crate::manifest::ModelCatalog::load_default()?;
+    let manifest = catalog
+        .get(model_id)
+        .cloned()
+        .ok_or_else(|| DspError::InvalidConfig(format!("unknown model id '{model_id}' in the dspk-synapse-ml catalog")))?;
+    let path = dspk_hub::pull(model_id).map_err(|e| DspError::Io(e.to_string()))?;
+    Ok((manifest, path))
 }
 
-/// Validates a runtime tensor's dimensions against a [`TensorPortSpec`] from [`crate::hub::ModelManifest`].
+/// Validates a runtime tensor's dimensions against a [`TensorPortSpec`] from [`crate::manifest::ModelManifest`].
 ///
 /// Any positive dimension `d > 0` in `spec.shape` must match `actual_shape[i]` exactly;
 /// `-1` denotes a dynamic dimension (e.g., batch size, variable channel count, or basis rank).

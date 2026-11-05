@@ -7,7 +7,7 @@
 //! refractory ([`crate::metrics::acg_refractory`]), else *mua* (Phy's `cluster_KSLabel`); it
 //! carries EMUsort's composite score, whose SNR follows [`AmplitudeScale`].
 
-use dspk_synapse_io::probe::SensorLayout;
+use crate::io::probe::SensorLayout;
 use crate::core::{SortedUnit, SortingOutput, WaveformTemplate};
 use crate::metrics::{acg_refractory, composite_score, CompositeScoreOptions, RefractoryOptions};
 use crate::{QualityCriteria, UnitQualityLabel};

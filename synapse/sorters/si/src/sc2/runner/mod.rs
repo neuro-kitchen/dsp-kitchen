@@ -36,7 +36,7 @@ use dspk_ops::pipeline::{Pipeline, PipelineStage, PipelineWorkspace};
 use dspk_ops::spatial::SpatialWhitening;
 use dspk_core::progress::Stages;
 use dspk_core::{ChunkSchedule, DspError, DspResult, HaloWindow, ProgressSink, RecordingSource};
-use dspk_synapse_io::probe::SensorLayout;
+use dspk_synapse::io::probe::SensorLayout;
 use dspk_synapse::core::{SortingOutput, WaveformTemplate};
 use dspk_synapse::features::{ChannelNeighbourhoods, LocalSvd};
 use dspk_synapse::metrics::{CompositeScoreOptions, RefractoryOptions};
@@ -48,7 +48,7 @@ use dspk_synapse::sorter::components::{
     MatchedFilter, MatchedFilterOptions, OmpOptions, PeakSign, SparseFeatures, SplitOptions, Templates,
 };
 use dspk_synapse::sorter::DeviceWindows;
-use dspk_ms5::MaskedSnippets;
+use crate::shared::PeakWaveforms;
 use dspk_synapse::sorter::result::{AmplitudeScale, SorterResult};
 
 /// Sorter name in [`SortingOutput`].
@@ -154,7 +154,7 @@ pub fn filter_stages(cfg: &Spykingcircus2Config, channels: usize) -> Vec<Pipelin
     stages
 }
 
-fn filter_error(e: dspk_ops::filter::FilterError) -> DspError {
+fn filter_error(e: dspk_ops::filter::OpsError) -> DspError {
     DspError::InvalidConfig(e.to_string())
 }
 
@@ -253,7 +253,7 @@ pub fn run(client: &Client, source: &dyn RecordingSource, probe: &SensorLayout, 
 
     // 2. Prototype
     let detector = LocallyExclusiveDetector::new(client, &positions, &noise_levels, cfg.detect_threshold, cfg.radius_um / 2.0, sweep, PeakSign::Neg);
-    let mut waves = MaskedSnippets::new(&positions, Some(0.0), nbefore, nafter);
+    let mut waves = PeakWaveforms::new(&positions, 0.0, nbefore, nafter);
     let mut scanned = 0u64;
     device.for_each_while(&order, |w, prepared| {
         let peaks = detector.detect(client, prepared, w.read_len(), w.valid_local.clone(), w.read_global.start);
@@ -316,7 +316,7 @@ pub fn run(client: &Client, source: &dyn RecordingSource, probe: &SensorLayout, 
 
     // 4. Features: fit on a subset's own-channel waveforms, then every selected peak
     let fit_idx = subsample_peaks(&sel_samples, &sel_channels.iter().map(|&c| c as usize).collect::<Vec<_>>(), &SubsampleOptions { n_peaks: cfg.svd_peaks_fit, per_channel: false, seed: cfg.seed });
-    let mut fit_waves = MaskedSnippets::new(&positions, Some(0.0), nbefore, nafter);
+    let mut fit_waves = PeakWaveforms::new(&positions, 0.0, nbefore, nafter);
     let in_window = |w: &HaloWindow, list: &[u64]| -> Range<usize> {
         let a = list.partition_point(|&s| s < w.valid_global.start);
         let b = list.partition_point(|&s| s < w.valid_global.end);
@@ -499,7 +499,7 @@ pub fn run(client: &Client, source: &dyn RecordingSource, probe: &SensorLayout, 
 mod tests {
     use super::*;
     use dspk_core::compute::ComputeTarget;
-    use dspk_synapse_io::synthetic::{SyntheticParams, SyntheticRecording};
+    use dspk_synapse::io::synthetic::{SyntheticParams, SyntheticRecording};
 
     #[test]
     fn shuffle_is_a_seeded_permutation() {

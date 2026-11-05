@@ -21,11 +21,12 @@ use dspk_ops::pipeline::{Pipeline, PipelineStage, PipelineWorkspace};
 use dspk_ops::spatial::SpatialWhitening;
 use dspk_core::progress::Stages;
 use dspk_core::{ChunkSchedule, DspError, DspResult, HaloWindow, ProgressSink, RecordingSource};
-use dspk_synapse_io::probe::SensorLayout;
+use dspk_synapse::io::probe::SensorLayout;
 use dspk_synapse::core::{SortingOutput, UnitTemplateAccumulator, WaveformTemplate};
 use dspk_synapse::features::{ChannelNeighbourhoods, LocalSvd};
 use dspk_synapse::metrics::{CompositeScoreOptions, RefractoryOptions};
-use dspk_synapse::sorting::{isosplit_si, subsample_peaks, IsosplitOptions, IsosplitVariant, SubsampleOptions};
+use crate::shared::isosplit::{isosplit_si, IsosplitOptions};
+use dspk_synapse::sorting::{subsample_peaks, SubsampleOptions};
 
 use super::Tridesclous2Config;
 use dspk_synapse::sorter::components::{
@@ -33,7 +34,7 @@ use dspk_synapse::sorter::components::{
     FineFilter, LocallyExclusiveDetector, PeakSign, SparseFeatures, SplitOptions, TdcPeeler, TdcPeelerOptions, Templates,
 };
 use dspk_synapse::sorter::DeviceWindows;
-use dspk_ms5::MaskedSnippets;
+use crate::shared::PeakWaveforms;
 use dspk_synapse::sorter::result::{AmplitudeScale, SorterResult};
 use dspk_ops::math::execute_channel_mad;
 use dspk_synapse::sorter::{snippet_fits, spread_windows};
@@ -138,7 +139,7 @@ pub fn filter_stages(cfg: &Tridesclous2Config, channels: usize) -> Vec<PipelineS
     stages
 }
 
-fn filter_error(e: dspk_ops::filter::FilterError) -> DspError {
+fn filter_error(e: dspk_ops::filter::OpsError) -> DspError {
     DspError::InvalidConfig(e.to_string())
 }
 
@@ -243,7 +244,7 @@ pub fn run(client: &Client, source: &dyn RecordingSource, probe: &SensorLayout, 
     let fit_idx = subsample_peaks(&sel_samples, &sel_channels.iter().map(|&c| c as usize).collect::<Vec<_>>(), &SubsampleOptions { n_peaks: cfg.svd_peaks_fit, per_channel: false, seed: cfg.seed });
     let fit_samples: Vec<u64> = fit_idx.iter().map(|&i| sel_samples[i]).collect();
     let fit_channels: Vec<u32> = fit_idx.iter().map(|&i| sel_channels[i]).collect();
-    let mut fit_waves = MaskedSnippets::new(&positions, Some(0.0), cb, ca);
+    let mut fit_waves = PeakWaveforms::new(&positions, 0.0, cb, ca);
     device.for_each_while(&windows, |w, prepared| {
         let r = in_window(w, &fit_samples);
         let (s, c): (Vec<u32>, Vec<u32>) = r
@@ -287,7 +288,6 @@ pub fn run(client: &Client, source: &dyn RecordingSource, probe: &SensorLayout, 
         isocut_threshold: cfg.isocut_threshold,
         min_cluster_size: cfg.isosplit_min_cluster_size,
         max_iterations_per_pass: cfg.isosplit_max_iterations_per_pass,
-        variant: IsosplitVariant::SpikeInterface,
         ..Default::default()
     };
     let (n_init, mcs, seed) = (cfg.isosplit_n_init, cfg.isosplit_min_cluster_size.max(1), cfg.seed);
@@ -486,7 +486,7 @@ pub fn run(client: &Client, source: &dyn RecordingSource, probe: &SensorLayout, 
 mod tests {
     use super::*;
     use dspk_core::compute::ComputeTarget;
-    use dspk_synapse_io::synthetic::{SyntheticParams, SyntheticRecording};
+    use dspk_synapse::io::synthetic::{SyntheticParams, SyntheticRecording};
 
     /// Recovers well-separated synthetic units.
     #[test]

@@ -5,7 +5,7 @@ use std::path::Path;
 use dspk_core::{ComputeTarget, DspError, DspResult};
 use dspk_synapse::{FeatureEmbedder, SnippetBatch};
 
-use crate::hub::TensorIoSpec;
+use crate::manifest::TensorIoSpec;
 use crate::runtime::{
     OnnxRuntimeSession, RuntimeTensor, validate_tensor_port,
 };
@@ -19,7 +19,7 @@ pub struct DartsortVaeEmbedder {
 }
 
 impl DartsortVaeEmbedder {
-    /// Pulls and initializes `dartsort/spatiotemporal-vae-v1` from [`crate::hub::ModelHub`].
+    /// Pulls and initializes `dartsort/spatiotemporal-vae-v1` from [`crate::runtime::pull_model`].
     #[cfg(feature = "hub")]
     pub fn from_hub(target: ComputeTarget) -> DspResult<Self> {
         let (manifest, path) = crate::runtime::pull_model(DARTSORT_VAE_MODEL_ID)?;

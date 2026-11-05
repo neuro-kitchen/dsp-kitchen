@@ -1,13 +1,14 @@
 [package]
-name = "dspk-ms5"
+name = "dspk-sorter-ms5"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 # A port of MountainSort 5 (Apache-2.0): the port stays under the same licence
 license = "Apache-2.0"
-# Not published yet: published together with the other sorter crates
-publish = false
-description = "MountainSort 5 spike sorter, ported from flatironinstitute/mountainsort5 to GPU kernels (CubeCL)"
+repository.workspace = true
+description = "MountainSort 5 spike sorter for dspk, ported from flatironinstitute/mountainsort5 (with isosplit6) to GPU kernels (CubeCL)"
+keywords = ["spike-sorting", "mountainsort", "electrophysiology", "gpu", "dspk"]
+categories = ["science"]
 
 [features]
 default = ["wgpu", "cuda", "cpu"]
@@ -20,6 +21,5 @@ hip = ["dspk-core/hip", "dspk-ops/hip", "dspk-synapse/hip"]
 dspk-core = { workspace = true, features = ["compute"] }
 dspk-ops.workspace = true
 dspk-synapse.workspace = true
-dspk-synapse-io.workspace = true
 cubecl.workspace = true
 rayon.workspace = true

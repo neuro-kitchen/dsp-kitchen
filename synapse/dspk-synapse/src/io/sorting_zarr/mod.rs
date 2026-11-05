@@ -21,7 +21,7 @@ use dspk_io::container::zarr::{
     has_array, open_rw_store, read_array, read_node_json, read_optional_array, write_array_f32, write_array_i32,
     write_array_u64, write_group,
 };
-use crate::probe::SensorLayout;
+use crate::io::probe::SensorLayout;
 
 /// `dsp_format` written to the manifest.
 pub const SORTING_ZARR_FORMAT: &str = "sorting_analyzer_v1";

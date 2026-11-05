@@ -4,16 +4,15 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-# Not published yet: the synapse names may change; app and CLI are not libraries
-publish = false
-description = "Pretrained neuro models (DARTsort, SpikeNet2, UnitRefine), their runtime, and the catalog of published artifacts, each with its provenance"
+repository.workspace = true
+description = "Pretrained neuro models (DARTsort, SpikeNet2, UnitRefine) and their runtime for dspk, each with its provenance"
 
 [features]
 default = ["wgpu", "cuda", "cpu", "flex"]
 wgpu = ["burn-tensor/wgpu", "cubecl/wgpu", "dspk-ops/wgpu", "dspk-synapse/wgpu"]
 flex = ["burn-tensor/flex"]
-# Resolve catalog ids to verified local files (network access through dspk-synapse-hub)
-hub = ["dep:dspk-synapse-hub", "dep:anyhow"]
+# Model files by catalog id, verified (network access through dspk-hub)
+hub = ["dep:dspk-hub", "dspk-hub/synapse"]
 cpu = ["cubecl/cpu", "dspk-ops/cpu", "dspk-synapse/cpu"]
 cuda = ["cubecl/cuda", "dspk-ops/cuda", "dspk-synapse/cuda"]
 hip = ["cubecl/hip", "dspk-ops/hip", "dspk-synapse/hip"]
@@ -23,7 +22,6 @@ dspk-core = { workspace = true, features = ["compute"] }
 dspk-ops.workspace = true
 dspk-synapse.workspace = true
 dspk-io = { workspace = true, features = ["zarr"] }
-dspk-synapse-io = { workspace = true, features = ["zarr"] }
 burn-tensor.workspace = true
 onnx-ir.workspace = true
 safetensors.workspace = true
@@ -31,7 +29,6 @@ cubecl.workspace = true
 bytemuck.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-anyhow = { workspace = true, optional = true }
-dspk-synapse-hub = { workspace = true, optional = true }
+dspk-hub = { workspace = true, optional = true }
 rayon.workspace = true
 tracing.workspace = true

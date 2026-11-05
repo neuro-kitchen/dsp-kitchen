@@ -1,5 +1,7 @@
-//! Kilosort4 (Pachitariu, Sridhar, Pennington & Stringer, Nature Methods 2024), written from the
-//! paper and the published defaults — the upstream GPL-3.0 code is not ported.
+//! The Kilosort family on the GPU: **Kilosort4** (Pachitariu, Sridhar, Pennington & Stringer,
+//! Nature Methods 2024; feature `ks4`) and its fork **EMUsort** (O'Connell et al., eLife 2026;
+//! feature `emusort`, [`emusort`]). Written from the papers and the published defaults, their
+//! behaviour matched to upstream's code by reading it; no code copied. GPL-3.0, as both upstreams.
 //!
 //! Implemented stages: universal templates (`wPCA` / `wTEMP`) learned from the recording or loaded
 //! from the predefined `wTEMP.npz` ([`templates`]), universal-template spike detection with `wPCA`
@@ -11,8 +13,12 @@
 //! correction. See the book's *Sorters* pages.
 
 pub mod clustering;
+pub mod delays;
 pub mod detect;
+#[cfg(feature = "emusort")]
 pub mod emusort;
+#[cfg(feature = "ks4")]
+pub mod ks4;
 pub mod learned;
 pub mod matching;
 pub mod runner;
@@ -22,7 +28,10 @@ pub use clustering::{cluster_spikes, ClusteringOptions, SpikeClusters};
 pub use matching::{TemplateMatcher, MAX_PEELS};
 pub use clustering::merges::{global_merges, GlobalMergeOptions, MergedClusters};
 pub use learned::{learned_templates, LearnedTemplates, TemplateMergeOptions};
+#[cfg(feature = "emusort")]
 pub use emusort::{Emusort, EmusortConfig};
+#[cfg(feature = "ks4")]
+pub use ks4::{kilosort4_provenance, Kilosort4};
 pub use detect::{detect_universal, CentreOptions, TemplateCentres, UniversalDetector, UniversalSpike};
 pub use runner::{
     fit_kilosort4_preprocessing, fit_preprocessing, run_plan, ChannelDelays, FitSettings, FittedPreprocessing, Kilosort4Result,
@@ -34,7 +43,6 @@ pub use templates::{
 
 use dspk_synapse::NeuralBand;
 
-use dspk_synapse::provenance::{ArtifactSource, Attributed, Paper, Provenance, ProvenanceKind, UpstreamCode};
 
 /// Shortest waveform `nt_ms` can give (samples).
 const MIN_NT: usize = 3;
@@ -55,8 +63,8 @@ pub const LINE_NOISE_HZ: f64 = 60.0;
 /// Default quality factor of the line-noise notch (−3 dB bandwidth `f / 30`: 2 Hz at 60 Hz).
 pub const NOTCH_Q: f64 = 30.0;
 
-/// Catalog id of Kilosort4's predefined `wTEMP.npz`.
-pub const KILOSORT4_WTEMP_MODEL_ID: &str = "kilosort4/wtemp-v1";
+/// `dspk-hub` catalog id of Kilosort4's predefined `wTEMP.npz` (`dspk_hub::catalog::synapse`).
+pub const KILOSORT4_WTEMP_ID: &str = "kilosort4/wtemp-v1";
 
 /// Kilosort4 settings this crate uses, with upstream defaults (`kilosort/parameters.py`).
 #[derive(Debug, Clone, PartialEq)]
@@ -185,69 +193,6 @@ impl Kilosort4Config {
     }
 }
 
-/// Paper, code and artifact of Kilosort4.
-pub fn kilosort4_provenance() -> Provenance {
-    Provenance {
-        name: "Kilosort4".into(),
-        kind: ProvenanceKind::ReimplementedFromPaper,
-        paper: Some(Paper {
-            title: "Spike sorting with Kilosort4".into(),
-            authors: vec!["Pachitariu".into(), "Sridhar".into(), "Pennington".into(), "Stringer".into()],
-            venue: "Nature Methods".into(),
-            year: 2024,
-            doi: "10.1038/s41592-024-02232-7".into(),
-            license: None,
-        }),
-        code: UpstreamCode { url: "https://github.com/MouseLand/Kilosort".into(), license: Some("GPL-3.0".into()), version: "v4.1.3".into() },
-        artifacts: vec![ArtifactSource {
-            name: "wTEMP.npz".into(),
-            url: "https://osf.io/download/6807fb5958b763aae139aa60/".into(),
-            sha256: "cae1c96f8f4150be0a39627515750b70c4bc3548177cf487ae3c013f1ca6abd8".into(),
-            size_bytes: 3432,
-            license: None,
-        }],
-        notes: "Written from the paper and the published defaults; GPL code not ported. Implemented: preprocessing, universal templates (learned or predefined), universal-template detection, graph-based clustering, learned templates, learned-template matching and the final clustering. Also the refractory (cross-correlogram) split criterion, global merges, duplicate-spike removal and good / mua labels. Not yet: drift correction. The predefined wTEMP.npz is only used when templates_from_data is false.".into(),
-    }
-}
-
-/// Kilosort4 over a whole recording ([`run_plan`] with [`RunPlan::kilosort4`]).
-#[derive(Debug, Clone, Default)]
-pub struct Kilosort4 {
-    pub config: Kilosort4Config,
-}
-
-impl Kilosort4 {
-    pub fn new(config: Kilosort4Config) -> Self {
-        Self { config }
-    }
-
-    /// Runs Kilosort4 over `source` on `client`'s device runtime.
-    pub fn run(
-        &self,
-        client: &cubecl::prelude::Client,
-        source: &dyn dspk_core::RecordingSource,
-        probe: &dspk_synapse_io::probe::SensorLayout,
-    ) -> dspk_core::DspResult<Kilosort4Result> {
-        self.run_with_progress(client, source, probe, &dspk_core::NoProgress)
-    }
-
-    /// [`Self::run`], reporting each stage to `progress` ([`runner::STAGE_FIT`] …).
-    pub fn run_with_progress(
-        &self,
-        client: &cubecl::prelude::Client,
-        source: &dyn dspk_core::RecordingSource,
-        probe: &dspk_synapse_io::probe::SensorLayout,
-        progress: &dyn dspk_core::ProgressSink,
-    ) -> dspk_core::DspResult<Kilosort4Result> {
-        run_plan(client, source, probe, &RunPlan::kilosort4(&self.config), progress)
-    }
-}
-
-impl Attributed for Kilosort4 {
-    fn provenance(&self) -> Provenance {
-        kilosort4_provenance()
-    }
-}
 
 #[cfg(test)]
 mod config_tests {

@@ -4,12 +4,15 @@
 //! (the minimum spanning tree of the medians without its longest edge) and each half is
 //! subdivided again, its labels numbered after the first half's.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
+
 use cubecl::prelude::*;
 use cubecl::server::Handle;
 use rayon::prelude::*;
 use dspk_ops::core::buffer;
 use dspk_ops::linalg::{DeviceRows, TopComponents, TopComponentsOptions};
-use dspk_synapse::sorting::{isosplit6, IsosplitOptions};
+use crate::isosplit6::{isosplit6, IsosplitOptions};
 
 /// Settings of [`isosplit6_subdivision`].
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -17,13 +20,18 @@ pub struct SubdivisionOptions {
     pub npca_per_subdivision: usize,
     pub isosplit: IsosplitOptions,
     pub pca: TopComponentsOptions,
+    /// Subdivide the two halves of a split on two threads (same labels; default `true`).
+    pub parallel: bool,
 }
 
 impl Default for SubdivisionOptions {
     fn default() -> Self {
-        Self { npca_per_subdivision: 10, isosplit: IsosplitOptions::default(), pca: TopComponentsOptions::default() }
+        Self { npca_per_subdivision: 10, isosplit: IsosplitOptions::default(), pca: TopComponentsOptions::default(), parallel: true }
     }
 }
+
+/// How often the calling thread passes the subdivision's progress on.
+const PROGRESS_POLL: Duration = Duration::from_millis(50);
 
 /// Labels `1..=K` of the `l` rows of `x` (row-major `[l, d]`).
 ///
@@ -50,7 +58,27 @@ pub fn isosplit6_subdivision_with_progress(
     // The points go to the device once; every subset is gathered there
     let device = Points { host: x, device: buffer::upload(client, x), dim: d };
     let all: Vec<usize> = (0..l).collect();
-    subdivide(client, &device, &all, opts, done)
+    // The subdivision runs on a worker (its halves on rayon threads) and counts finished points;
+    // this thread passes the count on to `done`, which need not be thread-safe
+    let finished = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        let worker = scope.spawn(|| subdivide(client, &device, &all, opts, &finished));
+        let mut reported = 0;
+        let mut report = |reported: &mut usize| {
+            let now = finished.load(Ordering::Relaxed);
+            if now > *reported {
+                done(now - *reported);
+                *reported = now;
+            }
+        };
+        while !worker.is_finished() {
+            std::thread::sleep(PROGRESS_POLL);
+            report(&mut reported);
+        }
+        let labels = worker.join().expect("subdivision worker");
+        report(&mut reported);
+        labels
+    })
 }
 
 /// The points on the host (medians) and on the device (PCA).
@@ -60,14 +88,14 @@ struct Points<'a> {
     dim: usize,
 }
 
-fn subdivide(client: &Client, points: &Points<'_>, inds: &[usize], opts: &SubdivisionOptions, done: &mut dyn FnMut(usize)) -> Vec<u32> {
+fn subdivide(client: &Client, points: &Points<'_>, inds: &[usize], opts: &SubdivisionOptions, finished: &AtomicUsize) -> Vec<u32> {
     let (x, d) = (points.host, points.dim);
     let l = inds.len();
     if l == 0 {
         return Vec::new();
     }
     if l == 1 || d == 0 {
-        done(l);
+        finished.fetch_add(l, Ordering::Relaxed);
         return vec![1; l];
     }
     let idx: Vec<u32> = inds.iter().map(|&i| i as u32).collect();
@@ -77,7 +105,7 @@ fn subdivide(client: &Client, points: &Points<'_>, inds: &[usize], opts: &Subdiv
     let labels = isosplit6(&features, l, pca.k, &opts.isosplit);
     let k = labels.iter().copied().max().unwrap_or(0) as usize;
     if k <= 1 {
-        done(l);
+        finished.fetch_add(l, Ordering::Relaxed);
         return labels;
     }
     let mut members: Vec<Vec<usize>> = vec![Vec::new(); k];
@@ -109,8 +137,12 @@ fn subdivide(client: &Client, points: &Points<'_>, inds: &[usize], opts: &Subdiv
             local2.push(i);
         }
     }
-    let labels1 = subdivide(client, points, &i1, opts, done);
-    let labels2 = subdivide(client, points, &i2, opts, done);
+    // The halves are independent: their labels are combined in the same order either way
+    let (labels1, labels2) = if opts.parallel {
+        rayon::join(|| subdivide(client, points, &i1, opts, finished), || subdivide(client, points, &i2, opts, finished))
+    } else {
+        (subdivide(client, points, &i1, opts, finished), subdivide(client, points, &i2, opts, finished))
+    };
     let k1 = labels1.iter().copied().max().unwrap_or(0);
     let mut out = vec![0u32; l];
     for (j, &i) in local1.iter().enumerate() {

@@ -331,7 +331,7 @@ mod tests {
         assert_eq!(series, vec!["/acquisition/ES", "/acquisition/Temp"], "timestamped series are skipped");
 
         // Default: the ElectricalSeries
-        let rec = crate::open(&path).unwrap();
+        let rec = crate::io::open(&path).unwrap();
         let i = rec.info();
         assert_eq!((i.channel_count(), i.samples, i.sample_rate_hz(), i.start_time.as_seconds_f64()), (3, 4, 1000.0, 0.5));
         let mut out = vec![0.0; 2 * 3];
@@ -340,7 +340,7 @@ mod tests {
         dspk_io::test_support::assert_stored_matches(rec.as_ref(), &[2, 0], 1..4);
         dspk_io::test_support::assert_native_matches(rec.as_ref(), 1..4);
 
-        let listed: Vec<(String, dspk_core::SignalUnit, f64, f64)> = crate::sources(&path)
+        let listed: Vec<(String, dspk_core::SignalUnit, f64, f64)> = crate::io::sources(&path)
             .unwrap()
             .into_iter()
             .map(|s| (s.name, s.unit, s.sample_rate.rate_hz(), s.start_time.as_seconds_f64()))
@@ -349,7 +349,7 @@ mod tests {
             listed,
             vec![("ES".into(), dspk_core::SignalUnit::Microvolt, 1000.0, 0.5), ("Temp".into(), dspk_core::SignalUnit::Dimensionless, 10.0, 0.0)]
         );
-        assert_eq!(crate::open_source(&path, "/acquisition/Temp").unwrap().info().channel_count(), 1);
+        assert_eq!(crate::io::open_source(&path, "/acquisition/Temp").unwrap().info().channel_count(), 1);
 
         let temp = NwbZarrRecording::open_series(&path, "/acquisition/Temp").unwrap();
         let mut out = vec![0.0; 2];

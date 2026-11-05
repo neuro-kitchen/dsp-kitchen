@@ -1,11 +1,12 @@
 //! EMUsort (O'Connell et al., eLife 2026): Kilosort4 adapted to motor-unit action potentials
-//! from high-density intramuscular arrays (Myomatrix). Written from the paper and the published
-//! defaults — the upstream GPL-3.0 code is not ported.
+//! from high-density intramuscular arrays (Myomatrix), feature `emusort`. Written from the paper
+//! and the published defaults, its behaviour matched to upstream's code (`snel-repo/EMUsort`
+//! `a06bb60`, `ks4mods`) by reading it; no code copied (GPL-3.0, as upstream).
 //!
 //! EMUsort is a Kilosort4 fork, so it reuses every stage of [`crate`] with
 //! its own settings ([`EmusortConfig`]) and adds:
-//! - **channel-delay removal** on the device ([`delays::ChannelDelayEstimator`],
-//!   [`delays::ChannelAligner`]): the lag (within ±2 ms) aligning each channel with the reference
+//! - **channel-delay removal** on the device ([`crate::delays::ChannelDelayEstimator`],
+//!   [`crate::delays::ChannelAligner`]): the lag (within ±2 ms) aligning each channel with the reference
 //!   channel that correlates best with all others, estimated on the high-passed data and removed
 //!   after whitening, before template learning and detection;
 //! - **HDBSCAN outlier removal** before the universal templates are clustered
@@ -13,7 +14,7 @@
 
 use cubecl::prelude::Client;
 use dspk_core::{DspResult, RecordingSource};
-use dspk_synapse_io::probe::SensorLayout;
+use dspk_synapse::io::probe::SensorLayout;
 
 use dspk_synapse::NeuralBand;
 
@@ -256,7 +257,7 @@ impl EmusortConfig {
 pub fn emusort_provenance() -> Provenance {
     Provenance {
         name: "EMUsort".into(),
-        kind: ProvenanceKind::ReimplementedFromPaper,
+        kind: ProvenanceKind::ReimplementedFromPaperAndCode,
         paper: Some(Paper {
             title: "High performance sorting of motor unit action potentials with EMUsort".into(),
             authors: ["O’Connell", "Michaels", "Wang", "Mamidipaka", "Venkatesh", "Aresh", "Pachitariu", "Pruszynski", "Sober", "Pandarinath"]
@@ -269,13 +270,11 @@ pub fn emusort_provenance() -> Provenance {
         }),
         code: UpstreamCode { url: "https://github.com/snel-repo/EMUsort".into(), license: Some("GPL-3.0".into()), version: "a06bb60 (Kilosort4 fork snel-repo/Kilosort4, base v4.0.18)".into() },
         artifacts: Vec::new(),
-        notes: "Preprint: bioRxiv, doi:10.64898/2026.01.06.697952. Written from the paper and the published defaults; GPL code not ported. Universal templates are always learned from the recording (no EMUsort artifacts exist). Implemented: channel-delay removal, HDBSCAN outlier removal, and the Kilosort4 stages of crate.".into(),
+        notes: "Preprint: bioRxiv, doi:10.64898/2026.01.06.697952. Written from the paper and the published defaults, behaviour matched to upstream's code (snel-repo/EMUsort a06bb60, ks4mods: channel delays, clip scaling) by reading it; no code copied. Universal templates are always learned from the recording (no EMUsort artifacts exist). Implemented: channel-delay removal, HDBSCAN outlier removal, and the Kilosort4 stages of crate.".into(),
     }
 }
 
-pub mod delays;
-
-pub use delays::{delays_from_cross_correlation, ChannelAligner, ChannelDelayEstimator, DELAY_TILE_SAMPLES};
+pub use crate::delays::{delays_from_cross_correlation, ChannelAligner, ChannelDelayEstimator, DELAY_TILE_SAMPLES};
 
 impl RunPlan {
     /// EMUsort's run at `sample_rate_hz`: Kilosort4's stages with `config`'s settings, channel
@@ -346,7 +345,7 @@ mod tests {
     #[test]
     fn emusort_runs_on_synthetic_recording() {
         use dspk_core::compute::{ComputeTarget, ComputeTask};
-        use dspk_synapse_io::synthetic::{SyntheticParams, SyntheticRecording};
+        use dspk_synapse::io::synthetic::{SyntheticParams, SyntheticRecording};
 
         let rec = SyntheticRecording::new(SyntheticParams { channels: 4, duration_sec: 1.0, sample_rate_hz: 30_000.0, ..Default::default() })
             .expect("synthetic recording");

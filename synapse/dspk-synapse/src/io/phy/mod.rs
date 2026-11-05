@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use dspk_core::{DspError, DspResult, SampleFormat};
 
 use dspk_io::container::npy::{read_npy, write_npy, NpyArray, NpyElement};
-use crate::templates::DenseTemplates;
+use crate::io::templates::DenseTemplates;
 
 /// Cluster (and template) ids as phy stores them.
 pub type ClusterId = u32;

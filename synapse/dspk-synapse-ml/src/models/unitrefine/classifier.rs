@@ -6,7 +6,7 @@ use dspk_core::{ComputeTarget, DspError, DspResult};
 use dspk_synapse::UnitQualityLabel;
 use serde::{Deserialize, Serialize};
 
-use crate::hub::TensorIoSpec;
+use crate::manifest::TensorIoSpec;
 use crate::runtime::{
     OnnxRuntimeSession, RuntimeTensor, validate_tensor_port,
 };
@@ -29,7 +29,7 @@ pub struct UnitRefineClassifier {
 }
 
 impl UnitRefineClassifier {
-    /// Pulls and initializes `unitrefine/curation-v1` from [`crate::hub::ModelHub`].
+    /// Pulls and initializes `unitrefine/curation-v1` from [`crate::runtime::pull_model`].
     #[cfg(feature = "hub")]
     pub fn from_hub(target: ComputeTarget) -> DspResult<Self> {
         let (manifest, path) = crate::runtime::pull_model(UNITREFINE_CURATION_MODEL_ID)?;
