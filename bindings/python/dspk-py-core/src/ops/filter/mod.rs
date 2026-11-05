@@ -10,12 +10,12 @@ pub mod non_linear;
 pub mod template;
 
 use dspk_ops::core::EdgeMode;
-use dspk_ops::filter::{FilterBand, FilterDesign, FilterError, FilterMode, FilterStart, Section, Sos};
+use dspk_ops::filter::{FilterBand, FilterDesign, OpsError, FilterMode, FilterStart, Section, Sos};
 use numpy::PyReadonlyArray2;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-pub(crate) fn filter_err(e: FilterError) -> PyErr {
+pub(crate) fn filter_err(e: OpsError) -> PyErr {
     PyValueError::new_err(e.to_string())
 }
 

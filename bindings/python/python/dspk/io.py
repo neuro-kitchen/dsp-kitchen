@@ -19,6 +19,7 @@ open = _io.open  # noqa: A001 (mirrors the Rust name)
 sources = _io.sources
 formats = _io.formats
 WRITE_CHUNK_SAMPLES: int = _io.WRITE_CHUNK_SAMPLES
+ZARR_CHUNK_SAMPLES: int = _io.ZARR_CHUNK_SAMPLES
 
 
 #: NumPy array dtypes written as they are; other dtypes and Python lists become float32 first.
@@ -68,13 +69,23 @@ def write_zarr(
     sample_rate: float,
     *,
     unit: str = "",
-    chunk_samples: int = WRITE_CHUNK_SAMPLES,
+    chunk_samples: int = ZARR_CHUNK_SAMPLES,
+    compression: str = "zstd",
+    level: int | None = None,
+    parallel: bool = True,
 ) -> None:
-    """Writes ``data`` ``(channels, samples)`` as a Zarr store at ``path`` (``/traces``, float32)."""
-    _io.write_zarr(_as_channels(data), path, sample_rate, unit=unit, chunk_samples=chunk_samples)
+    """Writes ``data`` ``(channels, samples)`` as a Zarr store at ``path`` (``/traces``, float32).
+
+    Chunks of ``chunk_samples`` (all channels) are compressed with ``compression`` (``"zstd"``,
+    ``"blosc_lz4"`` or ``"none"``; ``level``: zstd's, default 3, or blosc's 0-9, default 5) and
+    stored on several threads; ``parallel=False`` writes on one thread."""
+    _io.write_zarr(
+        _as_channels(data), path, sample_rate,
+        unit=unit, chunk_samples=chunk_samples, compression=compression, level=level, parallel=parallel,
+    )
 
 
 __all__ = [
-    "STORED_DTYPES", "Recording", "Source", "WRITE_CHUNK_SAMPLES",
+    "STORED_DTYPES", "Recording", "Source", "WRITE_CHUNK_SAMPLES", "ZARR_CHUNK_SAMPLES",
     "formats", "open", "sources", "write_raw", "write_zarr",
 ]

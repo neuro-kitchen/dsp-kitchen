@@ -77,8 +77,10 @@ def run(
     several inputs the write path needs ``{stem}`` or ``{index}``.
 
     Returns one report per input: mode, halo, runtime, stored_upload, channels, samples,
-    sample_rate, windows, output, provenance, seconds, and ``bytes`` (read from the input,
-    uploaded, downloaded, written).
+    sample_rate, windows, output, provenance, seconds, ``bytes`` (read from the input, uploaded,
+    downloaded, written) and ``timings`` in seconds (read_wait, device, write_wait, encode, disk:
+    reading, the device and the writer overlap, so the largest of read_wait, device and
+    encode + disk is the bottleneck).
 
     ``progress(input, inputs, windows_done, windows)`` is called after each window; returning
     ``False`` cancels with ``KeyboardInterrupt`` (the unfinished output is removed, finished inputs

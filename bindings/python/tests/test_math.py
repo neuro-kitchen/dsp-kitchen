@@ -26,6 +26,16 @@ def test_channel_noise_std_is_the_mad_estimate(runtime):
     np.testing.assert_allclose(dspk.ops.math.channel_noise_std(x, runtime=runtime), expected, rtol=1e-6)
 
 
+@pytest.mark.parametrize("runtime", RUNTIMES)
+@pytest.mark.parametrize("samples", [20_001, 20_000])  # odd and even: NumPy's median of each
+def test_channel_mad_matches_numpy(runtime, samples):
+    rng = np.random.default_rng(9)
+    x = (rng.standard_normal((4, samples)) * 3.0 + 1.5).astype(np.float32)
+    x64 = x.astype(np.float64)
+    expected = np.median(np.abs(x64 - np.median(x64, axis=1, keepdims=True)), axis=1)
+    np.testing.assert_allclose(dspk.ops.math.channel_mad(x, runtime=runtime), expected, rtol=1e-5)
+
+
 def test_windows_match_scipy():
     w = dspk.ops.math.window
     np.testing.assert_allclose(w("hann", 64), sp.get_window("hann", 64, fftbins=False), atol=1e-6)

@@ -11,6 +11,7 @@ __all__ = [
     "Recording",
     "Source",
     "WRITE_CHUNK_SAMPLES",
+    "ZARR_CHUNK_SAMPLES",
     "formats",
     "open",
     "sources",
@@ -19,6 +20,7 @@ __all__ = [
 ]
 
 WRITE_CHUNK_SAMPLES: builtins.int
+ZARR_CHUNK_SAMPLES: builtins.int
 @typing.final
 class Recording:
     r"""
@@ -120,8 +122,11 @@ def write_raw(data: typing.Any, path: builtins.str | os.PathLike | pathlib.Path,
     `order`: `"channel_major"` or `"time_major"`. `unit`: symbol of the values (`""`: dimensionless).
     """
 
-def write_zarr(data: typing.Any, path: builtins.str | os.PathLike | pathlib.Path, sample_rate: builtins.float, *, unit: builtins.str = '', chunk_samples: builtins.int = 65536) -> None:
+def write_zarr(data: typing.Any, path: builtins.str | os.PathLike | pathlib.Path, sample_rate: builtins.float, *, unit: builtins.str = '', chunk_samples: builtins.int = 5000, compression: builtins.str = 'zstd', level: typing.Optional[builtins.int] = None, parallel: builtins.bool = True) -> None:
     r"""
-    Writes `data` `(channels, samples)` as a Zarr store at `path` (`/traces`, `float32`).
+    Writes `data` `(channels, samples)` as a Zarr store at `path` (`/traces`, `float32`), chunks of
+    `chunk_samples` compressed with `compression` (`"zstd"`, `"blosc_lz4"` or `"none"`; `level`:
+    zstd's, default 3, or blosc's 0–9, default 5), compressed and stored on several threads unless
+    `parallel` is false.
     """
 

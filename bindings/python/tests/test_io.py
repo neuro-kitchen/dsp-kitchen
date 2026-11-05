@@ -55,6 +55,24 @@ def test_zarr_round_trip_and_sources(tmp_path, signal):
     np.testing.assert_array_equal(dspk.io.open(path, source=source.id).read(), signal)
 
 
+@pytest.mark.parametrize(
+    ("compression", "level", "parallel"),
+    [("zstd", None, True), ("zstd", 9, False), ("blosc_lz4", None, True), ("none", None, True), ("none", None, False)],
+)
+def test_zarr_compression_and_threads_keep_the_values(tmp_path, signal, compression, level, parallel):
+    path = tmp_path / "rec.zarr"
+    # 3000 samples in chunks of 700: four whole chunks and a short last one
+    dspk.io.write_zarr(signal, path, SAMPLE_RATE, chunk_samples=700, compression=compression, level=level, parallel=parallel)
+    np.testing.assert_array_equal(dspk.io.open(path).read(), signal)
+
+
+def test_zarr_rejects_unknown_compression(tmp_path, signal):
+    with pytest.raises(ValueError, match="unknown compression"):
+        dspk.io.write_zarr(signal, tmp_path / "rec.zarr", SAMPLE_RATE, compression="lzma")
+    with pytest.raises(ValueError, match="takes no level"):
+        dspk.io.write_zarr(signal, tmp_path / "rec.zarr", SAMPLE_RATE, compression="none", level=1)
+
+
 def test_float64_and_lists_are_converted(tmp_path, signal):
     path = tmp_path / "rec.bin"
     dspk.io.write_raw(signal.astype(np.float64).tolist(), path, SAMPLE_RATE)

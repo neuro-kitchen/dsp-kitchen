@@ -2,10 +2,10 @@
 //! `scipy.signal.decimate` / `resample_poly` semantics.
 
 use crate::ops::device::DeviceInput;
-use dspk_ops::filter::FilterError;
+use dspk_ops::filter::OpsError;
 use dspk_ops::resampler::decimate::{DECIMATE_DEFAULT, DECIMATE_FIR_TAPS_PER_FACTOR, DECIMATE_IIR_CUTOFF};
 use dspk_ops::resampler::poly::{RESAMPLE_POLY_DEFAULT_EDGE, RESAMPLE_POLY_HALF_LEN_PER_RATE, RESAMPLE_POLY_WINDOW};
-use dspk_ops::resampler::{decimate as dev_decimate, decimate_len, resample_poly as dev_resample_poly, resample_poly_len, DecimateFilter, FirWindow, ResampleFilter};
+use dspk_ops::resampler::{execute_decimate as dev_decimate, decimate_len, execute_resample_poly as dev_resample_poly, resample_poly_len, DecimateFilter, FirWindow, ResampleFilter};
 use numpy::{PyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -45,7 +45,7 @@ pub fn decimate<'py>(
     };
     let out_samples = decimate_len(data.dim().1, q);
     device::run_resized(py, data, runtime, out_samples, move |client, input, output, channels, samples| {
-        dev_decimate::<f32>(client, input, output, channels, samples, q, filter).map(|_| ()).map_err(|e: FilterError| e.to_string())
+        dev_decimate::<f32>(client, input, output, channels, samples, q, filter).map(|_| ()).map_err(|e: OpsError| e.to_string())
     })
 }
 

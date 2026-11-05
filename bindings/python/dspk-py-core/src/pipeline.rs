@@ -56,7 +56,8 @@ pub fn plan<'py>(py: Python<'py>, text: &str, base_dir: PathBuf, toml: bool) -> 
 
 /// Runs a spec (JSON text, or TOML with `toml=True`); relative paths resolve against `base_dir`.
 /// Returns one report per input, each a dict (mode, halo, runtime, stored_upload, channels, samples,
-/// sample_rate, windows, bytes {read, uploaded, downloaded, written}, output, provenance, seconds).
+/// sample_rate, windows, bytes {read, uploaded, downloaded, written}, output, provenance, seconds,
+/// timings {read_wait, device, write_wait, encode, disk} in seconds).
 ///
 /// `progress(input, inputs, windows_done, windows)` is called after each window; returning `False`
 /// cancels (KeyboardInterrupt, the unfinished output removed). Ctrl+C cancels too.
@@ -153,6 +154,13 @@ fn report_dict<'py>(py: Python<'py>, report: dspk_pipeline::RunReport) -> PyResu
     out.set_item("output", report.output)?;
     out.set_item("provenance", report.provenance)?;
     out.set_item("seconds", report.seconds)?;
+    let timings = PyDict::new(py);
+    timings.set_item("read_wait", report.timings.read_wait)?;
+    timings.set_item("device", report.timings.device)?;
+    timings.set_item("write_wait", report.timings.write_wait)?;
+    timings.set_item("encode", report.timings.encode)?;
+    timings.set_item("disk", report.timings.disk)?;
+    out.set_item("timings", timings)?;
     Ok(out)
 }
 

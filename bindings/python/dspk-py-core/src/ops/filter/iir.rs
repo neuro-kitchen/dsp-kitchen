@@ -31,7 +31,7 @@ fn sos_to_numpy<'py>(py: Python<'py>, sos: &Sos) -> Bound<'py, PyArray2<f64>> {
 fn run<'py>(py: Python<'py>, data: DeviceInput, spec: FilterSpec, sample_rate: f64, runtime: Option<&str>) -> PyResult<Bound<'py, PyArray2<f32>>> {
     spec.design(sample_rate).map_err(filter_err)?;
     device::run(py, data, runtime, move |client, input, output, channels, samples| {
-        execute_filter::<f32>(client, &spec, sample_rate, input, output, channels, samples).map_err(|e| e.to_string())
+        execute_filter::<f32>(client, input, output, channels, samples, sample_rate, &spec).map_err(|e| e.to_string())
     })
 }
 

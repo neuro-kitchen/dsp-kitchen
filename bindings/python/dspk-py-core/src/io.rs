@@ -20,6 +20,9 @@ use crate::error::to_py;
 /// Samples per channel each writer step reads from the source (bounds memory while writing).
 pub const WRITE_CHUNK_SAMPLES: usize = 65_536;
 
+/// Samples per Zarr chunk of [`write_zarr`] (dspk-io's default).
+pub const ZARR_CHUNK_SAMPLES: usize = dspk_io::generic::zarr_traces::DEFAULT_CHUNK_SAMPLES;
+
 /// A recording opened from a file. Reads return scaled `float32` values in each channel's unit,
 /// shape `(channels, samples)`.
 #[gen_stub_pyclass]
@@ -299,16 +302,51 @@ pub fn write_raw(
     Ok(())
 }
 
-/// Writes `data` `(channels, samples)` as a Zarr store at `path` (`/traces`, `float32`).
+/// Writes `data` `(channels, samples)` as a Zarr store at `path` (`/traces`, `float32`), chunks of
+/// `chunk_samples` compressed with `compression` (`"zstd"`, `"blosc_lz4"` or `"none"`; `level`:
+/// zstd's, default 3, or blosc's 0–9, default 5), compressed and stored on several threads unless
+/// `parallel` is false.
 #[gen_stub_pyfunction(module = "dspk._native.io")]
 #[pyfunction]
-#[pyo3(signature = (data, path, sample_rate, *, unit="", chunk_samples=WRITE_CHUNK_SAMPLES))]
-pub fn write_zarr(py: Python<'_>, data: &Bound<'_, PyAny>, path: PathBuf, sample_rate: f64, unit: &str, chunk_samples: usize) -> PyResult<()> {
+#[pyo3(signature = (data, path, sample_rate, *, unit="", chunk_samples=ZARR_CHUNK_SAMPLES, compression="zstd", level=None, parallel=true))]
+#[allow(clippy::too_many_arguments)]
+pub fn write_zarr(
+    py: Python<'_>,
+    data: &Bound<'_, PyAny>,
+    path: PathBuf,
+    sample_rate: f64,
+    unit: &str,
+    chunk_samples: usize,
+    compression: &str,
+    level: Option<i32>,
+    parallel: bool,
+) -> PyResult<()> {
+    let compression = match (compression, level) {
+        ("zstd", level) => dspk_io::ZarrCompression::Zstd { level: level.unwrap_or(DEFAULT_ZSTD_LEVEL) },
+        ("blosc_lz4", level) => {
+            let level = level.unwrap_or(DEFAULT_BLOSC_LEVEL);
+            let level = u8::try_from(level).map_err(|_| PyValueError::new_err(format!("blosc level {level} is not in 0..=9")))?;
+            dspk_io::ZarrCompression::BloscLz4 { level }
+        }
+        ("none", None) => dspk_io::ZarrCompression::None,
+        ("none", Some(_)) => return Err(PyValueError::new_err("compression \"none\" takes no level")),
+        (other, _) => return Err(PyValueError::new_err(format!("unknown compression {other:?} (zstd, blosc_lz4, none)"))),
+    };
+    if chunk_samples == 0 {
+        return Err(PyValueError::new_err("chunk_samples must be at least 1"));
+    }
+    let options = dspk_io::ZarrOptions { chunk_samples, compression, parallel };
     let source = ArrayRecording::new(data, sample_rate, 1.0, unit)?;
-    py.detach(|| dspk_io::write_zarr(&source, &path, chunk_samples, |_, _| {})).map_err(to_py)
+    py.detach(|| dspk_io::write_zarr(&source, &path, &options, |_, _| {})).map_err(to_py)
 }
 
+/// Default zstd level of [`write_zarr`].
+const DEFAULT_ZSTD_LEVEL: i32 = 3;
+/// Default blosc LZ4 level of [`write_zarr`].
+const DEFAULT_BLOSC_LEVEL: i32 = 5;
+
 pyo3_stub_gen::module_variable!("dspk._native.io", "WRITE_CHUNK_SAMPLES", usize);
+pyo3_stub_gen::module_variable!("dspk._native.io", "ZARR_CHUNK_SAMPLES", usize);
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Recording>()?;
@@ -319,5 +357,6 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(write_raw, m)?)?;
     m.add_function(wrap_pyfunction!(write_zarr, m)?)?;
     m.add("WRITE_CHUNK_SAMPLES", WRITE_CHUNK_SAMPLES)?;
+    m.add("ZARR_CHUNK_SAMPLES", ZARR_CHUNK_SAMPLES)?;
     Ok(())
 }
