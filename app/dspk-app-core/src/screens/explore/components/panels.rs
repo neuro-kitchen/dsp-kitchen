@@ -5,22 +5,22 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use gpui_kit::base::dock::{DockArea, DockPlacement, Panel as BasePanel, PanelEvent};
+use gpui_kit::base::dock::{DockPlacement, Panel as BasePanel, PanelEvent};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::dock::Panel;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::switch::Switch;
+use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, IconName, Selectable as _, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
     canvas, div, px, relative, uniform_list, App, AppContext as _, Bounds, Context, CursorStyle, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
-    WeakEntity, Window,
+    Window,
 };
 
-use crate::screens::explore::trace::renderer::TimeViewKind;
+use crate::screens::explore::trace::renderer::{ColorBy, TimeViewKind};
 use crate::data::store::{AppEvent, Store};
 use crate::screens::explore::{ExploreEvent, ExploreVm};
 use crate::screens::explore::trace::trace_panel::color;
@@ -35,23 +35,21 @@ fn focused_source(explore: &Entity<ExploreVm>, cx: &App) -> Option<String> {
     }
 }
 
-/// Opens and closes the dock a side panel lives in.
+/// Opens and closes the side a panel lives in (the panel's hide button).
 #[derive(Clone)]
 pub struct DockToggle {
-    pub dock: WeakEntity<DockArea>,
     pub placement: DockPlacement,
+    pub open: Rc<dyn Fn(&App) -> bool>,
+    pub toggle: Rc<dyn Fn(&mut Window, &mut App)>,
 }
 
 impl DockToggle {
     pub fn is_open(&self, cx: &App) -> bool {
-        self.dock.upgrade().is_some_and(|d| d.read(cx).is_dock_open(self.placement))
+        (self.open)(cx)
     }
 
     pub fn toggle(&self, window: &mut Window, cx: &mut App) {
-        let placement = self.placement;
-        if let Some(dock) = self.dock.upgrade() {
-            dock.update(cx, |d, cx| d.toggle_dock(placement, window, cx));
-        }
+        (self.toggle)(window, cx)
     }
 
     pub fn edge(&self) -> Edge {
@@ -133,53 +131,64 @@ pub struct ChannelsPanel {
     explore: Entity<ExploreVm>,
     dock: DockToggle,
     focus: FocusHandle,
+    /// One field: a number or site filters the list; a range (`0-31, 40`) + Enter shows those.
     filter: Entity<InputState>,
-    ranges: Entity<InputState>,
     range_error: Option<String>,
-    /// Groups (e.g. shanks) folded in the tree, by index.
-    collapsed: std::collections::HashSet<usize>,
+    /// Groups unfolded, by index (the first one when a recording opens).
+    expanded: std::collections::HashSet<usize>,
     _subs: Vec<Subscription>,
 }
+
+/// Channels per group when the recording has one group (or no layout): chunks of this many.
+const CHANNEL_BLOCK: usize = 32;
+/// Row height (8 pt grid).
+const ROW_H: f32 = 24.;
 
 /// A row of the channel tree.
 #[derive(Debug, Clone, Copy)]
 enum TreeRow {
-    /// Group `g`: channels shown of it, of all, and whether it is folded.
-    Group { g: usize, on: usize, of: usize, folded: bool },
+    /// Group `g`: channels shown of it, of all, and whether it is unfolded.
+    Group { g: usize, on: usize, of: usize, open: bool },
     Channel(usize),
 }
 
 side_panel!(ChannelsPanel, "dspk-app.channels", "Channels");
 
+/// Whether `text` is a range expression (`0-31, 40`) rather than a filter.
+fn is_range(text: &str) -> bool {
+    text.contains('-') || text.contains(',')
+}
+
 impl ChannelsPanel {
     pub fn new(explore: Entity<ExploreVm>, dock: DockToggle, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter, e.g. 12"));
-        let ranges = cx.new(|cx| InputState::new(window, cx).placeholder("Show only, e.g. 0-31, 40"));
+        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Find, or show 0-31, 40 ⏎"));
         let store = explore.read(cx).store().clone();
         let subs = vec![
             cx.observe(&explore, |_, _, cx| cx.notify()),
             cx.subscribe(&explore, |_, _, _: &ExploreEvent, cx| cx.notify()),
             cx.subscribe(&store, |this, _, e: &AppEvent, cx| {
                 if matches!(e, AppEvent::RecordingChanged) {
-                    this.collapsed.clear();
+                    this.expanded = [0].into_iter().collect();
                 }
-                if matches!(e, AppEvent::SelectionChanged(_) | AppEvent::RecordingChanged) {
+                if matches!(e, AppEvent::SelectionChanged(_) | AppEvent::RecordingChanged | AppEvent::Picked) {
                     cx.notify();
                 }
             }),
-            cx.subscribe(&filter, |_, _, e: &InputEvent, cx| {
-                if matches!(e, InputEvent::Change) {
+            cx.subscribe(&filter, |this, state, e: &InputEvent, cx| match e {
+                InputEvent::Change => {
+                    this.range_error = None;
                     cx.notify();
                 }
-            }),
-            cx.subscribe(&ranges, |this, state, e: &InputEvent, cx| {
-                if let InputEvent::PressEnter { .. } = e {
+                InputEvent::PressEnter { .. } => {
                     let text = state.read(cx).value().to_string();
-                    this.apply_ranges(&text, cx);
+                    if is_range(&text) {
+                        this.apply_ranges(&text, cx);
+                    }
                 }
+                _ => {}
             }),
         ];
-        Self { explore, dock, focus: cx.focus_handle(), filter, ranges, range_error: None, collapsed: Default::default(), _subs: subs }
+        Self { explore, dock, focus: cx.focus_handle(), filter, range_error: None, expanded: [0].into_iter().collect(), _subs: subs }
     }
 
     fn store(&self, cx: &App) -> Entity<Store> {
@@ -228,7 +237,7 @@ impl ChannelsPanel {
 }
 
 impl ChannelsPanel {
-    /// `12 of 385`
+    /// `12 / 385` shown
     fn header_extra(&self, cx: &App) -> Option<gpui_kit::AnyElement> {
         let source = focused_source(&self.explore, cx)?;
         let s = self.store(cx);
@@ -238,110 +247,117 @@ impl ChannelsPanel {
             Some(vm) => vm.read(cx).view.selection.len(),
             None => s.selection(&source).len(),
         };
-        Some(div().text_xs().text_color(cx.theme().muted_foreground).child(format!("{count} of {total}")).into_any_element())
+        Some(div().text_xs().text_color(cx.theme().muted_foreground).child(format!("{count} / {total}")).into_any_element())
+    }
+
+    /// Shown channels (of the pinned view, else of the source).
+    fn shown(&self, source: &str, cx: &App) -> Vec<usize> {
+        match self.pinned_vm(cx) {
+            Some(vm) => vm.read(cx).view.selection.clone(),
+            None => self.store(cx).read(cx).selection(source).to_vec(),
+        }
+    }
+
+    fn set_shown(&self, source: &str, channels: Vec<usize>, cx: &mut App) {
+        match self.pinned_vm(cx) {
+            Some(vm) => vm.update(cx, |vm, cx| vm.set_selection(channels, cx)),
+            None => self.store(cx).update(cx, |s, cx| s.set_selection(source, channels, cx)),
+        }
     }
 
     fn body(&mut self, _: &mut Window, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         let store = self.store(cx);
+        let muted = cx.theme().muted_foreground;
         let Some(source) = focused_source(&self.explore, cx) else {
-            return v_flex().size_full().p_3().text_sm().text_color(cx.theme().muted_foreground).child("No recording open.").into_any_element();
+            return v_flex().size_full().p_4().text_sm().text_color(muted).child("No recording open.").into_any_element();
         };
+        let pinned = self.pinned_vm(cx).is_some();
         let focused_vm = self.explore.read(cx).focused.clone();
-        let pinned_vm = self.pinned_vm(cx);
-        let (name, total, selected, events, ds, picked) = {
+        let (total, ds, picked) = {
             let s = store.read(cx);
-            let sources = s.sources().cloned();
-            let entry = sources.as_ref().map(|ss| ss.entry(&source).clone());
-            let ds = sources.as_ref().map(|ss| ss.get(&source));
-            let events = s.recording.as_ref().map(|r| r.events.clone()).unwrap_or_default();
-            let sel = match &pinned_vm {
-                Some(vm) => vm.read(cx).view.selection.clone(),
-                None => s.selection(&source).to_vec(),
-            };
-            (entry.as_ref().map_or_else(String::new, |e| e.name.clone()), entry.map_or(0, |e| e.channels), sel, events, ds, s.picked_channel)
+            let ds = s.sources().map(|ss| ss.get(&source));
+            (s.sources().map_or(0, |ss| ss.entry(&source).channels), ds, s.picked_channel)
         };
-        let filter = self.filter.read(cx).value().trim().to_lowercase();
-        let layout = ds.as_ref().and_then(|d| d.layout.clone());
-        let labels: Rc<Vec<Option<String>>> = Rc::new((0..total).map(|c| layout.as_ref().and_then(|l| l.label(c).map(str::to_string))).collect());
-        let matches = |c: usize| filter.is_empty() || c.to_string().contains(&filter) || labels[c].as_ref().is_some_and(|s| s.to_lowercase().contains(&filter));
-        let checked: Rc<Vec<bool>> = Rc::new({
+        let shown_list = self.shown(&source, cx);
+        let shown: Rc<Vec<bool>> = Rc::new({
             let mut v = vec![false; total];
-            for &c in &selected {
+            for &c in &shown_list {
                 if c < total {
                     v[c] = true;
                 }
             }
             v
         });
-        // Groups from the layout (e.g. shanks) when it has more than one, else a flat list
+        let text = self.filter.read(cx).value().trim().to_lowercase();
+        let filtering = !text.is_empty() && !is_range(&text);
+        let layout = ds.as_ref().and_then(|d| d.layout.clone());
+        let labels: Rc<Vec<Option<String>>> = Rc::new((0..total).map(|c| layout.as_ref().and_then(|l| l.label(c).map(str::to_string))).collect());
+        let matches = |c: usize| !filtering || c.to_string().contains(&text) || labels[c].as_ref().is_some_and(|s| s.to_lowercase().contains(&text));
+        // Groups: the layout's (shanks) when it has several, else blocks of 32 channels
         let groups: Vec<(String, Vec<usize>)> = match &layout {
             Some(l) if l.groups.len() > 1 => l.groups.iter().map(|g| (format!("{} {}", l.group_kind, g.name), g.channels.iter().copied().filter(|&c| c < total).collect())).collect(),
-            _ => Vec::new(),
+            _ => (0..total).step_by(CHANNEL_BLOCK).map(|a| {
+                let b = (a + CHANNEL_BLOCK).min(total);
+                (format!("{a}–{}", b - 1), (a..b).collect())
+            }).collect(),
         };
         let mut rows: Vec<TreeRow> = Vec::new();
-        if groups.is_empty() {
-            rows.extend((0..total).filter(|&c| matches(c)).map(TreeRow::Channel));
-        } else {
-            for (g, (_, chans)) in groups.iter().enumerate() {
-                let shown: Vec<usize> = chans.iter().copied().filter(|&c| matches(c)).collect();
-                if shown.is_empty() {
-                    continue;
-                }
-                let folded = self.collapsed.contains(&g) && filter.is_empty();
-                rows.push(TreeRow::Group { g, on: chans.iter().filter(|&&c| checked[c]).count(), of: chans.len(), folded });
-                if !folded {
-                    rows.extend(shown.into_iter().map(TreeRow::Channel));
-                }
+        for (g, (_, chans)) in groups.iter().enumerate() {
+            let visible: Vec<usize> = chans.iter().copied().filter(|&c| matches(c)).collect();
+            if visible.is_empty() {
+                continue;
+            }
+            // A search unfolds what it finds
+            let open = filtering || self.expanded.contains(&g);
+            rows.push(TreeRow::Group { g, on: chans.iter().filter(|&&c| shown[c]).count(), of: chans.len(), open });
+            if open {
+                rows.extend(visible.into_iter().map(TreeRow::Channel));
             }
         }
-        let palette = store.read(cx).palette();
         let t = cx.theme();
-        let (muted, danger, accent) = (t.muted_foreground, t.danger, t.accent);
+        let (accent, accent_fg, danger, fg) = (t.accent, t.accent_foreground, t.danger, t.foreground);
         let rows = Rc::new(rows);
         let groups = Rc::new(groups);
         let this = cx.entity().downgrade();
-        let (list_rows, list_labels, list_groups) = (rows.clone(), labels.clone(), groups.clone());
-        let (store_for_rows, source_for_rows, pinned_for_rows) = (store.clone(), source.clone(), pinned_vm.clone());
+        let (list_rows, list_labels, list_groups, src) = (rows.clone(), labels.clone(), groups.clone(), source.clone());
 
         let list = uniform_list("channel-rows", rows.len(), move |range, _, _| {
             range
                 .map(|i| {
-                    let (store, source, pinned, this) = (store_for_rows.clone(), source_for_rows.clone(), pinned_for_rows.clone(), this.clone());
+                    let (this, src) = (this.clone(), src.clone());
                     match list_rows[i] {
-                        TreeRow::Group { g, on, of, folded } => {
+                        TreeRow::Group { g, on, of, open } => {
                             let chans = list_groups[g].1.clone();
-                            let all_on = on == of;
+                            let all = on == of;
+                            let (t2, s2) = (this.clone(), src.clone());
                             h_flex()
                                 .id(("channel-group", g))
-                                .h(px(26.))
-                                .px_1()
-                                .gap_1()
+                                .h(px(ROW_H + 4.))
+                                .pl_2()
+                                .pr_1()
+                                .gap_2()
                                 .cursor_pointer()
-                                .child(gpui_kit::component::Icon::new(if folded { IconName::ChevronRight } else { IconName::ChevronDown }).xsmall())
-                                .child(Checkbox::new(("group-check", g)).checked(all_on).on_click({
-                                    let (store, source, pinned) = (store.clone(), source.clone(), pinned.clone());
-                                    move |_, _, cx| {
-                                        let current: Vec<usize> = match &pinned {
-                                            Some(vm) => vm.read(cx).view.selection.clone(),
-                                            None => store.read(cx).selection(&source).to_vec(),
-                                        };
-                                        let mut next: Vec<usize> = current.into_iter().filter(|c| !chans.contains(c)).collect();
-                                        if !all_on {
-                                            next.extend(chans.iter().copied());
-                                            next.sort_unstable();
-                                        }
-                                        match &pinned {
-                                            Some(vm) => vm.update(cx, |vm, cx| vm.set_selection(next, cx)),
-                                            None => store.update(cx, |s, cx| s.set_selection(&source, next, cx)),
-                                        }
-                                    }
-                                }))
-                                .child(div().flex_1().text_sm().font_weight(gpui_kit::FontWeight::SEMIBOLD).child(list_groups[g].0.clone()))
+                                .child(gpui_kit::component::Icon::new(if open { IconName::ChevronDown } else { IconName::ChevronRight }).xsmall().text_color(muted))
+                                .child(div().flex_1().text_sm().font_weight(gpui_kit::FontWeight::MEDIUM).child(list_groups[g].0.clone()))
                                 .child(div().text_xs().text_color(muted).child(format!("{on}/{of}")))
+                                .child(
+                                    icon_button(("group-eye", g), if on == 0 { IconName::EyeOff } else { IconName::Eye }, if all { "Hide this group" } else { "Show this group" })
+                                        .xsmall()
+                                        .on_click(move |_, _, cx| {
+                                            let _ = t2.update(cx, |p, cx| {
+                                                let mut next: Vec<usize> = p.shown(&s2, cx).into_iter().filter(|c| !chans.contains(c)).collect();
+                                                if !all {
+                                                    next.extend(chans.iter().copied());
+                                                    next.sort_unstable();
+                                                }
+                                                p.set_shown(&s2, next, cx);
+                                            });
+                                        }),
+                                )
                                 .on_click(move |_, _, cx| {
                                     let _ = this.update(cx, |p, cx| {
-                                        if !p.collapsed.remove(&g) {
-                                            p.collapsed.insert(g);
+                                        if !p.expanded.remove(&g) {
+                                            p.expanded.insert(g);
                                         }
                                         cx.notify();
                                     });
@@ -349,35 +365,43 @@ impl ChannelsPanel {
                                 .into_any_element()
                         }
                         TreeRow::Channel(ch) => {
-                            let on = checked[ch];
-                            let count = events.count(ch);
-                            let site_label = list_labels[ch].clone();
+                            let on = shown[ch];
                             let is_picked = picked == Some(ch);
-                            let pick_store = store.clone();
+                            let label = list_labels[ch].clone();
+                            let t2 = this.clone();
                             h_flex()
                                 .id(("channel", ch))
-                                .h(px(26.))
-                                .pl(px(if list_groups.is_empty() { 8. } else { 24. }))
-                                .pr_2()
+                                .h(px(ROW_H))
+                                .pl(px(32.))
+                                .pr_1()
                                 .gap_2()
-                                .when(is_picked, |d| d.bg(accent))
-                                .child(Checkbox::new(("channel-check", ch)).checked(on).on_click(move |_, _, cx| match &pinned {
-                                    Some(vm) => vm.update(cx, |vm, cx| vm.toggle_channel(ch, cx)),
-                                    None => store.update(cx, |s, cx| s.toggle_channel(&source, ch, cx)),
-                                }))
-                                .child(div().size(px(8.)).rounded_full().bg(color(palette.channel(ch))))
+                                .rounded_sm()
+                                .cursor_pointer()
+                                .when(is_picked, |d| d.bg(accent).text_color(accent_fg))
+                                .child(div().w(px(36.)).text_sm().text_color(if on { fg } else { muted }).child(ch.to_string()))
+                                .child(div().flex_1().min_w_0().truncate().text_xs().text_color(muted).children(label))
                                 .child(
-                                    div()
-                                        .id(("channel-name", ch))
-                                        .flex_1()
-                                        .text_sm()
-                                        .cursor_pointer()
-                                        .when(!on, |d| d.text_color(muted))
-                                        .child(format!("Ch {ch}"))
-                                        .on_click(move |_, _, cx| pick_store.update(cx, |s, cx| s.pick_channel(Some(ch), cx))),
+                                    icon_button(("channel-eye", ch), if on { IconName::Eye } else { IconName::EyeOff }, if on { "Hide" } else { "Show" })
+                                        .xsmall()
+                                        .on_click(move |_, _, cx| {
+                                            let _ = t2.update(cx, |p, cx| {
+                                                let mut next = p.shown(&src, cx);
+                                                match next.iter().position(|&c| c == ch) {
+                                                    Some(i) => {
+                                                        next.remove(i);
+                                                    }
+                                                    None => {
+                                                        let at = next.partition_point(|&c| c < ch);
+                                                        next.insert(at, ch);
+                                                    }
+                                                }
+                                                p.set_shown(&src, next, cx);
+                                            });
+                                        }),
                                 )
-                                .when_some(site_label, |d, s| d.child(div().text_xs().text_color(muted).child(s)))
-                                .when(count > 0, |d| d.child(div().text_xs().text_color(muted).child(count.to_string())))
+                                .on_click(move |_, _, cx| {
+                                    let _ = this.update(cx, |p, cx| p.store(cx).update(cx, |s, cx| s.pick_channel(Some(ch), cx)));
+                                })
                                 .into_any_element()
                         }
                     }
@@ -387,35 +411,26 @@ impl ChannelsPanel {
         .flex_1()
         .min_h_0();
 
-        let actions = h_flex()
-            .gap_1()
-            .child(Button::new("select-all").ghost().xsmall().label("All").on_click(cx.listener(|this, _, _, cx| this.select_all(cx))))
-            .child(Button::new("select-none").ghost().xsmall().label("None").on_click(cx.listener(|this, _, _, cx| this.select_none(cx))))
-            .child(Button::new("select-invert").ghost().xsmall().label("Invert").on_click(cx.listener(|this, _, _, cx| this.select_invert(cx))))
-            .when_some(focused_vm, |d, vm| {
-                let pinned = pinned_vm.is_some();
-                d.child(
-                    Button::new("pin-view-channels")
-                        .xsmall()
-                        .map(|b| if pinned { b.primary() } else { b.ghost() })
-                        .label(if pinned { "Pinned" } else { "Pin" })
-                        .tooltip("Keep this view's channel selection independent of other views")
-                        .on_click(move |_, _, cx| vm.update(cx, |vm, cx| vm.set_pinned_selection(!pinned, cx))),
-                )
+        // Every selection action in one menu (few visible choices)
+        let menu = {
+            let this = cx.entity().downgrade();
+            let pin_vm = focused_vm.clone();
+            Button::new("channels-menu").ghost().xsmall().icon(IconName::Ellipsis).tooltip("Show all, none, invert; pin to the view").dropdown_menu(move |menu: gpui_kit::component::menu::PopupMenu, _, _| {
+                let item = |label: &'static str, f: fn(&ChannelsPanel, &mut Context<ChannelsPanel>)| {
+                    let this = this.clone();
+                    gpui_kit::component::menu::PopupMenuItem::new(label).on_click(move |_, _, cx| {
+                        let _ = this.update(cx, |p, cx| f(p, cx));
+                    })
+                };
+                let mut menu = menu.item(item("Show all", |p, cx| p.select_all(cx))).item(item("Show none", |p, cx| p.select_none(cx))).item(item("Invert", |p, cx| p.select_invert(cx)));
+                if let Some(vm) = pin_vm.clone() {
+                    menu = menu.separator().item(gpui_kit::component::menu::PopupMenuItem::new(if pinned { "Unpin from this view" } else { "Pin to this view" }).on_click(move |_, _, cx| {
+                        vm.update(cx, |vm, cx| vm.set_pinned_selection(!pinned, cx))
+                    }));
+                }
+                menu
             })
-            .child(div().flex_1())
-            .when(!groups.is_empty(), |d| {
-                d.child(Button::new("fold-all").ghost().xsmall().label("Fold").tooltip("Fold every group").on_click(cx.listener(|this, _, _, cx| {
-                    let n = this.explore.read(cx).store().read(cx).sources().map(|s| s.get(&focused_source(&this.explore, cx).unwrap_or_default())).and_then(|d| d.layout.as_ref().map(|l| l.groups.len())).unwrap_or(0);
-                    if this.collapsed.len() == n {
-                        this.collapsed.clear();
-                    } else {
-                        this.collapsed = (0..n).collect();
-                    }
-                    cx.notify();
-                })))
-            })
-            .child(div().text_xs().text_color(muted).truncate().child(name));
+        };
 
         v_flex()
             .id("channels-panel")
@@ -423,10 +438,9 @@ impl ChannelsPanel {
             .size_full()
             .gap_2()
             .p_2()
-            .child(actions)
-            .child(Input::new(&self.ranges).small())
+            .child(h_flex().gap_1().child(div().flex_1().child(Input::new(&self.filter).small().prefix(gpui_kit::component::Icon::new(IconName::Search).small()))).child(menu))
             .when_some(self.range_error.clone(), |d, e| d.child(div().text_xs().text_color(danger).child(e)))
-            .child(Input::new(&self.filter).small().prefix(gpui_kit::component::Icon::new(IconName::Search).small()))
+            .when(pinned, |d| d.child(div().text_xs().text_color(muted).child("Pinned to the focused view")))
             .child(list)
             .into_any_element()
     }
@@ -444,7 +458,7 @@ pub struct SettingsPanel {
     _subs: Vec<Subscription>,
 }
 
-side_panel!(SettingsPanel, "dspk-app.view-settings", "View settings");
+side_panel!(SettingsPanel, "dspk-app.view-settings", "Display");
 
 impl SettingsPanel {
     pub fn new(explore: Entity<ExploreVm>, dock: DockToggle, cx: &mut Context<Self>) -> Self {
@@ -479,30 +493,31 @@ impl SettingsPanel {
         let sources = vm.read(cx).store().read(cx).sources().cloned();
         let traces = v.kind == TimeViewKind::Traces;
 
+        // Layers: what the view draws (one at a time)
+        let layer = |id: &'static str, icon: gpui_kit::assets::IconName, label: &'static str, tip: &'static str, on: bool, kind: TimeViewKind, spikes: bool| {
+            let vm = vm.clone();
+            Button::new(id).xsmall().icon(icon).label(label).tooltip(tip).map(|b| if on { b.primary() } else { b.ghost() }).on_click(move |_, _, cx| {
+                vm.update(cx, |vm, cx| {
+                    vm.set_kind(kind, cx);
+                    if kind == TimeViewKind::Traces {
+                        vm.set_spikes(spikes, cx);
+                    }
+                })
+            })
+        };
         let kind = h_flex()
             .gap_1()
-            .child(
-                Button::new("kind-traces")
-                    .small()
-                    .icon(gpui_kit::assets::IconName::AudioWaveform)
-                    .label("Traces")
-                    .map(|b| if traces { b.primary() } else { b.outline() })
-                    .on_click({
-                        let vm = vm.clone();
-                        move |_, _, cx| vm.update(cx, |vm, cx| vm.set_kind(TimeViewKind::Traces, cx))
-                    }),
-            )
-            .child(
-                Button::new("kind-heatmap")
-                    .small()
-                    .icon(gpui_kit::assets::IconName::Flame)
-                    .label("Heatmap")
-                    .map(|b| if !traces { b.primary() } else { b.outline() })
-                    .on_click({
-                        let vm = vm.clone();
-                        move |_, _, cx| vm.update(cx, |vm, cx| vm.set_kind(TimeViewKind::Heatmap, cx))
-                    }),
-            );
+            .flex_wrap()
+            .child(layer("kind-traces", gpui_kit::assets::IconName::AudioWaveform, "Traces", "The traces alone", traces && !v.spikes, TimeViewKind::Traces, false))
+            .child(layer("kind-spikes", gpui_kit::assets::IconName::Activity, "Spikes", "Traces faint, each spike in its unit's colour (a linked sorting)", traces && v.spikes, TimeViewKind::Traces, true))
+            .child(layer("kind-heatmap", gpui_kit::assets::IconName::Flame, "Heatmap", "Every channel as a row, colour = amplitude", v.kind == TimeViewKind::Heatmap, TimeViewKind::Heatmap, false))
+            .child(layer("kind-raster", gpui_kit::assets::IconName::GitCommitVertical, "Raster", "Spike times, one row per unit (a linked sorting)", v.kind == TimeViewKind::Raster, TimeViewKind::Raster, false));
+        let color_by = {
+            let vm = vm.clone();
+            let names: Vec<SharedString> = ColorBy::ALL.iter().map(|c| SharedString::from(c.name())).collect();
+            let sel = ColorBy::ALL.iter().position(|c| *c == v.color_by);
+            MenuSelect::new("color-by", names, sel, move |i, _, cx| vm.update(cx, |vm, cx| vm.set_color_by(ColorBy::ALL[i], cx)))
+        };
 
         let source = sources.as_ref().map(|ss| {
             let names: Vec<SharedString> = ss.entries().iter().map(|e| e.summary().into()).collect();
@@ -546,13 +561,6 @@ impl SettingsPanel {
                 Rc::new(move |cx| b.update(cx, |vm, cx| vm.zoom_gain(1.0 / 0.75, cx))),
             )
         };
-        let pin = {
-            let vm = vm.clone();
-            Switch::new("pin-selection")
-                .checked(v.pinned_selection)
-                .label("Pin channels to this view")
-                .on_click(move |on, _, cx| vm.update(cx, |vm, cx| vm.set_pinned_selection(*on, cx)))
-        };
         let auto = {
             let vm = vm.clone();
             Switch::new("auto-scale").checked(v.auto_scale).label("Fit amplitude to what is shown").on_click(move |on, _, cx| vm.update(cx, |vm, cx| vm.set_auto_scale(*on, cx)))
@@ -569,8 +577,9 @@ impl SettingsPanel {
             .gap_4()
             .p_3()
             .overflow_y_scroll()
-            .child(div().text_base().font_weight(gpui_kit::FontWeight::SEMIBOLD).child(v.title.clone()))
-            .child(Section::new("Display").child(kind).children(source).child(row("Range", div().text_sm().child(v.range_label()), cx)).child(pin))
+            .child(div().text_sm().font_weight(gpui_kit::FontWeight::SEMIBOLD).truncate().child(v.title.clone()))
+            .child(Section::new("Layer").child(kind).when(traces, |d| d.child(row("Colour", color_by, cx))))
+            .child(Section::new("Source").children(source).child(row("Range", div().text_sm().child(v.range_label()), cx)))
             .when(traces, |d| d.child(Section::new("Traces").child(row("On screen", lanes_row, cx)).child(row("Gain", gain_row, cx))))
             .child(Section::new("Scaling").child(auto).child(dc))
             .into_any_element()

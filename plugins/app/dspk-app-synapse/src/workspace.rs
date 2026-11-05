@@ -165,6 +165,8 @@ impl SortingWorkspace {
                 scale_bar: true,
                 highlights: Vec::new(),
                 overlay,
+                raster: None,
+                color_by: Default::default(),
                 palette,
             }
         });

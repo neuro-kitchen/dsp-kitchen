@@ -561,7 +561,10 @@ mod tests {
                 let b = window.find(("time-view", id)).bounds().size;
                 assert!(b.width > px(300.) && b.height > px(100.), "view {id}: {b:?}");
             }
-            assert!(window.try_find("channels-panel").is_some() && window.try_find("settings-panel").is_some() && window.try_find("timeline-panel").is_some());
+            // One panel per side: Channels, Processing (the default right panel), the timeline
+            for id in ["channels-panel", "processing-panel", "timeline-panel"] {
+                assert!(window.try_find(id).is_some(), "{id} on screen");
+            }
         })
         .unwrap();
 
@@ -603,33 +606,45 @@ mod tests {
         });
         assert!(cx.update(|cx| store.update(cx, |s, cx| s.select_ranges("main", "40", cx))).is_err(), "out of range");
 
-        // The docks open and close
-        let dock = cx.update(|cx| app.read(cx).explore.read(cx).dock.clone());
+        // The sides open and close: the icon bar at the left edge, and the panel's hide button
+        let explore = cx.update(|cx| app.read(cx).explore.clone());
+        let open = |cx: &mut TestAppContext| cx.update(|cx| explore.read(cx).is_side_open(DockPlacement::Left));
         cx.update_window(window, |_, window, cx| app.update(cx, |a, cx| a.toggle_dock(DockPlacement::Left, window, cx))).unwrap();
         cx.run_until_parked();
-        cx.update(|cx| assert!(!dock.read(cx).is_dock_open(DockPlacement::Left)));
+        assert!(!open(cx));
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
-            assert!(window.try_find("channels-panel").is_none(), "closed dock hides its panel");
-            // The rail at the left edge shows it again
-            let rail = window.find("show-channels").bounds();
-            assert!(rail.origin.x < px(40.), "rail at the window's left edge: {rail:?}");
-            window.click("show-channels", cx);
+            assert!(window.try_find("channels-panel").is_none(), "a hidden side hides its panel");
+            let rail = window.find("rail-channels").bounds();
+            assert!(rail.origin.x < px(40.), "icon bar at the window's left edge: {rail:?}");
+            window.click("rail-channels", cx);
         })
         .unwrap();
         cx.run_until_parked();
-        cx.update(|cx| assert!(dock.read(cx).is_dock_open(DockPlacement::Left)));
+        assert!(open(cx));
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
-            assert!(window.try_find("show-channels").is_none());
-            // The hide button sits at the panel's outer (left) edge
-            let hide = window.find("dspk-app.channels.toggle").bounds();
-            assert!(hide.origin.x < px(40.), "{hide:?}");
             window.click("dspk-app.channels.toggle", cx);
         })
         .unwrap();
         cx.run_until_parked();
-        cx.update(|cx| assert!(!dock.read(cx).is_dock_open(DockPlacement::Left)));
+        assert!(!open(cx));
+        // The right bar shows one panel at a time; its icon again hides the side
+        let right = |cx: &mut TestAppContext| cx.update(|cx| explore.read(cx).is_side_open(DockPlacement::Right));
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("rail-display", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("settings-panel").is_some() && window.try_find("processing-panel").is_none(), "one panel at a time");
+            window.click("rail-display", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert!(!right(cx));
     }
 
     /// Second pixel of the top row of the traces view's frame (BGRA): background (the first column

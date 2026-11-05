@@ -31,6 +31,10 @@ pub struct SavedTimeView {
     pub remove_dc: bool,
     #[serde(default)]
     pub pinned_selection: bool,
+    #[serde(default = "yes")]
+    pub spikes: bool,
+    #[serde(default)]
+    pub color_by: crate::screens::explore::trace::renderer::ColorBy,
 }
 
 impl SavedTimeView {
@@ -43,6 +47,8 @@ impl SavedTimeView {
             auto_scale: v.auto_scale,
             remove_dc: v.remove_dc,
             pinned_selection: v.pinned_selection,
+            spikes: v.spikes,
+            color_by: v.color_by,
         }
     }
 
@@ -52,6 +58,8 @@ impl SavedTimeView {
         v.auto_scale = self.auto_scale;
         v.remove_dc = self.remove_dc;
         v.pinned_selection = self.pinned_selection;
+        v.spikes = self.spikes;
+        v.color_by = self.color_by;
         v.needs_render = true;
     }
 }
@@ -77,11 +85,14 @@ pub struct ExploreSession {
     pub bottom_open: bool,
     #[serde(default)]
     pub views: Vec<SavedTimeView>,
+    /// The panel shown on the right side bar (`processing`, `display`, `plugin0`, …).
+    #[serde(default)]
+    pub right_panel: String,
 }
 
 impl Default for ExploreSession {
     fn default() -> Self {
-        Self { left_open: true, right_open: true, bottom_open: true, views: Vec::new() }
+        Self { left_open: true, right_open: true, bottom_open: true, views: Vec::new(), right_panel: String::new() }
     }
 }
 

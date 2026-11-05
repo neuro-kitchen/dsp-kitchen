@@ -184,9 +184,15 @@ impl TraceVm {
         // The active view's processed preview when it reads this source, else the recording
         let signal = store.signal_for(&self.view.source).unwrap_or_else(|| dataset.signal().clone());
         let mut req = self.view.render_request(&store.timeline, signal, events, store.palette());
-        if req.mode == TimeViewKind::Traces {
-            let window = req.window_start_sec..req.window_start_sec + req.window_sec;
-            req.overlay = crate::plugin::plugins().iter().find_map(|p| p.trace_overlay(store, &self.view.source, window.clone(), cx)).map(Arc::new);
+        let window = req.window_start_sec..req.window_start_sec + req.window_sec;
+        match req.mode {
+            TimeViewKind::Traces if self.view.spikes => {
+                req.overlay = crate::plugin::plugins().iter().find_map(|p| p.trace_overlay(store, &self.view.source, window.clone(), cx)).map(Arc::new);
+            }
+            TimeViewKind::Raster => {
+                req.raster = crate::plugin::plugins().iter().find_map(|p| p.raster(store, &self.view.source, window.clone(), cx)).map(Arc::new);
+            }
+            _ => {}
         }
         let samples_per_px = req.window_sec * dataset.sample_rate / req.width.max(1) as f64;
         let (start, window) = (req.window_start_sec, req.window_sec);
@@ -252,6 +258,23 @@ impl TraceVm {
         if self.view.kind != kind {
             self.view.kind = kind;
             self.view.retitle();
+            cx.emit(TraceEvent::Changed);
+            self.request_render(cx);
+        }
+    }
+
+    /// Traces with the spikes coloured (`spikes`), or alone.
+    pub fn set_spikes(&mut self, spikes: bool, cx: &mut Context<Self>) {
+        if self.view.spikes != spikes {
+            self.view.spikes = spikes;
+            cx.emit(TraceEvent::Changed);
+            self.request_render(cx);
+        }
+    }
+
+    pub fn set_color_by(&mut self, color_by: crate::screens::explore::trace::renderer::ColorBy, cx: &mut Context<Self>) {
+        if self.view.color_by != color_by {
+            self.view.color_by = color_by;
             cx.emit(TraceEvent::Changed);
             self.request_render(cx);
         }

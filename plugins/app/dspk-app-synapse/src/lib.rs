@@ -25,7 +25,7 @@ use std::sync::Arc;
 use dspk_app_core::data::store::{AppEvent, Store};
 use dspk_app_core::domain::session::ViewDoc;
 use dspk_app_core::navigation::route::Workspace;
-use dspk_app_core::plugin::{AppPlugin, OverlayMark, OverlayUnit, SourceOpener, TraceOverlay};
+use dspk_app_core::plugin::{AppPlugin, OverlayMark, OverlayUnit, Raster, RasterRow, SourceOpener, TraceOverlay};
 use dspk_core::RecordingSource;
 use dspk_synapse::io::{SyntheticParams, SyntheticRecording};
 use gpui_kit::{AnyElement, AnyView, App, AppContext as _, Context, Entity, EventEmitter, Global, Subscription, Window};
@@ -147,6 +147,12 @@ impl SynapseState {
         self.units_changed(cx);
     }
 
+    /// A Sort choice changed (the panel redraws).
+    pub fn choices_changed(&mut self, cx: &mut Context<Self>) {
+        self.store.update(cx, |s, cx| s.plugin_changed(cx));
+        cx.notify();
+    }
+
     fn units_changed(&mut self, cx: &mut Context<Self>) {
         self.store.update(cx, |s, cx| s.redraw(cx));
         cx.emit(SynapseEvent::UnitsChanged);
@@ -250,12 +256,48 @@ impl AppPlugin for SynapsePlugin {
         Some(TraceOverlay { dim: true, units, marks })
     }
 
+    /// The active view's sorting as raster rows: units by primary channel (depth along the
+    /// probe), hidden units left out, spikes in the window.
+    fn raster(&self, store: &Store, source: &str, window_sec: Range<f64>, cx: &App) -> Option<Raster> {
+        let view = store.active_view()?;
+        if store.view_source(view) != source {
+            return None;
+        }
+        let state = state(cx)?;
+        let state = state.read(cx);
+        let path = sorting_of(view)?;
+        let sorting = state.sortings.get(&path)?;
+        let start = store.sources()?.get(source).start_time_sec;
+        let rate = sorting.sample_rate;
+        let palette = store.palette();
+        let hidden = state.hidden.get(&path);
+        let mut order: Vec<usize> = (0..sorting.units.len()).filter(|u| !hidden.is_some_and(|h| h.contains(u))).collect();
+        order.sort_by_key(|&u| (sorting.units[u].info.primary_channel, u));
+        let row_of: std::collections::HashMap<usize, usize> = order.iter().enumerate().map(|(r, &u)| (u, r)).collect();
+        let mut rows: Vec<RasterRow> = order
+            .iter()
+            .map(|&u| RasterRow { color: palette.unit(u), label: format!("Unit {}", sorting.units[u].info.unit_id), times: Vec::new() })
+            .collect();
+        let s0 = ((window_sec.start - start) * rate).max(0.0) as u64;
+        let s1 = ((window_sec.end - start) * rate).max(0.0) as u64;
+        for k in sorting.in_range(s0, s1) {
+            if let Some(&r) = sorting.unit_of[k].and_then(|u| row_of.get(&(u as usize))) {
+                rows[r].times.push(start + sorting.times[k] as f64 / rate);
+            }
+        }
+        Some(Raster { rows })
+    }
+
     fn provides(&self, ws: Workspace) -> bool {
         ws == Workspace::Sorting
     }
 
     fn workspace(&self, ws: Workspace, store: &Entity<Store>, window: &mut Window, cx: &mut App) -> Option<AnyView> {
         (ws == Workspace::Sorting).then(|| cx.new(|cx| workspace::SortingWorkspace::new(store.clone(), window, cx)).into())
+    }
+
+    fn panel(&self) -> Option<(&'static str, std::rc::Rc<dyn Fn() -> gpui_kit::component::Icon>)> {
+        Some(("Sorting", std::rc::Rc::new(|| gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Microscope))))
     }
 
     fn view_section(&self, store: &Entity<Store>, view: &ViewDoc, window: &mut Window, cx: &mut App) -> Option<AnyElement> {

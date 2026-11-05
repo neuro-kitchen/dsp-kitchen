@@ -12,7 +12,7 @@ use crate::data::recording::{Dataset, SpikeEventStore};
 
 use dspk_core::SignalUnit;
 
-use super::renderer::{nominal_amplitude, px_per_unit, scale_bar_value, RenderRequest, TimeViewKind};
+use super::renderer::{nominal_amplitude, px_per_unit, scale_bar_value, ColorBy, RenderRequest, TimeViewKind};
 use crate::ui::theme::palette::Palette;
 use crate::domain::timeline::TimelineState;
 
@@ -73,6 +73,11 @@ pub struct TimeView {
     /// Keep this view's own channel selection instead of following the source's shared selection.
     #[serde(default)]
     pub pinned_selection: bool,
+    /// Traces: spikes coloured by unit over faint traces (else the traces alone).
+    #[serde(default = "yes")]
+    pub spikes: bool,
+    #[serde(default)]
+    pub color_by: ColorBy,
     /// Units that fill a lane at gain 1: reported by the renderer (auto-scale) or nominal.
     #[serde(skip, default = "nominal")]
     pub amp_scale: f32,
@@ -127,6 +132,8 @@ impl TimeView {
             auto_scale: true,
             remove_dc: true,
             pinned_selection: false,
+            spikes: true,
+            color_by: ColorBy::default(),
             amp_scale: nominal(),
             unit: micro(),
             nominal: nominal(),
@@ -189,6 +196,7 @@ impl TimeView {
         let n = self.selection.len();
         match self.kind {
             TimeViewKind::Heatmap => format!("{n} channels"),
+            TimeViewKind::Raster => "Units of the sorting".into(),
             TimeViewKind::Traces => {
                 let start = self.scroll.min(self.max_scroll());
                 let shown = self.drawn_channels().len();
@@ -286,6 +294,7 @@ impl TimeView {
         let drawn = self.drawn_channels();
         let n = drawn.len().max(1) as f32;
         match self.kind {
+            TimeViewKind::Raster => Vec::new(),
             TimeViewKind::Traces => drawn
                 .iter()
                 .enumerate()
@@ -395,6 +404,8 @@ impl TimeView {
             highlights: Vec::new(),
             // A plugin's marks (spikes) are set by the view model, which knows the plugins
             overlay: None,
+            raster: None,
+            color_by: self.color_by,
             palette,
         }
     }
@@ -421,6 +432,7 @@ pub fn kind_name(kind: TimeViewKind) -> &'static str {
     match kind {
         TimeViewKind::Traces => "Traces",
         TimeViewKind::Heatmap => "Heatmap",
+        TimeViewKind::Raster => "Raster",
     }
 }
 

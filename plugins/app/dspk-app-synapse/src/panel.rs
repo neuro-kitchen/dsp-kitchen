@@ -80,14 +80,14 @@ pub fn section(store: &Entity<Store>, view: &ViewDoc, _window: &mut Window, cx: 
     let sorter_pick = MenuSelect::new("sorter", SORTERS.iter().map(|(_, n)| SharedString::from(*n)).collect(), Some(sorter), move |i, _, cx| {
         s1.update(cx, |s, cx| {
             s.sorter = i;
-            cx.notify();
+            s.choices_changed(cx);
         })
     });
     let s2 = state.clone();
     let probe_pick = MenuSelect::new("probe", PROBES.iter().map(|(_, n)| SharedString::from(*n)).collect(), Some(probe), move |i, _, cx| {
         s2.update(cx, |s, cx| {
             s.probe = i;
-            cx.notify();
+            s.choices_changed(cx);
         })
     });
     let processed = view.ops.iter().any(|o| o.enabled);

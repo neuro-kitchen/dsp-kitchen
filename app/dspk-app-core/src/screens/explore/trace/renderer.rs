@@ -32,6 +32,32 @@ pub enum TimeViewKind {
     Traces,
     /// All channels as rows, color = peak |amplitude| per screen column.
     Heatmap,
+    /// Spike times as ticks, one row per unit (a plugin's sorting), coloured by unit.
+    Raster,
+}
+
+/// How traces are coloured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum ColorBy {
+    /// A colour per channel (cycling).
+    #[default]
+    Channel,
+    /// One colour for every trace.
+    Single,
+    /// Each column by its amplitude (the heat map's colours).
+    Amplitude,
+}
+
+impl ColorBy {
+    pub const ALL: [ColorBy; 3] = [ColorBy::Channel, ColorBy::Single, ColorBy::Amplitude];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            ColorBy::Channel => "By channel",
+            ColorBy::Single => "One colour",
+            ColorBy::Amplitude => "By amplitude",
+        }
+    }
 }
 
 /// Everything needed to draw one frame of one view. Sendable to the worker thread.
@@ -71,6 +97,9 @@ pub struct RenderRequest {
     /// A plugin's marks over the traces (e.g. spikes coloured by unit over their template's
     /// extent, the traces faint).
     pub overlay: Option<Arc<crate::plugin::TraceOverlay>>,
+    /// Raster rows (one per unit) for [`TimeViewKind::Raster`].
+    pub raster: Option<Arc<crate::plugin::Raster>>,
+    pub color_by: ColorBy,
     pub palette: Palette,
 }
 
@@ -148,6 +177,27 @@ fn choose_scale(amplitude: f32, hint: f32, nominal: f32) -> f32 {
     if hint > 0.0 && amplitude >= 0.5 * hint && amplitude <= 1.25 * hint { hint } else { amplitude }
 }
 
+/// One row per unit, each spike a tick in its unit's colour; rows fill the height.
+fn draw_raster(canvas: &mut Canvas, req: &RenderRequest) {
+    let Some(r) = &req.raster else { return };
+    let n = r.rows.len();
+    if n == 0 {
+        return;
+    }
+    let row_h = canvas.height as f32 / n as f32;
+    let w = canvas.width as f64;
+    let tick = (row_h * 0.8).max(1.0);
+    for (i, row) in r.rows.iter().enumerate() {
+        let top = i as f32 * row_h + (row_h - tick) * 0.5;
+        for &t in &row.times {
+            let x = ((t - req.window_start_sec) / req.window_sec * w) as f32;
+            if x >= 0.0 && x < w as f32 {
+                canvas.rect(x, top, x + req.scale.max(1.0), top + tick, row.color, 1.0);
+            }
+        }
+    }
+}
+
 /// Opacity of traces under an overlay (the marks are drawn opaque over them).
 const DIM_ALPHA: f32 = 0.35;
 
@@ -217,6 +267,12 @@ impl WaveformRenderer {
                 canvas.vline(x as usize, 0, canvas.height, req.palette.grid);
             }
         }
+        // A raster reads no samples: spike times only
+        if req.mode == TimeViewKind::Raster {
+            self.complete = true;
+            draw_raster(&mut canvas, req);
+            return (pixel_buffer, req.scale_hint.max(0.0));
+        }
 
         self.envelope(signal, &req.channels, start, end, x1.saturating_sub(x0));
         self.place_columns(req.channels.len(), x0, x1, canvas.width);
@@ -225,6 +281,7 @@ impl WaveformRenderer {
         match req.mode {
             TimeViewKind::Traces => self.draw_traces(&mut canvas, &req.events, req, has_samples, scale),
             TimeViewKind::Heatmap => self.draw_heatmap(&mut canvas, req, has_samples, scale),
+            TimeViewKind::Raster => {}
         }
 
         (pixel_buffer, scale)
@@ -379,10 +436,19 @@ impl WaveformRenderer {
             let row = &self.env[lane * w..(lane + 1) * w];
             let clip = (0.0, canvas.height as f32 - 1.0);
             let dim = req.overlay.as_ref().is_some_and(|o| o.dim);
+            let color = match req.color_by {
+                ColorBy::Single => req.palette.text,
+                _ => color,
+            };
             for x in 0..w {
                 if let Some((a, b)) = column_span(row, x, center, k, clip) {
                     if dim {
                         canvas.span_aa_alpha(x, a - thickness * 0.5, b + thickness * 0.5, req.palette.text, DIM_ALPHA);
+                    } else if req.color_by == ColorBy::Amplitude {
+                        // Peak |amplitude| of the column against the lane's scale
+                        let [mn, mx] = row[x];
+                        let v = (mn.abs().max(mx.abs()) * k / (lane_h * 0.5)).min(1.0);
+                        canvas.span_aa(x, a - thickness * 0.5, b + thickness * 0.5, req.palette.heat(0.25 + 0.75 * v));
                     } else {
                         canvas.span_aa(x, a - thickness * 0.5, b + thickness * 0.5, color);
                     }
@@ -467,7 +533,7 @@ mod tests {
         let events = Arc::new(SpikeEventStore::detect(ds.signal().as_ref()));
         let channels = match mode {
             TimeViewKind::Traces => (0..4.min(ds.total_channels)).collect(),
-            TimeViewKind::Heatmap => (0..ds.total_channels).collect(),
+            TimeViewKind::Heatmap | TimeViewKind::Raster => (0..ds.total_channels).collect(),
         };
         RenderRequest {
             signal: ds.signal().clone(),
@@ -489,6 +555,8 @@ mod tests {
             scale_bar: true,
             highlights: vec![(crate::ui::plot::canvas::Pixel::rgb(255, 0, 0), vec![(0.05, 0)])],
             overlay: None,
+            raster: None,
+            color_by: ColorBy::default(),
             palette: Palette::DARK,
         }
     }
@@ -554,6 +622,8 @@ mod tests {
             events: Arc::new(SpikeEventStore::default()),
             highlights: Vec::new(),
             overlay: None,
+            raster: None,
+            color_by: ColorBy::default(),
             ..request(ds, TimeViewKind::Traces)
         };
         let buf = WaveformRenderer::default().render(&req);

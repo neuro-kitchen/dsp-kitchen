@@ -8,7 +8,7 @@
 //! | [`AppPlugin::synthetic`] | a recording made up on demand | drifting units, noise, hum |
 //! | [`AppPlugin::trace_overlay`] | what to draw over the traces of a window | spikes coloured by unit |
 //! | [`AppPlugin::workspace`] | the body of a workspace tab | Sorting |
-//! | [`AppPlugin::view_section`] | a section of the Processing panel for a view | sorting, Sort… |
+//! | [`AppPlugin::panel`], [`AppPlugin::view_section`] | a panel on the right side bar, for the active view | Sorting: the linked sorting, units, Sort… |
 //! | per-view data in the session document | `views[i].plugins.<id>` (any JSON) | the linked `.sorting.zarr` |
 //!
 //! Plugins are compiled in (Rust has no stable plugin ABI): the `dspk-app` binary registers the
@@ -89,6 +89,20 @@ pub struct OverlayMark {
     pub unit: u32,
 }
 
+/// Spike rows for a raster view: per unit its colour, label and spike times (session seconds)
+/// in the window.
+#[derive(Debug, Clone, Default)]
+pub struct Raster {
+    pub rows: Vec<RasterRow>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RasterRow {
+    pub color: Pixel,
+    pub label: String,
+    pub times: Vec<f64>,
+}
+
 /// A domain plugin. Every method has a default: a plugin implements what it adds.
 pub trait AppPlugin: Send + Sync + 'static {
     /// Its key in the session document (`views[i].plugins.<id>`) and in logs.
@@ -112,6 +126,11 @@ pub trait AppPlugin: Send + Sync + 'static {
         None
     }
 
+    /// Raster rows over `source` for the session-time window `window_sec`.
+    fn raster(&self, _store: &Store, _source: &str, _window_sec: Range<f64>, _cx: &App) -> Option<Raster> {
+        None
+    }
+
     /// The body of workspace `ws` when this plugin provides it.
     fn workspace(&self, _ws: Workspace, _store: &Entity<Store>, _window: &mut Window, _cx: &mut App) -> Option<AnyView> {
         None
@@ -122,7 +141,12 @@ pub trait AppPlugin: Send + Sync + 'static {
         false
     }
 
-    /// A section of the Processing panel for `view`.
+    /// Its panel on the right side bar: title and icon (its body is [`Self::view_section`]).
+    fn panel(&self) -> Option<(&'static str, std::rc::Rc<dyn Fn() -> gpui_kit::component::Icon>)> {
+        None
+    }
+
+    /// The body of its panel for `view`.
     fn view_section(&self, _store: &Entity<Store>, _view: &ViewDoc, _window: &mut Window, _cx: &mut App) -> Option<AnyElement> {
         None
     }

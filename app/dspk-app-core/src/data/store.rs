@@ -50,6 +50,8 @@ pub enum AppEvent {
     Picked,
     /// A job started, progressed or ended (status bar, panels).
     JobChanged,
+    /// A plugin's own state changed (its panel redraws).
+    PluginChanged,
 }
 
 /// Work running for the UI (one at a time): what it is, how far, how to stop it.
@@ -524,6 +526,20 @@ impl Store {
             ex.bottom_open = bottom;
             self.save_session();
         }
+    }
+
+    /// The panel shown on the right side bar (saved).
+    pub fn set_explore_right(&mut self, key: &str) {
+        if self.session.explore.right_panel != key {
+            self.session.explore.right_panel = key.to_string();
+            self.save_session();
+        }
+    }
+
+    /// A plugin's own state changed (its panels redraw; views do not).
+    pub fn plugin_changed(&mut self, cx: &mut Context<Self>) {
+        cx.emit(AppEvent::PluginChanged);
+        cx.notify();
     }
 
     pub fn set_explore_views(&mut self, views: Vec<crate::data::preferences::SavedTimeView>) {

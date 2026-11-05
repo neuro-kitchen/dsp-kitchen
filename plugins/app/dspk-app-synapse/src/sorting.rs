@@ -15,6 +15,9 @@ use dspk_view::SignalBackend;
 pub const EXTENT_CHANNEL_FRACTION: f32 = 0.25;
 /// Most channels in a unit's extent (the largest first).
 pub const EXTENT_MAX_CHANNELS: usize = 8;
+/// Waveforms are read from this many windows spread over the recording, each this long (s).
+pub const SNIPPET_WINDOWS: usize = 8;
+pub const SNIPPET_WINDOW_SEC: f64 = 2.0;
 /// Half-width of the extent when a store has no templates (ms).
 pub const DEFAULT_HALF_WIDTH_MS: f64 = 1.0;
 
@@ -161,23 +164,43 @@ impl Snippets {
             .and_then(|&u| sorting.units.get(u))
             .map_or_else(|| { let h = (DEFAULT_HALF_WIDTH_MS * 1e-3 * sorting.sample_rate) as u64; (h, h) }, |u| (u.extent.before, u.extent.after));
         let total = signal.info().samples;
-        let mut picks: Vec<(Option<u32>, u64)> = Vec::new();
-        for &u in units {
-            let times = sorting.unit_times(u);
-            picks.extend(spread(&times, per_unit).into_iter().map(|t| (Some(u as u32), t)));
-        }
-        let unsorted: Vec<u64> = sorting.times.iter().zip(&sorting.unit_of).filter(|(_, u)| u.is_none()).map(|(&t, _)| t).collect();
-        picks.extend(spread(&unsorted, per_unit).into_iter().map(|t| (None, t)));
+        // A few windows spread over the recording, each read once for every unit: one processed
+        // block serves all the spikes in it (a spike at a time would process the whole
+        // channel group and its filter halo per spike)
+        let w = ((SNIPPET_WINDOW_SEC * sorting.sample_rate) as u64).min(total);
+        let starts: Vec<u64> = if total <= w { vec![0] } else { (0..SNIPPET_WINDOWS).map(|i| (total - w) * i as u64 / (SNIPPET_WINDOWS - 1) as u64).collect() };
+        let cap = per_unit.div_ceil(starts.len()).max(1);
+        let wanted = |u: Option<u32>| match u {
+            Some(u) => units.contains(&(u as usize)),
+            None => true,
+        };
         let n = (before + after) as usize;
-        let rows = picks
-            .into_iter()
-            .filter(|&(_, t)| t >= before && t + after <= total)
-            .filter_map(|(u, t)| {
-                let mut v = vec![0.0f32; n];
-                signal.read(&[channel], t - before..t + after, &mut v).ok()?;
-                Some((u, t, v))
-            })
-            .collect();
+        let mut rows = Vec::new();
+        let mut block = vec![0.0f32; w as usize];
+        for &s0 in &starts {
+            let s1 = (s0 + w).min(total);
+            // Spikes whose snippet lies inside the window, at most `cap` per unit, spread
+            let mut by_unit: std::collections::HashMap<Option<u32>, Vec<u64>> = std::collections::HashMap::new();
+            for k in sorting.in_range(s0 + before, s1.saturating_sub(after)) {
+                if wanted(sorting.unit_of[k]) {
+                    by_unit.entry(sorting.unit_of[k]).or_default().push(sorting.times[k]);
+                }
+            }
+            if by_unit.is_empty() {
+                continue;
+            }
+            let len = (s1 - s0) as usize;
+            if signal.read(&[channel], s0..s1, &mut block[..len]).is_err() {
+                continue;
+            }
+            for (u, times) in by_unit {
+                for t in spread(&times, cap) {
+                    let a = (t - before - s0) as usize;
+                    rows.push((u, t, block[a..a + n].to_vec()));
+                }
+            }
+        }
+        rows.sort_by_key(|r| (r.0.is_some(), r.1));
         Self { channel, before, after, rows }
     }
 

@@ -232,7 +232,7 @@ impl ProcessingPanel {
         let (muted, danger, accent, border) = (t.muted_foreground, t.danger, t.accent, t.border);
         let s = self.store.read(cx);
         let Some(view) = s.active_view().cloned() else {
-            return v_flex().size_full().p_3().text_sm().text_color(muted).child("Open a recording: its view and processing show here.").into_any_element();
+            return v_flex().id("processing-panel").test_support().size_full().p_4().text_sm().text_color(muted).child("Open a recording: its view and processing show here.").into_any_element();
         };
         let views: Vec<(String, String)> = s.doc.views.iter().map(|v| (v.id.clone(), v.name.clone())).collect();
         let source = s.view_source(&view);
@@ -445,8 +445,6 @@ impl ProcessingPanel {
                 .into_any_element(),
         };
 
-        let plugin_sections: Vec<AnyElement> = crate::plugin::plugins().iter().filter_map(|p| p.view_section(&self.store, &view, window, cx)).collect();
-
         v_flex()
             .id("processing-panel")
             .test_support()
@@ -471,7 +469,6 @@ impl ProcessingPanel {
             .children(params)
             .children(self.error.clone().map(|e| div().text_xs().text_color(danger).child(e)))
             .child(Section::new("Output").child(output))
-            .children(plugin_sections)
             .into_any_element()
     }
 }
