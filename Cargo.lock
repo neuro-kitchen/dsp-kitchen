@@ -3084,12 +3084,47 @@ name = "dspk-app"
 version = "0.0.4"
 dependencies = [
  "anyhow",
+ "clap",
+ "dspk-app-core",
+ "dspk-app-synapse",
+ "gpui-kit",
+ "image",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "dspk-app-core"
+version = "0.0.4"
+dependencies = [
+ "anyhow",
  "async-channel",
  "bytemuck",
- "clap",
  "dspk-core",
  "dspk-io",
  "dspk-ops",
+ "dspk-pipeline",
+ "dspk-synapse",
+ "dspk-view",
+ "gpui-kit",
+ "image",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
+name = "dspk-app-synapse"
+version = "0.0.4"
+dependencies = [
+ "anyhow",
+ "async-channel",
+ "dspk-app-core",
+ "dspk-core",
+ "dspk-io",
+ "dspk-pipeline",
  "dspk-synapse",
  "dspk-view",
  "gpui-kit",
@@ -3097,7 +3132,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -3121,6 +3155,24 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "dspk-cli-sorter"
+version = "0.0.4"
+dependencies = [
+ "anstream",
+ "anyhow",
+ "clap",
+ "cubecl",
+ "dspk-cli",
+ "dspk-core",
+ "dspk-sorter-kilosort",
+ "dspk-sorter-ms5",
+ "dspk-sorter-si",
+ "dspk-synapse",
  "tracing",
  "tracing-subscriber",
 ]
@@ -3254,24 +3306,6 @@ dependencies = [
  "dspk-synapse",
  "rayon",
  "serde_json",
-]
-
-[[package]]
-name = "dspk-sorters"
-version = "0.0.4"
-dependencies = [
- "anstream",
- "anyhow",
- "clap",
- "cubecl",
- "dspk-cli",
- "dspk-core",
- "dspk-sorter-kilosort",
- "dspk-sorter-ms5",
- "dspk-sorter-si",
- "dspk-synapse",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

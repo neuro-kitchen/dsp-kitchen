@@ -22,9 +22,12 @@ members = [
     "serve/dspk-stream",
     # Front ends
     "app/dspk-cli",
+    "app/dspk-app-core",
     "app/dspk-app",
-    # Plugins: cli/ programs the command line runs (the sorters: GPL-3.0, never linked)
+    # Plugins: cli/ programs the command line runs (the sorters: GPL-3.0, never linked);
+    # app/ domain plugins of the app (electrophysiology)
     "plugins/cli/dspk-cli-sorter",
+    "plugins/app/dspk-app-synapse",
     # Bindings
     "bindings/python/dspk-py-core",
     "bindings/python/dspk-py",

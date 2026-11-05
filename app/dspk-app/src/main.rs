@@ -1,18 +1,9 @@
-//! DSP App: an electrophysiology workbench (GPUI + gpui-kit). Workspaces (Explore · Sorting ·
-//! Pipeline · Curation) of docked views on one timeline; see `.tasks/slint-gpui-migration/`.
-//!
-//! Layout (Kotlin Compose Multiplatform style, as lumen-app): `di` (wiring), `data` (recording,
-//! shared store, preferences, work pool), `domain` (plain models), `navigation` (routes, actions),
-//! `screens/<feature>` (state, events, view model, screen, components), `ui` (theme, plot
-//! primitives, widgets). `--snapshot` uses the data layer and the trace renderer alone.
+//! DSP App: the workbench (`dspk-app-core`: any multichannel signal) with the plugins it is built
+//! with (feature `synapse`: electrophysiology, `dspk-app-synapse`). Workspaces (Explore ·
+//! Sorting · Pipeline · Curation) of docked views on one timeline. `--snapshot` uses the data
+//! layer and the trace renderer alone.
 
-mod app;
-mod data;
-mod di;
-mod domain;
-mod navigation;
-mod screens;
-mod ui;
+use dspk_app_core::{app, data, di, domain, navigation, plugin, screens, ui};
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -78,8 +69,18 @@ struct Args {
     no_session: bool,
 }
 
+/// The plugins this build has, registered before anything opens a file.
+fn register_plugins() {
+    #[allow(unused_mut)]
+    let mut plugins: Vec<Arc<dyn plugin::AppPlugin>> = Vec::new();
+    #[cfg(feature = "synapse")]
+    plugins.push(Arc::new(dspk_app_synapse::SynapsePlugin::new()));
+    plugin::register(plugins);
+}
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
+    register_plugins();
     let mut args = Args::parse();
     args.file = args.file.take().or(args.path.take());
 
@@ -102,7 +103,17 @@ fn main() -> Result<()> {
         // One main window: closing it ends the app (Linux / Windows convention)
         cx.on_window_closed(|cx, _| cx.quit()).detach();
 
-        let store = cx.new(|_| Store::new(session, session_path));
+        let document = if args.no_session { None } else { Session::document_path() };
+        let store = cx.new(|cx| {
+            let mut store = Store::new(session, session_path);
+            if let Some(path) = document {
+                store.attach_document(path, cx);
+            }
+            store
+        });
+        for p in plugin::plugins() {
+            p.install(&store, cx);
+        }
         let options = WindowOptions {
             titlebar: Some(TitlebarOptions { title: Some("DSP App".into()), ..TitleBar::title_bar_options() }),
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(1400.), px(880.)), cx))),

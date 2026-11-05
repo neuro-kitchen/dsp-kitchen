@@ -1,0 +1,44 @@
+[package]
+name = "dspk-app-core"
+description = "DSP App core: the workbench for any multichannel signal (open, view, process, write) and the plugin interface the domain plugins (electrophysiology: dspk-app-synapse) extend"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+# Our builds compile wgpu, cuda and cpu in; hip compiles but is untested (no AMD GPU)
+default = ["wgpu", "cuda", "cpu"]
+wgpu = ["dspk-core/wgpu", "dspk-ops/wgpu", "dspk-pipeline/wgpu"]
+cpu = ["dspk-core/cpu", "dspk-ops/cpu", "dspk-pipeline/cpu"]
+cuda = ["dspk-core/cuda", "dspk-ops/cuda", "dspk-pipeline/cuda"]
+hip = ["dspk-core/hip", "dspk-ops/hip", "dspk-pipeline/hip"]
+
+[dependencies]
+dspk-core = { workspace = true, features = ["compute"] }
+dspk-ops.workspace = true
+# Generic formats (raw + .meta, Zarr); domain formats come from plugins
+dspk-io = { workspace = true, features = ["zarr"] }
+# Envelopes, pyramids and the signal backend; host only (the app draws on the CPU)
+dspk-view = { workspace = true, default-features = false }
+# Views' op chains are dspk-pipeline nodes; writing a view runs its pipeline
+dspk-pipeline.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# The session document (JSON) and its JSON Schema for agents
+schemars.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+image.workspace = true
+bytemuck.workspace = true
+# Pinned exactly: gpui-kit pins a weekly GPUI snapshot (gpui-pre); update deliberately.
+gpui-kit = "=0.9.0"
+async-channel = "2.5.0"
+
+[dev-dependencies]
+# Headless UI tests (`#[gpui_kit::test]`, `gpui_kit::test::TestWindowExt`)
+gpui-kit = { version = "=0.9.0", features = ["test-support"] }
+# Test fixtures only: real recordings (SpikeGLX) and spike detection
+dspk-synapse.workspace = true
