@@ -1,6 +1,6 @@
-//! `dspk-sorters`: every spike sorter of dspk in one program — Kilosort4 and EMUsort (GPL-3.0),
+//! `dspk-cli-sorter`: every spike sorter of dspk in one program — Kilosort4 and EMUsort (GPL-3.0),
 //! MountainSort 5, SpyKING CIRCUS 2 and Tridesclous 2. Because it contains Kilosort4 and EMUsort,
-//! this program is distributed under GPL-3.0 as a whole (`dspk-sorters licenses` lists every
+//! this program is distributed under GPL-3.0 as a whole (`dspk-cli-sorter licenses` lists every
 //! sorter's licence). The `dspk` command line runs it as a separate program (`dspk sort …`,
 //! installed with `dspk sorters install`), so dspk itself stays MIT OR Apache-2.0.
 
@@ -12,7 +12,7 @@ use dspk_core::ComputeTarget;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "dspk-sorters",
+    name = "dspk-cli-sorter",
     version,
     about = "Spike sorters of dspk on the GPU or CPU: Kilosort4, EMUsort, MountainSort 5, SpyKING CIRCUS 2, Tridesclous 2 (GPL-3.0 as a whole)",
     styles = style::clap_styles()
@@ -43,10 +43,10 @@ enum Command {
 /// permissively licensed code in it.
 const LICENSE_TEXTS: [(&str, &str); 5] = [
     ("GNU General Public License v3 (this program; Kilosort4, EMUsort)", include_str!("../LICENSE")),
-    ("Apache License 2.0 (MountainSort 5 and isosplit6, dspk-sorter-ms5)", include_str!("../../../synapse/sorters/ms5/LICENSE")),
-    ("Apache License 2.0 (dspk code, also under MIT)", include_str!("../../../synapse/dspk-synapse/LICENSE-APACHE")),
-    ("MIT License (dspk code, also under Apache-2.0)", include_str!("../../../synapse/dspk-synapse/LICENSE-MIT")),
-    ("MIT License of SpikeInterface (SpyKING CIRCUS 2, Tridesclous 2, their isosplit, shared components)", include_str!("../../../synapse/dspk-synapse/LICENSE-SPIKEINTERFACE")),
+    ("Apache License 2.0 (MountainSort 5 and isosplit6, dspk-sorter-ms5)", include_str!("../../../../synapse/sorters/ms5/LICENSE")),
+    ("Apache License 2.0 (dspk code, also under MIT)", include_str!("../../../../synapse/dspk-synapse/LICENSE-APACHE")),
+    ("MIT License (dspk code, also under Apache-2.0)", include_str!("../../../../synapse/dspk-synapse/LICENSE-MIT")),
+    ("MIT License of SpikeInterface (SpyKING CIRCUS 2, Tridesclous 2, their isosplit, shared components)", include_str!("../../../../synapse/dspk-synapse/LICENSE-SPIKEINTERFACE")),
 ];
 
 /// Log level when `--verbose` is not given (as `dspk`).

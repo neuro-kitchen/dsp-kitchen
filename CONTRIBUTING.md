@@ -55,8 +55,8 @@ licence: `dspk-sorter-kilosort` (Kilosort4, EMUsort) is GPL-3.0, `dspk-sorter-ms
 `dspk-sorter-si` (SpyKING CIRCUS 2, Tridesclous 2) carries SpikeInterface's MIT notice. Rules:
 
 - No MIT / Apache crate depends on `dspk-sorter-kilosort`; the sorters reach users through the
-  separate `dspk-sorters` program (`cargo tree -i dspk-sorter-kilosort` must show only
-  `dspk-sorters`).
+  separate `dspk-cli-sorter` program (`cargo tree -i dspk-sorter-kilosort` must show only
+  `dspk-cli-sorter`).
 - Code ported from one upstream lives in that upstream's sorter crate, even when it means a copy
   (isosplit: magland's in `dspk-sorter-ms5`, SpikeInterface's in `dspk-sorter-si`).
 - Code written from another project's source keeps its licence and notice: say where it comes

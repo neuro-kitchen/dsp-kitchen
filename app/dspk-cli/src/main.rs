@@ -43,9 +43,9 @@ enum Command {
     /// Detect spikes in a whole recording and write them as a sorting (one unit per channel)
     Detect(commands::detect::DetectArgs),
     /// Spike-sort a recording (Kilosort4, EMUsort, MountainSort 5, SpyKING CIRCUS 2, Tridesclous 2)
-    /// with the separate dspk-sorters program (GPL-3.0; `dspk sorters install`)
+    /// with the separate dspk-cli-sorter program (GPL-3.0; `dspk sorters install`)
     Sort(commands::sort::SortArgs),
-    /// The dspk-sorters program `sort` runs: install it, or show which one is used
+    /// The dspk-cli-sorter program `sort` runs: install it, or show which one is used
     Sorters(commands::sorters::SortersArgs),
     /// Convert a sorting between formats (Phy, .sorting.zarr, NWB units)
     Convert(commands::convert::ConvertArgs),

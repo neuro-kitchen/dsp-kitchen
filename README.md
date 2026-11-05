@@ -35,7 +35,7 @@ drawn from min/max pyramids built by `dspk-view`.*
 | | `dspk-sorter-si` | SpikeInterface's SpyKING CIRCUS 2 and Tridesclous 2 (features `sc2`, `tdc2`) | next release |
 | `hub/` | `dspk-hub` | Verified downloads of published artifacts, with data catalogs per domain (feature `synapse`) | next release |
 | `app/` | `dspk-cli` | The `dspk` command line: `dspk run`, `dspk sort`, `dspk doctor`, … | built from source |
-| | `dspk-sorters` | Every sorter in one program (GPL-3.0), run by `dspk sort` | GitHub release |
+| | `dspk-cli-sorter` | Every sorter in one program (GPL-3.0), run by `dspk sort` | GitHub release |
 | | `dspk-app` | Desktop workbench | built from source |
 | `bindings/python/` | `dspk` | The Python package | PyPI |
 | `playground/` | | Worked examples as `# %%` cells and pipeline specs ([README](playground/README.md)) | |
@@ -158,20 +158,20 @@ values (e.g. 384 channels × 11.1 million samples). Larger requests are refused 
 ## Spike sorting
 
 Kilosort4, EMUsort, MountainSort 5, SpyKING CIRCUS 2 and Tridesclous 2 run on the GPU (or the CPU)
-in one separate program, `dspk-sorters`, released with each version. The `dspk` command line runs
+in one separate program, `dspk-cli-sorter`, released with each version. The `dspk` command line runs
 it as its own process:
 
 ```bash
 dspk sorters install                                   # this version's build, SHA-256 checked
 dspk sort kilosort4 recording.bin -o sorted --format phy
 dspk sort kilosort4 --help                             # every setting and its default
-dspk-sorters licenses                                  # each sorter's licence and source
+dspk-cli-sorter licenses                                  # each sorter's licence and source
 ```
 
 It is installed in the user data folder (`~/.local/share/dspk/sorters/<version>/` on Linux,
 `~/Library/Application Support/dspk/…` on macOS, `%LOCALAPPDATA%\dspk\…` on Windows;
-`DSPK_DATA_DIR` moves it, `DSPK_SORTERS_BIN` names another build). A source build finds the
-`dspk-sorters` built next to `dspk` (`cargo build -p dspk-sorters`).
+`DSPK_DATA_DIR` moves it, `DSPK_CLI_SORTER_BIN` names another build). A source build finds the
+`dspk-cli-sorter` built next to `dspk` (`cargo build -p dspk-cli-sorter`).
 
 ## License
 
@@ -186,8 +186,8 @@ The sorters follow their upstreams' licences:
 | `dspk-sorter-ms5` (MountainSort 5) | Apache-2.0 | MountainSort 5 and isosplit6 are Apache-2.0 |
 | `dspk-sorter-si` (SpyKING CIRCUS 2, Tridesclous 2) | MIT OR Apache-2.0 (+ SpikeInterface's MIT notice) | ported from SpikeInterface (MIT) |
 | `dspk-synapse` | MIT OR Apache-2.0 (+ SpikeInterface's MIT notice) | SpikeInterface components |
-| `dspk-sorters` (the program) | GPL-3.0-only | contains `dspk-sorter-kilosort` |
+| `dspk-cli-sorter` (the program) | GPL-3.0-only | contains `dspk-sorter-kilosort` |
 
 Each sorter crate carries its upstream licence and a `NOTICE.md`. Nothing MIT / Apache-licensed
-links `dspk-sorter-kilosort`: `dspk sort` runs `dspk-sorters` as a separate program, whose source is this
+links `dspk-sorter-kilosort`: `dspk sort` runs `dspk-cli-sorter` as a separate program, whose source is this
 repository at the version's tag.

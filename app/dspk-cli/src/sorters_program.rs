@@ -1,10 +1,10 @@
-//! The `dspk-sorters` program: every spike sorter (Kilosort4 and EMUsort under GPL-3.0,
+//! The `dspk-cli-sorter` program: every spike sorter (Kilosort4 and EMUsort under GPL-3.0,
 //! MountainSort 5, SpyKING CIRCUS 2, Tridesclous 2) in one executable, released as a file of the
 //! GitHub release of each dspk version. dspk itself never links it: front ends run it as a separate
 //! program, so their own licence stays MIT OR Apache-2.0.
 //!
 //! [`install`] downloads this platform's build into `<data dir>/sorters/<version>/` and verifies it
-//! against the release's manifest (`dspk-sorters-manifest.json`: file, SHA-256 and size per
+//! against the release's manifest (`dspk-cli-sorter-manifest.json`: file, SHA-256 and size per
 //! platform) before it is committed; [`locate`] finds an installed or bundled one.
 
 use std::collections::BTreeMap;
@@ -17,18 +17,18 @@ use serde::{Deserialize, Serialize};
 use dspk_hub::download::{build_http_client, download_and_verify};
 
 /// The program's name (plus [`std::env::consts::EXE_SUFFIX`]).
-pub const SORTERS_PROGRAM: &str = "dspk-sorters";
-/// Environment variable naming a `dspk-sorters` executable to use instead of looking for one.
-pub const SORTERS_BIN_ENV: &str = "DSPK_SORTERS_BIN";
+pub const SORTERS_PROGRAM: &str = "dspk-cli-sorter";
+/// Environment variable naming a `dspk-cli-sorter` executable to use instead of looking for one.
+pub const SORTERS_BIN_ENV: &str = "DSPK_CLI_SORTER_BIN";
 /// Environment variable replacing the user data folder dspk installs programs into.
 pub const DATA_DIR_ENV: &str = "DSPK_DATA_DIR";
 /// Where releases are downloaded from: `<base>/v<version>/<file>`.
 pub const RELEASE_BASE_URL: &str = "https://github.com/neuro-kitchen/dsp-kitchen/releases/download";
 /// Environment variable replacing [`RELEASE_BASE_URL`] (a mirror, or `file://` for offline
 /// installs and tests).
-pub const RELEASE_URL_ENV: &str = "DSPK_SORTERS_RELEASE_URL";
+pub const RELEASE_URL_ENV: &str = "DSPK_CLI_SORTER_RELEASE_URL";
 /// The manifest file of a release.
-pub const MANIFEST_FILE: &str = "dspk-sorters-manifest.json";
+pub const MANIFEST_FILE: &str = "dspk-cli-sorter-manifest.json";
 
 /// One platform's build in a release.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,7 +39,7 @@ pub struct SortersAsset {
     pub size: u64,
 }
 
-/// `dspk-sorters-manifest.json`: the builds of one release, keyed by target triple.
+/// `dspk-cli-sorter-manifest.json`: the builds of one release, keyed by target triple.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct SortersManifest {
     pub version: String,
@@ -86,7 +86,7 @@ pub fn installed(version: &str) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
-/// The `dspk-sorters` to run for `version`: `$DSPK_SORTERS_BIN`, else one next to `beside` (the
+/// The `dspk-cli-sorter` to run for `version`: `$DSPK_CLI_SORTER_BIN`, else one next to `beside` (the
 /// calling executable: a source build puts both in the same folder), else the installed one.
 pub fn locate(version: &str, beside: Option<&Path>) -> Option<PathBuf> {
     if let Ok(path) = std::env::var(SORTERS_BIN_ENV)
@@ -103,7 +103,7 @@ pub fn locate(version: &str, beside: Option<&Path>) -> Option<PathBuf> {
     installed(version)
 }
 
-/// The release folder URL of `version` (under `$DSPK_SORTERS_RELEASE_URL` when set).
+/// The release folder URL of `version` (under `$DSPK_CLI_SORTER_RELEASE_URL` when set).
 pub fn release_url(version: &str) -> String {
     let base = std::env::var(RELEASE_URL_ENV).ok().filter(|b| !b.trim().is_empty()).unwrap_or_else(|| RELEASE_BASE_URL.to_string());
     format!("{}/v{version}", base.trim().trim_end_matches('/'))
@@ -119,7 +119,7 @@ pub fn fetch_manifest(version: &str) -> Result<SortersManifest> {
             .send()
             .with_context(|| format!("HTTP GET failed for {url}"))?
             .error_for_status()
-            .with_context(|| format!("no sorter manifest at {url} (is v{version} released with dspk-sorters?)"))?
+            .with_context(|| format!("no sorter manifest at {url} (is v{version} released with dspk-cli-sorter?)"))?
             .text()
             .with_context(|| format!("failed to read {url}"))?,
     };
@@ -134,11 +134,11 @@ pub fn fetch_manifest(version: &str) -> Result<SortersManifest> {
 /// build, verifies its SHA-256 and size, and makes it executable. Returns the installed path.
 pub fn install(version: &str) -> Result<PathBuf> {
     let Some(target) = host_target() else {
-        bail!("no dspk-sorters build is released for {} {}; build it from source (`cargo build -p dspk-sorters`)", std::env::consts::OS, std::env::consts::ARCH);
+        bail!("no dspk-cli-sorter build is released for {} {}; build it from source (`cargo build -p dspk-cli-sorter`)", std::env::consts::OS, std::env::consts::ARCH);
     };
     let manifest = fetch_manifest(version)?;
     let Some(asset) = manifest.assets.get(target) else {
-        bail!("release v{version} has no dspk-sorters build for {target}");
+        bail!("release v{version} has no dspk-cli-sorter build for {target}");
     };
     let dest = install_dir(version).join(program_file_name());
     let url = format!("{}/{}", release_url(version), asset.file);
@@ -160,7 +160,7 @@ mod tests {
         let mut manifest = SortersManifest { version: "0.0.4".into(), ..Default::default() };
         manifest.assets.insert(
             "x86_64-unknown-linux-gnu".into(),
-            SortersAsset { file: "dspk-sorters-x86_64-unknown-linux-gnu".into(), sha256: "ab".repeat(32), size: 42 },
+            SortersAsset { file: "dspk-cli-sorter-x86_64-unknown-linux-gnu".into(), sha256: "ab".repeat(32), size: 42 },
         );
         let text = serde_json::to_string(&manifest).unwrap();
         assert_eq!(serde_json::from_str::<SortersManifest>(&text).unwrap(), manifest);
@@ -168,7 +168,7 @@ mod tests {
 
     #[test]
     fn locate_prefers_the_program_beside_the_caller() {
-        let dir = std::env::temp_dir().join(format!("dspk-sorters-locate-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("dspk-cli-sorter-locate-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let program = dir.join(program_file_name());
         std::fs::write(&program, b"").unwrap();

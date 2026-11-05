@@ -6,6 +6,14 @@ version number.
 
 ## Unreleased
 
+### Changed
+
+- **Breaking (install):** the sorter program `dspk-sorters` is now `dspk-cli-sorter`, in the new
+  `plugins/` folder: a plugin the CLI (`dspk sort`) and the app run as a separate program
+  (GPL-3.0, never linked). Release files `dspk-cli-sorter-<target>` and
+  `dspk-cli-sorter-manifest.json`; environment variables `DSPK_CLI_SORTER_BIN` and
+  `DSPK_CLI_SORTER_RELEASE_URL` (were `DSPK_SORTERS_*`). `dspk sorters install` installs it.
+
 ### Added
 
 - Python: `dspk.ops.math.channel_mad` (median absolute deviation per channel, on the device).
