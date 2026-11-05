@@ -4,7 +4,7 @@ All notable changes, newest first. Versions follow [Semantic Versioning](https:/
 0.0.x any release may change the API. The crates, the Python package and `dspk-sorters` share one
 version number.
 
-## Unreleased
+## 0.0.5 — 2026-11-05
 
 ### Added
 
