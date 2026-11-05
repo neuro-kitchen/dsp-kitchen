@@ -54,7 +54,7 @@ jobs:
           code=$(echo "$files" | grep -vE '\.md$|^CITATION\.cff$' || true)
           rust=false
           python=false
-          if echo "$code" | grep -qE '^(crates|engine|serve|synapse|hub|app)/|^bindings/python/dspk-py|^Cargo\.(toml|lock)$|^rust-toolchain|^\.github/workflows/ci\.yml$'; then
+          if echo "$code" | grep -qE '^(crates|engine|serve|synapse|hub|app|plugins)/|^bindings/python/dspk-py|^Cargo\.(toml|lock)$|^rust-toolchain|^\.github/workflows/ci\.yml$'; then
             rust=true
             python=true
           fi

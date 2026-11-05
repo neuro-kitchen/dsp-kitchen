@@ -1,6 +1,6 @@
 [package]
 name = "dspk-cli"
-description = "Command line for dspk: pipelines, devices, recordings, detection, benchmarks, streaming, artifact hub; sorting through the separate dspk-sorters program"
+description = "Command line for dspk: pipelines, devices, recordings, detection, benchmarks, streaming, artifact hub; sorting through the separate dspk-cli-sorter program"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -27,10 +27,10 @@ dspk-core = { workspace = true, features = ["compute"] }
 dspk-ops.workspace = true
 dspk-io = { workspace = true, features = ["zarr"] }
 dspk-synapse.workspace = true
-# Never the sorter crates: Kilosort4 / EMUsort are GPL-3.0; `sort` runs the separate dspk-sorters
+# Never the sorter crates: Kilosort4 / EMUsort are GPL-3.0; `sort` runs the separate dspk-cli-sorter
 # program instead (installed by `sorters_program`, downloads through dspk-hub)
 dspk-hub = { workspace = true, features = ["synapse"] }
-# Where `sorters_program` installs dspk-sorters (the user data folder)
+# Where `sorters_program` installs dspk-cli-sorter (the user data folder)
 dirs.workspace = true
 dspk-pipeline.workspace = true
 dspk-stream.workspace = true

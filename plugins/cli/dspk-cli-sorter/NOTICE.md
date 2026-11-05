@@ -1,13 +1,13 @@
-# dspk-sorters: notice
+# dspk-cli-sorter: notice
 
-`dspk-sorters` is one program with every spike sorter of dspk, run on the GPU or the CPU through
+`dspk-cli-sorter` is one program with every spike sorter of dspk, run on the GPU or the CPU through
 CubeCL. It contains Kilosort4 and EMUsort, which are licensed under the GNU General Public License
 v3, so the program as a whole is distributed under **GPL-3.0** (`LICENSE`). The dspk libraries,
 its command line and its Python package are MIT OR Apache-2.0 and do not contain it: `dspk sort`
 runs this program as a separate process.
 
 Source: <https://github.com/neuro-kitchen/dsp-kitchen>, at the tag of this version (`v<version>`,
-`dspk-sorters --version`): `app/dspk-sorters` and the crates below.
+`dspk-cli-sorter --version`): `plugins/cli/dspk-cli-sorter` and the crates below.
 
 | Sorter | Crate | Upstream | Upstream licence |
 |---|---|---|---|
@@ -24,4 +24,4 @@ describes how its code relates to upstream. Kilosort4's predefined universal tem
 (`wTEMP.npz`) are not included: they are downloaded from their upstream location through
 `dspk-hub` when asked for and checked by SHA-256.
 
-The full licence texts follow (`dspk-sorters licenses`).
+The full licence texts follow (`dspk-cli-sorter licenses`).

@@ -3068,7 +3068,7 @@ checksum = "117240f60069e65410b3ae1bb213295bd828f707b5bec6596a1afc8793ce0cbc"
 
 [[package]]
 name = "dspk"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "dspk-core",
  "dspk-hub",
@@ -3081,7 +3081,7 @@ dependencies = [
 
 [[package]]
 name = "dspk-app"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -3102,7 +3102,7 @@ dependencies = [
 
 [[package]]
 name = "dspk-cli"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "anstream",
  "anstyle",
@@ -3126,139 +3126,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "dspk-core"
-version = "0.0.4"
-dependencies = [
- "cubecl",
- "num-rational",
- "num-traits",
- "serde",
- "thiserror 2.0.21",
- "tracing",
-]
-
-[[package]]
-name = "dspk-hub"
-version = "0.0.4"
-dependencies = [
- "anyhow",
- "dirs 7.0.0",
- "hex",
- "reqwest",
- "rustls",
- "serde",
- "serde_json",
- "sha2 0.11.1",
-]
-
-[[package]]
-name = "dspk-io"
-version = "0.0.4"
-dependencies = [
- "dspk-core",
- "flate2",
- "memmap2",
- "rayon",
- "serde",
- "serde_json",
- "tracing",
- "zarrs",
-]
-
-[[package]]
-name = "dspk-ops"
-version = "0.0.4"
-dependencies = [
- "cubecl",
- "cubek-matmul",
- "cubek-std",
- "dspk-core",
- "num-complex",
- "num-traits",
- "serde_json",
- "thiserror 2.0.21",
- "tracing",
-]
-
-[[package]]
-name = "dspk-pipeline"
-version = "0.0.4"
-dependencies = [
- "cubecl",
- "dspk-core",
- "dspk-io",
- "dspk-ops",
- "glob",
- "rayon",
- "schemars",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "toml 1.2.0+spec-1.1.0",
-]
-
-[[package]]
-name = "dspk-py"
-version = "0.0.4"
-dependencies = [
- "dspk-py-core",
- "pyo3",
- "pyo3-stub-gen",
-]
-
-[[package]]
-name = "dspk-py-core"
-version = "0.0.4"
-dependencies = [
- "cubecl",
- "dspk-core",
- "dspk-io",
- "dspk-ops",
- "dspk-pipeline",
- "numpy",
- "pyo3",
- "pyo3-stub-gen",
-]
-
-[[package]]
-name = "dspk-sorter-kilosort"
-version = "0.0.4"
-dependencies = [
- "cubecl",
- "dspk-core",
- "dspk-hub",
- "dspk-io",
- "dspk-ops",
- "dspk-synapse",
- "tracing",
-]
-
-[[package]]
-name = "dspk-sorter-ms5"
-version = "0.0.4"
-dependencies = [
- "cubecl",
- "dspk-core",
- "dspk-ops",
- "dspk-synapse",
- "rayon",
-]
-
-[[package]]
-name = "dspk-sorter-si"
-version = "0.0.4"
-dependencies = [
- "cubecl",
- "dspk-core",
- "dspk-ops",
- "dspk-synapse",
- "rayon",
- "serde_json",
-]
-
-[[package]]
-name = "dspk-sorters"
-version = "0.0.4"
+name = "dspk-cli-sorter"
+version = "0.0.5"
 dependencies = [
  "anstream",
  "anyhow",
@@ -3275,8 +3144,139 @@ dependencies = [
 ]
 
 [[package]]
+name = "dspk-core"
+version = "0.0.5"
+dependencies = [
+ "cubecl",
+ "num-rational",
+ "num-traits",
+ "serde",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
+name = "dspk-hub"
+version = "0.0.5"
+dependencies = [
+ "anyhow",
+ "dirs 7.0.0",
+ "hex",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+]
+
+[[package]]
+name = "dspk-io"
+version = "0.0.5"
+dependencies = [
+ "dspk-core",
+ "flate2",
+ "memmap2",
+ "rayon",
+ "serde",
+ "serde_json",
+ "tracing",
+ "zarrs",
+]
+
+[[package]]
+name = "dspk-ops"
+version = "0.0.5"
+dependencies = [
+ "cubecl",
+ "cubek-matmul",
+ "cubek-std",
+ "dspk-core",
+ "num-complex",
+ "num-traits",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
+name = "dspk-pipeline"
+version = "0.0.5"
+dependencies = [
+ "cubecl",
+ "dspk-core",
+ "dspk-io",
+ "dspk-ops",
+ "glob",
+ "rayon",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "toml 1.2.0+spec-1.1.0",
+]
+
+[[package]]
+name = "dspk-py"
+version = "0.0.5"
+dependencies = [
+ "dspk-py-core",
+ "pyo3",
+ "pyo3-stub-gen",
+]
+
+[[package]]
+name = "dspk-py-core"
+version = "0.0.5"
+dependencies = [
+ "cubecl",
+ "dspk-core",
+ "dspk-io",
+ "dspk-ops",
+ "dspk-pipeline",
+ "numpy",
+ "pyo3",
+ "pyo3-stub-gen",
+]
+
+[[package]]
+name = "dspk-sorter-kilosort"
+version = "0.0.5"
+dependencies = [
+ "cubecl",
+ "dspk-core",
+ "dspk-hub",
+ "dspk-io",
+ "dspk-ops",
+ "dspk-synapse",
+ "tracing",
+]
+
+[[package]]
+name = "dspk-sorter-ms5"
+version = "0.0.5"
+dependencies = [
+ "cubecl",
+ "dspk-core",
+ "dspk-ops",
+ "dspk-synapse",
+ "rayon",
+]
+
+[[package]]
+name = "dspk-sorter-si"
+version = "0.0.5"
+dependencies = [
+ "cubecl",
+ "dspk-core",
+ "dspk-ops",
+ "dspk-synapse",
+ "rayon",
+ "serde_json",
+]
+
+[[package]]
 name = "dspk-stream"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "dspk-core",
  "dspk-view",
@@ -3294,7 +3294,7 @@ dependencies = [
 
 [[package]]
 name = "dspk-synapse"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "cubecl",
  "dspk-core",
@@ -3312,7 +3312,7 @@ dependencies = [
 
 [[package]]
 name = "dspk-synapse-ml"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "burn-tensor",
  "bytemuck",
@@ -3332,7 +3332,7 @@ dependencies = [
 
 [[package]]
 name = "dspk-view"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "cubecl",
  "dspk-core",
