@@ -31,8 +31,8 @@ impl Workspace {
     pub fn hint(self) -> &'static str {
         match self {
             Workspace::Explore => "Look at the recording: traces, heatmaps, channels, timeline",
-            Workspace::Sorting => "Define a spike-sorting run",
-            Workspace::Pipeline => "Snap processing steps together in a node graph",
+            Workspace::Sorting => "The linked sorting: units, waveforms, features, correlograms",
+            Workspace::Pipeline => "The view's processing as a chain of operators",
             Workspace::Curation => "Inspect and judge sorting results",
         }
     }
@@ -45,10 +45,7 @@ impl Workspace {
                 "Choose the channels and the part of the recording to sort, the sorter and its parameters, \
                  then run it and follow its progress here.",
             ),
-            Workspace::Pipeline => Some(
-                "Build a processing pipeline as a graph: filters, re-referencing, detection and sorting \
-                 steps snap together, and each step's output can be shown in a view.",
-            ),
+            Workspace::Pipeline => Some("Open a recording: its view's processing shows here as a chain of operators."),
             Workspace::Curation => Some(
                 "Inspect and judge sorting results: clusters, waveforms, correlograms and amplitudes, \
                  with merges and splits recorded for the sorting files.",

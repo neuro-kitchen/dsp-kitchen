@@ -29,6 +29,7 @@ pub const SYNTHETIC: (usize, f64, f64) = (32, 30_000.0, 300.0);
 pub struct DspApp {
     store: Entity<Store>,
     pub explore: Entity<ExploreView>,
+    pipeline: Entity<crate::screens::pipeline::PipelineView>,
     show_help: bool,
     show_about: bool,
     /// Workspaces plugins provide (built the first time they are shown).
@@ -42,6 +43,8 @@ impl DspApp {
         let choice = store.read(cx).session.dark;
         Self::apply_theme(&store, choice, window, cx);
         let explore = cx.new(|cx| ExploreView::new(store.clone(), window, cx));
+        let explore_vm = explore.read(cx).vm.clone();
+        let pipeline = cx.new(|cx| crate::screens::pipeline::PipelineView::new(store.clone(), explore_vm, cx));
         let subs = vec![
             // Follow the system's light / dark until the user picks one
             cx.observe_window_appearance(window, |this, window, cx| {
@@ -58,7 +61,7 @@ impl DspApp {
         ];
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
-        Self { store, explore, show_help: false, show_about: false, plugin_views: Default::default(), focus, _subs: subs }
+        Self { store, explore, pipeline, show_help: false, show_about: false, plugin_views: Default::default(), focus, _subs: subs }
     }
 
     /// Light, dark, or the system's (`None`); the store learns which, for the plot colours.
@@ -301,6 +304,9 @@ impl DspApp {
                 return view.clone().into_any_element();
             }
         }
+        if workspace == Workspace::Pipeline && self.store.read(cx).recording.is_some() {
+            return self.pipeline.clone().into_any_element();
+        }
         let s = self.store.read(cx);
         if let Some(text) = workspace.planned() {
             return div()
@@ -530,11 +536,11 @@ mod tests {
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
             assert!(window.try_find("start-screen").is_some(), "no recording: the start screen");
-            window.click("workspace-pipeline", cx);
+            window.click("workspace-curation", cx);
         })
         .unwrap();
         cx.run_until_parked();
-        cx.update(|cx| assert_eq!(store.read(cx).workspace, Workspace::Pipeline));
+        cx.update(|cx| assert_eq!(store.read(cx).workspace, Workspace::Curation));
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
             assert!(window.try_find("planned-workspace").is_some(), "a workspace still to come says what it will hold");

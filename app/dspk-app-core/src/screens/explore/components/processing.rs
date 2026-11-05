@@ -31,7 +31,7 @@ use crate::ui::widgets::{icon_button, row, MenuSelect, PanelHeader, Section};
 use super::panels::{side_panel, DockToggle};
 
 /// Ops the Add menu offers: label and the node (defaults filled in by the spec).
-fn presets() -> Vec<(&'static str, Value)> {
+pub fn presets() -> Vec<(&'static str, Value)> {
     vec![
         ("Band-pass 300–6000 Hz", json!({"op": "iir", "band": "bandpass", "cutoff": [300.0, 6000.0]})),
         ("High-pass 300 Hz", json!({"op": "iir", "band": "highpass", "cutoff": [300.0]})),

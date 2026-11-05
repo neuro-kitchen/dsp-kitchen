@@ -26,7 +26,7 @@ pub fn section(store: &Entity<Store>, view: &ViewDoc, _window: &mut Window, cx: 
     let linked = sorting_of(view);
     let loaded = state.read(cx).active_sorting(cx);
     let running = store.read(cx).job.is_some();
-    let mut section = Section::new("Sorting");
+    let mut section = Section::new("Linked sorting");
 
     // The linked sorting and its units
     match (&linked, &loaded) {
@@ -46,14 +46,15 @@ pub fn section(store: &Entity<Store>, view: &ViewDoc, _window: &mut Window, cx: 
                     .cursor_pointer()
                     .rounded_sm()
                     .child(div().size(px(9.)).rounded_full().when(!hidden, |d| d.bg(color(palette.unit(u)))).border_1().border_color(color(palette.unit(u))))
-                    .child(div().flex_1().text_xs().when(hidden, |d| d.text_color(muted)).child(format!("Unit {} · {}", unit.info.unit_id, unit.info.quality_label)))
+                    .child(div().w(px(40.)).text_xs().when(hidden, |d| d.text_color(muted)).child(unit.info.unit_id.to_string()))
+                    .child(div().flex_1().min_w_0().truncate().text_xs().text_color(muted).child(unit.info.quality_label.clone()))
                     .child(div().text_xs().text_color(muted).child(unit.info.num_spikes.to_string()))
                     .on_click(move |_, _, cx| state.update(cx, |s, cx| s.toggle_unit(&path, u, cx)))
             });
             let (s1, s2, p1, p2) = (state.clone(), state.clone(), path.clone(), path.clone());
             section = section
                 .child(div().text_xs().child(sorting.summary()))
-                .child(div().text_xs().text_color(muted).truncate().child(path.display().to_string()))
+                .child(div().text_xs().text_color(muted).truncate().child(path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned())))
                 .child(
                     h_flex()
                         .gap_1()
@@ -63,7 +64,7 @@ pub fn section(store: &Entity<Store>, view: &ViewDoc, _window: &mut Window, cx: 
                         .child(detach(store, view)),
                 )
                 .child(v_flex().id("unit-legend").max_h(px(220.)).overflow_y_scroll().children(rows))
-                .child(div().text_xs().text_color(muted).child("Highlighted on the traces while the window is at most 30 s; click a unit to show or hide it."));
+                .child(div().text_xs().text_color(muted).child("Click a unit to show or hide it (windows ≤ 30 s)."));
         }
         (Some(path), None) => {
             section = section.child(div().text_xs().text_color(muted).child(format!("Loading {}…", path.display()))).child(detach(store, view));
@@ -92,15 +93,22 @@ pub fn section(store: &Entity<Store>, view: &ViewDoc, _window: &mut Window, cx: 
     });
     let processed = view.ops.iter().any(|o| o.enabled);
     let input_note = if processed {
-        "Sorts this view's written processed recording (Write it first). Sorters filter again by their own settings."
+        "Sorts the written processed recording (Write it first)."
     } else {
         "Sorts the recording as stored."
     };
     let (store_c, view_c) = (store.clone(), view.clone());
     let run = Button::new("sort-view").small().primary().icon(IconName::Play).label("Sort").disabled(running).on_click(move |_, _, cx| start_sort(&store_c, &view_c, sorter, probe, cx));
-    section
-        .child(h_flex().gap_1().child(sorter_pick).child(probe_pick))
-        .child(h_flex().gap_2().child(run).child(div().flex_1().text_xs().text_color(muted).child(input_note)))
+    v_flex()
+        .gap_6()
+        .child(section)
+        .child(
+            Section::new("Sort")
+                .child(dspk_app_core::ui::widgets::row("Sorter", sorter_pick, cx))
+                .child(dspk_app_core::ui::widgets::row("Probe", probe_pick, cx))
+                .child(run)
+                .child(div().text_xs().text_color(muted).child(input_note)),
+        )
         .into_any_element()
 }
 

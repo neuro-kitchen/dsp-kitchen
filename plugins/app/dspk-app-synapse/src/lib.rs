@@ -15,6 +15,7 @@ pub mod panel;
 pub mod plots;
 pub mod sort;
 pub mod sorting;
+pub mod table;
 pub mod workspace;
 
 use std::collections::{HashMap, HashSet};

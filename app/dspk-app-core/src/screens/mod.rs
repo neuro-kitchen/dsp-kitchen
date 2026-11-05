@@ -2,3 +2,4 @@
 //! view model, screen and screen-local components.
 
 pub mod explore;
+pub mod pipeline;
