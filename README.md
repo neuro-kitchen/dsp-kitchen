@@ -59,8 +59,8 @@ Runtimes are crate features; the device is picked at run time with `dspk::core::
 
 ```toml
 [dependencies]
-dspk = "0.0.4"                                                                  # wgpu, cuda and cpu (default)
-# dspk = { version = "0.0.4", default-features = false, features = ["wgpu", "zarr"] }  # wgpu only
+dspk = "0.0.5"                                                                  # wgpu, cuda and cpu (default)
+# dspk = { version = "0.0.5", default-features = false, features = ["wgpu", "zarr"] }  # wgpu only
 ```
 
 | Feature | Runtime | Tested |

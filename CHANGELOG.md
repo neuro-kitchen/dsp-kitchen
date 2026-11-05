@@ -8,11 +8,21 @@ version number.
 
 ### Changed
 
-- **Breaking (install):** the sorter program `dspk-sorters` is now `dspk-cli-sorter`, in the new
-  `plugins/` folder: a plugin the CLI (`dspk sort`) and the app run as a separate program
-  (GPL-3.0, never linked). Release files `dspk-cli-sorter-<target>` and
-  `dspk-cli-sorter-manifest.json`; environment variables `DSPK_CLI_SORTER_BIN` and
-  `DSPK_CLI_SORTER_RELEASE_URL` (were `DSPK_SORTERS_*`). `dspk sorters install` installs it.
+- dspk-app is the core app (`dspk-app-core`: any multichannel signal) plus domain plugins:
+  `plugins/app/dspk-app-synapse` (electrophysiology: probes and shanks, sortings, spike
+  highlight, the Sorting workspace; sorts through `dspk-cli-sorter`). The session is one JSON
+  document (`current-session.json`) changed only by commands; the Processing panel edits each
+  view's op chain with a live device preview, and writes the processed recording.
+
+## 0.0.5 — 2026-11-05
+
+### Changed (install)
+
+- The sorter program `dspk-sorters` is now `dspk-cli-sorter`, in `plugins/cli/`: a plugin the
+  command line (`dspk sort`) runs as a separate program (GPL-3.0, never linked). Release files
+  `dspk-cli-sorter-<target>` and `dspk-cli-sorter-manifest.json`; environment variables
+  `DSPK_CLI_SORTER_BIN` and `DSPK_CLI_SORTER_RELEASE_URL` (were `DSPK_SORTERS_*`).
+  `dspk sorters install` installs it.
 
 ### Added
 
