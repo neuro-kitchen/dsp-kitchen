@@ -54,7 +54,7 @@ jobs:
           code=$(echo "$files" | grep -vE '\.md$|^CITATION\.cff$' || true)
           rust=false
           python=false
-          if echo "$code" | grep -qE '^(crates|engine|serve|synapse|app)/|^bindings/python/dspk-py|^Cargo\.(toml|lock)$|^rust-toolchain|^\.github/workflows/ci\.yml$'; then
+          if echo "$code" | grep -qE '^(crates|engine|serve|synapse|hub|app)/|^bindings/python/dspk-py|^Cargo\.(toml|lock)$|^rust-toolchain|^\.github/workflows/ci\.yml$'; then
             rust=true
             python=true
           fi
@@ -90,8 +90,10 @@ jobs:
         run: cargo check --workspace --all-targets
       - name: Unit tests of the host-side crates
         run: >
-          cargo test -p dspk-core -p dspk-io -p dspk-synapse-io -p dspk-synapse-hub -p dspk-view -p dspk-stream
+          cargo test -p dspk-core -p dspk-io -p dspk-hub -p dspk-view -p dspk-stream
           --lib
+      - name: Neural-recording and sorting formats (dspk-synapse io)
+        run: cargo test -p dspk-synapse --lib io::
       - name: Every dspk-ops operation against host references
         run: cargo test -p dspk-ops --test kernel_runtimes --test filter_runtimes
       - name: Device buffer writes

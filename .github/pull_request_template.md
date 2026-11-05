@@ -12,4 +12,4 @@
 
 ## Licences
 
-- [ ] No MIT / Apache-licensed crate gains a dependency on `dspk-ks4` (GPL-3.0); code ported from elsewhere keeps its upstream notice (see CONTRIBUTING.md)
+- [ ] No MIT / Apache-licensed crate gains a dependency on `dspk-sorter-kilosort` (GPL-3.0); code ported from elsewhere keeps its upstream notice (see CONTRIBUTING.md)
