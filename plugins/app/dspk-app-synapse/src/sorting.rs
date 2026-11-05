@@ -46,6 +46,8 @@ pub struct SortingData {
     /// clusters the manifest does not list are `None` (drawn as unsorted).
     pub times: Vec<u64>,
     pub unit_of: Vec<Option<u32>>,
+    /// Amplitude of each spike (same order; empty when the store has none).
+    pub amplitudes: Vec<f32>,
     pub units: Vec<Unit>,
     /// Unit index by unit id.
     pub by_id: HashMap<i32, usize>,
@@ -82,8 +84,9 @@ impl SortingData {
         order.sort_by_key(|&i| store.spike_times[i]);
         let times = order.iter().map(|&i| store.spike_times[i]).collect();
         let unit_of = order.iter().map(|&i| by_id.get(&store.spike_clusters.get(i).copied().unwrap_or(-1)).map(|&u| u as u32)).collect();
+        let amplitudes = if store.amplitudes.len() == store.spike_times.len() { order.iter().map(|&i| store.amplitudes[i]).collect() } else { Vec::new() };
         let channels = store.templates_mean.as_ref().and_then(|t| t.shape.get(1).copied());
-        Self { path: path.to_path_buf(), sorter: m.sorter_name.clone(), sample_rate: rate, times, unit_of, units, by_id, channels }
+        Self { path: path.to_path_buf(), sorter: m.sorter_name.clone(), sample_rate: rate, times, unit_of, amplitudes, units, by_id, channels }
     }
 
     /// Indices of the spikes with times in `samples`.
@@ -96,6 +99,16 @@ impl SortingData {
     /// Spike times of unit `unit` (an index into `units`).
     pub fn unit_times(&self, unit: usize) -> Vec<u64> {
         self.times.iter().zip(&self.unit_of).filter(|(_, u)| **u == Some(unit as u32)).map(|(&t, _)| t).collect()
+    }
+
+    /// (time s, amplitude) of up to `max` spikes of `unit`, evenly spread.
+    pub fn unit_amplitudes(&self, unit: usize, max: usize) -> Vec<(f32, f32)> {
+        if self.amplitudes.is_empty() {
+            return Vec::new();
+        }
+        let idx: Vec<usize> = (0..self.times.len()).filter(|&k| self.unit_of[k] == Some(unit as u32)).collect();
+        let step = (idx.len() / max.max(1)).max(1);
+        idx.iter().step_by(step).map(|&k| ((self.times[k] as f64 / self.sample_rate) as f32, self.amplitudes[k])).collect()
     }
 
     /// `kilosort4 · 287 units · 133 544 spikes`
@@ -209,6 +222,47 @@ impl Snippets {
     }
 }
 
+/// Counts of inter-spike intervals of sorted `times` (samples at `rate` Hz) in bins of `bin_ms`
+/// from 0 to `max_ms`.
+pub fn isi_histogram(times: &[u64], rate: f64, max_ms: f64, bin_ms: f64) -> Vec<u32> {
+    let bins = (max_ms / bin_ms).round() as usize;
+    let mut h = vec![0u32; bins];
+    for w in times.windows(2) {
+        let ms = (w[1] - w[0]) as f64 / rate * 1e3;
+        let b = (ms / bin_ms) as usize;
+        if b < bins {
+            h[b] += 1;
+        }
+    }
+    h
+}
+
+/// Autocorrelogram of sorted `times`: counts of lags in `[-half_ms, half_ms)` (zero lag left
+/// out) in bins of `bin_ms`; two pointers, so linear in spikes × spikes within the window.
+pub fn autocorrelogram(times: &[u64], rate: f64, half_ms: f64, bin_ms: f64) -> Vec<u32> {
+    let bins = (2.0 * half_ms / bin_ms).round() as usize;
+    let mut h = vec![0u32; bins];
+    let half = (half_ms * 1e-3 * rate) as u64;
+    let mut lo = 0;
+    for (i, &t) in times.iter().enumerate() {
+        while times[lo] + half < t {
+            lo += 1;
+        }
+        for &u in &times[lo..i] {
+            // u < t: a negative lag and its mirror
+            let ms = (t - u) as f64 / rate * 1e3;
+            let (neg, pos) = (((half_ms - ms) / bin_ms) as isize, ((half_ms + ms) / bin_ms) as isize);
+            if neg >= 0 && (neg as usize) < bins {
+                h[neg as usize] += 1;
+            }
+            if pos >= 0 && (pos as usize) < bins {
+                h[pos as usize] += 1;
+            }
+        }
+    }
+    h
+}
+
 /// Up to `k` of `times`, evenly spread.
 fn spread(times: &[u64], k: usize) -> Vec<u64> {
     if times.len() <= k {
@@ -252,6 +306,19 @@ mod tests {
         let (e, tpl) = template_extent(&t, 3, 5, 0, 2);
         assert_eq!(e, Extent { before: 1, after: 4, channels: vec![2, 1] });
         assert_eq!(tpl.len(), 2);
+    }
+
+    #[test]
+    fn test_isi_and_acg() {
+        // Spikes every 10 ms at 1 kHz
+        let times: Vec<u64> = (0..100).map(|i| i * 10).collect();
+        let isi = isi_histogram(&times, 1000.0, 50.0, 1.0);
+        assert_eq!(isi[10], 99);
+        let acg = autocorrelogram(&times, 1000.0, 50.0, 1.0);
+        assert_eq!(acg.len(), 100);
+        assert_eq!(acg[60], 99, "+10 ms");
+        assert_eq!(acg[40], 99, "-10 ms");
+        assert_eq!(acg[50], 0, "no zero lag");
     }
 
     #[test]

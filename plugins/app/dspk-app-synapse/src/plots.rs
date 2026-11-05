@@ -112,3 +112,72 @@ pub fn scatter(points: &[[f32; 2]], units: &[Option<u32>], palette: &Palette, wi
     }
     frame
 }
+
+/// A histogram: `counts` as bars in `c`; `marker` draws a vertical line at that bin (e.g. zero
+/// lag, or the refractory period).
+pub fn bars(counts: &[u32], c: Pixel, marker: Option<f32>, palette: &Palette, width: u32, height: u32) -> Frame {
+    let mut frame = Frame::new(width, height);
+    let mut canvas = frame.canvas();
+    canvas.pixels.fill(palette.background);
+    let peak = counts.iter().copied().max().unwrap_or(0).max(1) as f32;
+    let (w, h) = (width as f32, height as f32);
+    let bw = w / counts.len().max(1) as f32;
+    if let Some(m) = marker {
+        canvas.vline((m * bw) as usize, 0, height as usize, palette.grid);
+    }
+    for (i, &n) in counts.iter().enumerate() {
+        let top = h - (n as f32 / peak) * (h - 2.0);
+        canvas.rect(i as f32 * bw + 0.5, top, (i + 1) as f32 * bw - 0.5, h, c, 0.9);
+    }
+    frame
+}
+
+/// Amplitude over time: `points[u]` = (time s, amplitude) of selected unit `units[u]`, over
+/// `duration_sec`.
+pub fn amplitude_time(points: &[(u32, Vec<(f32, f32)>)], duration_sec: f32, palette: &Palette, width: u32, height: u32, scale: f32) -> Frame {
+    let mut frame = Frame::new(width, height);
+    let mut canvas = frame.canvas();
+    canvas.pixels.fill(palette.background);
+    let all: Vec<f32> = points.iter().flat_map(|(_, p)| p.iter().map(|q| q.1)).filter(|v| v.is_finite()).collect();
+    if all.is_empty() {
+        return frame;
+    }
+    let (lo, hi) = all.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), &v| (a.min(v), b.max(v)));
+    let lo = lo.min(0.0);
+    let span = (hi - lo).max(1e-6) * 1.08;
+    let (w, h) = (width as f32, height as f32);
+    let r = 1.2 * scale;
+    for (u, pts) in points {
+        let c = palette.unit(*u as usize);
+        for &(t, a) in pts {
+            let (x, y) = (t / duration_sec.max(1e-6) * w, h - (a - lo) / span * h);
+            canvas.rect(x - r, y - r, x + r, y + r, c, POINT_ALPHA);
+        }
+    }
+    frame
+}
+
+/// A unit's mean template on its channels (`rows`, labelled by the caller), one small panel per
+/// channel in a grid, on one shared amplitude scale.
+pub fn template_grid(rows: &[Vec<f32>], c: Pixel, palette: &Palette, width: u32, height: u32, scale: f32) -> Frame {
+    let mut frame = Frame::new(width, height);
+    let mut canvas = frame.canvas();
+    canvas.pixels.fill(palette.background);
+    let n = rows.len();
+    if n == 0 {
+        return frame;
+    }
+    let cols = (n as f32).sqrt().ceil() as usize;
+    let lines = n.div_ceil(cols);
+    let (cw, ch) = (width as f32 / cols as f32, height as f32 / lines as f32);
+    let amp = rows.iter().flat_map(|r| r.iter()).fold(0.0f32, |m, v| m.max(v.abs())).max(1e-6);
+    for (k, row) in rows.iter().enumerate() {
+        let (x0, y0) = ((k % cols) as f32 * cw, (k / cols) as f32 * ch);
+        let mid = y0 + ch * 0.5;
+        canvas.rect(x0 + 4.0, mid, x0 + cw - 4.0, mid + 1.0, palette.grid, 1.0);
+        let len = row.len().max(2);
+        let pts: Vec<(f32, f32)> = row.iter().enumerate().map(|(i, &v)| (x0 + 4.0 + i as f32 / (len - 1) as f32 * (cw - 8.0), mid - v / amp * ch * 0.45)).collect();
+        polyline(&mut canvas, &pts, c, 1.0, 1.4 * scale);
+    }
+    frame
+}

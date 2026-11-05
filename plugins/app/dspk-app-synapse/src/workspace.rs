@@ -40,8 +40,25 @@ struct Plots {
     waveforms: Option<Arc<RenderImage>>,
     scatter: Option<Arc<RenderImage>>,
     strip: Option<Arc<RenderImage>>,
+    acg: Option<Arc<RenderImage>>,
+    isi: Option<Arc<RenderImage>>,
+    amplitude: Option<Arc<RenderImage>>,
+    templates: Option<Arc<RenderImage>>,
     note: String,
 }
+
+/// Autocorrelogram: ±50 ms in 1 ms bins; ISI histogram: 0–50 ms in 0.5 ms bins; the refractory
+/// period marked at 1.5 ms.
+const ACG_HALF_MS: f64 = 50.0;
+const ACG_BIN_MS: f64 = 1.0;
+const ISI_MAX_MS: f64 = 50.0;
+const ISI_BIN_MS: f64 = 0.5;
+const REFRACTORY_MS: f64 = 1.5;
+/// Spikes per unit in the amplitude-over-time plot.
+const AMPLITUDE_POINTS: usize = 5000;
+/// Small plots (physical pixels).
+const SMALL_W: u32 = 480;
+const SMALL_H: u32 = 280;
 
 pub struct SortingWorkspace {
     store: Entity<Store>,
@@ -152,6 +169,9 @@ impl SortingWorkspace {
             }
         });
         let units = self.selected.clone();
+        let lead_colour = palette.unit(lead);
+        let template_rows = unit.template.clone();
+        let duration = (dataset.total_samples as f64 / dataset.sample_rate) as f32;
         let note = format!("Ch {channel} · {} spikes per unit at most · {}", SPIKES_PER_UNIT, if store.signal_for(&source).is_some() { "processed preview" } else { "recording as stored" });
         let work = cx.background_spawn(async move {
             let snippets = Snippets::read(&sorting, signal.as_ref(), &units, channel, SPIKES_PER_UNIT);
@@ -160,7 +180,16 @@ impl SortingWorkspace {
             let waveforms = plots::to_image(plots::waveforms(&snippets, &palette, PLOT_W, PLOT_H, 1.5));
             let scatter = plots::to_image(plots::scatter(&points, &labels, &palette, PLOT_W, PLOT_H, 1.5));
             let strip = strip.and_then(|req| plots::to_image(WaveformRenderer::default().render_scaled(&req).0));
-            Plots { waveforms, scatter, strip, note }
+            // Lead unit: correlogram, intervals, template; every selected unit: amplitudes
+            let times = sorting.unit_times(lead);
+            let acg = crate::sorting::autocorrelogram(&times, sorting.sample_rate, ACG_HALF_MS, ACG_BIN_MS);
+            let isi = crate::sorting::isi_histogram(&times, sorting.sample_rate, ISI_MAX_MS, ISI_BIN_MS);
+            let acg = plots::to_image(plots::bars(&acg, lead_colour, Some((ACG_HALF_MS / ACG_BIN_MS) as f32), &palette, SMALL_W, SMALL_H));
+            let isi = plots::to_image(plots::bars(&isi, lead_colour, Some((REFRACTORY_MS / ISI_BIN_MS) as f32), &palette, SMALL_W, SMALL_H));
+            let amps: Vec<(u32, Vec<(f32, f32)>)> = units.iter().map(|&u| (u as u32, sorting.unit_amplitudes(u, AMPLITUDE_POINTS))).collect();
+            let amplitude = plots::to_image(plots::amplitude_time(&amps, duration, &palette, SMALL_W, SMALL_H, 1.5));
+            let templates = plots::to_image(plots::template_grid(&template_rows, lead_colour, &palette, SMALL_W, SMALL_H, 1.5));
+            Plots { waveforms, scatter, strip, acg, isi, amplitude, templates, note }
         });
         self.computing = Some(cx.spawn(async move |this, cx| {
             let plots = work.await;
@@ -282,6 +311,15 @@ impl Render for SortingWorkspace {
                     .gap_2()
                     .child(h_flex().gap_2().child(legend).child(div().flex_1()).child(div().text_xs().text_color(muted).child(self.plots.note.clone())))
                     .child(h_flex().flex_1().min_h_0().gap_2().child(plot("Waveforms (spikes, unit means)", self.plots.waveforms.clone())).child(plot("Feature space (PC1 vs PC2)", self.plots.scatter.clone())))
+                    .child(
+                        h_flex()
+                            .h(px(190.))
+                            .gap_2()
+                            .child(plot("Autocorrelogram (±50 ms)", self.plots.acg.clone()))
+                            .child(plot("ISI (0–50 ms; 1.5 ms marked)", self.plots.isi.clone()))
+                            .child(plot("Amplitude over time", self.plots.amplitude.clone()))
+                            .child(plot("Template on its channels", self.plots.templates.clone())),
+                    )
                     .child(div().h(px(220.)).flex().child(plot("Trace around a spike of the first unit (100 ms)", self.plots.strip.clone()))),
             )
             .into_any_element()
