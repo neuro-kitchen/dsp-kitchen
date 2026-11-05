@@ -2,7 +2,7 @@ use cubecl::prelude::*;
 use super::session::PipelineWorkspace;
 use crate::core::DspFloat;
 use super::stage::PipelineStage;
-use crate::filter::design::FilterError;
+use crate::filter::design::OpsError;
 
 /// Stages (filters, spatial operators, pointwise math) run one after the other on a
 /// `[channels, samples]` device buffer. Intermediate results stay on the device, in two buffers
@@ -85,8 +85,8 @@ impl Pipeline {
     ///
     /// # Errors
     ///
-    /// [`FilterError`] when a stage's design is invalid at `sample_rate` (see [`validate`](Self::validate)).
-    pub fn settling(&self, sample_rate: f64) -> Result<(usize, usize), FilterError> {
+    /// [`OpsError`] when a stage's design is invalid at `sample_rate` (see [`validate`](Self::validate)).
+    pub fn settling(&self, sample_rate: f64) -> Result<(usize, usize), OpsError> {
         self.stages.iter().try_fold((0, 0), |(l, r), stage| {
             let (sl, sr) = stage.settling(sample_rate)?;
             Ok((l + sl, r + sr))
@@ -97,7 +97,7 @@ impl Pipeline {
     ///
     /// # Errors
     ///
-    /// [`FilterError`] for the first invalid stage, e.g. a cutoff at or above Nyquist.
+    /// [`OpsError`] for the first invalid stage, e.g. a cutoff at or above Nyquist.
     ///
     /// ```
     /// use dspk_ops::{Pipeline, PipelineStage};
@@ -106,7 +106,7 @@ impl Pipeline {
     /// assert!(pipeline.validate(30_000.0).is_ok());
     /// assert!(pipeline.validate(8_000.0).is_err()); // 5 kHz is above the 4 kHz Nyquist
     /// ```
-    pub fn validate(&self, sample_rate: f64) -> Result<(), FilterError> {
+    pub fn validate(&self, sample_rate: f64) -> Result<(), OpsError> {
         self.settling(sample_rate).map(|_| ())
     }
 
@@ -125,7 +125,7 @@ impl Pipeline {
     ///
     /// # Errors
     ///
-    /// [`FilterError`] when a stage's design is invalid at `sample_rate`.
+    /// [`OpsError`] when a stage's design is invalid at `sample_rate`.
     pub fn execute<F: DspFloat>(
         &self,
         client: &Client,
@@ -133,7 +133,7 @@ impl Pipeline {
         channels: usize,
         samples: usize,
         sample_rate: f64,
-    ) -> Result<cubecl::server::Handle, FilterError> {
+    ) -> Result<cubecl::server::Handle, OpsError> {
         if self.stages.is_empty() {
             return Ok(input_handle.clone());
         }

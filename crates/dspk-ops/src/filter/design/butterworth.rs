@@ -6,17 +6,17 @@ use num_complex::Complex64 as C;
 use std::f64::consts::PI;
 
 use super::sos::{Section, Sos};
-use super::{FilterBand, FilterError, check_cutoff, check_sample_rate};
+use super::{FilterBand, OpsError, check_cutoff, check_sample_rate};
 
 /// Designs a Butterworth filter of `order` (per band edge) as second-order sections.
 ///
 /// # Errors
 ///
-/// [`FilterError`] when the design is invalid at `sample_rate`: non-positive sample rate, zero
+/// [`OpsError`] when the design is invalid at `sample_rate`: non-positive sample rate, zero
 /// order, a cutoff outside `(0, Nyquist)`, band edges out of order, a bad `q` or ripple.
-pub fn butterworth_sos(order: usize, band: FilterBand, sample_rate: f64) -> Result<Sos, FilterError> {
+pub fn butterworth_sos(order: usize, band: FilterBand, sample_rate: f64) -> Result<Sos, OpsError> {
     if order == 0 {
-        return Err(FilterError::InvalidOrder);
+        return Err(OpsError::InvalidOrder);
     }
     design_sos(prototype(order), band, sample_rate)
 }
@@ -26,14 +26,14 @@ pub fn butterworth_sos(order: usize, band: FilterBand, sample_rate: f64) -> Resu
 ///
 /// # Errors
 ///
-/// [`FilterError`] when the design is invalid at `sample_rate`: non-positive sample rate, zero
+/// [`OpsError`] when the design is invalid at `sample_rate`: non-positive sample rate, zero
 /// order, a cutoff outside `(0, Nyquist)`, band edges out of order, a bad `q` or ripple.
-pub fn chebyshev1_sos(order: usize, ripple_db: f64, band: FilterBand, sample_rate: f64) -> Result<Sos, FilterError> {
+pub fn chebyshev1_sos(order: usize, ripple_db: f64, band: FilterBand, sample_rate: f64) -> Result<Sos, OpsError> {
     if order == 0 {
-        return Err(FilterError::InvalidOrder);
+        return Err(OpsError::InvalidOrder);
     }
     if !(ripple_db.is_finite() && ripple_db > 0.0) {
-        return Err(FilterError::InvalidRipple(ripple_db));
+        return Err(OpsError::InvalidRipple(ripple_db));
     }
     design_sos(chebyshev1_prototype(order, ripple_db), band, sample_rate)
 }
@@ -44,16 +44,16 @@ pub fn chebyshev1_sos(order: usize, ripple_db: f64, band: FilterBand, sample_rat
 ///
 /// # Errors
 ///
-/// [`FilterError`] when the design is invalid at `sample_rate` (as [`butterworth_sos`]).
-pub fn bessel_sos(order: usize, band: FilterBand, sample_rate: f64) -> Result<Sos, FilterError> {
+/// [`OpsError`] when the design is invalid at `sample_rate` (as [`butterworth_sos`]).
+pub fn bessel_sos(order: usize, band: FilterBand, sample_rate: f64) -> Result<Sos, OpsError> {
     if order == 0 {
-        return Err(FilterError::InvalidOrder);
+        return Err(OpsError::InvalidOrder);
     }
     design_sos(bessel_prototype(order), band, sample_rate)
 }
 
 /// Turns an analog low-pass prototype into digital second-order sections for `band`.
-fn design_sos((z, p, k): Zpk, band: FilterBand, sample_rate: f64) -> Result<Sos, FilterError> {
+fn design_sos((z, p, k): Zpk, band: FilterBand, sample_rate: f64) -> Result<Sos, OpsError> {
     check_sample_rate(sample_rate)?;
     let edges = match band {
         FilterBand::Lowpass(f) | FilterBand::Highpass(f) => vec![f],
@@ -65,7 +65,7 @@ fn design_sos((z, p, k): Zpk, band: FilterBand, sample_rate: f64) -> Result<Sos,
     if let [lo, hi] = edges[..]
         && lo >= hi
     {
-        return Err(FilterError::InvalidBand { low_hz: lo, high_hz: hi });
+        return Err(OpsError::InvalidBand { low_hz: lo, high_hz: hi });
     }
 
     // Design on scipy's normalized grid (fs = 2) with prewarped edges.

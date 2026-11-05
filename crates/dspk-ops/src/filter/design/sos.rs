@@ -1,4 +1,4 @@
-use super::FilterError;
+use super::OpsError;
 
 /// Relative impulse-response amplitude below which a filter is considered settled.
 pub const DEFAULT_SETTLING_TOLERANCE: f64 = 1e-3;
@@ -91,16 +91,16 @@ impl Sos {
     ///
     /// # Errors
     ///
-    /// [`FilterError::InvalidSections`] when there are no sections, a coefficient is not finite,
+    /// [`OpsError::InvalidSections`] when there are no sections, a coefficient is not finite,
     /// `a0 ≠ 1`, or a pole lies on or outside the unit circle.
-    pub fn validate(&self) -> Result<(), FilterError> {
+    pub fn validate(&self) -> Result<(), OpsError> {
         let ok = !self.sections.is_empty()
             && self.sections.iter().all(|s| {
                 s.b.iter().chain(s.a.iter()).all(|c| c.is_finite())
                     && (s.a[0] - 1.0).abs() < A0_TOLERANCE
                     && s.pole_radius() < 1.0
             });
-        if ok { Ok(()) } else { Err(FilterError::InvalidSections) }
+        if ok { Ok(()) } else { Err(OpsError::InvalidSections) }
     }
 
     /// Per-section steady-state initial conditions for a unit step (`sosfilt_zi`).

@@ -14,7 +14,7 @@ use dspk_ops::core::{buffer, EdgeMode};
 use dspk_ops::filter::fir::{execute_fir_centered_with, execute_fir_with, FirKernel};
 use dspk_ops::filter::non_linear::{execute_median_with, MedianKernel};
 use dspk_ops::filter::{DeviceFilter, FilterBand, FilterMode, FilterSpec, PassLayout};
-use dspk_ops::resampler::{resample_poly_len, resample_poly_with, ResampleFilter, ResampleKernel};
+use dspk_ops::resampler::{execute_resample_poly_with, resample_poly_len, ResampleFilter, ResampleKernel};
 use dspk_ops::spatial::{execute_common_median_with, execute_direct_car_with, CarKernel, CmrKernel};
 
 const ITERATIONS: usize = 7;
@@ -55,7 +55,7 @@ fn bench(client: &Client) {
         let kernels = std::iter::once(ResampleKernel::Direct).chain(widths.iter().map(|&width| ResampleKernel::Vectorized { width }));
         for kernel in kernels {
             let t = time_device(client, ITERATIONS, || {
-                resample_poly_with::<f32>(client, &x, &resampled, CHANNELS, SAMPLES, up, down, &ResampleFilter::default(), EdgeMode::Zeros, Some(kernel));
+                execute_resample_poly_with::<f32>(client, &x, &resampled, CHANNELS, SAMPLES, up, down, &ResampleFilter::default(), EdgeMode::Zeros, Some(kernel));
             });
             println!("  resample {up}/{down}{:13} {:28} {:8.2} ms", "", format!("{kernel:?}"), t.as_secs_f64() * 1e3);
         }

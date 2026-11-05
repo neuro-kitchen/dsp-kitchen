@@ -1,4 +1,4 @@
-use crate::filter::design::{FilterError, FilterSpec, Sos};
+use crate::filter::design::{OpsError, FilterSpec, Sos};
 use crate::core::EdgeMode;
 use crate::filter::fir::gaussian::{gaussian_radius, GAUSSIAN_DEFAULT_EDGE, GAUSSIAN_TRUNCATE};
 use crate::filter::fir::FIR_DEFAULT_EDGE;
@@ -116,8 +116,8 @@ impl PipelineStage {
     ///
     /// # Errors
     ///
-    /// [`FilterError`] when a filter stage's design is invalid at `sample_rate`.
-    pub fn settling(&self, sample_rate: f64) -> Result<(usize, usize), FilterError> {
+    /// [`OpsError`] when a filter stage's design is invalid at `sample_rate`.
+    pub fn settling(&self, sample_rate: f64) -> Result<(usize, usize), OpsError> {
         Ok(match self {
             PipelineStage::Filter(spec) => spec.settling(sample_rate)?,
             PipelineStage::GaussianSmooth { sigma_samples, .. } => {

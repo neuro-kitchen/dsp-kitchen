@@ -6,13 +6,15 @@ use cubecl::server::Handle;
 use super::engine::Pipeline;
 use super::stage::PipelineStage;
 use crate::core::{buffer, cast, cast_f32, DspFloat, EdgeMode};
-use crate::filter::design::FilterError;
+use crate::filter::design::OpsError;
 use crate::filter::fir::gaussian::GAUSSIAN_TRUNCATE;
 use crate::filter::iir::DeviceFilter;
 use crate::filter::{execute_fir, execute_fir_centered, execute_median, execute_teager_kaiser, gaussian_kernel_1d, FilterMode};
 use crate::math::{execute_clamp, execute_scaling, execute_unpack_stored, stored_word_bytes, write_stored_owned};
 use crate::spatial::{execute_common_median, execute_direct_car, DeviceSpatialMatrix};
-use dspk_core::{DspError, DspResult, SampleFormat};
+use dspk_core::{DspError, SampleFormat};
+
+use crate::error::OpsResult;
 
 /// How consecutive chunks relate to each other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,14 +68,14 @@ impl<F: DspFloat> PipelineWorkspace<F> {
     ///
     /// # Errors
     ///
-    /// [`FilterError`] when a filter stage's design is invalid at `sample_rate`.
+    /// [`OpsError`] when a filter stage's design is invalid at `sample_rate`.
     pub fn new(
         client: Client,
         pipeline: Pipeline,
         channels: usize,
         initial_samples: usize,
         sample_rate: f64,
-    ) -> Result<Self, FilterError> {
+    ) -> Result<Self, OpsError> {
         Self::with_mode(client, pipeline, channels, initial_samples, sample_rate, ChunkMode::Independent)
     }
 
@@ -82,15 +84,15 @@ impl<F: DspFloat> PipelineWorkspace<F> {
     ///
     /// # Errors
     ///
-    /// [`FilterError`] when a filter stage's design is invalid at `sample_rate`, and
-    /// [`FilterError::ForwardBackwardOnLiveStream`] for a zero-phase filter (it needs future samples).
+    /// [`OpsError`] when a filter stage's design is invalid at `sample_rate`, and
+    /// [`OpsError::ForwardBackwardOnLiveStream`] for a zero-phase filter (it needs future samples).
     pub fn new_stateful(
         client: Client,
         pipeline: Pipeline,
         channels: usize,
         initial_samples: usize,
         sample_rate: f64,
-    ) -> Result<Self, FilterError> {
+    ) -> Result<Self, OpsError> {
         Self::with_mode(client, pipeline, channels, initial_samples, sample_rate, ChunkMode::Stateful)
     }
 
@@ -101,14 +103,14 @@ impl<F: DspFloat> PipelineWorkspace<F> {
         initial_samples: usize,
         sample_rate: f64,
         mode: ChunkMode,
-    ) -> Result<Self, FilterError> {
+    ) -> Result<Self, OpsError> {
         let mut plan = Vec::with_capacity(pipeline.len());
         for stage in pipeline.stages() {
             match stage {
                 PipelineStage::Filter(spec) => {
                     let filter = DeviceFilter::<F>::new(&client, spec, sample_rate)?;
                     if mode == ChunkMode::Stateful && filter.mode() != FilterMode::Forward {
-                        return Err(FilterError::ForwardBackwardOnLiveStream);
+                        return Err(OpsError::ForwardBackwardOnLiveStream);
                     }
                     let state = buffer::empty::<F>(&client, channels * filter.state_len());
                     plan.push(Planned::Filter { filter, state });
@@ -312,7 +314,7 @@ impl<F: DspFloat> PipelineWorkspace<F> {
     /// [`DspError::ShapeMismatch`] when `stored` is not `channels × samples × format.bytes()` long;
     /// [`DspError::InvalidConfig`] before [`Self::set_stored_scaling`]; [`DspError::UnsupportedFormat`]
     /// for `float64` storage.
-    pub fn process_stored_chunk_in_vram(&mut self, stored: &[u8], format: SampleFormat, samples: usize) -> DspResult<Handle> {
+    pub fn process_stored_chunk_in_vram(&mut self, stored: &[u8], format: SampleFormat, samples: usize) -> OpsResult<Handle> {
         self.process_owned_stored_chunk_in_vram(stored.to_vec(), format, samples)
     }
 
@@ -323,9 +325,9 @@ impl<F: DspFloat> PipelineWorkspace<F> {
     /// # Errors
     ///
     /// As [`Self::process_stored_chunk_in_vram`].
-    pub fn process_owned_stored_chunk_in_vram(&mut self, stored: Vec<u8>, format: SampleFormat, samples: usize) -> DspResult<Handle> {
+    pub fn process_owned_stored_chunk_in_vram(&mut self, stored: Vec<u8>, format: SampleFormat, samples: usize) -> OpsResult<Handle> {
         if stored.len() != self.channels * samples * format.bytes() {
-            return Err(DspError::ShapeMismatch { expected: vec![self.channels, samples, format.bytes()], actual: vec![stored.len()] });
+            return Err(DspError::ShapeMismatch { expected: vec![self.channels, samples, format.bytes()], actual: vec![stored.len()] }.into());
         }
         let (gains, offsets) = self
             .stored_scaling

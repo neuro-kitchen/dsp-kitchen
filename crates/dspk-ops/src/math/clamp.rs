@@ -1,28 +1,29 @@
 use cubecl::prelude::*;
+use cubecl::server::Handle;
 use dspk_core::compute::LaunchGeometry;
 
 use super::kernels::clamp_samples_kernel;
 use crate::core::DspFloat;
 
-/// `output = clamp(input, min_val, max_val)` over `total_elements` values.
+/// `output = clamp(input, min, max)` over `len` values (any shape: element-wise).
 pub fn execute_clamp<F: DspFloat>(
     client: &Client,
-    input: &cubecl::server::Handle,
-    output: &cubecl::server::Handle,
-    total_elements: usize,
-    min_val: F,
-    max_val: F,
+    input: &Handle,
+    output: &Handle,
+    len: usize,
+    min: F,
+    max: F,
 ) {
-    let geom = LaunchGeometry::elementwise(client, total_elements);
+    let geom = LaunchGeometry::elementwise(client, len);
     unsafe {
         clamp_samples_kernel::launch::<F>(
             client,
             geom.cube_count,
             geom.cube_dim,
-            BufferArg::from_raw_parts(input.clone(), total_elements),
-            BufferArg::from_raw_parts(output.clone(), total_elements),
-            min_val,
-            max_val,
+            BufferArg::from_raw_parts(input.clone(), len),
+            BufferArg::from_raw_parts(output.clone(), len),
+            min,
+            max,
         );
     }
 }

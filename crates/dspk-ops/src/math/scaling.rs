@@ -1,27 +1,28 @@
 use cubecl::prelude::*;
+use cubecl::server::Handle;
 use dspk_core::compute::LaunchGeometry;
 
 use super::kernels::scale_samples_kernel;
 use crate::core::DspFloat;
 
-/// `output = input · scale_factor + offset` over `total_elements` values.
+/// `output = input · scale + offset` over `len` values (any shape: element-wise).
 pub fn execute_scaling<F: DspFloat>(
     client: &Client,
-    input: &cubecl::server::Handle,
-    output: &cubecl::server::Handle,
-    total_elements: usize,
-    scale_factor: F,
+    input: &Handle,
+    output: &Handle,
+    len: usize,
+    scale: F,
     offset: F,
 ) {
-    let geom = LaunchGeometry::elementwise(client, total_elements);
+    let geom = LaunchGeometry::elementwise(client, len);
     unsafe {
         scale_samples_kernel::launch::<F>(
             client,
             geom.cube_count,
             geom.cube_dim,
-            BufferArg::from_raw_parts(input.clone(), total_elements),
-            BufferArg::from_raw_parts(output.clone(), total_elements),
-            scale_factor,
+            BufferArg::from_raw_parts(input.clone(), len),
+            BufferArg::from_raw_parts(output.clone(), len),
+            scale,
             offset,
         );
     }

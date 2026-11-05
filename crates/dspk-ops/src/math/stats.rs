@@ -1,4 +1,5 @@
 use cubecl::prelude::*;
+use cubecl::server::Handle;
 use crate::core::{reduce, DspFloat};
 
 /// `Φ⁻¹(0.75)`: the median absolute value of a zero-mean Gaussian in units of its σ.
@@ -33,7 +34,7 @@ pub fn estimate_noise_std(signal: &[f32]) -> f32 {
 /// [`reduce::row_abs_kth`]); only the `channels` estimates are downloaded. Empty `cols`: zeros.
 pub fn execute_channel_noise_std<F: DspFloat>(
     client: &Client,
-    input: &cubecl::server::Handle,
+    input: &Handle,
     channels: usize,
     samples: usize,
     cols: std::ops::Range<usize>,
@@ -58,7 +59,7 @@ pub fn execute_channel_noise_std<F: DspFloat>(
 /// divides this by 0.6744897501960817. Empty `cols`: zeros.
 pub fn execute_channel_mad<F: DspFloat>(
     client: &Client,
-    input: &cubecl::server::Handle,
+    input: &Handle,
     channels: usize,
     samples: usize,
     cols: std::ops::Range<usize>,
@@ -69,7 +70,7 @@ pub fn execute_channel_mad<F: DspFloat>(
     let n = cols.len();
     let (k_lo, k_hi) = ((n - 1) / 2, n / 2);
     // NumPy's median of a row: the middle value, or the mean of the two middle values
-    let median_of = |select: &dyn Fn(&cubecl::server::Handle, usize)| -> Vec<f64> {
+    let median_of = |select: &dyn Fn(&Handle, usize)| -> Vec<f64> {
         let lo = crate::core::buffer::empty::<F>(client, channels);
         select(&lo, k_lo);
         let lo = crate::core::buffer::download::<F>(client, lo);
@@ -187,9 +188,9 @@ pub fn standard_error(sample_std: f32, count: usize) -> f32 {
 /// ([`reduce::row_mean_std`]).
 pub fn execute_channel_mean_std<F: DspFloat>(
     client: &Client,
-    input: &cubecl::server::Handle,
-    out_mean: &cubecl::server::Handle,
-    out_std: &cubecl::server::Handle,
+    input: &Handle,
+    out_mean: &Handle,
+    out_std: &Handle,
     channels: usize,
     samples: usize,
 ) {

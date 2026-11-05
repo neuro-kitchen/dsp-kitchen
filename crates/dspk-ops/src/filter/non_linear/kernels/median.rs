@@ -1,6 +1,7 @@
 use cubecl::prelude::*;
 use dspk_core::compute::{channel_position, element_position, sample_position};
 
+use crate::core::kernels::store_lanes;
 use crate::core::read_extended;
 
 /// Median of three with three min/max operations.
@@ -131,10 +132,46 @@ fn median_by_rank_vector<F: Float, N: Size>(window: &Array<Vector<F, N>>, #[comp
     median
 }
 
+/// Running median at outputs `i … i + N − 1` of the row at `input[base]`: reads the
+/// `width + N − 1` samples once and assembles window vector `k` (lane `l` = sample
+/// `i + l − radius + k`) from them; the median network or rank count then runs lane by lane with
+/// the same comparisons as the scalar kernel, so each lane is bit-identical to it. Lanes past the
+/// row's end read its edge extension.
+#[cube]
+fn median_vector_at<F: Float, N: Size>(input: &[F], base: usize, i: u32, num_samples: u32, #[comptime] width: u32, #[comptime] edge: u32) -> Vector<F, N> {
+    let mut window = Array::<Vector<F, N>>::new(comptime!(width as usize));
+    let n = window[0usize].vector_size();
+    let span = comptime!(width as usize + n - 1);
+    let radius = comptime!(width / 2);
+    let mut raw = Array::<F>::new(span);
+    if i >= radius && i + n as u32 - 1u32 + radius < num_samples {
+        let first = base + (i - radius) as usize;
+        #[unroll(width <= 9)]
+        for k in 0..span {
+            raw[k] = input[first + k];
+        }
+    } else {
+        // Logical sample i − radius + k is extended position i + k
+        #[unroll(width <= 9)]
+        for k in 0..span {
+            raw[k] = read_extended::<F>(input, base, num_samples, radius, i + k as u32, edge);
+        }
+    }
+    #[unroll(width <= 9)]
+    for k in 0..width {
+        let mut w = Vector::<F, N>::empty();
+        #[unroll]
+        for l in 0..n {
+            w.insert(l, raw[k as usize + l]);
+        }
+        window[k as usize] = w;
+    }
+    let median = if comptime!(width == 9) { med9_vector::<F, N>(&window) } else { median_by_rank_vector::<F, N>(&window, width) };
+    median
+}
+
 /// [`fn@median_filter_kernel`] with `N` consecutive outputs per unit (`num_samples` a multiple of
-/// `N`). The unit reads its `width + N − 1` samples once and assembles window vector `k` (lane `l`
-/// = sample `i + l − radius + k`) from them; the median network or rank count then runs lane by
-/// lane with the same comparisons as the scalar kernel, so the output is bit-identical.
+/// `N`), computed by [`fn@median_vector_at`].
 #[cube(launch)]
 pub fn median_filter_vector_kernel<F: Float, N: Size>(
     input: &[F],
@@ -145,37 +182,32 @@ pub fn median_filter_vector_kernel<F: Float, N: Size>(
 ) {
     let v = element_position();
     if v < output.len() {
-        let mut window = Array::<Vector<F, N>>::new(comptime!(width as usize));
-        let n = window[0usize].vector_size();
-        let span = comptime!(width as usize + n - 1);
-        let radius = comptime!(width / 2);
-        let per_row = num_samples / n as u32;
-        let i = (v as u32 % per_row) * n as u32;
+        let n = N::value() as u32;
+        let per_row = num_samples / n;
+        let i = (v as u32 % per_row) * n;
         let base = ((v as u32 / per_row) * num_samples) as usize;
-        let mut raw = Array::<F>::new(span);
-        if i >= radius && i + n as u32 - 1u32 + radius < num_samples {
-            let first = base + (i - radius) as usize;
-            #[unroll(width <= 9)]
-            for k in 0..span {
-                raw[k] = input[first + k];
-            }
-        } else {
-            // Logical sample i − radius + k is extended position i + k
-            #[unroll(width <= 9)]
-            for k in 0..span {
-                raw[k] = read_extended::<F>(input, base, num_samples, radius, i + k as u32, edge);
-            }
-        }
-        #[unroll(width <= 9)]
-        for k in 0..width {
-            let mut w = Vector::<F, N>::empty();
-            #[unroll]
-            for l in 0..n {
-                w.insert(l, raw[k as usize + l]);
-            }
-            window[k as usize] = w;
-        }
-        let median = if comptime!(width == 9) { med9_vector::<F, N>(&window) } else { median_by_rank_vector::<F, N>(&window, width) };
-        output[v] = median;
+        output[v] = median_vector_at::<F, N>(input, base, i, num_samples, width, edge);
+    }
+}
+
+/// [`fn@median_filter_vector_kernel`] for any `num_samples`: `units_per_row = ceil(num_samples / N)`
+/// units per row, outputs stored lane by lane ([`fn@store_lanes`]).
+#[cube(launch)]
+pub fn median_filter_vector_unaligned_kernel<F: Float, N: Size>(
+    input: &[F],
+    output: &mut [F],
+    num_samples: u32,
+    units_per_row: u32,
+    num_units: u32,
+    #[comptime] width: u32,
+    #[comptime] edge: u32,
+) {
+    let v = element_position() as u32;
+    if v < num_units {
+        let n = N::value() as u32;
+        let i = (v % units_per_row) * n;
+        let base = ((v / units_per_row) * num_samples) as usize;
+        let median = median_vector_at::<F, N>(input, base, i, num_samples, width, edge);
+        store_lanes::<F, N>(output, base + i as usize, median, u32::min(n, num_samples - i));
     }
 }

@@ -20,7 +20,7 @@ use dspk_ops::core::{buffer, EdgeMode};
 use dspk_ops::filter::{execute_fir, execute_fir_centered, execute_filter, execute_median, execute_teager_kaiser, FilterBand, FilterMode, FilterSpec};
 use dspk_ops::math::{execute_channel_mean_std, execute_channel_noise_std, execute_clamp, execute_scaling};
 use dspk_ops::peaks::{find_peak_candidates_on_device, Polarity};
-use dspk_ops::resampler::{firwin, resample_poly, resample_poly_len, FirWindow, ResampleFilter};
+use dspk_ops::resampler::{execute_resample_poly, firwin, resample_poly_len, FirWindow, ResampleFilter};
 use dspk_ops::spatial::{execute_common_median, execute_common_median_with, execute_direct_car, CmrKernel};
 
 /// Timed runs per kernel (after one warm-up).
@@ -103,7 +103,7 @@ fn bench(target: ComputeTarget, client: &Client) -> Vec<Row> {
         ("iir bandpass 5, forward", 1.0, FilterSpec::butterworth(5, FilterBand::Bandpass(300.0, 6000.0)).with_mode(FilterMode::Forward)),
         ("iir bandpass 5, zero-phase", 2.0, FilterSpec::butterworth(5, FilterBand::Bandpass(300.0, 6000.0)).with_mode(FilterMode::ForwardBackward)),
     ] {
-        time(name, rw, passes * iir_ops, &mut || execute_filter::<f32>(client, &spec, SAMPLE_RATE, &x, &out, CHANNELS, SAMPLES).unwrap());
+        time(name, rw, passes * iir_ops, &mut || execute_filter::<f32>(client, &x, &out, CHANNELS, SAMPLES, SAMPLE_RATE, &spec).unwrap());
     }
     let taps_host: Vec<f32> = firwin(63, 0.2, FirWindow::Hamming).into_iter().map(|v| v as f32).collect();
     let taps = buffer::upload(client, &taps_host);
@@ -117,7 +117,7 @@ fn bench(target: ComputeTarget, client: &Client) -> Vec<Row> {
     // Kaiser window of 2 · 10 · max(up, down) + 1 taps; each output (a third of the inputs) sums them
     let resample_ops = 2.0 * (2.0 * 10.0 * 3.0 + 1.0) / 3.0;
     time("resample_poly 1/3", block * (1.0 + 1.0 / 3.0), resample_ops, &mut || {
-        resample_poly::<f32>(client, &x, &resampled, CHANNELS, SAMPLES, 1, 3, &window, dspk_ops::resampler::RESAMPLE_POLY_DEFAULT_EDGE);
+        execute_resample_poly::<f32>(client, &x, &resampled, CHANNELS, SAMPLES, 1, 3, &window, dspk_ops::resampler::RESAMPLE_POLY_DEFAULT_EDGE);
     });
     let (mean, std) = (buffer::empty::<f32>(client, CHANNELS), buffer::empty::<f32>(client, CHANNELS));
     time("channel mean/std", block, 0.0, &mut || execute_channel_mean_std::<f32>(client, &x, &mean, &std, CHANNELS, SAMPLES));
