@@ -12,7 +12,7 @@ pub use butterworth::{bessel_sos, butterworth_sos, chebyshev1_sos};
 pub use notch::notch_sos;
 pub use sos::{Section, Sos, DEFAULT_SETTLING_TOLERANCE};
 
-use thiserror::Error;
+pub use crate::error::OpsError;
 
 /// Frequency band of a Butterworth filter, cutoffs in Hz.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -134,10 +134,10 @@ impl FilterSpec {
     ///
     /// # Errors
     ///
-    /// [`FilterError`] when the design is invalid at `sample_rate`: non-positive sample rate, zero
+    /// [`OpsError`] when the design is invalid at `sample_rate`: non-positive sample rate, zero
     /// order, a cutoff outside `(0, Nyquist)`, band edges out of order, a bad `q` or ripple.
     /// Explicit sections fail [`Sos::validate`].
-    pub fn design(&self, sample_rate: f64) -> Result<Sos, FilterError> {
+    pub fn design(&self, sample_rate: f64) -> Result<Sos, OpsError> {
         match &self.design {
             FilterDesign::Butterworth { order, band } => butterworth_sos(*order, *band, sample_rate),
             FilterDesign::Chebyshev1 { order, ripple_db, band } => chebyshev1_sos(*order, *ripple_db, *band, sample_rate),
@@ -156,7 +156,7 @@ impl FilterSpec {
     /// # Errors
     ///
     /// As [`Self::design`].
-    pub fn settling(&self, sample_rate: f64) -> Result<(usize, usize), FilterError> {
+    pub fn settling(&self, sample_rate: f64) -> Result<(usize, usize), OpsError> {
         let s = self.design(sample_rate)?.settling_samples(DEFAULT_SETTLING_TOLERANCE);
         Ok(match self.mode {
             FilterMode::Forward => (s, 0),
@@ -165,36 +165,15 @@ impl FilterSpec {
     }
 }
 
-/// Invalid filter parameters.
-#[derive(Debug, Clone, PartialEq, Error)]
-pub enum FilterError {
-    #[error("sample rate must be positive and finite, got {0}")]
-    InvalidSampleRate(f64),
-    #[error("filter order must be at least 1")]
-    InvalidOrder,
-    #[error("cutoff {cutoff_hz} Hz must lie in (0, {nyquist_hz}) Hz")]
-    CutoffOutOfRange { cutoff_hz: f64, nyquist_hz: f64 },
-    #[error("band edges must satisfy low < high, got {low_hz} Hz and {high_hz} Hz")]
-    InvalidBand { low_hz: f64, high_hz: f64 },
-    #[error("quality factor must be positive and finite, got {0}")]
-    InvalidQ(f64),
-    #[error("pass-band ripple must be positive and finite dB, got {0}")]
-    InvalidRipple(f64),
-    #[error("second-order sections must be non-empty, finite, with a0 = 1 and stable poles")]
-    InvalidSections,
-    #[error("forward-backward filters need future samples and cannot run on a live stream")]
-    ForwardBackwardOnLiveStream,
+pub(crate) fn check_sample_rate(fs: f64) -> Result<(), OpsError> {
+    if fs.is_finite() && fs > 0.0 { Ok(()) } else { Err(OpsError::InvalidSampleRate(fs)) }
 }
 
-pub(crate) fn check_sample_rate(fs: f64) -> Result<(), FilterError> {
-    if fs.is_finite() && fs > 0.0 { Ok(()) } else { Err(FilterError::InvalidSampleRate(fs)) }
-}
-
-pub(crate) fn check_cutoff(cutoff_hz: f64, fs: f64) -> Result<(), FilterError> {
+pub(crate) fn check_cutoff(cutoff_hz: f64, fs: f64) -> Result<(), OpsError> {
     let nyquist_hz = fs / 2.0;
     if cutoff_hz.is_finite() && cutoff_hz > 0.0 && cutoff_hz < nyquist_hz {
         Ok(())
     } else {
-        Err(FilterError::CutoffOutOfRange { cutoff_hz, nyquist_hz })
+        Err(OpsError::CutoffOutOfRange { cutoff_hz, nyquist_hz })
     }
 }

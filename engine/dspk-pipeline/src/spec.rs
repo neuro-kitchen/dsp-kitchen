@@ -73,11 +73,25 @@ pub enum Node {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         stop: Option<u64>,
     },
-    /// The output file. Relative paths are relative to the spec file.
+    /// The output file, float32 whatever the input's stored type (every recording processed by
+    /// a pipeline comes out in the same form). Relative paths are relative to the spec file.
     Write {
         path: PathBuf,
         #[serde(default)]
         format: OutputFormat,
+        /// Zarr only: chunk compression; default zstd level 3 (`dspk_io::DEFAULT_ZARR_COMPRESSION`).
+        /// Chunks are compressed and stored in parallel.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        compression: Option<Compression>,
+        /// Zarr only: samples per chunk along time (every chunk spans all channels); default
+        /// `dspk_io::generic::zarr_traces::DEFAULT_CHUNK_SAMPLES` (5000).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        chunk_samples: Option<usize>,
+        /// Write in parallel (Zarr: chunks compressed and stored on several threads; raw: frames
+        /// built on several threads); default `true`. `false` writes on one thread (e.g. a
+        /// machine busy with other work, or to compare).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parallel: Option<bool>,
     },
     /// `y = alpha * x + beta`.
     Scale {
@@ -245,6 +259,44 @@ pub enum Edge {
     Odd,
     Reflect,
     Nearest,
+}
+
+/// Compression of Zarr chunks: `{"codec": "zstd", "level": 3}`, `{"codec": "blosc_lz4", "level":
+/// 5}` (LZ4 after a byte shuffle; faster, usually a little larger) or `{"codec": "none"}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "codec", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Compression {
+    None,
+    Zstd {
+        #[serde(default = "default_zstd_level")]
+        level: i32,
+    },
+    BloscLz4 {
+        #[serde(default = "default_blosc_level")]
+        level: u8,
+    },
+}
+
+/// Default zstd level of [`Compression::Zstd`].
+pub const DEFAULT_ZSTD_LEVEL: i32 = 3;
+/// Default LZ4 level of [`Compression::BloscLz4`] (blosc's 0–9).
+pub const DEFAULT_BLOSC_LEVEL: u8 = 5;
+
+fn default_zstd_level() -> i32 {
+    DEFAULT_ZSTD_LEVEL
+}
+fn default_blosc_level() -> u8 {
+    DEFAULT_BLOSC_LEVEL
+}
+
+impl From<Compression> for dspk_io::ZarrCompression {
+    fn from(c: Compression) -> Self {
+        match c {
+            Compression::None => dspk_io::ZarrCompression::None,
+            Compression::Zstd { level } => dspk_io::ZarrCompression::Zstd { level },
+            Compression::BloscLz4 { level } => dspk_io::ZarrCompression::BloscLz4 { level },
+        }
+    }
 }
 
 /// How the executor runs the chain.

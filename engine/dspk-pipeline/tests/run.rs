@@ -223,6 +223,44 @@ fn stream_mode_is_refused_for_zero_phase_filters() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// Every compression, chunk length and thread setting of Zarr output writes the same values as
+/// raw output; compression on raw output is refused.
+#[test]
+fn zarr_write_options_keep_the_values() {
+    let target = targets()[0];
+    let dir = scratch("zarr-options");
+    write_input(&dir);
+    // A stage without autotuned choices: two runs give the same values, so any difference is the
+    // writer's (an autotuned IIR may pick another block layout in the second run: last-bit changes)
+    let stages = r#""sc": {"op": "scale", "alpha": 2.0, "beta": 1.0},"#;
+    let edges = r#"[["in", "sc"], ["sc", "out"]]"#;
+    let exec = format!(r#", "execution": {{"chunk_samples": {CHUNK}, "runtime": "{}"}}"#, target.name());
+    let raw = spec(stages, edges, &exec);
+    run(&raw, &dir).unwrap();
+    let want = read_all(&dir.join("out.bin"));
+    let writes = [
+        r#"{"op": "write", "path": "a.zarr", "format": "zarr"}"#,
+        r#"{"op": "write", "path": "b.zarr", "format": "zarr", "compression": {"codec": "blosc_lz4"}, "chunk_samples": 777}"#,
+        r#"{"op": "write", "path": "c.zarr", "format": "zarr", "compression": {"codec": "none"}, "parallel": false}"#,
+        r#"{"op": "write", "path": "d.zarr", "format": "zarr", "compression": {"codec": "zstd", "level": 9}, "chunk_samples": 50000}"#,
+    ];
+    for (i, write) in writes.iter().enumerate() {
+        let mut zarr = raw.clone();
+        let node = PipelineSpec::from_json(&format!(r#"{{"dspk_pipeline": 1, "nodes": {{"o": {write}}}, "edges": []}}"#)).unwrap().nodes["o"].clone();
+        zarr.nodes.insert("out".into(), node);
+        let report = run(&zarr, &dir).unwrap();
+        assert_eq!(read_all(&report.output), want, "write {i}: {write}");
+    }
+    let mut bad = raw.clone();
+    let node = PipelineSpec::from_json(r#"{"dspk_pipeline": 1, "nodes": {"o": {"op": "write", "path": "e.bin", "compression": {"codec": "zstd"}}}, "edges": []}"#)
+        .unwrap()
+        .nodes["o"]
+        .clone();
+    bad.nodes.insert("out".into(), node);
+    assert!(matches!(run(&bad, &dir), Err(PipelineError::Invalid(_))), "compression on raw output");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[test]
 fn zarr_output_matches_raw_and_provenance_is_written() {
     let target = targets()[0];
@@ -237,7 +275,10 @@ fn zarr_output_matches_raw_and_provenance_is_written() {
     zarr.nodes.insert("out".into(), PipelineSpec::from_json(r#"{"dspk_pipeline": 1, "nodes": {"o": {"op": "write", "path": "out.zarr", "format": "zarr"}}, "edges": []}"#).unwrap().nodes["o"].clone());
     let report = run(&zarr, &dir).unwrap();
     assert_eq!(read_all(&dir.join("out.zarr")), read_all(&dir.join("out.bin")));
-    assert!(!dir.join("out.dspk-tmp.bin").exists(), "temporary raw file removed");
+    assert!(!dir.join("out.dspk-tmp.bin").exists(), "written directly, no temporary raw file");
+    let t = report.timings;
+    assert!(t.device > 0.0 && t.disk > 0.0, "device and writer time measured: {t:?}");
+    assert!(report.seconds > 0.0);
     assert_eq!(report.provenance, dir.join(format!("out.zarr{PROVENANCE_SUFFIX}")));
     assert_eq!(PipelineSpec::load(&report.provenance).unwrap(), zarr);
     std::fs::remove_dir_all(&dir).unwrap();
@@ -365,7 +406,7 @@ fn whole_then_resample(stages_spec: &PipelineSpec, target: ComputeTarget, up: us
     let input = dspk_ops::core::buffer::upload(&client, &staged);
     let out_len = dspk_ops::resampler::resample_poly_len(SAMPLES, up, down);
     let out = dspk_ops::core::buffer::empty::<f32>(&client, CHANNELS * out_len);
-    dspk_ops::resampler::resample_poly::<f32>(&client, &input, &out, CHANNELS, SAMPLES, up, down, &Default::default(), dspk_ops::core::EdgeMode::Zeros);
+    dspk_ops::resampler::execute_resample_poly::<f32>(&client, &input, &out, CHANNELS, SAMPLES, up, down, &Default::default(), dspk_ops::core::EdgeMode::Zeros);
     dspk_ops::core::buffer::download_prefix::<f32>(&client, out, CHANNELS * out_len)
 }
 

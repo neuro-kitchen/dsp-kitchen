@@ -33,7 +33,8 @@ def run(text: builtins.str, base_dir: builtins.str | os.PathLike | pathlib.Path,
     r"""
     Runs a spec (JSON text, or TOML with `toml=True`); relative paths resolve against `base_dir`.
     Returns one report per input, each a dict (mode, halo, runtime, stored_upload, channels, samples,
-    sample_rate, windows, bytes {read, uploaded, downloaded, written}, output, provenance, seconds).
+    sample_rate, windows, bytes {read, uploaded, downloaded, written}, output, provenance, seconds,
+    timings {read_wait, device, write_wait, encode, disk} in seconds).
     
     `progress(input, inputs, windows_done, windows)` is called after each window; returning `False`
     cancels (KeyboardInterrupt, the unfinished output removed). Ctrl+C cancels too.

@@ -1,7 +1,7 @@
 //! Filters for `[channels, samples]` signals on the device.
 //!
 //! - [`design`]: IIR designs (Butterworth, Chebyshev, notch) as second-order sections, checked
-//!   against `scipy.signal`; [`FilterSpec`] describes one, [`FilterError`] explains a bad one.
+//!   against `scipy.signal`; [`FilterSpec`] describes one, [`OpsError`] explains a bad one.
 //! - [`iir`]: running sections over channels ([`DeviceFilter`]), causal or zero-phase.
 //! - [`fir`]: convolutions and Gaussian smoothing.
 //! - [`non_linear`]: median filters and the Teager–Kaiser energy operator.
@@ -17,7 +17,7 @@ pub mod non_linear;
 pub mod template;
 
 // Convenient flat re-exports for common workflows
-pub use design::{FilterBand, FilterDesign, FilterError, FilterMode, FilterSpec, FilterStart, Section, Sos};
+pub use design::{FilterBand, FilterDesign, OpsError, FilterMode, FilterSpec, FilterStart, Section, Sos};
 pub use iir::{DeviceFilter, PassLayout, execute_filter};
 pub use fir::{
     execute_fir, execute_fir_centered,

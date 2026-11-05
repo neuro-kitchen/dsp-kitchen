@@ -12,7 +12,7 @@
 //! | Noise, percentiles, element-wise math | [`math`] | [`math::estimate_noise_std`] |
 //! | Matrix products, PCA, ICA | [`linalg`] | [`PcaModel`], [`linalg::matmul`](fn@linalg::matmul) |
 //! | Peaks (`find_peaks`) | [`peaks`] | [`peaks::find_peak_candidates`] |
-//! | Resampling | [`resampler`] | [`resampler::resample_poly`] |
+//! | Resampling | [`resampler`] | [`resampler::execute_resample_poly`] |
 //! | Device buffers and shared kernels | [`core`] | [`core::buffer`] |
 //!
 //! Data is a `[channels, samples]` buffer, channel-major. Functions take a cubecl `Client`, from
@@ -24,6 +24,7 @@
 #[macro_use]
 mod test_support;
 
+pub mod error;
 pub mod core;
 pub mod filter;
 pub mod spatial;
@@ -33,6 +34,7 @@ pub mod peaks;
 pub mod pipeline;
 pub mod resampler;
 
+pub use error::{OpsError, OpsResult};
 pub use pipeline::{Pipeline, PipelineStage};
 pub use linalg::{FastIcaModel, IcaContrast, PcaModel, PpcaModel};
 pub use spatial::{SpatialWhitening, SurfaceLaplacian};

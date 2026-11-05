@@ -1,4 +1,5 @@
 use cubecl::prelude::*;
+use cubecl::server::Handle;
 use dspk_core::compute::LaunchGeometry;
 
 use super::kernels::teager_kaiser_kernel;
@@ -10,8 +11,8 @@ pub const TEAGER_KAISER_DEFAULT_EDGE: EdgeMode = EdgeMode::Reflect;
 /// Discrete Teager-Kaiser energy operator along time of a `[channels, samples]` buffer.
 pub fn execute_teager_kaiser<F: DspFloat>(
     client: &Client,
-    input: &cubecl::server::Handle,
-    output: &cubecl::server::Handle,
+    input: &Handle,
+    output: &Handle,
     channels: usize,
     samples: usize,
     edge: EdgeMode,

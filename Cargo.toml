@@ -9,14 +9,14 @@ members = [
     # Pipeline engine
     "engine/dspk-pipeline",
     # Electrophysiology
-    "synapse/dspk-synapse-io",
     "synapse/dspk-synapse",
     "synapse/dspk-synapse-ml",
+    # Spike sorters, one crate per upstream project (each under its upstream's licence)
+    "synapse/sorters/kilosort",
     "synapse/sorters/ms5",
-    "synapse/sorters/sc2",
-    "synapse/sorters/tdc2",
-    "synapse/sorters/ks4",
-    "synapse/dspk-synapse-hub",
+    "synapse/sorters/si",
+    # Verified downloads of published artifacts
+    "hub/dspk-hub",
     # Serving
     "serve/dspk-view",
     "serve/dspk-stream",
@@ -43,14 +43,12 @@ categories = ["science", "algorithms", "concurrency"]
 [workspace.dependencies]
 dspk-core = { path = "crates/dspk-core", version = "0.0.4", default-features = false }
 dspk-ops = { path = "crates/dspk-ops", version = "0.0.4", default-features = false }
-dspk-synapse-io = { path = "synapse/dspk-synapse-io", version = "0.0.4", default-features = false }
 dspk-synapse = { path = "synapse/dspk-synapse", version = "0.0.4", default-features = false }
 dspk-synapse-ml = { path = "synapse/dspk-synapse-ml", version = "0.0.4", default-features = false }
-dspk-ms5 = { path = "synapse/sorters/ms5", version = "0.0.4", default-features = false }
-dspk-sc2 = { path = "synapse/sorters/sc2", version = "0.0.4", default-features = false }
-dspk-tdc2 = { path = "synapse/sorters/tdc2", version = "0.0.4", default-features = false }
-dspk-ks4 = { path = "synapse/sorters/ks4", version = "0.0.4", default-features = false }
-dspk-synapse-hub = { path = "synapse/dspk-synapse-hub", version = "0.0.4", default-features = false }
+dspk-sorter-kilosort = { path = "synapse/sorters/kilosort", version = "0.0.4", default-features = false }
+dspk-sorter-ms5 = { path = "synapse/sorters/ms5", version = "0.0.4", default-features = false }
+dspk-sorter-si = { path = "synapse/sorters/si", version = "0.0.4", default-features = false }
+dspk-hub = { path = "hub/dspk-hub", version = "0.0.4", default-features = false }
 dspk-stream = { path = "serve/dspk-stream", version = "0.0.4", default-features = false }
 dspk-view = { path = "serve/dspk-view", version = "0.0.4", default-features = false }
 dspk-io = { path = "crates/dspk-io", version = "0.0.4", default-features = false }
@@ -81,7 +79,7 @@ memmap2 = "0.9.12"
 flate2 = "1.1.10"
 zarrs = { version = "0.23.14", default-features = false, features = ["filesystem", "blosc", "crc32c", "gzip", "sharding", "zstd"] }
 quinn = "0.11.12"
-tonic = "0.14.8"
+tonic = "0.14.9"
 prost = "0.14.4"
 prost-build = "0.14.4"
 protox = "0.10.0"
@@ -96,10 +94,10 @@ image = { version = "0.25.10", default-features = false, features = ["png"] }
 rfd = "0.17.2"
 
 # Python Interop
-pyo3 = { version = "0.29.3" }
-numpy = "0.29.0"
-# `.pyi` stubs of the Python extension (requires pyo3 < 0.30)
-pyo3-stub-gen = "0.23.1"
+pyo3 = { version = "0.30.1" }
+numpy = "0.30.0"
+# `.pyi` stubs of the Python extension (0.23 supports pyo3 0.27 – 0.30)
+pyo3-stub-gen = "0.23.2"
 
 # Concurrency & Async
 rayon = "1.12.0"
@@ -109,7 +107,7 @@ tokio = { version = "1.54.1", features = ["full"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 # Pipeline specs: TOML input, JSON Schema of the spec types
-toml = "1.1.8"
+toml = "1.2.0"
 # Pipeline specs: input globs
 glob = "0.3.4"
 schemars = "1.2.3"

@@ -20,6 +20,8 @@ hip = ["dspk-core/hip", "dspk-ops/hip"]
 [dependencies]
 dspk-core = { workspace = true, features = ["compute"] }
 dspk-io = { workspace = true, features = ["zarr"] }
+# Raw output frames built in parallel
+rayon.workspace = true
 dspk-ops.workspace = true
 glob.workspace = true
 cubecl.workspace = true

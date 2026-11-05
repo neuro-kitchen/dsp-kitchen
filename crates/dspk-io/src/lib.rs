@@ -9,7 +9,7 @@
 //! - [`container`]: storage containers shared by every format (binary codecs, …).
 //! - [`generic`]: domain-independent recording formats (raw binary, Zarr `/traces`).
 //!
-//! Neural-recording formats (NWB, SpikeGLX, mtscomp, Phy, probes) live in `dspk-synapse-io`.
+//! Neural-recording formats (NWB, SpikeGLX, mtscomp, Phy, probes) live in `dspk-synapse` (`dspk_synapse::io`).
 
 pub mod container;
 pub mod core;
@@ -23,5 +23,5 @@ pub use crate::core::{
 };
 pub use generic::raw::{write_raw, RawParams, RawRecording};
 #[cfg(feature = "zarr")]
-pub use generic::zarr_traces::{write_zarr, ZarrRecording};
+pub use generic::zarr_traces::{write_zarr, ZarrCompression, ZarrOptions, ZarrRecording, ZarrWriter, DEFAULT_PARALLEL_WRITES, DEFAULT_ZARR_COMPRESSION};
 pub use registry::formats;

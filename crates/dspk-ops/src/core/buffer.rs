@@ -86,6 +86,41 @@ pub fn filled<F: crate::core::DspFloat>(client: &Client, len: usize, value: F) -
     out
 }
 
+/// Sets the first `len` values of `handle` (which holds at least `len` values of `F`) to `value`,
+/// on the device.
+pub fn fill<F: crate::core::DspFloat>(client: &Client, handle: &Handle, len: usize, value: F) {
+    if len == 0 {
+        return;
+    }
+    let geom = dspk_core::compute::LaunchGeometry::elementwise(client, len);
+    // SAFETY: `handle` holds at least `len` values of `F`
+    unsafe {
+        super::kernels::fill_kernel::launch::<F>(
+            client,
+            geom.cube_count,
+            geom.cube_dim,
+            BufferArg::from_raw_parts(handle.clone(), len),
+            value,
+            len as u32,
+        );
+    }
+}
+
+/// Copies the first `len` values of `F` of `src` into `dst`, on the device.
+pub fn copy<F: crate::core::DspFloat>(client: &Client, src: &Handle, dst: &Handle, len: usize) {
+    if len == 0 {
+        return;
+    }
+    // SAFETY: both views cover `len` contiguous values of buffers that hold them
+    let (src, dst) = unsafe {
+        (
+            TensorBinding::from_raw_parts(src.clone(), cubecl::zspace::Strides::new(&[1]), cubecl::zspace::Shape::new([len])),
+            TensorBinding::from_raw_parts(dst.clone(), cubecl::zspace::Strides::new(&[1]), cubecl::zspace::Shape::new([len])),
+        )
+    };
+    cubecl::std::tensor::copy_into(client, src, dst, F::elem_type_native());
+}
+
 /// Host copy of a device buffer of `E` (waits for the queued work that writes it).
 pub fn download<E: CubeElement>(client: &Client, handle: Handle) -> Vec<E> {
     E::from_bytes(&client.read_one_unchecked(handle)).to_vec()

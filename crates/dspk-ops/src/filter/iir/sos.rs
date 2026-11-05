@@ -13,7 +13,7 @@ use dspk_core::compute::tune::{size_class, tune_id};
 
 use super::kernels::sos::{SVF_COEFFS, coeffs_len, sos_block_kernel, sos_block_scan_kernel, sos_block_vector_kernel};
 use crate::core::{buffer, cast, cast_all, layout, to_f64, DspFloat, Scratch};
-use crate::filter::design::{FilterError, FilterMode, FilterSpec, FilterStart, Sos};
+use crate::filter::design::{OpsError, FilterMode, FilterSpec, FilterStart, Sos};
 
 /// Numbers of time blocks the autotuner tries per pass. One block is a single sequential walk per
 /// channel; more blocks give more parallel units at the cost of a second pass over the data. The
@@ -37,7 +37,9 @@ pub enum PassLayout {
     TimeMajor,
     /// Time-major with `width` consecutive channels per unit (`Vector<F, width>`, their recursions
     /// in lockstep; SIMD on the CPU runtime). Runs the widest width up to `width` that the runtime
-    /// offers and that divides the channel count, else `TimeMajor`.
+    /// offers (else `TimeMajor`). A channel count it does not divide (385) is padded with zero
+    /// channels in the time-major scratch buffers, up to a multiple of the width; their results are
+    /// dropped, and every real channel is bit-identical to `TimeMajor`.
     TimeMajorVectorized { width: usize },
 }
 
@@ -49,6 +51,9 @@ struct PassWorkspace {
     slots: Scratch,
     input_t: Scratch,
     output_t: Scratch,
+    /// Filter state for padded channel lanes (`TimeMajorVectorized` on a channel count the width
+    /// does not divide).
+    state_padded: Scratch,
 }
 
 /// A designed filter uploaded to the device in element type `F`, ready to run on any chunk.
@@ -82,7 +87,7 @@ impl<F: DspFloat> DeviceFilter<F> {
     /// # Errors
     ///
     /// As [`FilterSpec::design`].
-    pub fn new(client: &Client, spec: &FilterSpec, sample_rate: f64) -> Result<Self, FilterError> {
+    pub fn new(client: &Client, spec: &FilterSpec, sample_rate: f64) -> Result<Self, OpsError> {
         let sos = spec.design(sample_rate)?;
         Ok(Self::from_sos(client, sos, spec.mode).with_start(spec.start))
     }
@@ -212,7 +217,7 @@ impl<F: DspFloat> DeviceFilter<F> {
     ///
     /// # Errors
     ///
-    /// [`FilterError::ForwardBackwardOnLiveStream`] when the filter is zero-phase.
+    /// [`OpsError::ForwardBackwardOnLiveStream`] when the filter is zero-phase.
     #[allow(clippy::too_many_arguments)]
     pub fn apply_stateful(
         &self,
@@ -223,9 +228,9 @@ impl<F: DspFloat> DeviceFilter<F> {
         channels: usize,
         samples: usize,
         first: bool,
-    ) -> Result<(), FilterError> {
+    ) -> Result<(), OpsError> {
         if self.mode != FilterMode::Forward {
-            return Err(FilterError::ForwardBackwardOnLiveStream);
+            return Err(OpsError::ForwardBackwardOnLiveStream);
         }
         if channels > 0 && samples > 0 {
             self.check_buffer("state", state, channels * self.state_len());
@@ -424,7 +429,7 @@ impl<F: DspFloat> PassInputs<F> {
         let n = f.n_sections();
         let vector = match layout {
             PassLayout::TimeMajorVectorized { width } => {
-                client.io_optimized_vector_sizes(size_of::<F>()).filter(|&w| w > 1 && w <= width && p.channels % w == 0).max()
+                client.io_optimized_vector_sizes(size_of::<F>()).filter(|&w| w > 1 && w <= width).max()
             }
             _ => None,
         };
@@ -434,32 +439,49 @@ impl<F: DspFloat> PassInputs<F> {
         let blocks = steps.div_ceil(block_len).max(1);
         let mut workspaces = f.workspace.lock().expect("filter workspace");
         let ws = workspaces.entry(std::thread::current().id()).or_default();
-        let slots = ws.slots.get::<F>(client, p.channels * blocks * f.state_len());
+        // Channel lanes of the buffers the kernel sees: the channel count, rounded up to the vector
+        // width (zero channels pad the last group; only the real channels are copied back)
+        let lanes = vector.map_or(p.channels, |w| p.channels.next_multiple_of(w));
+        let padded = lanes > p.channels;
+        let state_len = f.state_len();
+        let slots = ws.slots.get::<F>(client, lanes * blocks * state_len);
         // Buffers the kernel reads and writes, and their (channel, time) strides
         let (input, output, in_strides, out_strides) = match time_major {
             false => (p.input.clone(), p.output.clone(), (p.in_len, 1), (p.out_len, 1)),
             true => {
-                let input_t = ws.input_t.get::<F>(client, p.channels * p.in_len);
-                layout::transpose::<F>(client, &p.input, &input_t, p.channels, p.in_len);
-                let output_t = ws.output_t.get::<F>(client, p.channels * p.out_len);
-                (input_t, output_t, (1, p.channels), (1, p.channels))
+                let input_t = ws.input_t.get::<F>(client, lanes * p.in_len);
+                if padded {
+                    buffer::fill::<F>(client, &input_t, lanes * p.in_len, cast::<F>(0.0));
+                }
+                layout::transpose_strided::<F>(client, &p.input, &input_t, p.channels, p.in_len, p.in_len, lanes);
+                let output_t = ws.output_t.get::<F>(client, lanes * p.out_len);
+                (input_t, output_t, (1, lanes), (1, lanes))
+            }
+        };
+        let state = match padded {
+            false => p.state.clone(),
+            true => {
+                let state = ws.state_padded.get::<F>(client, lanes * state_len);
+                buffer::fill::<F>(client, &state, lanes * state_len, cast::<F>(0.0));
+                buffer::copy::<F>(client, &p.state, &state, p.channels * state_len);
+                state
             }
         };
         let launch = |phase: u32, active: usize| unsafe {
             // `phase` is a compile-time kernel parameter: each phase is its own specialised kernel
             if let Some(width) = vector {
-                let groups = p.channels / width;
+                let groups = lanes / width;
                 let geom = LaunchGeometry::elementwise(client, groups * active);
                 return sos_block_vector_kernel::launch::<F>(
                     client,
                     geom.cube_count,
                     geom.cube_dim,
                     width,
-                    BufferArg::from_raw_parts(input.clone(), p.channels * p.in_len),
-                    BufferArg::from_raw_parts(output.clone(), p.channels * p.out_len),
+                    BufferArg::from_raw_parts(input.clone(), lanes * p.in_len),
+                    BufferArg::from_raw_parts(output.clone(), lanes * p.out_len),
                     BufferArg::from_raw_parts(f.coeffs.clone(), coeffs_len(n)),
-                    BufferArg::from_raw_parts(p.state.clone(), p.channels * f.state_len()),
-                    BufferArg::from_raw_parts(slots.clone(), (p.channels * blocks * f.state_len()).max(1)),
+                    BufferArg::from_raw_parts(state.clone(), lanes * state_len),
+                    BufferArg::from_raw_parts(slots.clone(), (lanes * blocks * state_len).max(1)),
                     groups as u32,
                     p.in_len as u32,
                     p.pad as u32,
@@ -505,15 +527,15 @@ impl<F: DspFloat> PassInputs<F> {
         if blocks > 1 {
             launch(0, blocks - 1);
             let transition = f.transition(client, block_len);
-            let geom = LaunchGeometry::per_channel(client, p.channels);
+            let geom = LaunchGeometry::per_channel(client, lanes);
             unsafe {
                 sos_block_scan_kernel::launch::<F>(
                     client,
                     geom.cube_count,
                     geom.cube_dim,
-                    BufferArg::from_raw_parts(slots.clone(), p.channels * blocks * f.state_len()),
+                    BufferArg::from_raw_parts(slots.clone(), lanes * blocks * state_len),
                     BufferArg::from_raw_parts(transition, (2 * n) * (2 * n)),
-                    p.channels as u32,
+                    lanes as u32,
                     blocks as u32,
                     n,
                 );
@@ -521,7 +543,10 @@ impl<F: DspFloat> PassInputs<F> {
         }
         launch(1, blocks);
         if time_major {
-            layout::transpose::<F>(client, &output, &p.output, p.out_len, p.channels);
+            layout::transpose_strided::<F>(client, &output, &p.output, p.out_len, p.channels, lanes, p.out_len);
+        }
+        if padded {
+            buffer::copy::<F>(client, &state, &p.state, p.channels * state_len);
         }
     }
 }
@@ -530,12 +555,12 @@ impl<F: DspFloat> PassInputs<F> {
 /// this device, element type, filter order and problem size. Benchmarks write to scratch output and
 /// state buffers.
 fn tuned_pass<F: DspFloat>(inputs: PassInputs<F>) {
-    static TUNER: LocalTuner<String, String> = local_tuner!("sos-blocks-v2");
+    static TUNER: LocalTuner<String, String> = local_tuner!("sos-blocks-v3");
     let client = inputs.client.clone();
     let id = tune_id(&client);
     let widths: Vec<usize> = client.io_optimized_vector_sizes(size_of::<F>()).filter(|&w| w > 1).collect();
     let set = TUNER.init(&id, move || {
-        // `a`: the power of two dividing the channel count (up to 16), which decides the widths that run
+        // `a`: the power of two dividing the channel count (up to 16): which widths need padded lanes
         let key = |p: &PassInputs<F>| {
             format!(
                 "{}-n{}-c{}-t{}-a{}",
@@ -565,7 +590,8 @@ fn tuned_pass<F: DspFloat>(inputs: PassInputs<F>) {
     TUNER.execute(&id, &client, set, inputs)
 }
 
-/// One-shot filtering of a `[channels, samples]` buffer (independent chunk semantics).
+/// One-shot filtering of a `[channels, samples]` buffer sampled at `sample_rate` Hz (independent
+/// chunk semantics): data first, then the sample rate, then the filter, like every `execute_*`.
 ///
 /// # Errors
 ///
@@ -573,13 +599,13 @@ fn tuned_pass<F: DspFloat>(inputs: PassInputs<F>) {
 #[allow(clippy::too_many_arguments)]
 pub fn execute_filter<F: DspFloat>(
     client: &Client,
-    spec: &FilterSpec,
-    sample_rate: f64,
     input: &Handle,
     output: &Handle,
     channels: usize,
     samples: usize,
-) -> Result<(), FilterError> {
+    sample_rate: f64,
+    spec: &FilterSpec,
+) -> Result<(), OpsError> {
     let filter = DeviceFilter::<F>::new(client, spec, sample_rate)?;
     let scratch = buffer::empty::<F>(client, filter.scratch_len(channels, samples));
     let state = buffer::empty::<F>(client, channels * filter.state_len());

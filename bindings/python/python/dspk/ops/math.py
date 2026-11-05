@@ -12,6 +12,13 @@ _math = _ops.math
 MAD_TO_SIGMA: float = _math.MAD_TO_SIGMA
 
 
+def channel_mad(data, *, runtime: str | None = None) -> np.ndarray:
+    """Median absolute deviation of every channel, ``median(|x - median(x)|)``, unscaled (NumPy's
+    median for an even count). SpikeInterface's ``get_noise_levels(method="mad")`` divides it by
+    0.6744897501960817."""
+    return _math.channel_mad(_channels(data), runtime=runtime)
+
+
 def channel_mean_std(data, *, runtime: str | None = None) -> tuple[np.ndarray, np.ndarray]:
     """Mean and population standard deviation of every channel of ``data`` ``(channels, samples)``."""
     return _math.channel_mean_std(_channels(data), runtime=runtime)
@@ -29,4 +36,4 @@ def window(name: str, length: int, *, sigma: float | None = None, beta: float | 
     return _math.window(name, length, sigma=sigma, beta=beta)
 
 
-__all__ = ["MAD_TO_SIGMA", "channel_mean_std", "channel_noise_std", "window"]
+__all__ = ["MAD_TO_SIGMA", "channel_mad", "channel_mean_std", "channel_noise_std", "window"]

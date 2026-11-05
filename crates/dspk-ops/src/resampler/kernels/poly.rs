@@ -1,6 +1,7 @@
 use cubecl::prelude::*;
 use dspk_core::compute::{channel_position, element_position, sample_position};
 
+use crate::core::kernels::store_lanes;
 use crate::core::read_extended;
 use crate::core::edge::EDGE_ZEROS;
 
@@ -91,11 +92,61 @@ fn floor_div(a: i32, b: i32) -> i32 {
     if a % b != 0i32 && a < 0i32 { q - 1i32 } else { q }
 }
 
-/// [`fn@upfirdn_kernel`] with `N` consecutive outputs per unit (`out_len` a multiple of `N`).
-/// Output `m + l` meets input sample `s` at tap `(m + l) · down + start − s · up`; `table[d +
-/// reach]` holds in lane `l` the tap `d + l · down` (zero outside the filter), `reach = (N − 1) ·
-/// down`, so every load is aligned. Input samples are visited newest first, so each lane adds its
-/// taps in the scalar kernel's order (plus exact zeros): outputs are bit-identical to it.
+/// Outputs `m … m + N − 1` of the row at `input[base]`. Output `m + l` meets input sample `s` at
+/// tap `(m + l) · down + start − s · up`; `table[d + reach]` holds in lane `l` the tap
+/// `d + l · down` (zero outside the filter), `reach = (N − 1) · down`, so every load is aligned.
+/// Input samples are visited newest first, so each lane adds its taps in the scalar kernel's order
+/// (plus exact zeros): outputs are bit-identical to it. Lanes past the row's end stay in bounds
+/// (zeros or the edge extension).
+#[cube]
+#[allow(clippy::too_many_arguments)]
+fn upfirdn_vector_at<F: Float, N: Size>(
+    input: &[F],
+    table: &[Vector<F, N>],
+    base: usize,
+    m: u32,
+    in_len: u32,
+    num_taps: u32,
+    up: u32,
+    down: u32,
+    start: i32,
+    ext_pad: u32,
+    #[comptime] edge: u32,
+) -> Vector<F, N> {
+    let n = N::value() as u32;
+    let up_i = i32::cast_from(up);
+    let down_i = i32::cast_from(down);
+    let len = i32::cast_from(in_len);
+    let i0 = i32::cast_from(m) * down_i + start;
+    let reach = i32::cast_from(n - 1u32) * down_i;
+    // Inputs some lane meets: s · up in [i0 − (K − 1), i0 + reach]
+    let s_hi = floor_div(i0 + reach, up_i);
+    let s_lo = 0i32 - floor_div(i32::cast_from(num_taps) - 1i32 - i0, up_i);
+    let mut acc = Vector::<F, N>::new(F::new(0.0f32));
+    let mut s = s_hi;
+    if s_lo >= 0i32 && s_hi < len {
+        while s >= s_lo {
+            let d = i0 - s * up_i + reach;
+            acc += table[u32::cast_from(d) as usize] * Vector::new(input[base + u32::cast_from(s) as usize]);
+            s -= 1i32;
+        }
+    } else {
+        while s >= s_lo {
+            let d = i0 - s * up_i + reach;
+            if s >= 0i32 && s < len {
+                acc += table[u32::cast_from(d) as usize] * Vector::new(input[base + u32::cast_from(s) as usize]);
+            } else if comptime!(edge != EDGE_ZEROS) {
+                let ext = u32::cast_from(s + i32::cast_from(ext_pad));
+                acc += table[u32::cast_from(d) as usize] * Vector::new(read_extended::<F>(input, base, in_len, ext_pad, ext, edge));
+            }
+            s -= 1i32;
+        }
+    }
+    acc
+}
+
+/// [`fn@upfirdn_kernel`] with `N` consecutive outputs per unit (`out_len` a multiple of `N`),
+/// computed by [`fn@upfirdn_vector_at`].
 #[cube(launch)]
 #[allow(clippy::too_many_arguments)]
 pub fn upfirdn_vector_kernel<F: Float, N: Size>(
@@ -117,34 +168,35 @@ pub fn upfirdn_vector_kernel<F: Float, N: Size>(
         let per_row = out_len / n;
         let m = (v as u32 % per_row) * n;
         let base = ((v as u32 / per_row) * in_len) as usize;
-        let up_i = i32::cast_from(up);
-        let down_i = i32::cast_from(down);
-        let len = i32::cast_from(in_len);
-        let i0 = i32::cast_from(m) * down_i + start;
-        let reach = i32::cast_from(n - 1u32) * down_i;
-        // Inputs some lane meets: s · up in [i0 − (K − 1), i0 + reach]
-        let s_hi = floor_div(i0 + reach, up_i);
-        let s_lo = 0i32 - floor_div(i32::cast_from(num_taps) - 1i32 - i0, up_i);
-        let mut acc = Vector::<F, N>::new(F::new(0.0f32));
-        let mut s = s_hi;
-        if s_lo >= 0i32 && s_hi < len {
-            while s >= s_lo {
-                let d = i0 - s * up_i + reach;
-                acc += table[u32::cast_from(d) as usize] * Vector::new(input[base + u32::cast_from(s) as usize]);
-                s -= 1i32;
-            }
-        } else {
-            while s >= s_lo {
-                let d = i0 - s * up_i + reach;
-                if s >= 0i32 && s < len {
-                    acc += table[u32::cast_from(d) as usize] * Vector::new(input[base + u32::cast_from(s) as usize]);
-                } else if comptime!(edge != EDGE_ZEROS) {
-                    let ext = u32::cast_from(s + i32::cast_from(ext_pad));
-                    acc += table[u32::cast_from(d) as usize] * Vector::new(read_extended::<F>(input, base, in_len, ext_pad, ext, edge));
-                }
-                s -= 1i32;
-            }
-        }
-        output[v] = acc;
+        output[v] = upfirdn_vector_at::<F, N>(input, table, base, m, in_len, num_taps, up, down, start, ext_pad, edge);
+    }
+}
+
+/// [`fn@upfirdn_vector_kernel`] for any `out_len`: `units_per_row = ceil(out_len / N)` units per
+/// row, outputs stored lane by lane ([`fn@store_lanes`]).
+#[cube(launch)]
+#[allow(clippy::too_many_arguments)]
+pub fn upfirdn_vector_unaligned_kernel<F: Float, N: Size>(
+    input: &[F],
+    table: &[Vector<F, N>],
+    output: &mut [F],
+    in_len: u32,
+    out_len: u32,
+    num_taps: u32,
+    up: u32,
+    down: u32,
+    start: i32,
+    ext_pad: u32,
+    units_per_row: u32,
+    num_units: u32,
+    #[comptime] edge: u32,
+) {
+    let v = element_position() as u32;
+    if v < num_units {
+        let n = N::value() as u32;
+        let row = v / units_per_row;
+        let m = (v % units_per_row) * n;
+        let acc = upfirdn_vector_at::<F, N>(input, table, (row * in_len) as usize, m, in_len, num_taps, up, down, start, ext_pad, edge);
+        store_lanes::<F, N>(output, (row * out_len + m) as usize, acc, u32::min(n, out_len - m));
     }
 }

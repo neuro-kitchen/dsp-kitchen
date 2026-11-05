@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use dspk_synapse_io::probe::SensorLayout;
+use crate::io::probe::SensorLayout;
 use serde::{Deserialize, Serialize};
 
 use crate::metrics::{

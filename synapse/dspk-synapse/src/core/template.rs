@@ -1,6 +1,6 @@
 use dspk_ops::math::peak_to_peak;
 use dspk_ops::math::RunningMoments;
-use dspk_synapse_io::templates::{DenseTemplates, TemplateAxisOrder};
+use crate::io::templates::{DenseTemplates, TemplateAxisOrder};
 use serde::{Deserialize, Serialize};
 use super::snippets::WaveformSnippet;
 

@@ -201,48 +201,214 @@ impl RecordingSource for ZarrRecording {
     }
 }
 
+/// How Zarr chunks are compressed (a bytes-to-bytes codec of the array).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZarrCompression {
+    /// Uncompressed.
+    None,
+    /// The Zarr v3 `zstd` codec at `level` (zstd's levels; higher is smaller and slower).
+    Zstd { level: i32 },
+    /// The Zarr v3 `blosc` codec: LZ4 at `level` (0–9) after a byte shuffle of the float32
+    /// samples (faster than zstd, usually a little larger).
+    BloscLz4 { level: u8 },
+}
+
+/// The compression of [`ZarrOptions::default`]: zstd level 3, the codec Zarr's own tools default
+/// to, fast enough to keep up with the device when chunks are compressed in parallel.
+pub const DEFAULT_ZARR_COMPRESSION: ZarrCompression = ZarrCompression::Zstd { level: 3 };
+
+/// Layout of a written Zarr recording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZarrOptions {
+    /// Samples per chunk along time (chunks span every channel). Several chunks per block of
+    /// [`ZarrWriter::push`] are compressed and stored in parallel.
+    pub chunk_samples: usize,
+    pub compression: ZarrCompression,
+    /// Compress and store the completed chunks of each block on several threads (default
+    /// [`DEFAULT_PARALLEL_WRITES`]); `false`: one after the other on the calling thread.
+    pub parallel: bool,
+}
+
+/// Default of [`ZarrOptions::parallel`]: chunks are compressed and stored in parallel.
+pub const DEFAULT_PARALLEL_WRITES: bool = true;
+
+impl Default for ZarrOptions {
+    fn default() -> Self {
+        Self { chunk_samples: DEFAULT_CHUNK_SAMPLES, compression: DEFAULT_ZARR_COMPRESSION, parallel: DEFAULT_PARALLEL_WRITES }
+    }
+}
+
 /// Streams `source` into a new Zarr v3 store (`float32`, in the source's unit: the first
-/// channel's), `chunk_samples` per chunk.
-pub fn write_zarr(
-    source: &dyn RecordingSource,
-    path: &Path,
-    chunk_samples: usize,
-    mut progress: impl FnMut(u64, u64),
-) -> DspResult<()> {
+/// channel's), laid out as `options` says.
+pub fn write_zarr(source: &dyn RecordingSource, path: &Path, options: &ZarrOptions, mut progress: impl FnMut(u64, u64)) -> DspResult<()> {
     let info = source.info();
     let (nch, total) = (info.channels.len(), info.samples);
-    std::fs::create_dir_all(path)?;
-    let store = open_store(path)?;
-
-    let mut root = GroupBuilder::new().build(store.clone(), "/").map_err(|e| err("root group")(e.to_string()))?;
-    let attrs = root.attributes_mut();
-    attrs.insert("sample_rate_hz".into(), json!(info.sample_rate_hz()));
-    attrs.insert("channels".into(), json!(nch));
-    attrs.insert("samples".into(), json!(total));
-    attrs.insert("created_by".into(), json!("dspk (dspk-io, zarrs)"));
-    root.store_metadata().map_err(|e| err("root metadata")(e.to_string()))?;
-
-    let chunk = (chunk_samples.max(1) as u64).min(total.max(1));
-    let mut array = ArrayBuilder::new(vec![nch as u64, total], vec![nch as u64, chunk], data_type::float32(), 0.0f32)
-        .dimension_names(["channels", "samples"].into())
-        .build(store, ARRAY_PATH)
-        .map_err(|e| err("array")(e.to_string()))?;
     let unit = info.channels.first().map(|c| c.unit.clone()).unwrap_or_default();
-    array.attributes_mut().insert("unit".into(), serde_json::to_value(&unit).map_err(|e| err("unit")(e.to_string()))?);
-    array.store_metadata().map_err(|e| err("array metadata")(e.to_string()))?;
-
+    let mut writer = ZarrWriter::create(path, nch, total, info.sample_rate_hz(), &unit, options)?;
+    // Read several chunks at a time, so the writer stores them in parallel
+    let threads = if options.parallel { rayon::current_num_threads().max(1) } else { 1 };
+    let block = writer.chunk_samples() * threads as u64;
     let channels: Vec<usize> = (0..nch).collect();
     let mut buf = Vec::new();
     let mut s0 = 0;
     while s0 < total {
-        let s1 = (s0 + chunk).min(total);
-        buf.resize(nch * (s1 - s0) as usize, 0.0);
+        let s1 = (s0 + block).min(total);
+        let len = (s1 - s0) as usize;
+        buf.resize(nch * len, 0.0);
         source.read(&channels, s0..s1, &mut buf)?;
-        array.store_array_subset(&[0..nch as u64, s0..s1], buf.as_slice()).map_err(|e| err("write")(e.to_string()))?;
+        writer.push(&buf, len, 0..len)?;
         progress(s1, total);
         s0 = s1;
     }
-    Ok(())
+    writer.finish()
+}
+
+/// Writes a new Zarr recording in the layout [`write_zarr`] gives (`float32`
+/// `[channels, samples]`, chunked `[channels, chunk_samples]`, compressed per [`ZarrOptions`])
+/// from blocks of columns arriving in order, e.g. the windows of a pipeline run: [`Self::push`]
+/// fills chunks and, at the end of each call, compresses and stores the chunks it completed in
+/// parallel (rayon; every chunk is a separate file, so the stores are independent). The data never
+/// goes through a temporary file.
+pub struct ZarrWriter {
+    array: Array<dyn zarrs::storage::ReadableWritableListableStorageTraits>,
+    channels: usize,
+    total: u64,
+    chunk: u64,
+    /// Samples handed to the store so far (a multiple of `chunk`, until the end).
+    stored: u64,
+    parallel: bool,
+    /// The chunk being filled, channel-major with row length `chunk_len()`.
+    pending: Vec<f32>,
+    filled: usize,
+    /// Completed chunks not stored yet: first sample, values.
+    ready: Vec<(u64, Vec<f32>)>,
+}
+
+impl ZarrWriter {
+    /// Creates the store at `path` for `channels × samples` values at `sample_rate_hz` in `unit`.
+    pub fn create(path: &Path, channels: usize, samples: u64, sample_rate_hz: f64, unit: &SignalUnit, options: &ZarrOptions) -> DspResult<Self> {
+        std::fs::create_dir_all(path)?;
+        let store = open_store(path)?;
+
+        let mut root = GroupBuilder::new().build(store.clone(), "/").map_err(|e| err("root group")(e.to_string()))?;
+        let attrs = root.attributes_mut();
+        attrs.insert("sample_rate_hz".into(), json!(sample_rate_hz));
+        attrs.insert("channels".into(), json!(channels));
+        attrs.insert("samples".into(), json!(samples));
+        attrs.insert("created_by".into(), json!("dspk (dspk-io, zarrs)"));
+        root.store_metadata().map_err(|e| err("root metadata")(e.to_string()))?;
+
+        let chunk = (options.chunk_samples.max(1) as u64).min(samples.max(1));
+        let mut builder = ArrayBuilder::new(vec![channels as u64, samples], vec![channels as u64, chunk], data_type::float32(), 0.0f32);
+        builder.dimension_names(["channels", "samples"].into());
+        builder.bytes_to_bytes_codecs(compression_codecs(options.compression)?);
+        let mut array = builder.build(store, ARRAY_PATH).map_err(|e| err("array")(e.to_string()))?;
+        array.attributes_mut().insert("unit".into(), serde_json::to_value(unit).map_err(|e| err("unit")(e.to_string()))?);
+        array.store_metadata().map_err(|e| err("array metadata")(e.to_string()))?;
+
+        Ok(Self { array, channels, total: samples, chunk, stored: 0, parallel: options.parallel, pending: Vec::new(), filled: 0, ready: Vec::new() })
+    }
+
+    /// Samples per chunk.
+    pub fn chunk_samples(&self) -> u64 {
+        self.chunk
+    }
+
+    /// First sample of the chunk being filled.
+    fn chunk_start(&self) -> u64 {
+        self.stored + self.ready.len() as u64 * self.chunk
+    }
+
+    /// Length of the chunk being filled (the last one may be shorter).
+    fn chunk_len(&self) -> usize {
+        self.chunk.min(self.total - self.chunk_start()) as usize
+    }
+
+    /// Appends columns `cols` of the channel-major block `rows` (`[channels, row_len]`), then
+    /// stores the chunks this completed, in parallel.
+    ///
+    /// # Errors
+    /// [`DspError::ShapeMismatch`] for a block of the wrong size or past the end of the array;
+    /// [`DspError::Io`] when a chunk cannot be stored.
+    pub fn push(&mut self, rows: &[f32], row_len: usize, cols: Range<usize>) -> DspResult<()> {
+        if rows.len() != self.channels * row_len || cols.end > row_len {
+            return Err(DspError::ShapeMismatch { expected: vec![self.channels, row_len], actual: vec![rows.len(), cols.end] });
+        }
+        let mut col = cols.start;
+        while col < cols.end {
+            let len = self.chunk_len();
+            if len == 0 {
+                return Err(DspError::ShapeMismatch {
+                    expected: vec![self.channels, self.total as usize],
+                    actual: vec![self.channels, self.total as usize + (cols.end - col)],
+                });
+            }
+            if self.pending.is_empty() {
+                self.pending = vec![0.0; self.channels * len];
+            }
+            let take = (len - self.filled).min(cols.end - col);
+            for c in 0..self.channels {
+                let src = &rows[c * row_len + col..c * row_len + col + take];
+                self.pending[c * len + self.filled..c * len + self.filled + take].copy_from_slice(src);
+            }
+            self.filled += take;
+            col += take;
+            if self.filled == len {
+                let start = self.chunk_start();
+                self.ready.push((start, std::mem::take(&mut self.pending)));
+                self.filled = 0;
+            }
+        }
+        self.store_ready()
+    }
+
+    /// Compresses and stores the completed chunks, in parallel unless [`ZarrOptions::parallel`] is
+    /// off.
+    fn store_ready(&mut self) -> DspResult<()> {
+        use rayon::prelude::*;
+        let (array, channels, total) = (&self.array, self.channels as u64, self.total);
+        let store = |(start, values): &(u64, Vec<f32>)| {
+            let end = (start + values.len() as u64 / channels).min(total);
+            array.store_array_subset(&[0..channels, *start..end], values.as_slice()).map_err(|e| err("write")(e.to_string()))
+        };
+        if self.parallel {
+            self.ready.par_iter().try_for_each(store)?;
+        } else {
+            self.ready.iter().try_for_each(store)?;
+        }
+        self.stored += self.ready.iter().map(|(_, v)| v.len() as u64 / channels).sum::<u64>();
+        self.ready.clear();
+        Ok(())
+    }
+
+    /// Checks that every sample was written.
+    ///
+    /// # Errors
+    /// [`DspError::ShapeMismatch`] when fewer than `samples` columns were pushed.
+    pub fn finish(self) -> DspResult<()> {
+        if self.stored != self.total {
+            return Err(DspError::ShapeMismatch {
+                expected: vec![self.channels, self.total as usize],
+                actual: vec![self.channels, (self.stored as usize) + self.filled],
+            });
+        }
+        Ok(())
+    }
+}
+
+/// The bytes-to-bytes codecs of `compression`.
+fn compression_codecs(compression: ZarrCompression) -> DspResult<Vec<std::sync::Arc<dyn zarrs::array::BytesToBytesCodecTraits>>> {
+    use zarrs::array::codec::{BloscCodec, BloscCompressionLevel, BloscCompressor, BloscShuffleMode, ZstdCodec};
+    Ok(match compression {
+        ZarrCompression::None => Vec::new(),
+        ZarrCompression::Zstd { level } => vec![std::sync::Arc::new(ZstdCodec::new(level, false))],
+        ZarrCompression::BloscLz4 { level } => {
+            let level = BloscCompressionLevel::try_from(level).map_err(|_| DspError::InvalidConfig(format!("blosc level {level} is not in 0..=9")))?;
+            let codec = BloscCodec::new(BloscCompressor::LZ4, level, None, BloscShuffleMode::Shuffle, Some(size_of::<f32>()))
+                .map_err(|e| err("blosc codec")(e.to_string()))?;
+            vec![std::sync::Arc::new(codec)]
+        }
+    })
 }
 
 #[cfg(test)]
@@ -257,7 +423,7 @@ mod tests {
 
         let data: Vec<f32> = (0..4).flat_map(|c| (0..1200).map(move |s| (c * 10_000 + s) as f32)).collect();
         let src = MemoryRecording::new("src", data, 4, 20_000.0).unwrap();
-        write_zarr(&src, &path, 500, |_, _| {}).unwrap();
+        write_zarr(&src, &path, &ZarrOptions { chunk_samples: 500, ..Default::default() }, |_, _| {}).unwrap();
 
         let rec = ZarrRecording::open(&path).unwrap();
         assert_eq!(rec.info().channel_count(), 4);
@@ -269,5 +435,39 @@ mod tests {
         rec.read(&[3, 1], 498..502, &mut out).unwrap();
         assert_eq!(out, vec![30498.0, 30499.0, 30500.0, 30501.0, 10498.0, 10499.0, 10500.0, 10501.0]);
         let _ = std::fs::remove_dir_all(&path);
+    }
+
+    /// Blocks that start and end anywhere relative to the chunks (and only a column range of each
+    /// block) give the same array; pushing past the end or finishing short is an error.
+    #[test]
+    fn test_zarr_writer_blocks_across_chunks() {
+        let path = std::env::temp_dir().join(format!("dspk_io_zarr_writer_{}.zarr", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        let (nch, total) = (3usize, 1_234u64);
+        let value = |c: usize, s: u64| (c * 10_000) as f32 + s as f32;
+        let options = ZarrOptions { chunk_samples: 500, ..Default::default() };
+        let mut writer = ZarrWriter::create(&path, nch, total, 30_000.0, &SignalUnit::Microvolt, &options).unwrap();
+        let mut s0 = 0u64;
+        for len in [7u64, 493, 1, 499, 234] {
+            // Block of `len + 4` columns with 2 halo columns each side; only the middle is pushed
+            let row_len = len as usize + 4;
+            let rows: Vec<f32> = (0..nch).flat_map(|c| (0..row_len).map(move |t| value(c, (s0 + t as u64).wrapping_sub(2)))).collect();
+            writer.push(&rows, row_len, 2..2 + len as usize).unwrap();
+            s0 += len;
+        }
+        assert_eq!(s0, total);
+        assert!(writer.push(&vec![0.0; nch], 1, 0..1).is_err(), "past the end");
+        writer.finish().unwrap();
+
+        let rec = ZarrRecording::open(&path).unwrap();
+        let mut out = vec![0.0; nch * total as usize];
+        rec.read(&[0, 1, 2], 0..total, &mut out).unwrap();
+        let expected: Vec<f32> = (0..nch).flat_map(|c| (0..total).map(move |s| value(c, s))).collect();
+        assert_eq!(out, expected);
+
+        let short = ZarrWriter::create(&path.with_extension("short.zarr"), nch, total, 30_000.0, &SignalUnit::Microvolt, &options).unwrap();
+        assert!(short.finish().is_err(), "nothing written");
+        let _ = std::fs::remove_dir_all(&path);
+        let _ = std::fs::remove_dir_all(path.with_extension("short.zarr"));
     }
 }

@@ -8,8 +8,8 @@ use anyhow::{bail, Context};
 use clap::{Args, ValueEnum};
 use dspk_core::recording::SlicedRecording;
 use dspk_core::RecordingSource;
-use dspk_synapse_io::SortingFormat;
-use dspk_synapse_io::SensorLayout;
+use dspk_synapse::io::SortingFormat;
+use dspk_synapse::io::SensorLayout;
 use dspk_synapse::SortingOutput;
 
 use super::probe::{Preset, DEFAULT_HDEMG_PITCH_UM};
@@ -49,11 +49,11 @@ impl RecordingArgs {
         let id = match &self.source {
             Some(id) => id.clone(),
             None => {
-                let list = dspk_synapse_io::sources(path)?;
+                let list = dspk_synapse::io::sources(path)?;
                 dspk_io::default_source(&list).with_context(|| format!("{} has no sources", path.display()))?.id.clone()
             }
         };
-        let full: Arc<dyn RecordingSource> = Arc::from(dspk_synapse_io::open_source(path, &id)?);
+        let full: Arc<dyn RecordingSource> = Arc::from(dspk_synapse::io::open_source(path, &id)?);
         let info = full.info();
         let (fs, total) = (info.sample_rate_hz(), info.samples);
         let start = seconds_to_samples(self.start_sec, fs).min(total);
@@ -65,17 +65,29 @@ impl RecordingArgs {
             bail!("the window starts at {} s, past the end of the recording ({:.1} s)", self.start_sec, info.duration_sec());
         }
         let channels = info.channel_count();
-        let source: Arc<dyn RecordingSource> =
-            if start == 0 && end == total { full } else { Arc::new(SlicedRecording::new(full, start..end, None)?) };
         let probe = match self.probe {
             Some(preset) => preset.layout(self.pitch_um),
-            None => dspk_synapse_io::probe_of(path, &id)?.with_context(|| {
+            None => dspk_synapse::io::probe_of(path, &id)?.with_context(|| {
                 format!("{} carries no probe geometry: choose one with --probe", path.display())
             })?,
         };
-        if probe.total_channels() != channels {
-            bail!("the probe has {} sites but the recording {channels} channels", probe.total_channels());
-        }
+        // Extra channels after the probe's sites (SpikeGLX's sync channel, the 385th): read only the
+        // probe's, the first `sites` channels in order
+        let sites = probe.total_channels();
+        let in_order = probe.sites().iter().enumerate().all(|(i, s)| s.channel_id == i);
+        let pick = match (sites.cmp(&channels), in_order) {
+            (std::cmp::Ordering::Equal, _) => None,
+            (std::cmp::Ordering::Less, true) => {
+                eprintln!("note: the probe has {sites} sites, the recording {channels} channels: channels {sites}.. are left out");
+                Some((0..sites).collect())
+            }
+            _ => bail!("the probe has {sites} sites but the recording {channels} channels"),
+        };
+        let source: Arc<dyn RecordingSource> = if start == 0 && end == total && pick.is_none() {
+            full
+        } else {
+            Arc::new(SlicedRecording::new(full, start..end, pick)?)
+        };
         Ok(Opened { source, probe })
     }
 }

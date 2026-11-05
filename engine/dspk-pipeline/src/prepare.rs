@@ -79,12 +79,13 @@ pub(crate) struct Prepared {
     pub(crate) stored_format: SampleFormat,
     pub(crate) stored_upload: bool,
     pub(crate) mode: ExecutedMode,
-    pub(crate) chunk: usize,
     pub(crate) schedule: ChunkSchedule,
     pub(crate) out_rate: f64,
     pub(crate) out_samples: u64,
     pub(crate) output: PathBuf,
     pub(crate) format: OutputFormat,
+    /// Chunking and compression of Zarr output; `parallel` also applies to raw output.
+    pub(crate) zarr: dspk_io::ZarrOptions,
     pub(crate) input_label: String,
 }
 
@@ -144,7 +145,27 @@ pub(crate) fn prepare(
     let Node::Read { path: input, inputs, source, channels: picked, start, stop } = chain.read.1 else {
         unreachable!("chain starts with read")
     };
-    let Node::Write { path: output, format } = chain.write.1 else { unreachable!("chain ends with write") };
+    let Node::Write { path: output, format, compression, chunk_samples: zarr_chunk, parallel } = chain.write.1 else { unreachable!("chain ends with write") };
+    let parallel = parallel.unwrap_or(dspk_io::DEFAULT_PARALLEL_WRITES);
+    let zarr = match format {
+        OutputFormat::Zarr => {
+            let mut options = dspk_io::ZarrOptions { parallel, ..Default::default() };
+            if let Some(c) = compression {
+                options.compression = (*c).into();
+            }
+            if let Some(n) = zarr_chunk {
+                if *n == 0 {
+                    return Err(PipelineError::Invalid("write: chunk_samples must be at least 1".into()));
+                }
+                options.chunk_samples = *n;
+            }
+            options
+        }
+        OutputFormat::Raw if compression.is_some() || zarr_chunk.is_some() => {
+            return Err(PipelineError::Invalid("write: compression and chunk_samples apply to zarr output only".into()));
+        }
+        OutputFormat::Raw => dspk_io::ZarrOptions { parallel, ..Default::default() },
+    };
 
     let mut stages = Vec::with_capacity(chain.stages.len());
     let mut resample = None;
@@ -220,12 +241,12 @@ pub(crate) fn prepare(
         stored_format,
         stored_upload,
         mode,
-        chunk,
         schedule,
         out_rate,
         out_samples,
         output: base_dir.join(output),
         format: *format,
+        zarr,
         input_label,
     })
 }

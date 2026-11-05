@@ -1,4 +1,5 @@
 use cubecl::prelude::*;
+use cubecl::server::Handle;
 use super::conv::execute_fir_centered;
 use crate::core::{buffer, cast_f32, DspFloat, EdgeMode};
 
@@ -63,8 +64,8 @@ pub fn gaussian_smooth_1d(signal: &[f32], sigma_samples: f32) -> Vec<f32> {
 /// Multi-channel zero-phase Gaussian smoothing on the device via [`execute_fir_centered`].
 pub fn execute_gaussian_smooth<F: DspFloat>(
     client: &Client,
-    input: &cubecl::server::Handle,
-    output: &cubecl::server::Handle,
+    input: &Handle,
+    output: &Handle,
     channels: usize,
     samples: usize,
     sigma_samples: f32,

@@ -170,7 +170,8 @@ fn pinned_choices_match_the_fixed_split() {
 
 /// The vectorized time-major layout (N channels per unit, in lockstep) is bit-identical to the
 /// scalar time-major layout: every mode, start, block length and chunked streaming, with channel
-/// counts every width divides (16) and only some (6), each channel a different signal.
+/// counts every width divides (16), only some (6: padded lanes at width 16) and none (5: padded at
+/// every width), each channel a different signal.
 #[test]
 fn vectorized_layout_matches_time_major() {
     struct Vectorized;
@@ -180,7 +181,7 @@ fn vectorized_layout_matches_time_major() {
             let rt = client.name().to_string();
             let base = test_signal(5_003, FS);
             let n = base.len();
-            for channels in [16usize, 6] {
+            for channels in [16usize, 6, 5] {
                 let data: Vec<f32> = (0..channels).flat_map(|c| base.iter().enumerate().map(move |(t, v)| (*v * (1.0 + 0.1 * c as f64) + ((t * 31 + c * 7) % 13) as f64) as f32)).collect();
                 let input = client.create_from_slice(f32::as_bytes(&data));
                 let filter_out = |filter: &DeviceFilter<f32>, mode: FilterMode| -> Vec<f32> {

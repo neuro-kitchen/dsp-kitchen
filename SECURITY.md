@@ -17,5 +17,6 @@ dspk is in early development (0.0.x): only the latest release receives fixes.
 ## Scope
 
 Of particular interest: the network sessions of `dspk-stream` (QUIC + TLS), downloads through
-`dspk-synapse-hub` (models, sorter arrays and the `dspk-sorters` program, each verified by
-SHA-256), and file parsers in `dspk-io` / `dspk-synapse-io` reading untrusted recordings.
+`dspk-hub` (models, sorter arrays; and the CLI's installer of the `dspk-sorters` program), each
+verified by SHA-256, and file parsers in `dspk-io` / `dspk-synapse` (`io`) reading untrusted
+recordings.

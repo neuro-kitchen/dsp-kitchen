@@ -13,16 +13,21 @@ categories.workspace = true
 [features]
 default = ["wgpu", "cuda", "cpu", "zarr"]
 # CubeCL runtimes compiled in; the device is chosen at run time (`dspk::core::ComputeTarget`)
-wgpu = ["dspk-core/wgpu", "dspk-ops/wgpu", "dspk-view?/wgpu"]
-cpu = ["dspk-core/cpu", "dspk-ops/cpu", "dspk-view?/cpu"]
-cuda = ["dspk-core/cuda", "dspk-ops/cuda", "dspk-view?/cuda"]
-hip = ["dspk-core/hip", "dspk-ops/hip", "dspk-view?/hip"]
+wgpu = ["dspk-core/wgpu", "dspk-ops/wgpu", "dspk-view?/wgpu", "dspk-synapse?/wgpu"]
+cpu = ["dspk-core/cpu", "dspk-ops/cpu", "dspk-view?/cpu", "dspk-synapse?/cpu"]
+cuda = ["dspk-core/cuda", "dspk-ops/cuda", "dspk-view?/cuda", "dspk-synapse?/cuda"]
+hip = ["dspk-core/hip", "dspk-ops/hip", "dspk-view?/hip", "dspk-synapse?/hip"]
 # Zarr recordings in `dspk::io`
 zarr = ["dspk-io/zarr"]
 # Envelopes and pyramids for viewing (`dspk::view`)
 view = ["dep:dspk-view"]
 # Network sessions (`dspk::stream`)
 stream = ["view", "dep:dspk-stream"]
+# Electrophysiology (`dspk::synapse`): recording and sorting formats, probes, detection,
+# clustering, quality metrics. The sorters are separate crates (`dspk-sorter-*`, own licences)
+synapse = ["dep:dspk-synapse", "dspk-hub?/synapse"]
+# Verified downloads of published artifacts (`dspk::hub`; network access)
+hub = ["dep:dspk-hub"]
 
 [dependencies]
 dspk-core = { workspace = true, features = ["compute"] }
@@ -30,3 +35,5 @@ dspk-io.workspace = true
 dspk-ops.workspace = true
 dspk-view = { workspace = true, optional = true }
 dspk-stream = { workspace = true, optional = true }
+dspk-synapse = { workspace = true, optional = true }
+dspk-hub = { workspace = true, optional = true }

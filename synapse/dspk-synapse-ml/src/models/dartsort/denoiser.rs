@@ -5,7 +5,7 @@ use std::path::Path;
 use dspk_core::{ComputeTarget, DspError, DspResult};
 use dspk_synapse::{SnippetBatch, WaveformDenoiser};
 
-use crate::hub::{SafetensorsMap, TensorIoSpec};
+use crate::manifest::{SafetensorsMap, TensorIoSpec};
 use crate::runtime::{
     burn_conv1d, burn_linear_2d, validate_tensor_port,
 };
@@ -20,7 +20,7 @@ pub struct DartsortWaveformDenoiser {
 }
 
 impl DartsortWaveformDenoiser {
-    /// Pulls and initializes `dartsort/singlechan-denoiser-v1` from [`crate::hub::ModelHub`].
+    /// Pulls and initializes `dartsort/singlechan-denoiser-v1` from [`crate::runtime::pull_model`].
     #[cfg(feature = "hub")]
     pub fn from_hub(target: ComputeTarget) -> DspResult<Self> {
         let (manifest, path) = crate::runtime::pull_model(DARTSORT_DENOISER_MODEL_ID)?;

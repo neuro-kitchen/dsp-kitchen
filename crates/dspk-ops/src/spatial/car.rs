@@ -5,15 +5,18 @@ use dspk_core::compute::tune::{size_class, tune_id};
 use dspk_core::compute::LaunchGeometry;
 
 use crate::core::{buffer, DspFloat};
-pub use super::kernels::{common_median_bitonic_kernel, common_median_kernel, common_median_vector_kernel, direct_car_kernel, direct_car_vector_kernel};
+pub use super::kernels::{
+    common_median_bitonic_kernel, common_median_kernel, common_median_vector_kernel, common_median_vector_unaligned_kernel, direct_car_kernel,
+    direct_car_vector_kernel, direct_car_vector_unaligned_kernel,
+};
 
 /// High-level host dispatcher for direct, single-pass Common Average Referencing (CAR).
 /// Computes and subtracts the common average directly in VRAM without auxiliary buffers, with the
 /// faster of [`CarKernel`]'s choices for this device (same output).
 pub fn execute_direct_car<F: DspFloat>(
     client: &Client,
-    input: &cubecl::server::Handle,
-    output: &cubecl::server::Handle,
+    input: &Handle,
+    output: &Handle,
     channels: usize,
     samples: usize,
 ) {
@@ -26,16 +29,17 @@ pub enum CarKernel {
     /// One unit per sample ([`direct_car_kernel`]).
     Direct,
     /// `width` consecutive samples per unit ([`direct_car_vector_kernel`]; SIMD on the CPU
-    /// runtime). Runs the widest width up to `width` that the runtime offers and that divides the
-    /// sample count, else `Direct`.
+    /// runtime). Runs the widest width up to `width` that the runtime offers (else `Direct`); when
+    /// it does not divide the sample count, [`direct_car_vector_unaligned_kernel`] (lane by lane
+    /// loads and stores).
     Vectorized { width: usize },
 }
 
 /// [`execute_direct_car`] with a fixed kernel (`None` = autotuned); for tests and benchmarks.
 pub fn execute_direct_car_with<F: DspFloat>(
     client: &Client,
-    input: &cubecl::server::Handle,
-    output: &cubecl::server::Handle,
+    input: &Handle,
+    output: &Handle,
     channels: usize,
     samples: usize,
     kernel: Option<CarKernel>,
@@ -55,7 +59,7 @@ impl CmrInputs {
         let client = &self.client;
         let total = self.channels * self.samples;
         let width = match kernel {
-            CarKernel::Vectorized { width } => client.io_optimized_vector_sizes(size_of::<F>()).filter(|&w| w > 1 && w <= width && self.samples % w == 0).max(),
+            CarKernel::Vectorized { width } => client.io_optimized_vector_sizes(size_of::<F>()).filter(|&w| w > 1 && w <= width).max(),
             CarKernel::Direct => None,
         };
         // SAFETY: both buffers hold `channels · samples` values of `F`
@@ -65,10 +69,17 @@ impl CmrInputs {
                 let geom = LaunchGeometry::per_sample(client, self.samples);
                 direct_car_kernel::launch::<F>(client, geom.cube_count, geom.cube_dim, input, output, self.channels as u32, self.samples as u32)
             }
-            Some(width) => {
+            Some(width) if self.samples % width == 0 => {
                 let vectors = self.samples / width;
                 let geom = LaunchGeometry::elementwise(client, vectors);
                 direct_car_vector_kernel::launch::<F>(client, geom.cube_count, geom.cube_dim, width, input, output, self.channels as u32, vectors as u32)
+            }
+            Some(width) => {
+                let units = self.samples.div_ceil(width);
+                let geom = LaunchGeometry::elementwise(client, units);
+                direct_car_vector_unaligned_kernel::launch::<F>(
+                    client, geom.cube_count, geom.cube_dim, width, input, output, self.channels as u32, self.samples as u32, units as u32,
+                )
             }
         }
     }
@@ -77,7 +88,7 @@ impl CmrInputs {
 /// [`CmrInputs::run_car`] with the kernel CubeCL's autotuner found fastest for this device,
 /// element type and size. Benchmarks write to a scratch output.
 fn tuned_car<F: DspFloat>(inputs: CmrInputs) {
-    static TUNER: LocalTuner<String, String> = local_tuner!("common-average-v1");
+    static TUNER: LocalTuner<String, String> = local_tuner!("common-average-v2");
     let client = inputs.client.clone();
     let id = tune_id(&client);
     let widths: Vec<usize> = client.io_optimized_vector_sizes(size_of::<F>()).filter(|&w| w > 1).collect();
@@ -106,8 +117,9 @@ pub enum CmrKernel {
     /// per sample, one barrier each.
     Bitonic,
     /// Rank counting on `width` consecutive samples per unit ([`common_median_vector_kernel`];
-    /// SIMD on the CPU runtime). Runs the widest width up to `width` that the runtime offers and
-    /// that divides the sample count, else `Rank`.
+    /// SIMD on the CPU runtime). Runs the widest width up to `width` that the runtime offers (else
+    /// `Rank`); when it does not divide the sample count,
+    /// [`common_median_vector_unaligned_kernel`] (lane by lane loads and stores).
     Vectorized { width: usize },
 }
 
@@ -125,7 +137,27 @@ impl CmrInputs {
     fn run<F: DspFloat>(&self, kernel: CmrKernel) {
         let client = &self.client;
         if let CmrKernel::Vectorized { width } = kernel {
-            let width = client.io_optimized_vector_sizes(size_of::<F>()).filter(|&w| w > 1 && w <= width && self.samples % w == 0).max();
+            let width = client.io_optimized_vector_sizes(size_of::<F>()).filter(|&w| w > 1 && w <= width).max();
+            if let Some(width) = width.filter(|&w| self.samples % w != 0) {
+                let total = self.channels * self.samples;
+                let units = self.samples.div_ceil(width);
+                let geom = LaunchGeometry::elementwise(client, units);
+                // SAFETY: both buffers hold `channels · samples` values
+                unsafe {
+                    common_median_vector_unaligned_kernel::launch::<F>(
+                        client,
+                        geom.cube_count,
+                        geom.cube_dim,
+                        width,
+                        BufferArg::from_raw_parts(self.input.clone(), total),
+                        BufferArg::from_raw_parts(self.output.clone(), total),
+                        self.channels as u32,
+                        self.samples as u32,
+                        units as u32,
+                    );
+                }
+                return;
+            }
             if let Some(width) = width {
                 let total = self.channels * self.samples;
                 let vectors = self.samples / width;
@@ -167,14 +199,14 @@ impl CmrInputs {
 /// [`CmrInputs::run`] with the kernel CubeCL's autotuner found fastest for this device, element type
 /// and problem size. Benchmarks write to a scratch output.
 fn tuned<F: DspFloat>(inputs: CmrInputs) {
-    static TUNER: LocalTuner<String, String> = local_tuner!("common-median-v2");
+    static TUNER: LocalTuner<String, String> = local_tuner!("common-median-v3");
     let client = inputs.client.clone();
     let id = tune_id(&client);
     let widths: Vec<usize> = client.io_optimized_vector_sizes(size_of::<F>()).filter(|&w| w > 1).collect();
     // CubeCL's CPU runtime emulates barriers: Bitonic takes seconds there, even just to time it
     let cpu = client.name() == "cpu";
     let set = TUNER.init(&id, move || {
-        // `a`: the power of two dividing the sample count (up to 16), which decides the widths that run
+        // `a`: the power of two dividing the sample count (up to 16): which widths run aligned
         let key = |p: &CmrInputs| format!("{}-c{}-t{}-a{}", F::type_name(), size_class(p.channels), size_class(p.samples), p.samples.trailing_zeros().min(4));
         let scratch = |_: &String, p: &CmrInputs| CmrInputs { output: buffer::empty::<F>(&p.client, p.channels * p.samples), ..p.clone() };
         let set: TunableSet<String, CmrInputs, ()> = TunableSet::new(key, scratch);
@@ -194,8 +226,8 @@ fn tuned<F: DspFloat>(inputs: CmrInputs) {
 /// [`CmrKernel`]'s exact methods for this device.
 pub fn execute_common_median<F: DspFloat>(
     client: &Client,
-    input: &cubecl::server::Handle,
-    output: &cubecl::server::Handle,
+    input: &Handle,
+    output: &Handle,
     channels: usize,
     samples: usize,
 ) {
@@ -205,8 +237,8 @@ pub fn execute_common_median<F: DspFloat>(
 /// [`execute_common_median`] with a fixed kernel (`None` = autotuned); for tests and benchmarks.
 pub fn execute_common_median_with<F: DspFloat>(
     client: &Client,
-    input: &cubecl::server::Handle,
-    output: &cubecl::server::Handle,
+    input: &Handle,
+    output: &Handle,
     channels: usize,
     samples: usize,
     kernel: Option<CmrKernel>,
@@ -229,7 +261,7 @@ mod tests {
     /// Exact against a sorted reference, in `F` (signed fractional values, so the key's sign
     /// handling and both middle values of an even count are exercised).
     fn medians_of<F: DspFloat + std::fmt::Debug>(client: &Client) {
-        // 304 samples: every vector width divides; 300: widths above 4 fall back; 301: none divides
+        // 304 samples: every vector width divides; 300: widths above 4 run unaligned; 301: all do
         for (channels, samples) in [(1usize, 300usize), (4, 304), (5, 301), (37, 300), (384, 304)] {
             let x: Vec<F> = (0..channels * samples).map(|i| crate::core::cast::<F>(((i * 7919) % 211) as f64 * 0.37 - 40.0)).collect();
             let half = crate::core::cast::<F>(0.5);

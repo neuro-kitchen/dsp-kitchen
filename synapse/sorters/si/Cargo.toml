@@ -1,0 +1,31 @@
+[package]
+name = "dspk-sorter-si"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+# Ported from SpikeInterface (MIT); MIT-compatible, so the workspace's MIT OR Apache-2.0
+license.workspace = true
+repository.workspace = true
+description = "SpikeInterface's internal spike sorters for dspk, SpyKING CIRCUS 2 and Tridesclous 2, ported to GPU kernels (CubeCL)"
+keywords = ["spike-sorting", "spikeinterface", "electrophysiology", "gpu", "dspk"]
+categories = ["science"]
+
+[features]
+default = ["wgpu", "cuda", "cpu", "sc2", "tdc2"]
+# The sorters (`shared/` is always compiled)
+sc2 = []
+tdc2 = []
+wgpu = ["dspk-core/wgpu", "dspk-ops/wgpu", "dspk-synapse/wgpu"]
+cpu = ["dspk-core/cpu", "dspk-ops/cpu", "dspk-synapse/cpu"]
+cuda = ["dspk-core/cuda", "dspk-ops/cuda", "dspk-synapse/cuda"]
+hip = ["dspk-core/hip", "dspk-ops/hip", "dspk-synapse/hip"]
+
+[dependencies]
+dspk-core = { workspace = true, features = ["compute"] }
+dspk-ops.workspace = true
+dspk-synapse.workspace = true
+cubecl.workspace = true
+rayon.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

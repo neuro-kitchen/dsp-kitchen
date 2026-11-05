@@ -1,0 +1,25 @@
+[package]
+name = "dspk-hub"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Verified download and local cache of published artifacts (hf://, gh://, zenodo://, https://, file://), with data catalogs per domain"
+keywords = ["download", "cache", "sha256", "artifacts", "dspk"]
+categories = ["science"]
+
+[features]
+default = []
+# Electrophysiology artifacts (Kilosort4 universal templates, …): catalog data only
+synapse = []
+
+[dependencies]
+anyhow.workspace = true
+dirs.workspace = true
+hex.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true

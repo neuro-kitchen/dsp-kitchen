@@ -4,7 +4,7 @@ use cubecl::tune::{LocalTuner, Tunable, TunableSet, local_tuner};
 use dspk_core::compute::LaunchGeometry;
 use dspk_core::compute::tune::{size_class, tune_id};
 
-use super::kernels::{median_filter_kernel, median_filter_vector_kernel};
+use super::kernels::{median_filter_kernel, median_filter_vector_kernel, median_filter_vector_unaligned_kernel};
 use crate::core::{buffer, DspFloat, EdgeMode};
 
 /// Samples on each side of the centre in the 9-point median window.
@@ -19,8 +19,8 @@ pub enum MedianKernel {
     /// One unit per output.
     Direct,
     /// `width` consecutive outputs per unit (`Vector<F, width>`; SIMD on the CPU runtime). Runs the
-    /// widest vector width up to `width` that the runtime offers and that divides the row, else
-    /// `Direct`.
+    /// widest vector width up to `width` that the runtime offers (else `Direct`); rows it does not
+    /// divide store their outputs lane by lane.
     Vectorized { width: usize },
 }
 
@@ -85,7 +85,7 @@ impl MedianInputs {
         let total = self.channels * self.samples;
         let vector = match kernel {
             MedianKernel::Vectorized { width } => {
-                client.io_optimized_vector_sizes(size_of::<F>()).filter(|&w| w > 1 && w <= width && self.samples % w == 0).max()
+                client.io_optimized_vector_sizes(size_of::<F>()).filter(|&w| w > 1 && w <= width).max()
             }
             MedianKernel::Direct => None,
         };
@@ -98,10 +98,28 @@ impl MedianInputs {
                     client, geom.cube_count, geom.cube_dim, input, output, self.channels as u32, self.samples as u32, self.width as u32, self.edge.id(),
                 )
             }
-            Some(n) => {
+            Some(n) if self.samples % n == 0 => {
                 let geom = LaunchGeometry::elementwise(client, total / n);
                 median_filter_vector_kernel::launch::<F>(
                     client, geom.cube_count, geom.cube_dim, n, input, output, self.samples as u32, self.width as u32, self.edge.id(),
+                )
+            }
+            Some(n) => {
+                let per_row = self.samples.div_ceil(n);
+                let units = self.channels * per_row;
+                let geom = LaunchGeometry::elementwise(client, units);
+                median_filter_vector_unaligned_kernel::launch::<F>(
+                    client,
+                    geom.cube_count,
+                    geom.cube_dim,
+                    n,
+                    input,
+                    output,
+                    self.samples as u32,
+                    per_row as u32,
+                    units as u32,
+                    self.width as u32,
+                    self.edge.id(),
                 )
             }
         }
@@ -111,12 +129,12 @@ impl MedianInputs {
 /// [`MedianInputs::run`] with the kernel CubeCL's autotuner found fastest for this device, element
 /// type, window width and size. Benchmarks write to a scratch output.
 fn tuned<F: DspFloat>(inputs: MedianInputs) {
-    static TUNER: LocalTuner<String, String> = local_tuner!("median-filter-v1");
+    static TUNER: LocalTuner<String, String> = local_tuner!("median-filter-v2");
     let client = inputs.client.clone();
     let id = tune_id(&client);
     let widths: Vec<usize> = client.io_optimized_vector_sizes(size_of::<F>()).filter(|&w| w > 1).collect();
     let set = TUNER.init(&id, move || {
-        // `a`: the power of two dividing the row (up to 16), which decides the vector widths that run
+        // `a`: the power of two dividing the row (up to 16): which widths run aligned
         let key = |p: &MedianInputs| {
             format!("{}-w{}-c{}-t{}-a{}", F::type_name(), p.width, size_class(p.channels), size_class(p.samples), p.samples.trailing_zeros().min(4))
         };

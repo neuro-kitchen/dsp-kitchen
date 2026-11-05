@@ -6,7 +6,7 @@
 use crate::ops::device::DeviceInput;
 use dspk_ops::core::buffer;
 use dspk_ops::math::stats::MAD_TO_SIGMA;
-use dspk_ops::math::{execute_channel_mean_std, execute_channel_noise_std, gaussian_window, hamming_window, hann_window, kaiser_window};
+use dspk_ops::math::{execute_channel_mad, execute_channel_mean_std, execute_channel_noise_std, gaussian_window, hamming_window, hann_window, kaiser_window};
 use numpy::{IntoPyArray, PyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -42,6 +42,19 @@ pub fn channel_noise_std<'py>(py: Python<'py>, data: DeviceInput, runtime: Optio
     Ok(noise.into_pyarray(py))
 }
 
+/// Median absolute deviation per channel, `median(|x − median(x)|)`, unscaled (NumPy's median:
+/// the mean of the two middle values for an even count). SpikeInterface's
+/// `get_noise_levels(method="mad")` divides it by 0.6744897501960817.
+#[gen_stub_pyfunction(module = "dspk._native.ops.math")]
+#[pyfunction]
+#[pyo3(signature = (data, *, runtime))]
+pub fn channel_mad<'py>(py: Python<'py>, data: DeviceInput, runtime: Option<&str>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let mad = device::with_input(py, data, runtime, |client, input, channels, samples| {
+        Ok(execute_channel_mad::<f32>(client, input, channels, samples, 0..samples))
+    })?;
+    Ok(mad.into_pyarray(py))
+}
+
 /// Window of `length` values: `"hann"`, `"hamming"` (symmetric), `"gaussian"` (needs `sigma`),
 /// `"kaiser"` (needs `beta`).
 #[gen_stub_pyfunction(module = "dspk._native.ops.math")]
@@ -64,6 +77,7 @@ pub fn window<'py>(py: Python<'py>, name: &str, length: usize, sigma: Option<f32
 pyo3_stub_gen::module_variable!("dspk._native.ops.math", "MAD_TO_SIGMA", f32);
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(channel_mad, m)?)?;
     m.add_function(wrap_pyfunction!(channel_mean_std, m)?)?;
     m.add_function(wrap_pyfunction!(channel_noise_std, m)?)?;
     m.add_function(wrap_pyfunction!(window, m)?)?;

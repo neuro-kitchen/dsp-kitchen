@@ -50,12 +50,15 @@ feature sets or profiles recompile CubeCL and wgpu from scratch, so:
 
 ## Licences
 
-dspk is MIT OR Apache-2.0. The spike sorters follow their upstreams: `dspk-ks4` (Kilosort4,
-EMUsort) is GPL-3.0, `dspk-ms5` Apache-2.0, `dspk-sc2` / `dspk-tdc2` carry SpikeInterface's MIT
-notice. Rules:
+dspk is MIT OR Apache-2.0. The spike sorters are one crate per upstream project and follow its
+licence: `dspk-sorter-kilosort` (Kilosort4, EMUsort) is GPL-3.0, `dspk-sorter-ms5` Apache-2.0,
+`dspk-sorter-si` (SpyKING CIRCUS 2, Tridesclous 2) carries SpikeInterface's MIT notice. Rules:
 
-- No MIT / Apache crate depends on `dspk-ks4`; the sorters reach users through the separate
-  `dspk-sorters` program (`cargo tree -i dspk-ks4` must show only `dspk-sorters`).
+- No MIT / Apache crate depends on `dspk-sorter-kilosort`; the sorters reach users through the
+  separate `dspk-sorters` program (`cargo tree -i dspk-sorter-kilosort` must show only
+  `dspk-sorters`).
+- Code ported from one upstream lives in that upstream's sorter crate, even when it means a copy
+  (isosplit: magland's in `dspk-sorter-ms5`, SpikeInterface's in `dspk-sorter-si`).
 - Code written from another project's source keeps its licence and notice: say where it comes
   from (file, version) in the module docs and the crate's `NOTICE.md`, and keep GPL code in a GPL
   crate. Code written from a paper says so and cites it.

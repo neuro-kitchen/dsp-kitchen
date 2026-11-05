@@ -1,0 +1,33 @@
+[package]
+name = "dspk-sorter-kilosort"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+# Kilosort4 and EMUsort are GPL-3.0; this reimplementation is distributed under the same licence
+license = "GPL-3.0-only"
+repository.workspace = true
+description = "The Kilosort family of spike sorters for dspk on GPU kernels (CubeCL): Kilosort4 and its fork EMUsort, GPL-3.0 like their upstreams"
+keywords = ["spike-sorting", "kilosort", "electrophysiology", "gpu", "dspk"]
+categories = ["science"]
+
+[features]
+default = ["wgpu", "cuda", "cpu", "ks4", "emusort"]
+# The sorters (the shared Kilosort4 stages and settings are always compiled)
+ks4 = []
+emusort = []
+wgpu = ["dspk-core/wgpu", "dspk-ops/wgpu", "dspk-synapse/wgpu"]
+cpu = ["dspk-core/cpu", "dspk-ops/cpu", "dspk-synapse/cpu"]
+cuda = ["dspk-core/cuda", "dspk-ops/cuda", "dspk-synapse/cuda"]
+hip = ["dspk-core/hip", "dspk-ops/hip", "dspk-synapse/hip"]
+# Kilosort4's predefined universal templates (`wTEMP.npz`) downloaded from upstream through the
+# dspk-hub catalog, checked by SHA-256 (network access)
+hub = ["dep:dspk-hub", "dspk-hub/synapse"]
+
+[dependencies]
+dspk-core = { workspace = true, features = ["compute"] }
+dspk-ops.workspace = true
+dspk-io = { workspace = true, features = ["zarr"] }
+dspk-synapse.workspace = true
+dspk-hub = { workspace = true, optional = true }
+cubecl.workspace = true
+tracing.workspace = true

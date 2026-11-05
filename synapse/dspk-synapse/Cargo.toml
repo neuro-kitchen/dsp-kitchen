@@ -3,10 +3,12 @@ name = "dspk-synapse"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-# Our code MIT OR Apache-2.0; the isosplit6 port (src/sorting/isosplit.rs) Apache-2.0: NOTICE.md
-license = "(MIT OR Apache-2.0) AND Apache-2.0"
-# Not published yet: the synapse names may change; app and CLI are not libraries
-publish = false
+# Our code and the SpikeInterface ports (MIT, NOTICE.md): MIT OR Apache-2.0
+license.workspace = true
+repository.workspace = true
+description = "Electrophysiology for dspk: recording and sorting formats, probes, spike detection, waveforms, features, clustering, localization, quality metrics, and the shared parts of the sorters"
+keywords = ["electrophysiology", "spike-sorting", "neuroscience", "gpu", "dspk"]
+categories = ["science"]
 
 [features]
 default = ["wgpu", "cuda", "cpu"]
@@ -19,8 +21,9 @@ hip = ["dspk-ops/hip"]
 dspk-core = { workspace = true, features = ["compute"] }
 dspk-ops.workspace = true
 dspk-io = { workspace = true, features = ["zarr"] }
-dspk-synapse-io = { workspace = true, features = ["zarr"] }
 cubecl.workspace = true
+flate2.workspace = true
+memmap2.workspace = true
 rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -28,3 +31,5 @@ thiserror.workspace = true
 tracing.workspace = true
 zarrs.workspace = true
 
+[dev-dependencies]
+dspk-io = { workspace = true, features = ["zarr", "test-support"] }

@@ -4,7 +4,7 @@ use std::path::Path;
 
 use dspk_core::{ComputeTarget, DspError, DspResult};
 
-use crate::hub::TensorIoSpec;
+use crate::manifest::TensorIoSpec;
 use crate::runtime::{
     OnnxRuntimeSession, RuntimeTensor, validate_tensor_port,
 };
@@ -19,7 +19,7 @@ pub struct SpikeNet2Detector {
 }
 
 impl SpikeNet2Detector {
-    /// Pulls and initializes `spikenet2/ieeg-detector-v1` from [`crate::hub::ModelHub`].
+    /// Pulls and initializes `spikenet2/ieeg-detector-v1` from [`crate::runtime::pull_model`].
     #[cfg(feature = "hub")]
     pub fn from_hub(
         probability_threshold: f32,

@@ -28,13 +28,12 @@ drawn from min/max pyramids built by `dspk-view`.*
 | `engine/` | `dspk-pipeline` | Pipelines as data (JSON / TOML specs): plan, many inputs, merges, provenance | crates.io |
 | `serve/` | `dspk-view` | Min/max envelopes and pyramids for viewing, local or remote | crates.io |
 | | `dspk-stream` | Network sessions for continuous signals (QUIC + TLS, protobuf) | crates.io |
-| `synapse/` | `dspk-synapse` | Detection, clustering, matching, sorter building blocks, provenance | not yet |
-| | `dspk-synapse-io` | Neural-recording and sorting formats: NWB, SpikeGLX, mtscomp, Phy, probe geometry | not yet |
-| | `dspk-synapse-hub` | Verified downloads: models, sorter arrays, the `dspk-sorters` program | not yet |
-| | `dspk-synapse-ml` | Pretrained models (DARTsort, SpikeNet2, UnitRefine), their runtime and catalog | not yet |
-| `synapse/sorters/` | `dspk-ks4` | Kilosort4 and EMUsort (GPL-3.0) | not yet |
-| | `dspk-ms5` | MountainSort 5 (Apache-2.0) | not yet |
-| | `dspk-sc2`, `dspk-tdc2` | SpyKING CIRCUS 2, Tridesclous 2 | not yet |
+| `synapse/` | `dspk-synapse` | Electrophysiology: NWB, SpikeGLX, mtscomp, Phy formats, probes, detection, clustering, matching, metrics, sorter building blocks, provenance | next release |
+| | `dspk-synapse-ml` | Pretrained models (DARTsort, SpikeNet2, UnitRefine) and their runtime | next release |
+| `synapse/sorters/` | `dspk-sorter-kilosort` | Kilosort4 and EMUsort (features `ks4`, `emusort`; GPL-3.0) | next release |
+| | `dspk-sorter-ms5` | MountainSort 5, with isosplit6 (Apache-2.0) | next release |
+| | `dspk-sorter-si` | SpikeInterface's SpyKING CIRCUS 2 and Tridesclous 2 (features `sc2`, `tdc2`) | next release |
+| `hub/` | `dspk-hub` | Verified downloads of published artifacts, with data catalogs per domain (feature `synapse`) | next release |
 | `app/` | `dspk-cli` | The `dspk` command line: `dspk run`, `dspk sort`, `dspk doctor`, … | built from source |
 | | `dspk-sorters` | Every sorter in one program (GPL-3.0), run by `dspk sort` | GitHub release |
 | | `dspk-app` | Desktop workbench | built from source |
@@ -183,12 +182,12 @@ The sorters follow their upstreams' licences:
 
 | Crate | Licence | Why |
 |---|---|---|
-| `dspk-ks4` (Kilosort4, EMUsort) | GPL-3.0-only | Kilosort4 and EMUsort are GPL-3.0 |
-| `dspk-ms5` (MountainSort 5) | Apache-2.0 | MountainSort 5 and isosplit6 are Apache-2.0 |
-| `dspk-sc2`, `dspk-tdc2` | MIT OR Apache-2.0 (+ SpikeInterface's MIT notice) | ported from SpikeInterface (MIT) |
-| `dspk-synapse` | (MIT OR Apache-2.0) AND Apache-2.0 | isosplit6 port; SpikeInterface components |
-| `dspk-sorters` (the program) | GPL-3.0-only | contains `dspk-ks4` |
+| `dspk-sorter-kilosort` (Kilosort4, EMUsort) | GPL-3.0-only | Kilosort4 and EMUsort are GPL-3.0 |
+| `dspk-sorter-ms5` (MountainSort 5) | Apache-2.0 | MountainSort 5 and isosplit6 are Apache-2.0 |
+| `dspk-sorter-si` (SpyKING CIRCUS 2, Tridesclous 2) | MIT OR Apache-2.0 (+ SpikeInterface's MIT notice) | ported from SpikeInterface (MIT) |
+| `dspk-synapse` | MIT OR Apache-2.0 (+ SpikeInterface's MIT notice) | SpikeInterface components |
+| `dspk-sorters` (the program) | GPL-3.0-only | contains `dspk-sorter-kilosort` |
 
 Each sorter crate carries its upstream licence and a `NOTICE.md`. Nothing MIT / Apache-licensed
-links `dspk-ks4`: `dspk sort` runs `dspk-sorters` as a separate program, whose source is this
+links `dspk-sorter-kilosort`: `dspk sort` runs `dspk-sorters` as a separate program, whose source is this
 repository at the version's tag.

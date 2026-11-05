@@ -3,7 +3,7 @@
 //! used.
 
 use clap::{Args, Subcommand};
-use dspk_synapse_hub::sorters;
+use crate::sorters_program as sorters;
 
 use crate::style::{self, paint};
 

@@ -7,12 +7,20 @@ import numpy.typing
 import typing
 __all__ = [
     "MAD_TO_SIGMA",
+    "channel_mad",
     "channel_mean_std",
     "channel_noise_std",
     "window",
 ]
 
 MAD_TO_SIGMA: builtins.float
+def channel_mad(data: numpy.typing.NDArray[typing.Any], *, runtime: typing.Optional[builtins.str]) -> numpy.typing.NDArray[numpy.float64]:
+    r"""
+    Median absolute deviation per channel, `median(|x − median(x)|)`, unscaled (NumPy's median:
+    the mean of the two middle values for an even count). SpikeInterface's
+    `get_noise_levels(method="mad")` divides it by 0.6744897501960817.
+    """
+
 def channel_mean_std(data: numpy.typing.NDArray[typing.Any], *, runtime: typing.Optional[builtins.str]) -> tuple[numpy.typing.NDArray[numpy.float32], numpy.typing.NDArray[numpy.float32]]: ...
 
 def channel_noise_std(data: numpy.typing.NDArray[typing.Any], *, runtime: typing.Optional[builtins.str]) -> numpy.typing.NDArray[numpy.float64]:

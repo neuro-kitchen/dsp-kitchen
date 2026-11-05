@@ -10,6 +10,11 @@
 //!   exact: all of them by Jacobi ([`fn@super::symmetric_eigen`]) when `k + oversamples ≥ D / 2`,
 //!   otherwise by subspace iteration on `C` until the leading values change by less than
 //!   `tolerance` (relative), then Rayleigh–Ritz.
+//! - **Few rows** (`L ≤ dual_max_rows`, `L < D`, off by default): exact through the `L × L` Gram
+//!   matrix `G = X_c X_cᵀ` instead: its eigenvectors `U` (host, `f64`) give the components
+//!   `V = X_cᵀ U Σ⁻¹` and the variances `λ / (L − 1)`. One product each way and one small
+//!   eigendecomposition: much cheaper than iterating a subspace when `k` is close to `L`
+//!   (MountainSort 5's classifiers, ~`3 · mask channels` components of a few hundred snippets).
 //! - **`D > exact_cap`**: `C` is not formed (`D²` values); subspace iteration applies `C` as
 //!   `Σ_b X_bᵀ (X_b Q)` over the batches, for scikit-learn's randomized count of iterations (7
 //!   when `k < 0.1 · min(L, D)`, else 4) from a seeded Gaussian start of `k + oversamples` columns,
@@ -151,6 +156,9 @@ pub struct TopComponentsOptions {
     pub seed: u64,
     /// Device elements per batch of rows.
     pub batch_elements: usize,
+    /// At most this many rows (fewer than the features, and `rows · features ≤ batch_elements`)
+    /// are decomposed exactly through their `rows × rows` Gram matrix (module docs); 0: never.
+    pub dual_max_rows: usize,
 }
 
 impl Default for TopComponentsOptions {
@@ -163,6 +171,7 @@ impl Default for TopComponentsOptions {
             max_iterations: 300,
             seed: 0,
             batch_elements: 1 << 25,
+            dual_max_rows: 0,
         }
     }
 }
@@ -236,6 +245,9 @@ impl TopComponents {
         let mean: Vec<f32> = sums.iter().map(|s| (s / l as f64) as f32).collect();
         let mean_h = buffer::upload(client, &mean);
         let denom = (l.max(2) - 1) as f64;
+        if l <= opts.dual_max_rows && l < d && l * d <= opts.batch_elements {
+            return Self::fit_dual(client, src, k, mean, mean_h, denom);
+        }
 
         let r = (k + opts.oversamples).min(d);
         let exact = d <= opts.exact_cap;
@@ -311,6 +323,38 @@ impl TopComponents {
         let vectors: Vec<f64> = buffer::download::<f32>(client, v).into_iter().map(f64::from).collect();
         let values = eig.values[..k].iter().map(|v| v.max(0.0) / denom).collect();
         Self::finish(client, d, k, mean, mean_h, vectors, values, ran)
+    }
+
+    /// Exact components of few rows through their Gram matrix (module docs).
+    fn fit_dual<S: RowSource>(client: &Client, src: &S, k: usize, mean: Vec<f32>, mean_h: Handle, denom: f64) -> Self {
+        let (l, d) = (src.rows(), src.dim());
+        let x = centred(client, src, 0..l, &mean_h);
+        let xv = MatrixView::row_major(&x, l * d, l, d);
+        let g = buffer::empty::<f32>(client, l * l);
+        matmul::<f32>(client, &xv, &xv.transposed(), &g, l * l);
+        let host: Vec<f64> = buffer::download::<f32>(client, g).into_iter().take(l * l).map(f64::from).collect();
+        // Rounding leaves the device product slightly asymmetric
+        let sym: Vec<f64> = (0..l * l).map(|e| 0.5 * (host[e] + host[(e % l) * l + e / l])).collect();
+        let eig = symmetric_eigen_cpu(&sym, l);
+        // U Σ⁻¹ for the leading k; directions below √ε of the largest are left at zero, as
+        // `orthonormalise` does (rank-deficient rows, e.g. masked snippets)
+        let top = eig.values.first().copied().unwrap_or(0.0).max(0.0);
+        let floor = top * f32::EPSILON as f64;
+        let mut w = vec![0.0f32; l * k];
+        for c in 0..k {
+            let lambda = eig.values[c];
+            if lambda > floor && lambda > 0.0 {
+                let s = 1.0 / lambda.sqrt();
+                for i in 0..l {
+                    w[i * k + c] = (eig.vectors[i * l + c] * s) as f32;
+                }
+            }
+        }
+        let v = buffer::empty::<f32>(client, d * k);
+        matmul::<f32>(client, &xv.transposed(), &MatrixView::row_major(&buffer::upload(client, &w), l * k, l, k), &v, d * k);
+        let vectors: Vec<f64> = buffer::download::<f32>(client, v).into_iter().map(f64::from).collect();
+        let values = eig.values[..k].iter().map(|v| v.max(0.0) / denom).collect();
+        Self::finish(client, d, k, mean, mean_h, vectors, values, 0)
     }
 
     /// Sign convention and device copies; `vectors` is `[d, k]` (components as columns).
@@ -516,4 +560,26 @@ mod tests {
         check(client, TopComponentsOptions { exact_cap: 10, oversamples: 10, randomized_iterations: Some(12), ..base }, true);
     }
     runtime_test!(test_top_components_match_the_covariance, all_paths);
+
+    /// Fewer rows than features: the Gram-matrix path gives the covariance's leading variances and
+    /// orthonormal components, without iterating, with `k` close to `L`.
+    fn dual_path(client: &Client) {
+        let (l, d, k) = (120usize, 300usize, 100usize);
+        let x = data(l, d, 2);
+        let src = HostRows { data: &x, dim: d };
+        let opts = TopComponentsOptions { dual_max_rows: 4096, ..Default::default() };
+        let fit = TopComponents::fit(client, &src, k, &opts);
+        assert_eq!((fit.iterations, fit.k), (0, k));
+        let want = reference(client, &x, l, d, 10);
+        for (g, w) in fit.variances.iter().zip(&want) {
+            assert!((g - w).abs() < 2e-3 * w, "variances {:?} vs {want:?}", &fit.variances[..10]);
+        }
+        for a in 0..10 {
+            for b in 0..10 {
+                let dot: f32 = (0..d).map(|t| fit.components[a * d + t] * fit.components[b * d + t]).sum();
+                assert!((dot - if a == b { 1.0 } else { 0.0 }).abs() < 1e-3, "<{a},{b}> = {dot}");
+            }
+        }
+    }
+    runtime_test!(test_top_components_dual_path, dual_path);
 }

@@ -7,7 +7,7 @@ use dspk_core::compute::LaunchGeometry;
 use dspk_core::compute::tune::{size_class, tune_id};
 
 use super::design::{firwin, FirWindow};
-use super::kernels::{upfirdn_kernel, upfirdn_vector_kernel};
+use super::kernels::{upfirdn_kernel, upfirdn_vector_kernel, upfirdn_vector_unaligned_kernel};
 use crate::core::{buffer, cast_all, DspFloat, EdgeMode};
 
 /// `resample_poly`'s padding (`padtype="constant"`, zeros).
@@ -19,7 +19,7 @@ pub const RESAMPLE_POLY_WINDOW: FirWindow = FirWindow::Kaiser { beta: 5.0 };
 /// Half-length of the designed filter per unit of the larger rate (`half_len = 10 · max(up, down)`).
 pub const RESAMPLE_POLY_HALF_LEN_PER_RATE: usize = 10;
 
-/// The anti-aliasing filter of [`resample_poly`].
+/// The anti-aliasing filter of [`execute_resample_poly`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResampleFilter {
     /// Designed with `firwin(2 · half_len + 1, 1 / max(up, down), window)`.
@@ -34,8 +34,8 @@ pub enum ResampleKernel {
     /// One unit per output.
     Direct,
     /// `width` consecutive outputs per unit (`Vector<F, width>`; SIMD on the CPU runtime). Runs the
-    /// widest width up to `width` that the runtime offers and that divides the output row, else
-    /// `Direct`.
+    /// widest width up to `width` that the runtime offers (else `Direct`); output rows it does not
+    /// divide store their outputs lane by lane.
     Vectorized { width: usize },
 }
 
@@ -62,7 +62,7 @@ pub fn resample_poly_len(samples: usize, up: usize, down: usize) -> usize {
 /// # Panics
 /// If `up` or `down` is zero.
 #[allow(clippy::too_many_arguments)]
-pub fn resample_poly<F: DspFloat>(
+pub fn execute_resample_poly<F: DspFloat>(
     client: &Client,
     input: &Handle,
     output: &Handle,
@@ -73,12 +73,12 @@ pub fn resample_poly<F: DspFloat>(
     filter: &ResampleFilter,
     edge: EdgeMode,
 ) -> usize {
-    resample_poly_with::<F>(client, input, output, channels, samples, up, down, filter, edge, None)
+    execute_resample_poly_with::<F>(client, input, output, channels, samples, up, down, filter, edge, None)
 }
 
-/// [`resample_poly`] with a fixed kernel (`None` = autotuned); for tests and benchmarks.
+/// [`execute_resample_poly`] with a fixed kernel (`None` = autotuned); for tests and benchmarks.
 #[allow(clippy::too_many_arguments)]
-pub fn resample_poly_with<F: DspFloat>(
+pub fn execute_resample_poly_with<F: DspFloat>(
     client: &Client,
     input: &Handle,
     output: &Handle,
@@ -162,7 +162,7 @@ impl PolyInputs {
         let width = match kernel {
             ResampleKernel::Vectorized { width } => client
                 .io_optimized_vector_sizes(size_of::<F>())
-                .filter(|&w| w > 1 && w <= width && self.out_len % w == 0)
+                .filter(|&w| w > 1 && w <= width)
                 .max(),
             ResampleKernel::Direct => None,
         };
@@ -189,18 +189,28 @@ impl PolyInputs {
             Some(width) => {
                 let table = buffer::upload(client, &cast_all::<F>(&poly_table(&self.taps, self.down, width)));
                 let table_len = (self.taps.len() + (width - 1) * self.down) * width;
-                let geom = LaunchGeometry::elementwise(client, out_total / width);
                 // SAFETY: as above; `table` holds `table_len` values (`table_len / width` vectors)
-                unsafe {
-                    upfirdn_vector_kernel::launch::<F>(
-                        client,
-                        geom.cube_count,
-                        geom.cube_dim,
-                        width,
+                let (input, table, output) = unsafe {
+                    (
                         BufferArg::from_raw_parts(self.input.clone(), in_total),
                         BufferArg::from_raw_parts(table, table_len),
                         BufferArg::from_raw_parts(self.output.clone(), out_total),
+                    )
+                };
+                if self.out_len % width == 0 {
+                    let geom = LaunchGeometry::elementwise(client, out_total / width);
+                    upfirdn_vector_kernel::launch::<F>(
+                        client, geom.cube_count, geom.cube_dim, width, input, table, output,
                         args.0, args.1, args.2, args.3, args.4, args.5, args.6, args.7,
+                    );
+                } else {
+                    // Rows the width does not divide: outputs stored lane by lane
+                    let per_row = self.out_len.div_ceil(width);
+                    let units = self.channels * per_row;
+                    let geom = LaunchGeometry::elementwise(client, units);
+                    upfirdn_vector_unaligned_kernel::launch::<F>(
+                        client, geom.cube_count, geom.cube_dim, width, input, table, output,
+                        args.0, args.1, args.2, args.3, args.4, args.5, args.6, per_row as u32, units as u32, args.7,
                     );
                 }
             }
@@ -225,13 +235,13 @@ fn poly_table(taps: &[f64], down: usize, width: usize) -> Vec<f64> {
 /// [`PolyInputs::run`] with the kernel CubeCL's autotuner found fastest for this device, element
 /// type, rates, filter length and size. Benchmarks write to a scratch output.
 fn tuned<F: DspFloat>(inputs: PolyInputs) {
-    static TUNER: LocalTuner<String, String> = local_tuner!("resample-poly-v1");
+    static TUNER: LocalTuner<String, String> = local_tuner!("resample-poly-v2");
     let client = inputs.client.clone();
     let id = tune_id(&client);
     let widths: Vec<usize> = client.io_optimized_vector_sizes(size_of::<F>()).filter(|&w| w > 1).collect();
     let set = TUNER.init(&id, move || {
         let key = |p: &PolyInputs| {
-            // `a`: the power of two dividing the output row (up to 16), which decides the widths that run
+            // `a`: the power of two dividing the output row (up to 16): which widths run aligned
             format!(
                 "{}-u{}-d{}-k{}-c{}-t{}-a{}",
                 F::type_name(),
@@ -286,7 +296,7 @@ mod tests {
         for (up, down) in [(1usize, 3usize), (3, 1), (2, 3), (160, 147)] {
             let out_len = resample_poly_len(samples, up, down);
             let output = buffer::empty::<f32>(client, out_len);
-            let n = resample_poly::<f32>(client, &input, &output, 1, samples, up, down, &ResampleFilter::default(), RESAMPLE_POLY_DEFAULT_EDGE);
+            let n = execute_resample_poly::<f32>(client, &input, &output, 1, samples, up, down, &ResampleFilter::default(), RESAMPLE_POLY_DEFAULT_EDGE);
             assert_eq!(n, out_len);
             let got = buffer::download::<f32>(client, output);
             let want = host_resample_poly(&x, up, down);
@@ -309,7 +319,7 @@ mod tests {
                     let out_len = resample_poly_len(samples, up, down);
                     let run = |kernel| {
                         let out = buffer::empty::<F>(client, channels * out_len);
-                        resample_poly_with::<F>(client, &input, &out, channels, samples, up, down, &ResampleFilter::default(), edge, Some(kernel));
+                        execute_resample_poly_with::<F>(client, &input, &out, channels, samples, up, down, &ResampleFilter::default(), edge, Some(kernel));
                         buffer::download::<F>(client, out)
                     };
                     let direct = run(ResampleKernel::Direct);

@@ -12,11 +12,11 @@ use clap::{Args, Subcommand};
 use dspk_cli::commands::recording::{OutputArgs, RecordingArgs};
 use dspk_cli::progress::TerminalProgress;
 use dspk_core::ComputeTarget;
-use dspk_ks4::{run_plan, EmusortConfig, Kilosort4Config, RunPlan, UniversalTemplates};
-use dspk_ms5::Mountainsort5Config;
-use dspk_sc2::Spykingcircus2Config;
+use dspk_sorter_kilosort::{run_plan, EmusortConfig, Kilosort4Config, RunPlan, UniversalTemplates};
+use dspk_sorter_ms5::Mountainsort5Config;
+use dspk_sorter_si::sc2::Spykingcircus2Config;
 use dspk_synapse::SortingOutput;
-use dspk_tdc2::Tridesclous2Config;
+use dspk_sorter_si::tdc2::Tridesclous2Config;
 
 static KILOSORT4: LazyLock<Kilosort4Config> = LazyLock::new(Kilosort4Config::default);
 static EMUSORT: LazyLock<EmusortConfig> = LazyLock::new(EmusortConfig::default);
@@ -46,7 +46,7 @@ macro_rules! kilosort4_settings {
             #[arg(long, value_delimiter = ',', default_values_t = $defaults.th_single_ch.clone())]
             th_single_ch: Vec<f32>,
             /// Learn the universal templates from the recording (false: Kilosort4's predefined ones,
-            /// from --templates or the model hub)
+            /// from --templates or downloaded through dspk-hub)
             #[arg(long, default_value_t = $defaults.templates_from_data, action = clap::ArgAction::Set)]
             templates_from_data: bool,
             /// Universal templates learned
@@ -228,19 +228,19 @@ pub fn run(target: ComputeTarget, sorter: &SortCommand) -> anyhow::Result<()> {
         SortCommand::Mountainsort5(a) => {
             let config = Mountainsort5Config::default();
             run_defaults(target, a, "MountainSort 5", &config, |client, opened, progress| {
-                Ok(dspk_ms5::run(client, opened.source.as_ref(), &opened.probe, &config, progress)?.to_sorting_output(Some(opened.probe.clone())))
+                Ok(dspk_sorter_ms5::run(client, opened.source.as_ref(), &opened.probe, &config, progress)?.to_sorting_output(Some(opened.probe.clone())))
             })
         }
         SortCommand::Spykingcircus2(a) => {
             let config = Spykingcircus2Config::default();
             run_defaults(target, a, "SpyKING CIRCUS 2", &config, |client, opened, progress| {
-                Ok(dspk_sc2::run(client, opened.source.as_ref(), &opened.probe, &config, progress)?.to_sorting_output(Some(opened.probe.clone())))
+                Ok(dspk_sorter_si::sc2::run(client, opened.source.as_ref(), &opened.probe, &config, progress)?.to_sorting_output(Some(opened.probe.clone())))
             })
         }
         SortCommand::Tridesclous2(a) => {
             let config = Tridesclous2Config::default();
             run_defaults(target, a, "Tridesclous 2", &config, |client, opened, progress| {
-                Ok(dspk_tdc2::run(client, opened.source.as_ref(), &opened.probe, &config, progress)?.to_sorting_output(Some(opened.probe.clone())))
+                Ok(dspk_sorter_si::tdc2::run(client, opened.source.as_ref(), &opened.probe, &config, progress)?.to_sorting_output(Some(opened.probe.clone())))
             })
         }
     }

@@ -2,7 +2,8 @@
 //! localization, drift estimation, kriging, clustering, template matching, correlograms,
 //! Allen/IBL quality metrics, sorter comparison, and neural frequency bands.
 //!
-//! Probe geometry (layouts, presets, nearest-site queries) lives in `dspk_synapse_io::probe`.
+//! Recording and sorting file formats (NWB, SpikeGLX, mtscomp, Phy, `.sorting.zarr`) and probe
+//! geometry (layouts, presets, nearest-site queries) are in [`io`].
 //!
 //! # Where things are
 //!
@@ -16,8 +17,11 @@
 //! | Cluster into units | [`sorting`] | k-means, GMM, HDBSCAN, bipartite modularity |
 //! | Quality and comparison | [`metrics`] | ISI violations, presence, amplitude cutoff; sorter agreement |
 //! | Results on disk | [`storage`] | [`SortingOutput`] (Phy, Zarr, NWB) |
+//! | Recordings, probes, sorting files | [`io`] | [`io::open`], [`io::probe`] |
 //!
-//! Complete sorters (Kilosort4, EMUsort) are in `dspk-synapse-ml`.
+//! Complete sorters are separate crates, one per upstream project, each under its upstream's
+//! licence: `dspk-sorter-kilosort` (Kilosort4, EMUsort), `dspk-sorter-ms5` (MountainSort 5),
+//! `dspk-sorter-si` (SpyKING CIRCUS 2, Tridesclous 2). Pretrained models: `dspk-synapse-ml`.
 //!
 //! # Example
 //!
@@ -25,7 +29,7 @@
 //! channels is one spike, assigned to the channel where it is largest.
 //!
 //! ```
-//! use dspk_synapse_io::probe::{Position3D, SensorLayout, SensorSite};
+//! use dspk_synapse::io::probe::{Position3D, SensorLayout, SensorSite};
 //! use dspk_synapse::{deduplicate_spikes_spatial, detect_spikes_multichannel, SpikePolarity, SpikeSpacing};
 //!
 //! // 4 channels on a line, 20 µm apart
@@ -53,6 +57,7 @@ pub mod core;
 pub mod detection;
 pub mod extraction;
 pub mod features;
+pub mod io;
 pub mod metrics;
 pub mod provenance;
 pub mod sorter;
