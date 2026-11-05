@@ -20,10 +20,10 @@ use gpui_kit::{
     Styled as _, Subscription, WeakEntity, Window,
 };
 
-use crate::actions::*;
-use crate::engine::canvas::Pixel;
-use crate::engine::time::renderer::TimeViewKind;
-use crate::viewmodels::{ExploreVm, TraceVm};
+use crate::navigation::actions::*;
+use crate::ui::plot::canvas::Pixel;
+use crate::screens::explore::trace::renderer::TimeViewKind;
+use crate::screens::explore::{ExploreVm, TraceVm};
 
 /// Channel label column and time axis heights (logical px).
 pub const GUTTER: f32 = 64.;
@@ -66,7 +66,7 @@ impl TracePanel {
         (((p.x - b.origin.x).as_f32() / w).clamp(0.0, 1.0), ((p.y - b.origin.y).as_f32() / h).clamp(0.0, 1.0))
     }
 
-    fn store_update(&self, cx: &mut Context<Self>, f: impl FnOnce(&mut crate::store::Store, &mut Context<crate::store::Store>)) {
+    fn store_update(&self, cx: &mut Context<Self>, f: impl FnOnce(&mut crate::data::store::Store, &mut Context<crate::data::store::Store>)) {
         let store = self.vm.read(cx).store().clone();
         store.update(cx, f);
     }

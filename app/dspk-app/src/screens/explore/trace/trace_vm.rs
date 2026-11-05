@@ -11,14 +11,14 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::{App, Context, Entity, EventEmitter, RenderImage, Subscription, Task};
 
-use crate::engine::data::SourceSet;
-use crate::engine::work_pool::JobKey;
-use crate::engine::time::hover::{HoverReply, HoverRequest};
-use crate::engine::time::renderer::{render_on_worker, TimeViewKind};
-use crate::engine::time::view::{HoverTarget, TimeView, ViewId};
-use crate::store::{AppEvent, Store};
+use crate::data::recording::SourceSet;
+use crate::data::work_pool::JobKey;
+use crate::screens::explore::trace::hover::{HoverReply, HoverRequest};
+use crate::screens::explore::trace::renderer::{render_on_worker, TimeViewKind};
+use crate::screens::explore::trace::view::{HoverTarget, TimeView, ViewId};
+use crate::data::store::{AppEvent, Store};
 
-use super::services::{Services, RENDER_SLOT};
+use crate::data::services::{Services, RENDER_SLOT};
 
 /// The frame on screen and what it shows.
 #[derive(Clone)]
@@ -351,7 +351,7 @@ impl TraceVm {
     }
 
     pub fn select_ranges(&mut self, text: &str, cx: &mut Context<Self>) -> Result<(), String> {
-        let channels = crate::engine::time::view::parse_channel_ranges(text, self.total_channels(cx))?;
+        let channels = crate::screens::explore::trace::view::parse_channel_ranges(text, self.total_channels(cx))?;
         self.set_selection(channels, cx);
         Ok(())
     }

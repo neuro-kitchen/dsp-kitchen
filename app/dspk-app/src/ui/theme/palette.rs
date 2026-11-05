@@ -1,7 +1,7 @@
 //! Plot colours. Renderers and plot overlays take a [`Palette`] instead of fixed colours, so plots
 //! follow the app's light or dark theme (or stay dark when the user prefers dark plots).
 
-use super::canvas::Pixel;
+use crate::ui::plot::canvas::Pixel;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Palette {

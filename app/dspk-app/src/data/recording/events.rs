@@ -80,7 +80,7 @@ impl SpikeEventStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::data::Dataset;
+    use crate::data::recording::Dataset;
 
     #[test]
     fn test_spike_event_detection() {

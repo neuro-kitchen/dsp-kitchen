@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::engine::time::renderer::TimeViewKind;
-use crate::engine::time::view::TimeView;
-use crate::workspace::Workspace;
+use crate::screens::explore::trace::renderer::TimeViewKind;
+use crate::screens::explore::trace::view::TimeView;
+use crate::navigation::route::Workspace;
 
 /// Recent recordings kept.
 const RECENT: usize = 10;

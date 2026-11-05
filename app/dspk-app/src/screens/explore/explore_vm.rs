@@ -4,11 +4,11 @@
 
 use gpui_kit::{AppContext as _, Context, Entity, EventEmitter, Subscription};
 
-use crate::engine::time::renderer::TimeViewKind;
-use crate::engine::time::view::ViewId;
-use crate::store::{AppEvent, Store};
+use crate::screens::explore::trace::renderer::TimeViewKind;
+use crate::screens::explore::trace::view::ViewId;
+use crate::data::store::{AppEvent, Store};
 
-use super::trace::{TraceEvent, TraceVm};
+use super::trace::trace_vm::{TraceEvent, TraceVm};
 
 pub enum ExploreEvent {
     /// A recording opened: these views replace every view (default layout: traces over heatmap).
@@ -48,7 +48,7 @@ impl ExploreVm {
         &self.store
     }
 
-    fn make(&mut self, kind: TimeViewKind, source: &str, saved: Option<&crate::session::SavedTimeView>, cx: &mut Context<Self>) -> Entity<TraceVm> {
+    fn make(&mut self, kind: TimeViewKind, source: &str, saved: Option<&crate::data::preferences::SavedTimeView>, cx: &mut Context<Self>) -> Entity<TraceVm> {
         let id = self.next_id;
         self.next_id += 1;
         let store = self.store.clone();
@@ -76,7 +76,7 @@ impl ExploreVm {
     }
 
     fn persist_views(&self, cx: &mut Context<Self>) {
-        let saved: Vec<crate::session::SavedTimeView> = self.views.iter().map(|v| crate::session::SavedTimeView::from_view(&v.read(cx).view)).collect();
+        let saved: Vec<crate::data::preferences::SavedTimeView> = self.views.iter().map(|v| crate::data::preferences::SavedTimeView::from_view(&v.read(cx).view)).collect();
         self.store.update(cx, |s, _| s.set_explore_views(saved));
     }
 

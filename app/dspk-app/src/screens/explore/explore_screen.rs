@@ -12,14 +12,14 @@ use gpui_kit::component::h_flex;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{div, px, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, Styled as _, Subscription, Window};
 
-use crate::engine::time::renderer::TimeViewKind;
-use crate::engine::time::view::ViewId;
-use crate::store::Store;
-use crate::viewmodels::{ExploreEvent, ExploreVm, TraceVm};
+use crate::screens::explore::trace::renderer::TimeViewKind;
+use crate::screens::explore::trace::view::ViewId;
+use crate::data::store::Store;
+use crate::screens::explore::{ExploreEvent, ExploreVm, TraceVm};
 
-use super::panels::{ChannelsPanel, DockToggle, SettingsPanel, TimelinePanel};
-use crate::widgets::{rail, Edge};
-use super::trace::TracePanel;
+use super::components::panels::{ChannelsPanel, DockToggle, SettingsPanel, TimelinePanel};
+use crate::ui::widgets::{rail, Edge};
+use super::trace::trace_panel::TracePanel;
 
 pub struct ExploreView {
     pub vm: Entity<ExploreVm>,

@@ -3,8 +3,8 @@
 
 use gpui_kit::{App, Global};
 
-use crate::engine::time::hover::HoverReader;
-use crate::engine::work_pool::WorkPool;
+use crate::screens::explore::trace::hover::HoverReader;
+use crate::data::work_pool::WorkPool;
 
 /// Work-pool slot of a view's frame renders.
 pub const RENDER_SLOT: u32 = 0;

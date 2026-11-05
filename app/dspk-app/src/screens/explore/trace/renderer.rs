@@ -11,10 +11,10 @@ use dspk_ops::math::percentile;
 use dspk_core::SignalUnit;
 use dspk_view::{min_max_decimate_into, Envelope, SignalBackend, View};
 
-use crate::engine::canvas::{Canvas, Frame};
-use crate::engine::ticks::nice_step;
-use crate::engine::palette::Palette;
-use crate::engine::data::SpikeEventStore;
+use crate::ui::plot::canvas::{Canvas, Frame};
+use crate::ui::plot::ticks::nice_step;
+use crate::ui::theme::palette::Palette;
+use crate::data::recording::SpikeEventStore;
 
 /// Voltage that fills `LANE_FILL` of a lane's half-height at gain 1x when a view is not
 /// auto-scaled (80 µV: a large extracellular spike).
@@ -67,7 +67,7 @@ pub struct RenderRequest {
     /// Draw the amplitude scale bar (traces).
     pub scale_bar: bool,
     /// Sorted spikes to mark in a cluster color: (color, [(time_sec, channel)]).
-    pub highlights: Vec<(crate::engine::canvas::Pixel, Vec<(f64, usize)>)>,
+    pub highlights: Vec<(crate::ui::plot::canvas::Pixel, Vec<(f64, usize)>)>,
     pub palette: Palette,
 }
 
@@ -425,7 +425,7 @@ impl WaveformRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::data::Dataset;
+    use crate::data::recording::Dataset;
 
     /// Request for `mode` over `ds`: traces show the first 4 channels, heatmap every channel.
     fn request(ds: Dataset, mode: TimeViewKind) -> RenderRequest {
@@ -452,7 +452,7 @@ mod tests {
             scale_hint: 0.0,
             grid_times: vec![0.05],
             scale_bar: true,
-            highlights: vec![(crate::engine::canvas::Pixel::rgb(255, 0, 0), vec![(0.05, 0)])],
+            highlights: vec![(crate::ui::plot::canvas::Pixel::rgb(255, 0, 0), vec![(0.05, 0)])],
             palette: Palette::DARK,
         }
     }
@@ -595,7 +595,7 @@ mod tests {
             ("mock_signal_384ch.bin", TimeViewKind::Heatmap, 1.0),
         ];
         for (file, mode, window_sec) in cases {
-            let Ok(sources) = crate::engine::data::SourceSet::open(&root.join(file)) else {
+            let Ok(sources) = crate::data::recording::SourceSet::open(&root.join(file)) else {
                 println!("skip {file} (not found)");
                 continue;
             };

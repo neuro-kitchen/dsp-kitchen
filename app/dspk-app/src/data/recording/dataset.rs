@@ -220,7 +220,7 @@ mod tests {
     #[ignore]
     fn bench_pyramid() {
         let Some(path) = std::env::var_os("DSP_APP_BENCH_FILE") else { return };
-        let sources = crate::engine::data::SourceSet::open(Path::new(&path)).unwrap();
+        let sources = crate::data::recording::SourceSet::open(Path::new(&path)).unwrap();
         let ds = sources.default_dataset();
         let (tx, rx) = std::sync::mpsc::channel();
         ds.signal().watch(Arc::new(move |p: dspk_view::Progress| {

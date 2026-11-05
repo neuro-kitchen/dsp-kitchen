@@ -16,12 +16,12 @@ use gpui_kit::{
     PathPromptOptions, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
 };
 
-use crate::actions::*;
-use crate::engine::time::renderer::TimeViewKind;
-use crate::store::{file_label, AppEvent, Store};
-use crate::views::ExploreView;
-use crate::widgets::EmptyState;
-use crate::workspace::Workspace;
+use crate::navigation::actions::*;
+use crate::screens::explore::trace::renderer::TimeViewKind;
+use crate::data::store::{file_label, AppEvent, Store};
+use crate::screens::explore::ExploreView;
+use crate::ui::widgets::EmptyState;
+use crate::navigation::route::Workspace;
 
 /// The synthetic recording of the start screen and the File menu.
 pub const SYNTHETIC: (usize, f64, f64) = (32, 30_000.0, 300.0);
@@ -445,20 +445,20 @@ mod tests {
     use gpui_kit::{px, size, AnyWindowHandle, AppContext as _, Bounds, Entity, Point, TestAppContext, WindowBounds, WindowOptions};
 
     use super::DspApp;
-    use crate::engine::data::{Dataset, SourceSet};
-    use crate::engine::time::renderer::TimeViewKind;
-    use crate::session::Session;
-    use crate::store::{Recording, Store};
-    use crate::viewmodels::{ExploreVm, TraceVm};
-    use crate::workspace::Workspace;
+    use crate::data::recording::{Dataset, SourceSet};
+    use crate::screens::explore::trace::renderer::TimeViewKind;
+    use crate::data::preferences::Session;
+    use crate::data::store::{Recording, Store};
+    use crate::screens::explore::{ExploreVm, TraceVm};
+    use crate::navigation::route::Workspace;
 
     fn open(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Store>, Entity<DspApp>) {
         // Frames come back from real render threads: allow their wake-ups from the start
         cx.executor().allow_parking();
         cx.update(|cx| {
             gpui_kit::init(cx);
-            crate::actions::bind_keys(cx);
-            crate::viewmodels::Services::install(cx);
+            crate::navigation::actions::bind_keys(cx);
+            crate::data::services::Services::install(cx);
             let store = cx.new(|_| Store::new(Session::new(), None));
             let bounds = Bounds { origin: Point::default(), size: size(px(1400.), px(900.)) };
             let options = WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), ..Default::default() };
@@ -630,7 +630,7 @@ mod tests {
         install(cx, &store);
         // Start dark, whatever the test platform's appearance
         cx.update_window(window, |_, window, cx| app.update(cx, |a, cx| DspApp::apply_theme(&a.store, Some(true), window, cx))).unwrap();
-        let dark = crate::engine::palette::Palette::DARK.background;
+        let dark = crate::ui::theme::palette::Palette::DARK.background;
         wait_until(cx, window, |cx| corner_pixels(cx, &app).iter().all(|p| *p == Some([dark.b, dark.g, dark.r, 255])));
 
         cx.update_window(window, |_, window, cx| {

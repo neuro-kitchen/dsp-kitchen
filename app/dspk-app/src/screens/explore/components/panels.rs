@@ -20,11 +20,11 @@ use gpui_kit::{
     WeakEntity, Window,
 };
 
-use crate::engine::time::renderer::TimeViewKind;
-use crate::store::{AppEvent, Store};
-use crate::viewmodels::{ExploreEvent, ExploreVm};
-use crate::views::trace::color;
-use crate::widgets::{icon_button, row, Edge, MenuSelect, PanelHeader, Section};
+use crate::screens::explore::trace::renderer::TimeViewKind;
+use crate::data::store::{AppEvent, Store};
+use crate::screens::explore::{ExploreEvent, ExploreVm};
+use crate::screens::explore::trace::trace_panel::color;
+use crate::ui::widgets::{icon_button, row, Edge, MenuSelect, PanelHeader, Section};
 
 /// The focused view's source id (else the recording's default source).
 fn focused_source(explore: &Entity<ExploreVm>, cx: &App) -> Option<String> {
@@ -175,7 +175,7 @@ impl ChannelsPanel {
         self.explore.read(cx).store().clone()
     }
 
-    fn pinned_vm(&self, cx: &App) -> Option<Entity<crate::viewmodels::TraceVm>> {
+    fn pinned_vm(&self, cx: &App) -> Option<Entity<crate::screens::explore::TraceVm>> {
         self.explore.read(cx).focused.clone().filter(|vm| vm.read(cx).view.pinned_selection)
     }
 
@@ -527,7 +527,7 @@ impl SettingsPanel {
 }
 
 /// The open recording's default source.
-fn s_sources_default(store: &Entity<Store>, cx: &App) -> Option<std::sync::Arc<crate::engine::data::Dataset>> {
+fn s_sources_default(store: &Entity<Store>, cx: &App) -> Option<std::sync::Arc<crate::data::recording::Dataset>> {
     Some(store.read(cx).sources()?.default_dataset())
 }
 
@@ -677,7 +677,7 @@ impl TimelinePanel {
         // Activity of the whole recording behind the window box (columns of ~2 px)
         let columns = (self.track.get().size.width.as_f32() / 2.0).round().max(1.0) as usize;
         if self.activity.as_ref().is_none_or(|(w, _)| *w != columns) {
-            let values = s_sources_default(&self.store, cx).map(|ds| crate::engine::data::dataset::activity(&ds, columns)).unwrap_or_default();
+            let values = s_sources_default(&self.store, cx).map(|ds| crate::data::recording::dataset::activity(&ds, columns)).unwrap_or_default();
             self.activity = Some((columns, Rc::new(values)));
         }
         let activity = self.activity.as_ref().map(|(_, v)| v.clone()).unwrap_or_default();
@@ -743,10 +743,10 @@ impl TimelinePanel {
                     .justify_center()
                     .text_xs()
                     .text_color(fg)
-                    .child(crate::store::duration(tl.visible_window_sec)),
+                    .child(crate::data::store::duration(tl.visible_window_sec)),
             )
             .child(div().absolute().top_0().bottom_0().left(relative(p)).w(px(2.)).bg(color(self.store.read(cx).palette().playhead)));
-        let ruler = h_flex().justify_between().children((0..=4).map(|q| div().text_xs().text_color(muted).child(crate::store::duration(total * q as f64 / 4.0))));
+        let ruler = h_flex().justify_between().children((0..=4).map(|q| div().text_xs().text_color(muted).child(crate::data::store::duration(total * q as f64 / 4.0))));
 
         v_flex()
             .id("timeline-panel")

@@ -6,15 +6,15 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use dspk_view::SignalBackend;
 
-use crate::engine::canvas::Pixel;
-use crate::engine::ticks::{nice_step, ticks};
-use crate::engine::data::{Dataset, SpikeEventStore};
+use crate::ui::plot::canvas::Pixel;
+use crate::ui::plot::ticks::{nice_step, ticks};
+use crate::data::recording::{Dataset, SpikeEventStore};
 
 use dspk_core::SignalUnit;
 
 use super::renderer::{nominal_amplitude, px_per_unit, scale_bar_value, RenderRequest, TimeViewKind};
-use crate::engine::palette::Palette;
-use super::timeline::TimelineState;
+use crate::ui::theme::palette::Palette;
+use crate::domain::timeline::TimelineState;
 
 /// Identifies a view for as long as the app runs (also its render key).
 pub type ViewId = u64;

@@ -11,12 +11,12 @@ use std::time::{Duration, Instant};
 use gpui_kit::{AppContext as _, Context, EventEmitter, Task};
 
 use dspk_view::Progress;
-use crate::engine::data::{Dataset, SourceSet, SpikeEventStore};
-use crate::engine::palette::Palette;
-use crate::engine::time::timeline::TimelineState;
-use crate::engine::time::view::parse_channel_ranges;
-use crate::session::Session;
-use crate::workspace::Workspace;
+use crate::data::recording::{Dataset, SourceSet, SpikeEventStore};
+use crate::ui::theme::palette::Palette;
+use crate::domain::timeline::TimelineState;
+use crate::screens::explore::trace::view::parse_channel_ranges;
+use crate::data::preferences::Session;
+use crate::navigation::route::Workspace;
 
 /// Playback clock period.
 const TICK: Duration = Duration::from_millis(16);
@@ -163,7 +163,7 @@ impl Store {
         }
     }
 
-    pub fn set_explore_views(&mut self, views: Vec<crate::session::SavedTimeView>) {
+    pub fn set_explore_views(&mut self, views: Vec<crate::data::preferences::SavedTimeView>) {
         if self.session.explore.views != views {
             self.session.explore.views = views;
             self.save_session();

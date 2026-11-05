@@ -1,19 +1,18 @@
 //! DSP App: an electrophysiology workbench (GPUI + gpui-kit). Workspaces (Explore · Sorting ·
 //! Pipeline · Curation) of docked views on one timeline; see `.tasks/slint-gpui-migration/`.
 //!
-//! Layers: `engine` (no UI type: data, timeline, renderers, render threads) → `store` (shared state
-//! and its events) → `viewmodels` → `views` / `app` (GPUI). `--snapshot` uses the engine alone.
+//! Layout (Kotlin Compose Multiplatform style, as lumen-app): `di` (wiring), `data` (recording,
+//! shared store, preferences, work pool), `domain` (plain models), `navigation` (routes, actions),
+//! `screens/<feature>` (state, events, view model, screen, components), `ui` (theme, plot
+//! primitives, widgets). `--snapshot` uses the data layer and the trace renderer alone.
 
-mod actions;
 mod app;
-mod assets;
-mod engine;
-mod session;
-mod store;
-mod viewmodels;
-mod views;
-mod widgets;
-mod workspace;
+mod data;
+mod di;
+mod domain;
+mod navigation;
+mod screens;
+mod ui;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,12 +22,14 @@ use clap::Parser;
 use gpui_kit::component::TitleBar;
 use gpui_kit::{px, size, App, AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOptions};
 
-use engine::data::{Dataset, SourceSet, SpikeEventStore};
-use engine::time::renderer::{TimeViewKind, WaveformRenderer};
-use engine::time::timeline::TimelineState;
-use engine::time::view::TimeView;
-use session::Session;
-use store::Store;
+use data::preferences::Session;
+use data::recording::{Dataset, SourceSet, SpikeEventStore};
+use data::store::Store;
+use domain::timeline::TimelineState;
+use navigation::actions;
+use screens::explore::trace::renderer::{TimeViewKind, WaveformRenderer};
+use screens::explore::trace::view::TimeView;
+use ui::assets;
 
 #[derive(Parser, Debug)]
 #[command(name = "dspk-app")]
@@ -96,7 +97,7 @@ fn main() -> Result<()> {
     gpui_kit::application().with_assets(assets::AppAssets).run(move |cx: &mut App| {
         gpui_kit::init(cx);
         actions::bind_keys(cx);
-        viewmodels::Services::install(cx);
+        di::install(cx);
         cx.on_action(|_: &actions::Quit, cx| cx.quit());
         // One main window: closing it ends the app (Linux / Windows convention)
         cx.on_window_closed(|cx, _| cx.quit()).detach();
@@ -145,7 +146,7 @@ fn snapshot(args: &Args, path: &std::path::Path) -> Result<()> {
     let window = |t: f64| ((t - dataset.start_time_sec) * dataset.sample_rate).max(0.0) as u64;
     let (start, end) = (window(timeline.window_start_sec), window(timeline.window_start_sec + timeline.visible_window_sec));
     dataset.signal().prepare(start, end)?;
-    let req = view.render_request(&timeline, dataset.signal().clone(), Arc::new(SpikeEventStore::default()), engine::palette::Palette::DARK);
+    let req = view.render_request(&timeline, dataset.signal().clone(), Arc::new(SpikeEventStore::default()), ui::theme::palette::Palette::DARK);
     let (frame, scale) = WaveformRenderer::default().render_scaled(&req);
     view.amp_scale = scale;
     println!("Source {} · scale bar {}", dataset.name, view.scale_bar_label());

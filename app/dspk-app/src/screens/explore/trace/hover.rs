@@ -9,7 +9,7 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
 use std::thread;
 
-use crate::engine::data::Dataset;
+use crate::data::recording::Dataset;
 
 use super::view::fmt_amount;
 
