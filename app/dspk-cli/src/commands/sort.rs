@@ -1,4 +1,4 @@
-//! `sort`: runs the `dspk-sorters` program (every spike sorter; GPL-3.0 as a whole, since it
+//! `sort`: runs the `dspk-cli-sorter` program (every spike sorter; GPL-3.0 as a whole, since it
 //! contains Kilosort4 and EMUsort) as a separate process with the arguments given here, so this
 //! command line stays MIT OR Apache-2.0. `dspk sorters install` downloads the program; a source
 //! build finds the one built next to `dspk`.
@@ -13,7 +13,7 @@ use crate::sorters_program as sorters;
 #[derive(Args, Debug)]
 pub struct SortArgs {
     /// The sorter (kilosort4, emusort, mountainsort5, spykingcircus2, tridesclous2) and its
-    /// arguments, passed to dspk-sorters (`dspk sort kilosort4 --help` lists them)
+    /// arguments, passed to dspk-cli-sorter (`dspk sort kilosort4 --help` lists them)
     #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true, value_name = "SORTER ARGS")]
     args: Vec<OsString>,
 }
@@ -23,7 +23,7 @@ pub fn run(runtime: Option<&str>, verbose: bool, args: &SortArgs) -> anyhow::Res
     let caller = std::env::current_exe().ok();
     let Some(program) = sorters::locate(version, caller.as_deref()) else {
         bail!(
-            "the sorters are a separate program, dspk-sorters {version} (GPL-3.0), not installed here: \
+            "the sorters are a separate program, dspk-cli-sorter {version} (GPL-3.0), not installed here: \
              run `dspk sorters install` to download it, or set {} to an executable",
             sorters::SORTERS_BIN_ENV
         );

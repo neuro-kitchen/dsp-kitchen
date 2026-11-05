@@ -3126,6 +3126,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "dspk-cli-sorter"
+version = "0.0.5"
+dependencies = [
+ "anstream",
+ "anyhow",
+ "clap",
+ "cubecl",
+ "dspk-cli",
+ "dspk-core",
+ "dspk-sorter-kilosort",
+ "dspk-sorter-ms5",
+ "dspk-sorter-si",
+ "dspk-synapse",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "dspk-core"
 version = "0.0.5"
 dependencies = [
@@ -3254,24 +3272,6 @@ dependencies = [
  "dspk-synapse",
  "rayon",
  "serde_json",
-]
-
-[[package]]
-name = "dspk-sorters"
-version = "0.0.5"
-dependencies = [
- "anstream",
- "anyhow",
- "clap",
- "cubecl",
- "dspk-cli",
- "dspk-core",
- "dspk-sorter-kilosort",
- "dspk-sorter-ms5",
- "dspk-sorter-si",
- "dspk-synapse",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

@@ -22,8 +22,9 @@ members = [
     "serve/dspk-stream",
     # Front ends
     "app/dspk-cli",
-    "app/dspk-sorters",
     "app/dspk-app",
+    # Plugins: separate programs the front ends run (the sorters: GPL-3.0, never linked by them)
+    "plugins/cli/dspk-cli-sorter",
     # Bindings
     "bindings/python/dspk-py-core",
     "bindings/python/dspk-py",

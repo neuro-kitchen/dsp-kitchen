@@ -31,7 +31,7 @@ body:
         - Python (`pip install dspk`)
         - Rust crates
         - "`dspk` command line"
-        - "`dspk-sorters` / `dspk sort`"
+        - "`dspk-cli-sorter` / `dspk sort`"
         - Desktop app
     validations:
       required: true
