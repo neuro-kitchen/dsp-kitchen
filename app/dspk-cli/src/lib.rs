@@ -4,4 +4,5 @@
 
 pub mod commands;
 pub mod progress;
+pub mod sorters_program;
 pub mod style;

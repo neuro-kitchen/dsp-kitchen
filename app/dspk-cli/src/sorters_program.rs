@@ -14,7 +14,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::download::{build_http_client, download_and_verify};
+use dspk_hub::download::{build_http_client, download_and_verify};
 
 /// The program's name (plus [`std::env::consts::EXE_SUFFIX`]).
 pub const SORTERS_PROGRAM: &str = "dspk-sorters";

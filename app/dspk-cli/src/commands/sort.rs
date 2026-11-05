@@ -8,7 +8,7 @@ use std::process::Command;
 
 use anyhow::{bail, Context};
 use clap::Args;
-use dspk_synapse_hub::sorters;
+use crate::sorters_program as sorters;
 
 #[derive(Args, Debug)]
 pub struct SortArgs {

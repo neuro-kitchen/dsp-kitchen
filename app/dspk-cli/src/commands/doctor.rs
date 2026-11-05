@@ -60,6 +60,6 @@ pub fn run() -> anyhow::Result<()> {
     }
 
     #[cfg(feature = "hub")]
-    anstream::println!("{}  {}", paint(DIM, "Hub cache:"), paint(VALUE, dspk_synapse_hub::Hub::from_env_or_default().cache().root_dir().display()));
+    anstream::println!("{}  {}", paint(DIM, "Hub cache:"), paint(VALUE, dspk_hub::Hub::from_env_or_default().cache().root_dir().display()));
     Ok(())
 }

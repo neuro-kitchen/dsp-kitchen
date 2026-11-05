@@ -3,7 +3,7 @@
 //! Plot keys (pan, zoom, scroll, gain, play) work while a time view has focus (a click on it), so
 //! typing in a text field never moves the recording.
 
-use gpui_kit::{actions, App, KeyBinding};
+use gpui_kit::{actions, Action, App, KeyBinding};
 
 /// Key context of a focused time view.
 pub const PLOT: &str = "TimePlot";
@@ -42,16 +42,25 @@ actions!(
     ]
 );
 
+/// A global binding whose `secondary-` modifier is resolved for this OS (GPUI ≥ 0.3.11 resolves it
+/// only in `KeyBinding::load`; `KeyBinding::new` refuses it).
+fn os_binding<A: Action>(keys: &str, action: A, cx: &App) -> KeyBinding {
+    KeyBinding::load(keys, Box::new(action), None, false, None, cx).unwrap_or_else(|e| panic!("key binding {keys:?}: {e:?}"))
+}
+
 pub fn bind_keys(cx: &mut App) {
+    let global = [
+        os_binding("secondary-o", OpenRecording, cx),
+        os_binding("secondary-t", AddTraces, cx),
+        os_binding("secondary-h", AddHeatmap, cx),
+        os_binding("secondary-b", ToggleChannels, cx),
+        os_binding("secondary-alt-b", ToggleSettings, cx),
+        os_binding("secondary-j", ToggleTimeline, cx),
+        os_binding("secondary-q", Quit, cx),
+    ];
+    cx.bind_keys(global);
     cx.bind_keys([
-        KeyBinding::new("secondary-o", OpenRecording, None),
-        KeyBinding::new("secondary-t", AddTraces, None),
-        KeyBinding::new("secondary-h", AddHeatmap, None),
-        KeyBinding::new("secondary-b", ToggleChannels, None),
-        KeyBinding::new("secondary-alt-b", ToggleSettings, None),
-        KeyBinding::new("secondary-j", ToggleTimeline, None),
         KeyBinding::new("f1", ShowHelp, None),
-        KeyBinding::new("secondary-q", Quit, None),
         KeyBinding::new("space", PlayPause, Some(PLOT)),
         KeyBinding::new("left", PanBack, Some(PLOT)),
         KeyBinding::new("right", PanForward, Some(PLOT)),

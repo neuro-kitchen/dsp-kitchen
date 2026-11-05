@@ -57,8 +57,8 @@ pub struct RunArgs {
 /// Opens every format dspk reads, the neural ones included.
 fn open(path: &Path, source: Option<&str>) -> DspResult<Box<dyn RecordingSource>> {
     match source {
-        Some(id) => dspk_synapse_io::open_source(path, id),
-        None => dspk_synapse_io::open(path),
+        Some(id) => dspk_synapse::io::open_source(path, id),
+        None => dspk_synapse::io::open(path),
     }
 }
 
@@ -231,6 +231,17 @@ fn print_reports(reports: &[RunReport]) {
             paint(VALUE, shown(&r.output)),
             paint(DIM, format!("{:.2} s · {}/s read · {} written", r.seconds, bytes(rate as u64), bytes(r.bytes.written)))
         );
+        let t = &r.timings;
+        anstream::println!(
+            "  {}",
+            paint(
+                DIM,
+                format!(
+                    "read wait {:.2} s · device {:.2} s · write wait {:.2} s · encode {:.2} s · disk {:.2} s",
+                    t.read_wait, t.device, t.write_wait, t.encode, t.disk
+                )
+            )
+        );
     }
     if reports.len() > 1 {
         anstream::println!("{} {} inputs in {seconds:.2} s", paint(OK, "done"), reports.len());
@@ -262,6 +273,10 @@ fn report_json(r: &RunReport) -> serde_json::Value {
         "samples": r.samples, "sample_rate": r.sample_rate_hz, "windows": r.windows,
         "bytes": {"read": r.bytes.read, "uploaded": r.bytes.uploaded, "downloaded": r.bytes.downloaded, "written": r.bytes.written},
         "output": r.output, "provenance": r.provenance, "seconds": r.seconds,
+        "timings": {
+            "read_wait": r.timings.read_wait, "device": r.timings.device, "write_wait": r.timings.write_wait,
+            "encode": r.timings.encode, "disk": r.timings.disk,
+        },
     });
     v.as_object_mut().expect("object").extend(mode_json(r.mode).as_object().expect("object").clone());
     v
