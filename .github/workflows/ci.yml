@@ -93,7 +93,7 @@ jobs:
           cargo test -p dspk-core -p dspk-io -p dspk-hub -p dspk-view -p dspk-stream
           --lib
       - name: Neural-recording and sorting formats (dspk-synapse io)
-        run: cargo test -p dspk-synapse --lib io::
+        run: "cargo test -p dspk-synapse --lib io::"
       - name: Every dspk-ops operation against host references
         run: cargo test -p dspk-ops --test kernel_runtimes --test filter_runtimes
       - name: Device buffer writes
