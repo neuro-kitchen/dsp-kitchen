@@ -3173,6 +3173,7 @@ dependencies = [
  "dspk-sorter-ms5",
  "dspk-sorter-si",
  "dspk-synapse",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
 ]

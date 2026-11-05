@@ -74,7 +74,8 @@ pub fn sort(req: &SortRequest, send: impl Fn(JobMessage) + Send + Sync + 'static
         return Cancel::default();
     };
     let mut cmd = Command::new(program);
-    cmd.arg(&req.sorter).arg(&req.recording).arg("-o").arg(&req.output);
+    // Progress as JSON lines (stages and fractions), read by the job
+    cmd.arg("--progress").arg("json").arg(&req.sorter).arg(&req.recording).arg("-o").arg(&req.output);
     if let Some(s) = &req.source {
         cmd.arg("--source").arg(s);
     }
