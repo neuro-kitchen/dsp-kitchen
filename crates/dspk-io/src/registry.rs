@@ -2,7 +2,7 @@
 //!
 //! The one place that names every generic format and holds their feature gates. Adding a format is
 //! a new folder implementing [`Format`] plus one line here. Crates with more formats (e.g.
-//! `dspk-synapse-io`) keep their own list and detect with [`crate::core::detect_in`].
+//! `dspk_synapse::io`) keep their own list and detect with [`crate::core::detect_in`].
 
 use crate::core::Format;
 

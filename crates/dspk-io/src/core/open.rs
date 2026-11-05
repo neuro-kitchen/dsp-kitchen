@@ -14,7 +14,7 @@ pub fn detect(path: &Path) -> DspResult<&'static dyn Format> {
 }
 
 /// The format of `path`: the first of `formats` that detects it. For crates that add formats to
-/// the generic ones (e.g. `dspk-synapse-io`).
+/// the generic ones (e.g. `dspk_synapse::io`).
 pub fn detect_in(formats: &[&'static dyn Format], path: &Path) -> DspResult<&'static dyn Format> {
     if !path.exists() {
         return Err(DspError::Io(format!("{} does not exist", path.display())));
@@ -80,7 +80,7 @@ mod tests {
         #[cfg(feature = "zarr")]
         {
             let z = dir.join("rec.zarr");
-            write_zarr(&src, &z, 1000, |_, _| {}).unwrap();
+            write_zarr(&src, &z, &crate::ZarrOptions { chunk_samples: 1000, ..Default::default() }, |_, _| {}).unwrap();
             assert_eq!(open(&z).unwrap().info().channel_count(), 4);
         }
 
@@ -138,7 +138,7 @@ mod tests {
         #[cfg(feature = "zarr")]
         {
             let z = dir.join("rec.zarr");
-            write_zarr(&src, &z, 700, |_, _| {}).unwrap();
+            write_zarr(&src, &z, &crate::ZarrOptions { chunk_samples: 700, ..Default::default() }, |_, _| {}).unwrap();
             assert_stored_matches(open(&z).unwrap().as_ref(), &channels, 100..1_900);
             assert_native_matches(open(&z).unwrap().as_ref(), 100..1_900);
             let cached = CachedRecording::wrap(open(&z).unwrap(), 1 << 20);

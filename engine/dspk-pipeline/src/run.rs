@@ -3,23 +3,25 @@
 //!
 //! Every window crosses to the device once and back once ([`PipelineWorkspace`]: filters designed
 //! and uploaded once, device buffers reused). Integer recordings cross as their stored integers and
-//! are scaled on the device. The next window is read while the current one runs ([`WindowLoader`]).
-//! Results are appended to a raw float32 time-major file; Zarr output is converted from it at the
-//! end. [`DataMovement`] counts the bytes of each step.
+//! are scaled on the device. Three threads overlap: the next window is read while the current one
+//! runs ([`WindowLoader`]), and a writer thread takes downloaded windows through a bounded queue
+//! ([`WRITE_QUEUE_WINDOWS`]) and writes them: raw float32 time-major, or Zarr chunks directly
+//! ([`ZarrWriter`]). [`DataMovement`] counts the bytes of each step, [`StageTimings`] the time.
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::sync::mpsc::{sync_channel, Receiver};
+use std::time::{Duration, Instant};
 
 use cubecl::prelude::Client;
 use cubecl::server::Handle;
-use dspk_core::{ComputeTarget, DspResult, HaloWindow, MemoryOrder, RecordingSource, SampleFormat, WindowLoader};
-use dspk_io::{RawParams, RawRecording};
+use dspk_core::{ComputeTarget, DspError, DspResult, HaloWindow, MemoryOrder, RecordingSource, SampleFormat, WindowLoader};
+use dspk_io::{RawParams, ZarrWriter};
 use dspk_ops::core::buffer;
 use dspk_ops::math::stored_word_bytes;
 use dspk_ops::pipeline::PipelineWorkspace;
-use dspk_ops::resampler::{resample_poly, resample_poly_len};
+use dspk_ops::resampler::{execute_resample_poly, resample_poly_len};
 
 use crate::prepare::{default_open, prepare, ExecutedMode, Prepared};
 use crate::spec::{OutputFormat, PipelineSpec};
@@ -27,6 +29,13 @@ use crate::PipelineError;
 
 /// Appended to the output path for the canonical spec written next to it (provenance).
 pub const PROVENANCE_SUFFIX: &str = ".pipeline.json";
+
+/// Samples per parallel task when raw output frames are built.
+const ENCODE_SAMPLES_PER_TASK: usize = 4096;
+
+/// Downloaded windows waiting for the writer thread, at most: enough to absorb a slow write, and
+/// a bound on the memory they hold (each is `channels × window` float32 values).
+pub const WRITE_QUEUE_WINDOWS: usize = 2;
 
 /// Bytes moved by a run, step by step (window halos included: they are read, uploaded and
 /// downloaded with their window).
@@ -40,6 +49,26 @@ pub struct DataMovement {
     pub downloaded: u64,
     /// Bytes written to the output (float32).
     pub written: u64,
+}
+
+/// Where a run spent its time, in seconds. Reading, the device and the writer run on three
+/// threads at once, so these add up to more than [`RunReport::seconds`]; the largest of
+/// `read_wait`, `device` and `encode + disk` is the bottleneck.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct StageTimings {
+    /// Device thread waiting for the next window from the reader (read-ahead thread): reading is
+    /// the bottleneck when this is large.
+    pub read_wait: f64,
+    /// Upload, every stage, resampling and download, on the device thread.
+    pub device: f64,
+    /// Device thread waiting for room in the writer's queue: writing is the bottleneck when this is
+    /// large.
+    pub write_wait: f64,
+    /// Writer thread: channel-major windows into the output layout (raw: time-major frames;
+    /// Zarr: chunk buffers).
+    pub encode: f64,
+    /// Writer thread: handing bytes to the file system (raw writes, Zarr chunk stores).
+    pub disk: f64,
 }
 
 /// What a run did.
@@ -59,6 +88,7 @@ pub struct RunReport {
     /// The canonical spec written next to the output.
     pub provenance: PathBuf,
     pub seconds: f64,
+    pub timings: StageTimings,
 }
 
 /// Where a run is, passed to the observer after each window.
@@ -80,7 +110,7 @@ pub fn run(spec: &PipelineSpec, base_dir: &Path) -> Result<Vec<RunReport>, Pipel
 }
 
 /// [`run`] with recordings opened by `open` (e.g. a crate that adds formats, such as
-/// `dspk-synapse-io`) and `observe` called after each window: returning `false` cancels the run
+/// `dspk_synapse::io`) and `observe` called after each window: returning `false` cancels the run
 /// ([`PipelineError::Cancelled`]; the unfinished output is removed, finished inputs stay).
 pub fn run_with(
     spec: &PipelineSpec,
@@ -108,8 +138,8 @@ fn execute(
 ) -> Result<RunReport, PipelineError> {
     let started = Instant::now();
     let Prepared {
-        source, pipeline, resample, channels, range, unit, sample_rate, stored_format, stored_upload, mode, chunk, schedule,
-        out_rate, out_samples, output, format, ..
+        source, pipeline, resample, channels, range, unit, sample_rate, stored_format, stored_upload, mode, schedule,
+        out_rate, out_samples, output, format, zarr, ..
     } = p;
     let info = source.info();
     let nch = channels.len();
@@ -131,103 +161,127 @@ fn execute(
         workspace.set_stored_scaling(&gains, &offsets);
     }
 
-    // Raw float32, time-major; Zarr is converted from it at the end
-    let raw_path = match format {
-        OutputFormat::Raw => output.clone(),
-        OutputFormat::Zarr => output.with_extension("dspk-tmp.bin"),
-    };
-    if let Some(dir) = raw_path.parent().filter(|d| !d.as_os_str().is_empty()) {
+    if let Some(dir) = output.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir).map_err(|e| PipelineError::Io(format!("{}: {e}", dir.display())))?;
     }
-    let file = File::create(&raw_path).map_err(|e| PipelineError::Io(format!("{}: {e}", raw_path.display())))?;
-    let mut writer = BufWriter::new(file);
+    let sink = match format {
+        OutputFormat::Raw => {
+            let file = File::create(&output).map_err(|e| PipelineError::Io(format!("{}: {e}", output.display())))?;
+            Sink::Raw { file: BufWriter::new(file), frames: Vec::new(), parallel: zarr.parallel }
+        }
+        OutputFormat::Zarr => Sink::Zarr(ZarrWriter::create(&output, nch, out_samples, out_rate, &unit, &zarr)?),
+    };
 
     let mut bytes = DataMovement::default();
-    let mut frames = Vec::new();
-    // Columns `cols` of a processed `[channels, row_len]` block, channel-major → time-major,
-    // appended to the output
-    let mut emit = |rows: &[f32], row_len: usize, cols: std::ops::Range<usize>, bytes: &mut DataMovement| -> DspResult<()> {
-        frames.clear();
-        frames.reserve(cols.len() * nch * 4);
-        for t in cols {
-            for c in 0..nch {
-                frames.extend_from_slice(&rows[c * row_len + t].to_le_bytes());
-            }
-        }
-        writer.write_all(&frames)?;
-        bytes.written += frames.len() as u64;
-        Ok(())
-    };
-    // Downloads a processed window (resampled on the device first, when the chain ends with one)
-    // and appends the samples it owns
-    let origin = range.start;
-    let mut finish = |win: &HaloWindow, handle: Handle, client: &Client, bytes: &mut DataMovement| -> DspResult<()> {
-        let n = win.read_len();
-        let (rows, row_len, cols) = match &resample {
-            None => (buffer::download_prefix::<f32>(client, handle, nch * n), n, win.valid_local.clone()),
-            Some(r) => {
-                let out_len = resample_poly_len(n, r.up, r.down);
-                let out = buffer::empty::<f32>(client, nch * out_len);
-                resample_poly::<f32>(client, &handle, &out, nch, n, r.up, r.down, &r.filter, r.edge);
-                // Output j of the window is input `read_start + j · down / up`
-                let first = ((win.valid_global.start - win.read_global.start) as usize) * r.up / r.down;
-                let to_end = resample_poly_len((win.valid_global.end - origin) as usize, r.up, r.down);
-                let start = ((win.valid_global.start - origin) as usize) * r.up / r.down;
-                let count = to_end - start;
-                (buffer::download_prefix::<f32>(client, out, nch * out_len), out_len, first..(first + count).min(out_len))
-            }
-        };
-        bytes.downloaded += (rows.len() * 4) as u64;
-        emit(&rows, row_len, cols, bytes)
-    };
+    let mut timings = StageTimings::default();
     let loader = WindowLoader::with_channels(source.as_ref(), channels.clone());
     let total_windows = schedule.len();
     let mut done = 0;
     let mut cancelled = false;
     let read_bytes = |win: &HaloWindow| (nch * win.read_len() * stored_format.bytes()) as u64;
-    if stored_upload {
-        loader.stream_stored_owned_while(schedule.windows(), |win, stored| {
-            bytes.read += read_bytes(win);
-            bytes.uploaded += stored_word_bytes(stored.len()) as u64;
-            let handle = workspace.process_owned_stored_chunk_in_vram(stored, stored_format, win.read_len())?;
-            finish(win, handle, workspace.client(), &mut bytes)?;
-            done += 1;
-            cancelled = !observe(done, total_windows, bytes);
-            Ok(!cancelled)
-        })?;
-    } else {
-        loader.stream_while(schedule.windows(), |win, samples| {
-            bytes.read += read_bytes(win);
-            bytes.uploaded += (samples.len() * 4) as u64;
-            let handle = workspace.process_chunk_in_vram(samples, win.read_len());
-            finish(win, handle, workspace.client(), &mut bytes)?;
-            done += 1;
-            cancelled = !observe(done, total_windows, bytes);
-            Ok(!cancelled)
-        })?;
-    }
-    drop(finish);
-    drop(emit);
-    writer.flush().map_err(|e| PipelineError::Io(format!("{}: {e}", raw_path.display())))?;
-    drop(writer);
+    let origin = range.start;
+
+    let (sent, written) = std::thread::scope(|scope| {
+        let (queue, windows) = sync_channel::<Block>(WRITE_QUEUE_WINDOWS);
+        let writer = scope.spawn(move || sink.drain(windows, nch));
+        // Owns the queue: dropping it tells the writer no more blocks come
+        let send = move |block: Block, timings: &mut StageTimings| -> DspResult<()> {
+            let waited = Instant::now();
+            // The writer only hangs up after an error, which the join below reports
+            queue.send(block).map_err(|_| writer_stopped())?;
+            timings.write_wait += waited.elapsed().as_secs_f64();
+            Ok(())
+        };
+        // Downloads a processed window (resampled on the device first, when the chain ends with
+        // one) and queues the samples it owns for the writer
+        let finish = |win: &HaloWindow, handle: Handle, client: &Client, bytes: &mut DataMovement| -> Block {
+            let n = win.read_len();
+            let block = match &resample {
+                None => Block { rows: buffer::download_prefix::<f32>(client, handle, nch * n), row_len: n, cols: win.valid_local.clone() },
+                Some(r) => {
+                    let out_len = resample_poly_len(n, r.up, r.down);
+                    let out = buffer::empty::<f32>(client, nch * out_len);
+                    execute_resample_poly::<f32>(client, &handle, &out, nch, n, r.up, r.down, &r.filter, r.edge);
+                    // Output j of the window is input `read_start + j · down / up`
+                    let first = ((win.valid_global.start - win.read_global.start) as usize) * r.up / r.down;
+                    let to_end = resample_poly_len((win.valid_global.end - origin) as usize, r.up, r.down);
+                    let start = ((win.valid_global.start - origin) as usize) * r.up / r.down;
+                    let count = to_end - start;
+                    Block { rows: buffer::download_prefix::<f32>(client, out, nch * out_len), row_len: out_len, cols: first..(first + count).min(out_len) }
+                }
+            };
+            bytes.downloaded += (block.rows.len() * 4) as u64;
+            bytes.written += (block.cols.len() * nch * 4) as u64;
+            block
+        };
+        let mut idle = Instant::now();
+        let streamed = if stored_upload {
+            loader.stream_stored_owned_while(schedule.windows(), |win, stored| {
+                let started = Instant::now();
+                timings.read_wait += (started - idle).as_secs_f64();
+                bytes.read += read_bytes(win);
+                bytes.uploaded += stored_word_bytes(stored.len()) as u64;
+                let handle = workspace.process_owned_stored_chunk_in_vram(stored, stored_format, win.read_len())?;
+                let block = finish(win, handle, workspace.client(), &mut bytes);
+                timings.device += started.elapsed().as_secs_f64();
+                send(block, &mut timings)?;
+                done += 1;
+                cancelled = !observe(done, total_windows, bytes);
+                idle = Instant::now();
+                Ok(!cancelled)
+            })
+        } else {
+            loader.stream_while(schedule.windows(), |win, samples| {
+                let started = Instant::now();
+                timings.read_wait += (started - idle).as_secs_f64();
+                bytes.read += read_bytes(win);
+                bytes.uploaded += (samples.len() * 4) as u64;
+                let handle = workspace.process_chunk_in_vram(samples, win.read_len());
+                let block = finish(win, handle, workspace.client(), &mut bytes);
+                timings.device += started.elapsed().as_secs_f64();
+                send(block, &mut timings)?;
+                done += 1;
+                cancelled = !observe(done, total_windows, bytes);
+                idle = Instant::now();
+                Ok(!cancelled)
+            })
+        };
+        drop(send);
+        // The writer's own error explains a failed send; report it first
+        let written = writer.join().unwrap_or_else(|_| Err(DspError::Io("the output writer panicked".into())));
+        (streamed, written)
+    });
+    let cleanup = || match format {
+        OutputFormat::Raw => drop(std::fs::remove_file(&output)),
+        OutputFormat::Zarr => drop(std::fs::remove_dir_all(&output)),
+    };
+    // A cancelled run leaves the output incomplete (a Zarr writer then reports missing samples)
     if cancelled {
-        let _ = std::fs::remove_file(&raw_path);
+        cleanup();
         return Err(PipelineError::Cancelled);
     }
+    let stats = match (sent, written) {
+        (Ok(()), Ok(stats)) => stats,
+        // A failed send is explained by the writer's own error; any other error came first, and the
+        // writer then stopped short of the end because of it
+        (Err(e), Err(writer)) if e == writer_stopped() => {
+            cleanup();
+            return Err(writer.into());
+        }
+        (Err(e), _) | (Ok(()), Err(e)) => {
+            cleanup();
+            return Err(e.into());
+        }
+    };
+    timings.encode = stats.encode.as_secs_f64();
+    timings.disk = stats.disk.as_secs_f64();
 
     let samples = out_samples;
-    let mut params = RawParams::new(nch, out_rate, SampleFormat::F32, MemoryOrder::TimeMajor);
-    params.unit = unit;
-    params.samples = Some(samples);
-    params.write_sidecar(&raw_path)?;
-
-    if format == OutputFormat::Zarr {
-        let raw = RawRecording::open(&raw_path)?;
-        dspk_io::write_zarr(&raw, &output, chunk, |_, _| {})?;
-        drop(raw);
-        for p in [raw_path.clone(), RawParams::sidecar_path(&raw_path)] {
-            std::fs::remove_file(&p).map_err(|e| PipelineError::Io(format!("{}: {e}", p.display())))?;
-        }
+    if format == OutputFormat::Raw {
+        let mut params = RawParams::new(nch, out_rate, SampleFormat::F32, MemoryOrder::TimeMajor);
+        params.unit = unit;
+        params.samples = Some(samples);
+        params.write_sidecar(&output)?;
     }
 
     let provenance = provenance_path(&output);
@@ -245,7 +299,84 @@ fn execute(
         output,
         provenance,
         seconds: started.elapsed().as_secs_f64(),
+        timings,
     })
+}
+
+fn writer_stopped() -> DspError {
+    DspError::Io("the output writer stopped".into())
+}
+
+/// Columns `cols` of a processed `[channels, row_len]` window, for the writer.
+struct Block {
+    rows: Vec<f32>,
+    row_len: usize,
+    cols: std::ops::Range<usize>,
+}
+
+/// Where the writer thread puts blocks.
+enum Sink {
+    /// Raw float32, time-major (frames of all channels, sample after sample).
+    Raw { file: BufWriter<File>, frames: Vec<u8>, parallel: bool },
+    Zarr(ZarrWriter),
+}
+
+/// Time the writer thread spent on its two steps.
+#[derive(Default)]
+struct WriterStats {
+    encode: Duration,
+    disk: Duration,
+}
+
+impl Sink {
+    /// Writes every block from `blocks` until the sender hangs up, then completes the file.
+    fn drain(mut self, blocks: Receiver<Block>, nch: usize) -> DspResult<WriterStats> {
+        let mut stats = WriterStats::default();
+        for Block { rows, row_len, cols } in blocks {
+            match &mut self {
+                Sink::Raw { file, frames, parallel } => {
+                    // Frames (all channels of one sample), blocks of samples per task: in
+                    // parallel by default
+                    use rayon::prelude::*;
+                    let clock = Instant::now();
+                    let frame = nch * size_of::<f32>();
+                    frames.resize(cols.len() * frame, 0);
+                    let first = cols.start;
+                    let encode = |(block, out): (usize, &mut [u8])| {
+                        for (j, f) in out.chunks_exact_mut(frame).enumerate() {
+                            let t = first + block * ENCODE_SAMPLES_PER_TASK + j;
+                            for (c, v) in f.chunks_exact_mut(size_of::<f32>()).enumerate() {
+                                v.copy_from_slice(&rows[c * row_len + t].to_le_bytes());
+                            }
+                        }
+                    };
+                    if *parallel {
+                        frames.par_chunks_mut(frame * ENCODE_SAMPLES_PER_TASK).enumerate().for_each(encode);
+                    } else {
+                        frames.chunks_mut(frame * ENCODE_SAMPLES_PER_TASK).enumerate().for_each(encode);
+                    }
+                    stats.encode += clock.elapsed();
+                    let clock = Instant::now();
+                    file.write_all(frames)?;
+                    stats.disk += clock.elapsed();
+                }
+                // Copying into chunk buffers is cheap next to compressing and storing them (in
+                // parallel, inside `push`): counted as disk
+                Sink::Zarr(writer) => {
+                    let clock = Instant::now();
+                    writer.push(&rows, row_len, cols)?;
+                    stats.disk += clock.elapsed();
+                }
+            }
+        }
+        let clock = Instant::now();
+        match self {
+            Sink::Raw { mut file, .. } => file.flush()?,
+            Sink::Zarr(writer) => writer.finish()?,
+        }
+        stats.disk += clock.elapsed();
+        Ok(stats)
+    }
 }
 
 fn provenance_path(output: &Path) -> PathBuf {

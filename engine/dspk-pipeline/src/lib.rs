@@ -13,8 +13,9 @@
 //!   Schema of the spec is [`PipelineSpec::json_schema`].
 //! - The executor reads windows with read-ahead, uploads each window once (integer recordings as
 //!   stored integers, scaled on the device), runs every stage on the device, downloads once and
-//!   appends the result to the output; the canonical spec is written next to the output as
-//!   provenance (`<output>.pipeline.json`). The report counts the bytes moved at each step.
+//!   hands the result to a writer thread (raw, or Zarr chunks directly); the canonical spec is
+//!   written next to the output as provenance (`<output>.pipeline.json`). The report counts the
+//!   bytes moved at each step and the time spent in each ([`StageTimings`]).
 //! - One spec runs over many inputs (globs, lists) and may read several recordings as one (merge).
 //! - [`plan`] says what a run would do (mode, halos, windows, bytes) without touching the device;
 //!   [`run_with`] reports progress after each window and can cancel.
@@ -24,10 +25,10 @@ mod run;
 mod spec;
 
 pub use prepare::{default_open, plan, plan_with, ExecutedMode, Plan};
-pub use run::{run, run_with, DataMovement, Progress, RunReport, PROVENANCE_SUFFIX};
+pub use run::{run, run_with, DataMovement, Progress, RunReport, StageTimings, PROVENANCE_SUFFIX, WRITE_QUEUE_WINDOWS};
 pub use spec::{
-    Band, Chain, Design, Edge, ExecMode, Execution, Input, MergePart, Mode, Node, OutputFormat, PipelineSpec, Start, Upload,
-    DEFAULT_CHUNK_SAMPLES, SPEC_VERSION,
+    Band, Chain, Compression, Design, Edge, ExecMode, Execution, Input, MergePart, Mode, Node, OutputFormat, PipelineSpec, Start, Upload,
+    DEFAULT_BLOSC_LEVEL, DEFAULT_CHUNK_SAMPLES, DEFAULT_ZSTD_LEVEL, SPEC_VERSION,
 };
 
 /// Why a pipeline could not be read, checked or run.
