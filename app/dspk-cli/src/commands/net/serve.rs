@@ -11,7 +11,7 @@ use anyhow::Context;
 use clap::Args;
 use dspk_core::{ProgressEvent, ProgressSink, RecordingSource};
 use dspk_synapse::io::{SyntheticParams, SyntheticRecording};
-use dspk_stream::{serve_recording, server_config, Pacing, ServeOptions, Server, ServerIdentity};
+use dspk_stream::{serve_recording, server_config_with_clients, Authority, Pacing, ServeOptions, Server, ServerIdentity};
 use dspk_view::{Pyramid, PyramidBuilder, MEMORY_BASE};
 
 use crate::progress::TerminalProgress;
@@ -47,15 +47,25 @@ pub struct ServeArgs {
     /// Send as fast as clients take it, not at the recording's rate
     #[arg(long)]
     unpaced: bool,
-    /// Certificate chain (PEM); a self-signed certificate is generated when omitted
+    /// Certificate chain (PEM); when omitted, the server's authority issues one for the --name
+    /// names at every start
     #[arg(long, requires = "private_key")]
     certificate: Option<PathBuf>,
     /// Private key (PEM) of --certificate
     #[arg(long, requires = "certificate")]
     private_key: Option<PathBuf>,
-    /// Where to write the generated self-signed certificate (DER), for clients to trust
+    /// Where to write the certificate clients trust (DER): the server's authority. Clients
+    /// enrolled with `dspk clients enroll` have it in their identity file already
     #[arg(long, conflicts_with = "certificate")]
     certificate_out: Option<PathBuf>,
+    /// The server's authority folder: its CA and the enrolled clients (default: <data dir>/serve,
+    /// e.g. ~/.local/share/dspk/serve; created on first use)
+    #[arg(long, env = super::clients::AUTH_DIR_ENV)]
+    auth_dir: Option<PathBuf>,
+    /// Also let in clients without a certificate, read only. Anyone who reaches the port can
+    /// then read the recording: trusted networks only
+    #[arg(long)]
+    allow_anonymous: bool,
     /// Clients connected at once; more are refused until one leaves
     #[arg(long, default_value_t = dspk_stream::DEFAULT_MAX_CONNECTIONS)]
     max_clients: usize,
@@ -133,12 +143,21 @@ pub async fn run(args: &ServeArgs) -> anyhow::Result<()> {
         (Some(certificate_chain), Some(private_key)) => ServerIdentity::Files { certificate_chain: certificate_chain.clone(), private_key: private_key.clone() },
         _ => ServerIdentity::SelfSigned { names: self_signed_names(args) },
     };
-    let tls = server_config(&identity)?;
+    let dir = super::clients::auth_dir(args.auth_dir.as_deref());
+    let authority = Arc::new(Authority::open_or_create(&dir).with_context(|| format!("opening the authority in {}", dir.display()))?);
+    let tls = server_config_with_clients(&authority, &identity, args.allow_anonymous)?;
     if let Some(out) = &args.certificate_out {
         std::fs::write(out, &tls.certificate).with_context(|| format!("writing {}", out.display()))?;
-        println!("Certificate written to {} (clients: --certificate {})", out.display(), out.display());
+        println!("Certificate clients trust written to {} (`dspk receive --certificate {}`)", out.display(), out.display());
     }
-    let server = Server::bind(args.bind, tls.config)?.with_max_connections(args.max_clients);
+    let enrolled = authority.clients()?.iter().filter(|c| c.active()).count();
+    println!("Clients: certificates enrolled in {} ({enrolled} active; `dspk clients enroll <name>`)", dir.display());
+    if args.allow_anonymous {
+        println!("Warning: --allow-anonymous: anyone who reaches this port can read the recording");
+    } else if enrolled == 0 {
+        println!("No client is enrolled yet: nobody can connect until one is");
+    }
+    let server = Server::bind(args.bind, tls.config)?.with_max_connections(args.max_clients).with_authority(authority);
     let options = ServeOptions {
         frame_sec: args.frame_sec,
         pacing: if args.unpaced { Pacing::Unpaced } else { Pacing::RealTime },
@@ -150,8 +169,8 @@ pub async fn run(args: &ServeArgs) -> anyhow::Result<()> {
     tokio::select! {
         _ = shutdown() => println!("Stopping"),
         _ = async {
-            while let Some(connection) = server.accept().await {
-                let remote = connection.remote_address();
+            while let Some((connection, peer)) = server.accept().await {
+                let remote = format!("{} ({}, {})", connection.remote_address(), peer.name, peer.permission);
                 println!("Client {remote} connected");
                 let (source, pyramid, options) = (source.clone(), pyramid.clone(), options.clone());
                 tokio::spawn(async move {

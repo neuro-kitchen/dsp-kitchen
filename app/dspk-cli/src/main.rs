@@ -57,6 +57,9 @@ enum Command {
     Serve(commands::net::serve::ServeArgs),
     /// Receive a served recording: throughput, latency, optional save
     Receive(commands::net::receive::ReceiveArgs),
+    /// Who may connect to `serve`: enroll, revoke, list clients (certificates from the server's
+    /// own authority)
+    Clients(commands::net::clients::ClientsArgs),
     /// Published model and sorter artifacts: list, info, pull, verify, remove, clean
     #[cfg(feature = "hub")]
     Hub(commands::hub::HubArgs),
@@ -108,6 +111,7 @@ async fn dispatch(cli: &Cli) -> anyhow::Result<()> {
         Command::Benchmark(args) => commands::benchmark::run(cli.target()?, args),
         Command::Serve(args) => commands::net::serve::run(args).await,
         Command::Receive(args) => commands::net::receive::run(args).await,
+        Command::Clients(args) => commands::net::clients::run(args),
         #[cfg(feature = "hub")]
         Command::Hub(args) => commands::hub::run(args),
     }
