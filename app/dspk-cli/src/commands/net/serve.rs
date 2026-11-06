@@ -70,6 +70,10 @@ pub struct ServeArgs {
     /// e.g. ~/.local/share/dspk/serve; created on first use)
     #[arg(long, env = super::clients::AUTH_DIR_ENV)]
     auth_dir: Option<PathBuf>,
+    /// The compute runtime jobs (sorts) run on: wgpu, cuda, cpu (default: $DSPK_RUNTIME, else
+    /// the first compiled in, as `dspk doctor` shows)
+    #[arg(long)]
+    runtime: Option<String>,
     /// Also let in clients without a certificate, read only. Anyone who reaches the port can
     /// then read the recording: trusted networks only
     #[arg(long)]
@@ -213,13 +217,18 @@ pub async fn run(args: &ServeArgs) -> anyhow::Result<()> {
         loop_playback: args.r#loop,
         ..Default::default()
     };
+    // The runtime jobs run on: --runtime, else $DSPK_RUNTIME, else the first compiled in
+    let runtime = match &args.runtime {
+        Some(name) => dspk_core::ComputeTarget::parse(name)?.checked()?.name().to_string(),
+        None => dspk_core::ComputeTarget::from_env()?.name().to_string(),
+    };
     // Jobs (sorts) on the files, when there are files and the sorter program is here
     let jobs = match &files {
         Some((root, _)) => match crate::sorters_program::locate(env!("CARGO_PKG_VERSION"), std::env::current_exe().ok().as_deref()) {
             Some(program) => {
                 let audit = dir.join(AUDIT_FILE);
-                println!("Jobs: sorts with {} (control clients); audit log {}", program.display(), audit.display());
-                let runner = Arc::new(super::jobs::SorterRunner { program });
+                println!("Jobs: sorts with {} on {runtime} (control clients); audit log {}", program.display(), audit.display());
+                let runner = Arc::new(super::jobs::SorterRunner { program, runtime: Some(runtime.clone()) });
                 Some(Arc::new(dspk_stream::jobs::Jobs::new(runner, root.clone(), Some(audit))))
             }
             None => {
@@ -234,13 +243,25 @@ pub async fn run(args: &ServeArgs) -> anyhow::Result<()> {
         version: env!("CARGO_PKG_VERSION").to_string(),
         files,
         recording,
-        jobs,
+        jobs: jobs.clone(),
+        runtime: if jobs.is_some() { runtime } else { String::new() },
         options,
     });
     println!("Listening on {} (Ctrl+C to stop)", server.local_addr()?);
 
     tokio::select! {
-        _ = shutdown() => println!("Stopping"),
+        _ = shutdown() => {
+            println!("Stopping");
+            // No job outlives the server: a running sort is stopped (its program killed, its
+            // partial output removed)
+            if let Some(jobs) = &jobs
+                && jobs.state() == dspk_stream::protocol::wire::DeviceState::Running
+            {
+                println!("Stopping the running job");
+                let jobs = jobs.clone();
+                let _ = tokio::task::spawn_blocking(move || jobs.shutdown(std::time::Duration::from_secs(10))).await;
+            }
+        }
         _ = async {
             while let Some((connection, peer)) = server.accept().await {
                 let remote = format!("{} ({}, {})", connection.remote_address(), peer.name, peer.permission);

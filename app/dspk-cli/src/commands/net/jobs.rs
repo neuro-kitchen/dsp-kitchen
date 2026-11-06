@@ -15,10 +15,11 @@ pub const SORTERS: [&str; 5] = ["kilosort4", "emusort", "mountainsort5", "spykin
 /// How often a running sort checks whether it was asked to stop.
 const POLL: Duration = Duration::from_millis(200);
 
-/// Runs sorts with the `dspk-cli-sorter` at `program`. The compute runtime is the server's
-/// (`DSPK_RUNTIME` is inherited).
+/// Runs sorts with the `dspk-cli-sorter` at `program`, on `runtime` (`serve --runtime`).
 pub struct SorterRunner {
     pub program: PathBuf,
+    /// The compute runtime the sorts run on (`--runtime`); `None`: the sorter's default.
+    pub runtime: Option<String>,
 }
 
 impl JobRunner for SorterRunner {
@@ -28,7 +29,11 @@ impl JobRunner for SorterRunner {
 
     fn run(&self, job: &JobSpec, report: &dyn JobReport, cancel: &AtomicBool) -> Result<String, String> {
         let mut cmd = Command::new(&self.program);
-        cmd.arg("--progress").arg("json").arg(&job.sorter).arg(&job.recording).arg("--output").arg(&job.output);
+        cmd.arg("--progress").arg("json");
+        if let Some(r) = &self.runtime {
+            cmd.arg("--runtime").arg(r);
+        }
+        cmd.arg(&job.sorter).arg(&job.recording).arg("--output").arg(&job.output);
         if let Some(s) = &job.source {
             cmd.arg("--source").arg(s);
         }

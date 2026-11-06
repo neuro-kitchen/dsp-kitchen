@@ -147,6 +147,7 @@ pub async fn run(args: &RemoteArgs) -> anyhow::Result<()> {
             println!("{} (dspk {}), protocol {}", server.server_name, server.server_version, server.protocol_version);
             println!("You: {} ({permission})", server.peer_name);
             println!("State: {}", state_name(server.state));
+            println!("Jobs run on: {}", if server.runtime.is_empty() { "(no jobs)" } else { server.runtime.as_str() });
             println!("Files: {}", if server.has_files { "yes (`dspk remote … files`)" } else { "none" });
         }
         Action::Files { dir } => {
