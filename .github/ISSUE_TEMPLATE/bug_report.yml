@@ -52,7 +52,7 @@ body:
     id: version
     attributes:
       label: dspk version
-      placeholder: "0.0.5 (dspk.__version__, dspk --version, or Cargo.lock)"
+      placeholder: "0.0.6 (dspk.__version__, dspk --version, or Cargo.lock)"
     validations:
       required: true
   - type: textarea
