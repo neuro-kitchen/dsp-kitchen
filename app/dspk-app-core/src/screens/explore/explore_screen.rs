@@ -10,11 +10,12 @@ use std::rc::Rc;
 use gpui_kit::base::dock::{DockArea, DockLayout, DockPlacement, InsertTarget};
 use gpui_kit::base::Placement;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::dock::{panel_handle, DockSkin};
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Icon, Selectable as _, Sizable as _};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    div, px, AnyView, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
+    div, px, AnyView, App, AppContext as _, Context, DragMoveEvent, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
     Styled as _, Subscription, WeakEntity, Window,
 };
 
@@ -22,10 +23,12 @@ use crate::data::store::{AppEvent, Store};
 use crate::screens::explore::trace::renderer::TimeViewKind;
 use crate::screens::explore::trace::view::ViewId;
 use crate::screens::explore::{ExploreEvent, ExploreVm, TraceVm};
+use crate::ui::panel_edge::{follow_panel_drag, panel_edge, PanelResize, Side};
 use crate::ui::widgets::HEADER_HEIGHT;
 
 use super::components::panels::{ChannelsPanel, DockToggle, SettingsPanel, TimelinePanel};
 use super::components::plugin_panel::PluginPanel;
+use super::components::timeline_tab::TimelineTab;
 use super::components::processing::ProcessingPanel;
 use super::trace::trace_panel::TracePanel;
 
@@ -69,6 +72,9 @@ pub struct ExploreView {
     pub panels: HashMap<ViewId, Entity<TracePanel>>,
     store: Entity<Store>,
     channels: Entity<ChannelsPanel>,
+    timeline_tab: Entity<TimelineTab>,
+    /// The left side shows the timeline tab (else Channels).
+    left_timeline: bool,
     processing: Entity<ProcessingPanel>,
     settings: Entity<SettingsPanel>,
     timeline: Entity<TimelinePanel>,
@@ -108,6 +114,7 @@ impl ExploreView {
         }
         let me = cx.weak_entity();
         let channels = cx.new(|cx| ChannelsPanel::new(vm.clone(), toggle_of(me.clone(), DockPlacement::Left), window, cx));
+        let timeline_tab = cx.new(|cx| TimelineTab::new(vm.clone(), toggle_of(me.clone(), DockPlacement::Left), cx));
         let settings = cx.new(|cx| SettingsPanel::new(vm.clone(), toggle_of(me.clone(), DockPlacement::Right), cx));
         let processing = cx.new(|cx| ProcessingPanel::new(vm.clone(), toggle_of(me.clone(), DockPlacement::Right), cx));
         let timeline = cx.new(|cx| TimelinePanel::new(store.clone(), toggle_of(me.clone(), DockPlacement::Bottom), cx));
@@ -143,6 +150,8 @@ impl ExploreView {
             panels: HashMap::new(),
             store,
             channels,
+            timeline_tab,
+            left_timeline: false,
             processing,
             settings,
             timeline,
@@ -227,6 +236,20 @@ impl ExploreView {
         });
     }
 
+    /// The left side shows the timeline tab (`timeline`) or Channels; when it shows it already,
+    /// the side hides.
+    fn show_left(&mut self, timeline: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.left_open && self.left_timeline == timeline {
+            self.toggle_dock(DockPlacement::Left, window, cx);
+            return;
+        }
+        self.left_timeline = timeline;
+        if !self.left_open {
+            self.toggle_dock(DockPlacement::Left, window, cx);
+        }
+        cx.notify();
+    }
+
     pub fn toggle_dock(&mut self, placement: DockPlacement, _window: &mut Window, cx: &mut Context<Self>) {
         match placement {
             DockPlacement::Left => self.left_open = !self.left_open,
@@ -280,7 +303,7 @@ impl ExploreView {
                     .on_click(move |_, _, cx| store.update(cx, |s, cx| s.show_view(&id, cx)))
             })
             .collect();
-        let store = self.store.clone();
+        let (store, me) = (self.store.clone(), cx.entity().downgrade());
         h_flex()
             .id("view-tabs")
             .h(px(30.))
@@ -290,13 +313,23 @@ impl ExploreView {
             .border_color(border)
             .children(tabs)
             .child(
-                Button::new("view-tabs-pipeline")
+                Button::new("view-tabs-new")
                     .ghost()
                     .xsmall()
-                    .icon(Icon::new(gpui_kit::assets::IconName::Workflow))
-                    .label("New view…")
-                    .tooltip("Branch a recording into a new view on the Pipeline canvas")
-                    .on_click(move |_, _, cx| store.update(cx, |s, cx| s.set_workspace(crate::navigation::route::Workspace::Pipeline, cx))),
+                    .icon(IconName::Plus)
+                    .label("New view")
+                    .tooltip("Add a view of the shown stream, or branch it in Pipeline")
+                    .dropdown_menu(move |m: PopupMenu, _, _| {
+                        let mut m = m.label("A view of this stream");
+                        for (label, kind) in [("Traces", TimeViewKind::Traces), ("Heatmap", TimeViewKind::Heatmap), ("Raster", TimeViewKind::Raster)] {
+                            let me = me.clone();
+                            m = m.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
+                                let _ = me.update(cx, |e, cx| e.add_view(kind, cx));
+                            }));
+                        }
+                        let store = store.clone();
+                        m.separator().item(PopupMenuItem::new("New stream: branch in Pipeline…").on_click(move |_, _, cx| store.update(cx, |s, cx| s.set_workspace(crate::navigation::route::Workspace::Pipeline, cx))))
+                    }),
             )
     }
 }
@@ -322,8 +355,14 @@ impl Render for ExploreView {
                 .bg(bar)
                 .border_r_1()
                 .border_color(border)
-                .child(rail_button("rail-channels", Icon::new(gpui_kit::assets::IconName::Rows3), "Channels".into(), self.left_open, move |w, cx| {
-                    let _ = me.update(cx, |e, cx| e.toggle_dock(DockPlacement::Left, w, cx));
+                .child(rail_button("rail-channels", Icon::new(gpui_kit::assets::IconName::Rows3), "Channels".into(), self.left_open && !self.left_timeline, {
+                    let me = me.clone();
+                    move |w, cx| {
+                        let _ = me.update(cx, |e, cx| e.show_left(false, w, cx));
+                    }
+                }))
+                .child(rail_button("rail-timeline", Icon::new(gpui_kit::assets::IconName::ChartGantt), "Timeline: recordings and epochs".into(), self.left_open && self.left_timeline, move |w, cx| {
+                    let _ = me.update(cx, |e, cx| e.show_left(true, w, cx));
                 }))
         };
         let mut items: Vec<(String, Icon, SharedString, RightPanel)> = vec![
@@ -340,16 +379,48 @@ impl Render for ExploreView {
             })
         }));
         let right_panel = self.right.and_then(|r| self.right_view(r));
+        let (left_w, right_w) = {
+            let s = self.store.read(cx);
+            (s.panel_width("explore.left", LEFT_W), s.panel_width("explore.right", RIGHT_W))
+        };
         v_flex()
             .size_full()
             .child(
                 h_flex()
                     .flex_1()
                     .min_h_0()
+                    .on_drag_move(cx.listener(|this, e: &DragMoveEvent<PanelResize>, _, cx| {
+                        follow_panel_drag(&this.store, e, cx);
+                        cx.notify();
+                    }))
                     .child(left_rail)
-                    .when(self.left_open, |d| d.child(div().w(px(LEFT_W)).flex_none().h_full().border_r_1().border_color(border).child(self.channels.clone())))
+                    .when(self.left_open, |d| {
+                        d.child(
+                            div()
+                                .relative()
+                                .w(px(left_w))
+                                .flex_none()
+                                .h_full()
+                                .border_r_1()
+                                .border_color(border)
+                                .map(|d| if self.left_timeline { d.child(self.timeline_tab.clone()) } else { d.child(self.channels.clone()) })
+                                .child(panel_edge("explore.left", Side::Left, RAIL_W)),
+                        )
+                    })
                     .child(v_flex().flex_1().min_w_0().h_full().child(self.view_tabs(cx)).child(div().flex_1().min_h_0().child(self.dock.clone())))
-                    .when_some(right_panel, |d, p| d.child(div().w(px(RIGHT_W)).flex_none().h_full().border_l_1().border_color(border).child(p)))
+                    .when_some(right_panel, |d, p| {
+                        d.child(
+                            div()
+                                .relative()
+                                .w(px(right_w))
+                                .flex_none()
+                                .h_full()
+                                .border_l_1()
+                                .border_color(border)
+                                .child(p)
+                                .child(panel_edge("explore.right", Side::Right, RAIL_W)),
+                        )
+                    })
                     .child(right_rail),
             )
             // Fixed at the bottom: open, or minimised to its header; nothing else goes here

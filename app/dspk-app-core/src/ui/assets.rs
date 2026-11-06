@@ -7,7 +7,7 @@ use gpui_kit::{AssetSource, SharedString};
 
 gpui_kit::assets::icon_assets!(
     ExtraIcons,
-    [AudioWaveform, SlidersHorizontal, Workflow, Microscope, SkipBack, SkipForward, StepBack, StepForward, Repeat, Rows3, Flame, LayoutGrid, Table, Activity, ChartScatter, GitCommitVertical, ZoomIn, ZoomOut, Unlink, Trash, Merge, Tag, Save, Scissors, Undo2, Redo2, Cpu]
+    [AudioWaveform, SlidersHorizontal, Workflow, Microscope, SkipBack, SkipForward, StepBack, StepForward, Repeat, Rows3, Flame, LayoutGrid, Table, Activity, ChartScatter, GitCommitVertical, ZoomIn, ZoomOut, Unlink, Trash, Merge, Tag, Save, Undo2, Redo2, Cpu, ChartGantt, Package, Layers, MousePointer2, Hand, Scissors]
 );
 
 pub struct AppAssets;

@@ -41,7 +41,8 @@ fn op(label: &'static str, hint: &'static str, node: Value) -> Item {
     Item { label, hint, template: Template::Op(node) }
 }
 
-/// Every category, in tree and menu order.
+/// Every family, in tree and menu order. Each item is one op type of the spec (Author: "sub
+/// families … like filter iir fir notch"); its values are set in the inspector, from presets.
 pub fn catalog() -> Vec<Category> {
     vec![
         Category {
@@ -49,36 +50,33 @@ pub fn catalog() -> Vec<Category> {
             icon: IconName::AudioWaveform,
             items: vec![
                 Item { label: "Open recording", hint: "The recording open in Explore", template: Template::OpenRecording },
-                Item { label: "Recording from file…", hint: "Pick a file (SpikeGLX, raw .bin + .meta, NWB Zarr)", template: Template::RecordingFile },
+                Item { label: "Recording from file…", hint: "SpikeGLX, raw .bin + .meta, NWB Zarr", template: Template::RecordingFile },
             ],
         },
         Category {
             name: "Filter",
             icon: IconName::SlidersHorizontal,
             items: vec![
-                op("Band-pass 300–6000 Hz", "Spike band (zero phase)", json!({"op": "iir", "band": "bandpass", "cutoff": [300.0, 6000.0]})),
-                op("High-pass 300 Hz", "Removes the slow signal", json!({"op": "iir", "band": "highpass", "cutoff": [300.0]})),
-                op("Low-pass 300 Hz", "LFP band", json!({"op": "iir", "band": "lowpass", "cutoff": [300.0]})),
-                op("Low-pass 6000 Hz", "Removes high-frequency noise", json!({"op": "iir", "band": "lowpass", "cutoff": [6000.0]})),
-                op("Band-stop 58–62 Hz", "Mains hum and a margin", json!({"op": "iir", "band": "bandstop", "cutoff": [58.0, 62.0]})),
-                op("Notch 60 Hz", "Mains hum (Americas)", json!({"op": "notch", "freq": 60.0, "q": 30.0})),
-                op("Notch 50 Hz", "Mains hum (Europe, Asia)", json!({"op": "notch", "freq": 50.0, "q": 30.0})),
+                op("IIR", "Butterworth, Chebyshev or Bessel; band-, high-, low-pass or band-stop", json!({"op": "iir", "band": "bandpass", "cutoff": [300.0, 6000.0]})),
+                op("FIR", "Taps you give (a moving average to start)", json!({"op": "fir", "taps": [0.2, 0.2, 0.2, 0.2, 0.2], "centered": true})),
+                op("SOS", "Second-order sections you give", json!({"op": "sos", "sections": [[1.0, 0.0, 0.0, 1.0, 0.0, 0.0]]})),
+                op("Notch", "One frequency out (mains hum)", json!({"op": "notch", "freq": 60.0, "q": 30.0})),
             ],
         },
         Category {
             name: "Reference",
             icon: IconName::Rows3,
             items: vec![
-                op("Common median reference", "Subtracts the median over channels, per sample", json!({"op": "cmr"})),
-                op("Common average reference", "Subtracts the mean over channels, per sample", json!({"op": "car"})),
+                op("CMR", "Common median reference", json!({"op": "cmr"})),
+                op("CAR", "Common average reference", json!({"op": "car"})),
             ],
         },
         Category {
             name: "Smooth",
             icon: IconName::Activity,
             items: vec![
-                op("Median (5 samples)", "Removes spikes of noise, keeps edges", json!({"op": "median", "width": 5})),
-                op("Gaussian smoothing (σ 2 samples)", "Low-pass in time", json!({"op": "gaussian_smooth", "sigma_samples": 2.0})),
+                op("Median", "Running median in time", json!({"op": "median", "width": 5})),
+                op("Gaussian", "Gaussian smoothing in time", json!({"op": "gaussian_smooth", "sigma_samples": 2.0})),
             ],
         },
         Category {
@@ -87,8 +85,8 @@ pub fn catalog() -> Vec<Category> {
             items: vec![
                 op("Scale", "a · x + b", json!({"op": "scale", "alpha": 1.0, "beta": 0.0})),
                 op("Subtract baseline", "x − baseline", json!({"op": "subtract_baseline", "baseline": 0.0})),
-                op("Clamp ±1000", "Limits the values", json!({"op": "clamp", "min": -1000.0, "max": 1000.0})),
-                op("Teager–Kaiser energy", "Instantaneous energy (spike detection)", json!({"op": "teager_kaiser"})),
+                op("Clamp", "Limits the values", json!({"op": "clamp", "min": -1000.0, "max": 1000.0})),
+                op("Teager–Kaiser", "Instantaneous energy (spike detection)", json!({"op": "teager_kaiser"})),
             ],
         },
         Category {
@@ -100,6 +98,50 @@ pub fn catalog() -> Vec<Category> {
             ],
         },
     ]
+}
+
+/// The type name of an op node on the canvas (`IIR`, `CMR`, …).
+pub fn type_name(node: &Node) -> &'static str {
+    match node {
+        Node::Iir { .. } => "IIR",
+        Node::Fir { .. } => "FIR",
+        Node::Sos { .. } => "SOS",
+        Node::Notch { .. } => "Notch",
+        Node::Car {} => "CAR",
+        Node::Cmr {} => "CMR",
+        Node::Median { .. } => "Median",
+        Node::GaussianSmooth { .. } => "Gaussian",
+        Node::Scale { .. } => "Scale",
+        Node::SubtractBaseline { .. } => "Subtract baseline",
+        Node::Clamp { .. } => "Clamp",
+        Node::TeagerKaiser { .. } => "Teager–Kaiser",
+        Node::Resample { .. } => "Resample",
+        Node::Read { .. } => "Read",
+        Node::Write { .. } => "Write",
+    }
+}
+
+/// Presets of an op type: label and the node's values (`IIR`: the usual bands).
+pub fn presets(node: &Node) -> Vec<(&'static str, Value)> {
+    let iir = |band: &str, cutoff: Value, design: &str, order: u32| json!({"op": "iir", "band": band, "cutoff": cutoff, "design": design, "order": order});
+    match node {
+        Node::Iir { .. } => vec![
+            ("Spikes · band-pass 300–6000 Hz (Butterworth 3)", iir("bandpass", json!([300.0, 6000.0]), "butterworth", 3)),
+            ("Spikes · high-pass 300 Hz (Butterworth 3)", iir("highpass", json!([300.0]), "butterworth", 3)),
+            ("LFP · low-pass 300 Hz (Butterworth 4)", iir("lowpass", json!([300.0]), "butterworth", 4)),
+            ("EMG · band-pass 20–450 Hz (Butterworth 4)", iir("bandpass", json!([20.0, 450.0]), "butterworth", 4)),
+            ("ECG · band-pass 0.5–40 Hz (Butterworth 2)", iir("bandpass", json!([0.5, 40.0]), "butterworth", 2)),
+            ("EEG · band-pass 1–70 Hz (Butterworth 4)", iir("bandpass", json!([1.0, 70.0]), "butterworth", 4)),
+            ("Mains · band-stop 58–62 Hz (Butterworth 2)", iir("bandstop", json!([58.0, 62.0]), "butterworth", 2)),
+            ("Mains · band-stop 48–52 Hz (Butterworth 2)", iir("bandstop", json!([48.0, 52.0]), "butterworth", 2)),
+        ],
+        Node::Notch { .. } => vec![("Mains 60 Hz", json!({"op": "notch", "freq": 60.0, "q": 30.0})), ("Mains 50 Hz", json!({"op": "notch", "freq": 50.0, "q": 30.0})), ("Harmonic 120 Hz", json!({"op": "notch", "freq": 120.0, "q": 30.0}))],
+        Node::Median { .. } => vec![("3 samples", json!({"op": "median", "width": 3})), ("5 samples", json!({"op": "median", "width": 5})), ("9 samples", json!({"op": "median", "width": 9}))],
+        Node::GaussianSmooth { .. } => vec![("σ 1 sample", json!({"op": "gaussian_smooth", "sigma_samples": 1.0})), ("σ 2 samples", json!({"op": "gaussian_smooth", "sigma_samples": 2.0})), ("σ 5 samples", json!({"op": "gaussian_smooth", "sigma_samples": 5.0}))],
+        Node::Fir { .. } => vec![("Moving average, 5 taps", json!({"op": "fir", "taps": [0.2, 0.2, 0.2, 0.2, 0.2], "centered": true})), ("Moving average, 9 taps", json!({"op": "fir", "taps": [0.111111, 0.111111, 0.111111, 0.111111, 0.111111, 0.111111, 0.111111, 0.111111, 0.111111], "centered": true}))],
+        Node::Scale { .. } => vec![("Invert", json!({"op": "scale", "alpha": -1.0, "beta": 0.0})), ("µV → mV", json!({"op": "scale", "alpha": 0.001, "beta": 0.0}))],
+        _ => Vec::new(),
+    }
 }
 
 /// `.bandpass(300.0, 6000.0, order = 3)` — the op as a Flow operator call.
@@ -141,13 +183,13 @@ pub fn describe(kind: &NodeKind) -> (String, String, IconName) {
             let channels = recording.channels.as_ref().map_or_else(|| "all channels".to_string(), |c| format!("{} channels", c.len()));
             (file, format!("flowOf(recording) · {channels}"), IconName::AudioWaveform)
         }
-        NodeKind::Op { node, .. } => {
-            let summary = op_summary(node);
-            let title = summary.split(" · ").next().unwrap_or(&summary).to_string();
-            (title, flow_call(node), IconName::SlidersHorizontal)
-        }
+        NodeKind::Op { node, .. } => (type_name(node).to_string(), op_summary(node), IconName::SlidersHorizontal),
         NodeKind::View { name, .. } => (name.clone(), ".collect(view) · shown in Explore".into(), IconName::Eye),
         NodeKind::Write {} => ("Write".into(), ".collect(write) · processed file".into(), IconName::ArrowDown),
+        NodeKind::Recipe { recipe, overrides, .. } => {
+            let own = if overrides.is_empty() { String::new() } else { format!(" · {} own value{}", overrides.len(), if overrides.len() == 1 { "" } else { "s" }) };
+            (recipe.clone(), format!("recipe{own}"), IconName::Package)
+        }
     }
 }
 
@@ -156,12 +198,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_catalog_ops_are_valid_view_ops() {
+    fn test_catalog_ops_and_presets_are_valid_view_ops() {
         for c in catalog() {
             for item in c.items {
                 if let Template::Op(v) = item.template {
                     let node: Node = serde_json::from_value(v).unwrap_or_else(|e| panic!("{}: {e}", item.label));
                     assert!(node.stage().is_ok(), "{}", item.label);
+                    for (label, p) in presets(&node) {
+                        let n: Node = serde_json::from_value(p).unwrap_or_else(|e| panic!("{label}: {e}"));
+                        assert!(n.stage().is_ok(), "{label}");
+                        assert_eq!(type_name(&n), type_name(&node), "{label} keeps the type");
+                    }
                 }
             }
         }

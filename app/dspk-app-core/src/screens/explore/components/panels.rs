@@ -10,8 +10,8 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dock::Panel;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::switch::Switch;
-use gpui_kit::component::menu::DropdownMenu as _;
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, IconName, Selectable as _, Sizable as _};
+use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
@@ -605,6 +605,18 @@ enum TrackDrag {
     Window { grab: f64 },
     Edge { left: bool },
     Scrub,
+    /// Marking an area (an epoch to be): where the drag began.
+    Mark { from: f64 },
+    /// Moving an edge of the marked area.
+    MarkEdge { left: bool },
+}
+
+/// What a right-click on the track was on.
+#[derive(Debug, Clone)]
+enum TrackHit {
+    Marked(f64, f64),
+    Epoch(crate::domain::epoch::EpochDoc),
+    Nothing,
 }
 
 pub struct TimelinePanel {
@@ -616,6 +628,10 @@ pub struct TimelinePanel {
     focus: FocusHandle,
     track: Rc<Cell<Bounds<Pixels>>>,
     drag: Option<TrackDrag>,
+    /// The marked area (s), until saved as an epoch or cleared; a plain drag marks while on.
+    marked: Option<(f64, f64)>,
+    marking: bool,
+    hit: Rc<std::cell::RefCell<TrackHit>>,
     _sub: Subscription,
 }
 
@@ -631,7 +647,18 @@ impl TimelinePanel {
                 cx.notify();
             }
         });
-        Self { store, dock, activity: None, focus: cx.focus_handle(), track: Rc::new(Cell::new(Bounds::default())), drag: None, _sub: sub }
+        Self {
+            store,
+            dock,
+            activity: None,
+            focus: cx.focus_handle(),
+            track: Rc::new(Cell::new(Bounds::default())),
+            drag: None,
+            marked: None,
+            marking: false,
+            hit: Rc::new(std::cell::RefCell::new(TrackHit::Nothing)),
+            _sub: sub,
+        }
     }
 
     /// Time under `x` of the track.
@@ -652,6 +679,22 @@ impl TimelinePanel {
         let x = (e.position.x - b.origin.x).as_f32();
         let (x0, x1) = ((tl.window_start_sec / total) as f32 * w, ((tl.window_start_sec + tl.visible_window_sec) / total) as f32 * w);
         let t = self.time_at(e.position.x, cx);
+        // The marked area's edges, then a new mark (Shift+drag, or Mark on)
+        if let Some((m0, m1)) = self.marked {
+            let (mx0, mx1) = ((m0 / total) as f32 * w, (m1 / total) as f32 * w);
+            if (x - mx0).abs() <= EDGE || (x - mx1).abs() <= EDGE {
+                self.drag = Some(TrackDrag::MarkEdge { left: (x - mx0).abs() <= (x - mx1).abs() });
+                cx.stop_propagation();
+                return;
+            }
+        }
+        if e.modifiers.shift || self.marking {
+            self.marked = Some((t, t));
+            self.drag = Some(TrackDrag::Mark { from: t });
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         self.drag = Some(if (x - x0).abs() <= EDGE {
             TrackDrag::Edge { left: true }
         } else if (x - x1).abs() <= EDGE {
@@ -672,6 +715,21 @@ impl TimelinePanel {
             return;
         }
         let t = self.time_at(e.position.x, cx);
+        match drag {
+            TrackDrag::Mark { from } => {
+                self.marked = Some((from.min(t), from.max(t)));
+                cx.notify();
+                return;
+            }
+            TrackDrag::MarkEdge { left } => {
+                if let Some((a, b)) = self.marked {
+                    self.marked = Some(if left { (t.min(b), b) } else { (a, t.max(a)) });
+                }
+                cx.notify();
+                return;
+            }
+            _ => {}
+        }
         self.store.update(cx, |s, cx| {
             let (a, span) = (s.timeline.window_start_sec, s.timeline.visible_window_sec);
             match drag {
@@ -679,12 +737,29 @@ impl TimelinePanel {
                 TrackDrag::Edge { left: true } => s.set_window(t.min(a + span - 0.005), a + span, cx),
                 TrackDrag::Edge { left: false } => s.set_window(a, t.max(a + 0.005), cx),
                 TrackDrag::Scrub => s.scrub_to(t, cx),
+                TrackDrag::Mark { .. } | TrackDrag::MarkEdge { .. } => {}
             }
         });
     }
 
-    fn on_up(&mut self, _: &MouseUpEvent, _: &mut Window, _: &mut Context<Self>) {
+    fn on_up(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.drag, Some(TrackDrag::Mark { .. })) && self.marked.is_some_and(|(a, b)| b - a < 1e-4) {
+            self.marked = None;
+            cx.notify();
+        }
         self.drag = None;
+    }
+
+    /// What a right-click at `x` is on (read by the track's menu).
+    fn on_right(&mut self, e: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let t = self.time_at(e.position.x, cx);
+        let s = self.store.read(cx);
+        let open = s.recording.as_ref().and_then(|r| r.path.clone());
+        let hit = match self.marked {
+            Some((a, b)) if t >= a && t <= b => TrackHit::Marked(a, b),
+            _ => s.doc.epochs.iter().find(|ep| Some(&ep.recording) == open.as_ref() && t >= ep.start_sec && t <= ep.end_sec).cloned().map_or(TrackHit::Nothing, TrackHit::Epoch),
+        };
+        *self.hit.borrow_mut() = hit;
     }
 }
 
@@ -733,7 +808,31 @@ impl TimelinePanel {
                     .selected(tl.loop_playback)
                     .on_click(act(Store::toggle_loop)),
             )
-            .child(speed);
+            .child(speed)
+            .child({
+                let marking = self.marking;
+                Button::new("mark-epoch")
+                    .small()
+                    .ghost()
+                    .icon(Icon::new(Lucide::ChartGantt))
+                    .label("Mark")
+                    .selected(marking)
+                    .tooltip("Mark an epoch: drag on the track (or Shift+drag any time), then right-click it → Save")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.marking = !this.marking;
+                        cx.notify();
+                    }))
+            });
+        // Epochs of the open recording, and the marked area (fractions of the track)
+        let open_path = s.recording.as_ref().and_then(|r| r.path.clone());
+        let epoch_bands: Vec<(f32, f32, gpui_kit::Hsla, String)> = s
+            .doc
+            .epochs
+            .iter()
+            .filter(|e| Some(&e.recording) == open_path.as_ref())
+            .map(|e| (((e.start_sec / tl.total_duration_sec.max(1e-9)) as f32), (((e.end_sec - e.start_sec) / tl.total_duration_sec.max(1e-9)) as f32), super::timeline_tab::epoch_color(&e.kind), e.name.clone()))
+            .collect();
+        let marked = self.marked.map(|(a, b)| (((a / tl.total_duration_sec.max(1e-9)) as f32), (((b - a) / tl.total_duration_sec.max(1e-9)) as f32)));
         // Activity of the whole recording behind the window box (columns of ~2 px)
         let columns = (self.track.get().size.width.as_f32() / 2.0).round().max(1.0) as usize;
         if self.activity.as_ref().is_none_or(|(w, _)| *w != columns) {
@@ -805,7 +904,75 @@ impl TimelinePanel {
                     .text_color(fg)
                     .child(crate::data::store::duration(tl.visible_window_sec)),
             )
-            .child(div().absolute().top_0().bottom_0().left(relative(p)).w(px(2.)).bg(color(self.store.read(cx).palette().playhead)));
+            .children(epoch_bands.into_iter().map(|(a, w, c, name)| {
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(relative(a))
+                    .w(relative(w.max(0.002)))
+                    .bg(c.opacity(0.22))
+                    .border_t_2()
+                    .border_color(c)
+                    .overflow_hidden()
+                    .px_1()
+                    .text_xs()
+                    .text_color(fg)
+                    .child(name)
+            }))
+            .children(marked.map(|(a, w)| {
+                div()
+                    .id("marked-area")
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(relative(a))
+                    .w(relative(w.max(0.002)))
+                    .bg(accent.opacity(0.18))
+                    .border_x_2()
+                    .border_color(fg)
+                    .cursor(CursorStyle::ResizeLeftRight)
+            }))
+            .child(div().absolute().top_0().bottom_0().left(relative(p)).w(px(2.)).bg(color(self.store.read(cx).palette().playhead)))
+            .on_mouse_down(MouseButton::Right, cx.listener(Self::on_right))
+            .context_menu({
+                let (hit, store, me) = (self.hit.clone(), self.store.clone(), cx.entity().downgrade());
+                move |m: PopupMenu, _, _| match hit.borrow().clone() {
+                    TrackHit::Marked(a, b) => {
+                        let (store, me, me2) = (store.clone(), me.clone(), me.clone());
+                        m.item(PopupMenuItem::new("Save as epoch…").on_click(move |_, _, cx| {
+                            store.update(cx, |s, cx| {
+                                if let Some(path) = s.recording.as_ref().and_then(|r| r.path.clone()) {
+                                    let epoch = crate::domain::epoch::EpochDoc { id: String::new(), recording: path, name: String::new(), kind: "stimulus".into(), start_sec: a, end_sec: b, notes: String::new() };
+                                    s.open_floating(crate::data::store::Floating::Epoch(epoch), cx);
+                                }
+                            });
+                            let _ = me.update(cx, |p, cx| {
+                                p.marked = None;
+                                cx.notify();
+                            });
+                        }))
+                        .item(PopupMenuItem::new("Clear the mark").on_click(move |_, _, cx| {
+                            let _ = me2.update(cx, |p, cx| {
+                                p.marked = None;
+                                cx.notify();
+                            });
+                        }))
+                    }
+                    TrackHit::Epoch(e) => {
+                        let (store, store2, e2) = (store.clone(), store.clone(), e.clone());
+                        m.label(e.name.clone())
+                            .item(PopupMenuItem::new("Edit…").on_click(move |_, _, cx| store.update(cx, |s, cx| s.open_floating(crate::data::store::Floating::Epoch(e.clone()), cx))))
+                            .item(PopupMenuItem::new("Delete").on_click(move |_, _, cx| {
+                                let _ = store2.update(cx, |s, cx| s.execute(crate::domain::command::SessionCommand::RemoveEpoch { id: e2.id.clone() }, cx));
+                            }))
+                    }
+                    TrackHit::Nothing => {
+                        let store = store.clone();
+                        m.item(PopupMenuItem::new("New epoch from the visible window…").on_click(move |_, _, cx| super::timeline_tab::new_epoch(&store, cx)))
+                    }
+                }
+            });
         let ruler = h_flex().justify_between().children((0..=4).map(|q| div().text_xs().text_color(muted).child(crate::data::store::duration(total * q as f64 / 4.0))));
 
         v_flex()

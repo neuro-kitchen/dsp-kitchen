@@ -30,6 +30,8 @@ pub struct DspApp {
     store: Entity<Store>,
     pub explore: Entity<ExploreView>,
     pipeline: Entity<crate::screens::pipeline::PipelineView>,
+    floating: Entity<crate::screens::floating::FloatingLayer>,
+    palette: Option<(Entity<crate::screens::palette::CommandPalette>, Subscription)>,
     show_help: bool,
     show_about: bool,
     /// Workspaces plugins provide (built the first time they are shown).
@@ -44,6 +46,7 @@ impl DspApp {
         Self::apply_theme(&store, choice, window, cx);
         let explore = cx.new(|cx| ExploreView::new(store.clone(), window, cx));
         let pipeline = cx.new(|cx| crate::screens::pipeline::PipelineView::new(store.clone(), window, cx));
+        let floating = cx.new(|cx| crate::screens::floating::FloatingLayer::new(store.clone(), window, cx));
         let subs = vec![
             // Follow the system's light / dark until the user picks one
             cx.observe_window_appearance(window, |this, window, cx| {
@@ -60,7 +63,7 @@ impl DspApp {
         ];
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
-        Self { store, explore, pipeline, show_help: false, show_about: false, plugin_views: Default::default(), focus, _subs: subs }
+        Self { store, explore, pipeline, floating, palette: None, show_help: false, show_about: false, plugin_views: Default::default(), focus, _subs: subs }
     }
 
     /// Light, dark, or the system's (`None`); the store learns which, for the plot colours.
@@ -114,6 +117,73 @@ impl DspApp {
     fn add_view(&mut self, kind: TimeViewKind, cx: &mut Context<Self>) {
         self.store.update(cx, |s, cx| s.set_workspace(Workspace::Explore, cx));
         self.explore.update(cx, |e, cx| e.add_view(kind, cx));
+    }
+
+    /// Every command the palette offers.
+    fn commands(&self, cx: &mut Context<Self>) -> Vec<crate::screens::palette::Command> {
+        use crate::screens::palette::Command;
+        use std::rc::Rc;
+        let me = cx.entity().downgrade();
+        let mut out = Vec::new();
+        let mut add = |group: &'static str, name: String, f: Rc<dyn Fn(&mut DspApp, &mut Window, &mut Context<DspApp>)>| {
+            let me = me.clone();
+            out.push(Command { group, name, run: Rc::new(move |w, cx| {
+                let f = f.clone();
+                let _ = me.update(cx, |a, cx| f(a, w, cx));
+            }) });
+        };
+        for ws in Workspace::ALL {
+            add("Go to", format!("{} workspace", ws.title()), Rc::new(move |a, _, cx| a.store.update(cx, |s, cx| s.set_workspace(ws, cx))));
+        }
+        add("File", "Open recording…".into(), Rc::new(|a, _, cx| a.prompt_open(cx)));
+        add("File", "Synthetic recording".into(), Rc::new(|a, _, cx| a.open_synthetic(cx)));
+        for (name, kind) in [("Traces", TimeViewKind::Traces), ("Heatmap", TimeViewKind::Heatmap), ("Raster", TimeViewKind::Raster)] {
+            add("View", format!("Add a {} view", name.to_lowercase()), Rc::new(move |a, _, cx| a.add_view(kind, cx)));
+        }
+        add("Edit", "Undo".into(), Rc::new(|a, _, cx| a.store.update(cx, |s, cx| s.undo(false, cx))));
+        add("Edit", "Redo".into(), Rc::new(|a, _, cx| a.store.update(cx, |s, cx| s.undo(true, cx))));
+        add("Timeline", "New epoch from the visible window".into(), Rc::new(|a, _, cx| crate::screens::explore::components::timeline_tab::new_epoch(&a.store, cx)));
+        add("View", "Light / dark theme".into(), Rc::new(|a, w, cx| a.toggle_theme(w, cx)));
+        add("Help", "Keyboard & mouse".into(), Rc::new(|a, _, cx| {
+            a.show_help = true;
+            cx.notify();
+        }));
+        for c in crate::screens::pipeline::catalog::catalog() {
+            for it in c.items {
+                let template = it.template.clone();
+                add("Pipeline", format!("Add {} · {}", c.name.to_lowercase(), it.label), Rc::new(move |a, w, cx| {
+                    let template = template.clone();
+                    a.store.update(cx, |s, cx| s.set_workspace(Workspace::Pipeline, cx));
+                    a.pipeline.update(cx, |p, cx| p.add(&template, w, cx));
+                }));
+            }
+        }
+        for r in crate::domain::recipe::builtin().into_iter().chain(self.store.read(cx).doc.recipes.values().cloned()) {
+            let name = r.name.clone();
+            add("Recipe", format!("Add {name}"), Rc::new(move |a, _, cx| {
+                let r = r.clone();
+                a.store.update(cx, |s, cx| s.set_workspace(Workspace::Pipeline, cx));
+                a.pipeline.update(cx, |p, cx| p.add_recipe(r, cx));
+            }));
+        }
+        out
+    }
+
+    fn toggle_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.palette.take().is_some() {
+            window.focus(&self.focus, cx);
+            cx.notify();
+            return;
+        }
+        let commands = self.commands(cx);
+        let palette = cx.new(|cx| crate::screens::palette::CommandPalette::new(commands, window, cx));
+        let sub = cx.subscribe_in(&palette, window, |this, _, _: &crate::screens::palette::PaletteEvent, window, cx| {
+            this.palette = None;
+            window.focus(&this.focus, cx);
+            cx.notify();
+        });
+        self.palette = Some((palette, sub));
+        cx.notify();
     }
 
     fn toggle_dock(&mut self, placement: DockPlacement, window: &mut Window, cx: &mut Context<Self>) {
@@ -440,6 +510,9 @@ impl Render for DspApp {
                 cx.notify();
             }))
             .on_action(|_: &Quit, _, cx: &mut App| cx.quit())
+            .on_action(cx.listener(|this, _: &Undo, _, cx| this.store.update(cx, |s, cx| s.undo(false, cx))))
+            .on_action(cx.listener(|this, _: &Redo, _, cx| this.store.update(cx, |s, cx| s.undo(true, cx))))
+            .on_action(cx.listener(|this, _: &CommandPalette, w, cx| this.toggle_palette(w, cx)))
             // A file or folder dropped anywhere opens it
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                 if let Some(p) = paths.paths().first().cloned() {
@@ -449,6 +522,8 @@ impl Render for DspApp {
             .child(self.title_bar(cx))
             .child(div().flex_1().min_h_0().child(self.body(window, cx)))
             .child(self.status_bar(cx))
+            .child(self.floating.clone())
+            .children(self.palette.as_ref().map(|(p, _)| p.clone()))
             .when(self.show_help, |d| d.child(self.help(cx)))
             .when(self.show_about, |d| d.child(self.about(cx)))
     }
@@ -568,6 +643,13 @@ mod tests {
             window.render_frame(cx);
             assert!(window.try_find("graph-canvas").is_some(), "the Pipeline workspace is a canvas, recording open or not");
             assert!(window.try_find("node-s1").is_some() && window.try_find("node-v1").is_some(), "the recording and its view are nodes");
+            assert!(window.try_find("layer-s1").is_some(), "the recording is a layer");
+            window.click("left-ops", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
             // Clicking an operation of the tree adds it to the graph
             window.click("ops-item-filter-0", cx);
         })

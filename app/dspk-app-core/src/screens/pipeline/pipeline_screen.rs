@@ -1,7 +1,10 @@
-//! The Pipeline workspace: a menu bar (one menu per kind of operation, as in Photoshop), the
-//! graph canvas in the middle, and on the right the operations tree (drag an operation onto the
-//! canvas, or click it to add it after the selected node) over the inspector of the selection.
-//! Every edit is a session command, so the canvas, Explore and an agent see the same graph.
+//! The Pipeline workspace, laid out as Figma: a menu bar (one menu per family of operations, as
+//! in Photoshop); on the left the layers (the graph as a tree: each recording, the ops it feeds,
+//! the branches), the operations (drag one onto the canvas, or click to add it after the
+//! selected node) and the recipes (the session's, the built-in ones, the user's library); the
+//! canvas in the middle with a floating toolbar; on the right the inspector of the selection
+//! (values, presets, a recipe's uses). Every edit is a session command, so the canvas, Explore
+//! and an agent see the same graph.
 
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -11,11 +14,11 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Disableable as _, Icon, Sizable as _};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Disableable as _, Icon, Selectable as _, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
-    div, px, AnyElement, App, AppContext as _, Context, Entity, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    div, px, AnyElement, App, AppContext as _, Context, DragMoveEvent, Entity, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window,
 };
 
@@ -25,14 +28,25 @@ use crate::domain::command::SessionCommand;
 use crate::domain::graph::NodeKind;
 use crate::domain::session::{DisplayDoc, Show};
 use crate::screens::explore::components::processing::op_summary;
+use crate::ui::panel_edge::{follow_panel_drag, panel_edge, PanelResize, Side};
 use crate::ui::param_editor::{Commit, ParamEditor};
 use crate::ui::widgets::{row, Section};
 
-use super::canvas::{CanvasEvent, CatalogDrag, DragGhost, GraphCanvas};
-use super::catalog::{catalog, describe, Template};
+use super::canvas::{CanvasEvent, CatalogDrag, DragGhost, GraphCanvas, RecipeDrag};
+use super::catalog::{catalog, describe, presets, type_name, Template};
+use crate::data::preferences::Session;
+use crate::domain::recipe::{builtin, library, RecipeDoc};
 
-/// Width of the right side (logical px).
+/// Widths of the sides (logical px).
 const SIDE_W: f32 = 312.;
+const LEFT_W: f32 = 260.;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LeftTab {
+    Layers,
+    Operations,
+    Recipes,
+}
 
 pub struct PipelineView {
     store: Entity<Store>,
@@ -40,6 +54,12 @@ pub struct PipelineView {
     inspector: Entity<Inspector>,
     /// Categories folded in the tree.
     folded: HashSet<&'static str>,
+    left: LeftTab,
+    /// Layers folded (their children hidden).
+    collapsed: HashSet<String>,
+    /// Built-in and library recipes (read when the Recipes tab opens), and unreadable files.
+    library: Vec<(RecipeDoc, &'static str)>,
+    library_errors: Vec<String>,
     _subs: Vec<Subscription>,
 }
 
@@ -47,12 +67,241 @@ impl PipelineView {
     pub fn new(store: Entity<Store>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let canvas = cx.new(|cx| GraphCanvas::new(store.clone(), cx));
         let inspector = cx.new(|cx| Inspector::new(store.clone(), canvas.clone(), window, cx));
-        let subs = vec![cx.subscribe(&store, |_, _, e: &AppEvent, cx| {
-            if matches!(e, AppEvent::Document(_) | AppEvent::RecordingChanged | AppEvent::JobChanged) {
-                cx.notify();
+        let subs = vec![
+            cx.subscribe(&store, |_, _, e: &AppEvent, cx| {
+                if matches!(e, AppEvent::Document(_) | AppEvent::RecordingChanged | AppEvent::JobChanged) {
+                    cx.notify();
+                }
+            }),
+            cx.subscribe(&canvas, |_, _, _: &CanvasEvent, cx| cx.notify()),
+        ];
+        let mut this = Self { store, canvas, inspector, folded: HashSet::new(), left: LeftTab::Layers, collapsed: HashSet::new(), library: Vec::new(), library_errors: Vec::new(), _subs: subs };
+        this.read_library();
+        this
+    }
+
+    /// Adds `template` to the canvas (the palette).
+    pub fn add(&mut self, template: &Template, window: &mut Window, cx: &mut Context<Self>) {
+        self.canvas.update(cx, |c, cx| c.add(template, None, window, cx));
+    }
+
+    /// Adds a use of `recipe` (the palette).
+    pub fn add_recipe(&mut self, recipe: RecipeDoc, cx: &mut Context<Self>) {
+        self.canvas.update(cx, |c, cx| c.add_recipe(recipe, None, cx));
+    }
+
+    /// Built-in recipes and the user's library folder.
+    fn read_library(&mut self) {
+        self.library = builtin().into_iter().map(|r| (r, "built-in")).collect();
+        self.library_errors.clear();
+        if let Some(dir) = Session::recipes_dir() {
+            let (found, errors) = library(&dir);
+            self.library.extend(found.into_iter().map(|r| (r, "library")));
+            self.library_errors = errors;
+        }
+    }
+
+    fn set_left(&mut self, tab: LeftTab, cx: &mut Context<Self>) {
+        if tab == LeftTab::Recipes {
+            self.read_library();
+        }
+        self.left = tab;
+        cx.notify();
+    }
+
+    /// The graph as layers: each recording with what it feeds, branches nested; nodes without
+    /// an input that are not recordings under "Not connected".
+    fn layers(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = cx.theme();
+        let (muted, accent) = (t.muted_foreground, t.accent);
+        let g = self.store.read(cx).doc.graph.clone();
+        let selected = self.canvas.read(cx).selected.clone();
+        let mut rows: Vec<(String, usize, bool)> = Vec::new();
+        fn walk(g: &crate::domain::graph::GraphDoc, id: &str, depth: usize, collapsed: &HashSet<String>, rows: &mut Vec<(String, usize, bool)>, seen: &mut HashSet<String>) {
+            if !seen.insert(id.to_string()) {
+                return;
             }
-        })];
-        Self { store, canvas, inspector, folded: HashSet::new(), _subs: subs }
+            let kids = g.outputs(id);
+            rows.push((id.to_string(), depth, !kids.is_empty()));
+            if collapsed.contains(id) {
+                return;
+            }
+            for k in kids {
+                walk(g, k, depth + 1, collapsed, rows, seen);
+            }
+        }
+        let mut seen = HashSet::new();
+        for n in g.nodes.iter().filter(|n| matches!(n.kind, NodeKind::Source { .. })) {
+            walk(&g, &n.id, 0, &self.collapsed, &mut rows, &mut seen);
+        }
+        let loose: Vec<String> = g.nodes.iter().filter(|n| !seen.contains(&n.id) && g.input(&n.id).is_none()).map(|n| n.id.clone()).collect();
+        let first_loose = rows.len();
+        for id in &loose {
+            walk(&g, id, 0, &self.collapsed, &mut rows, &mut seen);
+        }
+        let canvas = self.canvas.downgrade();
+        let me = cx.entity().downgrade();
+        let mut list = v_flex().gap_0p5();
+        for (i, (id, depth, has_kids)) in rows.into_iter().enumerate() {
+            if i == first_loose && !loose.is_empty() {
+                list = list.child(div().pt_2().pb_1().px_1().text_xs().text_color(muted).child("Not connected"));
+            }
+            let Some(n) = g.node(&id) else { continue };
+            let (title, _, icon) = describe(&n.kind);
+            let on = selected.contains(&id);
+            let folded = self.collapsed.contains(&id);
+            let (canvas, me, id2, id3) = (canvas.clone(), me.clone(), id.clone(), id.clone());
+            list = list.child(
+                h_flex()
+                    .id(SharedString::from(format!("layer-{id}")))
+                    .test_support()
+                    .h(px(26.))
+                    .pl(px(4. + depth as f32 * 14.))
+                    .pr_1()
+                    .gap_1()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .when(on, |d| d.bg(accent))
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("layer-fold-{id}")))
+                            .w(px(14.))
+                            .when(has_kids, |d| d.child(Icon::new(if folded { IconName::ChevronRight } else { IconName::ChevronDown }).xsmall().text_color(muted)))
+                            .on_click(move |_, _, cx| {
+                                cx.stop_propagation();
+                                let _ = me.update(cx, |p, cx| {
+                                    if !p.collapsed.remove(&id2) {
+                                        p.collapsed.insert(id2.clone());
+                                    }
+                                    cx.notify();
+                                });
+                            }),
+                    )
+                    .child(Icon::new(icon).small().text_color(muted))
+                    .child(div().flex_1().min_w_0().truncate().text_sm().child(title))
+                    .on_click(move |_, _, cx| Self::canvas_do(&canvas, cx, |c, cx| c.reveal(&id3, cx))),
+            );
+        }
+        if g.nodes.is_empty() {
+            list = list.child(div().p_2().text_xs().text_color(muted).child("No layers yet: add a recording."));
+        }
+        div().id("pipeline-layers").flex_1().min_h_0().overflow_y_scroll().p_1().child(list)
+    }
+
+    /// The session's recipes, the built-in ones and the library's: drag one onto the canvas or
+    /// click it to add a use.
+    fn recipes_panel(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = cx.theme();
+        let (muted, hover, border) = (t.muted_foreground, t.accent, t.border);
+        let session: Vec<RecipeDoc> = self.store.read(cx).doc.recipes.values().cloned().collect();
+        let names: HashSet<String> = session.iter().map(|r| r.name.clone()).collect();
+        let mut items: Vec<(RecipeDoc, &'static str)> = session.into_iter().map(|r| (r, "this session")).collect();
+        items.extend(self.library.iter().filter(|(r, _)| !names.contains(&r.name)).cloned());
+        let canvas = self.canvas.downgrade();
+        let rows = items.into_iter().enumerate().map(|(i, (r, from))| {
+            let drag = RecipeDrag { recipe: r.clone() };
+            let (canvas, recipe) = (canvas.clone(), r.clone());
+            v_flex()
+                .id(("recipe-item", i))
+                .p_1p5()
+                .gap_0p5()
+                .rounded_md()
+                .cursor_grab()
+                .hover(|d| d.bg(hover))
+                .child(
+                    h_flex()
+                        .gap_1p5()
+                        .child(Icon::new(IconName::Package).small().text_color(muted))
+                        .child(div().flex_1().min_w_0().truncate().text_sm().child(r.name.clone()))
+                        .child(div().text_xs().text_color(muted).child(format!("v{} · {from}", r.version))),
+                )
+                .when(!r.description.is_empty(), |d| d.child(div().text_xs().text_color(muted).line_clamp(2).child(r.description.clone())))
+                .child(h_flex().flex_wrap().gap_1().children(r.labels.iter().map(|l| div().px_1().rounded_sm().border_1().border_color(border).text_xs().text_color(muted).child(l.clone()))))
+                .on_drag(drag, |d: &RecipeDrag, _, _, cx| cx.new(|_| DragGhost(d.recipe.name.clone().into())))
+                .on_click(move |_, _, cx| Self::canvas_do(&canvas, cx, |c, cx| c.add_recipe(recipe.clone(), None, cx)))
+        });
+        let dir = Session::recipes_dir().map(|d| d.display().to_string()).unwrap_or_default();
+        v_flex()
+            .id("pipeline-recipes")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .p_2()
+            .gap_1()
+            .child(div().px_1().text_xs().text_color(muted).child("Select a chain of ops, right side → Make recipe. Drag one here onto the canvas, or click to add it."))
+            .children(rows)
+            .children(self.library_errors.iter().map(|e| div().px_1().text_xs().text_color(cx.theme().danger).child(e.clone())))
+            .child(div().px_1().pt_2().text_xs().text_color(muted).truncate().child(format!("Library: {dir}")))
+    }
+
+    /// The tool bar floating at the bottom of the canvas: select or move, add a recording, an
+    /// operation, an output, make a recipe.
+    fn toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = cx.theme();
+        let c = self.canvas.read(cx);
+        let (hand, selected) = (c.hand, c.selected.len());
+        let canvas = self.canvas.downgrade();
+        let tool = |id: &'static str, icon: IconName, tip: &'static str, on: bool, f: fn(&mut GraphCanvas, &mut Context<GraphCanvas>)| {
+            let canvas = canvas.clone();
+            Button::new(id).ghost().small().icon(Icon::new(icon)).tooltip(tip).selected(on).on_click(move |_, _, cx| Self::canvas_do(&canvas, cx, f))
+        };
+        let menu = |id: &'static str, icon: IconName, label: &'static str, families: Vec<&'static str>| {
+            let canvas = canvas.clone();
+            Button::new(id).ghost().small().icon(Icon::new(icon)).label(label).dropdown_menu(move |m: PopupMenu, _, _| {
+                let mut m = m;
+                for c in catalog().into_iter().filter(|c| families.contains(&c.name)) {
+                    m = m.label(c.name);
+                    for it in c.items {
+                        let (canvas, template) = (canvas.clone(), it.template.clone());
+                        m = m.item(PopupMenuItem::new(it.label).on_click(move |_, window, cx| Self::canvas_do(&canvas, cx, |c, cx| c.add(&template, None, window, cx))));
+                    }
+                }
+                m
+            })
+        };
+        h_flex()
+            .id("pipeline-toolbar")
+            .occlude()
+            .absolute()
+            .bottom_4()
+            .left_0()
+            .right_0()
+            .justify_center()
+            .child(
+                h_flex()
+                    .gap_0p5()
+                    .p_1()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(t.border)
+                    .bg(t.popover)
+                    .shadow_lg()
+                    .child(tool("tool-select", IconName::MousePointer2, "Select (V)", !hand, |c, cx| {
+                        c.hand = false;
+                        cx.notify();
+                    }))
+                    .child(tool("tool-hand", IconName::Hand, "Move the canvas (H, or hold Space)", hand, |c, cx| {
+                        c.hand = true;
+                        cx.notify();
+                    }))
+                    .child(div().w(px(1.)).h(px(20.)).mx_1().bg(t.border))
+                    .child(menu("tool-input", IconName::AudioWaveform, "Input", vec!["Sources"]))
+                    .child(menu("tool-op", IconName::SlidersHorizontal, "Operation", vec!["Filter", "Reference", "Smooth", "Transform"]))
+                    .child(menu("tool-output", IconName::Eye, "Output", vec!["Output"]))
+                    .child(div().w(px(1.)).h(px(20.)).mx_1().bg(t.border))
+                    .child({
+                        let canvas = canvas.clone();
+                        Button::new("tool-recipe")
+                            .ghost()
+                            .small()
+                            .icon(Icon::new(IconName::Package))
+                            .label("Make recipe")
+                            .tooltip("The selected chain of ops becomes a recipe: one reusable node")
+                            .disabled(selected == 0)
+                            .on_click(move |_, _, cx| Self::canvas_do(&canvas, cx, |c, cx| c.make_recipe(cx)))
+                    })
+                    .child(tool("tool-fit", IconName::Maximize, "Fit the graph (F)", false, |c, cx| c.fit(cx))),
+            )
     }
 
     fn canvas_do(canvas: &WeakEntity<GraphCanvas>, cx: &mut App, f: impl FnOnce(&mut GraphCanvas, &mut Context<GraphCanvas>)) {
@@ -207,8 +456,8 @@ impl PipelineView {
         }
         v_flex()
             .id("ops-tree")
-            .flex_none()
-            .max_h(px(360.))
+            .flex_1()
+            .min_h_0()
             .overflow_y_scroll()
             .p_2()
             .gap_1()
@@ -220,6 +469,22 @@ impl PipelineView {
 impl Render for PipelineView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let border = cx.theme().border;
+        let (side_w, left_w) = {
+            let s = self.store.read(cx);
+            (s.panel_width("pipeline.right", SIDE_W), s.panel_width("pipeline.left", LEFT_W))
+        };
+        let me = cx.entity().downgrade();
+        let tab = |id: &'static str, label: &'static str, which: LeftTab| {
+            let me = me.clone();
+            Button::new(id).ghost().xsmall().label(label).selected(self.left == which).on_click(move |_, _, cx| {
+                let _ = me.update(cx, |p, cx| p.set_left(which, cx));
+            })
+        };
+        let left_body: AnyElement = match self.left {
+            LeftTab::Layers => self.layers(cx).into_any_element(),
+            LeftTab::Operations => self.tree(cx).into_any_element(),
+            LeftTab::Recipes => self.recipes_panel(cx).into_any_element(),
+        };
         v_flex()
             .id("pipeline-workspace")
             .size_full()
@@ -228,17 +493,33 @@ impl Render for PipelineView {
                 h_flex()
                     .flex_1()
                     .min_h_0()
-                    .child(div().flex_1().min_w_0().h_full().child(self.canvas.clone()))
+                    .on_drag_move(cx.listener(|this, e: &DragMoveEvent<PanelResize>, _, cx| {
+                        follow_panel_drag(&this.store, e, cx);
+                        cx.notify();
+                    }))
                     .child(
                         v_flex()
-                            .w(px(SIDE_W))
+                            .relative()
+                            .w(px(left_w))
+                            .flex_none()
+                            .h_full()
+                            .border_r_1()
+                            .border_color(border)
+                            .child(h_flex().h(px(34.)).flex_none().px_1().gap_0p5().border_b_1().border_color(border).child(tab("left-layers", "Layers", LeftTab::Layers)).child(tab("left-ops", "Operations", LeftTab::Operations)).child(tab("left-recipes", "Recipes", LeftTab::Recipes)))
+                            .child(left_body)
+                            .child(panel_edge("pipeline.left", Side::Left, 0.0)),
+                    )
+                    .child(div().relative().flex_1().min_w_0().h_full().child(self.canvas.clone()).child(self.toolbar(cx)))
+                    .child(
+                        v_flex()
+                            .relative()
+                            .w(px(side_w))
                             .flex_none()
                             .h_full()
                             .border_l_1()
                             .border_color(border)
-                            .child(self.tree(cx))
-                            .child(div().h(px(1.)).flex_none().bg(border))
-                            .child(div().flex_1().min_h_0().child(self.inspector.clone())),
+                            .child(div().flex_1().min_h_0().child(self.inspector.clone()))
+                            .child(panel_edge("pipeline.right", Side::Right, 0.0)),
                     ),
             )
     }
@@ -252,6 +533,15 @@ pub struct Inspector {
     name: Entity<InputState>,
     /// The view node the name input was filled for.
     name_for: String,
+    /// A recipe's name, labels and description inputs, and the recipe they were filled for.
+    rname: Entity<InputState>,
+    rlabels: Entity<InputState>,
+    rdesc: Entity<InputState>,
+    rinfo_for: String,
+    /// One editor per op of the selected recipe.
+    recipe_params: Vec<Entity<ParamEditor>>,
+    /// Edits change the recipe itself (every use), not only this use.
+    edit_recipe: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -275,7 +565,47 @@ impl Inspector {
                 }
             }),
         ];
-        Self { store, canvas, params: cx.new(|_| ParamEditor::new()), name, name_for: String::new(), _subs: subs }
+        let (rname, rlabels, rdesc) = (cx.new(|cx| InputState::new(window, cx)), cx.new(|cx| InputState::new(window, cx).placeholder("filter, emg, sorter…")), cx.new(|cx| InputState::new(window, cx).placeholder("What it does")));
+        let mut subs = subs;
+        for input in [&rname, &rlabels, &rdesc] {
+            subs.push(cx.subscribe(input, |this, _, e: &InputEvent, cx| {
+                if matches!(e, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                    this.save_recipe_info(cx);
+                }
+            }));
+        }
+        Self {
+            store,
+            canvas,
+            params: cx.new(|_| ParamEditor::new()),
+            name,
+            name_for: String::new(),
+            rname,
+            rlabels,
+            rdesc,
+            rinfo_for: String::new(),
+            recipe_params: Vec::new(),
+            edit_recipe: false,
+            _subs: subs,
+        }
+    }
+
+    /// The recipe's name, labels and description from the inputs.
+    fn save_recipe_info(&mut self, cx: &mut Context<Self>) {
+        if self.rinfo_for.is_empty() {
+            return;
+        }
+        let Some(def) = self.store.read(cx).doc.recipes.get(&self.rinfo_for).cloned() else { return };
+        let name = self.rname.read(cx).value().trim().to_string();
+        let labels: Vec<String> = self.rlabels.read(cx).value().split(',').map(|l| l.trim().to_lowercase()).filter(|l| !l.is_empty()).collect();
+        let description = self.rdesc.read(cx).value().trim().to_string();
+        if name == def.name && labels == def.labels && description == def.description {
+            return;
+        }
+        let cmd = SessionCommand::SetRecipeInfo { recipe: def.name.clone(), name: name.clone(), labels, description };
+        if self.store.update(cx, |s, cx| s.execute(cmd, cx)).is_ok() {
+            self.rinfo_for = name;
+        }
     }
 
     fn exec(&self, cmd: SessionCommand, cx: &mut App) {
@@ -288,12 +618,26 @@ impl Inspector {
         let selected = self.canvas.read(cx).selected.clone();
         let s = self.store.read(cx);
         let g = s.doc.graph.clone();
+        let recipes = s.doc.recipes.clone();
         let job = s.job.as_ref().map(|j| (j.label.clone(), j.fraction));
         let active = s.doc.active_view.clone();
         if selected.len() > 1 {
-            let canvas = self.canvas.downgrade();
+            let (canvas, canvas2) = (self.canvas.downgrade(), self.canvas.downgrade());
+            let all_ops = selected.iter().all(|id| matches!(g.node(id).map(|n| &n.kind), Some(NodeKind::Op { .. })));
             return Section::new(format!("{} nodes selected", selected.len()))
                 .child(div().text_xs().text_color(muted).child("Drag one of them to move them together; Ctrl+D duplicates them with their edges."))
+                .child(
+                    Button::new("inspector-make-recipe")
+                        .primary()
+                        .small()
+                        .icon(Icon::new(IconName::Package))
+                        .label("Make recipe")
+                        .tooltip("These ops become one reusable node (a chain of ops only)")
+                        .disabled(!all_ops)
+                        .on_click(move |_, _, cx| {
+                            let _ = canvas2.update(cx, |c, cx| c.make_recipe(cx));
+                        }),
+                )
                 .child(Button::new("inspector-delete").outline().small().label("Delete them").on_click(move |_, _, cx| {
                     let _ = canvas.update(cx, |c, cx| c.delete_selected(cx));
                 }))
@@ -334,6 +678,13 @@ impl Inspector {
                         cx,
                     ))
                     .child(div().text_xs().text_color(muted).child(format!("Feeds {} node(s).", g.outputs(&id).len())))
+                    .when(s.writes_of(&id).len() >= 2, |d| {
+                        let (store, id) = (self.store.clone(), id.clone());
+                        let n = s.writes_of(&id).len();
+                        d.child(Button::new("inspector-write-all").primary().small().icon(Icon::new(IconName::Play)).label(format!("Write its {n} outputs (one read)")).on_click(move |_, _, cx| {
+                            store.update(cx, |s, cx| s.write_source(&id, cx));
+                        }))
+                    })
                     .when(!is_open, |d| {
                         d.child(Button::new("inspector-open-recording").outline().small().label("Open in Explore").on_click(move |_, _, cx| {
                             store.update(cx, |s, cx| s.open(path.clone(), cx));
@@ -351,8 +702,24 @@ impl Inspector {
                 let this = cx.entity().downgrade();
                 let on = *enabled;
                 let id2 = id.clone();
+                let preset_list = presets(op);
+                let preset = (!preset_list.is_empty()).then(|| {
+                    let names: Vec<SharedString> = preset_list.iter().map(|(l, _)| SharedString::from(*l)).collect();
+                    let current = preset_list.iter().position(|(_, v)| serde_json::from_value::<dspk_pipeline::Node>(v.clone()).ok().as_ref() == Some(op));
+                    let (store, id) = (self.store.clone(), id.clone());
+                    row(
+                        "Preset",
+                        crate::ui::widgets::MenuSelect::new("inspector-preset", names, current, move |i, _, cx| {
+                            if let Ok(node) = serde_json::from_value(preset_list[i].1.clone()) {
+                                let _ = store.update(cx, |s, cx| s.execute(SessionCommand::SetNode { id: id.clone(), node }, cx));
+                            }
+                        }),
+                        cx,
+                    )
+                });
                 v_flex()
                     .gap_2()
+                    .children(preset)
                     .child(Checkbox::new("inspector-enabled").checked(on).label("On (off: kept in the graph, skipped)").on_click(move |v: &bool, _, cx| {
                         let v = *v;
                         let _ = this.update(cx, |i, cx| i.exec(SessionCommand::EnableNode { id: id2.clone(), enabled: v }, cx));
@@ -399,8 +766,9 @@ impl Inspector {
                     }))
                     .into_any_element()
             }
+            NodeKind::Recipe { recipe, enabled, overrides } => self.recipe_body(&id, recipe, *enabled, overrides, &g, &recipes, window, cx),
             NodeKind::Write {} => {
-                let out = g.chain(&id).map(|(r, _)| processed_path(&r.path, &id));
+                let out = g.chain(&id, &recipes).map(|(r, _)| processed_path(&r.path, &id));
                 let store = self.store.clone();
                 let id2 = id.clone();
                 v_flex()
@@ -417,6 +785,118 @@ impl Inspector {
             }
         };
         v_flex().gap_3().child(header).child(body).into_any_element()
+    }
+}
+
+impl Inspector {
+    /// A recipe node: its definition (name, labels, version), its values (this use's, or the
+    /// recipe's for every use), ungroup, save to the library.
+    #[allow(clippy::too_many_arguments)]
+    fn recipe_body(
+        &mut self,
+        id: &str,
+        recipe: &str,
+        enabled: bool,
+        overrides: &std::collections::BTreeMap<String, serde_json::Value>,
+        g: &crate::domain::graph::GraphDoc,
+        recipes: &crate::domain::graph::Recipes,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let muted = cx.theme().muted_foreground;
+        let Some(def) = recipes.get(recipe).cloned() else {
+            return div().text_xs().text_color(cx.theme().danger).child(format!("The session has no recipe {recipe:?}.")).into_any_element();
+        };
+        if self.rinfo_for != def.name {
+            self.rinfo_for = def.name.clone();
+            let (n, l, d) = (def.name.clone(), def.labels.join(", "), def.description.clone());
+            self.rname.update(cx, |i, cx| i.set_value(n, window, cx));
+            self.rlabels.update(cx, |i, cx| i.set_value(l, window, cx));
+            self.rdesc.update(cx, |i, cx| i.set_value(d, window, cx));
+        }
+        let uses = g.nodes.iter().filter(|n| matches!(&n.kind, NodeKind::Recipe { recipe: r, .. } if *r == def.name)).count();
+        while self.recipe_params.len() < def.ops.len() {
+            self.recipe_params.push(cx.new(|_| ParamEditor::new()));
+        }
+        let ops = def.ops_with(overrides);
+        let mut sections = Vec::new();
+        for (k, op) in ops.iter().enumerate() {
+            let commit: Commit = if self.edit_recipe {
+                let (store, recipe, op_id) = (self.store.clone(), def.name.clone(), op.id.clone());
+                Rc::new(move |node, cx| store.update(cx, |s, cx| s.execute(SessionCommand::SetRecipeOp { recipe: recipe.clone(), op: op_id.clone(), node }, cx)).map(|_| ()).map_err(|e| e.to_string()))
+            } else {
+                let (store, id, def, op_id, current) = (self.store.clone(), id.to_string(), def.clone(), op.id.clone(), overrides.clone());
+                Rc::new(move |node, cx| {
+                    // This use's values for the op: what differs from the recipe; the rest goes back
+                    let want = def.overrides_for(&op_id, &node);
+                    let prefix = format!("{op_id}.");
+                    let mut cmds: Vec<SessionCommand> = current.keys().filter(|k| k.starts_with(&prefix) && !want.contains_key(*k)).map(|k| SessionCommand::SetRecipeOverride { id: id.clone(), key: k.clone(), value: serde_json::Value::Null }).collect();
+                    cmds.extend(want.into_iter().map(|(key, value)| SessionCommand::SetRecipeOverride { id: id.clone(), key, value }));
+                    for c in cmds {
+                        store.update(cx, |s, cx| s.execute(c, cx)).map_err(|e| e.to_string())?;
+                    }
+                    Ok(())
+                })
+            };
+            let key = format!("{id}/{}/{}", op.id, self.edit_recipe);
+            self.recipe_params[k].update(cx, |p, cx| p.set_target(&key, &op.node, commit, window, cx));
+            let own = overrides.keys().filter(|o| o.starts_with(&format!("{}.", op.id))).count();
+            let title = format!("{} · {}{}", op.id, type_name(&op.node), if own > 0 && !self.edit_recipe { format!(" · {own} own") } else { String::new() });
+            sections.push(Section::new(title).child(self.recipe_params[k].clone()));
+        }
+        let me = cx.entity().downgrade();
+        let mode = |label: &'static str, recipe_mode: bool, on: bool| {
+            let me = me.clone();
+            Button::new(SharedString::from(format!("recipe-mode-{recipe_mode}")))
+                .xsmall()
+                .label(label)
+                .map(|b| if on { b.primary() } else { b.outline() })
+                .on_click(move |_, _, cx| {
+                    let _ = me.update(cx, |i, cx| {
+                        i.edit_recipe = recipe_mode;
+                        cx.notify();
+                    });
+                })
+        };
+        let (store, store2, id2, id3, save_def) = (self.store.clone(), self.store.clone(), id.to_string(), id.to_string(), def.clone());
+        v_flex()
+            .gap_2()
+            .child(row("Name", div().w(px(170.)).child(Input::new(&self.rname).small()), cx))
+            .child(row("Labels", div().w(px(170.)).child(Input::new(&self.rlabels).small()), cx))
+            .child(row("About", div().w(px(170.)).child(Input::new(&self.rdesc).small()), cx))
+            .child(div().text_xs().text_color(muted).child(format!(
+                "Version {} · {} use{} · {} → {}{}",
+                def.version,
+                uses,
+                if uses == 1 { "" } else { "s" },
+                format!("{:?}", def.input).to_lowercase(),
+                format!("{:?}", def.output).to_lowercase(),
+                if def.is_sorter() { " · listed in Sorting" } else { "" }
+            )))
+            .child(Checkbox::new("recipe-enabled").checked(enabled).label("On (off: its ops are skipped)").on_click(move |v: &bool, _, cx| {
+                let _ = store.update(cx, |s, cx| s.execute(SessionCommand::EnableNode { id: id2.clone(), enabled: *v }, cx));
+            }))
+            .child(h_flex().gap_1().child(div().text_xs().text_color(muted).child("Edit")).child(mode("this use", false, !self.edit_recipe)).child(mode("the recipe (every use)", true, self.edit_recipe)))
+            .children(sections)
+            .child(
+                h_flex()
+                    .gap_1()
+                    .child(Button::new("recipe-ungroup").outline().small().icon(Icon::new(IconName::Layers)).label("Ungroup").on_click(move |_, _, cx| {
+                        let _ = store2.update(cx, |s, cx| s.execute(SessionCommand::Ungroup { id: id3.clone() }, cx));
+                    }))
+                    .child({
+                        let store = self.store.clone();
+                        Button::new("recipe-save").outline().small().icon(Icon::new(IconName::Save)).label("Save to library").on_click(move |_, _, cx| {
+                            let status = match Session::recipes_dir().map(|d| save_def.save_in(&d)) {
+                                Some(Ok(p)) => format!("Recipe saved: {}", p.display()),
+                                Some(Err(e)) => format!("Recipe not saved: {e}"),
+                                None => "No configuration folder for the library".to_string(),
+                            };
+                            store.update(cx, |s, cx| s.set_status(status, cx));
+                        })
+                    }),
+            )
+            .into_any_element()
     }
 }
 

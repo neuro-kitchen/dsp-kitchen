@@ -39,6 +39,9 @@ actions!(
         GainUp,
         GainDown,
         ToggleLoop,
+        Undo,
+        Redo,
+        CommandPalette,
     ]
 );
 
@@ -57,6 +60,10 @@ pub fn bind_keys(cx: &mut App) {
         os_binding("secondary-alt-b", ToggleSettings, cx),
         os_binding("secondary-j", ToggleTimeline, cx),
         os_binding("secondary-q", Quit, cx),
+        os_binding("secondary-z", Undo, cx),
+        os_binding("secondary-shift-z", Redo, cx),
+        os_binding("secondary-y", Redo, cx),
+        os_binding("secondary-k", CommandPalette, cx),
     ];
     cx.bind_keys(global);
     cx.bind_keys([
@@ -89,6 +96,8 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+O", "Open a recording"),
             ("Ctrl+T / Ctrl+H", "Add a traces / heatmap view"),
             ("Ctrl+B / Ctrl+Alt+B / Ctrl+J", "Show or hide Channels / View settings / Timeline"),
+            ("Ctrl+K", "Command palette: any action, view, operation or recipe by name"),
+            ("Ctrl+Z / Ctrl+Shift+Z", "Undo / redo any change of the session (Curation: of the curation)"),
             ("F1", "This list"),
             ("Ctrl+Q", "Quit"),
         ],

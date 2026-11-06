@@ -97,6 +97,8 @@ impl TraceVm {
         });
         let sub = cx.subscribe(&store, |vm, store, event, cx| match event {
             AppEvent::WindowMoved | AppEvent::PaletteChanged => vm.request_render(cx),
+            // Back on Explore: draw what changed while another workspace was shown
+            AppEvent::WorkspaceChanged if vm.view.needs_render => vm.request_render(cx),
             AppEvent::PlaybackChanged => cx.notify(),
             AppEvent::PyramidProgress(source) if *source == vm.view.source && vm.incomplete => vm.request_render(cx),
             AppEvent::SelectionChanged(source) if *source == vm.view.source && !vm.view.pinned_selection => {
@@ -167,6 +169,11 @@ impl TraceVm {
 
     fn submit(&mut self, cx: &mut Context<Self>) {
         if !self.active || !self.view.needs_render || self.view.canvas_width == 0 || self.view.canvas_height == 0 {
+            return;
+        }
+        // Hidden behind another workspace: draw when Explore shows again (the work pool and the
+        // device stay free for the workspace in front)
+        if self.store.read(cx).workspace != crate::navigation::route::Workspace::Explore {
             return;
         }
         let Some(sources) = self.sources(cx) else { return };

@@ -83,6 +83,8 @@ pub struct GraphCanvas {
     /// Positions of nodes being dragged, until the drop writes them to the document.
     live: HashMap<String, (f32, f32)>,
     space: bool,
+    /// The hand tool: a drag moves the plane (else it selects).
+    pub hand: bool,
     pub show_grid: bool,
     pub show_minimap: bool,
     /// The plane's bounds in the window (set while painting).
@@ -116,6 +118,7 @@ impl GraphCanvas {
             drag: None,
             live: HashMap::new(),
             space: false,
+            hand: false,
             show_grid: true,
             show_minimap: true,
             bounds: Rc::new(Cell::new(Bounds::default())),
@@ -343,6 +346,38 @@ impl GraphCanvas {
         self.select(map.into_values(), cx);
     }
 
+    /// The selected ops become a recipe (named `Recipe N`, renamed in the inspector).
+    pub fn make_recipe(&mut self, cx: &mut Context<Self>) {
+        let nodes: Vec<String> = self.selected.iter().cloned().collect();
+        let n = self.store.read(cx).doc.recipes.len() + 1;
+        let name = (n..).map(|i| format!("Recipe {i}")).find(|name| !self.store.read(cx).doc.recipes.contains_key(name)).expect("names are unbounded");
+        let before: BTreeSet<String> = self.graph(cx).nodes.iter().map(|n| n.id.clone()).collect();
+        if self.exec(SessionCommand::MakeRecipe { nodes, name, labels: Vec::new() }, cx) {
+            let new: Vec<String> = self.graph(cx).nodes.iter().map(|n| n.id.clone()).filter(|id| !before.contains(id)).collect();
+            self.select(new, cx);
+        }
+    }
+
+    /// Adds a use of recipe `name` (from the library when the session does not have it yet).
+    pub fn add_recipe(&mut self, recipe: crate::domain::recipe::RecipeDoc, at: Option<(f32, f32)>, cx: &mut Context<Self>) {
+        let name = recipe.name.clone();
+        if !self.store.read(cx).doc.recipes.contains_key(&name) && !self.exec(SessionCommand::AddRecipe { recipe }, cx) {
+            return;
+        }
+        let after = if at.is_none() { self.single().filter(|id| self.graph(cx).node(id).is_some_and(|n| n.kind.has_output())).cloned() } else { None };
+        let (x, y) = at.unwrap_or_else(|| self.new_place(cx));
+        self.add_kind(NodeKind::Recipe { recipe: name, enabled: true, overrides: Default::default() }, x, y, after, cx);
+    }
+
+    /// Centres the view on node `id` and selects it.
+    pub fn reveal(&mut self, id: &str, cx: &mut Context<Self>) {
+        if let Some(n) = self.graph(cx).node(id) {
+            let p = (n.x + NODE_W / 2.0, n.y + NODE_H / 2.0);
+            self.centre_on(p, cx);
+        }
+        self.select([id.to_string()], cx);
+    }
+
     pub fn select_all(&mut self, cx: &mut Context<Self>) {
         let all: Vec<String> = self.graph(cx).nodes.iter().map(|n| n.id.clone()).collect();
         self.select(all, cx);
@@ -363,7 +398,7 @@ impl GraphCanvas {
     fn on_down(&mut self, e: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus, cx);
         let local = self.local(e.position);
-        if e.button == MouseButton::Middle || self.space || e.modifiers.alt {
+        if e.button == MouseButton::Middle || self.space || self.hand || e.modifiers.alt {
             self.drag = Some(Drag::Pan { mouse: local, pan: self.pan });
             return;
         }
@@ -503,6 +538,14 @@ impl GraphCanvas {
             "=" | "+" if cmd => self.zoom_by(1.25, None, cx),
             "-" if cmd => self.zoom_by(0.8, None, cx),
             "f" if !cmd => self.fit(cx),
+            "v" if !cmd => {
+                self.hand = false;
+                cx.notify();
+            }
+            "h" if !cmd => {
+                self.hand = true;
+                cx.notify();
+            }
             "enter" => {
                 if let Some(id) = self.single().cloned() {
                     self.open(&id, cx);
@@ -618,7 +661,7 @@ impl GraphCanvas {
             })
         };
         match kind {
-            NodeKind::Op { enabled, .. } => {
+            NodeKind::Op { enabled, .. } | NodeKind::Recipe { enabled, .. } => {
                 let (icon, tip) = if *enabled { (IconName::EyeOff, "Turn off (kept, skipped)") } else { (IconName::Eye, "Turn on") };
                 let on = !*enabled;
                 let (me, id) = (me.clone(), id.to_string());
@@ -629,6 +672,11 @@ impl GraphCanvas {
             NodeKind::View { .. } => bar = bar.child(button("show", IconName::ExternalLink, "Show in Explore (double-click)", |c, id, cx| c.open(id, cx))),
             NodeKind::Write {} => bar = bar.child(button("write", IconName::Play, "Write the processed file (double-click)", |c, id, cx| c.open(id, cx))),
             NodeKind::Source { .. } => {}
+        }
+        if matches!(kind, NodeKind::Recipe { .. }) {
+            bar = bar.child(button("ungroup", IconName::Layers, "Ungroup: back to its ops", |c, id, cx| {
+                c.exec(SessionCommand::Ungroup { id: id.to_string() }, cx);
+            }));
         }
         if has_input {
             bar = bar.child(button("unlink", IconName::Unlink, "Disconnect its input", |c, id, cx| {
@@ -761,6 +809,7 @@ fn kind_color(kind: &NodeKind) -> Hsla {
         NodeKind::Op { .. } => gpui_kit::hsla(239. / 360., 0.84, 0.67, 1.0),
         NodeKind::View { .. } => gpui_kit::hsla(271. / 360., 0.70, 0.60, 1.0),
         NodeKind::Write {} => gpui_kit::hsla(27. / 360., 0.90, 0.55, 1.0),
+        NodeKind::Recipe { .. } => gpui_kit::hsla(186. / 360., 0.70, 0.45, 1.0),
     }
 }
 
@@ -914,7 +963,7 @@ impl Render for GraphCanvas {
         }
         let cursor = match self.drag {
             Some(Drag::Pan { .. }) => gpui_kit::CursorStyle::ClosedHand,
-            _ if self.space => gpui_kit::CursorStyle::OpenHand,
+            _ if self.space || self.hand => gpui_kit::CursorStyle::OpenHand,
             _ => gpui_kit::CursorStyle::Arrow,
         };
         div()
@@ -940,6 +989,11 @@ impl Render for GraphCanvas {
                 let (x, y) = this.world(local);
                 this.add(&d.template, Some((snap(x - NODE_W / 2.0), snap(y - NODE_H / 2.0))), window, cx);
             }))
+            .on_drop(cx.listener(|this, d: &RecipeDrag, window, cx| {
+                let local = this.local(window.mouse_position());
+                let (x, y) = this.world(local);
+                this.add_recipe(d.recipe.clone(), Some((snap(x - NODE_W / 2.0), snap(y - NODE_H / 2.0))), cx);
+            }))
             .child(plane)
             .children(cards)
             .children(toolbar)
@@ -947,6 +1001,12 @@ impl Render for GraphCanvas {
             .child(self.controls(cx))
             .children(minimap)
     }
+}
+
+/// A recipe dragged from the library.
+#[derive(Debug, Clone)]
+pub struct RecipeDrag {
+    pub recipe: crate::domain::recipe::RecipeDoc,
 }
 
 /// What a dragged tree item looks like under the pointer.
