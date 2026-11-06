@@ -691,6 +691,27 @@ impl Store {
         cx.notify();
     }
 
+    /// The servers the user works with (Settings), saved.
+    pub fn set_servers(&mut self, servers: Vec<crate::data::remote::ServerProfile>, cx: &mut Context<Self>) {
+        self.session.servers = servers;
+        self.save_session();
+        cx.notify();
+    }
+
+    /// Where results fetched from servers go (`None`: the default), saved.
+    pub fn set_results_dir(&mut self, dir: Option<std::path::PathBuf>, cx: &mut Context<Self>) {
+        self.session.results_dir = dir;
+        self.save_session();
+        cx.notify();
+    }
+
+    /// The compute runtime for the next start (`None`: the first compiled in), saved.
+    pub fn set_runtime(&mut self, runtime: Option<String>, cx: &mut Context<Self>) {
+        self.session.runtime = runtime;
+        self.save_session();
+        cx.notify();
+    }
+
     pub fn set_dark_plots(&mut self, on: bool, cx: &mut Context<Self>) {
         let before = self.palette();
         self.session.dark_plots = on;

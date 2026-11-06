@@ -27,6 +27,10 @@ dspk-io = { workspace = true, features = ["zarr"] }
 dspk-view = { workspace = true, default-features = false }
 # Views' op chains are dspk-pipeline nodes; writing a view runs its pipeline
 dspk-pipeline.workspace = true
+# Servers (`dspk serve`): remote recordings (RemoteSignal), jobs, fetching results
+dspk-stream.workspace = true
+tokio.workspace = true
+dirs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 # The session document (JSON) and its JSON Schema for agents

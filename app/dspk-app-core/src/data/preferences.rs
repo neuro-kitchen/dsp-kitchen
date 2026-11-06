@@ -119,6 +119,16 @@ pub struct Session {
     /// Side panels shown or hidden, by key (`sorting.left`, …).
     #[serde(default)]
     pub panel_open: std::collections::BTreeMap<String, bool>,
+    /// Servers (`dspk serve`) the user works with (Settings).
+    #[serde(default)]
+    pub servers: Vec<crate::data::remote::ServerProfile>,
+    /// Where results fetched from servers go (`None`: [`Session::default_results_dir`]).
+    #[serde(default)]
+    pub results_dir: Option<PathBuf>,
+    /// The compute runtime (`wgpu`, `cuda`, `cpu`; `None`: the first that is compiled in). Takes
+    /// effect at the next start.
+    #[serde(default)]
+    pub runtime: Option<String>,
 }
 
 impl Session {
@@ -126,6 +136,17 @@ impl Session {
 
     pub fn new() -> Self {
         Self { version: Self::VERSION, ..Self::default() }
+    }
+
+    /// Results fetched from servers by default: `~/dspk/remote` (the home folder, or the current
+    /// one when there is no home).
+    pub fn default_results_dir() -> PathBuf {
+        dirs::home_dir().unwrap_or_default().join("dspk").join("remote")
+    }
+
+    /// Where results fetched from servers go.
+    pub fn results_dir(&self) -> PathBuf {
+        self.results_dir.clone().unwrap_or_else(Self::default_results_dir)
     }
 
     /// The user's recipe library: `<config>/dspk-app/recipes/`.
