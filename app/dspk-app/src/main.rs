@@ -98,9 +98,13 @@ fn main() -> Result<()> {
         // start below), so nothing reads the environment while it changes
         unsafe { std::env::set_var("DSPK_RUNTIME", runtime) };
     }
-    // What to open at start: --synthetic, --file, else the last recording
+    // What to open at start: --synthetic, --file, else the last recording when Settings says so
     let synthetic = args.synthetic.as_deref().map(parse_duration).transpose()?;
-    let file = args.file.clone().map(|p| std::fs::canonicalize(&p).unwrap_or(p)).or_else(|| session.recent.first().cloned().filter(|p| p.exists()));
+    let file = args
+        .file
+        .clone()
+        .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
+        .or_else(|| session.reopen_last.then(|| session.recent.first().cloned().filter(|p| p.exists())).flatten());
     let (channels, rate) = (args.channels, args.sample_rate);
 
     gpui_kit::application().with_assets(assets::AppAssets).run(move |cx: &mut App| {

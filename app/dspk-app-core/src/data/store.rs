@@ -785,6 +785,23 @@ impl Store {
         cx.notify();
     }
 
+    /// Whether the last recording opens at start, saved.
+    pub fn set_reopen_last(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.session.reopen_last = on;
+        self.save_session();
+        cx.notify();
+    }
+
+    /// Forgets `path` from the recent lists (`None`: all of them), saved. The files stay.
+    pub fn forget_recent(&mut self, path: Option<&std::path::Path>, cx: &mut Context<Self>) {
+        match path {
+            Some(p) => self.session.forget_recent(p),
+            None => self.session.clear_recent(),
+        }
+        self.save_session();
+        cx.notify();
+    }
+
     /// The compute runtime for the next start (`None`: the first compiled in), saved.
     pub fn set_runtime(&mut self, runtime: Option<String>, cx: &mut Context<Self>) {
         self.session.runtime = runtime;

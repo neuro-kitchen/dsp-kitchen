@@ -182,9 +182,9 @@ impl Render for SettingsScreen {
         let t = cx.theme();
         let (muted, danger, ok, border) = (t.muted_foreground, t.danger, t.success, t.border);
         let me = cx.entity().downgrade();
-        let (servers, results_dir, runtime, theme_choice, dark_plots) = {
+        let (servers, results_dir, runtime, theme_choice, dark_plots, reopen_last, recent) = {
             let s = &self.store.read(cx).session;
-            (s.servers.clone(), s.results_dir(), s.runtime.clone(), s.dark, s.dark_plots)
+            (s.servers.clone(), s.results_dir(), s.runtime.clone(), s.dark, s.dark_plots, s.reopen_last, s.recent.len() + s.recent_sortings.len())
         };
 
         // Servers: one row each, then the form
@@ -314,6 +314,20 @@ impl Render for SettingsScreen {
             s3.update(cx, |s, cx| s.set_dark_plots(on, cx));
         });
 
+        // Start: what opens, and the recent lists
+        let s4 = store.clone();
+        let reopen = Checkbox::new("settings-reopen-last").checked(reopen_last).on_click(move |on: &bool, _, cx| {
+            let on = *on;
+            s4.update(cx, |s, cx| s.set_reopen_last(on, cx));
+        });
+        let s5 = store.clone();
+        let clear = Button::new("settings-clear-recent")
+            .outline()
+            .small()
+            .label(if recent == 0 { "Nothing to clear".to_string() } else { format!("Clear recent ({recent})") })
+            .disabled(recent == 0)
+            .on_click(move |_, _, cx| s5.update(cx, |s, cx| s.forget_recent(None, cx)));
+
         v_flex()
             .id("settings")
             .w(px(560.))
@@ -329,6 +343,10 @@ impl Render for SettingsScreen {
             .child(Self::section("Results", cx))
             .child(results)
             .child(div().text_xs().text_color(muted).child(format!("Now: {} (default {}); each server's results in a folder of its own.", results_dir.display(), Session::default_results_dir().display())))
+            .child(Self::section("Start", cx))
+            .child(row("Open the last recording", reopen, cx))
+            .child(row("Recent recordings and sortings", clear, cx))
+            .child(div().text_xs().text_color(muted).child("Off by default: the app starts on the start screen. Clearing forgets the lists only; the files stay."))
             .child(Self::section("Compute", cx))
             .child(row("Runtime", runtime_menu, cx))
             .child(div().text_xs().text_color(muted).child(format!("Takes effect at the next start (now: {now}). DSPK_RUNTIME in the environment overrides it.")))

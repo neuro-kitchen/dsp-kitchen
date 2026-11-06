@@ -218,6 +218,11 @@ impl DspApp {
                         let (t, p) = (this.clone(), p.clone());
                         menu = menu.item(PopupMenuItem::new(file_label(&p)).on_click(move |_, _, cx| t.update(cx, |a, cx| a.open_path(p.clone(), cx))));
                     }
+                    let t = this.clone();
+                    menu = menu.item(PopupMenuItem::new("Clear recent").on_click(move |_, _, cx| {
+                        let store = t.read(cx).store.clone();
+                        store.update(cx, |s, cx| s.forget_recent(None, cx));
+                    }));
                 }
                 let t = this.clone();
                 menu.separator()
@@ -356,11 +361,22 @@ impl DspApp {
                     .children(recent.into_iter().take(6).enumerate().map(|(i, p)| {
                         let label = file_label(&p);
                         let dir = p.parent().map(|d| d.display().to_string()).unwrap_or_default();
-                        Button::new(("recent", i))
-                            .ghost()
+                        let forget = p.clone();
+                        h_flex()
                             .w_full()
-                            .child(h_flex().w_full().gap_2().child(div().text_sm().child(label)).child(div().flex_1().text_xs().text_color(muted).truncate().child(dir)))
-                            .on_click(cx.listener(move |this, _, _, cx| this.open_path(p.clone(), cx)))
+                            .gap_1()
+                            .child(
+                                Button::new(("recent", i))
+                                    .ghost()
+                                    .flex_1()
+                                    .child(h_flex().w_full().gap_2().child(div().text_sm().child(label)).child(div().flex_1().text_xs().text_color(muted).truncate().child(dir)))
+                                    .on_click(cx.listener(move |this, _, _, cx| this.open_path(p.clone(), cx))),
+                            )
+                            .child(
+                                crate::ui::widgets::icon_button(("recent-forget", i), IconName::Close, "Remove from the list (the file stays)")
+                                    .xsmall()
+                                    .on_click(cx.listener(move |this, _, _, cx| this.store.update(cx, |s, cx| s.forget_recent(Some(&forget), cx)))),
+                            )
                     })),
             );
         }
