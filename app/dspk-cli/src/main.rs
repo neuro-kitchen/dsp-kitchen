@@ -79,7 +79,10 @@ const DEFAULT_LOG_LEVEL: tracing::Level = tracing::Level::WARN;
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
-    tracing_subscriber::fmt().with_max_level(if cli.verbose { tracing::Level::DEBUG } else { DEFAULT_LOG_LEVEL }).init();
+    // `doctor` reports each runtime that cannot open a device itself: the runtimes' own warnings
+    // about it would only repeat that
+    let quiet = if matches!(cli.command, Command::Doctor) { tracing::Level::ERROR } else { DEFAULT_LOG_LEVEL };
+    tracing_subscriber::fmt().with_max_level(if cli.verbose { tracing::Level::DEBUG } else { quiet }).init();
     if let Err(e) = dispatch(&cli).await {
         anstream::eprintln!("{} {e}", style::paint(style::ERROR, "error:"));
         for cause in e.chain().skip(1) {
