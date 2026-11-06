@@ -1,7 +1,8 @@
 //! The server side: accepts clients and serves a recording to each (header, signal, views).
 
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dspk_core::{RecordingInfo, RecordingSource, SampleFormat};
@@ -9,7 +10,8 @@ use dspk_view::{Envelope, Pyramid};
 use tokio::task::JoinHandle;
 use tokio::time::{interval, MissedTickBehavior};
 
-use super::auth::{Authority, Peer};
+use super::auth::{Authority, Peer, Permission};
+use super::files::{kind_of, DataRoot};
 use crate::error::{StreamError, StreamResult};
 use crate::protocol::{frame_from_envelope, header_from_info, read_message, view_from_request, wire, write_message, PROTOCOL_VERSION};
 use dspk_view::View;
@@ -165,61 +167,170 @@ fn streamed_info(source: &dyn RecordingSource) -> (RecordingInfo, bool) {
     (scaled, false)
 }
 
-/// Serves `source` to one client until it closes the control stream or disconnects: answers
-/// its hello with the header, streams the signal from where it subscribes, and answers every
-/// view (from `pyramid` when given, else from raw reads).
+/// A recording a session serves: its source, pyramid (views), and what the signal carries.
+pub struct OpenRecording {
+    source: Arc<dyn RecordingSource>,
+    pyramid: Option<Arc<Pyramid>>,
+    info: RecordingInfo,
+    stored: bool,
+}
+
+impl OpenRecording {
+    pub fn new(source: Arc<dyn RecordingSource>, pyramid: Option<Arc<Pyramid>>) -> Self {
+        let (info, stored) = streamed_info(source.as_ref());
+        Self { source, pyramid, info, stored }
+    }
+
+    /// What the signal stream carries (the header sent to clients).
+    pub fn info(&self) -> &RecordingInfo {
+        &self.info
+    }
+}
+
+/// Opens the recordings clients ask for, by path under the data root. The formats are the
+/// caller's (dspk-stream knows none): the command line opens through dspk-synapse.
+pub trait RecordingOpener: Send + Sync {
+    /// Opens `path` (`source`: one of the file's sources, `None` = its default).
+    fn open(&self, path: &Path, source: Option<&str>) -> StreamResult<OpenRecording>;
+}
+
+/// What a server offers every client.
+#[derive(Clone)]
+pub struct Device {
+    /// The server's name (its host) and version, shown to clients.
+    pub name: String,
+    pub version: String,
+    /// The data root and how recordings under it are opened; `None`: no files.
+    pub files: Option<(DataRoot, Arc<dyn RecordingOpener>)>,
+    /// The recording every client starts with, if any.
+    pub recording: Option<Arc<OpenRecording>>,
+    pub options: ServeOptions,
+}
+
+/// The recording a session has open (the initial one, or the last one it opened).
+type Current = Arc<Mutex<Option<Arc<OpenRecording>>>>;
+
+fn current_recording(current: &Current) -> Option<Arc<OpenRecording>> {
+    current.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// Serves `source` to one client (the protocol's single-recording form: no files, anonymous).
 pub async fn serve_recording(connection: quinn::Connection, source: Arc<dyn RecordingSource>, pyramid: Option<Arc<Pyramid>>, options: ServeOptions) -> StreamResult<()> {
+    let device = Device { name: "dspk".into(), version: String::new(), files: None, recording: Some(Arc::new(OpenRecording::new(source, pyramid))), options };
+    serve_session(connection, Peer::anonymous(), Arc::new(device)).await
+}
+
+/// Serves one client until it closes the control stream or disconnects: answers its hello with
+/// the server's info, streams the signal of its open recording from where it subscribes, and
+/// answers every request (views, files, opening a recording) on its own stream.
+pub async fn serve_session(connection: quinn::Connection, peer: Peer, device: Arc<Device>) -> StreamResult<()> {
+    let options = device.options.clone();
     let (mut control_send, mut control_recv) = connection.accept_bi().await?;
     let hello: wire::ClientHello = read_message(&mut control_recv, options.max_message_bytes).await?.ok_or_else(|| StreamError::protocol("no hello"))?;
-    let (info, stored) = streamed_info(source.as_ref());
-    write_message(&mut control_send, &header_from_info(&info)).await?;
+    let info = wire::ServerInfo {
+        protocol_version: PROTOCOL_VERSION,
+        server_name: device.name.clone(),
+        server_version: device.version.clone(),
+        peer_name: peer.name.clone(),
+        permission: wire_permission(peer.permission) as i32,
+        state: wire::DeviceState::Stopped as i32,
+        has_files: device.files.is_some(),
+        recording: device.recording.as_ref().map(|r| header_from_info(r.info())),
+    };
+    write_message(&mut control_send, &info).await?;
     if hello.protocol_version != PROTOCOL_VERSION {
         return Err(StreamError::protocol(format!("client speaks protocol {}, this server {PROTOCOL_VERSION}", hello.protocol_version)));
     }
 
-    let views = tokio::spawn(answer_views(connection.clone(), source.clone(), pyramid, options.max_message_bytes));
+    let current: Current = Arc::new(Mutex::new(device.recording.clone()));
+    let requests = tokio::spawn(answer_requests(connection.clone(), device.clone(), current.clone()));
     let mut signal: Option<JoinHandle<StreamResult<()>>> = None;
     let result = loop {
         match read_message::<wire::Subscribe>(&mut control_recv, options.max_message_bytes).await {
             Ok(Some(subscribe)) => {
+                let Some(recording) = current_recording(&current) else { break Err(StreamError::protocol("subscribe before any recording is open")) };
                 if let Some(old) = signal.take() {
                     old.abort();
                 }
-                let task = stream_signal(connection.clone(), source.clone(), info.clone(), stored, subscribe.first_sample, options.clone());
+                let task = stream_signal(connection.clone(), recording, subscribe.first_sample, options.clone());
                 signal = Some(tokio::spawn(task));
             }
             Ok(None) => break Ok(()),
+            Err(e) if e.is_closed_by_peer() => break Ok(()),
             Err(e) => break Err(e),
         }
     };
     if let Some(task) = signal {
         task.abort();
     }
-    views.abort();
+    requests.abort();
     result
 }
 
-/// Answers each view stream the client opens with one envelope.
-async fn answer_views(connection: quinn::Connection, source: Arc<dyn RecordingSource>, pyramid: Option<Arc<Pyramid>>, max_message_bytes: usize) {
+fn wire_permission(p: Permission) -> wire::Permission {
+    match p {
+        Permission::Read => wire::Permission::Read,
+        Permission::Control => wire::Permission::Control,
+    }
+}
+
+/// Answers each request stream the client opens with one response.
+async fn answer_requests(connection: quinn::Connection, device: Arc<Device>, current: Current) {
+    let max = device.options.max_message_bytes;
     while let Ok((mut send, mut recv)) = connection.accept_bi().await {
-        let (source, pyramid) = (source.clone(), pyramid.clone());
+        let (device, current) = (device.clone(), current.clone());
         tokio::spawn(async move {
             let answer = async {
-                let request: wire::ViewRequest = read_message(&mut recv, max_message_bytes).await?.ok_or_else(|| StreamError::protocol("empty view stream"))?;
-                let envelope = match checked_view(&request, source.info()) {
-                    Ok(view) => tokio::task::spawn_blocking(move || -> StreamResult<Envelope> { Ok(view.read(source.as_ref(), pyramid.as_deref())?) })
-                        .await
-                        .map_err(StreamError::protocol)?,
-                    Err(e) => Err(e),
+                let request: wire::Request = read_message(&mut recv, max).await?.ok_or_else(|| StreamError::protocol("empty request stream"))?;
+                let kind = match answer(request, &device, &current).await {
+                    Ok(kind) => kind,
+                    Err(e) => wire::response::Kind::Error(e.reason()),
                 };
-                write_message(&mut send, &frame_from_envelope(envelope)).await?;
+                write_message(&mut send, &wire::Response { kind: Some(kind) }).await?;
                 send.finish().map_err(StreamError::protocol)?;
                 StreamResult::Ok(())
             };
             if let Err(e) = answer.await {
-                tracing::debug!("view stream closed: {e}");
+                tracing::debug!("request stream closed: {e}");
             }
         });
+    }
+}
+
+/// The answer to one request.
+async fn answer(request: wire::Request, device: &Device, current: &Current) -> StreamResult<wire::response::Kind> {
+    use wire::request::Kind as Req;
+    use wire::response::Kind as Resp;
+    match request.kind.ok_or_else(|| StreamError::protocol("empty request"))? {
+        Req::View(view) => {
+            let recording = current_recording(current).ok_or_else(|| StreamError::protocol("no recording is open"))?;
+            let view = checked_view(&view, recording.info())?;
+            let envelope = tokio::task::spawn_blocking(move || -> StreamResult<Envelope> { Ok(view.read(recording.source.as_ref(), recording.pyramid.as_deref())?) })
+                .await
+                .map_err(StreamError::protocol)?;
+            Ok(Resp::Envelope(frame_from_envelope(envelope)))
+        }
+        Req::ListFiles(list) => {
+            let (root, _) = device.files.as_ref().ok_or_else(|| StreamError::protocol("this server serves no files"))?;
+            let root = root.clone();
+            let files = tokio::task::spawn_blocking(move || root.list(&list.dir)).await.map_err(StreamError::protocol)??;
+            Ok(Resp::Files(files))
+        }
+        Req::Open(open) => {
+            let (root, opener) = device.files.clone().ok_or_else(|| StreamError::protocol("this server serves no files"))?;
+            let recording = tokio::task::spawn_blocking(move || -> StreamResult<OpenRecording> {
+                let path = root.resolve(&open.path)?;
+                if kind_of(&path, path.is_dir()) != wire::FileKind::Recording {
+                    return Err(StreamError::Protocol(format!("{:?} is not a recording", open.path)));
+                }
+                opener.open(&path, Some(open.source.as_str()).filter(|s| !s.is_empty()))
+            })
+            .await
+            .map_err(StreamError::protocol)??;
+            let header = header_from_info(recording.info());
+            *current.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(recording));
+            Ok(Resp::Header(header))
+        }
     }
 }
 
@@ -248,7 +359,8 @@ pub fn checked_view(request: &wire::ViewRequest, info: &RecordingInfo) -> Stream
 /// Streams frames from `first_sample` on a new unidirectional stream. A reader thread fills a
 /// bounded queue, so the recording is read ahead of the network but never held whole; the thread
 /// ends by itself once the queue is dropped.
-async fn stream_signal(connection: quinn::Connection, source: Arc<dyn RecordingSource>, info: RecordingInfo, stored: bool, first_sample: u64, options: ServeOptions) -> StreamResult<()> {
+async fn stream_signal(connection: quinn::Connection, recording: Arc<OpenRecording>, first_sample: u64, options: ServeOptions) -> StreamResult<()> {
+    let (source, info, stored) = (recording.source.clone(), recording.info.clone(), recording.stored);
     let total = info.samples;
     let frame = ((options.frame_sec * info.sample_rate_hz()).round() as u64).max(1);
     let channels: Vec<usize> = (0..info.channel_count()).collect();

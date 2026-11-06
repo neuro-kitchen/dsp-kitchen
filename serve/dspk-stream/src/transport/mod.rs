@@ -4,6 +4,7 @@
 
 pub mod auth;
 mod client;
+pub mod files;
 mod server;
 pub mod tls;
 
@@ -11,7 +12,7 @@ pub use auth::{Authority, ClientIdentity, ClientRecord, Enrollment, Peer, Permis
 
 pub use client::{Session, SignalReceiver};
 pub use server::{
-    checked_view, serve_recording, Pacing, ServeOptions, Server, REFUSED_CLIENT, DEFAULT_FRAME_SEC, DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_REQUEST_BYTES, DEFAULT_QUEUE_FRAMES,
+    checked_view, serve_recording, serve_session, Device, OpenRecording, Pacing, RecordingOpener, ServeOptions, Server, REFUSED_CLIENT, DEFAULT_FRAME_SEC, DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_REQUEST_BYTES, DEFAULT_QUEUE_FRAMES,
     MAX_VIEW_COLUMNS, MAX_VIEW_VALUES,
 };
 pub use tls::{client_config, client_config_with, server_config, server_config_with_clients, ServerIdentity, ServerTls, ServerTrust};
@@ -55,8 +56,8 @@ mod tests {
         let options = ServeOptions { pacing: Pacing::Unpaced, frame_sec: 0.3, ..Default::default() };
         let (addr, config) = start(rec.clone(), None, options);
         let mut session = Session::connect(addr, LOCALHOST, config).await.unwrap();
-        assert_eq!(session.info().channel_count(), 4);
-        assert_eq!(session.info().sample_rate, rec.info().sample_rate);
+        assert_eq!(session.recording().unwrap().channel_count(), 4);
+        assert_eq!(session.recording().unwrap().sample_rate, rec.info().sample_rate);
 
         let first = 1_234u64;
         let mut signal = session.subscribe(first).await.unwrap();
@@ -90,7 +91,7 @@ mod tests {
         let short = View { channels: vec![1], start: 10, end: 30, width: 40 };
         assert!(matches!(session.view(&short).await.unwrap(), Envelope::Samples(s) if s.len() == 20));
         let bad = View { channels: vec![9], start: 0, end: 10, width: 4 };
-        assert!(matches!(session.view(&bad).await, Err(StreamError::Protocol(_))));
+        assert!(matches!(session.view(&bad).await, Err(StreamError::Server(_))));
         session.close().await;
     }
 
@@ -101,9 +102,9 @@ mod tests {
         let (addr, config) = start(recording(), None, ServeOptions::default());
         let session = Session::connect(addr, LOCALHOST, config).await.unwrap();
         let twice = View { channels: vec![1, 1], start: 0, end: 100, width: 10 };
-        assert!(matches!(session.view(&twice).await, Err(StreamError::Protocol(m)) if m.contains("twice")));
+        assert!(matches!(session.view(&twice).await, Err(StreamError::Server(m)) if m.contains("twice")));
         let wide = View { channels: vec![0], start: 0, end: 5_000, width: MAX_VIEW_COLUMNS as usize + 1 };
-        assert!(matches!(session.view(&wide).await, Err(StreamError::Protocol(m)) if m.contains("columns")));
+        assert!(matches!(session.view(&wide).await, Err(StreamError::Server(m)) if m.contains("columns")));
         // The connection still answers after refusals
         let ok = View { channels: vec![0, 1], start: 0, end: 100, width: 10 };
         assert!(session.view(&ok).await.is_ok());
@@ -147,7 +148,7 @@ mod tests {
         let trust = ServerTrust::from_identity(&alice);
 
         let session = Session::connect(addr, LOCALHOST, client_config_with(&trust, Some(&alice)).unwrap()).await.unwrap();
-        assert_eq!(session.info().channel_count(), 4);
+        assert_eq!(session.recording().unwrap().channel_count(), 4);
         session.close().await;
 
         assert!(Session::connect(addr, LOCALHOST, client_config(&trust).unwrap()).await.is_err(), "no certificate");
@@ -162,6 +163,63 @@ mod tests {
         let session = Session::connect(open, LOCALHOST, client_config(&trust).unwrap()).await.unwrap();
         session.close().await;
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Opens every recording as the test recording (the formats are the caller's).
+    struct TestOpener;
+    impl RecordingOpener for TestOpener {
+        fn open(&self, _path: &std::path::Path, _source: Option<&str>) -> crate::error::StreamResult<OpenRecording> {
+            Ok(OpenRecording::new(recording(), None))
+        }
+    }
+
+    /// A server with a data root and no initial recording: a client lists, opens, views; paths
+    /// outside, hidden or not recordings are refused; nothing streams before a recording is open.
+    #[tokio::test]
+    async fn files_are_listed_and_opened_under_the_data_root() {
+        let base = std::env::temp_dir().join(format!("dspk-stream-device-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("data");
+        std::fs::create_dir_all(root.join("mouse1")).unwrap();
+        std::fs::create_dir_all(root.join(".dspk-auth")).unwrap();
+        std::fs::write(root.join("mouse1/rec.ap.bin"), [0u8; 8]).unwrap();
+        std::fs::write(root.join("notes.txt"), "x").unwrap();
+        let device = Arc::new(Device {
+            name: "test".into(),
+            version: "0".into(),
+            files: Some((files::DataRoot::new(&root).unwrap(), Arc::new(TestOpener))),
+            recording: None,
+            options: ServeOptions::default(),
+        });
+        let tls = server_config(&ServerIdentity::SelfSigned { names: vec![LOCALHOST.into()] }).unwrap();
+        let server = Server::bind("127.0.0.1:0".parse().unwrap(), tls.config).unwrap();
+        let addr = server.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Some((connection, peer)) = server.accept().await {
+                tokio::spawn(serve_session(connection, peer, device.clone()));
+            }
+        });
+        let config = client_config(&ServerTrust::Certificates(vec![tls.certificate])).unwrap();
+        let mut session = Session::connect(addr, LOCALHOST, config).await.unwrap();
+        assert!(session.server().has_files && session.recording().is_none());
+        assert!(session.view(&View { channels: vec![0], start: 0, end: 10, width: 4 }).await.is_err(), "nothing open yet");
+
+        let top = session.list_files("").await.unwrap();
+        let names: Vec<&str> = top.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["mouse1", "notes.txt"], "hidden entries left out, directories first");
+        for bad in ["../data/notes.txt", ".dspk-auth", "/etc/passwd"] {
+            assert!(session.list_files(bad).await.is_err(), "{bad}");
+        }
+        assert!(session.open("notes.txt", None).await.is_err(), "not a recording");
+        assert!(session.open(".dspk-auth/ca.key.pem", None).await.is_err(), "hidden");
+
+        assert_eq!(session.open("mouse1/rec.ap.bin", None).await.unwrap().channel_count(), 4);
+        let view = View { channels: vec![0, 1], start: 0, end: 100, width: 10 };
+        assert!(session.view(&view).await.is_ok());
+        let mut signal = session.subscribe(4_990).await.unwrap();
+        assert!(signal.next_values().await.unwrap().is_some());
+        session.close().await;
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[tokio::test]

@@ -26,6 +26,9 @@ pub enum StreamError {
     /// The peer sent something the protocol does not allow.
     #[error("protocol: {0}")]
     Protocol(String),
+    /// The server refused or failed a request, and said why.
+    #[error("server: {0}")]
+    Server(String),
     #[error(transparent)]
     Dsp(#[from] dspk_core::DspError),
 }
@@ -33,6 +36,24 @@ pub enum StreamError {
 impl StreamError {
     pub(crate) fn protocol(message: impl fmt::Display) -> Self {
         Self::Protocol(message.to_string())
+    }
+
+    /// What to tell a client about this error (the reason, without the kind's prefix).
+    pub(crate) fn reason(&self) -> String {
+        match self {
+            Self::Protocol(m) | Self::Server(m) | Self::Tls(m) => m.clone(),
+            other => other.to_string(),
+        }
+    }
+
+    /// The peer closed the connection (a client leaving), not a failure.
+    pub fn is_closed_by_peer(&self) -> bool {
+        use quinn::{ConnectionError, ReadError, ReadExactError};
+        matches!(
+            self,
+            Self::Connection(ConnectionError::ApplicationClosed(_) | ConnectionError::LocallyClosed)
+                | Self::Read(ReadExactError::ReadError(ReadError::ConnectionLost(ConnectionError::ApplicationClosed(_) | ConnectionError::LocallyClosed)))
+        )
     }
 }
 
