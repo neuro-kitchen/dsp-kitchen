@@ -1,6 +1,8 @@
-//! Every unit's template in a grid (largest channels overlaid, the unit's colour), drawn once per
-//! sorting and width into one image; a click selects a unit (the owner shows it on the
-//! timeline), the selection drawn as frames over the image.
+//! Every unit's template in a grid (largest channels overlaid, the unit's colour, its id under
+//! it), one image per row drawn in the background and shown through a virtual list (only the rows
+//! on screen are laid out; no image is larger than a row, which keeps every image within the
+//! GPU's texture limits). A click selects a unit, Ctrl / Shift+click adds it; the owner shows the
+//! selection on the timeline; selected cells are framed.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -8,19 +10,20 @@ use std::sync::Arc;
 
 use dspk_app_core::ui::plot::canvas::Frame;
 use dspk_app_core::ui::theme::palette::Palette;
-use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::{h_flex, ActiveTheme as _};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    canvas, div, img, px, App, AppContext as _, Bounds, Context, FontWeight, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Pixels, Render, RenderImage,
-    StatefulInteractiveElement as _, Styled as _, Task, Window,
+    canvas, div, img, px, uniform_list, App, AppContext as _, Bounds, Context, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Pixels, Render, RenderImage,
+    Styled as _, Task, Window,
 };
 
 use crate::plots;
-
 use crate::sorting::SortingData;
 
-/// Cell size (logical px) and the image's oversampling.
-pub const CELL_W: f32 = 132.;
-pub const CELL_H: f32 = 84.;
+/// Cell size (logical px), the label line under each template, and the images' oversampling.
+pub const CELL_W: f32 = 136.;
+pub const CELL_H: f32 = 96.;
+const LABEL_H: f32 = 16.;
 const SCALE: f32 = 1.5;
 /// Template rows (largest channels) overlaid per cell.
 const ROWS_PER_CELL: usize = 3;
@@ -29,11 +32,13 @@ pub type OnSelect = Rc<dyn Fn(usize, bool, &mut Window, &mut App)>;
 
 pub struct TemplateGrid {
     on_select: OnSelect,
-    /// What the image was drawn for: sorting, columns.
+    /// What the rows were drawn for: sorting, columns.
     drawn: Option<(*const SortingData, usize)>,
-    image: Option<Arc<RenderImage>>,
-    /// Units in grid order (largest first).
+    /// One image per row of the grid.
+    rows: Vec<Arc<RenderImage>>,
+    /// Units in grid order (largest first), and their ids.
     order: Vec<usize>,
+    ids: Vec<usize>,
     cols: usize,
     selected: Vec<usize>,
     /// What to draw again when the width changes.
@@ -45,7 +50,19 @@ pub struct TemplateGrid {
 
 impl TemplateGrid {
     pub fn new(on_select: OnSelect) -> Self {
-        Self { on_select, drawn: None, image: None, order: Vec::new(), cols: 1, selected: Vec::new(), sorting: None, palette: None, bounds: Rc::new(Cell::new(Bounds::default())), _work: None }
+        Self {
+            on_select,
+            drawn: None,
+            rows: Vec::new(),
+            order: Vec::new(),
+            ids: Vec::new(),
+            cols: 1,
+            selected: Vec::new(),
+            sorting: None,
+            palette: None,
+            bounds: Rc::new(Cell::new(Bounds::default())),
+            _work: None,
+        }
     }
 
     /// Shows `sorting`'s templates, `selected` framed.
@@ -54,13 +71,12 @@ impl TemplateGrid {
         self.sorting = sorting.clone();
         self.palette = Some(palette);
         let Some(sorting) = sorting else {
-            self.image = None;
+            self.rows.clear();
             self.drawn = None;
             cx.notify();
             return;
         };
-        let width = self.bounds.get().size.width.as_f32();
-        let cols = cols_for(width);
+        let cols = cols_for(self.bounds.get().size.width.as_f32());
         let key = (Arc::as_ptr(&sorting), cols);
         if self.drawn == Some(key) {
             cx.notify();
@@ -69,13 +85,14 @@ impl TemplateGrid {
         self.drawn = Some(key);
         let mut order: Vec<usize> = sorting.alive().collect();
         order.sort_by_key(|&u| std::cmp::Reverse(sorting.units[u].info.num_spikes));
+        self.ids = order.iter().map(|&u| sorting.units[u].info.unit_id).collect();
         self.order = order.clone();
         self.cols = cols;
-        let work = cx.background_spawn(async move { plots::to_image(draw(&sorting, &order, cols, &palette)) });
+        let work = cx.background_spawn(async move { order.chunks(cols).filter_map(|row| plots::to_image(draw_row(&sorting, row, cols, &palette))).collect::<Vec<_>>() });
         self._work = Some(cx.spawn(async move |this, cx| {
-            let image = work.await;
+            let rows = work.await;
             let _ = this.update(cx, |g, cx| {
-                g.image = image;
+                g.rows = rows;
                 cx.notify();
             });
         }));
@@ -87,19 +104,17 @@ fn cols_for(width: f32) -> usize {
     ((width / CELL_W).floor() as usize).max(1)
 }
 
-/// The grid: one cell per unit in `order`, `cols` per row.
-fn draw(sorting: &SortingData, order: &[usize], cols: usize, palette: &Palette) -> Frame {
-    let rows = order.len().div_ceil(cols).max(1);
-    let (cw, ch) = ((CELL_W * SCALE) as u32, (CELL_H * SCALE) as u32);
-    let mut frame = Frame::new(cw * cols as u32, ch * rows as u32);
+/// One row of the grid: the units of `row`, `cols` cells wide.
+fn draw_row(sorting: &SortingData, row: &[usize], cols: usize, palette: &Palette) -> Frame {
+    let (cw, ch) = ((CELL_W * SCALE) as u32, ((CELL_H - LABEL_H) * SCALE) as u32);
+    let mut frame = Frame::new(cw * cols as u32, ch);
     {
         let canvas = frame.canvas();
         canvas.pixels.fill(palette.background);
     }
-    let cells: Vec<(usize, &Vec<Vec<f32>>)> = order.iter().map(|&u| (u, &sorting.units[u].template)).collect();
-    for (k, (u, tpl)) in cells.into_iter().enumerate() {
-        let (x0, y0) = ((k % cols) as u32 * cw, (k / cols) as u32 * ch);
-        plots::template_cell(&mut frame, x0, y0, cw, ch, &tpl[..tpl.len().min(ROWS_PER_CELL)], palette.unit(u), palette, SCALE);
+    for (k, &u) in row.iter().enumerate() {
+        let tpl = &sorting.units[u].template;
+        plots::template_cell(&mut frame, k as u32 * cw, 0, cw, ch, &tpl[..tpl.len().min(ROWS_PER_CELL)], palette.unit(u), palette, SCALE);
     }
     frame
 }
@@ -107,7 +122,7 @@ fn draw(sorting: &SortingData, order: &[usize], cols: usize, palette: &Palette) 
 impl Render for TemplateGrid {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme();
-        let (muted, frame) = (t.muted_foreground, t.primary);
+        let (muted, frame, fg) = (t.muted_foreground, t.primary, t.foreground);
         // Drawn for another width: draw again for this one
         let width = self.bounds.get().size.width.as_f32();
         if width > 0.0 && cols_for(width) != self.cols {
@@ -119,48 +134,53 @@ impl Render for TemplateGrid {
                 });
             }
         }
-        let rows = self.order.len().div_ceil(self.cols).max(1);
-        let height = rows as f32 * CELL_H;
         let cols = self.cols;
+        let (rows, order, ids, selected, on_select) = (self.rows.clone(), self.order.clone(), self.ids.clone(), self.selected.clone(), self.on_select.clone());
+        let n_rows = if rows.is_empty() { 0 } else { order.len().div_ceil(cols) };
         let cell = self.bounds.clone();
-        let cell_paint = self.bounds.clone();
-        let (order, on_select) = (self.order.clone(), self.on_select.clone());
-        let frames = self.selected.iter().filter_map(|u| self.order.iter().position(|o| o == u)).map(|k| {
-            div()
-                .absolute()
-                .left(px((k % cols) as f32 * CELL_W))
-                .top(px((k / cols) as f32 * CELL_H))
-                .w(px(CELL_W))
-                .h(px(CELL_H))
-                .border_2()
-                .border_color(frame)
-        });
-        div()
-            .id("template-grid")
-            .size_full()
-            .overflow_y_scroll()
-            .child(
-                div()
-                    .relative()
-                    .w_full()
-                    .h(px(height))
-                    .on_mouse_down(MouseButton::Left, move |e, window, cx| {
-                        let b = cell.get();
-                        let (x, y) = ((e.position.x - b.origin.x).as_f32(), (e.position.y - b.origin.y).as_f32());
-                        let k = (y / CELL_H).floor() as usize * cols + (x / CELL_W).floor() as usize;
-                        if (x / CELL_W) < cols as f32 {
-                            if let Some(&u) = order.get(k) {
+        let list = uniform_list("template-rows", n_rows, move |range, _, _| {
+            range
+                .map(|r| {
+                    let units: Vec<usize> = order.iter().copied().skip(r * cols).take(cols).collect();
+                    let unit_ids: Vec<usize> = ids.iter().copied().skip(r * cols).take(cols).collect();
+                    let on_select = on_select.clone();
+                    let image = rows.get(r).cloned();
+                    let (units2, cell) = (units.clone(), cell.clone());
+                    div()
+                        .id(("template-row", r))
+                        .relative()
+                        .h(px(CELL_H))
+                        .w(px(cols as f32 * CELL_W))
+                        .on_mouse_down(MouseButton::Left, move |e, window, cx| {
+                            // The cell under the pointer (its row's origin: the row's left edge)
+                            let b = cell.get();
+                            let k = ((e.position.x - b.origin.x).as_f32() / CELL_W).floor().max(0.0) as usize;
+                            if let Some(&u) = units2.get(k) {
                                 let add = e.modifiers.control || e.modifiers.platform || e.modifiers.shift;
                                 on_select(u, add, window, cx);
                             }
-                        }
-                    })
-                    .child(canvas(move |b, _, _| cell_paint.set(b), |_, _, _, _| {}).absolute().size_full())
-                    .children(self.image.clone().map(|i| img(i).absolute().top_0().left_0().w(px(cols as f32 * CELL_W)).h(px(height))))
-                    .children(frames)
-                    .when(self.image.is_none(), |d| d.child(div().p_3().text_xs().text_color(muted).font_weight(FontWeight::NORMAL).child("Drawing the templates…"))),
-            )
+                        })
+                        .children(image.map(|i| img(i).absolute().top_0().left_0().w(px(cols as f32 * CELL_W)).h(px(CELL_H - LABEL_H))))
+                        .child(
+                            h_flex().absolute().left_0().bottom_0().h(px(LABEL_H)).children(unit_ids.iter().zip(&units).map(|(id, u)| {
+                                let on = selected.contains(u);
+                                div().w(px(CELL_W)).text_xs().text_center().text_color(if on { fg } else { muted }).child(format!("Unit {id}"))
+                            })),
+                        )
+                        .children(units.iter().enumerate().filter(|(_, u)| selected.contains(u)).map(|(k, _)| {
+                            div().absolute().top_0().left(px(k as f32 * CELL_W)).w(px(CELL_W)).h(px(CELL_H)).border_2().border_color(frame).rounded_sm()
+                        }))
+                })
+                .collect()
+        })
+        .size_full();
+        let cell_paint = self.bounds.clone();
+        div()
+            .id("template-grid")
+            .relative()
+            .size_full()
+            .child(canvas(move |b, _, _| cell_paint.set(b), |_, _, _, _| {}).absolute().size_full())
+            .child(list)
+            .when(self.rows.is_empty(), |d| d.child(div().absolute().top_0().left_0().p_3().text_xs().text_color(muted).child("Drawing the templates…")))
     }
 }
-
-use gpui_kit::prelude::FluentBuilder as _;

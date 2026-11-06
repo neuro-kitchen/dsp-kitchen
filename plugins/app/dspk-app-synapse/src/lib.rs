@@ -14,6 +14,7 @@
 //!   similarity; labels and merges kept as a log in the store) — [`curation_ws`], [`curation`];
 //! - the bottom strip of both: a simple trace view or raster over the shared timeline — [`strip`].
 
+pub mod chart;
 pub mod curation;
 pub mod curation_ws;
 pub mod opener;
@@ -90,6 +91,8 @@ pub struct SynapseState {
     loading: HashSet<PathBuf>,
     /// Units (by index) not highlighted, per sorting.
     pub hidden: HashMap<PathBuf, HashSet<usize>>,
+    /// Units a workspace is focused on (Sorting, Curation): its strip marks only those.
+    pub focus: HashMap<Workspace, Vec<usize>>,
     /// Index into [`sort::SORTERS`] and [`sort::PROBES`].
     pub sorter: usize,
     pub probe: usize,
@@ -128,6 +131,7 @@ impl SynapseState {
             curated: HashMap::new(),
             loading: HashSet::new(),
             hidden: HashMap::new(),
+            focus: HashMap::new(),
             sorter: 0,
             probe: 0,
             _store: sub,
@@ -237,6 +241,23 @@ impl SynapseState {
         self.store.update(cx, |s, cx| s.set_status(status, cx));
         cx.emit(SynapseEvent::Curated(path.clone()));
         cx.notify();
+    }
+
+    /// The units workspace `ws` is focused on (its trace strip marks only those).
+    pub fn set_focus(&mut self, ws: Workspace, units: Vec<usize>, cx: &mut Context<Self>) {
+        if self.focus.get(&ws) == Some(&units) {
+            return;
+        }
+        self.focus.insert(ws, units);
+        self.store.update(cx, |s, cx| s.redraw(cx));
+    }
+
+    /// Whether unit `u` is marked on the traces of the workspace in front.
+    fn shown_in(&self, ws: Workspace, path: &PathBuf, u: usize) -> bool {
+        match self.focus.get(&ws) {
+            Some(f) => f.contains(&u),
+            None => !self.is_hidden(path, u),
+        }
     }
 
     pub fn is_hidden(&self, sorting: &PathBuf, unit: usize) -> bool {
@@ -355,12 +376,12 @@ impl AppPlugin for SynapsePlugin {
         let (max_before, max_after) = sorting.units.iter().fold((0, 0), |(b, a), u| (b.max(u.extent.before), a.max(u.extent.after)));
         let s0 = (((window_sec.start - start) * rate).max(0.0) as u64).saturating_sub(max_after);
         let s1 = ((window_sec.end - start) * rate).max(0.0) as u64 + max_before;
-        let hidden = state.hidden.get(&path);
+        let ws = store.workspace;
         let marks = sorting
             .in_range(s0, s1)
             .filter_map(|k| {
                 let u = sorting.unit_of[k]? as usize;
-                if hidden.is_some_and(|h| h.contains(&u)) {
+                if !state.shown_in(ws, &path, u) {
                     return None;
                 }
                 let e = &sorting.units[u].extent;
@@ -389,8 +410,8 @@ impl AppPlugin for SynapsePlugin {
         let start = store.sources()?.get(source).start_time_sec;
         let rate = sorting.sample_rate;
         let palette = store.palette();
-        let hidden = state.hidden.get(&path);
-        let mut order: Vec<usize> = sorting.alive().filter(|u| !hidden.is_some_and(|h| h.contains(u))).collect();
+        let ws = store.workspace;
+        let mut order: Vec<usize> = sorting.alive().filter(|&u| state.shown_in(ws, &path, u)).collect();
         order.sort_by_key(|&u| (sorting.units[u].info.primary_channel, u));
         let row_of: std::collections::HashMap<usize, usize> = order.iter().enumerate().map(|(r, &u)| (u, r)).collect();
         let mut rows: Vec<RasterRow> = order
