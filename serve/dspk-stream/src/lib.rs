@@ -19,6 +19,6 @@ pub use transport::files;
 pub use transport::jobs;
 pub use transport::{
     checked_view, client_config, client_config_with, serve_recording, serve_session, server_config, Device, OpenRecording, RecordingOpener, server_config_with_clients, Authority, ClientIdentity, ClientRecord,
-    Enrollment, Pacing, Peer, Permission, ServeOptions, Server, ServerIdentity, ServerTls, ServerTrust, Session, SignalReceiver, DEFAULT_MAX_CONNECTIONS,
+    Enrollment, Pacing, Peer, Permission, RemoteSignal, ServeOptions, Server, ServerIdentity, ServerTls, ServerTrust, Session, SignalReceiver, DEFAULT_MAX_CONNECTIONS,
     DEFAULT_MAX_REQUEST_BYTES, MAX_VIEW_COLUMNS, MAX_VIEW_VALUES, REFUSED_CLIENT,
 };
