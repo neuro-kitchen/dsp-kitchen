@@ -41,8 +41,9 @@ enum Action {
         /// Also configure, start and stop jobs, and write (not only read recordings)
         #[arg(long)]
         control: bool,
-        /// Where to write the client's file (default: <name>.dspk-identity.pem here); never
-        /// overwritten
+        /// Where to write the client's file (default: <name>.dspk-identity.pem here; `-`: to
+        /// standard output, e.g. through `podman exec … > file`, so no copy stays on the server);
+        /// never overwritten. Never put it under the server's data root
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -61,6 +62,14 @@ pub fn run(args: &ClientsArgs) -> anyhow::Result<()> {
         Action::Enroll { name, control, out } => {
             let permission = if *control { Permission::Control } else { Permission::Read };
             let out = out.clone().unwrap_or_else(|| PathBuf::from(format!("{name}{IDENTITY_SUFFIX}")));
+            if out.as_os_str() == "-" {
+                // To standard output only; the messages go to stderr
+                let enrollment = authority.enroll(name, permission)?;
+                print!("{}", enrollment.pem);
+                eprintln!("Enrolled {name} ({permission}), certificate {}; valid until {}", &enrollment.record.fingerprint[..16], enrollment.record.expires_year);
+                eprintln!("The identity (with its private key) went to standard output: keep it private (chmod 600)");
+                return Ok(());
+            }
             // Check the file can be written before recording the client
             if out.exists() {
                 anyhow::bail!("{} exists: choose another --out (it is never overwritten)", out.display());

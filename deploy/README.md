@@ -89,11 +89,15 @@ Enroll a client in the running container, then give it its file over a private c
 holds the client's private key):
 
 ```bash
-podman exec dspk-serve dspk clients enroll alice --out /data/alice.dspk-identity.pem
-podman exec dspk-serve dspk clients enroll lab-pc --control --out /data/lab-pc.dspk-identity.pem
+# The identity goes to standard output, so no copy stays in the container or under /data
+(umask 077; podman exec dspk-serve dspk clients enroll alice --out - > alice.dspk-identity.pem)
+(umask 077; podman exec dspk-serve dspk clients enroll lab-pc --control --out - > lab-pc.dspk-identity.pem)
 podman exec dspk-serve dspk clients list
 podman exec dspk-serve dspk clients revoke alice      # refused from its next connection on
 ```
+
+Never put identity files under `/data`: they hold the client's private key. The server never
+lists or sends `*.dspk-identity.pem`, `*.key` or `*.key.pem` files anyway.
 
 - Read only unless `--control`; control will allow configuring and running jobs.
 - Revoking and enrolling take effect without restarting the server.

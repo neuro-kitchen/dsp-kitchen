@@ -27,7 +27,7 @@ PublishPort=50051:50051/udp
 # You on the host = the container's dspk user (uid 10001), so it can write to ~/dspk-data
 UserNS=keep-id:uid=10001,gid=10001
 # Recordings, their pyramids, and the authority (.dspk-auth: CA, enrolled clients); :Z labels it
-# for SELinux. Enroll: podman exec dspk-serve dspk clients enroll <name> --out /data/<name>.pem
+# for SELinux. Enroll: podman exec dspk-serve dspk clients enroll <name> --out - > <name>.pem
 Volume=%h/dspk-data:/data:Z
 # Compiled kernels and autotune results, kept across restarts
 Volume=dspk-cache:/home/dspk/.cache
