@@ -598,6 +598,7 @@ fn plan_matches_the_run_and_a_cancel_removes_the_output() {
 /// writes both outputs in one pass, each equal to its branch run on its own.
 #[test]
 fn branches_from_one_read_equal_their_chains() {
+    let target = targets()[0];
     let dir = scratch("branches");
     write_input(&dir);
     let branched = PipelineSpec::from_json(&format!(
@@ -609,7 +610,8 @@ fn branches_from_one_read_equal_their_chains() {
                        "a": {{"op": "write", "path": "a.bin"}},
                        "b": {{"op": "write", "path": "b.bin"}}}},
             "edges": [["in", "bp"], ["bp", "x2"], ["x2", "a"], ["bp", "cmr"], ["cmr", "b"]],
-            "execution": {{"chunk_samples": {CHUNK}}}}}"#
+            "execution": {{"chunk_samples": {CHUNK}, "runtime": "{}"}}}}"#,
+        target.name()
     ))
     .unwrap();
     assert_eq!(branched.writes(), 2);
