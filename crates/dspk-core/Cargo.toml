@@ -18,11 +18,14 @@ wgpu = ["compute", "cubecl/wgpu"]
 cpu = ["compute", "cubecl/cpu"]
 cuda = ["compute", "cubecl/cuda"]
 hip = ["compute", "cubecl/hip"]
+# JSON Schema of the serialisable types (channel maps), for specs that publish one.
+schema = ["dep:schemars"]
 
 [dependencies]
 cubecl = { workspace = true, optional = true }
 num-traits.workspace = true
 num-rational.workspace = true
+schemars = { workspace = true, optional = true }
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

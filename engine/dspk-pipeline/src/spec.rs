@@ -18,6 +18,7 @@ use dspk_ops::filter::non_linear::{MEDIAN_DEFAULT_EDGE, TEAGER_KAISER_DEFAULT_ED
 use dspk_ops::filter::{FilterBand, FilterDesign, FilterMode, FilterSpec, FilterStart, Section, Sos};
 use dspk_ops::resampler::poly::{RESAMPLE_POLY_DEFAULT_EDGE, RESAMPLE_POLY_WINDOW};
 use dspk_ops::resampler::FirWindow;
+use dspk_core::{ChannelMap, ChannelPair};
 use dspk_ops::PipelineStage;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -159,6 +160,19 @@ pub enum Node {
         beta: f64,
         #[serde(default = "default_resample_edge")]
         edge: Edge,
+    },
+    /// Channels reordered, dropped and renamed by pairs, like a hardware channel mapper: `pairs`
+    /// written here (`base` 0, or 1 for 1-based numbers), or `path` to a map file (`.toml` /
+    /// `.json` with the pairs under `remap`; relative to the spec file). Output channel `to` reads
+    /// input `from`; inputs left out are dropped. Right after `read` (or another remap): it folds
+    /// into the read, at no cost.
+    Remap {
+        #[serde(default = "default_channel_base")]
+        base: usize,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pairs: Vec<ChannelPair>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<PathBuf>,
     },
     /// Common average reference.
     Car {},
@@ -359,6 +373,9 @@ fn default_resample_beta() -> f64 {
         FirWindow::Kaiser { beta } => beta,
         FirWindow::Hamming => unreachable!("resample_poly's default window is Kaiser"),
     }
+}
+fn default_channel_base() -> usize {
+    dspk_core::recording::DEFAULT_CHANNEL_BASE
 }
 fn default_resample_edge() -> Edge {
     Edge::from(RESAMPLE_POLY_DEFAULT_EDGE)
@@ -693,14 +710,35 @@ fn expand_glob(base_dir: &Path, pattern: &Path) -> Result<Vec<PathBuf>, Pipeline
 }
 
 impl Node {
-    /// The dspk-ops stage of a processing node (`None` for `read`, `write` and `resample`, which the
-    /// executor runs itself).
+    /// A `remap`'s map: its `pairs`, or its file read (relative to `base_dir`; `None`: a file is
+    /// not read and `Ok(None)` returned). `None` for other nodes.
+    pub fn channel_map(&self, base_dir: Option<&Path>) -> Result<Option<ChannelMap>, PipelineError> {
+        let Node::Remap { base, pairs, path } = self else { return Ok(None) };
+        match (path, pairs.is_empty()) {
+            (Some(_), false) => Err(PipelineError::Invalid("remap: give pairs or path, not both".into())),
+            (None, true) => Err(PipelineError::Invalid("remap: give pairs or path".into())),
+            (None, false) => Ok(Some(ChannelMap { base: *base, pairs: pairs.clone() })),
+            (Some(p), true) => match base_dir {
+                Some(dir) => dspk_io::read_channel_map(&dir.join(p)).map(Some).map_err(|e| PipelineError::Invalid(format!("remap: {e}"))),
+                None => Ok(None),
+            },
+        }
+    }
+
+    /// The dspk-ops stage of a processing node (`None` for `read`, `write`, `remap` and
+    /// `resample`, which the executor runs itself).
     pub fn stage(&self) -> Result<Option<PipelineStage>, PipelineError> {
         let filter = |design: FilterDesign, mode: Mode, start: Start| {
             Ok(Some(PipelineStage::Filter(FilterSpec { design, mode: mode.into(), start: start.into() })))
         };
         match self {
             Node::Read { .. } | Node::Write { .. } => Ok(None),
+            Node::Remap { .. } => {
+                if let Some(map) = self.channel_map(None)? {
+                    map.order().map_err(|e| PipelineError::Invalid(e.to_string()))?;
+                }
+                Ok(None)
+            }
             Node::Resample { up, down, .. } => {
                 if *up == 0 || *down == 0 {
                     return Err(PipelineError::Invalid(format!("resample: up and down must be at least 1, got {up} / {down}")));

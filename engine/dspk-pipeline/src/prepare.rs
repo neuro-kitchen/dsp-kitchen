@@ -76,6 +76,8 @@ pub(crate) struct Prepared {
     pub(crate) stages: Vec<(String, dspk_ops::pipeline::PipelineStage)>,
     pub(crate) resample: Option<Resample>,
     pub(crate) channels: Vec<usize>,
+    /// The output channels' names (the input's, or a remap's).
+    pub(crate) names: Vec<String>,
     pub(crate) range: std::ops::Range<u64>,
     pub(crate) unit: SignalUnit,
     pub(crate) sample_rate: f64,
@@ -173,9 +175,16 @@ pub(crate) fn prepare(
     let mut stages = Vec::with_capacity(chain.stages.len());
     let mut stage_ids = Vec::with_capacity(chain.stages.len());
     let mut resample = None;
+    let mut remaps = Vec::new();
     for (i, (id, node)) in chain.stages.iter().enumerate() {
         let stage = node.stage().map_err(|e| PipelineError::Invalid(format!("node {id:?}: {e}")))?;
         match (node, stage) {
+            (Node::Remap { .. }, _) => {
+                if i != remaps.len() {
+                    return Err(PipelineError::Invalid(format!("node {id:?}: remap goes right after read (or another remap)")));
+                }
+                remaps.push(node.channel_map(Some(base_dir)).map_err(|e| PipelineError::Invalid(format!("node {id:?}: {e}")))?.expect("a remap has a map"));
+            }
             (Node::Resample { up, down, beta, edge }, _) => {
                 if i + 1 != chain.stages.len() {
                     return Err(PipelineError::Invalid(format!("node {id:?}: resample must be the last node before write")));
@@ -205,7 +214,18 @@ pub(crate) fn prepare(
     };
     let info = source.info();
     let (total, sample_rate, stored_format) = (info.samples, info.sample_rate_hz(), info.format);
-    let channels = select_channels(picked.as_deref(), info.channel_count())?;
+    let mut channels = select_channels(picked.as_deref(), info.channel_count())?;
+    // Remaps fold into the read: the channels read, in the remapped order, with their names
+    let mut names: Vec<String> = channels.iter().map(|&c| info.channels[c].name.clone()).collect();
+    if !remaps.is_empty() {
+        let mut map = dspk_core::ChannelMap::from_order(&channels);
+        for r in &remaps {
+            map = map.then(r).map_err(|e| PipelineError::Invalid(format!("remap: {e}")))?;
+        }
+        let given = map.names();
+        channels = map.resolve(info.channel_count()).map_err(|e| PipelineError::Invalid(format!("remap: {e}")))?;
+        names = channels.iter().zip(given).map(|(&c, n)| n.unwrap_or_else(|| info.channels[c].name.clone())).collect();
+    }
     let range = select_range(*start, *stop, total)?;
     let unit = info.channels[channels[0]].unit.clone();
     pipeline.validate(sample_rate).map_err(|e| PipelineError::Invalid(e.to_string()))?;
@@ -243,6 +263,7 @@ pub(crate) fn prepare(
         stages: stage_ids,
         resample,
         channels,
+        names,
         range,
         unit,
         sample_rate,

@@ -116,6 +116,7 @@ pub fn type_name(node: &Node) -> &'static str {
         Node::Clamp { .. } => "Clamp",
         Node::TeagerKaiser { .. } => "Teager–Kaiser",
         Node::Resample { .. } => "Resample",
+        Node::Remap { .. } => "Remap",
         Node::Read { .. } => "Read",
         Node::Write { .. } => "Write",
     }
@@ -170,6 +171,10 @@ pub fn flow_call(node: &Node) -> String {
         Node::Median { width, .. } => format!(".median(width = {width})"),
         Node::TeagerKaiser { .. } => ".teagerKaiser()".into(),
         Node::Resample { up, down, .. } => format!(".resample({up}, {down})"),
+        Node::Remap { pairs, path, .. } => match path {
+            Some(p) => format!(".remap({:?})", p.display().to_string()),
+            None => format!(".remap(pairs = {})", pairs.len()),
+        },
         Node::Read { .. } => "flowOf(recording)".into(),
         Node::Write { .. } => ".collect(write)".into(),
     }

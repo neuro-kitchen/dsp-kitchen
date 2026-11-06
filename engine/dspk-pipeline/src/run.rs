@@ -154,7 +154,7 @@ fn execute(
     let started = Instant::now();
     let Prepared {
         source, pipeline, resample, channels, range, unit, sample_rate, stored_format, stored_upload, mode, schedule,
-        out_rate, out_samples, output, format, zarr, ..
+        out_rate, out_samples, output, format, zarr, names, ..
     } = p;
     let info = source.info();
     let nch = channels.len();
@@ -184,7 +184,11 @@ fn execute(
             let file = File::create(&output).map_err(|e| PipelineError::Io(format!("{}: {e}", output.display())))?;
             Sink::Raw { file: BufWriter::new(file), frames: Vec::new(), parallel: zarr.parallel }
         }
-        OutputFormat::Zarr => Sink::Zarr(ZarrWriter::create(&output, nch, out_samples, out_rate, &unit, &zarr)?),
+        OutputFormat::Zarr => {
+            let mut w = ZarrWriter::create(&output, nch, out_samples, out_rate, &unit, &zarr)?;
+            w.set_channel_names(&names)?;
+            Sink::Zarr(w)
+        }
     };
 
     let mut bytes = DataMovement::default();
@@ -407,7 +411,11 @@ fn execute_fanout(
                 let file = File::create(&p.output).map_err(|e| PipelineError::Io(format!("{}: {e}", p.output.display())))?;
                 Sink::Raw { file: BufWriter::new(file), frames: Vec::new(), parallel: p.zarr.parallel }
             }
-            OutputFormat::Zarr => Sink::Zarr(ZarrWriter::create(&p.output, nch, p.out_samples, p.out_rate, &p.unit, &p.zarr)?),
+            OutputFormat::Zarr => {
+                let mut w = ZarrWriter::create(&p.output, nch, p.out_samples, p.out_rate, &p.unit, &p.zarr)?;
+                w.set_channel_names(&p.names)?;
+                Sink::Zarr(w)
+            }
         });
     }
 

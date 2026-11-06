@@ -11,6 +11,7 @@
 //!
 //! Neural-recording formats (NWB, SpikeGLX, mtscomp, Phy, probes) live in `dspk-synapse` (`dspk_synapse::io`).
 
+pub mod channel_map;
 pub mod container;
 pub mod core;
 pub mod generic;
@@ -24,4 +25,5 @@ pub use crate::core::{
 pub use generic::raw::{write_raw, RawParams, RawRecording};
 #[cfg(feature = "zarr")]
 pub use generic::zarr_traces::{write_zarr, ZarrCompression, ZarrOptions, ZarrRecording, ZarrWriter, DEFAULT_PARALLEL_WRITES, DEFAULT_ZARR_COMPRESSION};
+pub use channel_map::{channel_map_toml, parse_channel_map, read_channel_map};
 pub use registry::formats;

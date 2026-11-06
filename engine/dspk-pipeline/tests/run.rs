@@ -642,3 +642,45 @@ fn branches_from_one_read_equal_their_chains() {
     assert!(stray.branches().is_err());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A remap right after read (a map file, 1-based) after a channel pick, then an inline one: the
+/// output has the mapped channels, in the mapped order, with the map's names; a remap after a
+/// processing node is refused.
+#[test]
+fn remaps_fold_into_the_read() {
+    let target = targets()[0];
+    let dir = scratch("remap");
+    let rec = write_input(&dir);
+    // The read picks [5, 0, 3, 2]; the file maps (1-based) picked 3 → 1 "A1", 1 → 2, 4 → 3
+    std::fs::write(dir.join("map.toml"), "[remap]\nbase = 1\npairs = [{ from = 3, to = 1, name = \"A1\" }, { from = 1, to = 2 }, { from = 4, to = 3, name = \"A3\" }]\n").unwrap();
+    let spec = |extra_edge: &str, after: &str| {
+        PipelineSpec::from_json(&format!(
+            r#"{{"dspk_pipeline": 1,
+                "nodes": {{"in": {{"op": "read", "path": "in.bin", "channels": [5, 0, 3, 2]}},
+                           "m": {{"op": "remap", "path": "map.toml"}},
+                           "swap": {{"op": "remap", "pairs": [{{"from": 1, "to": 0, "name": "B"}}, {{"from": 0, "to": 1}}]}},
+                           "x2": {{"op": "scale", "alpha": 2.0}},
+                           "out": {{"op": "write", "path": "out.zarr", "format": "zarr"}}}},
+                "edges": [{extra_edge}, ["{after}", "out"]],
+                "execution": {{"chunk_samples": {CHUNK}, "runtime": "{}"}}}}"#,
+            target.name()
+        ))
+        .unwrap()
+    };
+    let ok = spec(r#"["in", "m"], ["m", "swap"], ["swap", "x2"]"#, "x2");
+    let report = run(&ok, &dir).unwrap();
+    assert_eq!(report.channels, 2);
+    // m gives [3 "A1", 5, 2 "A3"]; swap gives [5 "B", 3 "A1"] (2 dropped)
+    let out = dspk_io::open(&dir.join("out.zarr")).unwrap();
+    let names: Vec<&str> = out.info().channels.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["B", "A1"]);
+    let got = read_all(&dir.join("out.zarr"));
+    let expected: Vec<f32> = [5usize, 3].iter().flat_map(|&c| rec.data()[c * SAMPLES..(c + 1) * SAMPLES].iter().map(|v| v * 2.0)).collect();
+    assert_eq!(got.len(), expected.len());
+    assert!(max_rel_err(&got, &expected) < 1e-6);
+    // After a processing node: refused, with the reason
+    let late = spec(r#"["in", "x2"], ["x2", "m"], ["m", "swap"]"#, "swap");
+    let err = run(&late, &dir).unwrap_err().to_string();
+    assert!(err.contains("remap goes right after read"), "{err}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
