@@ -27,6 +27,17 @@ version number.
 - Supply chain: `cargo-deny` (`deny.toml`: no known vulnerability, no yanked crate, allowed
   licences only, crates.io only) on every pull request, weekly, and before every release.
 
+### Changed
+
+- **dspk-stream protocol 2** (ALPN `dspk-stream/2`; version 1 peers are refused): the hello is
+  answered with `ServerInfo` (server, the client's name and permission, device state, files);
+  requests (views, `ListFiles`, `Open`) are `Request` → `Response` on streams of their own;
+  refusals come back as `StreamError::Server`. A server can serve the recordings under a data
+  root (`files::DataRoot`: absolute paths, `..`, hidden files and links out of it refused;
+  `RecordingOpener`, `Device`, `serve_session`), each client opening its own;
+  `Session::recording()` replaces `info()`, with `list_files` and `open`.
+  `dspk serve --data <dir>`, `dspk receive --open <path>`.
+
 ### Added
 
 - `deploy/`: dspk as a server in a Podman container (targets `cpu`, `nvidia`, `mesa`), hardened
