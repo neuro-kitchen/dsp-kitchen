@@ -5,11 +5,12 @@
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 
 use anyhow::Context as _;
-use dspk_stream::protocol::wire;
+/// The protocol's messages (a remote job is a `wire::Configure`), for the app's plugins.
+pub use dspk_stream::protocol::wire;
 use dspk_stream::{client_config_with, ClientIdentity, RemoteSignal, ServerTrust, Session};
 use serde::{Deserialize, Serialize};
 
@@ -46,12 +47,55 @@ impl ServerProfile {
         if self.name.trim().is_empty() {
             return Err("give the server a name".into());
         }
+        if self.name.contains('/') {
+            return Err("a server name cannot contain '/' (it is part of dspk:// paths)".into());
+        }
         self.address.parse::<SocketAddr>().map_err(|_| format!("address {:?}: an IP and port, e.g. 192.168.1.20:50051", self.address))?;
         if !self.identity.is_file() {
             return Err(format!("identity file {} not found", self.identity.display()));
         }
         Ok(())
     }
+}
+
+/// How a recording on a server is named wherever the app names recordings by path (the session
+/// document, recent files, sortings' links): `dspk://<server name>/<path on the server>`.
+pub const SCHEME: &str = "dspk://";
+
+/// The path naming `path` on the server `server`.
+pub fn uri(server: &str, path: &str) -> PathBuf {
+    PathBuf::from(format!("{SCHEME}{server}/{}", path.trim_start_matches('/')))
+}
+
+/// The server and the path on it, for a `dspk://` path.
+pub fn parse_uri(path: &Path) -> Option<(String, String)> {
+    let rest = path.to_str()?.strip_prefix(SCHEME)?;
+    let (server, path) = rest.split_once('/')?;
+    (!server.is_empty() && !path.is_empty()).then(|| (server.to_string(), path.to_string()))
+}
+
+/// The servers saved in Settings, for code that only has a path (opening a recording).
+fn profiles() -> &'static RwLock<Vec<ServerProfile>> {
+    static PROFILES: OnceLock<RwLock<Vec<ServerProfile>>> = OnceLock::new();
+    PROFILES.get_or_init(|| RwLock::new(Vec::new()))
+}
+
+/// Updates the servers known to [`profile_named`] (the store calls it when Settings change).
+pub fn set_profiles(servers: &[ServerProfile]) {
+    *profiles().write().unwrap_or_else(|e| e.into_inner()) = servers.to_vec();
+}
+
+/// The saved server called `name`.
+pub fn profile_named(name: &str) -> Option<ServerProfile> {
+    profiles().read().unwrap_or_else(|e| e.into_inner()).iter().find(|p| p.name == name).cloned()
+}
+
+/// Opens the `dspk://` recording `path` (blocking: from a background thread, never on the
+/// network runtime).
+pub fn open_uri(path: &Path) -> anyhow::Result<Arc<RemoteSignal>> {
+    let (server, remote) = parse_uri(path).with_context(|| format!("{} is not a dspk:// path", path.display()))?;
+    let profile = profile_named(&server).with_context(|| format!("no server named {server:?} in Settings"))?;
+    runtime().block_on(open_recording(profile, remote))
 }
 
 /// The network runtime every connection runs on (started on first use).
@@ -239,12 +283,33 @@ mod tests {
         signal.view(&View { channels: vec![2], start: 0, end: 10, width: 10 }, &mut env).unwrap();
         assert!(matches!(env, Envelope::Samples(v) if v.len() == 10));
 
+        // The dspk:// path: what opening from the browser, recent files or the session goes through
+        set_profiles(std::slice::from_ref(&profile));
+        let set = crate::data::recording::SourceSet::open(&uri(&profile.name, "m1/rec.bin")).unwrap();
+        let ds = set.default_dataset();
+        assert_eq!(ds.total_channels, 3);
+        let mut window = vec![0.0f32; 2 * 100];
+        ds.source.as_ref().expect("sample reads through RemoteSource").read(&[0, 1], 10..110, &mut window).unwrap();
+        // MemoryRecording is channel-major: channel c, sample t = data[c · 4000 + t] = (c · 4000 + t) % 50
+        assert_eq!((window[0], window[100], window[99]), (10.0, 10.0, (109 % 50) as f32));
+        assert!(crate::data::recording::SourceSet::open(&uri("unknown", "m1/rec.bin")).is_err(), "a server not in Settings");
+
         let local = runtime().block_on(fetch(profile.clone(), "m1/notes.txt".into(), base.join("results"))).unwrap();
         assert_eq!(local, base.join("results/test_server/notes.txt"));
         assert_eq!(std::fs::read_to_string(&local).unwrap(), "hello");
         let again = runtime().block_on(fetch(profile, "m1/notes.txt".into(), base.join("results"))).unwrap();
         assert_eq!(again, base.join("results/test_server/2-notes.txt"), "never overwritten");
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn remote_paths_round_trip() {
+        let p = uri("lab GPU", "/m1/rec.ap.bin");
+        assert_eq!(p, PathBuf::from("dspk://lab GPU/m1/rec.ap.bin"));
+        assert_eq!(parse_uri(&p), Some(("lab GPU".into(), "m1/rec.ap.bin".into())));
+        assert_eq!(p.file_name().unwrap(), "rec.ap.bin");
+        assert_eq!(parse_uri(Path::new("/data/rec.bin")), None);
+        assert_eq!(parse_uri(Path::new("dspk://lab")), None);
     }
 
     #[test]

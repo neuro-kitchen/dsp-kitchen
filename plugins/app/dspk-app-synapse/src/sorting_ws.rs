@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use dspk_app_core::data::jobs::processed_path;
+use dspk_app_core::data::remote;
 use dspk_app_core::data::store::{file_label, AppEvent, Store};
 use dspk_app_core::domain::command::SessionCommand;
 use dspk_app_core::navigation::route::Workspace;
@@ -454,6 +455,48 @@ impl SortingWorkspace {
             })
             .collect();
         let processed = view.ops.iter().any(|o| o.enabled);
+        let probe = state(cx).map_or(0, |s| s.read(cx).probe);
+        let part = match (start, duration) {
+            (None, None) => "the whole recording".to_string(),
+            (s, d) => format!("{} s{}", s.unwrap_or(0.0), d.map(|d| format!(" + {d} s")).unwrap_or_else(|| " to the end".into())),
+        };
+        let id = view.id.clone();
+        // The result: its part's start recorded, then linked to the view (Explore, Curation follow)
+        let done = move |s: &mut Store, path: PathBuf, cx: &mut Context<Store>| {
+            if let Some(t) = start {
+                if let Err(e) = write_start_sec(&path, t) {
+                    s.set_status(format!("{}: {e}", path.display()), cx);
+                }
+            }
+            let Some(v) = s.doc.view(&id).cloned() else { return };
+            let data = plugin_data(&v, Some(&path), Some(&path));
+            let _ = s.execute(SessionCommand::SetPluginData { view: id.clone(), plugin: ID.into(), data }, cx);
+        };
+
+        // A recording on a server (dspk://): sorted there, the sorting fetched here
+        if let Some((server, remote_path)) = remote::parse_uri(&view.recording.path) {
+            if processed {
+                return status(self, format!("{} has processing ops: on a server, sort the recording itself (turn its ops off); processing there comes later", view.name), cx);
+            }
+            let Some(profile) = remote::profile_named(&server) else {
+                return status(self, format!("No server named {server:?} in Settings"), cx);
+            };
+            let job = remote::wire::Configure {
+                sorter: sorter.clone(),
+                recording: remote_path,
+                output: String::new(),
+                params: params.iter().map(|(flag, v)| (flag.trim_start_matches('-').to_string(), v.clone())).collect(),
+                source: String::new(),
+                probe: PROBES[probe].0.unwrap_or_default().to_string(),
+                start_sec: start.unwrap_or(0.0),
+                duration_sec: duration.unwrap_or(0.0),
+            };
+            let results = self.store.read(cx).session.results_dir();
+            let label = format!("{sorter} on {} ({part}) on {}", view.name, profile.name);
+            self.store.update(cx, |s, cx| s.start_job(label, move |send| remote::remote_sort(profile, job, results, move |m| send(m)), done, cx));
+            return;
+        }
+
         let (recording, source) = if processed {
             let written = processed_path(&view.recording.path, &view.id);
             if !written.exists() {
@@ -463,30 +506,9 @@ impl SortingWorkspace {
         } else {
             (view.recording.path.clone(), view.recording.source.clone())
         };
-        let probe = state(cx).map_or(0, |s| s.read(cx).probe);
         let output = sort::run_path(&recording, &sorter, start, duration);
         let req = SortRequest { sorter: sorter.clone(), recording, source, probe: PROBES[probe].0.map(str::to_string), output, params, start_sec: start, duration_sec: duration };
-        let (id, part) = (view.id.clone(), match (start, duration) {
-            (None, None) => "the whole recording".to_string(),
-            (s, d) => format!("{} s{}", s.unwrap_or(0.0), d.map(|d| format!(" + {d} s")).unwrap_or_else(|| " to the end".into())),
-        });
-        self.store.update(cx, |s, cx| {
-            s.start_job(
-                format!("{sorter} on {} ({part})", view.name),
-                move |send| sort::sort(&req, move |m| send(m)),
-                move |s, path, cx| {
-                    if let Some(t) = start {
-                        if let Err(e) = write_start_sec(&path, t) {
-                            s.set_status(format!("{}: {e}", path.display()), cx);
-                        }
-                    }
-                    let Some(v) = s.doc.view(&id).cloned() else { return };
-                    let data = plugin_data(&v, Some(&path), Some(&path));
-                    let _ = s.execute(SessionCommand::SetPluginData { view: id.clone(), plugin: ID.into(), data }, cx);
-                },
-                cx,
-            );
-        });
+        self.store.update(cx, |s, cx| s.start_job(format!("{sorter} on {} ({part})", view.name), move |send| sort::sort(&req, move |m| send(m)), done, cx));
     }
 
     /// Shows run `path` (links it to the view; Explore, Curation and this follow).

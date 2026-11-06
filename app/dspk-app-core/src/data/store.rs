@@ -153,6 +153,7 @@ impl EventEmitter<AppEvent> for Store {}
 
 impl Store {
     pub fn new(session: Session, session_path: Option<PathBuf>) -> Self {
+        crate::data::remote::set_profiles(&session.servers);
         Self {
             recording: None,
             timeline: TimelineState::new(1.0),
@@ -693,6 +694,7 @@ impl Store {
 
     /// The servers the user works with (Settings), saved.
     pub fn set_servers(&mut self, servers: Vec<crate::data::remote::ServerProfile>, cx: &mut Context<Self>) {
+        crate::data::remote::set_profiles(&servers);
         self.session.servers = servers;
         self.save_session();
         cx.notify();
@@ -847,30 +849,11 @@ impl Store {
         .detach();
     }
 
-    /// Opens the recording at `path` on a server: drawn from the server's pyramid, read there
-    /// (nothing copied whole). Processing previews need the recording here, so they stay off.
+    /// Opens the recording at `path` on a server (a `dspk://` path: drawn from the server's
+    /// pyramid, read there, nothing copied whole), like any recording: a view, recent files.
     pub fn open_remote(&mut self, profile: crate::data::remote::ServerProfile, path: String, cx: &mut Context<Self>) {
-        let label = format!("{} · {}", profile.name, path);
-        self.opening = Some(label.clone());
-        self.set_status(format!("Opening {label}…"), cx);
-        let task = crate::data::remote::runtime().spawn(crate::data::remote::open_recording(profile, path));
-        cx.spawn(async move |this, cx| {
-            let result = task.await;
-            let _ = this.update(cx, |store, cx| {
-                store.opening = None;
-                match result {
-                    Ok(Ok(signal)) => {
-                        let mut recording = Recording::new(SourceSet::single(Dataset::new(signal, None)), None);
-                        recording.name = label.clone();
-                        store.install(recording, cx);
-                        store.set_status(format!("Opened {label} (read on the server)"), cx);
-                    }
-                    Ok(Err(e)) => store.set_status(format!("Could not open {label}: {e:#}"), cx),
-                    Err(e) => store.set_status(format!("Could not open {label}: {e}"), cx),
-                }
-            });
-        })
-        .detach();
+        crate::data::remote::set_profiles(&self.session.servers);
+        self.open(crate::data::remote::uri(&profile.name, &path), cx);
     }
 
     /// Opens a procedural recording (noise, hum, drifting units) computed on demand.
