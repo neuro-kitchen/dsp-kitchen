@@ -56,6 +56,25 @@ pub struct ServeArgs {
     /// Where to write the generated self-signed certificate (DER), for clients to trust
     #[arg(long, conflicts_with = "certificate")]
     certificate_out: Option<PathBuf>,
+    /// Host names or addresses clients reach the server by, for the self-signed certificate
+    /// (besides localhost and the --bind address); repeat for several
+    #[arg(long = "name", conflicts_with = "certificate")]
+    names: Vec<String>,
+}
+
+/// The names of the self-signed certificate: localhost, the --bind address unless it is a
+/// wildcard (0.0.0.0, ::), then each --name, without repeats.
+fn self_signed_names(args: &ServeArgs) -> Vec<String> {
+    let mut names = vec![LOCALHOST.to_string()];
+    if !args.bind.ip().is_unspecified() {
+        names.push(args.bind.ip().to_string());
+    }
+    for n in &args.names {
+        if !names.contains(n) {
+            names.push(n.clone());
+        }
+    }
+    names
 }
 
 pub async fn run(args: &ServeArgs) -> anyhow::Result<()> {
@@ -92,7 +111,7 @@ pub async fn run(args: &ServeArgs) -> anyhow::Result<()> {
 
     let identity = match (&args.certificate, &args.private_key) {
         (Some(certificate_chain), Some(private_key)) => ServerIdentity::Files { certificate_chain: certificate_chain.clone(), private_key: private_key.clone() },
-        _ => ServerIdentity::SelfSigned { names: vec![LOCALHOST.to_string(), args.bind.ip().to_string()] },
+        _ => ServerIdentity::SelfSigned { names: self_signed_names(args) },
     };
     let tls = server_config(&identity)?;
     if let Some(out) = &args.certificate_out {
