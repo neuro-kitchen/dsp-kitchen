@@ -16,6 +16,7 @@ use crate::data::work_pool::JobKey;
 use crate::screens::explore::trace::hover::{HoverReply, HoverRequest};
 use crate::screens::explore::trace::renderer::{render_on_worker, TimeViewKind};
 use crate::screens::explore::trace::view::{HoverTarget, TimeView, ViewId};
+use crate::navigation::route::Workspace;
 use crate::data::store::{AppEvent, Store};
 
 use crate::data::services::{Services, RENDER_SLOT};
@@ -61,6 +62,7 @@ pub struct TraceVm {
     hover_reply: HoverReply,
     _tasks: Vec<Task<()>>,
     _store: Subscription,
+    home: Workspace,
 }
 
 impl EventEmitter<TraceEvent> for TraceVm {}
@@ -97,8 +99,12 @@ impl TraceVm {
         });
         let sub = cx.subscribe(&store, |vm, store, event, cx| match event {
             AppEvent::WindowMoved | AppEvent::PaletteChanged => vm.request_render(cx),
-            // Back on Explore: draw what changed while another workspace was shown
+            // Back on its workspace: draw what changed while another one was shown
             AppEvent::WorkspaceChanged if vm.view.needs_render => vm.request_render(cx),
+            AppEvent::RecordingChanged if vm.home != Workspace::Explore => {
+                let source = store.read(cx).sources().map(|s| s.default_entry().id.clone()).unwrap_or_default();
+                vm.set_source(&source, cx);
+            }
             AppEvent::PlaybackChanged => cx.notify(),
             AppEvent::PyramidProgress(source) if *source == vm.view.source && vm.incomplete => vm.request_render(cx),
             AppEvent::SelectionChanged(source) if *source == vm.view.source && !vm.view.pinned_selection => {
@@ -122,7 +128,15 @@ impl TraceVm {
             hover_reply,
             _tasks: vec![frame_task, hover_task],
             _store: sub,
+            home: Workspace::Explore,
         }
+    }
+
+    /// The workspace showing this view (Explore's views by default; a plugin's strip its own):
+    /// it renders only while that workspace is in front.
+    pub fn set_home(&mut self, home: Workspace, cx: &mut Context<Self>) {
+        self.home = home;
+        self.request_render(cx);
     }
 
     /// Points `view` at `source` of the open recording, with that source's shared selection.
@@ -171,9 +185,9 @@ impl TraceVm {
         if !self.active || !self.view.needs_render || self.view.canvas_width == 0 || self.view.canvas_height == 0 {
             return;
         }
-        // Hidden behind another workspace: draw when Explore shows again (the work pool and the
-        // device stay free for the workspace in front)
-        if self.store.read(cx).workspace != crate::navigation::route::Workspace::Explore {
+        // Hidden behind another workspace: draw when its workspace shows again (the work pool
+        // and the device stay free for the workspace in front)
+        if self.store.read(cx).workspace != self.home {
             return;
         }
         let Some(sources) = self.sources(cx) else { return };
