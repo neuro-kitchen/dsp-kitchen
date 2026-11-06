@@ -185,6 +185,11 @@ mod tests {
         std::fs::create_dir_all(root.join(".dspk-auth")).unwrap();
         std::fs::write(root.join("mouse1/rec.ap.bin"), [0u8; 8]).unwrap();
         std::fs::write(root.join("notes.txt"), "x").unwrap();
+        let sorting = root.join("mouse1/rec.ks4.sorting.zarr");
+        std::fs::create_dir_all(sorting.join("spikes/times/c")).unwrap();
+        std::fs::write(sorting.join("zarr.json"), "{}").unwrap();
+        let big: Vec<u8> = (0..(3 * server::FILE_CHUNK_BYTES + 17)).map(|i| (i % 251) as u8).collect();
+        std::fs::write(sorting.join("spikes/times/c/0"), &big).unwrap();
         let device = Arc::new(Device {
             name: "test".into(),
             version: "0".into(),
@@ -220,6 +225,15 @@ mod tests {
         assert!(session.view(&view).await.is_ok());
         let mut signal = session.subscribe(4_990).await.unwrap();
         assert!(signal.next_values().await.unwrap().is_some());
+
+        // Fetch: a directory file by file (chunks reassembled), never overwriting, only under the root
+        let local = base.join("fetched.sorting.zarr");
+        let (files, bytes) = session.fetch("mouse1/rec.ks4.sorting.zarr", &local).await.unwrap();
+        assert_eq!((files, bytes), (2, big.len() as u64 + 2));
+        assert_eq!(std::fs::read(local.join("spikes/times/c/0")).unwrap(), big);
+        assert!(session.fetch("mouse1/rec.ks4.sorting.zarr", &local).await.is_err(), "never overwritten");
+        assert!(session.fetch_file("../data/notes.txt", &base.join("x")).await.is_err());
+        assert!(session.fetch_file(".dspk-auth", &base.join("y")).await.is_err());
         session.close().await;
         let _ = std::fs::remove_dir_all(&base);
     }

@@ -113,7 +113,7 @@ impl DataRoot {
             let Ok(meta) = std::fs::metadata(&target) else { continue };
             let modified_unix = meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
             let kind = kind_of(&target, meta.is_dir());
-            entries.push(wire::FileEntry { name, kind: kind as i32, size: if meta.is_dir() { 0 } else { meta.len() }, modified_unix });
+            entries.push(wire::FileEntry { name, kind: kind as i32, size: if meta.is_dir() { 0 } else { meta.len() }, modified_unix, directory: meta.is_dir() });
             if entries.len() >= MAX_LIST_ENTRIES {
                 break;
             }

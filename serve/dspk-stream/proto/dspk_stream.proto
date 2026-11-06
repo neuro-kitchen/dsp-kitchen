@@ -148,6 +148,8 @@ message FileEntry {
   // Bytes (files; 0 for directories).
   uint64 size = 3;
   uint64 modified_unix = 4;
+  // A directory (a .sorting.zarr or a Zarr recording is one too, whatever its kind).
+  bool directory = 5;
 }
 
 message FileList {
@@ -218,6 +220,22 @@ message LogLines {
   repeated string lines = 1;
 }
 
+// Fetch a file under the data root. The answer is a Response with its FileHeader, then the file's
+// bytes as FileChunk messages on the same stream until it ends. A directory (a .sorting.zarr) is
+// fetched file by file after listing it.
+message Fetch {
+  string path = 1;
+}
+
+message FileHeader {
+  string path = 1;
+  uint64 size = 2;
+}
+
+message FileChunk {
+  bytes data = 1;
+}
+
 // client → server, the only message on a request stream.
 message Request {
   oneof kind {
@@ -229,6 +247,7 @@ message Request {
     Stop stop = 6;
     GetStatus status = 7;
     GetLogs logs = 8;
+    Fetch fetch = 9;
   }
 }
 
@@ -244,6 +263,8 @@ message Response {
     // The device's state (the answer to Configure, Start, Stop and GetStatus).
     Status status = 5;
     LogLines logs = 6;
+    // The answer to Fetch; FileChunk messages follow.
+    FileHeader file = 7;
   }
 }
 

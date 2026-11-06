@@ -132,6 +132,72 @@ impl Session {
         }
     }
 
+    /// Fetches the file `path` under the server's data root into `dest` (a new file, never
+    /// overwritten); returns its size. A directory is fetched with [`Self::fetch`].
+    pub async fn fetch_file(&self, path: &str, dest: &std::path::Path) -> StreamResult<u64> {
+        use tokio::io::AsyncWriteExt as _;
+        let (mut send, mut recv) = self.connection.open_bi().await?;
+        write_message(&mut send, &wire::Request { kind: Some(wire::request::Kind::Fetch(wire::Fetch { path: path.into() })) }).await?;
+        send.finish().map_err(StreamError::protocol)?;
+        let response: wire::Response = read_message(&mut recv, self.max_message_bytes).await?.ok_or_else(|| StreamError::protocol("no response"))?;
+        let header = match response.kind {
+            Some(wire::response::Kind::File(header)) => header,
+            Some(wire::response::Kind::Error(message)) => return Err(StreamError::Server(message)),
+            _ => return Err(StreamError::protocol("unexpected answer to fetch")),
+        };
+        let mut out = tokio::fs::OpenOptions::new().write(true).create_new(true).open(dest).await?;
+        let mut written = 0u64;
+        while let Some(chunk) = read_message::<wire::FileChunk>(&mut recv, self.max_message_bytes).await? {
+            written += chunk.data.len() as u64;
+            if written > header.size {
+                return Err(StreamError::protocol("the server sent more than the file's size"));
+            }
+            out.write_all(&chunk.data).await?;
+        }
+        out.flush().await?;
+        if written != header.size {
+            return Err(StreamError::Truncated);
+        }
+        Ok(written)
+    }
+
+    /// Fetches `path` (a file, or a directory such as a .sorting.zarr, file by file) into the new
+    /// local path `dest`; returns files and bytes. Names from the server are checked: plain, not
+    /// hidden, no separators, so nothing lands outside `dest`.
+    pub async fn fetch(&self, path: &str, dest: &std::path::Path) -> StreamResult<(usize, u64)> {
+        let parent = path.rsplit_once('/').map_or("", |(dir, _)| dir);
+        let name = path.rsplit('/').next().unwrap_or(path);
+        let listing = self.list_files(parent).await?;
+        let entry = listing.entries.iter().find(|e| e.name == name).ok_or_else(|| StreamError::Server(format!("{path:?} not found")))?;
+        if !entry.directory {
+            return Ok((1, self.fetch_file(path, dest).await?));
+        }
+        if dest.symlink_metadata().is_ok() {
+            return Err(StreamError::Io(std::io::Error::new(std::io::ErrorKind::AlreadyExists, format!("{} exists (never overwritten)", dest.display()))));
+        }
+        tokio::fs::create_dir(dest).await?;
+        let (mut files, mut bytes) = (0usize, 0u64);
+        // Depth-first over the directory, file by file
+        let mut stack = vec![(path.to_string(), dest.to_path_buf())];
+        while let Some((remote, local)) = stack.pop() {
+            for e in self.list_files(&remote).await?.entries {
+                let plain = !e.name.is_empty() && !e.name.starts_with('.') && !e.name.contains(['/', '\\']) && e.name != "..";
+                if !plain {
+                    return Err(StreamError::protocol(format!("the server listed {:?}: not a plain name", e.name)));
+                }
+                let (r, l) = (format!("{remote}/{}", e.name), local.join(&e.name));
+                if e.directory {
+                    tokio::fs::create_dir(&l).await?;
+                    stack.push((r, l));
+                } else {
+                    bytes += self.fetch_file(&r, &l).await?;
+                    files += 1;
+                }
+            }
+        }
+        Ok((files, bytes))
+    }
+
     /// Opens the recording at `path` under the server's data root (`source`: one of the file's
     /// sources, `None` = its default); views and the signal are then of it.
     pub async fn open(&mut self, path: &str, source: Option<&str>) -> StreamResult<&RecordingInfo> {

@@ -285,6 +285,9 @@ async fn answer_requests(connection: quinn::Connection, device: Arc<Device>, cur
         tokio::spawn(async move {
             let answer = async {
                 let request: wire::Request = read_message(&mut recv, max).await?.ok_or_else(|| StreamError::protocol("empty request stream"))?;
+                if let Some(wire::request::Kind::Fetch(fetch)) = &request.kind {
+                    return send_file(&mut send, &device, &fetch.path).await;
+                }
                 let kind = match answer(request, &device, &current, &peer).await {
                     Ok(kind) => kind,
                     Err(e) => wire::response::Kind::Error(e.reason()),
@@ -343,7 +346,43 @@ async fn answer(request: wire::Request, device: &Device, current: &Current, peer
         Req::Stop(_) => Ok(Resp::Status(jobs_of(device)?.stop(peer)?)),
         Req::Status(_) => Ok(Resp::Status(jobs_of(device)?.status())),
         Req::Logs(logs) => Ok(Resp::Logs(wire::LogLines { lines: jobs_of(device)?.logs(logs.lines as usize) })),
+        Req::Fetch(_) => Err(StreamError::protocol("fetch is answered by send_file")),
     }
+}
+
+/// Bytes per FileChunk.
+pub const FILE_CHUNK_BYTES: usize = 1 << 20;
+
+/// Answers a Fetch: the file's header, then its bytes in chunks; a refusal as an error response.
+async fn send_file(send: &mut quinn::SendStream, device: &Device, path: &str) -> StreamResult<()> {
+    use tokio::io::AsyncReadExt as _;
+    let opened = async {
+        let (root, _) = device.files.as_ref().ok_or_else(|| StreamError::Server("this server serves no files".into()))?;
+        let full = root.resolve(path)?;
+        if !full.is_file() {
+            return Err(StreamError::Server(format!("{path:?} is not a file (fetch a directory file by file)")));
+        }
+        let file = tokio::fs::File::open(&full).await?;
+        let size = file.metadata().await?.len();
+        Ok((file, size, root.relative(&full)))
+    };
+    let (mut file, size, relative) = match opened.await {
+        Ok(o) => o,
+        Err(e) => {
+            write_message(send, &wire::Response { kind: Some(wire::response::Kind::Error(e.reason())) }).await?;
+            return send.finish().map_err(StreamError::protocol);
+        }
+    };
+    write_message(send, &wire::Response { kind: Some(wire::response::Kind::File(wire::FileHeader { path: relative, size })) }).await?;
+    let mut buf = vec![0u8; FILE_CHUNK_BYTES];
+    loop {
+        let n = file.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        write_message(send, &wire::FileChunk { data: buf[..n].to_vec() }).await?;
+    }
+    send.finish().map_err(StreamError::protocol)
 }
 
 fn jobs_of(device: &Device) -> StreamResult<Arc<Jobs>> {
