@@ -181,3 +181,43 @@ pub fn template_grid(rows: &[Vec<f32>], c: Pixel, palette: &Palette, width: u32,
     }
     frame
 }
+
+/// A unit card (Plexon style): its waveform's mean ± one standard deviation over `rows` (top),
+/// and its ISI histogram (bottom, the refractory bin marked).
+pub fn unit_card(rows: &[&Vec<f32>], isi: &[u32], refractory_bin: f32, c: Pixel, palette: &Palette, width: u32, height: u32, scale: f32) -> Frame {
+    let mut frame = Frame::new(width, height);
+    let mut canvas = frame.canvas();
+    canvas.pixels.fill(palette.background);
+    let (w, h) = (width as f32, height as f32);
+    let wave_h = h * 0.62;
+    if let Some(first) = rows.first() {
+        let n = first.len();
+        if n >= 2 {
+            let k = rows.len() as f32;
+            let mean: Vec<f32> = (0..n).map(|i| rows.iter().map(|r| r[i]).sum::<f32>() / k).collect();
+            let sd: Vec<f32> = (0..n).map(|i| (rows.iter().map(|r| (r[i] - mean[i]).powi(2)).sum::<f32>() / k).sqrt()).collect();
+            let lo = mean.iter().zip(&sd).map(|(m, s)| m - s).fold(f32::INFINITY, f32::min);
+            let hi = mean.iter().zip(&sd).map(|(m, s)| m + s).fold(f32::NEG_INFINITY, f32::max);
+            let span = (hi - lo).max(1e-6) * 1.15;
+            let mid = 0.5 * (hi + lo);
+            let px_of = |i: usize, v: f32| (i as f32 / (n - 1) as f32 * (w - 1.0), wave_h * 0.5 - (v - mid) / span * wave_h);
+            canvas.rect(0.0, wave_h * 0.5, w, wave_h * 0.5 + 1.0, palette.grid, 1.0);
+            let band = |sign: f32| mean.iter().zip(&sd).enumerate().map(|(i, (m, s))| px_of(i, m + sign * s)).collect::<Vec<_>>();
+            polyline(&mut canvas, &band(1.0), c, 0.6, 1.0 * scale);
+            polyline(&mut canvas, &band(-1.0), c, 0.6, 1.0 * scale);
+            let m: Vec<(f32, f32)> = mean.iter().enumerate().map(|(i, &v)| px_of(i, v)).collect();
+            polyline(&mut canvas, &m, c, 1.0, 2.0 * scale);
+        }
+    }
+    // ISI histogram under the waveform
+    let (top, bottom) = (wave_h + 4.0, h - 1.0);
+    canvas.rect(0.0, top - 2.0, w, top - 1.0, palette.grid, 1.0);
+    let peak = isi.iter().copied().max().unwrap_or(0).max(1) as f32;
+    let bw = w / isi.len().max(1) as f32;
+    canvas.vline((refractory_bin * bw) as usize, top as usize, bottom as usize, palette.grid);
+    for (i, &n) in isi.iter().enumerate() {
+        let y = bottom - (n as f32 / peak) * (bottom - top);
+        canvas.rect(i as f32 * bw + 0.3, y, (i + 1) as f32 * bw - 0.3, bottom, c, 0.9);
+    }
+    frame
+}

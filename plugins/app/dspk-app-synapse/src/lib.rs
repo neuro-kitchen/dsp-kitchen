@@ -8,9 +8,11 @@
 //!   template's extent (samples and channels), unit toggles;
 //! - sorting from the app through the separate `dspk-cli-sorter` program — [`sort`];
 //! - the Sorting panel of Explore — [`panel`];
+//! - the Sorting workspace (the installed sorters, their settings, runs on a part of the
+//!   recording, the result as unit cards and clusters per channel) — [`sorting_ws`];
 //! - the Curation workspace (Phy style: unit table, waveforms, features, correlograms,
 //!   similarity; labels and merges kept as a log in the store) — [`curation_ws`], [`curation`];
-//! - the bottom strip: a simple trace view or raster over the shared timeline — [`strip`].
+//! - the bottom strip of both: a simple trace view or raster over the shared timeline — [`strip`].
 
 pub mod curation;
 pub mod curation_ws;
@@ -19,6 +21,7 @@ pub mod panel;
 pub mod plots;
 pub mod sort;
 pub mod sorting;
+pub mod sorting_ws;
 pub mod strip;
 pub mod table;
 
@@ -397,11 +400,12 @@ impl AppPlugin for SynapsePlugin {
     }
 
     fn provides(&self, ws: Workspace) -> bool {
-        ws == Workspace::Curation
+        matches!(ws, Workspace::Sorting | Workspace::Curation)
     }
 
     fn workspace(&self, ws: Workspace, store: &Entity<Store>, window: &mut Window, cx: &mut App) -> Option<AnyView> {
         match ws {
+            Workspace::Sorting => Some(cx.new(|cx| sorting_ws::SortingWorkspace::new(store.clone(), window, cx)).into()),
             Workspace::Curation => Some(cx.new(|cx| curation_ws::CurationWorkspace::new(store.clone(), window, cx)).into()),
             _ => None,
         }
