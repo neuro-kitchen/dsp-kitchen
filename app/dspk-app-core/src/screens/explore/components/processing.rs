@@ -6,12 +6,13 @@
 //! the sorting of the view).
 
 
+use std::rc::Rc;
+
 use dspk_pipeline::{Band, Node};
 use gpui_kit::base::dock::{Panel as BasePanel, PanelEvent};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::dock::Panel;
-use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Disableable as _, IconName, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -22,11 +23,13 @@ use gpui_kit::{
 };
 use serde_json::{json, Value};
 
+use crate::ui::param_editor::{Commit, ParamEditor};
+
 use crate::data::store::{AppEvent, Store};
 use crate::domain::command::SessionCommand;
-use crate::domain::session::{op_name, DisplayDoc, Show, ViewDoc};
+use crate::domain::session::{op_name, DisplayDoc, Show};
 use crate::screens::explore::ExploreVm;
-use crate::ui::widgets::{icon_button, row, MenuSelect, PanelHeader, Section};
+use crate::ui::widgets::{icon_button, MenuSelect, PanelHeader, Section};
 
 use super::panels::{side_panel, DockToggle};
 
@@ -44,18 +47,6 @@ pub fn presets() -> Vec<(&'static str, Value)> {
         ("Scale", json!({"op": "scale", "alpha": 1.0, "beta": 0.0})),
         ("Teager–Kaiser energy", json!({"op": "teager_kaiser"})),
     ]
-}
-
-/// Choices of the enum parameters, by field name.
-fn choices(field: &str) -> Option<&'static [&'static str]> {
-    Some(match field {
-        "band" => &["lowpass", "highpass", "bandpass", "bandstop"],
-        "design" => &["butterworth", "chebyshev1", "bessel"],
-        "mode" => &["forward_backward", "forward"],
-        "start" => &["rest", "steady_state"],
-        "edge" => &["zeros", "odd", "reflect", "nearest"],
-        _ => return None,
-    })
 }
 
 /// `Band-pass 300–6000 Hz · order 3 · zero phase`
@@ -88,23 +79,12 @@ pub fn op_summary(node: &Node) -> String {
     }
 }
 
-/// One editable number of the selected op: its place in the node's JSON (`cutoff`, index 1).
-struct Field {
-    key: String,
-    index: Option<usize>,
-    label: String,
-    input: Entity<InputState>,
-}
-
 pub struct ProcessingPanel {
     store: Entity<Store>,
     dock: DockToggle,
     focus: FocusHandle,
-    /// Inputs of the selected op, and what they were built for (view, op, node JSON).
-    fields: Vec<Field>,
-    fields_for: String,
-    field_subs: Vec<Subscription>,
-    error: Option<String>,
+    /// The selected op's parameters.
+    params: Entity<ParamEditor>,
     _subs: Vec<Subscription>,
 }
 
@@ -113,13 +93,13 @@ side_panel!(ProcessingPanel, "dspk-app.processing", "Processing");
 impl ProcessingPanel {
     pub fn new(explore: Entity<ExploreVm>, dock: DockToggle, cx: &mut Context<Self>) -> Self {
         let store = explore.read(cx).store().clone();
-        let subs = vec![cx.subscribe(&store, |this, _, e: &AppEvent, cx| {
+        let subs = vec![cx.subscribe(&store, |_, _, e: &AppEvent, cx| {
             if matches!(e, AppEvent::Document(_) | AppEvent::Picked | AppEvent::JobChanged | AppEvent::RecordingChanged | AppEvent::SelectionChanged(_)) {
-                this.error = None;
                 cx.notify();
             }
         })];
-        Self { store, dock, focus: cx.focus_handle(), fields: Vec::new(), fields_for: String::new(), field_subs: Vec::new(), error: None, _subs: subs }
+        let params = cx.new(|_| ParamEditor::new());
+        Self { store, dock, focus: cx.focus_handle(), params, _subs: subs }
     }
 
     fn header_extra(&self, cx: &App) -> Option<AnyElement> {
@@ -128,108 +108,9 @@ impl ProcessingPanel {
         Some(div().text_xs().text_color(cx.theme().muted_foreground).truncate().child(v.name.clone()).into_any_element())
     }
 
-    /// Inputs for the numbers of `node` (rebuilt when the view, the op or its values change).
-    fn sync_fields(&mut self, view: &ViewDoc, op: &str, node: &Node, window: &mut Window, cx: &mut Context<Self>) {
-        let value = serde_json::to_value(node).unwrap_or(Value::Null);
-        let key = format!("{}/{op}/{value}", view.id);
-        if key == self.fields_for {
-            return;
-        }
-        self.fields_for = key;
-        self.fields.clear();
-        self.field_subs.clear();
-        let Value::Object(map) = &value else { return };
-        let add = |this: &mut Self, key: &str, index: Option<usize>, label: String, v: f64, window: &mut Window, cx: &mut Context<Self>| {
-            let input = cx.new(|cx| InputState::new(window, cx).default_value(trim_number(v)));
-            let sub = cx.subscribe(&input, |this, _, e: &InputEvent, cx| {
-                if matches!(e, InputEvent::PressEnter { .. } | InputEvent::Blur) {
-                    this.apply_fields(cx);
-                }
-            });
-            this.field_subs.push(sub);
-            this.fields.push(Field { key: key.to_string(), index, label, input });
-        };
-        for (k, v) in map {
-            match v {
-                Value::Number(n) => add(self, k, None, label_of(k), n.as_f64().unwrap_or(0.0), window, cx),
-                Value::Array(a) if a.len() <= 2 && a.iter().all(Value::is_number) => {
-                    for (i, n) in a.iter().enumerate() {
-                        let label = match (k.as_str(), a.len(), i) {
-                            ("cutoff", 2, 0) => "Low (Hz)".to_string(),
-                            ("cutoff", 2, 1) => "High (Hz)".to_string(),
-                            ("cutoff", _, _) => "Cutoff (Hz)".to_string(),
-                            _ => format!("{} {}", label_of(k), i + 1),
-                        };
-                        add(self, k, Some(i), label, n.as_f64().unwrap_or(0.0), window, cx);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    /// The numbers typed in, set on the selected op (a command); a value that does not parse,
-    /// or parameters the spec rejects, leave the op unchanged and say why.
-    fn apply_fields(&mut self, cx: &mut Context<Self>) {
-        let (Some(view), Some(op)) = (self.store.read(cx).active_view().cloned(), self.store.read(cx).picked_op.clone()) else { return };
-        let Some(node) = view.op(&op).map(|o| o.node.clone()) else { return };
-        let mut value = serde_json::to_value(&node).unwrap_or(Value::Null);
-        for f in &self.fields {
-            let text = f.input.read(cx).value().to_string();
-            let Ok(n) = text.trim().parse::<f64>() else {
-                self.error = Some(format!("{}: {text:?} is not a number", f.label));
-                cx.notify();
-                return;
-            };
-            let slot = match f.index {
-                Some(i) => value.get_mut(&f.key).and_then(|a| a.get_mut(i)),
-                None => value.get_mut(&f.key),
-            };
-            if let Some(slot) = slot {
-                // Integers stay integers (orders, widths)
-                *slot = if slot.is_u64() || slot.is_i64() { json!(n.round() as i64) } else { json!(n) };
-            }
-        }
-        self.set_node(&view, &op, value, cx);
-    }
-
-    fn set_node(&mut self, view: &ViewDoc, op: &str, value: Value, cx: &mut Context<Self>) {
-        match serde_json::from_value::<Node>(value) {
-            Ok(node) => {
-                if view.op(op).is_some_and(|o| o.node == node) {
-                    return;
-                }
-                let result = self.store.update(cx, |s, cx| s.execute(SessionCommand::SetOp { view: view.id.clone(), op: op.to_string(), node }, cx));
-                self.error = result.err().map(|e| e.to_string());
-            }
-            Err(e) => self.error = Some(e.to_string()),
-        }
-        cx.notify();
-    }
-
-    /// A new enum value (band, mode, …) for the selected op; a band change keeps the cutoffs
-    /// it can (one for low / high pass, two for band pass / stop).
-    fn set_choice(&mut self, key: &str, choice: &str, cx: &mut Context<Self>) {
-        let (Some(view), Some(op)) = (self.store.read(cx).active_view().cloned(), self.store.read(cx).picked_op.clone()) else { return };
-        let Some(node) = view.op(&op).map(|o| o.node.clone()) else { return };
-        let mut value = serde_json::to_value(&node).unwrap_or(Value::Null);
-        value[key] = json!(choice);
-        if key == "band" {
-            let cut: Vec<f64> = value["cutoff"].as_array().map(|a| a.iter().filter_map(Value::as_f64).collect()).unwrap_or_default();
-            let (lo, hi) = (cut.first().copied().unwrap_or(300.0), cut.last().copied().unwrap_or(6000.0));
-            value["cutoff"] = match choice {
-                "lowpass" => json!([hi]),
-                "highpass" => json!([lo]),
-                _ if cut.len() == 2 => json!(cut),
-                _ => json!([lo, if hi > lo { hi } else { lo * 10.0 }]),
-            };
-        }
-        self.set_node(&view, &op, value, cx);
-    }
-
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.theme();
-        let (muted, danger, accent, border) = (t.muted_foreground, t.danger, t.accent, t.border);
+        let (muted, accent, border) = (t.muted_foreground, t.accent, t.border);
         let s = self.store.read(cx);
         let Some(view) = s.active_view().cloned() else {
             return v_flex().id("processing-panel").test_support().size_full().p_4().text_sm().text_color(muted).child("Open a recording: its view and processing show here.").into_any_element();
@@ -379,49 +260,14 @@ impl ProcessingPanel {
 
         // Parameters of the selected op
         let params = picked_op.as_ref().and_then(|op| view.op(op).cloned()).map(|op| {
-            self.sync_fields(&view, &op.id, &op.node, window, cx);
-            let value = serde_json::to_value(&op.node).unwrap_or(Value::Null);
-            let mut section = Section::new(format!("Parameters · {}", op_summary(&op.node)));
-            for f in &self.fields {
-                section = section.child(row(f.label.clone(), div().w(px(110.)).child(Input::new(&f.input).small()), cx));
-            }
-            if let Value::Object(map) = &value {
-                for (k, v) in map {
-                    if let (Some(opts), Some(cur)) = (choices(k), v.as_str()) {
-                        let this = cx.entity().downgrade();
-                        let key = k.clone();
-                        let names: Vec<SharedString> = opts.iter().map(|o| SharedString::from(o.replace('_', " "))).collect();
-                        let sel = opts.iter().position(|o| *o == cur);
-                        section = section.child(row(
-                            label_of(k),
-                            MenuSelect::new(SharedString::from(format!("param-{k}")), names, sel, move |i, _, cx| {
-                                let _ = this.update(cx, |p, cx| p.set_choice(&key, opts[i], cx));
-                            }),
-                            cx,
-                        ));
-                    } else if let Some(b) = v.as_bool() {
-                        let this = cx.entity().downgrade();
-                        let key = k.clone();
-                        section = section.child(row(
-                            label_of(k),
-                            Checkbox::new(SharedString::from(format!("param-{k}"))).checked(b).on_click(move |on: &bool, _, cx| {
-                                let on = *on;
-                                let _ = this.update(cx, |p, cx| {
-                                    let (Some(view), Some(op)) = (p.store.read(cx).active_view().cloned(), p.store.read(cx).picked_op.clone()) else { return };
-                                    let Some(node) = view.op(&op).map(|o| o.node.clone()) else { return };
-                                    let mut value = serde_json::to_value(&node).unwrap_or(Value::Null);
-                                    value[key.as_str()] = json!(on);
-                                    p.set_node(&view, &op, value, cx);
-                                });
-                            }),
-                            cx,
-                        ));
-                    } else if v.as_array().is_some_and(|a| a.len() > 2) {
-                        section = section.child(row(label_of(k), div().text_xs().text_color(muted).child(format!("{} values (edit in the session file)", v.as_array().map_or(0, Vec::len))), cx));
-                    }
-                }
-            }
-            section.child(div().text_xs().text_color(muted).child(format!("Applies to the {in_view} channels of this view. Enter applies a value.")))
+            let commit: Commit = {
+                let (store, view, op) = (self.store.clone(), view.id.clone(), op.id.clone());
+                Rc::new(move |node, cx| store.update(cx, |s, cx| s.execute(SessionCommand::SetOp { view: view.clone(), op: op.clone(), node }, cx)).map(|_| ()).map_err(|e| e.to_string()))
+            };
+            self.params.update(cx, |p, cx| p.set_target(&format!("{}/{}", view.id, op.id), &op.node, commit, window, cx));
+            Section::new(format!("Parameters · {}", op_summary(&op.node)))
+                .child(self.params.clone())
+                .child(div().text_xs().text_color(muted).child(format!("Applies to the {in_view} channels of this view. Enter applies a value.")))
         });
 
         // Output
@@ -467,28 +313,8 @@ impl ProcessingPanel {
                     .child(add),
             )
             .children(params)
-            .children(self.error.clone().map(|e| div().text_xs().text_color(danger).child(e)))
             .child(Section::new("Output").child(output))
             .into_any_element()
-    }
-}
-
-/// `sigma_samples` → `Sigma samples`
-fn label_of(key: &str) -> String {
-    let mut s = key.replace('_', " ");
-    if let Some(c) = s.get_mut(0..1) {
-        c.make_ascii_uppercase();
-    }
-    s
-}
-
-/// `300` rather than `300.0`, at most 6 decimals.
-fn trim_number(v: f64) -> String {
-    if v.fract() == 0.0 && v.abs() < 1e15 {
-        format!("{}", v as i64)
-    } else {
-        let s = format!("{v:.6}");
-        s.trim_end_matches('0').trim_end_matches('.').to_string()
     }
 }
 
@@ -503,12 +329,5 @@ mod tests {
             assert!(node.stage().is_ok(), "{label}");
             assert!(!op_summary(&node).is_empty());
         }
-    }
-
-    #[test]
-    fn test_labels_and_numbers() {
-        assert_eq!(label_of("sigma_samples"), "Sigma samples");
-        assert_eq!(trim_number(300.0), "300");
-        assert_eq!(trim_number(0.25), "0.25");
     }
 }
