@@ -1,6 +1,6 @@
 //! Template matching (peelers): SpyKING CIRCUS 2's circus-omp and Tridesclous 2's tdc peeler.
 
-pub mod kernels;
+pub(crate) mod kernels;
 pub mod omp;
 pub mod tdc_peeler;
 

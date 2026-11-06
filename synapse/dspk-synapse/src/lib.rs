@@ -80,9 +80,8 @@ pub use detection::{
     detect_spikes_with_sigma, detection_heights, estimate_noise_std, execute_detect_spikes_in_vram,
 };
 pub use extraction::{
-    execute_extract_sinc_in_vram, extract_snippet_batch_multichannel, extract_snippets_kernel,
+    execute_extract_sinc_in_vram, extract_snippet_batch_multichannel,
     extract_snippets_multichannel, extract_snippets_single_channel, read_snippets,
-    trough_shift_kernel,
 };
 pub use features::{
     ConductionVelocityEstimate, PcaFeatureEmbedder, PpcaFeatureEmbedder, SpikeMorphology,
@@ -117,7 +116,6 @@ pub use spatial::{
 pub use streaming::{
     BatchTemplateStats, SINC_RESAMPLE_MARGIN, StreamingDetectionConfig, StreamingDetectionResult,
     StreamingDetector, TemplateAccumulator, execute_reduce_templates_in_vram,
-    reduce_channel_templates_kernel,
 };
 pub use provenance::{ArtifactSource, Attributed, Paper, Provenance, ProvenanceKind, UpstreamCode};
 pub use storage::{

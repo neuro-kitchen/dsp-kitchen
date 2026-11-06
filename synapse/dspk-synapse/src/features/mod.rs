@@ -6,7 +6,10 @@ use dspk_core::{DspError, DspResult};
 use crate::core::{FeatureEmbedder, SnippetBatch, WaveformSnippet};
 
 pub mod conduction;
-pub mod kernels;
+pub(crate) mod kernels;
+
+/// A neighbourhood slot without a channel (`ChannelNeighbourhoods` tables).
+pub use kernels::NO_CHANNEL;
 pub mod local_svd;
 pub mod morphology;
 pub mod wavelet;

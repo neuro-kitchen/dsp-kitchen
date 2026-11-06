@@ -8,7 +8,7 @@ use cubecl::prelude::*;
 use cubecl::server::Handle;
 use dspk_core::compute::{element_position, LaunchGeometry};
 use dspk_ops::core::buffer;
-use dspk_synapse::features::kernels::NO_CHANNEL;
+use dspk_synapse::features::NO_CHANNEL;
 use dspk_synapse::features::ChannelNeighbourhoods;
 
 /// One unit per element `(j, s, k)` of `out` (`[events, width, max_neighbours]`): sample

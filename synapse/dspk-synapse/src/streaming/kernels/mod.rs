@@ -1,8 +1,6 @@
 pub mod template_reduce;
 
-pub use template_reduce::{
-    BatchTemplateStats, execute_reduce_templates_in_vram, reduce_channel_templates_kernel,
-};
+pub use template_reduce::{BatchTemplateStats, execute_reduce_templates_in_vram};
 
 #[cfg(test)]
 mod tests {

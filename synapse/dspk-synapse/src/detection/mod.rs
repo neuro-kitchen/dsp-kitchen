@@ -4,7 +4,7 @@
 pub mod adaptive;
 pub mod dedup;
 mod device;
-pub mod kernels;
+pub(crate) mod kernels;
 pub mod matched_filter;
 pub mod neo;
 pub mod noise;
@@ -17,7 +17,6 @@ pub use dedup::{
 };
 pub use device::execute_detect_spikes_in_vram;
 pub use dspk_ops::peaks::DistanceRule;
-pub use kernels::spatial_dedup_survival_kernel;
 pub use matched_filter::{
     MatchedFilterSpikeDetector, canonical_biphasic_prototype, detect_spikes_matched_filter,
 };

@@ -3,7 +3,7 @@
 
 pub mod detect;
 pub mod exclusive;
-pub mod kernels;
+pub(crate) mod kernels;
 pub mod matched;
 
 pub use detect::{LocallyExclusiveDetector, Peak, PeakSign};

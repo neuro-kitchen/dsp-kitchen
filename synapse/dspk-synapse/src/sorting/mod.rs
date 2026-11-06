@@ -5,6 +5,8 @@ pub mod gmm;
 pub mod hdbscan;
 pub mod kde_merge;
 pub mod kmeans;
+/// Device kernels; public only for the sorter crates that launch them (`relabel_kernel`).
+#[doc(hidden)]
 pub mod kernels;
 pub mod matching_pursuit;
 pub mod points;
@@ -20,7 +22,6 @@ pub use points::DevicePoints;
 pub use subsample::{subsample_peaks, SubsampleOptions};
 pub use kde_merge::{KdeMergeResult, cluster_kde_merge};
 pub use kmeans::{KMeansOptions, KMeansResult, cluster_sums, kmeans, kmeans_points, kmeans_points_with_progress};
-pub use kernels::{mp_score_kernel, mp_subtract_kernel};
 pub use matching_pursuit::{MatchingPursuitMatcher, match_spikes_matching_pursuit};
 pub use similarity::{
     compute_template_similarity_matrix, suggest_template_merges, template_max_cosine_similarity,

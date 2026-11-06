@@ -2,7 +2,7 @@ pub mod center_of_mass;
 pub mod dipole;
 pub mod drift;
 pub mod grid_convolution;
-pub mod kernels;
+pub(crate) mod kernels;
 pub mod kriging;
 pub mod monopolar;
 

@@ -1,6 +1,6 @@
 pub mod bands;
 pub mod events;
-pub mod kernels;
+pub(crate) mod kernels;
 pub mod snippets;
 pub mod sorting_output;
 pub mod template;
