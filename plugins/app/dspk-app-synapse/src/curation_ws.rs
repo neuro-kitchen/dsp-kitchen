@@ -31,6 +31,7 @@ use gpui_kit::{
     KeyDownEvent, ParentElement as _, Render, RenderImage, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, Window,
 };
 
+use crate::chart::{Chart, ChartGrid, Layer, Range2};
 use crate::curation::{next_unit_id, similar, CurationOp, LABELS};
 use crate::plots;
 use crate::sorting::{Snippets, SortingData};
@@ -42,7 +43,9 @@ use crate::{sorting_of, state, SynapseEvent};
 /// Spikes per selected unit drawn and projected (and as many unsorted ones).
 pub const SPIKES_PER_UNIT: usize = 300;
 /// Plot sizes (physical pixels; shown scaled to their panels).
+#[cfg(test)]
 const PLOT_W: u32 = 720;
+#[cfg(test)]
 const PLOT_H: u32 = 420;
 /// Units listed by the similarity view.
 const SIMILAR_MAX: usize = 20;
@@ -77,6 +80,24 @@ pub enum ViewKind {
 }
 
 impl ViewKind {
+    /// Its icon on the Curation side bar.
+    pub fn icon(self) -> gpui_kit::assets::IconName {
+        use gpui_kit::assets::IconName as I;
+        match self {
+            Self::Table => I::Table,
+            Self::Waveforms => I::AudioWaveform,
+            Self::Features => I::ChartScatter,
+            Self::Acg => I::ChartNoAxesColumn,
+            Self::Isi => I::ChartColumn,
+            Self::Amplitude => I::ChartLine,
+            Self::Template => I::ChartSpline,
+            Self::Similarity => I::Merge,
+            Self::Correlograms => I::Grid2x2,
+            Self::Templates => I::LayoutGrid,
+            Self::Probe => I::MapPin,
+        }
+    }
+
     pub const ALL: [ViewKind; 11] =
         [Self::Table, Self::Waveforms, Self::Features, Self::Acg, Self::Isi, Self::Amplitude, Self::Template, Self::Similarity, Self::Correlograms, Self::Templates, Self::Probe];
 
@@ -107,10 +128,27 @@ pub enum Grid {
 
 #[derive(Default, Clone)]
 struct Plots {
-    images: HashMap<ViewKind, Arc<RenderImage>>,
+    charts: HashMap<ViewKind, Arc<ChartGrid>>,
     note: String,
-    /// The amplitude plot's axes: (recording length s, lowest amplitude, amplitude span).
-    amp_axes: Option<(f32, f32, f32)>,
+}
+
+/// What the plots show, set in each view's ⋯ menu.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlotSettings {
+    /// Correlograms: ± window and bin (ms).
+    pub ccg_half_ms: f64,
+    pub ccg_bin_ms: f64,
+    /// ISI: range and bin (ms).
+    pub isi_max_ms: f64,
+    pub isi_bin_ms: f64,
+    /// Waveforms and features: spikes per unit.
+    pub spikes: usize,
+}
+
+impl Default for PlotSettings {
+    fn default() -> Self {
+        Self { ccg_half_ms: ACG_HALF_MS, ccg_bin_ms: ACG_BIN_MS, isi_max_ms: ISI_MAX_MS, isi_bin_ms: ISI_BIN_MS, spikes: SPIKES_PER_UNIT }
+    }
 }
 
 pub struct CurationWorkspace {
@@ -138,6 +176,7 @@ pub struct CurationWorkspace {
     generation: Arc<AtomicU64>,
     /// The keyboard help shows.
     show_keys: bool,
+    pub settings: PlotSettings,
     _work: Option<Task<()>>,
     _subs: Vec<Subscription>,
 }
@@ -148,7 +187,7 @@ impl CurationWorkspace {
             let skin = DockSkin::new(cx);
             DockArea::new("curation", Some(1), window, cx).with_renderer(skin)
         });
-        let strip = cx.new(|cx| BottomStrip::new(store.clone(), cx));
+        let strip = cx.new(|cx| BottomStrip::new(store.clone(), dspk_app_core::navigation::route::Workspace::Curation, cx));
         let me = cx.weak_entity();
         let templates = cx.new(|_| {
             TemplateGrid::new(std::rc::Rc::new(move |u, add, _, cx| {
@@ -198,6 +237,7 @@ impl CurationWorkspace {
             computing: false,
             generation: Arc::new(AtomicU64::new(0)),
             show_keys: false,
+            settings: PlotSettings::default(),
             _work: None,
             _subs: subs,
         };
@@ -313,21 +353,17 @@ impl CurationWorkspace {
         self.compute(cx);
     }
 
-    /// Splits the lead unit: its spikes inside `polygon` (fractions of the amplitude plot)
-    /// become a new unit, which joins the selection.
+    /// Splits the lead unit: its spikes inside `polygon` (time s, amplitude: the amplitude
+    /// plot's data coordinates) become a new unit, which joins the selection.
     fn split_lasso(&mut self, polygon: &[(f32, f32)], cx: &mut Context<Self>) {
         let (Some(path), Some(sorting), Some(&lead)) = (self.sorting_path(cx), self.sorting(cx), self.selected.first()) else { return };
-        let Some((duration, lo, span)) = self.plots.amp_axes else { return };
         if polygon.len() < 3 || sorting.amplitudes.is_empty() {
             return;
         }
         let spikes: Vec<u64> = sorting.by_unit[lead]
             .iter()
             .map(|&k| k as usize)
-            .filter(|&k| {
-                let p = ((sorting.times[k] as f64 / sorting.sample_rate) as f32 / duration.max(1e-6), 1.0 - (sorting.amplitudes[k] - lo) / span.max(1e-6));
-                inside(p, polygon)
-            })
+            .filter(|&k| inside(((sorting.times[k] as f64 / sorting.sample_rate) as f32, sorting.amplitudes[k]), polygon))
             .map(|k| sorting.times[k])
             .collect();
         let n = spikes.len();
@@ -432,7 +468,7 @@ impl CurationWorkspace {
 
     fn panel(&mut self, kind: ViewKind, cx: &mut Context<Self>) -> Entity<CurationPanel> {
         let ws = cx.weak_entity();
-        self.panels.entry(kind).or_insert_with(|| cx.new(|cx| CurationPanel { ws, kind, focus: cx.focus_handle(), lasso: Vec::new(), plot: Default::default() })).clone()
+        self.panels.entry(kind).or_insert_with(|| cx.new(|cx| CurationPanel { ws, kind, focus: cx.focus_handle(), lasso: Vec::new(), plot: Default::default(), view: None, image: None, drawn: None, pan: None, _draw: None })).clone()
     }
 
     /// The visible views in the grid: the table on the left, plots in rows of `columns`.
@@ -503,7 +539,8 @@ impl CurationWorkspace {
         let strip_units = units.clone();
         self.strip.update(cx, |s, cx| s.set_focus(strip_units, strip_channels, cx));
         let processed = self.store.read(cx).signal_for(&source).is_some();
-        let note = format!("Ch {channel} · ≤{SPIKES_PER_UNIT} spikes per unit · {}", if processed { "processed" } else { "as stored" });
+        let set = self.settings;
+        let note = format!("Ch {channel} · ≤{} spikes per unit · {}", set.spikes, if processed { "processed" } else { "as stored" });
         let wanted: Vec<ViewKind> = self.visible.clone();
         // A newer selection makes this work stale: it stops at its next step
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
@@ -511,89 +548,214 @@ impl CurationWorkspace {
         let stale = move || current.load(Ordering::SeqCst) != generation;
         self.computing = true;
         self.notify_panels(cx);
+        let ids: Vec<usize> = units.iter().map(|&u| sorting.units[u].info.unit_id).collect();
         // Fast: everything from the spike times alone (shown at once)
         let fast = cx.background_spawn({
-            let (sorting, units, palette, stale, wanted) = (sorting.clone(), units.clone(), palette, stale.clone(), wanted.clone());
+            let (sorting, units, palette, stale, wanted, ids) = (sorting.clone(), units.clone(), palette, stale.clone(), wanted.clone(), ids.clone());
             async move {
-                let mut images = HashMap::new();
+                let mut charts: HashMap<ViewKind, Arc<ChartGrid>> = HashMap::new();
                 if stale() {
-                    return (images, None);
+                    return charts;
                 }
                 let times = sorting.unit_times(lead);
-                let acg = crate::sorting::autocorrelogram(&times, sorting.sample_rate, ACG_HALF_MS, ACG_BIN_MS);
-                let isi = crate::sorting::isi_histogram(&times, sorting.sample_rate, ISI_MAX_MS, ISI_BIN_MS);
-                let mut put = |k: ViewKind, f: Option<Arc<RenderImage>>| {
-                    if let Some(i) = f {
-                        images.insert(k, i);
-                    }
-                };
-                put(ViewKind::Acg, plots::to_image(plots::bars(&acg, lead_colour, Some((ACG_HALF_MS / ACG_BIN_MS) as f32), &palette, PLOT_W, PLOT_H)));
-                put(ViewKind::Isi, plots::to_image(plots::bars(&isi, lead_colour, Some((REFRACTORY_MS / ISI_BIN_MS) as f32), &palette, PLOT_W, PLOT_H)));
-                put(ViewKind::Template, plots::to_image(plots::template_grid(&template_rows, lead_colour, &palette, PLOT_W, PLOT_H, 1.5)));
+                let acg = crate::sorting::autocorrelogram(&times, sorting.sample_rate, set.ccg_half_ms, set.ccg_bin_ms);
+                let isi = crate::sorting::isi_histogram(&times, sorting.sample_rate, set.isi_max_ms, set.isi_bin_ms);
+                let (half, bin) = (set.ccg_half_ms as f32, set.ccg_bin_ms as f32);
+                let bars = |counts: &[u32], color, start: f32, width: f32| Layer::Bars { color, start, width, counts: counts.iter().map(|&c| c as f32).collect() };
+                charts.insert(
+                    ViewKind::Acg,
+                    Arc::new(ChartGrid::one(Chart {
+                        layers: vec![bars(&acg, lead_colour, -half - bin / 2.0, bin), Layer::Marker { x: 0.0 }],
+                        x_label: "lag (ms)".into(),
+                        y_label: "spike pairs".into(),
+                        x: (-half - bin / 2.0, half + bin / 2.0),
+                        y: (0.0, 1.0),
+                        y_fit: true,
+                        title: String::new(),
+                    })),
+                );
+                charts.insert(
+                    ViewKind::Isi,
+                    Arc::new(ChartGrid::one(Chart {
+                        layers: vec![bars(&isi, lead_colour, 0.0, set.isi_bin_ms as f32), Layer::Marker { x: REFRACTORY_MS as f32 }],
+                        x_label: "interval (ms)".into(),
+                        y_label: "intervals".into(),
+                        x: (0.0, set.isi_max_ms as f32),
+                        y: (0.0, 1.0),
+                        y_fit: true,
+                        title: String::new(),
+                    })),
+                );
+                // The lead unit's template, one cell per channel of its extent
+                let (before, rate) = (sorting.units[lead].extent.before as f32, sorting.sample_rate as f32);
+                let amp = template_rows.iter().flatten().fold(0.0f32, |m, v| m.max(v.abs())).max(1e-6) * 1.1;
+                let cells: Vec<Chart> = template_rows
+                    .iter()
+                    .zip(&sorting.units[lead].extent.channels)
+                    .map(|(row, ch)| Chart {
+                        layers: vec![Layer::Lines { color: lead_colour, alpha: 1.0, width: 1.6, lines: vec![row.iter().enumerate().map(|(i, &v)| ((i as f32 - before) / rate * 1e3, v)).collect()] }],
+                        x_label: "time (ms)".into(),
+                        y_label: "template".into(),
+                        x: (-before / rate * 1e3, (row.len() as f32 - before) / rate * 1e3),
+                        y: (-amp, amp),
+                        y_fit: false,
+                        title: format!("ch {ch}"),
+                    })
+                    .collect();
+                if !cells.is_empty() {
+                    let cols = (cells.len() as f32).sqrt().ceil() as usize;
+                    charts.insert(ViewKind::Template, Arc::new(ChartGrid { cells, cols }));
+                }
                 if wanted.contains(&ViewKind::Correlograms) {
                     let shown: Vec<usize> = units.iter().copied().take(CCG_MAX_UNITS).collect();
                     let trains: Vec<Vec<u64>> = shown.iter().map(|&u| sorting.unit_times(u)).collect();
-                    let grid: Vec<Vec<Vec<u32>>> = trains
-                        .iter()
-                        .map(|a| trains.iter().map(|b| crate::sorting::crosscorrelogram(a, b, sorting.sample_rate, ACG_HALF_MS, ACG_BIN_MS)).collect())
-                        .collect();
-                    let colours: Vec<_> = shown.iter().map(|&u| palette.unit(u)).collect();
-                    put(ViewKind::Correlograms, plots::to_image(plots::correlogram_grid(&grid, &colours, &palette, PLOT_W, PLOT_H)));
+                    let mut cells = Vec::new();
+                    for (i, a) in trains.iter().enumerate() {
+                        for (j, b) in trains.iter().enumerate() {
+                            let counts = crate::sorting::crosscorrelogram(a, b, sorting.sample_rate, set.ccg_half_ms, set.ccg_bin_ms);
+                            let color = if i == j { palette.unit(shown[i]) } else { palette.unsorted() };
+                            cells.push(Chart {
+                                layers: vec![bars(&counts, color, -half - bin / 2.0, bin), Layer::Marker { x: 0.0 }],
+                                x_label: "lag (ms)".into(),
+                                y_label: String::new(),
+                                x: (-half - bin / 2.0, half + bin / 2.0),
+                                y: (0.0, 1.0),
+                                y_fit: true,
+                                title: format!("{} × {}", ids[i], ids[j]),
+                            });
+                        }
+                    }
+                    charts.insert(ViewKind::Correlograms, Arc::new(ChartGrid { cols: shown.len().max(1), cells }));
                 }
                 if stale() {
-                    return (images, None);
+                    return charts;
                 }
-                let amps: Vec<(u32, Vec<(f32, f32)>)> = units.iter().map(|&u| (u as u32, sorting.unit_amplitudes(u, AMPLITUDE_POINTS))).collect();
-                let (frame, (lo, span)) = plots::amplitude_time(&amps, duration, &palette, PLOT_W, PLOT_H, 1.5);
-                put(ViewKind::Amplitude, plots::to_image(frame));
+                let mut layers = Vec::new();
+                let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+                for &u in &units {
+                    let pts = sorting.unit_amplitudes(u, AMPLITUDE_POINTS);
+                    for p in &pts {
+                        lo = lo.min(p.1);
+                        hi = hi.max(p.1);
+                    }
+                    layers.push(Layer::Points { color: palette.unit(u), alpha: 0.5, radius: 1.2, points: pts });
+                }
+                if lo.is_finite() {
+                    let pad = (hi - lo).max(1e-6) * 0.05;
+                    charts.insert(
+                        ViewKind::Amplitude,
+                        Arc::new(ChartGrid::one(Chart { layers, x_label: "time (s)".into(), y_label: "amplitude".into(), x: (0.0, duration), y: (lo.min(0.0) - pad, hi + pad), y_fit: false, title: String::new() })),
+                    );
+                }
                 if wanted.contains(&ViewKind::Probe) {
                     let channels: Vec<(f32, f32)> = sorting.positions.iter().flatten().copied().collect();
-                    let marks: Vec<((f32, f32), _, bool)> = sorting.alive().filter_map(|u| sorting.unit_position(u).map(|p| (p, palette.unit(u), units.contains(&u)))).collect();
-                    put(ViewKind::Probe, plots::to_image(plots::probe_view(&channels, &marks, &palette, PLOT_W / 2, PLOT_H * 2, 1.5)));
+                    if !channels.is_empty() {
+                        let (x0, x1) = channels.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), p| (a.min(p.0), b.max(p.0)));
+                        let (y0, y1) = channels.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), p| (a.min(p.1), b.max(p.1)));
+                        let mut layers = vec![Layer::Points { color: palette.grid, alpha: 1.0, radius: 1.5, points: channels }];
+                        for u in sorting.alive() {
+                            if let Some(p) = sorting.unit_position(u) {
+                                let on = units.contains(&u);
+                                layers.push(Layer::Points { color: palette.unit(u), alpha: if on { 1.0 } else { 0.55 }, radius: if on { 6.0 } else { 3.0 }, points: vec![p] });
+                            }
+                        }
+                        let pad = ((x1 - x0).max(y1 - y0) * 0.04).max(10.0);
+                        charts.insert(
+                            ViewKind::Probe,
+                            Arc::new(ChartGrid::one(Chart { layers, x_label: "x (µm)".into(), y_label: "depth (µm)".into(), x: (x0 - pad, x1 + pad), y: (y0 - pad, y1 + pad), y_fit: false, title: String::new() })),
+                        );
+                    }
                 }
-                (images, Some((duration, lo, span)))
+                charts
             }
         });
         // Slow: waveforms and features from the signal's windows (read once per signal)
         let slow = cx.background_spawn(async move {
-            let mut images = HashMap::new();
+            let mut charts: HashMap<ViewKind, Arc<ChartGrid>> = HashMap::new();
             if stale() || !(wanted.contains(&ViewKind::Waveforms) || wanted.contains(&ViewKind::Features)) {
-                return images;
+                return charts;
             }
             let windows = crate::sorting::windows_of(&signal);
             if stale() {
-                return images;
+                return charts;
             }
-            let snippets = Snippets::read(&sorting, &windows, &units, channel, SPIKES_PER_UNIT);
-            if let Some(i) = plots::to_image(plots::waveforms(&snippets, &palette, PLOT_W, PLOT_H, 1.5)) {
-                images.insert(ViewKind::Waveforms, i);
+            let snippets = Snippets::read(&sorting, &windows, &units, channel, set.spikes);
+            let colour = |u: Option<u32>| u.map_or(palette.unsorted(), |u| palette.unit(u as usize));
+            let (before, rate) = (snippets.before as f32, sorting.sample_rate as f32);
+            let ms = |i: usize| (i as f32 - before) / rate * 1e3;
+            let mut groups: Vec<Option<u32>> = snippets.rows.iter().map(|(u, _, _)| *u).collect();
+            groups.sort();
+            groups.dedup();
+            let mut layers = Vec::new();
+            let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+            for g in &groups {
+                let rows: Vec<&Vec<f32>> = snippets.rows.iter().filter(|(u, _, _)| u == g).map(|(_, _, r)| r).collect();
+                for r in &rows {
+                    for &v in r.iter() {
+                        if v.is_finite() {
+                            lo = lo.min(v);
+                            hi = hi.max(v);
+                        }
+                    }
+                }
+                layers.push(Layer::Lines { color: colour(*g), alpha: 0.12, width: 1.0, lines: rows.iter().map(|r| r.iter().enumerate().map(|(i, &v)| (ms(i), v)).collect()).collect() });
+            }
+            for g in groups.iter().filter(|g| g.is_some()) {
+                let rows: Vec<&Vec<f32>> = snippets.rows.iter().filter(|(u, _, _)| u == g).map(|(_, _, r)| r).collect();
+                if let Some(n) = rows.first().map(|r| r.len()) {
+                    let mean: Vec<(f32, f32)> = (0..n).map(|i| (ms(i), rows.iter().map(|r| r[i]).sum::<f32>() / rows.len() as f32)).collect();
+                    layers.push(Layer::Lines { color: colour(*g), alpha: 1.0, width: 2.2, lines: vec![mean] });
+                }
+            }
+            if lo.is_finite() {
+                let n = (snippets.before + snippets.after) as usize;
+                let pad = (hi - lo).max(1e-6) * 0.05;
+                charts.insert(
+                    ViewKind::Waveforms,
+                    Arc::new(ChartGrid::one(Chart { layers, x_label: "time (ms)".into(), y_label: "µV".into(), x: (ms(0), ms(n.saturating_sub(1))), y: (lo - pad, hi + pad), y_fit: false, title: String::new() })),
+                );
             }
             let points = snippets.pca2();
-            let labels: Vec<Option<u32>> = snippets.rows.iter().map(|(u, _, _)| *u).collect();
-            if let Some(i) = plots::to_image(plots::scatter(&points, &labels, &palette, PLOT_W, PLOT_H, 1.5)) {
-                images.insert(ViewKind::Features, i);
+            let mut layers = Vec::new();
+            for g in &groups {
+                let pts: Vec<(f32, f32)> = snippets.rows.iter().zip(&points).filter(|((u, _, _), _)| u == g).map(|(_, p)| (p[0], p[1])).collect();
+                layers.push(Layer::Points { color: colour(*g), alpha: 0.6, radius: 1.6, points: pts });
             }
-            images
+            let fold = |i: usize| points.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), p| (a.min(p[i]), b.max(p[i])));
+            let ((x0, x1), (y0, y1)) = (fold(0), fold(1));
+            if x0.is_finite() && y0.is_finite() {
+                let (px_, py_) = ((x1 - x0).max(1e-6) * 0.06, (y1 - y0).max(1e-6) * 0.06);
+                charts.insert(
+                    ViewKind::Features,
+                    Arc::new(ChartGrid::one(Chart { layers, x_label: "PC1".into(), y_label: "PC2".into(), x: (x0 - px_, x1 + px_), y: (y0 - py_, y1 + py_), y_fit: false, title: String::new() })),
+                );
+            }
+            charts
         });
         self.plots.note = note;
         self._work = Some(cx.spawn(async move |this, cx| {
-            let (images, axes) = fast.await;
+            let charts = fast.await;
             let _ = this.update(cx, |w, cx| {
                 if w.generation.load(Ordering::SeqCst) == generation {
-                    w.plots.images.extend(images);
-                    w.plots.amp_axes = axes;
+                    w.plots.charts.extend(charts);
                     w.notify_panels(cx);
                 }
             });
-            let images = slow.await;
+            let charts = slow.await;
             let _ = this.update(cx, |w, cx| {
                 if w.generation.load(Ordering::SeqCst) == generation {
-                    w.plots.images.extend(images);
+                    w.plots.charts.extend(charts);
                     w.computing = false;
                     w.notify_panels(cx);
                 }
             });
         }));
+    }
+
+    /// Changes a plot setting and computes the plots again.
+    pub fn set_settings(&mut self, f: impl FnOnce(&mut PlotSettings), cx: &mut Context<Self>) {
+        f(&mut self.settings);
+        self.compute(cx);
     }
 
     fn notify_panels(&self, cx: &mut Context<Self>) {
@@ -719,6 +881,23 @@ impl Render for CurationWorkspace {
             .child(div().text_xs().text_color(muted).truncate().child(status))
             .child(views)
             .child(layout);
+        // The side bar: one icon per view, lit while it shows; a click shows or hides it
+        let rail_items = ViewKind::ALL
+            .into_iter()
+            .map(|k| {
+                let me = me.clone();
+                dspk_app_core::ui::panel_edge::RailItem {
+                    id: SharedString::from(format!("rail-view-{k:?}")),
+                    icon: Icon::new(k.icon()),
+                    tip: k.title().into(),
+                    selected: self.visible.contains(&k),
+                    on_click: Box::new(move |window, cx| {
+                        let _ = me.update(cx, |w, cx| w.toggle_view(k, window, cx));
+                    }),
+                }
+            })
+            .collect();
+        let rail = dspk_app_core::ui::panel_edge::rail(rail_items, true, cx);
         v_flex()
             .id("curation-workspace")
             .track_focus(&self.focus)
@@ -731,7 +910,7 @@ impl Render for CurationWorkspace {
             .size_full()
             .bg(bg)
             .child(toolbar)
-            .child(div().flex_1().min_h_0().child(self.dock.clone()))
+            .child(h_flex().flex_1().min_h_0().child(rail).child(div().flex_1().min_w_0().h_full().child(self.dock.clone())))
             .child(self.strip.clone())
             .when(self.show_keys, |d| d.child(keys_help(cx)))
             .into_any_element()
@@ -791,9 +970,16 @@ pub struct CurationPanel {
     ws: WeakEntity<CurationWorkspace>,
     kind: ViewKind,
     focus: FocusHandle,
-    /// The lasso being drawn on the amplitude plot (fractions of the plot).
+    /// The lasso being drawn on the amplitude plot (fractions of the plot area).
     lasso: Vec<(f32, f32)>,
     plot: std::rc::Rc<std::cell::Cell<gpui_kit::Bounds<gpui_kit::Pixels>>>,
+    /// The visible range (`None`: everything), the drawn image and what it was drawn for.
+    view: Option<Range2>,
+    image: Option<Arc<RenderImage>>,
+    drawn: Option<(*const ChartGrid, [u32; 4], u32, u32)>,
+    /// A pan in progress: the pointer and the range when it began.
+    pan: Option<((f32, f32), Range2)>,
+    _draw: Option<Task<()>>,
 }
 
 /// What the table draws (copied out of the workspace).
@@ -929,64 +1115,183 @@ impl Render for CurationPanel {
         if self.kind == ViewKind::Templates {
             return div().size_full().p_1().child(ws.read(cx).templates.clone()).into_any_element();
         }
-        let (image, computing, background) = {
+        let (chart, computing) = {
             let w = ws.read(cx);
-            (w.plots.images.get(&self.kind).cloned(), w.computing, w.store.read(cx).palette().background)
+            (w.plots.charts.get(&self.kind).cloned(), w.computing)
         };
-        let body = match image {
-            Some(i) if self.kind == ViewKind::Amplitude => self.lasso_plot(i, cx),
-            Some(i) => div().size_full().child(img(i).size_full()).into_any_element(),
+        match chart {
+            Some(c) => self.chart_view(c, &ws, cx),
             None => div()
                 .size_full()
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_xs()
+                .text_sm()
                 .text_color(muted)
                 .child(if computing { "Computing…" } else { "Select units in the table" })
                 .into_any_element(),
-        };
-        v_flex().size_full().bg(color(background)).child(div().flex_1().min_h_0().child(body)).into_any_element()
+        }
     }
 }
 
+/// Zoom per pixel of wheel movement.
+const ZOOM_PER_PX: f32 = 0.003;
+
 impl CurationPanel {
-    /// The amplitude plot with a lasso: press and drag around spikes, release to split them off
-    /// the lead unit.
-    fn lasso_plot(&self, image: Arc<RenderImage>, cx: &mut Context<Self>) -> AnyElement {
-        let frac = |this: &Self, p: gpui_kit::Point<gpui_kit::Pixels>| {
-            let b = this.plot.get();
-            (((p.x - b.origin.x).as_f32() / b.size.width.as_f32().max(1.0)).clamp(0.0, 1.0), ((p.y - b.origin.y).as_f32() / b.size.height.as_f32().max(1.0)).clamp(0.0, 1.0))
+    fn range(&self, chart: &ChartGrid) -> Range2 {
+        self.view.unwrap_or_else(|| chart.full())
+    }
+
+    /// Fractions (0–1) of the plot area under `p`.
+    fn frac(&self, p: gpui_kit::Point<gpui_kit::Pixels>) -> (f32, f32) {
+        let b = self.plot.get();
+        (((p.x - b.origin.x).as_f32() / b.size.width.as_f32().max(1.0)).clamp(0.0, 1.0), ((p.y - b.origin.y).as_f32() / b.size.height.as_f32().max(1.0)).clamp(0.0, 1.0))
+    }
+
+    /// Draws the chart for the visible range at the plot area's size, in the background.
+    fn draw(&mut self, chart: &Arc<ChartGrid>, palette: Palette, cx: &mut Context<Self>) {
+        let b = self.plot.get().size;
+        let (w, h) = ((b.width.as_f32() * 1.5) as u32, (b.height.as_f32() * 1.5) as u32);
+        if w < 8 || h < 8 {
+            // Not laid out yet: the plot area's first layout asks for a frame (see `chart_view`)
+            return;
+        }
+        let r = self.range(chart);
+        let key = (Arc::as_ptr(chart), [r.x.0.to_bits(), r.x.1.to_bits(), r.y.0.to_bits(), r.y.1.to_bits()], w, h);
+        if self.drawn == Some(key) {
+            return;
+        }
+        self.drawn = Some(key);
+        let chart = chart.clone();
+        let work = cx.background_spawn(async move { plots::to_image(crate::chart::draw(&chart, &r, w, h, &palette, 1.5)) });
+        self._draw = Some(cx.spawn(async move |this, cx| {
+            let image = work.await;
+            let _ = this.update(cx, |p, cx| {
+                p.image = image;
+                cx.notify();
+            });
+        }));
+    }
+
+    /// A chart: the plot area (zoom with the wheel — Shift: x only, Alt: y only —, drag to pan,
+    /// double-click to see everything; Amplitude: drag draws a lasso, Shift+drag pans), its axes
+    /// as text, a legend of the selected units.
+    fn chart_view(&mut self, chart: Arc<ChartGrid>, ws: &Entity<CurationWorkspace>, cx: &mut Context<Self>) -> AnyElement {
+        let t = cx.theme();
+        let (muted, fg, line, border) = (t.muted_foreground, t.foreground, t.primary, t.border);
+        let (palette, selected, ids) = {
+            let w = ws.read(cx);
+            let ids: Vec<usize> = w.sorting(cx).map(|s| w.selected.iter().map(|&u| s.units[u].info.unit_id).collect()).unwrap_or_default();
+            (w.store.read(cx).palette(), w.selected.clone(), ids)
         };
+        self.draw(&chart, palette, cx);
+        let r = self.range(&chart);
+        let single = chart.cells.len() == 1;
+        let y = if single { chart.cell_y(0, &r) } else { r.y };
+        let lasso_mode = self.kind == ViewKind::Amplitude;
+        // Ticks as text around the plot area
+        let xt: Vec<(f32, String)> =
+            crate::chart::ticks(r.x, 6).into_iter().map(|v| ((v - r.x.0) / (r.x.1 - r.x.0), crate::chart::tick_label(v))).filter(|(f, _)| (0.0..=1.0).contains(f)).collect();
+        let yt: Vec<(f32, String)> = if single {
+            crate::chart::ticks(y, 4).into_iter().map(|v| (1.0 - (v - y.0) / (y.1 - y.0), crate::chart::tick_label(v))).filter(|(f, _)| (0.0..=1.0).contains(f)).collect()
+        } else {
+            Vec::new()
+        };
+        let first = &chart.cells[0];
+        let (x_label, y_label) = (first.x_label.clone(), first.y_label.clone());
+        let titles: Vec<(usize, String)> = chart.cells.iter().enumerate().filter(|(_, c)| !c.title.is_empty()).map(|(i, c)| (i, c.title.clone())).collect();
+        let (cols, rows) = (chart.cols.max(1), chart.rows());
         let cell = self.plot.clone();
         let lasso = self.lasso.clone();
-        let line = cx.theme().primary;
-        div()
-            .id("amplitude-lasso")
+        let chart2 = chart.clone();
+        let me = cx.entity().downgrade();
+        let plot = div()
+            .id(SharedString::from(format!("chart-{:?}", self.kind)))
             .relative()
-            .size_full()
-            .cursor_crosshair()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .when(lasso_mode, |d| d.cursor_crosshair())
+            .on_scroll(cx.listener(move |this, e: &gpui_kit::ScrollEvent, _, cx| {
+                let d = e.delta.pixel_delta(px(20.)).y.as_f32();
+                let factor = (d * ZOOM_PER_PX).exp();
+                let (fx, fy) = this.frac(e.position);
+                let mut r = this.range(&chart2);
+                if !e.modifiers.alt {
+                    r.x = crate::chart::zoom(r.x, factor, fx);
+                }
+                if !e.modifiers.shift {
+                    r.y = crate::chart::zoom(r.y, factor, 1.0 - fy);
+                }
+                this.view = Some(r);
+                cx.stop_propagation();
+                cx.notify();
+            }))
             .on_mouse_down(gpui_kit::MouseButton::Left, cx.listener(move |this, e: &gpui_kit::MouseDownEvent, _, cx| {
-                this.lasso = vec![frac(this, e.position)];
+                if e.click_count == 2 {
+                    this.view = None;
+                    cx.notify();
+                    return;
+                }
+                let f = this.frac(e.position);
+                if lasso_mode && !e.modifiers.shift {
+                    this.lasso = vec![f];
+                } else if let Some(c) = this.ws.upgrade().and_then(|w| w.read(cx).plots.charts.get(&this.kind).cloned()) {
+                    this.pan = Some((f, this.range(&c)));
+                }
                 cx.notify();
             }))
             .on_mouse_move(cx.listener(move |this, e: &gpui_kit::MouseMoveEvent, _, cx| {
-                if e.pressed_button == Some(gpui_kit::MouseButton::Left) && !this.lasso.is_empty() {
-                    this.lasso.push(frac(this, e.position));
-                    cx.notify();
+                if e.pressed_button != Some(gpui_kit::MouseButton::Left) {
+                    this.pan = None;
+                    return;
                 }
-            }))
-            .on_mouse_up(gpui_kit::MouseButton::Left, cx.listener(|this, _, _, cx| {
-                let polygon = std::mem::take(&mut this.lasso);
-                if polygon.len() >= 3 {
-                    let _ = this.ws.update(cx, |w, cx| w.split_lasso(&polygon, cx));
+                let f = this.frac(e.position);
+                if !this.lasso.is_empty() {
+                    this.lasso.push(f);
+                } else if let Some((start, r0)) = this.pan {
+                    let (dx, dy) = (f.0 - start.0, f.1 - start.1);
+                    let (sx, sy) = (r0.x.1 - r0.x.0, r0.y.1 - r0.y.0);
+                    this.view = Some(Range2 { x: (r0.x.0 - dx * sx, r0.x.1 - dx * sx), y: (r0.y.0 + dy * sy, r0.y.1 + dy * sy) });
                 }
                 cx.notify();
             }))
-            .child(img(image).size_full())
+            .on_mouse_up(gpui_kit::MouseButton::Left, cx.listener(move |this, _, _, cx| {
+                this.pan = None;
+                let polygon = std::mem::take(&mut this.lasso);
+                if polygon.len() >= 3 {
+                    if let Some(c) = this.ws.upgrade().and_then(|w| w.read(cx).plots.charts.get(&this.kind).cloned()) {
+                        // Plot fractions to the chart's units (time s, amplitude)
+                        let r = this.range(&c);
+                        let data: Vec<(f32, f32)> = polygon.iter().map(|&(fx, fy)| (r.x.0 + fx * (r.x.1 - r.x.0), r.y.1 - fy * (r.y.1 - r.y.0))).collect();
+                        let _ = this.ws.update(cx, |w, cx| w.split_lasso(&data, cx));
+                    }
+                }
+                cx.notify();
+            }))
             .child(
                 gpui_kit::canvas(
-                    move |b, _, _| cell.set(b),
+                    move |b, _, cx| {
+                        // A new size: draw again for it
+                        let resized = cell.get().size != b.size;
+                        cell.set(b);
+                        if resized {
+                            let _ = me.update(cx, |_, cx| cx.notify());
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
+            .children(self.image.clone().map(|i| img(i).absolute().top_0().left_0().size_full()))
+            .children(titles.into_iter().map(|(i, title)| {
+                let (fx, fy) = ((i % cols) as f32 / cols as f32, (i / cols) as f32 / rows as f32);
+                div().absolute().left(gpui_kit::relative(fx)).top(gpui_kit::relative(fy)).px_1().text_xs().text_color(muted).child(title)
+            }))
+            .child(
+                gpui_kit::canvas(
+                    |_, _, _| {},
                     move |b, _, window, _| {
                         if lasso.len() < 2 {
                             return;
@@ -1005,6 +1310,40 @@ impl CurationPanel {
                 )
                 .absolute()
                 .size_full(),
+            );
+        let y_axis = div()
+            .relative()
+            .w(px(crate::chart::MARGIN_LEFT))
+            .flex_none()
+            .h_full()
+            .children(yt.into_iter().map(|(f, label)| div().absolute().right(px(6.)).top(gpui_kit::relative(f)).mt(px(-7.)).text_xs().text_color(muted).child(label)));
+        let x_axis = div()
+            .relative()
+            .h(px(16.))
+            .flex_none()
+            .ml(px(crate::chart::MARGIN_LEFT))
+            .mr(px(crate::chart::MARGIN_RIGHT))
+            .children(xt.into_iter().map(|(f, label)| div().absolute().left(gpui_kit::relative(f)).ml(px(-12.)).text_xs().text_color(muted).child(label)));
+        let legend = h_flex().h(px(22.)).flex_none().px_2().gap_3().overflow_hidden().children(selected.iter().zip(&ids).take(6).map(|(&u, id)| {
+            h_flex().gap_1().flex_none().child(div().size(px(8.)).rounded_full().bg(color(palette.unit(u)))).child(div().text_xs().text_color(fg).child(format!("Unit {id}")))
+        }));
+        let hint = if lasso_mode { "Drag: lasso to split · Shift+drag: move · wheel: zoom · double-click: all" } else { "Wheel: zoom (Shift: x, Alt: y) · drag: move · double-click: all" };
+        v_flex()
+            .size_full()
+            .bg(color(palette.background))
+            .child(legend)
+            .child(h_flex().flex_1().min_h_0().pr(px(crate::chart::MARGIN_RIGHT)).pt(px(crate::chart::MARGIN_TOP)).child(y_axis).child(plot))
+            .child(x_axis)
+            .child(
+                h_flex()
+                    .h(px(20.))
+                    .flex_none()
+                    .px_2()
+                    .gap_2()
+                    .border_t_1()
+                    .border_color(border)
+                    .child(div().flex_none().text_xs().text_color(muted).child(format!("{y_label} vs {x_label}")))
+                    .child(div().flex_1().min_w_0().truncate().text_xs().text_color(muted).text_right().child(hint)),
             )
             .into_any_element()
     }
@@ -1079,6 +1418,56 @@ impl BasePanel for CurationPanel {
 impl Panel for CurationPanel {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         self.kind.title()
+    }
+
+    /// The view's settings (⋯): zoom back to everything, and what the plot shows.
+    fn dropdown_menu(&mut self, menu: PopupMenu, _: &mut Window, cx: &mut Context<Self>) -> PopupMenu {
+        let me = cx.entity().downgrade();
+        let ws = self.ws.clone();
+        let settings = ws.upgrade().map(|w| w.read(cx).settings).unwrap_or_default();
+        let mut menu = menu.item(PopupMenuItem::new("Show everything (double-click)").on_click(move |_, _, cx| {
+            let _ = me.update(cx, |p, cx| {
+                p.view = None;
+                cx.notify();
+            });
+        }));
+        let set = |label: String, on: bool, f: std::rc::Rc<dyn Fn(&mut PlotSettings)>| {
+            let ws = ws.clone();
+            PopupMenuItem::new(label).checked(on).on_click(move |_, _, cx| {
+                let f = f.clone();
+                let _ = ws.update(cx, |w, cx| w.set_settings(|s| f(s), cx));
+            })
+        };
+        match self.kind {
+            ViewKind::Acg | ViewKind::Correlograms => {
+                menu = menu.separator().label("Window");
+                for h in [10.0, 25.0, 50.0, 100.0, 250.0] {
+                    menu = menu.item(set(format!("± {h} ms"), settings.ccg_half_ms == h, std::rc::Rc::new(move |s| s.ccg_half_ms = h)));
+                }
+                menu = menu.separator().label("Bin");
+                for b in [0.25, 0.5, 1.0, 2.0, 5.0] {
+                    menu = menu.item(set(format!("{b} ms"), settings.ccg_bin_ms == b, std::rc::Rc::new(move |s| s.ccg_bin_ms = b)));
+                }
+            }
+            ViewKind::Isi => {
+                menu = menu.separator().label("Range");
+                for m in [10.0, 25.0, 50.0, 100.0, 500.0] {
+                    menu = menu.item(set(format!("0–{m} ms"), settings.isi_max_ms == m, std::rc::Rc::new(move |s| s.isi_max_ms = m)));
+                }
+                menu = menu.separator().label("Bin");
+                for b in [0.1, 0.25, 0.5, 1.0, 5.0] {
+                    menu = menu.item(set(format!("{b} ms"), settings.isi_bin_ms == b, std::rc::Rc::new(move |s| s.isi_bin_ms = b)));
+                }
+            }
+            ViewKind::Waveforms | ViewKind::Features => {
+                menu = menu.separator().label("Spikes per unit");
+                for n in [100usize, 300, 1000, 3000] {
+                    menu = menu.item(set(format!("{n}"), settings.spikes == n, std::rc::Rc::new(move |s| s.spikes = n)));
+                }
+            }
+            _ => {}
+        }
+        menu
     }
 }
 

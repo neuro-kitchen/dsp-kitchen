@@ -35,12 +35,14 @@ use crate::sort::{self, Described, Param, SortRequest, PROBES};
 use crate::sorting::{isi_histogram, write_start_sec, Snippets, SortingData};
 use crate::strip::{view_signal, BottomStrip};
 use crate::templates::TemplateGrid;
-use dspk_app_core::ui::panel_edge::{follow_panel_drag, panel_edge, PanelResize, Side};
+use dspk_app_core::ui::panel_edge::{follow_panel_drag, panel_edge, rail, toggle_item, PanelResize, Side, RAIL_W};
 use crate::{plots, plugin_data, runs_of, sorting_of, state, SynapseEvent, ID};
 
 /// Widths of the side columns (logical px), card size (logical and rendered px).
-const LEFT_W: f32 = 260.;
-const RIGHT_W: f32 = 320.;
+const LEFT_W: f32 = 300.;
+const RIGHT_W: f32 = 300.;
+/// The channel table's width in the Channels tab.
+const CHANNELS_W: f32 = 232.;
 const CARD_W: f32 = 200.;
 const CARD_IMG_H: f32 = 120.;
 const CARD_PX: (u32, u32) = (400, 240);
@@ -82,8 +84,8 @@ pub struct SortingWorkspace {
     shown: Option<*const SortingData>,
     tab: CenterTab,
     grid: Entity<TemplateGrid>,
-    /// The template picked in the grid.
-    focused: Option<usize>,
+    /// The templates picked in the grid (the first leads).
+    focused: Vec<usize>,
     /// The run compared with the shown one, and the matches found (unit of the shown run, unit
     /// of the other, agreement).
     compare_with: Option<PathBuf>,
@@ -96,11 +98,11 @@ pub struct SortingWorkspace {
 
 impl SortingWorkspace {
     pub fn new(store: Entity<Store>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let strip = cx.new(|cx| BottomStrip::new(store.clone(), cx));
+        let strip = cx.new(|cx| BottomStrip::new(store.clone(), dspk_app_core::navigation::route::Workspace::Sorting, cx));
         let me = cx.weak_entity();
         let grid = cx.new(|_| {
-            TemplateGrid::new(std::rc::Rc::new(move |u, _, _, cx| {
-                let _ = me.update(cx, |w, cx| w.focus_unit(u, cx));
+            TemplateGrid::new(std::rc::Rc::new(move |u, add, _, cx| {
+                let _ = me.update(cx, |w, cx| w.focus_unit(u, add, cx));
             }))
         });
         let start = cx.new(|cx| InputState::new(window, cx).default_value("0"));
@@ -134,7 +136,7 @@ impl SortingWorkspace {
             shown: None,
             tab: CenterTab::Channel,
             grid,
-            focused: None,
+            focused: Vec::new(),
             compare_with: None,
             matches: None,
             _compare: None,
@@ -194,7 +196,7 @@ impl SortingWorkspace {
                     self.channel = s.alive().max_by_key(|&u| s.units[u].info.num_spikes).map(|u| s.units[u].info.primary_channel);
                 }
             }
-            self.focused = None;
+            self.focused.clear();
             self.compute(cx);
             self.sync_grid(cx);
         }
@@ -304,22 +306,47 @@ impl SortingWorkspace {
     fn sync_grid(&mut self, cx: &mut Context<Self>) {
         let sorting = self.sorting(cx);
         let palette = self.store.read(cx).palette();
-        let selected = self.focused.into_iter().collect();
+        let selected = self.focused.clone();
         self.grid.update(cx, |g, cx| g.set(sorting, selected, palette, cx));
     }
 
-    /// A template picked in the grid: its channel, and its spikes on the timeline (the window
-    /// jumps to its first spike after the current one).
-    fn focus_unit(&mut self, unit: usize, cx: &mut Context<Self>) {
+    /// Templates picked in the grid (Ctrl / Shift+click adds or removes one): the lead's channel,
+    /// and every picked unit's spikes on the timeline (the window jumps to the lead's next spike).
+    fn focus_unit(&mut self, unit: usize, add: bool, cx: &mut Context<Self>) {
         let Some(sorting) = self.sorting(cx) else { return };
-        self.focused = Some(unit);
-        self.channel = Some(sorting.units[unit].info.primary_channel);
+        if add {
+            match self.focused.iter().position(|&u| u == unit) {
+                Some(i) => {
+                    self.focused.remove(i);
+                }
+                None => self.focused.push(unit),
+            }
+        } else {
+            self.focused = vec![unit];
+        }
+        let Some(&lead) = self.focused.first() else {
+            self.sync_grid(cx);
+            return;
+        };
+        self.channel = Some(sorting.units[lead].info.primary_channel);
         self.compute(cx);
         let map = self.store.read(cx).active_view().and_then(|v| v.recording.channels.clone()).filter(|c| sorting.channels == Some(c.len()));
-        let channels: Vec<usize> = sorting.units[unit].extent.channels.iter().filter_map(|&c| map.as_ref().map_or(Some(c), |m| m.get(c).copied())).collect();
+        let mut channels: Vec<usize> = Vec::new();
+        for &u in &self.focused {
+            for &c in &sorting.units[u].extent.channels {
+                if let Some(v) = map.as_ref().map_or(Some(c), |m| m.get(c).copied()) {
+                    if !channels.contains(&v) {
+                        channels.push(v);
+                    }
+                }
+            }
+        }
+        let units = self.focused.clone();
         self.strip.update(cx, |s, cx| {
-            s.set_focus(vec![unit], channels, cx);
-            s.step_spike(true, cx);
+            s.set_focus(units, channels, cx);
+            if !add {
+                s.step_spike(true, cx);
+            }
         });
         self.sync_grid(cx);
     }
@@ -354,7 +381,10 @@ impl SortingWorkspace {
         let palette = s.palette();
         let lead_channels: Vec<usize> = units.first().map(|&u| sorting.units[u].extent.channels.iter().filter_map(|&c| to_view(c)).collect()).unwrap_or_else(|| vec![view_channel]);
         let strip_units = units.clone();
-        self.strip.update(cx, |st, cx| st.set_focus(strip_units, lead_channels, cx));
+        // Templates picked in the grid keep the strip on them
+        if self.focused.is_empty() {
+            self.strip.update(cx, |st, cx| st.set_focus(strip_units, lead_channels, cx));
+        }
         self.computing = true;
         let work = cx.background_spawn(async move {
             let windows = crate::sorting::windows_of(&signal);
@@ -470,7 +500,8 @@ impl SortingWorkspace {
     // Columns
     // ------------------------------------------------------------------------
 
-    fn control_grid(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    /// The sorter's side (left: sorter, part, probe, Run, runs) and its parameters (right).
+    fn control_grid(&mut self, window: &mut Window, cx: &mut Context<Self>) -> (AnyElement, AnyElement) {
         self.sync_inputs(window, cx);
         let t = cx.theme();
         let (muted, danger) = (t.muted_foreground, t.danger);
@@ -520,8 +551,8 @@ impl SortingWorkspace {
             }
         });
         let part = Section::new("Part of the recording")
-            .child(row("Start (s)", div().w(px(110.)).child(Input::new(&self.start).small()), cx))
-            .child(row("Duration (s)", div().w(px(110.)).child(Input::new(&self.duration).small()), cx))
+            .child(row("Start (s)", div().w_full().child(Input::new(&self.start).small()), cx))
+            .child(row("Duration (s)", div().w_full().child(Input::new(&self.duration).small()), cx))
             .child({
                 let me = me.clone();
                 Button::new("sorting-visible-window").ghost().xsmall().label("Use the visible window").on_click(move |_, window, cx| {
@@ -530,11 +561,14 @@ impl SortingWorkspace {
             })
             .child(div().text_xs().text_color(muted).child("Sort a minute first to try settings; an empty duration sorts to the end."))
             .child(row("Probe", probe_pick, cx));
-        let params = Section::new(format!("Parameters ({})", self.inputs.len())).children(self.inputs.iter().map(|(p, input)| {
+        // Each parameter: its name over a full-width input (its default as the placeholder), its
+        // help under it; nothing wider than the panel
+        let params = v_flex().gap_3().children(self.inputs.iter().map(|(p, input)| {
             v_flex()
-                .gap_0p5()
-                .child(row(p.name.replace('_', " "), div().w(px(120.)).child(Input::new(input).small()), cx))
-                .when(!p.help.is_empty(), |d| d.child(div().text_xs().text_color(muted).line_clamp(2).child(p.help.clone())))
+                .gap_1()
+                .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).truncate().child(p.name.replace('_', " ")))
+                .child(div().w_full().child(Input::new(input).small()))
+                .when(!p.help.is_empty(), |d| d.child(div().text_xs().text_color(muted).line_clamp(3).child(p.help.clone())))
         }));
         let run = match running {
             Some((label, fraction, line)) => v_flex()
@@ -554,7 +588,8 @@ impl SortingWorkspace {
                 }).into_any_element()
             }
         };
-        v_flex()
+        let n = self.inputs.len();
+        let left = v_flex()
             .id("sorting-controls")
             .size_full()
             .overflow_y_scroll()
@@ -563,8 +598,19 @@ impl SortingWorkspace {
             .child(sorter_section)
             .child(part)
             .child(run)
+            .child(self.runs(cx))
+            .into_any_element();
+        let right = v_flex()
+            .id("sorting-parameters")
+            .size_full()
+            .overflow_y_scroll()
+            .p_3()
+            .gap_3()
+            .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(muted).child(format!("PARAMETERS · {n}")))
+            .child(div().text_xs().text_color(muted).child("Empty: the default (shown in grey). Typed values go to the sorter."))
             .child(params)
-            .into_any_element()
+            .into_any_element();
+        (left, right)
     }
 
     fn runs(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -597,15 +643,11 @@ impl SortingWorkspace {
             })
             .collect();
         let store = self.store.clone();
+        let _ = border;
         v_flex()
             .id("sorting-runs")
             .flex_none()
-            .max_h(px(220.))
-            .overflow_y_scroll()
-            .p_2()
             .gap_0p5()
-            .border_b_1()
-            .border_color(border)
             .child(
                 h_flex()
                     .h(px(24.))
@@ -621,7 +663,7 @@ impl SortingWorkspace {
                             .on_click(move |_, _, cx| store.update(cx, |s, cx| s.set_workspace(Workspace::Curation, cx))),
                     ),
             )
-            .when(rows.is_empty(), |d| d.child(div().px_1().text_xs().text_color(muted).child("None yet: set a sorter on the right and Run. Each run is kept here.")))
+            .when(rows.is_empty(), |d| d.child(div().px_1().text_xs().text_color(muted).child("None yet: Run above. Each run is kept here.")))
             .children(rows)
     }
 
@@ -736,11 +778,10 @@ impl SortingWorkspace {
 impl Render for SortingWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (bg, border, muted) = (cx.theme().background, cx.theme().border, cx.theme().muted_foreground);
-        let controls = self.control_grid(window, cx);
-        let runs = self.runs(cx);
-        let (left_w, right_w) = {
+        let (controls, parameters) = self.control_grid(window, cx);
+        let (left_w, right_w, left_open, right_open) = {
             let s = self.store.read(cx);
-            (s.panel_width("sorting.left", LEFT_W), s.panel_width("sorting.right", RIGHT_W))
+            (s.panel_width("sorting.left", LEFT_W), s.panel_width("sorting.right", RIGHT_W), s.panel_open("sorting.left"), s.panel_open("sorting.right"))
         };
         let sorting = self.sorting(cx);
         let me = cx.entity().downgrade();
@@ -750,9 +791,23 @@ impl Render for SortingWorkspace {
                 let _ = me.update(cx, |w, cx| w.set_tab(which, cx));
             })
         };
-        let tabs = h_flex().h(px(34.)).flex_none().px_2().gap_1().border_b_1().border_color(border).child(tab("sorting-tab-channel", "Channel", CenterTab::Channel)).child(tab("sorting-tab-templates", "Templates", CenterTab::Templates)).child(tab("sorting-tab-compare", "Compare runs", CenterTab::Compare));
+        let tabs = h_flex()
+            .h(px(36.))
+            .flex_none()
+            .px_2()
+            .gap_1()
+            .border_b_1()
+            .border_color(border)
+            .child(tab("sorting-tab-channel", "Channels", CenterTab::Channel))
+            .child(tab("sorting-tab-templates", "Templates", CenterTab::Templates))
+            .child(tab("sorting-tab-compare", "Compare runs", CenterTab::Compare));
         let centre: AnyElement = match (&sorting, self.tab) {
-            (Some(s), CenterTab::Channel) => self.units(s, cx).into_any_element(),
+            (Some(s), CenterTab::Channel) => h_flex()
+                .flex_1()
+                .min_h_0()
+                .child(div().w(px(CHANNELS_W)).flex_none().h_full().border_r_1().border_color(border).child(self.channels(s, cx)))
+                .child(self.units(s, cx))
+                .into_any_element(),
             (Some(_), CenterTab::Templates) => div().flex_1().min_h_0().p_2().child(self.grid.clone()).into_any_element(),
             (Some(s), CenterTab::Compare) => self.compare_view(s, cx),
             (None, _) => div()
@@ -760,22 +815,13 @@ impl Render for SortingWorkspace {
                 .child(EmptyState::new(
                     gpui_kit::assets::IconName::SlidersHorizontal,
                     "No sorting shown yet",
-                    "Choose a sorter, its parameters and a part of the recording on the right, then Run. Each run shows here.",
+                    "Choose a sorter and a part of the recording on the left, its parameters on the right, then Run.",
                 ))
                 .into_any_element(),
         };
-        let left = v_flex()
-            .relative()
-            .w(px(left_w))
-            .flex_none()
-            .h_full()
-            .border_r_1()
-            .border_color(border)
-            .child(runs)
-            .children(sorting.as_ref().map(|s| self.channels(s, cx)))
-            .when(sorting.is_none(), |d| d.child(div().p_3().text_xs().text_color(muted).child("Channels with units show here.")))
-            .child(panel_edge("sorting.left", Side::Left, 0.0));
-        let right = div().relative().w(px(right_w)).flex_none().h_full().border_l_1().border_color(border).child(controls).child(panel_edge("sorting.right", Side::Right, 0.0));
+        let _ = muted;
+        let left_rail = rail(vec![toggle_item(&self.store, "sorting.left", Icon::new(gpui_kit::assets::IconName::SlidersHorizontal), "Sorter, part of the recording, runs", cx)], true, cx);
+        let right_rail = rail(vec![toggle_item(&self.store, "sorting.right", Icon::new(gpui_kit::assets::IconName::Settings2), "The sorter's parameters", cx)], false, cx);
         v_flex()
             .id("sorting-workspace")
             .size_full()
@@ -785,7 +831,20 @@ impl Render for SortingWorkspace {
                 cx.notify();
                 this.strip.update(cx, |_, cx| cx.notify());
             }))
-            .child(h_flex().flex_1().min_h_0().child(left).child(v_flex().flex_1().min_w_0().h_full().child(tabs).child(centre)).child(right))
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .child(left_rail)
+                    .when(left_open, |d| {
+                        d.child(div().relative().w(px(left_w)).flex_none().h_full().border_r_1().border_color(border).child(controls).child(panel_edge("sorting.left", Side::Left, RAIL_W)))
+                    })
+                    .child(v_flex().flex_1().min_w_0().h_full().child(tabs).child(centre))
+                    .when(right_open, |d| {
+                        d.child(div().relative().w(px(right_w)).flex_none().h_full().border_l_1().border_color(border).child(parameters).child(panel_edge("sorting.right", Side::Right, RAIL_W)))
+                    })
+                    .child(right_rail),
+            )
             .child(self.strip.clone())
     }
 }

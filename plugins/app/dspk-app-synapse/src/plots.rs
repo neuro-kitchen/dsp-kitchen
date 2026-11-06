@@ -26,7 +26,7 @@ fn colour(unit: Option<u32>, palette: &Palette) -> Pixel {
 }
 
 /// A line through `points` (pixels), one vertical span per column between consecutive points.
-fn polyline(canvas: &mut Canvas, points: &[(f32, f32)], c: Pixel, alpha: f32, width: f32) {
+pub fn polyline(canvas: &mut Canvas, points: &[(f32, f32)], c: Pixel, alpha: f32, width: f32) {
     for w in points.windows(2) {
         let ((x0, y0), (x1, y1)) = (w[0], w[1]);
         let (xa, xb) = (x0.round() as i64, x1.round() as i64);
