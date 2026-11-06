@@ -56,6 +56,9 @@ pub struct ServeArgs {
     /// Where to write the generated self-signed certificate (DER), for clients to trust
     #[arg(long, conflicts_with = "certificate")]
     certificate_out: Option<PathBuf>,
+    /// Clients connected at once; more are refused until one leaves
+    #[arg(long, default_value_t = dspk_stream::DEFAULT_MAX_CONNECTIONS)]
+    max_clients: usize,
     /// Host names or addresses clients reach the server by, for the self-signed certificate
     /// (besides localhost and the --bind address); repeat for several
     #[arg(long = "name", conflicts_with = "certificate")]
@@ -75,6 +78,23 @@ fn self_signed_names(args: &ServeArgs) -> Vec<String> {
         }
     }
     names
+}
+
+/// Ctrl+C (SIGINT), or SIGTERM on Unix: what `podman stop`, systemd and Kubernetes send.
+async fn shutdown() {
+    #[cfg(unix)]
+    {
+        let Ok(mut term) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) else {
+            let _ = tokio::signal::ctrl_c().await;
+            return;
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = term.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 pub async fn run(args: &ServeArgs) -> anyhow::Result<()> {
@@ -118,7 +138,7 @@ pub async fn run(args: &ServeArgs) -> anyhow::Result<()> {
         std::fs::write(out, &tls.certificate).with_context(|| format!("writing {}", out.display()))?;
         println!("Certificate written to {} (clients: --certificate {})", out.display(), out.display());
     }
-    let server = Server::bind(args.bind, tls.config)?;
+    let server = Server::bind(args.bind, tls.config)?.with_max_connections(args.max_clients);
     let options = ServeOptions {
         frame_sec: args.frame_sec,
         pacing: if args.unpaced { Pacing::Unpaced } else { Pacing::RealTime },
@@ -128,7 +148,7 @@ pub async fn run(args: &ServeArgs) -> anyhow::Result<()> {
     println!("Listening on {} (Ctrl+C to stop)", server.local_addr()?);
 
     tokio::select! {
-        _ = tokio::signal::ctrl_c() => println!("Stopping"),
+        _ = shutdown() => println!("Stopping"),
         _ = async {
             while let Some(connection) = server.accept().await {
                 let remote = connection.remote_address();
