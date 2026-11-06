@@ -13,6 +13,16 @@ use crate::protocol::wire;
 
 /// File extensions of recordings dspk opens (raw, SpikeGLX, NWB, mtscomp).
 pub const RECORDING_EXTENSIONS: [&str; 6] = ["bin", "cbin", "dat", "raw", "nwb", "h5"];
+/// File names never served, even under the root: client identities and private keys (someone may
+/// have left one there; a reader must never fetch another client's key).
+pub const NEVER_SERVED_SUFFIXES: [&str; 3] = [".dspk-identity.pem", ".key", ".key.pem"];
+
+/// Whether `name` is hidden or a secret: never listed, opened or fetched.
+pub fn withheld(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    name.starts_with('.') || NEVER_SERVED_SUFFIXES.iter().any(|s| lower.ends_with(s))
+}
+
 /// Most entries one listing returns (a directory of more is cut, with the first ones).
 pub const MAX_LIST_ENTRIES: usize = 10_000;
 
@@ -50,9 +60,8 @@ impl DataRoot {
         for component in rel.components() {
             match component {
                 Component::Normal(name) => {
-                    let name = name.to_string_lossy();
-                    if name.starts_with('.') {
-                        return Err(refused(relative, "hidden files are not served"));
+                    if withheld(&name.to_string_lossy()) {
+                        return Err(refused(relative, "hidden files and keys are not served"));
                     }
                 }
                 Component::CurDir => {}
@@ -71,7 +80,7 @@ impl DataRoot {
     pub fn resolve_new(&self, relative: &str) -> StreamResult<PathBuf> {
         let rel = Path::new(relative);
         let name = rel.file_name().map(|n| n.to_string_lossy().into_owned()).ok_or_else(|| refused(relative, "no file name"))?;
-        if name.starts_with('.') || name.contains(['/', '\\']) {
+        if withheld(&name) || name.contains(['/', '\\']) {
             return Err(refused(relative, "not a plain name"));
         }
         let parent = rel.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
@@ -102,7 +111,7 @@ impl DataRoot {
         for entry in std::fs::read_dir(&dir)? {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') {
+            if withheld(&name) {
                 continue;
             }
             // Follow links, but only to places under the root
@@ -155,6 +164,8 @@ mod tests {
         std::fs::write(root.join("mouse1/rec.ap.bin"), [0u8; 8]).unwrap();
         std::fs::write(root.join("mouse1/rec.ap.meta"), "x").unwrap();
         std::fs::write(base.join("outside.bin"), [0u8; 8]).unwrap();
+        std::fs::write(root.join("alice.dspk-identity.pem"), "key").unwrap();
+        std::fs::write(root.join("server.key"), "key").unwrap();
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(base.join("outside.bin"), root.join("link-out.bin")).unwrap();
@@ -164,7 +175,7 @@ mod tests {
 
         assert!(data.resolve("mouse1/rec.ap.bin").is_ok());
         assert!(data.resolve("").is_ok(), "the root itself");
-        for bad in ["/etc/passwd", "../outside.bin", "mouse1/../../outside.bin", ".dspk-auth/ca.key.pem", "mouse1/.hidden", "missing.bin"] {
+        for bad in ["/etc/passwd", "../outside.bin", "mouse1/../../outside.bin", ".dspk-auth/ca.key.pem", "mouse1/.hidden", "missing.bin", "alice.dspk-identity.pem", "server.key"] {
             assert!(data.resolve(bad).is_err(), "{bad} must be refused");
         }
         #[cfg(unix)]
@@ -176,6 +187,7 @@ mod tests {
         let top = data.list("").unwrap();
         let names: Vec<&str> = top.entries.iter().map(|e| e.name.as_str()).collect();
         assert!(names.contains(&"mouse1") && !names.contains(&".dspk-auth") && !names.contains(&"link-out.bin"), "{names:?}");
+        assert!(!names.iter().any(|n| n.ends_with(".pem") || n.ends_with(".key")), "keys never listed: {names:?}");
         assert_eq!(top.entries[0].name, "mouse1", "directories first");
         let inner = data.list("mouse1").unwrap();
         let kind = |n: &str| inner.entries.iter().find(|e| e.name == n).map(|e| e.kind);
