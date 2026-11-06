@@ -493,7 +493,8 @@ impl SortingWorkspace {
             };
             let results = self.store.read(cx).session.results_dir();
             let label = format!("{sorter} on {} ({part}) on {}", view.name, profile.name);
-            self.store.update(cx, |s, cx| s.start_job(label, move |send| remote::remote_sort(profile, job, results, move |m| send(m)), done, cx));
+            let node = view.id.clone();
+            self.store.update(cx, |s, cx| s.start_job_on([node], label, move |send| remote::remote_sort(profile, job, results, move |m| send(m)), done, cx));
             return;
         }
 
@@ -508,7 +509,8 @@ impl SortingWorkspace {
         };
         let output = sort::run_path(&recording, &sorter, start, duration);
         let req = SortRequest { sorter: sorter.clone(), recording, source, probe: PROBES[probe].0.map(str::to_string), output, params, start_sec: start, duration_sec: duration };
-        self.store.update(cx, |s, cx| s.start_job(format!("{sorter} on {} ({part})", view.name), move |send| sort::sort(&req, move |m| send(m)), done, cx));
+        let node = view.id.clone();
+        self.store.update(cx, |s, cx| s.start_job_on([node], format!("{sorter} on {} ({part})", view.name), move |send| sort::sort(&req, move |m| send(m)), done, cx));
     }
 
     /// Shows run `path` (links it to the view; Explore, Curation and this follow).

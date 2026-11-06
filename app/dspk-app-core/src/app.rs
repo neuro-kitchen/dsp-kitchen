@@ -703,6 +703,48 @@ mod tests {
         cx.update(|cx| assert_eq!(store.read(cx).workspace, Workspace::Explore));
     }
 
+    /// A job's graph nodes: running while it runs, then done (or failed); a job refused because
+    /// another runs marks nothing.
+    #[gpui_kit::test]
+    fn jobs_mark_their_nodes(cx: &mut TestAppContext) {
+        use crate::data::jobs::{Cancel, JobMessage};
+        use crate::data::store::NodeRun;
+        let (_window, store, _app) = open(cx);
+        cx.update(|cx| {
+            store.update(cx, |s, cx| {
+                let (tx, rx) = std::sync::mpsc::channel::<Box<dyn Fn(JobMessage) + Send + Sync>>();
+                assert!(s.start_job_on(["read".to_string(), "iir".to_string()], "test", move |send| {
+                    let _ = tx.send(send);
+                    Cancel::default()
+                }, |_, _, _| {}, cx));
+                assert!(matches!(s.node_status.get("iir"), Some(NodeRun::Running { .. })));
+                // Another job while this one runs: refused, nothing marked
+                assert!(!s.start_job_on(["other".to_string()], "second", |_| Cancel::default(), |_, _, _| {}, cx));
+                let send = rx.recv().unwrap();
+                send(JobMessage::Progress("Writing 40 %".into(), Some(0.4)));
+                send(JobMessage::Done(std::path::PathBuf::from("/tmp/out.zarr")));
+            })
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let s = store.read(cx);
+            assert!(matches!(s.node_status.get("read"), Some(NodeRun::Done { .. })), "{:?}", s.node_status);
+            assert!(matches!(s.node_status.get("iir"), Some(NodeRun::Done { .. })));
+            assert!(!s.node_status.contains_key("other"));
+        });
+        // A failure marks the job's nodes failed
+        cx.update(|cx| {
+            store.update(cx, |s, cx| {
+                assert!(s.start_job_on(["iir".to_string()], "failing", |send| {
+                    send(JobMessage::Failed("disk full".into()));
+                    Cancel::default()
+                }, |_, _, _| {}, cx));
+            })
+        });
+        cx.run_until_parked();
+        cx.update(|cx| assert_eq!(store.read(cx).node_status.get("iir"), Some(&NodeRun::Failed("disk full".into()))));
+    }
+
     #[gpui_kit::test]
     fn pipeline_canvas_shows_and_edits_the_graph(cx: &mut TestAppContext) {
         use crate::domain::command::SessionCommand;

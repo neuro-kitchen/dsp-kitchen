@@ -5,9 +5,12 @@
 //! Nodes are cards (KotlinFlow style: rounded, a border that lights up when selected) with an
 //! input handle on the left and an output handle on the right; dragging from an output to a
 //! node connects them (a node has one input: the new edge replaces it), dragging an input off
-//! its edge disconnects it. Selecting one node highlights its path: everything upstream to its
-//! recording and downstream to every view or write it feeds; the rest fades. Drop an operation
-//! from the tree (or the menus) on the plane to add it.
+//! its edge disconnects it. Pointing at a node (or selecting one) highlights its path:
+//! everything upstream to its recording and downstream to every view or write it feeds, its
+//! edges and ports lit; the rest fades. Edges run left to right with rounded elbows. Each node
+//! shows its last run (writes, sorts): running (with the stage, and data flowing along the edges
+//! into it), done (how long it took), failed (why). Drop an operation from the tree (or the
+//! menus) on the plane to add it.
 //!
 //! Hit testing is geometric (node rectangles and handle circles in canvas units), so the cards
 //! are plain elements and the plane handles every pointer event.
@@ -26,7 +29,7 @@ use gpui_kit::{
     Styled as _, Subscription, Window,
 };
 
-use crate::data::store::{AppEvent, Store};
+use crate::data::store::{AppEvent, NodeRun, Store};
 use crate::domain::command::{NodeMove, SessionCommand};
 use crate::domain::graph::{GraphDoc, NodeKind, COLUMN};
 use crate::ui::widgets::icon_button;
@@ -91,6 +94,8 @@ pub struct GraphCanvas {
     bounds: Rc<Cell<Bounds<Pixels>>>,
     /// Fit the graph once the plane has a size.
     fit_pending: bool,
+    /// The node under the pointer (its path is highlighted while nothing is selected).
+    hover: Option<String>,
     _subs: Vec<Subscription>,
 }
 
@@ -123,6 +128,7 @@ impl GraphCanvas {
             show_minimap: true,
             bounds: Rc::new(Cell::new(Bounds::default())),
             fit_pending: true,
+            hover: None,
             _subs: subs,
         }
     }
@@ -447,6 +453,11 @@ impl GraphCanvas {
                 self.live.clear();
                 cx.notify();
             }
+            let hover = self.node_at(self.local(e.position), cx);
+            if hover != self.hover {
+                self.hover = hover;
+                cx.notify();
+            }
             return;
         }
         let local = self.local(e.position);
@@ -576,17 +587,20 @@ impl GraphCanvas {
     // Drawing
     // ------------------------------------------------------------------------
 
-    /// Nodes on the selected node's path (upstream and downstream), when one node is selected.
+    /// Nodes on the path (upstream and downstream) of the selected node, else of the node under
+    /// the pointer.
     fn highlight(&self, g: &GraphDoc) -> Option<BTreeSet<String>> {
-        let id = self.single()?;
+        let id = self.single().or(self.hover.as_ref()).filter(|id| g.node(id).is_some())?;
         let mut set = g.ancestors(id);
         set.extend(g.descendants(id));
         set.insert(id.clone());
         Some(set)
     }
 
-    fn node_card(&self, id: &str, kind: &NodeKind, (sx, sy): (f32, f32), selected: bool, faded: bool, active: bool, cx: &App) -> impl IntoElement + use<> {
+    #[allow(clippy::too_many_arguments)]
+    fn node_card(&self, id: &str, kind: &NodeKind, (sx, sy): (f32, f32), selected: bool, faded: bool, lit: bool, active: bool, run: Option<NodeRun>, cx: &App) -> impl IntoElement + use<> {
         let t = cx.theme();
+        let (warning, success, danger, muted) = (t.warning, t.success, t.danger, t.muted_foreground);
         let z = self.zoom;
         let (title, sub, icon) = describe(kind);
         let enabled = !matches!(kind, NodeKind::Op { enabled: false, .. });
@@ -601,8 +615,31 @@ impl GraphCanvas {
                 .size(px(r * 2.0))
                 .rounded_full()
                 .border_2()
-                .border_color(if selected { t.primary } else { t.muted_foreground })
-                .bg(t.background)
+                .border_color(if selected || lit { t.primary } else { t.muted_foreground })
+                .bg(if lit { t.primary } else { t.background })
+        };
+        // The last run: a badge in the title row and a line under it
+        let z0 = z;
+        let badge = run.as_ref().map(|r| {
+            let d = px(10.0 * z0.max(0.6));
+            match r {
+                NodeRun::Running { .. } => div().flex_none().size(d).rounded_full().border_2().border_color(warning).into_any_element(),
+                NodeRun::Done { took } => h_flex()
+                    .flex_none()
+                    .gap(px(3.0 * z0))
+                    .child(div().size(d).rounded_full().bg(success))
+                    .child(div().text_size(px(10.0 * z0)).text_color(muted).child(duration_label(*took)))
+                    .into_any_element(),
+                NodeRun::Failed(_) => div().flex_none().size(d).rounded_full().bg(danger).into_any_element(),
+            }
+        });
+        let run_line = match &run {
+            Some(NodeRun::Running { line, fraction, .. }) => {
+                let pct = fraction.map(|f| format!("{:.0} % · ", f * 100.0)).unwrap_or_default();
+                Some((format!("{pct}{}", if line.is_empty() { "running…" } else { line }), warning))
+            }
+            Some(NodeRun::Failed(e)) => Some((e.clone(), danger)),
+            _ => None,
         };
         div()
             .id(SharedString::from(format!("node-{id}")))
@@ -640,9 +677,13 @@ impl GraphCanvas {
                                     .child(Icon::new(icon).size(px(14.0 * z)).text_color(accent))
                                     .child(div().flex_1().min_w_0().truncate().text_size(px(13.0 * z)).font_weight(FontWeight::SEMIBOLD).child(title))
                                     .when(active, |d| d.child(div().flex_none().px(px(5.0 * z)).rounded(px(4.0 * z)).bg(t.accent).text_size(px(10.0 * z)).child("shown")))
-                                    .when(!enabled, |d| d.child(div().flex_none().text_size(px(10.0 * z)).text_color(t.muted_foreground).child("off"))),
+                                    .when(!enabled, |d| d.child(div().flex_none().text_size(px(10.0 * z)).text_color(t.muted_foreground).child("off")))
+                                    .children(badge),
                             )
-                            .when(z >= 0.45, |d| d.child(div().truncate().text_size(px(11.0 * z)).font_family("monospace").text_color(t.muted_foreground).child(sub))),
+                            .when(z >= 0.45, |d| match run_line {
+                                Some((line, color)) => d.child(div().truncate().text_size(px(10.5 * z)).text_color(color).child(line)),
+                                None => d.child(div().truncate().text_size(px(11.0 * z)).font_family("monospace").text_color(t.muted_foreground).child(sub)),
+                            }),
                     ),
             )
             .when(kind.has_input(), |d| d.child(handle(true)))
@@ -821,13 +862,74 @@ fn extent(g: &GraphDoc) -> Option<(f32, f32, f32, f32)> {
     Some(it.fold(init, |(a, b, c, d), n| (a.min(n.x), b.min(n.y), c.max(n.x + NODE_W), d.max(n.y + NODE_H))))
 }
 
-/// An edge from `a` (an output) to `b` (an input), screen px: a horizontal S-curve.
+/// Radius of an edge's elbows (screen px, at most half the room there is).
+const ELBOW: f32 = 12.0;
+
+/// The corners of the edge from `a` to `b` when it runs left to right (out, across at the
+/// middle, in); `None` when `b` is behind `a` (then it is a curve).
+fn elbow_points(a: (f32, f32), b: (f32, f32)) -> Option<[(f32, f32); 4]> {
+    (b.0 - a.0 >= 2.0 * ELBOW).then(|| {
+        let mx = (a.0 + b.0) / 2.0;
+        [a, (mx, a.1), (mx, b.1), b]
+    })
+}
+
+/// An edge from `a` (an output) to `b` (an input), screen px: left to right with rounded elbows
+/// (an S-curve when `b` is behind `a`).
 fn edge_path(a: (f32, f32), b: (f32, f32), width: f32) -> Option<gpui_kit::Path<Pixels>> {
     let mut p = PathBuilder::stroke(px(width));
-    let dx = ((b.0 - a.0).abs() * 0.5).max(40.0);
-    p.move_to(point(px(a.0), px(a.1)));
-    p.cubic_bezier_to(point(px(b.0), px(b.1)), point(px(a.0 + dx), px(a.1)), point(px(b.0 - dx), px(b.1)));
+    let pt = |x: f32, y: f32| point(px(x), px(y));
+    p.move_to(pt(a.0, a.1));
+    match elbow_points(a, b) {
+        Some([_, (mx, _), _, _]) if (b.1 - a.1).abs() > 0.5 => {
+            let dy = b.1 - a.1;
+            let r = ELBOW.min(dy.abs() / 2.0).min((b.0 - a.0) / 2.0);
+            let s = dy.signum();
+            p.line_to(pt(mx - r, a.1));
+            p.curve_to(pt(mx, a.1 + s * r), pt(mx, a.1));
+            p.line_to(pt(mx, b.1 - s * r));
+            p.curve_to(pt(mx + r, b.1), pt(mx, b.1));
+            p.line_to(pt(b.0, b.1));
+        }
+        Some(_) => p.line_to(pt(b.0, b.1)),
+        None => {
+            let dx = ((b.0 - a.0).abs() * 0.5).max(40.0);
+            p.cubic_bezier_to(pt(b.0, b.1), pt(a.0 + dx, a.1), pt(b.0 - dx, b.1));
+        }
+    }
     p.build().ok()
+}
+
+/// Points every `step` px along the edge from `a` to `b`, shifted by `phase` (0..step): data
+/// flowing into a running node.
+fn flow_points(a: (f32, f32), b: (f32, f32), step: f32, phase: f32) -> Vec<(f32, f32)> {
+    let corners = elbow_points(a, b).map(|c| c.to_vec()).unwrap_or_else(|| vec![a, b]);
+    let mut out = Vec::new();
+    let mut carry = phase;
+    for w in corners.windows(2) {
+        let (p, q) = (w[0], w[1]);
+        let len = (q.0 - p.0).hypot(q.1 - p.1);
+        let mut d = carry;
+        while d < len {
+            let f = d / len;
+            out.push((p.0 + (q.0 - p.0) * f, p.1 + (q.1 - p.1) * f));
+            d += step;
+        }
+        carry = d - len;
+    }
+    out
+}
+
+/// `2.3 s`, `4 min 12 s`, `1 h 05 min`.
+fn duration_label(d: std::time::Duration) -> String {
+    let s = d.as_secs_f64();
+    if s < 60.0 {
+        format!("{s:.1} s")
+    } else if s < 3600.0 {
+        format!("{} min {:02} s", (s / 60.0) as u64, (s % 60.0) as u64)
+    } else {
+        format!("{} h {:02} min", (s / 3600.0) as u64, ((s % 3600.0) / 60.0) as u64)
+    }
 }
 
 /// The arrow head at an input.
@@ -851,7 +953,9 @@ impl Render for GraphCanvas {
         let faded = |id: &str| highlight.as_ref().is_some_and(|h| !h.contains(id));
 
         // Edges and the dot grid, painted under the cards
-        let mut edges: Vec<((f32, f32), (f32, f32), bool, bool)> = Vec::new();
+        let status = s.node_status.clone();
+        let running = |id: &str| matches!(status.get(id), Some(NodeRun::Running { .. }));
+        let mut edges: Vec<((f32, f32), (f32, f32), bool, bool, bool)> = Vec::new();
         for e in &g.edges {
             let (Some(a), Some(b)) = (g.node(&e.from), g.node(&e.to)) else { continue };
             let pa = self.pos(&a.id, a.x, a.y);
@@ -860,7 +964,7 @@ impl Render for GraphCanvas {
             let to = self.screen((pb.0, pb.1 + NODE_H / 2.0));
             let lit = highlight.as_ref().is_some_and(|h| h.contains(&e.from) && h.contains(&e.to));
             let dim = highlight.is_some() && !lit;
-            edges.push((from, to, lit, dim));
+            edges.push((from, to, lit, dim, running(&e.to)));
         }
         let pending = match &self.drag {
             Some(Drag::Connect { from, to }) => g.node(from).map(|n| {
@@ -874,7 +978,7 @@ impl Render for GraphCanvas {
             _ => None,
         };
         let (pan, show_grid) = (self.pan, self.show_grid);
-        let (dot, line, lit_line, sel_fill) = (t.muted_foreground.opacity(0.35), t.muted_foreground, t.primary, t.primary.opacity(0.08));
+        let (dot, line, lit_line, sel_fill, flow_color) = (t.muted_foreground.opacity(0.35), t.muted_foreground, t.primary, t.primary.opacity(0.08), t.warning);
         let bounds_cell = self.bounds.clone();
         let plane = canvas(
             move |bounds, _, _| bounds_cell.set(bounds),
@@ -899,9 +1003,26 @@ impl Render for GraphCanvas {
                 }
                 let at = |p: (f32, f32)| (p.0 + o.x.as_f32(), p.1 + o.y.as_f32());
                 // Dimmed edges first, the highlighted path on top
-                let mut order: Vec<&((f32, f32), (f32, f32), bool, bool)> = edges.iter().collect();
+                let mut order: Vec<&((f32, f32), (f32, f32), bool, bool, bool)> = edges.iter().collect();
                 order.sort_by_key(|e| e.2);
-                for (a, b, lit, dim) in order {
+                // Data flowing into running nodes: dots moving along their edges
+                let phase = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| (d.as_millis() % 1000) as f32 / 1000.0);
+                let mut flowing = false;
+                for (a, b, _, _, flow) in order.iter().copied() {
+                    if !*flow {
+                        continue;
+                    }
+                    flowing = true;
+                    let step = 14.0 * z.clamp(0.7, 1.3);
+                    let r = 2.0 * z.clamp(0.7, 1.3);
+                    for (x, y) in flow_points(at(*a), at(*b), step, phase * step) {
+                        window.paint_quad(fill(Bounds { origin: point(px(x - r), px(y - r)), size: size(px(2.0 * r), px(2.0 * r)) }, flow_color).corner_radii(px(r)));
+                    }
+                }
+                if flowing {
+                    window.request_animation_frame();
+                }
+                for (a, b, lit, dim, _) in order {
                     let (c, width) = if *lit { (lit_line, 2.5) } else if *dim { (line.opacity(0.25), 1.5) } else { (line.opacity(0.8), 1.5) };
                     if let Some(p) = edge_path(at(*a), at(*b), width * z.clamp(0.7, 1.3)) {
                         window.paint_path(p, c);
@@ -933,7 +1054,8 @@ impl Render for GraphCanvas {
                 let p = self.pos(&n.id, n.x, n.y);
                 let sp = self.screen(p);
                 let shown = active.as_deref() == Some(n.id.as_str());
-                self.node_card(&n.id, &n.kind, sp, self.selected.contains(&n.id), faded(&n.id), shown, cx).into_any_element()
+                let lit = highlight.as_ref().is_some_and(|h| h.contains(&n.id));
+                self.node_card(&n.id, &n.kind, sp, self.selected.contains(&n.id), faded(&n.id), lit, shown, status.get(&n.id).cloned(), cx).into_any_element()
             })
             .collect();
         let toolbar = self.single().cloned().and_then(|id| {
@@ -1016,5 +1138,26 @@ impl Render for DragGhost {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme();
         div().px_2().py_1().rounded_md().border_1().border_color(t.primary).bg(t.background).shadow_md().text_sm().child(self.0.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn edges_run_left_to_right_with_elbows() {
+        assert_eq!(elbow_points((0.0, 0.0), (100.0, 40.0)), Some([(0.0, 0.0), (50.0, 0.0), (50.0, 40.0), (100.0, 40.0)]));
+        assert_eq!(elbow_points((100.0, 0.0), (90.0, 40.0)), None, "behind: a curve");
+        assert!(edge_path((0.0, 0.0), (100.0, 40.0), 2.0).is_some() && edge_path((100.0, 0.0), (10.0, 40.0), 2.0).is_some());
+        // Flow: evenly spaced along the corners, shifted by the phase
+        let pts = flow_points((0.0, 0.0), (100.0, 0.0), 10.0, 5.0);
+        assert_eq!(pts.len(), 10);
+        assert_eq!(pts[0], (5.0, 0.0));
+        let bent = flow_points((0.0, 0.0), (100.0, 40.0), 10.0, 0.0);
+        assert!(bent.iter().any(|&(x, y)| x == 50.0 && y > 0.0 && y < 40.0), "the middle leg");
+        assert_eq!(duration_label(std::time::Duration::from_millis(2300)), "2.3 s");
+        assert_eq!(duration_label(std::time::Duration::from_secs(252)), "4 min 12 s");
+        assert_eq!(duration_label(std::time::Duration::from_secs(3900)), "1 h 05 min");
     }
 }
