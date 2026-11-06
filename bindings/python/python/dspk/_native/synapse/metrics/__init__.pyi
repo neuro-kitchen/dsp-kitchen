@@ -22,6 +22,9 @@ __all__ = [
     "DEFAULT_MIN_ISI_MS",
     "DEFAULT_PRESENCE_BIN_S",
     "DEFAULT_PRESENCE_MEAN_RATE_RATIO",
+    "DEFAULT_PSTH_BIN_MS",
+    "DEFAULT_PSTH_POST_MS",
+    "DEFAULT_PSTH_PRE_MS",
     "DEFAULT_REFRACTORY_BIN_MS",
     "DEFAULT_REFRACTORY_WINDOW_MS",
     "acg_refractory",
@@ -63,6 +66,9 @@ DEFAULT_MATCH_DELTA_MS: builtins.float
 DEFAULT_MIN_ISI_MS: builtins.float
 DEFAULT_PRESENCE_BIN_S: builtins.float
 DEFAULT_PRESENCE_MEAN_RATE_RATIO: builtins.float
+DEFAULT_PSTH_BIN_MS: builtins.float
+DEFAULT_PSTH_POST_MS: builtins.float
+DEFAULT_PSTH_PRE_MS: builtins.float
 DEFAULT_REFRACTORY_BIN_MS: builtins.float
 DEFAULT_REFRACTORY_WINDOW_MS: builtins.float
 def acg_refractory(train: numpy.typing.NDArray[numpy.uint64], sample_rate: builtins.float, bin_ms: builtins.float, window_ms: builtins.float, ratio: builtins.float, probability: builtins.float) -> dict:
@@ -82,7 +88,7 @@ def autocorrelogram(train: numpy.typing.NDArray[numpy.uint64], sample_rate: buil
     Auto-correlogram (zero lag excluded): `lags_ms`, `counts`.
     """
 
-def bursts(spike_times_s: numpy.typing.NDArray[numpy.float64], duration_s: builtins.float, bin_ms: builtins.float, sigma_ms: builtins.float, threshold_hz: builtins.float, min_duration_ms: builtins.float) -> dict:
+def bursts(train: numpy.typing.NDArray[numpy.uint64], total_samples: builtins.int, sample_rate: builtins.float, bin_ms: builtins.float, sigma_ms: builtins.float, threshold_hz: builtins.float, min_duration_ms: builtins.float) -> dict:
     r"""
     Burst epochs where the smoothed firing rate stays above `threshold_hz` for `min_duration_ms`:
     `onset_s`, `offset_s`, `peak_hz` arrays.
@@ -128,7 +134,7 @@ def firing_range(train: numpy.typing.NDArray[numpy.uint64], total_samples: built
     Spread of a unit's firing rate (Hz) between the `low` and `high` percentiles of `bin_s` bins.
     """
 
-def firing_rate(spike_times_s: numpy.typing.NDArray[numpy.float64], duration_s: builtins.float, bin_ms: builtins.float, sigma_ms: builtins.float) -> dict:
+def firing_rate(train: numpy.typing.NDArray[numpy.uint64], total_samples: builtins.int, sample_rate: builtins.float, bin_ms: builtins.float, sigma_ms: builtins.float) -> dict:
     r"""
     Gaussian-smoothed instantaneous firing rate: `time_s`, `rate_hz`.
     """
@@ -159,7 +165,7 @@ def presence_ratio(train: numpy.typing.NDArray[numpy.uint64], total_samples: bui
     Fraction of `bin_s` bins where the unit fires more than `mean_rate_ratio` × its mean rate.
     """
 
-def psth(spike_times_s: numpy.typing.NDArray[numpy.float64], stimulus_times_s: numpy.typing.NDArray[numpy.float64], pre_ms: builtins.float, post_ms: builtins.float, bin_ms: builtins.float) -> dict:
+def psth(train: numpy.typing.NDArray[numpy.uint64], stimulus_samples: numpy.typing.NDArray[numpy.uint64], sample_rate: builtins.float, pre_ms: builtins.float, post_ms: builtins.float, bin_ms: builtins.float) -> dict:
     r"""
     Peri-stimulus time histogram: `time_ms`, `rate_hz` (mean over trials), `se_hz`, `trials`.
     """

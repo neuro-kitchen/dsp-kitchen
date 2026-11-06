@@ -36,7 +36,8 @@ pub fn snippets<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, samples: 
         .collect();
     let kept: Vec<usize> = (0..s.len()).filter(|&i| syn::extraction::snippet_fits(s[i] as usize, pre, post, n, sinc_shift)).collect();
     let chosen: Vec<DeduplicatedSpike> = kept.iter().map(|&i| spikes[i].clone()).collect();
-    let snips = py.detach(|| syn::extract_snippets(&x, c, n, &chosen, &probe.inner, k, pre, post, sinc_shift));
+    let options = syn::extraction::SnippetOptions { k_neighbors: k, pre_samples: pre, post_samples: post, sinc_shift };
+    let snips = py.detach(|| syn::extract_snippets(&x, c, n, &chosen, &probe.inner, &options));
     let width = pre + post;
     let kk = snips.first().map_or(k, |sn| sn.num_channels());
     let mut wav = Vec::with_capacity(snips.len() * kk * width);

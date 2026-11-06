@@ -139,7 +139,7 @@ def test_sortings_compared_and_rates():
     c = metrics.compare_sortings(a, b)
     assert c["agreement"].shape == (2, 2) and sorted(c["well_detected"]) == [0, 1]
     np.testing.assert_allclose(np.diag(c["agreement"]), 1.0)
-    fr = metrics.firing_rate(trains[1] / FS, 20.0)
+    fr = metrics.firing_rate(trains[1], int(20 * FS), FS)
     assert fr["rate_hz"].mean() == pytest.approx(trains[1].size / 20.0, rel=0.1)
-    p = metrics.psth(trains[1] / FS, np.arange(1.0, 19.0), pre_ms=100.0, post_ms=200.0, bin_ms=20.0)
+    p = metrics.psth(trains[1], (np.arange(1.0, 19.0) * FS).astype(np.uint64), FS, pre_ms=100.0, post_ms=200.0, bin_ms=20.0)
     assert p["trials"] == 18 and p["rate_hz"].mean() == pytest.approx(8.0, rel=0.5)

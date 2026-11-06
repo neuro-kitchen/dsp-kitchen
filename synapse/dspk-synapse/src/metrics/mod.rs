@@ -15,11 +15,11 @@ pub use comparison::{
 pub use composite::{compute_composite_score, compute_firing_range, compute_sort_composite_score, CompositeScore, CompositeScoreOptions};
 pub use correlogram::{Correlogram, compute_autocorrelogram, compute_crosscorrelogram};
 pub use evoked::{
-    MepMetrics, PsthResult, StimulusTriggeredAverage, compute_psth,
+    MepMetrics, PsthOptions, PsthResult, StimulusTriggeredAverage, compute_psth, DEFAULT_PSTH_BIN_MS, DEFAULT_PSTH_POST_MS, DEFAULT_PSTH_PRE_MS,
     compute_stimulus_triggered_average, quantify_mep,
 };
 pub use firing::{
-    IsiMetrics, compute_amplitude_cutoff, compute_amplitude_cutoff_with, compute_isi_violations,
+    AmplitudeCutoffOptions, IsiMetrics, compute_amplitude_cutoff, compute_isi_violations,
     compute_llobet_contamination, compute_presence_ratio, count_refractory_violations, compute_isi_histogram,
 };
 pub use isolation::{

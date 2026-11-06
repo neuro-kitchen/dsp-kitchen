@@ -81,7 +81,7 @@ pub fn presence_ratio(train: PyReadonlyArray1<'_, u64>, total_samples: u64, samp
 #[gen_stub_pyfunction(module = "dspk._native.synapse.metrics")]
 #[pyfunction]
 pub fn amplitude_cutoff(amplitudes: PyReadonlyArray1<'_, f32>, bins: usize, smoothing_bins: f64, min_ratio: f64) -> PyResult<f64> {
-    Ok(m::compute_amplitude_cutoff_with(amplitudes.as_slice()?, bins, smoothing_bins, min_ratio))
+    Ok(m::compute_amplitude_cutoff(amplitudes.as_slice()?, &m::AmplitudeCutoffOptions { num_bins: bins, smoothing_bins, min_ratio }))
 }
 
 /// Spike pairs (not only consecutive ones) at most `refractory_samples` apart.
@@ -180,8 +180,8 @@ pub fn ccg_refractory<'py>(py: Python<'py>, a: PyReadonlyArray1<'_, u64>, b: PyR
 /// Gaussian-smoothed instantaneous firing rate: `time_s`, `rate_hz`.
 #[gen_stub_pyfunction(module = "dspk._native.synapse.metrics")]
 #[pyfunction]
-pub fn firing_rate<'py>(py: Python<'py>, spike_times_s: PyReadonlyArray1<'_, f64>, duration_s: f64, bin_ms: f64, sigma_ms: f64) -> PyResult<Dict<'py>> {
-    let c = m::compute_instantaneous_firing_rate(spike_times_s.as_slice()?, duration_s, bin_ms, sigma_ms);
+pub fn firing_rate<'py>(py: Python<'py>, train: PyReadonlyArray1<'_, u64>, total_samples: u64, sample_rate: f64, bin_ms: f64, sigma_ms: f64) -> PyResult<Dict<'py>> {
+    let c = m::compute_instantaneous_firing_rate(train.as_slice()?, total_samples, sample_rate, bin_ms, sigma_ms);
     let out = PyDict::new(py);
     out.set_item("time_s", c.time_bin_centers_sec.into_pyarray(py))?;
     out.set_item("rate_hz", c.rate_hz.into_pyarray(py))?;
@@ -192,8 +192,9 @@ pub fn firing_rate<'py>(py: Python<'py>, spike_times_s: PyReadonlyArray1<'_, f64
 /// `onset_s`, `offset_s`, `peak_hz` arrays.
 #[gen_stub_pyfunction(module = "dspk._native.synapse.metrics")]
 #[pyfunction]
-pub fn bursts<'py>(py: Python<'py>, spike_times_s: PyReadonlyArray1<'_, f64>, duration_s: f64, bin_ms: f64, sigma_ms: f64, threshold_hz: f32, min_duration_ms: f64) -> PyResult<Dict<'py>> {
-    let curve = m::compute_instantaneous_firing_rate(spike_times_s.as_slice()?, duration_s, bin_ms, sigma_ms);
+#[allow(clippy::too_many_arguments)]
+pub fn bursts<'py>(py: Python<'py>, train: PyReadonlyArray1<'_, u64>, total_samples: u64, sample_rate: f64, bin_ms: f64, sigma_ms: f64, threshold_hz: f32, min_duration_ms: f64) -> PyResult<Dict<'py>> {
+    let curve = m::compute_instantaneous_firing_rate(train.as_slice()?, total_samples, sample_rate, bin_ms, sigma_ms);
     let epochs = m::detect_burst_epochs(&curve, threshold_hz, min_duration_ms);
     let out = PyDict::new(py);
     out.set_item("onset_s", epochs.iter().map(|e| e.onset_sec).collect::<Vec<_>>().into_pyarray(py))?;
@@ -205,8 +206,8 @@ pub fn bursts<'py>(py: Python<'py>, spike_times_s: PyReadonlyArray1<'_, f64>, du
 /// Peri-stimulus time histogram: `time_ms`, `rate_hz` (mean over trials), `se_hz`, `trials`.
 #[gen_stub_pyfunction(module = "dspk._native.synapse.metrics")]
 #[pyfunction]
-pub fn psth<'py>(py: Python<'py>, spike_times_s: PyReadonlyArray1<'_, f64>, stimulus_times_s: PyReadonlyArray1<'_, f64>, pre_ms: f64, post_ms: f64, bin_ms: f64) -> PyResult<Dict<'py>> {
-    let r = m::compute_psth(spike_times_s.as_slice()?, stimulus_times_s.as_slice()?, pre_ms, post_ms, bin_ms);
+pub fn psth<'py>(py: Python<'py>, train: PyReadonlyArray1<'_, u64>, stimulus_samples: PyReadonlyArray1<'_, u64>, sample_rate: f64, pre_ms: f64, post_ms: f64, bin_ms: f64) -> PyResult<Dict<'py>> {
+    let r = m::compute_psth(train.as_slice()?, stimulus_samples.as_slice()?, sample_rate, &m::PsthOptions { pre_ms, post_ms, bin_ms });
     let out = PyDict::new(py);
     out.set_item("time_ms", r.time_bins_ms.into_pyarray(py))?;
     out.set_item("rate_hz", r.mean_rate_hz.into_pyarray(py))?;
@@ -307,6 +308,9 @@ pub fn compare_sortings<'py>(py: Python<'py>, a: &Sorting, b: &Sorting, delta_ms
 }
 
 pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_ISI_THRESHOLD_MS", f64);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_PSTH_PRE_MS", f64);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_PSTH_POST_MS", f64);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_PSTH_BIN_MS", f64);
 pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_MIN_ISI_MS", f64);
 pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_PRESENCE_BIN_S", f64);
 pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_PRESENCE_MEAN_RATE_RATIO", f64);
@@ -326,6 +330,9 @@ pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_CCG_PRO
 
 pub(crate) fn register(md: &Bound<'_, PyModule>) -> PyResult<()> {
     md.add("DEFAULT_ISI_THRESHOLD_MS", m::DEFAULT_ISI_THRESHOLD_MS)?;
+    md.add("DEFAULT_PSTH_PRE_MS", m::DEFAULT_PSTH_PRE_MS)?;
+    md.add("DEFAULT_PSTH_POST_MS", m::DEFAULT_PSTH_POST_MS)?;
+    md.add("DEFAULT_PSTH_BIN_MS", m::DEFAULT_PSTH_BIN_MS)?;
     md.add("DEFAULT_MIN_ISI_MS", m::DEFAULT_MIN_ISI_MS)?;
     md.add("DEFAULT_PRESENCE_BIN_S", m::DEFAULT_PRESENCE_BIN_SEC)?;
     md.add("DEFAULT_PRESENCE_MEAN_RATE_RATIO", m::DEFAULT_PRESENCE_MEAN_FR_RATIO)?;

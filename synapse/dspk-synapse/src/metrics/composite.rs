@@ -18,7 +18,7 @@
 //! presence of a single type of error results in rejection"; components are clamped to `[0, 1]`;
 //! percentiles interpolate linearly (as `numpy.percentile`).
 
-use super::firing::{compute_amplitude_cutoff_with, compute_llobet_contamination, compute_presence_ratio, AMPLITUDE_CUTOFF_MIN_RATIO, AMPLITUDE_CUTOFF_SMOOTHING};
+use super::firing::{compute_amplitude_cutoff, compute_llobet_contamination, compute_presence_ratio, AmplitudeCutoffOptions};
 
 /// Settings of the composite score (the paper's values).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -83,7 +83,7 @@ pub fn compute_composite_score(
     let type_1 = unit(1.0 - contamination);
 
     let presence = compute_presence_ratio(spike_samples, total_samples, sample_rate_hz, opts.presence_bin_s, opts.presence_mean_fr_ratio);
-    let cutoff = compute_amplitude_cutoff_with(amplitudes, opts.amplitude_bins, AMPLITUDE_CUTOFF_SMOOTHING, AMPLITUDE_CUTOFF_MIN_RATIO);
+    let cutoff = compute_amplitude_cutoff(amplitudes, &AmplitudeCutoffOptions { num_bins: opts.amplitude_bins, ..Default::default() });
     let type_2 = unit(unit(presence) * unit(1.0 - cutoff));
 
     let duration_s = total_samples as f64 / sample_rate_hz;

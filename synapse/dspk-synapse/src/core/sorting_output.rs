@@ -206,7 +206,7 @@ impl SortedUnit {
         let amp_cutoff = if amplitudes_uv.is_empty() {
             f64::NAN
         } else {
-            compute_amplitude_cutoff(&amplitudes_uv)
+            compute_amplitude_cutoff(&amplitudes_uv, &Default::default())
         };
 
         let peak_uv = template

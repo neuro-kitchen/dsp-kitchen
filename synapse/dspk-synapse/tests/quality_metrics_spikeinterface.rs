@@ -39,7 +39,7 @@ fn metrics_match_spikeinterface() {
         let rp = compute_llobet_contamination(&spikes, total, fs, fx["refractory_ms"].as_f64().unwrap(), fx["censored_ms"].as_f64().unwrap());
         same(rp, &unit["rp_contamination"], &format!("{name}: rp contamination"));
 
-        same(compute_amplitude_cutoff(&amps), &unit["amplitude_cutoff"], &format!("{name}: amplitude cutoff"));
+        same(compute_amplitude_cutoff(&amps, &Default::default()), &unit["amplitude_cutoff"], &format!("{name}: amplitude cutoff"));
         same(
             compute_presence_ratio(&spikes, total, fs, fx["presence_bin_s"].as_f64().unwrap(), 0.0),
             &unit["presence_ratio"],

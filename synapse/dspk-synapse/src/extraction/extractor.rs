@@ -50,20 +50,42 @@ pub(crate) fn cut_row(
     }
 }
 
+/// Default snippet window (samples): 1 ms before and 2 ms after the trough at 30 kHz.
+pub const DEFAULT_SNIPPET_PRE_SAMPLES: usize = 30;
+pub const DEFAULT_SNIPPET_POST_SAMPLES: usize = 60;
+/// Default channels per snippet (the primary and its nearest neighbours).
+pub const DEFAULT_SNIPPET_K_NEIGHBORS: usize = 4;
+
+/// Settings of [`extract_snippets`] / [`extract_snippet_batch`]: the window `[t − pre, t + post)`
+/// in samples, the channels per snippet (the primary and its `k_neighbors − 1` nearest), and
+/// whether each snippet is realigned to its sub-sample trough (windowed sinc).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SnippetOptions {
+    pub k_neighbors: usize,
+    pub pre_samples: usize,
+    pub post_samples: usize,
+    pub sinc_shift: bool,
+}
+
+impl Default for SnippetOptions {
+    fn default() -> Self {
+        Self { k_neighbors: DEFAULT_SNIPPET_K_NEIGHBORS, pre_samples: DEFAULT_SNIPPET_PRE_SAMPLES, post_samples: DEFAULT_SNIPPET_POST_SAMPLES, sinc_shift: true }
+    }
+}
+
+impl SnippetOptions {
+    /// A window of `pre_ms` / `post_ms` at `sample_rate_hz`.
+    pub fn at_rate(sample_rate_hz: f64, pre_ms: f64, post_ms: f64, k_neighbors: usize, sinc_shift: bool) -> Self {
+        let n = |ms: f64| (ms * 1e-3 * sample_rate_hz).round() as usize;
+        Self { k_neighbors, pre_samples: n(pre_ms), post_samples: n(post_ms), sinc_shift }
+    }
+}
+
 /// Extracts a contiguous [`SnippetBatch`] directly from multi-channel raw data without intermediate
 /// per-spike heap allocations.
-#[allow(clippy::too_many_arguments)]
-pub fn extract_snippet_batch(
-    data: &[f32],
-    _channels: usize,
-    samples: usize,
-    spikes: &[DeduplicatedSpike],
-    layout: &SensorLayout,
-    k_neighbors: usize,
-    pre_samples: usize,
-    post_samples: usize,
-    apply_sinc_shift: bool,
-) -> SnippetBatch {
+pub fn extract_snippet_batch(data: &[f32], channels: usize, samples: usize, spikes: &[DeduplicatedSpike], layout: &SensorLayout, options: &SnippetOptions) -> SnippetBatch {
+    assert_eq!(data.len(), channels * samples, "data is [channels, samples]");
+    let (k_neighbors, pre_samples, post_samples, apply_sinc_shift) = (options.k_neighbors, options.pre_samples, options.post_samples, options.sinc_shift);
     let snippet_len = pre_samples + post_samples;
     let total_ch = layout.total_channels();
     let k = k_neighbors.min(total_ch).max(1);
@@ -130,30 +152,8 @@ pub fn extract_snippet_batch(
 }
 
 /// Extracts multi-channel [`WaveformSnippet`]s across K-nearest neighbors for deduplicated spike events.
-#[allow(clippy::too_many_arguments)]
-pub fn extract_snippets(
-    data: &[f32],
-    channels: usize,
-    samples: usize,
-    spikes: &[DeduplicatedSpike],
-    layout: &SensorLayout,
-    k_neighbors: usize,
-    pre_samples: usize,
-    post_samples: usize,
-    apply_sinc_shift: bool,
-) -> Vec<WaveformSnippet> {
-    extract_snippet_batch(
-        data,
-        channels,
-        samples,
-        spikes,
-        layout,
-        k_neighbors,
-        pre_samples,
-        post_samples,
-        apply_sinc_shift,
-    )
-    .to_snippets()
+pub fn extract_snippets(data: &[f32], channels: usize, samples: usize, spikes: &[DeduplicatedSpike], layout: &SensorLayout, options: &SnippetOptions) -> Vec<WaveformSnippet> {
+    extract_snippet_batch(data, channels, samples, spikes, layout, options).to_snippets()
 }
 
 /// Single-channel snippet extraction from raw `SpikeEvent`s.
@@ -268,9 +268,7 @@ mod tests {
             participating_channels: vec![0, 1, 2, 3],
         }];
 
-        let batch = extract_snippet_batch(
-            &data, channels, samples, &spikes, &layout, 4, 10, 20, false,
-        );
+        let batch = extract_snippet_batch(&data, channels, samples, &spikes, &layout, &SnippetOptions { k_neighbors: 4, pre_samples: 10, post_samples: 20, sinc_shift: false });
 
         assert_eq!(batch.shape(), [1, 4, 30]);
         assert_eq!(batch.snippet_slice(0).len(), 120);

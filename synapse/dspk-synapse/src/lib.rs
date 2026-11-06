@@ -93,7 +93,7 @@ pub use metrics::{
     BurstEpoch, Correlogram, FiringRateCurve, IsiMetrics, MepMetrics, PairwiseTrainMatch,
     PsthResult, QualityCriteria, SortingComparison, StimulusTriggeredAverage, UnitMatchSummary,
     compare_sortings, compare_spike_trains, compute_amplitude_cutoff,
-    compute_amplitude_cutoff_with, compute_autocorrelogram, compute_crosscorrelogram,
+    AmplitudeCutoffOptions, compute_autocorrelogram, compute_crosscorrelogram,
     compute_d_prime, compute_instantaneous_firing_rate, compute_isi_violations,
     compute_isolation_distance, compute_llobet_contamination, compute_presence_ratio,
     compute_psth, compute_silhouette_score, compute_snr, compute_stimulus_triggered_average,

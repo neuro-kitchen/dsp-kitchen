@@ -107,23 +107,27 @@ pub fn compute_presence_ratio(
     counts.iter().filter(|&&c| c > threshold).count() as f64 / num_bins as f64
 }
 
-/// Amplitude cutoff in `[0, 0.5]` (NaN with fewer than 5 spikes per bin) with SpikeInterface's defaults.
-pub fn compute_amplitude_cutoff<T: Into<f64> + Copy>(amplitudes: &[T]) -> f64 {
-    compute_amplitude_cutoff_with(
-        amplitudes,
-        AMPLITUDE_CUTOFF_BINS,
-        AMPLITUDE_CUTOFF_SMOOTHING,
-        AMPLITUDE_CUTOFF_MIN_RATIO,
-    )
+/// Settings of [`compute_amplitude_cutoff`] (defaults: SpikeInterface's).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AmplitudeCutoffOptions {
+    /// Histogram bins of the amplitudes.
+    pub num_bins: usize,
+    /// Gaussian smoothing of the histogram (bins).
+    pub smoothing_bins: f64,
+    /// Least spikes per bin; fewer gives NaN.
+    pub min_ratio: f64,
 }
 
-/// [`compute_amplitude_cutoff`] with explicit histogram parameters.
-pub fn compute_amplitude_cutoff_with<T: Into<f64> + Copy>(
-    amplitudes: &[T],
-    num_bins: usize,
-    smoothing_bins: f64,
-    min_ratio: f64,
-) -> f64 {
+impl Default for AmplitudeCutoffOptions {
+    fn default() -> Self {
+        Self { num_bins: AMPLITUDE_CUTOFF_BINS, smoothing_bins: AMPLITUDE_CUTOFF_SMOOTHING, min_ratio: AMPLITUDE_CUTOFF_MIN_RATIO }
+    }
+}
+
+/// Amplitude cutoff in `[0, 0.5]`: the estimated fraction of spikes below the detection threshold
+/// (NaN with fewer than `options.min_ratio` spikes per bin).
+pub fn compute_amplitude_cutoff<T: Into<f64> + Copy>(amplitudes: &[T], options: &AmplitudeCutoffOptions) -> f64 {
+    let (num_bins, smoothing_bins, min_ratio) = (options.num_bins, options.smoothing_bins, options.min_ratio);
     let amps: Vec<f64> = amplitudes.iter().map(|&a| a.into().abs()).collect();
     let n = amps.len();
     if num_bins == 0 || (n as f64) / (num_bins as f64) < min_ratio {
@@ -280,7 +284,7 @@ mod tests {
 
     #[test]
     fn too_few_spikes_is_nan() {
-        assert!(compute_amplitude_cutoff(&[1.0f32; 499]).is_nan());
+        assert!(compute_amplitude_cutoff(&[1.0f32; 499], &AmplitudeCutoffOptions::default()).is_nan());
     }
 
     #[test]

@@ -11,6 +11,9 @@ from dspk._native import synapse as _synapse
 _m = _synapse.metrics
 
 DEFAULT_ISI_THRESHOLD_MS: float = _m.DEFAULT_ISI_THRESHOLD_MS
+DEFAULT_PSTH_PRE_MS: float = _m.DEFAULT_PSTH_PRE_MS
+DEFAULT_PSTH_POST_MS: float = _m.DEFAULT_PSTH_POST_MS
+DEFAULT_PSTH_BIN_MS: float = _m.DEFAULT_PSTH_BIN_MS
 DEFAULT_MIN_ISI_MS: float = _m.DEFAULT_MIN_ISI_MS
 DEFAULT_PRESENCE_BIN_S: float = _m.DEFAULT_PRESENCE_BIN_S
 DEFAULT_PRESENCE_MEAN_RATE_RATIO: float = _m.DEFAULT_PRESENCE_MEAN_RATE_RATIO
@@ -33,9 +36,6 @@ DEFAULT_CCG_PROBABILITY: float = _m.DEFAULT_CCG_PROBABILITY
 def _train(x) -> np.ndarray:
     return np.ascontiguousarray(x, dtype=np.uint64)
 
-
-def _f64(x) -> np.ndarray:
-    return np.ascontiguousarray(x, dtype=np.float64)
 
 
 def isi_violations(train, sample_rate: float, duration_s: float, *, threshold_ms: float = DEFAULT_ISI_THRESHOLD_MS, min_isi_ms: float = DEFAULT_MIN_ISI_MS) -> dict:
@@ -109,19 +109,20 @@ def ccg_refractory(a, b, sample_rate: float, *, bin_ms: float = DEFAULT_REFRACTO
     return _m.ccg_refractory(_train(a), _train(b), sample_rate, bin_ms, window_ms, ratio, probability)
 
 
-def firing_rate(spike_times_s, duration_s: float, *, bin_ms: float = 10.0, sigma_ms: float = 50.0) -> dict:
-    """Gaussian-smoothed instantaneous firing rate: ``time_s``, ``rate_hz``."""
-    return _m.firing_rate(_f64(spike_times_s), duration_s, bin_ms, sigma_ms)
+def firing_rate(train, total_samples: int, sample_rate: float, *, bin_ms: float = 10.0, sigma_ms: float = 50.0) -> dict:
+    """Gaussian-smoothed instantaneous firing rate over the recording: ``time_s``, ``rate_hz``."""
+    return _m.firing_rate(_train(train), int(total_samples), sample_rate, bin_ms, sigma_ms)
 
 
-def bursts(spike_times_s, duration_s: float, *, threshold_hz: float, min_duration_ms: float = 50.0, bin_ms: float = 10.0, sigma_ms: float = 50.0) -> dict:
+def bursts(train, total_samples: int, sample_rate: float, *, threshold_hz: float, min_duration_ms: float = 50.0, bin_ms: float = 10.0, sigma_ms: float = 50.0) -> dict:
     """Epochs where the smoothed rate stays above ``threshold_hz``: ``onset_s``, ``offset_s``, ``peak_hz``."""
-    return _m.bursts(_f64(spike_times_s), duration_s, bin_ms, sigma_ms, threshold_hz, min_duration_ms)
+    return _m.bursts(_train(train), int(total_samples), sample_rate, bin_ms, sigma_ms, threshold_hz, min_duration_ms)
 
 
-def psth(spike_times_s, stimulus_times_s, *, pre_ms: float = 100.0, post_ms: float = 500.0, bin_ms: float = 10.0) -> dict:
-    """Peri-stimulus time histogram: ``time_ms``, ``rate_hz`` (mean over trials), ``se_hz``, ``trials``."""
-    return _m.psth(_f64(spike_times_s), _f64(stimulus_times_s), pre_ms, post_ms, bin_ms)
+def psth(train, stimulus_samples, sample_rate: float, *, pre_ms: float = DEFAULT_PSTH_PRE_MS, post_ms: float = DEFAULT_PSTH_POST_MS, bin_ms: float = DEFAULT_PSTH_BIN_MS) -> dict:
+    """Peri-stimulus time histogram of a train around stimuli (both in samples): ``time_ms``,
+    ``rate_hz`` (mean over trials), ``se_hz``, ``trials``."""
+    return _m.psth(_train(train), _train(stimulus_samples), sample_rate, pre_ms, post_ms, bin_ms)
 
 
 def stimulus_average(data, stimulus_samples, sample_rate: float, *, pre_ms: float = 10.0, post_ms: float = 50.0, response_ms: tuple[float, float] = (2.0, 40.0), threshold_sigma: float = 3.0) -> dict:
@@ -157,7 +158,7 @@ def compare_sortings(a, b, *, delta_ms: float = DEFAULT_MATCH_DELTA_MS, threshol
 __all__ = [
     "AMPLITUDE_CUTOFF_BINS", "AMPLITUDE_CUTOFF_MIN_RATIO", "AMPLITUDE_CUTOFF_SMOOTHING", "DEFAULT_ACG_PROBABILITY", "DEFAULT_ACG_RATIO",
     "DEFAULT_AGREEMENT_THRESHOLD", "DEFAULT_CCG_PROBABILITY", "DEFAULT_CCG_RATIO", "DEFAULT_CORRELOGRAM_BIN_MS", "DEFAULT_CORRELOGRAM_WINDOW_MS",
-    "DEFAULT_ISI_THRESHOLD_MS", "DEFAULT_MATCH_DELTA_MS", "DEFAULT_MIN_ISI_MS", "DEFAULT_PRESENCE_BIN_S", "DEFAULT_PRESENCE_MEAN_RATE_RATIO",
+    "DEFAULT_ISI_THRESHOLD_MS", "DEFAULT_MATCH_DELTA_MS", "DEFAULT_PSTH_BIN_MS", "DEFAULT_PSTH_POST_MS", "DEFAULT_PSTH_PRE_MS", "DEFAULT_MIN_ISI_MS", "DEFAULT_PRESENCE_BIN_S", "DEFAULT_PRESENCE_MEAN_RATE_RATIO",
     "DEFAULT_REFRACTORY_BIN_MS", "DEFAULT_REFRACTORY_WINDOW_MS",
     "acg_refractory", "amplitude_cutoff", "autocorrelogram", "bursts", "ccg_refractory", "compare_sortings", "compare_trains", "composite_score",
     "crosscorrelogram", "d_prime", "firing_range", "firing_rate", "isi_histogram", "isi_violations", "isolation_distance", "llobet_contamination",
