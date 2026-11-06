@@ -60,6 +60,8 @@ enum Command {
     /// Who may connect to `serve`: enroll, revoke, list clients (certificates from the server's
     /// own authority)
     Clients(commands::net::clients::ClientsArgs),
+    /// Work with a `serve` server: info, files, sort on it, status, logs, stop
+    Remote(commands::net::remote::RemoteArgs),
     /// Published model and sorter artifacts: list, info, pull, verify, remove, clean
     #[cfg(feature = "hub")]
     Hub(commands::hub::HubArgs),
@@ -112,6 +114,7 @@ async fn dispatch(cli: &Cli) -> anyhow::Result<()> {
         Command::Serve(args) => commands::net::serve::run(args).await,
         Command::Receive(args) => commands::net::receive::run(args).await,
         Command::Clients(args) => commands::net::clients::run(args),
+        Command::Remote(args) => commands::net::remote::run(args).await,
         #[cfg(feature = "hub")]
         Command::Hub(args) => commands::hub::run(args),
     }

@@ -2,5 +2,7 @@
 //! clients a server lets in.
 
 pub mod clients;
+pub mod jobs;
 pub mod receive;
+pub mod remote;
 pub mod serve;

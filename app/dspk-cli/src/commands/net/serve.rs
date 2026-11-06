@@ -23,6 +23,8 @@ const LOCALHOST: &str = "localhost";
 const SYNTHETIC_CHANNELS: usize = 384;
 const SYNTHETIC_SAMPLE_RATE_HZ: f64 = 30_000.0;
 const SYNTHETIC_DURATION_SEC: f64 = 3_600.0;
+/// The audit log of control requests, in the authority folder (JSON lines, mode 0600).
+const AUDIT_FILE: &str = "audit.jsonl";
 /// Progress label of the pyramid build.
 const PYRAMID_STAGE: &str = "Building pyramid";
 
@@ -211,11 +213,28 @@ pub async fn run(args: &ServeArgs) -> anyhow::Result<()> {
         loop_playback: args.r#loop,
         ..Default::default()
     };
+    // Jobs (sorts) on the files, when there are files and the sorter program is here
+    let jobs = match &files {
+        Some((root, _)) => match crate::sorters_program::locate(env!("CARGO_PKG_VERSION"), std::env::current_exe().ok().as_deref()) {
+            Some(program) => {
+                let audit = dir.join(AUDIT_FILE);
+                println!("Jobs: sorts with {} (control clients); audit log {}", program.display(), audit.display());
+                let runner = Arc::new(super::jobs::SorterRunner { program });
+                Some(Arc::new(dspk_stream::jobs::Jobs::new(runner, root.clone(), Some(audit))))
+            }
+            None => {
+                println!("Jobs: none (dspk-cli-sorter not found: `dspk sorters install`)");
+                None
+            }
+        },
+        None => None,
+    };
     let device = Arc::new(Device {
         name: args.names.first().cloned().unwrap_or_else(|| LOCALHOST.to_string()),
         version: env!("CARGO_PKG_VERSION").to_string(),
         files,
         recording,
+        jobs,
         options,
     });
     println!("Listening on {} (Ctrl+C to stop)", server.local_addr()?);
