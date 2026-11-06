@@ -465,10 +465,21 @@ impl DspApp {
                     .on_click(|_, _, cx| cx.stop_propagation())
                     .child(
                         h_flex()
-                            .gap_2()
+                            .gap_3()
                             .items_center()
-                            .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("DSP App"))
-                            .child(div().text_xs().text_color(muted).child(format!("v{}", env!("CARGO_PKG_VERSION")))),
+                            .child(gpui_kit::img(crate::ui::assets::BRAND_LOGO).size(px(56.)).flex_none())
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .child(
+                                        h_flex()
+                                            .gap_2()
+                                            .items_center()
+                                            .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("DSP App"))
+                                            .child(div().text_xs().text_color(muted).child(format!("v{}", env!("CARGO_PKG_VERSION")))),
+                                    )
+                                    .child(div().text_xs().text_color(muted).child("by neuro-kitchen")),
+                            ),
                     )
                     .child(div().text_sm().text_color(muted).child(
                         "Electrophysiology workbench built with GPUI and gpui-kit. Explore multi-channel recordings across docked time views and curate spike-sorting results.",
