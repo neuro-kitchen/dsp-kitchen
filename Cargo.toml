@@ -30,6 +30,7 @@ members = [
     "plugins/app/dspk-app-synapse",
     # Bindings
     "bindings/python/dspk-py-core",
+    "bindings/python/dspk-py-synapse",
     "bindings/python/dspk-py",
     # Benchmarks (never published): kernel timings; the sorter's under its licence
     "benchmarks/kernels",
@@ -63,6 +64,7 @@ dspk-pipeline = { path = "engine/dspk-pipeline", version = "0.0.6", default-feat
 dspk-app-core = { path = "app/dspk-app-core", version = "0.0.6", default-features = false }
 dspk-app-synapse = { path = "plugins/app/dspk-app-synapse", version = "0.0.6", default-features = false }
 dspk-py-core = { path = "bindings/python/dspk-py-core", default-features = false }
+dspk-py-synapse = { path = "bindings/python/dspk-py-synapse", default-features = false }
 
 # Compute & Tensors
 # `persistence`: autotune decisions and compiled kernels survive the process (dspk-core

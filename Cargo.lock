@@ -3436,6 +3436,7 @@ name = "dspk-py"
 version = "0.0.6"
 dependencies = [
  "dspk-py-core",
+ "dspk-py-synapse",
  "pyo3",
  "pyo3-stub-gen",
 ]
@@ -3449,6 +3450,20 @@ dependencies = [
  "dspk-io",
  "dspk-ops",
  "dspk-pipeline",
+ "numpy",
+ "pyo3",
+ "pyo3-stub-gen",
+ "serde_json",
+]
+
+[[package]]
+name = "dspk-py-synapse"
+version = "0.0.6"
+dependencies = [
+ "dspk-core",
+ "dspk-io",
+ "dspk-py-core",
+ "dspk-synapse",
  "numpy",
  "pyo3",
  "pyo3-stub-gen",

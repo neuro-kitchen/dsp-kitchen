@@ -17,7 +17,7 @@ STUBS = Path(dspk.__file__).parent / "_native"
 MODULES = [
     "dspk._native", "dspk._native.io", "dspk._native.ops", "dspk._native.ops.filter", "dspk._native.ops.layout", "dspk._native.ops.linalg", "dspk._native.ops.math",
     "dspk._native.ops.peaks", "dspk._native.ops.resample", "dspk._native.ops.spatial",
-    "dspk._native.pipeline",
+    "dspk._native.pipeline", "dspk._native.synapse", "dspk._native.synapse.io", "dspk._native.synapse.metrics",
     "dspk._native.runtime",
 ]
 

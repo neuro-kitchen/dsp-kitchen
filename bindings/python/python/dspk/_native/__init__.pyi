@@ -6,11 +6,13 @@ from . import io
 from . import ops
 from . import pipeline
 from . import runtime
+from . import synapse
 __all__ = [
     "io",
     "ops",
     "pipeline",
     "runtime",
+    "synapse",
 ]
 
 __version__: builtins.str

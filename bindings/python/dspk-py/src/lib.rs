@@ -7,6 +7,7 @@ use pyo3::prelude::*;
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     dspk_py_core::register(m)?;
+    dspk_py_synapse::register(m)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }
