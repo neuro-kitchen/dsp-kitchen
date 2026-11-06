@@ -5,7 +5,10 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-publish = false
+repository.workspace = true
+readme = "README.md"
+keywords = ["electrophysiology", "neuroscience", "gui", "signal-processing", "spike-sorting"]
+categories = ["science", "gui", "visualization"]
 
 [features]
 default = ["wgpu", "cuda", "cpu"]
@@ -15,7 +18,7 @@ cuda = ["dspk-app-core/cuda", "dspk-synapse/cuda"]
 hip = ["dspk-app-core/hip", "dspk-synapse/hip"]
 
 [dependencies]
-dspk-app-core = { path = "../../../app/dspk-app-core", default-features = false }
+dspk-app-core.workspace = true
 dspk-core.workspace = true
 dspk-io = { workspace = true, features = ["zarr"] }
 # Formats with probes, synthetic recordings, sortings (MIT OR Apache-2.0; never the GPL sorters)

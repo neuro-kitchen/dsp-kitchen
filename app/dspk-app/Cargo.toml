@@ -5,7 +5,10 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-publish = false
+repository.workspace = true
+readme = "README.md"
+keywords = ["electrophysiology", "neuroscience", "gui", "signal-processing", "spike-sorting"]
+categories = ["science", "gui", "visualization"]
 
 [[bin]]
 name = "dspk-app"
@@ -22,8 +25,8 @@ hip = ["dspk-app-core/hip", "dspk-app-synapse?/hip"]
 synapse = ["dep:dspk-app-synapse"]
 
 [dependencies]
-dspk-app-core = { path = "../dspk-app-core", default-features = false }
-dspk-app-synapse = { path = "../../plugins/app/dspk-app-synapse", default-features = false, optional = true }
+dspk-app-core.workspace = true
+dspk-app-synapse = { workspace = true, optional = true }
 clap.workspace = true
 anyhow.workspace = true
 tracing.workspace = true

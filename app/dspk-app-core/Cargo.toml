@@ -5,7 +5,10 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-publish = false
+repository.workspace = true
+readme = "README.md"
+keywords = ["electrophysiology", "neuroscience", "gui", "signal-processing", "spike-sorting"]
+categories = ["science", "gui", "visualization"]
 
 [features]
 # Our builds compile wgpu, cuda and cpu in; hip compiles but is untested (no AMD GPU)
