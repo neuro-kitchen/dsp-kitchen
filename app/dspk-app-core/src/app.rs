@@ -34,6 +34,8 @@ pub struct DspApp {
     palette: Option<(Entity<crate::screens::palette::CommandPalette>, Subscription)>,
     show_help: bool,
     show_about: bool,
+    /// Settings, while open.
+    settings: Option<Entity<crate::screens::settings::SettingsScreen>>,
     /// Workspaces plugins provide (built the first time they are shown).
     plugin_views: std::collections::HashMap<Workspace, gpui_kit::AnyView>,
     focus: FocusHandle,
@@ -63,11 +65,11 @@ impl DspApp {
         ];
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
-        Self { store, explore, pipeline, floating, palette: None, show_help: false, show_about: false, plugin_views: Default::default(), focus, _subs: subs }
+        Self { store, explore, pipeline, floating, palette: None, show_help: false, show_about: false, settings: None, plugin_views: Default::default(), focus, _subs: subs }
     }
 
     /// Light, dark, or the system's (`None`); the store learns which, for the plot colours.
-    fn apply_theme(store: &Entity<Store>, dark: Option<bool>, window: &mut Window, cx: &mut App) {
+    pub(crate) fn apply_theme(store: &Entity<Store>, dark: Option<bool>, window: &mut Window, cx: &mut App) {
         match dark {
             Some(true) => Theme::change(ThemeMode::Dark, Some(window), cx),
             Some(false) => Theme::change(ThemeMode::Light, Some(window), cx),
@@ -213,7 +215,10 @@ impl DspApp {
                         menu = menu.item(PopupMenuItem::new(file_label(&p)).on_click(move |_, _, cx| t.update(cx, |a, cx| a.open_path(p.clone(), cx))));
                     }
                 }
+                let t = this.clone();
                 menu.separator()
+                    .item(PopupMenuItem::new("Settings…").on_click(move |_, window, cx| t.update(cx, |a, cx| a.toggle_settings(window, cx))))
+                    .separator()
                     .item(PopupMenuItem::new("Quit").on_click(|_, _, cx| cx.quit()))
             })
         };
@@ -436,6 +441,44 @@ impl DspApp {
             )
     }
 
+    /// Opens Settings, or closes it when open.
+    fn toggle_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings = match self.settings.take() {
+            Some(_) => None,
+            None => Some(cx.new(|cx| crate::screens::settings::SettingsScreen::new(self.store.clone(), window, cx))),
+        };
+        cx.notify();
+    }
+
+    /// Settings over everything; a click outside the card closes it.
+    fn settings_overlay(&self, screen: Entity<crate::screens::settings::SettingsScreen>, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = cx.theme();
+        let (bg, border) = (t.popover, t.border);
+        div()
+            .id("settings-overlay")
+            .absolute()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(gpui_kit::hsla(0., 0., 0., 0.5))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.settings = None;
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .id("settings-card")
+                    .p_4()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(border)
+                    .bg(bg)
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .child(screen),
+            )
+    }
+
     fn about(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = cx.theme();
         let (muted, bg, border) = (t.muted_foreground, t.popover, t.border);
@@ -516,6 +559,7 @@ impl Render for DspApp {
                 this.show_help = !this.show_help;
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &ShowPreferences, window, cx| this.toggle_settings(window, cx)))
             .on_action(cx.listener(|this, _: &ShowAbout, _, cx| {
                 this.show_about = !this.show_about;
                 cx.notify();
@@ -537,6 +581,7 @@ impl Render for DspApp {
             .children(self.palette.as_ref().map(|(p, _)| p.clone()))
             .when(self.show_help, |d| d.child(self.help(cx)))
             .when(self.show_about, |d| d.child(self.about(cx)))
+            .children(self.settings.clone().map(|s| self.settings_overlay(s, cx)))
     }
 }
 
