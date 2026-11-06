@@ -1,4 +1,4 @@
-//! Memory-order conversion on the device.
+//! Memory-order conversion on the device, and channels gathered into a new order.
 //!
 //! A transpose is a copy from a transposed view, which cubecl-std already provides
 //! (`cubecl::std::tensor::copy_into`, with a CPU-specific path): measured as fast as or faster than
@@ -9,6 +9,37 @@ use cubecl::server::Handle;
 use cubecl::zspace::{Shape, Strides};
 
 use super::DspFloat;
+use crate::core::buffer;
+
+/// `output` (`[order.len(), samples]`) = the channels `order` of the channel-major `input`
+/// (`[channels, samples]`), in that order: a channel remap on the device (any channel may be left
+/// out or repeated).
+///
+/// # Panics
+/// When a channel in `order` is not below `channels`.
+pub fn execute_gather_channels<F: DspFloat>(client: &Client, input: &Handle, output: &Handle, channels: usize, samples: usize, order: &[usize]) {
+    assert!(order.iter().all(|&c| c < channels), "gather_channels: a channel of {order:?} is not below {channels}");
+    let total = order.len() * samples;
+    if total == 0 {
+        return;
+    }
+    let rows: Vec<u32> = order.iter().map(|&c| c as u32).collect();
+    let geom = dspk_core::compute::LaunchGeometry::elementwise(client, total);
+    // SAFETY: the input holds `channels · samples` values and every index is below `channels`; the
+    // output holds `order.len() · samples`
+    unsafe {
+        super::kernels::gather_rows_kernel::launch::<F>(
+            client,
+            geom.cube_count,
+            geom.cube_dim,
+            BufferArg::from_raw_parts(input.clone(), channels * samples),
+            BufferArg::from_raw_parts(buffer::upload(client, &rows), rows.len()),
+            BufferArg::from_raw_parts(output.clone(), total),
+            samples as u32,
+            total as u32,
+        );
+    }
+}
 
 /// Transposes a `[rows, cols]` buffer of `F` into `output` (`[cols, rows]`), e.g. channel-major to
 /// time-major.
@@ -61,4 +92,23 @@ pub fn transpose_strided<F: DspFloat>(
         )
     };
     cubecl::std::tensor::copy_into(client, input, output, F::elem_type_native());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn gathers_channels_in_the_given_order(client: &Client) {
+        let (channels, samples) = (4usize, 1000usize);
+        let data: Vec<f32> = (0..channels * samples).map(|i| i as f32).collect();
+        let input = buffer::upload(client, &data);
+        // Reordered, one left out, one repeated
+        let order = [3usize, 0, 3];
+        let output = buffer::empty::<f32>(client, order.len() * samples);
+        execute_gather_channels::<f32>(client, &input, &output, channels, samples, &order);
+        let got = buffer::download::<f32>(client, output);
+        let expected: Vec<f32> = order.iter().flat_map(|&c| data[c * samples..(c + 1) * samples].to_vec()).collect();
+        assert_eq!(&got[..expected.len()], &expected[..]);
+    }
+    runtime_test!(gather_channels_follows_the_order, gathers_channels_in_the_given_order);
 }
