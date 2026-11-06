@@ -113,7 +113,7 @@ fn dispatch(cli: &Cli) -> anyhow::Result<()> {
 }
 
 /// Arguments of the recording / output / run, not sorter parameters (the front end sets them).
-const RUN_ARGS: [&str; 10] = ["recording", "source", "probe", "pitch_um", "start_sec", "duration_sec", "output", "format", "templates", "show_config"];
+const RUN_ARGS: [&str; 12] = ["recording", "source", "probe", "probe_file", "channel_map", "pitch_um", "start_sec", "duration_sec", "output", "format", "templates", "show_config"];
 
 /// The plugin description: program, version, licence, and per sorter its parameters (from the
 /// command line definition, so it never drifts from what the program accepts).

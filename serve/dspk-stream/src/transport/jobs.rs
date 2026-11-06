@@ -32,7 +32,8 @@ pub const MAX_PARAM_CHARS: usize = 256;
 /// Most parameters one job may set.
 pub const MAX_PARAMS: usize = 64;
 /// Parameter names the server sets itself: a client cannot set them through `params`.
-pub const RESERVED_PARAMS: [&str; 9] = ["output", "o", "progress", "source", "probe", "start-sec", "duration-sec", "help", "version"];
+/// `probe-file` and `channel-map` name files: a client could point them outside the data root.
+pub const RESERVED_PARAMS: [&str; 11] = ["output", "o", "progress", "source", "probe", "probe-file", "channel-map", "start-sec", "duration-sec", "help", "version"];
 /// What a sorting's path ends with.
 pub const SORTING_SUFFIX: &str = ".sorting.zarr";
 

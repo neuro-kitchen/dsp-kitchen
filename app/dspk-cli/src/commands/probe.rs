@@ -1,4 +1,5 @@
-//! `probe`: a probe layout preset (dspk-io `neuro::probe`).
+//! `probe`: a probe layout (a preset, or a probe .json file with its wiring), and its channel map
+//! written for `remap` nodes and `--channel-map`.
 
 use clap::{Args, ValueEnum};
 use dspk_synapse::io::probe::{self, SensorLayout};
@@ -17,10 +18,18 @@ pub enum Preset {
 }
 
 #[derive(Args, Debug)]
+#[command(group = clap::ArgGroup::new("which").required(true).args(["preset", "file"]))]
 pub struct ProbeArgs {
     /// Layout preset
     #[arg(value_enum)]
-    preset: Preset,
+    preset: Option<Preset>,
+    /// A probe file instead (.json: probeinterface or Kilosort 4)
+    #[arg(long)]
+    file: Option<std::path::PathBuf>,
+    /// Write the channel map (.toml / .json): a file's wiring (contact order), or a preset's
+    /// channels sorted by shank and depth; never overwritten
+    #[arg(long)]
+    write_map: Option<std::path::PathBuf>,
     /// Electrode pitch of HD-EMG grids (µm)
     #[arg(long, default_value_t = DEFAULT_HDEMG_PITCH_UM)]
     pitch_um: f32,
@@ -41,7 +50,30 @@ impl Preset {
 }
 
 pub fn run(args: &ProbeArgs) -> anyhow::Result<()> {
-    let layout = args.preset.layout(args.pitch_um);
+    let (layout, map) = match (&args.file, args.preset) {
+        (Some(file), _) => {
+            let w = probe::read_probe_wiring(file)?;
+            (w.layout, w.map)
+        }
+        (None, Some(preset)) => {
+            let layout = preset.layout(args.pitch_um);
+            let map = layout.depth_order();
+            (layout, map)
+        }
+        (None, None) => unreachable!("clap requires a preset or --file"),
+    };
+    if let Some(out) = &args.write_map {
+        if out.exists() {
+            anyhow::bail!("{} exists: choose another path (it is never overwritten)", out.display());
+        }
+        let text = match out.extension().and_then(|e| e.to_str()) {
+            Some("toml") => dspk_io::channel_map_toml(&map),
+            Some("json") => serde_json::to_string_pretty(&dspk_core::ChannelMapFile { remap: map.clone() })? + "\n",
+            _ => anyhow::bail!("{}: a channel map is a .toml or .json file", out.display()),
+        };
+        std::fs::write(out, text)?;
+        println!("Channel map: {} ({} channels)", out.display(), map.pairs.len());
+    }
     let sites = layout.sites();
     let span = |coord: fn(&probe::SensorSite) -> f32| {
         let (lo, hi) = sites.iter().map(coord).fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), v| (a.min(v), b.max(v)));
