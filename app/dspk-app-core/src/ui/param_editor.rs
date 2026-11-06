@@ -9,7 +9,7 @@ use dspk_pipeline::Node;
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{v_flex, ActiveTheme as _, Sizable as _};
-use gpui_kit::{div, px, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, SharedString, Styled as _, Subscription, Window};
+use gpui_kit::{div, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, SharedString, Styled as _, Subscription, Window};
 use serde_json::{json, Value};
 
 use super::widgets::{row, MenuSelect};
@@ -166,7 +166,7 @@ impl Render for ParamEditor {
         let value = serde_json::to_value(node).unwrap_or(Value::Null);
         let mut out = v_flex().gap_2();
         for f in &self.fields {
-            out = out.child(row(f.label.clone(), div().w(px(110.)).child(Input::new(&f.input).small()), cx));
+            out = out.child(row(f.label.clone(), div().w_full().child(Input::new(&f.input).small()), cx));
         }
         if let Value::Object(map) = &value {
             for (k, v) in map {

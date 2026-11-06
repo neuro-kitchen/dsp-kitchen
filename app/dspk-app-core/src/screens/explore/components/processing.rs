@@ -265,7 +265,7 @@ impl ProcessingPanel {
                 Rc::new(move |node, cx| store.update(cx, |s, cx| s.execute(SessionCommand::SetOp { view: view.clone(), op: op.clone(), node }, cx)).map(|_| ()).map_err(|e| e.to_string()))
             };
             self.params.update(cx, |p, cx| p.set_target(&format!("{}/{}", view.id, op.id), &op.node, commit, window, cx));
-            Section::new(format!("Parameters · {}", op_summary(&op.node)))
+            Section::new("Parameters")
                 .child(self.params.clone())
                 .child(div().text_xs().text_color(muted).child(format!("Applies to the {in_view} channels of this view. Enter applies a value.")))
         });

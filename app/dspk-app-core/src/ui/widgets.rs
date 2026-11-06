@@ -39,7 +39,9 @@ impl MenuSelect {
 impl RenderOnce for MenuSelect {
     fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
         let Self { id, current, options, selected, on_pick, full } = self;
-        Button::new(id).outline().small().label(current).dropdown_caret(true).cursor_pointer().when(full, |b| b.w_full()).dropdown_menu(move |menu, _, _| {
+        // The current option shortened with "…" when the row is narrow (never wider than it)
+        let face = h_flex().w_full().min_w_0().gap_1().child(div().flex_1().min_w_0().truncate().text_left().child(current)).child(Icon::new(IconName::ChevronDown).xsmall());
+        Button::new(id).outline().small().min_w_0().max_w_full().child(face).cursor_pointer().when(full, |b| b.w_full()).dropdown_menu(move |menu, _, _| {
             let mut menu = menu.scrollable(true).max_h(px(360.));
             for (i, label) in options.iter().enumerate() {
                 let on_pick = on_pick.clone();
@@ -79,9 +81,15 @@ impl RenderOnce for Section {
     }
 }
 
-/// `label    control` on one line.
+/// `label    control` on one line, never wider than its panel: the label takes up to 40 % (cut
+/// with "…"), the control the rest (controls fill it; long text in them is cut too).
 pub fn row(label: impl Into<SharedString>, control: impl IntoElement, cx: &App) -> impl IntoElement {
-    h_flex().gap_2().justify_between().child(div().text_sm().text_color(cx.theme().muted_foreground).child(label.into())).child(control)
+    h_flex()
+        .w_full()
+        .min_w_0()
+        .gap_2()
+        .child(div().flex_none().max_w(gpui_kit::relative(0.4)).truncate().text_sm().text_color(cx.theme().muted_foreground).child(label.into()))
+        .child(h_flex().flex_1().min_w_0().justify_end().overflow_hidden().child(control))
 }
 
 /// Centred icon, title and a line of explanation, with optional actions under it.
