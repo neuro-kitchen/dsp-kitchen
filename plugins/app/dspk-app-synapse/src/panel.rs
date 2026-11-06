@@ -14,7 +14,6 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Disableable as _, IconName, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{div, px, AnyElement, App, Entity, InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, SharedString, StatefulInteractiveElement as _, Styled as _, Window};
-use serde_json::json;
 
 use crate::sort::{self, SortRequest, PROBES, SORTERS};
 use crate::{sorting_of, state, ID};
@@ -32,7 +31,7 @@ pub fn section(store: &Entity<Store>, view: &ViewDoc, _window: &mut Window, cx: 
     match (&linked, &loaded) {
         (Some(path), Some(sorting)) => {
             let palette = store.read(cx).palette();
-            let mut order: Vec<usize> = (0..sorting.units.len()).collect();
+            let mut order: Vec<usize> = sorting.alive().collect();
             order.sort_by_key(|&u| std::cmp::Reverse(sorting.units[u].info.num_spikes));
             let rows = order.into_iter().map(|u| {
                 let unit = &sorting.units[u];
@@ -113,9 +112,10 @@ pub fn section(store: &Entity<Store>, view: &ViewDoc, _window: &mut Window, cx: 
 }
 
 fn detach(store: &Entity<Store>, view: &ViewDoc) -> impl IntoElement {
-    let (store, id) = (store.clone(), view.id.clone());
+    let (store, view) = (store.clone(), view.clone());
     Button::new("detach-sorting").ghost().xsmall().label("Detach").on_click(move |_, _, cx| {
-        let _ = store.update(cx, |s, cx| s.execute(SessionCommand::SetPluginData { view: id.clone(), plugin: ID.into(), data: serde_json::Value::Null }, cx));
+        let data = crate::plugin_data(&view, None, None);
+        let _ = store.update(cx, |s, cx| s.execute(SessionCommand::SetPluginData { view: view.id.clone(), plugin: ID.into(), data }, cx));
     })
 }
 
@@ -136,8 +136,10 @@ fn attach(store: &Entity<Store>, view: &ViewDoc) -> impl IntoElement {
     })
 }
 
-fn link(s: &mut Store, view: &str, path: PathBuf, cx: &mut gpui_kit::Context<Store>) {
-    let data = json!({ "sorting": path });
+/// Links `path` to view `view` (its runs kept).
+pub fn link(s: &mut Store, view: &str, path: PathBuf, cx: &mut gpui_kit::Context<Store>) {
+    let Some(v) = s.doc.view(view).cloned() else { return };
+    let data = crate::plugin_data(&v, Some(&path), None);
     let _ = s.execute(SessionCommand::SetPluginData { view: view.to_string(), plugin: ID.into(), data }, cx);
 }
 
@@ -156,7 +158,7 @@ fn start_sort(store: &Entity<Store>, view: &ViewDoc, sorter: usize, probe: usize
         (view.recording.path.clone(), view.recording.source.clone())
     };
     let output = sort::sorting_path(&recording, key);
-    let req = SortRequest { sorter: key.to_string(), recording, source, probe: PROBES[probe].0.map(str::to_string), output };
+    let req = SortRequest { sorter: key.to_string(), recording, source, probe: PROBES[probe].0.map(str::to_string), output, params: Vec::new(), start_sec: None, duration_sec: None };
     let id = view.id.clone();
     store.update(cx, |s, cx| {
         s.start_job(format!("{name} on {}", view.name), move |send| sort::sort(&req, move |m| send(m)), move |s, path, cx| link(s, &id, path, cx), cx);

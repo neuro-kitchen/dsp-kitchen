@@ -65,6 +65,11 @@ pub struct SortRequest {
     pub probe: Option<String>,
     /// `<name>.<sorter>.sorting.zarr`.
     pub output: PathBuf,
+    /// Sorter parameters set away from their defaults: (`--flag`, value).
+    pub params: Vec<(String, String)>,
+    /// The part of the recording to sort (s); `None`: from the start / to the end.
+    pub start_sec: Option<f64>,
+    pub duration_sec: Option<f64>,
 }
 
 /// Runs `dspk-cli-sorter <sorter> <recording> -o <output>`, reporting its progress lines.
@@ -82,7 +87,111 @@ pub fn sort(req: &SortRequest, send: impl Fn(JobMessage) + Send + Sync + 'static
     if let Some(p) = &req.probe {
         cmd.arg("--probe").arg(p);
     }
+    if let Some(t) = req.start_sec {
+        cmd.arg("--start-sec").arg(t.to_string());
+    }
+    if let Some(d) = req.duration_sec {
+        cmd.arg("--duration-sec").arg(d.to_string());
+    }
+    for (flag, value) in &req.params {
+        cmd.arg(flag).arg(value);
+    }
     jobs::run_program(cmd, req.output.clone(), send)
+}
+
+/// One parameter of a sorter, as `dspk-cli-sorter describe` lists it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Param {
+    pub name: String,
+    pub flag: String,
+    pub help: String,
+    /// The default as text (lists joined by commas); empty when it has none.
+    pub default: String,
+    pub choices: Vec<String>,
+}
+
+/// A sorter and its parameters.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SorterInfo {
+    pub name: String,
+    pub about: String,
+    pub params: Vec<Param>,
+}
+
+/// What the installed program says about itself.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Described {
+    pub program: PathBuf,
+    pub version: String,
+    pub sorters: Vec<SorterInfo>,
+}
+
+/// Runs `dspk-cli-sorter describe` (blocking: call it off the UI thread).
+pub fn describe() -> Result<Described, String> {
+    let program = locate().ok_or_else(|| format!("{} not found: install it with `dspk sorters install`, or set {SORTER_BIN_ENV}", program_file_name()))?;
+    let out = Command::new(&program).arg("describe").output().map_err(|e| format!("{}: {e}", program.display()))?;
+    if !out.status.success() {
+        return Err(format!("{} describe: {}", program.display(), String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|e| format!("{} describe: {e}", program.display()))?;
+    parse_describe(program, &v)
+}
+
+/// The sorters of a `describe` document (interface 1).
+pub fn parse_describe(program: PathBuf, v: &serde_json::Value) -> Result<Described, String> {
+    if v["interface"].as_u64() != Some(1) {
+        return Err(format!("{}: describe interface {} (this app reads 1): update the program", program.display(), v["interface"]));
+    }
+    let text = |x: &serde_json::Value| match x {
+        serde_json::Value::Null => String::new(),
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(a) => a.iter().map(|e| e.as_str().map_or_else(|| e.to_string(), str::to_string)).collect::<Vec<_>>().join(","),
+        other => other.to_string(),
+    };
+    let sorters = v["sorters"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|s| SorterInfo {
+                    name: text(&s["name"]),
+                    about: text(&s["about"]),
+                    params: s["parameters"]
+                        .as_array()
+                        .map(|ps| {
+                            ps.iter()
+                                .map(|p| Param {
+                                    name: text(&p["name"]),
+                                    flag: text(&p["flag"]),
+                                    help: text(&p["help"]),
+                                    default: text(&p["default"]),
+                                    choices: p["choices"].as_array().map(|c| c.iter().map(text).collect()).unwrap_or_default(),
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(Described { program, version: text(&v["version"]), sorters })
+}
+
+/// `rec.bin` sorted by `sorter` over `start`…`start + duration` s →
+/// `rec.<sorter>.<start>-<end>s.sorting.zarr` next to it (the whole recording: [`sorting_path`]).
+pub fn run_path(recording: &Path, sorter: &str, start_sec: Option<f64>, duration_sec: Option<f64>) -> PathBuf {
+    match (start_sec, duration_sec) {
+        (None, None) => sorting_path(recording, sorter),
+        (s, d) => {
+            let s = s.unwrap_or(0.0);
+            let end = d.map_or_else(|| "end".to_string(), |d| format!("{}", trim(s + d)));
+            sorting_path(recording, &format!("{sorter}.{}-{end}s", trim(s)))
+        }
+    }
+}
+
+fn trim(v: f64) -> String {
+    let t = format!("{v:.3}");
+    t.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
 /// `rec.bin` → `rec.<sorter>.sorting.zarr` next to it.
@@ -95,6 +204,19 @@ pub fn sorting_path(recording: &Path, sorter: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_run_paths_and_describe() {
+        assert_eq!(run_path(Path::new("/d/rec.bin"), "kilosort4", Some(10.0), Some(60.0)), PathBuf::from("/d/rec.kilosort4.10-70s.sorting.zarr"));
+        assert_eq!(run_path(Path::new("/d/rec.bin"), "kilosort4", None, None), PathBuf::from("/d/rec.kilosort4.sorting.zarr"));
+        let v = serde_json::json!({"interface": 1, "version": "0.0.5", "sorters": [{"name": "kilosort4", "about": "KS4", "parameters": [
+            {"name": "th_universal", "flag": "--th-universal", "help": "h", "default": "9", "choices": [], "list": false},
+            {"name": "mode", "flag": "--mode", "help": "", "default": null, "choices": ["a", "b"], "list": false}]}]});
+        let d = parse_describe(PathBuf::from("p"), &v).unwrap();
+        assert_eq!(d.sorters[0].params[0].default, "9");
+        assert_eq!(d.sorters[0].params[1].choices, ["a", "b"]);
+        assert!(parse_describe(PathBuf::from("p"), &serde_json::json!({"interface": 2})).is_err());
+    }
 
     #[test]
     fn test_sorting_path() {

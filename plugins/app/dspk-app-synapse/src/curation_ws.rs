@@ -1,51 +1,49 @@
-//! The Sorting workspace: the active view's sorting in views the user arranges. Every view is a
-//! dock panel (drag a tab to snap it beside, under or into another; close it), the Views menu
-//! toggles each one, the Layout menu applies a grid (auto, or 1–3 columns, the table on the
-//! left). Views: the unit table (a Polars frame: sort by any column, filter by label), the
-//! selected units' waveforms (spikes, unsorted grey, means), their features (PC1 vs PC2),
-//! autocorrelogram, ISI, amplitude over time, the lead unit's template on its channels, a
-//! raster of the selected units over the recording, and the trace around one of the lead unit's
-//! spikes (previous / next). Waveforms and features are computed on demand from the view's
-//! signal (its processed preview when it has ops: what was sorted), on a background thread;
-//! nothing of it is stored.
+//! The Curation workspace (Phy style): the active view's sorting in views the user arranges, its
+//! units judged and edited. Every view is a dock panel (drag a tab to snap it beside, under or
+//! into another; close it), the Views menu toggles each one, the Layout menu applies a grid.
+//! Views: the unit table (a Polars frame: sort by any column, filter by label), the selected
+//! units' waveforms, their features (PC1 vs PC2), autocorrelogram, ISI, amplitude over time, the
+//! lead unit's template, and the units most similar to it (template similarity: merge
+//! candidates). Under them the bottom strip: the lead unit's channels over the shared timeline
+//! (or a raster), previous / next spike.
+//!
+//! Editing, as in Phy: label the selected units good / mua / noise (Alt+G, Alt+M, Alt+N), merge
+//! them (G), undo / redo (Ctrl+Z, Ctrl+Shift+Z), save (Ctrl+S) — a log inside the
+//! `.sorting.zarr` ([`crate::curation`]); the sorter's arrays are never rewritten.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use dspk_app_core::data::recording::{Dataset, SpikeEventStore};
 use dspk_app_core::data::store::{AppEvent, Store};
-use dspk_app_core::plugin::{AppPlugin as _, Raster, RasterRow};
-use dspk_app_core::screens::explore::trace::renderer::{nominal_amplitude, RenderRequest, TimeViewKind, WaveformRenderer};
 use dspk_app_core::screens::explore::trace::trace_panel::color;
 use dspk_app_core::ui::plot::canvas::Pixel;
 use dspk_app_core::ui::theme::palette::Palette;
 use dspk_app_core::ui::widgets::{icon_button, EmptyState};
-use dspk_view::SignalBackend;
 use gpui_kit::base::dock::{DockArea, DockLayout, Panel as BasePanel, PanelEvent};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dock::{panel_handle, DockSkin, Panel};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, IconName, Sizable as _};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     div, img, px, uniform_list, AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, RenderImage, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, Window,
+    KeyDownEvent, ParentElement as _, Render, RenderImage, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, Window,
 };
 
+use crate::curation::{next_unit_id, similar, CurationOp, LABELS};
 use crate::plots;
 use crate::sorting::{Snippets, SortingData};
+use crate::strip::{view_signal, BottomStrip};
 use crate::table::{UnitTable, COLUMNS};
-use crate::{state, SynapseEvent, SynapsePlugin};
+use crate::{sorting_of, state, SynapseEvent};
 
 /// Spikes per selected unit drawn and projected (and as many unsorted ones).
 pub const SPIKES_PER_UNIT: usize = 300;
 /// Plot sizes (physical pixels; shown scaled to their panels).
 const PLOT_W: u32 = 720;
 const PLOT_H: u32 = 420;
-const WIDE_W: u32 = 1400;
-const WIDE_H: u32 = 320;
-/// The trace strip's window around a spike (s).
-const STRIP_SEC: f64 = 0.1;
+/// Units listed by the similarity view.
+const SIMILAR_MAX: usize = 20;
 /// Autocorrelogram ±50 ms in 1 ms bins; ISI 0–50 ms in 0.5 ms bins; refractory period marked.
 const ACG_HALF_MS: f64 = 50.0;
 const ACG_BIN_MS: f64 = 1.0;
@@ -68,12 +66,11 @@ pub enum ViewKind {
     Isi,
     Amplitude,
     Template,
-    Raster,
-    Trace,
+    Similarity,
 }
 
 impl ViewKind {
-    pub const ALL: [ViewKind; 9] = [Self::Table, Self::Waveforms, Self::Features, Self::Acg, Self::Isi, Self::Amplitude, Self::Template, Self::Raster, Self::Trace];
+    pub const ALL: [ViewKind; 8] = [Self::Table, Self::Waveforms, Self::Features, Self::Acg, Self::Isi, Self::Amplitude, Self::Template, Self::Similarity];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -84,21 +81,15 @@ impl ViewKind {
             Self::Isi => "ISI",
             Self::Amplitude => "Amplitude over time",
             Self::Template => "Template",
-            Self::Raster => "Raster",
-            Self::Trace => "Trace",
+            Self::Similarity => "Similar units",
         }
-    }
-
-    /// Plots as wide as the grid (time along x).
-    fn wide(self) -> bool {
-        matches!(self, Self::Raster | Self::Trace)
     }
 }
 
 /// How the views are arranged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Grid {
-    /// Columns = √(plots), time plots full width below.
+    /// Columns = √(plots).
     Auto,
     Columns(usize),
 }
@@ -109,36 +100,37 @@ struct Plots {
     note: String,
 }
 
-pub struct SortingWorkspace {
+pub struct CurationWorkspace {
     store: Entity<Store>,
     dock: Entity<DockArea>,
-    panels: HashMap<ViewKind, Entity<SortingPanel>>,
+    strip: Entity<BottomStrip>,
+    focus: FocusHandle,
+    panels: HashMap<ViewKind, Entity<CurationPanel>>,
     /// Views shown, in layout order.
     visible: Vec<ViewKind>,
     grid: Grid,
     /// Units selected in the table (indices), the first one leads (its channel, its spikes).
     selected: Vec<usize>,
-    /// The table of the loaded sorting, its order (sorted, filtered), and how.
-    table: Option<(std::path::PathBuf, Arc<UnitTable>)>,
+    /// The table of the loaded sorting (built per curated state), its order (sorted, filtered),
+    /// and how.
+    table: Option<(*const SortingData, Arc<UnitTable>)>,
     order: Vec<usize>,
     sort_by: &'static str,
     descending: bool,
     label: Option<String>,
-    /// Which spike of the lead unit the trace shows.
-    strip_spike: usize,
     plots: Plots,
     computing: bool,
     _work: Option<Task<()>>,
-    _strip: Option<Task<()>>,
     _subs: Vec<Subscription>,
 }
 
-impl SortingWorkspace {
+impl CurationWorkspace {
     pub fn new(store: Entity<Store>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let dock = cx.new(|cx| {
             let skin = DockSkin::new(cx);
-            DockArea::new("sorting", Some(1), window, cx).with_renderer(skin)
+            DockArea::new("curation", Some(1), window, cx).with_renderer(skin)
         });
+        let strip = cx.new(|cx| BottomStrip::new(store.clone(), cx));
         let mut subs = vec![cx.subscribe(&store, |this, _, e: &AppEvent, cx| {
             if matches!(e, AppEvent::Document(_) | AppEvent::RecordingChanged | AppEvent::PaletteChanged) {
                 this.selected.clear();
@@ -147,17 +139,27 @@ impl SortingWorkspace {
             }
         })];
         if let Some(st) = state(cx) {
-            subs.push(cx.subscribe(&st, |this, _, e: &SynapseEvent, cx| {
-                if matches!(e, SynapseEvent::SortingLoaded(_)) {
+            subs.push(cx.subscribe(&st, |this, _, e: &SynapseEvent, cx| match e {
+                SynapseEvent::SortingLoaded(_) => {
                     this.selected.clear();
                     this.refresh(cx);
                 }
+                SynapseEvent::Curated(_) => {
+                    // Merged-away units leave the selection
+                    if let Some(s) = this.sorting(cx) {
+                        this.selected.retain(|&u| s.units.get(u).is_some_and(|u| u.merged_into.is_none()));
+                    }
+                    this.refresh(cx);
+                }
+                SynapseEvent::UnitsChanged => {}
             }));
         }
-        let visible = vec![ViewKind::Table, ViewKind::Waveforms, ViewKind::Features, ViewKind::Acg, ViewKind::Isi, ViewKind::Amplitude, ViewKind::Template, ViewKind::Raster];
+        let visible = vec![ViewKind::Table, ViewKind::Waveforms, ViewKind::Features, ViewKind::Acg, ViewKind::Isi, ViewKind::Amplitude, ViewKind::Template, ViewKind::Similarity];
         let mut this = Self {
             store,
             dock,
+            strip,
+            focus: cx.focus_handle(),
             panels: HashMap::new(),
             visible,
             grid: Grid::Auto,
@@ -167,11 +169,9 @@ impl SortingWorkspace {
             sort_by: "spikes",
             descending: true,
             label: None,
-            strip_spike: 0,
             plots: Plots::default(),
             computing: false,
             _work: None,
-            _strip: None,
             _subs: subs,
         };
         this.apply_layout(window, cx);
@@ -191,9 +191,9 @@ impl SortingWorkspace {
             self.notify_panels(cx);
             return;
         };
-        if self.table.as_ref().is_none_or(|(p, _)| *p != sorting.path) {
+        if self.table.as_ref().is_none_or(|(p, _)| *p != Arc::as_ptr(&sorting)) {
             match UnitTable::new(&sorting) {
-                Ok(t) => self.table = Some((sorting.path.clone(), Arc::new(t))),
+                Ok(t) => self.table = Some((Arc::as_ptr(&sorting), Arc::new(t))),
                 Err(e) => tracing::warn!("unit table: {e}"),
             }
         }
@@ -238,8 +238,74 @@ impl SortingWorkspace {
             }
             None => self.selected.push(unit),
         }
-        self.strip_spike = 0;
         self.compute(cx);
+    }
+
+    /// Selects `unit` alone (a click without Ctrl / Shift, as in Phy).
+    fn pick_unit(&mut self, unit: usize, add: bool, cx: &mut Context<Self>) {
+        if add {
+            self.toggle_unit(unit, cx);
+        } else {
+            self.selected = vec![unit];
+            self.compute(cx);
+        }
+    }
+
+    fn sorting_path(&self, cx: &App) -> Option<std::path::PathBuf> {
+        sorting_of(self.store.read(cx).active_view()?)
+    }
+
+    /// Labels the selected units.
+    fn label_selected(&mut self, label: &str, cx: &mut Context<Self>) {
+        let (Some(path), Some(sorting)) = (self.sorting_path(cx), self.sorting(cx)) else { return };
+        let units: Vec<usize> = self.selected.iter().map(|&u| sorting.units[u].info.unit_id).collect();
+        if units.is_empty() {
+            return;
+        }
+        let Some(st) = state(cx) else { return };
+        st.update(cx, |s, cx| s.curate(&path, CurationOp::Label { units, label: label.to_string() }, cx));
+    }
+
+    /// Merges the selected units into a new one, which is selected.
+    fn merge_selected(&mut self, cx: &mut Context<Self>) {
+        let (Some(path), Some(sorting)) = (self.sorting_path(cx), self.sorting(cx)) else { return };
+        if self.selected.len() < 2 {
+            return;
+        }
+        let units: Vec<usize> = self.selected.iter().map(|&u| sorting.units[u].info.unit_id).collect();
+        let into = next_unit_id(&sorting);
+        let new_index = sorting.units.len();
+        let Some(st) = state(cx) else { return };
+        st.update(cx, |s, cx| s.curate(&path, CurationOp::Merge { units, into }, cx));
+        self.selected = vec![new_index];
+        self.compute(cx);
+    }
+
+    fn undo(&mut self, redo: bool, cx: &mut Context<Self>) {
+        let (Some(path), Some(st)) = (self.sorting_path(cx), state(cx)) else { return };
+        st.update(cx, |s, cx| if redo { s.redo(&path, cx) } else { s.undo(&path, cx) });
+    }
+
+    fn save(&mut self, cx: &mut Context<Self>) {
+        let (Some(path), Some(st)) = (self.sorting_path(cx), state(cx)) else { return };
+        st.update(cx, |s, cx| s.save_curation(&path, cx));
+    }
+
+    fn on_key(&mut self, e: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let k = &e.keystroke;
+        let (cmd, alt, shift) = (k.modifiers.control || k.modifiers.platform, k.modifiers.alt, k.modifiers.shift);
+        match k.key.as_str() {
+            "g" if alt => self.label_selected("good", cx),
+            "m" if alt => self.label_selected("mua", cx),
+            "n" if alt => self.label_selected("noise", cx),
+            "g" if !cmd => self.merge_selected(cx),
+            "z" if cmd && shift => self.undo(true, cx),
+            "z" if cmd => self.undo(false, cx),
+            "y" if cmd => self.undo(true, cx),
+            "s" if cmd => self.save(cx),
+            _ => return,
+        }
+        cx.stop_propagation();
     }
 
     /// Shows or hides `kind`, then arranges the views again.
@@ -263,16 +329,14 @@ impl SortingWorkspace {
         cx.notify();
     }
 
-    fn panel(&mut self, kind: ViewKind, cx: &mut Context<Self>) -> Entity<SortingPanel> {
+    fn panel(&mut self, kind: ViewKind, cx: &mut Context<Self>) -> Entity<CurationPanel> {
         let ws = cx.weak_entity();
-        self.panels.entry(kind).or_insert_with(|| cx.new(|cx| SortingPanel { ws, kind, focus: cx.focus_handle() })).clone()
+        self.panels.entry(kind).or_insert_with(|| cx.new(|cx| CurationPanel { ws, kind, focus: cx.focus_handle() })).clone()
     }
 
-    /// The visible views in the grid: the table on the left, plots in rows of `columns`, time
-    /// plots (raster, trace) full width under them.
+    /// The visible views in the grid: the table on the left, plots in rows of `columns`.
     fn apply_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let plot_kinds: Vec<ViewKind> = self.visible.iter().copied().filter(|k| *k != ViewKind::Table && !k.wide()).collect();
-        let wide: Vec<ViewKind> = self.visible.iter().copied().filter(|k| k.wide()).collect();
+        let plot_kinds: Vec<ViewKind> = self.visible.iter().copied().filter(|k| *k != ViewKind::Table).collect();
         let cols = match self.grid {
             Grid::Auto => (plot_kinds.len() as f32).sqrt().ceil().max(1.0) as usize,
             Grid::Columns(n) => n.max(1),
@@ -286,11 +350,6 @@ impl SortingWorkspace {
                 row = row.child(DockLayout::tabs().panel_view(panel_handle(p), cx), None);
             }
             grid = grid.child(row, None);
-            any = true;
-        }
-        for &k in &wide {
-            let p = self.panel(k, cx);
-            grid = grid.child(DockLayout::tabs().panel_view(panel_handle(p), cx), None);
             any = true;
         }
         let root = if self.visible.contains(&ViewKind::Table) {
@@ -312,49 +371,10 @@ impl SortingWorkspace {
         self.apply_layout(window, cx);
     }
 
-    /// The active view's signal (its processed preview when it has ops), dataset and source.
-    fn signal(&self, cx: &App) -> Option<(Arc<dyn SignalBackend>, Arc<Dataset>, String)> {
-        let store = self.store.read(cx);
-        let view = store.active_view()?;
-        let source = store.view_source(view);
-        let dataset = store.sources()?.get(&source);
-        let signal = store.signal_for(&source).unwrap_or_else(|| dataset.signal().clone());
-        Some((signal, dataset, source))
-    }
-
     /// A subset view sorted on its own output: the sorting's channel i is the view's i-th.
     fn channel_map(&self, sorting: &SortingData, cx: &App) -> impl Fn(usize) -> Option<usize> + Send + 'static {
         let map = self.store.read(cx).active_view().and_then(|v| v.recording.channels.clone()).filter(|c| sorting.channels == Some(c.len()));
         move |c: usize| map.as_ref().map_or(Some(c), |m| m.get(c).copied())
-    }
-
-    /// A request over `channels` from `start_sec`, `window_sec` long.
-    fn request(&self, signal: Arc<dyn SignalBackend>, dataset: &Dataset, channels: Vec<usize>, start_sec: f64, window_sec: f64, mode: TimeViewKind, cx: &App) -> RenderRequest {
-        let unit = dataset.signal().info().channels.first().map(|c| c.unit.clone()).unwrap_or(dspk_core::SignalUnit::Microvolt);
-        RenderRequest {
-            signal,
-            events: Arc::new(SpikeEventStore::default()),
-            width: WIDE_W,
-            height: WIDE_H,
-            scale: 1.5,
-            mode,
-            channels,
-            window_start_sec: start_sec,
-            window_sec,
-            start_time_sec: dataset.start_time_sec,
-            amplitude_scale: 1.0,
-            nominal: nominal_amplitude(&unit),
-            auto_scale: true,
-            remove_dc: true,
-            scale_hint: 0.0,
-            grid_times: Vec::new(),
-            scale_bar: mode == TimeViewKind::Traces,
-            highlights: Vec::new(),
-            overlay: None,
-            raster: None,
-            color_by: Default::default(),
-            palette: self.store.read(cx).palette(),
-        }
     }
 
     /// Every plot of the selected units, on a background thread (a newer selection replaces it).
@@ -365,7 +385,7 @@ impl SortingWorkspace {
             self.notify_panels(cx);
             return;
         };
-        let Some((signal, dataset, source)) = self.signal(cx) else { return };
+        let Some((signal, dataset, source)) = view_signal(self.store.read(cx)) else { return };
         let to_view = self.channel_map(&sorting, cx);
         let palette = self.store.read(cx).palette();
         let Some(channel) = to_view(sorting.units[lead].info.primary_channel) else { return };
@@ -373,14 +393,10 @@ impl SortingWorkspace {
         let lead_colour = palette.unit(lead);
         let template_rows = sorting.units[lead].template.clone();
         let duration = (dataset.total_samples as f64 / dataset.sample_rate) as f32;
-        let start = dataset.start_time_sec;
-        // Raster of the selected units over the whole recording
-        let rows = units
-            .iter()
-            .map(|&u| RasterRow { color: palette.unit(u), label: String::new(), times: sorting.unit_times(u).iter().map(|&t| start + t as f64 / sorting.sample_rate).collect() })
-            .collect();
-        let mut raster = self.request(signal.clone(), &dataset, Vec::new(), start, duration as f64, TimeViewKind::Raster, cx);
-        raster.raster = Some(Arc::new(Raster { rows }));
+        // The strip follows the selection: the lead unit's channels
+        let strip_channels: Vec<usize> = sorting.units[lead].extent.channels.iter().filter_map(|&c| to_view(c)).collect();
+        let strip_units = units.clone();
+        self.strip.update(cx, |s, cx| s.set_focus(strip_units, strip_channels, cx));
         let processed = self.store.read(cx).signal_for(&source).is_some();
         let note = format!("Ch {channel} · ≤{SPIKES_PER_UNIT} spikes per unit · {}", if processed { "processed" } else { "as stored" });
         let wanted: Vec<ViewKind> = self.visible.clone();
@@ -408,68 +424,16 @@ impl SortingWorkspace {
             let amps: Vec<(u32, Vec<(f32, f32)>)> = units.iter().map(|&u| (u as u32, sorting.unit_amplitudes(u, AMPLITUDE_POINTS))).collect();
             put(ViewKind::Amplitude, plots::to_image(plots::amplitude_time(&amps, duration, &palette, PLOT_W, PLOT_H, 1.5)));
             put(ViewKind::Template, plots::to_image(plots::template_grid(&template_rows, lead_colour, &palette, PLOT_W, PLOT_H, 1.5)));
-            put(ViewKind::Raster, plots::to_image(WaveformRenderer::default().render_scaled(&raster).0));
             Plots { images, note }
         });
         self._work = Some(cx.spawn(async move |this, cx| {
             let plots = work.await;
             let _ = this.update(cx, |w, cx| {
-                // The trace keeps its own image
-                let strip = w.plots.images.remove(&ViewKind::Trace);
                 w.plots = plots;
-                if let Some(s) = strip {
-                    w.plots.images.insert(ViewKind::Trace, s);
-                }
                 w.computing = false;
-                w.compute_strip(cx);
                 w.notify_panels(cx);
             });
         }));
-    }
-
-    /// The trace around spike `strip_spike` of the lead unit, on the unit's channels.
-    fn compute_strip(&mut self, cx: &mut Context<Self>) {
-        if !self.visible.contains(&ViewKind::Trace) {
-            return;
-        }
-        let (Some(sorting), Some(&lead)) = (self.sorting(cx), self.selected.first()) else { return };
-        let Some((signal, dataset, source)) = self.signal(cx) else { return };
-        let times = sorting.unit_times(lead);
-        if times.is_empty() {
-            return;
-        }
-        self.strip_spike = self.strip_spike.min(times.len() - 1);
-        let to_view = self.channel_map(&sorting, cx);
-        let channels: Vec<usize> = sorting.units[lead].extent.channels.iter().filter_map(|&c| to_view(c)).collect();
-        let t = dataset.start_time_sec + times[self.strip_spike] as f64 / sorting.sample_rate;
-        let window = (t - STRIP_SEC / 2.0)..(t + STRIP_SEC / 2.0);
-        let mut req = self.request(signal, &dataset, channels, window.start, STRIP_SEC, TimeViewKind::Traces, cx);
-        req.overlay = SynapsePlugin::new().trace_overlay(self.store.read(cx), &source, window, cx).map(Arc::new);
-        let work = cx.background_spawn(async move { plots::to_image(WaveformRenderer::default().render_scaled(&req).0) });
-        self._strip = Some(cx.spawn(async move |this, cx| {
-            let image = work.await;
-            let _ = this.update(cx, |w, cx| {
-                if let Some(i) = image {
-                    w.plots.images.insert(ViewKind::Trace, i);
-                }
-                w.notify_panels(cx);
-            });
-        }));
-    }
-
-    fn step_spike(&mut self, forward: bool, cx: &mut Context<Self>) {
-        self.strip_spike = if forward { self.strip_spike + 1 } else { self.strip_spike.saturating_sub(1) };
-        self.compute_strip(cx);
-        self.notify_panels(cx);
-    }
-
-    /// `Unit 88 · spike 12 of 4171 · 1.234 s`
-    fn strip_label(&self, cx: &App) -> String {
-        let (Some(sorting), Some(&lead)) = (self.sorting(cx), self.selected.first()) else { return String::new() };
-        let times = sorting.unit_times(lead);
-        let k = self.strip_spike.min(times.len().saturating_sub(1));
-        let t = times.get(k).map_or(0.0, |&t| t as f64 / sorting.sample_rate);
-        format!("Unit {} · spike {} of {} · {t:.3} s · 100 ms on its channels", sorting.units[lead].info.unit_id, k + 1, times.len())
     }
 
     fn notify_panels(&self, cx: &mut Context<Self>) {
@@ -480,7 +444,7 @@ impl SortingWorkspace {
     }
 }
 
-impl Render for SortingWorkspace {
+impl Render for CurationWorkspace {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme();
         let (muted, border, bg) = (t.muted_foreground, t.border, t.background);
@@ -488,16 +452,16 @@ impl Render for SortingWorkspace {
             return div()
                 .size_full()
                 .child(EmptyState::new(
-                    dspk_app_core::navigation::route::Workspace::Sorting.icon(),
+                    dspk_app_core::navigation::route::Workspace::Curation.icon(),
                     "No sorting on the active view",
-                    "Link one in Explore → Sorting (attach a .sorting.zarr, or Sort the view).",
+                    "Run a sorter in Sorting, or link a .sorting.zarr in Explore → Sorting.",
                 ))
                 .into_any_element();
         };
         let me = cx.weak_entity();
         let views = {
             let (me, visible) = (me.clone(), self.visible.clone());
-            Button::new("sorting-views").ghost().small().icon(IconName::Eye).label("Views").dropdown_menu(move |menu: PopupMenu, _, _| {
+            Button::new("curation-views").ghost().small().icon(IconName::Eye).label("Views").dropdown_menu(move |menu: PopupMenu, _, _| {
                 let mut menu = menu;
                 for k in ViewKind::ALL {
                     let me = me.clone();
@@ -510,7 +474,7 @@ impl Render for SortingWorkspace {
         };
         let layout = {
             let (me, grid) = (me.clone(), self.grid);
-            Button::new("sorting-layout").ghost().small().icon(gpui_kit::assets::IconName::LayoutGrid).tooltip("Arrange the views in a grid").dropdown_menu(move |menu: PopupMenu, _, _| {
+            Button::new("curation-layout").ghost().small().icon(gpui_kit::assets::IconName::LayoutGrid).tooltip("Arrange the views in a grid").dropdown_menu(move |menu: PopupMenu, _, _| {
                 let mut menu = menu;
                 for (label, g) in [("Auto grid", Grid::Auto), ("1 column", Grid::Columns(1)), ("2 columns", Grid::Columns(2)), ("3 columns", Grid::Columns(3))] {
                     let me = me.clone();
@@ -526,26 +490,92 @@ impl Render for SortingWorkspace {
             h_flex().gap_1().flex_none().child(div().size(px(8.)).rounded_full().bg(color(palette.unit(u)))).child(div().text_xs().child(format!("Unit {}", sorting.units[u].info.unit_id)))
         }));
         let status = if self.computing { "Computing…".to_string() } else { self.plots.note.clone() };
+        // Curation: labels, merge, undo / redo, save
+        let path = self.sorting_path(cx);
+        let (can_undo, can_redo, dirty, edits) = path
+            .as_ref()
+            .and_then(|p| state(cx).and_then(|st| st.read(cx).curations.get(p).map(|c| (!c.ops.is_empty(), !c.undone.is_empty(), c.dirty(), c.ops.len()))))
+            .unwrap_or_default();
+        let n = self.selected.len();
+        let label_button = |label: &'static str, keys: &'static str| {
+            let me = me.clone();
+            Button::new(SharedString::from(format!("label-{label}")))
+                .outline()
+                .xsmall()
+                .label(label)
+                .tooltip(format!("Label the selected units {label} ({keys})"))
+                .disabled(n == 0)
+                .on_click(move |_, _, cx| {
+                    let _ = me.update(cx, |w, cx| w.label_selected(label, cx));
+                })
+        };
+        let act = |id: &'static str, icon: gpui_kit::assets::IconName, tip: &'static str, enabled: bool, f: fn(&mut CurationWorkspace, &mut Context<CurationWorkspace>)| {
+            let me = me.clone();
+            icon_button(id, Icon::new(icon), tip).small().disabled(!enabled).on_click(move |_, _, cx| {
+                let _ = me.update(cx, |w, cx| f(w, cx));
+            })
+        };
+        let keys = ["Alt+G", "Alt+M", "Alt+N", ""];
+        let mut labels = h_flex().gap_1().flex_none();
+        for (l, k) in LABELS.iter().zip(keys) {
+            labels = labels.child(label_button(l, if k.is_empty() { "no key" } else { k }));
+        }
+        let edit = h_flex()
+            .gap_1()
+            .flex_none()
+            .child(labels)
+            .child({
+                let me = me.clone();
+                Button::new("curation-merge").outline().xsmall().icon(Icon::new(gpui_kit::assets::IconName::Merge)).label("Merge").tooltip("Merge the selected units into one (G)").disabled(n < 2).on_click(move |_, _, cx| {
+                    let _ = me.update(cx, |w, cx| w.merge_selected(cx));
+                })
+            })
+            .child(act("curation-undo", gpui_kit::assets::IconName::Undo2, "Undo (Ctrl+Z)", can_undo, |w, cx| w.undo(false, cx)))
+            .child(act("curation-redo", gpui_kit::assets::IconName::Redo2, "Redo (Ctrl+Shift+Z)", can_redo, |w, cx| w.undo(true, cx)))
+            .child({
+                let me = me.clone();
+                Button::new("curation-save")
+                    .xsmall()
+                    .map(|b| if dirty { b.primary() } else { b.ghost() })
+                    .icon(Icon::new(gpui_kit::assets::IconName::Save))
+                    .label(if dirty { format!("Save ({edits})") } else { "Saved".to_string() })
+                    .tooltip("Write the curation log into the .sorting.zarr (curation.json; Ctrl+S)")
+                    .disabled(!dirty)
+                    .on_click(move |_, _, cx| {
+                        let _ = me.update(cx, |w, cx| w.save(cx));
+                    })
+            });
         let toolbar = h_flex()
-            .h(px(36.))
+            .h(px(40.))
             .flex_none()
             .px_2()
             .gap_2()
             .border_b_1()
             .border_color(border)
             .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).flex_none().child(SharedString::from(sorting.summary())))
+            .child(edit)
             .child(legend)
             .child(div().flex_1())
             .child(div().text_xs().text_color(muted).truncate().child(status))
             .child(views)
             .child(layout);
-        v_flex().id("sorting-workspace").size_full().bg(bg).child(toolbar).child(div().flex_1().min_h_0().child(self.dock.clone())).into_any_element()
+        v_flex()
+            .id("curation-workspace")
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(Self::on_key))
+            .on_mouse_down(gpui_kit::MouseButton::Left, cx.listener(|this, _, window, cx| window.focus(&this.focus, cx)))
+            .size_full()
+            .bg(bg)
+            .child(toolbar)
+            .child(div().flex_1().min_h_0().child(self.dock.clone()))
+            .child(self.strip.clone())
+            .into_any_element()
     }
 }
 
-/// One view of the Sorting workspace as a dock panel.
-pub struct SortingPanel {
-    ws: WeakEntity<SortingWorkspace>,
+/// One view of the Curation workspace as a dock panel.
+pub struct CurationPanel {
+    ws: WeakEntity<CurationWorkspace>,
     kind: ViewKind,
     focus: FocusHandle,
 }
@@ -567,7 +597,7 @@ fn num(v: f64, digits: usize) -> String {
     if v.is_finite() { format!("{v:.digits$}") } else { "—".into() }
 }
 
-impl SortingPanel {
+impl CurationPanel {
     fn table(&self, d: TableData, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.theme();
         let (muted, border, accent) = (t.muted_foreground, t.border, t.accent);
@@ -639,8 +669,10 @@ impl SortingPanel {
                                 cell.child(text)
                             }
                         }))
-                        .on_click(move |_, _, cx| {
-                            let _ = me.update(cx, |ws, cx| ws.toggle_unit(u, cx));
+                        .on_click(move |e, _, cx| {
+                            let m = e.modifiers();
+                            let add = m.control || m.platform || m.shift;
+                            let _ = me.update(cx, |ws, cx| ws.pick_unit(u, add, cx));
                         })
                 })
                 .collect()
@@ -656,7 +688,7 @@ impl SortingPanel {
     }
 }
 
-impl Render for SortingPanel {
+impl Render for CurationPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let Some(ws) = self.ws.upgrade() else { return div().into_any_element() };
         let muted = cx.theme().muted_foreground;
@@ -675,9 +707,12 @@ impl Render for SortingPanel {
             };
             return self.table(data, cx);
         }
-        let (image, computing, background, label) = {
+        if self.kind == ViewKind::Similarity {
+            return self.similarity(&ws, cx);
+        }
+        let (image, computing, background) = {
             let w = ws.read(cx);
-            (w.plots.images.get(&self.kind).cloned(), w.computing, w.store.read(cx).palette().background, (self.kind == ViewKind::Trace).then(|| w.strip_label(cx)))
+            (w.plots.images.get(&self.kind).cloned(), w.computing, w.store.read(cx).palette().background)
         };
         let body = match image {
             Some(i) => div().size_full().child(img(i).size_full()).into_any_element(),
@@ -691,36 +726,70 @@ impl Render for SortingPanel {
                 .child(if computing { "Computing…" } else { "Select units in the table" })
                 .into_any_element(),
         };
-        let controls = label.map(|label| {
-            let (me, me2) = (self.ws.clone(), self.ws.clone());
-            h_flex()
-                .h(px(28.))
-                .flex_none()
-                .px_2()
-                .gap_1()
-                .child(icon_button("spike-prev", IconName::ChevronLeft, "Previous spike").xsmall().on_click(move |_, _, cx| {
-                    let _ = me.update(cx, |w, cx| w.step_spike(false, cx));
-                }))
-                .child(icon_button("spike-next", IconName::ChevronRight, "Next spike").xsmall().on_click(move |_, _, cx| {
-                    let _ = me2.update(cx, |w, cx| w.step_spike(true, cx));
-                }))
-                .child(div().text_xs().text_color(muted).truncate().child(label))
-        });
-        v_flex().size_full().bg(color(background)).children(controls).child(div().flex_1().min_h_0().child(body)).into_any_element()
+        v_flex().size_full().bg(color(background)).child(div().flex_1().min_h_0().child(body)).into_any_element()
     }
 }
 
-impl EventEmitter<PanelEvent> for SortingPanel {}
+impl CurationPanel {
+    /// The units most like the lead unit (template similarity): a click adds one to the
+    /// selection, to compare or merge.
+    fn similarity(&self, ws: &Entity<CurationWorkspace>, cx: &mut Context<Self>) -> AnyElement {
+        let t = cx.theme();
+        let (muted, accent) = (t.muted_foreground, t.accent);
+        let w = ws.read(cx);
+        let (Some(sorting), Some(&lead)) = (w.sorting(cx), w.selected.first()) else {
+            return div().size_full().p_3().text_xs().text_color(muted).child("Select a unit: the units whose templates look most like it are listed here.").into_any_element();
+        };
+        let palette = w.store.read(cx).palette();
+        let selected = w.selected.clone();
+        let list = similar(&sorting, lead, SIMILAR_MAX);
+        let me = self.ws.clone();
+        v_flex()
+            .id("similar-units")
+            .size_full()
+            .overflow_y_scroll()
+            .p_1()
+            .child(div().px_1().pb_1().text_xs().text_color(muted).child(format!("Like unit {} (template similarity); click to add to the selection", sorting.units[lead].info.unit_id)))
+            .children(list.into_iter().map(|(u, score)| {
+                let info = &sorting.units[u].info;
+                let on = selected.contains(&u);
+                let me = me.clone();
+                h_flex()
+                    .id(("similar", u))
+                    .h(px(ROW_H))
+                    .px_2()
+                    .gap_2()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .when(on, |d| d.bg(accent))
+                    .child(div().size(px(8.)).flex_none().rounded_full().bg(color(palette.unit(u))))
+                    .child(div().w(px(56.)).text_xs().child(format!("Unit {}", info.unit_id)))
+                    .child(div().w(px(44.)).text_xs().font_weight(FontWeight::SEMIBOLD).child(format!("{score:.2}")))
+                    .child(div().h(px(4.)).w(px(80. * score.clamp(0.0, 1.0))).rounded_sm().bg(color(palette.unit(u))))
+                    .child(div().flex_1().text_xs().text_color(muted).truncate().child(format!("{} · {} spikes · ch {}", info.quality_label, info.num_spikes, info.primary_channel)))
+                    .on_click(move |_, _, cx| {
+                        let _ = me.update(cx, |ws, cx| {
+                            if !ws.selected.contains(&u) {
+                                ws.toggle_unit(u, cx);
+                            }
+                        });
+                    })
+            }))
+            .into_any_element()
+    }
+}
 
-impl Focusable for SortingPanel {
+impl EventEmitter<PanelEvent> for CurationPanel {}
+
+impl Focusable for CurationPanel {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()
     }
 }
 
-impl BasePanel for SortingPanel {
+impl BasePanel for CurationPanel {
     fn panel_name(&self) -> &'static str {
-        "dspk-app.sorting-view"
+        "dspk-app.curation-view"
     }
 
     fn on_removed(&mut self, _: &mut Window, cx: &mut Context<Self>) {
@@ -729,7 +798,7 @@ impl BasePanel for SortingPanel {
     }
 }
 
-impl Panel for SortingPanel {
+impl Panel for CurationPanel {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         self.kind.title()
     }
