@@ -83,6 +83,13 @@ enum Action {
     },
     /// Stop the running job (control permission)
     Stop,
+    /// Fetch a file, or a directory such as a .sorting.zarr, into a new local path
+    Fetch {
+        /// Under the server's data root
+        path: String,
+        /// Where to put it (default: its name, here); never overwritten
+        dest: Option<PathBuf>,
+    },
 }
 
 fn parse_param(s: &str) -> Result<(String, String), String> {
@@ -190,6 +197,13 @@ pub async fn run(args: &RemoteArgs) -> anyhow::Result<()> {
             }
         }
         Action::Stop => print_status(&session.stop().await?),
+        Action::Fetch { path, dest } => {
+            let name = path.trim_end_matches('/').rsplit('/').next().unwrap_or(path);
+            let dest = dest.clone().unwrap_or_else(|| PathBuf::from(name));
+            let started = std::time::Instant::now();
+            let (files, bytes) = session.fetch(path.trim_end_matches('/'), &dest).await.with_context(|| format!("fetching {path} into {}", dest.display()))?;
+            println!("Fetched {files} file(s), {:.1} MB, into {} in {:.1} s", bytes as f64 / 1e6, dest.display(), started.elapsed().as_secs_f64());
+        }
     }
     session.close().await;
     Ok(())
