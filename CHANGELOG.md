@@ -36,7 +36,21 @@ version number.
   root (`files::DataRoot`: absolute paths, `..`, hidden files and links out of it refused;
   `RecordingOpener`, `Device`, `serve_session`), each client opening its own;
   `Session::recording()` replaces `info()`, with `list_files` and `open`.
-  `dspk serve --data <dir>`, `dspk receive --open <path>`.
+  `dspk serve --data <dir>`, `dspk receive --open <path>`. Identity files and keys
+  (`*.dspk-identity.pem`, `*.key`) are never listed or served.
+
+### Added (server jobs)
+
+- **Sorts on a server.** A control client configures a job (`Configure`: sorter, recording,
+  output, parameters, part), starts and stops it; any client reads `Status` and `Logs`. One job
+  at a time (Stopped ⇄ Running, Error); every request is checked (known sorter, paths under the
+  data root, a new output never overwritten, plain parameter names, none the server sets) and
+  every control request audited (`audit.jsonl`, 0600). `dspk-stream::jobs` (`Jobs`,
+  `JobRunner`); `dspk serve --data` runs `dspk-cli-sorter`.
+- **Fetch** files and directories (a `.sorting.zarr`) under the data root (`Session::fetch`,
+  never overwriting, names from the server checked).
+- **`dspk remote <addr> --identity <file>`**: `info`, `files`, `sort … [--wait]`, `status
+  [--follow]`, `logs`, `stop`, `fetch`. `dspk clients enroll --out -` writes to standard output.
 
 ### Added
 
