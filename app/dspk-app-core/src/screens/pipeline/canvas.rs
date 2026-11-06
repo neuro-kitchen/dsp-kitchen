@@ -34,11 +34,13 @@ use crate::domain::command::{NodeMove, SessionCommand};
 use crate::domain::graph::{GraphDoc, NodeKind, COLUMN};
 use crate::ui::widgets::icon_button;
 
-use super::catalog::{describe, Template};
+use super::catalog::{describe, type_name, Template};
 
 /// A node's size in canvas units.
 pub const NODE_W: f32 = 216.;
 pub const NODE_H: f32 = 64.;
+/// Height of a recipe's tab above its card (canvas units).
+const RECIPE_TAB: f32 = 18.;
 /// Handle radius (screen px) and how far from it a press still grabs it.
 const HANDLE_R: f32 = 5.;
 const HANDLE_GRAB: f32 = 11.;
@@ -96,6 +98,8 @@ pub struct GraphCanvas {
     fit_pending: bool,
     /// The node under the pointer (its path is highlighted while nothing is selected).
     hover: Option<String>,
+    /// Recipe nodes whose ops are listed under them.
+    expanded: BTreeSet<String>,
     _subs: Vec<Subscription>,
 }
 
@@ -129,6 +133,7 @@ impl GraphCanvas {
             bounds: Rc::new(Cell::new(Bounds::default())),
             fit_pending: true,
             hover: None,
+            expanded: BTreeSet::new(),
             _subs: subs,
         }
     }
@@ -598,7 +603,19 @@ impl GraphCanvas {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn node_card(&self, id: &str, kind: &NodeKind, (sx, sy): (f32, f32), selected: bool, faded: bool, lit: bool, active: bool, run: Option<NodeRun>, cx: &App) -> impl IntoElement + use<> {
+    fn node_card(
+        &self,
+        id: &str,
+        kind: &NodeKind,
+        (sx, sy): (f32, f32),
+        selected: bool,
+        faded: bool,
+        lit: bool,
+        active: bool,
+        run: Option<NodeRun>,
+        group: Option<Vec<String>>,
+        cx: &App,
+    ) -> impl IntoElement + use<> {
         let t = cx.theme();
         let (warning, success, danger, muted) = (t.warning, t.success, t.danger, t.muted_foreground);
         let z = self.zoom;
@@ -633,6 +650,16 @@ impl GraphCanvas {
                 NodeRun::Failed(_) => div().flex_none().size(d).rounded_full().bg(danger).into_any_element(),
             }
         });
+        // A recipe: a group of ops, shown as one card with a tab and what it holds
+        let recipe_name = match kind {
+            NodeKind::Recipe { recipe, .. } => Some(recipe.clone()),
+            _ => None,
+        };
+        let group_line = group.as_ref().map(|ops| match ops.len() {
+            0 => "no ops (not defined in this session)".to_string(),
+            n => format!("{n} op{}: {}", if n == 1 { "" } else { "s" }, ops.join(" · ")),
+        });
+        let listed = group.clone().filter(|_| self.expanded.contains(id));
         let run_line = match &run {
             Some(NodeRun::Running { line, fraction, .. }) => {
                 let pct = fraction.map(|f| format!("{:.0} % · ", f * 100.0)).unwrap_or_default();
@@ -680,14 +707,55 @@ impl GraphCanvas {
                                     .when(!enabled, |d| d.child(div().flex_none().text_size(px(10.0 * z)).text_color(t.muted_foreground).child("off")))
                                     .children(badge),
                             )
-                            .when(z >= 0.45, |d| match run_line {
-                                Some((line, color)) => d.child(div().truncate().text_size(px(10.5 * z)).text_color(color).child(line)),
-                                None => d.child(div().truncate().text_size(px(11.0 * z)).font_family("monospace").text_color(t.muted_foreground).child(sub)),
+                            .when(z >= 0.45, |d| match (run_line, group_line) {
+                                (Some((line, color)), _) => d.child(div().truncate().text_size(px(10.5 * z)).text_color(color).child(line)),
+                                (None, Some(ops)) => d.child(div().truncate().text_size(px(11.0 * z)).text_color(t.muted_foreground).child(ops)),
+                                (None, None) => d.child(div().truncate().text_size(px(11.0 * z)).font_family("monospace").text_color(t.muted_foreground).child(sub)),
                             }),
                     ),
             )
             .when(kind.has_input(), |d| d.child(handle(true)))
             .when(kind.has_output(), |d| d.child(handle(false)))
+            // The group's tab above the card, and its ops listed under it when expanded
+            .children(recipe_name.filter(|_| z >= 0.45).map(|name| {
+                div()
+                    .absolute()
+                    .top(px(-RECIPE_TAB * z))
+                    .left(px(10.0 * z))
+                    .h(px(RECIPE_TAB * z))
+                    .px(px(8.0 * z))
+                    .rounded_t(px(6.0 * z))
+                    .border_1()
+                    .border_b_0()
+                    .border_color(if selected { t.primary } else { t.border })
+                    .bg(t.secondary)
+                    .flex()
+                    .items_center()
+                    .text_size(px(10.0 * z))
+                    .text_color(t.muted_foreground)
+                    .child(format!("Recipe: {name}"))
+            }))
+            .children(listed.map(|ops| {
+                v_flex()
+                    .absolute()
+                    .top(px(NODE_H * z + 4.0))
+                    .left_0()
+                    .w(px(NODE_W * z))
+                    .p(px(6.0 * z))
+                    .gap(px(2.0 * z))
+                    .rounded(px(8.0 * z))
+                    .border_1()
+                    .border_color(t.border)
+                    .bg(t.background)
+                    .shadow_sm()
+                    .children(ops.into_iter().enumerate().map(|(i, op)| {
+                        h_flex()
+                            .gap(px(6.0 * z))
+                            .text_size(px(11.0 * z))
+                            .child(div().w(px(14.0 * z)).text_color(t.muted_foreground).child(format!("{}", i + 1)))
+                            .child(div().truncate().child(op))
+                    }))
+            }))
     }
 
     /// Buttons over the selected node.
@@ -715,6 +783,13 @@ impl GraphCanvas {
             NodeKind::Source { .. } => {}
         }
         if matches!(kind, NodeKind::Recipe { .. }) {
+            let shown = self.expanded.contains(id);
+            bar = bar.child(button(if shown { "hide-ops" } else { "show-ops" }, IconName::Menu, if shown { "Hide its ops" } else { "Show all its ops" }, |c, id, cx| {
+                if !c.expanded.remove(id) {
+                    c.expanded.insert(id.to_string());
+                }
+                cx.notify();
+            }));
             bar = bar.child(button("ungroup", IconName::Layers, "Ungroup: back to its ops", |c, id, cx| {
                 c.exec(SessionCommand::Ungroup { id: id.to_string() }, cx);
             }));
@@ -727,10 +802,12 @@ impl GraphCanvas {
         bar = bar
             .child(button("duplicate", IconName::Copy, "Duplicate (Ctrl+D)", |c, _, cx| c.duplicate_selected(cx)))
             .child(button("delete", IconName::Trash, "Delete (Del)", |c, _, cx| c.delete_selected(cx)));
+        // Above a recipe's tab
+        let lift = if matches!(kind, NodeKind::Recipe { .. }) { RECIPE_TAB * self.zoom } else { 0.0 };
         div()
             .absolute()
             .left(px(sx))
-            .top(px(sy - 34.0))
+            .top(px(sy - 34.0 - lift))
             .p_0p5()
             .rounded_md()
             .border_1()
@@ -954,6 +1031,7 @@ impl Render for GraphCanvas {
 
         // Edges and the dot grid, painted under the cards
         let status = s.node_status.clone();
+        let recipes = s.doc.recipes.clone();
         let running = |id: &str| matches!(status.get(id), Some(NodeRun::Running { .. }));
         let mut edges: Vec<((f32, f32), (f32, f32), bool, bool, bool)> = Vec::new();
         for e in &g.edges {
@@ -1055,7 +1133,11 @@ impl Render for GraphCanvas {
                 let sp = self.screen(p);
                 let shown = active.as_deref() == Some(n.id.as_str());
                 let lit = highlight.as_ref().is_some_and(|h| h.contains(&n.id));
-                self.node_card(&n.id, &n.kind, sp, self.selected.contains(&n.id), faded(&n.id), lit, shown, status.get(&n.id).cloned(), cx).into_any_element()
+                let group = match &n.kind {
+                    NodeKind::Recipe { recipe, .. } => Some(recipes.get(recipe).map(|r| r.ops.iter().map(|o| type_name(&o.node).to_string()).collect()).unwrap_or_default()),
+                    _ => None,
+                };
+                self.node_card(&n.id, &n.kind, sp, self.selected.contains(&n.id), faded(&n.id), lit, shown, status.get(&n.id).cloned(), group, cx).into_any_element()
             })
             .collect();
         let toolbar = self.single().cloned().and_then(|id| {

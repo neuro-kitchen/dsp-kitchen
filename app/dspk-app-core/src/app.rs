@@ -779,6 +779,22 @@ mod tests {
             assert_eq!(g.nodes.len(), 3);
             assert!(g.node("iir").is_some(), "the band-pass went in as op `iir`");
         });
+        // A recipe (a group of ops) is one card with its tab
+        cx.update(|cx| {
+            let pipeline = app.read(cx).pipeline.clone();
+            let recipe = crate::domain::recipe::builtin().into_iter().next().expect("a built-in recipe");
+            pipeline.update(cx, |p, cx| p.add_recipe(recipe, cx));
+        });
+        cx.run_until_parked();
+        let recipe_node = cx.update(|cx| {
+            store.read(cx).doc.graph.nodes.iter().find(|n| matches!(n.kind, crate::domain::graph::NodeKind::Recipe { .. })).map(|n| n.id.clone())
+        });
+        let recipe_node = recipe_node.expect("the recipe went into the graph as one node");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find(gpui_kit::SharedString::from(format!("node-{recipe_node}"))).is_some(), "drawn as one card");
+        })
+        .unwrap();
     }
 
     #[gpui_kit::test]
