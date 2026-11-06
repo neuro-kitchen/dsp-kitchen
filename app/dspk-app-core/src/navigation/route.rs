@@ -31,9 +31,9 @@ impl Workspace {
     pub fn hint(self) -> &'static str {
         match self {
             Workspace::Explore => "Look at the recording: traces, heatmaps, channels, timeline",
-            Workspace::Sorting => "The linked sorting: units, waveforms, features, correlograms",
-            Workspace::Pipeline => "The view's processing as a chain of operators",
-            Workspace::Curation => "Inspect and judge sorting results",
+            Workspace::Sorting => "Run the installed sorters on the recording or a part of it, compare their units",
+            Workspace::Pipeline => "The processing graph: recordings, operations, views and writes on a canvas",
+            Workspace::Curation => "Judge a sorting: units, waveforms, features, correlograms; label and merge",
         }
     }
 

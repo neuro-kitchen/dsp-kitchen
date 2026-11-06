@@ -1,213 +1,428 @@
-//! The Pipeline workspace: the active view's processing drawn as an operator chain, the way a
-//! Kotlin Flow reads — `flowOf(recording)`, then one operator per op (`.bandpass(300, 6000)`,
-//! `.cmr()`), then `.collect(write)` — each a card, with the data's shape between them (channels ×
-//! rate · sample type). Clicking an operator selects it: the Processing panel beside the chain
-//! edits it. It is the same op chain as Explore's Processing (the session document's view).
+//! The Pipeline workspace: a menu bar (one menu per kind of operation, as in Photoshop), the
+//! graph canvas in the middle, and on the right the operations tree (drag an operation onto the
+//! canvas, or click it to add it after the selected node) over the inspector of the selection.
+//! Every edit is a session command, so the canvas, Explore and an agent see the same graph.
 
-use dspk_pipeline::{Band, Mode, Node};
-use gpui_kit::component::button::Button;
+use std::collections::HashSet;
+use std::rc::Rc;
+
+use gpui_kit::assets::IconName;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Disableable as _, IconName, Sizable as _};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Disableable as _, Icon, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
-    div, px, App, AppContext as _, Context, Entity, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Subscription, Window,
+    div, px, AnyElement, App, AppContext as _, Context, Entity, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window,
 };
 
 use crate::data::jobs::processed_path;
 use crate::data::store::{AppEvent, Store};
 use crate::domain::command::SessionCommand;
-use crate::screens::explore::components::panels::DockToggle;
-use crate::screens::explore::components::processing::{op_summary, presets, ProcessingPanel};
-use crate::screens::explore::ExploreVm;
-use crate::ui::widgets::EmptyState;
+use crate::domain::graph::NodeKind;
+use crate::domain::session::{DisplayDoc, Show};
+use crate::screens::explore::components::processing::op_summary;
+use crate::ui::param_editor::{Commit, ParamEditor};
+use crate::ui::widgets::{row, Section};
 
-/// Width of the chain column and of the side panel (logical px).
-const CHAIN_W: f32 = 560.;
-const SIDE_W: f32 = 328.;
+use super::canvas::{CanvasEvent, CatalogDrag, DragGhost, GraphCanvas};
+use super::catalog::{catalog, describe, Template};
 
-/// `.bandpass(300.0, 6000.0, order = 3)` — the op as a Flow operator call.
-pub fn flow_call(node: &Node) -> String {
-    let n = |v: f64| if v.fract() == 0.0 { format!("{v:.1}") } else { format!("{v}") };
-    match node {
-        Node::Iir { band, cutoff, order, mode, .. } => {
-            let phase = if *mode == Mode::ForwardBackward { "" } else { ", causal = true" };
-            match (band, cutoff.as_slice()) {
-                (Band::Bandpass, [lo, hi]) => format!(".bandpass({}, {}, order = {order}{phase})", n(*lo), n(*hi)),
-                (Band::Bandstop, [lo, hi]) => format!(".bandstop({}, {}, order = {order}{phase})", n(*lo), n(*hi)),
-                (Band::Highpass, [f]) => format!(".highpass({}, order = {order}{phase})", n(*f)),
-                (Band::Lowpass, [f]) => format!(".lowpass({}, order = {order}{phase})", n(*f)),
-                _ => ".iir(…)".into(),
-            }
-        }
-        Node::Notch { freq, q, .. } => format!(".notch({}, q = {})", n(*freq), n(*q)),
-        Node::Car {} => ".car()".into(),
-        Node::Cmr {} => ".cmr()".into(),
-        Node::Scale { alpha, beta } => format!(".map {{ it * {alpha} + {beta} }}"),
-        Node::SubtractBaseline { baseline } => format!(".map {{ it - {baseline} }}"),
-        Node::Clamp { min, max } => format!(".map {{ it.coerceIn({min}, {max}) }}"),
-        Node::Sos { sections, .. } => format!(".sos(sections = {})", sections.len()),
-        Node::Fir { taps, .. } => format!(".fir(taps = {})", taps.len()),
-        Node::GaussianSmooth { sigma_samples, .. } => format!(".gaussianSmooth(sigma = {sigma_samples})"),
-        Node::Median { width, .. } => format!(".median(width = {width})"),
-        Node::TeagerKaiser { .. } => ".teagerKaiser()".into(),
-        Node::Resample { up, down, .. } => format!(".resample({up}, {down})"),
-        Node::Read { .. } => "flowOf(recording)".into(),
-        Node::Write { .. } => ".collect(write)".into(),
-    }
-}
+/// Width of the right side (logical px).
+const SIDE_W: f32 = 312.;
 
 pub struct PipelineView {
     store: Entity<Store>,
-    processing: Entity<ProcessingPanel>,
-    _sub: Subscription,
+    canvas: Entity<GraphCanvas>,
+    inspector: Entity<Inspector>,
+    /// Categories folded in the tree.
+    folded: HashSet<&'static str>,
+    _subs: Vec<Subscription>,
 }
 
 impl PipelineView {
-    pub fn new(store: Entity<Store>, explore: Entity<ExploreVm>, cx: &mut Context<Self>) -> Self {
-        let toggle = DockToggle { placement: gpui_kit::base::dock::DockPlacement::Right, open: std::rc::Rc::new(|_| true), toggle: std::rc::Rc::new(|_, _| {}) };
-        let processing = cx.new(|cx| ProcessingPanel::new(explore, toggle, cx));
-        let sub = cx.subscribe(&store, |_, _, e: &AppEvent, cx| {
-            if matches!(e, AppEvent::Document(_) | AppEvent::Picked | AppEvent::RecordingChanged | AppEvent::JobChanged) {
+    pub fn new(store: Entity<Store>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let canvas = cx.new(|cx| GraphCanvas::new(store.clone(), cx));
+        let inspector = cx.new(|cx| Inspector::new(store.clone(), canvas.clone(), window, cx));
+        let subs = vec![cx.subscribe(&store, |_, _, e: &AppEvent, cx| {
+            if matches!(e, AppEvent::Document(_) | AppEvent::RecordingChanged | AppEvent::JobChanged) {
                 cx.notify();
             }
-        });
-        Self { store, processing, _sub: sub }
+        })];
+        Self { store, canvas, inspector, folded: HashSet::new(), _subs: subs }
     }
-}
 
-/// A card of the chain: the operator call, what it does, and its controls.
-fn card(id: impl Into<SharedString>, call: String, detail: String, selected: bool, cx: &App) -> gpui_kit::Stateful<gpui_kit::Div> {
-    let t = cx.theme();
-    div()
-        .id(gpui_kit::ElementId::Name(id.into()))
-        .w_full()
-        .p_4()
-        .rounded_lg()
-        .border_1()
-        .border_color(if selected { t.primary } else { t.border })
-        .bg(t.background)
-        .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(call))
-        .child(div().mt_1().text_xs().text_color(t.muted_foreground).truncate().child(detail))
-}
+    fn canvas_do(canvas: &WeakEntity<GraphCanvas>, cx: &mut App, f: impl FnOnce(&mut GraphCanvas, &mut Context<GraphCanvas>)) {
+        let _ = canvas.update(cx, f);
+    }
 
-/// The arrow between two cards, with the data's shape.
-fn connector(shape: String, cx: &App) -> impl IntoElement {
-    let muted = cx.theme().muted_foreground;
-    h_flex().h(px(40.)).pl_6().gap_3().child(div().w(px(1.)).h_full().bg(cx.theme().border)).child(div().text_xs().text_color(muted).child(shape))
+    /// The menu bar: File, Edit, one menu per kind of operation, View.
+    fn menu_bar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = cx.theme();
+        let canvas = self.canvas.downgrade();
+        let selected = !self.canvas.read(cx).selected.is_empty();
+        let writable = self.canvas.read(cx).single().and_then(|id| self.store.read(cx).doc.graph.node(id)).is_some_and(|n| matches!(n.kind, NodeKind::Write {} | NodeKind::View { .. }));
+        let menu = |id: &'static str, title: &'static str, build: Rc<dyn Fn(PopupMenu) -> PopupMenu>| {
+            Button::new(id).ghost().small().label(title).dropdown_menu(move |m: PopupMenu, _, _| build(m))
+        };
+        let item_canvas = canvas.clone();
+        let item = move |label: &'static str, enabled: bool, f: fn(&mut GraphCanvas, &mut Window, &mut Context<GraphCanvas>)| {
+            let canvas = item_canvas.clone();
+            PopupMenuItem::new(label).disabled(!enabled).on_click(move |_, window, cx| {
+                let _ = canvas.update(cx, |c, cx| f(c, window, cx));
+            })
+        };
+        let file = {
+            let item = item.clone();
+            Rc::new(move |m: PopupMenu| {
+                m.item(item("Add the open recording", true, |c, w, cx| c.add(&Template::OpenRecording, None, w, cx)))
+                    .item(item("Add a recording from file…", true, |c, w, cx| c.add(&Template::RecordingFile, None, w, cx)))
+                    .separator()
+                    .item(item("Write the selected chain", writable, |c, _, cx| {
+                        if let Some(id) = c.single().cloned() {
+                            let store = c.store_entity();
+                            store.update(cx, |s, cx| s.write_node(&id, cx));
+                        }
+                    }))
+            }) as Rc<dyn Fn(PopupMenu) -> PopupMenu>
+        };
+        let edit = {
+            let item = item.clone();
+            Rc::new(move |m: PopupMenu| {
+                m.item(item("Duplicate  (Ctrl+D)", selected, |c, _, cx| c.duplicate_selected(cx)))
+                    .item(item("Delete  (Del)", selected, |c, _, cx| c.delete_selected(cx)))
+                    .item(item("Disconnect input", selected, |c, _, cx| c.disconnect_selected(cx)))
+                    .separator()
+                    .item(item("Select all  (Ctrl+A)", true, |c, _, cx| c.select_all(cx)))
+            }) as Rc<dyn Fn(PopupMenu) -> PopupMenu>
+        };
+        let view = {
+            let item = item.clone();
+            Rc::new(move |m: PopupMenu| {
+                m.item(item("Zoom in  (Ctrl +)", true, |c, _, cx| c.zoom_by(1.25, None, cx)))
+                    .item(item("Zoom out  (Ctrl −)", true, |c, _, cx| c.zoom_by(0.8, None, cx)))
+                    .item(item("Actual size  (Ctrl+0)", true, |c, _, cx| c.zoom_to(1.0, cx)))
+                    .item(item("Fit the graph  (F)", true, |c, _, cx| c.fit(cx)))
+                    .separator()
+                    .item(item("Dot grid", true, |c, _, cx| {
+                        c.show_grid = !c.show_grid;
+                        cx.notify();
+                    }))
+                    .item(item("Minimap", true, |c, _, cx| {
+                        c.show_minimap = !c.show_minimap;
+                        cx.notify();
+                    }))
+            }) as Rc<dyn Fn(PopupMenu) -> PopupMenu>
+        };
+        let mut bar = h_flex()
+            .h(px(34.))
+            .flex_none()
+            .px_2()
+            .gap_0p5()
+            .border_b_1()
+            .border_color(t.border)
+            .child(menu("pipeline-menu-file", "File", file))
+            .child(menu("pipeline-menu-edit", "Edit", edit));
+        // One menu per kind of operation (Sources are in File)
+        for c in catalog().into_iter().filter(|c| c.name != "Sources") {
+            let canvas = canvas.clone();
+            let items = c.items.clone();
+            let build: Rc<dyn Fn(PopupMenu) -> PopupMenu> = Rc::new(move |m: PopupMenu| {
+                let mut m = m;
+                for it in &items {
+                    let (canvas, template) = (canvas.clone(), it.template.clone());
+                    m = m.item(PopupMenuItem::new(it.label).on_click(move |_, window, cx| {
+                        Self::canvas_do(&canvas, cx, |c, cx| c.add(&template, None, window, cx));
+                    }));
+                }
+                m
+            });
+            let id: &'static str = match c.name {
+                "Filter" => "pipeline-menu-filter",
+                "Reference" => "pipeline-menu-reference",
+                "Smooth" => "pipeline-menu-smooth",
+                "Transform" => "pipeline-menu-transform",
+                _ => "pipeline-menu-output",
+            };
+            bar = bar.child(menu(id, c.name, build));
+        }
+        bar.child(menu("pipeline-menu-view", "View", view))
+            .child(div().flex_1())
+            .child(div().text_xs().text_color(t.muted_foreground).child("Wheel: pan · Ctrl+wheel: zoom · Space+drag: move · drag an output onto a node: connect"))
+    }
+
+    /// The operations tree: categories (fold with a click), items to drag or click.
+    fn tree(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = cx.theme();
+        let (muted, hover) = (t.muted_foreground, t.accent);
+        let mut list = v_flex().gap_0p5();
+        for c in catalog() {
+            let folded = self.folded.contains(c.name);
+            let name = c.name;
+            list = list.child(
+                h_flex()
+                    .id(SharedString::from(format!("ops-cat-{}", name.to_lowercase())))
+                    .h(px(26.))
+                    .px_1()
+                    .gap_1p5()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .hover(|d| d.bg(hover))
+                    .child(Icon::new(if folded { IconName::ChevronRight } else { IconName::ChevronDown }).xsmall().text_color(muted))
+                    .child(Icon::new(c.icon).small().text_color(muted))
+                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(name))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if !this.folded.remove(name) {
+                            this.folded.insert(name);
+                        }
+                        cx.notify();
+                    })),
+            );
+            if folded {
+                continue;
+            }
+            for (i, it) in c.items.into_iter().enumerate() {
+                let drag = CatalogDrag { label: it.label.into(), template: it.template.clone() };
+                let canvas = self.canvas.downgrade();
+                let template = it.template.clone();
+                list = list.child(
+                    v_flex()
+                        .id(SharedString::from(format!("ops-item-{}-{i}", name.to_lowercase())))
+                        .test_support()
+                        .pl(px(30.))
+                        .pr_1()
+                        .py_0p5()
+                        .rounded_md()
+                        .cursor_grab()
+                        .hover(|d| d.bg(hover))
+                        .child(div().text_sm().truncate().child(it.label))
+                        .child(div().text_xs().text_color(muted).truncate().child(it.hint))
+                        .on_drag(drag, |d: &CatalogDrag, _, _, cx| cx.new(|_| DragGhost(d.label.clone())))
+                        .on_click(move |_, window, cx| Self::canvas_do(&canvas, cx, |c, cx| c.add(&template, None, window, cx))),
+                );
+            }
+        }
+        v_flex()
+            .id("ops-tree")
+            .flex_none()
+            .max_h(px(360.))
+            .overflow_y_scroll()
+            .p_2()
+            .gap_1()
+            .child(div().px_1().text_xs().text_color(muted).child("Drag onto the canvas, or click to add after the selected node"))
+            .child(list)
+    }
 }
 
 impl Render for PipelineView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let s = self.store.read(cx);
-        let Some(view) = s.active_view().cloned() else {
-            return div()
-                .size_full()
-                .child(EmptyState::new(gpui_kit::assets::IconName::Workflow, "No view yet", "Open a recording: its processing shows here as a chain of operators."))
-                .into_any_element();
-        };
-        let source = s.view_source(&view);
-        let entry = s.sources().map(|ss| ss.entry(&source).clone());
-        let picked = s.picked_op.clone();
-        let running = s.job.is_some();
-        let (channels, rate, format) = entry.as_ref().map_or((0, 0.0, "?"), |e| (e.channels, e.sample_rate.rate_hz(), e.format.name()));
-        let channels = view.recording.channels.as_ref().map_or(channels, Vec::len);
-        let rate = if rate >= 1000.0 { format!("{:.1} kHz", rate / 1000.0) } else { format!("{rate:.0} Hz") };
-        let shape = |ty: &str| format!("{channels} ch × {rate} · {ty}");
-        let file = view.recording.path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-        let output = processed_path(&view.recording.path, &view.id);
-        let out_name = output.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-        let enabled = view.ops.iter().any(|o| o.enabled);
-
-        let mut chain = v_flex().w(px(CHAIN_W)).child(card("flow-source", "flowOf(recording)".into(), format!("{file} · {}", shape(format)), false, cx));
-        let mut ty = format.to_string();
-        for op in &view.ops {
-            chain = chain.child(connector(shape(&ty), cx));
-            if op.enabled {
-                // Processing runs in float32 on the device
-                ty = "float32".into();
-            }
-            let (store, id, op_id, on) = (self.store.clone(), view.id.clone(), op.id.clone(), op.enabled);
-            let pick = {
-                let (store, op_id) = (self.store.clone(), op.id.clone());
-                move |_: &gpui_kit::ClickEvent, _: &mut Window, cx: &mut App| store.update(cx, |s, cx| s.pick_op(Some(op_id.clone()), cx))
-            };
-            let c = card(format!("flow-op-{}", op.id), flow_call(&op.node), op_summary(&op.node), picked.as_deref() == Some(op.id.as_str()), cx)
-                .cursor_pointer()
-                .when(!op.enabled, |d| d.opacity(0.5))
-                .on_click(pick)
-                .child(h_flex().mt_2().gap_2().child(Checkbox::new(SharedString::from(format!("flow-on-{}", op.id))).checked(on).label("Enabled").on_click(move |v: &bool, _, cx| {
-                    let _ = store.update(cx, |s, cx| s.execute(SessionCommand::EnableOp { view: id.clone(), op: op_id.clone(), enabled: *v }, cx));
-                })));
-            chain = chain.child(c);
-        }
-        let add = {
-            let (store, id) = (self.store.clone(), view.id.clone());
-            Button::new("flow-add").outline().small().icon(IconName::Plus).label("Add operator").dropdown_menu(move |menu: PopupMenu, _, _| {
-                let mut menu = menu;
-                for (label, value) in presets() {
-                    let (store, id) = (store.clone(), id.clone());
-                    menu = menu.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
-                        let Ok(node) = serde_json::from_value::<Node>(value.clone()) else { return };
-                        store.update(cx, |s, cx| {
-                            if s.execute(SessionCommand::AddOp { view: id.clone(), node, index: None, id: None }, cx).is_ok() {
-                                let new = s.active_view().and_then(|v| v.ops.last()).map(|o| o.id.clone());
-                                s.pick_op(new, cx);
-                            }
-                        });
-                    }));
-                }
-                menu
-            })
-        };
-        let write = Button::new("flow-write")
-            .small()
-            .outline()
-            .label(if running { "Running…" } else { "Write" })
-            .disabled(running || !enabled)
-            .on_click({
-                let store = self.store.clone();
-                move |_, _, cx| store.update(cx, |s, cx| s.write_active_view(cx))
-            });
-        chain = chain
-            .child(h_flex().h(px(48.)).pl_6().items_center().child(add))
-            .child(connector(shape(&ty), cx))
-            .child(card("flow-write-card", ".collect(write)".into(), format!("{out_name} · Zarr, compressed"), false, cx).child(h_flex().mt_2().child(write)));
-
-        let t = cx.theme();
-        h_flex()
+        let border = cx.theme().border;
+        v_flex()
             .id("pipeline-workspace")
             .size_full()
+            .child(self.menu_bar(cx))
             .child(
-                div()
-                    .id("pipeline-chain")
+                h_flex()
                     .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .overflow_y_scroll()
+                    .min_h_0()
+                    .child(div().flex_1().min_w_0().h_full().child(self.canvas.clone()))
                     .child(
                         v_flex()
-                            .items_center()
-                            .py_8()
-                            .gap_4()
-                            .child(v_flex().w(px(CHAIN_W)).gap_1().child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(view.name.clone())).child(div().text_xs().text_color(t.muted_foreground).child("The view's processing as a chain of operators: click one to edit it on the right.")))
-                            .child(chain),
+                            .w(px(SIDE_W))
+                            .flex_none()
+                            .h_full()
+                            .border_l_1()
+                            .border_color(border)
+                            .child(self.tree(cx))
+                            .child(div().h(px(1.)).flex_none().bg(border))
+                            .child(div().flex_1().min_h_0().child(self.inspector.clone())),
                     ),
             )
-            .child(div().w(px(SIDE_W)).flex_none().h_full().border_l_1().border_color(t.border).child(self.processing.clone()))
-            .into_any_element()
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// The selected node: what it is, and what can be changed.
+pub struct Inspector {
+    store: Entity<Store>,
+    canvas: Entity<GraphCanvas>,
+    params: Entity<ParamEditor>,
+    name: Entity<InputState>,
+    /// The view node the name input was filled for.
+    name_for: String,
+    _subs: Vec<Subscription>,
+}
 
-    #[test]
-    fn test_flow_calls() {
-        let bp: Node = serde_json::from_value(serde_json::json!({"op": "iir", "band": "bandpass", "cutoff": [300.0, 6000.0]})).unwrap();
-        assert!(flow_call(&bp).starts_with(".bandpass(300.0, 6000.0, order = "));
-        assert_eq!(flow_call(&Node::Cmr {}), ".cmr()");
+impl Inspector {
+    fn new(store: Entity<Store>, canvas: Entity<GraphCanvas>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let name = cx.new(|cx| InputState::new(window, cx));
+        let subs = vec![
+            cx.subscribe(&canvas, |_, _, _: &CanvasEvent, cx| cx.notify()),
+            cx.subscribe(&store, |_, _, e: &AppEvent, cx| {
+                if matches!(e, AppEvent::Document(_) | AppEvent::JobChanged) {
+                    cx.notify();
+                }
+            }),
+            cx.subscribe(&name, |this, input, e: &InputEvent, cx| {
+                if matches!(e, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                    let text = input.read(cx).value().trim().to_string();
+                    if !text.is_empty() && !this.name_for.is_empty() {
+                        let view = this.name_for.clone();
+                        let _ = this.store.update(cx, |s, cx| s.execute(SessionCommand::RenameView { view, name: text }, cx));
+                    }
+                }
+            }),
+        ];
+        Self { store, canvas, params: cx.new(|_| ParamEditor::new()), name, name_for: String::new(), _subs: subs }
+    }
+
+    fn exec(&self, cmd: SessionCommand, cx: &mut App) {
+        let _ = self.store.update(cx, |s, cx| s.execute(cmd, cx));
+    }
+
+    fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let t = cx.theme();
+        let muted = t.muted_foreground;
+        let selected = self.canvas.read(cx).selected.clone();
+        let s = self.store.read(cx);
+        let g = s.doc.graph.clone();
+        let job = s.job.as_ref().map(|j| (j.label.clone(), j.fraction));
+        let active = s.doc.active_view.clone();
+        if selected.len() > 1 {
+            let canvas = self.canvas.downgrade();
+            return Section::new(format!("{} nodes selected", selected.len()))
+                .child(div().text_xs().text_color(muted).child("Drag one of them to move them together; Ctrl+D duplicates them with their edges."))
+                .child(Button::new("inspector-delete").outline().small().label("Delete them").on_click(move |_, _, cx| {
+                    let _ = canvas.update(cx, |c, cx| c.delete_selected(cx));
+                }))
+                .into_any_element();
+        }
+        let Some(node) = selected.iter().next().and_then(|id| g.node(id)).cloned() else {
+            return Section::new("Nothing selected")
+                .child(div().text_xs().text_color(muted).child("Click a node to see it here; its path through the graph lights up."))
+                .child(div().text_xs().text_color(muted).child("A view node is a stream in Explore: connect a chain to it, then double-click it to show it."))
+                .child(div().text_xs().text_color(muted).child("A node has one input; outputs fan out, so one recording can feed several branches."))
+                .into_any_element();
+        };
+        let (title, sub, _) = describe(&node.kind);
+        let path = g.path(&node.id);
+        let header = v_flex()
+            .gap_0p5()
+            .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(title))
+            .child(div().text_xs().font_family("monospace").text_color(muted).truncate().child(sub))
+            .child(div().text_xs().text_color(muted).child(match &path {
+                Some(p) => format!("{} · {} step{} from its recording", node.id, p.len() - 1, if p.len() == 2 { "" } else { "s" }),
+                None if node.kind.has_input() => format!("{} · not connected to a recording", node.id),
+                None => node.id.clone(),
+            }));
+        let id = node.id.clone();
+        let body: AnyElement = match &node.kind {
+            NodeKind::Source { recording } => {
+                let open = s.recording.as_ref().and_then(|r| r.path.clone());
+                let is_open = open.as_deref() == Some(recording.path.as_path());
+                let store = self.store.clone();
+                let path = recording.path.clone();
+                v_flex()
+                    .gap_2()
+                    .child(row("File", div().text_xs().truncate().child(recording.path.display().to_string()), cx))
+                    .child(row("Source", div().text_xs().child(recording.source.clone().unwrap_or_else(|| "default".into())), cx))
+                    .child(row(
+                        "Channels",
+                        div().text_xs().child(recording.channels.as_ref().map_or_else(|| "all".to_string(), |c| format!("{} ({}…)", c.len(), c.iter().take(4).map(|c| c.to_string()).collect::<Vec<_>>().join(", ")))),
+                        cx,
+                    ))
+                    .child(div().text_xs().text_color(muted).child(format!("Feeds {} node(s).", g.outputs(&id).len())))
+                    .when(!is_open, |d| {
+                        d.child(Button::new("inspector-open-recording").outline().small().label("Open in Explore").on_click(move |_, _, cx| {
+                            store.update(cx, |s, cx| s.open(path.clone(), cx));
+                        }))
+                    })
+                    .into_any_element()
+            }
+            NodeKind::Op { enabled, node: op } => {
+                let commit: Commit = {
+                    let (store, id) = (self.store.clone(), id.clone());
+                    Rc::new(move |node, cx| store.update(cx, |s, cx| s.execute(SessionCommand::SetNode { id: id.clone(), node }, cx)).map(|_| ()).map_err(|e| e.to_string()))
+                };
+                self.params.update(cx, |p, cx| p.set_target(&id, op, commit, window, cx));
+                let views: Vec<String> = g.descendants(&id).into_iter().filter(|d| matches!(g.node(d).map(|n| &n.kind), Some(NodeKind::View { .. }))).collect();
+                let this = cx.entity().downgrade();
+                let on = *enabled;
+                let id2 = id.clone();
+                v_flex()
+                    .gap_2()
+                    .child(Checkbox::new("inspector-enabled").checked(on).label("On (off: kept in the graph, skipped)").on_click(move |v: &bool, _, cx| {
+                        let v = *v;
+                        let _ = this.update(cx, |i, cx| i.exec(SessionCommand::EnableNode { id: id2.clone(), enabled: v }, cx));
+                    }))
+                    .child(Section::new(format!("Parameters · {}", op_summary(op))).child(self.params.clone()))
+                    .child(div().text_xs().text_color(muted).child(if views.is_empty() {
+                        "Feeds no view yet: connect it to one to see it in Explore.".to_string()
+                    } else {
+                        format!("Changes {}: {}", if views.len() == 1 { "view" } else { "views" }, views.join(", "))
+                    }))
+                    .into_any_element()
+            }
+            NodeKind::View { name, display, .. } => {
+                if self.name_for != id {
+                    self.name_for = id.clone();
+                    let name = name.clone();
+                    self.name.update(cx, |i, cx| i.set_value(name, window, cx));
+                }
+                let ops = path.as_ref().map_or(0, |p| p.len().saturating_sub(2));
+                let shown = active.as_deref() == Some(id.as_str());
+                let show = |which: Show, label: &'static str| {
+                    let (store, id, display) = (self.store.clone(), id.clone(), display.clone());
+                    Button::new(SharedString::from(format!("inspector-show-{label}")))
+                        .small()
+                        .label(label)
+                        .map(|b| if display.show == which { b.primary() } else { b.outline() })
+                        .on_click(move |_, _, cx| {
+                            let display = DisplayDoc { show: which, ..display.clone() };
+                            let _ = store.update(cx, |s, cx| s.execute(SessionCommand::SetDisplay { view: id.clone(), display }, cx));
+                        })
+                };
+                let store = self.store.clone();
+                let id2 = id.clone();
+                v_flex()
+                    .gap_2()
+                    .child(row("Name", div().w(px(160.)).child(Input::new(&self.name).small()), cx))
+                    .child(row("Shows", h_flex().gap_1().child(show(Show::Processed, "Processed")).child(show(Show::Raw, "Raw")), cx))
+                    .child(div().text_xs().text_color(muted).child(match &path {
+                        Some(_) => format!("{ops} op(s) on its path.{}", if shown { " Shown in Explore now." } else { "" }),
+                        None => "Connect a chain to it (drag from an output onto it).".to_string(),
+                    }))
+                    .child(Button::new("inspector-show-view").primary().small().icon(Icon::new(IconName::ExternalLink)).label("Show in Explore").disabled(path.is_none()).on_click(move |_, _, cx| {
+                        store.update(cx, |s, cx| s.show_view(&id2, cx));
+                    }))
+                    .into_any_element()
+            }
+            NodeKind::Write {} => {
+                let out = g.chain(&id).map(|(r, _)| processed_path(&r.path, &id));
+                let store = self.store.clone();
+                let id2 = id.clone();
+                v_flex()
+                    .gap_2()
+                    .child(row("Output", div().text_xs().truncate().child(out.as_ref().map_or_else(|| "connect it first".into(), |p| p.display().to_string())), cx))
+                    .child(div().text_xs().text_color(muted).child("float32, Zarr, compressed; the whole recording through the enabled ops of its path."))
+                    .child(match &job {
+                        Some((label, fraction)) => div().text_xs().child(format!("{label}{}", fraction.map(|f| format!(" · {:.0} %", f * 100.0)).unwrap_or_default())).into_any_element(),
+                        None => Button::new("inspector-write").primary().small().icon(Icon::new(IconName::Play)).label("Write").disabled(out.is_none()).on_click(move |_, _, cx| {
+                            store.update(cx, |s, cx| s.write_node(&id2, cx));
+                        }).into_any_element(),
+                    })
+                    .into_any_element()
+            }
+        };
+        v_flex().gap_3().child(header).child(body).into_any_element()
+    }
+}
+
+impl Render for Inspector {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let body = self.body(window, cx);
+        v_flex().id("pipeline-inspector").size_full().p_3().gap_2().overflow_y_scroll().child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(cx.theme().muted_foreground).child("INSPECTOR")).child(body)
     }
 }

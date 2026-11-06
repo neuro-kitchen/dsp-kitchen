@@ -43,8 +43,7 @@ impl DspApp {
         let choice = store.read(cx).session.dark;
         Self::apply_theme(&store, choice, window, cx);
         let explore = cx.new(|cx| ExploreView::new(store.clone(), window, cx));
-        let explore_vm = explore.read(cx).vm.clone();
-        let pipeline = cx.new(|cx| crate::screens::pipeline::PipelineView::new(store.clone(), explore_vm, cx));
+        let pipeline = cx.new(|cx| crate::screens::pipeline::PipelineView::new(store.clone(), window, cx));
         let subs = vec![
             // Follow the system's light / dark until the user picks one
             cx.observe_window_appearance(window, |this, window, cx| {
@@ -304,7 +303,7 @@ impl DspApp {
                 return view.clone().into_any_element();
             }
         }
-        if workspace == Workspace::Pipeline && self.store.read(cx).recording.is_some() {
+        if workspace == Workspace::Pipeline {
             return self.pipeline.clone().into_any_element();
         }
         let s = self.store.read(cx);
@@ -550,6 +549,35 @@ mod tests {
         .unwrap();
         cx.run_until_parked();
         cx.update(|cx| assert_eq!(store.read(cx).workspace, Workspace::Explore));
+    }
+
+    #[gpui_kit::test]
+    fn pipeline_canvas_shows_and_edits_the_graph(cx: &mut TestAppContext) {
+        use crate::domain::command::SessionCommand;
+        use crate::domain::session::RecordingRef;
+        let (window, store, _) = open(cx);
+        cx.update(|cx| {
+            store.update(cx, |s, cx| {
+                let recording = RecordingRef { path: "/data/rec.bin".into(), source: None, channels: None };
+                s.execute(SessionCommand::OpenView { recording, name: None }, cx).unwrap();
+                s.set_workspace(Workspace::Pipeline, cx);
+            })
+        });
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("graph-canvas").is_some(), "the Pipeline workspace is a canvas, recording open or not");
+            assert!(window.try_find("node-s1").is_some() && window.try_find("node-v1").is_some(), "the recording and its view are nodes");
+            // Clicking an operation of the tree adds it to the graph
+            window.click("ops-item-filter-0", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let g = &store.read(cx).doc.graph;
+            assert_eq!(g.nodes.len(), 3);
+            assert!(g.node("iir").is_some(), "the band-pass went in as op `iir`");
+        });
     }
 
     #[gpui_kit::test]

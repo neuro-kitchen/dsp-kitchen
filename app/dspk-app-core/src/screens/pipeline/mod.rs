@@ -1,5 +1,8 @@
-//! Pipeline: the active view's processing as an operator chain (Kotlin Flow style).
+//! Pipeline: the session's processing graph on an infinite canvas (sources, ops, views,
+//! writes), the operations tree and the inspector.
 
+pub mod canvas;
+pub mod catalog;
 pub mod pipeline_screen;
 
 pub use pipeline_screen::PipelineView;
