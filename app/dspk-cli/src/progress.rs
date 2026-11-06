@@ -1,8 +1,9 @@
 //! Terminal progress bar for long runs: one line per stage on stderr,
 //! `[2/4] Finding clips  ████░░░░  12/40 windows  0:05 < 0:12`, the time left estimated from the
-//! rate so far. Any run reporting through [`dspk_core::ProgressSink`] can draw it.
+//! rate so far. Any run reporting through [`dspk_core::ProgressSink`] can draw it. When stderr
+//! is not a terminal (container logs, journald, a file), plain lines instead, a few per stage.
 
-use std::io::Write;
+use std::io::{IsTerminal as _, Write};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -12,6 +13,8 @@ use dspk_core::{ProgressEvent, ProgressSink};
 const BAR_WIDTH: usize = 24;
 /// Least time between two redraws of a stage's line.
 const REDRAW: Duration = Duration::from_millis(100);
+/// Least time between two lines of a stage when stderr is not a terminal (logs).
+const LOG_EVERY: Duration = Duration::from_secs(10);
 const SECS_PER_MINUTE: u64 = 60;
 const SECS_PER_HOUR: u64 = 3600;
 
@@ -24,10 +27,17 @@ struct Line {
     width: usize,
 }
 
-/// Draws progress on stderr, one line per stage, ending each line when its stage completes.
-#[derive(Default)]
+/// Draws progress on stderr, one line per stage, ending each line when its stage completes; not
+/// on a terminal, a plain line every [`LOG_EVERY`] and the last.
 pub struct TerminalProgress {
     line: Mutex<Line>,
+    terminal: bool,
+}
+
+impl Default for TerminalProgress {
+    fn default() -> Self {
+        Self { line: Mutex::new(Line::default()), terminal: std::io::stderr().is_terminal() }
+    }
 }
 
 fn clock(d: Duration) -> String {
@@ -42,13 +52,14 @@ impl ProgressSink for TerminalProgress {
         let now = Instant::now();
         let key = (e.step, e.stage.to_string());
         if line.key.as_ref() != Some(&key) {
-            if line.key.is_some() {
+            if line.key.is_some() && self.terminal {
                 eprintln!();
             }
             *line = Line { key: Some(key), start: Some(now), drawn: None, width: 0 };
         }
         let finished = e.total > 0 && e.done >= e.total;
-        if !finished && line.drawn.is_some_and(|t| now - t < REDRAW) {
+        let every = if self.terminal { REDRAW } else { LOG_EVERY };
+        if !finished && line.drawn.is_some_and(|t| now - t < every) {
             return;
         }
         line.drawn = Some(now);
@@ -62,9 +73,16 @@ impl ProgressSink for TerminalProgress {
         } else {
             format!("{label}  {} {}  {}", e.done, e.unit, clock(elapsed))
         };
+        let mut err = std::io::stderr().lock();
+        if !self.terminal {
+            let _ = writeln!(err, "{text}");
+            if finished {
+                line.key = None;
+            }
+            return;
+        }
         let width = text.chars().count();
         // Pad over a longer previous line
-        let mut err = std::io::stderr().lock();
         let _ = write!(err, "\r{text:<0$}", line.width.max(width));
         let _ = err.flush();
         line.width = width;
