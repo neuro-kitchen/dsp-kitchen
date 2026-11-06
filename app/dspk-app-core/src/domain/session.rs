@@ -303,6 +303,7 @@ pub fn op_family(node: &Node) -> &'static str {
         Node::Iir { .. } | Node::Fir { .. } | Node::Sos { .. } | Node::Notch { .. } => "filter",
         Node::Car {} | Node::Cmr {} => "reference",
         Node::Median { .. } | Node::GaussianSmooth { .. } => "smooth",
+        Node::Remap { .. } => "channels",
         _ => "transform",
     }
 }
@@ -320,6 +321,7 @@ pub fn op_name(node: &Node) -> &'static str {
         Node::Sos { .. } => "sos",
         Node::Fir { .. } => "fir",
         Node::Resample { .. } => "resample",
+        Node::Remap { .. } => "remap",
         Node::Car {} => "car",
         Node::Cmr {} => "cmr",
         Node::GaussianSmooth { .. } => "gaussian_smooth",

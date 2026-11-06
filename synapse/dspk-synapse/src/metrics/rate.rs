@@ -25,8 +25,15 @@ pub struct BurstEpoch {
     pub peak_rate_hz: f32,
 }
 
-/// Computes a continuous Gaussian-smoothed instantaneous firing rate $r(t)$ (in Hz) over `[0, total_duration_sec]`.
-pub fn compute_instantaneous_firing_rate(
+/// A Gaussian-smoothed instantaneous firing rate (Hz) of a spike train (samples at
+/// `sample_rate_hz`) over the recording's `total_samples`, in `bin_width_ms` bins smoothed by
+/// `kernel_sigma_ms`.
+pub fn compute_instantaneous_firing_rate(spike_samples: &[u64], total_samples: u64, sample_rate_hz: f64, bin_width_ms: f64, kernel_sigma_ms: f64) -> FiringRateCurve {
+    let times: Vec<f64> = spike_samples.iter().map(|&s| s as f64 / sample_rate_hz).collect();
+    firing_rate_seconds(&times, total_samples as f64 / sample_rate_hz, bin_width_ms, kernel_sigma_ms)
+}
+
+fn firing_rate_seconds(
     spike_times_sec: &[f64],
     total_duration_sec: f64,
     bin_width_ms: f64,
@@ -119,8 +126,9 @@ mod tests {
     #[test]
     fn test_gaussian_firing_rate_conserves_spike_count_and_detects_burst() {
         // 50 spikes clustered in a burst around t = 1.0..1.5 s in a 3.0 s recording
-        let spikes: Vec<f64> = (0..50).map(|i| 1.0 + (i as f64) * 0.01).collect();
-        let curve = compute_instantaneous_firing_rate(&spikes, 3.0, 5.0, 20.0);
+        let fs = 30_000.0;
+        let spikes: Vec<u64> = (0..50).map(|i| ((1.0 + (i as f64) * 0.01) * fs).round() as u64).collect();
+        let curve = compute_instantaneous_firing_rate(&spikes, (3.0 * fs) as u64, fs, 5.0, 20.0);
 
         let integral_spikes: f64 = curve
             .rate_hz

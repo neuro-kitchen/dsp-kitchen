@@ -9,7 +9,7 @@ use dspk_ops::resampler::fractional_delay_taps_device;
 use dspk_core::compute::LaunchGeometry;
 
 use crate::detection::DeduplicatedSpike;
-use crate::extraction::{SINC_KERNEL_RADIUS, snippet_fits};
+use crate::extraction::{SINC_KERNEL_RADIUS, SnippetOptions, snippet_fits};
 
 /// Denominator below which the three samples around a trough count as flat (no shift).
 const PARABOLA_FLAT: f32 = 1e-12;
@@ -134,7 +134,7 @@ pub fn execute_extract_sinc_in_vram<F: DspFloat>(
         .enumerate()
         .filter(|(_, s)| {
             s.primary_channel < channels
-                && snippet_fits(s.sample_index as usize, pre_samples, post_samples, samples, apply_sinc_shift)
+                && snippet_fits(s.sample_index as usize, samples, &SnippetOptions { k_neighbors: 1, pre_samples, post_samples, sinc_shift: apply_sinc_shift, subtract_mean: false })
         })
         .map(|(i, _)| i)
         .collect();

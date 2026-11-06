@@ -34,6 +34,10 @@ pub struct DspApp {
     palette: Option<(Entity<crate::screens::palette::CommandPalette>, Subscription)>,
     show_help: bool,
     show_about: bool,
+    /// Settings, while open.
+    settings: Option<Entity<crate::screens::settings::SettingsScreen>>,
+    /// Open from server, while open.
+    browser: Option<(Entity<crate::screens::server_browser::ServerBrowser>, Subscription)>,
     /// Workspaces plugins provide (built the first time they are shown).
     plugin_views: std::collections::HashMap<Workspace, gpui_kit::AnyView>,
     focus: FocusHandle,
@@ -63,11 +67,11 @@ impl DspApp {
         ];
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
-        Self { store, explore, pipeline, floating, palette: None, show_help: false, show_about: false, plugin_views: Default::default(), focus, _subs: subs }
+        Self { store, explore, pipeline, floating, palette: None, show_help: false, show_about: false, settings: None, browser: None, plugin_views: Default::default(), focus, _subs: subs }
     }
 
     /// Light, dark, or the system's (`None`); the store learns which, for the plot colours.
-    fn apply_theme(store: &Entity<Store>, dark: Option<bool>, window: &mut Window, cx: &mut App) {
+    pub(crate) fn apply_theme(store: &Entity<Store>, dark: Option<bool>, window: &mut Window, cx: &mut App) {
         match dark {
             Some(true) => Theme::change(ThemeMode::Dark, Some(window), cx),
             Some(false) => Theme::change(ThemeMode::Light, Some(window), cx),
@@ -205,6 +209,8 @@ impl DspApp {
                 let t = this.clone();
                 let mut menu = menu.item(PopupMenuItem::new("Open recording…").on_click(move |_, _, cx| t.update(cx, |a, cx| a.prompt_open(cx))));
                 let t = this.clone();
+                menu = menu.item(PopupMenuItem::new("Open from server…").on_click(move |_, _, cx| t.update(cx, |a, cx| a.toggle_browser(cx))));
+                let t = this.clone();
                 menu = menu.item(PopupMenuItem::new("Synthetic recording (32 ch, 5 min)").on_click(move |_, _, cx| t.update(cx, |a, cx| a.open_synthetic(cx))));
                 if !recent.is_empty() {
                     menu = menu.separator().label("Recent");
@@ -212,8 +218,16 @@ impl DspApp {
                         let (t, p) = (this.clone(), p.clone());
                         menu = menu.item(PopupMenuItem::new(file_label(&p)).on_click(move |_, _, cx| t.update(cx, |a, cx| a.open_path(p.clone(), cx))));
                     }
+                    let t = this.clone();
+                    menu = menu.item(PopupMenuItem::new("Clear recent").on_click(move |_, _, cx| {
+                        let store = t.read(cx).store.clone();
+                        store.update(cx, |s, cx| s.forget_recent(None, cx));
+                    }));
                 }
+                let t = this.clone();
                 menu.separator()
+                    .item(PopupMenuItem::new("Settings…").on_click(move |_, window, cx| t.update(cx, |a, cx| a.toggle_settings(window, cx))))
+                    .separator()
                     .item(PopupMenuItem::new("Quit").on_click(|_, _, cx| cx.quit()))
             })
         };
@@ -347,11 +361,22 @@ impl DspApp {
                     .children(recent.into_iter().take(6).enumerate().map(|(i, p)| {
                         let label = file_label(&p);
                         let dir = p.parent().map(|d| d.display().to_string()).unwrap_or_default();
-                        Button::new(("recent", i))
-                            .ghost()
+                        let forget = p.clone();
+                        h_flex()
                             .w_full()
-                            .child(h_flex().w_full().gap_2().child(div().text_sm().child(label)).child(div().flex_1().text_xs().text_color(muted).truncate().child(dir)))
-                            .on_click(cx.listener(move |this, _, _, cx| this.open_path(p.clone(), cx)))
+                            .gap_1()
+                            .child(
+                                Button::new(("recent", i))
+                                    .ghost()
+                                    .flex_1()
+                                    .child(h_flex().w_full().gap_2().child(div().text_sm().child(label)).child(div().flex_1().text_xs().text_color(muted).truncate().child(dir)))
+                                    .on_click(cx.listener(move |this, _, _, cx| this.open_path(p.clone(), cx))),
+                            )
+                            .child(
+                                crate::ui::widgets::icon_button(("recent-forget", i), IconName::Close, "Remove from the list (the file stays)")
+                                    .xsmall()
+                                    .on_click(cx.listener(move |this, _, _, cx| this.store.update(cx, |s, cx| s.forget_recent(Some(&forget), cx)))),
+                            )
                     })),
             );
         }
@@ -436,6 +461,60 @@ impl DspApp {
             )
     }
 
+    /// Opens Settings, or closes it when open.
+    fn toggle_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings = match self.settings.take() {
+            Some(_) => None,
+            None => Some(cx.new(|cx| crate::screens::settings::SettingsScreen::new(self.store.clone(), window, cx))),
+        };
+        cx.notify();
+    }
+
+    /// Opens Open from server, or closes it when open.
+    fn toggle_browser(&mut self, cx: &mut Context<Self>) {
+        if self.browser.take().is_none() {
+            let browser = cx.new(|cx| crate::screens::server_browser::ServerBrowser::new(self.store.clone(), cx));
+            let sub = cx.subscribe(&browser, |this, _, e: &crate::screens::server_browser::BrowserEvent, cx| match e {
+                crate::screens::server_browser::BrowserEvent::Opened => {
+                    this.browser = None;
+                    this.store.update(cx, |s, cx| s.set_workspace(Workspace::Explore, cx));
+                    cx.notify();
+                }
+            });
+            self.browser = Some((browser, sub));
+        }
+        cx.notify();
+    }
+
+    /// `content` over everything, in a card; a click outside it runs `close`.
+    fn modal(&self, id: &'static str, content: AnyElement, close: fn(&mut Self), cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = cx.theme();
+        let (bg, border) = (t.popover, t.border);
+        div()
+            .id(SharedString::from(format!("{id}-overlay")))
+            .absolute()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(gpui_kit::hsla(0., 0., 0., 0.5))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                close(this);
+                cx.notify();
+            }))
+            .child(
+                div()
+                    .id(SharedString::from(format!("{id}-card")))
+                    .p_4()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(border)
+                    .bg(bg)
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .child(content),
+            )
+    }
+
     fn about(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = cx.theme();
         let (muted, bg, border) = (t.muted_foreground, t.popover, t.border);
@@ -465,10 +544,21 @@ impl DspApp {
                     .on_click(|_, _, cx| cx.stop_propagation())
                     .child(
                         h_flex()
-                            .gap_2()
+                            .gap_3()
                             .items_center()
-                            .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("DSP App"))
-                            .child(div().text_xs().text_color(muted).child(format!("v{}", env!("CARGO_PKG_VERSION")))),
+                            .child(gpui_kit::img(crate::ui::assets::BRAND_LOGO).size(px(56.)).flex_none())
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .child(
+                                        h_flex()
+                                            .gap_2()
+                                            .items_center()
+                                            .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("DSP App"))
+                                            .child(div().text_xs().text_color(muted).child(format!("v{}", env!("CARGO_PKG_VERSION")))),
+                                    )
+                                    .child(div().text_xs().text_color(muted).child("by neuro-kitchen")),
+                            ),
                     )
                     .child(div().text_sm().text_color(muted).child(
                         "Electrophysiology workbench built with GPUI and gpui-kit. Explore multi-channel recordings across docked time views and curate spike-sorting results.",
@@ -505,6 +595,7 @@ impl Render for DspApp {
                 this.show_help = !this.show_help;
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, _: &ShowPreferences, window, cx| this.toggle_settings(window, cx)))
             .on_action(cx.listener(|this, _: &ShowAbout, _, cx| {
                 this.show_about = !this.show_about;
                 cx.notify();
@@ -526,6 +617,8 @@ impl Render for DspApp {
             .children(self.palette.as_ref().map(|(p, _)| p.clone()))
             .when(self.show_help, |d| d.child(self.help(cx)))
             .when(self.show_about, |d| d.child(self.about(cx)))
+            .children(self.settings.clone().map(|s| self.modal("settings", s.into_any_element(), |a| a.settings = None, cx)))
+            .children(self.browser.as_ref().map(|(b, _)| b.clone()).map(|b| self.modal("server-browser", b.into_any_element(), |a| a.browser = None, cx)))
     }
 }
 
@@ -626,6 +719,48 @@ mod tests {
         cx.update(|cx| assert_eq!(store.read(cx).workspace, Workspace::Explore));
     }
 
+    /// A job's graph nodes: running while it runs, then done (or failed); a job refused because
+    /// another runs marks nothing.
+    #[gpui_kit::test]
+    fn jobs_mark_their_nodes(cx: &mut TestAppContext) {
+        use crate::data::jobs::{Cancel, JobMessage};
+        use crate::data::store::NodeRun;
+        let (_window, store, _app) = open(cx);
+        cx.update(|cx| {
+            store.update(cx, |s, cx| {
+                let (tx, rx) = std::sync::mpsc::channel::<Box<dyn Fn(JobMessage) + Send + Sync>>();
+                assert!(s.start_job_on(["read".to_string(), "iir".to_string()], "test", move |send| {
+                    let _ = tx.send(send);
+                    Cancel::default()
+                }, |_, _, _| {}, cx));
+                assert!(matches!(s.node_status.get("iir"), Some(NodeRun::Running { .. })));
+                // Another job while this one runs: refused, nothing marked
+                assert!(!s.start_job_on(["other".to_string()], "second", |_| Cancel::default(), |_, _, _| {}, cx));
+                let send = rx.recv().unwrap();
+                send(JobMessage::Progress("Writing 40 %".into(), Some(0.4)));
+                send(JobMessage::Done(std::path::PathBuf::from("/tmp/out.zarr")));
+            })
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let s = store.read(cx);
+            assert!(matches!(s.node_status.get("read"), Some(NodeRun::Done { .. })), "{:?}", s.node_status);
+            assert!(matches!(s.node_status.get("iir"), Some(NodeRun::Done { .. })));
+            assert!(!s.node_status.contains_key("other"));
+        });
+        // A failure marks the job's nodes failed
+        cx.update(|cx| {
+            store.update(cx, |s, cx| {
+                assert!(s.start_job_on(["iir".to_string()], "failing", |send| {
+                    send(JobMessage::Failed("disk full".into()));
+                    Cancel::default()
+                }, |_, _, _| {}, cx));
+            })
+        });
+        cx.run_until_parked();
+        cx.update(|cx| assert_eq!(store.read(cx).node_status.get("iir"), Some(&NodeRun::Failed("disk full".into()))));
+    }
+
     #[gpui_kit::test]
     fn pipeline_canvas_shows_and_edits_the_graph(cx: &mut TestAppContext) {
         use crate::domain::command::SessionCommand;
@@ -660,6 +795,22 @@ mod tests {
             assert_eq!(g.nodes.len(), 3);
             assert!(g.node("iir").is_some(), "the band-pass went in as op `iir`");
         });
+        // A recipe (a group of ops) is one card with its tab
+        cx.update(|cx| {
+            let pipeline = app.read(cx).pipeline.clone();
+            let recipe = crate::domain::recipe::builtin().into_iter().next().expect("a built-in recipe");
+            pipeline.update(cx, |p, cx| p.add_recipe(recipe, cx));
+        });
+        cx.run_until_parked();
+        let recipe_node = cx.update(|cx| {
+            store.read(cx).doc.graph.nodes.iter().find(|n| matches!(n.kind, crate::domain::graph::NodeKind::Recipe { .. })).map(|n| n.id.clone())
+        });
+        let recipe_node = recipe_node.expect("the recipe went into the graph as one node");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find(gpui_kit::SharedString::from(format!("node-{recipe_node}"))).is_some(), "drawn as one card");
+        })
+        .unwrap();
     }
 
     #[gpui_kit::test]

@@ -6,7 +6,7 @@ import dspk
 
 
 def test_version_matches_the_crates():
-    assert dspk.__version__ == "0.0.6"
+    assert dspk.__version__ == "0.0.7"
 
 
 def test_available_lists_compiled_runtimes_gpus_first():
@@ -18,12 +18,18 @@ def test_available_lists_compiled_runtimes_gpus_first():
 
 
 def test_set_and_reset():
+    from conftest import RUNTIMES
+
     first = dspk.runtime.available()[0]
-    for name in dspk.runtime.available():
-        dspk.runtime.set(name)
-        assert dspk.runtime.current() == name
-    dspk.runtime.set(None)
-    assert dspk.runtime.current() == first
+    try:
+        for name in dspk.runtime.available():
+            dspk.runtime.set(name)
+            assert dspk.runtime.current() == name
+        dspk.runtime.set(None)
+        assert dspk.runtime.current() == first
+    finally:
+        # Back to the session's runtime (conftest): later tests that do not pass runtime= rely on it
+        dspk.runtime.set(RUNTIMES[0] if RUNTIMES else None)
 
 
 def test_unknown_runtime_is_refused():

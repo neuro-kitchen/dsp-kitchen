@@ -3220,7 +3220,7 @@ checksum = "117240f60069e65410b3ae1bb213295bd828f707b5bec6596a1afc8793ce0cbc"
 
 [[package]]
 name = "dspk"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "dspk-core",
  "dspk-hub",
@@ -3233,7 +3233,7 @@ dependencies = [
 
 [[package]]
 name = "dspk-app"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "anyhow",
  "clap",
@@ -3247,15 +3247,17 @@ dependencies = [
 
 [[package]]
 name = "dspk-app-core"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "anyhow",
  "async-channel",
  "bytemuck",
+ "dirs 7.0.0",
  "dspk-core",
  "dspk-io",
  "dspk-ops",
  "dspk-pipeline",
+ "dspk-stream",
  "dspk-synapse",
  "dspk-view",
  "gpui-kit",
@@ -3264,12 +3266,13 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "tokio",
  "tracing",
 ]
 
 [[package]]
 name = "dspk-app-synapse"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -3288,8 +3291,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "dspk-benchmarks"
+version = "0.0.7"
+dependencies = [
+ "cubecl",
+ "dspk-core",
+ "dspk-ops",
+ "dspk-synapse",
+ "serde_json",
+]
+
+[[package]]
+name = "dspk-benchmarks-sorters"
+version = "0.0.7"
+dependencies = [
+ "cubecl",
+ "dspk-benchmarks",
+ "dspk-core",
+ "dspk-ops",
+ "dspk-sorter-kilosort",
+ "dspk-synapse",
+]
+
+[[package]]
 name = "dspk-cli"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "anstream",
  "anstyle",
@@ -3314,7 +3340,7 @@ dependencies = [
 
 [[package]]
 name = "dspk-cli-sorter"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "anstream",
  "anyhow",
@@ -3333,11 +3359,12 @@ dependencies = [
 
 [[package]]
 name = "dspk-core"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "cubecl",
  "num-rational",
  "num-traits",
+ "schemars",
  "serde",
  "thiserror 2.0.21",
  "tracing",
@@ -3345,7 +3372,7 @@ dependencies = [
 
 [[package]]
 name = "dspk-hub"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "anyhow",
  "dirs 7.0.0",
@@ -3359,7 +3386,7 @@ dependencies = [
 
 [[package]]
 name = "dspk-io"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "dspk-core",
  "flate2",
@@ -3367,13 +3394,14 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+ "toml 1.2.0+spec-1.1.0",
  "tracing",
  "zarrs",
 ]
 
 [[package]]
 name = "dspk-ops"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "cubecl",
  "cubek-matmul",
@@ -3388,7 +3416,7 @@ dependencies = [
 
 [[package]]
 name = "dspk-pipeline"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "cubecl",
  "dspk-core",
@@ -3405,16 +3433,17 @@ dependencies = [
 
 [[package]]
 name = "dspk-py"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "dspk-py-core",
+ "dspk-py-synapse",
  "pyo3",
  "pyo3-stub-gen",
 ]
 
 [[package]]
 name = "dspk-py-core"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "cubecl",
  "dspk-core",
@@ -3424,11 +3453,27 @@ dependencies = [
  "numpy",
  "pyo3",
  "pyo3-stub-gen",
+ "serde_json",
+]
+
+[[package]]
+name = "dspk-py-synapse"
+version = "0.0.7"
+dependencies = [
+ "dspk-core",
+ "dspk-io",
+ "dspk-ops",
+ "dspk-py-core",
+ "dspk-synapse",
+ "numpy",
+ "pyo3",
+ "pyo3-stub-gen",
+ "serde_json",
 ]
 
 [[package]]
 name = "dspk-sorter-kilosort"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "cubecl",
  "dspk-core",
@@ -3441,7 +3486,7 @@ dependencies = [
 
 [[package]]
 name = "dspk-sorter-ms5"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "cubecl",
  "dspk-core",
@@ -3452,7 +3497,7 @@ dependencies = [
 
 [[package]]
 name = "dspk-sorter-si"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "cubecl",
  "dspk-core",
@@ -3464,7 +3509,7 @@ dependencies = [
 
 [[package]]
 name = "dspk-stream"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "dspk-core",
  "dspk-view",
@@ -3485,7 +3530,7 @@ dependencies = [
 
 [[package]]
 name = "dspk-synapse"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "cubecl",
  "dspk-core",
@@ -3503,7 +3548,7 @@ dependencies = [
 
 [[package]]
 name = "dspk-synapse-ml"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "burn-tensor",
  "bytemuck",
@@ -3523,7 +3568,7 @@ dependencies = [
 
 [[package]]
 name = "dspk-view"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
  "cubecl",
  "dspk-core",

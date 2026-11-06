@@ -5,3 +5,5 @@ pub mod explore;
 pub mod floating;
 pub mod palette;
 pub mod pipeline;
+pub mod server_browser;
+pub mod settings;

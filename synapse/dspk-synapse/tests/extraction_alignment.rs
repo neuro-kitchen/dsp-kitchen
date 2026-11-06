@@ -4,7 +4,7 @@
 use cubecl::prelude::*;
 use dspk_synapse::detection::DeduplicatedSpike;
 use dspk_synapse::extraction::{
-    extract_snippet_batch_multichannel, extract_snippets_multichannel, snippet_fits,
+    extract_snippet_batch, extract_snippets, snippet_fits, SnippetOptions,
 };
 use dspk_ops::math::parabolic_vertex_offset;
 use dspk_synapse::extraction::execute_extract_sinc_in_vram;
@@ -65,8 +65,8 @@ fn setup() -> (Vec<f32>, Vec<DeduplicatedSpike>, Vec<f32>) {
 fn cpu_extractors_put_trough_on_centre() {
     let (trace, spikes, fracs) = setup();
     let layout = tetrode();
-    let snippets = extract_snippets_multichannel(&trace, CHANNELS, SAMPLES, &spikes, &layout, K, PRE, POST, true);
-    let batch = extract_snippet_batch_multichannel(&trace, CHANNELS, SAMPLES, &spikes, &layout, K, PRE, POST, true);
+    let snippets = extract_snippets(&trace, CHANNELS, SAMPLES, &spikes, &layout, &SnippetOptions { k_neighbors: K, pre_samples: PRE, post_samples: POST, sinc_shift: true, subtract_mean: false });
+    let batch = extract_snippet_batch(&trace, CHANNELS, SAMPLES, &spikes, &layout, &SnippetOptions { k_neighbors: K, pre_samples: PRE, post_samples: POST, sinc_shift: true, subtract_mean: false });
     assert_eq!(snippets.len(), fracs.len());
     assert_eq!(batch.num_spikes, fracs.len());
     for (i, (snip, f)) in snippets.iter().zip(&fracs).enumerate() {
@@ -76,7 +76,7 @@ fn cpu_extractors_put_trough_on_centre() {
         assert_eq!(&batch.snippet_slice(i)[..], &snip.waveform[..]);
     }
     // Without realignment the residual is the fractional offset itself.
-    let raw = extract_snippets_multichannel(&trace, CHANNELS, SAMPLES, &spikes, &layout, K, PRE, POST, false);
+    let raw = extract_snippets(&trace, CHANNELS, SAMPLES, &spikes, &layout, &SnippetOptions { k_neighbors: K, pre_samples: PRE, post_samples: POST, sinc_shift: false, subtract_mean: false });
     let worst = raw.iter().map(|s| residual(&s.waveform[..PRE + POST]).abs()).fold(0.0, f32::max);
     assert!(worst > 0.4, "unaligned residual {worst}");
 }
@@ -101,7 +101,7 @@ fn gpu_extract(client: &Client, trace: &[f32], spikes: &[DeduplicatedSpike]) -> 
 #[test]
 fn gpu_kernel_matches_cpu_and_centres_trough() {
     let (trace, spikes, fracs) = setup();
-    let cpu = extract_snippets_multichannel(&trace, CHANNELS, SAMPLES, &spikes, &tetrode(), K, PRE, POST, true);
+    let cpu = extract_snippets(&trace, CHANNELS, SAMPLES, &spikes, &tetrode(), &SnippetOptions { k_neighbors: K, pre_samples: PRE, post_samples: POST, sinc_shift: true, subtract_mean: false });
     for client in test_clients() {
         let (gpu, kept, dropped) = gpu_extract(&client, &trace, &spikes).unwrap();
         assert_eq!((kept.len(), dropped), (fracs.len(), 0));
@@ -123,12 +123,12 @@ fn edge_spikes_are_skipped_and_counted() {
     let expected: Vec<usize> = centers
         .iter()
         .enumerate()
-        .filter(|(_, c)| snippet_fits(**c, PRE, POST, SAMPLES, true))
+        .filter(|(_, c)| snippet_fits(**c, SAMPLES, &SnippetOptions { k_neighbors: K, pre_samples: PRE, post_samples: POST, sinc_shift: true, subtract_mean: false }))
         .map(|(i, _)| i)
         .collect();
     assert_eq!(expected, vec![3, 4, 5]);
 
-    let cpu = extract_snippets_multichannel(&trace, CHANNELS, SAMPLES, &spikes, &tetrode(), K, PRE, POST, true);
+    let cpu = extract_snippets(&trace, CHANNELS, SAMPLES, &spikes, &tetrode(), &SnippetOptions { k_neighbors: K, pre_samples: PRE, post_samples: POST, sinc_shift: true, subtract_mean: false });
     let cpu_centers: Vec<usize> = cpu.iter().map(|s| s.center_sample as usize).collect();
     assert_eq!(cpu_centers, expected.iter().map(|&i| centers[i]).collect::<Vec<_>>());
 
@@ -159,7 +159,7 @@ fn every_snippet_sample_uses_full_sinc_taps() {
     trace[center + 1] = c;
     let delta = parabolic_vertex_offset(a, b, c);
 
-    let snip = &extract_snippets_multichannel(&trace, CHANNELS, SAMPLES, &[spike(center)], &tetrode(), K, PRE, POST, true)[0];
+    let snip = &extract_snippets(&trace, CHANNELS, SAMPLES, &[spike(center)], &tetrode(), &SnippetOptions { k_neighbors: K, pre_samples: PRE, post_samples: POST, sinc_shift: true, subtract_mean: false })[0];
     // Rows 1.. are other channels (untouched by the forced parabola).
     let row = &snip.waveform[(PRE + POST)..2 * (PRE + POST)];
     let err = row

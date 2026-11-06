@@ -140,6 +140,19 @@ fn stage_median(width: usize, edge: &str) -> PyResult<Stage> {
     Ok(stage(PipelineStage::Median { width, edge: self::edge(edge)? }))
 }
 
+/// The channels in `order` (every channel once: a reorder; the channel count stays).
+#[gen_stub_pyfunction(module = "dspk._native.ops")]
+#[pyfunction]
+fn stage_reorder_channels(order: Vec<usize>) -> PyResult<Stage> {
+    let mut seen = vec![false; order.len()];
+    for &c in &order {
+        if c >= order.len() || std::mem::replace(&mut seen[c], true) {
+            return Err(PyValueError::new_err(format!("{order:?} is not an order of {} channels (each once)", order.len())));
+        }
+    }
+    Ok(stage(PipelineStage::ReorderChannels { order }))
+}
+
 #[gen_stub_pyfunction(module = "dspk._native.ops")]
 #[pyfunction]
 fn stage_teager_kaiser(edge: &str) -> PyResult<Stage> {
@@ -266,6 +279,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Stage>()?;
     m.add_class::<Pipeline>()?;
     m.add_function(wrap_pyfunction!(stage_scale, m)?)?;
+    m.add_function(wrap_pyfunction!(stage_reorder_channels, m)?)?;
     m.add_function(wrap_pyfunction!(stage_subtract_baseline, m)?)?;
     m.add_function(wrap_pyfunction!(stage_clamp, m)?)?;
     m.add_function(wrap_pyfunction!(stage_iir, m)?)?;

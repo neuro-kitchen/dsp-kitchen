@@ -1,3 +1,11 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/neuro-kitchen/dsp-kitchen/main/assets/img/neuro-kitchen-lockup-on-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/neuro-kitchen/dsp-kitchen/main/assets/img/neuro-kitchen-lockup-on-light.svg">
+    <img alt="neuro-kitchen" width="360" src="https://raw.githubusercontent.com/neuro-kitchen/dsp-kitchen/main/assets/img/neuro-kitchen-lockup-on-light.svg">
+  </picture>
+</p>
+
 # dspk
 
 > [!WARNING]
@@ -61,8 +69,8 @@ Runtimes are crate features; the device is picked at run time with `dspk::core::
 
 ```toml
 [dependencies]
-dspk = "0.0.6"                                                                  # wgpu, cuda and cpu (default)
-# dspk = { version = "0.0.6", default-features = false, features = ["wgpu", "zarr"] }  # wgpu only
+dspk = "0.0.7"                                                                  # wgpu, cuda and cpu (default)
+# dspk = { version = "0.0.7", default-features = false, features = ["wgpu", "zarr"] }  # wgpu only
 ```
 
 | Feature | Runtime | Tested |
@@ -98,7 +106,7 @@ on the device and keeps the fastest. The vector versions are bit-identical to th
 other alternatives (FIR tiles, IIR time blocks) agree to rounding;
 `dspk_core::compute::pin_tuned_choices` fixes the IIR block split and the matrix-multiply choice for
 runs that must reproduce bit for bit. Reproduce with
-`cargo test -p dspk-ops --profile validate --test bench_kernels -- --ignored --nocapture` (and
+`cargo test -p dspk-benchmarks --profile validate --test bench_kernels -- --ignored --nocapture` (and
 `bench_vector` for every choice); timings against scipy from Python are in
 [benchmarks](benchmarks/README.md).
 

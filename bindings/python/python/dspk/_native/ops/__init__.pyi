@@ -6,6 +6,7 @@ import numpy
 import numpy.typing
 import typing
 from . import filter
+from . import layout
 from . import linalg
 from . import math
 from . import peaks
@@ -15,6 +16,7 @@ __all__ = [
     "Pipeline",
     "Stage",
     "filter",
+    "layout",
     "linalg",
     "math",
     "peaks",
@@ -29,6 +31,7 @@ __all__ = [
     "stage_laplacian",
     "stage_median",
     "stage_notch",
+    "stage_reorder_channels",
     "stage_scale",
     "stage_sos",
     "stage_subtract_baseline",
@@ -97,6 +100,11 @@ def stage_laplacian(laplacian: spatial.Laplacian) -> Stage: ...
 def stage_median(width: builtins.int, edge: builtins.str) -> Stage: ...
 
 def stage_notch(freq: builtins.float, q: builtins.float, mode: builtins.str, start: builtins.str) -> Stage: ...
+
+def stage_reorder_channels(order: typing.Sequence[builtins.int]) -> Stage:
+    r"""
+    The channels in `order` (every channel once: a reorder; the channel count stays).
+    """
 
 def stage_scale(alpha: builtins.float, beta: builtins.float) -> Stage: ...
 

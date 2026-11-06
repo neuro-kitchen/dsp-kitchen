@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context};
 use clap::{Args, ValueEnum};
-use dspk_core::recording::SlicedRecording;
+use dspk_core::recording::{RemappedSource, SlicedRecording};
 use dspk_core::RecordingSource;
 use dspk_synapse::io::SortingFormat;
 use dspk_synapse::io::SensorLayout;
@@ -23,8 +23,17 @@ pub struct RecordingArgs {
     #[arg(long)]
     pub source: Option<String>,
     /// Probe preset; default: the geometry the recording carries (SpikeGLX), else an error
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, conflicts_with = "probe_file")]
     pub probe: Option<Preset>,
+    /// Probe file (.json: probeinterface or Kilosort 4) saying which channel each contact is
+    /// wired to: the data is read in contact order (unconnected contacts left out), with its
+    /// geometry
+    #[arg(long)]
+    pub probe_file: Option<PathBuf>,
+    /// Channel map (.toml / .json, pairs under `remap`) applied after the probe: channels
+    /// reordered, dropped, renamed; the geometry follows them
+    #[arg(long)]
+    pub channel_map: Option<PathBuf>,
     /// Electrode pitch of HD-EMG grid presets (µm)
     #[arg(long, default_value_t = DEFAULT_HDEMG_PITCH_UM)]
     pub pitch_um: f32,
@@ -65,6 +74,13 @@ impl RecordingArgs {
             bail!("the window starts at {} s, past the end of the recording ({:.1} s)", self.start_sec, info.duration_sec());
         }
         let channels = info.channel_count();
+        if let Some(file) = &self.probe_file {
+            // The wiring picks and orders the channels itself
+            let wiring = dspk_synapse::io::probe::read_probe_wiring(file)?;
+            let timed: Arc<dyn RecordingSource> = if start == 0 && end == total { full } else { Arc::new(SlicedRecording::new(full, start..end, None)?) };
+            let source: Arc<dyn RecordingSource> = Arc::new(RemappedSource::new(timed, &wiring.map).with_context(|| format!("{} on {}", file.display(), path.display()))?);
+            return self.with_channel_map(Opened { source, probe: wiring.layout });
+        }
         let probe = match self.probe {
             Some(preset) => preset.layout(self.pitch_um),
             None => dspk_synapse::io::probe_of(path, &id)?.with_context(|| {
@@ -88,6 +104,16 @@ impl RecordingArgs {
         } else {
             Arc::new(SlicedRecording::new(full, start..end, pick)?)
         };
+        self.with_channel_map(Opened { source, probe })
+    }
+
+    /// `opened` through `--channel-map`, when given: the source reads the mapped channels and the
+    /// probe's sites follow them.
+    fn with_channel_map(&self, opened: Opened) -> anyhow::Result<Opened> {
+        let Some(file) = &self.channel_map else { return Ok(opened) };
+        let map = dspk_io::read_channel_map(file)?;
+        let probe = opened.probe.remap(&map).with_context(|| format!("{}: the probe", file.display()))?;
+        let source: Arc<dyn RecordingSource> = Arc::new(RemappedSource::new(opened.source, &map).with_context(|| format!("{}: the recording", file.display()))?);
         Ok(Opened { source, probe })
     }
 }
@@ -142,4 +168,65 @@ pub fn save(sorting: &SortingOutput, path: &Path, format: Option<Format>) -> any
     let spikes: usize = sorting.units.iter().map(|u| u.spike_samples.len()).sum();
     println!("Wrote {} units, {spikes} spikes to {} ({format:?})", sorting.units.len(), path.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use dspk_core::{MemoryOrder, MemoryRecording, SampleFormat};
+
+    use super::*;
+
+    /// 4 channels × 100 samples, value = channel · 1000 + sample, as a raw file with its .meta.
+    fn recording(dir: &Path) -> PathBuf {
+        let data: Vec<f32> = (0..4).flat_map(|c| (0..100).map(move |s| (c * 1000 + s) as f32)).collect();
+        let rec = MemoryRecording::new("r", data, 4, 1000.0).unwrap();
+        let path = dir.join("r.bin");
+        dspk_io::write_raw(&rec, &path, SampleFormat::F32, MemoryOrder::ChannelMajor, 1.0, 100, |_, _| {}).unwrap();
+        path
+    }
+
+    fn args(recording: PathBuf, probe_file: Option<PathBuf>, channel_map: Option<PathBuf>, probe: Option<Preset>) -> RecordingArgs {
+        RecordingArgs { recording, source: None, probe, probe_file, channel_map, pitch_um: DEFAULT_HDEMG_PITCH_UM, start_sec: 0.0, duration_sec: None }
+    }
+
+    fn first_values(opened: &Opened) -> Vec<f32> {
+        let n = opened.source.info().channel_count();
+        let mut out = vec![0.0; n];
+        opened.source.read(&(0..n).collect::<Vec<_>>(), 0..1, &mut out).unwrap();
+        out
+    }
+
+    #[test]
+    fn a_probe_file_and_a_channel_map_reorder_the_data_and_the_geometry_follows() {
+        let dir = std::env::temp_dir().join(format!("dspk-cli-remap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rec = recording(&dir);
+        // Contacts at y = 0, 20, 40, 60 wired to channels 3, 1, (none), 0
+        let probe = dir.join("probe.json");
+        std::fs::write(
+            &probe,
+            r#"{"specification": "probeinterface", "probes": [{"contact_positions": [[0, 0], [0, 20], [0, 40], [0, 60]], "device_channel_indices": [3, 1, -1, 0]}]}"#,
+        )
+        .unwrap();
+        let opened = args(rec.clone(), Some(probe.clone()), None, None).open().unwrap();
+        assert_eq!(first_values(&opened), vec![3000.0, 1000.0, 0.0]);
+        let ys: Vec<f32> = opened.probe.sites().iter().map(|s| s.position.y_um).collect();
+        assert_eq!(ys, vec![0.0, 20.0, 60.0]);
+        // Then a map (1-based) keeping the last two, swapped: channels 0, 1 at y 60, 20
+        let map = dir.join("map.toml");
+        std::fs::write(&map, "[remap]\nbase = 1\npairs = [{ from = 3, to = 1 }, { from = 2, to = 2 }]\n").unwrap();
+        let opened = args(rec.clone(), Some(probe), Some(map.clone()), None).open().unwrap();
+        assert_eq!(first_values(&opened), vec![0.0, 1000.0]);
+        let ys: Vec<f32> = opened.probe.sites().iter().map(|s| s.position.y_um).collect();
+        assert_eq!(ys, vec![60.0, 20.0]);
+        // A map on a preset's geometry
+        let opened = args(rec.clone(), None, Some(map), Some(Preset::Tetrode)).open().unwrap();
+        assert_eq!(first_values(&opened), vec![2000.0, 1000.0]);
+        assert_eq!(opened.probe.sites()[0].position, crate::commands::probe::Preset::Tetrode.layout(0.0).get_site(2).unwrap().position);
+        // .mat probe files are refused
+        let mat = dir.join("chanMap.mat");
+        std::fs::write(&mat, b"MATLAB").unwrap();
+        assert!(args(rec, Some(mat), None, None).open().is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

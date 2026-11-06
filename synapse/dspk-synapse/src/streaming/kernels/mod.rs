@@ -1,8 +1,6 @@
 pub mod template_reduce;
 
-pub use template_reduce::{
-    BatchTemplateStats, execute_reduce_templates_in_vram, reduce_channel_templates_kernel,
-};
+pub use template_reduce::{BatchTemplateStats, execute_reduce_templates_in_vram};
 
 #[cfg(test)]
 mod tests {
@@ -11,10 +9,10 @@ mod tests {
     use cubecl::CubeElement;
     use crate::io::probe::{precompute_knn_table, Position3D, SensorLayout, SensorSite};
     use crate::detection::{
-        SpikePolarity, SpikeSpacing, deduplicate_spikes_spatial, detect_spikes_with_sigma,
+        SpikePolarity, SpikeSpacing, deduplicate_spikes_spatial, detect_spikes_threshold_with_sigma,
         detection_heights, execute_detect_spikes_in_vram,
     };
-    use crate::extraction::{execute_extract_sinc_in_vram, extract_snippets_multichannel};
+    use crate::extraction::{execute_extract_sinc_in_vram, extract_snippets, SnippetOptions};
     use crate::streaming::TemplateAccumulator;
 
     fn test_clients() -> Vec<Client> {
@@ -74,28 +72,14 @@ mod tests {
         let threshold_factor = 5.0f32;
         let refrac = 25usize;
 
-        let spacing = SpikeSpacing::new(refrac);
-        let cpu_spikes = detect_spikes_with_sigma(
-            &trace,
-            channels,
-            samples,
-            &sigmas,
-            threshold_factor,
-            SpikePolarity::Negative,
-            spacing,
-        );
+        // 1 kHz: the refractory period in ms is the spacing in samples
+        let settings = crate::detection::ThresholdSpikeDetector { threshold_factor, refractory_ms: refrac as f64, polarity: SpikePolarity::Negative, ..Default::default() };
+        let cpu_spikes = detect_spikes_threshold_with_sigma(&trace, channels, samples, &sigmas, 1000.0, &settings);
         let cpu_dedup = deduplicate_spikes_spatial(&cpu_spikes, &probe, 150.0, refrac as u64);
-        let cpu_snips = extract_snippets_multichannel(
-            &trace,
+        let cpu_snips = extract_snippets(&trace,
             channels,
             samples,
-            &cpu_dedup,
-            &probe,
-            k_neighbors,
-            pre_samples,
-            post_samples,
-            true,
-        );
+            &cpu_dedup, &probe, &SnippetOptions { k_neighbors, pre_samples, post_samples, sinc_shift: true, subtract_mean: false });
         let knn_table = precompute_knn_table(&probe, channels, k_neighbors);
         let mut cpu_accs: Vec<TemplateAccumulator> = (0..channels)
             .map(|ch| {
@@ -127,7 +111,7 @@ mod tests {
                 0..samples,
                 0,
                 SpikePolarity::Negative,
-                spacing,
+                settings.spacing(1000.0),
             );
             assert_eq!(gpu_spikes, cpu_spikes);
 

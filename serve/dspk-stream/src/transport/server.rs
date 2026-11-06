@@ -207,6 +207,8 @@ pub struct Device {
     pub recording: Option<Arc<OpenRecording>>,
     /// The jobs it runs for clients (sorts); `None`: none.
     pub jobs: Option<Arc<Jobs>>,
+    /// The compute runtime its jobs run on, as clients are told ("" = none or unknown).
+    pub runtime: String,
     pub options: ServeOptions,
 }
 
@@ -219,7 +221,7 @@ fn current_recording(current: &Current) -> Option<Arc<OpenRecording>> {
 
 /// Serves `source` to one client (the protocol's single-recording form: no files, anonymous).
 pub async fn serve_recording(connection: quinn::Connection, source: Arc<dyn RecordingSource>, pyramid: Option<Arc<Pyramid>>, options: ServeOptions) -> StreamResult<()> {
-    let device = Device { name: "dspk".into(), version: String::new(), files: None, recording: Some(Arc::new(OpenRecording::new(source, pyramid))), jobs: None, options };
+    let device = Device { name: "dspk".into(), version: String::new(), files: None, recording: Some(Arc::new(OpenRecording::new(source, pyramid))), jobs: None, runtime: String::new(), options };
     serve_session(connection, Peer::anonymous(), Arc::new(device)).await
 }
 
@@ -239,6 +241,7 @@ pub async fn serve_session(connection: quinn::Connection, peer: Peer, device: Ar
         state: device.jobs.as_ref().map_or(wire::DeviceState::Stopped, |j| j.state()) as i32,
         has_files: device.files.is_some(),
         recording: device.recording.as_ref().map(|r| header_from_info(r.info())),
+        runtime: device.runtime.clone(),
     };
     write_message(&mut control_send, &info).await?;
     if hello.protocol_version != PROTOCOL_VERSION {

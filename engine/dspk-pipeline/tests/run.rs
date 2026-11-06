@@ -445,7 +445,7 @@ fn resample_is_refused_where_it_cannot_be_exact() {
         r#"[["in", "r"], ["r", "c"], ["c", "out"]]"#,
         "",
     );
-    assert!(run(&not_last, &dir).unwrap_err().to_string().contains("last node"));
+    assert!(run(&not_last, &dir).unwrap_err().to_string().contains("last processing node"));
     let mut misaligned = spec(r#""r": {"op": "resample", "up": 1, "down": 3},"#, r#"[["in", "r"], ["r", "out"]]"#, "");
     if let Some(dspk_pipeline::Node::Read { start, .. }) = misaligned.nodes.get_mut("in") {
         *start = Some(100);
@@ -641,4 +641,93 @@ fn branches_from_one_read_equal_their_chains() {
     stray.edges.push(("bp".into(), "loose".into()));
     assert!(stray.branches().is_err());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Remaps: right after read (a map file, 1-based, after a channel pick, then an inline one) the
+/// output has the mapped channels, in the mapped order, with the map's names; after the last
+/// processing node the same; between processing nodes a reorder runs and a drop is refused; in a
+/// branched spec each branch writes its own channels.
+#[test]
+fn remaps_fold_into_the_read() {
+    let target = targets()[0];
+    let dir = scratch("remap");
+    let rec = write_input(&dir);
+    // The read picks [5, 0, 3, 2]; the file maps (1-based) picked 3 → 1 "A1", 1 → 2, 4 → 3
+    std::fs::write(dir.join("map.toml"), "[remap]\nbase = 1\npairs = [{ from = 3, to = 1, name = \"A1\" }, { from = 1, to = 2 }, { from = 4, to = 3, name = \"A3\" }]\n").unwrap();
+    let spec = |extra_edge: &str, after: &str| {
+        PipelineSpec::from_json(&format!(
+            r#"{{"dspk_pipeline": 1,
+                "nodes": {{"in": {{"op": "read", "path": "in.bin", "channels": [5, 0, 3, 2]}},
+                           "m": {{"op": "remap", "path": "map.toml"}},
+                           "swap": {{"op": "remap", "pairs": [{{"from": 1, "to": 0, "name": "B"}}, {{"from": 0, "to": 1}}]}},
+                           "x2": {{"op": "scale", "alpha": 2.0}},
+                           "out": {{"op": "write", "path": "out.zarr", "format": "zarr"}}}},
+                "edges": [{extra_edge}, ["{after}", "out"]],
+                "execution": {{"chunk_samples": {CHUNK}, "runtime": "{}"}}}}"#,
+            target.name()
+        ))
+        .unwrap()
+    };
+    let ok = spec(r#"["in", "m"], ["m", "swap"], ["swap", "x2"]"#, "x2");
+    let report = run(&ok, &dir).unwrap();
+    assert_eq!(report.channels, 2);
+    // m gives [3 "A1", 5, 2 "A3"]; swap gives [5 "B", 3 "A1"] (2 dropped)
+    let out = dspk_io::open(&dir.join("out.zarr")).unwrap();
+    let names: Vec<&str> = out.info().channels.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["B", "A1"]);
+    let got = read_all(&dir.join("out.zarr"));
+    let expected: Vec<f32> = [5usize, 3].iter().flat_map(|&c| rec.data()[c * SAMPLES..(c + 1) * SAMPLES].iter().map(|v| v * 2.0)).collect();
+    assert_eq!(got.len(), expected.len());
+    assert!(max_rel_err(&got, &expected) < 1e-6);
+    // After the last processing node (a gather on the device before the download): the same
+    std::fs::remove_dir_all(dir.join("out.zarr")).unwrap();
+    let late = spec(r#"["in", "x2"], ["x2", "m"], ["m", "swap"]"#, "swap");
+    assert_eq!(run(&late, &dir).unwrap().channels, 2);
+    let names: Vec<String> = dspk_io::open(&dir.join("out.zarr")).unwrap().info().channels.iter().map(|c| c.name.clone()).collect();
+    assert_eq!(names, ["B", "A1"]);
+    assert!(max_rel_err(&read_all(&dir.join("out.zarr")), &expected) < 1e-6);
+    // Between processing nodes: a reorder runs on the device; dropping there is refused
+    let middle = |pairs: &str| {
+        PipelineSpec::from_json(&format!(
+            r#"{{"dspk_pipeline": 1,
+                "nodes": {{"in": {{"op": "read", "path": "in.bin", "channels": [5, 0, 3, 2]}},
+                           "x2": {{"op": "scale", "alpha": 2.0}},
+                           "r": {{"op": "remap", "pairs": {pairs}}},
+                           "car": {{"op": "car"}},
+                           "out": {{"op": "write", "path": "mid.bin"}}}},
+                "edges": [["in", "x2"], ["x2", "r"], ["r", "car"], ["car", "out"]],
+                "execution": {{"chunk_samples": {CHUNK}, "runtime": "{}"}}}}"#,
+            target.name()
+        ))
+        .unwrap()
+    };
+    let reversed = middle(r#"[{"from": 3, "to": 0}, {"from": 2, "to": 1}, {"from": 1, "to": 2}, {"from": 0, "to": 3}]"#);
+    assert_eq!(run(&reversed, &dir).unwrap().channels, 4);
+    // CAR is the same whatever the order: the output is the CAR of [2, 3, 0, 5] · 2
+    let picked = [2usize, 3, 0, 5];
+    let x: Vec<Vec<f32>> = picked.iter().map(|&c| rec.data()[c * SAMPLES..(c + 1) * SAMPLES].iter().map(|v| v * 2.0).collect()).collect();
+    let expected_car: Vec<f32> = (0..4).flat_map(|c| { let x = &x; (0..SAMPLES).map(move |t| x[c][t] - x.iter().map(|r| r[t]).sum::<f32>() / 4.0) }).collect();
+    assert!(max_rel_err(&read_all(&dir.join("mid.bin")), &expected_car) < 1e-5);
+    let dropping = middle(r#"[{"from": 3, "to": 0}]"#);
+    let err = run(&dropping, &dir).unwrap_err().to_string();
+    assert!(err.contains("keeps every channel"), "{err}");
+    // Branches: one writes two channels gathered at its end, the other all four
+    let branched = PipelineSpec::from_json(&format!(
+        r#"{{"dspk_pipeline": 1,
+            "nodes": {{"in": {{"op": "read", "path": "in.bin", "channels": [5, 0, 3, 2]}},
+                       "x2": {{"op": "scale", "alpha": 2.0}},
+                       "few": {{"op": "remap", "pairs": [{{"from": 2, "to": 0, "name": "c3"}}, {{"from": 0, "to": 1}}]}},
+                       "a": {{"op": "write", "path": "few.zarr", "format": "zarr"}},
+                       "b": {{"op": "write", "path": "all.bin"}}}},
+            "edges": [["in", "x2"], ["x2", "few"], ["few", "a"], ["x2", "b"]],
+            "execution": {{"chunk_samples": {CHUNK}, "runtime": "{}"}}}}"#,
+        target.name()
+    ))
+    .unwrap();
+    let reports = dspk_pipeline::run(&branched, &dir).unwrap();
+    assert_eq!(reports.iter().map(|r| r.channels).collect::<Vec<_>>(), [2, 4]);
+    let few: Vec<f32> = [3usize, 5].iter().flat_map(|&c| rec.data()[c * SAMPLES..(c + 1) * SAMPLES].iter().map(|v| v * 2.0)).collect();
+    assert!(max_rel_err(&read_all(&dir.join("few.zarr")), &few) < 1e-6);
+    assert_eq!(dspk_io::open(&dir.join("few.zarr")).unwrap().info().channels[0].name, "c3");
+    std::fs::remove_dir_all(&dir).unwrap();
 }

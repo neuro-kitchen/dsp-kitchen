@@ -90,9 +90,21 @@ fn main() -> Result<()> {
 
     let session_path = if args.no_session { None } else { Session::path() };
     let session = Session::load(session_path.as_deref());
-    // What to open at start: --synthetic, --file, else the last recording
+    // The compute runtime chosen in Settings, unless the environment names one
+    if let Some(runtime) = session.runtime.as_deref().filter(|r| !r.is_empty())
+        && std::env::var_os("DSPK_RUNTIME").is_none()
+    {
+        // SAFETY: no other thread exists yet (the UI, the work pool and the network runtime all
+        // start below), so nothing reads the environment while it changes
+        unsafe { std::env::set_var("DSPK_RUNTIME", runtime) };
+    }
+    // What to open at start: --synthetic, --file, else the last recording when Settings says so
     let synthetic = args.synthetic.as_deref().map(parse_duration).transpose()?;
-    let file = args.file.clone().map(|p| std::fs::canonicalize(&p).unwrap_or(p)).or_else(|| session.recent.first().cloned().filter(|p| p.exists()));
+    let file = args
+        .file
+        .clone()
+        .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
+        .or_else(|| session.reopen_last.then(|| session.recent.first().cloned().filter(|p| p.exists())).flatten());
     let (channels, rate) = (args.channels, args.sample_rate);
 
     gpui_kit::application().with_assets(assets::AppAssets).run(move |cx: &mut App| {

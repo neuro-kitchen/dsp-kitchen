@@ -18,7 +18,7 @@ pub use time::{RationalTime, SampleRate, TimeRange};
 pub use buffer::{BufferLayout, MemoryOrder, SignalChunk};
 pub use recording::{
     ChannelInfo, MemoryRecording, RecordingInfo, RecordingSource, SampleFormat, SignalUnit, MICROVOLTS_PER_VOLT,
-    SlicedRecording,
+    SlicedRecording, ChannelMap, ChannelMapFile, ChannelPair, RemappedSource,
 };
 pub use progress::{NoProgress, ProgressEvent, ProgressSink};
 pub use window::{ChunkSchedule, HaloWindow, WindowLoader};

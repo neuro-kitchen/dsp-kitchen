@@ -119,6 +119,19 @@ pub struct Session {
     /// Side panels shown or hidden, by key (`sorting.left`, …).
     #[serde(default)]
     pub panel_open: std::collections::BTreeMap<String, bool>,
+    /// Servers (`dspk serve`) the user works with (Settings).
+    #[serde(default)]
+    pub servers: Vec<crate::data::remote::ServerProfile>,
+    /// Where results fetched from servers go (`None`: [`Session::default_results_dir`]).
+    #[serde(default)]
+    pub results_dir: Option<PathBuf>,
+    /// The compute runtime (`wgpu`, `cuda`, `cpu`; `None`: the first that is compiled in). Takes
+    /// effect at the next start.
+    #[serde(default)]
+    pub runtime: Option<String>,
+    /// Open the last recording when the app starts (default off: the start screen).
+    #[serde(default)]
+    pub reopen_last: bool,
 }
 
 impl Session {
@@ -126,6 +139,17 @@ impl Session {
 
     pub fn new() -> Self {
         Self { version: Self::VERSION, ..Self::default() }
+    }
+
+    /// Results fetched from servers by default: `~/dspk/remote` (the home folder, or the current
+    /// one when there is no home).
+    pub fn default_results_dir() -> PathBuf {
+        dirs::home_dir().unwrap_or_default().join("dspk").join("remote")
+    }
+
+    /// Where results fetched from servers go.
+    pub fn results_dir(&self) -> PathBuf {
+        self.results_dir.clone().unwrap_or_else(Self::default_results_dir)
     }
 
     /// The user's recipe library: `<config>/dspk-app/recipes/`.
@@ -174,6 +198,18 @@ impl Session {
         std::fs::write(path, serde_json::to_string_pretty(self).map_err(std::io::Error::other)?)
     }
 
+    /// Forgets `path` from the recent recordings and sortings.
+    pub fn forget_recent(&mut self, path: &Path) {
+        self.recent.retain(|p| p != path);
+        self.recent_sortings.retain(|p| p != path);
+    }
+
+    /// Forgets every recent recording and sorting.
+    pub fn clear_recent(&mut self) {
+        self.recent.clear();
+        self.recent_sortings.clear();
+    }
+
     /// `path` becomes the newest recent recording.
     pub fn push_recent(&mut self, path: &Path) {
         self.recent.retain(|p| p != path);
@@ -213,6 +249,23 @@ mod tests {
         s.workspace = Workspace::Curation;
         s.save(Some(&path)).unwrap();
         assert_eq!(Session::load(Some(&path)), s);
+    }
+
+    #[test]
+    fn recent_entries_are_forgotten_and_the_last_file_is_not_reopened_by_default() {
+        let mut s = Session::new();
+        assert!(!s.reopen_last, "start on the start screen unless Settings says otherwise");
+        // An older session file without the field: off too
+        let old: Session = serde_json::from_str(r#"{"version": 1, "recent": ["/a"]}"#).unwrap();
+        assert!(!old.reopen_last);
+        s.push_recent(Path::new("/a"));
+        s.push_recent(Path::new("/b"));
+        s.push_recent_sorting(Path::new("/a"));
+        s.forget_recent(Path::new("/a"));
+        assert_eq!((s.recent.clone(), s.recent_sortings.len()), (vec![PathBuf::from("/b")], 0));
+        s.push_recent_sorting(Path::new("/c"));
+        s.clear_recent();
+        assert!(s.recent.is_empty() && s.recent_sortings.is_empty());
     }
 
     #[test]

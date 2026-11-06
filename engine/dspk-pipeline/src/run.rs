@@ -19,8 +19,9 @@ use cubecl::server::Handle;
 use dspk_core::{ComputeTarget, DspError, DspResult, HaloWindow, MemoryOrder, RecordingSource, SampleFormat, WindowLoader};
 use dspk_io::{RawParams, ZarrWriter};
 use dspk_ops::core::buffer;
+use dspk_ops::core::layout::execute_gather_rows;
 use dspk_ops::math::stored_word_bytes;
-use dspk_ops::pipeline::PipelineWorkspace;
+use dspk_ops::pipeline::{Pipeline, PipelineWorkspace};
 use dspk_ops::resampler::{execute_resample_poly, resample_poly_len};
 
 use crate::prepare::{default_open, prepare, ExecutedMode, Prepared};
@@ -154,10 +155,12 @@ fn execute(
     let started = Instant::now();
     let Prepared {
         source, pipeline, resample, channels, range, unit, sample_rate, stored_format, stored_upload, mode, schedule,
-        out_rate, out_samples, output, format, zarr, ..
+        out_rate, out_samples, output, format, zarr, names, keep, ..
     } = p;
     let info = source.info();
     let nch = channels.len();
+    // Channels written: the kept ones, gathered on the device before the download
+    let out_nch = names.len();
     let target = match &spec.execution.runtime {
         Some(name) => ComputeTarget::parse(name).and_then(ComputeTarget::checked),
         None => ComputeTarget::from_env(),
@@ -184,7 +187,11 @@ fn execute(
             let file = File::create(&output).map_err(|e| PipelineError::Io(format!("{}: {e}", output.display())))?;
             Sink::Raw { file: BufWriter::new(file), frames: Vec::new(), parallel: zarr.parallel }
         }
-        OutputFormat::Zarr => Sink::Zarr(ZarrWriter::create(&output, nch, out_samples, out_rate, &unit, &zarr)?),
+        OutputFormat::Zarr => {
+            let mut w = ZarrWriter::create(&output, out_nch, out_samples, out_rate, &unit, &zarr)?;
+            w.set_channel_names(&names)?;
+            Sink::Zarr(w)
+        }
     };
 
     let mut bytes = DataMovement::default();
@@ -198,7 +205,7 @@ fn execute(
 
     let (sent, written) = std::thread::scope(|scope| {
         let (queue, windows) = sync_channel::<Block>(WRITE_QUEUE_WINDOWS);
-        let writer = scope.spawn(move || sink.drain(windows, nch));
+        let writer = scope.spawn(move || sink.drain(windows, out_nch));
         // Owns the queue: dropping it tells the writer no more blocks come
         let send = move |block: Block, timings: &mut StageTimings| -> DspResult<()> {
             let waited = Instant::now();
@@ -209,8 +216,18 @@ fn execute(
         };
         // Downloads a processed window (resampled on the device first, when the chain ends with
         // one) and queues the samples it owns for the writer
+        let keep_rows = keep.as_ref().map(|k| buffer::upload(workspace.client(), &k.iter().map(|&c| c as u32).collect::<Vec<u32>>()));
         let finish = |win: &HaloWindow, handle: Handle, client: &Client, bytes: &mut DataMovement| -> Block {
             let n = win.read_len();
+            let handle = match &keep_rows {
+                Some(rows) => {
+                    let kept = buffer::empty::<f32>(client, out_nch * n);
+                    execute_gather_rows::<f32>(client, &handle, rows, &kept, nch, out_nch, n);
+                    kept
+                }
+                None => handle,
+            };
+            let nch = out_nch;
             let block = match &resample {
                 None => Block { rows: buffer::download_prefix::<f32>(client, handle, nch * n), row_len: n, cols: win.valid_local.clone() },
                 Some(r) => {
@@ -293,7 +310,7 @@ fn execute(
 
     let samples = out_samples;
     if format == OutputFormat::Raw {
-        let mut params = RawParams::new(nch, out_rate, SampleFormat::F32, MemoryOrder::TimeMajor);
+        let mut params = RawParams::new(out_nch, out_rate, SampleFormat::F32, MemoryOrder::TimeMajor);
         params.unit = unit;
         params.samples = Some(samples);
         params.write_sidecar(&output)?;
@@ -306,7 +323,7 @@ fn execute(
         mode,
         runtime: target.name(),
         stored_upload,
-        channels: nch,
+        channels: out_nch,
         samples,
         sample_rate_hz: out_rate,
         windows: schedule.len(),
@@ -316,6 +333,17 @@ fn execute(
         seconds: started.elapsed().as_secs_f64(),
         timings,
     })
+}
+
+/// How many stages every branch starts with in common: the same nodes of the spec (so the same
+/// stages), counted from the read.
+fn shared_stages(prepared: &[Prepared]) -> usize {
+    let Some(first) = prepared.first() else { return 0 };
+    let mut n = 0;
+    while n < first.stages.len() && prepared.iter().all(|p| p.stages.get(n).is_some_and(|(id, _)| *id == first.stages[n].0)) {
+        n += 1;
+    }
+    n
 }
 
 /// The branches of a branched spec (each prepared as its own chain), from one read of the
@@ -359,22 +387,35 @@ fn execute_fanout(
     }
     .map_err(|e| PipelineError::Compute(e.to_string()))?;
     let capacity = schedule.max_read_samples().max(1);
-    let mut workspaces = Vec::with_capacity(prepared.len());
-    let mut sinks = Vec::with_capacity(prepared.len());
-    for p in &prepared {
+    // A workspace for `pipeline`; `takes_input`: it receives the read windows (the stored values'
+    // scaling is its job), else the device output of the shared stages
+    let make = |pipeline: Pipeline, takes_input: bool| -> Result<PipelineWorkspace<f32>, PipelineError> {
         let client = target.client().map_err(|e| PipelineError::Compute(e.to_string()))?;
         let mut ws = if stream {
-            PipelineWorkspace::<f32>::new_stateful(client, p.pipeline.clone(), nch, capacity, p.sample_rate)
+            PipelineWorkspace::<f32>::new_stateful(client, pipeline, nch, capacity, first.sample_rate)
         } else {
-            PipelineWorkspace::<f32>::new(client, p.pipeline.clone(), nch, capacity, p.sample_rate)
+            PipelineWorkspace::<f32>::new(client, pipeline, nch, capacity, first.sample_rate)
         }
         .map_err(|e| PipelineError::Invalid(e.to_string()))?;
-        if stored_upload {
+        if stored_upload && takes_input {
             let gains: Vec<f32> = channels.iter().map(|&c| info.channels[c].gain).collect();
             let offsets: Vec<f32> = channels.iter().map(|&c| info.channels[c].offset).collect();
             ws.set_stored_scaling(&gains, &offsets);
         }
-        workspaces.push(ws);
+        Ok(ws)
+    };
+    // The stages every branch starts with (the same nodes of the spec) run once per window; each
+    // branch then runs only its own stages, on the shared result in device memory
+    let shared = shared_stages(&prepared);
+    let mut prefix = match shared {
+        0 => None,
+        n => Some(make(Pipeline::with_stages(first.stages[..n].iter().map(|(_, s)| s.clone()).collect()), true)?),
+    };
+    let mut workspaces = Vec::with_capacity(prepared.len());
+    let mut sinks = Vec::with_capacity(prepared.len());
+    for p in &prepared {
+        let pipeline = if shared > 0 { Pipeline::with_stages(p.stages[shared..].iter().map(|(_, s)| s.clone()).collect()) } else { p.pipeline.clone() };
+        workspaces.push(make(pipeline, prefix.is_none())?);
         if let Some(dir) = p.output.parent().filter(|d| !d.as_os_str().is_empty()) {
             std::fs::create_dir_all(dir).map_err(|e| PipelineError::Io(format!("{}: {e}", dir.display())))?;
         }
@@ -383,10 +424,19 @@ fn execute_fanout(
                 let file = File::create(&p.output).map_err(|e| PipelineError::Io(format!("{}: {e}", p.output.display())))?;
                 Sink::Raw { file: BufWriter::new(file), frames: Vec::new(), parallel: p.zarr.parallel }
             }
-            OutputFormat::Zarr => Sink::Zarr(ZarrWriter::create(&p.output, nch, p.out_samples, p.out_rate, &p.unit, &p.zarr)?),
+            OutputFormat::Zarr => {
+                let mut w = ZarrWriter::create(&p.output, p.names.len(), p.out_samples, p.out_rate, &p.unit, &p.zarr)?;
+                w.set_channel_names(&p.names)?;
+                Sink::Zarr(w)
+            }
         });
     }
 
+    let keep_rows: Vec<Option<Handle>> = prepared
+        .iter()
+        .zip(&workspaces)
+        .map(|(p, ws)| p.keep.as_ref().map(|k| buffer::upload(ws.client(), &k.iter().map(|&c| c as u32).collect::<Vec<u32>>())))
+        .collect();
     let mut bytes = DataMovement::default();
     let mut timings = StageTimings::default();
     let loader = WindowLoader::with_channels(first.source.as_ref(), channels.clone());
@@ -396,10 +446,11 @@ fn execute_fanout(
     let (sent, written) = std::thread::scope(|scope| {
         let mut queues = Vec::new();
         let mut writers = Vec::new();
-        for sink in sinks {
+        for (sink, p) in sinks.into_iter().zip(&prepared) {
             let (queue, blocks) = sync_channel::<Block>(WRITE_QUEUE_WINDOWS);
             queues.push(queue);
-            writers.push(scope.spawn(move || sink.drain(blocks, nch)));
+            let out_nch = p.names.len();
+            writers.push(scope.spawn(move || sink.drain(blocks, out_nch)));
         }
         let mut idle = Instant::now();
         let mut each = |win: &HaloWindow, input: Input<'_>, bytes: &mut DataMovement, timings: &mut StageTimings| -> DspResult<bool> {
@@ -412,8 +463,26 @@ fn execute_fanout(
                 Input::Stored(v) => Some(v.clone()),
                 Input::Values(_) => None,
             };
+            // The shared stages, once: their result stays on the device for every branch
+            let shared_out = match prefix.as_mut() {
+                Some(pw) => Some(match &input {
+                    Input::Stored(_) => {
+                        let stored = owned.take().unwrap_or_default();
+                        bytes.uploaded += stored_word_bytes(stored.len()) as u64;
+                        pw.process_owned_stored_chunk_in_vram(stored, stored_format, n)?
+                    }
+                    Input::Values(samples) => {
+                        bytes.uploaded += (samples.len() * 4) as u64;
+                        pw.process_chunk_in_vram(samples, n)
+                    }
+                }),
+                None => None,
+            };
             for (i, ws) in workspaces.iter_mut().enumerate() {
-                let handle = match &input {
+                let handle = if let Some(shared) = &shared_out {
+                    ws.process_handle(shared, n)
+                } else {
+                    match &input {
                     Input::Stored(_) => {
                         // Each branch takes the stored values (the last one takes them as they are)
                         let stored = if i == last { owned.take().unwrap_or_default() } else { owned.clone().unwrap_or_default() };
@@ -424,10 +493,21 @@ fn execute_fanout(
                         bytes.uploaded += (samples.len() * 4) as u64;
                         ws.process_chunk_in_vram(samples, n)
                     }
+                    }
                 };
-                let rows = buffer::download_prefix::<f32>(ws.client(), handle, nch * n);
+                // A branch that writes fewer channels gathers them on the device first
+                let out_nch = prepared[i].names.len();
+                let handle = match &keep_rows[i] {
+                    Some(rows) => {
+                        let kept = buffer::empty::<f32>(ws.client(), out_nch * n);
+                        execute_gather_rows::<f32>(ws.client(), &handle, rows, &kept, nch, out_nch, n);
+                        kept
+                    }
+                    None => handle,
+                };
+                let rows = buffer::download_prefix::<f32>(ws.client(), handle, out_nch * n);
                 bytes.downloaded += (rows.len() * 4) as u64;
-                bytes.written += (win.valid_local.len() * nch * 4) as u64;
+                bytes.written += (win.valid_local.len() * out_nch * 4) as u64;
                 let waited = Instant::now();
                 queues[i].send(Block { rows, row_len: n, cols: win.valid_local.clone() }).map_err(|_| writer_stopped())?;
                 timings.write_wait += waited.elapsed().as_secs_f64();
@@ -481,7 +561,7 @@ fn execute_fanout(
     let mut reports = Vec::new();
     for (p, one) in prepared.iter().zip(specs) {
         if p.format == OutputFormat::Raw {
-            let mut params = RawParams::new(nch, p.out_rate, SampleFormat::F32, MemoryOrder::TimeMajor);
+            let mut params = RawParams::new(p.names.len(), p.out_rate, SampleFormat::F32, MemoryOrder::TimeMajor);
             params.unit = p.unit.clone();
             params.samples = Some(p.out_samples);
             params.write_sidecar(&p.output)?;
@@ -492,7 +572,7 @@ fn execute_fanout(
             mode,
             runtime: target.name(),
             stored_upload,
-            channels: nch,
+            channels: p.names.len(),
             samples: p.out_samples,
             sample_rate_hz: p.out_rate,
             windows: schedule.len(),

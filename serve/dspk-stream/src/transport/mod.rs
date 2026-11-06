@@ -6,12 +6,14 @@ pub mod auth;
 mod client;
 pub mod files;
 pub mod jobs;
+mod remote_signal;
 mod server;
 pub mod tls;
 
 pub use auth::{Authority, ClientIdentity, ClientRecord, Enrollment, Peer, Permission};
 
 pub use client::{Session, SignalReceiver};
+pub use remote_signal::{RemoteSignal, RemoteSource};
 pub use server::{
     checked_view, serve_recording, serve_session, Device, OpenRecording, Pacing, RecordingOpener, ServeOptions, Server, REFUSED_CLIENT, DEFAULT_FRAME_SEC, DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_REQUEST_BYTES, DEFAULT_QUEUE_FRAMES,
     MAX_VIEW_COLUMNS, MAX_VIEW_VALUES,
@@ -196,6 +198,7 @@ mod tests {
             files: Some((files::DataRoot::new(&root).unwrap(), Arc::new(TestOpener))),
             recording: None,
             jobs: None,
+            runtime: String::new(),
             options: ServeOptions::default(),
         });
         let tls = server_config(&ServerIdentity::SelfSigned { names: vec![LOCALHOST.into()] }).unwrap();
@@ -236,6 +239,54 @@ mod tests {
         assert!(session.fetch_file(".dspk-auth", &base.join("y")).await.is_err());
         session.close().await;
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A remote recording behind SignalBackend reads and views like the local one: reads in
+    /// pieces larger than one request (the server's limits), views from the server's pyramid.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_remote_signal_reads_and_views_like_the_local_one() {
+        use dspk_view::SignalBackend;
+        let rec = recording();
+        let pyramid = Arc::new(Pyramid::in_memory(rec.as_ref(), 16).unwrap());
+        assert!(pyramid.fill(rec.as_ref(), 0, 5_000, 1 << 20, || false).unwrap());
+        let (addr, config) = start(rec.clone(), Some(pyramid.clone()), ServeOptions::default());
+        let session = Arc::new(Session::connect(addr, LOCALHOST, config).await.unwrap());
+        let signal = RemoteSignal::new(session, tokio::runtime::Handle::current()).unwrap();
+
+        // A longer recording: a read of all of it is three requests (65,536 samples each at most)
+        let long_samples = 150_000usize;
+        let long: Arc<MemoryRecording> =
+            Arc::new(MemoryRecording::new("long", (0..2 * long_samples).map(|i| ((i * 31) % 997) as f32).collect(), 2, 1000.0).unwrap());
+        let (long_addr, long_config) = start(long.clone(), None, ServeOptions::default());
+        let long_signal = RemoteSignal::new(Arc::new(Session::connect(long_addr, LOCALHOST, long_config).await.unwrap()), tokio::runtime::Handle::current()).unwrap();
+        let long_got = tokio::task::spawn_blocking(move || {
+            let mut got = vec![0.0f32; 2 * long_samples];
+            long_signal.read(&[1, 0], 0..long_samples as u64, &mut got).unwrap();
+            got
+        })
+        .await
+        .unwrap();
+        let mut long_expected = vec![0.0f32; 2 * long_samples];
+        long.read(&[1, 0], 0..long_samples as u64, &mut long_expected).unwrap();
+        assert_eq!(long_got, long_expected, "pieces reassembled in order, channels as asked");
+
+        let (got, local) = tokio::task::spawn_blocking(move || {
+            assert_eq!(signal.info().channel_count(), 4);
+            // Every sample of every channel
+            let mut got = vec![0.0f32; 4 * 5_000];
+            signal.read(&[0, 1, 2, 3], 0..5_000, &mut got).unwrap();
+            let mut wide = Envelope::Samples(Vec::new());
+            let view = View { channels: vec![2, 0], start: 0, end: 5_000, width: 40 };
+            signal.view(&view, &mut wide).unwrap();
+            (got, (wide, view))
+        })
+        .await
+        .unwrap();
+        let mut expected = vec![0.0f32; 4 * 5_000];
+        rec.read(&[0, 1, 2, 3], 0..5_000, &mut expected).unwrap();
+        assert_eq!(got, expected);
+        let (wide, view) = local;
+        assert_eq!(wide, view.read(rec.as_ref(), Some(&pyramid)).unwrap());
     }
 
     #[tokio::test]

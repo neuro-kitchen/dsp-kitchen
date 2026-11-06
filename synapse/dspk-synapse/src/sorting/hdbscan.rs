@@ -57,10 +57,10 @@ fn max_rounds(n: usize) -> usize {
     (usize::BITS - n.saturating_sub(1).leading_zeros()) as usize
 }
 
-/// Progress total of [`hdbscan_points_with_progress`] over `n` points: `n` units per pass (the
+/// Progress total of [`execute_hdbscan_with_progress`] over `n` points: `n` units per pass (the
 /// neighbour pass and at most `max_rounds` Borůvka rounds). A launch over `c` of the `n` targets
 /// for `r` of the `n` points advances `c · r / n`; a round's skipped work is credited when it ends.
-pub fn hdbscan_progress_total(n: usize) -> u64 {
+pub fn cluster_hdbscan_progress_total(n: usize) -> u64 {
     (1 + max_rounds(n) as u64) * n as u64
 }
 
@@ -102,34 +102,46 @@ impl Launches {
     }
 }
 
-/// Labels of [`hdbscan_points`] for host points `x` (`[n, d]` row-major), uploaded once.
-pub fn hdbscan(client: &Client, x: &[f32], n: usize, d: usize, min_cluster_size: usize) -> Vec<i32> {
-    hdbscan_points(client, &DevicePoints::upload(client, x, n, d), min_cluster_size)
+/// Default of [`HdbscanOptions::min_cluster_size`] (the `hdbscan` package's).
+pub const DEFAULT_MIN_CLUSTER_SIZE: usize = 5;
+
+/// Settings of HDBSCAN.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HdbscanOptions {
+    /// Smallest group of points that counts as a cluster (at least 2).
+    pub min_cluster_size: usize,
+    /// The `hdbscan` package's `allow_single_cluster` (SpikeInterface's splits set it):
+    /// excess-of-mass selection may also keep the root, i.e. all points as one cluster.
+    pub allow_single_cluster: bool,
 }
 
-/// Labels of HDBSCAN on device points: cluster index per point (`0..`), `-1` for noise.
-pub fn hdbscan_points(client: &Client, points: &DevicePoints, min_cluster_size: usize) -> Vec<i32> {
-    hdbscan_points_with_progress(client, points, min_cluster_size, &mut |_, _| {})
+impl Default for HdbscanOptions {
+    fn default() -> Self {
+        Self { min_cluster_size: DEFAULT_MIN_CLUSTER_SIZE, allow_single_cluster: false }
+    }
 }
 
-/// [`hdbscan_points`], calling `progress(done, total)` as the work advances (`total` from
-/// [`hdbscan_progress_total`]; the last call is `(total, total)`).
-pub fn hdbscan_points_with_progress(
-    client: &Client,
-    points: &DevicePoints,
-    min_cluster_size: usize,
-    progress: &mut dyn FnMut(u64, u64),
-) -> Vec<i32> {
-    spanning_tree_labels(client, points, min_cluster_size, false, true, progress)
+impl HdbscanOptions {
+    pub fn new(min_cluster_size: usize) -> Self {
+        Self { min_cluster_size, ..Self::default() }
+    }
 }
 
-/// [`hdbscan`] with the `hdbscan` package's `allow_single_cluster` (SpikeInterface's splits set it):
-/// excess-of-mass selection may also keep the root, i.e. the points as one cluster. When it does,
-/// a point is labelled 0 only if it leaves the root at the root's largest `λ` (the package's
-/// labelling), else noise.
-pub fn hdbscan_allow_single(client: &Client, x: &[f32], n: usize, d: usize, min_cluster_size: usize) -> Vec<i32> {
-    let points = DevicePoints::upload(client, x, n, d);
-    spanning_tree_labels(client, &points, min_cluster_size, true, true, &mut |_, _| {})
+/// HDBSCAN labels of host points `x` (`[n, d]` row-major, uploaded once): cluster index per
+/// point (`0..`), `-1` for noise.
+pub fn cluster_hdbscan(client: &Client, x: &[f32], n: usize, d: usize, options: &HdbscanOptions) -> Vec<i32> {
+    execute_hdbscan(client, &DevicePoints::upload(client, x, n, d), options)
+}
+
+/// [`cluster_hdbscan`] of points already on the device.
+pub fn execute_hdbscan(client: &Client, points: &DevicePoints, options: &HdbscanOptions) -> Vec<i32> {
+    execute_hdbscan_with_progress(client, points, options, &mut |_, _| {})
+}
+
+/// [`execute_hdbscan`], calling `progress(done, total)` as the work advances (`total` from
+/// [`cluster_hdbscan_progress_total`]; the last call is `(total, total)`).
+pub fn execute_hdbscan_with_progress(client: &Client, points: &DevicePoints, options: &HdbscanOptions, progress: &mut dyn FnMut(u64, u64)) -> Vec<i32> {
+    spanning_tree_labels(client, points, options.min_cluster_size, options.allow_single_cluster, true, progress)
 }
 
 /// Steps 1–3; `prune = false` scans every point in every round (the reference the shortcuts are
@@ -147,7 +159,7 @@ fn spanning_tree_labels(
     if n < mcs {
         return vec![-1; n];
     }
-    let total = hdbscan_progress_total(n);
+    let total = cluster_hdbscan_progress_total(n);
     let mut done = 0u64;
     let mut report = |done: u64| progress(done.min(total), total);
 
@@ -542,7 +554,7 @@ mod tests {
     impl ComputeTask for Labels {
         type Output = Vec<i32>;
         fn run(self, client: Client) -> Self::Output {
-            hdbscan(&client, &self.0, self.1, self.2, self.3)
+            cluster_hdbscan(&client, &self.0, self.1, self.2, &HdbscanOptions::new(self.3))
         }
     }
 

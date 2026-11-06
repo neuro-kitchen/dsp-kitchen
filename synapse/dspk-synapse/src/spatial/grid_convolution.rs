@@ -11,15 +11,8 @@ use crate::core::PeakLocalizer;
 use dspk_ops::math::peak_to_peak;
 
 /// Localizes a single spike via Grid Convolution soft-argmax over a local 3D grid.
-pub fn localize_spike_grid_convolution(
-    channel_ids: &[usize],
-    ptp_amplitudes: &[f32],
-    layout: &SensorLayout,
-    xy_radius_um: f32,
-    xy_step_um: f32,
-    z_values_um: &[f32],
-    softmax_temperature: f32,
-) -> [f32; 3] {
+pub fn localize_spike_grid_convolution(channel_ids: &[usize], ptp_amplitudes: &[f32], layout: &SensorLayout, settings: &GridConvolutionLocalizer) -> [f32; 3] {
+    let (xy_radius_um, xy_step_um, z_values_um, softmax_temperature) = (settings.xy_radius_um, settings.xy_step_um, settings.z_values_um.as_slice(), settings.softmax_temperature);
     if channel_ids.is_empty() || ptp_amplitudes.is_empty() {
         return [0.0, 0.0, 15.0];
     }
@@ -122,15 +115,7 @@ impl PeakLocalizer for GridConvolutionLocalizer {
                 ptp_buf[k] = peak_to_peak(batch.channel_slice(i, k));
             }
             let ch_ids = batch.spike_channel_ids(i);
-            out.push(localize_spike_grid_convolution(
-                ch_ids,
-                &ptp_buf,
-                layout,
-                self.xy_radius_um,
-                self.xy_step_um,
-                &self.z_values_um,
-                self.softmax_temperature,
-            ));
+            out.push(localize_spike_grid_convolution(ch_ids, &ptp_buf, layout, self));
         }
         Ok(out)
     }

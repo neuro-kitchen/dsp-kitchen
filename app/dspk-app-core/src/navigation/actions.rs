@@ -22,6 +22,8 @@ actions!(
         ToggleTimeline,
         ShowHelp,
         ShowAbout,
+        /// Settings: servers, results folder, compute runtime, theme.
+        ShowPreferences,
         Quit,
         PlayPause,
         PanBack,
@@ -64,6 +66,7 @@ pub fn bind_keys(cx: &mut App) {
         os_binding("secondary-shift-z", Redo, cx),
         os_binding("secondary-y", Redo, cx),
         os_binding("secondary-k", CommandPalette, cx),
+        os_binding("secondary-,", ShowPreferences, cx),
     ];
     cx.bind_keys(global);
     cx.bind_keys([

@@ -28,7 +28,7 @@ pub fn empty<E: CubeElement>(client: &Client, len: usize) -> Handle {
 pub fn upload<E: CubeElement>(client: &Client, data: &[E]) -> Handle {
     bytes::<E>(data.len());
     // `create` with owned bytes: `create_from_slice` copies through a slower general path
-    // (≈2–3× longer for a 92 MB window on wgpu and CUDA; `tests/bench_upload.rs`)
+    // (≈2–3× longer for a 92 MB window on wgpu and CUDA; `benchmarks/kernels/tests/bench_upload.rs`)
     client.create(Bytes::from_elems(data.to_vec()))
 }
 

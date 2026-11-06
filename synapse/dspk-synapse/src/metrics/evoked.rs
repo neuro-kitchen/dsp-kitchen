@@ -52,8 +52,33 @@ pub struct MepMetrics {
     pub rectified_auc_uv_ms: f32,
 }
 
-/// Computes a Peri-Stimulus Time Histogram (PSTH) with trial-by-trial $\text{SE}$ around `stim_times_sec`.
-pub fn compute_psth(
+/// Default window and bins of [`compute_psth`] (ms).
+pub const DEFAULT_PSTH_PRE_MS: f64 = 100.0;
+pub const DEFAULT_PSTH_POST_MS: f64 = 500.0;
+pub const DEFAULT_PSTH_BIN_MS: f64 = 10.0;
+
+/// Settings of [`compute_psth`]: the window around each stimulus and the bin width (ms).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PsthOptions {
+    pub pre_ms: f64,
+    pub post_ms: f64,
+    pub bin_ms: f64,
+}
+
+impl Default for PsthOptions {
+    fn default() -> Self {
+        Self { pre_ms: DEFAULT_PSTH_PRE_MS, post_ms: DEFAULT_PSTH_POST_MS, bin_ms: DEFAULT_PSTH_BIN_MS }
+    }
+}
+
+/// Peri-Stimulus Time Histogram of a spike train around stimuli (both in samples at
+/// `sample_rate_hz`), with the across-trial standard error.
+pub fn compute_psth(spike_samples: &[u64], stimulus_samples: &[u64], sample_rate_hz: f64, options: &PsthOptions) -> PsthResult {
+    let to_s = |x: &[u64]| x.iter().map(|&s| s as f64 / sample_rate_hz).collect::<Vec<f64>>();
+    psth_seconds(&to_s(spike_samples), &to_s(stimulus_samples), options.pre_ms, options.post_ms, options.bin_ms)
+}
+
+fn psth_seconds(
     spike_times_sec: &[f64],
     stim_times_sec: &[f64],
     pre_ms: f64,
@@ -214,14 +239,30 @@ pub fn compute_stimulus_triggered_average(
     }
 }
 
+/// Defaults of [`MepOptions`]: a 2–40 ms response window, onset at 3 σ of the baseline.
+pub const DEFAULT_MEP_RESPONSE_START_MS: f64 = 2.0;
+pub const DEFAULT_MEP_RESPONSE_END_MS: f64 = 40.0;
+pub const DEFAULT_MEP_THRESHOLD_SIGMA: f32 = 3.0;
+
+/// Settings of [`quantify_mep`]: the response window after the stimulus and the onset threshold
+/// (in baseline standard deviations).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MepOptions {
+    pub response_start_ms: f64,
+    pub response_end_ms: f64,
+    pub threshold_sigma: f32,
+}
+
+impl Default for MepOptions {
+    fn default() -> Self {
+        Self { response_start_ms: DEFAULT_MEP_RESPONSE_START_MS, response_end_ms: DEFAULT_MEP_RESPONSE_END_MS, threshold_sigma: DEFAULT_MEP_THRESHOLD_SIGMA }
+    }
+}
+
 /// Quantifies per-channel Motor Evoked Potential (MEP) onset latency, peak-to-peak amplitude,
 /// RMS, and rectified AUC from a [`StimulusTriggeredAverage`] within `[response_start_ms, response_end_ms]`.
-pub fn quantify_mep(
-    sta: &StimulusTriggeredAverage,
-    response_start_ms: f64,
-    response_end_ms: f64,
-    threshold_sigma: f32,
-) -> Vec<MepMetrics> {
+pub fn quantify_mep(sta: &StimulusTriggeredAverage, options: &MepOptions) -> Vec<MepMetrics> {
+    let (response_start_ms, response_end_ms, threshold_sigma) = (options.response_start_ms, options.response_end_ms, options.threshold_sigma);
     let win_len = sta.num_samples;
     if win_len == 0 || sta.num_channels == 0 {
         return Vec::new();
@@ -326,7 +367,7 @@ mod tests {
         // Since all 4 trials are identical, SE should be 0.0 everywhere
         assert!(sta.se_uv.iter().all(|&v| v.abs() < 1e-5));
 
-        let meps = quantify_mep(&sta, 5.0, 35.0, 3.0);
+        let meps = quantify_mep(&sta, &MepOptions { response_start_ms: 5.0, response_end_ms: 35.0, threshold_sigma: 3.0 });
         assert_eq!(meps.len(), 1);
         assert!((meps[0].onset_latency_ms - 12.0).abs() < 0.6, "latency={}", meps[0].onset_latency_ms);
         assert!((meps[0].peak_to_peak_uv - 350.0).abs() < 1.0, "ptp={}", meps[0].peak_to_peak_uv);

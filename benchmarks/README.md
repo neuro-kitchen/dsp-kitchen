@@ -1,49 +1,75 @@
 # benchmarks
 
-Timings and validations against other tools. Each folder writes what it measures to its own
-`results/` (git-ignored); the reports record the machine and versions next to the numbers.
+What dspk measures about itself: time, and agreement with other tools. Every benchmark writes a
+**JSON record** (the schema of [`plating.results`](../plating/plating/results.py): dspk's version
+and commit, the runtime, the reference tool and its version, the machine, and per case the times,
+the error and pass / fail). Records and the figures drawn from them (with
+[`plating`](../plating/README.md)) are committed, so runs can be inspected and compared across
+versions and machines; anything else a run leaves in `results/` is not.
 
 ```text
 benchmarks/
-├── signal-operations/   dspk vs scipy / numpy: time and agreement per operation
-│   └── results/
-└── sorters/             our sorters vs Kilosort4's saved results; sorter time and memory
+├── signal-operations/   dspk vs scipy / numpy, from Python: time and agreement per operation
+│   └── results/         scipy_timing-<runtime>.json + its figures
+├── kernels/             Rust crate `dspk-benchmarks`: device-only timings of dspk-ops / dspk-synapse kernels
+│   └── results/         <benchmark>-<device>.json
+└── sorters/             our sorters vs Kilosort4 and the others; sort time and memory
+    ├── kernels/         Rust crate `dspk-benchmarks-sorters` (GPL-3.0, like the sorter it measures)
     └── results/
 ```
-
-Kernel-level timings (the device alone, no host transfers) are Rust tests next to the kernels,
-ignored by default:
-
-```bash
-cargo test -p dspk-ops --profile validate --test bench_kernels -- --ignored --nocapture   # also bench_reduce, bench_linalg, bench_eigen, bench_upload
-DSPK_TEST_RUNTIMES=cuda cargo test ...                                                   # one runtime
-```
-
-Build the Python package with `maturin develop --release` before timing it (`--profile validate`
-optimizes the dependencies but not dspk itself). Run each benchmark in a fresh process.
 
 ## signal-operations
 
 `scipy_timing.py`: one 384 × 60 000 block (2 s of Neuropixels at 30 kHz, float32) through
 zero-phase and causal band-pass, notch, FIR, median filter, polyphase resampling and common median
-reference, on every runtime compiled in, against scipy / numpy. dspk's time is end to end from a
-NumPy array (upload, kernel, download): at this size most of it is the ~92 MB transfer, so
-the GPU times are close to each other and chained stages (`dspk.ops.Pipeline`) gain the most.
+reference, on every runtime compiled in, against scipy / numpy in float64. dspk's time is end to
+end from a NumPy array (upload, kernels, download), the time a Python caller sees; at this size most
+of it is the ~92 MB transfer, which is why chained stages (`dspk.ops.Pipeline`, pipeline specs) gain
+the most. Tolerances (relative to scipy's peak): 1e-5 for the filters and resampling (float32 on the
+device against float64), 1e-6 for median and CMR (exact).
 
 ```bash
 uv run python benchmarks/signal-operations/scipy_timing.py [--repeats 5] [--channels 384] [--samples 60000]
 ```
 
-First run (2026-10-29, dspk 0.0.3 built with `--profile validate`, scipy 1.18.1, RTX 2070 Max-Q,
-12-thread x86-64; 2 repeats): every operation agrees with scipy to ≤ 4e-6 of the peak (median and
-common median reference exactly); scipy 0.33–2.1 s, dspk 0.15–0.28 s on wgpu / CUDA. CPU runtime:
-0.23–0.46 s, except common median reference (1.7 s, scalar code; see `.tasks/12_cpu-vectorization.md`).
+Build the Python package with `maturin develop --release` before timing it (`--profile validate`
+optimizes the dependencies but not dspk itself). Run each benchmark in a fresh process.
+
+## kernels
+
+The device alone, no host transfers: ignored Rust tests that print a table and write a record.
+
+| Test | Measures |
+|---|---|
+| `bench_kernels` | every kernel family on one recording-sized block, as bandwidth and share of the streaming ceiling |
+| `bench_vector` | every kernel choice (scalar, tiled, each vector width) per operation |
+| `bench_reduce` | per-channel reductions and transposes at sorter sizes |
+| `bench_linalg` | covariance, second moment, dense spatial operator, projection |
+| `bench_eigen` | the batched symmetric eigensolver, with its residual |
+| `bench_upload` | host → device upload strategies for one window |
+| `bench_hdbscan` | HDBSCAN on synthetic clips (`HDBSCAN_POINTS`, `HDBSCAN_REFERENCE` to compare labels) |
+
+```bash
+cargo test -p dspk-benchmarks --profile validate --test bench_kernels -- --ignored --nocapture
+DSPK_TEST_RUNTIMES=cuda cargo test -p dspk-benchmarks ...   # one runtime
+```
+
+`bench_reduce`, `bench_eigen` and `bench_linalg` open the discrete and integrated GPUs through wgpu
+by name; the others run on every runtime of `DSPK_TEST_RUNTIMES`.
 
 ## sorters
 
+`kernels/` (Rust, GPL-3.0): Kilosort4's universal-template detection and EMUsort's channel-delay
+estimation, per window:
+
+```bash
+cargo test -p dspk-benchmarks-sorters --profile validate --test bench_detection -- --ignored --nocapture
+```
+
 > [!NOTE]
-> These scripts use the previous Python API (`dsp_kitchen`) and wait for the synapse bindings;
-> they do not run on the current `dspk` package.
+> The Python scripts below use the previous Python API (`dsp_kitchen`) and wait for the synapse
+> bindings (`.tasks/27`); they do not run on the current `dspk` package. When they move over, they
+> write `plating.results` records like the others.
 
 | Script | What it does |
 |---|---|

@@ -22,8 +22,17 @@ pub struct SourceSet {
 }
 
 impl SourceSet {
-    /// Lists `path`'s sources and opens the default one (the largest electrical signal).
+    /// Lists `path`'s sources and opens the default one (the largest electrical signal). A
+    /// `dspk://` path is a recording on a server: one source, drawn from the server's pyramid and
+    /// read there.
     pub fn open(path: &Path) -> Result<Self> {
+        if crate::data::remote::parse_uri(path).is_some() {
+            let signal = crate::data::remote::open_uri(path)?;
+            let source: Arc<dyn dspk_core::RecordingSource> = signal.source();
+            let mut set = Self::single(Dataset::new(signal, None).with_source(source));
+            set.path = Some(path.to_path_buf());
+            return Ok(set);
+        }
         let entries = crate::plugin::sources(path).with_context(|| format!("Failed to open {}", path.display()))?;
         let default_id = dspk_io::default_source(&entries).map(|e| e.id.clone()).unwrap_or_default();
         let default = entries.iter().position(|e| e.id == default_id).unwrap_or(0);

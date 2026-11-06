@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use dspk_core::compute::device_elements;
-use dspk_core::{ChunkSchedule, DspResult, RecordingSource, SampleFormat, SignalUnit};
+use dspk_core::{ChunkSchedule, DspError, DspResult, RecordingSource, SampleFormat, SignalUnit};
 use dspk_io::MergedRecording;
 use dspk_ops::core::EdgeMode;
 use dspk_ops::filter::FilterMode;
@@ -33,7 +33,10 @@ pub struct Plan {
     pub mode: ExecutedMode,
     /// `true` when stored integers would be uploaded and scaled on the device.
     pub stored_upload: bool,
+    /// Channels read (and processed).
     pub channels: usize,
+    /// Channels written (fewer when a remap before write drops some).
+    pub output_channels: usize,
     /// Input samples per channel processed (`stop - start`).
     pub input_samples: u64,
     pub input_rate_hz: f64,
@@ -71,8 +74,16 @@ impl Resample {
 pub(crate) struct Prepared {
     pub(crate) source: Box<dyn RecordingSource>,
     pub(crate) pipeline: Pipeline,
+    /// The pipeline's stages with the node each comes from (branches of one spec share the
+    /// nodes, and so the stages, of their common start).
+    pub(crate) stages: Vec<(String, dspk_ops::pipeline::PipelineStage)>,
     pub(crate) resample: Option<Resample>,
     pub(crate) channels: Vec<usize>,
+    /// The output channels' names (the input's, or a remap's).
+    pub(crate) names: Vec<String>,
+    /// The pipeline output's channels written, in order (a remap after the last processing node);
+    /// `None`: all.
+    pub(crate) keep: Option<Vec<usize>>,
     pub(crate) range: std::ops::Range<u64>,
     pub(crate) unit: SignalUnit,
     pub(crate) sample_rate: f64,
@@ -100,6 +111,7 @@ impl Prepared {
             mode: self.mode,
             stored_upload: self.stored_upload,
             channels: self.channels.len(),
+            output_channels: self.names.len(),
             input_samples: self.range.end - self.range.start,
             input_rate_hz: self.sample_rate,
             output_samples: self.out_samples,
@@ -167,22 +179,42 @@ pub(crate) fn prepare(
         OutputFormat::Raw => dspk_io::ZarrOptions { parallel, ..Default::default() },
     };
 
-    let mut stages = Vec::with_capacity(chain.stages.len());
+    // Remaps by position: right after read (fold into the read: may drop), between processing
+    // steps (a reorder stage on the device: keeps every channel), after the last one (a gather
+    // before the download: may drop)
+    let last_processing = chain.stages.iter().rposition(|(_, n)| !matches!(n, Node::Remap { .. }));
+    let mut lead = Vec::new();
+    let mut tail = Vec::new();
+    // The pipeline's steps in order: a stage, or a middle remap (its order is set once the
+    // channel count is known)
+    enum Step {
+        Stage(PipelineStage),
+        Reorder(dspk_core::ChannelMap),
+    }
+    let mut steps: Vec<(String, Step)> = Vec::with_capacity(chain.stages.len());
     let mut resample = None;
     for (i, (id, node)) in chain.stages.iter().enumerate() {
         let stage = node.stage().map_err(|e| PipelineError::Invalid(format!("node {id:?}: {e}")))?;
         match (node, stage) {
+            (Node::Remap { .. }, _) => {
+                let map = node.channel_map(Some(base_dir)).map_err(|e| PipelineError::Invalid(format!("node {id:?}: {e}")))?.expect("a remap has a map");
+                match last_processing {
+                    Some(last) if i > last => tail.push(map),
+                    Some(_) if steps.is_empty() && resample.is_none() => lead.push(map),
+                    None => lead.push(map),
+                    Some(_) => steps.push((id.to_string(), Step::Reorder(map))),
+                }
+            }
             (Node::Resample { up, down, beta, edge }, _) => {
-                if i + 1 != chain.stages.len() {
-                    return Err(PipelineError::Invalid(format!("node {id:?}: resample must be the last node before write")));
+                if last_processing != Some(i) {
+                    return Err(PipelineError::Invalid(format!("node {id:?}: resample must be the last processing node before write (only remaps may follow)")));
                 }
                 resample = Some(Resample::new(*up, *down, *beta, (*edge).into()));
             }
-            (_, Some(stage)) => stages.push(stage),
+            (_, Some(stage)) => steps.push((id.to_string(), Step::Stage(stage))),
             (_, None) => unreachable!("every other processing node has a stage"),
         }
     }
-    let pipeline = Pipeline::with_stages(stages);
 
     let (source, input_label): (Box<dyn RecordingSource>, String) = match (input, inputs.as_deref()) {
         (Some(path), None) => (open(&base_dir.join(path), source.as_deref())?, path.display().to_string()),
@@ -198,7 +230,54 @@ pub(crate) fn prepare(
     };
     let info = source.info();
     let (total, sample_rate, stored_format) = (info.samples, info.sample_rate_hz(), info.format);
-    let channels = select_channels(picked.as_deref(), info.channel_count())?;
+    let mut channels = select_channels(picked.as_deref(), info.channel_count())?;
+    let remap_err = |e: DspError| PipelineError::Invalid(format!("remap: {e}"));
+    let mut names: Vec<String> = channels.iter().map(|&c| info.channels[c].name.clone()).collect();
+    // `names` through `map` (0-based over the current channels): the names it gives, else the
+    // current ones
+    let rename = |names: &[String], map: &dspk_core::ChannelMap, order: &[usize]| -> Vec<String> {
+        order.iter().zip(map.names()).map(|(&c, n)| n.unwrap_or_else(|| names[c].clone())).collect()
+    };
+    if !lead.is_empty() {
+        let mut map = dspk_core::ChannelMap::from_order(&channels);
+        for r in &lead {
+            map = map.then(r).map_err(remap_err)?;
+        }
+        channels = map.resolve(info.channel_count()).map_err(remap_err)?;
+        let all: Vec<String> = info.channels.iter().map(|c| c.name.clone()).collect();
+        names = rename(&all, &map, &channels);
+    }
+    let nch = channels.len();
+    let mut stages = Vec::with_capacity(steps.len());
+    for (id, step) in steps {
+        let stage = match step {
+            Step::Stage(stage) => stage,
+            Step::Reorder(map) => {
+                let order = map.resolve(nch).map_err(|e| PipelineError::Invalid(format!("node {id:?}: {e}")))?;
+                if order.len() != nch {
+                    return Err(PipelineError::Invalid(format!(
+                        "node {id:?}: a remap between processing nodes keeps every channel ({nch}; it reorders them): drop channels in a remap right after read or right before write"
+                    )));
+                }
+                names = rename(&names, &map, &order);
+                PipelineStage::ReorderChannels { order }
+            }
+        };
+        stages.push((id, stage));
+    }
+    let keep = if tail.is_empty() {
+        None
+    } else {
+        let mut map = dspk_core::ChannelMap::from_order(&(0..nch).collect::<Vec<_>>());
+        for r in &tail {
+            map = map.then(r).map_err(remap_err)?;
+        }
+        let order = map.resolve(nch).map_err(remap_err)?;
+        names = rename(&names, &map, &order);
+        Some(order)
+    };
+    let stage_ids = stages.clone();
+    let pipeline = Pipeline::with_stages(stages.into_iter().map(|(_, s)| s).collect());
     let range = select_range(*start, *stop, total)?;
     let unit = info.channels[channels[0]].unit.clone();
     pipeline.validate(sample_rate).map_err(|e| PipelineError::Invalid(e.to_string()))?;
@@ -233,8 +312,11 @@ pub(crate) fn prepare(
     Ok(Prepared {
         source,
         pipeline,
+        stages: stage_ids,
         resample,
         channels,
+        names,
+        keep,
         range,
         unit,
         sample_rate,

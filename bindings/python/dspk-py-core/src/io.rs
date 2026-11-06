@@ -31,6 +31,13 @@ pub struct Recording {
     inner: Arc<dyn RecordingSource>,
 }
 
+impl Recording {
+    /// The recording, for other binding crates (synapse's detectors read it in place).
+    pub fn source(&self) -> Arc<dyn RecordingSource> {
+        self.inner.clone()
+    }
+}
+
 #[gen_stub_pymethods]
 #[pymethods]
 impl Recording {

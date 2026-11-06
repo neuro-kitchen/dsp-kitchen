@@ -95,6 +95,8 @@ message ServerInfo {
   bool has_files = 7;
   // The recording the server opened for every client at start, if any.
   Header recording = 8;
+  // The compute runtime its jobs run on (wgpu, cuda, cpu, …; "" = none or unknown).
+  string runtime = 9;
 }
 
 // What a recording is: the answer to Open, and part of ServerInfo.

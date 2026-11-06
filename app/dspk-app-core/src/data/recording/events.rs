@@ -38,12 +38,11 @@ impl SpikeEventStore {
     /// never detects on its own; user-run extraction replaces it.
     #[cfg(test)]
     pub fn detect(source: &dyn dspk_view::SignalBackend) -> Self {
-        use dspk_synapse::{detect_spikes_multichannel, SpikePolarity, SpikeSpacing};
+        use dspk_synapse::{detect_spikes_threshold, SpikePolarity, ThresholdSpikeDetector};
         const THRESHOLD_FACTOR: f32 = 4.5;
         const REFRACTORY_SEC: f64 = 0.002;
         let info = source.info();
         let sample_rate = info.sample_rate_hz();
-        let refractory_samples = (sample_rate * REFRACTORY_SEC) as usize;
         let samples = info.samples as usize;
 
         let mut by_channel = Vec::with_capacity(info.channel_count());
@@ -56,14 +55,8 @@ impl SpikeEventStore {
                 continue;
             }
             // Channels are detected independently so the refractory state never leaks across them
-            let events = detect_spikes_multichannel(
-                &trace,
-                1,
-                samples,
-                THRESHOLD_FACTOR,
-                SpikePolarity::Negative,
-                SpikeSpacing::new(refractory_samples),
-            );
+            let settings = ThresholdSpikeDetector::new(THRESHOLD_FACTOR, REFRACTORY_SEC * 1e3, SpikePolarity::Negative);
+            let events = detect_spikes_threshold(&trace, 1, samples, sample_rate, &settings);
             let times: Vec<f64> = events
                 .iter()
                 .map(|e| e.sample_index as f64 / sample_rate)

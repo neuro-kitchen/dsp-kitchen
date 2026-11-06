@@ -8,6 +8,32 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Settings of [`cluster_density_peaks`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DensityPeaksOptions {
+    /// Distance scale of the local density, in feature units.
+    pub cutoff_distance: f32,
+    /// Clusters to keep (the points of highest density × distance).
+    pub num_clusters: usize,
+    /// Cluster at most this many points (an evenly strided subsample; the others take the label
+    /// of their nearest subsampled point); `None`: all (time O(N²·D)).
+    pub max_points: Option<usize>,
+}
+
+impl DensityPeaksOptions {
+    pub fn new(cutoff_distance: f32, num_clusters: usize) -> Self {
+        Self { cutoff_distance, num_clusters, max_points: None }
+    }
+}
+
+/// Rodriguez-Laio density peaks of `points` (`[n, dim]` row-major).
+pub fn cluster_density_peaks(points: &[f32], n: usize, dim: usize, options: &DensityPeaksOptions) -> DensityPeaksResult {
+    match options.max_points {
+        Some(max) => density_peaks_capped(points, n, dim, options.cutoff_distance, options.num_clusters, max),
+        None => density_peaks_exact(points, n, dim, options.cutoff_distance, options.num_clusters),
+    }
+}
+
 /// Result of Rodriguez-Laio Density Peaks clustering.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DensityPeaksResult {
@@ -29,7 +55,7 @@ fn dist2(a: &[f32], b: &[f32]) -> f32 {
 ///
 /// Exact, O(N²·D) time and O(N) extra memory (distances are recomputed, never stored). For large
 /// N use [`cluster_density_peaks_capped`].
-pub fn cluster_density_peaks(
+fn density_peaks_exact(
     features: &[f32],
     num_points: usize,
     dim: usize,
@@ -107,7 +133,7 @@ pub fn cluster_density_peaks(
 ///
 /// `cluster_centers` index the full input; `densities` / `deltas` are NaN for points outside the
 /// subsample.
-pub fn cluster_density_peaks_capped(
+fn density_peaks_capped(
     features: &[f32],
     num_points: usize,
     dim: usize,
@@ -117,12 +143,12 @@ pub fn cluster_density_peaks_capped(
 ) -> DensityPeaksResult {
     let m = max_points.max(num_clusters).max(1);
     if num_points <= m {
-        return cluster_density_peaks(features, num_points, dim, cutoff_distance, num_clusters);
+        return density_peaks_exact(features, num_points, dim, cutoff_distance, num_clusters);
     }
     assert_eq!(features.len(), num_points * dim);
     let picked: Vec<usize> = (0..m).map(|i| i * num_points / m).collect();
     let sub: Vec<f32> = picked.iter().flat_map(|&i| features[i * dim..(i + 1) * dim].iter().copied()).collect();
-    let res = cluster_density_peaks(&sub, m, dim, cutoff_distance, num_clusters);
+    let res = density_peaks_exact(&sub, m, dim, cutoff_distance, num_clusters);
 
     let mut labels = vec![0usize; num_points];
     let mut densities = vec![f32::NAN; num_points];
@@ -164,7 +190,7 @@ mod tests {
             }
         }
 
-        let res = cluster_density_peaks(&features, 45, 2, 1.5, 3);
+        let res = cluster_density_peaks(&features, 45, 2, &DensityPeaksOptions::new(1.5, 3));
         assert_eq!(res.cluster_centers.len(), 3);
 
         // Verify all 15 points within each group share the same label and groups are distinct
@@ -192,8 +218,8 @@ mod tests {
                 features.push(c[1] + ((k / 20) as f32 - 10.0) * 0.05);
             }
         }
-        let exact = cluster_density_peaks(&features, 1_200, 2, 1.5, 3);
-        let capped = cluster_density_peaks_capped(&features, 1_200, 2, 1.5, 3, 150);
+        let exact = cluster_density_peaks(&features, 1_200, 2, &DensityPeaksOptions::new(1.5, 3));
+        let capped = cluster_density_peaks(&features, 1_200, 2, &DensityPeaksOptions { max_points: Some(150), ..DensityPeaksOptions::new(1.5, 3) });
         // Same partition (labels may be permuted).
         for i in 0..1_200 {
             for j in [0, 400, 800] {

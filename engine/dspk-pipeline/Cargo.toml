@@ -18,7 +18,7 @@ cuda = ["dspk-core/cuda", "dspk-ops/cuda"]
 hip = ["dspk-core/hip", "dspk-ops/hip"]
 
 [dependencies]
-dspk-core = { workspace = true, features = ["compute"] }
+dspk-core = { workspace = true, features = ["compute", "schema"] }
 dspk-io = { workspace = true, features = ["zarr"] }
 # Raw output frames built in parallel
 rayon.workspace = true

@@ -43,14 +43,9 @@ pub fn canonical_biphasic_prototype(kernel_samples: usize) -> Vec<f32> {
 /// Detects multi-channel spikes with the matched-filter inner product against `prototype`: score
 /// peaks above `threshold_factor · σ(score)` where the voltage is negative, spaced by `spacing`
 /// (larger score wins).
-pub fn detect_spikes_matched_filter(
-    data: &[f32],
-    channels: usize,
-    samples: usize,
-    prototype: &[f32],
-    threshold_factor: f32,
-    spacing: SpikeSpacing,
-) -> Vec<SpikeEvent> {
+pub fn detect_spikes_matched_filter(data: &[f32], channels: usize, samples: usize, sample_rate_hz: f64, settings: &MatchedFilterSpikeDetector) -> Vec<SpikeEvent> {
+    let (prototype, threshold_factor) = (settings.prototype.as_slice(), settings.threshold_factor);
+    let spacing = SpikeSpacing::from_ms(settings.refractory_ms, sample_rate_hz, settings.distance_rule);
     assert_eq!(data.len(), channels * samples);
     let k_len = prototype.len();
     if k_len == 0 || samples <= k_len {
@@ -132,8 +127,7 @@ impl SpikeDetector for MatchedFilterSpikeDetector {
         samples: usize,
         sample_rate_hz: f64,
     ) -> dspk_core::DspResult<Vec<SpikeEvent>> {
-        let spacing = SpikeSpacing::from_ms(self.refractory_ms, sample_rate_hz, self.distance_rule);
-        Ok(detect_spikes_matched_filter(data, channels, samples, &self.prototype, self.threshold_factor, spacing))
+        Ok(detect_spikes_matched_filter(data, channels, samples, sample_rate_hz, self))
     }
 }
 
@@ -153,7 +147,7 @@ mod tests {
             sig[500 + k] += p * 180.0;
         }
 
-        let events = detect_spikes_matched_filter(&sig, 1, samples, &proto, 4.5, SpikeSpacing::new(20));
+        let events = detect_spikes_matched_filter(&sig, 1, samples, 1000.0, &MatchedFilterSpikeDetector { prototype: proto.clone(), threshold_factor: 4.5, refractory_ms: 20.0, distance_rule: DistanceRule::LocallyExclusive });
         assert_eq!(events.len(), 1);
         assert!((events[0].sample_index as i64 - 508).abs() <= 2);
     }

@@ -34,6 +34,22 @@ podman build -f deploy/Containerfile --ignorefile deploy/.containerignore --targ
   driver (`nvidia-smi` shows it).
 - `--build-arg FEATURES=cpu,hub` compiles the CPU runtime only.
 
+## Smoke test
+
+`deploy/smoke-test.sh` checks an image end to end with nothing on the host but Podman (the
+image is the server and the client): build → `doctor` (the target's runtime usable) → a
+synthetic recording → serve (hardened) → enroll a read-only and a control client → receive →
+refusals (no identity, a sort from the read-only client, fetching the server's key) → a sort on
+the server → fetch (identical) → audit log → stop.
+
+```bash
+deploy/smoke-test.sh                    # target from the host: nvidia, mesa or cpu
+deploy/smoke-test.sh --target cpu --no-build
+```
+
+Each step prints PASS or FAIL; the script stops at the first failure (keeping its working
+folder for a look) and always removes its container.
+
 ## Run
 
 A synthetic recording (384 channels at 30 kHz, one hour):

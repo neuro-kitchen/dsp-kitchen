@@ -27,8 +27,9 @@ uv run --project ../.. python -m pytest tests                # tests (scipy refe
 after changing a binding (`tests/test_stubs.py` fails when they disagree with the extension):
 
 ```bash
-LIB=$(../../.venv/bin/python -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))")
-LD_LIBRARY_PATH=$LIB PYO3_PYTHON=../../.venv/bin/python cargo run --bin stub_gen
+PY=$(realpath ../../.venv/bin/python)   # absolute: cargo's build script runs elsewhere
+LIB=$($PY -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))")
+LD_LIBRARY_PATH=$LIB PYO3_PYTHON=$PY cargo run --bin stub_gen
 ```
 
 The generator links `libpython`; `LD_LIBRARY_PATH` points the loader at uv's Python.

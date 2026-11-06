@@ -4,6 +4,77 @@ All notable changes, newest first. Versions follow [Semantic Versioning](https:/
 0.0.x any release may change the API. The crates, the Python package and `dspk-sorters` share one
 version number.
 
+## 0.0.7 — 2026-11-06
+
+### Changed (breaking)
+
+- **dspk-synapse: one way to call every operation** (`.tasks/30`). Names start with their verb;
+  functions on device buffers start with `execute_`; data comes first with its shape, then
+  `sample_rate`, then one settings struct; spike times are samples.
+  - Renamed: `isi_histogram`, `refractory_stats`, `acg_refractory`, `ccg_refractory`,
+    `composite_score`, `sort_composite_score`, `firing_range` → `compute_*`; `kmeans` /
+    `hdbscan` → `cluster_kmeans` / `cluster_hdbscan`; `kmeans_points*`, `hdbscan_points*`,
+    `cluster_sums`, `bipartite_clustering`, `nearest_neighbours` → `execute_*`;
+    `detect_spikes_multichannel` / `_with_sigma` → `detect_spikes_threshold` / `_with_sigma`;
+    `extract_snippets_multichannel` / `extract_snippet_batch_multichannel` → `extract_snippets` /
+    `extract_snippet_batch`; `compute_neo_energy_1d` → `compute_neo_energy`;
+    `haar_dwt_multilevel_1d` → `compute_haar_dwt`; `deduplicate_spikes_spatial_gpu` →
+    `deduplicate_spikes_spatial_device`.
+  - Settings structs: detectors take `(data, channels, samples, sample_rate, &settings)` with
+    `ThresholdSpikeDetector` / `NeoSpikeDetector` / `MatchedFilterSpikeDetector` (refractory in
+    ms); `MatchingPursuitMatcher` and `GridConvolutionLocalizer` are their functions' settings;
+    new `HdbscanOptions` (replaces `cluster_hdbscan_allow_single`), `DensityPeaksOptions`
+    (replaces `cluster_density_peaks_capped`), `KdeMergeOptions`, `AmplitudeCutoffOptions`
+    (replaces `compute_amplitude_cutoff_with`), `PsthOptions`, `MepOptions`, `DriftOptions`,
+    `SnippetOptions`.
+  - Samples, not seconds: `compute_psth`, `compute_instantaneous_firing_rate`,
+    `estimate_rigid_drift`, `estimate_nonrigid_drift` take spike samples and `sample_rate`;
+    `compute_isi_violations` takes the recording's total samples.
+  - Device kernels (`*_kernel`) are no longer public (sorting's stay, hidden, for the sorter crates).
+- The kernel benchmarks moved from the crates' `tests/` into `benchmarks/kernels` (crate
+  `dspk-benchmarks`; the Kilosort ones in `dspk-benchmarks-sorters`, GPL-3.0); every benchmark
+  writes a JSON record.
+- dspk-app starts on the start screen; reopening the last recording is a setting (off by default).
+
+### Added
+
+- **Channel maps as pairs** (`[remap] base`, `pairs = [{ from, to, name }]`, TOML or JSON):
+  `dspk_core::ChannelMap` (compose, check), `RemappedSource`, `dspk_io::read_channel_map`.
+  Pipeline node `remap`: right after `read` it folds into the read; between processing nodes it
+  reorders on the device (`PipelineStage::ReorderChannels`); before `write` it may drop channels
+  (gathered on the device, per branch). Zarr outputs keep channel names.
+- `dspk_ops::core::layout::execute_gather_channels`.
+- Probe files: probeinterface and Kilosort 4 probe JSON read as a channel map plus geometry
+  (`.json` only); `SensorLayout::remap`, `depth_order`. CLI: `sort` / `detect`
+  `--probe-file`, `--channel-map`; `dspk probe --file … --write-map …`.
+- **Python:** `dspk.synapse` — `io` (`Probe`, `Sorting`: Phy / `.sorting.zarr` / NWB units),
+  `metrics` (22 unit and train metrics, correlograms, PSTH, stimulus averages, sorting
+  comparison), `detection` (threshold, NEO, matched filter, dedup, `detect_recording`),
+  `extraction` (snippets), `features` (morphology, Haar wavelet, conduction velocity);
+  `dspk.ops.layout` (channel maps, `remap`, `gather_channels`), `stage.reorder_channels` /
+  `stage.remap`; branched pipeline specs run from Python.
+- Branched pipeline specs compute the stages all branches start with once per window.
+- dspk-app: servers in Settings (Ctrl+,), Open from server (browse, open recordings remotely,
+  fetch), recordings on servers as `dspk://` paths sorted on the server; the Pipeline canvas
+  shows the path of a node on hover and each node's run status; recipes as group cards; recent
+  entries removable.
+- dspk-stream: `RemoteSource` / `RemoteSignal` (a server's recording read like a local one);
+  stopped or failed jobs remove their partial output; `dspk serve --runtime`.
+- `deploy/smoke-test.sh` (the server image end to end with Podman).
+- `plating` (the figures' look, a synthetic recording with known components, the benchmark JSON);
+  the playground rebuilt as a course in chapters (01 basics … 07 channels, 10 remote), each
+  script with its committed figure.
+
+### Fixed
+
+- dspk-app: adding plot views in Curation no longer panics.
+- Python: branched specs (one read, several writes) were refused.
+
+### Security
+
+- `dspk serve` refuses `probe-file` and `channel-map` as job parameters (paths a client could point
+  outside the data root).
+
 ## 0.0.6 — 2026-11-06
 
 ### Security

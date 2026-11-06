@@ -12,20 +12,20 @@ pub use comparison::{
     PairwiseTrainMatch, SortingComparison, UnitMatchSummary, compare_sortings,
     compare_spike_trains,
 };
-pub use composite::{composite_score, firing_range, sort_composite_score, CompositeScore, CompositeScoreOptions};
+pub use composite::{compute_composite_score, compute_firing_range, compute_sort_composite_score, CompositeScore, CompositeScoreOptions};
 pub use correlogram::{Correlogram, compute_autocorrelogram, compute_crosscorrelogram};
 pub use evoked::{
-    MepMetrics, PsthResult, StimulusTriggeredAverage, compute_psth,
+    MepMetrics, MepOptions, PsthOptions, PsthResult, StimulusTriggeredAverage, compute_psth, DEFAULT_PSTH_BIN_MS, DEFAULT_PSTH_POST_MS, DEFAULT_PSTH_PRE_MS,
     compute_stimulus_triggered_average, quantify_mep,
 };
 pub use firing::{
-    IsiMetrics, compute_amplitude_cutoff, compute_amplitude_cutoff_with, compute_isi_violations,
-    compute_llobet_contamination, compute_presence_ratio, count_refractory_violations, isi_histogram,
+    AmplitudeCutoffOptions, IsiMetrics, compute_amplitude_cutoff, compute_isi_violations,
+    compute_llobet_contamination, compute_presence_ratio, count_refractory_violations, compute_isi_histogram,
 };
 pub use isolation::{
     compute_d_prime, compute_isolation_distance, compute_silhouette_score, compute_snr,
 };
-pub use refractory::{acg_refractory, ccg_refractory, refractory_stats, RefractoryOptions, RefractoryStats};
+pub use refractory::{compute_acg_refractory, compute_ccg_refractory, compute_refractory_stats, RefractoryOptions, RefractoryStats};
 pub use rate::{
     BurstEpoch, FiringRateCurve, compute_instantaneous_firing_rate, detect_burst_epochs,
 };

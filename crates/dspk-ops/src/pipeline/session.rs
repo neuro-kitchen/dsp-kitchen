@@ -37,6 +37,8 @@ enum Planned<F: DspFloat> {
     SpatialMatrix(DeviceSpatialMatrix),
     CenteredFir { taps: Handle, radius: usize, edge: EdgeMode },
     CausalFir { taps: Handle, num_taps: usize, edge: EdgeMode },
+    /// The channel order, uploaded once.
+    Reorder { rows: Handle },
 }
 
 /// Pre-allocated device workspace for running a [`Pipeline`] over many chunks of `F` values.
@@ -137,6 +139,19 @@ impl<F: DspFloat> PipelineWorkspace<F> {
                     let (taps, radius) = gaussian_kernel_1d(*sigma_samples, GAUSSIAN_TRUNCATE);
                     plan.push(Planned::CenteredFir { taps: buffer::upload(&client, &cast_f32::<F>(&taps)), radius, edge: *edge });
                 }
+                PipelineStage::ReorderChannels { order } => {
+                    let mut seen = vec![false; channels];
+                    for &c in order {
+                        if c >= channels || std::mem::replace(&mut seen[c], true) {
+                            return Err(OpsError::InvalidChannelOrder(format!("{order:?} is not an order of {channels} channels (each once)")));
+                        }
+                    }
+                    if order.len() != channels {
+                        return Err(OpsError::InvalidChannelOrder(format!("{order:?} is not an order of {channels} channels (each once)")));
+                    }
+                    let rows: Vec<u32> = order.iter().map(|&c| c as u32).collect();
+                    plan.push(Planned::Reorder { rows: buffer::upload(&client, &rows) });
+                }
                 other => plan.push(Planned::Stage(other.clone())),
             }
         }
@@ -196,7 +211,7 @@ impl<F: DspFloat> PipelineWorkspace<F> {
             .iter()
             .map(|p| match p {
                 Planned::Filter { filter, .. } => filter.scratch_len(self.channels, samples),
-                Planned::Stage(_) | Planned::SpatialMatrix(_) | Planned::CenteredFir { .. } | Planned::CausalFir { .. } => 0,
+                Planned::Stage(_) | Planned::SpatialMatrix(_) | Planned::CenteredFir { .. } | Planned::CausalFir { .. } | Planned::Reorder { .. } => 0,
             })
             .max()
             .unwrap_or(0);
@@ -238,6 +253,9 @@ impl<F: DspFloat> PipelineWorkspace<F> {
                 Planned::CausalFir { taps, num_taps, edge } => {
                     execute_fir::<F>(client, &current_in, &out, taps, channels, samples, *num_taps, *edge);
                 }
+                Planned::Reorder { rows } => {
+                    crate::core::layout::execute_gather_rows::<F>(client, &current_in, rows, &out, channels, channels, samples);
+                }
                 Planned::Stage(stage) => match stage {
                     PipelineStage::Scale { alpha, beta } => {
                         execute_scaling::<F>(client, &current_in, &out, total, cast(*alpha as f64), cast(*beta as f64))
@@ -264,6 +282,7 @@ impl<F: DspFloat> PipelineWorkspace<F> {
                     | PipelineStage::SpatialWhitening(_)
                     | PipelineStage::SurfaceLaplacian(_)
                     | PipelineStage::GaussianSmooth { .. }
+                    | PipelineStage::ReorderChannels { .. }
                     | PipelineStage::Fir { .. } => {
                         unreachable!("pre-planned stage")
                     }

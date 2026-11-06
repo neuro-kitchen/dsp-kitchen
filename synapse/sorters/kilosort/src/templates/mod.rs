@@ -14,7 +14,7 @@ use cubecl::prelude::*;
 use dspk_ops::linalg::{symmetric_eigen, EigenOptions, SecondMomentAccumulator};
 use dspk_core::{DspError, DspResult};
 use dspk_io::container::npy::read_npz;
-use dspk_synapse::sorting::{hdbscan_points_with_progress, hdbscan_progress_total, kmeans_points_with_progress, DevicePoints, KMeansOptions};
+use dspk_synapse::sorting::{execute_hdbscan_with_progress, cluster_hdbscan_progress_total, execute_kmeans_with_progress, DevicePoints, HdbscanOptions, KMeansOptions};
 
 /// Half-window of the local-maximum test of clip detection: ±4 channel indices × ±5 samples
 /// (upstream `loc_range = [4, 5]` over `[channels, samples]`, in Kilosort4 and EMUsort's fork).
@@ -162,7 +162,7 @@ pub fn learn_universal_templates_with_progress(
         return Err(DspError::InvalidConfig(format!("{n} clips: too few to learn {} PCs and {} templates", opts.n_pcs, opts.n_templates)));
     }
     let outliers = opts.outlier_min_cluster_size.filter(|&mcs| n >= MIN_CLIPS_FOR_OUTLIERS.max(mcs));
-    let hdbscan_steps = if outliers.is_some() { hdbscan_progress_total(n) } else { 0 };
+    let hdbscan_steps = if outliers.is_some() { cluster_hdbscan_progress_total(n) } else { 0 };
     let total = 1 + hdbscan_steps + KMEANS_N_INIT as u64;
     progress(0, total);
     let scaled = scale_clips(clips, nt, opts.clip_scaling);
@@ -184,7 +184,7 @@ pub fn learn_universal_templates_with_progress(
     // EMUsort: drop HDBSCAN outliers before clustering
     let kept = match outliers {
         Some(mcs) => {
-            let labels = hdbscan_points_with_progress(client, &points, mcs, &mut |done, _| progress(1 + done, total));
+            let labels = execute_hdbscan_with_progress(client, &points, &HdbscanOptions::new(mcs), &mut |done, _| progress(1 + done, total));
             let inliers: Vec<u32> = (0..n as u32).filter(|&i| labels[i as usize] >= 0).collect();
             if inliers.len() >= opts.n_templates {
                 points.gather(client, &inliers)
@@ -204,7 +204,7 @@ pub fn learn_universal_templates_with_progress(
     // wTEMP: k-means centres, rows L2-normalized
     let offset = 1 + hdbscan_steps;
     let options = KMeansOptions { n_init: KMEANS_N_INIT, seed: opts.seed, ..Default::default() };
-    let km = kmeans_points_with_progress(client, &kept, opts.n_templates, &options, &mut |done, _| progress(offset + done, total));
+    let km = execute_kmeans_with_progress(client, &kept, opts.n_templates, &options, &mut |done, _| progress(offset + done, total));
     let mut wtemp = km.centers;
     for row in wtemp.chunks_exact_mut(nt) {
         let norm = row.iter().map(|v| v * v).sum::<f32>().sqrt();

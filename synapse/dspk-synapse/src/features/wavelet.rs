@@ -8,7 +8,7 @@ use dspk_ops::math::interquartile_range;
 use crate::core::{FeatureEmbedder, SnippetBatch};
 
 /// Computes a multi-level 1D Haar Discrete Wavelet Transform (DWT) of `signal`.
-pub fn haar_dwt_multilevel_1d(signal: &[f32], levels: usize) -> Vec<f32> {
+pub fn compute_haar_dwt(signal: &[f32], levels: usize) -> Vec<f32> {
     if signal.is_empty() {
         return Vec::new();
     }
@@ -68,7 +68,7 @@ impl FeatureEmbedder for WaveletFeatureEmbedder {
         for s in 0..num_spikes {
             for c in 0..ch_count {
                 let wave = batch.channel_slice(s, c);
-                let dwt = haar_dwt_multilevel_1d(wave, self.levels);
+                let dwt = compute_haar_dwt(wave, self.levels);
                 let dst = &mut all_coeffs[s * total_coeffs + c * t_len..s * total_coeffs + (c + 1) * t_len];
                 dst.copy_from_slice(&dwt);
             }
@@ -106,7 +106,7 @@ mod tests {
     fn test_haar_dwt_preserves_energy() {
         let sig = vec![1.0f32, -2.0, 4.0, -1.0, 3.0, 0.5, -1.5, 2.0];
         let e_in: f32 = sig.iter().map(|v| v * v).sum();
-        let coeffs = haar_dwt_multilevel_1d(&sig, 3);
+        let coeffs = compute_haar_dwt(&sig, 3);
         let e_out: f32 = coeffs.iter().map(|v| v * v).sum();
         assert!((e_in - e_out).abs() < 1e-4);
     }

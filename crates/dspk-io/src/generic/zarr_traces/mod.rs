@@ -17,6 +17,7 @@ use zarrs::array::{Array, ArrayBuilder, ArrayBytes, data_type};
 
 use crate::container::binary::codec::{native_to_le, scale_frames, select_stored};
 use crate::container::zarr::open_store;
+use zarrs::storage::ReadableWritableListableStorage;
 use zarrs::group::{Group, GroupBuilder};
 
 mod format;
@@ -82,6 +83,13 @@ impl ZarrRecording {
 
         let name = path.file_name().map_or_else(|| "recording.zarr".into(), |n| n.to_string_lossy().into_owned());
         let mut info = RecordingInfo::new(name, channels, samples, SampleRate::new(rate)?, format, order).with_gain(gain, unit);
+        if let Some(names) = attrs.get(CHANNEL_NAMES_ATTR).and_then(Value::as_array).filter(|n| n.len() == channels) {
+            for (ch, n) in info.channels.iter_mut().zip(names) {
+                if let Some(n) = n.as_str() {
+                    ch.name = n.to_string();
+                }
+            }
+        }
         info.metadata.insert("format".into(), "zarr v3".into());
         let time_axis = if order == MemoryOrder::TimeMajor { 0 } else { 1 };
         let chunk_samples = array.chunk_shape(&[0, 0]).ok().map(|c| c[time_axis].get());
@@ -217,6 +225,9 @@ pub enum ZarrCompression {
 /// to, fast enough to keep up with the device when chunks are compressed in parallel.
 pub const DEFAULT_ZARR_COMPRESSION: ZarrCompression = ZarrCompression::Zstd { level: 3 };
 
+/// Root attribute holding the channels' names (a list, one per channel).
+pub const CHANNEL_NAMES_ATTR: &str = "channel_names";
+
 /// Layout of a written Zarr recording.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ZarrOptions {
@@ -245,6 +256,7 @@ pub fn write_zarr(source: &dyn RecordingSource, path: &Path, options: &ZarrOptio
     let (nch, total) = (info.channels.len(), info.samples);
     let unit = info.channels.first().map(|c| c.unit.clone()).unwrap_or_default();
     let mut writer = ZarrWriter::create(path, nch, total, info.sample_rate_hz(), &unit, options)?;
+    writer.set_channel_names(&info.channels.iter().map(|c| c.name.clone()).collect::<Vec<_>>())?;
     // Read several chunks at a time, so the writer stores them in parallel
     let threads = if options.parallel { rayon::current_num_threads().max(1) } else { 1 };
     let block = writer.chunk_samples() * threads as u64;
@@ -270,6 +282,7 @@ pub fn write_zarr(source: &dyn RecordingSource, path: &Path, options: &ZarrOptio
 /// parallel (rayon; every chunk is a separate file, so the stores are independent). The data never
 /// goes through a temporary file.
 pub struct ZarrWriter {
+    store: ReadableWritableListableStorage,
     array: Array<dyn zarrs::storage::ReadableWritableListableStorageTraits>,
     channels: usize,
     total: u64,
@@ -302,11 +315,22 @@ impl ZarrWriter {
         let mut builder = ArrayBuilder::new(vec![channels as u64, samples], vec![channels as u64, chunk], data_type::float32(), 0.0f32);
         builder.dimension_names(["channels", "samples"].into());
         builder.bytes_to_bytes_codecs(compression_codecs(options.compression)?);
-        let mut array = builder.build(store, ARRAY_PATH).map_err(|e| err("array")(e.to_string()))?;
+        let mut array = builder.build(store.clone(), ARRAY_PATH).map_err(|e| err("array")(e.to_string()))?;
         array.attributes_mut().insert("unit".into(), serde_json::to_value(unit).map_err(|e| err("unit")(e.to_string()))?);
         array.store_metadata().map_err(|e| err("array metadata")(e.to_string()))?;
 
-        Ok(Self { array, channels, total: samples, chunk, stored: 0, parallel: options.parallel, pending: Vec::new(), filled: 0, ready: Vec::new() })
+        Ok(Self { store, array, channels, total: samples, chunk, stored: 0, parallel: options.parallel, pending: Vec::new(), filled: 0, ready: Vec::new() })
+    }
+
+    /// Records the channels' names (the `channel_names` attribute of the root group; read back
+    /// as each channel's name).
+    pub fn set_channel_names(&mut self, names: &[String]) -> DspResult<()> {
+        if names.len() != self.channels {
+            return Err(DspError::ShapeMismatch { expected: vec![self.channels], actual: vec![names.len()] });
+        }
+        let mut root = Group::open(self.store.clone(), "/").map_err(|e| err("root group")(e.to_string()))?;
+        root.attributes_mut().insert(CHANNEL_NAMES_ATTR.into(), json!(names));
+        root.store_metadata().map_err(|e| err("root metadata")(e.to_string()))
     }
 
     /// Samples per chunk.

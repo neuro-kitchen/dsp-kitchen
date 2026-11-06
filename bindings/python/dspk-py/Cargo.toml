@@ -17,13 +17,14 @@ crate-type = ["cdylib", "rlib"]
 default = ["wgpu", "cuda", "cpu"]
 # Set by maturin when it builds the wheel; off for `cargo` builds of the workspace (linker)
 extension-module = ["pyo3/extension-module"]
-wgpu = ["dspk-py-core/wgpu"]
-cpu = ["dspk-py-core/cpu"]
-cuda = ["dspk-py-core/cuda"]
-hip = ["dspk-py-core/hip"]
+wgpu = ["dspk-py-core/wgpu", "dspk-py-synapse/wgpu"]
+cpu = ["dspk-py-core/cpu", "dspk-py-synapse/cpu"]
+cuda = ["dspk-py-core/cuda", "dspk-py-synapse/cuda"]
+hip = ["dspk-py-core/hip", "dspk-py-synapse/hip"]
 
 [dependencies]
 dspk-py-core.workspace = true
+dspk-py-synapse.workspace = true
 # abi3: one wheel per platform serves every CPython >= 3.10
 pyo3 = { workspace = true, features = ["abi3-py310"] }
 pyo3-stub-gen.workspace = true

@@ -260,8 +260,17 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# Playground scratch (the curated figures live in each chapter's figures/, committed)
 playground/output/
-benchmarks/*/results/
+playground/data/
+# Benchmark results: the JSON records and their PNGs are committed (plating.results); anything
+# else a run leaves there (sortings, folders, logs) is not
+benchmarks/*/results/*
+benchmarks/*/*/results/*
+!benchmarks/*/results/*.json
+!benchmarks/*/results/*.png
+!benchmarks/*/*/results/*.json
+!benchmarks/*/*/results/*.png
 
 # Python API reference build (Zensical); docs/build.sh copies it into target/site/
 docs/api/python/site/

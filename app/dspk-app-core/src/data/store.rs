@@ -77,6 +77,14 @@ pub struct RunningJob {
     pub cancel: Cancel,
 }
 
+/// What a graph node's last job is doing (the Pipeline canvas shows it on the node).
+#[derive(Debug, Clone, PartialEq)]
+pub enum NodeRun {
+    Running { line: String, fraction: Option<f32>, since: Instant },
+    Done { took: Duration },
+    Failed(String),
+}
+
 /// The open recording.
 pub struct Recording {
     pub sources: Arc<SourceSet>,
@@ -140,6 +148,11 @@ pub struct Store {
     pub picked_channel: Option<usize>,
     pub picked_op: Option<String>,
     pub job: Option<RunningJob>,
+    /// The last job that failed: its label and why (cleared when the next job starts).
+    pub last_failed: Option<(String, String)>,
+    /// Graph nodes the running job works on, and every node's last run.
+    job_nodes: Vec<String>,
+    pub node_status: HashMap<String, NodeRun>,
     /// Floating windows, front last.
     pub floating: Vec<Floating>,
     /// Earlier documents (undo) and undone ones (redo).
@@ -153,6 +166,7 @@ impl EventEmitter<AppEvent> for Store {}
 
 impl Store {
     pub fn new(session: Session, session_path: Option<PathBuf>) -> Self {
+        crate::data::remote::set_profiles(&session.servers);
         Self {
             recording: None,
             timeline: TimelineState::new(1.0),
@@ -175,6 +189,9 @@ impl Store {
             picked_channel: None,
             picked_op: None,
             job: None,
+            last_failed: None,
+            job_nodes: Vec::new(),
+            node_status: HashMap::new(),
             floating: Vec::new(),
             history: Vec::new(),
             future: Vec::new(),
@@ -527,18 +544,66 @@ impl Store {
 
     /// Starts a job: `start` gets the sender of its messages and returns its cancel handle;
     /// `done` runs on the UI thread with the file it wrote.
+    /// Starts a job ([`Self::start_job`]) that works on graph nodes `nodes`: they show running on
+    /// the Pipeline canvas until it ends, then done or failed. `false` (nothing marked) when
+    /// another job is running.
+    pub fn start_job_on(
+        &mut self,
+        nodes: impl IntoIterator<Item = String>,
+        label: impl Into<String>,
+        start: impl FnOnce(Box<dyn Fn(JobMessage) + Send + Sync>) -> Cancel,
+        done: impl FnOnce(&mut Self, PathBuf, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.start_job(label, start, done, cx) {
+            return false;
+        }
+        self.mark_job_nodes(nodes, cx);
+        true
+    }
+
+    /// The running job's graph nodes (only from [`Self::start_job_on`], right after it starts).
+    fn mark_job_nodes(&mut self, ids: impl IntoIterator<Item = String>, cx: &mut Context<Self>) {
+        let since = Instant::now();
+        self.job_nodes = ids.into_iter().collect();
+        for id in &self.job_nodes {
+            self.node_status.insert(id.clone(), NodeRun::Running { line: String::new(), fraction: None, since });
+        }
+        cx.emit(AppEvent::JobChanged);
+    }
+
+    /// The job's nodes: done (with how long it took) or failed.
+    fn finish_job_nodes(&mut self, failed: Option<String>) {
+        for id in std::mem::take(&mut self.job_nodes) {
+            let status = match (&failed, self.node_status.get(&id)) {
+                (Some(e), _) => NodeRun::Failed(e.clone()),
+                (None, Some(NodeRun::Running { since, .. })) => NodeRun::Done { took: since.elapsed() },
+                (None, _) => NodeRun::Done { took: Duration::ZERO },
+            };
+            self.node_status.insert(id, status);
+        }
+    }
+
+    /// The nodes a write of `id` runs: `id` and everything upstream of it.
+    fn chain_nodes(&self, id: &str) -> Vec<String> {
+        let mut ids: Vec<String> = self.doc.graph.ancestors(id).into_iter().collect();
+        ids.push(id.to_string());
+        ids
+    }
+
     pub fn start_job(
         &mut self,
         label: impl Into<String>,
         start: impl FnOnce(Box<dyn Fn(JobMessage) + Send + Sync>) -> Cancel,
         done: impl FnOnce(&mut Self, PathBuf, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
-    ) {
+    ) -> bool {
         if self.job.is_some() {
             self.set_status("Another job is running: wait for it or cancel it", cx);
-            return;
+            return false;
         }
         let label = label.into();
+        self.last_failed = None;
         let (tx, rx) = async_channel::unbounded::<JobMessage>();
         let cancel = start(Box::new(move |m| {
             let _ = tx.try_send(m);
@@ -557,11 +622,18 @@ impl Store {
                                 j.line = line.clone();
                                 j.fraction = fraction.or(j.fraction);
                             }
+                            for id in s.job_nodes.clone() {
+                                if let Some(NodeRun::Running { line: l, fraction: f, .. }) = s.node_status.get_mut(&id) {
+                                    *l = line.clone();
+                                    *f = fraction.or(*f);
+                                }
+                            }
                             s.status = format!("{label}: {line}");
                             cx.emit(AppEvent::Status);
                         }
                         JobMessage::Done(path) => {
                             s.job = None;
+                            s.finish_job_nodes(None);
                             s.set_status(format!("{label}: done ({})", file_label(&path)), cx);
                             if let Some(done) = done.take() {
                                 done(s, path, cx);
@@ -569,6 +641,8 @@ impl Store {
                         }
                         JobMessage::Failed(e) => {
                             s.job = None;
+                            s.last_failed = Some((label.clone(), e.clone()));
+                            s.finish_job_nodes(Some(e.clone()));
                             s.set_status(format!("{label}: {e}"), cx);
                         }
                     }
@@ -580,6 +654,7 @@ impl Store {
             }
         })
         .detach();
+        true
     }
 
     pub fn cancel_job(&mut self, cx: &mut Context<Self>) {
@@ -623,7 +698,9 @@ impl Store {
             chains.push(ViewDoc { id: w.clone(), name: w.clone(), recording, ops, display: Default::default(), plugins: Default::default() });
         }
         let n = chains.len();
-        self.start_job(
+        let nodes: std::collections::BTreeSet<String> = writes.iter().flat_map(|w| self.chain_nodes(w)).collect();
+        self.start_job_on(
+            nodes,
             format!("Write {n} outputs"),
             move |send| jobs::write_branches(chains, outputs, move |m| send(m)),
             move |s, _, cx| s.set_status(format!("Written: {n} outputs in one read"), cx),
@@ -658,7 +735,9 @@ impl Store {
             return;
         }
         let output = jobs::processed_path(&v.recording.path, &v.id);
-        self.start_job(
+        let nodes = self.chain_nodes(&v.id);
+        self.start_job_on(
+            nodes,
             format!("Write {}", v.name),
             move |send| jobs::write_view(&v, output, move |m| send(m)),
             |s, path, cx| s.set_status(format!("Written: {}", path.display()), cx),
@@ -687,6 +766,45 @@ impl Store {
     /// The user's theme choice (`None`: follow the system), saved.
     pub fn set_theme_choice(&mut self, dark: Option<bool>, cx: &mut Context<Self>) {
         self.session.dark = dark;
+        self.save_session();
+        cx.notify();
+    }
+
+    /// The servers the user works with (Settings), saved.
+    pub fn set_servers(&mut self, servers: Vec<crate::data::remote::ServerProfile>, cx: &mut Context<Self>) {
+        crate::data::remote::set_profiles(&servers);
+        self.session.servers = servers;
+        self.save_session();
+        cx.notify();
+    }
+
+    /// Where results fetched from servers go (`None`: the default), saved.
+    pub fn set_results_dir(&mut self, dir: Option<std::path::PathBuf>, cx: &mut Context<Self>) {
+        self.session.results_dir = dir;
+        self.save_session();
+        cx.notify();
+    }
+
+    /// Whether the last recording opens at start, saved.
+    pub fn set_reopen_last(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.session.reopen_last = on;
+        self.save_session();
+        cx.notify();
+    }
+
+    /// Forgets `path` from the recent lists (`None`: all of them), saved. The files stay.
+    pub fn forget_recent(&mut self, path: Option<&std::path::Path>, cx: &mut Context<Self>) {
+        match path {
+            Some(p) => self.session.forget_recent(p),
+            None => self.session.clear_recent(),
+        }
+        self.save_session();
+        cx.notify();
+    }
+
+    /// The compute runtime for the next start (`None`: the first compiled in), saved.
+    pub fn set_runtime(&mut self, runtime: Option<String>, cx: &mut Context<Self>) {
+        self.session.runtime = runtime;
         self.save_session();
         cx.notify();
     }
@@ -824,6 +942,13 @@ impl Store {
             });
         })
         .detach();
+    }
+
+    /// Opens the recording at `path` on a server (a `dspk://` path: drawn from the server's
+    /// pyramid, read there, nothing copied whole), like any recording: a view, recent files.
+    pub fn open_remote(&mut self, profile: crate::data::remote::ServerProfile, path: String, cx: &mut Context<Self>) {
+        crate::data::remote::set_profiles(&self.session.servers);
+        self.open(crate::data::remote::uri(&profile.name, &path), cx);
     }
 
     /// Opens a procedural recording (noise, hum, drifting units) computed on demand.

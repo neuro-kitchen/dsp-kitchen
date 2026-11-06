@@ -18,7 +18,7 @@
 //! presence of a single type of error results in rejection"; components are clamped to `[0, 1]`;
 //! percentiles interpolate linearly (as `numpy.percentile`).
 
-use super::firing::{compute_amplitude_cutoff_with, compute_llobet_contamination, compute_presence_ratio, AMPLITUDE_CUTOFF_MIN_RATIO, AMPLITUDE_CUTOFF_SMOOTHING};
+use super::firing::{compute_amplitude_cutoff, compute_llobet_contamination, compute_presence_ratio, AmplitudeCutoffOptions};
 
 /// Settings of the composite score (the paper's values).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -68,7 +68,7 @@ pub struct CompositeScore {
 }
 
 /// Composite score of a cluster from its spike times (samples), amplitudes and SNR.
-pub fn composite_score(
+pub fn compute_composite_score(
     spike_samples: &[u64],
     amplitudes: &[f32],
     snr: f64,
@@ -83,12 +83,12 @@ pub fn composite_score(
     let type_1 = unit(1.0 - contamination);
 
     let presence = compute_presence_ratio(spike_samples, total_samples, sample_rate_hz, opts.presence_bin_s, opts.presence_mean_fr_ratio);
-    let cutoff = compute_amplitude_cutoff_with(amplitudes, opts.amplitude_bins, AMPLITUDE_CUTOFF_SMOOTHING, AMPLITUDE_CUTOFF_MIN_RATIO);
+    let cutoff = compute_amplitude_cutoff(amplitudes, &AmplitudeCutoffOptions { num_bins: opts.amplitude_bins, ..Default::default() });
     let type_2 = unit(unit(presence) * unit(1.0 - cutoff));
 
     let duration_s = total_samples as f64 / sample_rate_hz;
     let rate = if duration_s > 0.0 { spike_samples.len() as f64 / duration_s } else { f64::NAN };
-    let range = firing_range(spike_samples, total_samples, sample_rate_hz, opts.firing_range_bin_s, opts.firing_range_percentiles);
+    let range = compute_firing_range(spike_samples, total_samples, sample_rate_hz, opts.firing_range_bin_s, opts.firing_range_percentiles);
     let firing_rate = if rate.is_finite() && range.is_finite() {
         unit(logistic_below(rate, opts.max_rate_hz) * logistic_below(range, opts.max_rate_hz))
     } else {
@@ -100,13 +100,13 @@ pub fn composite_score(
 }
 
 /// Mean of the clusters' scores: the sort's composite score (NaN without clusters).
-pub fn sort_composite_score(scores: &[CompositeScore]) -> f64 {
+pub fn compute_sort_composite_score(scores: &[CompositeScore]) -> f64 {
     scores.iter().map(|s| s.score).sum::<f64>() / scores.len() as f64
 }
 
 /// Spread of a unit's firing rate (Hz): `high − low` percentile of its rate in `bin_s` bins over
-/// the recording (SpikeInterface `firing_range`). NaN when the recording is shorter than one bin.
-pub fn firing_range(spike_samples: &[u64], total_samples: u64, sample_rate_hz: f64, bin_s: f64, (low, high): (f64, f64)) -> f64 {
+/// the recording (SpikeInterface `compute_firing_range`). NaN when the recording is shorter than one bin.
+pub fn compute_firing_range(spike_samples: &[u64], total_samples: u64, sample_rate_hz: f64, bin_s: f64, (low, high): (f64, f64)) -> f64 {
     let bin = (bin_s * sample_rate_hz).round() as u64;
     if bin == 0 || total_samples < bin {
         return f64::NAN;
@@ -155,20 +155,20 @@ mod tests {
         let spikes: Vec<u64> = (0..1200).map(|i| i * 3_000 + 100).collect();
         let amps: Vec<f32> = (0..1200).map(|i| 50.0 + ((i * 37 % 41) as f32 - 20.0) * 0.5).collect();
         let opts = CompositeScoreOptions::default();
-        let good = composite_score(&spikes, &amps, 10.0, total, FS, &opts);
+        let good = compute_composite_score(&spikes, &amps, 10.0, total, FS, &opts);
         assert_eq!(good.type_1, 1.0, "no refractory violations");
         assert!(good.score > 0.9, "{good:?}");
-        let noisy = composite_score(&spikes, &amps, 2.0, total, FS, &opts);
+        let noisy = compute_composite_score(&spikes, &amps, 2.0, total, FS, &opts);
         assert!((noisy.snr - 1.0 / (1.0 + 2f64.exp())).abs() < 1e-12);
         let fast: Vec<u64> = (0..36_000).map(|i| i * 100).collect();
         let fast_amps = vec![50.0f32; fast.len()];
-        let fast = composite_score(&fast, &fast_amps, 10.0, total, FS, &opts);
+        let fast = compute_composite_score(&fast, &fast_amps, 10.0, total, FS, &opts);
         assert!(fast.firing_rate < 1e-6, "{fast:?}");
     }
 
     #[test]
     fn too_few_spikes_score_zero() {
-        let s = composite_score(&[100], &[50.0], 10.0, 30 * 30_000, FS, &CompositeScoreOptions::default());
+        let s = compute_composite_score(&[100], &[50.0], 10.0, 30 * 30_000, FS, &CompositeScoreOptions::default());
         assert_eq!(s.score, 0.0);
     }
 }

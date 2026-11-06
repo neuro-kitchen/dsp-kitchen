@@ -4,17 +4,16 @@
 # through each operation, on every runtime compiled in, against scipy / numpy on the host:
 # zero-phase and causal band-pass, notch, FIR, median filter, polyphase resampling, common median
 # reference. dspk's time is end to end from a NumPy array (upload, kernel, download), the time a
-# Python caller sees; the kernel alone is in `crates/dspk-ops/tests/bench_kernels.rs`.
+# Python caller sees; the kernel alone is in `benchmarks/kernels/tests/bench_kernels.rs`.
 #
 #     uv run python benchmarks/signal-operations/scipy_timing.py [--repeats 5] [--channels 384] [--samples 60000]
 #
-# Writes `benchmarks/signal-operations/results/scipy_timing.json` (with the machine and versions).
+# Writes `benchmarks/signal-operations/results/scipy_timing-<runtime>.json` (plating's record: machine,
+# versions, per operation the times, the error and pass / fail) and its two figures.
 # Timings are medians after one warm-up (the warm-up compiles and autotunes the kernels).
 
 # %% Settings
 import argparse
-import json
-import platform
 import time
 from pathlib import Path
 
@@ -23,6 +22,8 @@ import scipy
 from scipy import signal as sp
 
 import dspk
+import plating
+from plating import figures, results
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--repeats", type=int, default=5, help="timed runs per operation (after one warm-up)")
@@ -91,6 +92,10 @@ def timed(call):
 
 
 # %% Run
+#: Largest error each operation may have against scipy, relative to scipy's peak: float32 on the
+#: device against scipy's float64 for the filters; median and CMR pick the same samples (exact)
+TOLERANCE = {"zero-phase band-pass": 1e-5, "causal band-pass": 1e-5, "notch 60 Hz": 1e-5, f"FIR {FIR_TAPS} taps": 1e-5,
+             f"median width {MEDIAN_WIDTH}": 1e-6, f"resample {UP}/{DOWN}": 1e-5, "common median reference": 1e-6}
 runtimes = []
 for rt in dspk.runtime.available():
     try:
@@ -101,29 +106,25 @@ for rt in dspk.runtime.available():
 print(f"dspk {dspk.__version__}, scipy {scipy.__version__} | {args.channels} ch × {args.samples} samples | runtimes {runtimes}\n")
 header = f"{'operation':26s} {'scipy':>9s}" + "".join(f" {rt:>9s}" for rt in runtimes) + "   max error vs scipy (of its peak)"
 print(header + "\n" + "-" * len(header))
-rows = []
+cases = {rt: [] for rt in runtimes}
 for name, (ours, theirs) in OPERATIONS.items():
     t_ref, ref = timed(theirs)
-    peak = float(np.max(np.abs(ref))) or 1.0
-    row = {"operation": name, "scipy_s": t_ref, "runtimes": {}}
+    cells, errors = "", []
     for rt in runtimes:
         t_ours, y = timed(lambda: ours(rt))
-        row["runtimes"][rt] = {"seconds": t_ours, "speedup": t_ref / t_ours, "max_error": float(np.max(np.abs(y - ref))) / peak}
-    rows.append(row)
-    cells = "".join(f" {row['runtimes'][rt]['seconds'] * 1e3:7.1f}ms" for rt in runtimes)
-    errors = " ".join(f"{row['runtimes'][rt]['max_error']:.0e}" for rt in runtimes)
-    print(f"{name:26s} {t_ref * 1e3:7.1f}ms{cells}   {errors}")
+        case = results.compare(name, y, ref, tolerance=TOLERANCE[name], dspk_ms=t_ours * 1e3, reference_ms=t_ref * 1e3)
+        cases[rt].append(case)
+        cells += f" {t_ours * 1e3:7.1f}ms"
+        errors.append(f"{case.rel_err:.0e}{'' if case.passed else ' FAIL'}")
+    print(f"{name:26s} {t_ref * 1e3:7.1f}ms{cells}   {' '.join(errors)}")
 
-# %% Save
-RESULTS.mkdir(parents=True, exist_ok=True)
-report = {
-    "dspk": dspk.__version__,
-    "scipy": scipy.__version__,
-    "numpy": np.__version__,
-    "machine": {"system": platform.platform(), "processor": platform.processor() or platform.machine()},
-    "shape": [args.channels, args.samples],
-    "repeats": args.repeats,
-    "results": rows,
-}
-(RESULTS / "scipy_timing.json").write_text(json.dumps(report, indent=2))
-print("\nreport:", RESULTS / "scipy_timing.json")
+# %% Save: one record per runtime (plating.results schema), and its two figures
+NOTES = (f"One {args.channels} × {args.samples} float32 block (2 s of Neuropixels at 30 kHz). Each time is the median of "
+         f"{args.repeats} calls after a warm-up, end to end from a NumPy array (upload, kernels, download) for dspk; "
+         f"scipy / numpy in float64 on the CPU. Error: max |dspk − scipy| / max |scipy|.")
+for rt in runtimes:
+    path = results.write(RESULTS / f"scipy_timing-{rt}.json", "signal-operations/scipy", cases[rt],
+                         reference={"tool": "scipy", "version": scipy.__version__}, runtime=rt, notes=NOTES)
+    plating.save(figures.timings(path, title=f"dspk ({rt}) against scipy, {args.channels} channels × 2 s")[0], RESULTS / f"scipy_timing-{rt}.png", note=NOTES.split(". ")[0] + ".", runtime=rt)
+    plating.save(figures.agreement(path, title=f"dspk ({rt}) agrees with scipy")[0], RESULTS / f"scipy_agreement-{rt}.png", runtime=rt)
+    print("record:", path)

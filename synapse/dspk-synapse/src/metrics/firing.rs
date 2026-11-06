@@ -24,17 +24,19 @@ pub struct IsiMetrics {
     pub firing_rate_hz: f64,
 }
 
-/// ISI violations of a spike train (sample indices, any order) over a recording of `total_duration_sec`.
+/// ISI violations of a spike train (sample indices, any order) over a recording of `total_samples`
+/// at `sample_rate_hz`.
 pub fn compute_isi_violations(
     spike_samples: &[u64],
+    total_samples: u64,
     sample_rate_hz: f64,
-    total_duration_sec: f64,
     isi_threshold_ms: f64,
     min_isi_ms: f64,
 ) -> IsiMetrics {
     let mut sorted = spike_samples.to_vec();
     sorted.sort_unstable();
     let n = sorted.len();
+    let total_duration_sec = total_samples as f64 / sample_rate_hz;
     let threshold_s = isi_threshold_ms * 1e-3;
     let violations = sorted
         .windows(2)
@@ -70,7 +72,7 @@ pub fn compute_isi_violations(
 
 /// Inter-spike-interval histogram of a spike train (sample indices, any order): counts of the
 /// intervals in `bin_ms` bins over `[0, max_ms)`, and the bin centres in ms.
-pub fn isi_histogram(spike_samples: &[u64], sample_rate_hz: f64, bin_ms: f64, max_ms: f64) -> (Vec<f64>, Vec<u64>) {
+pub fn compute_isi_histogram(spike_samples: &[u64], sample_rate_hz: f64, bin_ms: f64, max_ms: f64) -> (Vec<f64>, Vec<u64>) {
     let bin_ms = bin_ms.max(1e-3);
     let bins = ((max_ms.max(bin_ms) / bin_ms).round() as usize).max(1);
     let hi = bins as f64 * bin_ms;
@@ -107,23 +109,27 @@ pub fn compute_presence_ratio(
     counts.iter().filter(|&&c| c > threshold).count() as f64 / num_bins as f64
 }
 
-/// Amplitude cutoff in `[0, 0.5]` (NaN with fewer than 5 spikes per bin) with SpikeInterface's defaults.
-pub fn compute_amplitude_cutoff<T: Into<f64> + Copy>(amplitudes: &[T]) -> f64 {
-    compute_amplitude_cutoff_with(
-        amplitudes,
-        AMPLITUDE_CUTOFF_BINS,
-        AMPLITUDE_CUTOFF_SMOOTHING,
-        AMPLITUDE_CUTOFF_MIN_RATIO,
-    )
+/// Settings of [`compute_amplitude_cutoff`] (defaults: SpikeInterface's).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AmplitudeCutoffOptions {
+    /// Histogram bins of the amplitudes.
+    pub num_bins: usize,
+    /// Gaussian smoothing of the histogram (bins).
+    pub smoothing_bins: f64,
+    /// Least spikes per bin; fewer gives NaN.
+    pub min_ratio: f64,
 }
 
-/// [`compute_amplitude_cutoff`] with explicit histogram parameters.
-pub fn compute_amplitude_cutoff_with<T: Into<f64> + Copy>(
-    amplitudes: &[T],
-    num_bins: usize,
-    smoothing_bins: f64,
-    min_ratio: f64,
-) -> f64 {
+impl Default for AmplitudeCutoffOptions {
+    fn default() -> Self {
+        Self { num_bins: AMPLITUDE_CUTOFF_BINS, smoothing_bins: AMPLITUDE_CUTOFF_SMOOTHING, min_ratio: AMPLITUDE_CUTOFF_MIN_RATIO }
+    }
+}
+
+/// Amplitude cutoff in `[0, 0.5]`: the estimated fraction of spikes below the detection threshold
+/// (NaN with fewer than `options.min_ratio` spikes per bin).
+pub fn compute_amplitude_cutoff<T: Into<f64> + Copy>(amplitudes: &[T], options: &AmplitudeCutoffOptions) -> f64 {
+    let (num_bins, smoothing_bins, min_ratio) = (options.num_bins, options.smoothing_bins, options.min_ratio);
     let amps: Vec<f64> = amplitudes.iter().map(|&a| a.into().abs()).collect();
     let n = amps.len();
     if num_bins == 0 || (n as f64) / (num_bins as f64) < min_ratio {
@@ -242,7 +248,7 @@ mod tests {
     #[test]
     fn test_isi_histogram() {
         // 1 kHz: intervals of 1, 2, 2 and 10 ms (10 ms is outside [0, 10))
-        let (centers, counts) = isi_histogram(&[0, 1, 3, 5, 15], 1000.0, 1.0, 10.0);
+        let (centers, counts) = compute_isi_histogram(&[0, 1, 3, 5, 15], 1000.0, 1.0, 10.0);
         assert_eq!(centers.len(), 10);
         assert_eq!(centers[0], 0.5);
         assert_eq!(counts[1], 1);
@@ -255,7 +261,7 @@ mod tests {
     #[test]
     fn test_isi_violations() {
         let spikes = vec![300, 0, 30];
-        let metrics = compute_isi_violations(&spikes, 30000.0, 1.0, 1.5, 0.0);
+        let metrics = compute_isi_violations(&spikes, 30_000, 30000.0, 1.5, 0.0);
         assert_eq!(metrics.total_spikes, 3);
         assert_eq!(metrics.violation_count, 1);
         assert_eq!(metrics.violation_rate_pct, 50.0);
@@ -280,7 +286,7 @@ mod tests {
 
     #[test]
     fn too_few_spikes_is_nan() {
-        assert!(compute_amplitude_cutoff(&[1.0f32; 499]).is_nan());
+        assert!(compute_amplitude_cutoff(&[1.0f32; 499], &AmplitudeCutoffOptions::default()).is_nan());
     }
 
     #[test]

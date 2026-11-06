@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use dspk_app_core::data::jobs::processed_path;
+use dspk_app_core::data::remote;
 use dspk_app_core::data::store::{file_label, AppEvent, Store};
 use dspk_app_core::domain::command::SessionCommand;
 use dspk_app_core::navigation::route::Workspace;
@@ -32,7 +33,7 @@ use gpui_kit::{
 };
 
 use crate::sort::{self, Described, Param, SortRequest, PROBES};
-use crate::sorting::{isi_histogram, write_start_sec, Snippets, SortingData};
+use crate::sorting::{compute_isi_histogram, write_start_sec, Snippets, SortingData};
 use crate::strip::{view_signal, BottomStrip};
 use crate::templates::TemplateGrid;
 use dspk_app_core::ui::panel_edge::{follow_panel_drag, panel_edge, rail, toggle_item, PanelResize, Side, RAIL_W};
@@ -66,6 +67,8 @@ enum CenterTab {
 
 pub struct SortingWorkspace {
     store: Entity<Store>,
+    /// Why the last Run did not start, shown under the button (cleared by the next one).
+    run_error: Option<String>,
     strip: Entity<BottomStrip>,
     described: Option<Result<Described, String>>,
     /// Index into the described sorters.
@@ -137,6 +140,7 @@ impl SortingWorkspace {
             tab: CenterTab::Channel,
             grid,
             focused: Vec::new(),
+            run_error: None,
             compare_with: None,
             matches: None,
             _compare: None,
@@ -393,7 +397,7 @@ impl SortingWorkspace {
                 .iter()
                 .filter_map(|&u| {
                     let rows: Vec<&Vec<f32>> = snippets.rows.iter().filter(|(x, _, _)| *x == Some(u as u32)).map(|(_, _, r)| r).collect();
-                    let isi = isi_histogram(&sorting.unit_times(u), sorting.sample_rate, ISI_MAX_MS, ISI_BIN_MS);
+                    let isi = compute_isi_histogram(&sorting.unit_times(u), sorting.sample_rate, ISI_MAX_MS, ISI_BIN_MS);
                     let frame = plots::unit_card(&rows, &isi, (REFRACTORY_MS / ISI_BIN_MS) as f32, palette.unit(u), &palette, CARD_PX.0, CARD_PX.1, 1.5);
                     plots::to_image(frame).map(|i| (u, i))
                 })
@@ -437,7 +441,13 @@ impl SortingWorkspace {
     /// Runs the chosen sorter on the active view over the part asked for; the result is linked
     /// to the view and added to its runs.
     fn run(&mut self, cx: &mut Context<Self>) {
-        let status = |w: &Self, text: String, cx: &mut Context<Self>| w.store.update(cx, |s, cx| s.set_status(text, cx));
+        // A refusal is shown under the Run button (and in the status bar)
+        let status = |w: &mut Self, text: String, cx: &mut Context<Self>| {
+            w.run_error = Some(text.clone());
+            w.store.update(cx, |s, cx| s.set_status(text, cx));
+            cx.notify();
+        };
+        self.run_error = None;
         let Some(Ok(d)) = &self.described else { return };
         let Some(sorter) = d.sorters.get(self.sorter).map(|s| s.name.clone()) else { return };
         let Some(view) = self.store.read(cx).active_view().cloned() else { return };
@@ -454,6 +464,51 @@ impl SortingWorkspace {
             })
             .collect();
         let processed = view.ops.iter().any(|o| o.enabled);
+        let probe = state(cx).map_or(0, |s| s.read(cx).probe);
+        let part = match (start, duration) {
+            (None, None) => "the whole recording".to_string(),
+            (s, d) => format!("{} s{}", s.unwrap_or(0.0), d.map(|d| format!(" + {d} s")).unwrap_or_else(|| " to the end".into())),
+        };
+        let id = view.id.clone();
+        // The result: its part's start recorded, then linked to the view (Explore, Curation follow)
+        let done = move |s: &mut Store, path: PathBuf, cx: &mut Context<Store>| {
+            if let Some(t) = start {
+                if let Err(e) = write_start_sec(&path, t) {
+                    s.set_status(format!("{}: {e}", path.display()), cx);
+                }
+            }
+            let Some(v) = s.doc.view(&id).cloned() else { return };
+            let data = plugin_data(&v, Some(&path), Some(&path));
+            let _ = s.execute(SessionCommand::SetPluginData { view: id.clone(), plugin: ID.into(), data }, cx);
+        };
+
+        // A recording on a server (dspk://): sorted there, the sorting fetched here
+        if let Some((server, remote_path)) = remote::parse_uri(&view.recording.path) {
+            if processed {
+                return status(self, format!("{} has processing ops: on a server, sort the recording itself (turn its ops off); processing there comes later", view.name), cx);
+            }
+            let Some(profile) = remote::profile_named(&server) else {
+                return status(self, format!("No server named {server:?} in Settings"), cx);
+            };
+            // Named after the part, as local runs are, so runs of different parts do not collide
+            let output = sort::run_path(std::path::Path::new(&remote_path), &sorter, start, duration).to_string_lossy().into_owned();
+            let job = remote::wire::Configure {
+                sorter: sorter.clone(),
+                recording: remote_path,
+                output,
+                params: params.iter().map(|(flag, v)| (flag.trim_start_matches('-').to_string(), v.clone())).collect(),
+                source: String::new(),
+                probe: PROBES[probe].0.unwrap_or_default().to_string(),
+                start_sec: start.unwrap_or(0.0),
+                duration_sec: duration.unwrap_or(0.0),
+            };
+            let results = self.store.read(cx).session.results_dir();
+            let label = format!("{sorter} on {} ({part}) on {}", view.name, profile.name);
+            let node = view.id.clone();
+            self.store.update(cx, |s, cx| s.start_job_on([node], label, move |send| remote::remote_sort(profile, job, results, move |m| send(m)), done, cx));
+            return;
+        }
+
         let (recording, source) = if processed {
             let written = processed_path(&view.recording.path, &view.id);
             if !written.exists() {
@@ -463,30 +518,10 @@ impl SortingWorkspace {
         } else {
             (view.recording.path.clone(), view.recording.source.clone())
         };
-        let probe = state(cx).map_or(0, |s| s.read(cx).probe);
         let output = sort::run_path(&recording, &sorter, start, duration);
         let req = SortRequest { sorter: sorter.clone(), recording, source, probe: PROBES[probe].0.map(str::to_string), output, params, start_sec: start, duration_sec: duration };
-        let (id, part) = (view.id.clone(), match (start, duration) {
-            (None, None) => "the whole recording".to_string(),
-            (s, d) => format!("{} s{}", s.unwrap_or(0.0), d.map(|d| format!(" + {d} s")).unwrap_or_else(|| " to the end".into())),
-        });
-        self.store.update(cx, |s, cx| {
-            s.start_job(
-                format!("{sorter} on {} ({part})", view.name),
-                move |send| sort::sort(&req, move |m| send(m)),
-                move |s, path, cx| {
-                    if let Some(t) = start {
-                        if let Err(e) = write_start_sec(&path, t) {
-                            s.set_status(format!("{}: {e}", path.display()), cx);
-                        }
-                    }
-                    let Some(v) = s.doc.view(&id).cloned() else { return };
-                    let data = plugin_data(&v, Some(&path), Some(&path));
-                    let _ = s.execute(SessionCommand::SetPluginData { view: id.clone(), plugin: ID.into(), data }, cx);
-                },
-                cx,
-            );
-        });
+        let node = view.id.clone();
+        self.store.update(cx, |s, cx| s.start_job_on([node], format!("{sorter} on {} ({part})", view.name), move |send| sort::sort(&req, move |m| send(m)), done, cx));
     }
 
     /// Shows run `path` (links it to the view; Explore, Curation and this follow).
@@ -583,9 +618,15 @@ impl SortingWorkspace {
             None => {
                 let me = me.clone();
                 let ready = matches!(self.described, Some(Ok(_))) && self.store.read(cx).active_view().is_some();
-                Button::new("sorting-run").primary().icon(Icon::new(IconName::Play)).label("Run").disabled(!ready).on_click(move |_, _, cx| {
-                    let _ = me.update(cx, |w, cx| w.run(cx));
-                }).into_any_element()
+                // Why the last run did not start, or how the last job failed
+                let failed = self.run_error.clone().or_else(|| self.store.read(cx).last_failed.as_ref().map(|(label, e)| format!("{label}: {e}")));
+                v_flex()
+                    .gap_1()
+                    .child(Button::new("sorting-run").primary().icon(Icon::new(IconName::Play)).label("Run").disabled(!ready).on_click(move |_, _, cx| {
+                        let _ = me.update(cx, |w, cx| w.run(cx));
+                    }))
+                    .children(failed.map(|e| div().id("sorting-run-error").text_xs().text_color(danger).line_clamp(4).child(e)))
+                    .into_any_element()
             }
         };
         let n = self.inputs.len();

@@ -35,7 +35,7 @@ feature sets or profiles recompile CubeCL and wgpu from scratch, so:
   GPU runtimes locally when you change a kernel.
 - Kernels with several implementations (vector widths, tiles, sorting networks) are autotuned;
   test each choice against the scalar one (vector versions are bit-identical by construction).
-- Timings: `cargo test -p dspk-ops --profile validate --test bench_kernels -- --ignored --nocapture`
+- Timings: `cargo test -p dspk-benchmarks --profile validate --test bench_kernels -- --ignored --nocapture`
   in a fresh process; see [benchmarks](benchmarks/README.md).
 
 ## Code

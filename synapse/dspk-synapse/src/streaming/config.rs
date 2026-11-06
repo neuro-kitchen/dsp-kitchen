@@ -70,6 +70,17 @@ impl Default for StreamingDetectionConfig {
 }
 
 impl StreamingDetectionConfig {
+    /// The threshold detector's settings these detections use (factor, polarity, refractory
+    /// period, spacing rule).
+    pub fn threshold_detector(&self) -> crate::detection::ThresholdSpikeDetector {
+        crate::detection::ThresholdSpikeDetector {
+            threshold_factor: self.threshold_factor,
+            refractory_ms: self.refractory_ms,
+            polarity: self.polarity,
+            distance_rule: self.distance_rule,
+        }
+    }
+
     /// Refractory period in samples at `sample_rate` Hz.
     #[inline]
     pub fn refractory_samples(&self, sample_rate: f64) -> usize {

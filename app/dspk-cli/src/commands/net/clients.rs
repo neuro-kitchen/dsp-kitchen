@@ -78,7 +78,7 @@ pub fn run(args: &ClientsArgs) -> anyhow::Result<()> {
             enrollment.write(&out).with_context(|| format!("writing {}", out.display()))?;
             println!("Enrolled {name} ({permission}), certificate {}", &enrollment.record.fingerprint[..16]);
             println!("Its file: {} (certificate, private key, the server's authority; mode 0600)", out.display());
-            println!("Give it to {name} over a private channel; they connect with `dspk receive <address> --identity {}`", out.display());
+            println!("Give this file to the client {name:?} over a private channel; it connects with `dspk remote <address> --identity {} info`", out.display());
             println!("Valid until {}; `dspk clients revoke {name}` refuses it sooner", enrollment.record.expires_year);
         }
         Action::Revoke { name } => {

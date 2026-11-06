@@ -32,7 +32,8 @@ pub const MAX_PARAM_CHARS: usize = 256;
 /// Most parameters one job may set.
 pub const MAX_PARAMS: usize = 64;
 /// Parameter names the server sets itself: a client cannot set them through `params`.
-pub const RESERVED_PARAMS: [&str; 9] = ["output", "o", "progress", "source", "probe", "start-sec", "duration-sec", "help", "version"];
+/// `probe-file` and `channel-map` name files: a client could point them outside the data root.
+pub const RESERVED_PARAMS: [&str; 11] = ["output", "o", "progress", "source", "probe", "probe-file", "channel-map", "start-sec", "duration-sec", "help", "version"];
 /// What a sorting's path ends with.
 pub const SORTING_SUFFIX: &str = ".sorting.zarr";
 
@@ -303,6 +304,15 @@ impl Jobs {
             std::thread::spawn(move || {
                 let reporter = Reporter(jobs.clone());
                 let outcome = jobs.runner.run(&job, &reporter, &cancel);
+                // A stopped or failed job leaves no partial output: it was new when the job started
+                // (checked), so it is this job's, and a rerun would be refused while it is there
+                if outcome.is_err() && job.output.symlink_metadata().is_ok() {
+                    let removed = if job.output.is_dir() { std::fs::remove_dir_all(&job.output) } else { std::fs::remove_file(&job.output) };
+                    match removed {
+                        Ok(()) => reporter.log(&format!("removed the partial output {}", job.output.display())),
+                        Err(e) => reporter.log(&format!("could not remove the partial output {}: {e}", job.output.display())),
+                    }
+                }
                 let mut s = jobs.lock();
                 (s.state, s.message) = match outcome {
                     Ok(summary) => (wire::DeviceState::Stopped, summary),
@@ -328,6 +338,20 @@ impl Jobs {
         });
         self.audit(peer, "stop", &self.lock().description.clone(), &result.as_ref().map(|_| ()).map_err(|e| e.reason()));
         result.map(|()| self.status())
+    }
+
+    /// Stops the running job, if any, and waits up to `timeout` for it to end (the server shutting
+    /// down: no job outlives it). `true` when nothing runs any more.
+    pub fn shutdown(&self, timeout: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        self.lock().cancel.store(true, Ordering::Relaxed);
+        while self.state() == wire::DeviceState::Running {
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        true
     }
 
     pub fn data_root(&self) -> &DataRoot {
@@ -368,6 +392,53 @@ mod tests {
             std::fs::create_dir_all(&job.output).map_err(|e| e.to_string())?;
             Ok("3 units".into())
         }
+    }
+
+    /// Writes part of its output, then fails (or waits to be stopped).
+    struct PartialRunner {
+        block: bool,
+    }
+
+    impl JobRunner for PartialRunner {
+        fn sorters(&self) -> Vec<String> {
+            vec!["kilosort4".into()]
+        }
+        fn run(&self, job: &JobSpec, _: &dyn JobReport, cancel: &AtomicBool) -> Result<String, String> {
+            std::fs::create_dir_all(job.output.join("spikes")).map_err(|e| e.to_string())?;
+            while self.block && !cancel.load(Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err("out of memory".into())
+        }
+    }
+
+    /// A stopped or failed job removes its partial output, so a rerun is not refused; shutdown
+    /// stops a running job.
+    #[test]
+    fn partial_outputs_are_removed_and_shutdown_stops_the_job() {
+        let base = std::env::temp_dir().join(format!("dspk-stream-partial-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("data");
+        std::fs::create_dir_all(root.join("m1")).unwrap();
+        std::fs::write(root.join("m1/rec.bin"), [0u8; 8]).unwrap();
+        let ctl = Peer { name: "lab".into(), permission: Permission::Control };
+        let job = || wire::Configure { sorter: "kilosort4".into(), recording: "m1/rec.bin".into(), ..Default::default() };
+        let output = root.join("m1/rec.kilosort4.sorting.zarr");
+
+        let failing = Arc::new(Jobs::new(Arc::new(PartialRunner { block: false }), DataRoot::new(&root).unwrap(), None));
+        failing.configure(&ctl, job()).unwrap();
+        failing.start(&ctl).unwrap();
+        wait_until(&failing, wire::DeviceState::Error);
+        assert!(!output.exists(), "the failed job's partial output is removed");
+        assert!(failing.logs(0).iter().any(|l| l.contains("removed the partial output")));
+        assert!(failing.configure(&ctl, job()).is_ok(), "a rerun is not refused");
+
+        let running = Arc::new(Jobs::new(Arc::new(PartialRunner { block: true }), DataRoot::new(&root).unwrap(), None));
+        running.configure(&ctl, job()).unwrap();
+        running.start(&ctl).unwrap();
+        assert!(running.shutdown(std::time::Duration::from_secs(5)), "shutdown stops the running job");
+        assert!(!output.exists(), "and removes its partial output");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     fn wait_until(jobs: &Jobs, state: wire::DeviceState) {

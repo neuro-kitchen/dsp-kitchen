@@ -1,3 +1,7 @@
+<p align="center">
+  <img alt="neuro-kitchen" width="120" src="https://raw.githubusercontent.com/neuro-kitchen/dsp-kitchen/main/assets/img/neuro-kitchen-logo.png">
+</p>
+
 # `dspk-app`: DSP App, the desktop workbench of dspk
 
 A desktop app (GPUI, gpui-kit) for long multichannel recordings, with electrophysiology built in.

@@ -9,12 +9,17 @@ dependencies = [
     "matplotlib>=3.10.9",
     "maturin>=1.15.0",
     "numpy>=2.2.6",
+    "plating",
     "polars>=2.0.0",
 ]
 
 [tool.uv]
 # Not a package: `maturin develop` (bindings/python) installs dspk into this environment
 package = false
+
+[tool.uv.sources]
+# How the playground's and benchmarks' figures are presented (repo-local, editable)
+plating = { path = "plating", editable = true }
 
 [tool.ruff]
 src = ["bindings/python/python"]

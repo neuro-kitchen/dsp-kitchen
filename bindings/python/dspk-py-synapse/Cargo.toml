@@ -1,0 +1,25 @@
+[package]
+name = "dspk-py-synapse"
+description = "Python bindings of dspk-synapse (electrophysiology: probes, sortings, detection, features, clustering, metrics), registered into the `dspk` extension as `dspk._native.synapse`"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+wgpu = ["dspk-synapse/wgpu", "dspk-py-core/wgpu"]
+cpu = ["dspk-synapse/cpu", "dspk-py-core/cpu"]
+cuda = ["dspk-synapse/cuda", "dspk-py-core/cuda"]
+hip = ["dspk-synapse/hip", "dspk-py-core/hip"]
+
+[dependencies]
+dspk-core = { workspace = true, features = ["compute"] }
+dspk-io = { workspace = true, features = ["zarr"] }
+dspk-synapse.workspace = true
+dspk-ops.workspace = true
+dspk-py-core.workspace = true
+pyo3.workspace = true
+numpy.workspace = true
+serde_json.workspace = true
+pyo3-stub-gen.workspace = true
