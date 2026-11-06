@@ -207,12 +207,16 @@ impl Store {
 
     /// Runs a command on the session document, saves it and emits what changed.
     pub fn execute(&mut self, cmd: SessionCommand, cx: &mut Context<Self>) -> Result<Changed, CommandError> {
+        let before = self.doc.clone();
         let result = apply(&mut self.doc, cmd);
         match &result {
-            Ok(change) => {
+            Ok(_) => {
                 self.save_document();
-                self.changed(change, cx);
-                cx.emit(AppEvent::Document(change.clone()));
+                // What the command changed in the views (a graph edit can change several chains)
+                for change in diff(&before, &self.doc) {
+                    self.changed(&change, cx);
+                    cx.emit(AppEvent::Document(change));
+                }
             }
             Err(e) => self.set_status(e.to_string(), cx),
         }
@@ -368,6 +372,7 @@ impl Store {
                 cx.emit(AppEvent::WindowMoved);
             }
             Changed::Display(_) | Changed::Plugin(..) => cx.emit(AppEvent::WindowMoved),
+            Changed::Graph => {}
         }
     }
 
@@ -459,10 +464,43 @@ impl Store {
         }
     }
 
+    /// Writes the chain of graph node `id` (a write or view node) to
+    /// `<recording>.<id>.processed.zarr` next to its recording.
+    pub fn write_node(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some((recording, ops)) = self.doc.graph.chain(id) else {
+            self.set_status(format!("{id} is not connected to a recording"), cx);
+            return;
+        };
+        let v = ViewDoc { id: id.to_string(), name: id.to_string(), recording, ops, display: Default::default(), plugins: Default::default() };
+        self.write_view(v, cx);
+    }
+
+    /// Shows view `id` in Explore, opening its recording when another one is open.
+    pub fn show_view(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(v) = self.doc.view(id).cloned() else {
+            self.set_status(format!("{id} is not connected to a recording yet"), cx);
+            return;
+        };
+        let _ = self.execute(SessionCommand::SelectView { view: id.to_string() }, cx);
+        let open = self.recording.as_ref().and_then(|r| r.path.clone());
+        if open.as_deref() != Some(v.recording.path.as_path()) {
+            self.open(v.recording.path.clone(), cx);
+        }
+        self.set_workspace(Workspace::Explore, cx);
+    }
+
     /// Writes the active view (its recording through its enabled ops) to
     /// `<recording>.<view>.processed.zarr` next to the recording.
     pub fn write_active_view(&mut self, cx: &mut Context<Self>) {
         let Some(v) = self.doc.active().cloned() else { return };
+        self.write_view(v, cx);
+    }
+
+    fn write_view(&mut self, v: ViewDoc, cx: &mut Context<Self>) {
+        if !v.ops.iter().any(|o| o.enabled) {
+            self.set_status(format!("{}: no enabled ops to write", v.name), cx);
+            return;
+        }
         let output = jobs::processed_path(&v.recording.path, &v.id);
         self.start_job(
             format!("Write {}", v.name),
@@ -857,9 +895,24 @@ impl Store {
 
 /// What differs between two documents, as the changes a command would have reported.
 fn diff(before: &SessionDoc, after: &SessionDoc) -> Vec<Changed> {
+    let mut out = diff_views(before, after);
+    if before.graph != after.graph {
+        out.push(Changed::Graph);
+    }
+    out
+}
+
+fn diff_views(before: &SessionDoc, after: &SessionDoc) -> Vec<Changed> {
     let ids = |d: &SessionDoc| d.views.iter().map(|v| (v.id.clone(), v.name.clone(), v.recording.clone())).collect::<Vec<_>>();
     if ids(before) != ids(after) || before.active_view != after.active_view {
-        return vec![Changed::Views];
+        // Chains of the views kept may have changed too
+        let mut out = vec![Changed::Views];
+        for b in &after.views {
+            if before.view(&b.id).is_some_and(|a| a.ops != b.ops) {
+                out.push(Changed::Ops(b.id.clone()));
+            }
+        }
+        return out;
     }
     let mut out = Vec::new();
     for (a, b) in before.views.iter().zip(&after.views) {

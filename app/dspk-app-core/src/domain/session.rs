@@ -1,10 +1,12 @@
 //! The session document: the whole working session as one versioned JSON document, so the app and an agent (a future MCP server, as Paper's MCP edits the open
 //! file) read and change the same thing.
 //!
-//! A session holds views. Each view is one recording (file, source within it, optional channel
-//! subset read as one grouped array), its own op chain (dspk-pipeline nodes, applied to every
-//! channel of the view), how it is displayed, and what plugins keep for it (e.g. electrophysiology:
-//! the linked sorting).
+//! A session holds a processing graph ([`GraphDoc`]: recordings, ops, views, writes, as the
+//! Pipeline canvas shows them) and the views compiled from it. Each view is one recording (file,
+//! source within it, optional channel subset read as one grouped array), the op chain on its path
+//! (dspk-pipeline nodes, applied to every channel of the view), how it is displayed, and what
+//! plugins keep for it (e.g. electrophysiology: the linked sorting). The graph is the truth: the
+//! views are rewritten from it after every command (they stay in the file for agents to read).
 //!
 //! The document only changes through [`crate::domain::command::SessionCommand`]s; the app
 //! re-renders from it and saves it after each change.
@@ -13,6 +15,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use dspk_pipeline::{Node, OutputFormat, PipelineSpec, SPEC_VERSION};
+
+use super::graph::GraphDoc;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -25,7 +29,11 @@ pub const SESSION_VERSION: u32 = 1;
 pub struct SessionDoc {
     /// Document version; must equal [`SESSION_VERSION`].
     pub dspk_session: u32,
-    /// Every view, in the order they are listed.
+    /// The processing graph (the Pipeline canvas).
+    #[serde(default, skip_serializing_if = "GraphDoc::is_empty")]
+    pub graph: GraphDoc,
+    /// Every view, in the order they are listed: compiled from `graph` (a document with views
+    /// and no graph gets one on load).
     #[serde(default)]
     pub views: Vec<ViewDoc>,
     /// Id of the view shown (and edited by default).
@@ -35,7 +43,7 @@ pub struct SessionDoc {
 
 impl Default for SessionDoc {
     fn default() -> Self {
-        Self { dspk_session: SESSION_VERSION, views: Vec::new(), active_view: None }
+        Self { dspk_session: SESSION_VERSION, graph: GraphDoc::default(), views: Vec::new(), active_view: None }
     }
 }
 
@@ -149,11 +157,34 @@ impl SessionDoc {
         serde_json::from_str::<Self>(text).map_err(|e| SessionError::Parse(e.to_string()))?.checked()
     }
 
-    fn checked(self) -> Result<Self, SessionError> {
+    fn checked(mut self) -> Result<Self, SessionError> {
         if self.dspk_session != SESSION_VERSION {
             return Err(SessionError::Version(self.dspk_session));
         }
+        self.normalize();
         Ok(self)
+    }
+
+    /// A graph for a document with views only, then the views from the graph.
+    pub fn normalize(&mut self) {
+        if self.graph.is_empty() && !self.views.is_empty() {
+            self.graph = GraphDoc::from_views(&self.views);
+        }
+        self.compile();
+    }
+
+    /// The views from the graph; the active view stays when it is still one, else the first.
+    pub fn compile(&mut self) {
+        self.views = self.graph.compile();
+        if !self.active_view.as_ref().is_some_and(|a| self.views.iter().any(|v| v.id == *a)) {
+            self.active_view = self.views.first().map(|v| v.id.clone());
+        }
+    }
+
+    /// The document as written by [`Self::from_json`] (graph and compiled views).
+    pub fn normalized(mut self) -> Self {
+        self.normalize();
+        self
     }
 
     /// Reads a document (JSON).
@@ -194,9 +225,18 @@ impl SessionDoc {
         self.active_view.as_deref().and_then(|id| self.view(id))
     }
 
-    /// A view id not used yet (`v1`, `v2`, …).
+    /// A view id not used yet (`v1`, `v2`, …), by any view or node.
     pub fn new_view_id(&self) -> String {
-        fresh_id("v", |id| self.view(id).is_some())
+        fresh_id("v", |id| self.view(id).is_some() || self.graph.contains(id))
+    }
+
+    /// An op id not used yet by any node, from the op's name (`iir`, `iir1`, …).
+    pub fn new_op_id(&self, node: &Node) -> String {
+        let id = self.graph.fresh_id(op_name(node));
+        if self.view(&id).is_none() {
+            return id;
+        }
+        fresh_id(op_name(node), |id| self.graph.contains(id) || self.view(id).is_some())
     }
 }
 
@@ -293,12 +333,13 @@ mod tests {
             display: DisplayDoc::default(),
             plugins: BTreeMap::new(),
         };
-        SessionDoc { views: vec![view], active_view: Some("v1".into()), ..SessionDoc::default() }
+        SessionDoc { views: vec![view], active_view: Some("v1".into()), ..SessionDoc::default() }.normalized()
     }
 
     #[test]
     fn test_json_round_trip() {
         let d = doc();
+        assert_eq!(d.graph.nodes.len(), 4, "source, two ops, view");
         assert_eq!(SessionDoc::from_json(&d.to_json()).unwrap(), d);
     }
 
@@ -336,6 +377,7 @@ mod tests {
         assert_eq!(d.new_view_id(), "v2");
         assert_eq!(d.views[0].new_op_id(&bandpass(1.0, 2.0)), "iir1");
         assert_eq!(d.views[0].new_op_id(&Node::Car {}), "car");
+        assert_eq!(d.new_op_id(&bandpass(1.0, 2.0)), "iir1");
     }
 
     #[test]

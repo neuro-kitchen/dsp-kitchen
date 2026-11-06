@@ -2,6 +2,10 @@
 //! the same commands, so there is one code path; each command is plain data (serializable, so an
 //! agent sends it as JSON) and [`apply`] is pure (no I/O, no device), so it is tested directly.
 //!
+//! Two families, one graph: view commands (`add_op`, `set_op`, …) act on a view's chain (the
+//! path from its recording to the view node), graph commands (`add_node`, `connect`, …) on the
+//! Pipeline canvas. After every command the views are compiled from the graph again.
+//!
 //! Running work (preview, write, sort) is not a document change: the data layer does it and
 //! records its result with a command (e.g. a sort: [`SessionCommand::SetPluginData`]).
 
@@ -9,18 +13,19 @@ use dspk_pipeline::Node;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::session::{op_name, DisplayDoc, OpDoc, RecordingRef, SessionDoc, ViewDoc};
+use super::graph::{GraphNode, NodeKind, COLUMN};
+use super::session::{op_name, DisplayDoc, RecordingRef, SessionDoc};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SessionCommand {
-    /// Adds a view of a recording (all its channels, no ops) and shows it.
+    /// Adds a recording and a view of it (all its channels, no ops) and shows it.
     OpenView {
         recording: RecordingRef,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
     },
-    /// Copies a view (recording, ops, display, sorting) into a new one, optionally reading only
+    /// Copies a view (its chain, display, plugin data) into a new one, optionally reading only
     /// `channels` (indices into the source, in order): how some channels get other processing.
     CopyView {
         view: String,
@@ -29,6 +34,7 @@ pub enum SessionCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
     },
+    /// Removes a view and what only fed it.
     CloseView { view: String },
     RenameView { view: String, name: String },
     /// Shows a view.
@@ -45,13 +51,47 @@ pub enum SessionCommand {
     /// Replaces an op's parameters (the node may not change kind to `read` / `write`).
     SetOp { view: String, op: String, node: Node },
     EnableOp { view: String, op: String, enabled: bool },
+    /// Removes an op (from every chain through it: its input feeds what it fed).
     RemoveOp { view: String, op: String },
-    /// Moves an op to `index` in the chain.
+    /// Moves an op to `index` in the view's chain (an op other chains share stays put).
     MoveOp { view: String, op: String, index: usize },
     SetDisplay { view: String, display: DisplayDoc },
     /// Replaces what plugin `plugin` keeps for a view (`null` removes it), e.g.
     /// `{"plugin": "synapse", "data": {"sorting": "rec.kilosort4.sorting.zarr"}}`.
     SetPluginData { view: String, plugin: String, data: serde_json::Value },
+    /// Adds a node at (`x`, `y`), fed by `after` when given.
+    AddNode {
+        kind: NodeKind,
+        #[serde(default)]
+        x: f32,
+        #[serde(default)]
+        y: f32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after: Option<String>,
+    },
+    /// Removes nodes and their edges.
+    RemoveNodes { nodes: Vec<String> },
+    /// Places nodes.
+    MoveNodes { moves: Vec<NodeMove> },
+    /// Feeds `to` from `from` (replacing `to`'s input).
+    Connect { from: String, to: String },
+    /// Removes `to`'s input.
+    Disconnect { to: String },
+    /// Replaces an op node's parameters.
+    SetNode { id: String, node: Node },
+    EnableNode { id: String, enabled: bool },
+    /// Points a source node at another recording (or channel subset).
+    SetSource { id: String, recording: RecordingRef },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NodeMove {
+    pub id: String,
+    pub x: f32,
+    pub y: f32,
 }
 
 /// What a command changed, so the app redraws only that.
@@ -65,6 +105,8 @@ pub enum Changed {
     Display(String),
     /// What a plugin keeps for the view: (view, plugin).
     Plugin(String, String),
+    /// The graph (nodes, places, edges); the views it changed are reported on their own.
+    Graph,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -73,116 +115,269 @@ pub enum CommandError {
     NoView(String),
     #[error("view {view:?} has no op {op:?}")]
     NoOp { view: String, op: String },
+    #[error("no node {0:?}")]
+    NoNode(String),
     #[error("{0}")]
     Invalid(String),
 }
 
 /// Applies `cmd` to `doc`; on an error `doc` is unchanged.
 pub fn apply(doc: &mut SessionDoc, cmd: SessionCommand) -> Result<Changed, CommandError> {
+    let mut work = doc.clone();
+    let change = apply_graph(&mut work, cmd)?;
+    work.compile();
+    *doc = work;
+    Ok(change)
+}
+
+fn apply_graph(doc: &mut SessionDoc, cmd: SessionCommand) -> Result<Changed, CommandError> {
     use SessionCommand as C;
     match cmd {
         C::OpenView { recording, name } => {
-            if recording.channels.as_ref().is_some_and(Vec::is_empty) {
-                return Err(CommandError::Invalid("a view needs at least one channel".into()));
-            }
-            let id = doc.new_view_id();
+            check_channels(&recording.channels)?;
             let name = name.unwrap_or_else(|| recording_name(&recording));
-            doc.views.push(ViewDoc { id: id.clone(), name, recording, ops: Vec::new(), display: DisplayDoc::default(), plugins: Default::default() });
-            doc.active_view = Some(id);
+            let y = doc.graph.next_row();
+            let s = source_id(doc);
+            let v = doc.new_view_id();
+            doc.graph.nodes.push(GraphNode { id: s.clone(), x: 0.0, y, kind: NodeKind::Source { recording } });
+            doc.graph.nodes.push(GraphNode { id: v.clone(), x: COLUMN, y, kind: view_kind(name) });
+            doc.graph.connect(&s, &v).map_err(CommandError::Invalid)?;
+            doc.active_view = Some(v);
             Ok(Changed::Views)
         }
         C::CopyView { view, channels, name } => {
-            let src = doc.view(&view).ok_or_else(|| CommandError::NoView(view.clone()))?;
-            if channels.as_ref().is_some_and(Vec::is_empty) {
-                return Err(CommandError::Invalid("a view needs at least one channel".into()));
-            }
-            let mut copy = src.clone();
-            copy.id = doc.new_view_id();
-            copy.name = name.unwrap_or_else(|| format!("{} (copy)", src.name));
-            if let Some(subset) = channels {
-                // `subset` indexes the source; a copy of a subset view must stay inside it
-                if let Some(parent) = &src.recording.channels {
-                    if let Some(c) = subset.iter().find(|c| !parent.contains(c)) {
-                        return Err(CommandError::Invalid(format!("channel {c} is not read by view {view:?}")));
+            let path = view_path(doc, &view)?;
+            let NodeKind::Source { recording } = node(doc, &path[0])?.kind.clone() else { unreachable!("a path starts at a source") };
+            let NodeKind::View { name: old, display, plugins } = node(doc, &view)?.kind.clone() else { unreachable!("checked by view_path") };
+            check_channels(&channels)?;
+            let y = doc.graph.next_row();
+            let source = match channels {
+                Some(subset) => {
+                    // `subset` indexes the source; a copy of a subset view must stay inside it
+                    if let Some(parent) = &recording.channels {
+                        if let Some(c) = subset.iter().find(|c| !parent.contains(c)) {
+                            return Err(CommandError::Invalid(format!("channel {c} is not read by view {view:?}")));
+                        }
                     }
+                    let s = source_id(doc);
+                    let recording = RecordingRef { channels: Some(subset), ..recording };
+                    doc.graph.nodes.push(GraphNode { id: s.clone(), x: 0.0, y, kind: NodeKind::Source { recording } });
+                    s
                 }
-                copy.recording.channels = Some(subset);
+                None => path[0].clone(),
+            };
+            // Its own copy of the chain (edits to it leave the original alone)
+            let mut last = source;
+            let mut x = COLUMN;
+            for op in &path[1..path.len() - 1] {
+                let kind = node(doc, op)?.kind.clone();
+                let NodeKind::Op { node: n, .. } = &kind else { continue };
+                let id = doc.new_op_id(n);
+                doc.graph.nodes.push(GraphNode { id: id.clone(), x, y, kind });
+                doc.graph.connect(&last, &id).map_err(CommandError::Invalid)?;
+                last = id;
+                x += COLUMN;
             }
-            doc.active_view = Some(copy.id.clone());
-            doc.views.push(copy);
+            let v = doc.new_view_id();
+            let name = name.unwrap_or_else(|| format!("{old} (copy)"));
+            doc.graph.nodes.push(GraphNode { id: v.clone(), x, y, kind: NodeKind::View { name, display, plugins } });
+            doc.graph.connect(&last, &v).map_err(CommandError::Invalid)?;
+            doc.active_view = Some(v);
             Ok(Changed::Views)
         }
         C::CloseView { view } => {
-            let i = view_index(doc, &view)?;
-            doc.views.remove(i);
+            view_node(doc, &view)?;
+            let mut cur = doc.graph.input(&view).map(str::to_string);
+            doc.graph.remove(&view);
+            // What fed only this view goes with it
+            while let Some(id) = cur {
+                if !doc.graph.outputs(&id).is_empty() {
+                    break;
+                }
+                cur = doc.graph.input(&id).map(str::to_string);
+                doc.graph.remove(&id);
+            }
             if doc.active_view.as_deref() == Some(view.as_str()) {
-                doc.active_view = doc.views.get(i.min(doc.views.len().saturating_sub(1))).map(|v| v.id.clone());
+                let i = doc.views.iter().position(|v| v.id == view).unwrap_or(0);
+                let rest: Vec<String> = doc.views.iter().filter(|v| v.id != view).map(|v| v.id.clone()).collect();
+                doc.active_view = rest.get(i.min(rest.len().saturating_sub(1))).cloned();
             }
             Ok(Changed::Views)
         }
         C::RenameView { view, name } => {
-            view_mut(doc, &view)?.name = name;
+            if let NodeKind::View { name: n, .. } = &mut view_node(doc, &view)?.kind {
+                *n = name;
+            }
             Ok(Changed::Views)
         }
         C::SelectView { view } => {
-            view_index(doc, &view)?;
+            view_path(doc, &view)?;
             doc.active_view = Some(view);
             Ok(Changed::Views)
         }
-        C::AddOp { view, node, index, id } => {
-            check_processing(&node)?;
-            let v = view_mut(doc, &view)?;
+        C::AddOp { view, node: op, index, id } => {
+            check_processing(&op)?;
+            let path = view_path(doc, &view)?;
             let id = match id {
-                Some(id) if v.op(&id).is_some() || id == "read" || id == "write" => {
+                Some(id) if doc.graph.contains(&id) || doc.view(&id).is_some() || id == "read" || id == "write" => {
                     return Err(CommandError::Invalid(format!("op id {id:?} is taken")));
                 }
                 Some(id) => id,
-                None => v.new_op_id(&node),
+                None => doc.new_op_id(&op),
             };
-            let at = index.unwrap_or(v.ops.len()).min(v.ops.len());
-            v.ops.insert(at, OpDoc { id, enabled: true, node });
+            let ops = path.len() - 2;
+            let at = index.unwrap_or(ops).min(ops);
+            let (x, y) = node(doc, &path[at + 1]).map(|n| (n.x, n.y))?;
+            // Room for it: what follows on this chain moves one column right
+            for later in &path[at + 1..] {
+                if let Some(n) = doc.graph.node_mut(later) {
+                    n.x += COLUMN;
+                }
+            }
+            doc.graph.nodes.push(GraphNode { id: id.clone(), x, y, kind: NodeKind::Op { enabled: true, node: op } });
+            doc.graph.splice(&path[at], &path[at + 1], &id);
             Ok(Changed::Ops(view))
         }
-        C::SetOp { view, op, node } => {
-            check_processing(&node)?;
-            op_mut(doc, &view, &op)?.node = node;
+        C::SetOp { view, op, node: n } => {
+            check_processing(&n)?;
+            if let NodeKind::Op { node, .. } = &mut chain_op(doc, &view, &op)?.kind {
+                *node = n;
+            }
             Ok(Changed::Ops(view))
         }
         C::EnableOp { view, op, enabled } => {
-            op_mut(doc, &view, &op)?.enabled = enabled;
+            if let NodeKind::Op { enabled: e, .. } = &mut chain_op(doc, &view, &op)?.kind {
+                *e = enabled;
+            }
             Ok(Changed::Ops(view))
         }
         C::RemoveOp { view, op } => {
-            let v = view_mut(doc, &view)?;
-            let i = v.ops.iter().position(|o| o.id == op).ok_or_else(|| CommandError::NoOp { view: view.clone(), op })?;
-            v.ops.remove(i);
+            chain_op(doc, &view, &op)?;
+            doc.graph.remove_bridging(&op);
             Ok(Changed::Ops(view))
         }
         C::MoveOp { view, op, index } => {
-            let v = view_mut(doc, &view)?;
-            let i = v.ops.iter().position(|o| o.id == op).ok_or_else(|| CommandError::NoOp { view: view.clone(), op })?;
-            let o = v.ops.remove(i);
-            let at = index.min(v.ops.len());
-            v.ops.insert(at, o);
+            chain_op(doc, &view, &op)?;
+            if doc.graph.outputs(&op).len() > 1 {
+                return Err(CommandError::Invalid(format!("{op} feeds other chains too: move it on the Pipeline canvas")));
+            }
+            doc.graph.unlink_bridging(&op);
+            let path = view_path(doc, &view)?;
+            let at = index.min(path.len() - 2);
+            doc.graph.splice(&path[at], &path[at + 1], &op);
             Ok(Changed::Ops(view))
         }
         C::SetDisplay { view, display } => {
             if display.lanes == 0 || !(display.gain.is_finite() && display.gain > 0.0) {
                 return Err(CommandError::Invalid("display: lanes ≥ 1 and gain > 0".into()));
             }
-            view_mut(doc, &view)?.display = display;
+            if let NodeKind::View { display: d, .. } = &mut view_node(doc, &view)?.kind {
+                *d = display;
+            }
             Ok(Changed::Display(view))
         }
         C::SetPluginData { view, plugin, data } => {
-            let v = view_mut(doc, &view)?;
-            if data.is_null() {
-                v.plugins.remove(&plugin);
-            } else {
-                v.plugins.insert(plugin.clone(), data);
+            if let NodeKind::View { plugins, .. } = &mut view_node(doc, &view)?.kind {
+                if data.is_null() {
+                    plugins.remove(&plugin);
+                } else {
+                    plugins.insert(plugin.clone(), data);
+                }
             }
             Ok(Changed::Plugin(view, plugin))
         }
+        C::AddNode { kind, x, y, id, after } => {
+            let id = match id {
+                Some(id) if doc.graph.contains(&id) || doc.view(&id).is_some() || id == "read" || id == "write" => {
+                    return Err(CommandError::Invalid(format!("node id {id:?} is taken")));
+                }
+                Some(id) => id,
+                None => match &kind {
+                    NodeKind::Source { .. } => source_id(doc),
+                    NodeKind::Op { node, .. } => doc.new_op_id(node),
+                    NodeKind::View { .. } => doc.new_view_id(),
+                    NodeKind::Write {} => doc.graph.numbered_id("w", |id| doc.view(id).is_some()),
+                },
+            };
+            match &kind {
+                NodeKind::Op { node, .. } => check_processing(node)?,
+                NodeKind::Source { recording } => check_channels(&recording.channels)?,
+                _ => {}
+            }
+            doc.graph.nodes.push(GraphNode { id: id.clone(), x, y, kind });
+            if let Some(from) = after {
+                doc.graph.connect(&from, &id).map_err(CommandError::Invalid)?;
+            }
+            Ok(Changed::Graph)
+        }
+        C::RemoveNodes { nodes } => {
+            for id in &nodes {
+                node(doc, id)?;
+            }
+            for id in &nodes {
+                doc.graph.remove(id);
+            }
+            Ok(Changed::Graph)
+        }
+        C::MoveNodes { moves } => {
+            for m in moves {
+                let n = doc.graph.node_mut(&m.id).ok_or_else(|| CommandError::NoNode(m.id.clone()))?;
+                if !(m.x.is_finite() && m.y.is_finite()) {
+                    return Err(CommandError::Invalid("node positions are numbers".into()));
+                }
+                (n.x, n.y) = (m.x, m.y);
+            }
+            Ok(Changed::Graph)
+        }
+        C::Connect { from, to } => {
+            doc.graph.connect(&from, &to).map_err(CommandError::Invalid)?;
+            Ok(Changed::Graph)
+        }
+        C::Disconnect { to } => {
+            node(doc, &to)?;
+            doc.graph.disconnect(&to);
+            Ok(Changed::Graph)
+        }
+        C::SetNode { id, node: n } => {
+            check_processing(&n)?;
+            match &mut doc.graph.node_mut(&id).ok_or_else(|| CommandError::NoNode(id.clone()))?.kind {
+                NodeKind::Op { node, .. } => *node = n,
+                _ => return Err(CommandError::Invalid(format!("{id} is not an op"))),
+            }
+            Ok(Changed::Graph)
+        }
+        C::EnableNode { id, enabled } => {
+            match &mut doc.graph.node_mut(&id).ok_or_else(|| CommandError::NoNode(id.clone()))?.kind {
+                NodeKind::Op { enabled: e, .. } => *e = enabled,
+                _ => return Err(CommandError::Invalid(format!("{id} is not an op"))),
+            }
+            Ok(Changed::Graph)
+        }
+        C::SetSource { id, recording } => {
+            check_channels(&recording.channels)?;
+            match &mut doc.graph.node_mut(&id).ok_or_else(|| CommandError::NoNode(id.clone()))?.kind {
+                NodeKind::Source { recording: r } => *r = recording,
+                _ => return Err(CommandError::Invalid(format!("{id} is not a recording"))),
+            }
+            Ok(Changed::Graph)
+        }
     }
+}
+
+/// A new view node.
+pub fn view_kind(name: String) -> NodeKind {
+    NodeKind::View { name, display: DisplayDoc::default(), plugins: Default::default() }
+}
+
+fn source_id(doc: &SessionDoc) -> String {
+    doc.graph.numbered_id("s", |id| doc.view(id).is_some())
+}
+
+fn check_channels(channels: &Option<Vec<usize>>) -> Result<(), CommandError> {
+    if channels.as_ref().is_some_and(Vec::is_empty) {
+        return Err(CommandError::Invalid("a view needs at least one channel".into()));
+    }
+    Ok(())
 }
 
 /// Processing nodes run on the visible window and in the written output; `read` / `write` are the
@@ -196,17 +391,31 @@ fn check_processing(node: &Node) -> Result<(), CommandError> {
     }
 }
 
-fn view_index(doc: &SessionDoc, view: &str) -> Result<usize, CommandError> {
-    doc.views.iter().position(|v| v.id == view).ok_or_else(|| CommandError::NoView(view.to_string()))
+fn node<'a>(doc: &'a SessionDoc, id: &str) -> Result<&'a GraphNode, CommandError> {
+    doc.graph.node(id).ok_or_else(|| CommandError::NoNode(id.to_string()))
 }
 
-fn view_mut<'a>(doc: &'a mut SessionDoc, view: &str) -> Result<&'a mut ViewDoc, CommandError> {
-    doc.view_mut(view).ok_or_else(|| CommandError::NoView(view.to_string()))
+/// The view node `view`.
+fn view_node<'a>(doc: &'a mut SessionDoc, view: &str) -> Result<&'a mut GraphNode, CommandError> {
+    match doc.graph.node_mut(view) {
+        Some(n) if matches!(n.kind, NodeKind::View { .. }) => Ok(n),
+        _ => Err(CommandError::NoView(view.to_string())),
+    }
 }
 
-fn op_mut<'a>(doc: &'a mut SessionDoc, view: &str, op: &str) -> Result<&'a mut OpDoc, CommandError> {
-    let v = view_mut(doc, view)?;
-    v.ops.iter_mut().find(|o| o.id == op).ok_or_else(|| CommandError::NoOp { view: view.to_string(), op: op.to_string() })
+/// `view`'s chain `[source, op…, view]`.
+fn view_path(doc: &mut SessionDoc, view: &str) -> Result<Vec<String>, CommandError> {
+    view_node(doc, view)?;
+    doc.graph.path(view).ok_or_else(|| CommandError::Invalid(format!("view {view:?} is not connected to a recording")))
+}
+
+/// Op `op` on `view`'s chain.
+fn chain_op<'a>(doc: &'a mut SessionDoc, view: &str, op: &str) -> Result<&'a mut GraphNode, CommandError> {
+    let path = view_path(doc, view)?;
+    if !path[1..path.len() - 1].iter().any(|n| n == op) {
+        return Err(CommandError::NoOp { view: view.to_string(), op: op.to_string() });
+    }
+    doc.graph.node_mut(op).ok_or_else(|| CommandError::NoOp { view: view.to_string(), op: op.to_string() })
 }
 
 /// `rec.bin` or `rec.nwb · ecephys` for a new view.
@@ -222,6 +431,7 @@ fn recording_name(r: &RecordingRef) -> String {
 mod tests {
     use super::*;
     use crate::domain::session::Show;
+    use crate::domain::graph::NodeKind;
     use dspk_pipeline::{Band, Design, Mode, Start};
 
     fn bandpass(lo: f64, hi: f64) -> Node {
@@ -271,7 +481,9 @@ mod tests {
         apply(&mut d, SessionCommand::CopyView { view: "v1".into(), channels: Some(vec![4, 5]), name: None }).unwrap();
         let copy = d.active().unwrap();
         assert_eq!((copy.id.as_str(), copy.recording.channels.as_deref()), ("v2", Some(&[4, 5][..])));
-        assert_eq!(copy.ops, d.views[0].ops, "the copy starts with the same chain");
+        let nodes = |ops: &[crate::domain::session::OpDoc]| ops.iter().map(|o| (o.enabled, o.node.clone())).collect::<Vec<_>>();
+        assert_eq!(nodes(&copy.ops), nodes(&d.views[0].ops), "the copy starts with the same chain");
+        assert_ne!(copy.ops[0].id, d.views[0].ops[0].id, "its own ops: edits to it leave the original alone");
         // A copy of a subset stays inside it
         assert!(apply(&mut d, SessionCommand::CopyView { view: "v2".into(), channels: Some(vec![6]), name: None }).is_err());
     }
@@ -310,5 +522,39 @@ mod tests {
         assert_eq!(back, d);
         apply(&mut d, SessionCommand::SetPluginData { view: "v1".into(), plugin: "synapse".into(), data: serde_json::Value::Null }).unwrap();
         assert!(d.views[0].plugins.is_empty());
+    }
+
+    #[test]
+    fn test_graph_commands_branch_a_recording() {
+        let mut d = opened();
+        apply(&mut d, SessionCommand::AddOp { view: "v1".into(), node: bandpass(300.0, 6000.0), index: None, id: None }).unwrap();
+        // A second branch off the recording: a low-pass into a new view
+        let lp: Node = serde_json::from_value(serde_json::json!({"op": "iir", "band": "lowpass", "cutoff": [300.0]})).unwrap();
+        apply(&mut d, SessionCommand::AddNode { kind: NodeKind::Op { enabled: true, node: lp }, x: 260.0, y: 150.0, id: Some("lfp_band".into()), after: Some("s1".into()) }).unwrap();
+        apply(&mut d, SessionCommand::AddNode { kind: view_kind("LFP".into()), x: 520.0, y: 150.0, id: None, after: Some("lfp_band".into()) }).unwrap();
+        assert_eq!(d.views.len(), 2);
+        assert_eq!(d.views[1].name, "LFP");
+        assert_eq!(d.views[1].ops[0].id, "lfp_band");
+        // Editing the shared recording's branch leaves the other alone
+        apply(&mut d, SessionCommand::EnableNode { id: "iir".into(), enabled: false }).unwrap();
+        assert!(!d.views[0].ops[0].enabled && d.views[1].ops[0].enabled);
+        // A view cut off its source is no longer a view
+        apply(&mut d, SessionCommand::Disconnect { to: "v2".into() }).unwrap();
+        assert_eq!(d.views.len(), 1);
+        assert!(apply(&mut d, SessionCommand::Connect { from: "v1".into(), to: "v2".into() }).is_err(), "a view has no output");
+        apply(&mut d, SessionCommand::MoveNodes { moves: vec![NodeMove { id: "v2".into(), x: 10.0, y: 20.0 }] }).unwrap();
+        assert_eq!((d.graph.node("v2").unwrap().x, d.graph.node("v2").unwrap().y), (10.0, 20.0));
+        apply(&mut d, SessionCommand::RemoveNodes { nodes: vec!["v2".into(), "lfp_band".into()] }).unwrap();
+        assert_eq!(d.graph.nodes.len(), 3);
+    }
+
+    #[test]
+    fn test_a_shared_op_is_not_moved_by_one_view() {
+        let mut d = opened();
+        apply(&mut d, SessionCommand::AddOp { view: "v1".into(), node: Node::Cmr {}, index: None, id: None }).unwrap();
+        apply(&mut d, SessionCommand::AddOp { view: "v1".into(), node: bandpass(300.0, 6000.0), index: None, id: None }).unwrap();
+        apply(&mut d, SessionCommand::AddNode { kind: view_kind("other".into()), x: 0.0, y: 0.0, id: None, after: Some("cmr".into()) }).unwrap();
+        assert!(apply(&mut d, SessionCommand::MoveOp { view: "v1".into(), op: "cmr".into(), index: 1 }).is_err());
+        assert_eq!(d.view("v2").unwrap().ops.len(), 1, "the other view keeps cmr");
     }
 }
