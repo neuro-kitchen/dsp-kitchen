@@ -10,14 +10,23 @@ use tokio::task::JoinHandle;
 use tokio::time::{interval, MissedTickBehavior};
 
 use crate::error::{StreamError, StreamResult};
-use crate::protocol::{
-    frame_from_envelope, header_from_info, read_message, view_from_request, wire, write_message, DEFAULT_MAX_MESSAGE_BYTES, PROTOCOL_VERSION,
-};
+use crate::protocol::{frame_from_envelope, header_from_info, read_message, view_from_request, wire, write_message, PROTOCOL_VERSION};
+use dspk_view::View;
 
 /// Seconds of signal per frame by default.
 pub const DEFAULT_FRAME_SEC: f64 = 0.02;
 /// Frames read ahead per client by default (bounds memory whatever the recording length).
 pub const DEFAULT_QUEUE_FRAMES: usize = 8;
+/// Largest message a client may send by default: its messages (hello, subscribe, view
+/// requests) are a few bytes; the length is checked before anything is allocated.
+pub const DEFAULT_MAX_REQUEST_BYTES: usize = 64 << 10;
+/// Clients connected at once by default; more are refused until one leaves.
+pub const DEFAULT_MAX_CONNECTIONS: usize = 32;
+/// Largest view answered: values (channels × columns, or × samples) in one envelope, so a request
+/// cannot make the server allocate without bound (32 MiB of f32, under a client's message limit).
+pub const MAX_VIEW_VALUES: u64 = 8 << 20;
+/// Most columns a view may ask for (a screen is a few thousand pixels wide).
+pub const MAX_VIEW_COLUMNS: u32 = 1 << 16;
 
 /// When frames are sent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,35 +47,57 @@ pub struct ServeOptions {
     pub loop_playback: bool,
     /// Frames read ahead per client.
     pub queue_frames: usize,
-    /// Largest message accepted from a client.
+    /// Largest message accepted from a client (default [`DEFAULT_MAX_REQUEST_BYTES`]).
     pub max_message_bytes: usize,
 }
 
 impl Default for ServeOptions {
     fn default() -> Self {
-        Self { frame_sec: DEFAULT_FRAME_SEC, pacing: Pacing::RealTime, loop_playback: false, queue_frames: DEFAULT_QUEUE_FRAMES, max_message_bytes: DEFAULT_MAX_MESSAGE_BYTES }
+        Self { frame_sec: DEFAULT_FRAME_SEC, pacing: Pacing::RealTime, loop_playback: false, queue_frames: DEFAULT_QUEUE_FRAMES, max_message_bytes: DEFAULT_MAX_REQUEST_BYTES }
     }
 }
 
 /// A QUIC endpoint accepting clients.
 pub struct Server {
     endpoint: quinn::Endpoint,
+    max_connections: usize,
 }
 
 impl Server {
-    /// Listens on `addr` (UDP).
+    /// Listens on `addr` (UDP), at most [`DEFAULT_MAX_CONNECTIONS`] clients at once.
     pub fn bind(addr: SocketAddr, config: quinn::ServerConfig) -> StreamResult<Self> {
-        Ok(Self { endpoint: quinn::Endpoint::server(config, addr)? })
+        Ok(Self { endpoint: quinn::Endpoint::server(config, addr)?, max_connections: DEFAULT_MAX_CONNECTIONS })
+    }
+
+    /// At most `n` clients at once (at least one).
+    pub fn with_max_connections(mut self, n: usize) -> Self {
+        self.max_connections = n.max(1);
+        self
     }
 
     pub fn local_addr(&self) -> StreamResult<SocketAddr> {
         Ok(self.endpoint.local_addr()?)
     }
 
-    /// The next client whose handshake succeeds; `None` once the endpoint is closed.
+    /// The next client whose handshake succeeds; `None` once the endpoint is closed. Before any
+    /// handshake work, a client must prove it owns its address (QUIC Retry: a spoofed source
+    /// address gets one small packet, never the server's answers), and clients beyond the
+    /// connection limit are refused.
     pub async fn accept(&self) -> Option<quinn::Connection> {
         loop {
-            match self.endpoint.accept().await?.await {
+            let incoming = self.endpoint.accept().await?;
+            if !incoming.remote_address_validated() && incoming.may_retry() {
+                if let Err(e) = incoming.retry() {
+                    tracing::debug!("QUIC retry failed: {e}");
+                }
+                continue;
+            }
+            if self.endpoint.open_connections() >= self.max_connections {
+                tracing::warn!("refused {}: {} clients connected (the limit)", incoming.remote_address(), self.max_connections);
+                incoming.refuse();
+                continue;
+            }
+            match incoming.await {
                 Ok(connection) => return Some(connection),
                 Err(e) => tracing::warn!("QUIC handshake failed: {e}"),
             }
@@ -139,10 +170,12 @@ async fn answer_views(connection: quinn::Connection, source: Arc<dyn RecordingSo
         tokio::spawn(async move {
             let answer = async {
                 let request: wire::ViewRequest = read_message(&mut recv, max_message_bytes).await?.ok_or_else(|| StreamError::protocol("empty view stream"))?;
-                let view = view_from_request(&request);
-                let envelope = tokio::task::spawn_blocking(move || -> StreamResult<Envelope> { Ok(view.read(source.as_ref(), pyramid.as_deref())?) })
-                    .await
-                    .map_err(StreamError::protocol)?;
+                let envelope = match checked_view(&request, source.info()) {
+                    Ok(view) => tokio::task::spawn_blocking(move || -> StreamResult<Envelope> { Ok(view.read(source.as_ref(), pyramid.as_deref())?) })
+                        .await
+                        .map_err(StreamError::protocol)?,
+                    Err(e) => Err(e),
+                };
                 write_message(&mut send, &frame_from_envelope(envelope)).await?;
                 send.finish().map_err(StreamError::protocol)?;
                 StreamResult::Ok(())
@@ -152,6 +185,28 @@ async fn answer_views(connection: quinn::Connection, source: Arc<dyn RecordingSo
             }
         });
     }
+}
+
+/// The view a client asks for, refused when it is outside the recording or larger than the
+/// server answers: channels in range and each once, at most [`MAX_VIEW_COLUMNS`] columns and
+/// [`MAX_VIEW_VALUES`] values (channels × the columns, or the samples when fewer).
+pub fn checked_view(request: &wire::ViewRequest, info: &RecordingInfo) -> StreamResult<View> {
+    let view = view_from_request(request);
+    view.validate(info.channel_count(), info.samples).map_err(|e| StreamError::protocol(e.to_string()))?;
+    let mut seen = vec![false; info.channel_count()];
+    for &c in &view.channels {
+        if std::mem::replace(&mut seen[c], true) {
+            return Err(StreamError::protocol(format!("channel {c} asked for twice")));
+        }
+    }
+    if request.width > MAX_VIEW_COLUMNS {
+        return Err(StreamError::protocol(format!("{} columns asked for: at most {MAX_VIEW_COLUMNS}", request.width)));
+    }
+    let values = view.channels.len() as u64 * (view.end - view.start).min(u64::from(request.width));
+    if values > MAX_VIEW_VALUES {
+        return Err(StreamError::protocol(format!("a view of {values} values: at most {MAX_VIEW_VALUES} (fewer channels or columns)")));
+    }
+    Ok(view)
 }
 
 /// Streams frames from `first_sample` on a new unidirectional stream. A reader thread fills a

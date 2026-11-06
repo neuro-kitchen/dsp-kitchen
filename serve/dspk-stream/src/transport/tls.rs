@@ -3,12 +3,38 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
 use crate::error::{StreamError, StreamResult};
 use crate::protocol::ALPN;
+
+/// Requests (view streams) a client may have open at once; one more for its control stream.
+pub const MAX_CONCURRENT_REQUESTS: u32 = 8;
+/// A connection with nothing sent for this long is closed (clients send keep-alives meanwhile).
+pub const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+/// How often a client shows it is alive when it has nothing else to send.
+pub const KEEP_ALIVE: Duration = Duration::from_secs(10);
+
+/// The server's QUIC limits: [`MAX_CONCURRENT_REQUESTS`] bidirectional streams plus the control
+/// one, no unidirectional streams from clients (only the server sends one, the signal), and
+/// [`IDLE_TIMEOUT`].
+fn server_transport() -> quinn::TransportConfig {
+    let mut t = quinn::TransportConfig::default();
+    t.max_concurrent_bidi_streams(quinn::VarInt::from_u32(MAX_CONCURRENT_REQUESTS + 1))
+        .max_concurrent_uni_streams(quinn::VarInt::from_u32(0))
+        .max_idle_timeout(Some(quinn::IdleTimeout::try_from(IDLE_TIMEOUT).expect("idle timeout fits QUIC's range")));
+    t
+}
+
+/// The client's side: keep-alives within the server's idle timeout.
+fn client_transport() -> quinn::TransportConfig {
+    let mut t = quinn::TransportConfig::default();
+    t.keep_alive_interval(Some(KEEP_ALIVE)).max_idle_timeout(Some(quinn::IdleTimeout::try_from(IDLE_TIMEOUT).expect("idle timeout fits QUIC's range")));
+    t
+}
 
 /// The certificate a server presents.
 #[derive(Debug, Clone)]
@@ -68,7 +94,9 @@ pub fn server_config(identity: &ServerIdentity) -> StreamResult<ServerTls> {
     let mut crypto = rustls::ServerConfig::builder().with_no_client_auth().with_single_cert(chain, key).map_err(tls_error)?;
     crypto.alpn_protocols = vec![ALPN.to_vec()];
     let quic = quinn::crypto::rustls::QuicServerConfig::try_from(crypto).map_err(tls_error)?;
-    Ok(ServerTls { config: quinn::ServerConfig::with_crypto(Arc::new(quic)), certificate })
+    let mut config = quinn::ServerConfig::with_crypto(Arc::new(quic));
+    config.transport_config(Arc::new(server_transport()));
+    Ok(ServerTls { config, certificate })
 }
 
 /// The QUIC client configuration for `trust`.
@@ -88,7 +116,9 @@ pub fn client_config(trust: &ServerTrust) -> StreamResult<quinn::ClientConfig> {
     };
     crypto.alpn_protocols = vec![ALPN.to_vec()];
     let quic = quinn::crypto::rustls::QuicClientConfig::try_from(crypto).map_err(tls_error)?;
-    Ok(quinn::ClientConfig::new(Arc::new(quic)))
+    let mut config = quinn::ClientConfig::new(Arc::new(quic));
+    config.transport_config(Arc::new(client_transport()));
+    Ok(config)
 }
 
 /// Accepts every server certificate ([`ServerTrust::DangerAcceptAnyCertificate`]); signatures
