@@ -12,6 +12,7 @@
 //! `.sorting.zarr` ([`crate::curation`]); the sorter's arrays are never rewritten.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use dspk_app_core::data::store::{AppEvent, Store};
@@ -35,6 +36,7 @@ use crate::plots;
 use crate::sorting::{Snippets, SortingData};
 use crate::strip::{view_signal, BottomStrip};
 use crate::table::{UnitTable, COLUMNS};
+use crate::templates::TemplateGrid;
 use crate::{sorting_of, state, SynapseEvent};
 
 /// Spikes per selected unit drawn and projected (and as many unsorted ones).
@@ -44,6 +46,8 @@ const PLOT_W: u32 = 720;
 const PLOT_H: u32 = 420;
 /// Units listed by the similarity view.
 const SIMILAR_MAX: usize = 20;
+/// Selected units in the correlogram grid (auto on the diagonal, cross elsewhere).
+const CCG_MAX_UNITS: usize = 4;
 /// Autocorrelogram ±50 ms in 1 ms bins; ISI 0–50 ms in 0.5 ms bins; refractory period marked.
 const ACG_HALF_MS: f64 = 50.0;
 const ACG_BIN_MS: f64 = 1.0;
@@ -67,10 +71,14 @@ pub enum ViewKind {
     Amplitude,
     Template,
     Similarity,
+    Correlograms,
+    Templates,
+    Probe,
 }
 
 impl ViewKind {
-    pub const ALL: [ViewKind; 8] = [Self::Table, Self::Waveforms, Self::Features, Self::Acg, Self::Isi, Self::Amplitude, Self::Template, Self::Similarity];
+    pub const ALL: [ViewKind; 11] =
+        [Self::Table, Self::Waveforms, Self::Features, Self::Acg, Self::Isi, Self::Amplitude, Self::Template, Self::Similarity, Self::Correlograms, Self::Templates, Self::Probe];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -79,9 +87,12 @@ impl ViewKind {
             Self::Features => "Features (PC1 · PC2)",
             Self::Acg => "Autocorrelogram",
             Self::Isi => "ISI",
-            Self::Amplitude => "Amplitude over time",
+            Self::Amplitude => "Amplitude over time (lasso: split)",
             Self::Template => "Template",
             Self::Similarity => "Similar units",
+            Self::Correlograms => "Correlograms",
+            Self::Templates => "All templates",
+            Self::Probe => "Probe",
         }
     }
 }
@@ -98,12 +109,15 @@ pub enum Grid {
 struct Plots {
     images: HashMap<ViewKind, Arc<RenderImage>>,
     note: String,
+    /// The amplitude plot's axes: (recording length s, lowest amplitude, amplitude span).
+    amp_axes: Option<(f32, f32, f32)>,
 }
 
 pub struct CurationWorkspace {
     store: Entity<Store>,
     dock: Entity<DockArea>,
     strip: Entity<BottomStrip>,
+    templates: Entity<TemplateGrid>,
     focus: FocusHandle,
     panels: HashMap<ViewKind, Entity<CurationPanel>>,
     /// Views shown, in layout order.
@@ -120,6 +134,10 @@ pub struct CurationWorkspace {
     label: Option<String>,
     plots: Plots,
     computing: bool,
+    /// Bumped by every new selection: older work sees it and stops.
+    generation: Arc<AtomicU64>,
+    /// The keyboard help shows.
+    show_keys: bool,
     _work: Option<Task<()>>,
     _subs: Vec<Subscription>,
 }
@@ -131,6 +149,12 @@ impl CurationWorkspace {
             DockArea::new("curation", Some(1), window, cx).with_renderer(skin)
         });
         let strip = cx.new(|cx| BottomStrip::new(store.clone(), cx));
+        let me = cx.weak_entity();
+        let templates = cx.new(|_| {
+            TemplateGrid::new(std::rc::Rc::new(move |u, add, _, cx| {
+                let _ = me.update(cx, |w, cx| w.pick_unit(u, add, cx));
+            }))
+        });
         let mut subs = vec![cx.subscribe(&store, |this, _, e: &AppEvent, cx| {
             if matches!(e, AppEvent::Document(_) | AppEvent::RecordingChanged | AppEvent::PaletteChanged) {
                 this.selected.clear();
@@ -154,11 +178,12 @@ impl CurationWorkspace {
                 SynapseEvent::UnitsChanged => {}
             }));
         }
-        let visible = vec![ViewKind::Table, ViewKind::Waveforms, ViewKind::Features, ViewKind::Acg, ViewKind::Isi, ViewKind::Amplitude, ViewKind::Template, ViewKind::Similarity];
+        let visible = vec![ViewKind::Table, ViewKind::Waveforms, ViewKind::Features, ViewKind::Correlograms, ViewKind::Isi, ViewKind::Amplitude, ViewKind::Template, ViewKind::Similarity];
         let mut this = Self {
             store,
             dock,
             strip,
+            templates,
             focus: cx.focus_handle(),
             panels: HashMap::new(),
             visible,
@@ -171,6 +196,8 @@ impl CurationWorkspace {
             label: None,
             plots: Plots::default(),
             computing: false,
+            generation: Arc::new(AtomicU64::new(0)),
+            show_keys: false,
             _work: None,
             _subs: subs,
         };
@@ -255,6 +282,67 @@ impl CurationWorkspace {
         sorting_of(self.store.read(cx).active_view()?)
     }
 
+    /// The next (`dir` 1) or previous (−1) unit of the table's order, alone.
+    fn step_unit(&mut self, dir: i64, cx: &mut Context<Self>) {
+        if self.order.is_empty() {
+            return;
+        }
+        let at = self.selected.first().and_then(|u| self.order.iter().position(|o| o == u));
+        let next = match at {
+            Some(i) => (i as i64 + dir).clamp(0, self.order.len() as i64 - 1) as usize,
+            None => 0,
+        };
+        self.selected = vec![self.order[next]];
+        self.compute(cx);
+    }
+
+    /// The lead unit with the next (or previous) unit most like it, for a merge decision
+    /// (Phy's space / shift+space).
+    fn step_similar(&mut self, dir: i64, cx: &mut Context<Self>) {
+        let (Some(sorting), Some(&lead)) = (self.sorting(cx), self.selected.first()) else { return };
+        let list = similar(&sorting, lead, SIMILAR_MAX);
+        if list.is_empty() {
+            return;
+        }
+        let at = self.selected.get(1).and_then(|u| list.iter().position(|(o, _)| o == u));
+        let next = match at {
+            Some(i) => (i as i64 + dir).clamp(0, list.len() as i64 - 1) as usize,
+            None => 0,
+        };
+        self.selected = vec![lead, list[next].0];
+        self.compute(cx);
+    }
+
+    /// Splits the lead unit: its spikes inside `polygon` (fractions of the amplitude plot)
+    /// become a new unit, which joins the selection.
+    fn split_lasso(&mut self, polygon: &[(f32, f32)], cx: &mut Context<Self>) {
+        let (Some(path), Some(sorting), Some(&lead)) = (self.sorting_path(cx), self.sorting(cx), self.selected.first()) else { return };
+        let Some((duration, lo, span)) = self.plots.amp_axes else { return };
+        if polygon.len() < 3 || sorting.amplitudes.is_empty() {
+            return;
+        }
+        let spikes: Vec<u64> = sorting.by_unit[lead]
+            .iter()
+            .map(|&k| k as usize)
+            .filter(|&k| {
+                let p = ((sorting.times[k] as f64 / sorting.sample_rate) as f32 / duration.max(1e-6), 1.0 - (sorting.amplitudes[k] - lo) / span.max(1e-6));
+                inside(p, polygon)
+            })
+            .map(|k| sorting.times[k])
+            .collect();
+        let n = spikes.len();
+        if n == 0 || n == sorting.by_unit[lead].len() {
+            self.store.update(cx, |s, cx| s.set_status(if n == 0 { "The lasso holds none of the unit's spikes" } else { "The lasso holds every spike of the unit: nothing to split" }, cx));
+            return;
+        }
+        let (unit, into, new_index) = (sorting.units[lead].info.unit_id, next_unit_id(&sorting), sorting.units.len());
+        let Some(st) = state(cx) else { return };
+        st.update(cx, |s, cx| s.curate(&path, CurationOp::Split { unit, spikes, into }, cx));
+        self.store.update(cx, |s, cx| s.set_status(format!("Unit {unit}: {n} spikes split off as unit {into}"), cx));
+        self.selected = vec![lead, new_index];
+        self.compute(cx);
+    }
+
     /// Labels the selected units.
     fn label_selected(&mut self, label: &str, cx: &mut Context<Self>) {
         let (Some(path), Some(sorting)) = (self.sorting_path(cx), self.sorting(cx)) else { return };
@@ -298,6 +386,19 @@ impl CurationWorkspace {
             "g" if alt => self.label_selected("good", cx),
             "m" if alt => self.label_selected("mua", cx),
             "n" if alt => self.label_selected("noise", cx),
+            "u" if alt => self.label_selected("unsorted", cx),
+            "down" | "j" if !cmd => self.step_unit(1, cx),
+            "up" | "k" if !cmd => self.step_unit(-1, cx),
+            "space" if shift => self.step_similar(-1, cx),
+            "space" => self.step_similar(1, cx),
+            "?" | "h" if !cmd => {
+                self.show_keys = !self.show_keys;
+                cx.notify();
+            }
+            "escape" if self.show_keys => {
+                self.show_keys = false;
+                cx.notify();
+            }
             "g" if !cmd => self.merge_selected(cx),
             "z" if cmd && shift => self.undo(true, cx),
             "z" if cmd => self.undo(false, cx),
@@ -331,7 +432,7 @@ impl CurationWorkspace {
 
     fn panel(&mut self, kind: ViewKind, cx: &mut Context<Self>) -> Entity<CurationPanel> {
         let ws = cx.weak_entity();
-        self.panels.entry(kind).or_insert_with(|| cx.new(|cx| CurationPanel { ws, kind, focus: cx.focus_handle() })).clone()
+        self.panels.entry(kind).or_insert_with(|| cx.new(|cx| CurationPanel { ws, kind, focus: cx.focus_handle(), lasso: Vec::new(), plot: Default::default() })).clone()
     }
 
     /// The visible views in the grid: the table on the left, plots in rows of `columns`.
@@ -379,12 +480,16 @@ impl CurationWorkspace {
 
     /// Every plot of the selected units, on a background thread (a newer selection replaces it).
     fn compute(&mut self, cx: &mut Context<Self>) {
-        let Some(sorting) = self.sorting(cx) else { return };
+        let sorting = self.sorting(cx);
+        let (palette, selected) = (self.store.read(cx).palette(), self.selected.clone());
+        self.templates.update(cx, |g, cx| g.set(sorting.clone(), selected, palette, cx));
+        let Some(sorting) = sorting else { return };
         let Some(&lead) = self.selected.first() else {
             self.plots = Plots::default();
             self.notify_panels(cx);
             return;
         };
+        // The last plots stay until the new ones replace them (no blank "Computing…" panels)
         let Some((signal, dataset, source)) = view_signal(self.store.read(cx)) else { return };
         let to_view = self.channel_map(&sorting, cx);
         let palette = self.store.read(cx).palette();
@@ -400,38 +505,93 @@ impl CurationWorkspace {
         let processed = self.store.read(cx).signal_for(&source).is_some();
         let note = format!("Ch {channel} · ≤{SPIKES_PER_UNIT} spikes per unit · {}", if processed { "processed" } else { "as stored" });
         let wanted: Vec<ViewKind> = self.visible.clone();
+        // A newer selection makes this work stale: it stops at its next step
+        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let current = self.generation.clone();
+        let stale = move || current.load(Ordering::SeqCst) != generation;
         self.computing = true;
         self.notify_panels(cx);
-        let work = cx.background_spawn(async move {
-            let mut images = HashMap::new();
-            let mut put = |k: ViewKind, f: Option<Arc<RenderImage>>| {
-                if let Some(i) = f {
-                    images.insert(k, i);
+        // Fast: everything from the spike times alone (shown at once)
+        let fast = cx.background_spawn({
+            let (sorting, units, palette, stale, wanted) = (sorting.clone(), units.clone(), palette, stale.clone(), wanted.clone());
+            async move {
+                let mut images = HashMap::new();
+                if stale() {
+                    return (images, None);
                 }
-            };
-            if wanted.contains(&ViewKind::Waveforms) || wanted.contains(&ViewKind::Features) {
-                let snippets = Snippets::read(&sorting, signal.as_ref(), &units, channel, SPIKES_PER_UNIT);
-                put(ViewKind::Waveforms, plots::to_image(plots::waveforms(&snippets, &palette, PLOT_W, PLOT_H, 1.5)));
-                let points = snippets.pca2();
-                let labels: Vec<Option<u32>> = snippets.rows.iter().map(|(u, _, _)| *u).collect();
-                put(ViewKind::Features, plots::to_image(plots::scatter(&points, &labels, &palette, PLOT_W, PLOT_H, 1.5)));
+                let times = sorting.unit_times(lead);
+                let acg = crate::sorting::autocorrelogram(&times, sorting.sample_rate, ACG_HALF_MS, ACG_BIN_MS);
+                let isi = crate::sorting::isi_histogram(&times, sorting.sample_rate, ISI_MAX_MS, ISI_BIN_MS);
+                let mut put = |k: ViewKind, f: Option<Arc<RenderImage>>| {
+                    if let Some(i) = f {
+                        images.insert(k, i);
+                    }
+                };
+                put(ViewKind::Acg, plots::to_image(plots::bars(&acg, lead_colour, Some((ACG_HALF_MS / ACG_BIN_MS) as f32), &palette, PLOT_W, PLOT_H)));
+                put(ViewKind::Isi, plots::to_image(plots::bars(&isi, lead_colour, Some((REFRACTORY_MS / ISI_BIN_MS) as f32), &palette, PLOT_W, PLOT_H)));
+                put(ViewKind::Template, plots::to_image(plots::template_grid(&template_rows, lead_colour, &palette, PLOT_W, PLOT_H, 1.5)));
+                if wanted.contains(&ViewKind::Correlograms) {
+                    let shown: Vec<usize> = units.iter().copied().take(CCG_MAX_UNITS).collect();
+                    let trains: Vec<Vec<u64>> = shown.iter().map(|&u| sorting.unit_times(u)).collect();
+                    let grid: Vec<Vec<Vec<u32>>> = trains
+                        .iter()
+                        .map(|a| trains.iter().map(|b| crate::sorting::crosscorrelogram(a, b, sorting.sample_rate, ACG_HALF_MS, ACG_BIN_MS)).collect())
+                        .collect();
+                    let colours: Vec<_> = shown.iter().map(|&u| palette.unit(u)).collect();
+                    put(ViewKind::Correlograms, plots::to_image(plots::correlogram_grid(&grid, &colours, &palette, PLOT_W, PLOT_H)));
+                }
+                if stale() {
+                    return (images, None);
+                }
+                let amps: Vec<(u32, Vec<(f32, f32)>)> = units.iter().map(|&u| (u as u32, sorting.unit_amplitudes(u, AMPLITUDE_POINTS))).collect();
+                let (frame, (lo, span)) = plots::amplitude_time(&amps, duration, &palette, PLOT_W, PLOT_H, 1.5);
+                put(ViewKind::Amplitude, plots::to_image(frame));
+                if wanted.contains(&ViewKind::Probe) {
+                    let channels: Vec<(f32, f32)> = sorting.positions.iter().flatten().copied().collect();
+                    let marks: Vec<((f32, f32), _, bool)> = sorting.alive().filter_map(|u| sorting.unit_position(u).map(|p| (p, palette.unit(u), units.contains(&u)))).collect();
+                    put(ViewKind::Probe, plots::to_image(plots::probe_view(&channels, &marks, &palette, PLOT_W / 2, PLOT_H * 2, 1.5)));
+                }
+                (images, Some((duration, lo, span)))
             }
-            let times = sorting.unit_times(lead);
-            let acg = crate::sorting::autocorrelogram(&times, sorting.sample_rate, ACG_HALF_MS, ACG_BIN_MS);
-            let isi = crate::sorting::isi_histogram(&times, sorting.sample_rate, ISI_MAX_MS, ISI_BIN_MS);
-            put(ViewKind::Acg, plots::to_image(plots::bars(&acg, lead_colour, Some((ACG_HALF_MS / ACG_BIN_MS) as f32), &palette, PLOT_W, PLOT_H)));
-            put(ViewKind::Isi, plots::to_image(plots::bars(&isi, lead_colour, Some((REFRACTORY_MS / ISI_BIN_MS) as f32), &palette, PLOT_W, PLOT_H)));
-            let amps: Vec<(u32, Vec<(f32, f32)>)> = units.iter().map(|&u| (u as u32, sorting.unit_amplitudes(u, AMPLITUDE_POINTS))).collect();
-            put(ViewKind::Amplitude, plots::to_image(plots::amplitude_time(&amps, duration, &palette, PLOT_W, PLOT_H, 1.5)));
-            put(ViewKind::Template, plots::to_image(plots::template_grid(&template_rows, lead_colour, &palette, PLOT_W, PLOT_H, 1.5)));
-            Plots { images, note }
         });
+        // Slow: waveforms and features from the signal's windows (read once per signal)
+        let slow = cx.background_spawn(async move {
+            let mut images = HashMap::new();
+            if stale() || !(wanted.contains(&ViewKind::Waveforms) || wanted.contains(&ViewKind::Features)) {
+                return images;
+            }
+            let windows = crate::sorting::windows_of(&signal);
+            if stale() {
+                return images;
+            }
+            let snippets = Snippets::read(&sorting, &windows, &units, channel, SPIKES_PER_UNIT);
+            if let Some(i) = plots::to_image(plots::waveforms(&snippets, &palette, PLOT_W, PLOT_H, 1.5)) {
+                images.insert(ViewKind::Waveforms, i);
+            }
+            let points = snippets.pca2();
+            let labels: Vec<Option<u32>> = snippets.rows.iter().map(|(u, _, _)| *u).collect();
+            if let Some(i) = plots::to_image(plots::scatter(&points, &labels, &palette, PLOT_W, PLOT_H, 1.5)) {
+                images.insert(ViewKind::Features, i);
+            }
+            images
+        });
+        self.plots.note = note;
         self._work = Some(cx.spawn(async move |this, cx| {
-            let plots = work.await;
+            let (images, axes) = fast.await;
             let _ = this.update(cx, |w, cx| {
-                w.plots = plots;
-                w.computing = false;
-                w.notify_panels(cx);
+                if w.generation.load(Ordering::SeqCst) == generation {
+                    w.plots.images.extend(images);
+                    w.plots.amp_axes = axes;
+                    w.notify_panels(cx);
+                }
+            });
+            let images = slow.await;
+            let _ = this.update(cx, |w, cx| {
+                if w.generation.load(Ordering::SeqCst) == generation {
+                    w.plots.images.extend(images);
+                    w.computing = false;
+                    w.notify_panels(cx);
+                }
             });
         }));
     }
@@ -563,14 +723,67 @@ impl Render for CurationWorkspace {
             .id("curation-workspace")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
+            .on_drag_move(cx.listener(|this, e: &gpui_kit::DragMoveEvent<dspk_app_core::ui::panel_edge::PanelResize>, _, cx| {
+                dspk_app_core::ui::panel_edge::follow_panel_drag(&this.store, e, cx);
+                this.strip.update(cx, |_, cx| cx.notify());
+            }))
             .on_mouse_down(gpui_kit::MouseButton::Left, cx.listener(|this, _, window, cx| window.focus(&this.focus, cx)))
             .size_full()
             .bg(bg)
             .child(toolbar)
             .child(div().flex_1().min_h_0().child(self.dock.clone()))
             .child(self.strip.clone())
+            .when(self.show_keys, |d| d.child(keys_help(cx)))
             .into_any_element()
     }
+}
+
+/// Phy's keys, as this workspace binds them.
+const KEYS: [(&str, &str); 12] = [
+    ("Click / Ctrl+click", "Select a unit / add it"),
+    ("↓ ↑  (J K)", "Next / previous unit of the table"),
+    ("Space / Shift+Space", "Next / previous most similar unit beside the lead"),
+    ("Alt+G  Alt+M  Alt+N", "Label good / mua / noise"),
+    ("Alt+U", "Label unsorted"),
+    ("G", "Merge the selected units"),
+    ("Lasso on Amplitude", "Split the lead unit's spikes inside it"),
+    ("Ctrl+Z / Ctrl+Shift+Z", "Undo / redo"),
+    ("Ctrl+S", "Save the curation in the .sorting.zarr"),
+    ("◀ ▶ in the strip", "The lead unit's previous / next spike"),
+    ("Ctrl+wheel in the strip", "Zoom in time"),
+    ("? or H", "This help"),
+];
+
+fn keys_help(cx: &App) -> impl IntoElement + use<> {
+    let t = cx.theme();
+    v_flex()
+        .absolute()
+        .top(px(48.))
+        .right(px(16.))
+        .w(px(420.))
+        .p_3()
+        .gap_1p5()
+        .rounded_lg()
+        .border_1()
+        .border_color(t.border)
+        .bg(t.popover)
+        .shadow_lg()
+        .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Curation keys (Phy)"))
+        .children(KEYS.iter().map(|(k, what)| h_flex().gap_3().child(div().w(px(170.)).text_xs().font_weight(FontWeight::SEMIBOLD).child(*k)).child(div().text_xs().text_color(t.muted_foreground).child(*what))))
+}
+
+/// Whether `p` lies inside `polygon` (ray casting).
+fn inside(p: (f32, f32), polygon: &[(f32, f32)]) -> bool {
+    let mut on = false;
+    let mut j = polygon.len() - 1;
+    for i in 0..polygon.len() {
+        let ((xi, yi), (xj, yj)) = (polygon[i], polygon[j]);
+        if (yi > p.1) != (yj > p.1) && p.0 < (xj - xi) * (p.1 - yi) / (yj - yi) + xi {
+            on = !on;
+        }
+        j = i;
+    }
+    on
 }
 
 /// One view of the Curation workspace as a dock panel.
@@ -578,6 +791,9 @@ pub struct CurationPanel {
     ws: WeakEntity<CurationWorkspace>,
     kind: ViewKind,
     focus: FocusHandle,
+    /// The lasso being drawn on the amplitude plot (fractions of the plot).
+    lasso: Vec<(f32, f32)>,
+    plot: std::rc::Rc<std::cell::Cell<gpui_kit::Bounds<gpui_kit::Pixels>>>,
 }
 
 /// What the table draws (copied out of the workspace).
@@ -710,11 +926,15 @@ impl Render for CurationPanel {
         if self.kind == ViewKind::Similarity {
             return self.similarity(&ws, cx);
         }
+        if self.kind == ViewKind::Templates {
+            return div().size_full().p_1().child(ws.read(cx).templates.clone()).into_any_element();
+        }
         let (image, computing, background) = {
             let w = ws.read(cx);
             (w.plots.images.get(&self.kind).cloned(), w.computing, w.store.read(cx).palette().background)
         };
         let body = match image {
+            Some(i) if self.kind == ViewKind::Amplitude => self.lasso_plot(i, cx),
             Some(i) => div().size_full().child(img(i).size_full()).into_any_element(),
             None => div()
                 .size_full()
@@ -731,6 +951,64 @@ impl Render for CurationPanel {
 }
 
 impl CurationPanel {
+    /// The amplitude plot with a lasso: press and drag around spikes, release to split them off
+    /// the lead unit.
+    fn lasso_plot(&self, image: Arc<RenderImage>, cx: &mut Context<Self>) -> AnyElement {
+        let frac = |this: &Self, p: gpui_kit::Point<gpui_kit::Pixels>| {
+            let b = this.plot.get();
+            (((p.x - b.origin.x).as_f32() / b.size.width.as_f32().max(1.0)).clamp(0.0, 1.0), ((p.y - b.origin.y).as_f32() / b.size.height.as_f32().max(1.0)).clamp(0.0, 1.0))
+        };
+        let cell = self.plot.clone();
+        let lasso = self.lasso.clone();
+        let line = cx.theme().primary;
+        div()
+            .id("amplitude-lasso")
+            .relative()
+            .size_full()
+            .cursor_crosshair()
+            .on_mouse_down(gpui_kit::MouseButton::Left, cx.listener(move |this, e: &gpui_kit::MouseDownEvent, _, cx| {
+                this.lasso = vec![frac(this, e.position)];
+                cx.notify();
+            }))
+            .on_mouse_move(cx.listener(move |this, e: &gpui_kit::MouseMoveEvent, _, cx| {
+                if e.pressed_button == Some(gpui_kit::MouseButton::Left) && !this.lasso.is_empty() {
+                    this.lasso.push(frac(this, e.position));
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(gpui_kit::MouseButton::Left, cx.listener(|this, _, _, cx| {
+                let polygon = std::mem::take(&mut this.lasso);
+                if polygon.len() >= 3 {
+                    let _ = this.ws.update(cx, |w, cx| w.split_lasso(&polygon, cx));
+                }
+                cx.notify();
+            }))
+            .child(img(image).size_full())
+            .child(
+                gpui_kit::canvas(
+                    move |b, _, _| cell.set(b),
+                    move |b, _, window, _| {
+                        if lasso.len() < 2 {
+                            return;
+                        }
+                        let at = |(x, y): (f32, f32)| gpui_kit::point(b.origin.x + b.size.width * x, b.origin.y + b.size.height * y);
+                        let mut path = gpui_kit::PathBuilder::stroke(px(1.5));
+                        path.move_to(at(lasso[0]));
+                        for &p in &lasso[1..] {
+                            path.line_to(at(p));
+                        }
+                        path.line_to(at(lasso[0]));
+                        if let Ok(p) = path.build() {
+                            window.paint_path(p, line);
+                        }
+                    },
+                )
+                .absolute()
+                .size_full(),
+            )
+            .into_any_element()
+    }
+
     /// The units most like the lead unit (template similarity): a click adds one to the
     /// selection, to compare or merge.
     fn similarity(&self, ws: &Entity<CurationWorkspace>, cx: &mut Context<Self>) -> AnyElement {
@@ -801,5 +1079,59 @@ impl BasePanel for CurationPanel {
 impl Panel for CurationPanel {
     fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         self.kind.title()
+    }
+}
+
+/// Timing of a unit click on real data (the Kilosort4 test recording and its sorting):
+/// `cargo test --profile validate -p dspk-app-synapse bench_curation_click -- --ignored --nocapture`.
+#[cfg(test)]
+mod bench {
+    use std::time::Instant;
+
+    use dspk_view::{LocalSignal, SignalBackend};
+
+    use super::*;
+
+    #[test]
+    #[ignore = "needs .data/kilosort4"]
+    fn bench_curation_click() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.data/kilosort4");
+        let rec = root.join("ZFM-02370_mini.imec0.ap.short.bin");
+        let store = root.join("ZFM-02370_mini.imec0.ap.short.kilosort4.sorting.zarr");
+        let t = Instant::now();
+        let sorting = SortingData::load(&store).unwrap();
+        println!("load sorting: {:.0} ms ({})", t.elapsed().as_secs_f64() * 1e3, sorting.summary());
+        let list = dspk_synapse::io::sources(&rec).unwrap();
+        let id = dspk_io::default_source(&list).unwrap().id.clone();
+        let source: Arc<dyn dspk_core::RecordingSource> = Arc::from(dspk_synapse::io::open_source(&rec, &id).unwrap());
+        let signal: Arc<dyn SignalBackend> = Arc::new(LocalSignal::open(source, None).unwrap());
+        let t = Instant::now();
+        let windows = crate::sorting::windows_of(&signal);
+        println!("windows (once per signal): {:.0} ms, {} × {} samples × {} channels", t.elapsed().as_secs_f64() * 1e3, windows.starts.len(), windows.len, windows.channels);
+        let palette = dspk_app_core::ui::theme::palette::Palette::of(true);
+        let lead = sorting.alive().max_by_key(|&u| sorting.units[u].info.num_spikes).unwrap();
+        for _ in 0..3 {
+            let t = Instant::now();
+            let times = sorting.unit_times(lead);
+            let acg = crate::sorting::autocorrelogram(&times, sorting.sample_rate, ACG_HALF_MS, ACG_BIN_MS);
+            let _ = plots::to_image(plots::bars(&acg, palette.unit(lead), None, &palette, PLOT_W, PLOT_H));
+            let fast = t.elapsed();
+            let ch = sorting.units[lead].info.primary_channel;
+            let snippets = Snippets::read(&sorting, &windows, &[lead], ch, SPIKES_PER_UNIT);
+            let _ = plots::to_image(plots::waveforms(&snippets, &palette, PLOT_W, PLOT_H, 1.5));
+            let pts = snippets.pca2();
+            let labels: Vec<Option<u32>> = snippets.rows.iter().map(|(u, _, _)| *u).collect();
+            let _ = plots::to_image(plots::scatter(&pts, &labels, &palette, PLOT_W, PLOT_H, 1.5));
+            let sim = crate::curation::similar(&sorting, lead, SIMILAR_MAX);
+            let ch = sorting.units[lead].info.primary_channel;
+            let tp = sorting.templates.as_ref().unwrap();
+            let row = sorting.units[lead].template_row.unwrap();
+            let r = tp.row(row);
+            let peak = (0..tp.channels).max_by(|&a, &b| { let p = |c: usize| r[c * tp.samples..(c + 1) * tp.samples].iter().fold(0f32, |m, v| m.max(v.abs())); p(a).total_cmp(&p(b)) }).unwrap();
+            let nonzero = r.iter().filter(|v| v.abs() > 1e-6).count();
+            let neighbours: Vec<(u32, f32)> = sim.iter().map(|&(u, sc)| (sorting.units[u].info.primary_channel as u32, sc)).take(5).collect();
+            println!("unit id {} primary ch {ch}, template peak ch {peak}, nonzero {nonzero}/{}, top: {neighbours:?}", sorting.units[lead].info.unit_id, r.len());
+            println!("click: fast plots {:.1} ms, all {:.1} ms ({} snippets; best match {:?})", fast.as_secs_f64() * 1e3, t.elapsed().as_secs_f64() * 1e3, snippets.rows.len(), sim.first());
+        }
     }
 }

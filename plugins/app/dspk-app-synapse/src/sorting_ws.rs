@@ -24,21 +24,23 @@ use dspk_app_core::screens::explore::trace::trace_panel::color;
 use dspk_app_core::ui::widgets::{row, EmptyState, MenuSelect, Section};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    div, img, px, AnyElement, App, AppContext as _, Context, Entity, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, RenderImage, SharedString,
+    div, img, px, AnyElement, App, AppContext as _, Context, DragMoveEvent, Entity, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, RenderImage, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window,
 };
 
 use crate::sort::{self, Described, Param, SortRequest, PROBES};
 use crate::sorting::{isi_histogram, write_start_sec, Snippets, SortingData};
 use crate::strip::{view_signal, BottomStrip};
+use crate::templates::TemplateGrid;
+use dspk_app_core::ui::panel_edge::{follow_panel_drag, panel_edge, PanelResize, Side};
 use crate::{plots, plugin_data, runs_of, sorting_of, state, SynapseEvent, ID};
 
 /// Widths of the side columns (logical px), card size (logical and rendered px).
-const LEFT_W: f32 = 300.;
-const RIGHT_W: f32 = 240.;
+const LEFT_W: f32 = 260.;
+const RIGHT_W: f32 = 320.;
 const CARD_W: f32 = 200.;
 const CARD_IMG_H: f32 = 120.;
 const CARD_PX: (u32, u32) = (400, 240);
@@ -52,6 +54,13 @@ const ISI_BIN_MS: f64 = 0.5;
 const REFRACTORY_MS: f64 = 1.5;
 /// Default part of the recording for a first run (s).
 const DEFAULT_DURATION_SEC: f64 = 60.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CenterTab {
+    Channel,
+    Templates,
+    Compare,
+}
 
 pub struct SortingWorkspace {
     store: Entity<Store>,
@@ -71,6 +80,15 @@ pub struct SortingWorkspace {
     computing: bool,
     /// The sorting the cards were made for.
     shown: Option<*const SortingData>,
+    tab: CenterTab,
+    grid: Entity<TemplateGrid>,
+    /// The template picked in the grid.
+    focused: Option<usize>,
+    /// The run compared with the shown one, and the matches found (unit of the shown run, unit
+    /// of the other, agreement).
+    compare_with: Option<PathBuf>,
+    matches: Option<(PathBuf, PathBuf, Vec<(usize, usize, f32)>)>,
+    _compare: Option<Task<()>>,
     _describe: Option<Task<()>>,
     _work: Option<Task<()>>,
     _subs: Vec<Subscription>,
@@ -79,6 +97,12 @@ pub struct SortingWorkspace {
 impl SortingWorkspace {
     pub fn new(store: Entity<Store>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let strip = cx.new(|cx| BottomStrip::new(store.clone(), cx));
+        let me = cx.weak_entity();
+        let grid = cx.new(|_| {
+            TemplateGrid::new(std::rc::Rc::new(move |u, _, _, cx| {
+                let _ = me.update(cx, |w, cx| w.focus_unit(u, cx));
+            }))
+        });
         let start = cx.new(|cx| InputState::new(window, cx).default_value("0"));
         let duration = cx.new(|cx| InputState::new(window, cx).default_value(format!("{DEFAULT_DURATION_SEC}")).placeholder("to the end"));
         let mut subs = vec![cx.subscribe(&store, |this, _, e: &AppEvent, cx| match e {
@@ -90,6 +114,7 @@ impl SortingWorkspace {
             subs.push(cx.subscribe(&st, |this, _, e: &SynapseEvent, cx| {
                 if matches!(e, SynapseEvent::SortingLoaded(_) | SynapseEvent::Curated(_)) {
                     this.refresh(cx);
+                    this.update_compare(cx);
                 }
             }));
         }
@@ -107,6 +132,12 @@ impl SortingWorkspace {
             clusters: None,
             computing: false,
             shown: None,
+            tab: CenterTab::Channel,
+            grid,
+            focused: None,
+            compare_with: None,
+            matches: None,
+            _compare: None,
             _describe: None,
             _work: None,
             _subs: subs,
@@ -163,9 +194,134 @@ impl SortingWorkspace {
                     self.channel = s.alive().max_by_key(|&u| s.units[u].info.num_spikes).map(|u| s.units[u].info.primary_channel);
                 }
             }
+            self.focused = None;
             self.compute(cx);
+            self.sync_grid(cx);
         }
         cx.notify();
+    }
+
+    /// Compares the shown run with `other` (loaded first when needed), in the background.
+    fn compare_with(&mut self, other: PathBuf, cx: &mut Context<Self>) {
+        self.compare_with = Some(other.clone());
+        self.update_compare(cx);
+    }
+
+    fn update_compare(&mut self, cx: &mut Context<Self>) {
+        let (Some(other), Some(st)) = (self.compare_with.clone(), state(cx)) else { return };
+        let Some(shown) = self.store.read(cx).active_view().and_then(sorting_of) else { return };
+        if self.matches.as_ref().is_some_and(|(a, b, _)| *a == shown && *b == other) {
+            return;
+        }
+        let (a, b) = (st.read(cx).sorting(&shown), st.read(cx).sorting(&other));
+        let (Some(a), Some(b)) = (a, b) else {
+            // Loaded first; the comparison follows (SortingLoaded refreshes)
+            st.update(cx, |s, cx| {
+                s.load(shown.clone(), cx);
+                s.load(other.clone(), cx);
+            });
+            return;
+        };
+        let work = cx.background_spawn(async move { crate::sorting::compare(&a, &b, crate::sorting::MATCH_TOLERANCE_MS) });
+        self._compare = Some(cx.spawn(async move |this, cx| {
+            let m = work.await;
+            let _ = this.update(cx, |w, cx| {
+                w.matches = Some((shown, other, m));
+                cx.notify();
+            });
+        }));
+    }
+
+    /// The comparison of the shown run with another: each unit's best match and its agreement.
+    fn compare_view(&self, sorting: &SortingData, cx: &mut Context<Self>) -> AnyElement {
+        let t = cx.theme();
+        let (muted, border) = (t.muted_foreground, t.border);
+        let view = self.store.read(cx).active_view().cloned();
+        let shown = view.as_ref().and_then(sorting_of);
+        let runs: Vec<PathBuf> = view.as_ref().map(runs_of).unwrap_or_default().into_iter().filter(|r| Some(r) != shown.as_ref()).collect();
+        let names: Vec<SharedString> = runs.iter().map(|p| SharedString::from(file_label(p).trim_end_matches(".sorting.zarr").to_string())).collect();
+        let current = self.compare_with.as_ref().and_then(|c| runs.iter().position(|r| r == c));
+        let me = cx.entity().downgrade();
+        let runs2 = runs.clone();
+        let pick = MenuSelect::new("compare-with", names, current, move |i, _, cx| {
+            let _ = me.update(cx, |w, cx| w.compare_with(runs2[i].clone(), cx));
+        });
+        let other = self.compare_with.as_ref().and_then(|p| state(cx).and_then(|s| s.read(cx).sorting(p)));
+        let palette = self.store.read(cx).palette();
+        let summary = |s: &SortingData| {
+            let mut labels: BTreeMap<String, usize> = BTreeMap::new();
+            for u in s.alive() {
+                *labels.entry(s.units[u].info.quality_label.clone()).or_default() += 1;
+            }
+            let l = labels.iter().map(|(k, v)| format!("{v} {k}")).collect::<Vec<_>>().join(" · ");
+            format!("{} · {} units · {} spikes · {l}", s.sorter, s.alive().count(), s.times.len())
+        };
+        let rows = self.matches.as_ref().filter(|(a, b, _)| Some(a) == shown.as_ref() && Some(b) == self.compare_with.as_ref()).map(|(_, _, m)| m.clone()).unwrap_or_default();
+        let agreeing = rows.iter().filter(|r| r.2 >= 0.8).count();
+        v_flex()
+            .id("sorting-compare")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .p_3()
+            .gap_3()
+            .child(h_flex().gap_2().child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Compare with")).child(pick))
+            .when(runs.is_empty(), |d| d.child(div().text_xs().text_color(muted).child("Run another sorter (or the same with other settings): every run of this view can be compared.")))
+            .child(div().text_xs().child(format!("Shown: {}", summary(sorting))))
+            .children(other.as_ref().map(|o| div().text_xs().child(format!("Other: {}", summary(o)))))
+            .when(!rows.is_empty(), |d| {
+                d.child(div().text_xs().text_color(muted).child(format!(
+                    "{agreeing} of {} units found in both (agreement ≥ 0.8; spikes within {} ms count as the same)",
+                    rows.len(),
+                    crate::sorting::MATCH_TOLERANCE_MS
+                )))
+            })
+            .child(
+                v_flex().children(rows.iter().take(200).map(|&(u, v, sc)| {
+                    let other_id = other.as_ref().map_or_else(|| "?".to_string(), |o| o.units.get(v).map_or("?".into(), |x| x.info.unit_id.to_string()));
+                    h_flex()
+                        .h(px(22.))
+                        .gap_3()
+                        .border_b_1()
+                        .border_color(border)
+                        .child(div().size(px(8.)).rounded_full().bg(color(palette.unit(u))))
+                        .child(div().w(px(80.)).text_xs().child(format!("Unit {}", sorting.units[u].info.unit_id)))
+                        .child(div().w(px(80.)).text_xs().child(format!("↔ unit {other_id}")))
+                        .child(div().w(px(50.)).text_xs().font_weight(FontWeight::SEMIBOLD).child(format!("{sc:.2}")))
+                        .child(div().h(px(4.)).w(px(120. * sc)).rounded_sm().bg(color(palette.unit(u))))
+                        .child(div().text_xs().text_color(muted).child(format!("{} spikes", sorting.units[u].info.num_spikes)))
+                })),
+            )
+            .into_any_element()
+    }
+
+    fn set_tab(&mut self, tab: CenterTab, cx: &mut Context<Self>) {
+        self.tab = tab;
+        self.sync_grid(cx);
+        cx.notify();
+    }
+
+    fn sync_grid(&mut self, cx: &mut Context<Self>) {
+        let sorting = self.sorting(cx);
+        let palette = self.store.read(cx).palette();
+        let selected = self.focused.into_iter().collect();
+        self.grid.update(cx, |g, cx| g.set(sorting, selected, palette, cx));
+    }
+
+    /// A template picked in the grid: its channel, and its spikes on the timeline (the window
+    /// jumps to its first spike after the current one).
+    fn focus_unit(&mut self, unit: usize, cx: &mut Context<Self>) {
+        let Some(sorting) = self.sorting(cx) else { return };
+        self.focused = Some(unit);
+        self.channel = Some(sorting.units[unit].info.primary_channel);
+        self.compute(cx);
+        let map = self.store.read(cx).active_view().and_then(|v| v.recording.channels.clone()).filter(|c| sorting.channels == Some(c.len()));
+        let channels: Vec<usize> = sorting.units[unit].extent.channels.iter().filter_map(|&c| map.as_ref().map_or(Some(c), |m| m.get(c).copied())).collect();
+        self.strip.update(cx, |s, cx| {
+            s.set_focus(vec![unit], channels, cx);
+            s.step_spike(true, cx);
+        });
+        self.sync_grid(cx);
     }
 
     fn pick_channel(&mut self, channel: usize, cx: &mut Context<Self>) {
@@ -201,7 +357,8 @@ impl SortingWorkspace {
         self.strip.update(cx, |st, cx| st.set_focus(strip_units, lead_channels, cx));
         self.computing = true;
         let work = cx.background_spawn(async move {
-            let snippets = Snippets::read(&sorting, signal.as_ref(), &units, view_channel, SPIKES_PER_UNIT);
+            let windows = crate::sorting::windows_of(&signal);
+            let snippets = Snippets::read(&sorting, &windows, &units, view_channel, SPIKES_PER_UNIT);
             let cards = units
                 .iter()
                 .filter_map(|&u| {
@@ -340,9 +497,16 @@ impl SortingWorkspace {
                     .full_width()
                 };
                 let about = d.sorters.get(self.sorter).map(|s| s.about.clone()).unwrap_or_default();
+                let recipes: Vec<String> = self.store.read(cx).doc.recipes.values().filter(|r| r.is_sorter()).map(|r| r.name.clone()).collect();
                 Section::new("Sorter")
                     .child(pick)
                     .child(div().text_xs().text_color(muted).child(about))
+                    .when(!recipes.is_empty(), |d| {
+                        d.child(div().text_xs().text_color(muted).child(format!(
+                            "Recipes labelled sorter: {}. They chain ops only: detection and clustering are not Pipeline nodes yet, so they cannot run here yet.",
+                            recipes.join(", ")
+                        )))
+                    })
                     .child(div().text_xs().text_color(muted).truncate().child(format!("dspk-cli-sorter {} · {}", d.version, d.program.display())))
             }
         };
@@ -392,9 +556,7 @@ impl SortingWorkspace {
         };
         v_flex()
             .id("sorting-controls")
-            .w(px(LEFT_W))
-            .flex_none()
-            .h_full()
+            .size_full()
             .overflow_y_scroll()
             .p_3()
             .gap_4()
@@ -412,7 +574,7 @@ impl SortingWorkspace {
         let runs = view.as_ref().map(runs_of).unwrap_or_default();
         let linked = view.as_ref().and_then(sorting_of);
         let me = cx.entity().downgrade();
-        let chips: Vec<_> = runs
+        let rows: Vec<_> = runs
             .iter()
             .enumerate()
             .map(|(i, p)| {
@@ -423,43 +585,44 @@ impl SortingWorkspace {
                     .id(("sorting-run", i))
                     .h(px(26.))
                     .px_2()
-                    .gap_1()
-                    .flex_none()
+                    .gap_1p5()
                     .rounded_md()
-                    .border_1()
-                    .border_color(border)
                     .cursor_pointer()
                     .when(on, |d| d.bg(accent))
-                    .child(div().text_xs().child(name))
+                    .child(Icon::new(gpui_kit::assets::IconName::Activity).xsmall().text_color(muted))
+                    .child(div().flex_1().min_w_0().truncate().text_xs().child(name))
                     .on_click(move |_, _, cx| {
                         let _ = me.update(cx, |w, cx| w.show_run(p.clone(), cx));
                     })
             })
             .collect();
         let store = self.store.clone();
-        h_flex()
+        v_flex()
             .id("sorting-runs")
-            .h(px(40.))
             .flex_none()
-            .px_3()
-            .gap_2()
-            .overflow_x_scroll()
+            .max_h(px(220.))
+            .overflow_y_scroll()
+            .p_2()
+            .gap_0p5()
             .border_b_1()
             .border_color(border)
-            .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(muted).flex_none().child("RUNS"))
-            .when(chips.is_empty(), |d| d.child(div().text_xs().text_color(muted).child("None yet: run a sorter on the left (each run is kept here).")))
-            .children(chips)
-            .child(div().flex_1())
             .child(
-                Button::new("sorting-to-curation")
-                    .ghost()
-                    .xsmall()
-                    .icon(Icon::new(gpui_kit::assets::IconName::Microscope))
-                    .label("Curate")
-                    .tooltip("Judge and edit the shown run's units")
-                    .disabled(linked.is_none())
-                    .on_click(move |_, _, cx| store.update(cx, |s, cx| s.set_workspace(Workspace::Curation, cx))),
+                h_flex()
+                    .h(px(24.))
+                    .child(div().flex_1().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(muted).child("RUNS"))
+                    .child(
+                        Button::new("sorting-to-curation")
+                            .ghost()
+                            .xsmall()
+                            .icon(Icon::new(gpui_kit::assets::IconName::Microscope))
+                            .label("Curate")
+                            .tooltip("Judge and edit the shown run's units")
+                            .disabled(linked.is_none())
+                            .on_click(move |_, _, cx| store.update(cx, |s, cx| s.set_workspace(Workspace::Curation, cx))),
+                    ),
             )
+            .when(rows.is_empty(), |d| d.child(div().px_1().text_xs().text_color(muted).child("None yet: set a sorter on the right and Run. Each run is kept here.")))
+            .children(rows)
     }
 
     fn units(&self, sorting: &SortingData, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -548,11 +711,8 @@ impl SortingWorkspace {
                 })
         });
         v_flex()
-            .w(px(RIGHT_W))
-            .flex_none()
-            .h_full()
-            .border_l_1()
-            .border_color(border)
+            .flex_1()
+            .min_h_0()
             .child(
                 h_flex()
                     .h(px(28.))
@@ -575,25 +735,57 @@ impl SortingWorkspace {
 
 impl Render for SortingWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let bg = cx.theme().background;
+        let (bg, border, muted) = (cx.theme().background, cx.theme().border, cx.theme().muted_foreground);
         let controls = self.control_grid(window, cx);
         let runs = self.runs(cx);
-        let body: AnyElement = match self.sorting(cx) {
-            Some(sorting) => h_flex().flex_1().min_h_0().child(self.units(&sorting, cx)).child(self.channels(&sorting, cx)).into_any_element(),
-            None => div()
+        let (left_w, right_w) = {
+            let s = self.store.read(cx);
+            (s.panel_width("sorting.left", LEFT_W), s.panel_width("sorting.right", RIGHT_W))
+        };
+        let sorting = self.sorting(cx);
+        let me = cx.entity().downgrade();
+        let tab = |id: &'static str, label: &'static str, which: CenterTab| {
+            let me = me.clone();
+            Button::new(id).ghost().small().label(label).selected(self.tab == which).on_click(move |_, _, cx| {
+                let _ = me.update(cx, |w, cx| w.set_tab(which, cx));
+            })
+        };
+        let tabs = h_flex().h(px(34.)).flex_none().px_2().gap_1().border_b_1().border_color(border).child(tab("sorting-tab-channel", "Channel", CenterTab::Channel)).child(tab("sorting-tab-templates", "Templates", CenterTab::Templates)).child(tab("sorting-tab-compare", "Compare runs", CenterTab::Compare));
+        let centre: AnyElement = match (&sorting, self.tab) {
+            (Some(s), CenterTab::Channel) => self.units(s, cx).into_any_element(),
+            (Some(_), CenterTab::Templates) => div().flex_1().min_h_0().p_2().child(self.grid.clone()).into_any_element(),
+            (Some(s), CenterTab::Compare) => self.compare_view(s, cx),
+            (None, _) => div()
                 .flex_1()
                 .child(EmptyState::new(
                     gpui_kit::assets::IconName::SlidersHorizontal,
                     "No sorting shown yet",
-                    "Choose a sorter and a part of the recording on the left, then Run. Each run shows here, channel by channel.",
+                    "Choose a sorter, its parameters and a part of the recording on the right, then Run. Each run shows here.",
                 ))
                 .into_any_element(),
         };
+        let left = v_flex()
+            .relative()
+            .w(px(left_w))
+            .flex_none()
+            .h_full()
+            .border_r_1()
+            .border_color(border)
+            .child(runs)
+            .children(sorting.as_ref().map(|s| self.channels(s, cx)))
+            .when(sorting.is_none(), |d| d.child(div().p_3().text_xs().text_color(muted).child("Channels with units show here.")))
+            .child(panel_edge("sorting.left", Side::Left, 0.0));
+        let right = div().relative().w(px(right_w)).flex_none().h_full().border_l_1().border_color(border).child(controls).child(panel_edge("sorting.right", Side::Right, 0.0));
         v_flex()
             .id("sorting-workspace")
             .size_full()
             .bg(bg)
-            .child(h_flex().flex_1().min_h_0().child(controls).child(v_flex().flex_1().min_w_0().h_full().border_l_1().border_color(cx.theme().border).child(runs).child(body)))
+            .on_drag_move(cx.listener(|this, e: &DragMoveEvent<PanelResize>, _, cx| {
+                follow_panel_drag(&this.store, e, cx);
+                cx.notify();
+                this.strip.update(cx, |_, cx| cx.notify());
+            }))
+            .child(h_flex().flex_1().min_h_0().child(left).child(v_flex().flex_1().min_w_0().h_full().child(tabs).child(centre)).child(right))
             .child(self.strip.clone())
     }
 }
