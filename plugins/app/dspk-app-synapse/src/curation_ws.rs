@@ -1264,7 +1264,12 @@ impl CurationPanel {
                         // Plot fractions to the chart's units (time s, amplitude)
                         let r = this.range(&c);
                         let data: Vec<(f32, f32)> = polygon.iter().map(|&(fx, fy)| (r.x.0 + fx * (r.x.1 - r.x.0), r.y.1 - fy * (r.y.1 - r.y.0))).collect();
-                        let _ = this.ws.update(cx, |w, cx| w.split_lasso(&data, cx));
+                        // After this handler: the split re-computes and notifies every panel,
+                        // this one included, which cannot be updated while it is handling the event
+                        let ws = this.ws.clone();
+                        cx.defer(move |cx| {
+                            let _ = ws.update(cx, |w, cx| w.split_lasso(&data, cx));
+                        });
                     }
                 }
                 cx.notify();
