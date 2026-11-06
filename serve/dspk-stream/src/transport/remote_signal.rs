@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use dspk_core::{DspError, DspResult, RecordingInfo};
+use dspk_core::{DspError, DspResult, RecordingInfo, RecordingSource};
 use dspk_view::{Envelope, OnProgress, Progress, SignalBackend, View};
 
 use super::client::Session;
@@ -24,10 +24,66 @@ fn dsp(e: StreamError) -> DspError {
     DspError::Io(format!("remote: {e}"))
 }
 
+/// The recording a [`Session`] has open, as a [`RecordingSource`]: samples (scaled `f32`) read on
+/// the server as sample views, in pieces under its limits. For small reads (a window of
+/// waveforms, the value under the cursor); a whole recording belongs on the server.
+pub struct RemoteSource {
+    handle: tokio::runtime::Handle,
+    session: Arc<Session>,
+    info: RecordingInfo,
+}
+
+impl RemoteSource {
+    /// The recording `session` has open; calls run on `handle` (the runtime that drives the
+    /// session's connection).
+    pub fn new(session: Arc<Session>, handle: tokio::runtime::Handle) -> Result<Self, StreamError> {
+        let info = session.recording().cloned().ok_or_else(|| StreamError::protocol("no recording is open in this session"))?;
+        Ok(Self { handle, session, info })
+    }
+
+    /// Samples of `channels` channels one request reads: a sample view of c channels and n
+    /// samples is c × n values and n columns, both under the server's limits.
+    fn samples_per_request(channels: usize) -> u64 {
+        (MAX_VIEW_VALUES / channels.max(1) as u64).min(u64::from(MAX_VIEW_COLUMNS)).max(1)
+    }
+}
+
+impl RecordingSource for RemoteSource {
+    fn info(&self) -> &RecordingInfo {
+        &self.info
+    }
+
+    /// Samples of `channels`, channel-major, fetched as sample views and reassembled.
+    fn read(&self, channels: &[usize], samples: Range<u64>, out: &mut [f32]) -> DspResult<()> {
+        let n = (samples.end.saturating_sub(samples.start)) as usize;
+        if out.len() != channels.len() * n {
+            return Err(DspError::ShapeMismatch { expected: vec![channels.len(), n], actual: vec![out.len()] });
+        }
+        let step = Self::samples_per_request(channels.len());
+        let mut start = samples.start;
+        while start < samples.end {
+            let end = (start + step).min(samples.end);
+            let piece = (end - start) as usize;
+            let view = View { channels: channels.to_vec(), start, end, width: piece };
+            let values = match self.handle.block_on(self.session.view(&view)).map_err(dsp)? {
+                Envelope::Samples(values) => values,
+                Envelope::Columns { .. } => return Err(DspError::Io("remote: the server answered columns for a sample read".into())),
+            };
+            let offset = (start - samples.start) as usize;
+            for (c, row) in values.chunks_exact(piece).enumerate() {
+                out[c * n + offset..c * n + offset + piece].copy_from_slice(row);
+            }
+            start = end;
+        }
+        Ok(())
+    }
+}
+
 /// The recording a [`Session`] has open, behind [`SignalBackend`].
 pub struct RemoteSignal {
     handle: tokio::runtime::Handle,
     session: Arc<Session>,
+    source: Arc<RemoteSource>,
     info: RecordingInfo,
     /// Whether the server's pyramid answered complete views (until then views may hold NaN).
     complete: Arc<AtomicBool>,
@@ -39,10 +95,12 @@ impl RemoteSignal {
     /// The recording `session` has open; calls run on `handle` (the runtime that drives the
     /// session's connection).
     pub fn new(session: Arc<Session>, handle: tokio::runtime::Handle) -> Result<Self, StreamError> {
-        let info = session.recording().cloned().ok_or_else(|| StreamError::protocol("no recording is open in this session"))?;
+        let source = Arc::new(RemoteSource::new(session.clone(), handle.clone())?);
+        let info = source.info().clone();
         Ok(Self {
             handle,
             session,
+            source,
             info,
             complete: Arc::new(AtomicBool::new(false)),
             listeners: Arc::new(Mutex::new(Vec::new())),
@@ -50,10 +108,9 @@ impl RemoteSignal {
         })
     }
 
-    /// Samples of `channels` channels one request reads: a sample view of c channels and n
-    /// samples is c × n values and n columns, both under the server's limits.
-    fn samples_per_request(channels: usize) -> u64 {
-        (MAX_VIEW_VALUES / channels.max(1) as u64).min(u64::from(MAX_VIEW_COLUMNS)).max(1)
+    /// The same recording as a [`RecordingSource`] (sample reads), sharing the session.
+    pub fn source(&self) -> Arc<RemoteSource> {
+        self.source.clone()
     }
 
     /// Asks the server again, every [`PYRAMID_POLL`], until its pyramid answers complete views,
@@ -105,30 +162,9 @@ impl SignalBackend for RemoteSignal {
         Ok(())
     }
 
-    /// Samples of `channels`, channel-major, fetched as sample views in pieces the server
-    /// answers (its limits on columns and values).
+    /// Samples of `channels`, channel-major (through [`RemoteSource`]).
     fn read(&self, channels: &[usize], samples: Range<u64>, out: &mut [f32]) -> DspResult<()> {
-        let n = (samples.end.saturating_sub(samples.start)) as usize;
-        if out.len() != channels.len() * n {
-            return Err(DspError::ShapeMismatch { expected: vec![channels.len(), n], actual: vec![out.len()] });
-        }
-        let step = Self::samples_per_request(channels.len());
-        let mut start = samples.start;
-        while start < samples.end {
-            let end = (start + step).min(samples.end);
-            let piece = (end - start) as usize;
-            let view = View { channels: channels.to_vec(), start, end, width: piece };
-            let values = match self.handle.block_on(self.session.view(&view)).map_err(dsp)? {
-                Envelope::Samples(values) => values,
-                Envelope::Columns { .. } => return Err(DspError::Io("remote: the server answered columns for a sample read".into())),
-            };
-            let offset = (start - samples.start) as usize;
-            for (c, row) in values.chunks_exact(piece).enumerate() {
-                out[c * n + offset..c * n + offset + piece].copy_from_slice(row);
-            }
-            start = end;
-        }
-        Ok(())
+        self.source.read(channels, samples, out)
     }
 
     /// The server builds its own pyramid: nothing to steer from here.
