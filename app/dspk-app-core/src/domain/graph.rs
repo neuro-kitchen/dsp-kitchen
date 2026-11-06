@@ -14,7 +14,11 @@ use dspk_pipeline::Node;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::recipe::RecipeDoc;
 use super::session::{op_name, DisplayDoc, OpDoc, RecordingRef, ViewDoc};
+
+/// The session's recipe definitions, by name.
+pub type Recipes = BTreeMap<String, RecipeDoc>;
 
 /// Spacing of nodes laid out by the app (canvas units): one column per step, one row per chain.
 pub const COLUMN: f32 = 260.;
@@ -65,6 +69,16 @@ pub enum NodeKind {
     },
     /// The chain written to `<recording>.<id>.processed.zarr`.
     Write {},
+    /// A use of recipe `recipe` (defined in the session's `recipes`), with its own values.
+    Recipe {
+        recipe: String,
+        #[serde(default = "yes")]
+        enabled: bool,
+        /// `"<op>.<key>"` → value, over the recipe's.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        #[schemars(with = "BTreeMap<String, serde_json::Value>")]
+        overrides: BTreeMap<String, serde_json::Value>,
+    },
 }
 
 fn yes() -> bool {
@@ -79,7 +93,7 @@ impl NodeKind {
 
     /// Whether the node's output can feed others (sources and ops).
     pub fn has_output(&self) -> bool {
-        matches!(self, NodeKind::Source { .. } | NodeKind::Op { .. })
+        matches!(self, NodeKind::Source { .. } | NodeKind::Op { .. } | NodeKind::Recipe { .. })
     }
 }
 
@@ -233,27 +247,33 @@ impl GraphDoc {
         self.edges.push(EdgeDoc { from: id.to_string(), to: b.to_string() });
     }
 
-    /// The recording and ops (enabled or not) of `id`'s chain.
-    pub fn chain(&self, id: &str) -> Option<(RecordingRef, Vec<OpDoc>)> {
+    /// The recording and ops (enabled or not) of `id`'s chain; a recipe node gives its ops
+    /// (`<node>.<op>`, its overrides applied).
+    pub fn chain(&self, id: &str, recipes: &Recipes) -> Option<(RecordingRef, Vec<OpDoc>)> {
         let path = self.path(id)?;
         let NodeKind::Source { recording } = &self.node(&path[0])?.kind else { return None };
-        let ops = path[1..path.len() - 1]
-            .iter()
-            .filter_map(|n| match &self.node(n)?.kind {
-                NodeKind::Op { enabled, node } => Some(OpDoc { id: n.clone(), enabled: *enabled, node: node.clone() }),
-                _ => None,
-            })
-            .collect();
+        let mut ops = Vec::new();
+        for n in &path[1..path.len() - 1] {
+            match &self.node(n)?.kind {
+                NodeKind::Op { enabled, node } => ops.push(OpDoc { id: n.clone(), enabled: *enabled, node: node.clone() }),
+                NodeKind::Recipe { recipe, enabled, overrides } => {
+                    // A use of a recipe the session does not define breaks the chain
+                    let def = recipes.get(recipe)?;
+                    ops.extend(def.ops_with(overrides).into_iter().map(|op| OpDoc { id: format!("{n}.{}", op.id), enabled: op.enabled && *enabled, node: op.node }));
+                }
+                _ => {}
+            }
+        }
         Some((recording.clone(), ops))
     }
 
     /// The views: each view node that reaches a source, in node order.
-    pub fn compile(&self) -> Vec<ViewDoc> {
+    pub fn compile(&self, recipes: &Recipes) -> Vec<ViewDoc> {
         self.nodes
             .iter()
             .filter_map(|n| {
                 let NodeKind::View { name, display, plugins } = &n.kind else { return None };
-                let (recording, ops) = self.chain(&n.id)?;
+                let (recording, ops) = self.chain(&n.id, recipes)?;
                 Some(ViewDoc { id: n.id.clone(), name: name.clone(), recording, ops, display: display.clone(), plugins: plugins.clone() })
             })
             .collect()
@@ -317,7 +337,7 @@ mod tests {
 
     #[test]
     fn test_branches_compile_to_one_view_each() {
-        let views = branched().compile();
+        let views = branched().compile(&Recipes::new());
         assert_eq!(views.len(), 2);
         assert_eq!(views[0].ops.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(), ["hp", "cmr"]);
         assert_eq!(views[1].ops.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(), ["lp"]);
@@ -350,13 +370,13 @@ mod tests {
         g.remove_bridging("hp");
         assert_eq!(g.path("spikes").unwrap(), ["s1", "cmr", "spikes"]);
         g.disconnect("lfp");
-        assert_eq!(g.compile().len(), 1, "a view without a source is not a view yet");
+        assert_eq!(g.compile(&Recipes::new()).len(), 1, "a view without a source is not a view yet");
     }
 
     #[test]
     fn test_from_views_round_trips() {
-        let views = branched().compile();
-        let again = GraphDoc::from_views(&views).compile();
+        let views = branched().compile(&Recipes::new());
+        let again = GraphDoc::from_views(&views).compile(&Recipes::new());
         assert_eq!(again.iter().map(|v| (&v.id, v.ops.len())).collect::<Vec<_>>(), views.iter().map(|v| (&v.id, v.ops.len())).collect::<Vec<_>>());
     }
 }

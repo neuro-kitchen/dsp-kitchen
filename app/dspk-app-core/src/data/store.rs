@@ -12,7 +12,7 @@ use gpui_kit::{AppContext as _, Context, EventEmitter, Task};
 
 use dspk_view::{Progress, SignalBackend};
 use crate::data::jobs::{self, Cancel, JobMessage};
-use crate::data::recording::processed::ProcessedSignal;
+use crate::data::recording::processed::{PreviewSource, ProcessedSignal};
 use crate::data::recording::{Dataset, SourceSet, SpikeEventStore};
 use crate::ui::theme::palette::Palette;
 use crate::domain::timeline::TimelineState;
@@ -22,6 +22,10 @@ use crate::domain::command::{apply, Changed, CommandError, SessionCommand};
 use crate::domain::session::{RecordingRef, SessionDoc, Show, ViewDoc};
 use crate::navigation::route::Workspace;
 
+/// Previews kept by chain.
+const PREVIEW_CACHE: usize = 6;
+/// Changes of the session that can be undone.
+const UNDO_DEPTH: usize = 200;
 /// Playback clock period.
 const TICK: Duration = Duration::from_millis(16);
 /// How often the session document file is checked for edits made outside the app (an agent).
@@ -52,6 +56,17 @@ pub enum AppEvent {
     JobChanged,
     /// A plugin's own state changed (its panel redraws).
     PluginChanged,
+    /// A floating window opened or closed.
+    Floating,
+}
+
+/// A floating window over the workspace.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Floating {
+    /// What is known about a recording's source.
+    Metadata { path: PathBuf, source: String },
+    /// An epoch to save (new or edited).
+    Epoch(crate::domain::epoch::EpochDoc),
 }
 
 /// Work running for the UI (one at a time): what it is, how far, how to stop it.
@@ -118,10 +133,18 @@ pub struct Store {
     _doc_watch: Option<Task<()>>,
     /// Live preview of each view's op chain (views of the open recording with enabled ops).
     previews: HashMap<String, Arc<ProcessedSignal>>,
+    /// Previews by chain (source, channels, enabled ops), most recent last: views with the same
+    /// chain share one, and a branch reads the preview of the ops it shares with another.
+    preview_cache: Vec<(Vec<String>, Arc<ProcessedSignal>)>,
     /// The channel the Processing panel is about, and the op selected in it.
     pub picked_channel: Option<usize>,
     pub picked_op: Option<String>,
     pub job: Option<RunningJob>,
+    /// Floating windows, front last.
+    pub floating: Vec<Floating>,
+    /// Earlier documents (undo) and undone ones (redo).
+    history: Vec<SessionDoc>,
+    future: Vec<SessionDoc>,
     /// The active view and channel subset last applied to the selection.
     applied_view: Option<(String, Option<Vec<usize>>)>,
 }
@@ -148,9 +171,13 @@ impl Store {
             doc_text: String::new(),
             _doc_watch: None,
             previews: HashMap::new(),
+            preview_cache: Vec::new(),
             picked_channel: None,
             picked_op: None,
             job: None,
+            floating: Vec::new(),
+            history: Vec::new(),
+            future: Vec::new(),
             applied_view: None,
         }
     }
@@ -211,6 +238,13 @@ impl Store {
         let result = apply(&mut self.doc, cmd);
         match &result {
             Ok(_) => {
+                if before != self.doc {
+                    self.history.push(before.clone());
+                    if self.history.len() > UNDO_DEPTH {
+                        self.history.remove(0);
+                    }
+                    self.future.clear();
+                }
                 self.save_document();
                 // What the command changed in the views (a graph edit can change several chains)
                 for change in diff(&before, &self.doc) {
@@ -220,7 +254,83 @@ impl Store {
             }
             Err(e) => self.set_status(e.to_string(), cx),
         }
+        if result.is_ok() && before.epochs != self.doc.epochs {
+            self.write_epochs(&before, cx);
+        }
         result
+    }
+
+    /// Back to the document before the last change (`redo`: forward again).
+    pub fn undo(&mut self, redo: bool, cx: &mut Context<Self>) {
+        let next = if redo { self.future.pop() } else { self.history.pop() };
+        let Some(doc) = next else {
+            self.set_status(if redo { "Nothing to redo" } else { "Nothing to undo" }, cx);
+            return;
+        };
+        let before = std::mem::replace(&mut self.doc, doc);
+        if redo { self.history.push(before.clone()) } else { self.future.push(before.clone()) }
+        self.save_document();
+        for change in diff(&before, &self.doc) {
+            self.changed(&change, cx);
+            cx.emit(AppEvent::Document(change));
+        }
+        if before.epochs != self.doc.epochs {
+            self.write_epochs(&before, cx);
+        }
+        self.set_status(if redo { "Redone" } else { "Undone" }, cx);
+    }
+
+    /// Writes the epochs file of every recording whose epochs changed.
+    fn write_epochs(&mut self, before: &SessionDoc, cx: &mut Context<Self>) {
+        let of = |d: &SessionDoc, r: &Path| d.epochs.iter().filter(|e| e.recording == r).cloned().collect::<Vec<_>>();
+        let mut paths: Vec<PathBuf> = before.epochs.iter().chain(&self.doc.epochs).map(|e| e.recording.clone()).collect();
+        paths.sort();
+        paths.dedup();
+        for r in paths {
+            let now = of(&self.doc, &r);
+            if now == of(before, &r) || !r.exists() {
+                continue;
+            }
+            let file = crate::data::epochs::epochs_path(&r);
+            if let Err(e) = crate::data::epochs::write(&file, &now) {
+                self.set_status(format!("Epochs not saved to {}: {e}", file.display()), cx);
+            }
+        }
+    }
+
+    /// The epochs saved next to `path` that the session does not have yet.
+    fn load_epochs(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let file = crate::data::epochs::epochs_path(path);
+        match crate::data::epochs::read(&file, path) {
+            Ok(found) => {
+                for mut e in found {
+                    if self.doc.epochs.iter().any(|d| d.recording == e.recording && d.start_sec == e.start_sec && d.end_sec == e.end_sec) {
+                        continue;
+                    }
+                    if self.doc.epochs.iter().any(|d| d.id == e.id) {
+                        e.id.clear();
+                    }
+                    let _ = self.execute(SessionCommand::SetEpoch { epoch: e }, cx);
+                }
+            }
+            Err(e) => self.set_status(format!("{}: {e}", file.display()), cx),
+        }
+    }
+
+    /// Opens a floating window (one of each kind and target).
+    pub fn open_floating(&mut self, f: Floating, cx: &mut Context<Self>) {
+        self.floating.retain(|x| std::mem::discriminant(x) != std::mem::discriminant(&f) || matches!((x, &f), (Floating::Metadata { path: a, .. }, Floating::Metadata { path: b, .. }) if a != b));
+        self.floating.push(f);
+        cx.emit(AppEvent::Floating);
+        cx.notify();
+    }
+
+    pub fn close_floating(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index < self.floating.len() {
+            self.floating.remove(index);
+            cx.emit(AppEvent::Floating);
+            cx.notify();
+        }
     }
 
     fn save_document(&mut self) {
@@ -322,9 +432,24 @@ impl Store {
             return;
         }
         let group = v.recording.channels.clone().unwrap_or_else(|| (0..ds.total_channels).collect());
-        match ProcessedSignal::new(ds.signal().clone(), raw, group, stages) {
+        // The chain's key, step by step: [source and channels, op 1, op 2, …]
+        let mut key = vec![format!("{source}|{group:?}")];
+        key.extend(v.ops.iter().filter(|o| o.enabled && o.node.stage().ok().flatten().is_some()).map(|o| serde_json::to_string(&o.node).unwrap_or_default()));
+        // The longest computed prefix of this chain
+        let found = (2..=key.len()).rev().find_map(|k| self.preview_cache.iter().find(|(c, _)| c[..] == key[..k]).map(|(_, p)| (k, p.clone())));
+        let built = match found {
+            Some((k, p)) if k == key.len() => Ok(p),
+            Some((k, p)) => ProcessedSignal::new(ds.signal().clone(), Arc::new(PreviewSource::new(p)), group, stages[k - 1..].to_vec()).map(Arc::new),
+            None => ProcessedSignal::new(ds.signal().clone(), raw, group, stages).map(Arc::new),
+        };
+        match built {
             Ok(p) => {
-                self.previews.insert(id.to_string(), Arc::new(p));
+                self.preview_cache.retain(|(c, _)| *c != key);
+                self.preview_cache.push((key, p.clone()));
+                if self.preview_cache.len() > PREVIEW_CACHE {
+                    self.preview_cache.remove(0);
+                }
+                self.previews.insert(id.to_string(), p);
             }
             Err(e) => self.set_status(format!("{}: {e}", v.name), cx),
         }
@@ -372,7 +497,7 @@ impl Store {
                 cx.emit(AppEvent::WindowMoved);
             }
             Changed::Display(_) | Changed::Plugin(..) => cx.emit(AppEvent::WindowMoved),
-            Changed::Graph => {}
+            Changed::Graph | Changed::Timeline => {}
         }
     }
 
@@ -467,12 +592,43 @@ impl Store {
     /// Writes the chain of graph node `id` (a write or view node) to
     /// `<recording>.<id>.processed.zarr` next to its recording.
     pub fn write_node(&mut self, id: &str, cx: &mut Context<Self>) {
-        let Some((recording, ops)) = self.doc.graph.chain(id) else {
+        let Some((recording, ops)) = self.doc.graph.chain(id, &self.doc.recipes) else {
             self.set_status(format!("{id} is not connected to a recording"), cx);
             return;
         };
         let v = ViewDoc { id: id.to_string(), name: id.to_string(), recording, ops, display: Default::default(), plugins: Default::default() };
         self.write_view(v, cx);
+    }
+
+    /// The write nodes fed by source node `id` (with their chains).
+    pub fn writes_of(&self, id: &str) -> Vec<String> {
+        let g = &self.doc.graph;
+        g.descendants(id).into_iter().filter(|d| matches!(g.node(d).map(|n| &n.kind), Some(crate::domain::graph::NodeKind::Write {}))).collect()
+    }
+
+    /// Writes every output of source node `id` in one read of its recording.
+    pub fn write_source(&mut self, id: &str, cx: &mut Context<Self>) {
+        let writes = self.writes_of(id);
+        if writes.len() < 2 {
+            if let Some(w) = writes.first().cloned() {
+                self.write_node(&w, cx);
+            }
+            return;
+        }
+        let mut chains = Vec::new();
+        let mut outputs = Vec::new();
+        for w in &writes {
+            let Some((recording, ops)) = self.doc.graph.chain(w, &self.doc.recipes) else { continue };
+            outputs.push(jobs::processed_path(&recording.path, w));
+            chains.push(ViewDoc { id: w.clone(), name: w.clone(), recording, ops, display: Default::default(), plugins: Default::default() });
+        }
+        let n = chains.len();
+        self.start_job(
+            format!("Write {n} outputs"),
+            move |send| jobs::write_branches(chains, outputs, move |m| send(m)),
+            move |s, _, cx| s.set_status(format!("Written: {n} outputs in one read"), cx),
+            cx,
+        );
     }
 
     /// Shows view `id` in Explore, opening its recording when another one is open.
@@ -567,6 +723,19 @@ impl Store {
     }
 
     /// The panel shown on the right side bar (saved).
+    /// A resizable panel's size (`default` until the user drags it).
+    pub fn panel_width(&self, key: &str, default: f32) -> f32 {
+        self.session.panel_widths.get(key).copied().unwrap_or(default)
+    }
+
+    pub fn set_panel_width(&mut self, key: &str, width: f32, cx: &mut Context<Self>) {
+        if self.session.panel_widths.get(key) != Some(&width) {
+            self.session.panel_widths.insert(key.to_string(), width);
+            self.save_session();
+            cx.notify();
+        }
+    }
+
     pub fn set_explore_right(&mut self, key: &str) {
         if self.session.explore.right_panel != key {
             self.session.explore.right_panel = key.to_string();
@@ -637,6 +806,7 @@ impl Store {
                         let source = sources.default_entry().id.clone();
                         store.install(Recording::new(sources, Some(path.clone())), cx);
                         store.ensure_view(&path, &source, cx);
+                        store.load_epochs(&path, cx);
                     }
                     Err(e) => store.set_status(format!("Could not open {name}: {e:#}"), cx),
                 }
@@ -660,6 +830,7 @@ impl Store {
         self.selection = recording.sources.entries().iter().map(|e| (e.id.clone(), (0..e.channels).collect())).collect();
         self.pyramids.clear();
         self.previews.clear();
+        self.preview_cache.clear();
         self.applied_view = None;
         self.picked_channel = None;
         self.picked_op = None;
@@ -896,8 +1067,11 @@ impl Store {
 /// What differs between two documents, as the changes a command would have reported.
 fn diff(before: &SessionDoc, after: &SessionDoc) -> Vec<Changed> {
     let mut out = diff_views(before, after);
-    if before.graph != after.graph {
+    if before.graph != after.graph || before.recipes != after.recipes {
         out.push(Changed::Graph);
+    }
+    if before.epochs != after.epochs || before.placements != after.placements {
+        out.push(Changed::Timeline);
     }
     out
 }

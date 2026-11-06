@@ -2,6 +2,7 @@
 //! what is remembered between runs (`preferences`), and the background services (`work_pool`,
 //! `services`). Screens reach it through view models only.
 
+pub mod epochs;
 pub mod jobs;
 pub mod preferences;
 pub mod recording;

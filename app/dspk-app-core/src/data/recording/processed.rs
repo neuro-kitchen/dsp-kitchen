@@ -153,6 +153,43 @@ impl ProcessedSignal {
     }
 }
 
+impl ProcessedSignal {
+    /// `channels` over `samples`, processed whatever the size (a branch reading this preview
+    /// as its input: its halo makes the request larger than a view's).
+    pub fn read_processed(&self, channels: &[usize], samples: Range<u64>, out: &mut [f32]) -> DspResult<()> {
+        self.fill(channels, samples, out)
+    }
+}
+
+/// A preview read as a recording (float32, unit gain): the input of a branch that shares its
+/// first ops with another, so they are computed once (the branch runs only its own ops on it).
+pub struct PreviewSource {
+    preview: Arc<ProcessedSignal>,
+    info: RecordingInfo,
+}
+
+impl PreviewSource {
+    pub fn new(preview: Arc<ProcessedSignal>) -> Self {
+        let mut info = preview.raw.info().clone();
+        info.format = SampleFormat::F32;
+        for c in &mut info.channels {
+            c.gain = 1.0;
+            c.offset = 0.0;
+        }
+        Self { preview, info }
+    }
+}
+
+impl RecordingSource for PreviewSource {
+    fn info(&self) -> &RecordingInfo {
+        &self.info
+    }
+
+    fn read(&self, channels: &[usize], samples: Range<u64>, out: &mut [f32]) -> DspResult<()> {
+        self.preview.read_processed(channels, samples, out)
+    }
+}
+
 impl SignalBackend for ProcessedSignal {
     fn info(&self) -> &RecordingInfo {
         self.raw.info()
@@ -228,6 +265,21 @@ mod tests {
             assert!((a[i] - (2.0 * b[i] + 1.0)).abs() < 1e-5, "channel 0 is processed");
             assert_eq!(a[100 + i], b[100 + i], "channel 1 is outside the group: raw");
             assert!((a[200 + i] - (2.0 * b[200 + i] + 1.0)).abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn test_a_branch_on_a_shared_prefix_equals_its_whole_chain() {
+        let source = recording(2, 6000);
+        let raw: Arc<dyn SignalBackend> = Arc::new(LocalSignal::open(source.clone(), None).unwrap());
+        let prefix = Arc::new(ProcessedSignal::new(raw.clone(), source.clone(), vec![0, 1], vec![PipelineStage::bandpass(20.0, 200.0)]).unwrap());
+        let branch = ProcessedSignal::new(raw.clone(), Arc::new(PreviewSource::new(prefix)), vec![0, 1], vec![PipelineStage::Scale { alpha: 3.0, beta: 0.0 }]).unwrap();
+        let whole = ProcessedSignal::new(raw, source, vec![0, 1], vec![PipelineStage::bandpass(20.0, 200.0), PipelineStage::Scale { alpha: 3.0, beta: 0.0 }]).unwrap();
+        let (mut a, mut b) = (vec![0.0f32; 2 * 400], vec![0.0f32; 2 * 400]);
+        branch.read(&[0, 1], 2000..2400, &mut a).unwrap();
+        whole.read(&[0, 1], 2000..2400, &mut b).unwrap();
+        for i in 0..800 {
+            assert!((a[i] - b[i]).abs() < 1e-3 * b[i].abs().max(1.0), "{i}: {} vs {}", a[i], b[i]);
         }
     }
 

@@ -113,6 +113,9 @@ pub struct Session {
     pub dark_plots: bool,
     #[serde(default)]
     pub explore: ExploreSession,
+    /// Widths (heights for bottom panels) of resizable panels, by key (`explore.left`, …).
+    #[serde(default)]
+    pub panel_widths: std::collections::BTreeMap<String, f32>,
 }
 
 impl Session {
@@ -120,6 +123,11 @@ impl Session {
 
     pub fn new() -> Self {
         Self { version: Self::VERSION, ..Self::default() }
+    }
+
+    /// The user's recipe library: `<config>/dspk-app/recipes/`.
+    pub fn recipes_dir() -> Option<PathBuf> {
+        Some(Self::config_dir()?.join("dspk-app").join("recipes"))
     }
 
     fn config_dir() -> Option<PathBuf> {

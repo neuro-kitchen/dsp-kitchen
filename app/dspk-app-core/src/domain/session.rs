@@ -16,7 +16,8 @@ use std::path::{Path, PathBuf};
 
 use dspk_pipeline::{Node, OutputFormat, PipelineSpec, SPEC_VERSION};
 
-use super::graph::GraphDoc;
+use super::epoch::{EpochDoc, Placement};
+use super::graph::{GraphDoc, Recipes};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -32,6 +33,15 @@ pub struct SessionDoc {
     /// The processing graph (the Pipeline canvas).
     #[serde(default, skip_serializing_if = "GraphDoc::is_empty")]
     pub graph: GraphDoc,
+    /// The recipes the graph uses, by name (copies of library recipes, or made here).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub recipes: Recipes,
+    /// Marked spans of the recordings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub epochs: Vec<EpochDoc>,
+    /// Where recordings sit on the session's time.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub placements: Vec<Placement>,
     /// Every view, in the order they are listed: compiled from `graph` (a document with views
     /// and no graph gets one on load).
     #[serde(default)]
@@ -43,7 +53,7 @@ pub struct SessionDoc {
 
 impl Default for SessionDoc {
     fn default() -> Self {
-        Self { dspk_session: SESSION_VERSION, graph: GraphDoc::default(), views: Vec::new(), active_view: None }
+        Self { dspk_session: SESSION_VERSION, graph: GraphDoc::default(), recipes: Recipes::new(), epochs: Vec::new(), placements: Vec::new(), views: Vec::new(), active_view: None }
     }
 }
 
@@ -175,7 +185,7 @@ impl SessionDoc {
 
     /// The views from the graph; the active view stays when it is still one, else the first.
     pub fn compile(&mut self) {
-        self.views = self.graph.compile();
+        self.views = self.graph.compile(&self.recipes);
         if !self.active_view.as_ref().is_some_and(|a| self.views.iter().any(|v| v.id == *a)) {
             self.active_view = self.views.first().map(|v| v.id.clone());
         }
@@ -284,6 +294,16 @@ impl ViewDoc {
         nodes.insert("write".to_string(), Node::Write { path: output, format, compression: None, chunk_samples: None, parallel: None });
         edges.push((last, "write".to_string()));
         PipelineSpec { dspk_pipeline: SPEC_VERSION, name: Some(self.name.clone()), nodes, edges, execution: Default::default() }
+    }
+}
+
+/// The family of an op (a recipe's default label).
+pub fn op_family(node: &Node) -> &'static str {
+    match node {
+        Node::Iir { .. } | Node::Fir { .. } | Node::Sos { .. } | Node::Notch { .. } => "filter",
+        Node::Car {} | Node::Cmr {} => "reference",
+        Node::Median { .. } | Node::GaussianSmooth { .. } => "smooth",
+        _ => "transform",
     }
 }
 

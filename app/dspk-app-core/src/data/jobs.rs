@@ -73,6 +73,63 @@ pub fn write_view(view: &ViewDoc, output: PathBuf, send: impl Fn(JobMessage) + S
     cancel
 }
 
+/// Writes several chains of one recording in one read of it (a branched spec: chains that start
+/// with the same ops share those nodes in the spec); `outputs[i]` is chain `i`'s file.
+pub fn write_branches(chains: Vec<ViewDoc>, outputs: Vec<PathBuf>, send: impl Fn(JobMessage) + Send + 'static) -> Cancel {
+    let cancel = Cancel::default();
+    let Some(first) = chains.first().cloned() else {
+        send(JobMessage::Failed("nothing to write".into()));
+        return cancel;
+    };
+    let mut nodes = std::collections::BTreeMap::new();
+    let mut edges = Vec::new();
+    nodes.insert(
+        "read".to_string(),
+        dspk_pipeline::Node::Read { path: Some(first.recording.path.clone()), inputs: None, source: first.recording.source.clone(), channels: first.recording.channels.clone(), start: None, stop: None },
+    );
+    // Shared first ops become shared nodes (keyed by the ops so far)
+    let mut ids: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for (i, (v, out)) in chains.iter().zip(&outputs).enumerate() {
+        let (mut last, mut key) = ("read".to_string(), String::new());
+        for op in v.ops.iter().filter(|o| o.enabled) {
+            key.push_str(&serde_json::to_string(&op.node).unwrap_or_default());
+            key.push('|');
+            let id = match ids.get(&key) {
+                Some(id) => id.clone(),
+                None => {
+                    let id = format!("n{}", ids.len() + 1);
+                    nodes.insert(id.clone(), op.node.clone());
+                    edges.push((last.clone(), id.clone()));
+                    ids.insert(key.clone(), id.clone());
+                    id
+                }
+            };
+            last = id;
+        }
+        let w = format!("write{}", i + 1);
+        nodes.insert(w.clone(), dspk_pipeline::Node::Write { path: out.clone(), format: OutputFormat::Zarr, compression: None, chunk_samples: None, parallel: None });
+        edges.push((last, w));
+    }
+    let spec = PipelineSpec { dspk_pipeline: dspk_pipeline::SPEC_VERSION, name: Some(format!("{} branches", chains.len())), nodes, edges, execution: Default::default() };
+    let c = cancel.clone();
+    let done = outputs[0].clone();
+    std::thread::spawn(move || {
+        let base = done.parent().map(Path::to_path_buf).unwrap_or_default();
+        let open = |p: &Path, source: Option<&str>| crate::plugin::open(p, source);
+        let n = outputs.len();
+        let result = dspk_pipeline::run_with(&spec, &base, open, |p| {
+            let f = p.windows_done as f32 / p.windows.max(1) as f32;
+            send(JobMessage::Progress(format!("Writing {n} outputs in one read · {:.0} %", f * 100.0), Some(f)));
+            !c.cancelled()
+        });
+        send(match result {
+            Ok(_) => JobMessage::Done(done),
+            Err(e) => JobMessage::Failed(format!("Write failed: {e}")),
+        });
+    });
+    cancel
+}
+
 /// Runs a program (e.g. a plugin's `dspk-cli-sorter`) that writes `output`: its output lines are
 /// progress (bars redrawn with `\r` split, colour codes removed), success is a zero exit status.
 pub fn run_program(mut cmd: Command, output: PathBuf, send: impl Fn(JobMessage) + Send + Sync + 'static) -> Cancel {

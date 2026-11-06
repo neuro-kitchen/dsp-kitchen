@@ -14,6 +14,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::graph::{GraphNode, NodeKind, COLUMN};
+use super::epoch::{EpochDoc, Placement};
+use super::recipe::RecipeDoc;
 use super::session::{op_name, DisplayDoc, RecordingRef, SessionDoc};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -84,6 +86,35 @@ pub enum SessionCommand {
     EnableNode { id: String, enabled: bool },
     /// Points a source node at another recording (or channel subset).
     SetSource { id: String, recording: RecordingRef },
+    /// Adds (or replaces) a recipe definition in the session (e.g. from the library).
+    AddRecipe { recipe: RecipeDoc },
+    /// Turns a chain of op nodes into a recipe and one node using it, wired as they were.
+    MakeRecipe {
+        nodes: Vec<String>,
+        name: String,
+        #[serde(default)]
+        labels: Vec<String>,
+    },
+    /// A use's own value of `key` (`"<op>.<key>"`); `null` goes back to the recipe's.
+    SetRecipeOverride { id: String, key: String, value: serde_json::Value },
+    /// Edits the recipe itself (every use follows): op `op`'s values become `node`'s.
+    SetRecipeOp { recipe: String, op: String, node: Node },
+    /// Renames a recipe and relabels it (every use follows).
+    SetRecipeInfo { recipe: String, name: String, labels: Vec<String>, description: String },
+    /// Replaces a recipe node by its ops (with its overrides), wired as it was.
+    Ungroup { id: String },
+    /// Adds an epoch, or replaces the one with its id (an empty id: a new one).
+    SetEpoch { epoch: EpochDoc },
+    RemoveEpoch { id: String },
+    /// Puts a recording at `start_sec` on the session's time.
+    PlaceRecording {
+        path: std::path::PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<String>,
+        start_sec: f64,
+    },
+    /// Takes a recording off the session's time.
+    UnplaceRecording { path: std::path::PathBuf },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -107,6 +138,8 @@ pub enum Changed {
     Plugin(String, String),
     /// The graph (nodes, places, edges); the views it changed are reported on their own.
     Graph,
+    /// Epochs or placements.
+    Timeline,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -297,10 +330,14 @@ fn apply_graph(doc: &mut SessionDoc, cmd: SessionCommand) -> Result<Changed, Com
                     NodeKind::Op { node, .. } => doc.new_op_id(node),
                     NodeKind::View { .. } => doc.new_view_id(),
                     NodeKind::Write {} => doc.graph.numbered_id("w", |id| doc.view(id).is_some()),
+                    NodeKind::Recipe { recipe, .. } => doc.graph.fresh_id(&super::recipe::file_stem(recipe).replace('-', "_")),
                 },
             };
             match &kind {
                 NodeKind::Op { node, .. } => check_processing(node)?,
+                NodeKind::Recipe { recipe, .. } if !doc.recipes.contains_key(recipe) => {
+                    return Err(CommandError::Invalid(format!("no recipe {recipe:?} in the session")));
+                }
                 NodeKind::Source { recording } => check_channels(&recording.channels)?,
                 _ => {}
             }
@@ -348,10 +385,167 @@ fn apply_graph(doc: &mut SessionDoc, cmd: SessionCommand) -> Result<Changed, Com
         }
         C::EnableNode { id, enabled } => {
             match &mut doc.graph.node_mut(&id).ok_or_else(|| CommandError::NoNode(id.clone()))?.kind {
-                NodeKind::Op { enabled: e, .. } => *e = enabled,
+                NodeKind::Op { enabled: e, .. } | NodeKind::Recipe { enabled: e, .. } => *e = enabled,
                 _ => return Err(CommandError::Invalid(format!("{id} is not an op"))),
             }
             Ok(Changed::Graph)
+        }
+        C::AddRecipe { recipe } => {
+            if recipe.name.trim().is_empty() {
+                return Err(CommandError::Invalid("a recipe needs a name".into()));
+            }
+            for op in &recipe.ops {
+                check_processing(&op.node)?;
+            }
+            doc.recipes.insert(recipe.name.clone(), recipe);
+            Ok(Changed::Graph)
+        }
+        C::MakeRecipe { nodes, name, labels } => {
+            let name = name.trim().to_string();
+            if name.is_empty() || doc.recipes.contains_key(&name) {
+                return Err(CommandError::Invalid(format!("recipe name {name:?} is empty or taken")));
+            }
+            let order = chain_order(doc, &nodes)?;
+            let ops: Vec<super::session::OpDoc> = order
+                .iter()
+                .map(|id| match &doc.graph.node(id).expect("checked").kind {
+                    NodeKind::Op { enabled, node } => super::session::OpDoc { id: id.clone(), enabled: *enabled, node: node.clone() },
+                    _ => unreachable!("checked: ops only"),
+                })
+                .collect();
+            let (head, tail) = (order[0].clone(), order[order.len() - 1].clone());
+            let input = doc.graph.input(&head).map(str::to_string);
+            let outputs: Vec<String> = doc.graph.outputs(&tail).into_iter().map(str::to_string).collect();
+            let (x, y) = node(doc, &head).map(|n| (n.x, n.y))?;
+            let id = doc.graph.fresh_id(&super::recipe::file_stem(&name).replace('-', "_"));
+            let mut labels = labels;
+            if labels.is_empty() {
+                let mut fams: Vec<String> = ops.iter().map(|o| super::session::op_family(&o.node).to_string()).collect();
+                fams.dedup();
+                labels = fams;
+            }
+            doc.recipes.insert(name.clone(), RecipeDoc::new(name.clone(), labels, ops));
+            for n in &order {
+                doc.graph.remove(n);
+            }
+            doc.graph.nodes.push(GraphNode { id: id.clone(), x, y, kind: NodeKind::Recipe { recipe: name, enabled: true, overrides: Default::default() } });
+            if let Some(i) = input {
+                doc.graph.connect(&i, &id).map_err(CommandError::Invalid)?;
+            }
+            for o in outputs {
+                doc.graph.connect(&id, &o).map_err(CommandError::Invalid)?;
+            }
+            Ok(Changed::Graph)
+        }
+        C::SetRecipeOverride { id, key, value } => {
+            let recipe = match &node(doc, &id)?.kind {
+                NodeKind::Recipe { recipe, .. } => recipe.clone(),
+                _ => return Err(CommandError::Invalid(format!("{id} is not a recipe"))),
+            };
+            let def = doc.recipes.get(&recipe).ok_or_else(|| CommandError::Invalid(format!("no recipe {recipe:?}")))?.clone();
+            let Some(NodeKind::Recipe { overrides, .. }) = doc.graph.node_mut(&id).map(|n| &mut n.kind) else { unreachable!() };
+            if value.is_null() {
+                overrides.remove(&key);
+            } else {
+                overrides.insert(key.clone(), value);
+            }
+            // The values must still make valid ops
+            for op in def.ops_with(overrides) {
+                check_processing(&op.node)?;
+            }
+            Ok(Changed::Graph)
+        }
+        C::SetRecipeOp { recipe, op, node: n } => {
+            check_processing(&n)?;
+            let def = doc.recipes.get_mut(&recipe).ok_or_else(|| CommandError::Invalid(format!("no recipe {recipe:?}")))?;
+            let slot = def.ops.iter_mut().find(|o| o.id == op).ok_or_else(|| CommandError::Invalid(format!("recipe {recipe:?} has no op {op:?}")))?;
+            slot.node = n;
+            def.version += 1;
+            Ok(Changed::Graph)
+        }
+        C::SetRecipeInfo { recipe, name, labels, description } => {
+            let name = name.trim().to_string();
+            if name.is_empty() || (name != recipe && doc.recipes.contains_key(&name)) {
+                return Err(CommandError::Invalid(format!("recipe name {name:?} is empty or taken")));
+            }
+            let mut def = doc.recipes.remove(&recipe).ok_or_else(|| CommandError::Invalid(format!("no recipe {recipe:?}")))?;
+            def.name = name.clone();
+            def.labels = labels;
+            def.description = description;
+            def.version += 1;
+            doc.recipes.insert(name.clone(), def);
+            for n in &mut doc.graph.nodes {
+                if let NodeKind::Recipe { recipe: r, .. } = &mut n.kind {
+                    if *r == recipe {
+                        *r = name.clone();
+                    }
+                }
+            }
+            Ok(Changed::Graph)
+        }
+        C::Ungroup { id } => {
+            let (recipe, enabled, overrides, x, y) = match &node(doc, &id)?.kind {
+                NodeKind::Recipe { recipe, enabled, overrides } => (recipe.clone(), *enabled, overrides.clone(), node(doc, &id)?.x, node(doc, &id)?.y),
+                _ => return Err(CommandError::Invalid(format!("{id} is not a recipe"))),
+            };
+            let def = doc.recipes.get(&recipe).ok_or_else(|| CommandError::Invalid(format!("no recipe {recipe:?}")))?.clone();
+            let input = doc.graph.input(&id).map(str::to_string);
+            let outputs: Vec<String> = doc.graph.outputs(&id).into_iter().map(str::to_string).collect();
+            doc.graph.remove(&id);
+            let mut last = input;
+            for (k, op) in def.ops_with(&overrides).into_iter().enumerate() {
+                let nid = doc.new_op_id(&op.node);
+                doc.graph.nodes.push(GraphNode { id: nid.clone(), x: x + k as f32 * COLUMN, y, kind: NodeKind::Op { enabled: op.enabled && enabled, node: op.node } });
+                if let Some(l) = &last {
+                    doc.graph.connect(l, &nid).map_err(CommandError::Invalid)?;
+                }
+                last = Some(nid);
+            }
+            if let Some(l) = last {
+                for o in outputs {
+                    doc.graph.connect(&l, &o).map_err(CommandError::Invalid)?;
+                }
+            }
+            Ok(Changed::Graph)
+        }
+        C::SetEpoch { mut epoch } => {
+            if !(epoch.start_sec.is_finite() && epoch.end_sec.is_finite() && epoch.end_sec > epoch.start_sec && epoch.start_sec >= 0.0) {
+                return Err(CommandError::Invalid("an epoch ends after it starts, at or after 0 s".into()));
+            }
+            if epoch.name.trim().is_empty() {
+                epoch.name = format!("{} {}", epoch.kind, doc.epochs.len() + 1);
+            }
+            if epoch.id.is_empty() {
+                epoch.id = (1..).map(|i| format!("e{i}")).find(|id| !doc.epochs.iter().any(|e| e.id == *id)).expect("ids are unbounded");
+            }
+            match doc.epochs.iter_mut().find(|e| e.id == epoch.id) {
+                Some(e) => *e = epoch,
+                None => doc.epochs.push(epoch),
+            }
+            doc.epochs.sort_by(|a, b| a.recording.cmp(&b.recording).then(a.start_sec.total_cmp(&b.start_sec)));
+            Ok(Changed::Timeline)
+        }
+        C::RemoveEpoch { id } => {
+            let n = doc.epochs.len();
+            doc.epochs.retain(|e| e.id != id);
+            if doc.epochs.len() == n {
+                return Err(CommandError::Invalid(format!("no epoch {id:?}")));
+            }
+            Ok(Changed::Timeline)
+        }
+        C::PlaceRecording { path, source, start_sec } => {
+            if !(start_sec.is_finite() && start_sec >= 0.0) {
+                return Err(CommandError::Invalid("a recording starts at or after 0 s".into()));
+            }
+            match doc.placements.iter_mut().find(|p| p.path == path && p.source == source) {
+                Some(p) => p.start_sec = start_sec,
+                None => doc.placements.push(Placement { path, source, start_sec }),
+            }
+            Ok(Changed::Timeline)
+        }
+        C::UnplaceRecording { path } => {
+            doc.placements.retain(|p| p.path != path);
+            Ok(Changed::Timeline)
         }
         C::SetSource { id, recording } => {
             check_channels(&recording.channels)?;
@@ -362,6 +556,33 @@ fn apply_graph(doc: &mut SessionDoc, cmd: SessionCommand) -> Result<Changed, Com
             Ok(Changed::Graph)
         }
     }
+}
+
+/// `nodes` (op nodes) in chain order: one enters the group from outside, each leads to the next.
+fn chain_order(doc: &SessionDoc, nodes: &[String]) -> Result<Vec<String>, CommandError> {
+    let bad = |m: &str| Err(CommandError::Invalid(format!("a recipe is made of a chain of ops: {m}")));
+    if nodes.is_empty() {
+        return bad("nothing selected");
+    }
+    for id in nodes {
+        if !matches!(node(doc, id)?.kind, NodeKind::Op { .. }) {
+            return bad(&format!("{id} is not an op"));
+        }
+    }
+    let inside = |id: &str| nodes.iter().any(|n| n == id);
+    let heads: Vec<&String> = nodes.iter().filter(|n| !doc.graph.input(n).is_some_and(inside)).collect();
+    if heads.len() != 1 {
+        return bad("the selection must be one chain");
+    }
+    let mut order = vec![heads[0].clone()];
+    while order.len() < nodes.len() {
+        let next: Vec<&str> = doc.graph.outputs(order.last().expect("non-empty")).into_iter().filter(|o| inside(o)).collect();
+        match next.as_slice() {
+            [one] if doc.graph.outputs(order.last().expect("non-empty")).len() == 1 => order.push(one.to_string()),
+            _ => return bad("the selection branches or has gaps"),
+        }
+    }
+    Ok(order)
 }
 
 /// A new view node.
@@ -546,6 +767,47 @@ mod tests {
         assert_eq!((d.graph.node("v2").unwrap().x, d.graph.node("v2").unwrap().y), (10.0, 20.0));
         apply(&mut d, SessionCommand::RemoveNodes { nodes: vec!["v2".into(), "lfp_band".into()] }).unwrap();
         assert_eq!(d.graph.nodes.len(), 3);
+    }
+
+    #[test]
+    fn test_epochs_and_placements() {
+        let mut d = opened();
+        let e = EpochDoc { id: String::new(), recording: "/data/rec.bin".into(), name: String::new(), kind: "stimulus".into(), start_sec: 2.0, end_sec: 3.5, notes: String::new() };
+        apply(&mut d, SessionCommand::SetEpoch { epoch: e.clone() }).unwrap();
+        assert_eq!((d.epochs[0].id.as_str(), d.epochs[0].name.as_str()), ("e1", "stimulus 1"));
+        assert!(apply(&mut d, SessionCommand::SetEpoch { epoch: EpochDoc { end_sec: 1.0, ..e.clone() } }).is_err(), "ends before it starts");
+        apply(&mut d, SessionCommand::SetEpoch { epoch: EpochDoc { id: "e1".into(), name: "tone".into(), ..e } }).unwrap();
+        assert_eq!((d.epochs.len(), d.epochs[0].name.as_str()), (1, "tone"));
+        apply(&mut d, SessionCommand::RemoveEpoch { id: "e1".into() }).unwrap();
+        apply(&mut d, SessionCommand::PlaceRecording { path: "/data/rec.bin".into(), source: None, start_sec: 60.0 }).unwrap();
+        apply(&mut d, SessionCommand::PlaceRecording { path: "/data/rec.bin".into(), source: None, start_sec: 90.0 }).unwrap();
+        assert_eq!((d.placements.len(), d.placements[0].start_sec), (1, 90.0));
+        let back = SessionDoc::from_json(&d.to_json()).unwrap();
+        assert_eq!(back.placements, d.placements);
+    }
+
+    #[test]
+    fn test_recipes_make_override_edit_ungroup() {
+        let mut d = opened();
+        apply(&mut d, SessionCommand::AddOp { view: "v1".into(), node: bandpass(300.0, 6000.0), index: None, id: None }).unwrap();
+        apply(&mut d, SessionCommand::AddOp { view: "v1".into(), node: Node::Cmr {}, index: None, id: None }).unwrap();
+        let before = d.views[0].ops.iter().map(|o| o.node.clone()).collect::<Vec<_>>();
+        apply(&mut d, SessionCommand::MakeRecipe { nodes: vec!["cmr".into(), "iir".into()], name: "Spikes".into(), labels: vec![] }).unwrap();
+        assert_eq!(d.graph.nodes.len(), 3, "source, recipe, view");
+        assert_eq!(d.views[0].ops.iter().map(|o| o.node.clone()).collect::<Vec<_>>(), before, "the view runs the same ops");
+        assert_eq!(d.recipes["Spikes"].labels, ["filter", "reference"]);
+        // A use's own value, then the recipe's (every use follows)
+        apply(&mut d, SessionCommand::SetRecipeOverride { id: "spikes".into(), key: "iir.cutoff".into(), value: serde_json::json!([500.0, 5000.0]) }).unwrap();
+        assert_eq!(d.views[0].ops[0].node, bandpass(500.0, 5000.0));
+        assert!(apply(&mut d, SessionCommand::SetRecipeOverride { id: "spikes".into(), key: "iir.cutoff".into(), value: serde_json::json!([500.0]) }).is_err(), "a band-pass needs two cutoffs");
+        apply(&mut d, SessionCommand::SetRecipeOverride { id: "spikes".into(), key: "iir.cutoff".into(), value: serde_json::Value::Null }).unwrap();
+        apply(&mut d, SessionCommand::SetRecipeOp { recipe: "Spikes".into(), op: "iir".into(), node: bandpass(250.0, 7000.0) }).unwrap();
+        assert_eq!((d.views[0].ops[0].node.clone(), d.recipes["Spikes"].version), (bandpass(250.0, 7000.0), 2));
+        apply(&mut d, SessionCommand::Ungroup { id: "spikes".into() }).unwrap();
+        assert_eq!(d.graph.nodes.len(), 4);
+        assert_eq!(d.views[0].ops[0].node, bandpass(250.0, 7000.0));
+        // Not a chain
+        assert!(apply(&mut d, SessionCommand::MakeRecipe { nodes: vec!["s1".into()], name: "x".into(), labels: vec![] }).is_err());
     }
 
     #[test]
