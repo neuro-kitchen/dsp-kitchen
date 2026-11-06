@@ -25,11 +25,13 @@ pub struct UnitTable {
 }
 
 impl UnitTable {
+    /// The units not merged away.
     pub fn new(sorting: &SortingData) -> PolarsResult<Self> {
-        let u = &sorting.units;
+        let index: Vec<u32> = sorting.alive().map(|i| i as u32).collect();
+        let u: Vec<&crate::sorting::Unit> = index.iter().map(|&i| &sorting.units[i as usize]).collect();
         let f = |g: fn(&dspk_synapse::io::sorting_zarr::SortingZarrUnit) -> f64| u.iter().map(|x| g(&x.info)).collect::<Vec<f64>>();
         let df = df!(
-            "index" => (0..u.len() as u32).collect::<Vec<u32>>(),
+            "index" => index.clone(),
             "unit" => u.iter().map(|x| x.info.unit_id as u32).collect::<Vec<u32>>(),
             "label" => u.iter().map(|x| x.info.quality_label.clone()).collect::<Vec<String>>(),
             "spikes" => u.iter().map(|x| x.info.num_spikes as u32).collect::<Vec<u32>>(),
@@ -77,7 +79,7 @@ mod tests {
             composite_score: f64::NAN,
             num_spikes: spikes,
         };
-        Unit { info, extent: Extent { before: 1, after: 1, channels: vec![0] }, template: Vec::new() }
+        Unit { info, extent: Extent { before: 1, after: 1, channels: vec![0] }, template: Vec::new(), merged_into: None }
     }
 
     #[test]

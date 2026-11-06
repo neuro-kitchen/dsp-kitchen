@@ -38,9 +38,16 @@ pub struct Unit {
     /// Mean template on `extent.channels` (rows), `before + after` samples each; empty without
     /// templates.
     pub template: Vec<Vec<f32>>,
+    /// Merged by curation into the unit at this index (the row stays, empty).
+    pub merged_into: Option<usize>,
 }
 
+/// The app's notes on a store, inside its folder (`dspk-app.json`): where in the recording a
+/// sorting of a part of it starts (its spike times count from there).
+pub const APP_NOTES_FILE: &str = "dspk-app.json";
+
 /// A loaded sorting.
+#[derive(Clone)]
 pub struct SortingData {
     pub path: PathBuf,
     pub sorter: String,
@@ -62,7 +69,18 @@ pub struct SortingData {
 impl SortingData {
     pub fn load(path: &Path) -> Result<Self> {
         let store = SortingZarr::read(path).with_context(|| format!("Failed to read {}", path.display()))?;
-        Ok(Self::from_store(path, store))
+        let mut data = Self::from_store(path, store);
+        // A sorting of a part of the recording: its times count from the part's start
+        let offset = start_sec(path).map_or(0, |s| (s * data.sample_rate).round().max(0.0) as u64);
+        if offset > 0 {
+            data.times.iter_mut().for_each(|t| *t += offset);
+        }
+        Ok(data)
+    }
+
+    /// Units not merged away, by index.
+    pub fn alive(&self) -> impl Iterator<Item = usize> + '_ {
+        (0..self.units.len()).filter(|&u| self.units[u].merged_into.is_none())
     }
 
     pub fn from_store(path: &Path, store: SortingZarr) -> Self {
@@ -79,7 +97,7 @@ impl SortingData {
                     Some(t) if t.shape.len() == 3 && i < t.shape[0] => template_extent(&t.data, t.shape[1], t.shape[2], i, u.primary_channel),
                     _ => (Extent { before: half, after: half, channels: vec![u.primary_channel] }, Vec::new()),
                 };
-                Unit { info: u.clone(), extent, template }
+                Unit { info: u.clone(), extent, template, merged_into: None }
             })
             .collect();
         // Spikes sorted by time (stores are usually sorted already; a stable sort keeps ties)
@@ -116,8 +134,19 @@ impl SortingData {
 
     /// `kilosort4 · 287 units · 133 544 spikes`
     pub fn summary(&self) -> String {
-        format!("{} · {} units · {} spikes", self.sorter, self.units.len(), self.times.len())
+        format!("{} · {} units · {} spikes", self.sorter, self.alive().count(), self.times.len())
     }
+}
+
+/// Where the sorting at `store` starts in its recording (s), from the app's notes.
+pub fn start_sec(store: &Path) -> Option<f64> {
+    let text = std::fs::read_to_string(store.join(APP_NOTES_FILE)).ok()?;
+    serde_json::from_str::<serde_json::Value>(&text).ok()?.get("start_sec")?.as_f64()
+}
+
+/// Notes that the sorting at `store` starts `start_sec` into its recording.
+pub fn write_start_sec(store: &Path, start_sec: f64) -> std::io::Result<()> {
+    std::fs::write(store.join(APP_NOTES_FILE), serde_json::json!({ "start_sec": start_sec }).to_string())
 }
 
 /// Unit `u`'s extent from the mean templates `[units, channels, samples]`: its alignment (the
@@ -316,8 +345,46 @@ fn power_iteration(m: &[f64], d: usize, deflate: Option<&[f64]>) -> Vec<f64> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use dspk_synapse::io::sorting_zarr::SortingZarrUnit;
+
+    /// A sorting of units `(id, primary channel, spikes)`, spikes 10 samples apart in unit order,
+    /// templates of 4 samples on the primary channel.
+    pub(crate) fn sorting_of_units(units: &[(usize, usize, usize)]) -> SortingData {
+        let mut times = Vec::new();
+        let mut unit_of = Vec::new();
+        let mut t = 0;
+        for (i, &(_, _, n)) in units.iter().enumerate() {
+            for _ in 0..n {
+                times.push(t);
+                unit_of.push(Some(i as u32));
+                t += 10;
+            }
+        }
+        let units: Vec<Unit> = units
+            .iter()
+            .map(|&(id, ch, n)| Unit {
+                info: SortingZarrUnit {
+                    unit_id: id,
+                    primary_channel: ch,
+                    quality_label: "mua".into(),
+                    snr: 5.0,
+                    firing_rate_hz: 1.0,
+                    isi_violation_ratio: 0.0,
+                    presence_ratio: 1.0,
+                    amplitude_cutoff: 0.0,
+                    composite_score: f64::NAN,
+                    num_spikes: n,
+                },
+                extent: Extent { before: 1, after: 3, channels: vec![ch] },
+                template: vec![vec![0.0, -1.0 - id as f32 * 0.1, 0.5, 0.0]],
+                merged_into: None,
+            })
+            .collect();
+        let by_id = units.iter().enumerate().map(|(i, u)| (u.info.unit_id as i32, i)).collect();
+        SortingData { path: "/x.sorting.zarr".into(), sorter: "test".into(), sample_rate: 1000.0, times, unit_of, amplitudes: Vec::new(), units, by_id, channels: None }
+    }
 
     #[test]
     fn test_extent_follows_the_template() {
