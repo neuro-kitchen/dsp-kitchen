@@ -57,6 +57,11 @@ enum Command {
     Serve(commands::net::serve::ServeArgs),
     /// Receive a served recording: throughput, latency, optional save
     Receive(commands::net::receive::ReceiveArgs),
+    /// Who may connect to `serve`: enroll, revoke, list clients (certificates from the server's
+    /// own authority)
+    Clients(commands::net::clients::ClientsArgs),
+    /// Work with a `serve` server: info, files, sort on it, status, logs, stop
+    Remote(commands::net::remote::RemoteArgs),
     /// Published model and sorter artifacts: list, info, pull, verify, remove, clean
     #[cfg(feature = "hub")]
     Hub(commands::hub::HubArgs),
@@ -79,7 +84,10 @@ const DEFAULT_LOG_LEVEL: tracing::Level = tracing::Level::WARN;
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
-    tracing_subscriber::fmt().with_max_level(if cli.verbose { tracing::Level::DEBUG } else { DEFAULT_LOG_LEVEL }).init();
+    // `doctor` reports each runtime that cannot open a device itself: the runtimes' own warnings
+    // about it would only repeat that
+    let quiet = if matches!(cli.command, Command::Doctor) { tracing::Level::ERROR } else { DEFAULT_LOG_LEVEL };
+    tracing_subscriber::fmt().with_max_level(if cli.verbose { tracing::Level::DEBUG } else { quiet }).init();
     if let Err(e) = dispatch(&cli).await {
         anstream::eprintln!("{} {e}", style::paint(style::ERROR, "error:"));
         for cause in e.chain().skip(1) {
@@ -105,6 +113,8 @@ async fn dispatch(cli: &Cli) -> anyhow::Result<()> {
         Command::Benchmark(args) => commands::benchmark::run(cli.target()?, args),
         Command::Serve(args) => commands::net::serve::run(args).await,
         Command::Receive(args) => commands::net::receive::run(args).await,
+        Command::Clients(args) => commands::net::clients::run(args),
+        Command::Remote(args) => commands::net::remote::run(args).await,
         #[cfg(feature = "hub")]
         Command::Hub(args) => commands::hub::run(args),
     }

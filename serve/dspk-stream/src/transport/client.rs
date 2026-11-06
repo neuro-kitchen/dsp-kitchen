@@ -1,4 +1,5 @@
-//! The client side: a session with one server (its recording's description, the signal, views).
+//! The client side: a session with one server (who it is, its files, the recording this client
+//! opened, the signal, views).
 
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
@@ -10,7 +11,7 @@ use crate::protocol::{
     decode_signal, envelope_from_frame, info_from_header, read_message, request_from_view, wire, write_message, DEFAULT_MAX_MESSAGE_BYTES, PROTOCOL_VERSION,
 };
 
-/// A connected session: the server's recording, as described by its header.
+/// A connected session: the server's info, and the recording this client has open.
 pub struct Session {
     /// Kept for the connection's lifetime (the endpoint drives it).
     _endpoint: quinn::Endpoint,
@@ -18,13 +19,14 @@ pub struct Session {
     control: quinn::SendStream,
     /// Kept open: dropping it would ask the server to stop the control stream.
     _control_recv: quinn::RecvStream,
-    info: RecordingInfo,
+    server: wire::ServerInfo,
+    recording: Option<RecordingInfo>,
     max_message_bytes: usize,
 }
 
 impl Session {
     /// Connects to `addr` (certificate checked against `server_name` per `config`) and reads the
-    /// header. The local endpoint uses the address family of `addr`.
+    /// server's info. The local endpoint uses the address family of `addr`.
     pub async fn connect(addr: SocketAddr, server_name: &str, config: quinn::ClientConfig) -> StreamResult<Self> {
         let local: SocketAddr = if addr.is_ipv6() { (Ipv6Addr::UNSPECIFIED, 0).into() } else { (Ipv4Addr::UNSPECIFIED, 0).into() };
         let mut endpoint = quinn::Endpoint::client(local)?;
@@ -32,9 +34,12 @@ impl Session {
         let connection = endpoint.connect(addr, server_name)?.await?;
         let (mut control, mut control_recv) = connection.open_bi().await?;
         write_message(&mut control, &wire::ClientHello { protocol_version: PROTOCOL_VERSION }).await?;
-        let header: wire::Header = read_message(&mut control_recv, DEFAULT_MAX_MESSAGE_BYTES).await?.ok_or_else(|| StreamError::protocol("no header"))?;
-        let info = info_from_header(&header)?;
-        Ok(Self { _endpoint: endpoint, connection, control, _control_recv: control_recv, info, max_message_bytes: DEFAULT_MAX_MESSAGE_BYTES })
+        let server: wire::ServerInfo = read_message(&mut control_recv, DEFAULT_MAX_MESSAGE_BYTES).await?.ok_or_else(|| StreamError::protocol("no server info"))?;
+        if server.protocol_version != PROTOCOL_VERSION {
+            return Err(StreamError::protocol(format!("server speaks protocol {}, this client {PROTOCOL_VERSION}", server.protocol_version)));
+        }
+        let recording = server.recording.as_ref().map(info_from_header).transpose()?;
+        Ok(Self { _endpoint: endpoint, connection, control, _control_recv: control_recv, server, recording, max_message_bytes: DEFAULT_MAX_MESSAGE_BYTES })
     }
 
     /// Accepts messages up to `bytes` long (default [`DEFAULT_MAX_MESSAGE_BYTES`]).
@@ -43,25 +48,167 @@ impl Session {
         self
     }
 
-    /// The recording the server streams (channels, units, exact rate, stored format).
-    pub fn info(&self) -> &RecordingInfo {
-        &self.info
+    /// Who the server is, who this client is to it, and what it may do.
+    pub fn server(&self) -> &wire::ServerInfo {
+        &self.server
     }
 
-    /// Starts (or restarts) the signal at `first_sample`.
+    /// The recording this client has open (channels, units, exact rate, stored format): the
+    /// server's initial one, or the last [`Self::open`]ed.
+    pub fn recording(&self) -> Option<&RecordingInfo> {
+        self.recording.as_ref()
+    }
+
+    /// Starts (or restarts) the signal of the open recording at `first_sample`.
     pub async fn subscribe(&mut self, first_sample: u64) -> StreamResult<SignalReceiver> {
+        let info = self.recording.clone().ok_or_else(|| StreamError::protocol("no recording is open: open one first"))?;
         write_message(&mut self.control, &wire::Subscribe { first_sample }).await?;
         let recv = self.connection.accept_uni().await?;
-        Ok(SignalReceiver { recv, info: self.info.clone(), max_message_bytes: self.max_message_bytes })
+        Ok(SignalReceiver { recv, info, max_message_bytes: self.max_message_bytes })
     }
 
-    /// The server's answer to `view`, on a stream of its own (never behind signal data).
-    pub async fn view(&self, view: &View) -> StreamResult<Envelope> {
+    /// Sends `kind` on a stream of its own (never behind signal data) and reads the answer; a
+    /// refusal or failure on the server is an error here.
+    async fn request(&self, kind: wire::request::Kind) -> StreamResult<wire::response::Kind> {
         let (mut send, mut recv) = self.connection.open_bi().await?;
-        write_message(&mut send, &request_from_view(view)?).await?;
+        write_message(&mut send, &wire::Request { kind: Some(kind) }).await?;
         send.finish().map_err(StreamError::protocol)?;
-        let frame: wire::EnvelopeFrame = read_message(&mut recv, self.max_message_bytes).await?.ok_or_else(|| StreamError::protocol("no envelope"))?;
-        envelope_from_frame(frame)
+        let response: wire::Response = read_message(&mut recv, self.max_message_bytes).await?.ok_or_else(|| StreamError::protocol("no response"))?;
+        match response.kind {
+            Some(wire::response::Kind::Error(message)) => Err(StreamError::Server(message)),
+            Some(kind) => Ok(kind),
+            None => Err(StreamError::protocol("empty response")),
+        }
+    }
+
+    /// The server's answer to `view` of the open recording.
+    pub async fn view(&self, view: &View) -> StreamResult<Envelope> {
+        match self.request(wire::request::Kind::View(request_from_view(view)?)).await? {
+            wire::response::Kind::Envelope(frame) => envelope_from_frame(frame),
+            _ => Err(StreamError::protocol("unexpected answer to a view")),
+        }
+    }
+
+    /// The entries of directory `dir` under the server's data root ("" = the root).
+    pub async fn list_files(&self, dir: &str) -> StreamResult<wire::FileList> {
+        match self.request(wire::request::Kind::ListFiles(wire::ListFiles { dir: dir.into() })).await? {
+            wire::response::Kind::Files(list) => Ok(list),
+            _ => Err(StreamError::protocol("unexpected answer to a listing")),
+        }
+    }
+
+    async fn status_request(&self, kind: wire::request::Kind) -> StreamResult<wire::Status> {
+        match self.request(kind).await? {
+            wire::response::Kind::Status(status) => Ok(status),
+            _ => Err(StreamError::protocol("unexpected answer to a job request")),
+        }
+    }
+
+    /// Sets the server's job (control permission; only while nothing runs).
+    pub async fn configure(&self, job: wire::Configure) -> StreamResult<wire::Status> {
+        self.status_request(wire::request::Kind::Configure(job)).await
+    }
+
+    /// Starts the configured job (control permission).
+    pub async fn start(&self) -> StreamResult<wire::Status> {
+        self.status_request(wire::request::Kind::Start(wire::Start {})).await
+    }
+
+    /// Asks the running job to stop (control permission).
+    pub async fn stop(&self) -> StreamResult<wire::Status> {
+        self.status_request(wire::request::Kind::Stop(wire::Stop {})).await
+    }
+
+    /// The server's state and its job's progress.
+    pub async fn status(&self) -> StreamResult<wire::Status> {
+        self.status_request(wire::request::Kind::Status(wire::GetStatus {})).await
+    }
+
+    /// The job's last `lines` log lines (0 = all the server keeps).
+    pub async fn logs(&self, lines: u32) -> StreamResult<Vec<String>> {
+        match self.request(wire::request::Kind::Logs(wire::GetLogs { lines })).await? {
+            wire::response::Kind::Logs(logs) => Ok(logs.lines),
+            _ => Err(StreamError::protocol("unexpected answer to logs")),
+        }
+    }
+
+    /// Fetches the file `path` under the server's data root into `dest` (a new file, never
+    /// overwritten); returns its size. A directory is fetched with [`Self::fetch`].
+    pub async fn fetch_file(&self, path: &str, dest: &std::path::Path) -> StreamResult<u64> {
+        use tokio::io::AsyncWriteExt as _;
+        let (mut send, mut recv) = self.connection.open_bi().await?;
+        write_message(&mut send, &wire::Request { kind: Some(wire::request::Kind::Fetch(wire::Fetch { path: path.into() })) }).await?;
+        send.finish().map_err(StreamError::protocol)?;
+        let response: wire::Response = read_message(&mut recv, self.max_message_bytes).await?.ok_or_else(|| StreamError::protocol("no response"))?;
+        let header = match response.kind {
+            Some(wire::response::Kind::File(header)) => header,
+            Some(wire::response::Kind::Error(message)) => return Err(StreamError::Server(message)),
+            _ => return Err(StreamError::protocol("unexpected answer to fetch")),
+        };
+        let mut out = tokio::fs::OpenOptions::new().write(true).create_new(true).open(dest).await?;
+        let mut written = 0u64;
+        while let Some(chunk) = read_message::<wire::FileChunk>(&mut recv, self.max_message_bytes).await? {
+            written += chunk.data.len() as u64;
+            if written > header.size {
+                return Err(StreamError::protocol("the server sent more than the file's size"));
+            }
+            out.write_all(&chunk.data).await?;
+        }
+        out.flush().await?;
+        if written != header.size {
+            return Err(StreamError::Truncated);
+        }
+        Ok(written)
+    }
+
+    /// Fetches `path` (a file, or a directory such as a .sorting.zarr, file by file) into the new
+    /// local path `dest`; returns files and bytes. Names from the server are checked: plain, not
+    /// hidden, no separators, so nothing lands outside `dest`.
+    pub async fn fetch(&self, path: &str, dest: &std::path::Path) -> StreamResult<(usize, u64)> {
+        let parent = path.rsplit_once('/').map_or("", |(dir, _)| dir);
+        let name = path.rsplit('/').next().unwrap_or(path);
+        let listing = self.list_files(parent).await?;
+        let entry = listing.entries.iter().find(|e| e.name == name).ok_or_else(|| StreamError::Server(format!("{path:?} not found")))?;
+        if !entry.directory {
+            return Ok((1, self.fetch_file(path, dest).await?));
+        }
+        if dest.symlink_metadata().is_ok() {
+            return Err(StreamError::Io(std::io::Error::new(std::io::ErrorKind::AlreadyExists, format!("{} exists (never overwritten)", dest.display()))));
+        }
+        tokio::fs::create_dir(dest).await?;
+        let (mut files, mut bytes) = (0usize, 0u64);
+        // Depth-first over the directory, file by file
+        let mut stack = vec![(path.to_string(), dest.to_path_buf())];
+        while let Some((remote, local)) = stack.pop() {
+            for e in self.list_files(&remote).await?.entries {
+                let plain = !e.name.is_empty() && !e.name.starts_with('.') && !e.name.contains(['/', '\\']) && e.name != "..";
+                if !plain {
+                    return Err(StreamError::protocol(format!("the server listed {:?}: not a plain name", e.name)));
+                }
+                let (r, l) = (format!("{remote}/{}", e.name), local.join(&e.name));
+                if e.directory {
+                    tokio::fs::create_dir(&l).await?;
+                    stack.push((r, l));
+                } else {
+                    bytes += self.fetch_file(&r, &l).await?;
+                    files += 1;
+                }
+            }
+        }
+        Ok((files, bytes))
+    }
+
+    /// Opens the recording at `path` under the server's data root (`source`: one of the file's
+    /// sources, `None` = its default); views and the signal are then of it.
+    pub async fn open(&mut self, path: &str, source: Option<&str>) -> StreamResult<&RecordingInfo> {
+        let open = wire::Open { path: path.into(), source: source.unwrap_or_default().into() };
+        match self.request(wire::request::Kind::Open(open)).await? {
+            wire::response::Kind::Header(header) => {
+                self.recording = Some(info_from_header(&header)?);
+                Ok(self.recording.as_ref().expect("just set"))
+            }
+            _ => Err(StreamError::protocol("unexpected answer to open")),
+        }
     }
 
     /// Ends the session (the server stops streaming).

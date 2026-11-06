@@ -1,0 +1,49 @@
+# Podman Quadlet: `dspk serve` as a systemd service (starts at boot, restarts on failure).
+# Install for your user:
+#   mkdir -p ~/.config/containers/systemd ~/dspk-data
+#   cp deploy/dspk-serve.container ~/.config/containers/systemd/
+#   systemctl --user daemon-reload && systemctl --user start dspk-serve
+#   loginctl enable-linger "$USER"     # keep it running after you log out
+# System-wide (root): /etc/containers/systemd/ instead, and `systemctl` without --user.
+# Logs: journalctl --user -u dspk-serve
+
+[Unit]
+Description=dspk serve: a recording over QUIC (dspk-stream)
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+# The image target for this machine's GPU (deploy/README.md): nvidia, mesa or cpu
+Image=localhost/dspk-serve:nvidia
+# NVIDIA (CDI from the NVIDIA Container Toolkit); for mesa: AddDevice=/dev/dri and
+# GroupAdd=keep-groups; for cpu: neither
+AddDevice=nvidia.com/gpu=all
+# A confined container may not use GPU device files (SELinux): labelling off for this container
+# only, as the developer container does; the hardening below stays. Alternative (root, once):
+# setsebool -P container_use_devices on, then remove this line
+SecurityLabelDisable=true
+ContainerName=dspk-serve
+PublishPort=50051:50051/udp
+# You on the host = the container's dspk user (uid 10001), so it can write to ~/dspk-data
+UserNS=keep-id:uid=10001,gid=10001
+# Recordings, their pyramids, and the authority (.dspk-auth: CA, enrolled clients); :Z labels it
+# for SELinux. Enroll: podman exec dspk-serve dspk clients enroll <name> --out - > <name>.pem
+Volume=%h/dspk-data:/data:Z
+# Compiled kernels and autotune results, kept across restarts
+Volume=dspk-cache:/home/dspk/.cache
+# Hardening: the image's files read-only (writable: /data, the cache, /tmp), no Linux
+# capabilities, no privilege gain (setuid), a cap on processes; add --memory=<n>g to cap memory
+ReadOnly=true
+DropCapability=all
+NoNewPrivileges=true
+PodmanArgs=--pids-limit=1024
+# Clients open the recordings under ~/dspk-data (/data); %H: this machine's name, for the
+# certificate. Add a path (e.g. /data/recording.ap.bin --loop) to open one for every client
+Exec=serve --bind 0.0.0.0:50051 --name %H --max-clients 8
+
+[Service]
+Restart=on-failure
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target

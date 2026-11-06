@@ -1,14 +1,18 @@
-// dspk-stream session protocol, version 1.
+// dspk-stream session protocol, version 2.
 //
-// One QUIC connection (ALPN "dspk-stream/1") per client. Every message is a 4-byte big-endian
-// length followed by the protobuf encoding; receivers reject lengths above their limit before
-// allocating.
+// One QUIC connection (ALPN "dspk-stream/2") per client, authenticated by its certificate (see
+// the crate's `auth`). Every message is a 4-byte big-endian length followed by the protobuf
+// encoding; receivers reject lengths above their limit before allocating.
 //
 // Streams:
-//   control  bidirectional, opened by the client: ClientHello → Header, then Subscribe.
+//   control  bidirectional, opened by the client: ClientHello → ServerInfo, then Subscribe.
 //   signal   unidirectional, opened by the server after Subscribe: SignalFrame, ….
-//   view     bidirectional, one per request, opened by the client: ViewRequest → EnvelopeFrame.
-// Views travel on their own streams so they never wait behind signal data.
+//   request  bidirectional, one per request, opened by the client: Request → Response.
+// Requests (views, files, …) travel on their own streams so they never wait behind signal data.
+//
+// A server serves files under one data root: paths are relative to it, and anything outside it,
+// hidden (a component starting with '.') or reached through a link out of it is refused. Each
+// client opens its own recording (Open); views and the signal are of that recording.
 
 syntax = "proto3";
 
@@ -58,7 +62,42 @@ message ClientHello {
   uint32 protocol_version = 1;
 }
 
-// server → client, the answer to ClientHello: what is being streamed.
+// What a client may do (from its enrollment).
+enum Permission {
+  PERMISSION_UNSPECIFIED = 0;
+  // Recordings, views, files.
+  PERMISSION_READ = 1;
+  // Also configure, start and stop jobs.
+  PERMISSION_CONTROL = 2;
+}
+
+// What the server is doing.
+enum DeviceState {
+  DEVICE_STATE_UNSPECIFIED = 0;
+  // Idle: a job can be configured and started.
+  DEVICE_STATE_STOPPED = 1;
+  DEVICE_STATE_RUNNING = 2;
+  // The last job failed (Status says why); configure again to clear it.
+  DEVICE_STATE_ERROR = 3;
+}
+
+// server → client, the answer to ClientHello.
+message ServerInfo {
+  uint32 protocol_version = 1;
+  // The server's name (its host) and the dspk version it runs.
+  string server_name = 2;
+  string server_version = 3;
+  // Who this client is to the server, and what it may do.
+  string peer_name = 4;
+  Permission permission = 5;
+  DeviceState state = 6;
+  // Whether the server has a data root (files can be listed and opened).
+  bool has_files = 7;
+  // The recording the server opened for every client at start, if any.
+  Header recording = 8;
+}
+
+// What a recording is: the answer to Open, and part of ServerInfo.
 message Header {
   uint32 protocol_version = 1;
   string name = 2;
@@ -88,7 +127,148 @@ message SignalFrame {
   uint64 sent_unix_ns = 5;
 }
 
-// client → server, the only message on a view stream.
+// List a directory under the data root ("" is the root itself).
+message ListFiles {
+  string dir = 1;
+}
+
+enum FileKind {
+  FILE_KIND_UNSPECIFIED = 0;
+  FILE_KIND_DIRECTORY = 1;
+  // A file or store dspk can open as a recording.
+  FILE_KIND_RECORDING = 2;
+  // A sorting (.sorting.zarr).
+  FILE_KIND_SORTING = 3;
+  FILE_KIND_OTHER = 4;
+}
+
+message FileEntry {
+  string name = 1;
+  FileKind kind = 2;
+  // Bytes (files; 0 for directories).
+  uint64 size = 3;
+  uint64 modified_unix = 4;
+  // A directory (a .sorting.zarr or a Zarr recording is one too, whatever its kind).
+  bool directory = 5;
+}
+
+message FileList {
+  // The directory listed, relative to the data root.
+  string dir = 1;
+  repeated FileEntry entries = 2;
+}
+
+// Open a recording under the data root for this client (its views and signal).
+message Open {
+  string path = 1;
+  // The source within the file ("" = its default one).
+  string source = 2;
+}
+
+// A job for the server to run (a sort), checked when configured: the sorter is one the server
+// has, the recording is under the data root, the output is a new .sorting.zarr under it.
+// Configure, Start and Stop need the control permission; one job runs at a time.
+message Configure {
+  // kilosort4, emusort, mountainsort5, spykingcircus2, tridesclous2 (what the server has).
+  string sorter = 1;
+  // The recording, under the data root.
+  string recording = 2;
+  // Where the sorting goes, under the data root ("" = next to the recording,
+  // <name>.<sorter>.sorting.zarr); never overwritten.
+  string output = 3;
+  // Sorter parameters away from their defaults: flag name (without "--") → value.
+  map<string, string> params = 4;
+  // The source within the recording's file ("" = its default one).
+  string source = 5;
+  // A probe preset ("" = the recording's own geometry).
+  string probe = 6;
+  // The part to sort, in seconds (0 and 0 = all of it).
+  double start_sec = 7;
+  double duration_sec = 8;
+}
+
+message Start {}
+message Stop {}
+message GetStatus {}
+message GetLogs {
+  // The last lines (0 = all the server keeps).
+  uint32 lines = 1;
+}
+
+// The device's state and its job.
+message Status {
+  DeviceState state = 1;
+  // The job configured or running, in words ("" = none).
+  string job = 2;
+  // Its progress: stage, step of steps, done of total (in unit).
+  string stage = 3;
+  uint32 step = 4;
+  uint32 steps = 5;
+  uint64 done = 6;
+  uint64 total = 7;
+  string unit = 8;
+  // The last result or failure, in words.
+  string message = 9;
+  // The job's output, under the data root.
+  string output = 10;
+  // Who started it, and when (Unix seconds).
+  string started_by = 11;
+  uint64 started_unix = 12;
+}
+
+message LogLines {
+  repeated string lines = 1;
+}
+
+// Fetch a file under the data root. The answer is a Response with its FileHeader, then the file's
+// bytes as FileChunk messages on the same stream until it ends. A directory (a .sorting.zarr) is
+// fetched file by file after listing it.
+message Fetch {
+  string path = 1;
+}
+
+message FileHeader {
+  string path = 1;
+  uint64 size = 2;
+}
+
+message FileChunk {
+  bytes data = 1;
+}
+
+// client → server, the only message on a request stream.
+message Request {
+  oneof kind {
+    ViewRequest view = 1;
+    ListFiles list_files = 2;
+    Open open = 3;
+    Configure configure = 4;
+    Start start = 5;
+    Stop stop = 6;
+    GetStatus status = 7;
+    GetLogs logs = 8;
+    Fetch fetch = 9;
+  }
+}
+
+// server → client, the answer on a request stream.
+message Response {
+  oneof kind {
+    EnvelopeFrame envelope = 1;
+    FileList files = 2;
+    // The recording just opened.
+    Header header = 3;
+    // The request was refused or failed.
+    string error = 4;
+    // The device's state (the answer to Configure, Start, Stop and GetStatus).
+    Status status = 5;
+    LogLines logs = 6;
+    // The answer to Fetch; FileChunk messages follow.
+    FileHeader file = 7;
+  }
+}
+
+// A view of the open recording: [min, max] columns or samples of some channels.
 message ViewRequest {
   repeated uint32 channels = 1;
   uint64 start = 2;
@@ -109,7 +289,7 @@ message Samples {
   repeated float values = 1;
 }
 
-// server → client, the answer on a view stream.
+// A view's contents (in Response.envelope).
 message EnvelopeFrame {
   oneof content {
     Columns columns = 1;

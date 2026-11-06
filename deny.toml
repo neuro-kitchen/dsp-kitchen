@@ -1,0 +1,59 @@
+# cargo-deny: supply-chain checks run in CI (`cargo deny check`) and locally.
+# - advisories: no crate with a known vulnerability (RustSec), none yanked;
+# - licenses: only the licences listed (dspk itself is MIT OR Apache-2.0; the sorters keep their
+#   upstream licences, named per crate below);
+# - bans: no wildcard version requirements;
+# - sources: crates.io only (no git dependencies, no other registries).
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+# A crate no longer maintained is an error when dspk depends on it directly; deep in the GUI
+# (fonts, D-Bus) and Burn stacks it is the upstream's to replace, and CI would fail on every one
+unmaintained = "workspace"
+ignore = []
+
+[licenses]
+version = 2
+confidence-threshold = 0.93
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "BSL-1.0",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+    "0BSD",
+    "Unicode-DFS-2016",
+]
+# The sorters keep their upstream licence (Kilosort4 / EMUsort: GPL-3.0); they are never linked
+# into the MIT OR Apache-2.0 crates, only run as the separate dspk-cli-sorter program
+exceptions = [
+    { crate = "dspk-sorter-kilosort", allow = ["GPL-3.0-only"] },
+    { crate = "dspk-cli-sorter", allow = ["GPL-3.0-only"] },
+]
+
+# No licence field in its manifest; its LICENSE file is the Apache License 2.0
+[[licenses.clarify]]
+crate = "cfg_block"
+expression = "Apache-2.0"
+license-files = [{ path = "LICENSE", hash = 0xfb72a18 }]
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

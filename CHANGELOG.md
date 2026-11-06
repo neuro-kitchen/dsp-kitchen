@@ -6,7 +6,60 @@ version number.
 
 ## 0.0.6 — 2026-11-06
 
+### Security
+
+- **dspk-stream: only enrolled clients connect (mutual TLS).** A server keeps its own
+  certificate authority (`Authority`: CA key mode 0600, `clients.json`) and lets in only clients
+  holding a certificate it issued and has not revoked (checked at every connection);
+  `--allow-anonymous` adds read-only access without one, with a warning. `dspk clients enroll
+  <name> [--control]` writes a client's identity file (its certificate and key, and the
+  authority, mode 0600); `dspk clients revoke <name>`, `dspk clients list`; `dspk receive
+  --identity <file>`. Changed API: `Server::accept` returns the connection and its `Peer` (name,
+  permission); new `server_config_with_clients`, `client_config_with`, `ClientIdentity`,
+  `ServerTrust::from_identity`.
+- dspk-stream: a client could make a server allocate without bound (a view of any width or with
+  repeated channels, many such requests at once, unlimited connections, 64 MiB messages). Views
+  are now checked (`checked_view`: channels in range and once, at most 65,536 columns and 8 Mi
+  values), client messages are limited to 64 KiB, each client to 8 requests at once, servers to
+  32 clients (`Server::with_max_connections`, `dspk serve --max-clients`), idle connections close
+  after 30 s, and a client proves its address (QUIC Retry) before any handshake work.
+- `dspk serve` stops on SIGTERM (container and service managers), not only Ctrl+C.
+- Supply chain: `cargo-deny` (`deny.toml`: no known vulnerability, no yanked crate, allowed
+  licences only, crates.io only) on every pull request, weekly, and before every release.
+
+### Changed
+
+- **dspk-stream protocol 2** (ALPN `dspk-stream/2`; version 1 peers are refused): the hello is
+  answered with `ServerInfo` (server, the client's name and permission, device state, files);
+  requests (views, `ListFiles`, `Open`) are `Request` → `Response` on streams of their own;
+  refusals come back as `StreamError::Server`. A server can serve the recordings under a data
+  root (`files::DataRoot`: absolute paths, `..`, hidden files and links out of it refused;
+  `RecordingOpener`, `Device`, `serve_session`), each client opening its own;
+  `Session::recording()` replaces `info()`, with `list_files` and `open`.
+  `dspk serve --data <dir>`, `dspk receive --open <path>`. Identity files and keys
+  (`*.dspk-identity.pem`, `*.key`) are never listed or served.
+
+### Added (server jobs)
+
+- **Sorts on a server.** A control client configures a job (`Configure`: sorter, recording,
+  output, parameters, part), starts and stops it; any client reads `Status` and `Logs`. One job
+  at a time (Stopped ⇄ Running, Error); every request is checked (known sorter, paths under the
+  data root, a new output never overwritten, plain parameter names, none the server sets) and
+  every control request audited (`audit.jsonl`, 0600). `dspk-stream::jobs` (`Jobs`,
+  `JobRunner`); `dspk serve --data` runs `dspk-cli-sorter`.
+- **Fetch** files and directories (a `.sorting.zarr`) under the data root (`Session::fetch`,
+  never overwriting, names from the server checked).
+- **`dspk remote <addr> --identity <file>`**: `info`, `files`, `sort … [--wait]`, `status
+  [--follow]`, `logs`, `stop`, `fetch`. `dspk clients enroll --out -` writes to standard output.
+
 ### Added
+
+- `deploy/`: dspk as a server in a Podman container (targets `cpu`, `nvidia`, `mesa`), hardened
+  (non-root, read-only root, no capabilities), with a systemd Quadlet unit; tested with CUDA and
+  Vulkan on an NVIDIA GPU.
+- `dspk serve --name`: the host names clients use, on the self-signed certificate.
+- `dspk doctor` says in one line why a runtime is not usable, and warns when the selected one
+  has no device.
 
 - **`dspk-app` on crates.io** (`cargo install dspk-app`), with its core `dspk-app-core` and the
   electrophysiology plugin `dspk-app-synapse`. Four workspaces on one timeline:
