@@ -64,6 +64,9 @@ ENTRYPOINT ["dspk"]
 # The server's authority (its CA and the enrolled clients) is kept with the data, so it survives
 # restarts and image updates: enroll clients with `podman exec <container> dspk clients enroll`
 ENV DSPK_SERVE_AUTH_DIR=/data/.dspk-auth
+# Clients list and open the recordings under /data (hidden files, such as the authority, and
+# links out of /data are never served)
+ENV DSPK_SERVE_DATA=/data
 # Listen on every interface of the container; only enrolled clients get in. Add --name <host> for
 # the names clients use, or bring your own certificate (--certificate, --private-key).
 CMD ["serve", "--bind", "0.0.0.0:50051"]

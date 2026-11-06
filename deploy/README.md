@@ -39,14 +39,14 @@ podman build -f deploy/Containerfile --ignorefile deploy/.containerignore --targ
 A synthetic recording (384 channels at 30 kHz, one hour):
 
 ```bash
-podman run --rm -p 50051:50051/udp --device nvidia.com/gpu=all dspk-serve:nvidia
+podman run --rm -p 50051:50051/udp --device nvidia.com/gpu=all --security-opt=label=disable dspk-serve:nvidia
 ```
 
 Your own recording, from a folder mounted at `/data`:
 
 ```bash
 mkdir -p ~/dspk-data && cp recording.ap.bin recording.ap.meta ~/dspk-data/
-podman run --rm -p 50051:50051/udp --device nvidia.com/gpu=all --userns=keep-id:uid=10001,gid=10001 \
+podman run --rm -p 50051:50051/udp --device nvidia.com/gpu=all --security-opt=label=disable --userns=keep-id:uid=10001,gid=10001 \
   --read-only --cap-drop=all --security-opt=no-new-privileges --pids-limit=1024 \
   -v ~/dspk-data:/data:Z -v dspk-cache:/home/dspk/.cache dspk-serve:nvidia \
   serve /data/recording.ap.bin --bind 0.0.0.0:50051 --loop --name $(hostname) --max-clients 8
@@ -103,7 +103,8 @@ podman exec dspk-serve dspk clients revoke alice      # refused from its next co
 The client connects with its file:
 
 ```bash
-dspk receive <server-ip>:50051 --identity alice.dspk-identity.pem --server-name <name>
+dspk receive <server-ip>:50051 --identity alice.dspk-identity.pem --server-name <name> \
+  --open mouse1/recording.ap.bin
 ```
 
 `--server-name` must be one of the server's names: `localhost`, or a `--name` given to `serve`
@@ -122,7 +123,7 @@ dspk receive <server-ip>:50051 --identity alice.dspk-identity.pem --server-name 
 ```bash
 mkdir -p ~/.config/containers/systemd ~/dspk-data
 cp deploy/dspk-serve.container ~/.config/containers/systemd/
-# edit the Exec= line: your recording's file name
+# clients open recordings under ~/dspk-data; to serve one to every client, add its path to Exec=
 systemctl --user daemon-reload
 systemctl --user start dspk-serve
 loginctl enable-linger "$USER"   # keeps it running after you log out
@@ -136,7 +137,7 @@ journalctl --user -u dspk-serve  # logs
 Check what the container sees:
 
 ```bash
-podman run --rm --device nvidia.com/gpu=all dspk-serve:nvidia doctor
+podman run --rm --device nvidia.com/gpu=all --security-opt=label=disable dspk-serve:nvidia doctor
 ```
 
 Every runtime is listed as usable, or with the reason it isn't. The `Selected:` line is the one
@@ -150,17 +151,22 @@ device and names one that has.
   `--group-add keep-groups` to keep your `render` and `video` groups.
 - **No GPU:** the `cpu` target.
 
-**SELinux (Fedora, RHEL).** With SELinux enforcing, a container may not use the GPU's device
-files by default: CUDA then reports `CUDA_ERROR_NO_DEVICE` and Vulkan finds no adapter, even
-with the GPU passed in. Either allow containers to use devices, once for the whole machine
-(SELinux stays on):
+**SELinux (Fedora, RHEL).** SELinux gives every process and file a label. Podman starts each
+container as `container_t` with a tag of its own, and the kernel lets it touch only files
+labelled for that container (`:Z` on a volume relabels your folder for it). This holds even if
+something inside the container breaks out of Podman's other limits. The GPU's device files
+(`/dev/nvidia*`, `/dev/dri/*`) are not labelled for containers, so with the GPU passed in, CUDA
+reports `CUDA_ERROR_NO_DEVICE` and Vulkan finds no adapter. Two ways around it:
 
-```bash
-sudo setsebool -P container_use_devices on
-```
+| | `--security-opt=label=disable` (default here) | `setsebool -P container_use_devices on` |
+|---|---|---|
+| What it does | Turns the labels off for this one container | Keeps labelling on for every container and allows them to use device files in general: one rule is loosened for all containers instead of turning the labels off for one |
+| Needs | Nothing (no sudo) | Root, once for the machine (`sudo setsebool -P container_use_devices on`) |
+| Where | `podman run … --security-opt=label=disable`; `SecurityLabelDisable=true` in the Quadlet unit | Then drop `label=disable` from the commands and the unit |
+| Matches | The developer container (`~/dev/devops`, `devop-cli`) | — |
 
-or turn labelling off for this container only: `--security-opt=label=disable`
-(`SecurityLabelDisable=true` in the Quadlet unit).
+Either way the other protections stay: non-root user, read-only root, no capabilities,
+no-new-privileges, pids limit, and only enrolled clients.
 
 `dspk serve` itself only streams; the GPU is for the pipelines and sorts the server runs.
 
@@ -171,7 +177,7 @@ or turn labelling off for this container only: `--security-opt=label=disable`
   136 units, 63,014 spikes in 28.6 s.
 
 ```bash
-podman run --rm --device nvidia.com/gpu=all --userns=keep-id:uid=10001,gid=10001 \
+podman run --rm --device nvidia.com/gpu=all --security-opt=label=disable --userns=keep-id:uid=10001,gid=10001 \
   -v ~/dspk-data:/data:Z dspk-serve:nvidia \
   sort --runtime cuda kilosort4 /data/recording.ap.bin --probe neuropixels1 \
   --output /data/recording.kilosort4.sorting.zarr --duration-sec 30

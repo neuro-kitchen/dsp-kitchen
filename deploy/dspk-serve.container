@@ -18,6 +18,10 @@ Image=localhost/dspk-serve:nvidia
 # NVIDIA (CDI from the NVIDIA Container Toolkit); for mesa: AddDevice=/dev/dri and
 # GroupAdd=keep-groups; for cpu: neither
 AddDevice=nvidia.com/gpu=all
+# A confined container may not use GPU device files (SELinux): labelling off for this container
+# only, as the developer container does; the hardening below stays. Alternative (root, once):
+# setsebool -P container_use_devices on, then remove this line
+SecurityLabelDisable=true
 ContainerName=dspk-serve
 PublishPort=50051:50051/udp
 # You on the host = the container's dspk user (uid 10001), so it can write to ~/dspk-data
@@ -33,8 +37,9 @@ ReadOnly=true
 DropCapability=all
 NoNewPrivileges=true
 PodmanArgs=--pids-limit=1024
-# Your file under ~/dspk-data, and the names clients use for this machine (for the certificate)
-Exec=serve /data/recording.ap.bin --bind 0.0.0.0:50051 --loop --name %H --max-clients 8
+# Clients open the recordings under ~/dspk-data (/data); %H: this machine's name, for the
+# certificate. Add a path (e.g. /data/recording.ap.bin --loop) to open one for every client
+Exec=serve --bind 0.0.0.0:50051 --name %H --max-clients 8
 
 [Service]
 Restart=on-failure
