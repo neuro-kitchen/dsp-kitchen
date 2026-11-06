@@ -24,16 +24,26 @@ pub fn execute_gather_channels<F: DspFloat>(client: &Client, input: &Handle, out
         return;
     }
     let rows: Vec<u32> = order.iter().map(|&c| c as u32).collect();
+    execute_gather_rows::<F>(client, input, &buffer::upload(client, &rows), output, channels, order.len(), samples);
+}
+
+/// [`execute_gather_channels`] with the order already on the device (`rows`: `out_channels` `u32`
+/// indices, each below `channels`; not checked here), e.g. uploaded once for many windows.
+pub fn execute_gather_rows<F: DspFloat>(client: &Client, input: &Handle, rows: &Handle, output: &Handle, channels: usize, out_channels: usize, samples: usize) {
+    let total = out_channels * samples;
+    if total == 0 {
+        return;
+    }
     let geom = dspk_core::compute::LaunchGeometry::elementwise(client, total);
-    // SAFETY: the input holds `channels · samples` values and every index is below `channels`; the
-    // output holds `order.len() · samples`
+    // SAFETY: the input holds `channels · samples` values and every index is below `channels` (the
+    // caller's contract); the output holds `out_channels · samples`
     unsafe {
         super::kernels::gather_rows_kernel::launch::<F>(
             client,
             geom.cube_count,
             geom.cube_dim,
             BufferArg::from_raw_parts(input.clone(), channels * samples),
-            BufferArg::from_raw_parts(buffer::upload(client, &rows), rows.len()),
+            BufferArg::from_raw_parts(rows.clone(), out_channels),
             BufferArg::from_raw_parts(output.clone(), total),
             samples as u32,
             total as u32,

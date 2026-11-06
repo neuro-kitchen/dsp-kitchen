@@ -37,6 +37,10 @@ pub enum PipelineStage {
     /// Discrete Teager-Kaiser Energy Operator: `Ψ[xₜ] = xₜ² − xₜ₋₁·xₜ₊₁`; the neighbours
     /// of the end samples come from `edge`.
     TeagerKaiser { edge: EdgeMode },
+    /// The channels in a new order: output channel `i` is input channel `order[i]`. A permutation
+    /// (every channel once), so the channel count stays; dropping channels happens outside a
+    /// pipeline (at its read or its write).
+    ReorderChannels { order: Vec<usize> },
 }
 
 impl PipelineStage {
@@ -135,7 +139,8 @@ impl PipelineStage {
             | PipelineStage::CommonAverageReference
             | PipelineStage::CommonMedianReference
             | PipelineStage::SpatialWhitening(_)
-            | PipelineStage::SurfaceLaplacian(_) => (0, 0),
+            | PipelineStage::SurfaceLaplacian(_)
+            | PipelineStage::ReorderChannels { .. } => (0, 0),
         })
     }
 }

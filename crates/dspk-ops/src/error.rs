@@ -26,6 +26,8 @@ pub enum OpsError {
     InvalidSections,
     #[error("forward-backward filters need future samples and cannot run on a live stream")]
     ForwardBackwardOnLiveStream,
+    #[error("channel order: {0}")]
+    InvalidChannelOrder(String),
     #[error(transparent)]
     Core(#[from] DspError),
 }
