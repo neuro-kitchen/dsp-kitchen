@@ -158,6 +158,8 @@ pub struct CurationWorkspace {
     templates: Entity<TemplateGrid>,
     focus: FocusHandle,
     panels: HashMap<ViewKind, Entity<CurationPanel>>,
+    /// Set while the dock is rebuilt: the panels it takes out are not being closed by the user.
+    relayout: std::rc::Rc<std::cell::Cell<bool>>,
     /// Views shown, in layout order.
     visible: Vec<ViewKind>,
     grid: Grid,
@@ -225,6 +227,7 @@ impl CurationWorkspace {
             templates,
             focus: cx.focus_handle(),
             panels: HashMap::new(),
+            relayout: Default::default(),
             visible,
             grid: Grid::Auto,
             selected: Vec::new(),
@@ -468,7 +471,11 @@ impl CurationWorkspace {
 
     fn panel(&mut self, kind: ViewKind, cx: &mut Context<Self>) -> Entity<CurationPanel> {
         let ws = cx.weak_entity();
-        self.panels.entry(kind).or_insert_with(|| cx.new(|cx| CurationPanel { ws, kind, focus: cx.focus_handle(), lasso: Vec::new(), plot: Default::default(), view: None, image: None, drawn: None, pan: None, _draw: None })).clone()
+        let relayout = self.relayout.clone();
+        self.panels
+            .entry(kind)
+            .or_insert_with(|| cx.new(|cx| CurationPanel { ws, relayout, kind, focus: cx.focus_handle(), lasso: Vec::new(), plot: Default::default(), view: None, image: None, drawn: None, pan: None, _draw: None }))
+            .clone()
     }
 
     /// The visible views in the grid: the table on the left, plots in rows of `columns`.
@@ -499,7 +506,11 @@ impl CurationWorkspace {
         } else {
             grid
         };
+        // Rebuilding takes the panels out of the dock (they report it while this workspace is
+        // being updated): flagged so they do not take it for the user closing them
+        self.relayout.set(true);
         self.dock.update(cx, |d, cx| d.set_center(root, window, cx));
+        self.relayout.set(false);
         cx.notify();
     }
 
@@ -968,6 +979,8 @@ fn inside(p: (f32, f32), polygon: &[(f32, f32)]) -> bool {
 /// One view of the Curation workspace as a dock panel.
 pub struct CurationPanel {
     ws: WeakEntity<CurationWorkspace>,
+    /// The workspace's flag: set while it rebuilds the dock.
+    relayout: std::rc::Rc<std::cell::Cell<bool>>,
     kind: ViewKind,
     focus: FocusHandle,
     /// The lasso being drawn on the amplitude plot (fractions of the plot area).
@@ -1414,9 +1427,17 @@ impl BasePanel for CurationPanel {
         "dspk-app.curation-view"
     }
 
+    /// The user closed this view (its tab). A rebuild of the dock also takes panels out, from
+    /// inside the workspace's update: those are ignored (calling back into the workspace then
+    /// would update it while it is being updated, the panic seen when adding plots).
     fn on_removed(&mut self, _: &mut Window, cx: &mut Context<Self>) {
-        let kind = self.kind;
-        let _ = self.ws.update(cx, |ws, cx| ws.closed(kind, cx));
+        if self.relayout.get() {
+            return;
+        }
+        let (kind, ws) = (self.kind, self.ws.clone());
+        cx.defer(move |cx| {
+            let _ = ws.update(cx, |ws, cx| ws.closed(kind, cx));
+        });
     }
 }
 
@@ -1526,6 +1547,43 @@ mod bench {
             let neighbours: Vec<(u32, f32)> = sim.iter().map(|&(u, sc)| (sorting.units[u].info.primary_channel as u32, sc)).take(5).collect();
             println!("unit id {} primary ch {ch}, template peak ch {peak}, nonzero {nonzero}/{}, top: {neighbours:?}", sorting.units[lead].info.unit_id, r.len());
             println!("click: fast plots {:.1} ms, all {:.1} ms ({} snippets; best match {:?})", fast.as_secs_f64() * 1e3, t.elapsed().as_secs_f64() * 1e3, snippets.rows.len(), sim.first());
+        }
+    }
+}
+
+/// Headless: adding and removing plot views rebuilds the dock without the panels' removal
+/// calling back into the workspace mid-update (the panic seen when adding plots), and a rebuild
+/// is not taken for the user closing views.
+#[cfg(test)]
+mod layout_tests {
+    use dspk_app_core::data::preferences::Session;
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{px, size, Bounds, Point, TestAppContext, WindowBounds, WindowOptions};
+
+    use super::*;
+
+    #[gpui_kit::test]
+    fn adding_and_removing_views_rebuilds_the_dock(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let (window, ws) = cx.update(|cx| {
+            gpui_kit::init(cx);
+            dspk_app_core::data::services::Services::install(cx);
+            let store = cx.new(|_| Store::new(Session::new(), None));
+            let options = WindowOptions { window_bounds: Some(WindowBounds::Windowed(Bounds { origin: Point::default(), size: size(px(1400.), px(900.)) })), ..Default::default() };
+            gpui_kit::open_window(options, cx, move |window, cx| cx.new(|cx| CurationWorkspace::new(store, window, cx))).expect("open test window")
+        });
+        let before = cx.update(|cx| ws.read(cx).visible.clone());
+        for kind in [ViewKind::Acg, ViewKind::Isi, ViewKind::Amplitude] {
+            let added = !before.contains(&kind);
+            cx.update_window(window, |_, window, cx| ws.update(cx, |w, cx| w.toggle_view(kind, window, cx))).unwrap();
+            cx.run_until_parked();
+            cx.update_window(window, |_, window, cx| window.render_frame(cx)).unwrap();
+            assert_eq!(cx.update(|cx| ws.read(cx).visible.contains(&kind)), added);
+        }
+        // Every view that was visible and not toggled is still there after three rebuilds
+        let after = cx.update(|cx| ws.read(cx).visible.clone());
+        for k in before.iter().filter(|k| ![ViewKind::Acg, ViewKind::Isi, ViewKind::Amplitude].contains(k)) {
+            assert!(after.contains(k), "{k:?} was not closed by the user: it stays");
         }
     }
 }
