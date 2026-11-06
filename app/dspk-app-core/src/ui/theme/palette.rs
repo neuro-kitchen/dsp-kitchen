@@ -35,6 +35,17 @@ pub const UNIT_COLORS: [Pixel; 10] = [
     Pixel::rgb(186, 176, 172),
 ];
 
+/// How colourful unit colours are on dark plots (1 = as on light ones).
+pub const DARK_CHROMA: f32 = 0.75;
+
+/// `c` with `chroma` of its colourfulness: moved toward the grey of the same lightness (hue and
+/// lightness kept).
+fn muted(c: Pixel, chroma: f32) -> Pixel {
+    let grey = 0.2126 * c.r as f32 + 0.7152 * c.g as f32 + 0.0722 * c.b as f32;
+    let mix = |v: u8| (grey + (v as f32 - grey) * chroma).round().clamp(0.0, 255.0) as u8;
+    Pixel::rgb(mix(c.r), mix(c.g), mix(c.b))
+}
+
 impl Palette {
     pub const DARK: Palette = Palette {
         dark: true,
@@ -100,10 +111,12 @@ impl Palette {
         self.channels[ch % self.channels.len()]
     }
 
-    /// Colour of sorted unit `i` (cycling through [`UNIT_COLORS`]; the same in both themes so a
-    /// unit keeps its colour everywhere).
+    /// Colour of sorted unit `i` (cycling through [`UNIT_COLORS`]: the same hue in both themes,
+    /// so a unit keeps its colour everywhere). On dark plots it is [`DARK_CHROMA`] as colourful:
+    /// saturated colours glare on a dark background (design review: chroma −20–30 %).
     pub fn unit(&self, i: usize) -> Pixel {
-        UNIT_COLORS[i % UNIT_COLORS.len()]
+        let c = UNIT_COLORS[i % UNIT_COLORS.len()];
+        if self.dark { muted(c, DARK_CHROMA) } else { c }
     }
 
     /// Spikes no unit claims.
@@ -126,6 +139,22 @@ impl Palette {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unit_colours_are_less_colourful_on_dark_plots() {
+        let spread = |c: Pixel| c.r.max(c.g).max(c.b) as f32 - c.r.min(c.g).min(c.b) as f32;
+        for i in 0..UNIT_COLORS.len() {
+            let (light, dark) = (Palette::of(false).unit(i), Palette::of(true).unit(i));
+            assert_eq!(light, UNIT_COLORS[i], "light plots keep the colours as they are");
+            if spread(light) > 8.0 {
+                let ratio = spread(dark) / spread(light);
+                assert!((0.70..=0.80).contains(&ratio), "unit {i}: chroma ×{ratio}");
+                // Same hue: the brightest channel stays the brightest
+                let top = |c: Pixel| if c.r >= c.g && c.r >= c.b { 0 } else if c.g >= c.b { 1 } else { 2 };
+                assert_eq!(top(dark), top(light), "unit {i}: hue kept");
+            }
+        }
+    }
 
     #[test]
     fn test_heat_endpoints() {
