@@ -46,6 +46,12 @@ pub struct ReceiveArgs {
     /// Accept any server certificate (encrypted, not authenticated): trusted networks only
     #[arg(long, conflicts_with = "certificate")]
     insecure: bool,
+    /// A recording under the server's data root to open first (relative path)
+    #[arg(long)]
+    open: Option<String>,
+    /// The source within --open's file (default: its default one)
+    #[arg(long, requires = "open")]
+    source: Option<String>,
     /// First sample to receive
     #[arg(long, default_value_t = 0)]
     from_sample: u64,
@@ -145,8 +151,19 @@ pub async fn run(args: &ReceiveArgs) -> anyhow::Result<()> {
     };
     let connect_start = Instant::now();
     let mut session = Session::connect(args.addr, &args.server_name, client_config_with(&trust, identity.as_ref())?).await?;
-    let info = session.info().clone();
-    println!("Connected to {} in {:.1} ms", args.addr, connect_start.elapsed().as_secs_f64() * MS_PER_S);
+    let server = session.server().clone();
+    println!(
+        "Connected to {} ({} {}) in {:.1} ms as {}",
+        args.addr,
+        server.server_name,
+        server.server_version,
+        connect_start.elapsed().as_secs_f64() * MS_PER_S,
+        server.peer_name
+    );
+    if let Some(path) = &args.open {
+        session.open(path, args.source.as_deref()).await?;
+    }
+    let info = session.recording().cloned().ok_or_else(|| anyhow::anyhow!("the server has no recording open for this client: choose one with --open <path> (`dspk remote files` lists them)"))?;
     println!("{}: {} channels at {} Hz, {} samples, stored {:?}", info.name, info.channel_count(), info.sample_rate_hz(), info.samples, info.format);
 
     let mut saver = args.save.as_deref().map(|p| Saver::new(p, &info)).transpose()?;

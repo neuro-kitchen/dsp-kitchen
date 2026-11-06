@@ -3,7 +3,7 @@
 //! background, or reused from the file next to the recording).
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -11,7 +11,8 @@ use anyhow::Context;
 use clap::Args;
 use dspk_core::{ProgressEvent, ProgressSink, RecordingSource};
 use dspk_synapse::io::{SyntheticParams, SyntheticRecording};
-use dspk_stream::{serve_recording, server_config_with_clients, Authority, Pacing, ServeOptions, Server, ServerIdentity};
+use dspk_stream::files::DataRoot;
+use dspk_stream::{serve_session, server_config_with_clients, Authority, Device, OpenRecording, Pacing, RecordingOpener, ServeOptions, Server, ServerIdentity, StreamError, StreamResult};
 use dspk_view::{Pyramid, PyramidBuilder, MEMORY_BASE};
 
 use crate::progress::TerminalProgress;
@@ -27,8 +28,13 @@ const PYRAMID_STAGE: &str = "Building pyramid";
 
 #[derive(Args, Debug)]
 pub struct ServeArgs {
-    /// Recording to serve (any format dspk-io reads); a synthetic one when omitted
+    /// Recording every client starts with (any format dspk-io reads); a synthetic one when
+    /// neither this nor --data is given
     recording: Option<PathBuf>,
+    /// Data root: clients list and open the recordings under it (paths relative to it; hidden
+    /// files and links out of it are refused)
+    #[arg(long, env = "DSPK_SERVE_DATA")]
+    data: Option<PathBuf>,
     /// UDP address to listen on
     #[arg(short, long, default_value = DEFAULT_BIND)]
     bind: SocketAddr,
@@ -107,22 +113,36 @@ async fn shutdown() {
     let _ = tokio::signal::ctrl_c().await;
 }
 
-pub async fn run(args: &ServeArgs) -> anyhow::Result<()> {
-    let (source, pyramid): (Arc<dyn RecordingSource>, Pyramid) = match &args.recording {
-        Some(path) => {
-            let source: Arc<dyn RecordingSource> = Arc::from(dspk_synapse::io::open(path).with_context(|| format!("opening {}", path.display()))?);
-            let entries = dspk_synapse::io::sources(path)?;
-            let id = dspk_io::default_source(&entries).map(|e| e.id.clone()).unwrap_or_default();
-            let (pyramid, _) = Pyramid::open_or_create(source.as_ref(), Some((path.as_path(), id.as_str())))?;
-            (source, pyramid)
-        }
-        None => {
-            let params = SyntheticParams { channels: args.channels, sample_rate_hz: args.sample_rate, duration_sec: SYNTHETIC_DURATION_SEC, ..Default::default() };
-            let source: Arc<dyn RecordingSource> = Arc::new(SyntheticRecording::new(params)?);
-            let pyramid = Pyramid::in_memory(source.as_ref(), MEMORY_BASE)?;
-            (source, pyramid)
-        }
+/// Opens a recording and its pyramid (the file next to it, built when missing).
+fn open_with_pyramid(path: &Path, source: Option<&str>) -> anyhow::Result<(Arc<dyn RecordingSource>, Pyramid)> {
+    let entries = dspk_synapse::io::sources(path).with_context(|| format!("reading {}", path.display()))?;
+    let id = match source {
+        Some(id) => id.to_string(),
+        None => dspk_io::default_source(&entries).map(|e| e.id.clone()).unwrap_or_default(),
     };
+    let source: Arc<dyn RecordingSource> = Arc::from(if id.is_empty() { dspk_synapse::io::open(path) } else { dspk_synapse::io::open_source(path, &id) }.with_context(|| format!("opening {}", path.display()))?);
+    let (pyramid, _) = Pyramid::open_or_create(source.as_ref(), Some((path, id.as_str())))?;
+    Ok((source, pyramid))
+}
+
+/// Opens the recordings clients ask for (through dspk-synapse's formats), building a missing
+/// pyramid in the background without a progress bar.
+struct FileOpener;
+
+impl RecordingOpener for FileOpener {
+    fn open(&self, path: &Path, source: Option<&str>) -> StreamResult<OpenRecording> {
+        let (source, pyramid) = open_with_pyramid(path, source).map_err(|e| StreamError::Protocol(format!("{e:#}")))?;
+        let pyramid = Arc::new(pyramid);
+        if !pyramid.is_complete() {
+            PyramidBuilder::default().run(source.clone(), pyramid.clone(), 0, Arc::new(AtomicBool::new(false)), Arc::new(|_| {}));
+        }
+        Ok(OpenRecording::new(source, Some(pyramid)))
+    }
+}
+
+/// The recording every client starts with: says what it is and builds its pyramid in the
+/// background (with a progress bar) when the file next to it is missing or incomplete.
+fn start_recording(source: Arc<dyn RecordingSource>, pyramid: Pyramid) -> OpenRecording {
     let pyramid = Arc::new(pyramid);
     let info = source.info();
     println!("Serving {}: {} channels × {} samples at {} Hz ({:?})", info.name, info.channel_count(), info.samples, info.sample_rate_hz(), info.format);
@@ -138,6 +158,33 @@ pub async fn run(args: &ServeArgs) -> anyhow::Result<()> {
             PyramidBuilder::default().run(source.clone(), pyramid.clone(), 0, Arc::new(AtomicBool::new(false)), on_progress);
         }
     }
+
+    OpenRecording::new(source, Some(pyramid))
+}
+
+pub async fn run(args: &ServeArgs) -> anyhow::Result<()> {
+    let initial: Option<(Arc<dyn RecordingSource>, Pyramid)> = match (&args.recording, &args.data) {
+        (Some(path), _) => Some(open_with_pyramid(path, None)?),
+        (None, Some(_)) => None,
+        (None, None) => {
+            let params = SyntheticParams { channels: args.channels, sample_rate_hz: args.sample_rate, duration_sec: SYNTHETIC_DURATION_SEC, ..Default::default() };
+            let source: Arc<dyn RecordingSource> = Arc::new(SyntheticRecording::new(params)?);
+            let pyramid = Pyramid::in_memory(source.as_ref(), MEMORY_BASE)?;
+            Some((source, pyramid))
+        }
+    };
+    let files = match &args.data {
+        Some(dir) => {
+            let root = DataRoot::new(dir)?;
+            println!("Files: recordings under {} (clients list and open them)", root.path().display());
+            Some((root, Arc::new(FileOpener) as Arc<dyn RecordingOpener>))
+        }
+        None => None,
+    };
+    let recording = match initial {
+        Some((source, pyramid)) => Some(Arc::new(start_recording(source, pyramid))),
+        None => None,
+    };
 
     let identity = match (&args.certificate, &args.private_key) {
         (Some(certificate_chain), Some(private_key)) => ServerIdentity::Files { certificate_chain: certificate_chain.clone(), private_key: private_key.clone() },
@@ -164,6 +211,13 @@ pub async fn run(args: &ServeArgs) -> anyhow::Result<()> {
         loop_playback: args.r#loop,
         ..Default::default()
     };
+    let device = Arc::new(Device {
+        name: args.names.first().cloned().unwrap_or_else(|| LOCALHOST.to_string()),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        files,
+        recording,
+        options,
+    });
     println!("Listening on {} (Ctrl+C to stop)", server.local_addr()?);
 
     tokio::select! {
@@ -172,9 +226,9 @@ pub async fn run(args: &ServeArgs) -> anyhow::Result<()> {
             while let Some((connection, peer)) = server.accept().await {
                 let remote = format!("{} ({}, {})", connection.remote_address(), peer.name, peer.permission);
                 println!("Client {remote} connected");
-                let (source, pyramid, options) = (source.clone(), pyramid.clone(), options.clone());
+                let device = device.clone();
                 tokio::spawn(async move {
-                    match serve_recording(connection, source, Some(pyramid), options).await {
+                    match serve_session(connection, peer, device).await {
                         Ok(()) => println!("Client {remote} left"),
                         Err(e) => println!("Client {remote}: {e}"),
                     }
