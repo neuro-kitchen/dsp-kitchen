@@ -847,6 +847,32 @@ impl Store {
         .detach();
     }
 
+    /// Opens the recording at `path` on a server: drawn from the server's pyramid, read there
+    /// (nothing copied whole). Processing previews need the recording here, so they stay off.
+    pub fn open_remote(&mut self, profile: crate::data::remote::ServerProfile, path: String, cx: &mut Context<Self>) {
+        let label = format!("{} · {}", profile.name, path);
+        self.opening = Some(label.clone());
+        self.set_status(format!("Opening {label}…"), cx);
+        let task = crate::data::remote::runtime().spawn(crate::data::remote::open_recording(profile, path));
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |store, cx| {
+                store.opening = None;
+                match result {
+                    Ok(Ok(signal)) => {
+                        let mut recording = Recording::new(SourceSet::single(Dataset::new(signal, None)), None);
+                        recording.name = label.clone();
+                        store.install(recording, cx);
+                        store.set_status(format!("Opened {label} (read on the server)"), cx);
+                    }
+                    Ok(Err(e)) => store.set_status(format!("Could not open {label}: {e:#}"), cx),
+                    Err(e) => store.set_status(format!("Could not open {label}: {e}"), cx),
+                }
+            });
+        })
+        .detach();
+    }
+
     /// Opens a procedural recording (noise, hum, drifting units) computed on demand.
     pub fn open_synthetic(&mut self, channels: usize, sample_rate: f64, duration_sec: f64, cx: &mut Context<Self>) {
         match Dataset::procedural(channels, sample_rate, duration_sec) {

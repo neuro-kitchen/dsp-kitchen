@@ -99,6 +99,24 @@ pub async fn open_recording(profile: ServerProfile, path: String) -> anyhow::Res
     Ok(Arc::new(RemoteSignal::new(Arc::new(session), runtime().handle().clone())?))
 }
 
+/// Fetches `path` (a file, or a directory such as a .sorting.zarr) from the server into
+/// `<results>/<server>/`, under a new name when one is there already; returns the local path.
+pub async fn fetch(profile: ServerProfile, path: String, results: PathBuf) -> anyhow::Result<PathBuf> {
+    let session = connect(&profile).await?;
+    let name = path.trim_end_matches('/').rsplit('/').next().unwrap_or("fetched").to_string();
+    let dir = results_dir(&results, &profile);
+    tokio::fs::create_dir_all(&dir).await?;
+    let mut local = dir.join(&name);
+    let mut n = 1;
+    while local.exists() {
+        n += 1;
+        local = dir.join(format!("{n}-{name}"));
+    }
+    session.fetch(path.trim_end_matches('/'), &local).await?;
+    session.close().await;
+    Ok(local)
+}
+
 /// Where a server's results are fetched to: `<results>/<server name>/`.
 pub fn results_dir(base: &Path, profile: &ServerProfile) -> PathBuf {
     let safe: String = profile.name.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') { c } else { '_' }).collect();
@@ -164,6 +182,70 @@ pub fn remote_sort(profile: ServerProfile, job: wire::Configure, results: PathBu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dspk_core::{MemoryRecording, RecordingSource};
+    use dspk_stream::files::DataRoot;
+    use dspk_stream::{serve_session, server_config_with_clients, Authority, Device, OpenRecording, Permission, RecordingOpener, ServeOptions, Server, ServerIdentity};
+    use dspk_view::{Envelope, SignalBackend, View};
+
+    /// Opens every recording as a 3-channel test signal.
+    struct TestOpener;
+    impl RecordingOpener for TestOpener {
+        fn open(&self, _: &Path, _: Option<&str>) -> dspk_stream::StreamResult<OpenRecording> {
+            let data: Vec<f32> = (0..3 * 4_000).map(|i| (i % 50) as f32).collect();
+            Ok(OpenRecording::new(Arc::new(MemoryRecording::new("t", data, 3, 1000.0).unwrap()) as Arc<dyn RecordingSource>, None))
+        }
+    }
+
+    /// The app's data layer against a real server: list, open (RemoteSignal), fetch.
+    #[test]
+    fn list_open_and_fetch_from_a_server() {
+        let base = std::env::temp_dir().join(format!("dspk-app-remote-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("data");
+        std::fs::create_dir_all(root.join("m1")).unwrap();
+        std::fs::write(root.join("m1/rec.bin"), [0u8; 8]).unwrap();
+        std::fs::write(root.join("m1/notes.txt"), "hello").unwrap();
+        let authority = Arc::new(Authority::open_or_create(&base.join("auth")).unwrap());
+        authority.enroll("app", Permission::Read).unwrap().write(&base.join("app.pem")).unwrap();
+        let tls = server_config_with_clients(&authority, &ServerIdentity::SelfSigned { names: vec!["localhost".into()] }, false).unwrap();
+        let device = Arc::new(Device {
+            name: "test".into(),
+            version: "0".into(),
+            files: Some((DataRoot::new(&root).unwrap(), Arc::new(TestOpener))),
+            recording: None,
+            jobs: None,
+            options: ServeOptions::default(),
+        });
+        let addr = runtime().block_on(async {
+            let server = Server::bind("127.0.0.1:0".parse().unwrap(), tls.config).unwrap().with_authority(authority);
+            let addr = server.local_addr().unwrap();
+            tokio::spawn(async move {
+                while let Some((c, peer)) = server.accept().await {
+                    tokio::spawn(serve_session(c, peer, device.clone()));
+                }
+            });
+            addr
+        });
+        let profile = ServerProfile { name: "test server".into(), address: addr.to_string(), server_name: "localhost".into(), identity: base.join("app.pem") };
+
+        let info = runtime().block_on(test(profile.clone())).unwrap();
+        assert_eq!(info.peer_name, "app");
+        let list = runtime().block_on(list(profile.clone(), "m1".into())).unwrap();
+        assert_eq!(list.entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["notes.txt", "rec.bin"]);
+
+        let signal = runtime().block_on(open_recording(profile.clone(), "m1/rec.bin".into())).unwrap();
+        assert_eq!(signal.info().channel_count(), 3);
+        let mut env = Envelope::Samples(Vec::new());
+        signal.view(&View { channels: vec![2], start: 0, end: 10, width: 10 }, &mut env).unwrap();
+        assert!(matches!(env, Envelope::Samples(v) if v.len() == 10));
+
+        let local = runtime().block_on(fetch(profile.clone(), "m1/notes.txt".into(), base.join("results"))).unwrap();
+        assert_eq!(local, base.join("results/test_server/notes.txt"));
+        assert_eq!(std::fs::read_to_string(&local).unwrap(), "hello");
+        let again = runtime().block_on(fetch(profile, "m1/notes.txt".into(), base.join("results"))).unwrap();
+        assert_eq!(again, base.join("results/test_server/2-notes.txt"), "never overwritten");
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn profiles_are_checked_before_connecting() {

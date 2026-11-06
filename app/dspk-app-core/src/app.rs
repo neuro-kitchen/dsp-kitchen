@@ -36,6 +36,8 @@ pub struct DspApp {
     show_about: bool,
     /// Settings, while open.
     settings: Option<Entity<crate::screens::settings::SettingsScreen>>,
+    /// Open from server, while open.
+    browser: Option<(Entity<crate::screens::server_browser::ServerBrowser>, Subscription)>,
     /// Workspaces plugins provide (built the first time they are shown).
     plugin_views: std::collections::HashMap<Workspace, gpui_kit::AnyView>,
     focus: FocusHandle,
@@ -65,7 +67,7 @@ impl DspApp {
         ];
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
-        Self { store, explore, pipeline, floating, palette: None, show_help: false, show_about: false, settings: None, plugin_views: Default::default(), focus, _subs: subs }
+        Self { store, explore, pipeline, floating, palette: None, show_help: false, show_about: false, settings: None, browser: None, plugin_views: Default::default(), focus, _subs: subs }
     }
 
     /// Light, dark, or the system's (`None`); the store learns which, for the plot colours.
@@ -206,6 +208,8 @@ impl DspApp {
             Button::new("menu-file").ghost().small().label("File").dropdown_menu(move |menu: PopupMenu, _, _| {
                 let t = this.clone();
                 let mut menu = menu.item(PopupMenuItem::new("Open recording…").on_click(move |_, _, cx| t.update(cx, |a, cx| a.prompt_open(cx))));
+                let t = this.clone();
+                menu = menu.item(PopupMenuItem::new("Open from server…").on_click(move |_, _, cx| t.update(cx, |a, cx| a.toggle_browser(cx))));
                 let t = this.clone();
                 menu = menu.item(PopupMenuItem::new("Synthetic recording (32 ch, 5 min)").on_click(move |_, _, cx| t.update(cx, |a, cx| a.open_synthetic(cx))));
                 if !recent.is_empty() {
@@ -450,32 +454,48 @@ impl DspApp {
         cx.notify();
     }
 
-    /// Settings over everything; a click outside the card closes it.
-    fn settings_overlay(&self, screen: Entity<crate::screens::settings::SettingsScreen>, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    /// Opens Open from server, or closes it when open.
+    fn toggle_browser(&mut self, cx: &mut Context<Self>) {
+        if self.browser.take().is_none() {
+            let browser = cx.new(|cx| crate::screens::server_browser::ServerBrowser::new(self.store.clone(), cx));
+            let sub = cx.subscribe(&browser, |this, _, e: &crate::screens::server_browser::BrowserEvent, cx| match e {
+                crate::screens::server_browser::BrowserEvent::Opened => {
+                    this.browser = None;
+                    this.store.update(cx, |s, cx| s.set_workspace(Workspace::Explore, cx));
+                    cx.notify();
+                }
+            });
+            self.browser = Some((browser, sub));
+        }
+        cx.notify();
+    }
+
+    /// `content` over everything, in a card; a click outside it runs `close`.
+    fn modal(&self, id: &'static str, content: AnyElement, close: fn(&mut Self), cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = cx.theme();
         let (bg, border) = (t.popover, t.border);
         div()
-            .id("settings-overlay")
+            .id(SharedString::from(format!("{id}-overlay")))
             .absolute()
             .size_full()
             .flex()
             .items_center()
             .justify_center()
             .bg(gpui_kit::hsla(0., 0., 0., 0.5))
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.settings = None;
+            .on_click(cx.listener(move |this, _, _, cx| {
+                close(this);
                 cx.notify();
             }))
             .child(
                 div()
-                    .id("settings-card")
+                    .id(SharedString::from(format!("{id}-card")))
                     .p_4()
                     .rounded_lg()
                     .border_1()
                     .border_color(border)
                     .bg(bg)
                     .on_click(|_, _, cx| cx.stop_propagation())
-                    .child(screen),
+                    .child(content),
             )
     }
 
@@ -581,7 +601,8 @@ impl Render for DspApp {
             .children(self.palette.as_ref().map(|(p, _)| p.clone()))
             .when(self.show_help, |d| d.child(self.help(cx)))
             .when(self.show_about, |d| d.child(self.about(cx)))
-            .children(self.settings.clone().map(|s| self.settings_overlay(s, cx)))
+            .children(self.settings.clone().map(|s| self.modal("settings", s.into_any_element(), |a| a.settings = None, cx)))
+            .children(self.browser.as_ref().map(|(b, _)| b.clone()).map(|b| self.modal("server-browser", b.into_any_element(), |a| a.browser = None, cx)))
     }
 }
 
