@@ -1,3 +1,11 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/neuro-kitchen/dsp-kitchen/main/assets/img/neuro-kitchen-lockup-on-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/neuro-kitchen/dsp-kitchen/main/assets/img/neuro-kitchen-lockup-on-light.svg">
+    <img alt="neuro-kitchen" width="360" src="https://raw.githubusercontent.com/neuro-kitchen/dsp-kitchen/main/assets/img/neuro-kitchen-lockup-on-light.svg">
+  </picture>
+</p>
+
 # dspk
 
 > [!WARNING]
