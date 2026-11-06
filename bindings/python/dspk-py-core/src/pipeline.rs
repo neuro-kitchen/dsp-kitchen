@@ -126,6 +126,7 @@ fn plan_dict<'py>(py: Python<'py>, plan: Plan) -> PyResult<Bound<'py, PyDict>> {
     out.set_item("halo", halo)?;
     out.set_item("stored_upload", plan.stored_upload)?;
     out.set_item("channels", plan.channels)?;
+    out.set_item("output_channels", plan.output_channels)?;
     out.set_item("input_samples", plan.input_samples)?;
     out.set_item("input_rate", plan.input_rate_hz)?;
     out.set_item("output_samples", plan.output_samples)?;

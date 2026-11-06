@@ -76,6 +76,22 @@ def laplacian(laplacian) -> Stage:  # noqa: F811 (name of the operation)
     return _ops.stage_laplacian(laplacian._native)
 
 
+def reorder_channels(order: Sequence[int]) -> Stage:
+    """The channels in ``order`` (0-based, every channel once): output channel ``i`` is input
+    channel ``order[i]``. The channel count stays; to drop channels use
+    :func:`dspk.ops.layout.remap`, or a ``remap`` node right after ``read`` or before ``write``."""
+    return _ops.stage_reorder_channels([int(c) for c in order])
+
+
+def remap(map) -> Stage:  # noqa: A002
+    """A channel map (see :mod:`dspk.ops.layout`) that keeps every channel, as a stage
+    (:func:`reorder_channels` of its order)."""
+    from dspk.ops.layout import map_order
+
+    order, _ = map_order(map)
+    return reorder_channels(order)
+
+
 def car() -> Stage:
     """Common average reference: the mean over channels subtracted at every sample."""
     return _ops.stage_car()
@@ -104,5 +120,5 @@ def teager_kaiser(*, edge: str = TEAGER_KAISER_DEFAULT_EDGE) -> Stage:
 __all__ = [
     "GAUSSIAN_DEFAULT_EDGE", "MAX_MEDIAN_WIDTH", "MEDIAN_DEFAULT_EDGE", "Stage", "TEAGER_KAISER_DEFAULT_EDGE",
     "FIR_DEFAULT_EDGE", "car", "clamp", "cmr", "fir", "gaussian_smooth", "laplacian", "whiten", "iir", "median", "notch", "scale", "sos", "subtract_baseline",
-    "teager_kaiser",
+    "remap", "reorder_channels", "teager_kaiser",
 ]

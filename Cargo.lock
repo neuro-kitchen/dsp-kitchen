@@ -3429,6 +3429,7 @@ dependencies = [
  "numpy",
  "pyo3",
  "pyo3-stub-gen",
+ "serde_json",
 ]
 
 [[package]]
