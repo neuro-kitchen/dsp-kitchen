@@ -144,7 +144,7 @@ def isi_histogram(train: numpy.typing.NDArray[numpy.uint64], sample_rate: builti
     Inter-spike-interval histogram: `(bin_edges_ms, counts)` over `[0, max_ms]` in `bin_ms` bins.
     """
 
-def isi_violations(train: numpy.typing.NDArray[numpy.uint64], sample_rate: builtins.float, duration_s: builtins.float, threshold_ms: builtins.float, min_isi_ms: builtins.float) -> dict:
+def isi_violations(train: numpy.typing.NDArray[numpy.uint64], total_samples: builtins.int, sample_rate: builtins.float, threshold_ms: builtins.float, min_isi_ms: builtins.float) -> dict:
     r"""
     ISI violations (Hill et al. 2011, as SpikeInterface): `violations`, `ratio`
     (`isi_violations_ratio`), `rate_pct`, `per_second`, `firing_rate_hz`, `spikes`.

@@ -15,7 +15,7 @@ pub use comparison::{
 pub use composite::{compute_composite_score, compute_firing_range, compute_sort_composite_score, CompositeScore, CompositeScoreOptions};
 pub use correlogram::{Correlogram, compute_autocorrelogram, compute_crosscorrelogram};
 pub use evoked::{
-    MepMetrics, PsthOptions, PsthResult, StimulusTriggeredAverage, compute_psth, DEFAULT_PSTH_BIN_MS, DEFAULT_PSTH_POST_MS, DEFAULT_PSTH_PRE_MS,
+    MepMetrics, MepOptions, PsthOptions, PsthResult, StimulusTriggeredAverage, compute_psth, DEFAULT_PSTH_BIN_MS, DEFAULT_PSTH_POST_MS, DEFAULT_PSTH_PRE_MS,
     compute_stimulus_triggered_average, quantify_mep,
 };
 pub use firing::{

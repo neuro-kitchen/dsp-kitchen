@@ -64,8 +64,57 @@ impl DriftEstimate {
     }
 }
 
-/// Estimates rigid vertical probe drift $d(t)$ from spike timestamps, depths (`y_um`), and amplitudes.
-pub fn estimate_rigid_drift(
+/// Defaults of [`DriftOptions`] (Kilosort-like: 2 s bins, 5 µm depth bins, up to ±50 µm).
+pub const DEFAULT_DRIFT_TIME_BIN_S: f64 = 2.0;
+pub const DEFAULT_DRIFT_DEPTH_BIN_UM: f32 = 5.0;
+pub const DEFAULT_MAX_DRIFT_UM: f32 = 50.0;
+pub const DEFAULT_DRIFT_DEPTH_BLOCKS: usize = 5;
+
+/// Settings of [`estimate_rigid_drift`] / [`estimate_nonrigid_drift`]. The depth range is the
+/// probe's (required: [`DriftOptions::new`]); the rest have defaults.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DriftOptions {
+    pub time_bin_s: f64,
+    pub depth_min_um: f32,
+    pub depth_max_um: f32,
+    pub depth_bin_um: f32,
+    /// Largest drift searched (either way).
+    pub max_drift_um: f32,
+    /// Depth blocks of the non-rigid estimate.
+    pub depth_blocks: usize,
+}
+
+impl DriftOptions {
+    pub fn new(depth_min_um: f32, depth_max_um: f32) -> Self {
+        Self {
+            time_bin_s: DEFAULT_DRIFT_TIME_BIN_S,
+            depth_min_um,
+            depth_max_um,
+            depth_bin_um: DEFAULT_DRIFT_DEPTH_BIN_UM,
+            max_drift_um: DEFAULT_MAX_DRIFT_UM,
+            depth_blocks: DEFAULT_DRIFT_DEPTH_BLOCKS,
+        }
+    }
+}
+
+fn seconds(samples: &[u64], sample_rate_hz: f64) -> Vec<f64> {
+    samples.iter().map(|&s| s as f64 / sample_rate_hz).collect()
+}
+
+/// Rigid vertical probe drift d(t) from spikes (samples at `sample_rate_hz`, their depths `y_um`
+/// and amplitudes) over the recording's `total_samples`.
+pub fn estimate_rigid_drift(spike_samples: &[u64], depths_um: &[f32], amplitudes_uv: &[f32], total_samples: u64, sample_rate_hz: f64, options: &DriftOptions) -> DriftEstimate {
+    let o = options;
+    rigid_drift_seconds(&seconds(spike_samples, sample_rate_hz), depths_um, amplitudes_uv, total_samples as f64 / sample_rate_hz, o.time_bin_s, o.depth_min_um, o.depth_max_um, o.depth_bin_um, o.max_drift_um)
+}
+
+/// Non-rigid drift: [`estimate_rigid_drift`] per depth block (`options.depth_blocks`).
+pub fn estimate_nonrigid_drift(spike_samples: &[u64], depths_um: &[f32], amplitudes_uv: &[f32], total_samples: u64, sample_rate_hz: f64, options: &DriftOptions) -> NonRigidDriftEstimate {
+    let o = options;
+    nonrigid_drift_seconds(&seconds(spike_samples, sample_rate_hz), depths_um, amplitudes_uv, total_samples as f64 / sample_rate_hz, o.time_bin_s, o.depth_min_um, o.depth_max_um, o.depth_bin_um, o.max_drift_um, o.depth_blocks)
+}
+
+fn rigid_drift_seconds(
     spike_times_sec: &[f64],
     spike_depths_um: &[f32],
     spike_amplitudes_uv: &[f32],
@@ -204,7 +253,7 @@ impl NonRigidDriftEstimate {
 /// Estimates non-rigid multi-depth vertical probe drift $\Delta z(y, t)$ by partitioning
 /// `[depth_min_um, depth_max_um]` into `num_depth_blocks` overlapping windows and registering each block.
 #[allow(clippy::too_many_arguments)]
-pub fn estimate_nonrigid_drift(
+fn nonrigid_drift_seconds(
     spike_times_sec: &[f64],
     spike_depths_um: &[f32],
     spike_amplitudes_uv: &[f32],
@@ -250,7 +299,7 @@ pub fn estimate_nonrigid_drift(
             }
         }
 
-        let est = estimate_rigid_drift(
+        let est = rigid_drift_seconds(
             &b_times,
             &b_depths,
             &b_amps,
@@ -281,6 +330,11 @@ pub fn estimate_nonrigid_drift(
 mod tests {
     use super::*;
 
+    /// Times (s) as samples at 1 kHz (the tests' rate).
+    fn to_ms(times: &[f64]) -> Vec<u64> {
+        times.iter().map(|&t| (t * 1000.0).round() as u64).collect()
+    }
+
     #[test]
     fn test_rigid_drift_estimation_recovers_sinusoidal_motion() {
         let mut times = Vec::new();
@@ -305,7 +359,7 @@ mod tests {
             }
         }
 
-        let est = estimate_rigid_drift(&times, &depths, &amps, 4.0, 1.0, 0.0, 350.0, 4.0, 40.0);
+        let est = estimate_rigid_drift(&to_ms(&times), &depths, &amps, (4.0 * 1000.0) as u64, 1000.0, &DriftOptions { time_bin_s: 1.0, depth_min_um: 0.0, depth_max_um: 350.0, depth_bin_um: 4.0, max_drift_um: 40.0, depth_blocks: 1 });
         assert_eq!(est.num_time_bins, num_bins);
         for (b, &expected) in true_drifts.iter().enumerate() {
             assert!(
@@ -332,7 +386,7 @@ mod tests {
                 }
             }
         }
-        let est = estimate_rigid_drift(&times, &depths, &amps, 4.0, 1.0, 0.0, 350.0, 4.0, 40.0);
+        let est = estimate_rigid_drift(&to_ms(&times), &depths, &amps, (4.0 * 1000.0) as u64, 1000.0, &DriftOptions { time_bin_s: 1.0, depth_min_um: 0.0, depth_max_um: 350.0, depth_bin_um: 4.0, max_drift_um: 40.0, depth_blocks: 1 });
         assert_eq!(est.drift_um[0], 0.0, "before the reference");
         assert!(est.drift_um[1].abs() <= 1e-3, "reference bin: {}", est.drift_um[1]);
         assert_eq!(est.drift_um[2], est.drift_um[1], "empty bin holds the previous drift");
@@ -361,7 +415,7 @@ mod tests {
             }
         }
 
-        let nr = estimate_nonrigid_drift(&times, &depths, &amps, 2.0, 1.0, 0.0, 600.0, 4.0, 30.0, 2);
+        let nr = estimate_nonrigid_drift(&to_ms(&times), &depths, &amps, (2.0 * 1000.0) as u64, 1000.0, &DriftOptions { time_bin_s: 1.0, depth_min_um: 0.0, depth_max_um: 600.0, depth_bin_um: 4.0, max_drift_um: 30.0, depth_blocks: 2 });
         let d_bottom = nr.interpolate_drift_at(100.0, 1.5);
         let d_top = nr.interpolate_drift_at(500.0, 1.5);
         assert!((d_bottom - 12.0).abs() <= 4.0, "d_bottom={d_bottom}");

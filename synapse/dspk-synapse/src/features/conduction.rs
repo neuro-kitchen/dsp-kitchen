@@ -40,8 +40,8 @@ pub fn estimate_hdemg_conduction_velocity(
     rows: usize,
     cols: usize,
     samples: usize,
-    pitch_um: f32,
     sample_rate_hz: f64,
+    pitch_um: f32,
 ) -> ConductionVelocityEstimate {
     assert_eq!(waveform.len(), rows * cols * samples);
     if rows == 0 || cols < 3 || samples < 5 {
@@ -145,7 +145,7 @@ mod tests {
             }
         }
 
-        let est = estimate_hdemg_conduction_velocity(&wave, rows, cols, samples, pitch_um, fs);
+        let est = estimate_hdemg_conduction_velocity(&wave, rows, cols, samples, fs, pitch_um);
         assert!(
             (est.velocity_m_per_s - 4.0).abs() < 0.3,
             "est velocity = {} m/s, expected 4.0 m/s",

@@ -24,17 +24,19 @@ pub struct IsiMetrics {
     pub firing_rate_hz: f64,
 }
 
-/// ISI violations of a spike train (sample indices, any order) over a recording of `total_duration_sec`.
+/// ISI violations of a spike train (sample indices, any order) over a recording of `total_samples`
+/// at `sample_rate_hz`.
 pub fn compute_isi_violations(
     spike_samples: &[u64],
+    total_samples: u64,
     sample_rate_hz: f64,
-    total_duration_sec: f64,
     isi_threshold_ms: f64,
     min_isi_ms: f64,
 ) -> IsiMetrics {
     let mut sorted = spike_samples.to_vec();
     sorted.sort_unstable();
     let n = sorted.len();
+    let total_duration_sec = total_samples as f64 / sample_rate_hz;
     let threshold_s = isi_threshold_ms * 1e-3;
     let violations = sorted
         .windows(2)
@@ -259,7 +261,7 @@ mod tests {
     #[test]
     fn test_isi_violations() {
         let spikes = vec![300, 0, 30];
-        let metrics = compute_isi_violations(&spikes, 30000.0, 1.0, 1.5, 0.0);
+        let metrics = compute_isi_violations(&spikes, 30_000, 30000.0, 1.5, 0.0);
         assert_eq!(metrics.total_spikes, 3);
         assert_eq!(metrics.violation_count, 1);
         assert_eq!(metrics.violation_rate_pct, 50.0);

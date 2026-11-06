@@ -85,7 +85,7 @@ def test_isi_violations_and_refractory_counts():
     n, dur, thr = t.size, 60.0, metrics.DEFAULT_ISI_THRESHOLD_MS
     isis = np.diff(np.sort(t).astype(np.int64)) / FS
     v = int(np.sum(isis < thr / 1e3))
-    r = metrics.isi_violations(t, FS, dur)
+    r = metrics.isi_violations(t, int(dur * FS), FS)
     assert r["violations"] == v
     # Hill et al.: violation rate over the violation time window, relative to the total rate
     np.testing.assert_allclose(r["ratio"], (v / (2 * n * thr / 1e3)) / (n / dur), rtol=1e-9)

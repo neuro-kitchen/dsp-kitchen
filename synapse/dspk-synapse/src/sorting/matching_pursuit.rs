@@ -40,19 +40,13 @@ struct MatchingPursuitParams {
 /// with no larger one within a template length (so a pass's picks never overlap), and subtracts
 /// them from the device residual; overlapping spikes are resolved by later passes. Only the picks
 /// are downloaded.
-#[allow(clippy::too_many_arguments)]
-pub fn match_spikes_matching_pursuit(
-    client: &Client,
-    data: &[f32],
-    channels: usize,
-    samples: usize,
-    templates: &[WaveformTemplate],
-    min_amplitude_scale: f32,
-    max_amplitude_scale: f32,
-    min_explained_energy: f32,
-    max_passes: usize,
-) -> Vec<MatchedSpike> {
-    let params = MatchingPursuitParams { min_amplitude_scale, max_amplitude_scale, min_explained_energy, max_passes };
+pub fn match_spikes_matching_pursuit(client: &Client, data: &[f32], channels: usize, samples: usize, templates: &[WaveformTemplate], settings: &MatchingPursuitMatcher) -> Vec<MatchedSpike> {
+    let params = MatchingPursuitParams {
+        min_amplitude_scale: settings.min_amplitude_scale,
+        max_amplitude_scale: settings.max_amplitude_scale,
+        min_explained_energy: settings.min_explained_energy,
+        max_passes: settings.max_passes,
+    };
     matching_pursuit_on(client, data, channels, samples, templates, params)
 }
 
@@ -252,17 +246,7 @@ impl SpikeMatcher for MatchingPursuitMatcher {
         samples: usize,
         templates: &[WaveformTemplate],
     ) -> DspResult<Vec<MatchedSpike>> {
-        Ok(match_spikes_matching_pursuit(
-            client,
-            data,
-            channels,
-            samples,
-            templates,
-            self.min_amplitude_scale,
-            self.max_amplitude_scale,
-            self.min_explained_energy,
-            self.max_passes,
-        ))
+        Ok(match_spikes_matching_pursuit(client, data, channels, samples, templates, self))
     }
 }
 
@@ -278,7 +262,8 @@ mod tests {
             type Output = Vec<MatchedSpike>;
             fn run(self, client: Client) -> Vec<MatchedSpike> {
                 let min_scale = 2.0 - self.4;
-                match_spikes_matching_pursuit(&client, self.0, self.1, self.2, self.3, min_scale, self.4, self.5, 4)
+                let settings = MatchingPursuitMatcher { min_amplitude_scale: min_scale, max_amplitude_scale: self.4, min_explained_energy: self.5, max_passes: 4 };
+                match_spikes_matching_pursuit(&client, self.0, self.1, self.2, self.3, &settings)
             }
         }
         let targets = ComputeTarget::for_tests();

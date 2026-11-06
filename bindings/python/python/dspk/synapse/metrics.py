@@ -38,10 +38,10 @@ def _train(x) -> np.ndarray:
 
 
 
-def isi_violations(train, sample_rate: float, duration_s: float, *, threshold_ms: float = DEFAULT_ISI_THRESHOLD_MS, min_isi_ms: float = DEFAULT_MIN_ISI_MS) -> dict:
+def isi_violations(train, total_samples: int, sample_rate: float, *, threshold_ms: float = DEFAULT_ISI_THRESHOLD_MS, min_isi_ms: float = DEFAULT_MIN_ISI_MS) -> dict:
     """ISI violations (Hill et al. 2011, SpikeInterface's ``isi_violations_ratio``): ``violations``,
     ``ratio``, ``rate_pct``, ``per_second``, ``firing_rate_hz``, ``spikes``."""
-    return _m.isi_violations(_train(train), sample_rate, duration_s, threshold_ms, min_isi_ms)
+    return _m.isi_violations(_train(train), int(total_samples), sample_rate, threshold_ms, min_isi_ms)
 
 
 def isi_histogram(train, sample_rate: float, *, bin_ms: float = 1.0, max_ms: float = 100.0) -> dict:

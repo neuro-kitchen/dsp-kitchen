@@ -190,8 +190,8 @@ impl SortedUnit {
 
         let isi = compute_isi_violations(
             &spike_samples,
+            (duration_sec * sample_rate_hz).round() as u64,
             sample_rate_hz,
-            duration_sec,
             criteria.refractory_ms,
             criteria.censored_ms,
         );

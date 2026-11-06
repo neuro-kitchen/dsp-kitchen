@@ -26,12 +26,9 @@ use dspk_core::compute::{ComputeTarget, ComputeTask};
 use dspk_core::{MemoryOrder, MemoryRecording, RecordingSource, SampleFormat};
 use dspk_synapse::io::probe::{precompute_knn_table, Position3D, SensorLayout, SensorSite};
 use dspk_synapse::io::{SyntheticParams, SyntheticRecording};
-use dspk_synapse::sorting::matching_pursuit::{
-    DEFAULT_MAX_AMPLITUDE_SCALE, DEFAULT_MAX_PASSES, DEFAULT_MIN_AMPLITUDE_SCALE, DEFAULT_MIN_EXPLAINED_ENERGY_UV2,
-};
 use dspk_synapse::{
     deduplicate_spikes_spatial, execute_detect_spikes_in_vram, execute_extract_sinc_in_vram, execute_reduce_templates_in_vram,
-    match_spikes_matching_pursuit, SpikeSpacing, StreamingDetectionConfig, StreamingDetector,
+    match_spikes_matching_pursuit, MatchingPursuitMatcher, SpikeSpacing, StreamingDetectionConfig, StreamingDetector,
 };
 use serde::Serialize;
 
@@ -418,10 +415,7 @@ fn suite_on(client: Client, shape: &Shape, report_dir: &Path) -> anyhow::Result<
                 mp_channels,
                 mp_samples,
                 &templates,
-                DEFAULT_MIN_AMPLITUDE_SCALE,
-                DEFAULT_MAX_AMPLITUDE_SCALE,
-                DEFAULT_MIN_EXPLAINED_ENERGY_UV2,
-                DEFAULT_MAX_PASSES,
+                &MatchingPursuitMatcher::default(),
             )
             .len();
         });

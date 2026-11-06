@@ -15,12 +15,12 @@ pub mod subsample;
 
 pub use bipartite::{execute_bipartite_clustering, execute_nearest_neighbours, BipartiteClustering, BipartiteOptions};
 pub use cbss::{ConvolutiveBssDecomposer, MotorUnitPulseTrain};
-pub use density_peaks::{DensityPeaksResult, cluster_density_peaks, cluster_density_peaks_capped};
+pub use density_peaks::{DensityPeaksOptions, DensityPeaksResult, cluster_density_peaks};
 pub use gmm::{GmmClusterer, GmmCovarianceKind, GmmResult, cluster_gmm_bic};
-pub use hdbscan::{cluster_hdbscan, cluster_hdbscan_allow_single, execute_hdbscan, execute_hdbscan_with_progress, cluster_hdbscan_progress_total};
+pub use hdbscan::{HdbscanOptions, DEFAULT_MIN_CLUSTER_SIZE, cluster_hdbscan, execute_hdbscan, execute_hdbscan_with_progress, cluster_hdbscan_progress_total};
 pub use points::DevicePoints;
 pub use subsample::{subsample_peaks, SubsampleOptions};
-pub use kde_merge::{KdeMergeResult, cluster_kde_merge};
+pub use kde_merge::{KdeMergeOptions, KdeMergeResult, cluster_kde_merge, DEFAULT_DIP_THRESHOLD, DEFAULT_KDE_MIN_CLUSTER_SIZE};
 pub use kmeans::{KMeansOptions, KMeansResult, execute_cluster_sums, cluster_kmeans, execute_kmeans, execute_kmeans_with_progress};
 pub use matching_pursuit::{MatchingPursuitMatcher, match_spikes_matching_pursuit};
 pub use similarity::{

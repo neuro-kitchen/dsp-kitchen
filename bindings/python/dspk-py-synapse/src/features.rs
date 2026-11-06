@@ -34,9 +34,9 @@ pub fn snippets<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, samples: 
     let spikes: Vec<DeduplicatedSpike> = (0..s.len())
         .map(|i| DeduplicatedSpike { primary_channel: ch[i] as usize, sample_index: s[i], peak_amplitude_uv: 0.0, participating_channels: vec![ch[i] as usize] })
         .collect();
-    let kept: Vec<usize> = (0..s.len()).filter(|&i| syn::extraction::snippet_fits(s[i] as usize, pre, post, n, sinc_shift)).collect();
+    let options = syn::extraction::SnippetOptions { k_neighbors: k, pre_samples: pre, post_samples: post, sinc_shift, subtract_mean: false };
+    let kept: Vec<usize> = (0..s.len()).filter(|&i| syn::extraction::snippet_fits(s[i] as usize, n, &options)).collect();
     let chosen: Vec<DeduplicatedSpike> = kept.iter().map(|&i| spikes[i].clone()).collect();
-    let options = syn::extraction::SnippetOptions { k_neighbors: k, pre_samples: pre, post_samples: post, sinc_shift };
     let snips = py.detach(|| syn::extract_snippets(&x, c, n, &chosen, &probe.inner, &options));
     let width = pre + post;
     let kk = snips.first().map_or(k, |sn| sn.num_channels());
@@ -97,7 +97,7 @@ pub fn conduction_velocity<'py>(py: Python<'py>, template: PyReadonlyArray2<'_, 
         return Err(invalid(format!("{} channels for a {rows} × {cols} grid", a.nrows())));
     }
     let x: Vec<f32> = a.iter().copied().collect();
-    let e = syn::features::estimate_hdemg_conduction_velocity(&x, rows, cols, a.ncols(), pitch_um, sample_rate);
+    let e = syn::features::estimate_hdemg_conduction_velocity(&x, rows, cols, a.ncols(), sample_rate, pitch_um);
     let out = PyDict::new(py);
     out.set_item("velocity_m_per_s", e.velocity_m_per_s)?;
     out.set_item("mean_delay_ms", e.mean_delay_ms)?;

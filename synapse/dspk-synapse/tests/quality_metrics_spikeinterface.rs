@@ -29,7 +29,7 @@ fn metrics_match_spikeinterface() {
         let spikes: Vec<u64> = unit["spike_samples"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
         let amps: Vec<f64> = unit["amplitudes"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
 
-        let isi = compute_isi_violations(&spikes, fs, duration, fx["isi_threshold_ms"].as_f64().unwrap(), 0.0);
+        let isi = compute_isi_violations(&spikes, (duration * fs).round() as u64, fs, fx["isi_threshold_ms"].as_f64().unwrap(), 0.0);
         assert_eq!(isi.violation_count as u64, unit["isi_violations_count"].as_u64().unwrap(), "{name}: ISI count");
         same(isi.isi_violations_ratio, &unit["isi_violations_ratio"], &format!("{name}: ISI ratio"));
         same(isi.violations_per_sec, &unit["isi_violations_rate"], &format!("{name}: ISI rate"));

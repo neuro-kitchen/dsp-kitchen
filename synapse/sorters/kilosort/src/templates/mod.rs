@@ -14,7 +14,7 @@ use cubecl::prelude::*;
 use dspk_ops::linalg::{symmetric_eigen, EigenOptions, SecondMomentAccumulator};
 use dspk_core::{DspError, DspResult};
 use dspk_io::container::npy::read_npz;
-use dspk_synapse::sorting::{execute_hdbscan_with_progress, cluster_hdbscan_progress_total, execute_kmeans_with_progress, DevicePoints, KMeansOptions};
+use dspk_synapse::sorting::{execute_hdbscan_with_progress, cluster_hdbscan_progress_total, execute_kmeans_with_progress, DevicePoints, HdbscanOptions, KMeansOptions};
 
 /// Half-window of the local-maximum test of clip detection: ±4 channel indices × ±5 samples
 /// (upstream `loc_range = [4, 5]` over `[channels, samples]`, in Kilosort4 and EMUsort's fork).
@@ -184,7 +184,7 @@ pub fn learn_universal_templates_with_progress(
     // EMUsort: drop HDBSCAN outliers before clustering
     let kept = match outliers {
         Some(mcs) => {
-            let labels = execute_hdbscan_with_progress(client, &points, mcs, &mut |done, _| progress(1 + done, total));
+            let labels = execute_hdbscan_with_progress(client, &points, &HdbscanOptions::new(mcs), &mut |done, _| progress(1 + done, total));
             let inliers: Vec<u32> = (0..n as u32).filter(|&i| labels[i as usize] >= 0).collect();
             if inliers.len() >= opts.n_templates {
                 points.gather(client, &inliers)

@@ -79,7 +79,7 @@ mod tests {
         let cpu_snips = extract_snippets(&trace,
             channels,
             samples,
-            &cpu_dedup, &probe, &SnippetOptions { k_neighbors, pre_samples, post_samples, sinc_shift: true });
+            &cpu_dedup, &probe, &SnippetOptions { k_neighbors, pre_samples, post_samples, sinc_shift: true, subtract_mean: false });
         let knn_table = precompute_knn_table(&probe, channels, k_neighbors);
         let mut cpu_accs: Vec<TemplateAccumulator> = (0..channels)
             .map(|ch| {

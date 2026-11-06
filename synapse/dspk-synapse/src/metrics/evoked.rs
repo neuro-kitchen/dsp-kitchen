@@ -239,14 +239,30 @@ pub fn compute_stimulus_triggered_average(
     }
 }
 
+/// Defaults of [`MepOptions`]: a 2–40 ms response window, onset at 3 σ of the baseline.
+pub const DEFAULT_MEP_RESPONSE_START_MS: f64 = 2.0;
+pub const DEFAULT_MEP_RESPONSE_END_MS: f64 = 40.0;
+pub const DEFAULT_MEP_THRESHOLD_SIGMA: f32 = 3.0;
+
+/// Settings of [`quantify_mep`]: the response window after the stimulus and the onset threshold
+/// (in baseline standard deviations).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MepOptions {
+    pub response_start_ms: f64,
+    pub response_end_ms: f64,
+    pub threshold_sigma: f32,
+}
+
+impl Default for MepOptions {
+    fn default() -> Self {
+        Self { response_start_ms: DEFAULT_MEP_RESPONSE_START_MS, response_end_ms: DEFAULT_MEP_RESPONSE_END_MS, threshold_sigma: DEFAULT_MEP_THRESHOLD_SIGMA }
+    }
+}
+
 /// Quantifies per-channel Motor Evoked Potential (MEP) onset latency, peak-to-peak amplitude,
 /// RMS, and rectified AUC from a [`StimulusTriggeredAverage`] within `[response_start_ms, response_end_ms]`.
-pub fn quantify_mep(
-    sta: &StimulusTriggeredAverage,
-    response_start_ms: f64,
-    response_end_ms: f64,
-    threshold_sigma: f32,
-) -> Vec<MepMetrics> {
+pub fn quantify_mep(sta: &StimulusTriggeredAverage, options: &MepOptions) -> Vec<MepMetrics> {
+    let (response_start_ms, response_end_ms, threshold_sigma) = (options.response_start_ms, options.response_end_ms, options.threshold_sigma);
     let win_len = sta.num_samples;
     if win_len == 0 || sta.num_channels == 0 {
         return Vec::new();
@@ -351,7 +367,7 @@ mod tests {
         // Since all 4 trials are identical, SE should be 0.0 everywhere
         assert!(sta.se_uv.iter().all(|&v| v.abs() < 1e-5));
 
-        let meps = quantify_mep(&sta, 5.0, 35.0, 3.0);
+        let meps = quantify_mep(&sta, &MepOptions { response_start_ms: 5.0, response_end_ms: 35.0, threshold_sigma: 3.0 });
         assert_eq!(meps.len(), 1);
         assert!((meps[0].onset_latency_ms - 12.0).abs() < 0.6, "latency={}", meps[0].onset_latency_ms);
         assert!((meps[0].peak_to_peak_uv - 350.0).abs() < 1.0, "ptp={}", meps[0].peak_to_peak_uv);

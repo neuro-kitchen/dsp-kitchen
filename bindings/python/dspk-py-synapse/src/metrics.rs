@@ -46,8 +46,8 @@ fn refractory<'py>(py: Python<'py>, (s, refractory): (RefractoryStats, bool)) ->
 /// (`isi_violations_ratio`), `rate_pct`, `per_second`, `firing_rate_hz`, `spikes`.
 #[gen_stub_pyfunction(module = "dspk._native.synapse.metrics")]
 #[pyfunction]
-pub fn isi_violations<'py>(py: Python<'py>, train: PyReadonlyArray1<'_, u64>, sample_rate: f64, duration_s: f64, threshold_ms: f64, min_isi_ms: f64) -> PyResult<Dict<'py>> {
-    let r = m::compute_isi_violations(train.as_slice()?, sample_rate, duration_s, threshold_ms, min_isi_ms);
+pub fn isi_violations<'py>(py: Python<'py>, train: PyReadonlyArray1<'_, u64>, total_samples: u64, sample_rate: f64, threshold_ms: f64, min_isi_ms: f64) -> PyResult<Dict<'py>> {
+    let r = m::compute_isi_violations(train.as_slice()?, total_samples, sample_rate, threshold_ms, min_isi_ms);
     let out = PyDict::new(py);
     out.set_item("violations", r.violation_count)?;
     out.set_item("ratio", r.isi_violations_ratio)?;
@@ -237,7 +237,7 @@ pub fn stimulus_average<'py>(
     let (channels, samples) = (a.nrows(), a.ncols());
     let flat: Vec<f32> = a.iter().copied().collect();
     let sta = m::compute_stimulus_triggered_average(&flat, channels, samples, stimulus_samples.as_slice()?, pre_samples, post_samples, sample_rate);
-    let meps = m::quantify_mep(&sta, response_start_ms, response_end_ms, threshold_sigma);
+    let meps = m::quantify_mep(&sta, &m::MepOptions { response_start_ms, response_end_ms, threshold_sigma });
     let shape = (sta.num_channels, sta.num_samples);
     let out = PyDict::new(py);
     out.set_item("time_ms", sta.time_ms.clone().into_pyarray(py))?;

@@ -38,15 +38,32 @@ pub struct KdeMergeResult {
     pub centroids: Vec<f32>,
 }
 
-/// Clusters `features` (`[num_spikes, num_features]`) by KDE valley merging (see the module docs).
-pub fn cluster_kde_merge(
-    features: &[f32],
-    num_spikes: usize,
-    num_features: usize,
-    initial_k: usize,
-    dip_threshold: f32,
-    min_cluster_size: usize,
-) -> KdeMergeResult {
+/// Default of [`KdeMergeOptions::dip_threshold`]: the middle of the dip score's `[0, 3]`.
+pub const DEFAULT_DIP_THRESHOLD: f32 = 1.5;
+/// Default of [`KdeMergeOptions::min_cluster_size`].
+pub const DEFAULT_KDE_MIN_CLUSTER_SIZE: usize = 5;
+
+/// Settings of [`cluster_kde_merge`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct KdeMergeOptions {
+    /// Clusters of the starting over-clustering (k-means).
+    pub initial_k: usize,
+    /// Pairs with a dip score below it merge.
+    pub dip_threshold: f32,
+    /// Smaller clusters are merged into their nearest.
+    pub min_cluster_size: usize,
+}
+
+impl KdeMergeOptions {
+    pub fn new(initial_k: usize) -> Self {
+        Self { initial_k, dip_threshold: DEFAULT_DIP_THRESHOLD, min_cluster_size: DEFAULT_KDE_MIN_CLUSTER_SIZE }
+    }
+}
+
+/// Clusters `points` (`[n, dim]` row-major) by KDE valley merging (see the module docs).
+pub fn cluster_kde_merge(points: &[f32], n: usize, dim: usize, options: &KdeMergeOptions) -> KdeMergeResult {
+    let (features, num_spikes, num_features) = (points, n, dim);
+    let (initial_k, dip_threshold, min_cluster_size) = (options.initial_k, options.dip_threshold, options.min_cluster_size);
     assert_eq!(features.len(), num_spikes * num_features);
     if num_spikes == 0 || num_features == 0 {
         return KdeMergeResult {
@@ -337,7 +354,7 @@ mod tests {
         }
 
         // Start with K0 = 9 over-clustered parcels; unimodal sub-parcels merge down to 3
-        let res = cluster_kde_merge(&features, n, d, 9, 1.5, 5);
+        let res = cluster_kde_merge(&features, n, d, &KdeMergeOptions { initial_k: 9, dip_threshold: 1.5, min_cluster_size: 5 });
         assert_eq!(res.num_clusters, 3, "expected 3 clusters, got {}", res.num_clusters);
     }
 }

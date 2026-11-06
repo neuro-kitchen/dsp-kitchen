@@ -102,7 +102,7 @@ pub use metrics::{
 pub use sorting::{
     ConvolutiveBssDecomposer, DensityPeaksResult, GmmClusterer, GmmCovarianceKind, GmmResult,
     KdeMergeResult, MotorUnitPulseTrain, MatchingPursuitMatcher, cluster_density_peaks,
-    cluster_density_peaks_capped, cluster_gmm_bic, cluster_kde_merge,
+    DensityPeaksOptions, KdeMergeOptions, cluster_gmm_bic, cluster_kde_merge,
     compute_template_similarity_matrix, match_spikes_matching_pursuit,
     suggest_template_merges, template_max_cosine_similarity,
 };
