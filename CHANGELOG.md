@@ -8,6 +8,15 @@ version number.
 
 ### Security
 
+- **dspk-stream: only enrolled clients connect (mutual TLS).** A server keeps its own
+  certificate authority (`Authority`: CA key mode 0600, `clients.json`) and lets in only clients
+  holding a certificate it issued and has not revoked (checked at every connection);
+  `--allow-anonymous` adds read-only access without one, with a warning. `dspk clients enroll
+  <name> [--control]` writes a client's identity file (its certificate and key, and the
+  authority, mode 0600); `dspk clients revoke <name>`, `dspk clients list`; `dspk receive
+  --identity <file>`. Changed API: `Server::accept` returns the connection and its `Peer` (name,
+  permission); new `server_config_with_clients`, `client_config_with`, `ClientIdentity`,
+  `ServerTrust::from_identity`.
 - dspk-stream: a client could make a server allocate without bound (a view of any width or with
   repeated channels, many such requests at once, unlimited connections, 64 MiB messages). Views
   are now checked (`checked_view`: channels in range and once, at most 65,536 columns and 8 Mi
