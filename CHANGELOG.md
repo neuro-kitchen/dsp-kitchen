@@ -6,7 +6,24 @@ version number.
 
 ## 0.0.6 — 2026-11-06
 
+### Security
+
+- dspk-stream: a client could make a server allocate without bound (a view of any width or with
+  repeated channels, many such requests at once, unlimited connections, 64 MiB messages). Views
+  are now checked (`checked_view`: channels in range and once, at most 65,536 columns and 8 Mi
+  values), client messages are limited to 64 KiB, each client to 8 requests at once, servers to
+  32 clients (`Server::with_max_connections`, `dspk serve --max-clients`), idle connections close
+  after 30 s, and a client proves its address (QUIC Retry) before any handshake work.
+- `dspk serve` stops on SIGTERM (container and service managers), not only Ctrl+C.
+
 ### Added
+
+- `deploy/`: dspk as a server in a Podman container (targets `cpu`, `nvidia`, `mesa`), hardened
+  (non-root, read-only root, no capabilities), with a systemd Quadlet unit; tested with CUDA and
+  Vulkan on an NVIDIA GPU.
+- `dspk serve --name`: the host names clients use, on the self-signed certificate.
+- `dspk doctor` says in one line why a runtime is not usable, and warns when the selected one
+  has no device.
 
 - **`dspk-app` on crates.io** (`cargo install dspk-app`), with its core `dspk-app-core` and the
   electrophysiology plugin `dspk-app-synapse`. Four workspaces on one timeline:
