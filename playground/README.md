@@ -1,75 +1,51 @@
 # playground
 
-Examples of the `dspk` Python package, written as `# %%` cells (run them as scripts or open them as
-notebooks in VS Code / Jupyter). Figures and files go to `playground/output/` (git-ignored).
+A course in `dspk`, from a first call to a sorted recording. Each folder is a chapter, each script
+one idea, a little harder than the one before; every script ends with a figure, committed next to
+it in `figures/`, so you can see what it shows before running it. Scripts are `# %%` cells: run
+them as scripts, or open them as notebooks in VS Code / Jupyter.
 
-```text
-playground/
-├── base/       01 IIR filters vs scipy on every runtime · 02 pipelines on the device and streaming · 03 pipelines as data (JSON / TOML specs)
-├── synapse/    detection walkthroughs                    (old `dsp_kitchen` API: waits for the synapse bindings)
-├── sorters/    Kilosort4 + EMUsort examples             (old `dsp_kitchen` API: waits for the synapse bindings)
-└── output/     anything the scripts write (git-ignored)
-```
+Up to sorting, everything runs on a **synthetic recording** whose content is known
+(`plating.signals`: LFP, mains hum, a common artefact, spikes, noise), so each result can be
+checked, not just looked at. Sorting uses real data, downloaded once by `09_sorting`.
 
-`base/pipelines/` holds pipeline specs to run as they are: `neuropixels_preprocess.json` band-passes
-(300–6000 Hz, zero phase) and common-median-references the Neuropixels test recording into Zarr:
-
-```bash
-uv run python -c 'import dspk; print(dspk.pipeline.run("playground/base/pipelines/neuropixels_preprocess.json"))'
-cargo run -p dspk-cli --profile validate -- run playground/base/pipelines/neuropixels_preprocess.json      # the CLI
-cargo run -p dspk-cli --profile validate -- run playground/base/pipelines/neuropixels_preprocess.json -n   # plan only
-```
-
-Paths in a spec are relative to its folder; `-i` / `-o` replace the input and output (another
-recording, a glob of several). The recording is local test data (see *Data* below).
-
-Only `base/` runs on the current `dspk` package (checked 2026-10-29 on wgpu, CUDA and CPU).
-Benchmarks and validations against other tools live in [`benchmarks/`](../benchmarks/README.md).
+Figures are drawn with [`plating`](../plating/README.md), the repository's small plotting package:
+the look lives there, the scripts only say what to plot.
 
 ## Setup
 
 From the repository root:
 
 ```bash
-uv sync                                                             # development environment
+uv sync                                                             # the environment (installs plating)
 cd bindings/python && uv run --project ../.. maturin develop --profile validate && cd ../..
-uv run python playground/base/01_filters_vs_scipy.py
+uv run python playground/01_basics/01_runtimes.py
 ```
 
-Use `maturin develop --release` instead for timings (`--profile validate` optimizes the dependencies
-but not dspk itself).
+Every script runs in seconds on any runtime (`DSPK_RUNTIME=cpu` works everywhere). For timings,
+build with `maturin develop --release` (`--profile validate` optimizes the dependencies but not
+dspk itself).
 
-## Not in the new bindings yet
+## Chapters
 
-The previous `base/` scripts (FIR and template filters, PCA and other linear algebra, spatial
-whitening, class-style filters, probe layouts) used parts the rewritten bindings do not cover yet;
-they are parked in `.refactoring/playground/base-old/` and in git history. Probe layouts belong to
-the synapse bindings.
+| Chapter | Scripts | What you learn |
+|---|---|---|
+| **01_basics** | `01_runtimes` · `02_synthetic_signal` · `03_files` | runtimes (CUDA, wgpu, CPU) and that they agree; the recording every chapter uses; writing and reading files (int16 with a gain, Zarr) |
+| **02_filtering** | `01_lowpass_highpass` · `02_zero_phase_vs_causal` · `03_notch` · `04_fir_design` · `05_median_and_energy` | splitting LFP from spikes; why zero phase (equal to scipy's `sosfiltfilt`); taking the hum out; designing FIR taps; non-linear filters |
+| **03_referencing** | `01_car_and_cmr` | removing what all channels share; why the median survives a bad channel |
+| **04_resampling** | `01_resample_poly` | lowering the rate for LFP (`resample_poly`, `decimate`, equal to scipy) |
+| **05_spatial** | `01_whitening` · `02_laplacian` | decorrelating channels as sorters do; keeping what is local on a grid |
+| **06_pipelines** | `01_chain_on_device` · `02_streaming` · `03_specs` · `04_branches` | chaining stages on the device; streaming in pieces equal to the whole; pipelines as JSON / TOML files; one read, several outputs |
+| **07_channels** | `01_remap_with_pairs` · `02_maps_in_specs` | channel maps written as pairs; maps in pipeline specs (reorder, drop, name) |
+| **08_detection** | — | waits for the synapse Python bindings (`.tasks/27`) |
+| **09_sorting** | `00_fetch_kilosort_data` | the Kilosort4 test recording, verified; the sorting scripts wait for the synapse bindings |
+| **10_remote** | README | a GPU server and a laptop: `dspk serve`, `dspk clients`, `dspk remote` |
+
+Measurements against other tools (time, agreement) are in [`benchmarks/`](../benchmarks/README.md),
+not here: the playground teaches, the benchmarks measure.
 
 ## Data
 
-Test data is local and not in the repository: it lives in `<repository>/.data/` (git-ignored), or
-in the folder named by `DSP_KITCHEN_DATA` (scripts on the old API).
-
-| Path under `.data/` | Used by |
-|---|---|
-| `nwb/15-25-33_meps.nwb.zarr` (HD-EMG, 4 × 8 grid, `HDEMG` series) | `base/03`, `synapse/01`, `synapse/02`, `sorters/emusort_hdemg`, `benchmarks/sorters/emusort_checks`, `benchmarks/sorters/sorter_resources` |
-| `kilosort4/ZFM-02370_mini.imec0.ap.short.bin` + `.meta` (Neuropixels 1.0, SpikeGLX) | `sorters/kilosort4_universal_templates`, `benchmarks/sorters/kilosort4_*`, `benchmarks/sorters/sorter_resources` |
-| `kilosort4/saved_results/` (Kilosort4's output for that file, Phy folder) | `sorters/kilosort4_universal_templates`, `benchmarks/sorters/*_validation`, `kilosort4_*` (through `benchmarks/sorters/ks4_reference.py`) |
-
-The `base/` scripts need no data (synthetic signals). `synapse/03` and `sorters/00` use
-`dsp_kitchen.io.SyntheticRecording`; `synapse/01` falls back to synthetic data when the recording is
-absent.
-
-## What the sorter examples show
-
-`kilosort4.run` and `emusort.run` (with a progress bar per stage and the time left; `tqdm` is
-used when installed) run the stages implemented so far over a whole recording, in Rust and
-on the device (halo windows, bounded memory): preprocessing, EMUsort's channel-delay removal,
-universal templates, detection, clustering, learned-template matching and the clustering of the
-matches into units. The refractory criteria, final merges and drift correction are not implemented
-yet; see the book's *Sorters* pages and *Benchmarks*. Both scripts end with `inspection.inspect`:
-one channel of the run's own preprocessed signal with the units on it (Kilosort4's saved units
-alongside ours on the Neuropixels data). `sorters/00_sorters_synthetic.py` checks them
-without data: channel delays recovered and removed on the device, detection vs ground truth, the
-same run on every compiled runtime, export.
+Chapters 01–07 need no data. From chapter 09 on, data is local and not in the repository:
+`playground/data/` (what `09_sorting/00_fetch_kilosort_data.py` downloads), and the benchmarks'
+`<repository>/.data/` (see `benchmarks/README.md`). Both are git-ignored.
