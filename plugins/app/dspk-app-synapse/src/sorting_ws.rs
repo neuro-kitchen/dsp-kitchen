@@ -33,7 +33,7 @@ use gpui_kit::{
 };
 
 use crate::sort::{self, Described, Param, SortRequest, PROBES};
-use crate::sorting::{isi_histogram, write_start_sec, Snippets, SortingData};
+use crate::sorting::{compute_isi_histogram, write_start_sec, Snippets, SortingData};
 use crate::strip::{view_signal, BottomStrip};
 use crate::templates::TemplateGrid;
 use dspk_app_core::ui::panel_edge::{follow_panel_drag, panel_edge, rail, toggle_item, PanelResize, Side, RAIL_W};
@@ -397,7 +397,7 @@ impl SortingWorkspace {
                 .iter()
                 .filter_map(|&u| {
                     let rows: Vec<&Vec<f32>> = snippets.rows.iter().filter(|(x, _, _)| *x == Some(u as u32)).map(|(_, _, r)| r).collect();
-                    let isi = isi_histogram(&sorting.unit_times(u), sorting.sample_rate, ISI_MAX_MS, ISI_BIN_MS);
+                    let isi = compute_isi_histogram(&sorting.unit_times(u), sorting.sample_rate, ISI_MAX_MS, ISI_BIN_MS);
                     let frame = plots::unit_card(&rows, &isi, (REFRACTORY_MS / ISI_BIN_MS) as f32, palette.unit(u), &palette, CARD_PX.0, CARD_PX.1, 1.5);
                     plots::to_image(frame).map(|i| (u, i))
                 })

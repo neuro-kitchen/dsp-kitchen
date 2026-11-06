@@ -300,7 +300,7 @@ impl DedupNeighbours {
 
 /// One-off [`DedupNeighbours::deduplicate`]: builds the neighbour table for this call. Reuse a
 /// [`DedupNeighbours`] when deduplicating more than one batch.
-pub fn deduplicate_spikes_spatial_gpu(
+pub fn deduplicate_spikes_spatial_device(
     client: &cubecl::prelude::Client,
     spikes: &[SpikeEvent],
     layout: &SensorLayout,
@@ -442,7 +442,7 @@ mod tests {
         impl ComputeTask for Task<'_> {
             type Output = Vec<DeduplicatedSpike>;
             fn run(self, client: Client) -> Vec<DeduplicatedSpike> {
-                deduplicate_spikes_spatial_gpu(&client, self.0, self.1, self.2, self.3)
+                deduplicate_spikes_spatial_device(&client, self.0, self.1, self.2, self.3)
             }
         }
 

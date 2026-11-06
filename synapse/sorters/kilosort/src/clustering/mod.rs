@@ -7,7 +7,7 @@
 //!    features, 0 on channels a spike's centre does not cover. Built on the device from the compact
 //!    `[n, nearest_chans, n_pcs]` features, so only those cross the bus.
 //! 2. **Graph clustering** of each section of at least `min_section_spikes` spikes
-//!    ([`dspk_synapse::sorting::bipartite_clustering`]): oversplit on purpose.
+//!    ([`dspk_synapse::sorting::execute_bipartite_clustering`]): oversplit on purpose.
 //! 3. **Merging tree** (host: at most `init_clusters` leaves). From the edge counts `K` between
 //!    clusters and their degree sums `k`, the pair with the highest `γ̂ = 2m·K_ij / (k_i·k_j)` (the
 //!    resolution at which merging them stops lowering modularity) is merged, repeatedly: a tree
@@ -17,7 +17,7 @@
 //!    halves of a split node are decided in turn, an unsplit node is one unit. When the run gives a
 //!    sample rate (the clustering of the matched spikes; the paper uses only bimodality for the
 //!    first clustering), the halves' cross-correlogram is tested first
-//!    ([`dspk_synapse::metrics::ccg_refractory`]): a refractory CCG keeps them together.
+//!    ([`dspk_synapse::metrics::compute_ccg_refractory`]): a refractory CCG keeps them together.
 //! 5. **Templates:** each unit's mean features, on all channels (`[units, channels, n_pcs]`).
 //!
 //! **Bimodality** (on the device): the axis `u` and bias `b` minimizing `Σ w_y (uᵀx + b − y)²` with
@@ -48,9 +48,9 @@ use dspk_ops::core::buffer;
 use dspk_ops::linalg::{matmul, MatrixView};
 use dspk_core::compute::LaunchGeometry;
 use dspk_synapse::io::probe::SensorLayout;
-use dspk_synapse::metrics::{ccg_refractory, RefractoryOptions};
+use dspk_synapse::metrics::{compute_ccg_refractory, RefractoryOptions};
 use dspk_synapse::sorting::kernels::bipartite::{relabel_kernel, NO_LABEL};
-use dspk_synapse::sorting::{bipartite_clustering, cluster_sums, BipartiteOptions, DevicePoints};
+use dspk_synapse::sorting::{execute_bipartite_clustering, execute_cluster_sums, BipartiteOptions, DevicePoints};
 
 use super::detect::{TemplateCentres, UniversalSpike};
 use self::kernels::cluster::{embed_section_kernel, projection_histogram_kernel, weigh_node_kernel, SIDE_NEG, SIDE_NONE, SIDE_POS};
@@ -476,7 +476,7 @@ pub fn cluster_spikes(
         let (unit_labels, section_units) = if n < opts.min_section_spikes.max(2) {
             (buffer::zeros::<u32>(client, n), 1)
         } else {
-            let graph = bipartite_clustering(client, &points, &opts.graph);
+            let graph = execute_bipartite_clustering(client, &points, &opts.graph);
             let nc = graph.n_clusters;
             let sizes = graph.sizes.clone();
             let tree = merge_tree(&graph.edges, nc);
@@ -501,7 +501,7 @@ pub fn cluster_spikes(
                 t
             };
             let mut refractory = |a: &[usize], b: &[usize]| match sample_rate_hz {
-                Some(fs) => ccg_refractory(&train(a), &train(b), fs, &opts.refractory).1,
+                Some(fs) => compute_ccg_refractory(&train(a), &train(b), fs, &opts.refractory).1,
                 None => false,
             };
             let groups = decide(&tree, nc, opts, &mut refractory, &mut |a, b| section.bimodality(a, b));
@@ -526,7 +526,7 @@ pub fn cluster_spikes(
         };
 
         // Mean features of each unit, back on all channels
-        let (sums, counts) = cluster_sums(client, &points, &unit_labels, section_units);
+        let (sums, counts) = execute_cluster_sums(client, &points, &unit_labels, section_units);
         let local = buffer::download_prefix::<u32>(client, unit_labels, n);
         for (&i, &u) in members.iter().zip(&local) {
             labels[i] = (n_units + u as usize) as u32;

@@ -36,7 +36,7 @@ pub fn snippets<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, samples: 
         .collect();
     let kept: Vec<usize> = (0..s.len()).filter(|&i| syn::extraction::snippet_fits(s[i] as usize, pre, post, n, sinc_shift)).collect();
     let chosen: Vec<DeduplicatedSpike> = kept.iter().map(|&i| spikes[i].clone()).collect();
-    let snips = py.detach(|| syn::extract_snippets_multichannel(&x, c, n, &chosen, &probe.inner, k, pre, post, sinc_shift));
+    let snips = py.detach(|| syn::extract_snippets(&x, c, n, &chosen, &probe.inner, k, pre, post, sinc_shift));
     let width = pre + post;
     let kk = snips.first().map_or(k, |sn| sn.num_channels());
     let mut wav = Vec::with_capacity(snips.len() * kk * width);
@@ -83,7 +83,7 @@ pub fn morphology<'py>(py: Python<'py>, waveforms: PyReadonlyArray2<'_, f32>) ->
 #[gen_stub_pyfunction(module = "dspk._native.synapse.features")]
 #[pyfunction]
 pub fn haar_wavelet<'py>(py: Python<'py>, signal: PyReadonlyArray1<'_, f32>, levels: usize) -> PyResult<Bound<'py, PyArray1<f32>>> {
-    Ok(syn::haar_dwt_multilevel_1d(signal.as_slice()?, levels).into_pyarray(py))
+    Ok(syn::compute_haar_dwt(signal.as_slice()?, levels).into_pyarray(py))
 }
 
 /// Muscle-fibre conduction velocity from an HD-EMG template `(rows · cols, samples)` laid out

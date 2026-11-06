@@ -53,7 +53,7 @@ pub(crate) fn cut_row(
 /// Extracts a contiguous [`SnippetBatch`] directly from multi-channel raw data without intermediate
 /// per-spike heap allocations.
 #[allow(clippy::too_many_arguments)]
-pub fn extract_snippet_batch_multichannel(
+pub fn extract_snippet_batch(
     data: &[f32],
     _channels: usize,
     samples: usize,
@@ -131,7 +131,7 @@ pub fn extract_snippet_batch_multichannel(
 
 /// Extracts multi-channel [`WaveformSnippet`]s across K-nearest neighbors for deduplicated spike events.
 #[allow(clippy::too_many_arguments)]
-pub fn extract_snippets_multichannel(
+pub fn extract_snippets(
     data: &[f32],
     channels: usize,
     samples: usize,
@@ -142,7 +142,7 @@ pub fn extract_snippets_multichannel(
     post_samples: usize,
     apply_sinc_shift: bool,
 ) -> Vec<WaveformSnippet> {
-    extract_snippet_batch_multichannel(
+    extract_snippet_batch(
         data,
         channels,
         samples,
@@ -268,7 +268,7 @@ mod tests {
             participating_channels: vec![0, 1, 2, 3],
         }];
 
-        let batch = extract_snippet_batch_multichannel(
+        let batch = extract_snippet_batch(
             &data, channels, samples, &spikes, &layout, 4, 10, 20, false,
         );
 

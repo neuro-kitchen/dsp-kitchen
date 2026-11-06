@@ -15,7 +15,7 @@ use super::threshold::SpikeEvent;
 const TROUGH_SEARCH_SAMPLES: usize = 2;
 
 /// Computes the 1D Teager-Kaiser Nonlinear Energy Operator `ψ[n] = x²[n] − x[n−1]·x[n+1]`.
-pub fn compute_neo_energy_1d(signal: &[f32]) -> Vec<f32> {
+pub fn compute_neo_energy(signal: &[f32]) -> Vec<f32> {
     let n = signal.len();
     let mut psi = vec![0.0f32; n];
     if n < 3 {
@@ -48,7 +48,7 @@ pub fn detect_spikes_neo(
 
     for ch in 0..channels {
         let ch_slice = &data[ch * samples..(ch + 1) * samples];
-        let psi = compute_neo_energy_1d(ch_slice);
+        let psi = compute_neo_energy(ch_slice);
 
         // Baseline NEO energy via MAD / median
         let neo_std = estimate_noise_std(&psi);

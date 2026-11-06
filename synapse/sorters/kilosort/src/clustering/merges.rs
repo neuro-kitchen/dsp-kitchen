@@ -4,7 +4,7 @@
 //! Units are taken in decreasing spike count. For a unit, every other unit still in the pool whose
 //! waveform similarity (correlation maximized over lags) is above `min_similarity` (0.5) is a
 //! candidate, tested from the most to the least similar: the pair merges when its
-//! cross-correlogram is refractory ([`dspk_synapse::metrics::ccg_refractory`]: the two never fire
+//! cross-correlogram is refractory ([`dspk_synapse::metrics::compute_ccg_refractory`]: the two never fire
 //! within a few ms of each other, one neuron). A merged unit is tested again against the pool. When
 //! nothing merges any more, the unit is complete and leaves the pool.
 //!
@@ -14,7 +14,7 @@
 //! spike-count-weighted mean of the two, without a relative shift.
 
 use cubecl::prelude::Client;
-use dspk_synapse::metrics::{ccg_refractory, RefractoryOptions};
+use dspk_synapse::metrics::{compute_ccg_refractory, RefractoryOptions};
 
 use crate::clustering::SpikeClusters;
 use crate::learned::pair_similarities;
@@ -97,7 +97,7 @@ pub fn global_merges(
                 .filter(|&(r, _)| r > opts.min_similarity)
                 .collect();
             candidates.sort_by(|x, y| y.0.total_cmp(&x.0).then(x.1.cmp(&y.1)));
-            let partner = candidates.into_iter().map(|(_, b)| b).find(|&b| ccg_refractory(&trains[a], &trains[b], sample_rate_hz, &opts.refractory).1);
+            let partner = candidates.into_iter().map(|(_, b)| b).find(|&b| compute_ccg_refractory(&trains[a], &trains[b], sample_rate_hz, &opts.refractory).1);
             let Some(b) = partner else { break };
             // Merge `b` into `a`, then test `a` again
             let (ca, cb) = (trains[a].len() as f32, trains[b].len() as f32);

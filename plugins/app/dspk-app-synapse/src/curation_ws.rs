@@ -570,7 +570,7 @@ impl CurationWorkspace {
                 }
                 let times = sorting.unit_times(lead);
                 let acg = crate::sorting::autocorrelogram(&times, sorting.sample_rate, set.ccg_half_ms, set.ccg_bin_ms);
-                let isi = crate::sorting::isi_histogram(&times, sorting.sample_rate, set.isi_max_ms, set.isi_bin_ms);
+                let isi = crate::sorting::compute_isi_histogram(&times, sorting.sample_rate, set.isi_max_ms, set.isi_bin_ms);
                 let (half, bin) = (set.ccg_half_ms as f32, set.ccg_bin_ms as f32);
                 let bars = |counts: &[u32], color, start: f32, width: f32| Layer::Bars { color, start, width, counts: counts.iter().map(|&c| c as f32).collect() };
                 charts.insert(

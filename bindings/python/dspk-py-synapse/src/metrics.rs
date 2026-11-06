@@ -62,7 +62,7 @@ pub fn isi_violations<'py>(py: Python<'py>, train: PyReadonlyArray1<'_, u64>, sa
 #[gen_stub_pyfunction(module = "dspk._native.synapse.metrics")]
 #[pyfunction]
 pub fn isi_histogram<'py>(py: Python<'py>, train: PyReadonlyArray1<'_, u64>, sample_rate: f64, bin_ms: f64, max_ms: f64) -> PyResult<Dict<'py>> {
-    let (edges, counts) = m::isi_histogram(train.as_slice()?, sample_rate, bin_ms, max_ms);
+    let (edges, counts) = m::compute_isi_histogram(train.as_slice()?, sample_rate, bin_ms, max_ms);
     let out = PyDict::new(py);
     out.set_item("bin_ms", edges.into_pyarray(py))?;
     out.set_item("counts", counts.into_pyarray(py))?;
@@ -166,7 +166,7 @@ fn refractory_options(bin_ms: f32, window_ms: f32, ratio: f64, probability: f64)
 #[gen_stub_pyfunction(module = "dspk._native.synapse.metrics")]
 #[pyfunction]
 pub fn acg_refractory<'py>(py: Python<'py>, train: PyReadonlyArray1<'_, u64>, sample_rate: f64, bin_ms: f32, window_ms: f32, ratio: f64, probability: f64) -> PyResult<Dict<'py>> {
-    refractory(py, m::acg_refractory(&sorted(train.as_slice()?), sample_rate, &refractory_options(bin_ms, window_ms, ratio, probability)))
+    refractory(py, m::compute_acg_refractory(&sorted(train.as_slice()?), sample_rate, &refractory_options(bin_ms, window_ms, ratio, probability)))
 }
 
 /// Whether two units' cross-correlogram looks refractory (they are likely one unit): as
@@ -174,7 +174,7 @@ pub fn acg_refractory<'py>(py: Python<'py>, train: PyReadonlyArray1<'_, u64>, sa
 #[gen_stub_pyfunction(module = "dspk._native.synapse.metrics")]
 #[pyfunction]
 pub fn ccg_refractory<'py>(py: Python<'py>, a: PyReadonlyArray1<'_, u64>, b: PyReadonlyArray1<'_, u64>, sample_rate: f64, bin_ms: f32, window_ms: f32, ratio: f64, probability: f64) -> PyResult<Dict<'py>> {
-    refractory(py, m::ccg_refractory(&sorted(a.as_slice()?), &sorted(b.as_slice()?), sample_rate, &refractory_options(bin_ms, window_ms, ratio, probability)))
+    refractory(py, m::compute_ccg_refractory(&sorted(a.as_slice()?), &sorted(b.as_slice()?), sample_rate, &refractory_options(bin_ms, window_ms, ratio, probability)))
 }
 
 /// Gaussian-smoothed instantaneous firing rate: `time_s`, `rate_hz`.
@@ -256,7 +256,7 @@ pub fn stimulus_average<'py>(
 #[gen_stub_pyfunction(module = "dspk._native.synapse.metrics")]
 #[pyfunction]
 pub fn composite_score<'py>(py: Python<'py>, train: PyReadonlyArray1<'_, u64>, amplitudes: PyReadonlyArray1<'_, f32>, snr: f64, total_samples: u64, sample_rate: f64) -> PyResult<Dict<'py>> {
-    let s = m::composite_score(&sorted(train.as_slice()?), amplitudes.as_slice()?, snr, total_samples, sample_rate, &CompositeScoreOptions::default());
+    let s = m::compute_composite_score(&sorted(train.as_slice()?), amplitudes.as_slice()?, snr, total_samples, sample_rate, &CompositeScoreOptions::default());
     let out = PyDict::new(py);
     out.set_item("score", s.score)?;
     out.set_item("type_1", s.type_1)?;
@@ -270,7 +270,7 @@ pub fn composite_score<'py>(py: Python<'py>, train: PyReadonlyArray1<'_, u64>, a
 #[gen_stub_pyfunction(module = "dspk._native.synapse.metrics")]
 #[pyfunction]
 pub fn firing_range(train: PyReadonlyArray1<'_, u64>, total_samples: u64, sample_rate: f64, bin_s: f64, low: f64, high: f64) -> PyResult<f64> {
-    Ok(m::firing_range(train.as_slice()?, total_samples, sample_rate, bin_s, (low, high)))
+    Ok(m::compute_firing_range(train.as_slice()?, total_samples, sample_rate, bin_s, (low, high)))
 }
 
 /// Two spike trains matched 1-to-1 within `tolerance_samples`: `matches`, `false_negatives`,

@@ -9,10 +9,10 @@ mod tests {
     use cubecl::CubeElement;
     use crate::io::probe::{precompute_knn_table, Position3D, SensorLayout, SensorSite};
     use crate::detection::{
-        SpikePolarity, SpikeSpacing, deduplicate_spikes_spatial, detect_spikes_with_sigma,
+        SpikePolarity, SpikeSpacing, deduplicate_spikes_spatial, detect_spikes_threshold_with_sigma,
         detection_heights, execute_detect_spikes_in_vram,
     };
-    use crate::extraction::{execute_extract_sinc_in_vram, extract_snippets_multichannel};
+    use crate::extraction::{execute_extract_sinc_in_vram, extract_snippets};
     use crate::streaming::TemplateAccumulator;
 
     fn test_clients() -> Vec<Client> {
@@ -73,7 +73,7 @@ mod tests {
         let refrac = 25usize;
 
         let spacing = SpikeSpacing::new(refrac);
-        let cpu_spikes = detect_spikes_with_sigma(
+        let cpu_spikes = detect_spikes_threshold_with_sigma(
             &trace,
             channels,
             samples,
@@ -83,7 +83,7 @@ mod tests {
             spacing,
         );
         let cpu_dedup = deduplicate_spikes_spatial(&cpu_spikes, &probe, 150.0, refrac as u64);
-        let cpu_snips = extract_snippets_multichannel(
+        let cpu_snips = extract_snippets(
             &trace,
             channels,
             samples,

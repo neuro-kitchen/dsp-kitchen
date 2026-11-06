@@ -9,9 +9,9 @@
 //!
 //! | Step | Module | Start with |
 //! |---|---|---|
-//! | Find spikes | [`detection`] | [`detect_spikes_multichannel`], [`deduplicate_spikes_spatial`] |
+//! | Find spikes | [`detection`] | [`detect_spikes_threshold`], [`deduplicate_spikes_spatial`] |
 //! | Whole recordings, bounded memory | [`streaming`] | [`streaming::StreamingDetector`] |
-//! | Cut waveforms | [`extraction`] | [`extract_snippets_multichannel`] |
+//! | Cut waveforms | [`extraction`] | [`extract_snippets`] |
 //! | Features | [`features`] | [`PcaFeatureEmbedder`] |
 //! | Positions and drift | [`spatial`] | [`PeakLocalizer`] implementations |
 //! | Cluster into units | [`sorting`] | k-means, GMM, HDBSCAN, bipartite modularity |
@@ -30,7 +30,7 @@
 //!
 //! ```
 //! use dspk_synapse::io::probe::{Position3D, SensorLayout, SensorSite};
-//! use dspk_synapse::{deduplicate_spikes_spatial, detect_spikes_multichannel, SpikePolarity, SpikeSpacing};
+//! use dspk_synapse::{deduplicate_spikes_spatial, detect_spikes_threshold, SpikePolarity, SpikeSpacing};
 //!
 //! // 4 channels on a line, 20 µm apart
 //! let sites = (0..4).map(|c| SensorSite::new(c, Position3D::new(0.0, 20.0 * c as f32, 0.0), 0)).collect();
@@ -43,7 +43,7 @@
 //! x[2 * samples + 500] = -40.0;
 //!
 //! // Troughs below −5 σ (σ per channel, from the median absolute deviation), ≥ 1 ms apart at 30 kHz
-//! let crossings = detect_spikes_multichannel(&x, channels, samples, 5.0, SpikePolarity::Negative, SpikeSpacing::new(30));
+//! let crossings = detect_spikes_threshold(&x, channels, samples, 5.0, SpikePolarity::Negative, SpikeSpacing::new(30));
 //! assert_eq!(crossings.len(), 2); // the same spike, on two channels
 //!
 //! // Crossings within 50 µm and 10 samples of a larger one belong to it
@@ -75,18 +75,18 @@ pub use core::{
 pub use detection::{
     AdaptiveThresholdDetector, DistanceRule, MatchedFilterSpikeDetector, NeoSpikeDetector,
     SpikePolarity, SpikeSpacing, ThresholdSpikeDetector, canonical_biphasic_prototype,
-    DedupNeighbours, compute_neo_energy_1d, deduplicate_spikes_spatial, deduplicate_spikes_spatial_gpu,
-    detect_spikes_matched_filter, detect_spikes_multichannel, detect_spikes_neo,
-    detect_spikes_with_sigma, detection_heights, estimate_noise_std, execute_detect_spikes_in_vram,
+    DedupNeighbours, compute_neo_energy, deduplicate_spikes_spatial, deduplicate_spikes_spatial_device,
+    detect_spikes_matched_filter, detect_spikes_threshold, detect_spikes_neo,
+    detect_spikes_threshold_with_sigma, detection_heights, estimate_noise_std, execute_detect_spikes_in_vram,
 };
 pub use extraction::{
-    execute_extract_sinc_in_vram, extract_snippet_batch_multichannel,
-    extract_snippets_multichannel, extract_snippets_single_channel, read_snippets,
+    execute_extract_sinc_in_vram, extract_snippet_batch,
+    extract_snippets, extract_snippets_single_channel, read_snippets,
 };
 pub use features::{
     ConductionVelocityEstimate, PcaFeatureEmbedder, PpcaFeatureEmbedder, SpikeMorphology,
     WaveletFeatureEmbedder, compute_morphology, estimate_hdemg_conduction_velocity,
-    extract_waveform_pca, haar_dwt_multilevel_1d,
+    extract_waveform_pca, compute_haar_dwt,
 };
 pub use metrics::{
     BurstEpoch, Correlogram, FiringRateCurve, IsiMetrics, MepMetrics, PairwiseTrainMatch,
@@ -96,7 +96,7 @@ pub use metrics::{
     compute_d_prime, compute_instantaneous_firing_rate, compute_isi_violations,
     compute_isolation_distance, compute_llobet_contamination, compute_presence_ratio,
     compute_psth, compute_silhouette_score, compute_snr, compute_stimulus_triggered_average,
-    count_refractory_violations, detect_burst_epochs, isi_histogram, quantify_mep,
+    count_refractory_violations, detect_burst_epochs, compute_isi_histogram, quantify_mep,
 };
 pub use sorting::{
     ConvolutiveBssDecomposer, DensityPeaksResult, GmmClusterer, GmmCovarianceKind, GmmResult,

@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use dspk_benchmarks::Report;
 use dspk_core::compute::{ComputeTarget, ComputeTask};
-use dspk_synapse::sorting::hdbscan;
+use dspk_synapse::sorting::cluster_hdbscan;
 
 /// Samples per clip (Kilosort4 / EMUsort `nt`).
 const DIMS: usize = 61;
@@ -63,7 +63,7 @@ impl ComputeTask for Run {
     fn run(self, client: cubecl::prelude::Client) -> Self::Output {
         let x = clips(self.0);
         let start = Instant::now();
-        let labels = hdbscan(&client, &x, self.0, DIMS, MIN_CLUSTER_SIZE);
+        let labels = cluster_hdbscan(&client, &x, self.0, DIMS, MIN_CLUSTER_SIZE);
         let clusters = labels.iter().copied().max().map_or(0, |m| m + 1);
         let noise = labels.iter().filter(|&&l| l < 0).count();
         let secs = start.elapsed().as_secs_f64();

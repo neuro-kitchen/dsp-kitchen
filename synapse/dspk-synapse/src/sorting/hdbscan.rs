@@ -57,10 +57,10 @@ fn max_rounds(n: usize) -> usize {
     (usize::BITS - n.saturating_sub(1).leading_zeros()) as usize
 }
 
-/// Progress total of [`hdbscan_points_with_progress`] over `n` points: `n` units per pass (the
+/// Progress total of [`execute_hdbscan_with_progress`] over `n` points: `n` units per pass (the
 /// neighbour pass and at most `max_rounds` Borůvka rounds). A launch over `c` of the `n` targets
 /// for `r` of the `n` points advances `c · r / n`; a round's skipped work is credited when it ends.
-pub fn hdbscan_progress_total(n: usize) -> u64 {
+pub fn cluster_hdbscan_progress_total(n: usize) -> u64 {
     (1 + max_rounds(n) as u64) * n as u64
 }
 
@@ -102,19 +102,19 @@ impl Launches {
     }
 }
 
-/// Labels of [`hdbscan_points`] for host points `x` (`[n, d]` row-major), uploaded once.
-pub fn hdbscan(client: &Client, x: &[f32], n: usize, d: usize, min_cluster_size: usize) -> Vec<i32> {
-    hdbscan_points(client, &DevicePoints::upload(client, x, n, d), min_cluster_size)
+/// Labels of [`execute_hdbscan`] for host points `x` (`[n, d]` row-major), uploaded once.
+pub fn cluster_hdbscan(client: &Client, x: &[f32], n: usize, d: usize, min_cluster_size: usize) -> Vec<i32> {
+    execute_hdbscan(client, &DevicePoints::upload(client, x, n, d), min_cluster_size)
 }
 
 /// Labels of HDBSCAN on device points: cluster index per point (`0..`), `-1` for noise.
-pub fn hdbscan_points(client: &Client, points: &DevicePoints, min_cluster_size: usize) -> Vec<i32> {
-    hdbscan_points_with_progress(client, points, min_cluster_size, &mut |_, _| {})
+pub fn execute_hdbscan(client: &Client, points: &DevicePoints, min_cluster_size: usize) -> Vec<i32> {
+    execute_hdbscan_with_progress(client, points, min_cluster_size, &mut |_, _| {})
 }
 
-/// [`hdbscan_points`], calling `progress(done, total)` as the work advances (`total` from
-/// [`hdbscan_progress_total`]; the last call is `(total, total)`).
-pub fn hdbscan_points_with_progress(
+/// [`execute_hdbscan`], calling `progress(done, total)` as the work advances (`total` from
+/// [`cluster_hdbscan_progress_total`]; the last call is `(total, total)`).
+pub fn execute_hdbscan_with_progress(
     client: &Client,
     points: &DevicePoints,
     min_cluster_size: usize,
@@ -123,11 +123,11 @@ pub fn hdbscan_points_with_progress(
     spanning_tree_labels(client, points, min_cluster_size, false, true, progress)
 }
 
-/// [`hdbscan`] with the `hdbscan` package's `allow_single_cluster` (SpikeInterface's splits set it):
+/// [`cluster_hdbscan`] with the `hdbscan` package's `allow_single_cluster` (SpikeInterface's splits set it):
 /// excess-of-mass selection may also keep the root, i.e. the points as one cluster. When it does,
 /// a point is labelled 0 only if it leaves the root at the root's largest `λ` (the package's
 /// labelling), else noise.
-pub fn hdbscan_allow_single(client: &Client, x: &[f32], n: usize, d: usize, min_cluster_size: usize) -> Vec<i32> {
+pub fn cluster_hdbscan_allow_single(client: &Client, x: &[f32], n: usize, d: usize, min_cluster_size: usize) -> Vec<i32> {
     let points = DevicePoints::upload(client, x, n, d);
     spanning_tree_labels(client, &points, min_cluster_size, true, true, &mut |_, _| {})
 }
@@ -147,7 +147,7 @@ fn spanning_tree_labels(
     if n < mcs {
         return vec![-1; n];
     }
-    let total = hdbscan_progress_total(n);
+    let total = cluster_hdbscan_progress_total(n);
     let mut done = 0u64;
     let mut report = |done: u64| progress(done.min(total), total);
 
@@ -542,7 +542,7 @@ mod tests {
     impl ComputeTask for Labels {
         type Output = Vec<i32>;
         fn run(self, client: Client) -> Self::Output {
-            hdbscan(&client, &self.0, self.1, self.2, self.3)
+            cluster_hdbscan(&client, &self.0, self.1, self.2, self.3)
         }
     }
 

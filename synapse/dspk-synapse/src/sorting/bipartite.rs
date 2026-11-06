@@ -49,7 +49,7 @@ const CHUNK_ROWS_ALIGN: usize = 64;
 /// launch overhead dominates). Measured by `time_seeding_blocks`.
 const TRIAL_BLOCK: usize = 16;
 
-/// Settings of [`bipartite_clustering`] (defaults: the Kilosort4 paper's).
+/// Settings of [`execute_bipartite_clustering`] (defaults: the Kilosort4 paper's).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BipartiteOptions {
     /// Right neighbours of every left node.
@@ -73,7 +73,7 @@ impl Default for BipartiteOptions {
     }
 }
 
-/// Result of [`bipartite_clustering`].
+/// Result of [`execute_bipartite_clustering`].
 pub struct BipartiteClustering {
     pub n_clusters: usize,
     /// `[n]` cluster of every point (`u32`, `0..n_clusters`), on the device.
@@ -119,7 +119,7 @@ fn launch_norms(client: &Client, points: &DevicePoints) -> Handle {
 /// nearest first). `right_ids[j]` is right point `j`'s index among the left points, so a point is
 /// not its own neighbour ([`NO_LABEL`] for right points that are none of them). Needs
 /// `k ≤ right.n` (`k < right.n` when the right points are a subset of the left ones).
-pub fn nearest_neighbours(client: &Client, left: &DevicePoints, right: &DevicePoints, right_ids: &[u32], k: usize) -> Handle {
+pub fn execute_nearest_neighbours(client: &Client, left: &DevicePoints, right: &DevicePoints, right_ids: &[u32], k: usize) -> Handle {
     let (n, m, d) = (left.n, right.n, left.d);
     assert_eq!(right.d, d, "nearest_neighbours: feature counts differ");
     assert_eq!(right_ids.len(), m, "nearest_neighbours: one id per right point");
@@ -283,7 +283,7 @@ fn count_values(client: &Client, values: &Handle, n: usize, bins: usize) -> Hand
 }
 
 /// Clusters `points` (see the module docs).
-pub fn bipartite_clustering(client: &Client, points: &DevicePoints, opts: &BipartiteOptions) -> BipartiteClustering {
+pub fn execute_bipartite_clustering(client: &Client, points: &DevicePoints, opts: &BipartiteOptions) -> BipartiteClustering {
     let n = points.n;
     let subset = subset_indices(n, opts.subset_stride, opts.max_subset);
     let m = subset.len();
@@ -296,14 +296,14 @@ pub fn bipartite_clustering(client: &Client, points: &DevicePoints, opts: &Bipar
 
     // 1. Graph, and the degree of every right node
     let right_points = points.gather(client, &subset);
-    let nb = nearest_neighbours(client, points, &right_points, &subset, k);
+    let nb = execute_nearest_neighbours(client, points, &right_points, &subset, k);
     let edges_n = n * k;
     let right_degree = count_values(client, &nb, edges_n, m);
 
     // 2. Initial labels: nearest k-means++ seed (no point is excluded from its nearest seed)
     let seeds = kmeans_plus_plus_seeds(client, points, opts.init_clusters.min(n).max(1), &mut rng);
     let c = seeds.len();
-    let left = nearest_neighbours(client, points, &points.gather(client, &seeds), &vec![NO_LABEL; c], 1);
+    let left = execute_nearest_neighbours(client, points, &points.gather(client, &seeds), &vec![NO_LABEL; c], 1);
     let right = buffer::upload(client, &vec![NO_LABEL; m]);
 
     // 3. Alternating right / left assignment
@@ -479,7 +479,7 @@ mod tests {
         let x = blobs(3, n / 3 + 1, d, 4.0)[..n * d].to_vec();
         let points = DevicePoints::upload(&client, &x, n, d);
         let subset = subset_indices(n, 3, 1000);
-        let nb = nearest_neighbours(&client, &points, &points.gather(&client, &subset), &subset, k);
+        let nb = execute_nearest_neighbours(&client, &points, &points.gather(&client, &subset), &subset, k);
         let got = buffer::download_prefix::<u32>(&client, nb, n * k);
         let want = host_neighbours(&x, n, d, &subset, k);
         let mut differ = 0;
@@ -521,7 +521,7 @@ mod tests {
         let n = b * per;
         let points = DevicePoints::upload(&client, &blobs(b, per, d, 12.0), n, d);
         let opts = BipartiteOptions { subset_stride: 2, init_clusters: 20, ..Default::default() };
-        let res = bipartite_clustering(&client, &points, &opts);
+        let res = execute_bipartite_clustering(&client, &points, &opts);
         let labels = buffer::download_prefix::<u32>(&client, res.labels.clone(), n);
         assert!(res.n_clusters >= b, "{} clusters for {b} blobs", res.n_clusters);
         assert!(labels.iter().all(|&l| (l as usize) < res.n_clusters));

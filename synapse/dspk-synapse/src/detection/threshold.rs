@@ -29,7 +29,7 @@ pub fn detection_heights(channel_sigmas: &[f32], threshold_factor: f32) -> Vec<f
 /// Threshold crossings of every channel of `[channels, samples]` `data`: local extrema of
 /// `polarity` reaching `threshold_factor · σ` (σ per channel by [`estimate_noise_std`]), spaced by
 /// `spacing`; sorted by sample.
-pub fn detect_spikes_multichannel(
+pub fn detect_spikes_threshold(
     data: &[f32],
     channels: usize,
     samples: usize,
@@ -39,11 +39,11 @@ pub fn detect_spikes_multichannel(
 ) -> Vec<SpikeEvent> {
     assert_eq!(data.len(), channels * samples);
     let sigmas: Vec<f32> = data.chunks_exact(samples.max(1)).take(channels).map(estimate_noise_std).collect();
-    detect_spikes_with_sigma(data, channels, samples, &sigmas, threshold_factor, polarity, spacing)
+    detect_spikes_threshold_with_sigma(data, channels, samples, &sigmas, threshold_factor, polarity, spacing)
 }
 
-/// [`detect_spikes_multichannel`] with pre-calibrated per-channel noise `channel_sigmas` (µV).
-pub fn detect_spikes_with_sigma(
+/// [`detect_spikes_threshold`] with pre-calibrated per-channel noise `channel_sigmas` (µV).
+pub fn detect_spikes_threshold_with_sigma(
     data: &[f32],
     channels: usize,
     samples: usize,
@@ -110,7 +110,7 @@ impl crate::core::SpikeDetector for ThresholdSpikeDetector {
         sample_rate_hz: f64,
     ) -> dspk_core::DspResult<Vec<SpikeEvent>> {
         let spacing = SpikeSpacing::from_ms(self.refractory_ms, sample_rate_hz, self.distance_rule);
-        Ok(detect_spikes_multichannel(data, channels, samples, self.threshold_factor, self.polarity, spacing))
+        Ok(detect_spikes_threshold(data, channels, samples, self.threshold_factor, self.polarity, spacing))
     }
 }
 
@@ -128,7 +128,7 @@ mod tests {
         signal[300] = -120.0;
         signal[301] = -40.0;
 
-        let spikes = detect_spikes_multichannel(&signal, 1, 1000, 4.0, SpikePolarity::Negative, SpikeSpacing::new(30));
+        let spikes = detect_spikes_threshold(&signal, 1, 1000, 4.0, SpikePolarity::Negative, SpikeSpacing::new(30));
         assert_eq!(spikes.len(), 1);
         assert_eq!(spikes[0].channel_id, 0);
         assert_eq!(spikes[0].sample_index, 300);
@@ -141,7 +141,7 @@ mod tests {
         let mut signal: Vec<f32> = (0..1000).map(|i| ((i % 5) as f32 - 2.0) * 3.0).collect();
         signal[400] = -60.0;
         signal[405] = -150.0;
-        let spikes = detect_spikes_multichannel(&signal, 1, 1000, 4.5, SpikePolarity::Negative, SpikeSpacing::new(20));
+        let spikes = detect_spikes_threshold(&signal, 1, 1000, 4.5, SpikePolarity::Negative, SpikeSpacing::new(20));
         assert_eq!(spikes.iter().map(|s| s.sample_index).collect::<Vec<_>>(), vec![405]);
     }
 
@@ -154,12 +154,12 @@ mod tests {
         signal[200] = -95.0;
         signal[600] = 110.0;
 
-        let pos = detect_spikes_multichannel(&signal, 1, 1000, 4.5, SpikePolarity::Positive, SpikeSpacing::new(20));
+        let pos = detect_spikes_threshold(&signal, 1, 1000, 4.5, SpikePolarity::Positive, SpikeSpacing::new(20));
         assert_eq!(pos.len(), 1);
         assert_eq!(pos[0].sample_index, 600);
         assert_eq!(pos[0].peak_amplitude_uv, 110.0);
 
-        let both = detect_spikes_multichannel(&signal, 1, 1000, 4.5, SpikePolarity::Both, SpikeSpacing::new(20));
+        let both = detect_spikes_threshold(&signal, 1, 1000, 4.5, SpikePolarity::Both, SpikeSpacing::new(20));
         assert_eq!(both.len(), 2);
         assert_eq!(both[0].sample_index, 200);
         assert_eq!(both[1].sample_index, 600);

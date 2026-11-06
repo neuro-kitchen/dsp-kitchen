@@ -423,9 +423,9 @@ pub fn windows_of(signal: &Arc<dyn SignalBackend>) -> Arc<Windows> {
 }
 
 /// Counts of inter-spike intervals of sorted `times` (samples at `rate` Hz) in bins of `bin_ms`
-/// from 0 to `max_ms` (dspk-synapse's `isi_histogram`).
-pub fn isi_histogram(times: &[u64], rate: f64, max_ms: f64, bin_ms: f64) -> Vec<u32> {
-    dspk_synapse::metrics::firing::isi_histogram(times, rate, bin_ms, max_ms).1.into_iter().map(|c| c.min(u32::MAX as u64) as u32).collect()
+/// from 0 to `max_ms` (dspk-synapse's `compute_isi_histogram`).
+pub fn compute_isi_histogram(times: &[u64], rate: f64, max_ms: f64, bin_ms: f64) -> Vec<u32> {
+    dspk_synapse::metrics::firing::compute_isi_histogram(times, rate, bin_ms, max_ms).1.into_iter().map(|c| c.min(u32::MAX as u64) as u32).collect()
 }
 
 /// Autocorrelogram of sorted `times`: counts of lags in `[-half_ms, half_ms]` in bins of `bin_ms`
@@ -569,7 +569,7 @@ pub(crate) mod tests {
     fn test_isi_and_acg() {
         // Spikes every 10 ms at 1 kHz
         let times: Vec<u64> = (0..100).map(|i| i * 10).collect();
-        let isi = isi_histogram(&times, 1000.0, 50.0, 1.0);
+        let isi = compute_isi_histogram(&times, 1000.0, 50.0, 1.0);
         assert_eq!(isi[10], 99);
         let acg = autocorrelogram(&times, 1000.0, 50.0, 1.0);
         assert_eq!(acg.len(), 101, "±50 bins and zero lag");

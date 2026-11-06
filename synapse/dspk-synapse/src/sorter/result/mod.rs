@@ -4,12 +4,12 @@
 //!
 //! [`SorterResult::to_sorting_output`]: one unit per non-empty unit id. Its primary channel is the
 //! template channel with the most energy; it is labelled *good* when its auto-correlogram is
-//! refractory ([`crate::metrics::acg_refractory`]), else *mua* (Phy's `cluster_KSLabel`); it
+//! refractory ([`crate::metrics::compute_acg_refractory`]), else *mua* (Phy's `cluster_KSLabel`); it
 //! carries EMUsort's composite score, whose SNR follows [`AmplitudeScale`].
 
 use crate::io::probe::SensorLayout;
 use crate::core::{SortedUnit, SortingOutput, WaveformTemplate};
-use crate::metrics::{acg_refractory, composite_score, CompositeScoreOptions, RefractoryOptions};
+use crate::metrics::{compute_acg_refractory, compute_composite_score, CompositeScoreOptions, RefractoryOptions};
 use crate::{QualityCriteria, UnitQualityLabel};
 
 /// What the spike amplitudes (and templates) are measured in, which sets each unit's SNR.
@@ -89,7 +89,7 @@ impl SorterResult {
                 };
                 let mut sorted = s.clone();
                 sorted.sort_unstable();
-                let good = acg_refractory(&sorted, self.sample_rate_hz, &self.label_refractory).1;
+                let good = compute_acg_refractory(&sorted, self.sample_rate_hz, &self.label_refractory).1;
                 let mut unit = SortedUnit::from_spikes_with(
                     unit_id,
                     primary,
@@ -104,7 +104,7 @@ impl SorterResult {
                 );
                 unit.quality_label = if good { UnitQualityLabel::SingleUnit } else { UnitQualityLabel::MultiUnit };
                 unit.composite_score =
-                    composite_score(&unit.spike_samples, &unit.amplitudes_uv, snr, self.total_samples, self.sample_rate_hz, &self.composite).score;
+                    compute_composite_score(&unit.spike_samples, &unit.amplitudes_uv, snr, self.total_samples, self.sample_rate_hz, &self.composite).score;
                 unit
             })
             .collect();

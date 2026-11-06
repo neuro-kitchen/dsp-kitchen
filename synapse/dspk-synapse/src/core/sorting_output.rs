@@ -95,7 +95,7 @@ pub struct SortedUnit {
     /// Estimated fraction of missing spikes below detection threshold (`[0.0, 0.5]`).
     #[serde(default, deserialize_with = "serde_nan::deserialize_f64")]
     pub amplitude_cutoff: f64,
-    /// EMUsort's composite quality score in `[0, 1]` ([`crate::metrics::composite_score`]); NaN when
+    /// EMUsort's composite quality score in `[0, 1]` ([`crate::metrics::compute_composite_score`]); NaN when
     /// the sorter does not compute it.
     #[serde(default = "serde_nan::nan", deserialize_with = "serde_nan::deserialize_f64")]
     pub composite_score: f64,

@@ -40,7 +40,7 @@ use dspk_synapse::io::probe::SensorLayout;
 use dspk_synapse::core::{SortingOutput, WaveformTemplate};
 use dspk_synapse::features::{ChannelNeighbourhoods, LocalSvd};
 use dspk_synapse::metrics::{CompositeScoreOptions, RefractoryOptions};
-use dspk_synapse::sorting::{hdbscan_allow_single, subsample_peaks, SubsampleOptions};
+use dspk_synapse::sorting::{cluster_hdbscan_allow_single, subsample_peaks, SubsampleOptions};
 
 use super::Spykingcircus2Config;
 use dspk_synapse::sorter::components::{
@@ -364,7 +364,7 @@ pub fn run(client: &Client, source: &dyn RecordingSource, probe: &SensorLayout, 
     let split = SplitOptions { split_radius_um: cfg.split_radius_um, recursive: true, recursive_depth: cfg.split_depth, min_size_split: 2 * cfg.min_cluster_size, n_pca_features: cfg.split_pca_features, minimum_overlap_ratio: 0.25 };
     let start: Vec<i64> = sel_channels.iter().map(|&c| c as i64).collect();
     let mcs = cfg.min_cluster_size;
-    let mut clusterer = |x: &[f32], n: usize, d: usize| hdbscan_allow_single(client, x, n, d, mcs);
+    let mut clusterer = |x: &[f32], n: usize, d: usize| cluster_hdbscan_allow_single(client, x, n, d, mcs);
     let labels = split_clusters(&start, &sel_channels, &sparse, &positions, &split, &mut clusterer);
     stages.report(STAGE_CLUSTERING, 1, 4);
     let clean_opts = CleanOptions {

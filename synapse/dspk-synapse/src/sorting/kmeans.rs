@@ -13,7 +13,7 @@ pub const DEFAULT_N_INIT: usize = 10;
 pub const DEFAULT_MAX_ITER: usize = 300;
 pub const DEFAULT_TOL: f64 = 1e-4;
 
-/// Options of [`kmeans`].
+/// Options of [`cluster_kmeans`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct KMeansOptions {
     pub n_init: usize,
@@ -29,7 +29,7 @@ impl Default for KMeansOptions {
     }
 }
 
-/// Result of [`kmeans`].
+/// Result of [`cluster_kmeans`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct KMeansResult {
     /// `[k, d]` centres.
@@ -185,7 +185,7 @@ fn assign(client: &Client, points: &DevicePoints, centers: &[f32], k: usize, out
 
 /// `(sums [k, d], counts [k])` of the points per label (`label[i] < k`; other labels are left
 /// out), split on the device, added in `f64`. Downloads `splits · k · (d + 1)` values.
-pub fn cluster_sums(client: &Client, points: &DevicePoints, label: &Handle, k: usize) -> (Vec<f64>, Vec<usize>) {
+pub fn execute_cluster_sums(client: &Client, points: &DevicePoints, label: &Handle, k: usize) -> (Vec<f64>, Vec<usize>) {
     let (n, d) = (points.n, points.d);
     let splits = n.div_ceil(SUM_SPLIT).max(1);
     let (sums, counts) = (buffer::empty::<f32>(client, splits * k * d), buffer::empty::<u32>(client, splits * k));
@@ -228,7 +228,7 @@ fn lloyd(client: &Client, points: &DevicePoints, k: usize, mut centers: Vec<f32>
     let assignment = Assignment { label: buffer::empty::<u32>(client, n), dist: buffer::empty::<f32>(client, n) };
     for _ in 0..max_iter.max(1) {
         assign(client, points, &centers, k, &assignment);
-        let (sums, counts) = cluster_sums(client, points, &assignment.label, k);
+        let (sums, counts) = execute_cluster_sums(client, points, &assignment.label, k);
         let mut new_centers = centers.clone();
         // Empty clusters move to the points farthest from their centre (distances read only then)
         let mut far: Option<std::vec::IntoIter<usize>> = None;
@@ -262,17 +262,17 @@ fn lloyd(client: &Client, points: &DevicePoints, k: usize, mut centers: Vec<f32>
 }
 
 /// k-means of host points `x` (`[n, d]` row-major) into `k` clusters (`k ≤ n`), uploaded once.
-pub fn kmeans(client: &Client, x: &[f32], n: usize, d: usize, k: usize, options: &KMeansOptions) -> KMeansResult {
-    kmeans_points(client, &DevicePoints::upload(client, x, n, d), k, options)
+pub fn cluster_kmeans(client: &Client, x: &[f32], n: usize, d: usize, k: usize, options: &KMeansOptions) -> KMeansResult {
+    execute_kmeans(client, &DevicePoints::upload(client, x, n, d), k, options)
 }
 
 /// k-means of device points into `k` clusters (`k ≤ n`). See the module docs.
-pub fn kmeans_points(client: &Client, points: &DevicePoints, k: usize, options: &KMeansOptions) -> KMeansResult {
-    kmeans_points_with_progress(client, points, k, options, &mut |_, _| {})
+pub fn execute_kmeans(client: &Client, points: &DevicePoints, k: usize, options: &KMeansOptions) -> KMeansResult {
+    execute_kmeans_with_progress(client, points, k, options, &mut |_, _| {})
 }
 
-/// [`kmeans_points`], calling `progress(done, total)` after each of the `n_init` restarts.
-pub fn kmeans_points_with_progress(
+/// [`execute_kmeans`], calling `progress(done, total)` after each of the `n_init` restarts.
+pub fn execute_kmeans_with_progress(
     client: &Client,
     points: &DevicePoints,
     k: usize,
@@ -446,7 +446,7 @@ mod tests {
     impl ComputeTask for Fit {
         type Output = KMeansResult;
         fn run(self, client: Client) -> Self::Output {
-            kmeans(&client, &self.0, self.1, self.2, self.3, &self.4)
+            cluster_kmeans(&client, &self.0, self.1, self.2, self.3, &self.4)
         }
     }
 

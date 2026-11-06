@@ -91,7 +91,7 @@ impl RefractoryStats {
 }
 
 /// `R12`, `Q12` and `R` of a correlogram with `counts[half + i]` at lag `i` bins.
-pub fn refractory_stats(correlogram: &Correlogram, options: &RefractoryOptions) -> RefractoryStats {
+pub fn compute_refractory_stats(correlogram: &Correlogram, options: &RefractoryOptions) -> RefractoryStats {
     let counts = &correlogram.counts;
     let half = counts.len() / 2;
     let shoulder = ((options.shoulder_start_ms / correlogram.bin_size_ms).round() as usize).clamp(1, half);
@@ -127,17 +127,17 @@ pub fn refractory_stats(correlogram: &Correlogram, options: &RefractoryOptions) 
 
 /// Refractory statistics of the cross-correlogram of two sorted spike trains (samples), and whether
 /// it is refractory (the trains look like one neuron).
-pub fn ccg_refractory(sorted_a: &[u64], sorted_b: &[u64], sample_rate_hz: f64, options: &RefractoryOptions) -> (RefractoryStats, bool) {
+pub fn compute_ccg_refractory(sorted_a: &[u64], sorted_b: &[u64], sample_rate_hz: f64, options: &RefractoryOptions) -> (RefractoryStats, bool) {
     let ccg = compute_crosscorrelogram(sorted_a, sorted_b, sample_rate_hz, options.bin_ms, options.window_ms);
-    let stats = refractory_stats(&ccg, options);
+    let stats = compute_refractory_stats(&ccg, options);
     (stats, stats.is_refractory(options.ccg_ratio, options.ccg_probability))
 }
 
 /// Refractory statistics of the auto-correlogram of a sorted spike train (samples), and whether it
 /// is refractory (a well-isolated unit).
-pub fn acg_refractory(sorted: &[u64], sample_rate_hz: f64, options: &RefractoryOptions) -> (RefractoryStats, bool) {
+pub fn compute_acg_refractory(sorted: &[u64], sample_rate_hz: f64, options: &RefractoryOptions) -> (RefractoryStats, bool) {
     let acg = compute_autocorrelogram(sorted, sample_rate_hz, options.bin_ms, options.window_ms);
-    let stats = refractory_stats(&acg, options);
+    let stats = compute_refractory_stats(&acg, options);
     (stats, stats.is_refractory(options.acg_ratio, options.acg_probability))
 }
 
@@ -203,7 +203,7 @@ mod tests {
     #[test]
     fn poisson_train_is_not_refractory() {
         let t = train(1, 10.0, 0.0);
-        let (stats, refractory) = acg_refractory(&t, FS, &RefractoryOptions::default());
+        let (stats, refractory) = compute_acg_refractory(&t, FS, &RefractoryOptions::default());
         assert!(!refractory, "{stats:?}");
         assert!(stats.ratio > 0.5, "{stats:?}");
     }
@@ -213,16 +213,16 @@ mod tests {
     #[test]
     fn an_empty_zero_lag_bin_alone_is_not_refractory() {
         let t = train(6, 30.0, 0.5);
-        let (stats, refractory) = acg_refractory(&t, FS, &RefractoryOptions::default());
+        let (stats, refractory) = compute_acg_refractory(&t, FS, &RefractoryOptions::default());
         assert!(!refractory, "{stats:?}");
         let counting_centre = RefractoryOptions { ignored_central_bins: 0, ..Default::default() };
-        assert!(acg_refractory(&t, FS, &counting_centre).1, "with the centre counted it looks refractory");
+        assert!(compute_acg_refractory(&t, FS, &counting_centre).1, "with the centre counted it looks refractory");
     }
 
     #[test]
     fn train_with_dead_time_is_refractory() {
         let t = train(2, 10.0, 3.0);
-        let (stats, refractory) = acg_refractory(&t, FS, &RefractoryOptions::default());
+        let (stats, refractory) = compute_acg_refractory(&t, FS, &RefractoryOptions::default());
         assert!(refractory, "{stats:?}");
     }
 
@@ -233,24 +233,24 @@ mod tests {
             if i % 2 == 0 { a.push(s) } else { b.push(s) }
             (a, b)
         });
-        let (stats, refractory) = ccg_refractory(&a, &b, FS, &RefractoryOptions::default());
+        let (stats, refractory) = compute_ccg_refractory(&a, &b, FS, &RefractoryOptions::default());
         assert!(refractory, "{stats:?}");
     }
 
     #[test]
     fn independent_neurons_have_a_flat_ccg() {
         let (a, b) = (train(4, 10.0, 3.0), train(5, 10.0, 3.0));
-        let (stats, refractory) = ccg_refractory(&a, &b, FS, &RefractoryOptions::default());
+        let (stats, refractory) = compute_ccg_refractory(&a, &b, FS, &RefractoryOptions::default());
         assert!(!refractory, "{stats:?}");
         // And their union (two neurons in one cluster) is not a refractory unit
-        let (stats, refractory) = acg_refractory(&merge(&a, &b), FS, &RefractoryOptions::default());
+        let (stats, refractory) = compute_acg_refractory(&merge(&a, &b), FS, &RefractoryOptions::default());
         assert!(!refractory, "{stats:?}");
     }
 
     #[test]
     fn empty_or_sparse_trains_are_not_refractory() {
         let options = RefractoryOptions::default();
-        assert!(!acg_refractory(&[], FS, &options).1);
-        assert!(!ccg_refractory(&[100], &[], FS, &options).1);
+        assert!(!compute_acg_refractory(&[], FS, &options).1);
+        assert!(!compute_ccg_refractory(&[100], &[], FS, &options).1);
     }
 }

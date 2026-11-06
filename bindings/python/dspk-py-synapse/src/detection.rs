@@ -68,9 +68,9 @@ pub fn threshold<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, threshol
             if s.len() != c {
                 return Err(invalid(format!("{} sigmas for {c} channels", s.len())));
             }
-            py.detach(|| syn::detect_spikes_with_sigma(&x, c, n, &s, threshold, pol, sp))
+            py.detach(|| syn::detect_spikes_threshold_with_sigma(&x, c, n, &s, threshold, pol, sp))
         }
-        None => py.detach(|| syn::detect_spikes_multichannel(&x, c, n, threshold, pol, sp)),
+        None => py.detach(|| syn::detect_spikes_threshold(&x, c, n, threshold, pol, sp)),
     };
     events(py, ev)
 }

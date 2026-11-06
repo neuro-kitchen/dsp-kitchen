@@ -17,7 +17,7 @@ pub mod wavelet;
 pub use local_svd::{ChannelNeighbourhoods, LocalSvd, LocalSvdOptions};
 pub use conduction::{ConductionVelocityEstimate, estimate_hdemg_conduction_velocity};
 pub use morphology::{SpikeMorphology, compute_morphology};
-pub use wavelet::{WaveletFeatureEmbedder, haar_dwt_multilevel_1d};
+pub use wavelet::{WaveletFeatureEmbedder, compute_haar_dwt};
 
 /// Components the PCA / PPCA embedders keep unless told otherwise.
 pub const DEFAULT_FEATURE_COMPONENTS: usize = 4;
