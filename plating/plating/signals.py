@@ -43,6 +43,13 @@ class Synthetic:
         return self.data.shape[1]
 
     @property
+    def loudest_channel(self) -> int:
+        """The channel where the largest unit peaks (where spikes show best)."""
+        if not len(self.templates):
+            return 0
+        return int(self.unit_channels[int(np.argmax(np.abs(self.templates).max(axis=1)))])
+
+    @property
     def time(self) -> np.ndarray:
         """Seconds of every sample."""
         return np.arange(self.samples) / self.sample_rate
@@ -98,8 +105,11 @@ def synthetic(
 
     lfp = sum(lfp_uv * np.sin(2 * np.pi * f * t + 0.4 * ch + k) for k, f in enumerate(lfp_hz))
     hum = np.broadcast_to(hum_uv * (np.sin(2 * np.pi * hum_hz * t) + 0.3 * np.sin(2 * np.pi * 3 * hum_hz * t)), (channels, n))
-    steps = np.cumsum(rng.normal(0, 1, max(1, int(seconds * 3))))
-    common_1d = np.interp(t, np.linspace(0, seconds, steps.size), steps)
+    # A random walk sampled every millisecond, smoothed over 100 ms: a slow, wandering artefact
+    walk = np.cumsum(rng.normal(0, 1, max(2, int(seconds * 1000))))
+    kernel = np.hanning(101)
+    walk = np.convolve(np.pad(walk, 50, mode="edge"), kernel / kernel.sum(), mode="valid")
+    common_1d = np.interp(t, np.linspace(0, seconds, walk.size), walk)
     common_1d = common_uv * (common_1d - common_1d.mean()) / (np.std(common_1d) or 1.0)
     common = np.broadcast_to(common_1d, (channels, n))
     noise = rng.normal(0, noise_uv, (channels, n))
