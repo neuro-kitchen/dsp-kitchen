@@ -13,32 +13,44 @@ everything it sends is encrypted with TLS.
 
 ## Build
 
+One `Containerfile`, three targets. They hold the same `dspk` and `dspk-cli-sorter` (CUDA, wgpu
+and CPU compiled in) and differ only in the system libraries each GPU needs:
+
+| Target | For | Adds | Run with |
+|---|---|---|---|
+| `cpu` (default) | no GPU | nothing (`DSPK_RUNTIME=cpu`) | — |
+| `nvidia` | NVIDIA: CUDA and Vulkan | NVRTC 13.0 and the Vulkan loader; the driver comes from the host | `--device nvidia.com/gpu=all` |
+| `mesa` | AMD, Intel: Vulkan (wgpu) | the Vulkan loader and Mesa's Vulkan drivers | `--device /dev/dri` |
+
 From the repository root (the build needs the whole workspace):
 
 ```bash
-podman build -f deploy/Containerfile --ignorefile deploy/.containerignore -t dspk-serve .
+podman build -f deploy/Containerfile --ignorefile deploy/.containerignore --target nvidia -t dspk-serve:nvidia .
 ```
 
-The first build compiles everything and takes a while. Later builds reuse Podman's caches of
-crates, build output and the LLVM bundle. For a smaller image without the GPU runtimes, add
-`--build-arg FEATURES=cpu,hub`.
+- The first build compiles everything and takes a while. Building another target afterwards
+  compiles nothing: they share the build stage and Podman's caches.
+- `--build-arg CUDA_NVRTC=13-5` picks a newer NVRTC, at most the CUDA version of the host's
+  driver (`nvidia-smi` shows it).
+- `--build-arg FEATURES=cpu,hub` compiles the CPU runtime only.
 
 ## Run
 
 A synthetic recording (384 channels at 30 kHz, one hour):
 
 ```bash
-podman run --rm -p 50051:50051/udp dspk-serve
+podman run --rm -p 50051:50051/udp --device nvidia.com/gpu=all dspk-serve:nvidia
 ```
 
 Your own recording, from a folder mounted at `/data`:
 
 ```bash
 mkdir -p ~/dspk-data && cp recording.ap.bin recording.ap.meta ~/dspk-data/
-podman run --rm -p 50051:50051/udp --userns=keep-id:uid=10001,gid=10001 \
-  -v ~/dspk-data:/data:Z dspk-serve \
+podman run --rm -p 50051:50051/udp --device nvidia.com/gpu=all --userns=keep-id:uid=10001,gid=10001 \
+  --read-only --cap-drop=all --security-opt=no-new-privileges --pids-limit=1024 \
+  -v ~/dspk-data:/data:Z -v dspk-cache:/home/dspk/.cache dspk-serve:nvidia \
   serve /data/recording.ap.bin --bind 0.0.0.0:50051 --loop \
-  --certificate-out /data/server.der --name $(hostname)
+  --certificate-out /data/server.der --name $(hostname) --max-clients 8
 ```
 
 - `:Z` lets SELinux allow the container to use the folder.
@@ -47,6 +59,25 @@ podman run --rm -p 50051:50051/udp --userns=keep-id:uid=10001,gid=10001 \
   write to your folder ("Permission denied" writing `server.der`).
 - The pyramid is built on the first run and written next to the recording, so the folder must
   be writable. Later runs reuse it.
+- The second line hardens the container; see [Hardening](#hardening).
+
+## Hardening
+
+The image runs as a non-root user (uid 10001). The service file (`dspk-serve.container`) and the
+command above add:
+
+| Flag | What it does |
+|---|---|
+| `--read-only` | The image's files can't be changed; writable are only `/data`, the cache volume and `/tmp` |
+| `--cap-drop=all` | No Linux capabilities: the server needs none |
+| `--security-opt=no-new-privileges` | No program inside can gain privileges (setuid) |
+| `--pids-limit=1024` | Caps processes and threads |
+| `--memory=<n>g` (optional) | Caps memory; sorts of long recordings need several GB |
+
+The server itself refuses requests that would make it allocate without bound, accepts at most
+`--max-clients` clients (default 32) and 8 requests at once from each, closes idle connections
+after 30 s, and makes a client prove its address before any work (QUIC Retry). Keep SELinux on
+(see [GPU](#gpu)).
 
 ## Connect
 
@@ -77,19 +108,63 @@ journalctl --user -u dspk-serve  # logs
 
 ## GPU
 
-`dspk serve` streams and needs no GPU. The image can still run the other commands
-(`dspk run`, …) on a GPU:
-
-- **NVIDIA:** install the NVIDIA Container Toolkit, then add `--device nvidia.com/gpu=all`.
-- **Vulkan (wgpu):** add `--device /dev/dri`. The image also needs a Vulkan driver
-  (`mesa-vulkan-drivers`), which isn't installed by default.
-
-Without either, every command runs on the CPU.
-
-## Firewall
-
-QUIC is UDP. If the server's firewall is on, open the port:
+Check what the container sees:
 
 ```bash
-sudo firewall-cmd --add-port=50051/udp --permanent && sudo firewall-cmd --reload
+podman run --rm --device nvidia.com/gpu=all dspk-serve:nvidia doctor
 ```
+
+Every runtime is listed as usable, or with the reason it isn't. The `Selected:` line is the one
+commands use (`DSPK_RUNTIME`, else the first compiled in: wgpu); `doctor` warns when it has no
+device and names one that has.
+
+- **NVIDIA:** install the NVIDIA Container Toolkit and generate its CDI file once:
+  `sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`. Generate it again after a driver
+  update. `--device nvidia.com/gpu=all` then passes the driver (CUDA and its Vulkan ICD) in.
+- **AMD, Intel:** `--device /dev/dri` with the `mesa` target. Rootless containers also need
+  `--group-add keep-groups` to keep your `render` and `video` groups.
+- **No GPU:** the `cpu` target.
+
+**SELinux (Fedora, RHEL).** With SELinux enforcing, a container may not use the GPU's device
+files by default: CUDA then reports `CUDA_ERROR_NO_DEVICE` and Vulkan finds no adapter, even
+with the GPU passed in. Either allow containers to use devices, once for the whole machine
+(SELinux stays on):
+
+```bash
+sudo setsebool -P container_use_devices on
+```
+
+or turn labelling off for this container only: `--security-opt=label=disable`
+(`SecurityLabelDisable=true` in the Quadlet unit).
+
+`dspk serve` itself only streams; the GPU is for the pipelines and sorts the server runs.
+
+### Tested (2026-11-06, RTX 2070, driver 615.71, rootless Podman 6.1, Fedora 45)
+
+- `doctor` in the `nvidia` target: wgpu and CUDA usable.
+- Kilosort4 on 30 s of a Neuropixels recording (384 channels) in the container, on CUDA:
+  136 units, 63,014 spikes in 28.6 s.
+
+```bash
+podman run --rm --device nvidia.com/gpu=all --userns=keep-id:uid=10001,gid=10001 \
+  -v ~/dspk-data:/data:Z dspk-serve:nvidia \
+  sort --runtime cuda kilosort4 /data/recording.ap.bin --probe neuropixels1 \
+  --output /data/recording.kilosort4.sorting.zarr --duration-sec 30
+```
+
+## Firewall and who can connect
+
+QUIC runs over UDP, and every connection is encrypted with TLS 1.3. Clients check the server's
+certificate, but **the server does not yet check who the client is**: anyone who can reach the
+port can connect and read the recording. Until clients authenticate, keep the server on a
+network you trust.
+
+Open the port only to that network (replace the address range with yours):
+
+```bash
+sudo firewall-cmd --permanent --add-rich-rule='rule family=ipv4 source address=192.168.1.0/24 port port=50051 protocol=udp accept'
+sudo firewall-cmd --reload
+```
+
+Better still, reach the server through a VPN (WireGuard, Tailscale) and don't open the port to
+the internet at all. Avoid `--add-port=50051/udp`: that opens it to every address.

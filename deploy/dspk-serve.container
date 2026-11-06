@@ -13,7 +13,11 @@ After=network-online.target
 Wants=network-online.target
 
 [Container]
-Image=localhost/dspk-serve:latest
+# The image target for this machine's GPU (deploy/README.md): nvidia, mesa or cpu
+Image=localhost/dspk-serve:nvidia
+# NVIDIA (CDI from the NVIDIA Container Toolkit); for mesa: AddDevice=/dev/dri and
+# GroupAdd=keep-groups; for cpu: neither
+AddDevice=nvidia.com/gpu=all
 ContainerName=dspk-serve
 PublishPort=50051:50051/udp
 # You on the host = the container's dspk user (uid 10001), so it can write to ~/dspk-data
@@ -22,8 +26,14 @@ UserNS=keep-id:uid=10001,gid=10001
 Volume=%h/dspk-data:/data:Z
 # Compiled kernels and autotune results, kept across restarts
 Volume=dspk-cache:/home/dspk/.cache
+# Hardening: the image's files read-only (writable: /data, the cache, /tmp), no Linux
+# capabilities, no privilege gain (setuid), a cap on processes; add --memory=<n>g to cap memory
+ReadOnly=true
+DropCapability=all
+NoNewPrivileges=true
+PodmanArgs=--pids-limit=1024
 # Your file under ~/dspk-data, and the names clients use for this machine (for the certificate)
-Exec=serve /data/recording.ap.bin --bind 0.0.0.0:50051 --loop --certificate-out /data/server.der --name %H
+Exec=serve /data/recording.ap.bin --bind 0.0.0.0:50051 --loop --certificate-out /data/server.der --name %H --max-clients 8
 
 [Service]
 Restart=on-failure

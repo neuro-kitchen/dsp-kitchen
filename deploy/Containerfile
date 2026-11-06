@@ -1,50 +1,104 @@
 # dspk as a server: `dspk serve` streams a recording over QUIC (UDP 50051, TLS) to clients
-# (`dspk receive`, the app, Python). The image holds the whole `dspk` command line, so the same
-# container also runs `dspk run`, `dspk doctor`, … on the CPU (or a GPU passed through).
+# (`dspk receive`, the app, Python). The image holds the whole `dspk` command line and the sorter
+# program `dspk-cli-sorter`, so the same container also runs `dspk run`, `dspk sort`,
+# `dspk doctor`, … on a GPU passed through, or on the CPU.
+#
+# One binary (CUDA, wgpu and CPU compiled in), three targets that differ only in the system
+# libraries each GPU needs (they share the build stage: a second target compiles nothing):
+#   cpu     no GPU libraries (default, smallest)
+#   nvidia  NVRTC (CUDA's run-time compiler) + the Vulkan loader; the driver comes from the host
+#           through the NVIDIA Container Toolkit:  podman run --device nvidia.com/gpu=all …
+#   mesa    the Vulkan loader + Mesa's Vulkan drivers (AMD, Intel):  podman run --device /dev/dri …
 #
 # Build from the repository root (the build context is the whole workspace):
-#   podman build -f deploy/Containerfile --ignorefile deploy/.containerignore -t dspk-serve .
+#   podman build -f deploy/Containerfile --ignorefile deploy/.containerignore --target nvidia -t dspk-serve:nvidia .
 # Run (a synthetic 384-channel recording; your own: see deploy/README.md):
-#   podman run --rm -p 50051:50051/udp dspk-serve
+#   podman run --rm -p 50051:50051/udp --device nvidia.com/gpu=all dspk-serve:nvidia
 
 # Rust toolchain of the build (edition 2024 needs >= 1.85; CI uses the latest stable)
 ARG RUST_VERSION=1.99
-# Debian release of both stages: glibc >= 2.34 for the CPU runtime's prebuilt LLVM (bookworm: 2.36)
+# Debian release of every stage: glibc >= 2.34 for the CPU runtime's prebuilt LLVM (bookworm: 2.36)
 ARG DEBIAN=bookworm
 
 FROM docker.io/library/rust:${RUST_VERSION}-${DEBIAN} AS build
-# CubeCL runtimes compiled in, and the artifact hub (`dspk hub`); the defaults of dspk-cli.
-# A smaller image without GPU runtimes: --build-arg FEATURES=cpu,hub
+# CubeCL runtimes compiled in, and the artifact hub (`dspk hub`): the defaults of dspk-cli
 ARG FEATURES=wgpu,cuda,cpu,hub
 WORKDIR /src
 COPY . .
 # Caches: the crates.io registry, the build, and the LLVM bundle the CPU runtime downloads at
-# build time (~/.local/share/tracel); the binary is copied out of the cached target folder
+# build time (~/.local/share/tracel); the binaries are copied out of the cached target folder.
+# The sorter program sits next to dspk, where `dspk sort` looks for it.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     --mount=type=cache,target=/root/.local/share/tracel \
-    cargo build --release --locked -p dspk-cli --no-default-features --features "${FEATURES}" \
-    && install -D -m 0755 target/release/dspk /out/dspk
+    cargo build --release --locked -p dspk-cli -p dspk-cli-sorter --no-default-features --features "${FEATURES}" \
+    && install -D -m 0755 target/release/dspk /out/dspk \
+    && install -D -m 0755 target/release/dspk-cli-sorter /out/dspk-cli-sorter
 
-FROM docker.io/library/debian:${DEBIAN}-slim
+# What every target shares: the programs, a non-root user, /data
+FROM docker.io/library/debian:${DEBIAN}-slim AS base
 # ca-certificates: verified downloads from the hub over HTTPS
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=build /out/dspk /usr/local/bin/dspk
-# Not root; /data holds the recordings, their pyramids (written next to them, so the volume is
-# writable) and the certificate the server writes for clients
+COPY --from=build /out/dspk /out/dspk-cli-sorter /usr/local/bin/
+# Not root (uid 10001); /data holds the recordings, their pyramids (written next to them, so the
+# volume is writable), sortings and the certificate the server writes for clients
 RUN useradd --create-home --uid 10001 dspk && install -d -o dspk -g dspk /data
-USER dspk
 WORKDIR /data
 VOLUME /data
-# Kernels compiled and autotuned once survive restarts when this is a volume too
-ENV XDG_CACHE_HOME=/home/dspk/.cache
+# Kernels compiled and autotuned once survive restarts when this is a volume too; with a
+# read-only root (--read-only, recommended) it is the only other writable place besides /data
+# and /tmp. XDG_RUNTIME_DIR: Mesa's Vulkan driver warns without one.
+ENV XDG_CACHE_HOME=/home/dspk/.cache XDG_RUNTIME_DIR=/tmp
+RUN install -d -o dspk -g dspk /home/dspk/.cache
+VOLUME /home/dspk/.cache
 EXPOSE 50051/udp
-# `dspk serve` stops cleanly on Ctrl+C (SIGINT); podman stop sends this instead of SIGTERM
-STOPSIGNAL SIGINT
+# `dspk serve` stops cleanly on SIGTERM (podman stop, systemd) and Ctrl+C
 ENTRYPOINT ["dspk"]
 # Listen on every interface of the container; the self-signed certificate is written to /data
 # for clients (`dspk receive --certificate server.der`). Add --name <host> for the names clients
 # use, or bring your own certificate (--certificate, --private-key).
 CMD ["serve", "--bind", "0.0.0.0:50051", "--certificate-out", "/data/server.der"]
+
+# NVIDIA: CUDA and Vulkan. The host's driver (libcuda, the Vulkan ICD) is passed in by the NVIDIA
+# Container Toolkit (CDI); the image brings what the driver does not: NVRTC, which CubeCL uses to
+# compile kernels at run time, the Vulkan loader for wgpu, and libX11 / libXext, which the
+# driver's Vulkan library (libGLX_nvidia) links even without a display.
+FROM base AS nvidia
+USER root
+# NVRTC of CUDA 13.0 works with every CUDA 13 driver (a newer driver accepts what an older NVRTC
+# emits); a newer one: --build-arg CUDA_NVRTC=13-5 (at most the CUDA version of the host's driver)
+ARG CUDA_NVRTC=13-0
+ARG CUDA_REPO=https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64
+# Pinned: the build fails if the downloaded keyring is not this file
+ADD --checksum=sha256:e7f219eab6fe4819cdb5c15b98233dc3420302d9c00883219cd3d896857cf48d ${CUDA_REPO}/cuda-keyring_1.1-1_all.deb /tmp/cuda-keyring.deb
+RUN dpkg -i /tmp/cuda-keyring.deb && rm /tmp/cuda-keyring.deb \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends libvulkan1 libx11-6 libxext6 cuda-nvrtc-${CUDA_NVRTC} \
+    && rm -rf /var/lib/apt/lists/* \
+    && echo "/usr/local/cuda-$(echo ${CUDA_NVRTC} | tr - .)/targets/x86_64-linux/lib" > /etc/ld.so.conf.d/cuda-nvrtc.conf \
+    && ldconfig
+# Vulkan through the driver's EGL library: the toolkit passes in a driver file naming
+# libGLX_nvidia, whose vkCreateInstance fails without an X server ("Found no drivers");
+# libEGL_nvidia (passed in too) works headless
+RUN install -d /usr/share/vulkan/icd.d \
+    && printf '{"file_format_version": "1.0.1", "ICD": {"library_path": "libEGL_nvidia.so.0", "api_version": "1.3.0"}}\n' \
+       > /usr/share/vulkan/icd.d/nvidia_egl.json
+ENV VK_DRIVER_FILES=/usr/share/vulkan/icd.d/nvidia_egl.json
+# Older (hook-based) toolkit setups read these; CDI passes what its spec lists
+ENV NVIDIA_VISIBLE_DEVICES=all NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
+USER dspk
+
+# AMD and Intel: Vulkan through wgpu, with Mesa's drivers (the GPU itself: --device /dev/dri)
+FROM base AS mesa
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers \
+    && rm -rf /var/lib/apt/lists/*
+USER dspk
+
+# No GPU: the CPU runtime only (the GPU runtimes report "not usable"; DSPK_RUNTIME=cpu picks it)
+FROM base AS cpu
+ENV DSPK_RUNTIME=cpu
+USER dspk
