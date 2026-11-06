@@ -20,7 +20,7 @@ use dspk_core::{ComputeTarget, DspError, DspResult, HaloWindow, MemoryOrder, Rec
 use dspk_io::{RawParams, ZarrWriter};
 use dspk_ops::core::buffer;
 use dspk_ops::math::stored_word_bytes;
-use dspk_ops::pipeline::PipelineWorkspace;
+use dspk_ops::pipeline::{Pipeline, PipelineWorkspace};
 use dspk_ops::resampler::{execute_resample_poly, resample_poly_len};
 
 use crate::prepare::{default_open, prepare, ExecutedMode, Prepared};
@@ -318,6 +318,17 @@ fn execute(
     })
 }
 
+/// How many stages every branch starts with in common: the same nodes of the spec (so the same
+/// stages), counted from the read.
+fn shared_stages(prepared: &[Prepared]) -> usize {
+    let Some(first) = prepared.first() else { return 0 };
+    let mut n = 0;
+    while n < first.stages.len() && prepared.iter().all(|p| p.stages.get(n).is_some_and(|(id, _)| *id == first.stages[n].0)) {
+        n += 1;
+    }
+    n
+}
+
 /// The branches of a branched spec (each prepared as its own chain), from one read of the
 /// recording: each window is read once and goes through every branch's device workspace to its
 /// own writer. All branches run in window mode with the largest halo of any (or all in stream
@@ -359,22 +370,35 @@ fn execute_fanout(
     }
     .map_err(|e| PipelineError::Compute(e.to_string()))?;
     let capacity = schedule.max_read_samples().max(1);
-    let mut workspaces = Vec::with_capacity(prepared.len());
-    let mut sinks = Vec::with_capacity(prepared.len());
-    for p in &prepared {
+    // A workspace for `pipeline`; `takes_input`: it receives the read windows (the stored values'
+    // scaling is its job), else the device output of the shared stages
+    let make = |pipeline: Pipeline, takes_input: bool| -> Result<PipelineWorkspace<f32>, PipelineError> {
         let client = target.client().map_err(|e| PipelineError::Compute(e.to_string()))?;
         let mut ws = if stream {
-            PipelineWorkspace::<f32>::new_stateful(client, p.pipeline.clone(), nch, capacity, p.sample_rate)
+            PipelineWorkspace::<f32>::new_stateful(client, pipeline, nch, capacity, first.sample_rate)
         } else {
-            PipelineWorkspace::<f32>::new(client, p.pipeline.clone(), nch, capacity, p.sample_rate)
+            PipelineWorkspace::<f32>::new(client, pipeline, nch, capacity, first.sample_rate)
         }
         .map_err(|e| PipelineError::Invalid(e.to_string()))?;
-        if stored_upload {
+        if stored_upload && takes_input {
             let gains: Vec<f32> = channels.iter().map(|&c| info.channels[c].gain).collect();
             let offsets: Vec<f32> = channels.iter().map(|&c| info.channels[c].offset).collect();
             ws.set_stored_scaling(&gains, &offsets);
         }
-        workspaces.push(ws);
+        Ok(ws)
+    };
+    // The stages every branch starts with (the same nodes of the spec) run once per window; each
+    // branch then runs only its own stages, on the shared result in device memory
+    let shared = shared_stages(&prepared);
+    let mut prefix = match shared {
+        0 => None,
+        n => Some(make(Pipeline::with_stages(first.stages[..n].iter().map(|(_, s)| s.clone()).collect()), true)?),
+    };
+    let mut workspaces = Vec::with_capacity(prepared.len());
+    let mut sinks = Vec::with_capacity(prepared.len());
+    for p in &prepared {
+        let pipeline = if shared > 0 { Pipeline::with_stages(p.stages[shared..].iter().map(|(_, s)| s.clone()).collect()) } else { p.pipeline.clone() };
+        workspaces.push(make(pipeline, prefix.is_none())?);
         if let Some(dir) = p.output.parent().filter(|d| !d.as_os_str().is_empty()) {
             std::fs::create_dir_all(dir).map_err(|e| PipelineError::Io(format!("{}: {e}", dir.display())))?;
         }
@@ -412,8 +436,26 @@ fn execute_fanout(
                 Input::Stored(v) => Some(v.clone()),
                 Input::Values(_) => None,
             };
+            // The shared stages, once: their result stays on the device for every branch
+            let shared_out = match prefix.as_mut() {
+                Some(pw) => Some(match &input {
+                    Input::Stored(_) => {
+                        let stored = owned.take().unwrap_or_default();
+                        bytes.uploaded += stored_word_bytes(stored.len()) as u64;
+                        pw.process_owned_stored_chunk_in_vram(stored, stored_format, n)?
+                    }
+                    Input::Values(samples) => {
+                        bytes.uploaded += (samples.len() * 4) as u64;
+                        pw.process_chunk_in_vram(samples, n)
+                    }
+                }),
+                None => None,
+            };
             for (i, ws) in workspaces.iter_mut().enumerate() {
-                let handle = match &input {
+                let handle = if let Some(shared) = &shared_out {
+                    ws.process_handle(shared, n)
+                } else {
+                    match &input {
                     Input::Stored(_) => {
                         // Each branch takes the stored values (the last one takes them as they are)
                         let stored = if i == last { owned.take().unwrap_or_default() } else { owned.clone().unwrap_or_default() };
@@ -423,6 +465,7 @@ fn execute_fanout(
                     Input::Values(samples) => {
                         bytes.uploaded += (samples.len() * 4) as u64;
                         ws.process_chunk_in_vram(samples, n)
+                    }
                     }
                 };
                 let rows = buffer::download_prefix::<f32>(ws.client(), handle, nch * n);

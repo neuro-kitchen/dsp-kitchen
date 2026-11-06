@@ -71,6 +71,9 @@ impl Resample {
 pub(crate) struct Prepared {
     pub(crate) source: Box<dyn RecordingSource>,
     pub(crate) pipeline: Pipeline,
+    /// The pipeline's stages with the node each comes from (branches of one spec share the
+    /// nodes, and so the stages, of their common start).
+    pub(crate) stages: Vec<(String, dspk_ops::pipeline::PipelineStage)>,
     pub(crate) resample: Option<Resample>,
     pub(crate) channels: Vec<usize>,
     pub(crate) range: std::ops::Range<u64>,
@@ -168,6 +171,7 @@ pub(crate) fn prepare(
     };
 
     let mut stages = Vec::with_capacity(chain.stages.len());
+    let mut stage_ids = Vec::with_capacity(chain.stages.len());
     let mut resample = None;
     for (i, (id, node)) in chain.stages.iter().enumerate() {
         let stage = node.stage().map_err(|e| PipelineError::Invalid(format!("node {id:?}: {e}")))?;
@@ -178,7 +182,10 @@ pub(crate) fn prepare(
                 }
                 resample = Some(Resample::new(*up, *down, *beta, (*edge).into()));
             }
-            (_, Some(stage)) => stages.push(stage),
+            (_, Some(stage)) => {
+                stage_ids.push((id.to_string(), stage.clone()));
+                stages.push(stage);
+            }
             (_, None) => unreachable!("every other processing node has a stage"),
         }
     }
@@ -233,6 +240,7 @@ pub(crate) fn prepare(
     Ok(Prepared {
         source,
         pipeline,
+        stages: stage_ids,
         resample,
         channels,
         range,
