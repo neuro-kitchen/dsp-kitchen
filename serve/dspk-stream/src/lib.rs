@@ -15,6 +15,8 @@ pub mod transport;
 pub use error::{StreamError, StreamResult};
 /// Files under a server's data root (safe paths, listings).
 pub use transport::files;
+/// Jobs a server runs for its clients (sorts), one at a time.
+pub use transport::jobs;
 pub use transport::{
     checked_view, client_config, client_config_with, serve_recording, serve_session, server_config, Device, OpenRecording, RecordingOpener, server_config_with_clients, Authority, ClientIdentity, ClientRecord,
     Enrollment, Pacing, Peer, Permission, ServeOptions, Server, ServerIdentity, ServerTls, ServerTrust, Session, SignalReceiver, DEFAULT_MAX_CONNECTIONS,

@@ -5,6 +5,7 @@
 pub mod auth;
 mod client;
 pub mod files;
+pub mod jobs;
 mod server;
 pub mod tls;
 
@@ -189,6 +190,7 @@ mod tests {
             version: "0".into(),
             files: Some((files::DataRoot::new(&root).unwrap(), Arc::new(TestOpener))),
             recording: None,
+            jobs: None,
             options: ServeOptions::default(),
         });
         let tls = server_config(&ServerIdentity::SelfSigned { names: vec![LOCALHOST.into()] }).unwrap();

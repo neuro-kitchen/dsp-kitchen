@@ -163,12 +163,72 @@ message Open {
   string source = 2;
 }
 
+// A job for the server to run (a sort), checked when configured: the sorter is one the server
+// has, the recording is under the data root, the output is a new .sorting.zarr under it.
+// Configure, Start and Stop need the control permission; one job runs at a time.
+message Configure {
+  // kilosort4, emusort, mountainsort5, spykingcircus2, tridesclous2 (what the server has).
+  string sorter = 1;
+  // The recording, under the data root.
+  string recording = 2;
+  // Where the sorting goes, under the data root ("" = next to the recording,
+  // <name>.<sorter>.sorting.zarr); never overwritten.
+  string output = 3;
+  // Sorter parameters away from their defaults: flag name (without "--") → value.
+  map<string, string> params = 4;
+  // The source within the recording's file ("" = its default one).
+  string source = 5;
+  // A probe preset ("" = the recording's own geometry).
+  string probe = 6;
+  // The part to sort, in seconds (0 and 0 = all of it).
+  double start_sec = 7;
+  double duration_sec = 8;
+}
+
+message Start {}
+message Stop {}
+message GetStatus {}
+message GetLogs {
+  // The last lines (0 = all the server keeps).
+  uint32 lines = 1;
+}
+
+// The device's state and its job.
+message Status {
+  DeviceState state = 1;
+  // The job configured or running, in words ("" = none).
+  string job = 2;
+  // Its progress: stage, step of steps, done of total (in unit).
+  string stage = 3;
+  uint32 step = 4;
+  uint32 steps = 5;
+  uint64 done = 6;
+  uint64 total = 7;
+  string unit = 8;
+  // The last result or failure, in words.
+  string message = 9;
+  // The job's output, under the data root.
+  string output = 10;
+  // Who started it, and when (Unix seconds).
+  string started_by = 11;
+  uint64 started_unix = 12;
+}
+
+message LogLines {
+  repeated string lines = 1;
+}
+
 // client → server, the only message on a request stream.
 message Request {
   oneof kind {
     ViewRequest view = 1;
     ListFiles list_files = 2;
     Open open = 3;
+    Configure configure = 4;
+    Start start = 5;
+    Stop stop = 6;
+    GetStatus status = 7;
+    GetLogs logs = 8;
   }
 }
 
@@ -181,6 +241,9 @@ message Response {
     Header header = 3;
     // The request was refused or failed.
     string error = 4;
+    // The device's state (the answer to Configure, Start, Stop and GetStatus).
+    Status status = 5;
+    LogLines logs = 6;
   }
 }
 

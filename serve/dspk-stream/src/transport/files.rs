@@ -66,6 +66,26 @@ impl DataRoot {
         Ok(full)
     }
 
+    /// A path for something new under the root: its folder exists under the root, its name is
+    /// plain and not hidden, and nothing is there yet (never overwritten).
+    pub fn resolve_new(&self, relative: &str) -> StreamResult<PathBuf> {
+        let rel = Path::new(relative);
+        let name = rel.file_name().map(|n| n.to_string_lossy().into_owned()).ok_or_else(|| refused(relative, "no file name"))?;
+        if name.starts_with('.') || name.contains(['/', '\\']) {
+            return Err(refused(relative, "not a plain name"));
+        }
+        let parent = rel.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+        let dir = self.resolve(&parent)?;
+        if !dir.is_dir() {
+            return Err(refused(relative, "its folder is not a directory"));
+        }
+        let full = dir.join(&name);
+        if full.symlink_metadata().is_ok() {
+            return Err(refused(relative, "exists already (never overwritten)"));
+        }
+        Ok(full)
+    }
+
     /// `path` (under the root) relative to the root, with `/` separators.
     pub fn relative(&self, path: &Path) -> String {
         path.strip_prefix(&self.root).map(|p| p.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/")).unwrap_or_default()
@@ -163,6 +183,10 @@ mod tests {
         assert_eq!(kind("run.sorting.zarr"), Some(wire::FileKind::Sorting as i32));
         assert_eq!(kind("rec.ap.meta"), Some(wire::FileKind::Other as i32));
         assert_eq!(inner.dir, "mouse1");
+        assert!(data.resolve_new("mouse1/new.sorting.zarr").is_ok());
+        for bad in ["mouse1/rec.ap.bin", "mouse1/.hidden", "../new", "missing/new", ".dspk-auth/x", "/tmp/new"] {
+            assert!(data.resolve_new(bad).is_err(), "{bad} must be refused as a new path");
+        }
         let _ = std::fs::remove_dir_all(&base);
     }
 }

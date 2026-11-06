@@ -97,6 +97,41 @@ impl Session {
         }
     }
 
+    async fn status_request(&self, kind: wire::request::Kind) -> StreamResult<wire::Status> {
+        match self.request(kind).await? {
+            wire::response::Kind::Status(status) => Ok(status),
+            _ => Err(StreamError::protocol("unexpected answer to a job request")),
+        }
+    }
+
+    /// Sets the server's job (control permission; only while nothing runs).
+    pub async fn configure(&self, job: wire::Configure) -> StreamResult<wire::Status> {
+        self.status_request(wire::request::Kind::Configure(job)).await
+    }
+
+    /// Starts the configured job (control permission).
+    pub async fn start(&self) -> StreamResult<wire::Status> {
+        self.status_request(wire::request::Kind::Start(wire::Start {})).await
+    }
+
+    /// Asks the running job to stop (control permission).
+    pub async fn stop(&self) -> StreamResult<wire::Status> {
+        self.status_request(wire::request::Kind::Stop(wire::Stop {})).await
+    }
+
+    /// The server's state and its job's progress.
+    pub async fn status(&self) -> StreamResult<wire::Status> {
+        self.status_request(wire::request::Kind::Status(wire::GetStatus {})).await
+    }
+
+    /// The job's last `lines` log lines (0 = all the server keeps).
+    pub async fn logs(&self, lines: u32) -> StreamResult<Vec<String>> {
+        match self.request(wire::request::Kind::Logs(wire::GetLogs { lines })).await? {
+            wire::response::Kind::Logs(logs) => Ok(logs.lines),
+            _ => Err(StreamError::protocol("unexpected answer to logs")),
+        }
+    }
+
     /// Opens the recording at `path` under the server's data root (`source`: one of the file's
     /// sources, `None` = its default); views and the signal are then of it.
     pub async fn open(&mut self, path: &str, source: Option<&str>) -> StreamResult<&RecordingInfo> {

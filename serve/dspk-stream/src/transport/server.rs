@@ -12,6 +12,7 @@ use tokio::time::{interval, MissedTickBehavior};
 
 use super::auth::{Authority, Peer, Permission};
 use super::files::{kind_of, DataRoot};
+use super::jobs::Jobs;
 use crate::error::{StreamError, StreamResult};
 use crate::protocol::{frame_from_envelope, header_from_info, read_message, view_from_request, wire, write_message, PROTOCOL_VERSION};
 use dspk_view::View;
@@ -204,6 +205,8 @@ pub struct Device {
     pub files: Option<(DataRoot, Arc<dyn RecordingOpener>)>,
     /// The recording every client starts with, if any.
     pub recording: Option<Arc<OpenRecording>>,
+    /// The jobs it runs for clients (sorts); `None`: none.
+    pub jobs: Option<Arc<Jobs>>,
     pub options: ServeOptions,
 }
 
@@ -216,7 +219,7 @@ fn current_recording(current: &Current) -> Option<Arc<OpenRecording>> {
 
 /// Serves `source` to one client (the protocol's single-recording form: no files, anonymous).
 pub async fn serve_recording(connection: quinn::Connection, source: Arc<dyn RecordingSource>, pyramid: Option<Arc<Pyramid>>, options: ServeOptions) -> StreamResult<()> {
-    let device = Device { name: "dspk".into(), version: String::new(), files: None, recording: Some(Arc::new(OpenRecording::new(source, pyramid))), options };
+    let device = Device { name: "dspk".into(), version: String::new(), files: None, recording: Some(Arc::new(OpenRecording::new(source, pyramid))), jobs: None, options };
     serve_session(connection, Peer::anonymous(), Arc::new(device)).await
 }
 
@@ -233,7 +236,7 @@ pub async fn serve_session(connection: quinn::Connection, peer: Peer, device: Ar
         server_version: device.version.clone(),
         peer_name: peer.name.clone(),
         permission: wire_permission(peer.permission) as i32,
-        state: wire::DeviceState::Stopped as i32,
+        state: device.jobs.as_ref().map_or(wire::DeviceState::Stopped, |j| j.state()) as i32,
         has_files: device.files.is_some(),
         recording: device.recording.as_ref().map(|r| header_from_info(r.info())),
     };
@@ -243,7 +246,7 @@ pub async fn serve_session(connection: quinn::Connection, peer: Peer, device: Ar
     }
 
     let current: Current = Arc::new(Mutex::new(device.recording.clone()));
-    let requests = tokio::spawn(answer_requests(connection.clone(), device.clone(), current.clone()));
+    let requests = tokio::spawn(answer_requests(connection.clone(), device.clone(), current.clone(), Arc::new(peer)));
     let mut signal: Option<JoinHandle<StreamResult<()>>> = None;
     let result = loop {
         match read_message::<wire::Subscribe>(&mut control_recv, options.max_message_bytes).await {
@@ -275,14 +278,14 @@ fn wire_permission(p: Permission) -> wire::Permission {
 }
 
 /// Answers each request stream the client opens with one response.
-async fn answer_requests(connection: quinn::Connection, device: Arc<Device>, current: Current) {
+async fn answer_requests(connection: quinn::Connection, device: Arc<Device>, current: Current, peer: Arc<Peer>) {
     let max = device.options.max_message_bytes;
     while let Ok((mut send, mut recv)) = connection.accept_bi().await {
-        let (device, current) = (device.clone(), current.clone());
+        let (device, current, peer) = (device.clone(), current.clone(), peer.clone());
         tokio::spawn(async move {
             let answer = async {
                 let request: wire::Request = read_message(&mut recv, max).await?.ok_or_else(|| StreamError::protocol("empty request stream"))?;
-                let kind = match answer(request, &device, &current).await {
+                let kind = match answer(request, &device, &current, &peer).await {
                     Ok(kind) => kind,
                     Err(e) => wire::response::Kind::Error(e.reason()),
                 };
@@ -298,7 +301,7 @@ async fn answer_requests(connection: quinn::Connection, device: Arc<Device>, cur
 }
 
 /// The answer to one request.
-async fn answer(request: wire::Request, device: &Device, current: &Current) -> StreamResult<wire::response::Kind> {
+async fn answer(request: wire::Request, device: &Device, current: &Current, peer: &Peer) -> StreamResult<wire::response::Kind> {
     use wire::request::Kind as Req;
     use wire::response::Kind as Resp;
     match request.kind.ok_or_else(|| StreamError::protocol("empty request"))? {
@@ -331,7 +334,20 @@ async fn answer(request: wire::Request, device: &Device, current: &Current) -> S
             *current.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(recording));
             Ok(Resp::Header(header))
         }
+        Req::Configure(configure) => {
+            let jobs = jobs_of(device)?;
+            let peer = peer.clone();
+            Ok(Resp::Status(tokio::task::spawn_blocking(move || jobs.configure(&peer, configure)).await.map_err(StreamError::protocol)??))
+        }
+        Req::Start(_) => Ok(Resp::Status(jobs_of(device)?.start(peer)?)),
+        Req::Stop(_) => Ok(Resp::Status(jobs_of(device)?.stop(peer)?)),
+        Req::Status(_) => Ok(Resp::Status(jobs_of(device)?.status())),
+        Req::Logs(logs) => Ok(Resp::Logs(wire::LogLines { lines: jobs_of(device)?.logs(logs.lines as usize) })),
     }
+}
+
+fn jobs_of(device: &Device) -> StreamResult<Arc<Jobs>> {
+    device.jobs.clone().ok_or_else(|| StreamError::Server("this server runs no jobs".into()))
 }
 
 /// The view a client asks for, refused when it is outside the recording or larger than the
