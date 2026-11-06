@@ -20,6 +20,8 @@ from matplotlib.ticker import FuncFormatter
 from plating import theme
 from plating.results import read
 
+#: Times within this ratio of each other read "same speed" in :func:`timings`.
+SAME_SPEED = 1.05
 #: Welch segment length of :func:`psd` (samples; shorter signals use their own length).
 DEFAULT_NPERSEG = 4096
 
@@ -155,6 +157,40 @@ def before_after(before, after, sample_rate: float, *, title: str, channel: int 
     return fig, (left, right)
 
 
+def matrix(ax, m, *, diverging: bool = True, labels: Sequence[str] | None = None, colorbar_label: str = ""):
+    """A square matrix as a heatmap: ``diverging`` (blue ↔ red around a grey zero, symmetric
+    limits) for signed values such as covariance; else the sequential ramp (one hue, light to dark)
+    for magnitudes. Returns the image (for a colour bar)."""
+    from matplotlib.colors import LinearSegmentedColormap
+
+    p = theme.palette()
+    m = np.asarray(m, dtype=np.float64)
+    if diverging:
+        mid = "#f0efec" if p is theme.LIGHT else "#383835"
+        cmap = LinearSegmentedColormap.from_list("plating-div", [p.series[0], mid, p.series[7]])
+        lim = float(np.max(np.abs(m))) or 1.0
+        im = ax.imshow(m, cmap=cmap, vmin=-lim, vmax=lim, interpolation="nearest")
+    else:
+        cmap = LinearSegmentedColormap.from_list("plating-seq", list(p.sequential))
+        im = ax.imshow(m, cmap=cmap, interpolation="nearest")
+    ax.grid(False)
+    n = m.shape[0]
+    ticks = range(0, n, max(1, n // 8))
+    ax.set_xticks(list(ticks))
+    ax.set_yticks(list(ticks))
+    if labels is not None:
+        ax.set_xticklabels([labels[i] for i in ticks])
+        ax.set_yticklabels([labels[i] for i in ticks])
+    for side in ("left", "bottom"):
+        ax.spines[side].set_visible(False)
+    bar = ax.figure.colorbar(im, ax=ax, fraction=0.046, pad=0.03)
+    bar.outline.set_visible(False)
+    bar.ax.tick_params(colors=p.ink2, labelsize=8)
+    if colorbar_label:
+        bar.set_label(colorbar_label, color=p.ink2)
+    return im
+
+
 def ms_label(ms: float) -> str:
     """A time in milliseconds as people read it: ``0.82 ms``, ``233 ms``, ``2,460 ms``."""
     return f"{ms:,.0f} ms" if ms >= 100 else f"{ms:.3g} ms"
@@ -177,11 +213,19 @@ def timings(record, *, title: str | None = None):
     for i, c in enumerate(cases):
         y = -i
         ax.barh(y + (off if ref_name else 0), c["dspk_ms"], height=h, color=p.series[0], label=f"dspk ({r['dspk']['runtime']})" if i == 0 and ref_name else None)
-        ax.text(c["dspk_ms"] * 1.06, y + (off if ref_name else 0), ms_label(c['dspk_ms']), va="center", fontsize=8.5, color=p.ink)
-        if ref_name and c.get("reference_ms") is not None:
+        # The comparison is dspk's: it goes on dspk's bar ("× faster" / "× slower")
+        label = ms_label(c["dspk_ms"])
+        has_ref = ref_name and c.get("reference_ms") is not None
+        if has_ref and c["dspk_ms"]:
+            ratio = c["reference_ms"] / c["dspk_ms"]
+            if 1 / SAME_SPEED <= ratio <= SAME_SPEED:
+                label += "  ·  same speed"
+            else:
+                label += f"  ·  {ratio:.1f}× faster" if ratio > 1 else f"  ·  {1 / ratio:.1f}× slower"
+        ax.text(c["dspk_ms"] * 1.06, y + (off if ref_name else 0), label, va="center", fontsize=8.5, color=p.ink)
+        if has_ref:
             ax.barh(y - off, c["reference_ms"], height=h, color=p.series[1], label=ref_name if i == 0 else None)
-            speed = c["reference_ms"] / c["dspk_ms"] if c["dspk_ms"] else float("nan")
-            ax.text(c["reference_ms"] * 1.06, y - off, f"{ms_label(c['reference_ms'])}  ({speed:.1f}× faster)" if speed >= 1 else ms_label(c['reference_ms']), va="center", fontsize=8.5, color=p.ink2)
+            ax.text(c["reference_ms"] * 1.06, y - off, ms_label(c["reference_ms"]), va="center", fontsize=8.5, color=p.ink2)
     ax.set_yticks([-i for i in range(len(cases))])
     ax.set_yticklabels([c["name"] for c in cases])
     ax.grid(axis="y", visible=False)
@@ -236,4 +280,4 @@ def agreement(record, *, title: str | None = None):
     return fig, ax
 
 
-__all__ = ["DEFAULT_NPERSEG", "agreement", "before_after", "ms_label", "overlay", "psd", "raster", "response", "spectrum", "timings", "traces", "waveforms"]
+__all__ = ["DEFAULT_NPERSEG", "agreement", "before_after", "matrix", "ms_label", "overlay", "psd", "raster", "response", "spectrum", "timings", "traces", "waveforms"]
