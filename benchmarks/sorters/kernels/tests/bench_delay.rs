@@ -2,12 +2,13 @@
 //! cross-correlation of every channel pair), at HD-EMG size on the discrete GPU. Ignored by default:
 //!
 //! ```text
-//! cargo test -p dspk-sorter-kilosort --profile validate --test bench_delay -- --ignored --nocapture
+//! cargo test -p dspk-benchmarks-sorters --profile validate --test bench_delay -- --ignored --nocapture
 //! ```
 
 use cubecl::device::{WgpuDevice, WgpuDeviceKind};
 use cubecl::Device;
 use dspk_ops::core::buffer;
+use dspk_benchmarks::Report;
 use dspk_core::compute::bench::time_device;
 use dspk_sorter_kilosort::delays::ChannelDelayEstimator;
 
@@ -29,4 +30,7 @@ fn bench_delay_estimation() {
     let mut estimator = ChannelDelayEstimator::new(&client, CHANNELS, MAX_LAG);
     let t = time_device(&client, ITERATIONS, || estimator.add(&handle, row_len, HALO..HALO + WINDOW));
     println!("delay add | {CHANNELS} ch x {WINDOW} | lags ±{MAX_LAG} | {:.2} ms / window", t.as_secs_f64() * 1e3);
+    let mut record = Report::new("sorters/emusort-delays", "wgpu dGPU", &format!("one fit window added to the channel-delay estimator (lags ±{MAX_LAG}); median of {ITERATIONS} after a warm-up"));
+    record.case("delay estimator, one window", &[CHANNELS, WINDOW], t.as_secs_f64() * 1e3, &[]);
+    record.write_to(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("results")).expect("writing the record");
 }

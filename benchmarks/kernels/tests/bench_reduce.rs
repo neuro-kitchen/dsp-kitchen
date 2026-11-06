@@ -3,7 +3,7 @@
 //! and the integrated GPU (wgpu). Ignored by default:
 //!
 //! ```text
-//! cargo test -p dspk-ops --release --test bench_reduce -- --ignored --nocapture
+//! cargo test -p dspk-benchmarks --release --test bench_reduce -- --ignored --nocapture
 //! ```
 
 use cubecl::device::{WgpuDevice, WgpuDeviceKind};
@@ -11,6 +11,7 @@ use cubecl::prelude::*;
 use cubecl::zspace::{Shape, Strides};
 use dspk_ops::core::buffer;
 use dspk_ops::math::execute_channel_noise_std;
+use dspk_benchmarks::Report;
 use dspk_core::compute::bench::time_device;
 
 /// Timed runs per case (after the warm-up).
@@ -24,17 +25,19 @@ fn data(len: usize) -> Vec<f32> {
     (0..len).map(|i| ((i * 7919) % 1013) as f32 * 0.01 - 5.0).collect()
 }
 
-fn bench(device: &str, client: &Client) {
+fn bench(device: &str, client: &Client, report: &mut Report) {
     for c in CHANNELS {
         let x = buffer::upload(client, &data(c * WINDOW));
         let t = time_device(client, ITERATIONS, || {
             execute_channel_noise_std::<f32>(client, &x, c, WINDOW, 0..WINDOW);
         });
         println!("{device:>10} | median |x| {c}x{WINDOW:<22} | {:>10.3} ms", t.as_secs_f64() * 1e3);
+        report.case(&format!("median |x|, {c} channels"), &[c, WINDOW], t.as_secs_f64() * 1e3, &[]);
 
         let out = buffer::empty::<f32>(client, c * WINDOW);
         let t = time_device(client, ITERATIONS, || dspk_ops::core::layout::transpose::<f32>(client, &x, &out, c, WINDOW));
         println!("{device:>10} | transpose (ours) {c}x{WINDOW:<16} | {:>10.3} ms", t.as_secs_f64() * 1e3);
+        report.case(&format!("transpose (ours), {c} channels"), &[c, WINDOW], t.as_secs_f64() * 1e3, &[]);
         let elem = f32::elem_type_native();
         let t = time_device(client, ITERATIONS, || {
             // A transposed view of the input ([cols, rows], strides [1, cols]) copied contiguously
@@ -43,6 +46,7 @@ fn bench(device: &str, client: &Client) {
             cubecl::std::tensor::copy_into(client, input, output, elem);
         });
         println!("{device:>10} | transpose (cubecl-std) {c}x{WINDOW:<10} | {:>10.3} ms", t.as_secs_f64() * 1e3);
+        report.case(&format!("transpose (cubecl-std), {c} channels"), &[c, WINDOW], t.as_secs_f64() * 1e3, &[]);
     }
 }
 
@@ -50,6 +54,8 @@ fn bench(device: &str, client: &Client) {
 #[ignore = "benchmark: run with --ignored --nocapture"]
 fn bench_reductions() {
     for (name, kind) in [("dGPU", WgpuDeviceKind::DiscreteGpu(0)), ("iGPU", WgpuDeviceKind::IntegratedGpu(0))] {
-        bench(name, &dspk_core::compute::open_device(cubecl::Device::Wgpu(WgpuDevice::new(kind))));
+        let mut report = Report::new("kernels/reduce", &format!("wgpu {name}"), &format!("median of {ITERATIONS} launches after a warm-up; windows of {WINDOW} samples"));
+        bench(name, &dspk_core::compute::open_device(cubecl::Device::Wgpu(WgpuDevice::new(kind))), &mut report);
+        report.write().expect("writing the record");
     }
 }

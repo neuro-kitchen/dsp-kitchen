@@ -3291,6 +3291,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "dspk-benchmarks"
+version = "0.0.6"
+dependencies = [
+ "cubecl",
+ "dspk-core",
+ "dspk-ops",
+ "dspk-synapse",
+ "serde_json",
+]
+
+[[package]]
+name = "dspk-benchmarks-sorters"
+version = "0.0.6"
+dependencies = [
+ "cubecl",
+ "dspk-benchmarks",
+ "dspk-core",
+ "dspk-ops",
+ "dspk-sorter-kilosort",
+ "dspk-synapse",
+]
+
+[[package]]
 name = "dspk-cli"
 version = "0.0.6"
 dependencies = [

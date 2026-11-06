@@ -3,7 +3,7 @@
 //! runtime when compiled in. Ignored by default (minutes, mostly autotuning):
 //!
 //! ```text
-//! cargo test -p dspk-ops --release --features cpu --test bench_linalg -- --ignored --nocapture
+//! cargo test -p dspk-benchmarks --release --features cpu --test bench_linalg -- --ignored --nocapture
 //! ```
 //!
 //! The first call of each case is the warm-up (kernel compilation and autotuning); the reported
@@ -15,6 +15,7 @@ use cubecl::Device;
 use dspk_ops::core::buffer;
 use dspk_ops::linalg::{covariance, DeviceProjection, SecondMomentAccumulator};
 use dspk_ops::spatial::execute_spatial_matrix_multiply;
+use dspk_benchmarks::Report;
 use dspk_core::compute::bench::time_device;
 
 /// Timed runs per case (after the warm-up).
@@ -35,27 +36,28 @@ fn data(len: usize) -> Vec<f32> {
     (0..len).map(|i| ((i * 7919) % 1013) as f32 * 0.01 - 5.0).collect()
 }
 
-fn report(device: &str, case: &str, time: std::time::Duration) {
+fn report(record: &mut Report, device: &str, case: &str, time: std::time::Duration) {
     println!("{device:>10} | {case:<34} | {:>10.3} ms", time.as_secs_f64() * 1e3);
+    record.case(case, &[], time.as_secs_f64() * 1e3, &[]);
 }
 
-fn bench(device: &str, client: &Client) {
+fn bench(device: &str, client: &Client, record: &mut Report) {
     for c in CHANNELS {
         let x = buffer::upload(client, &data(c * WINDOW));
         let (cov, mean) = (buffer::empty::<f32>(client, c * c), buffer::empty::<f32>(client, c));
         let t = time_device(client, ITERATIONS, || covariance::<f32>(client, &x, &cov, &mean, c, WINDOW));
-        report(device, &format!("covariance {c}x{WINDOW}"), t);
+        report(record, device, &format!("covariance {c}x{WINDOW}"), t);
 
         let row_len = WINDOW + 2 * HALO;
         let padded = buffer::upload(client, &data(c * row_len));
         let mut acc = SecondMomentAccumulator::<f32>::new(client, c);
         let t = time_device(client, ITERATIONS, || acc.add(&padded, row_len, HALO..HALO + WINDOW));
-        report(device, &format!("second moment {c}x{WINDOW} (halo)"), t);
+        report(record, device, &format!("second moment {c}x{WINDOW} (halo)"), t);
 
         let w = buffer::upload(client, &data(c * c));
         let out = buffer::empty::<f32>(client, c * WINDOW);
         let t = time_device(client, ITERATIONS, || execute_spatial_matrix_multiply::<f32>(client, &x, &w, &out, c, WINDOW));
-        report(device, &format!("dense spatial {c}x{c} . {c}x{WINDOW}"), t);
+        report(record, device, &format!("dense spatial {c}x{c} . {c}x{WINDOW}"), t);
     }
 
     #[allow(unused_mut)]
@@ -63,7 +65,7 @@ fn bench(device: &str, client: &Client) {
     let clips = buffer::upload(client, &data(CLIP * CLIPS));
     let out = buffer::empty::<f32>(client, COMPONENTS * CLIPS);
     let t = time_device(client, ITERATIONS, || proj.project::<f32>(client, &clips, &out, CLIPS));
-    report(device, &format!("projection {CLIP}->{COMPONENTS} x{CLIPS}"), t);
+    report(record, device, &format!("projection {CLIP}->{COMPONENTS} x{CLIPS}"), t);
 }
 
 #[test]
@@ -78,6 +80,8 @@ fn bench_dense_linalg() {
     }
     for (name, device) in devices {
         // Opened through dspk: CubeCL caches in the user cache directory, not target/
-        bench(name, &dspk_core::compute::open_device(device));
+        let mut record = Report::new("kernels/linalg", name, &format!("median of {ITERATIONS} device-synchronised runs after a warm-up (compilation, autotuning)"));
+        bench(name, &dspk_core::compute::open_device(device), &mut record);
+        record.write().expect("writing the record");
     }
 }

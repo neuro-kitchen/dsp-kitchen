@@ -3,10 +3,12 @@
 //! neighbourhoods (the batched shared-memory path). Ignored by default:
 //!
 //! ```text
-//! cargo test -p dspk-ops --release --test bench_eigen -- --ignored --nocapture
+//! cargo test -p dspk-benchmarks --release --test bench_eigen -- --ignored --nocapture
 //! ```
 
 use std::time::Instant;
+
+use dspk_benchmarks::Report;
 
 use cubecl::device::{WgpuDevice, WgpuDeviceKind};
 use cubecl::prelude::*;
@@ -50,7 +52,7 @@ fn worst_relative_residual(a: &[f64], e: &SymmetricEigen) -> f64 {
         .fold(0.0, f64::max)
 }
 
-fn bench(device: &str, client: &Client) {
+fn bench(device: &str, client: &Client, report: &mut Report) {
     for (n, batch) in [(CHANNELS, 1usize), (NEIGHBOURHOOD, CHANNELS)] {
         let mats: Vec<f64> = (0..batch).flat_map(|b| spd(n, 3.0, b)).collect();
         let handle = buffer::upload(client, &mats.iter().map(|&x| x as f32).collect::<Vec<_>>());
@@ -61,6 +63,7 @@ fn bench(device: &str, client: &Client) {
         let ms = start.elapsed().as_secs_f64() * 1e3;
         let worst = worst_relative_residual(&mats[..n * n], &eig[0]);
         println!("{device:>6} | {batch:>3} x {n:>3}x{n:<3} | {ms:>9.2} ms | worst relative residual {worst:.2e}");
+        report.case(&format!("{batch} × {n}x{n} symmetric eigen"), &[batch, n, n], ms, &[("worst_relative_residual", worst)]);
     }
 }
 
@@ -68,6 +71,8 @@ fn bench(device: &str, client: &Client) {
 #[ignore = "benchmark: run with --ignored --nocapture"]
 fn bench_eigensolver() {
     for (name, kind) in [("dGPU", WgpuDeviceKind::DiscreteGpu(0)), ("iGPU", WgpuDeviceKind::IntegratedGpu(0))] {
-        bench(name, &dspk_core::compute::open_device(cubecl::Device::Wgpu(WgpuDevice::new(kind))));
+        let mut report = Report::new("kernels/eigen", &format!("wgpu {name}"), "one timed solve after a warm-up (the readback waits for the device); SPD matrices with eigenvalues over 3 decades");
+        bench(name, &dspk_core::compute::open_device(cubecl::Device::Wgpu(WgpuDevice::new(kind))), &mut report);
+        report.write().expect("writing the record");
     }
 }

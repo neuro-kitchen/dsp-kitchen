@@ -1,0 +1,22 @@
+[package]
+name = "dspk-benchmarks"
+description = "Device-only timings of dspk's kernels (dspk-ops, dspk-synapse): ignored tests that print a table and write a JSON record to results/"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = ["wgpu", "cuda", "cpu"]
+wgpu = ["dspk-core/wgpu", "dspk-ops/wgpu", "dspk-synapse/wgpu"]
+cpu = ["dspk-core/cpu", "dspk-ops/cpu", "dspk-synapse/cpu"]
+cuda = ["dspk-core/cuda", "dspk-ops/cuda", "dspk-synapse/cuda"]
+
+[dependencies]
+serde_json.workspace = true
+
+[dev-dependencies]
+cubecl.workspace = true
+dspk-core = { workspace = true, features = ["compute"] }
+dspk-ops.workspace = true
+dspk-synapse.workspace = true

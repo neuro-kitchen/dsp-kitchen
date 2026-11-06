@@ -1,0 +1,21 @@
+[package]
+name = "dspk-benchmarks-sorters"
+description = "Device timings of the Kilosort sorter's stages (GPL-3.0, like the sorter it measures; never published)"
+version.workspace = true
+edition.workspace = true
+license = "GPL-3.0-only"
+publish = false
+
+[features]
+default = ["wgpu", "cuda", "cpu"]
+wgpu = ["dspk-sorter-kilosort/wgpu"]
+cpu = ["dspk-sorter-kilosort/cpu"]
+cuda = ["dspk-sorter-kilosort/cuda"]
+
+[dev-dependencies]
+dspk-benchmarks = { path = "../../kernels" }
+cubecl.workspace = true
+dspk-core = { workspace = true, features = ["compute"] }
+dspk-ops.workspace = true
+dspk-synapse.workspace = true
+dspk-sorter-kilosort.workspace = true

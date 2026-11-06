@@ -4,13 +4,14 @@
 //!
 //! ```text
 //! HDBSCAN_POINTS=40000 HDBSCAN_REFERENCE=/tmp/hdbscan_ref.bin \
-//!   cargo test -p dspk-synapse --release --test bench_hdbscan -- --ignored --nocapture
+//!   cargo test -p dspk-benchmarks --release --test bench_hdbscan -- --ignored --nocapture
 //! ```
 //!
 //! The first run writes `HDBSCAN_REFERENCE`; later runs compare against it.
 
 use std::time::Instant;
 
+use dspk_benchmarks::Report;
 use dspk_core::compute::{ComputeTarget, ComputeTask};
 use dspk_synapse::sorting::hdbscan;
 
@@ -57,15 +58,17 @@ fn clips(n: usize) -> Vec<f32> {
 struct Run(usize);
 
 impl ComputeTask for Run {
-    type Output = Vec<i32>;
-    fn run(self, client: cubecl::prelude::Client) -> Vec<i32> {
+    /// Labels, seconds, runtime, clusters, noise points.
+    type Output = (Vec<i32>, f64, String, usize, usize);
+    fn run(self, client: cubecl::prelude::Client) -> Self::Output {
         let x = clips(self.0);
         let start = Instant::now();
         let labels = hdbscan(&client, &x, self.0, DIMS, MIN_CLUSTER_SIZE);
         let clusters = labels.iter().copied().max().map_or(0, |m| m + 1);
         let noise = labels.iter().filter(|&&l| l < 0).count();
-        println!("{} | {} points x {DIMS} | {:.2} s | {clusters} clusters, {noise} noise", client.name(), self.0, start.elapsed().as_secs_f64());
-        labels
+        let secs = start.elapsed().as_secs_f64();
+        println!("{} | {} points x {DIMS} | {secs:.2} s | {clusters} clusters, {noise} noise", client.name(), self.0);
+        (labels, secs, client.name().to_string(), clusters.max(0) as usize, noise)
     }
 }
 
@@ -73,7 +76,10 @@ impl ComputeTask for Run {
 #[ignore = "benchmark: run with --ignored --nocapture"]
 fn bench_and_compare_hdbscan() {
     let n = std::env::var("HDBSCAN_POINTS").ok().and_then(|v| v.parse().ok()).unwrap_or(DEFAULT_POINTS);
-    let labels = ComputeTarget::from_env().expect("a runtime").run(Run(n)).expect("runtime");
+    let (labels, secs, runtime, clusters, noise) = ComputeTarget::from_env().expect("a runtime").run(Run(n)).expect("runtime");
+    let mut record = Report::new("kernels/hdbscan", &runtime, &format!("HDBSCAN of {n} synthetic clips × {DIMS} features (min cluster size {MIN_CLUSTER_SIZE}), one run"));
+    record.case(&format!("hdbscan {n} points"), &[n, DIMS], secs * 1e3, &[("clusters", clusters as f64), ("noise_points", noise as f64)]);
+    record.write().expect("writing the record");
     let Ok(path) = std::env::var("HDBSCAN_REFERENCE") else { return };
     let bytes: Vec<u8> = labels.iter().flat_map(|l| l.to_le_bytes()).collect();
     match std::fs::read(&path) {

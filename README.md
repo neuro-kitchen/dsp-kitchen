@@ -106,7 +106,7 @@ on the device and keeps the fastest. The vector versions are bit-identical to th
 other alternatives (FIR tiles, IIR time blocks) agree to rounding;
 `dspk_core::compute::pin_tuned_choices` fixes the IIR block split and the matrix-multiply choice for
 runs that must reproduce bit for bit. Reproduce with
-`cargo test -p dspk-ops --profile validate --test bench_kernels -- --ignored --nocapture` (and
+`cargo test -p dspk-benchmarks --profile validate --test bench_kernels -- --ignored --nocapture` (and
 `bench_vector` for every choice); timings against scipy from Python are in
 [benchmarks](benchmarks/README.md).
 

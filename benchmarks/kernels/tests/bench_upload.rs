@@ -2,13 +2,14 @@
 //! 92 MB), each ending in a device sync. Ignored by default:
 //!
 //! ```text
-//! cargo test -p dspk-ops --profile validate --test bench_upload -- --ignored --nocapture
+//! cargo test -p dspk-benchmarks --profile validate --test bench_upload -- --ignored --nocapture
 //! ```
 
 use std::time::Instant;
 
 use cubecl::bytes::Bytes;
 use cubecl::prelude::*;
+use dspk_benchmarks::Report;
 use dspk_core::compute::bench::sync;
 
 const CHANNELS: usize = 384;
@@ -33,15 +34,20 @@ fn bench_uploads() {
     // Every runtime the tests run on (`DSPK_TEST_RUNTIMES`), opened through dspk
     for target in dspk_core::ComputeTarget::for_tests() {
         println!("{}:", target.name());
-        uploads(&target.client().expect("compiled-in runtime"));
+        let mut report = Report::new("kernels/upload", target.name(), &format!("one {CHANNELS} × {WINDOW} float32 window per upload, each ending in a device sync; mean of {ITERATIONS} after a warm-up"));
+        uploads(&target.client().expect("compiled-in runtime"), &mut report);
+        report.write().expect("writing the record");
     }
 }
 
-fn uploads(client: &Client) {
+fn uploads(client: &Client, record: &mut Report) {
     let client = client.clone();
     let x: Vec<f32> = (0..CHANNELS * WINDOW).map(|i| (i % 1013) as f32).collect();
     let bytes = x.len() * size_of::<f32>();
-    let report = |name: &str, ms: f64| println!("{name:<38} | {ms:>8.2} ms | {:>6.2} GB/s", bytes as f64 / ms / 1e6);
+    let mut report = |name: &str, ms: f64| {
+        println!("{name:<38} | {ms:>8.2} ms | {:>6.2} GB/s", bytes as f64 / ms / 1e6);
+        record.case(name, &[CHANNELS, WINDOW], ms, &[("gb_per_s", bytes as f64 / ms / 1e6)]);
+    };
 
     report("(a) create_from_slice (new buffer)", time(&client, || drop(client.create_from_slice(f32::as_bytes(&x)))));
     report("(b) create(Bytes) (new buffer, owned)", time(&client, || drop(client.create(Bytes::from_elems(x.clone())))));

@@ -4,10 +4,11 @@
 //! autotuner picks among the same choices in normal use; this shows all of them.
 //!
 //! ```text
-//! cargo test -p dspk-ops --profile validate --test bench_vector -- --ignored --nocapture
+//! cargo test -p dspk-benchmarks --profile validate --test bench_vector -- --ignored --nocapture
 //! ```
 
 use cubecl::prelude::*;
+use dspk_benchmarks::Report;
 use dspk_core::compute::bench::time_device;
 use dspk_core::ComputeTarget;
 use dspk_ops::core::{buffer, EdgeMode};
@@ -24,11 +25,18 @@ const SAMPLES: usize = 60_000;
 const RADIUS: usize = 31;
 const TAPS: usize = 2 * RADIUS + 1;
 
+/// Prints a row (the label, then the time) and records it.
+fn row(record: &mut Report, label: String, t: std::time::Duration) {
+    let ms = t.as_secs_f64() * 1e3;
+    println!("  {label} {ms:8.2} ms");
+    record.case(label.split_whitespace().collect::<Vec<_>>().join(" ").as_str(), &[CHANNELS, SAMPLES], ms, &[]);
+}
+
 fn data(len: usize) -> Vec<f32> {
     (0..len).map(|i| ((i.wrapping_mul(7919)) % 1013) as f32 * 0.01 - 5.0).collect()
 }
 
-fn bench(client: &Client) {
+fn bench(client: &Client, record: &mut Report) {
     let n = CHANNELS * SAMPLES;
     let x = buffer::upload(client, &data(n));
     let out = buffer::empty::<f32>(client, n);
@@ -47,7 +55,7 @@ fn bench(client: &Client) {
                 }
             });
             let shape = if centered { "centred" } else { "causal" };
-            println!("  FIR {TAPS} taps, {shape:7} {:28} {:8.2} ms", format!("{kernel:?}"), t.as_secs_f64() * 1e3);
+            row(record, format!("FIR {TAPS} taps, {shape:7} {:28}", format!("{kernel:?}")), t);
         }
     }
     for (up, down) in [(1usize, 3usize), (2, 3), (3, 1)] {
@@ -57,14 +65,14 @@ fn bench(client: &Client) {
             let t = time_device(client, ITERATIONS, || {
                 execute_resample_poly_with::<f32>(client, &x, &resampled, CHANNELS, SAMPLES, up, down, &ResampleFilter::default(), EdgeMode::Zeros, Some(kernel));
             });
-            println!("  resample {up}/{down}{:13} {:28} {:8.2} ms", "", format!("{kernel:?}"), t.as_secs_f64() * 1e3);
+            row(record, format!("resample {up}/{down}{:13} {:28}", "", format!("{kernel:?}")), t);
         }
     }
     for width in [5usize, 9, 31] {
         let kernels = std::iter::once(MedianKernel::Direct).chain(widths.iter().map(|&w| MedianKernel::Vectorized { width: w }));
         for kernel in kernels {
             let t = time_device(client, ITERATIONS, || execute_median_with::<f32>(client, &x, &out, CHANNELS, SAMPLES, width, EdgeMode::Zeros, Some(kernel)));
-            println!("  median width {width:<11} {:28} {:8.2} ms", format!("{kernel:?}"), t.as_secs_f64() * 1e3);
+            row(record, format!("median width {width:<11} {:28}", format!("{kernel:?}")), t);
         }
     }
     // Fifth-order band-pass, forward; blocks per pass fixed so every layout gets the same split
@@ -76,18 +84,18 @@ fn bench(client: &Client) {
             let scratch = buffer::empty::<f32>(client, filter.scratch_len(CHANNELS, SAMPLES).max(1));
             let state = buffer::empty::<f32>(client, CHANNELS * filter.state_len());
             let t = time_device(client, ITERATIONS, || filter.apply(client, &x, &out, &scratch, &state, CHANNELS, SAMPLES));
-            println!("  iir bandpass 5, {blocks:>3} blocks {:28} {:8.2} ms", format!("{layout:?}"), t.as_secs_f64() * 1e3);
+            row(record, format!("iir bandpass 5, {blocks:>3} blocks {:28}", format!("{layout:?}")), t);
         }
     }
     for kernel in std::iter::once(CarKernel::Direct).chain(widths.iter().map(|&width| CarKernel::Vectorized { width })) {
         let t = time_device(client, ITERATIONS, || execute_direct_car_with::<f32>(client, &x, &out, CHANNELS, SAMPLES, Some(kernel)));
-        println!("  common average reference {:28} {:8.2} ms", format!("{kernel:?}"), t.as_secs_f64() * 1e3);
+        row(record, format!("common average reference {:28}", format!("{kernel:?}")), t);
     }
     let cpu = client.name() == "cpu";
     let kernels = [CmrKernel::Rank, CmrKernel::Bitonic].into_iter().filter(|&k| !(cpu && k == CmrKernel::Bitonic)).chain(widths.iter().map(|&width| CmrKernel::Vectorized { width }));
     for kernel in kernels {
         let t = time_device(client, ITERATIONS, || execute_common_median_with::<f32>(client, &x, &out, CHANNELS, SAMPLES, Some(kernel)));
-        println!("  common median reference  {:28} {:8.2} ms", format!("{kernel:?}"), t.as_secs_f64() * 1e3);
+        row(record, format!("common median reference  {:28}", format!("{kernel:?}")), t);
     }
 }
 
@@ -98,7 +106,9 @@ fn vector_widths() {
         match target.client() {
             Ok(client) => {
                 println!("\n{} — {CHANNELS} × {SAMPLES} float32", target.name());
-                bench(&client);
+                let mut record = Report::new("kernels/vector-widths", target.name(), &format!("every kernel choice per operation on a {CHANNELS} × {SAMPLES} float32 block; median of {ITERATIONS} launches"));
+                bench(&client, &mut record);
+                record.write().expect("writing the record");
             }
             Err(e) => println!("{}: skipped ({e})", target.name()),
         }

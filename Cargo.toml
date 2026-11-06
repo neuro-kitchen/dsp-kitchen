@@ -31,6 +31,9 @@ members = [
     # Bindings
     "bindings/python/dspk-py-core",
     "bindings/python/dspk-py",
+    # Benchmarks (never published): kernel timings; the sorter's under its licence
+    "benchmarks/kernels",
+    "benchmarks/sorters/kernels",
 ]
 
 

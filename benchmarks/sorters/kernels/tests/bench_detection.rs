@@ -3,10 +3,12 @@
 //! Each window is uploaded and detected, as in a run. Ignored by default:
 //!
 //! ```text
-//! cargo test -p dspk-sorter-kilosort --profile validate --test bench_detection -- --ignored --nocapture
+//! cargo test -p dspk-benchmarks-sorters --profile validate --test bench_detection -- --ignored --nocapture
 //! ```
 
 use std::time::Instant;
+
+use dspk_benchmarks::Report;
 
 use cubecl::device::{WgpuDevice, WgpuDeviceKind};
 use cubecl::Device;
@@ -99,4 +101,8 @@ fn bench_universal_detection() {
         "sequential | {CHANNELS} ch x {WINDOW} | {} centres | upload {upload_ms:.2} ms (host call {host_ms:.2}) + detect {detect_ms:.2} ms / window | {spikes} spikes",
         centres.n_centres()
     );
+    let mut record = Report::new("sorters/ks4-universal-detection", "wgpu dGPU", &format!("Kilosort4 universal-template detection, mean per window over {WINDOWS} windows after a warm-up"));
+    record.case("upload, one window", &[CHANNELS, WINDOW], upload_ms, &[("host_call_ms", host_ms)]);
+    record.case("detect, one window", &[CHANNELS, WINDOW], detect_ms, &[("spikes_total", spikes as f64), ("centres", centres.n_centres() as f64)]);
+    record.write_to(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("results")).expect("writing the record");
 }

@@ -130,11 +130,11 @@ def machine() -> str:
     return " · ".join(p for p in parts if p)
 
 
-def _versions() -> str:
+def _versions(runtime: str | None = None) -> str:
     try:
         import dspk
 
-        return f"dspk {dspk.__version__} · runtime {dspk.runtime.current()}"
+        return f"dspk {dspk.__version__} · runtime {runtime or dspk.runtime.current()}"
     except Exception:  # noqa: BLE001 (plots work without dspk)
         return ""
 
@@ -151,14 +151,15 @@ def reference_line(ax, y: float, label: str, *, horizontal: bool = True) -> None
         ax.text(y, 0.95, label, transform=ax.get_xaxis_transform(), color=p.ink2, fontsize=8.5, ha="center", va="top", bbox=box, zorder=5)
 
 
-def save(fig: Figure, path: str | Path, *, note: str = "", footer: bool = True) -> Path:
+def save(fig: Figure, path: str | Path, *, note: str = "", footer: bool = True, runtime: str | None = None) -> Path:
     """Saves ``fig`` as a PNG at :data:`DPI`, with a footer: ``note`` (what was done, in one line),
-    then the machine and the dspk version / runtime. Creates the folder; returns the path."""
+    then the machine and the dspk version and ``runtime`` (default: the one in use). Creates the
+    folder; returns the path."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if footer:
         lines = [note] if note else []
-        stamp = " · ".join(s for s in (machine(), _versions()) if s)
+        stamp = " · ".join(s for s in (machine(), _versions(runtime)) if s)
         if stamp:
             lines.append(stamp)
         if lines:

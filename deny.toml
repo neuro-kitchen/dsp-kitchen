@@ -40,6 +40,7 @@ allow = [
 exceptions = [
     { crate = "dspk-sorter-kilosort", allow = ["GPL-3.0-only"] },
     { crate = "dspk-cli-sorter", allow = ["GPL-3.0-only"] },
+    { crate = "dspk-benchmarks-sorters", allow = ["GPL-3.0-only"] },
 ]
 
 # No licence field in its manifest; its LICENSE file is the Apache License 2.0

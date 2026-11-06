@@ -2,7 +2,7 @@
 //!
 //! A transpose is a copy from a transposed view, which cubecl-std already provides
 //! (`cubecl::std::tensor::copy_into`, with a CPU-specific path): measured as fast as or faster than
-//! a hand-written transpose kernel on both GPUs (`tests/bench_reduce.rs`).
+//! a hand-written transpose kernel on both GPUs (`benchmarks/kernels/tests/bench_reduce.rs`).
 
 use cubecl::prelude::*;
 use cubecl::server::Handle;

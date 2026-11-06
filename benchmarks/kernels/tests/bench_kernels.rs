@@ -5,7 +5,7 @@
 //! near 100 % is memory-bound and done; one far below is where work pays. Ignored by default:
 //!
 //! ```text
-//! cargo test -p dspk-ops --profile validate --test bench_kernels -- --ignored --nocapture
+//! cargo test -p dspk-benchmarks --profile validate --test bench_kernels -- --ignored --nocapture
 //! DSPK_TEST_RUNTIMES=cuda cargo test ...   # one runtime
 //! ```
 //!
@@ -14,6 +14,7 @@
 
 use cubecl::prelude::Client;
 use cubecl::server::Handle;
+use dspk_benchmarks::Report;
 use dspk_core::compute::bench::time_device;
 use dspk_core::ComputeTarget;
 use dspk_ops::core::{buffer, EdgeMode};
@@ -149,10 +150,17 @@ fn kernel_bandwidth() {
         let ceiling = rows[0].bytes / rows[0].ms / 1e6;
         println!("\n{} — {CHANNELS} × {SAMPLES} float32 ({:.1} MB), ceiling {ceiling:.0} GB/s", target.name(), (CHANNELS * SAMPLES * 4) as f64 / 1e6);
         println!("{:<30} {:>10} {:>10} {:>9} {:>10}", "kernel", "ms", "GB/s", "of ceil.", "Gop/s");
+        let mut report = Report::new("kernels/bandwidth", target.name(), &format!("{CHANNELS} × {SAMPLES} float32 block; median of {ITERATIONS} launches after a warm-up; bandwidth = least bytes moved / time; share of the scale kernel's (the ceiling)"));
         for r in &rows {
             let gbs = r.bytes / r.ms / 1e6;
             let gops = if r.ops > 0.0 { format!("{:.0}", r.ops / r.ms / 1e6) } else { String::new() };
             println!("{:<30} {:>10.3} {:>10.1} {:>8.0}% {:>10}", r.name, r.ms, gbs, 100.0 * gbs / ceiling, gops);
+            let mut extra = vec![("gb_per_s", gbs), ("share_of_ceiling", gbs / ceiling)];
+            if r.ops > 0.0 {
+                extra.push(("gop_per_s", r.ops / r.ms / 1e6));
+            }
+            report.case(r.name, &[CHANNELS, SAMPLES], r.ms, &extra);
         }
+        report.write().expect("writing the record");
     }
 }

@@ -15,6 +15,8 @@ from pathlib import Path
 
 import numpy as np
 
+from matplotlib.ticker import FuncFormatter
+
 from plating import theme
 from plating.results import read
 
@@ -153,6 +155,11 @@ def before_after(before, after, sample_rate: float, *, title: str, channel: int 
     return fig, (left, right)
 
 
+def ms_label(ms: float) -> str:
+    """A time in milliseconds as people read it: ``0.82 ms``, ``233 ms``, ``2,460 ms``."""
+    return f"{ms:,.0f} ms" if ms >= 100 else f"{ms:.3g} ms"
+
+
 def _record(record) -> dict:
     return read(record) if isinstance(record, (str, Path)) else record
 
@@ -165,24 +172,32 @@ def timings(record, *, title: str | None = None):
     cases = [c for c in r["cases"] if c.get("dspk_ms") is not None]
     ref_name = (r.get("reference") or {}).get("tool", "")
     fig, ax = theme.figure(title or f"{r['benchmark']}: time per case", size=(11.0, 1.2 + 0.55 * len(cases) * (2 if ref_name else 1)))
-    h = 0.38
+    # Bar height, and the offset of a pair's bars (a small gap of surface between them)
+    h, off = 0.36, 0.2
     for i, c in enumerate(cases):
         y = -i
-        ax.barh(y + (h / 2 if ref_name else 0), c["dspk_ms"], height=h, color=p.series[0], label=f"dspk ({r['dspk']['runtime']})" if i == 0 else None)
-        ax.text(c["dspk_ms"] * 1.06, y + (h / 2 if ref_name else 0), f"{c['dspk_ms']:.3g} ms", va="center", fontsize=8.5, color=p.ink)
+        ax.barh(y + (off if ref_name else 0), c["dspk_ms"], height=h, color=p.series[0], label=f"dspk ({r['dspk']['runtime']})" if i == 0 and ref_name else None)
+        ax.text(c["dspk_ms"] * 1.06, y + (off if ref_name else 0), ms_label(c['dspk_ms']), va="center", fontsize=8.5, color=p.ink)
         if ref_name and c.get("reference_ms") is not None:
-            ax.barh(y - h / 2, c["reference_ms"], height=h, color=p.series[1], label=ref_name if i == 0 else None)
+            ax.barh(y - off, c["reference_ms"], height=h, color=p.series[1], label=ref_name if i == 0 else None)
             speed = c["reference_ms"] / c["dspk_ms"] if c["dspk_ms"] else float("nan")
-            ax.text(c["reference_ms"] * 1.06, y - h / 2, f"{c['reference_ms']:.3g} ms  ({speed:.1f}× faster)" if speed >= 1 else f"{c['reference_ms']:.3g} ms", va="center", fontsize=8.5, color=p.ink2)
+            ax.text(c["reference_ms"] * 1.06, y - off, f"{ms_label(c['reference_ms'])}  ({speed:.1f}× faster)" if speed >= 1 else ms_label(c['reference_ms']), va="center", fontsize=8.5, color=p.ink2)
     ax.set_yticks([-i for i in range(len(cases))])
     ax.set_yticklabels([c["name"] for c in cases])
-    ax.set_xscale("log")
-    ax.set_xlabel("milliseconds (log)")
     ax.grid(axis="y", visible=False)
-    lo, hi = ax.get_xlim()
-    ax.set_xlim(lo, hi * 4)
-    ax.legend(loc="lower right")
-    ax.set_title(f"{r['dspk']['version']} · {r['date']}" + (f" · against {ref_name} {r['reference'].get('version', '')}" if ref_name else ""))
+    times = [c["dspk_ms"] for c in cases] + [c["reference_ms"] for c in cases if ref_name and c.get("reference_ms") is not None]
+    if ref_name:
+        # Times far apart: a log axis, bars from a whole decade below the shortest
+        ax.set_xscale("log")
+        ax.set_xlim(10 ** np.floor(np.log10(min(times))), max(times) * 8)
+        ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
+        ax.set_xlabel("milliseconds (log)")
+        # Above the bars, in one row, so it never covers a value
+        ax.legend(loc="lower left", bbox_to_anchor=(0, 1.0), ncols=2, borderaxespad=0.3)
+    else:
+        # One series: bars from zero on a linear axis, so lengths compare honestly; no legend
+        ax.set_xlim(0, max(times) * 1.25)
+        ax.set_xlabel("milliseconds")
     return fig, ax
 
 
@@ -193,22 +208,32 @@ def agreement(record, *, title: str | None = None):
     p = theme.palette()
     cases = [c for c in r["cases"] if c.get("rel_err") is not None]
     fig, ax = theme.figure(title or f"{r['benchmark']}: agreement with {(r.get('reference') or {}).get('tool', 'the reference')}", size=(11.0, 1.2 + 0.45 * len(cases)))
+    # The axis: a decade below the smallest non-zero error or tolerance, to well past the largest
+    values = [v for c in cases for v in (c["rel_err"], c.get("tolerance")) if v]
+    lo = 10 ** (np.floor(np.log10(min(values))) - 1) if values else 1e-9
+    hi = 10 ** (np.ceil(np.log10(max(values))) + 1.5) if values else 1.0
     for i, c in enumerate(cases):
         y = -i
-        err = max(c["rel_err"], 1e-12)
+        exact = c["rel_err"] == 0
+        err = lo if exact else c["rel_err"]
         ok = c.get("pass")
-        ax.plot(err, y, "o", color=p.good if ok else p.critical, markersize=7, markeredgecolor=p.surface, markeredgewidth=1.5, zorder=3)
-        if c.get("tolerance"):
-            ax.plot(c["tolerance"], y, "|", color=p.ink2, markersize=14, markeredgewidth=1.5, zorder=2)
-        ax.text(err * 1.4, y, f"{c['rel_err']:.1e}  {'pass' if ok else 'FAIL' if ok is False else ''}", va="center", fontsize=8.5, color=p.ink)
+        ax.plot(err, y, "o", color=p.good if ok else p.critical, markersize=7, markeredgecolor=p.surface, markeredgewidth=1.5, zorder=3, clip_on=False)
+        tol = c.get("tolerance")
+        if tol:
+            ax.plot(tol, y, "|", color=p.ink2, markersize=14, markeredgewidth=1.5, zorder=2)
+        verdict = "pass" if ok else "FAIL" if ok is False else ""
+        text = f"exact  {verdict}" if exact else f"{c['rel_err']:.1e}  {verdict}"
+        # Right of the dot, or of the tolerance tick when the dot is left of it and close
+        x = err * 1.5 if not tol or err > tol or tol / err > 30 else tol * 1.5
+        ax.text(x, y, text, va="center", fontsize=8.5, color=p.ink)
     ax.set_yticks([-i for i in range(len(cases))])
     ax.set_yticklabels([c["name"] for c in cases])
     ax.set_xscale("log")
-    ax.set_xlabel("relative error (max |dspk − reference| / max |reference|; tick: tolerance)")
+    ax.set_xlim(lo, hi)
+    ax.xaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:.0e}"))
+    ax.set_xlabel("relative error (max |dspk − reference| / max |reference|; tick: tolerance; exact matches at the left)")
     ax.grid(axis="y", visible=False)
-    lo, hi = ax.get_xlim()
-    ax.set_xlim(lo, hi * 30)
     return fig, ax
 
 
-__all__ = ["DEFAULT_NPERSEG", "agreement", "before_after", "overlay", "psd", "raster", "response", "spectrum", "timings", "traces", "waveforms"]
+__all__ = ["DEFAULT_NPERSEG", "agreement", "before_after", "ms_label", "overlay", "psd", "raster", "response", "spectrum", "timings", "traces", "waveforms"]
