@@ -49,14 +49,13 @@ mkdir -p ~/dspk-data && cp recording.ap.bin recording.ap.meta ~/dspk-data/
 podman run --rm -p 50051:50051/udp --device nvidia.com/gpu=all --userns=keep-id:uid=10001,gid=10001 \
   --read-only --cap-drop=all --security-opt=no-new-privileges --pids-limit=1024 \
   -v ~/dspk-data:/data:Z -v dspk-cache:/home/dspk/.cache dspk-serve:nvidia \
-  serve /data/recording.ap.bin --bind 0.0.0.0:50051 --loop \
-  --certificate-out /data/server.der --name $(hostname) --max-clients 8
+  serve /data/recording.ap.bin --bind 0.0.0.0:50051 --loop --name $(hostname) --max-clients 8
 ```
 
 - `:Z` lets SELinux allow the container to use the folder.
 - `--userns=keep-id:uid=10001,gid=10001` maps you to the container's `dspk` user (uid 10001).
   Without it, rootless Podman maps that user to an unused uid on the host, and the server can't
-  write to your folder ("Permission denied" writing `server.der`).
+  write to your folder ("Permission denied").
 - The pyramid is built on the first run and written next to the recording, so the folder must
   be writable. Later runs reuse it.
 - The second line hardens the container; see [Hardening](#hardening).
@@ -79,18 +78,44 @@ The server itself refuses requests that would make it allocate without bound, ac
 after 30 s, and makes a client prove its address before any work (QUIC Retry). Keep SELinux on
 (see [GPU](#gpu)).
 
-## Connect
+## Who can connect
 
-The server makes its own certificate and writes it to `/data/server.der`. Give that file to
-clients so they can check they reach this server:
+Only clients the server has enrolled. The server keeps its own small certificate authority in
+`/data/.dspk-auth` (mode 0700; its key 0600): enrolling a client issues it a certificate, and
+the server accepts only those, checking at every connection that it is not revoked. Clients
+trust the server through the same authority, so there is nothing else to hand out.
+
+Enroll a client in the running container, then give it its file over a private channel (it
+holds the client's private key):
 
 ```bash
-dspk receive <server-ip>:50051 --certificate ~/dspk-data/server.der --server-name <name>
+podman exec dspk-serve dspk clients enroll alice --out /data/alice.dspk-identity.pem
+podman exec dspk-serve dspk clients enroll lab-pc --control --out /data/lab-pc.dspk-identity.pem
+podman exec dspk-serve dspk clients list
+podman exec dspk-serve dspk clients revoke alice      # refused from its next connection on
 ```
 
-`--server-name` must be one of the names in the certificate: `localhost`, or a name given with
-`--name` (repeat it for several). For a certificate of your own, pass `--certificate chain.pem`
-and `--private-key key.pem`, and mount them into the container.
+- Read only unless `--control`; control will allow configuring and running jobs.
+- Revoking and enrolling take effect without restarting the server.
+- A file is never overwritten, and a name already enrolled must be revoked first.
+- Certificates are valid for about two years; enroll again after.
+
+The client connects with its file:
+
+```bash
+dspk receive <server-ip>:50051 --identity alice.dspk-identity.pem --server-name <name>
+```
+
+`--server-name` must be one of the server's names: `localhost`, or a `--name` given to `serve`
+(repeat it for several; the service file passes the host name).
+
+- `--allow-anonymous` on `serve` also lets in clients without a certificate, read only. Anyone
+  who reaches the port can then read the recording; use it only on a network you trust.
+- A certificate of your own (from your organisation's CA): pass `--certificate chain.pem` and
+  `--private-key key.pem` to `serve`. Clients still need an enrollment, and also
+  `--certificate` with your CA.
+- Back up `/data/.dspk-auth`. Losing it means enrolling every client again, and anyone who
+  copies it can enroll clients.
 
 ## As a service (starts at boot)
 
@@ -152,14 +177,11 @@ podman run --rm --device nvidia.com/gpu=all --userns=keep-id:uid=10001,gid=10001
   --output /data/recording.kilosort4.sorting.zarr --duration-sec 30
 ```
 
-## Firewall and who can connect
+## Firewall
 
-QUIC runs over UDP, and every connection is encrypted with TLS 1.3. Clients check the server's
-certificate, but **the server does not yet check who the client is**: anyone who can reach the
-port can connect and read the recording. Until clients authenticate, keep the server on a
-network you trust.
-
-Open the port only to that network (replace the address range with yours):
+QUIC runs over UDP, and every connection is encrypted with TLS 1.3. The server lets in only
+enrolled clients ([Who can connect](#who-can-connect)). Still open the port only to the network
+that needs it (replace the address range with yours):
 
 ```bash
 sudo firewall-cmd --permanent --add-rich-rule='rule family=ipv4 source address=192.168.1.0/24 port port=50051 protocol=udp accept'

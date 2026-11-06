@@ -19,8 +19,13 @@
 ARG RUST_VERSION=1.99
 # Debian release of every stage: glibc >= 2.34 for the CPU runtime's prebuilt LLVM (bookworm: 2.36)
 ARG DEBIAN=bookworm
+# Base images pinned by digest (multi-architecture index), so a re-tagged or tampered image cannot
+# enter a build; the tags above only document what the digests are. To update: the new tag's
+# digest from the registry (e.g. `podman manifest inspect`), then build and test again.
+ARG RUST_DIGEST=sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c
+ARG DEBIAN_DIGEST=sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
 
-FROM docker.io/library/rust:${RUST_VERSION}-${DEBIAN} AS build
+FROM docker.io/library/rust:${RUST_VERSION}-${DEBIAN}@${RUST_DIGEST} AS build
 # CubeCL runtimes compiled in, and the artifact hub (`dspk hub`): the defaults of dspk-cli
 ARG FEATURES=wgpu,cuda,cpu,hub
 WORKDIR /src
@@ -36,7 +41,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && install -D -m 0755 target/release/dspk-cli-sorter /out/dspk-cli-sorter
 
 # What every target shares: the programs, a non-root user, /data
-FROM docker.io/library/debian:${DEBIAN}-slim AS base
+FROM docker.io/library/debian:${DEBIAN}-slim@${DEBIAN_DIGEST} AS base
 # ca-certificates: verified downloads from the hub over HTTPS
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
@@ -56,10 +61,12 @@ VOLUME /home/dspk/.cache
 EXPOSE 50051/udp
 # `dspk serve` stops cleanly on SIGTERM (podman stop, systemd) and Ctrl+C
 ENTRYPOINT ["dspk"]
-# Listen on every interface of the container; the self-signed certificate is written to /data
-# for clients (`dspk receive --certificate server.der`). Add --name <host> for the names clients
-# use, or bring your own certificate (--certificate, --private-key).
-CMD ["serve", "--bind", "0.0.0.0:50051", "--certificate-out", "/data/server.der"]
+# The server's authority (its CA and the enrolled clients) is kept with the data, so it survives
+# restarts and image updates: enroll clients with `podman exec <container> dspk clients enroll`
+ENV DSPK_SERVE_AUTH_DIR=/data/.dspk-auth
+# Listen on every interface of the container; only enrolled clients get in. Add --name <host> for
+# the names clients use, or bring your own certificate (--certificate, --private-key).
+CMD ["serve", "--bind", "0.0.0.0:50051"]
 
 # NVIDIA: CUDA and Vulkan. The host's driver (libcuda, the Vulkan ICD) is passed in by the NVIDIA
 # Container Toolkit (CDI); the image brings what the driver does not: NVRTC, which CubeCL uses to

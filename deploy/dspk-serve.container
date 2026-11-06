@@ -22,7 +22,8 @@ ContainerName=dspk-serve
 PublishPort=50051:50051/udp
 # You on the host = the container's dspk user (uid 10001), so it can write to ~/dspk-data
 UserNS=keep-id:uid=10001,gid=10001
-# Recordings, their pyramids and server.der (the certificate for clients); :Z labels it for SELinux
+# Recordings, their pyramids, and the authority (.dspk-auth: CA, enrolled clients); :Z labels it
+# for SELinux. Enroll: podman exec dspk-serve dspk clients enroll <name> --out /data/<name>.pem
 Volume=%h/dspk-data:/data:Z
 # Compiled kernels and autotune results, kept across restarts
 Volume=dspk-cache:/home/dspk/.cache
@@ -33,7 +34,7 @@ DropCapability=all
 NoNewPrivileges=true
 PodmanArgs=--pids-limit=1024
 # Your file under ~/dspk-data, and the names clients use for this machine (for the certificate)
-Exec=serve /data/recording.ap.bin --bind 0.0.0.0:50051 --loop --certificate-out /data/server.der --name %H --max-clients 8
+Exec=serve /data/recording.ap.bin --bind 0.0.0.0:50051 --loop --name %H --max-clients 8
 
 [Service]
 Restart=on-failure
