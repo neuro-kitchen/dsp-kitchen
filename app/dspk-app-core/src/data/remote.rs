@@ -302,6 +302,70 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// Writes a small sorting folder after reporting progress (stands in for dspk-cli-sorter).
+    struct FakeSorter;
+    impl dspk_stream::jobs::JobRunner for FakeSorter {
+        fn sorters(&self) -> Vec<String> {
+            vec!["kilosort4".into()]
+        }
+        fn run(&self, job: &dspk_stream::jobs::JobSpec, report: &dyn dspk_stream::jobs::JobReport, _: &std::sync::atomic::AtomicBool) -> Result<String, String> {
+            for done in 0..3 {
+                report.progress(dspk_stream::jobs::JobProgress { stage: "Sorting".into(), step: 1, steps: 1, done, total: 3, unit: "steps".into() });
+                std::thread::sleep(Duration::from_millis(400));
+            }
+            std::fs::create_dir_all(job.output.join("spikes")).map_err(|e| e.to_string())?;
+            std::fs::write(job.output.join("zarr.json"), "{}").map_err(|e| e.to_string())?;
+            Ok("2 units".into())
+        }
+    }
+
+    /// A sort on a server as the app runs it: configured, followed (progress), fetched.
+    #[test]
+    fn a_remote_sort_is_followed_and_fetched() {
+        let base = std::env::temp_dir().join(format!("dspk-app-remote-sort-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("data");
+        std::fs::create_dir_all(root.join("m1")).unwrap();
+        std::fs::write(root.join("m1/rec.bin"), [0u8; 8]).unwrap();
+        let authority = Arc::new(Authority::open_or_create(&base.join("auth")).unwrap());
+        authority.enroll("lab", Permission::Control).unwrap().write(&base.join("lab.pem")).unwrap();
+        let tls = server_config_with_clients(&authority, &ServerIdentity::SelfSigned { names: vec!["localhost".into()] }, false).unwrap();
+        let data_root = DataRoot::new(&root).unwrap();
+        let jobs = Arc::new(dspk_stream::jobs::Jobs::new(Arc::new(FakeSorter), data_root.clone(), None));
+        let device = Arc::new(Device { name: "t".into(), version: "0".into(), files: Some((data_root, Arc::new(TestOpener))), recording: None, jobs: Some(jobs), options: ServeOptions::default() });
+        let addr = runtime().block_on(async {
+            let server = Server::bind("127.0.0.1:0".parse().unwrap(), tls.config).unwrap().with_authority(authority);
+            let addr = server.local_addr().unwrap();
+            tokio::spawn(async move {
+                while let Some((c, peer)) = server.accept().await {
+                    tokio::spawn(serve_session(c, peer, device.clone()));
+                }
+            });
+            addr
+        });
+        let profile = ServerProfile { name: "gpu".into(), address: addr.to_string(), server_name: "localhost".into(), identity: base.join("lab.pem") };
+        let job = wire::Configure { sorter: "kilosort4".into(), recording: "m1/rec.bin".into(), ..Default::default() };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _cancel = remote_sort(profile, job, base.join("results"), move |m| {
+            let _ = tx.send(m);
+        });
+        let (mut progress, mut end) = (0, None);
+        while let Ok(m) = rx.recv_timeout(Duration::from_secs(20)) {
+            match m {
+                JobMessage::Progress(..) => progress += 1,
+                done => {
+                    end = Some(done);
+                    break;
+                }
+            }
+        }
+        let Some(JobMessage::Done(local)) = end else { panic!("the sort did not finish: {end:?}") };
+        assert!(progress >= 2, "progress reported while it ran ({progress})");
+        assert_eq!(local, base.join("results/gpu/rec.kilosort4.sorting.zarr"));
+        assert!(local.join("zarr.json").is_file() && local.join("spikes").is_dir(), "the sorting fetched whole");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn remote_paths_round_trip() {
         let p = uri("lab GPU", "/m1/rec.ap.bin");
