@@ -79,7 +79,7 @@ mod tests {
             composite_score: f64::NAN,
             num_spikes: spikes,
         };
-        Unit { info, extent: Extent { before: 1, after: 1, channels: vec![0] }, template: Vec::new(), merged_into: None }
+        Unit { info, extent: Extent { before: 1, after: 1, channels: vec![0] }, template: Vec::new(), template_row: None, merged_into: None }
     }
 
     #[test]
@@ -94,6 +94,9 @@ mod tests {
             units: vec![unit(5, "good", 10), unit(6, "mua", 30), unit(7, "good", 20)],
             by_id: Default::default(),
             channels: None,
+            by_unit: Vec::new(),
+            positions: Vec::new(),
+            templates: None,
         };
         let t = UnitTable::new(&sorting).unwrap();
         assert_eq!(t.labels, ["good", "mua"]);

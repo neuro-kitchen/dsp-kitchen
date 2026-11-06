@@ -24,6 +24,7 @@ pub mod sorting;
 pub mod sorting_ws;
 pub mod strip;
 pub mod table;
+pub mod templates;
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -39,7 +40,7 @@ use dspk_synapse::io::{SyntheticParams, SyntheticRecording};
 use gpui_kit::{AnyElement, AnyView, App, AppContext as _, Context, Entity, EventEmitter, Global, Subscription, Window};
 
 use crate::curation::{Curation, CurationOp};
-use crate::sorting::SortingData;
+use crate::sorting::{Snippets, SortingData};
 
 /// The plugin's key in the session document (`views[i].plugins.synapse`).
 pub const ID: &str = "synapse";
@@ -309,6 +310,13 @@ impl AppPlugin for SynapsePlugin {
     fn install(&self, store: &Entity<Store>, cx: &mut App) {
         let state = cx.new(|cx| SynapseState::new(store.clone(), cx));
         cx.set_global(Synapse(state));
+        // The device and its PCA kernels get ready while the user opens a recording, so the
+        // first unit clicked in Curation does not wait for them (seconds, cold)
+        cx.background_spawn(async {
+            let snippets = Snippets { channel: 0, before: 2, after: 2, rows: (0..8).map(|k| (None, k as u64, vec![k as f32, 1.0, -(k as f32), 0.5])).collect() };
+            let _ = snippets.pca2();
+        })
+        .detach();
     }
 
     /// The active view's sorting over `source`: every spike near the window, on its unit's

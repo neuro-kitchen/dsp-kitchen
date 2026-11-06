@@ -133,14 +133,14 @@ pub fn bars(counts: &[u32], c: Pixel, marker: Option<f32>, palette: &Palette, wi
 }
 
 /// Amplitude over time: `points[u]` = (time s, amplitude) of selected unit `units[u]`, over
-/// `duration_sec`.
-pub fn amplitude_time(points: &[(u32, Vec<(f32, f32)>)], duration_sec: f32, palette: &Palette, width: u32, height: u32, scale: f32) -> Frame {
+/// `duration_sec`; with the amplitude axis drawn (`lo`, `span`: y = 1 − (a − lo) / span).
+pub fn amplitude_time(points: &[(u32, Vec<(f32, f32)>)], duration_sec: f32, palette: &Palette, width: u32, height: u32, scale: f32) -> (Frame, (f32, f32)) {
     let mut frame = Frame::new(width, height);
     let mut canvas = frame.canvas();
     canvas.pixels.fill(palette.background);
     let all: Vec<f32> = points.iter().flat_map(|(_, p)| p.iter().map(|q| q.1)).filter(|v| v.is_finite()).collect();
     if all.is_empty() {
-        return frame;
+        return (frame, (0.0, 1.0));
     }
     let (lo, hi) = all.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), &v| (a.min(v), b.max(v)));
     let lo = lo.min(0.0);
@@ -153,6 +153,40 @@ pub fn amplitude_time(points: &[(u32, Vec<(f32, f32)>)], duration_sec: f32, pale
             let (x, y) = (t / duration_sec.max(1e-6) * w, h - (a - lo) / span * h);
             canvas.rect(x - r, y - r, x + r, y + r, c, POINT_ALPHA);
         }
+    }
+    (frame, (lo, span))
+}
+
+/// The probe: every channel as a grey dot, units as discs at their positions (the selected
+/// ones larger, outlined).
+pub fn probe_view(channels: &[(f32, f32)], units: &[((f32, f32), Pixel, bool)], palette: &Palette, width: u32, height: u32, scale: f32) -> Frame {
+    let mut frame = Frame::new(width, height);
+    let mut canvas = frame.canvas();
+    canvas.pixels.fill(palette.background);
+    if channels.is_empty() {
+        return frame;
+    }
+    let (x0, x1) = channels.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), p| (a.min(p.0), b.max(p.0)));
+    let (y0, y1) = channels.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), p| (a.min(p.1), b.max(p.1)));
+    let pad = 14.0 * scale;
+    let (w, h) = (width as f32 - 2.0 * pad, height as f32 - 2.0 * pad);
+    // One scale for both axes (the probe's shape), centred
+    let k = (w / (x1 - x0).max(1.0)).min(h / (y1 - y0).max(1.0));
+    let (ox, oy) = (pad + (w - (x1 - x0) * k) / 2.0, pad + (h - (y1 - y0) * k) / 2.0);
+    // Depth upwards: the probe's tip at the bottom
+    let at = |(x, y): (f32, f32)| (ox + (x - x0) * k, height as f32 - oy - (y - y0) * k);
+    let r = 1.5 * scale;
+    for &p in channels {
+        let (x, y) = at(p);
+        canvas.rect(x - r, y - r, x + r, y + r, palette.grid, 1.0);
+    }
+    for &(p, c, selected) in units.iter().filter(|u| !u.2).chain(units.iter().filter(|u| u.2)) {
+        let (x, y) = at(p);
+        let rr = if selected { 6.0 * scale } else { 3.5 * scale };
+        if selected {
+            canvas.rect(x - rr - scale, y - rr - scale, x + rr + scale, y + rr + scale, palette.text, 1.0);
+        }
+        canvas.rect(x - rr, y - rr, x + rr, y + rr, c, if selected { 1.0 } else { 0.7 });
     }
     frame
 }
@@ -220,4 +254,50 @@ pub fn unit_card(rows: &[&Vec<f32>], isi: &[u32], refractory_bin: f32, c: Pixel,
         canvas.rect(i as f32 * bw + 0.3, y, (i + 1) as f32 * bw - 0.3, bottom, c, 0.9);
     }
     frame
+}
+
+/// Correlograms of a few units: `grid[i][j]` is the cross-correlogram of unit i to unit j (the
+/// diagonal: autocorrelograms, in the unit's colour; elsewhere in grey); zero lag marked.
+pub fn correlogram_grid(grid: &[Vec<Vec<u32>>], colours: &[Pixel], palette: &Palette, width: u32, height: u32) -> Frame {
+    let mut frame = Frame::new(width, height);
+    let mut canvas = frame.canvas();
+    canvas.pixels.fill(palette.background);
+    let n = grid.len();
+    if n == 0 {
+        return frame;
+    }
+    let (cw, ch) = (width as f32 / n as f32, height as f32 / n as f32);
+    for (i, row) in grid.iter().enumerate() {
+        for (j, counts) in row.iter().enumerate() {
+            let (x0, y0) = (j as f32 * cw + 3.0, i as f32 * ch + 3.0);
+            let (w, h) = (cw - 6.0, ch - 6.0);
+            let c = if i == j { colours[i] } else { palette.unsorted() };
+            let peak = counts.iter().copied().max().unwrap_or(0).max(1) as f32;
+            let bw = w / counts.len().max(1) as f32;
+            canvas.vline((x0 + w / 2.0) as usize, y0 as usize, (y0 + h) as usize, palette.grid);
+            for (k, &v) in counts.iter().enumerate() {
+                let top = y0 + h - (v as f32 / peak) * (h - 2.0);
+                canvas.rect(x0 + k as f32 * bw, top, x0 + (k + 1) as f32 * bw - 0.4, y0 + h, c, 0.9);
+            }
+        }
+    }
+    frame
+}
+
+/// One unit's template rows (largest channels first) in the cell at (`x0`, `y0`) of `frame`, on
+/// one amplitude scale: the first row solid, the others fainter.
+#[allow(clippy::too_many_arguments)]
+pub fn template_cell(frame: &mut Frame, x0: u32, y0: u32, w: u32, h: u32, rows: &[Vec<f32>], c: Pixel, palette: &Palette, scale: f32) {
+    let mut canvas = frame.canvas();
+    let (x0, y0, w, h) = (x0 as f32, y0 as f32, w as f32, h as f32);
+    let pad = 6.0 * scale;
+    let mid = y0 + h * 0.5;
+    canvas.rect(x0 + pad, mid, x0 + w - pad, mid + 1.0, palette.grid, 0.6);
+    let amp = rows.iter().flatten().fold(0.0f32, |m, v| m.max(v.abs())).max(1e-6);
+    for (k, row) in rows.iter().enumerate().rev() {
+        let n = row.len().max(2);
+        let pts: Vec<(f32, f32)> = row.iter().enumerate().map(|(i, &v)| (x0 + pad + i as f32 / (n - 1) as f32 * (w - 2.0 * pad), mid - v / amp * (h * 0.5 - pad))).collect();
+        let alpha = if k == 0 { 1.0 } else { 0.45 };
+        polyline(&mut canvas, &pts, c, alpha, (if k == 0 { 1.6 } else { 1.0 }) * scale);
+    }
 }

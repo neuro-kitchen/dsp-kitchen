@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use dspk_synapse::io::sorting_zarr::{SortingZarr, SortingZarrUnit};
@@ -15,9 +16,14 @@ use dspk_view::SignalBackend;
 pub const EXTENT_CHANNEL_FRACTION: f32 = 0.25;
 /// Most channels in a unit's extent (the largest first).
 pub const EXTENT_MAX_CHANNELS: usize = 8;
-/// Waveforms are read from this many windows spread over the recording, each this long (s).
-pub const SNIPPET_WINDOWS: usize = 8;
-pub const SNIPPET_WINDOW_SEC: f64 = 2.0;
+/// Waveforms are read from windows spread over the recording, each this long (s), every channel
+/// at once and kept for the session (one processing of each window serves every unit and
+/// channel): as many as fit in [`WINDOW_BUDGET_BYTES`], between [`MIN_WINDOWS`] and
+/// [`MAX_WINDOWS`].
+pub const WINDOW_SEC: f64 = 1.0;
+pub const WINDOW_BUDGET_BYTES: usize = 256 << 20;
+pub const MIN_WINDOWS: usize = 2;
+pub const MAX_WINDOWS: usize = 12;
 /// Half-width of the extent when a store has no templates (ms).
 pub const DEFAULT_HALF_WIDTH_MS: f64 = 1.0;
 
@@ -38,8 +44,26 @@ pub struct Unit {
     /// Mean template on `extent.channels` (rows), `before + after` samples each; empty without
     /// templates.
     pub template: Vec<Vec<f32>>,
+    /// Its row in [`SortingData::templates`] (a merged unit: its largest part's).
+    pub template_row: Option<usize>,
     /// Merged by curation into the unit at this index (the row stays, empty).
     pub merged_into: Option<usize>,
+}
+
+/// Every unit's mean template on every channel: `[units, channels, samples]`.
+#[derive(Debug)]
+pub struct Templates {
+    pub data: Vec<f32>,
+    pub channels: usize,
+    pub samples: usize,
+}
+
+impl Templates {
+    /// Row `u`: `channels × samples`, channel-major.
+    pub fn row(&self, u: usize) -> &[f32] {
+        let n = self.channels * self.samples;
+        &self.data[u * n..(u + 1) * n]
+    }
 }
 
 /// The app's notes on a store, inside its folder (`dspk-app.json`): where in the recording a
@@ -64,6 +88,11 @@ pub struct SortingData {
     /// Channels of the recording it was sorted on (templates' rows), when known: a view that
     /// reads a channel subset maps the sorting's channel `i` to its `i`-th channel.
     pub channels: Option<usize>,
+    /// Spike indices (into `times`) of each unit, in time order.
+    pub by_unit: Vec<Vec<u32>>,
+    /// Position (µm, x and y) of each channel on the probe, when the store has the probe.
+    pub positions: Vec<Option<(f32, f32)>>,
+    pub templates: Option<Arc<Templates>>,
 }
 
 impl SortingData {
@@ -97,7 +126,8 @@ impl SortingData {
                     Some(t) if t.shape.len() == 3 && i < t.shape[0] => template_extent(&t.data, t.shape[1], t.shape[2], i, u.primary_channel),
                     _ => (Extent { before: half, after: half, channels: vec![u.primary_channel] }, Vec::new()),
                 };
-                Unit { info: u.clone(), extent, template, merged_into: None }
+                let row = store.templates_mean.as_ref().filter(|t| t.shape.len() == 3 && i < t.shape[0]).map(|_| i);
+                Unit { info: u.clone(), extent, template, template_row: row, merged_into: None }
             })
             .collect();
         // Spikes sorted by time (stores are usually sorted already; a stable sort keeps ties)
@@ -107,7 +137,34 @@ impl SortingData {
         let unit_of = order.iter().map(|&i| by_id.get(&store.spike_clusters.get(i).copied().unwrap_or(-1)).map(|&u| u as u32)).collect();
         let amplitudes = if store.amplitudes.len() == store.spike_times.len() { order.iter().map(|&i| store.amplitudes[i]).collect() } else { Vec::new() };
         let channels = store.templates_mean.as_ref().and_then(|t| t.shape.get(1).copied());
-        Self { path: path.to_path_buf(), sorter: m.sorter_name.clone(), sample_rate: rate, times, unit_of, amplitudes, units, by_id, channels }
+        let path = path.to_path_buf();
+        let sorter = m.sorter_name.clone();
+        let mut positions: Vec<Option<(f32, f32)>> = Vec::new();
+        if let Some(p) = &m.probe {
+            for site in p.sites() {
+                if positions.len() <= site.channel_id {
+                    positions.resize(site.channel_id + 1, None);
+                }
+                positions[site.channel_id] = Some((site.position.x_um, site.position.y_um));
+            }
+        }
+        let templates = store.templates_mean.filter(|t| t.shape.len() == 3).map(|t| Arc::new(Templates { channels: t.shape[1], samples: t.shape[2], data: t.data }));
+        let mut s = Self { path, sorter, sample_rate: rate, times, unit_of, amplitudes, units, by_id, channels, by_unit: Vec::new(), positions, templates };
+        s.index_units();
+        s
+    }
+
+    /// Rebuilds [`Self::by_unit`] (after spikes changed units).
+    pub fn index_units(&mut self) {
+        let mut by: Vec<Vec<u32>> = vec![Vec::new(); self.units.len()];
+        for (k, u) in self.unit_of.iter().enumerate() {
+            if let Some(u) = u {
+                if let Some(v) = by.get_mut(*u as usize) {
+                    v.push(k as u32);
+                }
+            }
+        }
+        self.by_unit = by;
     }
 
     /// Indices of the spikes with times in `samples`.
@@ -119,7 +176,7 @@ impl SortingData {
 
     /// Spike times of unit `unit` (an index into `units`).
     pub fn unit_times(&self, unit: usize) -> Vec<u64> {
-        self.times.iter().zip(&self.unit_of).filter(|(_, u)| **u == Some(unit as u32)).map(|(&t, _)| t).collect()
+        self.by_unit.get(unit).map_or_else(Vec::new, |ks| ks.iter().map(|&k| self.times[k as usize]).collect())
     }
 
     /// (time s, amplitude) of up to `max` spikes of `unit`, evenly spread.
@@ -127,9 +184,24 @@ impl SortingData {
         if self.amplitudes.is_empty() {
             return Vec::new();
         }
-        let idx: Vec<usize> = (0..self.times.len()).filter(|&k| self.unit_of[k] == Some(unit as u32)).collect();
+        let idx: Vec<usize> = self.by_unit.get(unit).map_or_else(Vec::new, |ks| ks.iter().map(|&k| k as usize).collect());
         let step = (idx.len() / max.max(1)).max(1);
         idx.iter().step_by(step).map(|&k| ((self.times[k] as f64 / self.sample_rate) as f32, self.amplitudes[k])).collect()
+    }
+
+    /// Where unit `u` sits on the probe: its extent channels' positions weighted by its
+    /// template's peak-to-peak there.
+    pub fn unit_position(&self, u: usize) -> Option<(f32, f32)> {
+        let unit = &self.units[u];
+        let (mut sx, mut sy, mut sw) = (0.0f32, 0.0f32, 0.0f32);
+        for (k, &c) in unit.extent.channels.iter().enumerate() {
+            let Some((x, y)) = self.positions.get(c).copied().flatten() else { continue };
+            let w = unit.template.get(k).map_or(1.0, |r| r.iter().copied().fold(f32::NEG_INFINITY, f32::max) - r.iter().copied().fold(f32::INFINITY, f32::min)).max(0.0);
+            sx += x * w;
+            sy += y * w;
+            sw += w;
+        }
+        (sw > 0.0).then(|| (sx / sw, sy / sw)).or_else(|| self.positions.get(unit.info.primary_channel).copied().flatten())
     }
 
     /// `kilosort4 · 287 units · 133 544 spikes`
@@ -184,48 +256,40 @@ pub struct Snippets {
 }
 
 impl Snippets {
-    /// Up to `per_unit` spikes of each unit in `units` (evenly spread over the recording) and as
-    /// many unsorted ones, on `channel`, read from `signal` (the processed preview when the view
-    /// has ops: what the sorter saw).
-    pub fn read(sorting: &SortingData, signal: &dyn SignalBackend, units: &[usize], channel: usize, per_unit: usize) -> Self {
+    /// Up to `per_unit` spikes of each unit in `units` (evenly spread over the windows) and as
+    /// many unsorted ones, on `channel`, from `windows` (read from the view's signal: the
+    /// processed preview when the view has ops, what the sorter saw).
+    pub fn read(sorting: &SortingData, windows: &Windows, units: &[usize], channel: usize, per_unit: usize) -> Self {
         let (before, after) = units
             .first()
             .and_then(|&u| sorting.units.get(u))
             .map_or_else(|| { let h = (DEFAULT_HALF_WIDTH_MS * 1e-3 * sorting.sample_rate) as u64; (h, h) }, |u| (u.extent.before, u.extent.after));
-        let total = signal.info().samples;
-        // A few windows spread over the recording, each read once for every unit: one processed
-        // block serves all the spikes in it (a spike at a time would process the whole
-        // channel group and its filter halo per spike)
-        let w = ((SNIPPET_WINDOW_SEC * sorting.sample_rate) as u64).min(total);
-        let starts: Vec<u64> = if total <= w { vec![0] } else { (0..SNIPPET_WINDOWS).map(|i| (total - w) * i as u64 / (SNIPPET_WINDOWS - 1) as u64).collect() };
-        let cap = per_unit.div_ceil(starts.len()).max(1);
+        let cap = per_unit.div_ceil(windows.starts.len().max(1)).max(1);
         let wanted = |u: Option<u32>| match u {
             Some(u) => units.contains(&(u as usize)),
             None => true,
         };
         let n = (before + after) as usize;
         let mut rows = Vec::new();
-        let mut block = vec![0.0f32; w as usize];
-        for &s0 in &starts {
-            let s1 = (s0 + w).min(total);
+        if channel >= windows.channels {
+            return Self { channel, before, after, rows };
+        }
+        for (w, &s0) in windows.starts.iter().enumerate() {
+            let s1 = s0 + windows.len;
             // Spikes whose snippet lies inside the window, at most `cap` per unit, spread
-            let mut by_unit: std::collections::HashMap<Option<u32>, Vec<u64>> = std::collections::HashMap::new();
+            let mut by_unit: HashMap<Option<u32>, Vec<u64>> = HashMap::new();
             for k in sorting.in_range(s0 + before, s1.saturating_sub(after)) {
                 if wanted(sorting.unit_of[k]) {
                     by_unit.entry(sorting.unit_of[k]).or_default().push(sorting.times[k]);
                 }
             }
-            if by_unit.is_empty() {
-                continue;
-            }
-            let len = (s1 - s0) as usize;
-            if signal.read(&[channel], s0..s1, &mut block[..len]).is_err() {
-                continue;
-            }
+            let block = windows.block(w, channel);
             for (u, times) in by_unit {
                 for t in spread(&times, cap) {
                     let a = (t - before - s0) as usize;
-                    rows.push((u, t, block[a..a + n].to_vec()));
+                    if a + n <= block.len() {
+                        rows.push((u, t, block[a..a + n].to_vec()));
+                    }
                 }
             }
         }
@@ -233,9 +297,32 @@ impl Snippets {
         Self { channel, before, after, rows }
     }
 
-    /// First two principal components of the snippets (host: a few thousand rows of tens of
-    /// samples; power iteration on the covariance).
+    /// First two principal components of the snippets: dspk-synapse's `extract_waveform_pca` on
+    /// the device; on the host (power iteration) when no device answers.
     pub fn pca2(&self) -> Vec<[f32; 2]> {
+        if let Some(points) = self.pca2_device() {
+            return points;
+        }
+        self.pca2_host()
+    }
+
+    fn pca2_device(&self) -> Option<Vec<[f32; 2]>> {
+        let n = (self.before + self.after) as usize;
+        if self.rows.len() < 3 || n == 0 {
+            return None;
+        }
+        let client = dspk_core::ComputeTarget::from_env().ok()?.client().ok()?;
+        let snippets: Vec<dspk_synapse::WaveformSnippet> = self
+            .rows
+            .iter()
+            .map(|(_, t, w)| dspk_synapse::WaveformSnippet { primary_channel: self.channel, center_sample: *t, subsample_offset: 0.0, channel_ids: vec![self.channel], num_samples: n, waveform: w.clone() })
+            .collect();
+        let (_, rows) = dspk_synapse::features::extract_waveform_pca(&client, &snippets, 2)?;
+        Some(rows.into_iter().map(|r| [r.first().copied().unwrap_or(0.0), r.get(1).copied().unwrap_or(0.0)]).collect())
+    }
+
+    /// The host fallback (a few thousand rows of tens of samples; power iteration).
+    pub fn pca2_host(&self) -> Vec<[f32; 2]> {
         let d = (self.before + self.after) as usize;
         let n = self.rows.len();
         if n < 3 || d == 0 {
@@ -274,45 +361,122 @@ impl Snippets {
     }
 }
 
-/// Counts of inter-spike intervals of sorted `times` (samples at `rate` Hz) in bins of `bin_ms`
-/// from 0 to `max_ms`.
-pub fn isi_histogram(times: &[u64], rate: f64, max_ms: f64, bin_ms: f64) -> Vec<u32> {
-    let bins = (max_ms / bin_ms).round() as usize;
-    let mut h = vec![0u32; bins];
-    for w in times.windows(2) {
-        let ms = (w[1] - w[0]) as f64 / rate * 1e3;
-        let b = (ms / bin_ms) as usize;
-        if b < bins {
-            h[b] += 1;
-        }
-    }
-    h
+/// Windows of every channel of a signal, read once (see [`WINDOW_SEC`]).
+pub struct Windows {
+    /// First sample of each window.
+    pub starts: Vec<u64>,
+    /// Samples per window.
+    pub len: u64,
+    pub channels: usize,
+    /// Per window: `channels × len` values, channel-major.
+    data: Vec<Vec<f32>>,
 }
 
-/// Autocorrelogram of sorted `times`: counts of lags in `[-half_ms, half_ms)` (zero lag left
-/// out) in bins of `bin_ms`; two pointers, so linear in spikes × spikes within the window.
-pub fn autocorrelogram(times: &[u64], rate: f64, half_ms: f64, bin_ms: f64) -> Vec<u32> {
-    let bins = (2.0 * half_ms / bin_ms).round() as usize;
-    let mut h = vec![0u32; bins];
-    let half = (half_ms * 1e-3 * rate) as u64;
-    let mut lo = 0;
-    for (i, &t) in times.iter().enumerate() {
-        while times[lo] + half < t {
-            lo += 1;
-        }
-        for &u in &times[lo..i] {
-            // u < t: a negative lag and its mirror
-            let ms = (t - u) as f64 / rate * 1e3;
-            let (neg, pos) = (((half_ms - ms) / bin_ms) as isize, ((half_ms + ms) / bin_ms) as isize);
-            if neg >= 0 && (neg as usize) < bins {
-                h[neg as usize] += 1;
+impl Windows {
+    /// Reads the windows of `signal` (every channel; blocking).
+    pub fn read(signal: &dyn SignalBackend) -> Self {
+        let info = signal.info();
+        let (total, channels) = (info.samples, info.channels.len());
+        let rate = info.sample_rate_hz();
+        let len = ((WINDOW_SEC * rate) as u64).clamp(1, total.max(1));
+        let per_window = channels.max(1) * len as usize * 4;
+        let count = (WINDOW_BUDGET_BYTES / per_window.max(1)).clamp(MIN_WINDOWS, MAX_WINDOWS);
+        let starts: Vec<u64> = if total <= len { vec![0] } else { (0..count).map(|i| (total - len) * i as u64 / (count - 1) as u64).collect() };
+        let all: Vec<usize> = (0..channels).collect();
+        let mut data = Vec::with_capacity(starts.len());
+        let mut kept = Vec::with_capacity(starts.len());
+        for &s0 in &starts {
+            let n = len.min(total - s0);
+            let mut block = vec![0.0f32; channels * n as usize];
+            if signal.read(&all, s0..s0 + n, &mut block).is_ok() && n == len {
+                data.push(block);
+                kept.push(s0);
             }
-            if pos >= 0 && (pos as usize) < bins {
-                h[pos as usize] += 1;
+        }
+        Self { starts: kept, len, channels, data }
+    }
+
+    /// Window `w` of `channel`.
+    pub fn block(&self, w: usize, channel: usize) -> &[f32] {
+        let n = self.len as usize;
+        &self.data[w][channel * n..(channel + 1) * n]
+    }
+}
+
+/// The windows of `signal`, read the first time and kept (the two most recent signals: the
+/// preview is a new signal after each edit of the ops).
+pub fn windows_of(signal: &Arc<dyn SignalBackend>) -> Arc<Windows> {
+    static CACHE: Mutex<Vec<(usize, Arc<Windows>)>> = Mutex::new(Vec::new());
+    let key = Arc::as_ptr(signal) as *const () as usize;
+    if let Some(w) = CACHE.lock().ok().and_then(|c| c.iter().find(|(k, _)| *k == key).map(|(_, w)| w.clone())) {
+        return w;
+    }
+    let w = Arc::new(Windows::read(signal.as_ref()));
+    if let Ok(mut c) = CACHE.lock() {
+        c.retain(|(k, _)| *k != key);
+        c.push((key, w.clone()));
+        if c.len() > 2 {
+            c.remove(0);
+        }
+    }
+    w
+}
+
+/// Counts of inter-spike intervals of sorted `times` (samples at `rate` Hz) in bins of `bin_ms`
+/// from 0 to `max_ms` (dspk-synapse's `isi_histogram`).
+pub fn isi_histogram(times: &[u64], rate: f64, max_ms: f64, bin_ms: f64) -> Vec<u32> {
+    dspk_synapse::metrics::firing::isi_histogram(times, rate, bin_ms, max_ms).1.into_iter().map(|c| c.min(u32::MAX as u64) as u32).collect()
+}
+
+/// Autocorrelogram of sorted `times`: counts of lags in `[-half_ms, half_ms]` in bins of `bin_ms`
+/// (dspk-synapse's `compute_autocorrelogram`; the middle bin is zero lag).
+pub fn autocorrelogram(times: &[u64], rate: f64, half_ms: f64, bin_ms: f64) -> Vec<u32> {
+    counts(dspk_synapse::metrics::correlogram::compute_autocorrelogram(times, rate, bin_ms as f32, half_ms as f32).counts)
+}
+
+fn counts(c: Vec<u64>) -> Vec<u32> {
+    c.into_iter().map(|v| v.min(u32::MAX as u64) as u32).collect()
+}
+
+/// Cross-correlogram of sorted trains `a` and `b` (lags `b − a`; dspk-synapse's
+/// `compute_crosscorrelogram`).
+pub fn crosscorrelogram(a: &[u64], b: &[u64], rate: f64, half_ms: f64, bin_ms: f64) -> Vec<u32> {
+    counts(dspk_synapse::metrics::correlogram::compute_crosscorrelogram(a, b, rate, bin_ms as f32, half_ms as f32).counts)
+}
+
+/// Spikes within this much of each other (ms) count as the same spike when comparing two runs.
+pub const MATCH_TOLERANCE_MS: f64 = 0.4;
+
+/// Each unit of `a` (alive) with its best match in `b`: (unit of `a`, unit of `b`, agreement =
+/// matched / (n_a + n_b − matched)), best first. Spikes match when within `tolerance_ms`.
+pub fn compare(a: &SortingData, b: &SortingData, tolerance_ms: f64) -> Vec<(usize, usize, f32)> {
+    let tol = (tolerance_ms * 1e-3 * a.sample_rate).round() as u64;
+    let mut pairs: HashMap<(u32, u32), u32> = HashMap::new();
+    for (k, &t) in a.times.iter().enumerate() {
+        let Some(ua) = a.unit_of[k] else { continue };
+        // Each spike of `a` counts once per unit of `b` near it
+        let mut seen: Vec<u32> = Vec::new();
+        for j in b.in_range(t.saturating_sub(tol), t + tol + 1) {
+            if let Some(ub) = b.unit_of[j] {
+                if !seen.contains(&ub) {
+                    seen.push(ub);
+                    *pairs.entry((ua, ub)).or_default() += 1;
+                }
             }
         }
     }
-    h
+    let n = |s: &SortingData, u: usize| s.by_unit.get(u).map_or(0, Vec::len) as f32;
+    let mut best: HashMap<u32, (u32, f32)> = HashMap::new();
+    for (&(ua, ub), &m) in &pairs {
+        let score = m as f32 / (n(a, ua as usize) + n(b, ub as usize) - m as f32).max(1.0);
+        let slot = best.entry(ua).or_insert((ub, 0.0));
+        if score > slot.1 {
+            *slot = (ub, score);
+        }
+    }
+    let mut out: Vec<(usize, usize, f32)> = a.alive().filter_map(|u| best.get(&(u as u32)).map(|&(v, sc)| (u, v as usize, sc))).collect();
+    out.sort_by(|x, y| y.2.total_cmp(&x.2));
+    out
 }
 
 /// Up to `k` of `times`, evenly spread.
@@ -379,11 +543,14 @@ pub(crate) mod tests {
                 },
                 extent: Extent { before: 1, after: 3, channels: vec![ch] },
                 template: vec![vec![0.0, -1.0 - id as f32 * 0.1, 0.5, 0.0]],
+                template_row: None,
                 merged_into: None,
             })
             .collect();
         let by_id = units.iter().enumerate().map(|(i, u)| (u.info.unit_id as i32, i)).collect();
-        SortingData { path: "/x.sorting.zarr".into(), sorter: "test".into(), sample_rate: 1000.0, times, unit_of, amplitudes: Vec::new(), units, by_id, channels: None }
+        let mut s = SortingData { path: "/x.sorting.zarr".into(), sorter: "test".into(), sample_rate: 1000.0, times, unit_of, amplitudes: Vec::new(), units, by_id, channels: None, by_unit: Vec::new(), positions: Vec::new(), templates: None };
+        s.index_units();
+        s
     }
 
     #[test]
@@ -405,10 +572,23 @@ pub(crate) mod tests {
         let isi = isi_histogram(&times, 1000.0, 50.0, 1.0);
         assert_eq!(isi[10], 99);
         let acg = autocorrelogram(&times, 1000.0, 50.0, 1.0);
-        assert_eq!(acg.len(), 100);
+        assert_eq!(acg.len(), 101, "±50 bins and zero lag");
         assert_eq!(acg[60], 99, "+10 ms");
         assert_eq!(acg[40], 99, "-10 ms");
         assert_eq!(acg[50], 0, "no zero lag");
+        let mut ccg = crosscorrelogram(&times, &times, 1000.0, 50.0, 1.0);
+        ccg[50] = 0;
+        assert_eq!(ccg, acg, "a train with itself is its autocorrelogram (but for each spike with itself)");
+    }
+
+    #[test]
+    fn test_compare_matches_shared_spikes() {
+        let a = sorting_of_units(&[(1, 0, 4), (2, 0, 2)]);
+        // b: the same spikes, the first unit split differently
+        let b = sorting_of_units(&[(7, 0, 4), (8, 0, 2)]);
+        let m = compare(&a, &b, 0.4);
+        assert_eq!(m[0], (0, 0, 1.0));
+        assert_eq!(m[1], (1, 1, 1.0));
     }
 
     #[test]
@@ -421,7 +601,7 @@ pub(crate) mod tests {
             rows.push((None, k as u64, vec![s * 5.0 + k as f32 * 0.01, 0.0, -s * 5.0]));
         }
         let snippets = Snippets { channel: 0, before: 1, after: 2, rows };
-        let pcs = snippets.pca2();
+        let pcs = snippets.pca2_host();
         assert!(pcs[..10].iter().all(|p| p[0].signum() == pcs[0][0].signum()));
         assert!(pcs[10..].iter().all(|p| p[0].signum() == -pcs[0][0].signum()));
     }

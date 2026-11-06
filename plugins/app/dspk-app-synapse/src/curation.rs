@@ -4,7 +4,7 @@
 //! `curation.json` (readers that do not know it see the sorter's result), and applied to the
 //! loaded sorting on read.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
@@ -26,6 +26,8 @@ pub enum CurationOp {
     Label { units: Vec<usize>, label: String },
     /// `units` become one unit, id `into` (labelled unsorted, as Phy does).
     Merge { units: Vec<usize>, into: usize },
+    /// The spikes of `unit` at sample times `spikes` become a new unit, id `into`.
+    Split { unit: usize, spikes: Vec<u64>, into: usize },
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -146,30 +148,65 @@ pub fn apply(base: &SortingData, ops: &[CurationOp]) -> SortingData {
                 s.units.push(unit);
                 s.by_id.insert(*into as i32, new);
             }
+            CurationOp::Split { unit, spikes, into } => {
+                let Some(&u) = s.by_id.get(&(*unit as i32)) else { continue };
+                if s.units[u].merged_into.is_some() || s.by_id.contains_key(&(*into as i32)) || spikes.is_empty() {
+                    continue;
+                }
+                let take: HashSet<u64> = spikes.iter().copied().collect();
+                let new = s.units.len();
+                let mut moved = 0;
+                for k in 0..s.times.len() {
+                    if s.unit_of[k] == Some(u as u32) && take.contains(&s.times[k]) {
+                        s.unit_of[k] = Some(new as u32);
+                        moved += 1;
+                    }
+                }
+                let mut part = s.units[u].clone();
+                part.info.unit_id = *into;
+                part.info.quality_label = "unsorted".into();
+                part.info.num_spikes = moved;
+                s.units[u].info.num_spikes -= moved.min(s.units[u].info.num_spikes);
+                s.units.push(part);
+                s.by_id.insert(*into as i32, new);
+            }
         }
     }
+    s.index_units();
     s
 }
 
-/// Units most like `lead` by template: cosine similarity of the mean templates over the channels
-/// both extents share (the rest counts as zero), best first, at most `max`.
-pub fn similar(sorting: &SortingData, lead: usize, max: usize) -> Vec<(usize, f32)> {
-    let a = &sorting.units[lead];
-    if a.template.is_empty() {
-        return Vec::new();
+/// Samples of shift tried when comparing templates.
+pub const SIMILARITY_LAG: usize = 5;
+
+/// A unit's mean template as dspk-synapse compares templates: every channel its stored template
+/// has signal on (else its extent channels).
+fn waveform_template(sorting: &SortingData, u: usize) -> Option<dspk_synapse::WaveformTemplate> {
+    let unit = &sorting.units[u];
+    if let (Some(t), Some(row)) = (&sorting.templates, unit.template_row) {
+        let r = t.row(row);
+        let channels: Vec<usize> = (0..t.channels).filter(|&c| r[c * t.samples..(c + 1) * t.samples].iter().any(|v| *v != 0.0)).collect();
+        if !channels.is_empty() {
+            let mean: Vec<f32> = channels.iter().flat_map(|&c| r[c * t.samples..(c + 1) * t.samples].iter().copied()).collect();
+            let n = mean.len();
+            return Some(dspk_synapse::WaveformTemplate::new(channels, t.samples, mean, vec![0.0; n]));
+        }
     }
-    let rows_a: HashMap<usize, &Vec<f32>> = a.extent.channels.iter().copied().zip(a.template.iter()).collect();
-    let norm = |rows: &[Vec<f32>]| rows.iter().flatten().map(|v| v * v).sum::<f32>().sqrt();
-    let na = norm(&a.template);
-    let mut out: Vec<(usize, f32)> = sorting
-        .units
-        .iter()
-        .enumerate()
-        .filter(|(u, b)| *u != lead && b.merged_into.is_none() && !b.template.is_empty())
-        .filter_map(|(u, b)| {
-            let dot: f32 = b.extent.channels.iter().zip(&b.template).filter_map(|(c, rb)| rows_a.get(c).map(|ra| ra.iter().zip(rb).map(|(x, y)| x * y).sum::<f32>())).sum();
-            let nb = norm(&b.template);
-            (dot != 0.0 && na > 0.0 && nb > 0.0).then(|| (u, dot / (na * nb)))
+    let samples = unit.template.first()?.len();
+    let mean: Vec<f32> = unit.template.iter().flatten().copied().collect();
+    Some(dspk_synapse::WaveformTemplate::new(unit.extent.channels.clone(), samples, mean, vec![0.0; unit.template.len() * samples]))
+}
+
+/// Units most like `lead` by template: dspk-synapse's lag-maximised cosine similarity (rows
+/// paired by channel, best shift within ±[`SIMILARITY_LAG`] samples), best first, at most `max`.
+pub fn similar(sorting: &SortingData, lead: usize, max: usize) -> Vec<(usize, f32)> {
+    let Some(a) = waveform_template(sorting, lead) else { return Vec::new() };
+    let mut out: Vec<(usize, f32)> = (0..sorting.units.len())
+        .filter(|&u| u != lead && sorting.units[u].merged_into.is_none())
+        .filter_map(|u| {
+            let b = waveform_template(sorting, u)?;
+            let (sim, _) = dspk_synapse::sorting::similarity::template_max_cosine_similarity(&a, &b, SIMILARITY_LAG);
+            (sim != 0.0).then_some((u, sim))
         })
         .collect();
     out.sort_by(|x, y| y.1.total_cmp(&x.1));
@@ -198,6 +235,10 @@ mod tests {
         assert!(log.undo());
         assert_eq!(apply(&base, &log.ops).units.len(), 3);
         assert!(log.redo() && log.dirty());
+        // Split: two of unit 7's spikes (times 50 and 60) become unit 9
+        let split = apply(&base, &[CurationOp::Split { unit: 7, spikes: vec![50, 60], into: 9 }]);
+        assert_eq!((split.units[2].info.num_spikes, split.units[3].info.num_spikes), (2, 2));
+        assert_eq!(split.unit_times(3), vec![50, 60]);
     }
 
     #[test]

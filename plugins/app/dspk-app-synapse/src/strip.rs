@@ -15,6 +15,7 @@ use dspk_app_core::data::store::{duration, AppEvent, Store};
 use dspk_app_core::plugin::{AppPlugin as _, Raster, RasterRow};
 use dspk_app_core::screens::explore::trace::renderer::{nominal_amplitude, RenderRequest, TimeViewKind, WaveformRenderer};
 use dspk_app_core::screens::explore::trace::trace_panel::color;
+use dspk_app_core::ui::panel_edge::{panel_edge, Side};
 use dspk_app_core::ui::widgets::icon_button;
 use dspk_view::SignalBackend;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -213,7 +214,7 @@ impl BottomStrip {
     }
 
     /// The window around the lead unit's next (or previous) spike from the window's centre.
-    fn step_spike(&mut self, forward: bool, cx: &mut Context<Self>) {
+    pub fn step_spike(&mut self, forward: bool, cx: &mut Context<Self>) {
         let Some(&lead) = self.units.first() else { return };
         let Some(sorting) = state(cx).and_then(|st| st.read(cx).active_sorting(cx)) else { return };
         let Some(start) = view_signal(self.store.read(cx)).map(|v| v.1.start_time_sec) else { return };
@@ -397,10 +398,12 @@ impl Render for BottomStrip {
             .on_scroll(cx.listener(Self::on_plot_wheel))
             .child(canvas(move |b, _, _| plot_cell.set(b), |_, _, _, _| {}).absolute().size_full())
             .children(image.map(|i| img(i).size_full()));
+        let height = self.store.read(cx).panel_width("strip.height", STRIP_H);
         v_flex()
             .id("bottom-strip")
+            .relative()
             .w_full()
-            .h(px(STRIP_H))
+            .h(px(height))
             .flex_none()
             .bg(bg)
             .border_t_1()
@@ -408,5 +411,6 @@ impl Render for BottomStrip {
             .child(header)
             .child(plot)
             .child(self.overview(cx))
+            .child(panel_edge("strip.height", Side::Bottom, 0.0))
     }
 }
