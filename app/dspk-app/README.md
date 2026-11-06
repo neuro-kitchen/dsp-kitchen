@@ -1,52 +1,54 @@
-# `dspk-app`: electrophysiology workbench (GPUI)
+# `dspk-app`: DSP App, the desktop workbench of dspk
 
-Desktop app of `dspk`, built on GPUI and gpui-kit: workspaces (Explore · Sorting ·
-Pipeline · Curation) of docked views on one shared timeline. Explore is built; Curation's data
-layer is built and tested, its views come next; Sorting and Pipeline show what they will hold.
+A desktop app (GPUI, gpui-kit) for long multichannel recordings, with electrophysiology built in.
+Four workspaces share one timeline:
 
-## What lives where
+- **Explore**: traces and heatmaps of every channel, drawn from min/max pyramids, so hours of
+  Neuropixels data scroll smoothly. Includes epochs and a timeline of sources.
+- **Pipeline**: an infinite canvas of the session's graph (sources, ops, views, writes), with
+  layers, reusable recipes and a live device preview of each op.
+- **Sorting**: runs a spike sorter (Kilosort4, MountainSort 5, SpyKING CIRCUS 2, …) through the
+  separate `dspk-cli-sorter` program, then shows its units, templates and channels.
+- **Curation**: correlograms, ISI, templates, amplitudes, waveforms, features and the probe, as
+  zoomable charts. Merge, split (lasso), label, undo and save to `.sorting.zarr`.
 
-The app keeps UI, state and orchestration. Signal maths and sorting I/O live in the library
-crates, so other tools (CLI, Python bindings) share them:
+The app is `dspk-app-core` (any multichannel signal) plus the electrophysiology plugin
+`dspk-app-synapse` (feature `synapse`, on by default).
 
-| Crate | What the app uses from it |
-|---|---|
-| `dspk-ops` | min/max envelopes, the background `Summarizer` and `MinMaxCache` (`resampler`); percentiles, histograms, axis ticks, point-in-polygon (`math`) |
-| `dspk-synapse` | `PhySorting` / `load_spikes` (phy / Kilosort folders, `.sorting.zarr`, NWB `/units`, curation save); `.npy` I/O; correlograms, ISI histograms, firing rates, ISI violations; PCA; `read_snippets` |
-| `dspk-io` | recording sources (SpikeGLX, raw + JSON sidecar, NWB Zarr) |
-
-## Layers
-
-1. **`engine/`** (no GPUI type; runs headless, e.g. `--snapshot` and unit tests)
-   - `canvas.rs`, `palette.rs`: BGRA frames (uploaded to GPUI as is) and light / dark plot palettes.
-   - `work_pool.rs`: shared background threads; jobs keyed by `(view, kind)`, newest wins, stale
-     ones cancelled. Renders and curation computations both run here.
-   - `data/`: `Dataset` (a recording with its summary and cache), `SourceSet` (the sources of a
-     file), `SpikeEventStore`, the timeline overview's `activity`.
-   - `time/`: `TimelineState`, `TimeView`, the trace / heatmap rasterizer, hover readouts.
-   - `curation/`: the curation state over a `PhySorting` (`mod.rs`: cluster table, open / save),
-     its edit history (`history.rs`: merge, split, labels, undo / redo), the data each view draws
-     (`derived.rs`: waveforms, features, correlograms, amplitudes, ISI, firing rate; from real
-     samples only), the cluster filter (`filter.rs`).
-   - `compute.rs`: cache of derived curation data, invalidated per cluster.
-2. **`store.rs`, `session.rs`**: the shared state (recording, timeline, per-source channel
-   selection, workspace, theme) as one entity emitting fine-grained `AppEvent`s; what is
-   remembered between runs (`$XDG_CONFIG_HOME/dspk-app/workbench.json`).
-3. **`viewmodels/`**: `ExploreVm`, `TraceVm` (render on change, frames over the view's own
-   channel, replaced images released a frame later), `Services` (work pool, hover reader, cache).
-4. **`views/`, `app.rs`, `widgets.rs`**: the shell (title bar, workspaces, start screen, status
-   bar, help / about), the Explore dock (`TracePanel`, Channels, View settings, Timeline), the plot
-   kit (`plot.rs`) for Curation, small widgets.
-
-## Running and testing
+## Install
 
 ```bash
-cargo run -p dspk-app                                    # reopens the last recording
-cargo run -p dspk-app -- --synthetic 5m --channels 32    # a procedural recording
-cargo run -p dspk-app -- --synthetic 10s --snapshot /tmp/traces.png   # headless PNG
-cargo test -p dspk-app                                   # unit and headless GPUI tests
-
-# With local data (ignored by default)
-DSP_KS4_FOLDER=<kilosort4 saved_results> cargo test -p dspk-app --release -- --ignored
-DSP_APP_BENCH_FILE=<recording> cargo test -p dspk-app --release bench -- --ignored --nocapture
+cargo install dspk-app
 ```
+
+On Linux, GPUI builds against these system libraries:
+
+```bash
+sudo apt-get install libfontconfig-dev libfreetype-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev
+```
+
+Processing runs on the GPU through CubeCL (wgpu, CUDA) or on the CPU. All three runtimes are
+compiled in by default (features `wgpu`, `cuda`, `cpu`).
+
+Sorting needs the sorter program `dspk-cli-sorter`, of the same version as the app. Download it
+from the [GitHub release](https://github.com/neuro-kitchen/dsp-kitchen/releases): the file
+`dspk-cli-sorter-<target>`. Rename it `dspk-cli-sorter` and put it next to `dspk-app`
+(`~/.cargo/bin`), or point `DSPK_CLI_SORTER_BIN` at it. `dspk sorters install` from the
+command line does the same.
+
+## Run
+
+```bash
+dspk-app                                    # reopens the last recording
+dspk-app recording.ap.bin                   # SpikeGLX .bin/.cbin, raw .bin + JSON .meta, Zarr
+dspk-app --synthetic 5m --channels 32       # a procedural recording
+dspk-app --synthetic 10s --snapshot traces.png   # one view to a PNG, no window
+```
+
+The session (sources, ops, views, epochs) is one JSON document, changed only through commands,
+with undo and redo.
+
+## Licence
+
+MIT OR Apache-2.0. The GPL-3.0 sorters are never linked: the app runs `dspk-cli-sorter` as a
+separate program.

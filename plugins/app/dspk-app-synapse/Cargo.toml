@@ -1,0 +1,39 @@
+[package]
+name = "dspk-app-synapse"
+description = "DSP App plugin for electrophysiology: SpikeGLX / NWB with probe geometry, shank grouping, sortings (.sorting.zarr), spike highlight, the Sorting workspace; sorts through dspk-cli-sorter (a separate program)"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["electrophysiology", "neuroscience", "gui", "signal-processing", "spike-sorting"]
+categories = ["science", "gui", "visualization"]
+
+[features]
+default = ["wgpu", "cuda", "cpu"]
+wgpu = ["dspk-app-core/wgpu", "dspk-synapse/wgpu"]
+cpu = ["dspk-app-core/cpu", "dspk-synapse/cpu"]
+cuda = ["dspk-app-core/cuda", "dspk-synapse/cuda"]
+hip = ["dspk-app-core/hip", "dspk-synapse/hip"]
+
+[dependencies]
+dspk-app-core.workspace = true
+dspk-core.workspace = true
+dspk-io = { workspace = true, features = ["zarr"] }
+# Formats with probes, synthetic recordings, sortings (MIT OR Apache-2.0; never the GPL sorters)
+dspk-synapse.workspace = true
+dspk-view = { workspace = true, default-features = false }
+dspk-pipeline.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+image.workspace = true
+gpui-kit = "=0.9.0"
+async-channel = "2.5.0"
+# Unit analytics (the Sorting view's table: sort, filter) as data frames
+polars = { version = "0.55.2", default-features = false, features = ["dtype-slim"] }
+
+[dev-dependencies]
+gpui-kit = { version = "=0.9.0", features = ["test-support"] }

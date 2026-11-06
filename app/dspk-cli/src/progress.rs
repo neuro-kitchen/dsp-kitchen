@@ -75,6 +75,60 @@ impl ProgressSink for TerminalProgress {
     }
 }
 
+/// Progress as JSON lines on stdout, for programs that run this one (the app runs
+/// `dspk-cli-sorter --progress json`): `{"event": "progress", "stage": …, "step": 2, "steps": 4,
+/// "done": 12, "total": 40, "unit": "windows"}`, at most one line per stage every
+/// [`REDRAW`] (the last of a stage always).
+#[derive(Default)]
+pub struct JsonProgress {
+    last: Mutex<Option<((usize, String), Instant)>>,
+}
+
+impl ProgressSink for JsonProgress {
+    fn report(&self, e: &ProgressEvent<'_>) {
+        let mut last = self.last.lock().expect("progress lock");
+        let now = Instant::now();
+        let key = (e.step, e.stage.to_string());
+        let finished = e.total > 0 && e.done >= e.total;
+        if !finished && last.as_ref().is_some_and(|(k, t)| *k == key && now - *t < REDRAW) {
+            return;
+        }
+        *last = Some((key, now));
+        json_line(&serde_json::json!({
+            "event": "progress", "stage": e.stage, "step": e.step, "steps": e.steps,
+            "done": e.done, "total": e.total, "unit": e.unit,
+        }));
+    }
+}
+
+/// One JSON object on its own stdout line (flushed: a reader sees it at once).
+pub fn json_line(value: &serde_json::Value) {
+    let mut out = std::io::stdout().lock();
+    let _ = writeln!(out, "{value}");
+    let _ = out.flush();
+}
+
+/// How a run reports progress: a bar on stderr, or JSON lines on stdout.
+pub enum RunProgress {
+    Bar(TerminalProgress),
+    Json(JsonProgress),
+}
+
+impl RunProgress {
+    pub fn new(json: bool) -> Self {
+        if json { Self::Json(JsonProgress::default()) } else { Self::Bar(TerminalProgress::default()) }
+    }
+}
+
+impl ProgressSink for RunProgress {
+    fn report(&self, e: &ProgressEvent<'_>) {
+        match self {
+            Self::Bar(p) => p.report(e),
+            Self::Json(p) => p.report(e),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

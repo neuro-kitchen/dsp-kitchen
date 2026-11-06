@@ -4,7 +4,9 @@
 //! provenance); TOML is accepted for files written by hand. Both parse into [`PipelineSpec`].
 //! Unknown fields are errors, so a misspelt option fails instead of silently taking its default.
 //!
-//! Spec version 1 runs a single chain: one `read`, processing nodes, one `write`.
+//! Spec version 1 runs a chain — one `read`, processing nodes, one `write` — or a tree of them
+//! from one `read`: every node has one input, outputs may branch, each `write` ends a branch
+//! ([`PipelineSpec::branches`]); the recording is then read once for every branch.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -524,6 +526,66 @@ impl PipelineSpec {
             stages: order[1..order.len() - 1].iter().map(|id| node(id)).collect(),
             write: node(write),
         })
+    }
+}
+
+impl PipelineSpec {
+    /// How many `write` nodes the spec has (more than one: a branched spec).
+    pub fn writes(&self) -> usize {
+        self.nodes.values().filter(|n| matches!(n, Node::Write { .. })).count()
+    }
+
+    /// The spec as one single-chain spec per `write` (its path from the `read`), named
+    /// `<name> · <write id>`; a spec with one write is itself. Every node has one input; every
+    /// node lies on a path from the read to a write.
+    pub fn branches(&self) -> Result<Vec<PipelineSpec>, PipelineError> {
+        if self.writes() <= 1 {
+            return Ok(vec![self.clone()]);
+        }
+        let invalid = |msg: String| Err(PipelineError::Invalid(msg));
+        let mut input: BTreeMap<&str, &str> = BTreeMap::new();
+        for (from, to) in &self.edges {
+            for id in [from, to] {
+                if !self.nodes.contains_key(id) {
+                    return invalid(format!("edge [{from:?}, {to:?}]: no node {id:?}"));
+                }
+            }
+            if input.insert(to, from).is_some() {
+                return invalid(format!("node {to:?} has more than one input (merging is not supported in version 1)"));
+            }
+        }
+        let mut used: BTreeSet<&str> = BTreeSet::new();
+        let mut out = Vec::new();
+        for (id, node) in &self.nodes {
+            if !matches!(node, Node::Write { .. }) {
+                continue;
+            }
+            // The write's path back to the read
+            let mut path = vec![id.as_str()];
+            while let Some(&from) = input.get(path.last().expect("non-empty")) {
+                path.push(from);
+                if path.len() > self.nodes.len() {
+                    return invalid("the edges form a cycle".into());
+                }
+            }
+            path.reverse();
+            if !matches!(self.nodes[path[0]], Node::Read { .. }) {
+                return invalid(format!("write {id:?} is not reached from the read"));
+            }
+            used.extend(path.iter().copied());
+            let nodes = path.iter().map(|n| (n.to_string(), self.nodes[*n].clone())).collect();
+            let edges = path.windows(2).map(|w| (w[0].to_string(), w[1].to_string())).collect();
+            let name = Some(format!("{} · {id}", self.name.clone().unwrap_or_else(|| "pipeline".into())));
+            out.push(PipelineSpec { dspk_pipeline: self.dspk_pipeline, name, nodes, edges, execution: self.execution.clone() });
+        }
+        if let Some(unused) = self.nodes.keys().find(|k| !used.contains(k.as_str())) {
+            return invalid(format!("node {unused:?} leads to no write"));
+        }
+        // Each branch on its own is a valid chain
+        for b in &out {
+            b.chain()?;
+        }
+        Ok(out)
     }
 }
 

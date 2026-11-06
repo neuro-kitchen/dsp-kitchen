@@ -23,6 +23,8 @@ hip = ["dspk-cli/hip", "dspk-sorter-kilosort/hip", "dspk-sorter-ms5/hip", "dspk-
 hub = ["dspk-sorter-kilosort/hub"]
 
 [dependencies]
+# describe and --progress json
+serde_json.workspace = true
 dspk-cli = { path = "../../../app/dspk-cli", default-features = false }
 dspk-core = { workspace = true, features = ["compute"] }
 dspk-synapse.workspace = true

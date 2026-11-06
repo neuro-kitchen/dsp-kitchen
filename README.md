@@ -14,7 +14,7 @@ crosses disk → RAM → device memory as few times as possible.
   <img alt="dspk-app: 385 channels of a Neuropixels recording as traces and a heatmap, with the channel list, view settings and timeline" src="https://raw.githubusercontent.com/neuro-kitchen/dsp-kitchen/main/assets/img/dsp-app_main-darkmode.png">
 </picture>
 
-*`dspk-app` (desktop workbench, not on crates.io): a Neuropixels recording (385 channels, 30 kHz)
+*`dspk-app` (desktop workbench, `cargo install dspk-app`): a Neuropixels recording (385 channels, 30 kHz)
 drawn from min/max pyramids built by `dspk-view`.*
 
 ## Crates and folders
@@ -28,15 +28,17 @@ drawn from min/max pyramids built by `dspk-view`.*
 | `engine/` | `dspk-pipeline` | Pipelines as data (JSON / TOML specs): plan, many inputs, merges, provenance | crates.io |
 | `serve/` | `dspk-view` | Min/max envelopes and pyramids for viewing, local or remote | crates.io |
 | | `dspk-stream` | Network sessions for continuous signals (QUIC + TLS, protobuf) | crates.io |
-| `synapse/` | `dspk-synapse` | Electrophysiology: NWB, SpikeGLX, mtscomp, Phy formats, probes, detection, clustering, matching, metrics, sorter building blocks, provenance | next release |
-| | `dspk-synapse-ml` | Pretrained models (DARTsort, SpikeNet2, UnitRefine) and their runtime | next release |
-| `synapse/sorters/` | `dspk-sorter-kilosort` | Kilosort4 and EMUsort (features `ks4`, `emusort`; GPL-3.0) | next release |
-| | `dspk-sorter-ms5` | MountainSort 5, with isosplit6 (Apache-2.0) | next release |
-| | `dspk-sorter-si` | SpikeInterface's SpyKING CIRCUS 2 and Tridesclous 2 (features `sc2`, `tdc2`) | next release |
-| `hub/` | `dspk-hub` | Verified downloads of published artifacts, with data catalogs per domain (feature `synapse`) | next release |
+| `synapse/` | `dspk-synapse` | Electrophysiology: NWB, SpikeGLX, mtscomp, Phy formats, probes, detection, clustering, matching, metrics, sorter building blocks, provenance | crates.io |
+| | `dspk-synapse-ml` | Pretrained models (DARTsort, SpikeNet2, UnitRefine) and their runtime | crates.io |
+| `synapse/sorters/` | `dspk-sorter-kilosort` | Kilosort4 and EMUsort (features `ks4`, `emusort`; GPL-3.0) | crates.io |
+| | `dspk-sorter-ms5` | MountainSort 5, with isosplit6 (Apache-2.0) | crates.io |
+| | `dspk-sorter-si` | SpikeInterface's SpyKING CIRCUS 2 and Tridesclous 2 (features `sc2`, `tdc2`) | crates.io |
+| `hub/` | `dspk-hub` | Verified downloads of published artifacts, with data catalogs per domain (feature `synapse`) | crates.io |
 | `app/` | `dspk-cli` | The `dspk` command line: `dspk run`, `dspk sort`, `dspk doctor`, … | built from source |
 | | `dspk-cli-sorter` | Every sorter in one program (GPL-3.0), run by `dspk sort` | GitHub release |
-| | `dspk-app` | Desktop workbench | built from source |
+| | `dspk-app` | Desktop workbench: Explore, Pipeline, Sorting, Curation ([README](app/dspk-app/README.md)) | crates.io |
+| | `dspk-app-core` | The app's core: any multichannel signal, the session, the plugin interface | crates.io |
+| `plugins/app/` | `dspk-app-synapse` | The app's electrophysiology plugin: probes, sortings, Sorting and Curation | crates.io |
 | `bindings/python/` | `dspk` | The Python package | PyPI |
 | `playground/` | | Worked examples as `# %%` cells and pipeline specs ([README](playground/README.md)) | |
 | `benchmarks/` | | Timings and validations against scipy and other sorters ([README](benchmarks/README.md)) | |
@@ -59,8 +61,8 @@ Runtimes are crate features; the device is picked at run time with `dspk::core::
 
 ```toml
 [dependencies]
-dspk = "0.0.5"                                                                  # wgpu, cuda and cpu (default)
-# dspk = { version = "0.0.5", default-features = false, features = ["wgpu", "zarr"] }  # wgpu only
+dspk = "0.0.6"                                                                  # wgpu, cuda and cpu (default)
+# dspk = { version = "0.0.6", default-features = false, features = ["wgpu", "zarr"] }  # wgpu only
 ```
 
 | Feature | Runtime | Tested |

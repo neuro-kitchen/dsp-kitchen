@@ -1,19 +1,9 @@
-//! DSP App: an electrophysiology workbench (GPUI + gpui-kit). Workspaces (Explore · Sorting ·
-//! Pipeline · Curation) of docked views on one timeline; see `.tasks/slint-gpui-migration/`.
-//!
-//! Layers: `engine` (no UI type: data, timeline, renderers, render threads) → `store` (shared state
-//! and its events) → `viewmodels` → `views` / `app` (GPUI). `--snapshot` uses the engine alone.
+//! DSP App: the workbench (`dspk-app-core`: any multichannel signal) with the plugins it is built
+//! with (feature `synapse`: electrophysiology, `dspk-app-synapse`). Workspaces (Explore ·
+//! Sorting · Pipeline · Curation) of docked views on one timeline. `--snapshot` uses the data
+//! layer and the trace renderer alone.
 
-mod actions;
-mod app;
-mod assets;
-mod engine;
-mod session;
-mod store;
-mod viewmodels;
-mod views;
-mod widgets;
-mod workspace;
+use dspk_app_core::{app, data, di, domain, navigation, plugin, screens, ui};
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,12 +13,14 @@ use clap::Parser;
 use gpui_kit::component::TitleBar;
 use gpui_kit::{px, size, App, AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOptions};
 
-use engine::data::{Dataset, SourceSet, SpikeEventStore};
-use engine::time::renderer::{TimeViewKind, WaveformRenderer};
-use engine::time::timeline::TimelineState;
-use engine::time::view::TimeView;
-use session::Session;
-use store::Store;
+use data::preferences::Session;
+use data::recording::{Dataset, SourceSet, SpikeEventStore};
+use data::store::Store;
+use domain::timeline::TimelineState;
+use navigation::actions;
+use screens::explore::trace::renderer::{TimeViewKind, WaveformRenderer};
+use screens::explore::trace::view::TimeView;
+use ui::assets;
 
 #[derive(Parser, Debug)]
 #[command(name = "dspk-app")]
@@ -77,8 +69,18 @@ struct Args {
     no_session: bool,
 }
 
+/// The plugins this build has, registered before anything opens a file.
+fn register_plugins() {
+    #[allow(unused_mut)]
+    let mut plugins: Vec<Arc<dyn plugin::AppPlugin>> = Vec::new();
+    #[cfg(feature = "synapse")]
+    plugins.push(Arc::new(dspk_app_synapse::SynapsePlugin::new()));
+    plugin::register(plugins);
+}
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
+    register_plugins();
     let mut args = Args::parse();
     args.file = args.file.take().or(args.path.take());
 
@@ -96,12 +98,22 @@ fn main() -> Result<()> {
     gpui_kit::application().with_assets(assets::AppAssets).run(move |cx: &mut App| {
         gpui_kit::init(cx);
         actions::bind_keys(cx);
-        viewmodels::Services::install(cx);
+        di::install(cx);
         cx.on_action(|_: &actions::Quit, cx| cx.quit());
         // One main window: closing it ends the app (Linux / Windows convention)
         cx.on_window_closed(|cx, _| cx.quit()).detach();
 
-        let store = cx.new(|_| Store::new(session, session_path));
+        let document = if args.no_session { None } else { Session::document_path() };
+        let store = cx.new(|cx| {
+            let mut store = Store::new(session, session_path);
+            if let Some(path) = document {
+                store.attach_document(path, cx);
+            }
+            store
+        });
+        for p in plugin::plugins() {
+            p.install(&store, cx);
+        }
         let options = WindowOptions {
             titlebar: Some(TitlebarOptions { title: Some("DSP App".into()), ..TitleBar::title_bar_options() }),
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(1400.), px(880.)), cx))),
@@ -145,7 +157,7 @@ fn snapshot(args: &Args, path: &std::path::Path) -> Result<()> {
     let window = |t: f64| ((t - dataset.start_time_sec) * dataset.sample_rate).max(0.0) as u64;
     let (start, end) = (window(timeline.window_start_sec), window(timeline.window_start_sec + timeline.visible_window_sec));
     dataset.signal().prepare(start, end)?;
-    let req = view.render_request(&timeline, dataset.signal().clone(), Arc::new(SpikeEventStore::default()), engine::palette::Palette::DARK);
+    let req = view.render_request(&timeline, dataset.signal().clone(), Arc::new(SpikeEventStore::default()), ui::theme::palette::Palette::DARK);
     let (frame, scale) = WaveformRenderer::default().render_scaled(&req);
     view.amp_scale = scale;
     println!("Source {} · scale bar {}", dataset.name, view.scale_bar_label());

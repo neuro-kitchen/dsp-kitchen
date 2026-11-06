@@ -4,6 +4,23 @@ All notable changes, newest first. Versions follow [Semantic Versioning](https:/
 0.0.x any release may change the API. The crates, the Python package and `dspk-sorters` share one
 version number.
 
+## 0.0.6 — 2026-11-06
+
+### Added
+
+- **`dspk-app` on crates.io** (`cargo install dspk-app`), with its core `dspk-app-core` and the
+  electrophysiology plugin `dspk-app-synapse`. Four workspaces on one timeline:
+  - Explore: traces and heatmaps from min/max pyramids, epochs, a timeline of sources.
+  - Pipeline: an infinite canvas of the session's graph (sources, ops by family and type,
+    views, writes), layers, recipes (reusable groups of ops), a live device preview per op.
+  - Sorting: runs the sorters through `dspk-cli-sorter`; units, templates (multi-select) and
+    channels; the sorter on the left, its parameters on the right.
+  - Curation: correlograms, ISI, templates, amplitudes, waveforms, features and the probe as
+    zoomable charts with axes; merge, split (lasso), label, undo, save to `.sorting.zarr`.
+- The session is one JSON document (`current-session.json`) changed only by commands, with undo
+  and redo. Side panels are resizable and collapsible.
+- dspk-pipeline: `PipelineSpec::branches`, several outputs from one read of the recording.
+
 ## 0.0.5 — 2026-11-05
 
 ### Changed (install)

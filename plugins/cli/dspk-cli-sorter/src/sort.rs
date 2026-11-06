@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use clap::{Args, Subcommand};
 use dspk_cli::commands::recording::{OutputArgs, RecordingArgs};
-use dspk_cli::progress::TerminalProgress;
+use dspk_cli::progress::{json_line, RunProgress};
 use dspk_core::ComputeTarget;
 use dspk_sorter_kilosort::{run_plan, EmusortConfig, Kilosort4Config, RunPlan, UniversalTemplates};
 use dspk_sorter_ms5::Mountainsort5Config;
@@ -253,7 +253,7 @@ fn run_defaults(
     args: &DefaultsArgs,
     name: &str,
     config: &dyn std::fmt::Debug,
-    sort: impl Fn(&cubecl::prelude::Client, &dspk_cli::commands::recording::Opened, &TerminalProgress) -> anyhow::Result<SortingOutput>,
+    sort: impl Fn(&cubecl::prelude::Client, &dspk_cli::commands::recording::Opened, &RunProgress) -> anyhow::Result<SortingOutput>,
 ) -> anyhow::Result<()> {
     if args.show_config {
         println!("{config:#?}");
@@ -264,9 +264,11 @@ fn run_defaults(
     println!("{name} on {} channels × {:.1} s, {}", info.channel_count(), info.duration_sec(), target.name());
     let client = target.client()?;
     let t = Instant::now();
-    let sorting = sort(&client, &opened, &TerminalProgress::default())?;
+    let sorting = sort(&client, &opened, &RunProgress::new(crate::json_progress()))?;
     println!("{} units, {} spikes in {:.1} s", sorting.num_units(), sorting.total_spikes(), t.elapsed().as_secs_f64());
-    args.output.save(&sorting)
+    args.output.save(&sorting)?;
+    done_line(sorting.num_units(), sorting.total_spikes(), t.elapsed().as_secs_f64(), &args.output.output);
+    Ok(())
 }
 
 /// Opens the recording, runs the plan (`plan(sample_rate_hz)`) with a progress bar, writes the sorting.
@@ -280,7 +282,7 @@ fn execute(target: ComputeTarget, args: &RunArgs, plan: impl Fn(f64) -> RunPlan)
     println!("{} on {} channels × {:.1} s, {}", plan.sorter, info.channel_count(), info.duration_sec(), target.name());
     let client = target.client()?;
     let t = Instant::now();
-    let result = run_plan(&client, opened.source.as_ref(), &opened.probe, &plan, &TerminalProgress::default())?;
+    let result = run_plan(&client, opened.source.as_ref(), &opened.probe, &plan, &RunProgress::new(crate::json_progress()))?;
     println!(
         "{} units, {} spikes ({} merges, {} duplicates removed) in {:.1} s",
         result.clusters.n_units,
@@ -289,5 +291,15 @@ fn execute(target: ComputeTarget, args: &RunArgs, plan: impl Fn(f64) -> RunPlan)
         result.duplicates,
         t.elapsed().as_secs_f64()
     );
-    args.output.save(&result.to_sorting_output(Some(opened.probe)))
+    let sorting = result.to_sorting_output(Some(opened.probe));
+    args.output.save(&sorting)?;
+    done_line(sorting.num_units(), sorting.total_spikes(), t.elapsed().as_secs_f64(), &args.output.output);
+    Ok(())
+}
+
+/// With `--progress json`: the run's summary as the last JSON line.
+fn done_line(units: usize, spikes: usize, seconds: f64, output: &std::path::Path) {
+    if crate::json_progress() {
+        json_line(&serde_json::json!({"event": "done", "units": units, "spikes": spikes, "seconds": seconds, "output": output}));
+    }
 }
