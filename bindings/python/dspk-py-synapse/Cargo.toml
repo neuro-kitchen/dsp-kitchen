@@ -17,6 +17,7 @@ hip = ["dspk-synapse/hip", "dspk-py-core/hip"]
 dspk-core = { workspace = true, features = ["compute"] }
 dspk-io = { workspace = true, features = ["zarr"] }
 dspk-synapse.workspace = true
+dspk-ops.workspace = true
 dspk-py-core.workspace = true
 pyo3.workspace = true
 numpy.workspace = true

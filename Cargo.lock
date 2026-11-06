@@ -3462,6 +3462,7 @@ version = "0.0.6"
 dependencies = [
  "dspk-core",
  "dspk-io",
+ "dspk-ops",
  "dspk-py-core",
  "dspk-synapse",
  "numpy",
