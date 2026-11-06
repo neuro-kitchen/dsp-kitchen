@@ -198,6 +198,7 @@ mod tests {
             files: Some((files::DataRoot::new(&root).unwrap(), Arc::new(TestOpener))),
             recording: None,
             jobs: None,
+            runtime: String::new(),
             options: ServeOptions::default(),
         });
         let tls = server_config(&ServerIdentity::SelfSigned { names: vec![LOCALHOST.into()] }).unwrap();
