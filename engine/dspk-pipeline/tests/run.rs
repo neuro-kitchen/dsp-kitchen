@@ -593,3 +593,50 @@ fn plan_matches_the_run_and_a_cancel_removes_the_output() {
     assert!(!dir.join("z.bin").exists());
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// A branched spec (one read, a shared band-pass, then two writes: one scaled, one referenced)
+/// writes both outputs in one pass, each equal to its branch run on its own.
+#[test]
+fn branches_from_one_read_equal_their_chains() {
+    let dir = scratch("branches");
+    write_input(&dir);
+    let branched = PipelineSpec::from_json(&format!(
+        r#"{{"dspk_pipeline": 1,
+            "nodes": {{"in": {{"op": "read", "path": "in.bin"}},
+                       "bp": {{"op": "iir", "band": "bandpass", "cutoff": [300.0, 6000.0]}},
+                       "x2": {{"op": "scale", "alpha": 2.0}},
+                       "cmr": {{"op": "cmr"}},
+                       "a": {{"op": "write", "path": "a.bin"}},
+                       "b": {{"op": "write", "path": "b.bin"}}}},
+            "edges": [["in", "bp"], ["bp", "x2"], ["x2", "a"], ["bp", "cmr"], ["cmr", "b"]],
+            "execution": {{"chunk_samples": {CHUNK}}}}}"#
+    ))
+    .unwrap();
+    assert_eq!(branched.writes(), 2);
+    let branches = branched.branches().unwrap();
+    assert_eq!(branches.len(), 2);
+    let reports = dspk_pipeline::run(&branched, &dir).unwrap();
+    assert_eq!(reports.len(), 2, "one report per output");
+    // Each branch on its own, to compare
+    for (b, out) in branches.iter().zip(["a.bin", "b.bin"]) {
+        let mut alone = b.clone();
+        for n in alone.nodes.values_mut() {
+            if let dspk_pipeline::Node::Write { path, .. } = n {
+                *path = PathBuf::from(format!("alone-{out}"));
+            }
+        }
+        run(&alone, &dir).unwrap();
+        let (x, y) = (read_all(&dir.join(out)), read_all(&dir.join(format!("alone-{out}"))));
+        assert_eq!(x.len(), y.len());
+        let peak = y.iter().fold(0f32, |m, v| m.max(v.abs()));
+        for (i, (p, q)) in x.iter().zip(&y).enumerate() {
+            assert!((p - q).abs() <= 1e-3 * peak, "{out} sample {i}: {p} vs {q}");
+        }
+    }
+    // A node feeding no write is an error
+    let mut stray = branched.clone();
+    stray.nodes.insert("loose".into(), dspk_pipeline::Node::Cmr {});
+    stray.edges.push(("bp".into(), "loose".into()));
+    assert!(stray.branches().is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}

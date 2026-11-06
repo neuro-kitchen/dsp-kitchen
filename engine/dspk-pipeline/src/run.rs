@@ -118,6 +118,21 @@ pub fn run_with(
     open: impl Fn(&Path, Option<&str>) -> DspResult<Box<dyn RecordingSource>>,
     mut observe: impl FnMut(&Progress) -> bool,
 ) -> Result<Vec<RunReport>, PipelineError> {
+    if spec.writes() > 1 {
+        // A branched spec: every branch from one read of the recording
+        let mut ones = Vec::new();
+        let mut prepared = Vec::new();
+        for branch in spec.branches()? {
+            let mut expanded = branch.expand_inputs(base_dir)?;
+            if expanded.len() != 1 {
+                return Err(PipelineError::Invalid("a branched spec reads one recording (no globs or input lists)".into()));
+            }
+            let one = expanded.remove(0);
+            prepared.push(prepare(&one, base_dir, &open)?);
+            ones.push(one);
+        }
+        return execute_fanout(&ones, prepared, |windows_done, windows, bytes| observe(&Progress { input: 0, inputs: 1, windows_done, windows, bytes }));
+    }
     let specs = spec.expand_inputs(base_dir)?;
     let inputs = specs.len();
     let mut reports = Vec::with_capacity(inputs);
@@ -301,6 +316,200 @@ fn execute(
         seconds: started.elapsed().as_secs_f64(),
         timings,
     })
+}
+
+/// The branches of a branched spec (each prepared as its own chain), from one read of the
+/// recording: each window is read once and goes through every branch's device workspace to its
+/// own writer. All branches run in window mode with the largest halo of any (or all in stream
+/// mode when every branch can); resampling branches are not supported here.
+fn execute_fanout(
+    specs: &[PipelineSpec],
+    prepared: Vec<Prepared>,
+    mut observe: impl FnMut(usize, usize, DataMovement) -> bool,
+) -> Result<Vec<RunReport>, PipelineError> {
+    let started = Instant::now();
+    let invalid = |m: &str| Err(PipelineError::Invalid(m.to_string()));
+    let first = &prepared[0];
+    if prepared.iter().any(|p| p.channels != first.channels || p.range != first.range || p.stored_upload != first.stored_upload || p.stored_format != first.stored_format) {
+        return invalid("the branches of one spec read the same recording the same way (channels, range, upload)");
+    }
+    if prepared.iter().any(|p| p.resample.is_some()) {
+        return invalid("resample in a branched spec: write that branch with its own spec");
+    }
+    // One schedule for all: stream when every branch streams, else windows with the largest halo
+    let stream = prepared.iter().all(|p| p.mode == ExecutedMode::Stream);
+    let mut halo = (0usize, 0usize);
+    if !stream {
+        for p in &prepared {
+            let (l, r) = match p.mode {
+                ExecutedMode::Windows { left, right } => (left, right),
+                ExecutedMode::Stream => p.pipeline.settling(p.sample_rate).map_err(|e| PipelineError::Invalid(e.to_string()))?,
+            };
+            halo = (halo.0.max(l), halo.1.max(r));
+        }
+    }
+    let mode = if stream { ExecutedMode::Stream } else { ExecutedMode::Windows { left: halo.0, right: halo.1 } };
+    let (channels, range, stored_upload, stored_format) = (first.channels.clone(), first.range.clone(), first.stored_upload, first.stored_format);
+    let info = first.source.info();
+    let nch = channels.len();
+    let schedule = dspk_core::ChunkSchedule::new(range.clone(), specs[0].execution.chunk_samples.max(1) as u64, halo.0 as u64, halo.1 as u64, info.samples);
+    let target = match &specs[0].execution.runtime {
+        Some(name) => ComputeTarget::parse(name).and_then(ComputeTarget::checked),
+        None => ComputeTarget::from_env(),
+    }
+    .map_err(|e| PipelineError::Compute(e.to_string()))?;
+    let capacity = schedule.max_read_samples().max(1);
+    let mut workspaces = Vec::with_capacity(prepared.len());
+    let mut sinks = Vec::with_capacity(prepared.len());
+    for p in &prepared {
+        let client = target.client().map_err(|e| PipelineError::Compute(e.to_string()))?;
+        let mut ws = if stream {
+            PipelineWorkspace::<f32>::new_stateful(client, p.pipeline.clone(), nch, capacity, p.sample_rate)
+        } else {
+            PipelineWorkspace::<f32>::new(client, p.pipeline.clone(), nch, capacity, p.sample_rate)
+        }
+        .map_err(|e| PipelineError::Invalid(e.to_string()))?;
+        if stored_upload {
+            let gains: Vec<f32> = channels.iter().map(|&c| info.channels[c].gain).collect();
+            let offsets: Vec<f32> = channels.iter().map(|&c| info.channels[c].offset).collect();
+            ws.set_stored_scaling(&gains, &offsets);
+        }
+        workspaces.push(ws);
+        if let Some(dir) = p.output.parent().filter(|d| !d.as_os_str().is_empty()) {
+            std::fs::create_dir_all(dir).map_err(|e| PipelineError::Io(format!("{}: {e}", dir.display())))?;
+        }
+        sinks.push(match p.format {
+            OutputFormat::Raw => {
+                let file = File::create(&p.output).map_err(|e| PipelineError::Io(format!("{}: {e}", p.output.display())))?;
+                Sink::Raw { file: BufWriter::new(file), frames: Vec::new(), parallel: p.zarr.parallel }
+            }
+            OutputFormat::Zarr => Sink::Zarr(ZarrWriter::create(&p.output, nch, p.out_samples, p.out_rate, &p.unit, &p.zarr)?),
+        });
+    }
+
+    let mut bytes = DataMovement::default();
+    let mut timings = StageTimings::default();
+    let loader = WindowLoader::with_channels(first.source.as_ref(), channels.clone());
+    let total_windows = schedule.len();
+    let mut done = 0;
+    let mut cancelled = false;
+    let (sent, written) = std::thread::scope(|scope| {
+        let mut queues = Vec::new();
+        let mut writers = Vec::new();
+        for sink in sinks {
+            let (queue, blocks) = sync_channel::<Block>(WRITE_QUEUE_WINDOWS);
+            queues.push(queue);
+            writers.push(scope.spawn(move || sink.drain(blocks, nch)));
+        }
+        let mut idle = Instant::now();
+        let mut each = |win: &HaloWindow, input: Input<'_>, bytes: &mut DataMovement, timings: &mut StageTimings| -> DspResult<bool> {
+            let t = Instant::now();
+            timings.read_wait += (t - idle).as_secs_f64();
+            bytes.read += (nch * win.read_len() * stored_format.bytes()) as u64;
+            let n = win.read_len();
+            let last = workspaces.len() - 1;
+            let mut owned = match &input {
+                Input::Stored(v) => Some(v.clone()),
+                Input::Values(_) => None,
+            };
+            for (i, ws) in workspaces.iter_mut().enumerate() {
+                let handle = match &input {
+                    Input::Stored(_) => {
+                        // Each branch takes the stored values (the last one takes them as they are)
+                        let stored = if i == last { owned.take().unwrap_or_default() } else { owned.clone().unwrap_or_default() };
+                        bytes.uploaded += stored_word_bytes(stored.len()) as u64;
+                        ws.process_owned_stored_chunk_in_vram(stored, stored_format, n)?
+                    }
+                    Input::Values(samples) => {
+                        bytes.uploaded += (samples.len() * 4) as u64;
+                        ws.process_chunk_in_vram(samples, n)
+                    }
+                };
+                let rows = buffer::download_prefix::<f32>(ws.client(), handle, nch * n);
+                bytes.downloaded += (rows.len() * 4) as u64;
+                bytes.written += (win.valid_local.len() * nch * 4) as u64;
+                let waited = Instant::now();
+                queues[i].send(Block { rows, row_len: n, cols: win.valid_local.clone() }).map_err(|_| writer_stopped())?;
+                timings.write_wait += waited.elapsed().as_secs_f64();
+            }
+            timings.device += t.elapsed().as_secs_f64();
+            done += 1;
+            cancelled = !observe(done, total_windows, *bytes);
+            idle = Instant::now();
+            Ok(!cancelled)
+        };
+        let streamed = if stored_upload {
+            loader.stream_stored_owned_while(schedule.windows(), |win, stored| each(win, Input::Stored(stored), &mut bytes, &mut timings))
+        } else {
+            loader.stream_while(schedule.windows(), |win, samples| each(win, Input::Values(samples), &mut bytes, &mut timings))
+        };
+        drop(queues);
+        let mut written = Vec::new();
+        for w in writers {
+            written.push(w.join().unwrap_or_else(|_| Err(DspError::Io("the output writer panicked".into()))));
+        }
+        (streamed, written)
+    });
+    let cleanup = || {
+        for p in &prepared {
+            match p.format {
+                OutputFormat::Raw => drop(std::fs::remove_file(&p.output)),
+                OutputFormat::Zarr => drop(std::fs::remove_dir_all(&p.output)),
+            }
+        }
+    };
+    if cancelled {
+        cleanup();
+        return Err(PipelineError::Cancelled);
+    }
+    let mut stats = Vec::new();
+    for w in written {
+        match w {
+            Ok(s) => stats.push(s),
+            Err(e) => {
+                cleanup();
+                return Err(e.into());
+            }
+        }
+    }
+    if let Err(e) = sent {
+        cleanup();
+        return Err(e.into());
+    }
+    timings.encode = stats.iter().map(|s| s.encode.as_secs_f64()).sum();
+    timings.disk = stats.iter().map(|s| s.disk.as_secs_f64()).sum();
+    let mut reports = Vec::new();
+    for (p, one) in prepared.iter().zip(specs) {
+        if p.format == OutputFormat::Raw {
+            let mut params = RawParams::new(nch, p.out_rate, SampleFormat::F32, MemoryOrder::TimeMajor);
+            params.unit = p.unit.clone();
+            params.samples = Some(p.out_samples);
+            params.write_sidecar(&p.output)?;
+        }
+        let provenance = provenance_path(&p.output);
+        std::fs::write(&provenance, one.to_json()).map_err(|e| PipelineError::Io(format!("{}: {e}", provenance.display())))?;
+        reports.push(RunReport {
+            mode,
+            runtime: target.name(),
+            stored_upload,
+            channels: nch,
+            samples: p.out_samples,
+            sample_rate_hz: p.out_rate,
+            windows: schedule.len(),
+            bytes,
+            output: p.output.clone(),
+            provenance,
+            seconds: started.elapsed().as_secs_f64(),
+            timings,
+        });
+    }
+    Ok(reports)
+}
+
+/// A window as read: stored values (bytes) or scaled values.
+enum Input<'a> {
+    Stored(Vec<u8>),
+    Values(&'a [f32]),
 }
 
 fn writer_stopped() -> DspError {
