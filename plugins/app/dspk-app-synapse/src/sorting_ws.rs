@@ -67,6 +67,8 @@ enum CenterTab {
 
 pub struct SortingWorkspace {
     store: Entity<Store>,
+    /// Why the last Run did not start, shown under the button (cleared by the next one).
+    run_error: Option<String>,
     strip: Entity<BottomStrip>,
     described: Option<Result<Described, String>>,
     /// Index into the described sorters.
@@ -138,6 +140,7 @@ impl SortingWorkspace {
             tab: CenterTab::Channel,
             grid,
             focused: Vec::new(),
+            run_error: None,
             compare_with: None,
             matches: None,
             _compare: None,
@@ -438,7 +441,13 @@ impl SortingWorkspace {
     /// Runs the chosen sorter on the active view over the part asked for; the result is linked
     /// to the view and added to its runs.
     fn run(&mut self, cx: &mut Context<Self>) {
-        let status = |w: &Self, text: String, cx: &mut Context<Self>| w.store.update(cx, |s, cx| s.set_status(text, cx));
+        // A refusal is shown under the Run button (and in the status bar)
+        let status = |w: &mut Self, text: String, cx: &mut Context<Self>| {
+            w.run_error = Some(text.clone());
+            w.store.update(cx, |s, cx| s.set_status(text, cx));
+            cx.notify();
+        };
+        self.run_error = None;
         let Some(Ok(d)) = &self.described else { return };
         let Some(sorter) = d.sorters.get(self.sorter).map(|s| s.name.clone()) else { return };
         let Some(view) = self.store.read(cx).active_view().cloned() else { return };
@@ -481,10 +490,12 @@ impl SortingWorkspace {
             let Some(profile) = remote::profile_named(&server) else {
                 return status(self, format!("No server named {server:?} in Settings"), cx);
             };
+            // Named after the part, as local runs are, so runs of different parts do not collide
+            let output = sort::run_path(std::path::Path::new(&remote_path), &sorter, start, duration).to_string_lossy().into_owned();
             let job = remote::wire::Configure {
                 sorter: sorter.clone(),
                 recording: remote_path,
-                output: String::new(),
+                output,
                 params: params.iter().map(|(flag, v)| (flag.trim_start_matches('-').to_string(), v.clone())).collect(),
                 source: String::new(),
                 probe: PROBES[probe].0.unwrap_or_default().to_string(),
@@ -607,9 +618,15 @@ impl SortingWorkspace {
             None => {
                 let me = me.clone();
                 let ready = matches!(self.described, Some(Ok(_))) && self.store.read(cx).active_view().is_some();
-                Button::new("sorting-run").primary().icon(Icon::new(IconName::Play)).label("Run").disabled(!ready).on_click(move |_, _, cx| {
-                    let _ = me.update(cx, |w, cx| w.run(cx));
-                }).into_any_element()
+                // Why the last run did not start, or how the last job failed
+                let failed = self.run_error.clone().or_else(|| self.store.read(cx).last_failed.as_ref().map(|(label, e)| format!("{label}: {e}")));
+                v_flex()
+                    .gap_1()
+                    .child(Button::new("sorting-run").primary().icon(Icon::new(IconName::Play)).label("Run").disabled(!ready).on_click(move |_, _, cx| {
+                        let _ = me.update(cx, |w, cx| w.run(cx));
+                    }))
+                    .children(failed.map(|e| div().id("sorting-run-error").text_xs().text_color(danger).line_clamp(4).child(e)))
+                    .into_any_element()
             }
         };
         let n = self.inputs.len();

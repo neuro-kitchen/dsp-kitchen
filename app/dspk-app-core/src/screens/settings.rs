@@ -140,7 +140,8 @@ impl SettingsScreen {
                 s.message = Some(match result {
                     Ok(Ok(info)) => {
                         let permission = if info.permission == dspk_stream::protocol::wire::Permission::Control as i32 { "control" } else { "read" };
-                        (true, format!("Connected: {} (dspk {}), you are {} ({permission}){}", info.server_name, info.server_version, info.peer_name, if info.has_files { ", files served" } else { "" }))
+                        let jobs = if info.runtime.is_empty() { String::new() } else { format!(", jobs on {}", info.runtime) };
+                        (true, format!("Connected: {} (dspk {}), you are {} ({permission}){}{jobs}", info.server_name, info.server_version, info.peer_name, if info.has_files { ", files served" } else { "" }))
                     }
                     Ok(Err(e)) => (false, format!("{e:#}")),
                     Err(e) => (false, e.to_string()),

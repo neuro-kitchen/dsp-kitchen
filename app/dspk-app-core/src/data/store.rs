@@ -148,6 +148,8 @@ pub struct Store {
     pub picked_channel: Option<usize>,
     pub picked_op: Option<String>,
     pub job: Option<RunningJob>,
+    /// The last job that failed: its label and why (cleared when the next job starts).
+    pub last_failed: Option<(String, String)>,
     /// Graph nodes the running job works on, and every node's last run.
     job_nodes: Vec<String>,
     pub node_status: HashMap<String, NodeRun>,
@@ -187,6 +189,7 @@ impl Store {
             picked_channel: None,
             picked_op: None,
             job: None,
+            last_failed: None,
             job_nodes: Vec::new(),
             node_status: HashMap::new(),
             floating: Vec::new(),
@@ -600,6 +603,7 @@ impl Store {
             return false;
         }
         let label = label.into();
+        self.last_failed = None;
         let (tx, rx) = async_channel::unbounded::<JobMessage>();
         let cancel = start(Box::new(move |m| {
             let _ = tx.try_send(m);
@@ -637,6 +641,7 @@ impl Store {
                         }
                         JobMessage::Failed(e) => {
                             s.job = None;
+                            s.last_failed = Some((label.clone(), e.clone()));
                             s.finish_job_nodes(Some(e.clone()));
                             s.set_status(format!("{label}: {e}"), cx);
                         }
