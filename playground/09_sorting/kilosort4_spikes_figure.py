@@ -3,7 +3,7 @@
 #
 # Waveforms of the largest *good* units and a raster over the preprocessed trace, from:
 # - the sort: `dspk sort kilosort4 <recording> --probe neuropixels1 -o <phy folder>`;
-# - the trace: the example pipeline (`playground/base/pipelines/neuropixels_preprocess.json`:
+# - the trace: the example pipeline (`playground/09_sorting/specs/neuropixels_preprocess.json`:
 #   band-pass 300–6000 Hz zero phase + common median reference), written as raw or Zarr.
 #
 # Usage: `python kilosort4_spikes_figure.py <phy folder> <preprocessed recording> <out.png>`

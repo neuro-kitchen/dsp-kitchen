@@ -35,11 +35,11 @@ def _window(data: np.ndarray, sample_rate: float, start: float, duration: float 
 
 def traces(ax, data, sample_rate: float, *, start: float = 0.0, duration: float | None = None, spacing: float | None = None,
            color: str | None = None, label: str | None = None, names: Sequence[str] | None = None, linewidth: float = 0.8) -> float:
-    """Channels stacked top to bottom (channel 0 on top), ``spacing`` apart (default: 6 × the median
-    standard deviation). Returns the spacing used, so a second call can share it."""
+    """Channels stacked top to bottom (channel 0 on top), ``spacing`` apart (default: 10 × the
+    median standard deviation). Returns the spacing used, so a second call can share it."""
     t, x = _window(data, sample_rate, start, duration)
     if spacing is None:
-        spacing = 6.0 * float(np.median(np.std(x, axis=1))) or 1.0
+        spacing = 10.0 * float(np.median(np.std(x, axis=1))) or 1.0
     color = color or theme.palette().series[0]
     for i, row in enumerate(x):
         ax.plot(t, row - i * spacing, color=color, linewidth=linewidth, label=label if i == 0 else None)

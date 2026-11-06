@@ -40,7 +40,7 @@ p = plating.theme.palette()
 names = list(times)
 ax.barh(range(len(names)), [times[n] for n in names], height=0.5, color=p.series[0])
 for i, n in enumerate(names):
-    ax.text(times[n] * 1.02, i, figures.ms_label(times[n]), va="center", fontsize=8.5, color=p.ink)
+    ax.text(times[n] + 0.01 * max(times.values()), i, figures.ms_label(times[n]), va="center", fontsize=8.5, color=p.ink)
 ax.set_yticks(range(len(names)))
 ax.set_yticklabels(names)
 ax.invert_yaxis()

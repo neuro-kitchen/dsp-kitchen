@@ -26,9 +26,12 @@ fn to_py(e: PipelineError) -> PyErr {
 
 fn parse(text: &str, toml: bool) -> PyResult<PipelineSpec> {
     let spec = if toml { PipelineSpec::from_toml(text) } else { PipelineSpec::from_json(text) }.map_err(to_py)?;
-    spec.chain().map_err(to_py)?;
-    for (id, node) in &spec.chain().map_err(to_py)?.stages {
-        node.stage().map_err(|e| PyValueError::new_err(format!("node {id:?}: {e}")))?;
+    // One chain, or a branched spec (one read, several writes): every branch checked as a chain
+    let chains = if spec.writes() > 1 { spec.branches().map_err(to_py)? } else { vec![spec.clone()] };
+    for branch in &chains {
+        for (id, node) in &branch.chain().map_err(to_py)?.stages {
+            node.stage().map_err(|e| PyValueError::new_err(format!("node {id:?}: {e}")))?;
+        }
     }
     Ok(spec)
 }

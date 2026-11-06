@@ -174,3 +174,23 @@ def test_plan_progress_and_cancel(tmp_path):
 
     with pytest.raises(ZeroDivisionError, match="from the callback"):
         dspk.pipeline.run(s, base_dir=tmp_path, progress=boom)
+
+
+def test_a_branched_spec_writes_every_output(tmp_path, recording):
+    """One read, two writes: both outputs, each equal to its own chain run alone."""
+    branched = {
+        "dspk_pipeline": 1,
+        "nodes": {
+            "in": {"op": "read", "path": "in.bin"},
+            "c": {"op": "car"},
+            "hp": {"op": "iir", "band": "highpass", "cutoff": [300.0], "mode": "forward"},
+            "lp": {"op": "iir", "band": "lowpass", "cutoff": [300.0], "mode": "forward"},
+            "a": {"op": "write", "path": "a.bin"},
+            "b": {"op": "write", "path": "b.bin"},
+        },
+        "edges": [["in", "c"], ["c", "hp"], ["hp", "a"], ["c", "lp"], ["lp", "b"]],
+    }
+    reports = dspk.pipeline.run(branched, base_dir=tmp_path)
+    assert sorted(r["output"].name for r in reports) == ["a.bin", "b.bin"]
+    (alone,) = dspk.pipeline.run(spec(out="alone.bin"), base_dir=tmp_path)
+    np.testing.assert_allclose(dspk.io.open(tmp_path / "a.bin").read(), dspk.io.open(alone["output"]).read(), rtol=1e-5, atol=1e-4)

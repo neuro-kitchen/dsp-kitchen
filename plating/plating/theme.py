@@ -78,7 +78,8 @@ def use(mode: str = "light") -> Palette:
     p = _current = LIGHT if mode == "light" else DARK
     plt.rcParams.update({
         "figure.facecolor": p.surface, "savefig.facecolor": p.surface, "axes.facecolor": p.surface,
-        "font.family": "sans-serif", "font.sans-serif": SANS, "font.monospace": MONO, "font.size": 9.5,
+        # The family as a list: matplotlib then falls back glyph by glyph (→, ×, µ, …)
+        "font.family": SANS, "font.sans-serif": SANS, "font.monospace": MONO, "font.size": 9.5,
         "text.color": p.ink, "axes.labelcolor": p.ink2, "axes.labelsize": 9.5,
         "axes.titlesize": 10.5, "axes.titlelocation": "left", "axes.titlecolor": p.ink, "axes.titlepad": 8,
         "axes.edgecolor": p.baseline, "axes.linewidth": 0.8,
