@@ -116,6 +116,9 @@ pub struct Session {
     /// Widths (heights for bottom panels) of resizable panels, by key (`explore.left`, …).
     #[serde(default)]
     pub panel_widths: std::collections::BTreeMap<String, f32>,
+    /// Side panels shown or hidden, by key (`sorting.left`, …).
+    #[serde(default)]
+    pub panel_open: std::collections::BTreeMap<String, bool>,
 }
 
 impl Session {

@@ -2,8 +2,10 @@
 //! pointer is on it) and the listener the workspace root runs while it is dragged. Widths are
 //! remembered per workspace and panel in the preferences (`panel_widths`).
 
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::resizable::{resize_handle, HandleEdge};
-use gpui_kit::{div, App, AppContext as _, Axis, Context, DragMoveEvent, Entity, IntoElement, Render, SharedString, Window};
+use gpui_kit::component::{v_flex, ActiveTheme as _, Icon, Selectable as _};
+use gpui_kit::{div, px, App, AppContext as _, Axis, Context, DragMoveEvent, Entity, IntoElement, ParentElement as _, Render, SharedString, Styled as _, Window};
 
 use crate::data::store::Store;
 
@@ -62,4 +64,42 @@ pub fn follow_panel_drag(store: &Entity<Store>, e: &DragMoveEvent<PanelResize>, 
     };
     let min = if r.side == Side::Bottom { 60.0 } else { MIN_PANEL };
     store.update(cx, |s, cx| s.set_panel_width(r.key, size.clamp(min, max), cx));
+}
+
+/// Width of an icon rail (logical px).
+pub const RAIL_W: f32 = 40.;
+
+/// One icon of a rail: the panel it shows (`key` in the preferences), its icon and name, and
+/// whether its panel is the one shown.
+pub struct RailItem {
+    pub id: SharedString,
+    pub icon: Icon,
+    pub tip: SharedString,
+    pub selected: bool,
+    pub on_click: Box<dyn Fn(&mut Window, &mut App)>,
+}
+
+/// An icon rail on a workspace's edge (as Explore's): a click on a panel's icon shows it, a
+/// click on the shown one hides its side.
+pub fn rail(items: Vec<RailItem>, left: bool, cx: &App) -> impl IntoElement + use<> {
+    let t = cx.theme();
+    let bar = v_flex().w(px(RAIL_W)).flex_none().h_full().py_2().gap_1().items_center().bg(t.sidebar).border_color(t.border);
+    let bar = if left { bar.border_r_1() } else { bar.border_l_1() };
+    bar.children(items.into_iter().map(|it| {
+        let f = it.on_click;
+        Button::new(gpui_kit::ElementId::Name(it.id)).ghost().icon(it.icon).tooltip(it.tip).selected(it.selected).on_click(move |_, window, cx| f(window, cx))
+    }))
+}
+
+/// A rail item toggling side panel `key`.
+pub fn toggle_item(store: &Entity<Store>, key: &'static str, icon: Icon, tip: &'static str, cx: &App) -> RailItem {
+    let open = store.read(cx).panel_open(key);
+    let store = store.clone();
+    RailItem {
+        id: SharedString::from(format!("rail-{key}")),
+        icon,
+        tip: tip.into(),
+        selected: open,
+        on_click: Box::new(move |_, cx| store.update(cx, |s, cx| s.set_panel_open(key, !open, cx))),
+    }
 }

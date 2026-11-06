@@ -728,6 +728,17 @@ impl Store {
         self.session.panel_widths.get(key).copied().unwrap_or(default)
     }
 
+    /// Whether a side panel shows (`true` until the user hides it).
+    pub fn panel_open(&self, key: &str) -> bool {
+        self.session.panel_open.get(key).copied().unwrap_or(true)
+    }
+
+    pub fn set_panel_open(&mut self, key: &str, open: bool, cx: &mut Context<Self>) {
+        self.session.panel_open.insert(key.to_string(), open);
+        self.save_session();
+        cx.notify();
+    }
+
     pub fn set_panel_width(&mut self, key: &str, width: f32, cx: &mut Context<Self>) {
         if self.session.panel_widths.get(key) != Some(&width) {
             self.session.panel_widths.insert(key.to_string(), width);

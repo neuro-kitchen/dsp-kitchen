@@ -630,7 +630,7 @@ mod tests {
     fn pipeline_canvas_shows_and_edits_the_graph(cx: &mut TestAppContext) {
         use crate::domain::command::SessionCommand;
         use crate::domain::session::RecordingRef;
-        let (window, store, _) = open(cx);
+        let (window, store, app) = open(cx);
         cx.update(|cx| {
             store.update(cx, |s, cx| {
                 let recording = RecordingRef { path: "/data/rec.bin".into(), source: None, channels: None };
@@ -644,14 +644,14 @@ mod tests {
             assert!(window.try_find("graph-canvas").is_some(), "the Pipeline workspace is a canvas, recording open or not");
             assert!(window.try_find("node-s1").is_some() && window.try_find("node-v1").is_some(), "the recording and its view are nodes");
             assert!(window.try_find("layer-s1").is_some(), "the recording is a layer");
-            window.click("left-ops", cx);
+            assert!(window.try_find("pipeline-toolbar").is_some(), "the floating toolbar");
         })
         .unwrap();
-        cx.run_until_parked();
+        // An operation from the catalogue (what the toolbar's menu does) goes into the graph
         cx.update_window(window, |_, window, cx| {
-            window.render_frame(cx);
-            // Clicking an operation of the tree adds it to the graph
-            window.click("ops-item-filter-0", cx);
+            let pipeline = app.read(cx).pipeline.clone();
+            let template = crate::screens::pipeline::catalog::catalog()[1].items[0].template.clone();
+            pipeline.update(cx, |p, cx| p.add(&template, window, cx));
         })
         .unwrap();
         cx.run_until_parked();

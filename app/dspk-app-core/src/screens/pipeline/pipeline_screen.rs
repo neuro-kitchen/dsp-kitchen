@@ -27,12 +27,11 @@ use crate::data::store::{AppEvent, Store};
 use crate::domain::command::SessionCommand;
 use crate::domain::graph::NodeKind;
 use crate::domain::session::{DisplayDoc, Show};
-use crate::screens::explore::components::processing::op_summary;
-use crate::ui::panel_edge::{follow_panel_drag, panel_edge, PanelResize, Side};
+use crate::ui::panel_edge::{follow_panel_drag, panel_edge, rail, toggle_item, PanelResize, RailItem, Side, RAIL_W};
 use crate::ui::param_editor::{Commit, ParamEditor};
 use crate::ui::widgets::{row, Section};
 
-use super::canvas::{CanvasEvent, CatalogDrag, DragGhost, GraphCanvas, RecipeDrag};
+use super::canvas::{CanvasEvent, DragGhost, GraphCanvas, RecipeDrag};
 use super::catalog::{catalog, describe, presets, type_name, Template};
 use crate::data::preferences::Session;
 use crate::domain::recipe::{builtin, library, RecipeDoc};
@@ -44,7 +43,6 @@ const LEFT_W: f32 = 260.;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LeftTab {
     Layers,
-    Operations,
     Recipes,
 }
 
@@ -52,8 +50,6 @@ pub struct PipelineView {
     store: Entity<Store>,
     canvas: Entity<GraphCanvas>,
     inspector: Entity<Inspector>,
-    /// Categories folded in the tree.
-    folded: HashSet<&'static str>,
     left: LeftTab,
     /// Layers folded (their children hidden).
     collapsed: HashSet<String>,
@@ -75,7 +71,7 @@ impl PipelineView {
             }),
             cx.subscribe(&canvas, |_, _, _: &CanvasEvent, cx| cx.notify()),
         ];
-        let mut this = Self { store, canvas, inspector, folded: HashSet::new(), left: LeftTab::Layers, collapsed: HashSet::new(), library: Vec::new(), library_errors: Vec::new(), _subs: subs };
+        let mut this = Self { store, canvas, inspector, left: LeftTab::Layers, collapsed: HashSet::new(), library: Vec::new(), library_errors: Vec::new(), _subs: subs };
         this.read_library();
         this
     }
@@ -101,11 +97,20 @@ impl PipelineView {
         }
     }
 
+    /// The left side shows `tab`; its icon when shown already hides the side.
     fn set_left(&mut self, tab: LeftTab, cx: &mut Context<Self>) {
-        if tab == LeftTab::Recipes {
-            self.read_library();
+        let open = self.store.read(cx).panel_open("pipeline.left");
+        if open && self.left == tab {
+            self.store.update(cx, |s, cx| s.set_panel_open("pipeline.left", false, cx));
+        } else {
+            if tab == LeftTab::Recipes {
+                self.read_library();
+            }
+            self.left = tab;
+            if !open {
+                self.store.update(cx, |s, cx| s.set_panel_open("pipeline.left", true, cx));
+            }
         }
-        self.left = tab;
         cx.notify();
     }
 
@@ -261,6 +266,7 @@ impl PipelineView {
         };
         h_flex()
             .id("pipeline-toolbar")
+            .test_support()
             .occlude()
             .absolute()
             .bottom_4()
@@ -403,88 +409,39 @@ impl PipelineView {
             .child(div().text_xs().text_color(t.muted_foreground).child("Wheel: pan · Ctrl+wheel: zoom · Space+drag: move · drag an output onto a node: connect"))
     }
 
-    /// The operations tree: categories (fold with a click), items to drag or click.
-    fn tree(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let t = cx.theme();
-        let (muted, hover) = (t.muted_foreground, t.accent);
-        let mut list = v_flex().gap_0p5();
-        for c in catalog() {
-            let folded = self.folded.contains(c.name);
-            let name = c.name;
-            list = list.child(
-                h_flex()
-                    .id(SharedString::from(format!("ops-cat-{}", name.to_lowercase())))
-                    .h(px(26.))
-                    .px_1()
-                    .gap_1p5()
-                    .rounded_md()
-                    .cursor_pointer()
-                    .hover(|d| d.bg(hover))
-                    .child(Icon::new(if folded { IconName::ChevronRight } else { IconName::ChevronDown }).xsmall().text_color(muted))
-                    .child(Icon::new(c.icon).small().text_color(muted))
-                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(name))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if !this.folded.remove(name) {
-                            this.folded.insert(name);
-                        }
-                        cx.notify();
-                    })),
-            );
-            if folded {
-                continue;
-            }
-            for (i, it) in c.items.into_iter().enumerate() {
-                let drag = CatalogDrag { label: it.label.into(), template: it.template.clone() };
-                let canvas = self.canvas.downgrade();
-                let template = it.template.clone();
-                list = list.child(
-                    v_flex()
-                        .id(SharedString::from(format!("ops-item-{}-{i}", name.to_lowercase())))
-                        .test_support()
-                        .pl(px(30.))
-                        .pr_1()
-                        .py_0p5()
-                        .rounded_md()
-                        .cursor_grab()
-                        .hover(|d| d.bg(hover))
-                        .child(div().text_sm().truncate().child(it.label))
-                        .child(div().text_xs().text_color(muted).truncate().child(it.hint))
-                        .on_drag(drag, |d: &CatalogDrag, _, _, cx| cx.new(|_| DragGhost(d.label.clone())))
-                        .on_click(move |_, window, cx| Self::canvas_do(&canvas, cx, |c, cx| c.add(&template, None, window, cx))),
-                );
-            }
-        }
-        v_flex()
-            .id("ops-tree")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .p_2()
-            .gap_1()
-            .child(div().px_1().text_xs().text_color(muted).child("Drag onto the canvas, or click to add after the selected node"))
-            .child(list)
-    }
 }
 
 impl Render for PipelineView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let border = cx.theme().border;
-        let (side_w, left_w) = {
+        let (side_w, left_w, left_open, right_open) = {
             let s = self.store.read(cx);
-            (s.panel_width("pipeline.right", SIDE_W), s.panel_width("pipeline.left", LEFT_W))
+            (s.panel_width("pipeline.right", SIDE_W), s.panel_width("pipeline.left", LEFT_W), s.panel_open("pipeline.left"), s.panel_open("pipeline.right"))
         };
         let me = cx.entity().downgrade();
-        let tab = |id: &'static str, label: &'static str, which: LeftTab| {
+        let item = |which: LeftTab, id: &'static str, icon: IconName, tip: &'static str| {
             let me = me.clone();
-            Button::new(id).ghost().xsmall().label(label).selected(self.left == which).on_click(move |_, _, cx| {
-                let _ = me.update(cx, |p, cx| p.set_left(which, cx));
-            })
+            RailItem {
+                id: id.into(),
+                icon: Icon::new(icon),
+                tip: tip.into(),
+                selected: left_open && self.left == which,
+                on_click: Box::new(move |_, cx| {
+                    let _ = me.update(cx, |p, cx| p.set_left(which, cx));
+                }),
+            }
         };
+        let left_rail = rail(vec![item(LeftTab::Layers, "rail-layers", IconName::Layers, "Layers: the graph as a tree"), item(LeftTab::Recipes, "rail-recipes", IconName::Package, "Recipes")], true, cx);
+        let right_rail = rail(vec![toggle_item(&self.store, "pipeline.right", Icon::new(IconName::Inspector), "Inspector", cx)], false, cx);
         let left_body: AnyElement = match self.left {
             LeftTab::Layers => self.layers(cx).into_any_element(),
-            LeftTab::Operations => self.tree(cx).into_any_element(),
             LeftTab::Recipes => self.recipes_panel(cx).into_any_element(),
         };
+        let title = match self.left {
+            LeftTab::Layers => "LAYERS",
+            LeftTab::Recipes => "RECIPES",
+        };
+        let muted = cx.theme().muted_foreground;
         v_flex()
             .id("pipeline-workspace")
             .size_full()
@@ -497,30 +454,36 @@ impl Render for PipelineView {
                         follow_panel_drag(&this.store, e, cx);
                         cx.notify();
                     }))
-                    .child(
-                        v_flex()
-                            .relative()
-                            .w(px(left_w))
-                            .flex_none()
-                            .h_full()
-                            .border_r_1()
-                            .border_color(border)
-                            .child(h_flex().h(px(34.)).flex_none().px_1().gap_0p5().border_b_1().border_color(border).child(tab("left-layers", "Layers", LeftTab::Layers)).child(tab("left-ops", "Operations", LeftTab::Operations)).child(tab("left-recipes", "Recipes", LeftTab::Recipes)))
-                            .child(left_body)
-                            .child(panel_edge("pipeline.left", Side::Left, 0.0)),
-                    )
+                    .child(left_rail)
+                    .when(left_open, |d| {
+                        d.child(
+                            v_flex()
+                                .relative()
+                                .w(px(left_w))
+                                .flex_none()
+                                .h_full()
+                                .border_r_1()
+                                .border_color(border)
+                                .child(h_flex().h(px(32.)).flex_none().px_3().border_b_1().border_color(border).child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(muted).child(title)))
+                                .child(left_body)
+                                .child(panel_edge("pipeline.left", Side::Left, RAIL_W)),
+                        )
+                    })
                     .child(div().relative().flex_1().min_w_0().h_full().child(self.canvas.clone()).child(self.toolbar(cx)))
-                    .child(
-                        v_flex()
-                            .relative()
-                            .w(px(side_w))
-                            .flex_none()
-                            .h_full()
-                            .border_l_1()
-                            .border_color(border)
-                            .child(div().flex_1().min_h_0().child(self.inspector.clone()))
-                            .child(panel_edge("pipeline.right", Side::Right, 0.0)),
-                    ),
+                    .when(right_open, |d| {
+                        d.child(
+                            v_flex()
+                                .relative()
+                                .w(px(side_w))
+                                .flex_none()
+                                .h_full()
+                                .border_l_1()
+                                .border_color(border)
+                                .child(div().flex_1().min_h_0().child(self.inspector.clone()))
+                                .child(panel_edge("pipeline.right", Side::Right, RAIL_W)),
+                        )
+                    })
+                    .child(right_rail),
             )
     }
 }
@@ -720,11 +683,11 @@ impl Inspector {
                 v_flex()
                     .gap_2()
                     .children(preset)
-                    .child(Checkbox::new("inspector-enabled").checked(on).label("On (off: kept in the graph, skipped)").on_click(move |v: &bool, _, cx| {
+                    .child(Checkbox::new("inspector-enabled").checked(on).label("On").on_click(move |v: &bool, _, cx| {
                         let v = *v;
                         let _ = this.update(cx, |i, cx| i.exec(SessionCommand::EnableNode { id: id2.clone(), enabled: v }, cx));
                     }))
-                    .child(Section::new(format!("Parameters · {}", op_summary(op))).child(self.params.clone()))
+                    .child(Section::new("Parameters").child(self.params.clone()))
                     .child(div().text_xs().text_color(muted).child(if views.is_empty() {
                         "Feeds no view yet: connect it to one to see it in Explore.".to_string()
                     } else {
@@ -755,7 +718,7 @@ impl Inspector {
                 let id2 = id.clone();
                 v_flex()
                     .gap_2()
-                    .child(row("Name", div().w(px(160.)).child(Input::new(&self.name).small()), cx))
+                    .child(row("Name", div().w_full().child(Input::new(&self.name).small()), cx))
                     .child(row("Shows", h_flex().gap_1().child(show(Show::Processed, "Processed")).child(show(Show::Raw, "Raw")), cx))
                     .child(div().text_xs().text_color(muted).child(match &path {
                         Some(_) => format!("{ops} op(s) on its path.{}", if shown { " Shown in Explore now." } else { "" }),
@@ -861,9 +824,9 @@ impl Inspector {
         let (store, store2, id2, id3, save_def) = (self.store.clone(), self.store.clone(), id.to_string(), id.to_string(), def.clone());
         v_flex()
             .gap_2()
-            .child(row("Name", div().w(px(170.)).child(Input::new(&self.rname).small()), cx))
-            .child(row("Labels", div().w(px(170.)).child(Input::new(&self.rlabels).small()), cx))
-            .child(row("About", div().w(px(170.)).child(Input::new(&self.rdesc).small()), cx))
+            .child(row("Name", div().w_full().child(Input::new(&self.rname).small()), cx))
+            .child(row("Labels", div().w_full().child(Input::new(&self.rlabels).small()), cx))
+            .child(row("About", div().w_full().child(Input::new(&self.rdesc).small()), cx))
             .child(div().text_xs().text_color(muted).child(format!(
                 "Version {} · {} use{} · {} → {}{}",
                 def.version,
@@ -873,7 +836,7 @@ impl Inspector {
                 format!("{:?}", def.output).to_lowercase(),
                 if def.is_sorter() { " · listed in Sorting" } else { "" }
             )))
-            .child(Checkbox::new("recipe-enabled").checked(enabled).label("On (off: its ops are skipped)").on_click(move |v: &bool, _, cx| {
+            .child(Checkbox::new("recipe-enabled").checked(enabled).label("On").on_click(move |v: &bool, _, cx| {
                 let _ = store.update(cx, |s, cx| s.execute(SessionCommand::EnableNode { id: id2.clone(), enabled: *v }, cx));
             }))
             .child(h_flex().gap_1().child(div().text_xs().text_color(muted).child("Edit")).child(mode("this use", false, !self.edit_recipe)).child(mode("the recipe (every use)", true, self.edit_recipe)))
