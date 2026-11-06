@@ -72,16 +72,9 @@ mod tests {
         let threshold_factor = 5.0f32;
         let refrac = 25usize;
 
-        let spacing = SpikeSpacing::new(refrac);
-        let cpu_spikes = detect_spikes_threshold_with_sigma(
-            &trace,
-            channels,
-            samples,
-            &sigmas,
-            threshold_factor,
-            SpikePolarity::Negative,
-            spacing,
-        );
+        // 1 kHz: the refractory period in ms is the spacing in samples
+        let settings = crate::detection::ThresholdSpikeDetector { threshold_factor, refractory_ms: refrac as f64, polarity: SpikePolarity::Negative, ..Default::default() };
+        let cpu_spikes = detect_spikes_threshold_with_sigma(&trace, channels, samples, &sigmas, 1000.0, &settings);
         let cpu_dedup = deduplicate_spikes_spatial(&cpu_spikes, &probe, 150.0, refrac as u64);
         let cpu_snips = extract_snippets(
             &trace,
@@ -125,7 +118,7 @@ mod tests {
                 0..samples,
                 0,
                 SpikePolarity::Negative,
-                spacing,
+                settings.spacing(1000.0),
             );
             assert_eq!(gpu_spikes, cpu_spikes);
 

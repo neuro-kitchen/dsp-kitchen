@@ -5,7 +5,7 @@ use dspk_ops::peaks::DistanceRule;
 use dspk_ops::{Pipeline, PipelineStage};
 use dspk_py_core::error::to_py;
 use dspk_py_core::io::Recording;
-use dspk_synapse::detection::{SpikePolarity, SpikeSpacing};
+use dspk_synapse::detection::SpikePolarity;
 use dspk_synapse::{self as syn, SpikeEvent, StreamingDetectionConfig, StreamingDetector};
 use numpy::{IntoPyArray, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
@@ -58,19 +58,20 @@ fn events<'py>(py: Python<'py>, mut ev: Vec<SpikeEvent>) -> PyResult<Dict<'py>> 
 /// `amplitudes` arrays, by time.
 #[gen_stub_pyfunction(module = "dspk._native.synapse.detection")]
 #[pyfunction]
-#[pyo3(signature = (data, threshold, polarity, refractory_samples, spacing, sigmas=None))]
-pub fn threshold<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, threshold: f32, polarity: &str, refractory_samples: usize, spacing: &str, sigmas: Option<PyReadonlyArray1<'_, f32>>) -> PyResult<Dict<'py>> {
+#[pyo3(signature = (data, sample_rate, threshold, polarity, refractory_ms, spacing, sigmas=None))]
+#[allow(clippy::too_many_arguments)]
+pub fn threshold<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, sample_rate: f64, threshold: f32, polarity: &str, refractory_ms: f64, spacing: &str, sigmas: Option<PyReadonlyArray1<'_, f32>>) -> PyResult<Dict<'py>> {
     let (x, c, n) = matrix(&data);
-    let (pol, sp) = (self::polarity(polarity)?, SpikeSpacing { refractory_samples, rule: rule(spacing)? });
+    let settings = syn::ThresholdSpikeDetector { threshold_factor: threshold, refractory_ms, polarity: self::polarity(polarity)?, distance_rule: rule(spacing)? };
     let ev = match sigmas {
         Some(s) => {
             let s = s.as_slice()?.to_vec();
             if s.len() != c {
                 return Err(invalid(format!("{} sigmas for {c} channels", s.len())));
             }
-            py.detach(|| syn::detect_spikes_threshold_with_sigma(&x, c, n, &s, threshold, pol, sp))
+            py.detach(|| syn::detect_spikes_threshold_with_sigma(&x, c, n, &s, sample_rate, &settings))
         }
-        None => py.detach(|| syn::detect_spikes_threshold(&x, c, n, threshold, pol, sp)),
+        None => py.detach(|| syn::detect_spikes_threshold(&x, c, n, sample_rate, &settings)),
     };
     events(py, ev)
 }
@@ -78,10 +79,10 @@ pub fn threshold<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, threshol
 /// Teager–Kaiser energy (NEO) detection: energy peaks beyond `threshold · σ(energy)` per channel.
 #[gen_stub_pyfunction(module = "dspk._native.synapse.detection")]
 #[pyfunction]
-pub fn neo<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, threshold: f32, refractory_samples: usize, spacing: &str) -> PyResult<Dict<'py>> {
+pub fn neo<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, sample_rate: f64, threshold: f32, refractory_ms: f64, spacing: &str) -> PyResult<Dict<'py>> {
     let (x, c, n) = matrix(&data);
-    let sp = SpikeSpacing { refractory_samples, rule: rule(spacing)? };
-    let ev = py.detach(|| syn::detect_spikes_neo(&x, c, n, threshold, sp));
+    let settings = syn::NeoSpikeDetector { threshold_factor: threshold, refractory_ms, distance_rule: rule(spacing)? };
+    let ev = py.detach(|| syn::detect_spikes_neo(&x, c, n, sample_rate, &settings));
     events(py, ev)
 }
 
@@ -89,11 +90,11 @@ pub fn neo<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, threshold: f32
 /// where the signal is negative.
 #[gen_stub_pyfunction(module = "dspk._native.synapse.detection")]
 #[pyfunction]
-pub fn matched_filter<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, prototype: PyReadonlyArray1<'_, f32>, threshold: f32, refractory_samples: usize, spacing: &str) -> PyResult<Dict<'py>> {
+#[allow(clippy::too_many_arguments)]
+pub fn matched_filter<'py>(py: Python<'py>, data: PyReadonlyArray2<'_, f32>, sample_rate: f64, prototype: PyReadonlyArray1<'_, f32>, threshold: f32, refractory_ms: f64, spacing: &str) -> PyResult<Dict<'py>> {
     let (x, c, n) = matrix(&data);
-    let proto = prototype.as_slice()?.to_vec();
-    let sp = SpikeSpacing { refractory_samples, rule: rule(spacing)? };
-    let ev = py.detach(|| syn::detect_spikes_matched_filter(&x, c, n, &proto, threshold, sp));
+    let settings = syn::MatchedFilterSpikeDetector { prototype: prototype.as_slice()?.to_vec(), threshold_factor: threshold, refractory_ms, distance_rule: rule(spacing)? };
+    let ev = py.detach(|| syn::detect_spikes_matched_filter(&x, c, n, sample_rate, &settings));
     events(py, ev)
 }
 
@@ -194,7 +195,8 @@ pub fn detect_recording<'py>(
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let d = StreamingDetectionConfig::default();
-    m.add("DEFAULT_THRESHOLD", d.threshold_factor)?;
+    m.add("DEFAULT_THRESHOLD", syn::ThresholdSpikeDetector::default().threshold_factor)?;
+    m.add("DEFAULT_RECORDING_THRESHOLD", d.threshold_factor)?;
     m.add("DEFAULT_REFRACTORY_MS", d.refractory_ms)?;
     m.add("DEFAULT_RADIUS_UM", d.spatial_radius_um)?;
     m.add("DEFAULT_K_NEIGHBORS", d.k_neighbors)?;
@@ -219,6 +221,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 pyo3_stub_gen::module_variable!("dspk._native.synapse.detection", "DEFAULT_THRESHOLD", f32);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.detection", "DEFAULT_RECORDING_THRESHOLD", f32);
 pyo3_stub_gen::module_variable!("dspk._native.synapse.detection", "DEFAULT_REFRACTORY_MS", f64);
 pyo3_stub_gen::module_variable!("dspk._native.synapse.detection", "DEFAULT_RADIUS_UM", f32);
 pyo3_stub_gen::module_variable!("dspk._native.synapse.detection", "DEFAULT_K_NEIGHBORS", usize);

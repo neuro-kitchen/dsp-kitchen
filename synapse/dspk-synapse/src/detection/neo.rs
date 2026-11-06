@@ -33,13 +33,8 @@ pub fn compute_neo_energy(signal: &[f32]) -> Vec<f32> {
 /// Detects multi-channel spikes with the Teager-Kaiser Nonlinear Energy Operator (NEO): energy
 /// peaks above `neo_threshold_factor · σ(ψ)` where the voltage is negative, moved to the voltage
 /// trough within ±2 samples, spaced by `spacing` (larger energy wins).
-pub fn detect_spikes_neo(
-    data: &[f32],
-    channels: usize,
-    samples: usize,
-    neo_threshold_factor: f32,
-    spacing: SpikeSpacing,
-) -> Vec<SpikeEvent> {
+pub fn detect_spikes_neo(data: &[f32], channels: usize, samples: usize, sample_rate_hz: f64, settings: &NeoSpikeDetector) -> Vec<SpikeEvent> {
+    let (neo_threshold_factor, spacing) = (settings.threshold_factor, SpikeSpacing::from_ms(settings.refractory_ms, sample_rate_hz, settings.distance_rule));
     assert_eq!(data.len(), channels * samples);
     let mut events = Vec::new();
     if samples < 3 {
@@ -104,8 +99,7 @@ impl SpikeDetector for NeoSpikeDetector {
         samples: usize,
         sample_rate_hz: f64,
     ) -> dspk_core::DspResult<Vec<SpikeEvent>> {
-        let spacing = SpikeSpacing::from_ms(self.refractory_ms, sample_rate_hz, self.distance_rule);
-        Ok(detect_spikes_neo(data, channels, samples, self.threshold_factor, spacing))
+        Ok(detect_spikes_neo(data, channels, samples, sample_rate_hz, self))
     }
 }
 
@@ -125,7 +119,7 @@ mod tests {
         sig[400] = -95.0;
         sig[401] = 35.0;
 
-        let spikes = detect_spikes_neo(&sig, 1, samples, 8.0, SpikeSpacing::new(20));
+        let spikes = detect_spikes_neo(&sig, 1, samples, 1000.0, &NeoSpikeDetector { threshold_factor: 8.0, refractory_ms: 20.0, ..Default::default() });
         assert_eq!(spikes.len(), 1);
         assert_eq!(spikes[0].sample_index, 400);
         assert_eq!(spikes[0].peak_amplitude_uv, -95.0);

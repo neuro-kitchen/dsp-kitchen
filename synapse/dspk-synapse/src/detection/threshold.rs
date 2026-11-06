@@ -26,20 +26,13 @@ pub fn detection_heights(channel_sigmas: &[f32], threshold_factor: f32) -> Vec<f
         .collect()
 }
 
-/// Threshold crossings of every channel of `[channels, samples]` `data`: local extrema of
-/// `polarity` reaching `threshold_factor · σ` (σ per channel by [`estimate_noise_std`]), spaced by
-/// `spacing`; sorted by sample.
-pub fn detect_spikes_threshold(
-    data: &[f32],
-    channels: usize,
-    samples: usize,
-    threshold_factor: f32,
-    polarity: SpikePolarity,
-    spacing: SpikeSpacing,
-) -> Vec<SpikeEvent> {
+/// Threshold crossings of every channel of `[channels, samples]` `data` at `sample_rate_hz`: local
+/// extrema of `settings.polarity` reaching `settings.threshold_factor · σ` (σ per channel by
+/// [`estimate_noise_std`]), more than `settings.refractory_ms` apart per channel; sorted by sample.
+pub fn detect_spikes_threshold(data: &[f32], channels: usize, samples: usize, sample_rate_hz: f64, settings: &ThresholdSpikeDetector) -> Vec<SpikeEvent> {
     assert_eq!(data.len(), channels * samples);
     let sigmas: Vec<f32> = data.chunks_exact(samples.max(1)).take(channels).map(estimate_noise_std).collect();
-    detect_spikes_threshold_with_sigma(data, channels, samples, &sigmas, threshold_factor, polarity, spacing)
+    detect_spikes_threshold_with_sigma(data, channels, samples, &sigmas, sample_rate_hz, settings)
 }
 
 /// [`detect_spikes_threshold`] with pre-calibrated per-channel noise `channel_sigmas` (µV).
@@ -48,13 +41,13 @@ pub fn detect_spikes_threshold_with_sigma(
     channels: usize,
     samples: usize,
     channel_sigmas: &[f32],
-    threshold_factor: f32,
-    polarity: SpikePolarity,
-    spacing: SpikeSpacing,
+    sample_rate_hz: f64,
+    settings: &ThresholdSpikeDetector,
 ) -> Vec<SpikeEvent> {
     assert_eq!(data.len(), channels * samples);
     assert_eq!(channel_sigmas.len(), channels);
-    let heights = detection_heights(channel_sigmas, threshold_factor);
+    let (polarity, spacing) = (settings.polarity, settings.spacing(sample_rate_hz));
+    let heights = detection_heights(channel_sigmas, settings.threshold_factor);
     let mut all_spikes = Vec::new();
     for (ch, &height) in heights.iter().enumerate() {
         if !height.is_finite() {
@@ -99,6 +92,11 @@ impl ThresholdSpikeDetector {
     pub fn new(threshold_factor: f32, refractory_ms: f64, polarity: SpikePolarity) -> Self {
         Self { threshold_factor, refractory_ms, polarity, ..Self::default() }
     }
+
+    /// The spacing of kept spikes at `sample_rate_hz`.
+    pub fn spacing(&self, sample_rate_hz: f64) -> SpikeSpacing {
+        SpikeSpacing::from_ms(self.refractory_ms, sample_rate_hz, self.distance_rule)
+    }
 }
 
 impl crate::core::SpikeDetector for ThresholdSpikeDetector {
@@ -109,8 +107,7 @@ impl crate::core::SpikeDetector for ThresholdSpikeDetector {
         samples: usize,
         sample_rate_hz: f64,
     ) -> dspk_core::DspResult<Vec<SpikeEvent>> {
-        let spacing = SpikeSpacing::from_ms(self.refractory_ms, sample_rate_hz, self.distance_rule);
-        Ok(detect_spikes_threshold(data, channels, samples, self.threshold_factor, self.polarity, spacing))
+        Ok(detect_spikes_threshold(data, channels, samples, sample_rate_hz, self))
     }
 }
 
@@ -128,7 +125,7 @@ mod tests {
         signal[300] = -120.0;
         signal[301] = -40.0;
 
-        let spikes = detect_spikes_threshold(&signal, 1, 1000, 4.0, SpikePolarity::Negative, SpikeSpacing::new(30));
+        let spikes = detect_spikes_threshold(&signal, 1, 1000, 1000.0, &ThresholdSpikeDetector { threshold_factor: 4.0, refractory_ms: 30.0, polarity: SpikePolarity::Negative, ..Default::default() });
         assert_eq!(spikes.len(), 1);
         assert_eq!(spikes[0].channel_id, 0);
         assert_eq!(spikes[0].sample_index, 300);
@@ -141,7 +138,7 @@ mod tests {
         let mut signal: Vec<f32> = (0..1000).map(|i| ((i % 5) as f32 - 2.0) * 3.0).collect();
         signal[400] = -60.0;
         signal[405] = -150.0;
-        let spikes = detect_spikes_threshold(&signal, 1, 1000, 4.5, SpikePolarity::Negative, SpikeSpacing::new(20));
+        let spikes = detect_spikes_threshold(&signal, 1, 1000, 1000.0, &ThresholdSpikeDetector { threshold_factor: 4.5, refractory_ms: 20.0, polarity: SpikePolarity::Negative, ..Default::default() });
         assert_eq!(spikes.iter().map(|s| s.sample_index).collect::<Vec<_>>(), vec![405]);
     }
 
@@ -154,12 +151,12 @@ mod tests {
         signal[200] = -95.0;
         signal[600] = 110.0;
 
-        let pos = detect_spikes_threshold(&signal, 1, 1000, 4.5, SpikePolarity::Positive, SpikeSpacing::new(20));
+        let pos = detect_spikes_threshold(&signal, 1, 1000, 1000.0, &ThresholdSpikeDetector { threshold_factor: 4.5, refractory_ms: 20.0, polarity: SpikePolarity::Positive, ..Default::default() });
         assert_eq!(pos.len(), 1);
         assert_eq!(pos[0].sample_index, 600);
         assert_eq!(pos[0].peak_amplitude_uv, 110.0);
 
-        let both = detect_spikes_threshold(&signal, 1, 1000, 4.5, SpikePolarity::Both, SpikeSpacing::new(20));
+        let both = detect_spikes_threshold(&signal, 1, 1000, 1000.0, &ThresholdSpikeDetector { threshold_factor: 4.5, refractory_ms: 20.0, polarity: SpikePolarity::Both, ..Default::default() });
         assert_eq!(both.len(), 2);
         assert_eq!(both[0].sample_index, 200);
         assert_eq!(both[1].sample_index, 600);

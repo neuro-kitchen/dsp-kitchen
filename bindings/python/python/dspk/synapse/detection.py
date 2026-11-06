@@ -15,7 +15,10 @@ from dspk.synapse.io import Probe, Sorting
 
 _d = _synapse.detection
 
+#: In-memory detectors (``threshold``, ``matched_filter``), as dspk-synapse's detectors.
 DEFAULT_THRESHOLD: float = _d.DEFAULT_THRESHOLD
+#: :func:`detect_recording`, as ``dspk detect``.
+DEFAULT_RECORDING_THRESHOLD: float = _d.DEFAULT_RECORDING_THRESHOLD
 DEFAULT_NEO_THRESHOLD: float = _d.DEFAULT_NEO_THRESHOLD
 DEFAULT_REFRACTORY_MS: float = _d.DEFAULT_REFRACTORY_MS
 DEFAULT_RADIUS_UM: float = _d.DEFAULT_RADIUS_UM
@@ -33,10 +36,6 @@ def _f32(data) -> np.ndarray:
     return np.ascontiguousarray(np.atleast_2d(data), dtype=np.float32)
 
 
-def _refractory(refractory_ms: float, sample_rate: float) -> int:
-    return max(1, round(refractory_ms * sample_rate / 1e3))
-
-
 def threshold(data, sample_rate: float, *, threshold: float = DEFAULT_THRESHOLD, polarity: str = "negative", refractory_ms: float = DEFAULT_REFRACTORY_MS,
               sigmas=None, spacing: str = "locally_exclusive") -> dict:  # noqa: A002
     """Local extrema beyond ``threshold · σ`` per channel of ``data`` ``(channels, samples)``
@@ -44,12 +43,12 @@ def threshold(data, sample_rate: float, *, threshold: float = DEFAULT_THRESHOLD,
     median-based). Spikes on a channel stay more than ``refractory_ms`` apart (``spacing``:
     ``locally_exclusive``, which chunked detection reproduces exactly, or ``scipy``)."""
     s = None if sigmas is None else np.ascontiguousarray(sigmas, dtype=np.float32)
-    return _d.threshold(_f32(data), threshold, polarity, _refractory(refractory_ms, sample_rate), spacing, s)
+    return _d.threshold(_f32(data), sample_rate, threshold, polarity, refractory_ms, spacing, s)
 
 
 def neo(data, sample_rate: float, *, threshold: float = DEFAULT_NEO_THRESHOLD, refractory_ms: float = DEFAULT_REFRACTORY_MS, spacing: str = "locally_exclusive") -> dict:  # noqa: A002
     """Teager–Kaiser energy peaks beyond ``threshold · σ(energy)`` per channel."""
-    return _d.neo(_f32(data), threshold, _refractory(refractory_ms, sample_rate), spacing)
+    return _d.neo(_f32(data), sample_rate, threshold, refractory_ms, spacing)
 
 
 def prototype(samples: int) -> np.ndarray:
@@ -62,7 +61,7 @@ def matched_filter(data, sample_rate: float, *, prototype_ms: float = 1.0, proto
     """Correlation with a spike shape (``prototype_``, default :func:`prototype` of ``prototype_ms``)
     peaking beyond ``threshold · σ(score)`` where the signal is negative."""
     proto = prototype(max(3, round(prototype_ms * sample_rate / 1e3))) if prototype_ is None else np.ascontiguousarray(prototype_, dtype=np.float32)
-    return _d.matched_filter(_f32(data), proto, threshold, _refractory(refractory_ms, sample_rate), spacing)
+    return _d.matched_filter(_f32(data), sample_rate, proto, threshold, refractory_ms, spacing)
 
 
 def heights(sigmas, threshold: float = DEFAULT_THRESHOLD) -> np.ndarray:  # noqa: A002
@@ -77,7 +76,7 @@ def deduplicate(spikes: dict, probe: Probe, sample_rate: float, *, radius_um: fl
                           np.ascontiguousarray(spikes["amplitudes"], dtype=np.float32), probe._native, radius_um, max(1, round(window_ms * sample_rate / 1e3)))
 
 
-def detect_recording(recording, probe: Probe, *, band: tuple[float, float] = DEFAULT_BAND, car: bool = False, threshold: float = DEFAULT_THRESHOLD,  # noqa: A002
+def detect_recording(recording, probe: Probe, *, band: tuple[float, float] = DEFAULT_BAND, car: bool = False, threshold: float = DEFAULT_RECORDING_THRESHOLD,  # noqa: A002
                      refractory_ms: float = DEFAULT_REFRACTORY_MS, polarity: str = "negative", spacing: str = "locally_exclusive",
                      radius_um: float = DEFAULT_RADIUS_UM, k_neighbors: int = DEFAULT_K_NEIGHBORS, pre_ms: float = DEFAULT_PRE_MS,
                      post_ms: float = DEFAULT_POST_MS, sinc_shift: bool = True, batch_s: float = DEFAULT_BATCH_S,
@@ -98,6 +97,6 @@ def detect_recording(recording, probe: Probe, *, band: tuple[float, float] = DEF
 
 __all__ = [
     "DEFAULT_BAND", "DEFAULT_BATCH_S", "DEFAULT_CALIBRATION_CHUNKS", "DEFAULT_CALIBRATION_S", "DEFAULT_K_NEIGHBORS", "DEFAULT_NEO_THRESHOLD",
-    "DEFAULT_POST_MS", "DEFAULT_PRE_MS", "DEFAULT_RADIUS_UM", "DEFAULT_REFRACTORY_MS", "DEFAULT_THRESHOLD",
+    "DEFAULT_POST_MS", "DEFAULT_PRE_MS", "DEFAULT_RADIUS_UM", "DEFAULT_RECORDING_THRESHOLD", "DEFAULT_REFRACTORY_MS", "DEFAULT_THRESHOLD",
     "deduplicate", "detect_recording", "heights", "matched_filter", "neo", "prototype", "threshold",
 ]

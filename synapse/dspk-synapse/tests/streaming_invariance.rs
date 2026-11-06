@@ -4,7 +4,7 @@
 use dspk_ops::pipeline::{Pipeline, PipelineStage, PipelineWorkspace};
 use dspk_synapse::io::probe::{Position3D, SensorLayout, SensorSite};
 use dspk_core::{MemoryRecording, RecordingSource};
-use dspk_synapse::detection::{DeduplicatedSpike, SpikeSpacing, deduplicate_spikes_spatial, detect_spikes_threshold_with_sigma};
+use dspk_synapse::detection::{DeduplicatedSpike, deduplicate_spikes_spatial, detect_spikes_threshold_with_sigma};
 use dspk_synapse::streaming::{StreamingDetectionConfig, StreamingDetector, calibrate_noise};
 
 const FS: f64 = 30_000.0;
@@ -126,8 +126,7 @@ fn whole_recording(rec: &MemoryRecording, cfg: &StreamingDetectionConfig) -> Vec
     let mut filtered = vec![0.0; rec.data().len()];
     ws.process_chunk(rec.data(), n, &mut filtered);
     let range = cfg.detection_range(FS, n as u64);
-    let spacing = SpikeSpacing { refractory_samples: cfg.refractory_samples(FS), rule: cfg.distance_rule };
-    let crossings: Vec<_> = detect_spikes_threshold_with_sigma(&filtered, CHANNELS, n, &sigmas, cfg.threshold_factor, cfg.polarity, spacing)
+    let crossings: Vec<_> = detect_spikes_threshold_with_sigma(&filtered, CHANNELS, n, &sigmas, FS, &cfg.threshold_detector())
         .into_iter()
         .filter(|s| range.contains(&s.sample_index))
         .collect();

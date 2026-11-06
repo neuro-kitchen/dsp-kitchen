@@ -16,6 +16,7 @@ __all__ = [
     "DEFAULT_POST_MS",
     "DEFAULT_PRE_MS",
     "DEFAULT_RADIUS_UM",
+    "DEFAULT_RECORDING_THRESHOLD",
     "DEFAULT_REFRACTORY_MS",
     "DEFAULT_THRESHOLD",
     "deduplicate",
@@ -35,6 +36,7 @@ DEFAULT_NEO_THRESHOLD: builtins.float
 DEFAULT_POST_MS: builtins.float
 DEFAULT_PRE_MS: builtins.float
 DEFAULT_RADIUS_UM: builtins.float
+DEFAULT_RECORDING_THRESHOLD: builtins.float
 DEFAULT_REFRACTORY_MS: builtins.float
 DEFAULT_THRESHOLD: builtins.float
 def deduplicate(samples: numpy.typing.NDArray[numpy.uint64], channels: numpy.typing.NDArray[numpy.uint32], amplitudes: numpy.typing.NDArray[numpy.float32], probe: io.Probe, radius_um: builtins.float, window_samples: builtins.int) -> dict:
@@ -58,13 +60,13 @@ def heights(sigmas: numpy.typing.NDArray[numpy.float32], threshold: builtins.flo
     Detection height per channel: `threshold · σ`, `inf` where σ is not positive.
     """
 
-def matched_filter(data: numpy.typing.NDArray[numpy.float32], prototype: numpy.typing.NDArray[numpy.float32], threshold: builtins.float, refractory_samples: builtins.int, spacing: builtins.str) -> dict:
+def matched_filter(data: numpy.typing.NDArray[numpy.float32], sample_rate: builtins.float, prototype: numpy.typing.NDArray[numpy.float32], threshold: builtins.float, refractory_ms: builtins.float, spacing: builtins.str) -> dict:
     r"""
     Matched-filter detection: correlation with `prototype` peaking beyond `threshold · σ(score)`
     where the signal is negative.
     """
 
-def neo(data: numpy.typing.NDArray[numpy.float32], threshold: builtins.float, refractory_samples: builtins.int, spacing: builtins.str) -> dict:
+def neo(data: numpy.typing.NDArray[numpy.float32], sample_rate: builtins.float, threshold: builtins.float, refractory_ms: builtins.float, spacing: builtins.str) -> dict:
     r"""
     Teager–Kaiser energy (NEO) detection: energy peaks beyond `threshold · σ(energy)` per channel.
     """
@@ -74,7 +76,7 @@ def prototype(samples: builtins.int) -> numpy.typing.NDArray[numpy.float32]:
     A zero-mean, unit-norm biphasic spike prototype of `samples` samples (trough first).
     """
 
-def threshold(data: numpy.typing.NDArray[numpy.float32], threshold: builtins.float, polarity: builtins.str, refractory_samples: builtins.int, spacing: builtins.str, sigmas: typing.Optional[numpy.typing.NDArray[numpy.float32]] = None) -> dict:
+def threshold(data: numpy.typing.NDArray[numpy.float32], sample_rate: builtins.float, threshold: builtins.float, polarity: builtins.str, refractory_ms: builtins.float, spacing: builtins.str, sigmas: typing.Optional[numpy.typing.NDArray[numpy.float32]] = None) -> dict:
     r"""
     Threshold crossings of every channel of `data` `(channels, samples)`: local extrema of
     `polarity` beyond `threshold · σ` (σ per channel: `sigmas`, else the median-based noise

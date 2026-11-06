@@ -30,7 +30,7 @@
 //!
 //! ```
 //! use dspk_synapse::io::probe::{Position3D, SensorLayout, SensorSite};
-//! use dspk_synapse::{deduplicate_spikes_spatial, detect_spikes_threshold, SpikePolarity, SpikeSpacing};
+//! use dspk_synapse::{deduplicate_spikes_spatial, detect_spikes_threshold, SpikePolarity, ThresholdSpikeDetector};
 //!
 //! // 4 channels on a line, 20 µm apart
 //! let sites = (0..4).map(|c| SensorSite::new(c, Position3D::new(0.0, 20.0 * c as f32, 0.0), 0)).collect();
@@ -43,7 +43,8 @@
 //! x[2 * samples + 500] = -40.0;
 //!
 //! // Troughs below −5 σ (σ per channel, from the median absolute deviation), ≥ 1 ms apart at 30 kHz
-//! let crossings = detect_spikes_threshold(&x, channels, samples, 5.0, SpikePolarity::Negative, SpikeSpacing::new(30));
+//! let settings = ThresholdSpikeDetector::new(5.0, 1.0, SpikePolarity::Negative);
+//! let crossings = detect_spikes_threshold(&x, channels, samples, 30_000.0, &settings);
 //! assert_eq!(crossings.len(), 2); // the same spike, on two channels
 //!
 //! // Crossings within 50 µm and 10 samples of a larger one belong to it
