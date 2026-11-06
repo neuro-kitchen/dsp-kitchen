@@ -2,16 +2,19 @@
 //! signal stream and one stream per view request (see `proto/dspk_stream.proto`), so a view
 //! never waits behind signal data.
 
+pub mod auth;
 mod client;
 mod server;
 pub mod tls;
 
+pub use auth::{Authority, ClientIdentity, ClientRecord, Enrollment, Peer, Permission};
+
 pub use client::{Session, SignalReceiver};
 pub use server::{
-    checked_view, serve_recording, Pacing, ServeOptions, Server, DEFAULT_FRAME_SEC, DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_REQUEST_BYTES, DEFAULT_QUEUE_FRAMES,
+    checked_view, serve_recording, Pacing, ServeOptions, Server, REFUSED_CLIENT, DEFAULT_FRAME_SEC, DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_REQUEST_BYTES, DEFAULT_QUEUE_FRAMES,
     MAX_VIEW_COLUMNS, MAX_VIEW_VALUES,
 };
-pub use tls::{client_config, server_config, ServerIdentity, ServerTls, ServerTrust};
+pub use tls::{client_config, client_config_with, server_config, server_config_with_clients, ServerIdentity, ServerTls, ServerTrust};
 
 #[cfg(test)]
 mod tests {
@@ -39,7 +42,7 @@ mod tests {
         let server = Server::bind("127.0.0.1:0".parse().unwrap(), tls.config).unwrap();
         let addr = server.local_addr().unwrap();
         tokio::spawn(async move {
-            while let Some(connection) = server.accept().await {
+            while let Some((connection, _peer)) = server.accept().await {
                 tokio::spawn(serve_recording(connection, source.clone(), pyramid.clone(), options.clone()));
             }
         });
@@ -116,6 +119,49 @@ mod tests {
         many.samples = u64::MAX / 2;
         let request = wire::ViewRequest { channels: (0..1024).collect(), start: 0, end: many.samples, width: MAX_VIEW_COLUMNS };
         assert!(checked_view(&request, &many).is_err(), "1024 × 65536 values is over the limit");
+    }
+
+    /// A server requiring client certificates from its authority, on an ephemeral port.
+    fn start_with_clients(authority: Arc<Authority>, anonymous: bool) -> SocketAddr {
+        let tls = server_config_with_clients(&authority, &ServerIdentity::SelfSigned { names: vec![LOCALHOST.into()] }, anonymous).unwrap();
+        let server = Server::bind("127.0.0.1:0".parse().unwrap(), tls.config).unwrap().with_authority(authority);
+        let addr = server.local_addr().unwrap();
+        let source: Arc<dyn RecordingSource> = recording();
+        tokio::spawn(async move {
+            while let Some((connection, _peer)) = server.accept().await {
+                tokio::spawn(serve_recording(connection, source.clone(), None, ServeOptions::default()));
+            }
+        });
+        addr
+    }
+
+    /// Mutual TLS: an enrolled client connects; one without a certificate, one enrolled by
+    /// another authority and a revoked one are refused; anonymous only when allowed.
+    #[tokio::test]
+    async fn only_enrolled_clients_connect() {
+        let dir = std::env::temp_dir().join(format!("dspk-stream-mtls-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let authority = Arc::new(Authority::open_or_create(&dir.join("server")).unwrap());
+        let addr = start_with_clients(authority.clone(), false);
+        let alice = ClientIdentity::from_pem(authority.enroll("alice", Permission::Read).unwrap().pem.as_bytes()).unwrap();
+        let trust = ServerTrust::from_identity(&alice);
+
+        let session = Session::connect(addr, LOCALHOST, client_config_with(&trust, Some(&alice)).unwrap()).await.unwrap();
+        assert_eq!(session.info().channel_count(), 4);
+        session.close().await;
+
+        assert!(Session::connect(addr, LOCALHOST, client_config(&trust).unwrap()).await.is_err(), "no certificate");
+        let other = Authority::open_or_create(&dir.join("other")).unwrap();
+        let mallory = ClientIdentity::from_pem(other.enroll("mallory", Permission::Control).unwrap().pem.as_bytes()).unwrap();
+        assert!(Session::connect(addr, LOCALHOST, client_config_with(&trust, Some(&mallory)).unwrap()).await.is_err(), "another authority");
+        authority.revoke("alice").unwrap();
+        assert!(Session::connect(addr, LOCALHOST, client_config_with(&trust, Some(&alice)).unwrap()).await.is_err(), "revoked");
+
+        // Anonymous access, when the server allows it: read only, no certificate needed
+        let open = start_with_clients(authority.clone(), true);
+        let session = Session::connect(open, LOCALHOST, client_config(&trust).unwrap()).await.unwrap();
+        session.close().await;
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

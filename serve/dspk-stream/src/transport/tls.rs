@@ -8,6 +8,7 @@ use std::time::Duration;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
+use super::auth::{Authority, ClientIdentity};
 use crate::error::{StreamError, StreamResult};
 use crate::protocol::ALPN;
 
@@ -74,9 +75,62 @@ fn tls_error(e: impl std::fmt::Display) -> StreamError {
     StreamError::Tls(e.to_string())
 }
 
-/// The QUIC server configuration for `identity`.
+impl ServerTrust {
+    /// Trusts the authority (CA) that enrolled `identity`: the server it was enrolled by.
+    pub fn from_identity(identity: &ClientIdentity) -> Self {
+        Self::Certificates(identity.authorities.clone())
+    }
+}
+
+/// The QUIC server configuration for `identity`, without client certificates (anyone who
+/// reaches the server may connect): tests and trusted networks only. A served deployment uses
+/// [`server_config_with_clients`].
 pub fn server_config(identity: &ServerIdentity) -> StreamResult<ServerTls> {
-    let (chain, key): (Vec<CertificateDer<'static>>, PrivateKeyDer<'static>) = match identity {
+    let (chain, key) = identity_chain(identity)?;
+    let certificate = chain[0].to_vec();
+    let crypto = rustls::ServerConfig::builder().with_no_client_auth().with_single_cert(chain, key).map_err(tls_error)?;
+    finish_server(crypto, certificate)
+}
+
+/// The QUIC server configuration that requires a client certificate issued by `authority`
+/// (mutual TLS); with `anonymous`, clients without one are let in too (read only, decided after
+/// the handshake). The server presents `identity` when it is files, else
+/// ([`ServerIdentity::SelfSigned`]) a certificate the authority issues for its names; clients
+/// then trust the authority (the returned `certificate` is its CA).
+pub fn server_config_with_clients(authority: &Authority, identity: &ServerIdentity, anonymous: bool) -> StreamResult<ServerTls> {
+    let (chain, key, certificate) = match identity {
+        ServerIdentity::Files { .. } => {
+            let (chain, key) = identity_chain(identity)?;
+            let first = chain[0].to_vec();
+            (chain, key, first)
+        }
+        ServerIdentity::SelfSigned { names } => {
+            let (chain, key) = authority.server_certificate(names)?;
+            (chain, key, authority.ca_certificate().to_vec())
+        }
+    };
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(CertificateDer::from(authority.ca_certificate().to_vec())).map_err(tls_error)?;
+    let mut verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots));
+    if anonymous {
+        verifier = verifier.allow_unauthenticated();
+    }
+    let verifier = verifier.build().map_err(tls_error)?;
+    let crypto = rustls::ServerConfig::builder().with_client_cert_verifier(verifier).with_single_cert(chain, key).map_err(tls_error)?;
+    finish_server(crypto, certificate)
+}
+
+fn finish_server(mut crypto: rustls::ServerConfig, certificate: Vec<u8>) -> StreamResult<ServerTls> {
+    crypto.alpn_protocols = vec![ALPN.to_vec()];
+    let quic = quinn::crypto::rustls::QuicServerConfig::try_from(crypto).map_err(tls_error)?;
+    let mut config = quinn::ServerConfig::with_crypto(Arc::new(quic));
+    config.transport_config(Arc::new(server_transport()));
+    Ok(ServerTls { config, certificate })
+}
+
+/// The certificate chain and key `identity` names (a new self-signed one, or PEM files).
+fn identity_chain(identity: &ServerIdentity) -> StreamResult<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
+    Ok(match identity {
         ServerIdentity::SelfSigned { names } => {
             let generated = rcgen::generate_simple_self_signed(names.clone()).map_err(tls_error)?;
             let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(generated.signing_key.serialize_der()));
@@ -89,30 +143,32 @@ pub fn server_config(identity: &ServerIdentity) -> StreamResult<ServerTls> {
             }
             (chain, PrivateKeyDer::from_pem_file(private_key).map_err(tls_error)?)
         }
-    };
-    let certificate = chain[0].to_vec();
-    let mut crypto = rustls::ServerConfig::builder().with_no_client_auth().with_single_cert(chain, key).map_err(tls_error)?;
-    crypto.alpn_protocols = vec![ALPN.to_vec()];
-    let quic = quinn::crypto::rustls::QuicServerConfig::try_from(crypto).map_err(tls_error)?;
-    let mut config = quinn::ServerConfig::with_crypto(Arc::new(quic));
-    config.transport_config(Arc::new(server_transport()));
-    Ok(ServerTls { config, certificate })
+    })
 }
 
-/// The QUIC client configuration for `trust`.
+/// The QUIC client configuration for `trust`, without a client certificate.
 pub fn client_config(trust: &ServerTrust) -> StreamResult<quinn::ClientConfig> {
-    let mut crypto = match trust {
+    client_config_with(trust, None)
+}
+
+/// The QUIC client configuration for `trust`, presenting `identity` (from `dspk clients enroll`)
+/// when given.
+pub fn client_config_with(trust: &ServerTrust, identity: Option<&ClientIdentity>) -> StreamResult<quinn::ClientConfig> {
+    let builder = match trust {
         ServerTrust::Certificates(certificates) => {
             let mut roots = rustls::RootCertStore::empty();
             for der in certificates {
                 roots.add(CertificateDer::from(der.clone())).map_err(tls_error)?;
             }
-            rustls::ClientConfig::builder().with_root_certificates(roots).with_no_client_auth()
+            rustls::ClientConfig::builder().with_root_certificates(roots)
         }
-        ServerTrust::DangerAcceptAnyCertificate => rustls::ClientConfig::builder()
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(AcceptAnyCertificate))
-            .with_no_client_auth(),
+        ServerTrust::DangerAcceptAnyCertificate => rustls::ClientConfig::builder().dangerous().with_custom_certificate_verifier(Arc::new(AcceptAnyCertificate)),
+    };
+    let mut crypto = match identity {
+        Some(id) => builder
+            .with_client_auth_cert(vec![CertificateDer::from(id.certificate.clone())], PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(id.private_key.clone())))
+            .map_err(tls_error)?,
+        None => builder.with_no_client_auth(),
     };
     crypto.alpn_protocols = vec![ALPN.to_vec()];
     let quic = quinn::crypto::rustls::QuicClientConfig::try_from(crypto).map_err(tls_error)?;

@@ -9,6 +9,7 @@ use dspk_view::{Envelope, Pyramid};
 use tokio::task::JoinHandle;
 use tokio::time::{interval, MissedTickBehavior};
 
+use super::auth::{Authority, Peer};
 use crate::error::{StreamError, StreamResult};
 use crate::protocol::{frame_from_envelope, header_from_info, read_message, view_from_request, wire, write_message, PROTOCOL_VERSION};
 use dspk_view::View;
@@ -61,12 +62,24 @@ impl Default for ServeOptions {
 pub struct Server {
     endpoint: quinn::Endpoint,
     max_connections: usize,
+    authority: Option<Arc<Authority>>,
 }
+
+/// Closing code for a client whose certificate is not enrolled or is revoked.
+pub const REFUSED_CLIENT: u32 = 1;
 
 impl Server {
     /// Listens on `addr` (UDP), at most [`DEFAULT_MAX_CONNECTIONS`] clients at once.
     pub fn bind(addr: SocketAddr, config: quinn::ServerConfig) -> StreamResult<Self> {
-        Ok(Self { endpoint: quinn::Endpoint::server(config, addr)?, max_connections: DEFAULT_MAX_CONNECTIONS })
+        Ok(Self { endpoint: quinn::Endpoint::server(config, addr)?, max_connections: DEFAULT_MAX_CONNECTIONS, authority: None })
+    }
+
+    /// Checks every client's certificate against `authority`'s registry after the handshake (use
+    /// with a configuration from [`super::tls::server_config_with_clients`]): enrolled and not
+    /// revoked, or the connection is closed.
+    pub fn with_authority(mut self, authority: Arc<Authority>) -> Self {
+        self.authority = Some(authority);
+        self
     }
 
     /// At most `n` clients at once (at least one).
@@ -79,11 +92,13 @@ impl Server {
         Ok(self.endpoint.local_addr()?)
     }
 
-    /// The next client whose handshake succeeds; `None` once the endpoint is closed. Before any
-    /// handshake work, a client must prove it owns its address (QUIC Retry: a spoofed source
-    /// address gets one small packet, never the server's answers), and clients beyond the
-    /// connection limit are refused.
-    pub async fn accept(&self) -> Option<quinn::Connection> {
+    /// The next client whose handshake succeeds and who is allowed in, and who it is; `None`
+    /// once the endpoint is closed. Before any handshake work, a client must prove it owns its
+    /// address (QUIC Retry: a spoofed source address gets one small packet, never the server's
+    /// answers), and clients beyond the connection limit are refused. With an authority, a
+    /// client presenting a certificate must be enrolled and not revoked; one presenting none is
+    /// anonymous (only possible when the TLS configuration allows it).
+    pub async fn accept(&self) -> Option<(quinn::Connection, Peer)> {
         loop {
             let incoming = self.endpoint.accept().await?;
             if !incoming.remote_address_validated() && incoming.may_retry() {
@@ -97,10 +112,31 @@ impl Server {
                 incoming.refuse();
                 continue;
             }
-            match incoming.await {
-                Ok(connection) => return Some(connection),
-                Err(e) => tracing::warn!("QUIC handshake failed: {e}"),
+            let connection = match incoming.await {
+                Ok(connection) => connection,
+                Err(e) => {
+                    tracing::warn!("QUIC handshake failed: {e}");
+                    continue;
+                }
+            };
+            match self.peer(&connection) {
+                Some(peer) => return Some((connection, peer)),
+                None => {
+                    tracing::warn!("refused {}: its certificate is not enrolled or is revoked", connection.remote_address());
+                    connection.close(quinn::VarInt::from_u32(REFUSED_CLIENT), b"client not enrolled or revoked");
+                }
             }
+        }
+    }
+
+    /// Who `connection`'s client is: anonymous without an authority or without a certificate,
+    /// else its enrolled record.
+    fn peer(&self, connection: &quinn::Connection) -> Option<Peer> {
+        let Some(authority) = &self.authority else { return Some(Peer::anonymous()) };
+        let certificates = connection.peer_identity().and_then(|id| id.downcast::<Vec<rustls::pki_types::CertificateDer<'static>>>().ok());
+        match certificates.as_deref().and_then(|c| c.first()) {
+            Some(certificate) => authority.authorize(certificate),
+            None => Some(Peer::anonymous()),
         }
     }
 
