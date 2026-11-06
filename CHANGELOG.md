@@ -24,6 +24,8 @@ version number.
   32 clients (`Server::with_max_connections`, `dspk serve --max-clients`), idle connections close
   after 30 s, and a client proves its address (QUIC Retry) before any handshake work.
 - `dspk serve` stops on SIGTERM (container and service managers), not only Ctrl+C.
+- Supply chain: `cargo-deny` (`deny.toml`: no known vulnerability, no yanked crate, allowed
+  licences only, crates.io only) on every pull request, weekly, and before every release.
 
 ### Added
 
