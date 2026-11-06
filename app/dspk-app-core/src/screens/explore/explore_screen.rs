@@ -11,9 +11,12 @@ use gpui_kit::base::dock::{DockArea, DockLayout, DockPlacement, InsertTarget};
 use gpui_kit::base::Placement;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dock::{panel_handle, DockSkin};
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Icon, Selectable as _};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Icon, Selectable as _, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
-use gpui_kit::{div, px, AnyView, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, SharedString, Styled as _, Subscription, WeakEntity, Window};
+use gpui_kit::{
+    div, px, AnyView, App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Subscription, WeakEntity, Window,
+};
 
 use crate::data::store::{AppEvent, Store};
 use crate::screens::explore::trace::renderer::TimeViewKind;
@@ -130,6 +133,9 @@ impl ExploreView {
             if matches!(e, AppEvent::Picked) && this.right != Some(RightPanel::Processing) {
                 this.show_right(RightPanel::Processing, cx);
             }
+            if matches!(e, AppEvent::Document(_) | AppEvent::RecordingChanged) {
+                cx.notify();
+            }
         });
         let mut this = Self {
             vm,
@@ -240,6 +246,61 @@ impl ExploreView {
     }
 }
 
+impl ExploreView {
+    /// The session's views (streams) as tabs: the active one is drawn; a click shows another
+    /// (opening its recording when it is another file). New views come from the Pipeline canvas.
+    fn view_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = cx.theme();
+        let (muted, border, active_bg) = (t.muted_foreground, t.border, t.background);
+        let s = self.store.read(cx);
+        let active = s.doc.active_view.clone();
+        let open = s.recording.as_ref().and_then(|r| r.path.clone());
+        let tabs: Vec<_> = s
+            .doc
+            .views
+            .iter()
+            .map(|v| {
+                let on = active.as_deref() == Some(v.id.as_str());
+                let elsewhere = open.as_deref() != Some(v.recording.path.as_path());
+                let ops = v.ops.iter().filter(|o| o.enabled).count();
+                let (store, id) = (self.store.clone(), v.id.clone());
+                h_flex()
+                    .id(SharedString::from(format!("view-tab-{}", v.id)))
+                    .h_full()
+                    .px_3()
+                    .gap_1p5()
+                    .flex_none()
+                    .cursor_pointer()
+                    .border_r_1()
+                    .border_color(border)
+                    .when(on, |d| d.bg(active_bg).border_b_2().border_color(t.primary))
+                    .child(div().text_xs().when(!on, |d| d.text_color(muted)).child(v.name.clone()))
+                    .child(div().text_xs().text_color(muted).child(if ops == 0 { "raw".to_string() } else { format!("{ops} op{}", if ops == 1 { "" } else { "s" }) }))
+                    .when(elsewhere, |d| d.child(div().text_xs().text_color(muted).child("· other file")))
+                    .on_click(move |_, _, cx| store.update(cx, |s, cx| s.show_view(&id, cx)))
+            })
+            .collect();
+        let store = self.store.clone();
+        h_flex()
+            .id("view-tabs")
+            .h(px(30.))
+            .flex_none()
+            .overflow_x_scroll()
+            .border_b_1()
+            .border_color(border)
+            .children(tabs)
+            .child(
+                Button::new("view-tabs-pipeline")
+                    .ghost()
+                    .xsmall()
+                    .icon(Icon::new(gpui_kit::assets::IconName::Workflow))
+                    .label("New view…")
+                    .tooltip("Branch a recording into a new view on the Pipeline canvas")
+                    .on_click(move |_, _, cx| store.update(cx, |s, cx| s.set_workspace(crate::navigation::route::Workspace::Pipeline, cx))),
+            )
+    }
+}
+
 /// An icon of a side bar: selected while its panel shows.
 fn rail_button(id: impl Into<SharedString>, icon: Icon, tip: SharedString, selected: bool, on: impl Fn(&mut Window, &mut App) + 'static) -> Button {
     Button::new(gpui_kit::ElementId::Name(id.into())).ghost().icon(icon).tooltip(tip).selected(selected).on_click(move |_, window, cx| on(window, cx))
@@ -287,7 +348,7 @@ impl Render for ExploreView {
                     .min_h_0()
                     .child(left_rail)
                     .when(self.left_open, |d| d.child(div().w(px(LEFT_W)).flex_none().h_full().border_r_1().border_color(border).child(self.channels.clone())))
-                    .child(div().flex_1().min_w_0().h_full().child(self.dock.clone()))
+                    .child(v_flex().flex_1().min_w_0().h_full().child(self.view_tabs(cx)).child(div().flex_1().min_h_0().child(self.dock.clone())))
                     .when_some(right_panel, |d, p| d.child(div().w(px(RIGHT_W)).flex_none().h_full().border_l_1().border_color(border).child(p)))
                     .child(right_rail),
             )
