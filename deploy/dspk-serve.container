@@ -1,0 +1,33 @@
+# Podman Quadlet: `dspk serve` as a systemd service (starts at boot, restarts on failure).
+# Install for your user:
+#   mkdir -p ~/.config/containers/systemd ~/dspk-data
+#   cp deploy/dspk-serve.container ~/.config/containers/systemd/
+#   systemctl --user daemon-reload && systemctl --user start dspk-serve
+#   loginctl enable-linger "$USER"     # keep it running after you log out
+# System-wide (root): /etc/containers/systemd/ instead, and `systemctl` without --user.
+# Logs: journalctl --user -u dspk-serve
+
+[Unit]
+Description=dspk serve: a recording over QUIC (dspk-stream)
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image=localhost/dspk-serve:latest
+ContainerName=dspk-serve
+PublishPort=50051:50051/udp
+# You on the host = the container's dspk user (uid 10001), so it can write to ~/dspk-data
+UserNS=keep-id:uid=10001,gid=10001
+# Recordings, their pyramids and server.der (the certificate for clients); :Z labels it for SELinux
+Volume=%h/dspk-data:/data:Z
+# Compiled kernels and autotune results, kept across restarts
+Volume=dspk-cache:/home/dspk/.cache
+# Your file under ~/dspk-data, and the names clients use for this machine (for the certificate)
+Exec=serve /data/recording.ap.bin --bind 0.0.0.0:50051 --loop --certificate-out /data/server.der --name %H
+
+[Service]
+Restart=on-failure
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target

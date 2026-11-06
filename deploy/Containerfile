@@ -1,0 +1,50 @@
+# dspk as a server: `dspk serve` streams a recording over QUIC (UDP 50051, TLS) to clients
+# (`dspk receive`, the app, Python). The image holds the whole `dspk` command line, so the same
+# container also runs `dspk run`, `dspk doctor`, … on the CPU (or a GPU passed through).
+#
+# Build from the repository root (the build context is the whole workspace):
+#   podman build -f deploy/Containerfile --ignorefile deploy/.containerignore -t dspk-serve .
+# Run (a synthetic 384-channel recording; your own: see deploy/README.md):
+#   podman run --rm -p 50051:50051/udp dspk-serve
+
+# Rust toolchain of the build (edition 2024 needs >= 1.85; CI uses the latest stable)
+ARG RUST_VERSION=1.99
+# Debian release of both stages: glibc >= 2.34 for the CPU runtime's prebuilt LLVM (bookworm: 2.36)
+ARG DEBIAN=bookworm
+
+FROM docker.io/library/rust:${RUST_VERSION}-${DEBIAN} AS build
+# CubeCL runtimes compiled in, and the artifact hub (`dspk hub`); the defaults of dspk-cli.
+# A smaller image without GPU runtimes: --build-arg FEATURES=cpu,hub
+ARG FEATURES=wgpu,cuda,cpu,hub
+WORKDIR /src
+COPY . .
+# Caches: the crates.io registry, the build, and the LLVM bundle the CPU runtime downloads at
+# build time (~/.local/share/tracel); the binary is copied out of the cached target folder
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    --mount=type=cache,target=/root/.local/share/tracel \
+    cargo build --release --locked -p dspk-cli --no-default-features --features "${FEATURES}" \
+    && install -D -m 0755 target/release/dspk /out/dspk
+
+FROM docker.io/library/debian:${DEBIAN}-slim
+# ca-certificates: verified downloads from the hub over HTTPS
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /out/dspk /usr/local/bin/dspk
+# Not root; /data holds the recordings, their pyramids (written next to them, so the volume is
+# writable) and the certificate the server writes for clients
+RUN useradd --create-home --uid 10001 dspk && install -d -o dspk -g dspk /data
+USER dspk
+WORKDIR /data
+VOLUME /data
+# Kernels compiled and autotuned once survive restarts when this is a volume too
+ENV XDG_CACHE_HOME=/home/dspk/.cache
+EXPOSE 50051/udp
+# `dspk serve` stops cleanly on Ctrl+C (SIGINT); podman stop sends this instead of SIGTERM
+STOPSIGNAL SIGINT
+ENTRYPOINT ["dspk"]
+# Listen on every interface of the container; the self-signed certificate is written to /data
+# for clients (`dspk receive --certificate server.der`). Add --name <host> for the names clients
+# use, or bring your own certificate (--certificate, --private-key).
+CMD ["serve", "--bind", "0.0.0.0:50051", "--certificate-out", "/data/server.der"]
