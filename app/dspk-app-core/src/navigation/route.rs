@@ -13,10 +13,12 @@ pub enum Workspace {
     Sorting,
     Pipeline,
     Curation,
+    /// Charts across recordings, sortings and runs (what it holds: to be decided).
+    Analytics,
 }
 
 impl Workspace {
-    pub const ALL: [Workspace; 4] = [Workspace::Explore, Workspace::Sorting, Workspace::Pipeline, Workspace::Curation];
+    pub const ALL: [Workspace; 5] = [Workspace::Explore, Workspace::Sorting, Workspace::Pipeline, Workspace::Curation, Workspace::Analytics];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -24,6 +26,7 @@ impl Workspace {
             Workspace::Sorting => "Sorting",
             Workspace::Pipeline => "Pipeline",
             Workspace::Curation => "Curation",
+            Workspace::Analytics => "Analytics",
         }
     }
 
@@ -34,6 +37,7 @@ impl Workspace {
             Workspace::Sorting => "Run the installed sorters on the recording or a part of it, compare their units",
             Workspace::Pipeline => "The processing graph: recordings, operations, views and writes on a canvas",
             Workspace::Curation => "Judge a sorting: units, waveforms, features, correlograms; label and merge",
+            Workspace::Analytics => "Charts across recordings, sortings and runs (coming)",
         }
     }
 
@@ -50,6 +54,10 @@ impl Workspace {
                 "Inspect and judge sorting results: clusters, waveforms, correlograms and amplitudes, \
                  with merges and splits recorded for the sorting files.",
             ),
+            Workspace::Analytics => Some(
+                "Charts across the session: recordings, sortings, metrics and runs side by side. \
+                 What it shows is being designed.",
+            ),
         }
     }
 
@@ -59,6 +67,7 @@ impl Workspace {
             Workspace::Sorting => IconName::SlidersHorizontal,
             Workspace::Pipeline => IconName::Workflow,
             Workspace::Curation => IconName::Microscope,
+            Workspace::Analytics => IconName::ChartPie,
         }
     }
 }

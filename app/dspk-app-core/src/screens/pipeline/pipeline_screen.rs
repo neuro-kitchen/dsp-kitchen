@@ -634,7 +634,35 @@ impl Inspector {
                 v_flex()
                     .gap_2()
                     .child(row("File", div().text_xs().truncate().child(recording.path.display().to_string()), cx))
-                    .child(row("Source", div().text_xs().child(recording.source.clone().unwrap_or_else(|| "default".into())), cx))
+                    .child({
+                        // The file's sources (when loaded): pick which one this node reads
+                        let loaded = s.recordings().find(|r| r.path.as_ref() == Some(&recording.path)).map(|r| r.sources.clone());
+                        match &loaded {
+                            Some(ss) => {
+                                let names: Vec<SharedString> = ss.entries().iter().map(|e| SharedString::from(e.summary())).collect();
+                                let ids: Vec<String> = ss.entries().iter().map(|e| e.id.clone()).collect();
+                                let current = recording.source.clone().unwrap_or_else(|| ss.default_entry().id.clone());
+                                let at = ids.iter().position(|i| *i == current);
+                                let (store, id, rec) = (self.store.clone(), id.clone(), recording.clone());
+                                row(
+                                    "Source",
+                                    crate::ui::widgets::MenuSelect::new("inspector-source", names, at, move |i, _, cx| {
+                                        // Another source: its channels differ, so the subset goes
+                                        let recording = crate::domain::session::RecordingRef { path: rec.path.clone(), source: Some(ids[i].clone()), channels: None };
+                                        let _ = store.update(cx, |s, cx| s.execute(SessionCommand::SetSource { id: id.clone(), recording }, cx));
+                                    })
+                                    .full_width(),
+                                    cx,
+                                )
+                                .into_any_element()
+                            }
+                            None => row("Source", div().text_xs().child(format!("{} (open the file to choose)", recording.source.clone().unwrap_or_else(|| "default".into()))), cx).into_any_element(),
+                        }
+                    })
+                    .children(s.recordings().find(|r| r.path.as_ref() == Some(&recording.path)).map(|r| {
+                        let e = r.sources.entry(recording.source.as_deref().unwrap_or(&r.sources.default_entry().id)).clone();
+                        Section::new("Metadata").child(crate::screens::explore::components::panels::source_facts(&e, muted))
+                    }))
                     .child(row(
                         "Channels",
                         div().text_xs().child(recording.channels.as_ref().map_or_else(|| "all".to_string(), |c| format!("{} ({}…)", c.len(), c.iter().take(4).map(|c| c.to_string()).collect::<Vec<_>>().join(", ")))),
