@@ -400,6 +400,8 @@ impl PipelineView {
                 "Reference" => "pipeline-menu-reference",
                 "Smooth" => "pipeline-menu-smooth",
                 "Transform" => "pipeline-menu-transform",
+                "Channels" => "pipeline-menu-channels",
+                "Rate" => "pipeline-menu-rate",
                 _ => "pipeline-menu-output",
             };
             bar = bar.child(menu(id, c.name, build));

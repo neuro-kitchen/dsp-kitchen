@@ -159,6 +159,22 @@ fn stage_teager_kaiser(edge: &str) -> PyResult<Stage> {
     Ok(stage(PipelineStage::TeagerKaiser { edge: self::edge(edge)? }))
 }
 
+/// One function of each sample: `abs`, `square`, `sqrt` (negative values as 0) or `log10` (of
+/// `|x|`, magnitudes below `LOG10_FLOOR` as it).
+#[gen_stub_pyfunction(module = "dspk._native.ops")]
+#[pyfunction]
+fn stage_elementwise(function: &str) -> PyResult<Stage> {
+    use dspk_ops::math::Elementwise;
+    let f = match function {
+        "abs" => Elementwise::Abs,
+        "square" => Elementwise::Square,
+        "sqrt" => Elementwise::Sqrt,
+        "log10" => Elementwise::Log10,
+        other => return Err(PyValueError::new_err(format!("function is abs, square, sqrt or log10, got {other:?}"))),
+    };
+    Ok(stage(PipelineStage::Elementwise(f)))
+}
+
 /// Stages run on the device over `(channels, samples)` chunks.
 ///
 /// `stream=False`: every chunk on its own (zero-phase filters allowed; give chunks enough context,
@@ -282,6 +298,8 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(stage_reorder_channels, m)?)?;
     m.add_function(wrap_pyfunction!(stage_subtract_baseline, m)?)?;
     m.add_function(wrap_pyfunction!(stage_clamp, m)?)?;
+    m.add_function(wrap_pyfunction!(stage_elementwise, m)?)?;
+    m.add("LOG10_FLOOR", dspk_ops::math::LOG10_FLOOR)?;
     m.add_function(wrap_pyfunction!(stage_iir, m)?)?;
     m.add_function(wrap_pyfunction!(stage_notch, m)?)?;
     m.add_function(wrap_pyfunction!(stage_sos, m)?)?;
@@ -295,3 +313,5 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(stage_teager_kaiser, m)?)?;
     Ok(())
 }
+
+pyo3_stub_gen::module_variable!("dspk._native.ops", "LOG10_FLOOR", f32);

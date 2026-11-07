@@ -19,6 +19,7 @@ use dspk_ops::filter::{FilterBand, FilterDesign, FilterMode, FilterSpec, FilterS
 use dspk_ops::resampler::poly::{RESAMPLE_POLY_DEFAULT_EDGE, RESAMPLE_POLY_WINDOW};
 use dspk_ops::resampler::FirWindow;
 use dspk_core::{ChannelMap, ChannelPair};
+use dspk_ops::math::Elementwise;
 use dspk_ops::PipelineStage;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -106,6 +107,14 @@ pub enum Node {
     SubtractBaseline { baseline: f32 },
     /// `y = clip(x, min, max)`.
     Clamp { min: f32, max: f32 },
+    /// `y = |x|` (full-wave rectification; then a low-pass gives an EMG envelope).
+    Rectify {},
+    /// `y = x²` (instantaneous power; then a moving average and `sqrt` give a moving RMS).
+    Square {},
+    /// `y = √x`, negative values taken as 0.
+    Sqrt {},
+    /// `y = log₁₀ |x|`, magnitudes below 1e-12 taken as 1e-12.
+    Log10 {},
     /// IIR filter designed for the recording's sample rate.
     Iir {
         band: Band,
@@ -787,6 +796,10 @@ impl Node {
                 Ok(Some(PipelineStage::Fir { taps: taps.clone(), centered: *centered, edge: (*edge).into() }))
             }
             Node::Car {} => Ok(Some(PipelineStage::CommonAverageReference)),
+            Node::Rectify {} => Ok(Some(PipelineStage::Elementwise(Elementwise::Abs))),
+            Node::Square {} => Ok(Some(PipelineStage::Elementwise(Elementwise::Square))),
+            Node::Sqrt {} => Ok(Some(PipelineStage::Elementwise(Elementwise::Sqrt))),
+            Node::Log10 {} => Ok(Some(PipelineStage::Elementwise(Elementwise::Log10))),
             Node::Cmr {} => Ok(Some(PipelineStage::CommonMedianReference)),
             Node::GaussianSmooth { sigma_samples, edge } => Ok(Some(PipelineStage::GaussianSmooth { sigma_samples: *sigma_samples, edge: (*edge).into() })),
             Node::Median { width, edge } => Ok(Some(PipelineStage::Median { width: *width, edge: (*edge).into() })),

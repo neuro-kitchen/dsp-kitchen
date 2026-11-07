@@ -219,7 +219,27 @@ pub fn builtin() -> Vec<RecipeDoc> {
     emg.description = "Band-pass 20–450 Hz, Teager–Kaiser energy, Gaussian smoothing.".into();
     let mut mains = RecipeDoc::new("Mains removal (60 Hz)", vec!["filter".into()], vec![op("notch60", json!({"op": "notch", "freq": 60.0, "q": 30.0})), op("notch120", json!({"op": "notch", "freq": 120.0, "q": 30.0}))]);
     mains.description = "Notches at 60 Hz and its first harmonic.".into();
-    vec![spike, lfp, emg, mains]
+    let mut rectified = RecipeDoc::new(
+        "EMG envelope (rectified)",
+        vec!["filter".into(), "emg".into()],
+        vec![
+            op("bandpass", json!({"op": "iir", "band": "bandpass", "cutoff": [20.0, 450.0], "order": 4})),
+            op("rectify", json!({"op": "rectify"})),
+            op("lowpass", json!({"op": "iir", "band": "lowpass", "cutoff": [6.0], "order": 4})),
+        ],
+    );
+    rectified.description = "Band-pass 20–450 Hz, full-wave rectification, low-pass 6 Hz: the linear envelope.".into();
+    let mut rms = RecipeDoc::new(
+        "RMS envelope",
+        vec!["filter".into(), "emg".into()],
+        vec![
+            op("square", json!({"op": "square"})),
+            op("lowpass", json!({"op": "iir", "band": "lowpass", "cutoff": [10.0], "order": 4})),
+            op("sqrt", json!({"op": "sqrt"})),
+        ],
+    );
+    rms.description = "Square, low-pass 10 Hz (a moving mean of the power), square root: the moving RMS.".into();
+    vec![spike, lfp, emg, rectified, rms, mains]
 }
 
 #[cfg(test)]

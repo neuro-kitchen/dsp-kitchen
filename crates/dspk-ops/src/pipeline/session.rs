@@ -266,6 +266,7 @@ impl<F: DspFloat> PipelineWorkspace<F> {
                     PipelineStage::Clamp { min, max } => {
                         execute_clamp::<F>(client, &current_in, &out, total, cast(*min as f64), cast(*max as f64))
                     }
+                    PipelineStage::Elementwise(f) => crate::math::execute_elementwise::<F>(client, &current_in, &out, total, *f),
                     PipelineStage::CommonAverageReference => {
                         execute_direct_car::<F>(client, &current_in, &out, channels, samples)
                     }

@@ -117,8 +117,32 @@ def teager_kaiser(*, edge: str = TEAGER_KAISER_DEFAULT_EDGE) -> Stage:
     return _ops.stage_teager_kaiser(edge)
 
 
+LOG10_FLOOR: float = _ops.LOG10_FLOOR
+"""Smallest magnitude ``log10`` takes the logarithm of (zeros give ``log10(LOG10_FLOOR)``)."""
+
+
+def rectify() -> Stage:
+    """Full-wave rectification ``|x|`` (then a low-pass gives an envelope)."""
+    return _ops.stage_elementwise("abs")
+
+
+def square() -> Stage:
+    """Instantaneous power ``x**2`` (then a low-pass and ``sqrt`` give a moving RMS)."""
+    return _ops.stage_elementwise("square")
+
+
+def sqrt() -> Stage:
+    """``sqrt(x)``, negative values taken as 0."""
+    return _ops.stage_elementwise("sqrt")
+
+
+def log10() -> Stage:
+    """``log10(|x|)``, magnitudes below ``LOG10_FLOOR`` taken as it."""
+    return _ops.stage_elementwise("log10")
+
+
 __all__ = [
     "GAUSSIAN_DEFAULT_EDGE", "MAX_MEDIAN_WIDTH", "MEDIAN_DEFAULT_EDGE", "Stage", "TEAGER_KAISER_DEFAULT_EDGE",
     "FIR_DEFAULT_EDGE", "car", "clamp", "cmr", "fir", "gaussian_smooth", "laplacian", "whiten", "iir", "median", "notch", "scale", "sos", "subtract_baseline",
-    "remap", "reorder_channels", "teager_kaiser",
+    "remap", "reorder_channels", "teager_kaiser", "LOG10_FLOOR", "rectify", "square", "sqrt", "log10",
 ]
