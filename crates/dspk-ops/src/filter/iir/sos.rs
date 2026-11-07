@@ -27,6 +27,12 @@ const BLOCK_COUNT_CANDIDATES: [usize; 5] = [1, 4, 16, 64, 256];
 /// length, not on the device's timings.
 pub const PINNED_BLOCK_COUNT: usize = 16;
 
+/// Longest pass (steps) the autotuner benchmarks: longer passes are timed on their first
+/// `TUNE_MAX_STEPS` steps and share one tuning result. A pass's cost per step does not change past
+/// this length, while benchmarking every candidate (a single sequential block among them) on a
+/// window of minutes took over a minute per new length.
+pub const TUNE_MAX_STEPS: usize = 1 << 20;
+
 /// Memory order a pass runs in. Channel-major rows are the buffers' own order; time-major runs on a
 /// transposed copy so the units of a plane (consecutive channels) read and write consecutive
 /// addresses, at the cost of two transposes. Which is faster depends on the device; the autotuner
@@ -567,12 +573,22 @@ fn tuned_pass<F: DspFloat>(inputs: PassInputs<F>) {
                 F::type_name(),
                 p.filter.n_sections(),
                 size_class(p.pass.channels),
-                size_class(p.steps()),
+                size_class(p.steps().min(TUNE_MAX_STEPS)),
                 p.pass.channels.trailing_zeros().min(4)
             )
         };
         let scratch = |_: &String, p: &PassInputs<F>| {
             let mut pass = p.pass.clone();
+            // Benchmarks run on at most `TUNE_MAX_STEPS` steps (rows read at the shorter stride
+            // stay inside the input; the values do not change the timing)
+            if p.steps() > TUNE_MAX_STEPS {
+                pass.pad = pass.pad.min(TUNE_MAX_STEPS / 4);
+                pass.in_len = pass.in_len.min(TUNE_MAX_STEPS - 2 * pass.pad);
+                pass.pad = pass.pad.min(pass.in_len.saturating_sub(1));
+                let total = pass.in_len + 2 * pass.pad;
+                pass.out_start = pass.out_start.min(total.saturating_sub(1));
+                pass.out_len = pass.out_len.min(total - pass.out_start).max(1);
+            }
             pass.output = buffer::empty::<F>(&p.client, pass.channels * pass.out_len);
             pass.state = buffer::zeros::<F>(&p.client, pass.channels * p.filter.state_len());
             PassInputs { client: p.client.clone(), filter: p.filter.clone(), pass }

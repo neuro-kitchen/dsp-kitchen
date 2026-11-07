@@ -168,6 +168,41 @@ fn pinned_choices_match_the_fixed_split() {
     }
 }
 
+/// A pass longer than `TUNE_MAX_STEPS` is tuned on its first steps (quickly), and the choice it
+/// runs filters the whole signal: equal to the fixed split within the block-rounding tolerance.
+#[test]
+fn passes_longer_than_the_tuned_length_filter_whole() {
+    use dspk_ops::filter::iir::sos::{PINNED_BLOCK_COUNT, TUNE_MAX_STEPS};
+    struct Long;
+    impl ComputeTask for Long {
+        type Output = ();
+        fn run(self, client: Client) {
+            let x = test_signal(TUNE_MAX_STEPS + 50_003, FS);
+            let n = x.len();
+            let input = upload(&client, &x);
+            let spec = FilterSpec::butterworth(5, FilterBand::Bandpass(300.0, 6000.0)).with_mode(FilterMode::ForwardBackward);
+            let run = |filter: DeviceFilter<f32>| {
+                let output = client.empty(CHANNELS * n * 4);
+                let scratch = client.empty((filter.scratch_len(CHANNELS, n) * 4).max(4));
+                let state = client.empty(CHANNELS * filter.state_len() * 4);
+                filter.apply(&client, &input, &output, &scratch, &state, CHANNELS, n);
+                read(&client, output)
+            };
+            let t0 = std::time::Instant::now();
+            let tuned = run(DeviceFilter::<f32>::new(&client, &spec, FS).unwrap());
+            eprintln!("{}: tuned and filtered {n} samples in {:.1} s", client.name(), t0.elapsed().as_secs_f64());
+            let filter = DeviceFilter::<f32>::new(&client, &spec, FS).unwrap();
+            let steps = n + 2 * filter.settling_samples().min(n - 1);
+            let fixed = run(filter.with_block_len(steps.div_ceil(PINNED_BLOCK_COUNT)).with_layout(PassLayout::ChannelMajor));
+            let scale = fixed.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+            assert_close(&format!("{} tuned", client.name()), &tuned, &fixed[..n], scale, TOLERANCE);
+        }
+    }
+    for target in ComputeTarget::for_tests() {
+        target.run(Long).expect("compiled-in runtime");
+    }
+}
+
 /// The vectorized time-major layout (N channels per unit, in lockstep) is bit-identical to the
 /// scalar time-major layout: every mode, start, block length and chunked streaming, with channel
 /// counts every width divides (16), only some (6: padded lanes at width 16) and none (5: padded at

@@ -102,6 +102,10 @@ impl ProcessedSignal {
             }
         };
         let mut ws = ws;
+        // Fixed launch choices: a preview never stops to benchmark kernels for a window size it
+        // has not seen (zooming meets a new size at every step), and its numbers do not depend
+        // on what a tuner picked
+        let _pinned = dspk_core::compute::pin_tuned_choices();
         let format = self.source.info().format;
         let mut bytes = if self.stored { vec![0u8; nch * n * format.bytes()] } else { Vec::new() };
         // Sources that cannot give stored values (no native stored read) are scaled on the host

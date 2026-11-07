@@ -1050,4 +1050,147 @@ mod tests {
         });
         wait_until(cx, window, |cx| all_drawn_for_window(cx, &store, &app));
     }
+
+    /// Test formats: `*.twosource` (in memory: `array`, 16 channels, and `emg`, 2 channels, at
+    /// 10 kHz for 60 s) and the formats of dspk-synapse (NWB, SpikeGLX…), as the app's plugin.
+    struct TestFormats;
+
+    impl TestFormats {
+        fn memory(id: &str) -> dspk_core::MemoryRecording {
+            let (channels, rate, samples) = (if id == "emg" { 2 } else { 16 }, 10_000.0, 600_000);
+            let data: Vec<f32> = (0..channels * samples).map(|i| (((i % samples) as f32) * 0.05 * (1 + i / samples) as f32).sin() * 100.0).collect();
+            dspk_core::MemoryRecording::new(id, data, channels, rate).unwrap()
+        }
+    }
+
+    impl crate::plugin::SourceOpener for TestFormats {
+        fn reads(&self, path: &std::path::Path) -> bool {
+            path.extension().is_some_and(|e| e == "twosource") || dspk_synapse::io::detect(path).is_ok()
+        }
+        fn sources(&self, path: &std::path::Path) -> dspk_core::DspResult<Vec<dspk_io::SourceEntry>> {
+            if path.extension().is_some_and(|e| e == "twosource") {
+                return Ok(["array", "emg"].iter().map(|id| {
+                    let mut e = dspk_io::core::single_source(&Self::memory(id));
+                    e.id = id.to_string();
+                    e.name = id.to_uppercase();
+                    e
+                }).collect());
+            }
+            dspk_synapse::io::sources(path)
+        }
+        fn open(&self, path: &std::path::Path, id: &str) -> dspk_core::DspResult<Box<dyn dspk_core::RecordingSource>> {
+            if path.extension().is_some_and(|e| e == "twosource") {
+                return Ok(Box::new(Self::memory(id)));
+            }
+            dspk_synapse::io::open_source(path, id)
+        }
+    }
+
+    impl crate::plugin::AppPlugin for TestFormats {
+        fn id(&self) -> &'static str {
+            "test-formats"
+        }
+        fn name(&self) -> &'static str {
+            "Test formats"
+        }
+        fn opener(&self) -> Option<&dyn crate::plugin::SourceOpener> {
+            Some(self)
+        }
+    }
+
+    /// Registers [`TestFormats`] (once per test binary).
+    fn test_formats() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| crate::plugin::register(vec![std::sync::Arc::new(TestFormats)]));
+    }
+
+    /// As [`wait_until`], for a real file (up to two minutes).
+    fn wait_long(cx: &mut TestAppContext, window: AnyWindowHandle, mut done: impl FnMut(&mut TestAppContext) -> bool) {
+        cx.executor().allow_parking();
+        for _ in 0..12_000 {
+            cx.update_window(window, |_, window, cx| window.render_frame(cx)).unwrap();
+            cx.run_until_parked();
+            if done(cx) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("timed out");
+    }
+
+    /// The ops of the bug report: a band-pass, CMR, Teager–Kaiser energy, a 20 Hz low-pass.
+    fn report_chain() -> Vec<dspk_pipeline::Node> {
+        serde_json::from_str(
+            r#"[
+            {"op": "iir", "band": "bandpass", "cutoff": [300.0, 3000.0], "order": 5, "design": "butterworth", "mode": "forward_backward", "start": "rest"},
+            {"op": "cmr"},
+            {"op": "teager_kaiser", "edge": "reflect"},
+            {"op": "iir", "band": "lowpass", "cutoff": [20.0], "order": 5, "design": "butterworth", "mode": "forward_backward", "start": "rest"}]"#,
+        )
+        .unwrap()
+    }
+
+    /// Opens `path`, shows its `source` (not the default one) in a new view, focuses it and adds
+    /// the report's ops one by one: after each, the view's preview exists, a window of `window_s`
+    /// seconds reads processed (not raw) within `limit_s`, and the view draws.
+    fn ops_on_a_second_source(cx: &mut TestAppContext, path: std::path::PathBuf, source: &str, window_s: f64, limit_s: f64) {
+        use crate::domain::command::SessionCommand;
+        test_formats();
+        let (window, store, app) = open(cx);
+        cx.update(|cx| store.update(cx, |s, cx| s.open(path.clone(), cx)));
+        wait_long(cx, window, |cx| cx.update(|cx| store.read(cx).opening.is_none()));
+        cx.update(|cx| assert!(store.read(cx).recording.is_some(), "{}", store.read(cx).status));
+        cx.update(|cx| assert_ne!(store.read(cx).sources().unwrap().default_entry().id, source, "a second source"));
+        let ex = explore(cx, &app);
+        let vm = cx.update(|cx| ex.update(cx, |ex, cx| ex.add_on(TimeViewKind::Traces, source, cx)));
+        wait_long(cx, window, |cx| cx.update(|cx| !vm.read(cx).view.doc_view.is_empty()));
+        let view = cx.update(|cx| vm.read(cx).view.doc_view.clone());
+        cx.update(|cx| ex.update(cx, |ex, cx| ex.focus(vm.clone(), cx)));
+        cx.run_until_parked();
+        cx.update(|cx| assert_eq!(store.read(cx).doc.active_view.as_deref(), Some(view.as_str()), "the focused view is the one edited"));
+        for node in report_chain() {
+            let name = format!("{node:?}");
+            cx.update(|cx| store.update(cx, |s, cx| s.execute(SessionCommand::AddOp { view: view.clone(), node, index: None, id: None }, cx)).unwrap());
+            cx.run_until_parked();
+            let (preview, status, raw) = cx.update(|cx| {
+                let s = store.read(cx);
+                (s.preview_of(&view), s.status.clone(), s.sources().unwrap().get(source).signal().clone())
+            });
+            let preview = preview.unwrap_or_else(|| panic!("no preview after {name}; status: {status}"));
+            let rate = preview.info().sample_rate_hz();
+            let n = ((window_s * rate) as u64).min(preview.info().samples);
+            let v = dspk_view::View { channels: vec![0, 1], start: 0, end: n, width: 2000 };
+            let (mut a, mut b) = (dspk_view::Envelope::Samples(Vec::new()), dspk_view::Envelope::Samples(Vec::new()));
+            let t0 = std::time::Instant::now();
+            preview.view(&v, &mut a).unwrap();
+            let took = t0.elapsed().as_secs_f64();
+            eprintln!("{name}: {window_s} s window in {:.0} ms", took * 1e3);
+            assert!(took < limit_s, "{name}: the preview took {took:.1} s");
+            raw.view(&v, &mut b).unwrap();
+            assert_ne!(a, b, "{name}: the view shows the processed signal");
+            // The view draws the processed signal
+            cx.update(|cx| vm.update(cx, |vm, _| vm.shown = None));
+            cx.update(|cx| store.update(cx, |s, cx| s.redraw(cx)));
+            wait_long(cx, window, |cx| cx.update(|cx| vm.read(cx).shown.is_some()));
+        }
+    }
+
+    /// Ops edited on a view of a file's second source preview there, at once, after every edit.
+    #[gpui_kit::test]
+    fn ops_preview_on_a_second_source(cx: &mut TestAppContext) {
+        // The sources are in memory; the file only has to exist (the views' caches key on it)
+        let dir = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/dspk-app-core-tests"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("two.twosource");
+        std::fs::write(&path, b"").unwrap();
+        ops_on_a_second_source(cx, path, "emg", 30.0, 60.0);
+    }
+
+    /// The file of the bug report (local only): its EMG source, the report's 4 min 35 s window.
+    #[gpui_kit::test]
+    #[ignore = "needs .data/nwb/15-25-33_meps.nwb.zarr"]
+    fn ops_preview_on_the_report_file(cx: &mut TestAppContext) {
+        let path = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../.data/nwb/15-25-33_meps.nwb.zarr"));
+        ops_on_a_second_source(cx, path, "/acquisition/EMG", 275.0, 15.0);
+    }
 }
