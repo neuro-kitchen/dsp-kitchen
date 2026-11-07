@@ -738,14 +738,17 @@ fn remaps_fold_into_the_read() {
 fn per_sample_ops_and_the_laplacian_of_a_grid() {
     let dir = scratch("laplacian");
     write_input(&dir);
-    let chain = spec(r#""r": {"op": "rectify"}, "l": {"op": "laplacian", "grid": [2, 3]}, "q": {"op": "sqrt"},"#, r#"[["in", "r"], ["r", "l"], ["l", "q"], ["q", "out"]]"#, "");
-    run(&chain, &dir).unwrap();
-    let got = read_all(&dir.join("out.bin"));
-    let expected = whole_recording(&chain, targets()[0], false);
-    assert!(max_rel_err(&got, &expected) < 1e-5, "{}", max_rel_err(&got, &expected));
-    let wrong = spec(r#""l": {"op": "laplacian", "grid": [2, 2]},"#, r#"[["in", "l"], ["l", "out"]]"#, "");
-    let err = run(&wrong, &dir).unwrap_err().to_string();
-    assert!(err.contains("made for 4 channels") && err.contains("has 6"), "{err}");
+    for target in targets() {
+        let exec = format!(r#", "execution": {{"runtime": "{}"}}"#, target.name());
+        let chain = spec(r#""r": {"op": "rectify"}, "l": {"op": "laplacian", "grid": [2, 3]}, "q": {"op": "sqrt"},"#, r#"[["in", "r"], ["r", "l"], ["l", "q"], ["q", "out"]]"#, &exec);
+        run(&chain, &dir).unwrap();
+        let got = read_all(&dir.join("out.bin"));
+        let expected = whole_recording(&chain, target, false);
+        assert!(max_rel_err(&got, &expected) < 1e-5, "{}: {}", target.name(), max_rel_err(&got, &expected));
+        let wrong = spec(r#""l": {"op": "laplacian", "grid": [2, 2]},"#, r#"[["in", "l"], ["l", "out"]]"#, &exec);
+        let err = run(&wrong, &dir).unwrap_err().to_string();
+        assert!(err.contains("made for 4 channels") && err.contains("has 6"), "{err}");
+    }
     let empty = spec(r#""l": {"op": "laplacian", "grid": [1, 1]},"#, r#"[["in", "l"], ["l", "out"]]"#, "");
     assert!(empty.chain().unwrap().stages[0].1.stage().unwrap_err().to_string().contains("at least two"));
 }
@@ -769,25 +772,29 @@ fn covariance(data: &[f32], channels: usize) -> Vec<f64> {
 fn whitening_is_fitted_before_the_run() {
     let dir = scratch("whiten");
     write_input(&dir);
-    let chain = spec(r#""f": {"op": "iir", "band": "highpass", "cutoff": [20.0]}, "w": {"op": "whiten"},"#, r#"[["in", "f"], ["f", "w"], ["w", "out"]]"#, "");
-    run(&chain, &dir).unwrap();
-    let got = read_all(&dir.join("out.bin"));
-    let cov = covariance(&got, CHANNELS);
-    for a in 0..CHANNELS {
-        for b in 0..CHANNELS {
-            let want = if a == b { 1.0 } else { 0.0 };
-            assert!((cov[a * CHANNELS + b] - want).abs() < 0.05, "cov[{a}][{b}] = {:.3}", cov[a * CHANNELS + b]);
+    for target in targets() {
+        let exec = format!(r#", "execution": {{"runtime": "{}"}}"#, target.name());
+        let chain = spec(r#""f": {"op": "iir", "band": "highpass", "cutoff": [20.0]}, "w": {"op": "whiten"},"#, r#"[["in", "f"], ["f", "w"], ["w", "out"]]"#, &exec);
+        run(&chain, &dir).unwrap();
+        let got = read_all(&dir.join("out.bin"));
+        let cov = covariance(&got, CHANNELS);
+        for a in 0..CHANNELS {
+            for b in 0..CHANNELS {
+                let want = if a == b { 1.0 } else { 0.0 };
+                assert!((cov[a * CHANNELS + b] - want).abs() < 0.05, "{}: cov[{a}][{b}] = {:.3}", target.name(), cov[a * CHANNELS + b]);
+            }
         }
+        // Two branches (one read): the whitened one writes the same
+        let branched = PipelineSpec::from_json(&format!(
+            r#"{{"dspk_pipeline": 1, "nodes": {{"in": {{"op": "read", "path": "in.bin"}}, "f": {{"op": "iir", "band": "highpass", "cutoff": [20.0]}},
+            "w": {{"op": "whiten"}}, "a": {{"op": "write", "path": "a.bin"}}, "b": {{"op": "write", "path": "b.bin"}}}},
+            "edges": [["in", "f"], ["f", "w"], ["w", "a"], ["f", "b"]], "execution": {{"runtime": "{}"}}}}"#,
+            target.name()
+        ))
+        .unwrap();
+        dspk_pipeline::run(&branched, &dir).unwrap();
+        assert!(max_rel_err(&read_all(&dir.join("a.bin")), &got) < 1e-4, "{}", target.name());
+        let bad = spec(r#""w": {"op": "whiten", "chunks": 0},"#, r#"[["in", "w"], ["w", "out"]]"#, &exec);
+        assert!(run(&bad, &dir).unwrap_err().to_string().contains("chunks at least 1"));
     }
-    // Two branches (one read): the whitened one writes the same
-    let branched = PipelineSpec::from_json(
-        r#"{"dspk_pipeline": 1, "nodes": {"in": {"op": "read", "path": "in.bin"}, "f": {"op": "iir", "band": "highpass", "cutoff": [20.0]},
-            "w": {"op": "whiten"}, "a": {"op": "write", "path": "a.bin"}, "b": {"op": "write", "path": "b.bin"}},
-            "edges": [["in", "f"], ["f", "w"], ["w", "a"], ["f", "b"]]}"#,
-    )
-    .unwrap();
-    dspk_pipeline::run(&branched, &dir).unwrap();
-    assert!(max_rel_err(&read_all(&dir.join("a.bin")), &got) < 1e-4);
-    let bad = spec(r#""w": {"op": "whiten", "chunks": 0},"#, r#"[["in", "w"], ["w", "out"]]"#, "");
-    assert!(run(&bad, &dir).unwrap_err().to_string().contains("chunks at least 1"));
 }
