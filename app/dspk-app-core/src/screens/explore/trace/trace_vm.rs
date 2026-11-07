@@ -44,6 +44,8 @@ pub enum TraceEvent {
     Pressed,
     /// Kind, source or title changed (tab title, settings panel).
     Changed,
+    /// The view no longer shows this session view (its source changed).
+    Released(String),
 }
 
 pub struct TraceVm {
@@ -311,7 +313,10 @@ impl TraceVm {
     pub fn set_source(&mut self, source: &str, cx: &mut Context<Self>) {
         if self.view.source != source {
             Self::attach(&mut self.view, &self.store, source, cx);
-            self.view.doc_view.clear();
+            let old = std::mem::take(&mut self.view.doc_view);
+            if !old.is_empty() {
+                cx.emit(TraceEvent::Released(old));
+            }
             self.shown = None;
             self.bind(cx);
             cx.emit(TraceEvent::Changed);

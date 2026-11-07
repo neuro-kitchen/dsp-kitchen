@@ -848,7 +848,6 @@ mod tests {
     fn explore_follows_remaps_anywhere(cx: &mut TestAppContext) {
         use crate::domain::command::SessionCommand;
         use crate::screens::pipeline::channel_table::Rows;
-        use dspk_view::SignalBackend as _;
         let (window, store, _app) = open(cx);
         cx.update(|cx| {
             let ds = Dataset::generate_synthetic(8, 10_000.0, 2.0);
@@ -895,7 +894,6 @@ mod tests {
     #[gpui_kit::test]
     fn whitening_previews_fitted(cx: &mut TestAppContext) {
         use crate::domain::command::SessionCommand;
-        use dspk_view::SignalBackend as _;
         let (window, store, _app) = open(cx);
         cx.update(|cx| {
             let ds = Dataset::generate_synthetic(6, 10_000.0, 4.0);
@@ -1269,6 +1267,53 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         panic!("timed out");
+    }
+
+    /// A view of a source that is closed, or switched to another source, leaves nothing behind in
+    /// the session (Pipeline) unless it holds work: a view with ops stays.
+    #[gpui_kit::test]
+    fn closed_views_leave_no_trace_unless_they_hold_work(cx: &mut TestAppContext) {
+        use crate::domain::command::SessionCommand;
+        test_formats();
+        let dir = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/dspk-app-core-tests"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("release.twosource");
+        std::fs::write(&path, b"").unwrap();
+        let (window, store, app) = open(cx);
+        cx.update(|cx| store.update(cx, |s, cx| s.open(path.clone(), cx)));
+        wait_long(cx, window, |cx| cx.update(|cx| store.read(cx).recording.is_some()));
+        let ex = explore(cx, &app);
+        let sessions = |cx: &mut TestAppContext| cx.update(|cx| store.read(cx).doc.views.iter().map(|v| v.recording.source.clone().unwrap_or_default()).collect::<Vec<_>>());
+        let count = |cx: &mut TestAppContext, src: &str| sessions(cx).iter().filter(|s| *s == src).count();
+        // An untouched view of EMG, closed: gone from the session
+        let vm = cx.update(|cx| ex.update(cx, |ex, cx| ex.add_on(TimeViewKind::Traces, "emg", cx)));
+        wait_long(cx, window, |cx| cx.update(|cx| !vm.read(cx).view.doc_view.is_empty()));
+        assert_eq!(count(cx, "emg"), 1);
+        let id = cx.update(|cx| vm.read(cx).id());
+        cx.update(|cx| ex.update(cx, |ex, cx| ex.removed(id, cx)));
+        cx.run_until_parked();
+        assert_eq!(count(cx, "emg"), 0, "closing an untouched view removes it: {:?}", sessions(cx));
+        // Switched to another source: the old one goes the same way
+        let vm = cx.update(|cx| ex.update(cx, |ex, cx| ex.add_on(TimeViewKind::Traces, "emg", cx)));
+        wait_long(cx, window, |cx| cx.update(|cx| !vm.read(cx).view.doc_view.is_empty()));
+        cx.update(|cx| vm.update(cx, |vm, cx| vm.set_source("array", cx)));
+        cx.run_until_parked();
+        assert_eq!(count(cx, "emg"), 0, "switching away removes it");
+        // A view with work stays when closed
+        cx.update(|cx| vm.update(cx, |vm, cx| vm.set_source("emg", cx)));
+        wait_long(cx, window, |cx| cx.update(|cx| !vm.read(cx).view.doc_view.is_empty()));
+        let doc_view = cx.update(|cx| vm.read(cx).view.doc_view.clone());
+        let node: dspk_pipeline::Node = serde_json::from_value(serde_json::json!({"op": "rectify"})).unwrap();
+        cx.update(|cx| store.update(cx, |s, cx| s.execute(SessionCommand::AddOp { view: doc_view, node, index: None, id: None }, cx))).unwrap();
+        // Drawn with the op (the device open) before the view closes: a process must not exit
+        // while a render thread is still opening the device (the driver's libraries unload under it)
+        cx.update(|cx| vm.update(cx, |vm, _| vm.shown = None));
+        cx.update(|cx| store.update(cx, |s, cx| s.redraw(cx)));
+        wait_long(cx, window, |cx| cx.update(|cx| vm.read(cx).shown.is_some()));
+        let id = cx.update(|cx| vm.read(cx).id());
+        cx.update(|cx| ex.update(cx, |ex, cx| ex.removed(id, cx)));
+        cx.run_until_parked();
+        assert_eq!(count(cx, "emg"), 1, "its processing is kept");
     }
 
     /// The ops of the bug report: a band-pass, CMR, Teager–Kaiser energy, a 20 Hz low-pass.

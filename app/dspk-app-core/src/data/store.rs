@@ -462,6 +462,17 @@ impl Store {
         id
     }
 
+    /// Closes session view `id` when it holds no work: no ops (its source feeds it directly),
+    /// all channels, its default name, no plugin data. Views with work stay (the Pipeline shows them).
+    pub fn close_view_if_untouched(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(v) = self.doc.view(id) else { return };
+        let direct = self.doc.graph.input(id).and_then(|i| self.doc.graph.node(i)).is_some_and(|n| matches!(n.kind, crate::domain::graph::NodeKind::Source { .. }));
+        let untouched = direct && v.ops.is_empty() && v.recording.channels.is_none() && v.name == crate::domain::session::view_name(&v.recording) && v.plugins.is_empty();
+        if untouched {
+            let _ = self.execute(SessionCommand::CloseView { view: id.to_string() }, cx);
+        }
+    }
+
     /// What session view `view` draws when it shows its processed preview (it has enabled ops and
     /// `Show::Processed`); `None`: the recording as stored.
     pub fn preview_of(&self, view: &str) -> Option<Arc<dyn SignalBackend>> {

@@ -65,6 +65,7 @@ impl ExploreVm {
         });
         let sub = cx.subscribe(&vm, |this, vm, event, cx| match event {
             TraceEvent::Pressed => this.focus(vm, cx),
+            TraceEvent::Released(id) => this.release(id.clone(), cx),
             TraceEvent::Changed => {
                 this.persist_views(cx);
                 if this.focused.as_ref() == Some(&vm) {
@@ -171,7 +172,11 @@ impl ExploreVm {
     pub fn removed(&mut self, id: ViewId, cx: &mut Context<Self>) {
         let Some(at) = self.views.iter().position(|v| v.read(cx).id() == id) else { return };
         let vm = self.views.remove(at);
+        let doc_view = vm.read(cx).view.doc_view.clone();
         vm.update(cx, |vm, cx| vm.close(cx));
+        if !doc_view.is_empty() {
+            self.release(doc_view, cx);
+        }
         self.subs.retain(|(v, _)| *v != id);
         if self.focused.as_ref() == Some(&vm) {
             self.focused = self.views.first().cloned();
@@ -179,6 +184,15 @@ impl ExploreVm {
         }
         self.persist_views(cx);
         cx.notify();
+    }
+
+    /// A view stopped showing session view `doc_view`: when no other view shows it and it holds
+    /// no work, it leaves the session (the Pipeline loses its source and view nodes).
+    fn release(&mut self, doc_view: String, cx: &mut Context<Self>) {
+        if self.views.iter().any(|v| v.read(cx).view.doc_view == doc_view) {
+            return;
+        }
+        self.store.update(cx, |s, cx| s.close_view_if_untouched(&doc_view, cx));
     }
 
     /// Double-click on a heatmap row: show `channel` in a traces view of the same source (a new one
