@@ -41,12 +41,10 @@ Rodriguez–Laio density peaks: `labels`, `centers` (exemplar indices), `densiti
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `points` |  |  |
-| `cutoff_distance` | `float` |  |
-| `num_clusters` | `int` |  |
-| `max_points` | `int \| None` | `None` |
+- **`points`**
+- **`cutoff_distance`** : `float`
+- **`num_clusters`** : `int`
+- **`max_points`** : `int | None`, default `None`
 
 ### `gmm`
 
@@ -73,18 +71,16 @@ A Gaussian mixture with its number of components chosen by BIC in `k_min..=k_max
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `points` |  |  |
-| `k_min` | `int` | `DEFAULT_GMM_K_MIN` (1) |
-| `k_max` | `int` | `DEFAULT_GMM_K_MAX` (8) |
-| `covariance` | `str` | `'full'` |
-| `max_iterations` | `int` | `DEFAULT_GMM_MAX_ITERATIONS` (100) |
-| `tolerance` | `float` | `DEFAULT_GMM_TOLERANCE` (0.001) |
-| `regularization` | `float` | `DEFAULT_GMM_REGULARIZATION` (0.0001) |
-| `outlier_mahalanobis_sq` | `float \| None` | `None` |
-| `mask` |  | `None` |
-| `runtime` | `str \| None` | `None` |
+- **`points`**
+- **`k_min`** : `int`, default `DEFAULT_GMM_K_MIN` (1)
+- **`k_max`** : `int`, default `DEFAULT_GMM_K_MAX` (8)
+- **`covariance`** : `str`, default `'full'`
+- **`max_iterations`** : `int`, default `DEFAULT_GMM_MAX_ITERATIONS` (100)
+- **`tolerance`** : `float`, default `DEFAULT_GMM_TOLERANCE` (0.001)
+- **`regularization`** : `float`, default `DEFAULT_GMM_REGULARIZATION` (0.0001)
+- **`outlier_mahalanobis_sq`** : `float | None`, default `None`
+- **`mask`**, default `None`
+- **`runtime`** : `str | None`, default `None`
 
 ### `hdbscan`
 
@@ -102,12 +98,10 @@ HDBSCAN labels (as the `hdbscan` package: excess of mass, `-1` for noise).
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `points` |  |  |
-| `min_cluster_size` | `int` | `DEFAULT_MIN_CLUSTER_SIZE` (5) |
-| `allow_single_cluster` | `bool` | `False` |
-| `runtime` | `str \| None` | `None` |
+- **`points`**
+- **`min_cluster_size`** : `int`, default `DEFAULT_MIN_CLUSTER_SIZE` (5)
+- **`allow_single_cluster`** : `bool`, default `False`
+- **`runtime`** : `str | None`, default `None`
 
 ### `kde_merge`
 
@@ -126,12 +120,10 @@ between them: `labels`, `centroids`.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `points` |  |  |
-| `initial_k` | `int` |  |
-| `dip_threshold` | `float` | `DEFAULT_DIP_THRESHOLD` (1.5) |
-| `min_cluster_size` | `int` | `DEFAULT_KDE_MIN_CLUSTER_SIZE` (5) |
+- **`points`**
+- **`initial_k`** : `int`
+- **`dip_threshold`** : `float`, default `DEFAULT_DIP_THRESHOLD` (1.5)
+- **`min_cluster_size`** : `int`, default `DEFAULT_KDE_MIN_CLUSTER_SIZE` (5)
 
 ### `kmeans`
 
@@ -153,15 +145,13 @@ k-means (k-means++ starts; the best of `n_init`): `labels`, `centers` `(k, d)`,
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `points` |  |  |
-| `k` | `int` |  |
-| `n_init` | `int` | `DEFAULT_N_INIT` (10) |
-| `max_iter` | `int` | `DEFAULT_MAX_ITER` (300) |
-| `tol` | `float` | `DEFAULT_TOL` (0.0001) |
-| `seed` | `int` | `0` |
-| `runtime` | `str \| None` | `None` |
+- **`points`**
+- **`k`** : `int`
+- **`n_init`** : `int`, default `DEFAULT_N_INIT` (10)
+- **`max_iter`** : `int`, default `DEFAULT_MAX_ITER` (300)
+- **`tol`** : `float`, default `DEFAULT_TOL` (0.0001)
+- **`seed`** : `int`, default `0`
+- **`runtime`** : `str | None`, default `None`
 
 ### `subsample_peaks`
 
@@ -180,13 +170,11 @@ Indices of `n_peaks` peaks chosen at random (in total, or of each channel), by s
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `samples` |  |  |
-| `channels` |  |  |
-| `n_peaks` | `int` |  |
-| `per_channel` | `bool` | `False` |
-| `seed` | `int` | `0` |
+- **`samples`**
+- **`channels`**
+- **`n_peaks`** : `int`
+- **`per_channel`** : `bool`, default `False`
+- **`seed`** : `int`, default `0`
 
 ## Constants
 

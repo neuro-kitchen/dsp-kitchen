@@ -42,15 +42,13 @@ new Nyquist, zero phase (samples near the ends can differ slightly from scipy's 
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `data` |  |  |
-| `q` | `int` |  |
-| `ftype` | `str` | `'iir'` |
-| `order` | `int` | `DECIMATE_DEFAULT_ORDER` (8) |
-| `ripple_db` | `float` | `DECIMATE_DEFAULT_RIPPLE_DB` (0.05) |
-| `taps_per_factor` | `int` | `DECIMATE_FIR_TAPS_PER_FACTOR` (20) |
-| `runtime` | `str \| None` | `None` |
+- **`data`**
+- **`q`** : `int`
+- **`ftype`** : `str`, default `'iir'`
+- **`order`** : `int`, default `DECIMATE_DEFAULT_ORDER` (8)
+- **`ripple_db`** : `float`, default `DECIMATE_DEFAULT_RIPPLE_DB` (0.05)
+- **`taps_per_factor`** : `int`, default `DECIMATE_FIR_TAPS_PER_FACTOR` (20)
+- **`runtime`** : `str | None`, default `None`
 
 ### `resample_poly`
 
@@ -71,14 +69,12 @@ window), as `scipy.signal.resample_poly`; samples past the ends come from `edge`
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `data` |  |  |
-| `up` | `int` |  |
-| `down` | `int` |  |
-| `beta` | `float` | `RESAMPLE_POLY_BETA` (5.0) |
-| `edge` | `str` | `RESAMPLE_POLY_DEFAULT_EDGE` ('zeros') |
-| `runtime` | `str \| None` | `None` |
+- **`data`**
+- **`up`** : `int`
+- **`down`** : `int`
+- **`beta`** : `float`, default `RESAMPLE_POLY_BETA` (5.0)
+- **`edge`** : `str`, default `RESAMPLE_POLY_DEFAULT_EDGE` ('zeros')
+- **`runtime`** : `str | None`, default `None`
 
 ## Constants
 

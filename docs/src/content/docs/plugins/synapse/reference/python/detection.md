@@ -19,7 +19,7 @@ Detections are dicts of arrays sorted by time: `samples` (sample index), `channe
 | | |
 |---|---|
 | [`deduplicate`](#deduplicate) | One spike per event seen on several channels. |
-| [`detect_recording`](#detect_recording) | Detects spikes over a whole [`Recording`](/dsp-kitchen/reference/python/io/#recording), read in place in `batch_s` batches (optional CAR, zero-phase band-pass, noise calibrated on spread-out chunks, crossings, spatial de-duplication, snippets, per-channel templates) as `dspk detect`; with `locate`, every spike located (centre of mass of its snippet's heights over its `k_neighbors`. |
+| [`detect_recording`](#detect_recording) | Detects spikes over a whole [`io.Recording`](/dsp-kitchen/reference/python/io/#recording), read in place in `batch_s` batches (optional CAR, zero-phase band-pass, noise calibrated on spread-out chunks, crossings, spatial de-duplication, snippets, per-channel templates) as `dspk detect`; with `locate`, every spike located (centre of mass of its snippet's heights over its `k_neighbors`. |
 | [`heights`](#heights) | Detection height per channel. |
 | [`matched_filter`](#matched_filter) | Correlation with a spike shape (`prototype_`, default [`prototype`](/dsp-kitchen/plugins/synapse/reference/python/detection/#prototype) of `prototype_ms`) peaking beyond `threshold · σ(score)` where the signal is negative. |
 | [`neo`](#neo) | Teager–Kaiser energy peaks beyond `threshold · σ(energy)` per channel. |
@@ -46,13 +46,11 @@ One spike per event seen on several channels: the largest within `radius_um` and
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `spikes` | `dict` |  |
-| `probe` | `Probe` |  |
-| `sample_rate` | `float` |  |
-| `radius_um` | `float` | `DEFAULT_RADIUS_UM` (150.0) |
-| `window_ms` | `float` | `0.5` |
+- **`spikes`** : `dict`
+- **`probe`** : `Probe`
+- **`sample_rate`** : `float`
+- **`radius_um`** : `float`, default `DEFAULT_RADIUS_UM` (150.0)
+- **`window_ms`** : `float`, default `0.5`
 
 ### `detect_recording`
 
@@ -80,7 +78,7 @@ detect_recording(
 ) -> tuple[Sorting, dict]
 ```
 
-Detects spikes over a whole [`Recording`](/dsp-kitchen/reference/python/io/#recording), read in place in `batch_s` batches
+Detects spikes over a whole [`io.Recording`](/dsp-kitchen/reference/python/io/#recording), read in place in `batch_s` batches
 (optional CAR, zero-phase band-pass, noise calibrated on spread-out chunks, crossings,
 spatial de-duplication, snippets, per-channel templates) as `dspk detect`; with `locate`,
 every spike located (centre of mass of its snippet's heights over its `k_neighbors`: the
@@ -89,26 +87,24 @@ channel) and a summary (`sigmas_uv`, `raw_crossings`, `spikes`, `channel_counts`
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `recording` |  |  |
-| `probe` | `Probe` |  |
-| `band` | `tuple[float, float]` | `DEFAULT_BAND` |
-| `car` | `bool` | `False` |
-| `threshold` | `float` | `DEFAULT_RECORDING_THRESHOLD` (5.0) |
-| `refractory_ms` | `float` | `DEFAULT_REFRACTORY_MS` (1.0) |
-| `polarity` | `str` | `'negative'` |
-| `spacing` | `str` | `'locally_exclusive'` |
-| `radius_um` | `float` | `DEFAULT_RADIUS_UM` (150.0) |
-| `k_neighbors` | `int` | `DEFAULT_K_NEIGHBORS` (4) |
-| `pre_ms` | `float` | `DEFAULT_PRE_MS` (1.0) |
-| `post_ms` | `float` | `DEFAULT_POST_MS` (2.0) |
-| `sinc_shift` | `bool` | `True` |
-| `locate` | `bool` | `True` |
-| `batch_s` | `float` | `DEFAULT_BATCH_S` (10.0) |
-| `calibration_s` | `float` | `DEFAULT_CALIBRATION_S` (5.0) |
-| `calibration_chunks` | `int` | `DEFAULT_CALIBRATION_CHUNKS` (5) |
-| `runtime` | `str \| None` | `None` |
+- **`recording`**
+- **`probe`** : `Probe`
+- **`band`** : `tuple[float, float]`, default `DEFAULT_BAND`
+- **`car`** : `bool`, default `False`
+- **`threshold`** : `float`, default `DEFAULT_RECORDING_THRESHOLD` (5.0)
+- **`refractory_ms`** : `float`, default `DEFAULT_REFRACTORY_MS` (1.0)
+- **`polarity`** : `str`, default `'negative'`
+- **`spacing`** : `str`, default `'locally_exclusive'`
+- **`radius_um`** : `float`, default `DEFAULT_RADIUS_UM` (150.0)
+- **`k_neighbors`** : `int`, default `DEFAULT_K_NEIGHBORS` (4)
+- **`pre_ms`** : `float`, default `DEFAULT_PRE_MS` (1.0)
+- **`post_ms`** : `float`, default `DEFAULT_POST_MS` (2.0)
+- **`sinc_shift`** : `bool`, default `True`
+- **`locate`** : `bool`, default `True`
+- **`batch_s`** : `float`, default `DEFAULT_BATCH_S` (10.0)
+- **`calibration_s`** : `float`, default `DEFAULT_CALIBRATION_S` (5.0)
+- **`calibration_chunks`** : `int`, default `DEFAULT_CALIBRATION_CHUNKS` (5)
+- **`runtime`** : `str | None`, default `None`
 
 ### `heights`
 
@@ -123,10 +119,8 @@ Detection height per channel: `threshold · σ` (`inf` where σ is not positive)
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `sigmas` |  |  |
-| `threshold` | `float` | `DEFAULT_THRESHOLD` (4.5) |
+- **`sigmas`**
+- **`threshold`** : `float`, default `DEFAULT_THRESHOLD` (4.5)
 
 ### `matched_filter`
 
@@ -148,15 +142,13 @@ peaking beyond `threshold · σ(score)` where the signal is negative.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `data` |  |  |
-| `sample_rate` | `float` |  |
-| `prototype_ms` | `float` | `1.0` |
-| `prototype_` |  | `None` |
-| `threshold` | `float` | `DEFAULT_THRESHOLD` (4.5) |
-| `refractory_ms` | `float` | `DEFAULT_REFRACTORY_MS` (1.0) |
-| `spacing` | `str` | `'locally_exclusive'` |
+- **`data`**
+- **`sample_rate`** : `float`
+- **`prototype_ms`** : `float`, default `1.0`
+- **`prototype_`**, default `None`
+- **`threshold`** : `float`, default `DEFAULT_THRESHOLD` (4.5)
+- **`refractory_ms`** : `float`, default `DEFAULT_REFRACTORY_MS` (1.0)
+- **`spacing`** : `str`, default `'locally_exclusive'`
 
 ### `neo`
 
@@ -175,13 +167,11 @@ Teager–Kaiser energy peaks beyond `threshold · σ(energy)` per channel.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `data` |  |  |
-| `sample_rate` | `float` |  |
-| `threshold` | `float` | `DEFAULT_NEO_THRESHOLD` (8.0) |
-| `refractory_ms` | `float` | `DEFAULT_REFRACTORY_MS` (1.0) |
-| `spacing` | `str` | `'locally_exclusive'` |
+- **`data`**
+- **`sample_rate`** : `float`
+- **`threshold`** : `float`, default `DEFAULT_NEO_THRESHOLD` (8.0)
+- **`refractory_ms`** : `float`, default `DEFAULT_REFRACTORY_MS` (1.0)
+- **`spacing`** : `str`, default `'locally_exclusive'`
 
 ### `prototype`
 
@@ -193,9 +183,7 @@ A zero-mean, unit-norm biphasic spike shape of `samples` samples.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `samples` | `int` |  |
+- **`samples`** : `int`
 
 ### `threshold`
 
@@ -219,15 +207,13 @@ median-based). Spikes on a channel stay more than `refractory_ms` apart (`spacin
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `data` |  |  |
-| `sample_rate` | `float` |  |
-| `threshold` | `float` | `DEFAULT_THRESHOLD` (4.5) |
-| `polarity` | `str` | `'negative'` |
-| `refractory_ms` | `float` | `DEFAULT_REFRACTORY_MS` (1.0) |
-| `sigmas` |  | `None` |
-| `spacing` | `str` | `'locally_exclusive'` |
+- **`data`**
+- **`sample_rate`** : `float`
+- **`threshold`** : `float`, default `DEFAULT_THRESHOLD` (4.5)
+- **`polarity`** : `str`, default `'negative'`
+- **`refractory_ms`** : `float`, default `DEFAULT_REFRACTORY_MS` (1.0)
+- **`sigmas`**, default `None`
+- **`spacing`** : `str`, default `'locally_exclusive'`
 
 ## Constants
 

@@ -32,10 +32,8 @@ median for an even count). SpikeInterface's `get_noise_levels(method="mad")` div
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `data` |  |  |
-| `runtime` | `str \| None` | `None` |
+- **`data`**
+- **`runtime`** : `str | None`, default `None`
 
 ### `channel_mean_std`
 
@@ -51,10 +49,8 @@ Mean and population standard deviation of every channel of `data` `(channels, sa
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `data` |  |  |
-| `runtime` | `str \| None` | `None` |
+- **`data`**
+- **`runtime`** : `str | None`, default `None`
 
 ### `channel_noise_std`
 
@@ -71,10 +67,8 @@ Robust noise level of every channel: `median(|x|) / MAD_TO_SIGMA` (the magnitude
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `data` |  |  |
-| `runtime` | `str \| None` | `None` |
+- **`data`**
+- **`runtime`** : `str | None`, default `None`
 
 ### `window`
 
@@ -93,12 +87,10 @@ Window of `length` values: `"hann"`, `"hamming"`, `"gaussian"` (`sigma`) or
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `name` | `str` |  |
-| `length` | `int` |  |
-| `sigma` | `float \| None` | `None` |
-| `beta` | `float \| None` | `None` |
+- **`name`** : `str`
+- **`length`** : `int`
+- **`sigma`** : `float | None`, default `None`
+- **`beta`** : `float | None`, default `None`
 
 ## Constants
 

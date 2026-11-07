@@ -12,8 +12,8 @@ sidebar:
 Probes (site geometry: presets, probe files, channel maps) and sortings (Phy / Kilosort folders,
 `.sorting.zarr`, NWB `/units`).
 
-A [`Probe`](/dsp-kitchen/plugins/synapse/reference/python/io/#probe) follows a recording's channels: `Probe.remap` applies a channel map (see
-`layout`), `Probe.depth_order` gives the map that sorts channels by depth.
+A [`Probe`](/dsp-kitchen/plugins/synapse/reference/python/io/#probe) follows a recording's channels: [`remap`](/dsp-kitchen/reference/python/ops-layout/#remap) applies a channel map (see
+`ops.layout`), `depth_order` gives the map that sorts channels by depth.
 A [`Sorting`](/dsp-kitchen/plugins/synapse/reference/python/io/#sorting) holds units with their spike trains, templates and quality metrics.
 
 | | |
@@ -38,10 +38,8 @@ The probe a recording file carries (SpikeGLX), or `None`.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `path` | `str \| PathLike` |  |
-| `source` | `str \| None` | `None` |
+- **`path`** : `str | PathLike`
+- **`source`** : `str | None`, default `None`
 
 ### `read_probe_file`
 
@@ -54,9 +52,7 @@ channel map that reads a recording in that order (`.mat` files are refused).
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `path` | `str \| PathLike` |  |
+- **`path`** : `str | PathLike`
 
 ## Classes
 
@@ -70,9 +66,7 @@ A probe's geometry: one site per recording channel (µm; `y` is depth).
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `native` | `_io.Probe` |  |
+- **`native`** : `_io.Probe`
 
 **Properties**
 
@@ -97,10 +91,8 @@ A nominal layout, one of [`PRESETS`](/dsp-kitchen/plugins/synapse/reference/pyth
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `name` | `str` |  |
-| `pitch_um` | `float` | `DEFAULT_HDEMG_PITCH_UM` |
+- **`name`** : `str`
+- **`pitch_um`** : `float`, default `DEFAULT_HDEMG_PITCH_UM`
 
 #### `Probe.grid`
 
@@ -112,11 +104,9 @@ A `rows × cols` grid, channel `row * cols + col`.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `rows` | `int` |  |
-| `cols` | `int` |  |
-| `pitch_um` | `float` |  |
+- **`rows`** : `int`
+- **`cols`** : `int`
+- **`pitch_um`** : `float`
 
 #### `Probe.from_positions`
 
@@ -133,11 +123,9 @@ Sites at `positions` (`(channels, 2)` or `(channels, 3)` µm), channel `i` at ro
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `positions` |  |  |
-| `shanks` | `Sequence[int] \| None` | `None` |
-| `name` | `str` | `'probe'` |
+- **`positions`**
+- **`shanks`** : `Sequence[int] | None`, default `None`
+- **`name`** : `str`, default `'probe'`
 
 #### `Probe.from_json`
 
@@ -147,9 +135,7 @@ from_json(text: str) -> Probe
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `text` | `str` |  |
+- **`text`** : `str`
 
 #### `Probe.remap`
 
@@ -157,13 +143,11 @@ from_json(text: str) -> Probe
 remap(map) -> Probe
 ```
 
-The geometry after a channel map (any form [`as_map`](/dsp-kitchen/reference/python/ops-layout/#as_map) takes).
+The geometry after a channel map (any form [`ops.layout.as_map`](/dsp-kitchen/reference/python/ops-layout/#as_map) takes).
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `map` |  |  |
+- **`map`**
 
 #### `Probe.depth_order`
 
@@ -183,9 +167,7 @@ The sites of `channels` (in that order), renumbered `0..`.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `channels` | `Sequence[int]` |  |
+- **`channels`** : `Sequence[int]`
 
 #### `Probe.neighbours`
 
@@ -197,9 +179,7 @@ The `k` nearest sites of every channel (itself first): `(channels, k)`.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `k` | `int` |  |
+- **`k`** : `int`
 
 #### `Probe.to_json`
 
@@ -217,9 +197,7 @@ Units with their spike trains (sample indices), templates and quality metrics.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `native` | `_io.Sorting` |  |
+- **`native`** : `_io.Sorting`
 
 **Properties**
 
@@ -241,9 +219,7 @@ A Phy / Kilosort folder, a `.sorting.zarr` store or an NWB `.nwb.zarr` (`/units`
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `path` | `str \| PathLike` |  |
+- **`path`** : `str | PathLike`
 
 #### `Sorting.from_spikes`
 
@@ -263,14 +239,12 @@ From flat arrays: the sample of every spike and its unit; metrics computed from 
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `spike_samples` |  |  |
-| `spike_units` |  |  |
-| `sample_rate` | `float` |  |
-| `total_samples` | `int` |  |
-| `sorter_name` | `str` | `'dspk'` |
-| `probe` | `Probe \| None` | `None` |
+- **`spike_samples`**
+- **`spike_units`**
+- **`sample_rate`** : `float`
+- **`total_samples`** : `int`
+- **`sorter_name`** : `str`, default `'dspk'`
+- **`probe`** : `Probe | None`, default `None`
 
 #### `Sorting.save`
 
@@ -282,10 +256,8 @@ As `"phy"`, `"sorting_zarr"` or `"nwb_units"` (default: from the path's name).
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `path` | `str \| PathLike` |  |
-| `format` | `str \| None` | `None` |
+- **`path`** : `str | PathLike`
+- **`format`** : `str | None`, default `None`
 
 #### `Sorting.spikes`
 
@@ -305,9 +277,7 @@ Sample indices of `unit_id`'s spikes (sorted, `uint64`).
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `unit_id` | `int` |  |
+- **`unit_id`** : `int`
 
 #### `Sorting.template`
 
@@ -319,9 +289,7 @@ template(unit_id: int) -> dict | None
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `unit_id` | `int` |  |
+- **`unit_id`** : `int`
 
 #### `Sorting.units`
 

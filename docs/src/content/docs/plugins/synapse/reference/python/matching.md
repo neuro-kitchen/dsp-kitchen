@@ -44,16 +44,14 @@ pass after pass: `samples` (troughs), `units`, `amplitudes` (scales), `scores`.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `data` |  |  |
-| `templates` |  |  |
-| `min_amplitude_scale` | `float` | `DEFAULT_MIN_AMPLITUDE_SCALE` (0.65) |
-| `max_amplitude_scale` | `float` | `DEFAULT_MAX_AMPLITUDE_SCALE` (1.45) |
-| `min_explained_energy` | `float` | `DEFAULT_MIN_EXPLAINED_ENERGY` (500.0) |
-| `max_passes` | `int` | `DEFAULT_MAX_PASSES` (4) |
-| `channels` |  | `None` |
-| `runtime` | `str \| None` | `None` |
+- **`data`**
+- **`templates`**
+- **`min_amplitude_scale`** : `float`, default `DEFAULT_MIN_AMPLITUDE_SCALE` (0.65)
+- **`max_amplitude_scale`** : `float`, default `DEFAULT_MAX_AMPLITUDE_SCALE` (1.45)
+- **`min_explained_energy`** : `float`, default `DEFAULT_MIN_EXPLAINED_ENERGY` (500.0)
+- **`max_passes`** : `int`, default `DEFAULT_MAX_PASSES` (4)
+- **`channels`**, default `None`
+- **`runtime`** : `str | None`, default `None`
 
 ### `suggest_merges`
 
@@ -71,12 +69,10 @@ suggest_merges(
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `templates` |  |  |
-| `max_lag_samples` | `int` | `DEFAULT_MAX_LAG_SAMPLES` |
-| `threshold` | `float` | `DEFAULT_MERGE_THRESHOLD` |
-| `channels` |  | `None` |
+- **`templates`**
+- **`max_lag_samples`** : `int`, default `DEFAULT_MAX_LAG_SAMPLES`
+- **`threshold`** : `float`, default `DEFAULT_MERGE_THRESHOLD`
+- **`channels`**, default `None`
 
 ### `template_similarity`
 
@@ -93,11 +89,9 @@ template_similarity(
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `templates` |  |  |
-| `max_lag_samples` | `int` | `DEFAULT_MAX_LAG_SAMPLES` |
-| `channels` |  | `None` |
+- **`templates`**
+- **`max_lag_samples`** : `int`, default `DEFAULT_MAX_LAG_SAMPLES`
+- **`channels`**, default `None`
 
 ## Constants
 

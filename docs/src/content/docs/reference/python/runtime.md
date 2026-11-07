@@ -51,6 +51,4 @@ default (`DSPK_RUNTIME`, else the first compiled in).
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `name` | `str \| None` |  |
+- **`name`** : `str | None`

@@ -20,11 +20,11 @@ runs), so a recording of any length goes through a function that only ever sees 
   shape. Windows are read with `halo` samples of context on each side and the result is trimmed
   back, so the windowed output equals `fn` on the whole array for any `fn` that looks at most
   `halo` samples away (a moving average of `2 · halo + 1` samples, a filter whose response has
-  died out within `halo`). `Transform.apply` returns an array; `Transform.write`
+  died out within `halo`). `apply` returns an array; `write`
   writes the whole recording to Zarr without holding it in memory.
 
 `x` is `(channels, samples)` float32 NumPy in each channel's unit, as
-`read` gives it; `w` is the [`Window`](/dsp-kitchen/reference/python/custom/#window) it came from.
+`io.Recording.read` gives it; `w` is the [`Window`](/dsp-kitchen/reference/python/custom/#window) it came from.
 
 | | |
 |---|---|
@@ -58,14 +58,12 @@ must return the same keys and shapes. The last window may be shorter.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `rec` |  |  |
-| `fn` | `Callable` |  |
-| `window_s` | `float` | `DEFAULT_WINDOW_S` |
-| `channels` | `Sequence[int] \| None` | `None` |
-| `start` | `int` | `0` |
-| `stop` | `int \| None` | `None` |
+- **`rec`**
+- **`fn`** : `Callable`
+- **`window_s`** : `float`, default `DEFAULT_WINDOW_S`
+- **`channels`** : `Sequence[int] | None`, default `None`
+- **`start`** : `int`, default `0`
+- **`stop`** : `int | None`, default `None`
 
 ### `transform`
 
@@ -82,11 +80,9 @@ A [`Transform`](/dsp-kitchen/reference/python/custom/#transform) of `fn`; also a
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `fn` | `Callable \| None` | `None` |
-| `halo` | `int` | `0` |
-| `window_s` | `float` | `DEFAULT_WINDOW_S` |
+- **`fn`** : `Callable | None`, default `None`
+- **`halo`** : `int`, default `0`
+- **`window_s`** : `float`, default `DEFAULT_WINDOW_S`
 
 ### `windows`
 
@@ -108,14 +104,12 @@ next window is read on another thread while the caller works on this one.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `rec` |  |  |
-| `window_s` | `float` | `DEFAULT_WINDOW_S` |
-| `halo` | `int` | `0` |
-| `channels` | `Sequence[int] \| None` | `None` |
-| `start` | `int` | `0` |
-| `stop` | `int \| None` | `None` |
+- **`rec`**
+- **`window_s`** : `float`, default `DEFAULT_WINDOW_S`
+- **`halo`** : `int`, default `0`
+- **`channels`** : `Sequence[int] | None`, default `None`
+- **`start`** : `int`, default `0`
+- **`stop`** : `int | None`, default `None`
 
 ## Classes
 
@@ -135,11 +129,9 @@ window by window (see the module). Make one with [`transform`](/dsp-kitchen/refe
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `fn` | `Callable` |  |
-| `halo` | `int` | `0` |
-| `window_s` | `float` | `DEFAULT_WINDOW_S` |
+- **`fn`** : `Callable`
+- **`halo`** : `int`, default `0`
+- **`window_s`** : `float`, default `DEFAULT_WINDOW_S`
 
 #### `Transform.blocks`
 
@@ -158,12 +150,10 @@ The processed windows of `rec`: `(y, w)` with `y` the window's own samples
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `rec` |  |  |
-| `channels` | `Sequence[int] \| None` | `None` |
-| `start` | `int` | `0` |
-| `stop` | `int \| None` | `None` |
+- **`rec`**
+- **`channels`** : `Sequence[int] | None`, default `None`
+- **`start`** : `int`, default `0`
+- **`stop`** : `int | None`, default `None`
 
 #### `Transform.apply`
 
@@ -181,12 +171,10 @@ apply(
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `rec` |  |  |
-| `channels` | `Sequence[int] \| None` | `None` |
-| `start` | `int` | `0` |
-| `stop` | `int \| None` | `None` |
+- **`rec`**
+- **`channels`** : `Sequence[int] | None`, default `None`
+- **`start`** : `int`, default `0`
+- **`stop`** : `int | None`, default `None`
 
 #### `Transform.write`
 
@@ -208,15 +196,13 @@ whole recording in memory); channel names and units as `rec`'s.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `rec` |  |  |
-| `path` | `str \| PathLike` |  |
-| `channels` | `Sequence[int] \| None` | `None` |
-| `start` | `int` | `0` |
-| `stop` | `int \| None` | `None` |
-| `chunk_samples` | `int` | `io.ZARR_CHUNK_SAMPLES` |
-| `compression` | `str` | `'zstd'` |
+- **`rec`**
+- **`path`** : `str | PathLike`
+- **`channels`** : `Sequence[int] | None`, default `None`
+- **`start`** : `int`, default `0`
+- **`stop`** : `int | None`, default `None`
+- **`chunk_samples`** : `int`, default `io.ZARR_CHUNK_SAMPLES`
+- **`compression`** : `str`, default `'zstd'`
 
 ### `Window`
 
@@ -238,15 +224,13 @@ slice of the read array that holds its own samples; `index`: its number (from 0)
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `index` | `int` |  |
-| `start` | `int` |  |
-| `stop` | `int` |  |
-| `read_start` | `int` |  |
-| `read_stop` | `int` |  |
-| `sample_rate` | `float` |  |
-| `channels` | `tuple[int, ...]` |  |
+- **`index`** : `int`
+- **`start`** : `int`
+- **`stop`** : `int`
+- **`read_start`** : `int`
+- **`read_stop`** : `int`
+- **`sample_rate`** : `float`
+- **`channels`** : `tuple[int, ...]`
 
 **Properties**
 

@@ -103,3 +103,11 @@
 .sl-markdown-content h4:has(> code) {
   font-size: var(--sl-text-xl);
 }
+/* Parameter lists (a name in bold code first): no bullets, a gap between entries. */
+.sl-markdown-content ul:has(> li > strong:first-child > code) {
+  list-style: none;
+  padding-inline-start: 0;
+}
+.sl-markdown-content li:has(> strong:first-child > code) + li {
+  margin-top: 0.85rem;
+}

@@ -57,11 +57,9 @@ job failed, `TimeoutError` after `timeout_s`.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `poll_s` | `float` | `DEFAULT_POLL_S` |
-| `progress` | `Callable[[dict], None] \| None` | `None` |
-| `timeout_s` | `float \| None` | `None` |
+- **`poll_s`** : `float`, default `DEFAULT_POLL_S`
+- **`progress`** : `Callable[[dict], None] | None`, default `None`
+- **`timeout_s`** : `float | None`, default `None`
 
 ## Constants
 

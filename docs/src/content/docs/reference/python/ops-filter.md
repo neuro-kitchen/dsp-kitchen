@@ -22,17 +22,17 @@ The implementation files (`_iir.py`, `_fir.py`, ...) are private; use the names 
 
 | | |
 |---|---|
-| [`fir`](#fir) | FIR filtering of `data` `(channels, samples)` with `taps` on the device. |
-| [`firwin`](#firwin) | Low-pass FIR taps with unit DC gain (`scipy.signal.firwin` with one cutoff). |
-| [`gaussian_smooth`](#gaussian_smooth) | Zero-phase Gaussian smoothing, standard deviation `sigma_samples`, cut at [`GAUSSIAN_TRUNCATE`](/dsp-kitchen/reference/python/ops-filter/#gaussian_truncate) sigma (`scipy.ndimage.gaussian_filter1d` with `mode=edge`). |
-| [`iir`](#iir) | Designs an IIR filter (as [`sos`](/dsp-kitchen/reference/python/ops-filter/#sos)) and applies it to `data` on the device. |
-| [`median`](#median) | Running median over an odd `width` (at most [`MAX_MEDIAN_WIDTH`](/dsp-kitchen/reference/python/ops-filter/#max_median_width)) along time; with the default `edge="zeros"` this is `scipy.signal.medfilt`. |
-| [`notch`](#notch) | Second-order notch at `freq` Hz, quality factor `q` (`scipy.signal.iirnotch`). |
-| [`settling_samples`](#settling_samples) | Samples until the impulse response of `sos` decays below [`SETTLING_TOLERANCE`](/dsp-kitchen/reference/python/ops-filter/#settling_tolerance). |
-| [`sos`](#sos) | Second-order sections `(sections, 6)` of an IIR design, scipy layout `[b, a]`. |
-| [`sosfilt`](#sosfilt) | Applies second-order sections `sos` `(sections, 6)` to `data` on the device. |
-| [`subtract_template`](#subtract_template) | Subtracts `template` `(channels, template_samples)` (or 1-D for one channel) from `data` `(channels, samples)` at every event (sample indices). |
-| [`teager_kaiser`](#teager_kaiser) | Teager–Kaiser energy `x[t]**2 - x[t-1] * x[t+1]` along time; the neighbours of the end samples come from `edge`. |
+| [`fir`](#fir) | Filters with FIR taps on the device. |
+| [`firwin`](#firwin) | Low-pass FIR taps with unit gain at DC, as `scipy.signal.firwin` with one cutoff. |
+| [`gaussian_smooth`](#gaussian_smooth) | Zero-phase Gaussian smoothing, as `scipy.ndimage.gaussian_filter1d` along time. |
+| [`iir`](#iir) | Designs an IIR filter and applies it on the device. |
+| [`median`](#median) | Running median along time, as `scipy.signal.medfilt` (with `edge="zeros"`). |
+| [`notch`](#notch) | Removes one frequency (a second-order notch), as `scipy.signal.iirnotch`. |
+| [`settling_samples`](#settling_samples) | Samples after which the impulse response of `sos` has settled. |
+| [`sos`](#sos) | Second-order sections of an IIR filter design, in scipy's layout. |
+| [`sosfilt`](#sosfilt) | Applies second-order sections on the device. |
+| [`subtract_template`](#subtract_template) | Subtracts a template from `data` at every event, each aligned and scaled. |
+| [`teager_kaiser`](#teager_kaiser) | Teager–Kaiser energy along time. |
 
 ## Functions
 
@@ -49,22 +49,39 @@ fir(
 ) -> np.ndarray
 ```
 
-FIR filtering of `data` `(channels, samples)` with `taps` on the device.
-
-`centered=False`: causal `y[t] = sum(taps[k] * x[t - k])`, as
-`scipy.signal.lfilter(taps, 1, x)` with `edge="zeros"`. `centered=True`: an odd number of
-taps centred on each sample (zero phase for symmetric taps). Samples past the ends come from
-`edge` (`"zeros"`, `"odd"`, `"reflect"`, `"nearest"`).
+Filters with FIR taps on the device.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `data` |  |  |
-| `taps` |  |  |
-| `centered` | `bool` | `False` |
-| `edge` | `str` | `FIR_DEFAULT_EDGE` ('zeros') |
-| `runtime` | `str \| None` | `None` |
+- **`data`** : `array_like`  
+  Signal `(channels, samples)`. float32, int8, int16, uint16 and int32 arrays go to the device as they are and are converted there; other dtypes and lists become float32 first.
+- **`taps`** : `array_like`  
+  Filter taps (1-D).
+- **`centered`** : `bool`, default `False`  
+  `False`: causal, `y[t] = sum(taps[k] * x[t - k])`, as `scipy.signal.lfilter(taps, 1, x)` with `edge="zeros"`. `True`: the taps (an odd number) centred on each sample, zero phase for symmetric taps.
+- **`edge`** : `{"zeros", "odd", "reflect", "nearest"}`, default `FIR_DEFAULT_EDGE` ('zeros')  
+  What the samples past each end are taken to be.
+- **`runtime`** : `str | None`, default `None`  
+  `"cuda"`, `"wgpu"` or `"cpu"` for this call. By default: the runtime chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
+
+**Returns**
+
+- `np.ndarray` — The filtered signal `(channels, samples)`, float32.
+
+**Raises**
+
+- `ValueError`: For empty `taps`, an even number of centred taps, an unknown `edge`, or `data` not 2-D.
+- `RuntimeError`: When the runtime has no device.
+
+**Examples**
+
+```python
+>>> import numpy as np
+>>> import dspk
+>>> x = np.random.default_rng(0).standard_normal((4, 30_000)).astype(np.float32)
+>>> taps = dspk.ops.filter.firwin(101, 250.0, sample_rate=30_000.0)
+>>> lfp = dspk.ops.filter.fir(x, taps, centered=True)
+```
 
 ### `firwin`
 
@@ -79,20 +96,35 @@ firwin(
 ) -> np.ndarray
 ```
 
-Low-pass FIR taps with unit DC gain (`scipy.signal.firwin` with one cutoff).
-
-`cutoff` is in Hz when `sample_rate` is given, else a fraction of Nyquist in `(0, 1]`.
-`window`: `"hamming"` or `"kaiser"` (needs `beta`).
+Low-pass FIR taps with unit gain at DC, as `scipy.signal.firwin` with one cutoff.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `num_taps` | `int` |  |
-| `cutoff` | `float` |  |
-| `sample_rate` | `float \| None` | `None` |
-| `window` | `str` | `'hamming'` |
-| `beta` | `float \| None` | `None` |
+- **`num_taps`** : `int`  
+  Number of taps (odd for a centred, zero-phase filter).
+- **`cutoff`** : `float`  
+  Cutoff in Hz when `sample_rate` is given, else a fraction of Nyquist in `(0, 1]`.
+- **`sample_rate`** : `float | None`, default `None`  
+  Sample rate in Hz.
+- **`window`** : `{"hamming", "kaiser"}`, default `'hamming'`  
+  The window shaping the taps.
+- **`beta`** : `float | None`, default `None`  
+  Kaiser shape parameter; `"kaiser"` needs it, `"hamming"` takes none.
+
+**Returns**
+
+- `np.ndarray` — Taps `(num_taps,)`.
+
+**Raises**
+
+- `ValueError`: For `num_taps` below 1, a cutoff outside `(0, Nyquist]`, a non-positive `sample_rate`, an unknown `window`, or `beta` given to (or missing from) a window.
+
+**Examples**
+
+```python
+>>> import dspk
+>>> taps = dspk.ops.filter.firwin(101, 250.0, sample_rate=30_000.0)
+```
 
 ### `gaussian_smooth`
 
@@ -106,17 +138,38 @@ gaussian_smooth(
 ) -> np.ndarray
 ```
 
-Zero-phase Gaussian smoothing, standard deviation `sigma_samples`, cut at
-[`GAUSSIAN_TRUNCATE`](/dsp-kitchen/reference/python/ops-filter/#gaussian_truncate) sigma (`scipy.ndimage.gaussian_filter1d` with `mode=edge`).
+Zero-phase Gaussian smoothing, as `scipy.ndimage.gaussian_filter1d` along time.
+
+The kernel is cut at [`GAUSSIAN_TRUNCATE`](/dsp-kitchen/reference/python/ops-filter/#gaussian_truncate) standard deviations.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `data` |  |  |
-| `sigma_samples` | `float` |  |
-| `edge` | `str` | `GAUSSIAN_DEFAULT_EDGE` ('reflect') |
-| `runtime` | `str \| None` | `None` |
+- **`data`** : `array_like`  
+  Signal `(channels, samples)`. float32, int8, int16, uint16 and int32 arrays go to the device as they are and are converted there; other dtypes and lists become float32 first.
+- **`sigma_samples`** : `float`  
+  Standard deviation of the Gaussian, in samples.
+- **`edge`** : `{"zeros", "odd", "reflect", "nearest"}`, default `GAUSSIAN_DEFAULT_EDGE` ('reflect')  
+  What the samples past each end are taken to be (scipy's `mode`).
+- **`runtime`** : `str | None`, default `None`  
+  `"cuda"`, `"wgpu"` or `"cpu"` for this call. By default: the runtime chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
+
+**Returns**
+
+- `np.ndarray` — The filtered signal `(channels, samples)`, float32.
+
+**Raises**
+
+- `ValueError`: For a non-positive `sigma_samples`, an unknown `edge`, or `data` not 2-D.
+- `RuntimeError`: When the runtime has no device.
+
+**Examples**
+
+```python
+>>> import numpy as np
+>>> import dspk
+>>> x = np.random.default_rng(0).standard_normal((4, 30_000)).astype(np.float32)
+>>> smooth = dspk.ops.filter.gaussian_smooth(np.abs(x), 30.0)
+```
 
 ### `iir`
 
@@ -136,22 +189,59 @@ iir(
 ) -> np.ndarray
 ```
 
-Designs an IIR filter (as [`sos`](/dsp-kitchen/reference/python/ops-filter/#sos)) and applies it to `data` on the device.
+Designs an IIR filter and applies it on the device.
+
+The design is [`sos`](/dsp-kitchen/reference/python/ops-filter/#sos)'s; filtering is [`sosfilt`](/dsp-kitchen/reference/python/ops-filter/#sosfilt)'s.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `data` |  |  |
-| `sample_rate` | `float` |  |
-| `band` | `str` |  |
-| `cutoff` | `float \| Sequence[float]` |  |
-| `order` | `int` | `DEFAULT_ORDER` (5) |
-| `design` | `str` | `'butterworth'` |
-| `ripple_db` | `float \| None` | `None` |
-| `mode` | `str` | `'forward_backward'` |
-| `start` | `str` | `'rest'` |
-| `runtime` | `str \| None` | `None` |
+- **`data`** : `array_like`  
+  Signal `(channels, samples)`. float32, int8, int16, uint16 and int32 arrays go to the device as they are and are converted there; other dtypes and lists become float32 first.
+- **`sample_rate`** : `float`  
+  Sample rate of `data` in Hz.
+- **`band`** : `{"lowpass", "highpass", "bandpass", "bandstop"}`  
+  The band the filter passes (or stops).
+- **`cutoff`** : `float | Sequence[float]`  
+  Cutoff in Hz: one for `"lowpass"` and `"highpass"`, `(low, high)` for `"bandpass"` and `"bandstop"`.
+- **`order`** : `int`, default `DEFAULT_ORDER` (5)  
+  Filter order (a zero-phase run applies it twice).
+- **`design`** : `{"butterworth", "chebyshev1", "bessel"}`, default `'butterworth'`  
+  The filter family.
+- **`ripple_db`** : `float | None`, default `None`  
+  Passband ripple in dB; `"chebyshev1"` needs it.
+- **`mode`** : `{"forward_backward", "forward"}`, default `'forward_backward'`  
+  `"forward_backward"`: zero phase, as `scipy.signal.sosfiltfilt` (the magnitude response is applied twice). `"forward"`: causal, one pass, as `scipy.signal.sosfilt`.
+- **`start`** : `{"rest", "steady_state"}`, default `'rest'`  
+  Where a `"forward"` pass starts: at rest, as if the signal were zero before the first sample (`sosfilt` without `zi`), or from the steady state of the first sample (`zi = sosfilt_zi(sos) * x[0]`: no step at the start). Forward-backward passes always start from the steady state.
+- **`runtime`** : `str | None`, default `None`  
+  `"cuda"`, `"wgpu"` or `"cpu"` for this call. By default: the runtime chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
+
+**Returns**
+
+- `np.ndarray` — The filtered signal `(channels, samples)`, float32.
+
+**Raises**
+
+- `ValueError`: For an invalid design (see [`sos`](/dsp-kitchen/reference/python/ops-filter/#sos)), `mode` or `start`, or `data` not 2-D.
+- `RuntimeError`: When the runtime has no device.
+
+**Notes**
+
+Zero-phase runs pad each end by [`settling_samples`](/dsp-kitchen/reference/python/ops-filter/#settling_samples) (odd reflection), where
+`scipy.signal.sosfiltfilt` pads `3 * (2 * len(sos) + 1)` samples by default: the
+interior is the same, the first and last samples can differ. `sosfiltfilt(sos, x,
+padlen=settling_samples(sos))` matches to float32 precision.
+
+**Examples**
+
+```python
+>>> import numpy as np
+>>> import dspk
+>>> x = np.random.default_rng(0).standard_normal((4, 30_000)).astype(np.float32)
+>>> spikes = dspk.ops.filter.iir(x, 30_000.0, "highpass", 300.0)
+>>> spikes.shape
+(4, 30000)
+```
 
 ### `median`
 
@@ -165,17 +255,36 @@ median(
 ) -> np.ndarray
 ```
 
-Running median over an odd `width` (at most [`MAX_MEDIAN_WIDTH`](/dsp-kitchen/reference/python/ops-filter/#max_median_width)) along time; with the
-default `edge="zeros"` this is `scipy.signal.medfilt`.
+Running median along time, as `scipy.signal.medfilt` (with `edge="zeros"`).
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `data` |  |  |
-| `width` | `int` |  |
-| `edge` | `str` | `MEDIAN_DEFAULT_EDGE` ('zeros') |
-| `runtime` | `str \| None` | `None` |
+- **`data`** : `array_like`  
+  Signal `(channels, samples)`. float32, int8, int16, uint16 and int32 arrays go to the device as they are and are converted there; other dtypes and lists become float32 first.
+- **`width`** : `int`  
+  Window length in samples, odd, at most [`MAX_MEDIAN_WIDTH`](/dsp-kitchen/reference/python/ops-filter/#max_median_width).
+- **`edge`** : `{"zeros", "odd", "reflect", "nearest"}`, default `MEDIAN_DEFAULT_EDGE` ('zeros')  
+  What the samples past each end are taken to be.
+- **`runtime`** : `str | None`, default `None`  
+  `"cuda"`, `"wgpu"` or `"cpu"` for this call. By default: the runtime chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
+
+**Returns**
+
+- `np.ndarray` — The filtered signal `(channels, samples)`, float32.
+
+**Raises**
+
+- `ValueError`: For an even or too large `width`, an unknown `edge`, or `data` not 2-D.
+- `RuntimeError`: When the runtime has no device.
+
+**Examples**
+
+```python
+>>> import numpy as np
+>>> import dspk
+>>> x = np.random.default_rng(0).standard_normal((4, 30_000)).astype(np.float32)
+>>> baseline = dspk.ops.filter.median(x, 31)
+```
 
 ### `notch`
 
@@ -192,19 +301,42 @@ notch(
 ) -> np.ndarray
 ```
 
-Second-order notch at `freq` Hz, quality factor `q` (`scipy.signal.iirnotch`).
+Removes one frequency (a second-order notch), as `scipy.signal.iirnotch`.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `data` |  |  |
-| `sample_rate` | `float` |  |
-| `freq` | `float` |  |
-| `q` | `float` |  |
-| `mode` | `str` | `'forward_backward'` |
-| `start` | `str` | `'rest'` |
-| `runtime` | `str \| None` | `None` |
+- **`data`** : `array_like`  
+  Signal `(channels, samples)`. float32, int8, int16, uint16 and int32 arrays go to the device as they are and are converted there; other dtypes and lists become float32 first.
+- **`sample_rate`** : `float`  
+  Sample rate of `data` in Hz.
+- **`freq`** : `float`  
+  Frequency to remove, in Hz (mains hum: 50 or 60).
+- **`q`** : `float`  
+  Quality factor: the notch is `freq / q` Hz wide at -3 dB; larger is narrower.
+- **`mode`** : `{"forward_backward", "forward"}`, default `'forward_backward'`  
+  `"forward_backward"`: zero phase, as `scipy.signal.sosfiltfilt` (the magnitude response is applied twice). `"forward"`: causal, one pass, as `scipy.signal.sosfilt`.
+- **`start`** : `{"rest", "steady_state"}`, default `'rest'`  
+  Where a `"forward"` pass starts: at rest, as if the signal were zero before the first sample (`sosfilt` without `zi`), or from the steady state of the first sample (`zi = sosfilt_zi(sos) * x[0]`: no step at the start). Forward-backward passes always start from the steady state.
+- **`runtime`** : `str | None`, default `None`  
+  `"cuda"`, `"wgpu"` or `"cpu"` for this call. By default: the runtime chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
+
+**Returns**
+
+- `np.ndarray` — The filtered signal `(channels, samples)`, float32.
+
+**Raises**
+
+- `ValueError`: When `data` is not 2-D.
+- `RuntimeError`: When the runtime has no device.
+
+**Examples**
+
+```python
+>>> import numpy as np
+>>> import dspk
+>>> x = np.random.default_rng(0).standard_normal((4, 30_000)).astype(np.float32)
+>>> clean = dspk.ops.filter.notch(x, 30_000.0, 60.0, 30.0)
+```
 
 ### `settling_samples`
 
@@ -212,13 +344,28 @@ Second-order notch at `freq` Hz, quality factor `q` (`scipy.signal.iirnotch`).
 settling_samples(sos: np.ndarray) -> int
 ```
 
-Samples until the impulse response of `sos` decays below [`SETTLING_TOLERANCE`](/dsp-kitchen/reference/python/ops-filter/#settling_tolerance).
+Samples after which the impulse response of `sos` has settled.
+
+The first sample `t` from which the rest of the response holds at most
+[`SETTLING_TOLERANCE`](/dsp-kitchen/reference/python/ops-filter/#settling_tolerance) of its total magnitude (`sum(|h[t:]|) <= tolerance *
+sum(|h|)`). It is how far a filter "remembers": the padding zero-phase runs use and the
+halo windowed runs need.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `sos` | `np.ndarray` |  |
+- **`sos`** : `np.ndarray`  
+  Sections `(sections, 6)` in scipy's layout.
+
+**Returns**
+
+- `int` — A number of samples.
+
+**Examples**
+
+```python
+>>> import dspk
+>>> n = dspk.ops.filter.settling_samples(dspk.ops.filter.sos("highpass", 300.0, 30_000.0))
+```
 
 ### `sos`
 
@@ -234,22 +381,37 @@ sos(
 ) -> np.ndarray
 ```
 
-Second-order sections `(sections, 6)` of an IIR design, scipy layout `[b, a]`.
-
-`band`: `"lowpass"`, `"highpass"` (one `cutoff` in Hz), `"bandpass"`, `"bandstop"`
-(`(low, high)` in Hz). `design`: `"butterworth"`, `"chebyshev1"` (needs `ripple_db`),
-`"bessel"`.
+Second-order sections of an IIR filter design, in scipy's layout.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `band` | `str` |  |
-| `cutoff` | `float \| Sequence[float]` |  |
-| `sample_rate` | `float` |  |
-| `order` | `int` | `DEFAULT_ORDER` (5) |
-| `design` | `str` | `'butterworth'` |
-| `ripple_db` | `float \| None` | `None` |
+- **`band`** : `{"lowpass", "highpass", "bandpass", "bandstop"}`  
+  The band the filter passes (or stops).
+- **`cutoff`** : `float | Sequence[float]`  
+  Cutoff in Hz: one for `"lowpass"` and `"highpass"`, `(low, high)` for `"bandpass"` and `"bandstop"`.
+- **`sample_rate`** : `float`  
+  Sample rate in Hz.
+- **`order`** : `int`, default `DEFAULT_ORDER` (5)  
+  Filter order.
+- **`design`** : `{"butterworth", "chebyshev1", "bessel"}`, default `'butterworth'`  
+  The filter family.
+- **`ripple_db`** : `float | None`, default `None`  
+  Passband ripple in dB; `"chebyshev1"` needs it, the other designs take none.
+
+**Returns**
+
+- `np.ndarray` — Sections `(sections, 6)`, each row `[b0, b1, b2, a0, a1, a2]` as `scipy.signal.butter(..., output="sos")` gives.
+
+**Raises**
+
+- `ValueError`: For an unknown `band` or `design`, the wrong number of cutoffs, or `ripple_db` given to (or missing from) a design.
+
+**Examples**
+
+```python
+>>> import dspk
+>>> sections = dspk.ops.filter.sos("bandpass", (300.0, 6000.0), 30_000.0, order=4)
+```
 
 ### `sosfilt`
 
@@ -264,17 +426,39 @@ sosfilt(
 ) -> np.ndarray
 ```
 
-Applies second-order sections `sos` `(sections, 6)` to `data` on the device.
+Applies second-order sections on the device.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `data` |  |  |
-| `sos` | `np.ndarray` |  |
-| `mode` | `str` | `'forward_backward'` |
-| `start` | `str` | `'rest'` |
-| `runtime` | `str \| None` | `None` |
+- **`data`** : `array_like`  
+  Signal `(channels, samples)`. float32, int8, int16, uint16 and int32 arrays go to the device as they are and are converted there; other dtypes and lists become float32 first.
+- **`sos`** : `np.ndarray`  
+  Sections `(sections, 6)` in scipy's layout, from [`sos`](/dsp-kitchen/reference/python/ops-filter/#sos) or `scipy.signal`.
+- **`mode`** : `{"forward_backward", "forward"}`, default `'forward_backward'`  
+  `"forward_backward"`: zero phase, as `scipy.signal.sosfiltfilt` (the magnitude response is applied twice). `"forward"`: causal, one pass, as `scipy.signal.sosfilt`.
+- **`start`** : `{"rest", "steady_state"}`, default `'rest'`  
+  Where a `"forward"` pass starts: at rest, as if the signal were zero before the first sample (`sosfilt` without `zi`), or from the steady state of the first sample (`zi = sosfilt_zi(sos) * x[0]`: no step at the start). Forward-backward passes always start from the steady state.
+- **`runtime`** : `str | None`, default `None`  
+  `"cuda"`, `"wgpu"` or `"cpu"` for this call. By default: the runtime chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
+
+**Returns**
+
+- `np.ndarray` — The filtered signal `(channels, samples)`, float32.
+
+**Raises**
+
+- `ValueError`: For an invalid `mode` or `start`, or `data` not 2-D.
+- `RuntimeError`: When the runtime has no device.
+
+**Examples**
+
+```python
+>>> import numpy as np
+>>> import dspk
+>>> x = np.random.default_rng(0).standard_normal((4, 30_000)).astype(np.float32)
+>>> sections = dspk.ops.filter.sos("lowpass", 250.0, 30_000.0)
+>>> lfp = dspk.ops.filter.sosfilt(x, sections)
+```
 
 ### `subtract_template`
 
@@ -291,26 +475,43 @@ subtract_template(
 ) -> np.ndarray
 ```
 
-Subtracts `template` `(channels, template_samples)` (or 1-D for one channel) from
-`data` `(channels, samples)` at every event (sample indices).
+Subtracts a template from `data` at every event, each aligned and scaled.
 
-The template's sample `center_offset` sits on the event; each event is aligned by
-cross-correlation within `±max_lag` samples and, with `dynamic_scaling`, scaled by least
-squares. Overlapping events are subtracted in their order: each alignment sees the residual of
-the earlier ones, so where waveforms overlap a remainder can stay (about 10 % for two events 5
-samples apart in the tests); isolated events are removed to well under 1 %.
+The template's sample `center_offset` is placed on each event, then shifted by up to
+`max_lag` samples to where it best matches (cross-correlation) and, with
+`dynamic_scaling`, scaled by least squares before it is subtracted.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `data` |  |  |
-| `template` |  |  |
-| `events` |  |  |
-| `center_offset` | `int` |  |
-| `max_lag` | `int` | `TEMPLATE_DEFAULT_MAX_LAG` (8) |
-| `dynamic_scaling` | `bool` | `True` |
-| `runtime` | `str \| None` | `None` |
+- **`data`** : `array_like`  
+  Signal `(channels, samples)`. float32, int8, int16, uint16 and int32 arrays go to the device as they are and are converted there; other dtypes and lists become float32 first.
+- **`template`** : `array_like`  
+  The waveform `(channels, template_samples)`, or 1-D for one channel.
+- **`events`** : `array_like`  
+  Sample indices of the events (1-D).
+- **`center_offset`** : `int`  
+  The template sample that sits on each event.
+- **`max_lag`** : `int`, default `TEMPLATE_DEFAULT_MAX_LAG` (8)  
+  How far, in samples, an event may shift to align.
+- **`dynamic_scaling`** : `bool`, default `True`  
+  Scale the template to each event (least squares); `False` subtracts it as it is.
+- **`runtime`** : `str | None`, default `None`  
+  `"cuda"`, `"wgpu"` or `"cpu"` for this call. By default: the runtime chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
+
+**Returns**
+
+- `np.ndarray` — `data` with the events removed `(channels, samples)`, float32.
+
+**Raises**
+
+- `ValueError`: When `data` is not 2-D.
+- `RuntimeError`: When the runtime has no device.
+
+**Notes**
+
+Overlapping events are subtracted in order, each aligned on what the earlier ones left, so
+where waveforms overlap a remainder can stay (about 10 % for two events 5 samples apart in
+the tests). Isolated events are removed to well under 1 %.
 
 ### `teager_kaiser`
 
@@ -323,16 +524,36 @@ teager_kaiser(
 ) -> np.ndarray
 ```
 
-Teager–Kaiser energy `x[t]**2 - x[t-1] * x[t+1]` along time; the neighbours of the end
-samples come from `edge`.
+Teager–Kaiser energy along time: `x[t]**2 - x[t-1] * x[t+1]`.
+
+It is large where the signal is both large and fast, so spikes stand out from slow waves.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `data` |  |  |
-| `edge` | `str` | `TEAGER_KAISER_DEFAULT_EDGE` ('reflect') |
-| `runtime` | `str \| None` | `None` |
+- **`data`** : `array_like`  
+  Signal `(channels, samples)`. float32, int8, int16, uint16 and int32 arrays go to the device as they are and are converted there; other dtypes and lists become float32 first.
+- **`edge`** : `{"zeros", "odd", "reflect", "nearest"}`, default `TEAGER_KAISER_DEFAULT_EDGE` ('reflect')  
+  What the neighbours of the first and last samples are taken to be.
+- **`runtime`** : `str | None`, default `None`  
+  `"cuda"`, `"wgpu"` or `"cpu"` for this call. By default: the runtime chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
+
+**Returns**
+
+- `np.ndarray` — The energy `(channels, samples)`, float32.
+
+**Raises**
+
+- `ValueError`: For an unknown `edge` or `data` not 2-D.
+- `RuntimeError`: When the runtime has no device.
+
+**Examples**
+
+```python
+>>> import numpy as np
+>>> import dspk
+>>> x = np.random.default_rng(0).standard_normal((4, 30_000)).astype(np.float32)
+>>> energy = dspk.ops.filter.teager_kaiser(x)
+```
 
 ## Constants
 

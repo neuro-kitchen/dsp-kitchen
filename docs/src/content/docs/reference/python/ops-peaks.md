@@ -40,9 +40,7 @@ channel then sample.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `data` |  |  |
-| `heights` |  |  |
-| `polarity` | `str` | `'positive'` |
-| `runtime` | `str \| None` | `None` |
+- **`data`**
+- **`heights`**
+- **`polarity`** : `str`, default `'positive'`
+- **`runtime`** : `str | None`, default `None`

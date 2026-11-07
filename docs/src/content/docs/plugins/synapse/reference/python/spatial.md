@@ -15,7 +15,7 @@ Space: where each spike comes from on the probe (four localisers), and how the p
 | | |
 |---|---|
 | [`drift`](#drift) | Probe drift from spikes (`samples` of a recording of `total_samples` at `sample_rate` Hz, their `depths_um` and `amplitudes_uv`). |
-| [`localize`](#localize) | `(spikes, 3)` positions from `snippets` (`waveforms` `(spikes, k, samples)` and `channels` `(spikes, k)`, the spike's own channel first, as [`snippets`](/dsp-kitchen/plugins/synapse/reference/python/extraction/#snippets) returns them). |
+| [`localize`](#localize) | `(spikes, 3)` positions from `snippets` (`waveforms` `(spikes, k, samples)` and `channels` `(spikes, k)`, the spike's own channel first, as [`synapse.extraction.snippets`](/dsp-kitchen/plugins/synapse/reference/python/extraction/#snippets) returns them). |
 
 ## Functions
 
@@ -46,20 +46,18 @@ Probe drift from spikes (`samples` of a recording of `total_samples` at
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `samples` |  |  |
-| `depths_um` |  |  |
-| `amplitudes_uv` |  |  |
-| `total_samples` | `int` |  |
-| `sample_rate` | `float` |  |
-| `depth_min_um` | `float` |  |
-| `depth_max_um` | `float` |  |
-| `time_bin_s` | `float` | `DEFAULT_DRIFT_TIME_BIN_S` (2.0) |
-| `depth_bin_um` | `float` | `DEFAULT_DRIFT_DEPTH_BIN_UM` (5.0) |
-| `max_drift_um` | `float` | `DEFAULT_MAX_DRIFT_UM` (50.0) |
-| `depth_blocks` | `int` | `DEFAULT_DRIFT_DEPTH_BLOCKS` (5) |
-| `rigid` | `bool` | `True` |
+- **`samples`**
+- **`depths_um`**
+- **`amplitudes_uv`**
+- **`total_samples`** : `int`
+- **`sample_rate`** : `float`
+- **`depth_min_um`** : `float`
+- **`depth_max_um`** : `float`
+- **`time_bin_s`** : `float`, default `DEFAULT_DRIFT_TIME_BIN_S` (2.0)
+- **`depth_bin_um`** : `float`, default `DEFAULT_DRIFT_DEPTH_BIN_UM` (5.0)
+- **`max_drift_um`** : `float`, default `DEFAULT_MAX_DRIFT_UM` (50.0)
+- **`depth_blocks`** : `int`, default `DEFAULT_DRIFT_DEPTH_BLOCKS` (5)
+- **`rigid`** : `bool`, default `True`
 
 ### `localize`
 
@@ -80,7 +78,7 @@ localize(
 
 `(spikes, 3)` positions from `snippets` (`waveforms` `(spikes, k, samples)` and
     `channels` `(spikes, k)`, the spike's own channel first, as
-[`snippets`](/dsp-kitchen/plugins/synapse/reference/python/extraction/#snippets) returns them).
+[`synapse.extraction.snippets`](/dsp-kitchen/plugins/synapse/reference/python/extraction/#snippets) returns them).
 
     `method`: `center_of_mass` (peak-to-peak weights to `power`), `monopolar`
     (Levenberg–Marquardt fit of a point source), `grid_convolution` (a grid of candidate
@@ -90,17 +88,15 @@ localize(
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `snippets` | `dict` |  |
-| `probe` | `Probe` |  |
-| `method` | `str` | `'center_of_mass'` |
-| `power` | `float` | `DEFAULT_COM_POWER` (1.0) |
-| `max_iterations` | `int \| None` | `None` |
-| `xy_radius_um` | `float` | `DEFAULT_GRID_XY_RADIUS_UM` (30.0) |
-| `xy_step_um` | `float` | `DEFAULT_GRID_XY_STEP_UM` (5.0) |
-| `z_values_um` |  | `DEFAULT_GRID_Z_VALUES_UM` ([5.0, 10.0, 20.0, 35.0, 50.0]) |
-| `softmax_temperature` | `float` | `DEFAULT_GRID_SOFTMAX_TEMPERATURE` (0.05) |
+- **`snippets`** : `dict`
+- **`probe`** : `Probe`
+- **`method`** : `str`, default `'center_of_mass'`
+- **`power`** : `float`, default `DEFAULT_COM_POWER` (1.0)
+- **`max_iterations`** : `int | None`, default `None`
+- **`xy_radius_um`** : `float`, default `DEFAULT_GRID_XY_RADIUS_UM` (30.0)
+- **`xy_step_um`** : `float`, default `DEFAULT_GRID_XY_STEP_UM` (5.0)
+- **`z_values_um`**, default `DEFAULT_GRID_Z_VALUES_UM` ([5.0, 10.0, 20.0, 35.0, 50.0])
+- **`softmax_temperature`** : `float`, default `DEFAULT_GRID_SOFTMAX_TEMPERATURE` (0.05)
 
 ## Constants
 

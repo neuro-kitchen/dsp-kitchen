@@ -20,7 +20,7 @@ lists) and read several recordings as one (merges)::
                "out": {"op": "write", "path": "filtered.zarr", "format": "zarr"}},
      "edges": [["raw", "hp"], ["hp", "out"]]}
 
-Processing nodes mirror `stage`. The run streams the recording window by window
+Processing nodes mirror `ops.stage`. The run streams the recording window by window
 through the device (one upload, one download per window) and writes the canonical spec next to the
 output (`<output>.pipeline.json`). Without `execution.runtime` the spec runs on the runtime
 `runtime` selects.
@@ -47,9 +47,7 @@ Raises `ValueError` with the reason when the spec is invalid.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `spec` | `Spec \| str \| PathLike` |  |
+- **`spec`** : `Spec | str | PathLike`
 
 ### `load`
 
@@ -61,9 +59,7 @@ Reads a `.json` or `.toml` spec file and returns its canonical form.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `path` | `str \| PathLike` |  |
+- **`path`** : `str | PathLike`
 
 ### `plan`
 
@@ -80,10 +76,8 @@ halo, stored_upload, channels, input/output samples and rates, windows, max_wind
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `spec` | `Spec \| str \| PathLike` |  |
-| `base_dir` | `str \| PathLike \| None` | `None` |
+- **`spec`** : `Spec | str | PathLike`
+- **`base_dir`** : `str | PathLike | None`, default `None`
 
 ### `run`
 
@@ -115,11 +109,9 @@ stay). Ctrl+C cancels the same way.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `spec` | `Spec \| str \| PathLike` |  |
-| `base_dir` | `str \| PathLike \| None` | `None` |
-| `progress` | `Progress \| None` | `None` |
+- **`spec`** : `Spec | str | PathLike`
+- **`base_dir`** : `str | PathLike | None`, default `None`
+- **`progress`** : `Progress | None`, default `None`
 
 ### `schema`
 

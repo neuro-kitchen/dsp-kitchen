@@ -19,7 +19,7 @@ Unit quality and spike-train analyses. Spike trains are sample indices (any inte
 | [`autocorrelogram`](#autocorrelogram) | Auto-correlogram (zero lag excluded). |
 | [`bursts`](#bursts) | Epochs where the smoothed rate stays above `threshold_hz`. |
 | [`ccg_refractory`](#ccg_refractory) | Kilosort4's test of a refractory cross-correlogram (two trains likely one unit). |
-| [`compare_sortings`](#compare_sortings) | Two [`Sorting`](/dsp-kitchen/plugins/synapse/reference/python/io/#sorting) compared unit by unit. |
+| [`compare_sortings`](#compare_sortings) | Two [`synapse.io.Sorting`](/dsp-kitchen/plugins/synapse/reference/python/io/#sorting) compared unit by unit. |
 | [`compare_trains`](#compare_trains) | Two trains matched 1-to-1 within `tolerance_samples`. |
 | [`composite_score`](#composite_score) | EMUsort's composite quality score of a unit. |
 | [`crosscorrelogram`](#crosscorrelogram) | Cross-correlogram of `b` around `a` (lags `t_b − t_a`). |
@@ -57,14 +57,12 @@ Kilosort4's test of a refractory auto-correlogram: `ratio`, `probability`, `base
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `train` |  |  |
-| `sample_rate` | `float` |  |
-| `bin_ms` | `float` | `DEFAULT_REFRACTORY_BIN_MS` (1.0) |
-| `window_ms` | `float` | `DEFAULT_REFRACTORY_WINDOW_MS` (500.0) |
-| `ratio` | `float` | `DEFAULT_ACG_RATIO` (0.2) |
-| `probability` | `float` | `DEFAULT_ACG_PROBABILITY` (0.2) |
+- **`train`**
+- **`sample_rate`** : `float`
+- **`bin_ms`** : `float`, default `DEFAULT_REFRACTORY_BIN_MS` (1.0)
+- **`window_ms`** : `float`, default `DEFAULT_REFRACTORY_WINDOW_MS` (500.0)
+- **`ratio`** : `float`, default `DEFAULT_ACG_RATIO` (0.2)
+- **`probability`** : `float`, default `DEFAULT_ACG_PROBABILITY` (0.2)
 
 ### `amplitude_cutoff`
 
@@ -82,12 +80,10 @@ Estimated fraction of spikes below the detection threshold, in `[0, 0.5]`.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `amplitudes` |  |  |
-| `bins` | `int` | `AMPLITUDE_CUTOFF_BINS` (100) |
-| `smoothing_bins` | `float` | `AMPLITUDE_CUTOFF_SMOOTHING` (3.0) |
-| `min_ratio` | `float` | `AMPLITUDE_CUTOFF_MIN_RATIO` (5.0) |
+- **`amplitudes`**
+- **`bins`** : `int`, default `AMPLITUDE_CUTOFF_BINS` (100)
+- **`smoothing_bins`** : `float`, default `AMPLITUDE_CUTOFF_SMOOTHING` (3.0)
+- **`min_ratio`** : `float`, default `AMPLITUDE_CUTOFF_MIN_RATIO` (5.0)
 
 ### `autocorrelogram`
 
@@ -105,12 +101,10 @@ Auto-correlogram (zero lag excluded): `lags_ms`, `counts`.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `train` |  |  |
-| `sample_rate` | `float` |  |
-| `bin_ms` | `float` | `DEFAULT_CORRELOGRAM_BIN_MS` (1.0) |
-| `window_ms` | `float` | `DEFAULT_CORRELOGRAM_WINDOW_MS` (50.0) |
+- **`train`**
+- **`sample_rate`** : `float`
+- **`bin_ms`** : `float`, default `DEFAULT_CORRELOGRAM_BIN_MS` (1.0)
+- **`window_ms`** : `float`, default `DEFAULT_CORRELOGRAM_WINDOW_MS` (50.0)
 
 ### `bursts`
 
@@ -131,15 +125,13 @@ Epochs where the smoothed rate stays above `threshold_hz`: `onset_s`, `offset_s`
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `train` |  |  |
-| `total_samples` | `int` |  |
-| `sample_rate` | `float` |  |
-| `threshold_hz` | `float` |  |
-| `min_duration_ms` | `float` | `50.0` |
-| `bin_ms` | `float` | `10.0` |
-| `sigma_ms` | `float` | `50.0` |
+- **`train`**
+- **`total_samples`** : `int`
+- **`sample_rate`** : `float`
+- **`threshold_hz`** : `float`
+- **`min_duration_ms`** : `float`, default `50.0`
+- **`bin_ms`** : `float`, default `10.0`
+- **`sigma_ms`** : `float`, default `50.0`
 
 ### `ccg_refractory`
 
@@ -160,15 +152,13 @@ Kilosort4's test of a refractory cross-correlogram (two trains likely one unit).
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `a` |  |  |
-| `b` |  |  |
-| `sample_rate` | `float` |  |
-| `bin_ms` | `float` | `DEFAULT_REFRACTORY_BIN_MS` (1.0) |
-| `window_ms` | `float` | `DEFAULT_REFRACTORY_WINDOW_MS` (500.0) |
-| `ratio` | `float` | `DEFAULT_CCG_RATIO` (0.25) |
-| `probability` | `float` | `DEFAULT_CCG_PROBABILITY` (0.05) |
+- **`a`**
+- **`b`**
+- **`sample_rate`** : `float`
+- **`bin_ms`** : `float`, default `DEFAULT_REFRACTORY_BIN_MS` (1.0)
+- **`window_ms`** : `float`, default `DEFAULT_REFRACTORY_WINDOW_MS` (500.0)
+- **`ratio`** : `float`, default `DEFAULT_CCG_RATIO` (0.25)
+- **`probability`** : `float`, default `DEFAULT_CCG_PROBABILITY` (0.05)
 
 ### `compare_sortings`
 
@@ -182,17 +172,15 @@ compare_sortings(
 ) -> dict
 ```
 
-Two [`Sorting`](/dsp-kitchen/plugins/synapse/reference/python/io/#sorting) compared unit by unit: `agreement` `(units_a, units_b)`,
+Two [`synapse.io.Sorting`](/dsp-kitchen/plugins/synapse/reference/python/io/#sorting) compared unit by unit: `agreement` `(units_a, units_b)`,
 `unit_ids_a`, `unit_ids_b`, `matched` `(a, b, agreement)`, `well_detected` (units of `a`).
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `a` |  |  |
-| `b` |  |  |
-| `delta_ms` | `float` | `DEFAULT_MATCH_DELTA_MS` (0.4) |
-| `threshold` | `float` | `DEFAULT_AGREEMENT_THRESHOLD` (0.5) |
+- **`a`**
+- **`b`**
+- **`delta_ms`** : `float`, default `DEFAULT_MATCH_DELTA_MS` (0.4)
+- **`threshold`** : `float`, default `DEFAULT_AGREEMENT_THRESHOLD` (0.5)
 
 ### `compare_trains`
 
@@ -205,11 +193,9 @@ Two trains matched 1-to-1 within `tolerance_samples`: `matches`, `false_negative
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `a` |  |  |
-| `b` |  |  |
-| `tolerance_samples` | `int` |  |
+- **`a`**
+- **`b`**
+- **`tolerance_samples`** : `int`
 
 ### `composite_score`
 
@@ -227,13 +213,11 @@ EMUsort's composite quality score of a unit: `score` in `[0, 1]` and its parts.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `train` |  |  |
-| `amplitudes` |  |  |
-| `snr` | `float` |  |
-| `total_samples` | `int` |  |
-| `sample_rate` | `float` |  |
+- **`train`**
+- **`amplitudes`**
+- **`snr`** : `float`
+- **`total_samples`** : `int`
+- **`sample_rate`** : `float`
 
 ### `crosscorrelogram`
 
@@ -252,13 +236,11 @@ Cross-correlogram of `b` around `a` (lags `t_b − t_a`): `lags_ms`, `counts`.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `a` |  |  |
-| `b` |  |  |
-| `sample_rate` | `float` |  |
-| `bin_ms` | `float` | `DEFAULT_CORRELOGRAM_BIN_MS` (1.0) |
-| `window_ms` | `float` | `DEFAULT_CORRELOGRAM_WINDOW_MS` (50.0) |
+- **`a`**
+- **`b`**
+- **`sample_rate`** : `float`
+- **`bin_ms`** : `float`, default `DEFAULT_CORRELOGRAM_BIN_MS` (1.0)
+- **`window_ms`** : `float`, default `DEFAULT_CORRELOGRAM_WINDOW_MS` (50.0)
 
 ### `d_prime`
 
@@ -270,10 +252,8 @@ Linear-discriminant d′ between two clusters' features `(n_a, d)` and `(n_b, d)
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `a` |  |  |
-| `b` |  |  |
+- **`a`**
+- **`b`**
 
 ### `firing_range`
 
@@ -292,13 +272,11 @@ Spread (Hz) of a unit's firing rate between two percentiles of `bin_s` bins.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `train` |  |  |
-| `total_samples` | `int` |  |
-| `sample_rate` | `float` |  |
-| `bin_s` | `float` | `0.5` |
-| `percentiles` | `tuple[float, float]` | `(5.0, 95.0)` |
+- **`train`**
+- **`total_samples`** : `int`
+- **`sample_rate`** : `float`
+- **`bin_s`** : `float`, default `0.5`
+- **`percentiles`** : `tuple[float, float]`, default `(5.0, 95.0)`
 
 ### `firing_rate`
 
@@ -317,13 +295,11 @@ Gaussian-smoothed instantaneous firing rate over the recording: `time_s`, `rate_
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `train` |  |  |
-| `total_samples` | `int` |  |
-| `sample_rate` | `float` |  |
-| `bin_ms` | `float` | `10.0` |
-| `sigma_ms` | `float` | `50.0` |
+- **`train`**
+- **`total_samples`** : `int`
+- **`sample_rate`** : `float`
+- **`bin_ms`** : `float`, default `10.0`
+- **`sigma_ms`** : `float`, default `50.0`
 
 ### `isi_histogram`
 
@@ -341,12 +317,10 @@ Inter-spike-interval histogram: `bin_ms` (left edges) and `counts`.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `train` |  |  |
-| `sample_rate` | `float` |  |
-| `bin_ms` | `float` | `1.0` |
-| `max_ms` | `float` | `100.0` |
+- **`train`**
+- **`sample_rate`** : `float`
+- **`bin_ms`** : `float`, default `1.0`
+- **`max_ms`** : `float`, default `100.0`
 
 ### `isi_violations`
 
@@ -366,13 +340,11 @@ ISI violations (Hill et al. 2011, SpikeInterface's `isi_violations_ratio`): `vio
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `train` |  |  |
-| `total_samples` | `int` |  |
-| `sample_rate` | `float` |  |
-| `threshold_ms` | `float` | `DEFAULT_ISI_THRESHOLD_MS` (1.5) |
-| `min_isi_ms` | `float` | `DEFAULT_MIN_ISI_MS` (0.0) |
+- **`train`**
+- **`total_samples`** : `int`
+- **`sample_rate`** : `float`
+- **`threshold_ms`** : `float`, default `DEFAULT_ISI_THRESHOLD_MS` (1.5)
+- **`min_isi_ms`** : `float`, default `DEFAULT_MIN_ISI_MS` (0.0)
 
 ### `isolation_distance`
 
@@ -384,11 +356,9 @@ Isolation distance of `unit` (Schmitzer-Torbert et al. 2005).
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `features` |  |  |
-| `labels` |  |  |
-| `unit` | `int` |  |
+- **`features`**
+- **`labels`**
+- **`unit`** : `int`
 
 ### `llobet_contamination`
 
@@ -407,13 +377,11 @@ Refractory-period contamination (Llobet et al. 2022).
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `train` |  |  |
-| `total_samples` | `int` |  |
-| `sample_rate` | `float` |  |
-| `refractory_ms` | `float` | `DEFAULT_ISI_THRESHOLD_MS` (1.5) |
-| `censored_ms` | `float` | `DEFAULT_MIN_ISI_MS` (0.0) |
+- **`train`**
+- **`total_samples`** : `int`
+- **`sample_rate`** : `float`
+- **`refractory_ms`** : `float`, default `DEFAULT_ISI_THRESHOLD_MS` (1.5)
+- **`censored_ms`** : `float`, default `DEFAULT_MIN_ISI_MS` (0.0)
 
 ### `presence_ratio`
 
@@ -432,13 +400,11 @@ Fraction of `bin_s` bins where the unit fires above `mean_rate_ratio` × its mea
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `train` |  |  |
-| `total_samples` | `int` |  |
-| `sample_rate` | `float` |  |
-| `bin_s` | `float` | `DEFAULT_PRESENCE_BIN_S` (60.0) |
-| `mean_rate_ratio` | `float` | `DEFAULT_PRESENCE_MEAN_RATE_RATIO` (0.0) |
+- **`train`**
+- **`total_samples`** : `int`
+- **`sample_rate`** : `float`
+- **`bin_s`** : `float`, default `DEFAULT_PRESENCE_BIN_S` (60.0)
+- **`mean_rate_ratio`** : `float`, default `DEFAULT_PRESENCE_MEAN_RATE_RATIO` (0.0)
 
 ### `psth`
 
@@ -459,14 +425,12 @@ Peri-stimulus time histogram of a train around stimuli (both in samples): `time_
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `train` |  |  |
-| `stimulus_samples` |  |  |
-| `sample_rate` | `float` |  |
-| `pre_ms` | `float` | `DEFAULT_PSTH_PRE_MS` (100.0) |
-| `post_ms` | `float` | `DEFAULT_PSTH_POST_MS` (500.0) |
-| `bin_ms` | `float` | `DEFAULT_PSTH_BIN_MS` (10.0) |
+- **`train`**
+- **`stimulus_samples`**
+- **`sample_rate`** : `float`
+- **`pre_ms`** : `float`, default `DEFAULT_PSTH_PRE_MS` (100.0)
+- **`post_ms`** : `float`, default `DEFAULT_PSTH_POST_MS` (500.0)
+- **`bin_ms`** : `float`, default `DEFAULT_PSTH_BIN_MS` (10.0)
 
 ### `refractory_violations`
 
@@ -478,10 +442,8 @@ Spike pairs at most `refractory_samples` apart (all pairs, not only consecutive)
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `train` |  |  |
-| `refractory_samples` | `int` |  |
+- **`train`**
+- **`refractory_samples`** : `int`
 
 ### `silhouette`
 
@@ -493,11 +455,9 @@ Silhouette score of `unit` in `[-1, 1]` among labelled `features` `(n, d)`.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `features` |  |  |
-| `labels` |  |  |
-| `unit` | `int` |  |
+- **`features`**
+- **`labels`**
+- **`unit`** : `int`
 
 ### `snr`
 
@@ -509,10 +469,8 @@ snr(peak_uv: float, noise_std_uv: float) -> float
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `peak_uv` | `float` |  |
-| `noise_std_uv` | `float` |  |
+- **`peak_uv`** : `float`
+- **`noise_std_uv`** : `float`
 
 ### `stimulus_average`
 
@@ -535,15 +493,13 @@ Stimulus-triggered average of `data` `(channels, samples)`: `time_ms`, `mean` /
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `data` |  |  |
-| `stimulus_samples` |  |  |
-| `sample_rate` | `float` |  |
-| `pre_ms` | `float` | `10.0` |
-| `post_ms` | `float` | `50.0` |
-| `response_ms` | `tuple[float, float]` | `(2.0, 40.0)` |
-| `threshold_sigma` | `float` | `3.0` |
+- **`data`**
+- **`stimulus_samples`**
+- **`sample_rate`** : `float`
+- **`pre_ms`** : `float`, default `10.0`
+- **`post_ms`** : `float`, default `50.0`
+- **`response_ms`** : `tuple[float, float]`, default `(2.0, 40.0)`
+- **`threshold_sigma`** : `float`, default `3.0`
 
 ## Constants
 

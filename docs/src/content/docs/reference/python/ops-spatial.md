@@ -30,10 +30,8 @@ Common average reference: the mean over channels subtracted at every sample.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `data` |  |  |
-| `runtime` | `str \| None` | `None` |
+- **`data`**
+- **`runtime`** : `str | None`, default `None`
 
 ### `cmr`
 
@@ -45,10 +43,8 @@ Common median reference: the median over channels subtracted at every sample.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `data` |  |  |
-| `runtime` | `str \| None` | `None` |
+- **`data`**
+- **`runtime`** : `str | None`, default `None`
 
 ## Classes
 
@@ -62,9 +58,7 @@ Surface Laplacian `(channels, channels)`, applied on the device.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `native` |  |  |
+- **`native`**
 
 **Properties**
 
@@ -82,10 +76,8 @@ from_grid(rows: int, cols: int) -> Laplacian
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `rows` | `int` |  |
-| `cols` | `int` |  |
+- **`rows`** : `int`
+- **`cols`** : `int`
 
 #### `Laplacian.from_positions`
 
@@ -97,10 +89,8 @@ Distance-weighted Hjorth Laplacian over each channel's `k` nearest.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `positions` |  |  |
-| `k` | `int` |  |
+- **`positions`**
+- **`k`** : `int`
 
 #### `Laplacian.apply`
 
@@ -112,10 +102,8 @@ apply(data, *, runtime: str | None = None) -> np.ndarray
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `data` |  |  |
-| `runtime` | `str \| None` | `None` |
+- **`data`**
+- **`runtime`** : `str | None`, default `None`
 
 ### `Whitening`
 
@@ -127,9 +115,7 @@ Spatial whitening `(channels, channels)`, fitted and applied on the device.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `native` |  |  |
+- **`native`**
 
 **Properties**
 
@@ -152,11 +138,9 @@ Global ZCA `U (L + epsilon)^-1/2 U^T` of `data` `(channels, samples)`.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `data` |  |  |
-| `epsilon` | `float` | `DEFAULT_WHITENING_EPSILON` (1e-06) |
-| `runtime` | `str \| None` | `None` |
+- **`data`**
+- **`epsilon`** : `float`, default `DEFAULT_WHITENING_EPSILON` (1e-06)
+- **`runtime`** : `str | None`, default `None`
 
 #### `Whitening.fit_local_knn`
 
@@ -176,13 +160,11 @@ Local ZCA: each channel whitened over its `k` nearest channels (`positions`
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `data` |  |  |
-| `positions` |  |  |
-| `k` | `int` |  |
-| `epsilon` | `float` | `DEFAULT_WHITENING_EPSILON` (1e-06) |
-| `runtime` | `str \| None` | `None` |
+- **`data`**
+- **`positions`**
+- **`k`** : `int`
+- **`epsilon`** : `float`, default `DEFAULT_WHITENING_EPSILON` (1e-06)
+- **`runtime`** : `str | None`, default `None`
 
 #### `Whitening.from_matrix`
 
@@ -194,9 +176,7 @@ A whitening from an explicit `(channels, channels)` matrix.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `matrix` |  |  |
+- **`matrix`**
 
 #### `Whitening.apply`
 
@@ -208,10 +188,8 @@ apply(data, *, runtime: str | None = None) -> np.ndarray
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `data` |  |  |
-| `runtime` | `str \| None` | `None` |
+- **`data`**
+- **`runtime`** : `str | None`, default `None`
 
 ## Constants
 

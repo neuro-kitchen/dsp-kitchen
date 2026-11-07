@@ -31,9 +31,7 @@ Principal component analysis; covariance and eigendecomposition on the device.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `native` |  |  |
+- **`native`**
 
 **Properties**
 
@@ -59,11 +57,9 @@ Fits `n_components` components on `data` `(channels, samples)`.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `data` |  |  |
-| `n_components` | `int` |  |
-| `runtime` | `str \| None` | `None` |
+- **`data`**
+- **`n_components`** : `int`
+- **`runtime`** : `str | None`, default `None`
 
 #### `PCA.transform`
 
@@ -75,10 +71,8 @@ Projects `data` `(channels, samples)` onto the components: `(n_components, sampl
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `data` |  |  |
-| `runtime` | `str \| None` | `None` |
+- **`data`**
+- **`runtime`** : `str | None`, default `None`
 
 ### `PPCA`
 
@@ -90,9 +84,7 @@ Probabilistic PCA (Tipping & Bishop), closed-form maximum likelihood.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `native` |  |  |
+- **`native`**
 
 **Properties**
 
@@ -117,11 +109,9 @@ Fits `n_components` latent dimensions on `data` `(channels, samples)`.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `data` |  |  |
-| `n_components` | `int` |  |
-| `runtime` | `str \| None` | `None` |
+- **`data`**
+- **`n_components`** : `int`
+- **`runtime`** : `str | None`, default `None`
 
 #### `PPCA.transform`
 
@@ -133,7 +123,5 @@ Posterior mean `E[z | x]` of `data` `(channels, samples)`: `(n_components, sampl
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `data` |  |  |
-| `runtime` | `str \| None` | `None` |
+- **`data`**
+- **`runtime`** : `str | None`, default `None`

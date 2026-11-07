@@ -108,7 +108,8 @@ class Linker:
         self.anchors.setdefault(name, url)
 
     def role(self, target: str, module: str) -> str:
-        short = target.rsplit(".", 1)[-1] if target.startswith("dspk.") else target
+        same_module = target.startswith(module + ".")
+        short = target.rsplit(".", 1)[-1] if same_module or not target.startswith("dspk.") else target.removeprefix("dspk.")
         for key in (target, f"{module}.{target}", short):
             if key in self.anchors:
                 return f"[`{short}`]({self.anchors[key]})"
@@ -255,19 +256,27 @@ def render_parameters(obj, doc_sections, module: str, linker: Linker, values, *,
             for p in s.value:
                 documented[p.name] = p
     params = [p for p in obj.parameters if not (skip_self and p.name in ("self", "cls"))]
-    described = any(documented.get(p.name) and documented[p.name].description for p in params)
-    rows = []
+    items = []
     for p in params:
         d = documented.get(p.name)
-        ann = type_text(p.annotation) or (str(d.annotation) if d and d.annotation else "")
-        row = f"| `{p.name}` | {f'`{cell(ann)}`' if ann else ''} | {default_text(p.default, values)} |"
-        if described:
-            row += f" {markdown(cell(d.description), module, linker) if d and d.description else ''} |"
-        rows.append(row)
-    if not rows:
+        choices = getattr(d.annotation, "elements", None) if d else None
+        doc_ann = str(d.annotation) if d and d.annotation else ""
+        if choices:  # numpy's {"a", "b"}: the values the parameter takes
+            ann = "{" + ", ".join('"' + str(c).strip("'\"") + '"' for c in choices) + "}"
+        else:
+            ann = type_text(p.annotation) or doc_ann
+        # numpy's layout: name, type and default on one line, the description under it
+        line = f"- **`{p.name}`**"
+        if ann:
+            line += f" : `{ann}`"
+        if p.default is not None:
+            line += f", default {default_text(p.default, values)}"
+        if d and d.description:
+            line += "  \n  " + markdown(" ".join(d.description.split()), module, linker)
+        items.append(line)
+    if not items:
         return []
-    head = ["| Name | Type | Default | Description |", "|---|---|---|---|"] if described else ["| Name | Type | Default |", "|---|---|---|"]
-    return ["**Parameters**", "", *head, *rows, ""]
+    return ["**Parameters**", "", *items, ""]
 
 
 def render_doc(doc_sections, module: str, linker: Linker, *, level: int) -> list[str]:
@@ -300,8 +309,11 @@ def render_function(name: str, obj, module, linker, values, *, level=3, owner=No
     shown = f"{owner}.{name}" if owner else name
     doc = sections(obj)
     out = [f"{'#' * level} `{shown}`", "", "```python", signature(name, obj, skip_self=skip_self), "```", ""]
-    out += render_doc([s for s in doc if s.kind.value != "parameters"], module, linker, level=level)
+    text = [s for s in doc if s.kind.value == "text"]
+    rest = [s for s in doc if s.kind.value not in ("text", "parameters")]
+    out += render_doc(text, module, linker, level=level)
     out += render_parameters(obj, doc, module, linker, values, skip_self=skip_self)
+    out += render_doc(rest, module, linker, level=level)
     return out
 
 

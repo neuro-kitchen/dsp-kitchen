@@ -47,10 +47,8 @@ Any map form as a checked `{"base", "pairs"}` dict (`base` applies to a list of 
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `map` | `MapLike` |  |
-| `base` | `int` | `DEFAULT_BASE` |
+- **`map`** : `MapLike`
+- **`base`** : `int`, default `DEFAULT_BASE`
 
 ### `gather_channels`
 
@@ -68,11 +66,9 @@ be left out or repeated), on the device. Returns float32 `(len(order), samples)`
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `data` |  |  |
-| `order` | `Sequence[int]` |  |
-| `runtime` | `str \| None` | `None` |
+- **`data`**
+- **`order`** : `Sequence[int]`
+- **`runtime`** : `str | None`, default `None`
 
 ### `map_order`
 
@@ -88,10 +84,8 @@ unnamed), checked against `channels` input channels when given.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `map` | `MapLike` |  |
-| `channels` | `int \| None` | `None` |
+- **`map`** : `MapLike`
+- **`channels`** : `int | None`, default `None`
 
 ### `read_map`
 
@@ -103,9 +97,7 @@ A map file (`.toml` or `.json`, the pairs under `remap`), checked: `{"base", "pa
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `path` | `str \| PathLike` |  |
+- **`path`** : `str | PathLike`
 
 ### `remap`
 
@@ -123,11 +115,9 @@ Returns float32 `(outputs, samples)`; [`map_order`](/dsp-kitchen/reference/pytho
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `data` |  |  |
-| `map` | `MapLike` |  |
-| `runtime` | `str \| None` | `None` |
+- **`data`**
+- **`map`** : `MapLike`
+- **`runtime`** : `str | None`, default `None`
 
 ### `write_map`
 
@@ -139,10 +129,8 @@ Writes a map file (`.toml` or `.json` by the suffix); returns its path.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `map` | `MapLike` |  |
-| `path` | `str \| PathLike` |  |
+- **`map`** : `MapLike`
+- **`path`** : `str | PathLike`
 
 ## Constants
 

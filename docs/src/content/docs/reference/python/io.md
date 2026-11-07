@@ -49,10 +49,8 @@ Opens the recording at `path`: its default source, or `source` (an id from `sour
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `path` | `str \| PathLike \| Path` |  |
-| `source` | `str \| None` | `None` |
+- **`path`** : `str | PathLike | Path`
+- **`source`** : `str | None`, default `None`
 
 ### `sources`
 
@@ -64,9 +62,7 @@ Every source of the file at `path`, from its metadata only.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `path` | `str \| PathLike \| Path` |  |
+- **`path`** : `str | PathLike | Path`
 
 ### `write_raw`
 
@@ -94,16 +90,14 @@ integers are written as they are, with no conversion; float values stored in an 
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `data` |  |  |
-| `path` | `str \| PathLike` |  |
-| `sample_rate` | `float` |  |
-| `format` | `str \| None` | `None` |
-| `order` | `str` | `'channel_major'` |
-| `gain` | `float` | `1.0` |
-| `unit` | `str` | `''` |
-| `chunk_samples` | `int` | `WRITE_CHUNK_SAMPLES` (65536) |
+- **`data`**
+- **`path`** : `str | PathLike`
+- **`sample_rate`** : `float`
+- **`format`** : `str | None`, default `None`
+- **`order`** : `str`, default `'channel_major'`
+- **`gain`** : `float`, default `1.0`
+- **`unit`** : `str`, default `''`
+- **`chunk_samples`** : `int`, default `WRITE_CHUNK_SAMPLES` (65536)
 
 ### `write_zarr`
 
@@ -129,16 +123,14 @@ stored on several threads; `parallel=False` writes on one thread.
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `data` |  |  |
-| `path` | `str \| PathLike` |  |
-| `sample_rate` | `float` |  |
-| `unit` | `str` | `''` |
-| `chunk_samples` | `int` | `ZARR_CHUNK_SAMPLES` (5000) |
-| `compression` | `str` | `'zstd'` |
-| `level` | `int \| None` | `None` |
-| `parallel` | `bool` | `True` |
+- **`data`**
+- **`path`** : `str | PathLike`
+- **`sample_rate`** : `float`
+- **`unit`** : `str`, default `''`
+- **`chunk_samples`** : `int`, default `ZARR_CHUNK_SAMPLES` (5000)
+- **`compression`** : `str`, default `'zstd'`
+- **`level`** : `int | None`, default `None`
+- **`parallel`** : `bool`, default `True`
 
 ## Classes
 
@@ -174,11 +166,9 @@ Reads `channels` (default: all) over samples `start..stop` (default: to the end)
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `channels` | `Sequence[int] \| None` | `None` |
-| `start` | `int` | `0` |
-| `stop` | `int \| None` | `None` |
+- **`channels`** : `Sequence[int] | None`, default `None`
+- **`start`** : `int`, default `0`
+- **`stop`** : `int | None`, default `None`
 
 ### `Source`
 
@@ -220,18 +210,16 @@ For data that does not fit in memory at once (a recording processed window by wi
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `path` | `str \| PathLike \| Path` |  |
-| `channels` | `int` |  |
-| `samples` | `int` |  |
-| `sample_rate` | `float` |  |
-| `unit` | `str` | `''` |
-| `chunk_samples` | `int` | `5000` |
-| `compression` | `str` | `'zstd'` |
-| `level` | `int \| None` | `None` |
-| `parallel` | `bool` | `True` |
-| `channel_names` | `Sequence[str] \| None` | `None` |
+- **`path`** : `str | PathLike | Path`
+- **`channels`** : `int`
+- **`samples`** : `int`
+- **`sample_rate`** : `float`
+- **`unit`** : `str`, default `''`
+- **`chunk_samples`** : `int`, default `5000`
+- **`compression`** : `str`, default `'zstd'`
+- **`level`** : `int | None`, default `None`
+- **`parallel`** : `bool`, default `True`
+- **`channel_names`** : `Sequence[str] | None`, default `None`
 
 #### `ZarrWriter.push`
 
@@ -243,9 +231,7 @@ Appends `block` `(channels, n)` float32 (the next `n` samples).
 
 **Parameters**
 
-| Name | Type | Default |
-|---|---|---|
-| `block` | `NDArray[np.float32]` |  |
+- **`block`** : `NDArray[np.float32]`
 
 #### `ZarrWriter.finish`
 
