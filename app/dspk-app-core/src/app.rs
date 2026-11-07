@@ -761,7 +761,7 @@ mod tests {
     }
 
     /// "Add view or container": a view kind adds a view (Raster only with units), a container
-    /// arranges the views, Close closes it.
+    /// arranges the views, Close and Esc close it, the arrow keys and Enter run a row.
     #[gpui_kit::test]
     fn add_view_or_container(cx: &mut TestAppContext) {
         let (window, store, app) = open(cx);
@@ -800,6 +800,24 @@ mod tests {
         }).unwrap();
         cx.run_until_parked();
         assert!(!dialog_open(cx), "Close closes it");
+        // The keyboard: Esc closes; from the first row, ↑ wraps to the last it can run (Heatmap:
+        // Raster has no units) and Enter adds it
+        let open_with_click = |cx: &mut TestAppContext| {
+            cx.update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window.click("explore-add-view", cx);
+            }).unwrap();
+            cx.run_until_parked();
+        };
+        open_with_click(cx);
+        cx.simulate_keystrokes(window, "escape");
+        assert!(!dialog_open(cx), "Esc closes it");
+        open_with_click(cx);
+        let n = views(cx, &app).len();
+        cx.simulate_keystrokes(window, "up enter");
+        cx.run_until_parked();
+        assert!(!dialog_open(cx));
+        assert_eq!(views(cx, &app).len(), n + 1, "↑ then Enter added a heatmap");
     }
 
     /// A remap at the head of a view's chain is what Explore shows: its order, without the
