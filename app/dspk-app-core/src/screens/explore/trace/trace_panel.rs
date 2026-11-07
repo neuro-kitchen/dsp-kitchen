@@ -371,7 +371,7 @@ impl Panel for TracePanel {
         Some(PanelControl::Toolbar)
     }
 
-    fn dropdown_menu(&mut self, menu: PopupMenu, _: &mut Window, _: &mut Context<Self>) -> PopupMenu {
+    fn dropdown_menu(&mut self, menu: PopupMenu, _: &mut Window, cx: &mut Context<Self>) -> PopupMenu {
         let explore = self.explore.clone();
         let add = move |kind: TimeViewKind| {
             let explore = explore.clone();
@@ -383,7 +383,15 @@ impl Panel for TracePanel {
                 }
             }
         };
-        menu.item(PopupMenuItem::new("Add traces view").on_click(add(TimeViewKind::Traces))).item(PopupMenuItem::new("Add heatmap view").on_click(add(TimeViewKind::Heatmap)))
+        let (explore, id) = (self.explore.clone(), self.vm.read(cx).id());
+        menu.item(PopupMenuItem::new("Add traces view").on_click(add(TimeViewKind::Traces)))
+            .item(PopupMenuItem::new("Add heatmap view").on_click(add(TimeViewKind::Heatmap)))
+            .separator()
+            .item(PopupMenuItem::new("Close view").on_click(move |_, _, cx| {
+                if let Some(ex) = explore.upgrade() {
+                    ex.update(cx, |ex, cx| ex.close(id, cx));
+                }
+            }))
     }
 
     fn inner_padding(&self, _: &App) -> bool {

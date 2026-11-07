@@ -15,7 +15,7 @@ use gpui_kit::component::dock::{panel_handle, DockSkin};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    div, px, AnyView, App, AppContext as _, Context, DragMoveEvent, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
+    div, px, AnyView, App, AppContext as _, Context, DragMoveEvent, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
     Styled as _, Subscription, WeakEntity, Window,
 };
 
@@ -134,6 +134,12 @@ impl ExploreView {
             ExploreEvent::Reset(views) => this.reset(views.clone(), window, cx),
             ExploreEvent::Added { vm, below } => this.add(vm.clone(), *below, window, cx),
             ExploreEvent::Focus => {}
+            ExploreEvent::Close(id) => {
+                if let Some(panel) = this.panels.remove(id) {
+                    this.dock.update(cx, |d, cx| d.remove_panel(panel, window, cx));
+                }
+                cx.notify();
+            }
         });
         // Picking a channel shows its processing
         let picked = cx.subscribe(&store, |this, _, e: &AppEvent, cx| {
@@ -217,6 +223,11 @@ impl ExploreView {
 
     /// A new view in its own group beside the focused view's group (to its right, or under it).
     fn add(&mut self, vm: Entity<TraceVm>, below: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.panels.is_empty() {
+            self.reset(vec![vm], window, cx);
+            cx.notify();
+            return;
+        }
         let focused = self.vm.read(cx).focused.as_ref().and_then(|f| self.panels.get(&f.read(cx).id())).map(|p| p.entity_id());
         let panel = self.panel(vm, cx);
         let id = gpui_kit::base::dock::PanelId::from(panel.entity_id());
@@ -270,67 +281,79 @@ impl ExploreView {
 }
 
 impl ExploreView {
-    /// The session's views (streams) as tabs: the active one is drawn; a click shows another
-    /// (opening its recording when it is another file). New views come from the Pipeline canvas.
-    fn view_tabs(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let t = cx.theme();
-        let (muted, border, active_bg) = (t.muted_foreground, t.border, t.background);
+    /// "Add view…": a view of each source of the open recording, of the kinds its data supports
+    /// (a raster needs units: a linked sorting), and the suggested layout.
+    fn add_view_menu(&self, m: PopupMenu, cx: &App) -> PopupMenu {
         let s = self.store.read(cx);
-        let active = s.doc.active_view.clone();
-        let open = s.recording.as_ref().and_then(|r| r.path.clone());
-        let tabs: Vec<_> = s
-            .doc
-            .views
-            .iter()
-            .map(|v| {
-                let on = active.as_deref() == Some(v.id.as_str());
-                let elsewhere = open.as_deref() != Some(v.recording.path.as_path());
-                let ops = v.ops.iter().filter(|o| o.enabled).count();
-                let (store, id) = (self.store.clone(), v.id.clone());
-                h_flex()
-                    .id(SharedString::from(format!("view-tab-{}", v.id)))
-                    .h_full()
-                    .px_3()
-                    .gap_1p5()
-                    .flex_none()
-                    .cursor_pointer()
-                    .border_r_1()
-                    .border_color(border)
-                    .when(on, |d| d.bg(active_bg).border_b_2().border_color(t.primary))
-                    .child(div().text_xs().when(!on, |d| d.text_color(muted)).child(v.name.clone()))
-                    .child(div().text_xs().text_color(muted).child(if ops == 0 { "raw".to_string() } else { format!("{ops} op{}", if ops == 1 { "" } else { "s" }) }))
-                    .when(elsewhere, |d| d.child(div().text_xs().text_color(muted).child("· other file")))
-                    .on_click(move |_, _, cx| store.update(cx, |s, cx| s.show_view(&id, cx)))
-            })
-            .collect();
-        let (store, me) = (self.store.clone(), cx.entity().downgrade());
+        let Some(sources) = s.sources().cloned() else {
+            return m.label("Open a recording first");
+        };
+        let path = s.recording.as_ref().and_then(|r| r.path.clone());
+        let mut m = m;
+        for e in sources.entries() {
+            let units = path.as_ref().and_then(|p| s.doc.views.iter().find(|v| &v.recording.path == p && v.recording.source.as_deref().unwrap_or(&sources.default_entry().id) == e.id)).is_some_and(|v| crate::plugin::layers(s, v, cx).units);
+            m = m.label(format!("{} · {} ch", e.name, e.channels));
+            let mut kinds = vec![("Traces", TimeViewKind::Traces), ("Heatmap", TimeViewKind::Heatmap)];
+            if units {
+                kinds.push(("Raster", TimeViewKind::Raster));
+            }
+            for (label, kind) in kinds {
+                let (vm, source) = (self.vm.clone(), e.id.clone());
+                m = m.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
+                    vm.update(cx, |vm, cx| {
+                        vm.add_on(kind, &source, cx);
+                    });
+                }));
+            }
+        }
+        let (vm, store) = (self.vm.clone(), self.store.clone());
+        m.separator()
+            .item(PopupMenuItem::new("Reset to suggested layout").on_click(move |_, _, cx| vm.update(cx, |vm, cx| vm.reset_layout(cx))))
+            .item(PopupMenuItem::new("New stream: branch in Pipeline…").on_click(move |_, _, cx| store.update(cx, |s, cx| s.set_workspace(crate::navigation::route::Workspace::Pipeline, cx))))
+    }
+
+    fn add_view_button(&self, id: &'static str, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let me = cx.entity().downgrade();
+        Button::new(id).ghost().xsmall().icon(IconName::Plus).label("Add view…").tooltip("A view of a source of the open recording").dropdown_menu(move |m: PopupMenu, _, cx| {
+            match me.upgrade() {
+                Some(e) => e.read(cx).add_view_menu(m, cx),
+                None => m,
+            }
+        })
+    }
+
+    /// Above the views: what the focused view shows, and "Add view…".
+    fn toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = cx.theme();
+        let (muted, border) = (t.muted_foreground, t.border);
+        let s = self.store.read(cx);
+        let shown = s.active_view().map(|v| {
+            let ops = v.ops.iter().filter(|o| o.enabled).count();
+            format!("{} · {}", v.name, if ops == 0 { "raw".to_string() } else { format!("{ops} op{}", if ops == 1 { "" } else { "s" }) })
+        });
         h_flex()
-            .id("view-tabs")
             .h(px(30.))
             .flex_none()
-            .overflow_x_scroll()
+            .px_1()
+            .gap_2()
             .border_b_1()
             .border_color(border)
-            .children(tabs)
-            .child(
-                Button::new("view-tabs-new")
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::Plus)
-                    .label("New view")
-                    .tooltip("Add a view of the shown stream, or branch it in Pipeline")
-                    .dropdown_menu(move |m: PopupMenu, _, _| {
-                        let mut m = m.label("A view of this stream");
-                        for (label, kind) in [("Traces", TimeViewKind::Traces), ("Heatmap", TimeViewKind::Heatmap), ("Raster", TimeViewKind::Raster)] {
-                            let me = me.clone();
-                            m = m.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
-                                let _ = me.update(cx, |e, cx| e.add_view(kind, cx));
-                            }));
-                        }
-                        let store = store.clone();
-                        m.separator().item(PopupMenuItem::new("New stream: branch in Pipeline…").on_click(move |_, _, cx| store.update(cx, |s, cx| s.set_workspace(crate::navigation::route::Workspace::Pipeline, cx))))
-                    }),
-            )
+            .child(self.add_view_button("explore-add-view", cx))
+            .when_some(shown, |d, label| d.child(div().text_xs().text_color(muted).truncate().child(label)))
+    }
+
+    /// No views: say so, and offer "Add view…" (or opening a recording).
+    fn empty_state(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let muted = cx.theme().muted_foreground;
+        let has_recording = self.store.read(cx).recording.is_some();
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap_2()
+            .child(div().text_sm().text_color(muted).child(if has_recording { "No views" } else { "No recording open" }))
+            .child(div().text_xs().text_color(muted).child(if has_recording { "Add a view of a source: traces, a heatmap, or a raster when units are linked." } else { "Open a recording (File → Open, or drop it here); it is listed under Timeline → Recordings." }))
+            .when(has_recording, |d| d.child(self.add_view_button("explore-empty-add-view", cx)))
     }
 }
 
@@ -407,7 +430,15 @@ impl Render for ExploreView {
                                 .child(panel_edge("explore.left", Side::Left, RAIL_W)),
                         )
                     })
-                    .child(v_flex().flex_1().min_w_0().h_full().child(self.view_tabs(cx)).child(div().flex_1().min_h_0().child(self.dock.clone())))
+                    .child({
+                        let empty = self.vm.read(cx).views.is_empty();
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .child(self.toolbar(cx))
+                            .child(div().flex_1().min_h_0().map(|d| if empty { d.child(self.empty_state(cx)) } else { d.child(self.dock.clone()) }))
+                    })
                     .when_some(right_panel, |d, p| {
                         d.child(
                             div()

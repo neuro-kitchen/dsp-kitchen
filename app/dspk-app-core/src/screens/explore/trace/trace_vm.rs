@@ -115,6 +115,10 @@ impl TraceVm {
             }
             _ => {}
         });
+        let this = cx.weak_entity();
+        cx.defer(move |cx| {
+            let _ = this.update(cx, |vm, cx| vm.bind(cx));
+        });
         Self {
             store,
             view,
@@ -202,16 +206,17 @@ impl TraceVm {
             Some(r) if on_default => r.events.clone(),
             _ => Default::default(),
         };
-        // The active view's processed preview when it reads this source, else the recording
-        let signal = store.signal_for(&self.view.source).unwrap_or_else(|| dataset.signal().clone());
+        // This view's session view: its processed preview, else the recording as stored
+        let shown = self.shown_view(store);
+        let signal = shown.and_then(|v| store.preview_of(&v.id)).unwrap_or_else(|| dataset.signal().clone());
         let mut req = self.view.render_request(&store.timeline, signal, events, store.palette());
         let window = req.window_start_sec..req.window_start_sec + req.window_sec;
         match req.mode {
             TimeViewKind::Traces if self.view.spikes => {
-                req.overlay = crate::plugin::plugins().iter().find_map(|p| p.trace_overlay(store, &self.view.source, window.clone(), cx)).map(Arc::new);
+                req.overlay = shown.and_then(|v| crate::plugin::plugins().iter().find_map(|p| p.trace_overlay(store, v, window.clone(), cx))).map(Arc::new);
             }
             TimeViewKind::Raster => {
-                req.raster = crate::plugin::plugins().iter().find_map(|p| p.raster(store, &self.view.source, window.clone(), cx)).map(Arc::new);
+                req.raster = shown.and_then(|v| crate::plugin::plugins().iter().find_map(|p| p.raster(store, v, window.clone(), cx))).map(Arc::new);
             }
             _ => {}
         }
@@ -301,14 +306,49 @@ impl TraceVm {
         }
     }
 
-    /// Shows another source of the open file.
+    /// Shows another source of the open file (Explore's views: with that source's session view
+    /// and its processing).
     pub fn set_source(&mut self, source: &str, cx: &mut Context<Self>) {
         if self.view.source != source {
             Self::attach(&mut self.view, &self.store, source, cx);
+            self.view.doc_view.clear();
             self.shown = None;
+            self.bind(cx);
             cx.emit(TraceEvent::Changed);
             self.request_render(cx);
         }
+    }
+
+    /// Explore's views show a session view of their own: the one of their source with all its
+    /// channels (made when none). The workspaces' strips follow the active session view instead.
+    fn bind(&mut self, cx: &mut Context<Self>) {
+        if self.home != Workspace::Explore || !self.view.doc_view.is_empty() {
+            return;
+        }
+        let (store, source) = (self.store.clone(), self.view.source.clone());
+        let this = cx.weak_entity();
+        // After this update: making the session view updates the store
+        cx.defer(move |cx| {
+            let id = store.update(cx, |s, cx| s.view_for_source(&source, cx));
+            let _ = this.update(cx, |vm, cx| {
+                if let Some(id) = id
+                    && vm.view.source == source
+                {
+                    vm.view.doc_view = id;
+                    cx.emit(TraceEvent::Changed);
+                }
+                vm.request_render(cx);
+            });
+        });
+    }
+
+    /// The session view this view draws: its own (Explore), else the active one when it reads this
+    /// view's source (the strips).
+    pub fn shown_view<'a>(&self, store: &'a Store) -> Option<&'a crate::domain::session::ViewDoc> {
+        if !self.view.doc_view.is_empty() {
+            return store.doc.view(&self.view.doc_view);
+        }
+        store.active_view().filter(|v| store.view_source(v) == self.view.source)
     }
 
     pub fn set_lanes(&mut self, lanes: usize, cx: &mut Context<Self>) {

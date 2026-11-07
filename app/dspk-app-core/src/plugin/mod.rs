@@ -28,6 +28,25 @@ use crate::domain::session::ViewDoc;
 use crate::navigation::route::Workspace;
 use crate::ui::plot::canvas::Pixel;
 
+/// What a view's data holds beyond its continuous signal (traces and heatmaps need only the
+/// signal): spike times (the Spikes layer) and units (the Raster layer).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Layers {
+    pub spikes: bool,
+    pub units: bool,
+}
+
+impl Layers {
+    fn or(self, other: Layers) -> Layers {
+        Layers { spikes: self.spikes || other.spikes, units: self.units || other.units }
+    }
+}
+
+/// What the installed plugins can draw for session view `view`, together.
+pub fn layers(store: &Store, view: &ViewDoc, cx: &App) -> Layers {
+    plugins().iter().fold(Layers::default(), |acc, p| acc.or(p.layers(store, view, cx)))
+}
+
 /// Channels in groups (e.g. the shanks of a probe) and a label per channel (e.g. its site).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ChannelLayout {
@@ -121,14 +140,19 @@ pub trait AppPlugin: Send + Sync + 'static {
     /// Called once the store exists (subscribe to its events, create the plugin's state).
     fn install(&self, _store: &Entity<Store>, _cx: &mut App) {}
 
-    /// Marks over `source`'s traces for the session-time window `window_sec`.
-    fn trace_overlay(&self, _store: &Store, _source: &str, _window_sec: Range<f64>, _cx: &App) -> Option<TraceOverlay> {
+    /// Marks over the traces of session view `view` for the session-time window `window_sec`.
+    fn trace_overlay(&self, _store: &Store, _view: &ViewDoc, _window_sec: Range<f64>, _cx: &App) -> Option<TraceOverlay> {
         None
     }
 
-    /// Raster rows over `source` for the session-time window `window_sec`.
-    fn raster(&self, _store: &Store, _source: &str, _window_sec: Range<f64>, _cx: &App) -> Option<Raster> {
+    /// Raster rows of session view `view` for the session-time window `window_sec`.
+    fn raster(&self, _store: &Store, _view: &ViewDoc, _window_sec: Range<f64>, _cx: &App) -> Option<Raster> {
         None
+    }
+
+    /// What this plugin can draw for session view `view` (e.g. a linked sorting: spikes, units).
+    fn layers(&self, _store: &Store, _view: &ViewDoc, _cx: &App) -> Layers {
+        Layers::default()
     }
 
     /// The body of workspace `ws` when this plugin provides it.

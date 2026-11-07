@@ -224,6 +224,13 @@ impl DspApp {
                         store.update(cx, |s, cx| s.forget_recent(None, cx));
                     }));
                 }
+                if open {
+                    let t = this.clone();
+                    menu = menu.separator().item(PopupMenuItem::new("Close recording").on_click(move |_, _, cx| {
+                        let store = t.read(cx).store.clone();
+                        store.update(cx, |s, cx| s.close_recording(None, cx));
+                    }));
+                }
                 let t = this.clone();
                 menu.separator()
                     .item(PopupMenuItem::new("Settings…").on_click(move |_, window, cx| t.update(cx, |a, cx| a.toggle_settings(window, cx))))
@@ -695,6 +702,58 @@ mod tests {
             let start = store.read(cx).timeline.window_start_sec;
             vs.iter().all(|v| v.read(cx).shown.as_ref().is_some_and(|s| (s.start - start).abs() < 1e-9))
         })
+    }
+
+    /// Recordings load once each; closing the active one switches to another, then to none, and
+    /// Explore is left with no views (its empty state), every view closable.
+    #[gpui_kit::test]
+    fn recordings_load_once_and_close(cx: &mut TestAppContext) {
+        let (window, store, app) = open(cx);
+        let rec = |name: &str| Recording::new(SourceSet::single(Dataset::generate_synthetic(4, 1_000.0, 2.0)), Some(std::path::PathBuf::from(format!("/nonexistent/{name}.zarr"))));
+        cx.update(|cx| store.update(cx, |s, cx| s.install(rec("a"), cx)));
+        cx.update(|cx| store.update(cx, |s, cx| s.install(rec("b"), cx)));
+        cx.update(|cx| store.update(cx, |s, cx| s.install(rec("a"), cx)));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let names: Vec<String> = store.read(cx).recordings().map(|r| r.name.clone()).collect();
+            assert_eq!(names, ["a.zarr", "b.zarr"], "each file once, the active first");
+        });
+        cx.update(|cx| store.update(cx, |s, cx| s.close_recording(None, cx)));
+        cx.run_until_parked();
+        cx.update(|cx| assert_eq!(store.read(cx).recording.as_ref().map(|r| r.name.clone()).as_deref(), Some("b.zarr")));
+        cx.update(|cx| store.update(cx, |s, cx| s.close_recording(None, cx)));
+        cx.run_until_parked();
+        cx.update(|cx| assert!(store.read(cx).recording.is_none() && store.read(cx).loaded.is_empty()));
+        assert!(views(cx, &app).is_empty(), "no recording, no views");
+        cx.update_window(window, |_, window, cx| window.render_frame(cx)).unwrap();
+    }
+
+    /// Every view closes, the last one too (Explore then offers "Add view…"), and adding one
+    /// after that lays out the dock again.
+    #[gpui_kit::test]
+    fn every_view_closes(cx: &mut TestAppContext) {
+        let (window, store, app) = open(cx);
+        install(cx, &store);
+        cx.update_window(window, |_, window, cx| window.render_frame(cx)).unwrap();
+        let ex = explore(cx, &app);
+        for vm in views(cx, &app) {
+            let id = cx.update(|cx| vm.read(cx).id());
+            cx.update(|cx| ex.update(cx, |ex, cx| ex.close(id, cx)));
+            cx.run_until_parked();
+        }
+        assert!(views(cx, &app).is_empty(), "the last view closes too");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("explore-empty-add-view").is_some(), "the empty state offers Add view");
+        })
+        .unwrap();
+        let source = cx.update(|cx| store.read(cx).sources().unwrap().default_entry().id.clone());
+        cx.update(|cx| ex.update(cx, |ex, cx| {
+            ex.add_on(TimeViewKind::Traces, &source, cx);
+        }));
+        cx.run_until_parked();
+        assert_eq!(views(cx, &app).len(), 1);
+        cx.update_window(window, |_, window, cx| window.render_frame(cx)).unwrap();
     }
 
     #[gpui_kit::test]

@@ -114,7 +114,10 @@ impl Recording {
 }
 
 pub struct Store {
+    /// The active recording (what Explore draws and Processing edits).
     pub recording: Option<Recording>,
+    /// Other recordings loaded this session (each file once): switching to one is instant.
+    pub loaded: Vec<Recording>,
     pub timeline: TimelineState,
     /// Channels shown, per source id, in display order.
     selection: HashMap<String, Vec<usize>>,
@@ -169,6 +172,7 @@ impl Store {
         crate::data::remote::set_profiles(&session.servers);
         Self {
             recording: None,
+            loaded: Vec::new(),
             timeline: TimelineState::new(1.0),
             selection: HashMap::new(),
             workspace: session.workspace,
@@ -412,6 +416,35 @@ impl Store {
             return None;
         }
         self.previews.get(&v.id).map(|p| p.clone() as Arc<dyn SignalBackend>)
+    }
+
+    /// The session view showing `source` of the open recording with all its channels (made when
+    /// none does; it becomes the active view then); `None` for a recording without a file.
+    pub fn view_for_source(&mut self, source: &str, cx: &mut Context<Self>) -> Option<String> {
+        let rec = self.recording.as_ref()?;
+        let path = rec.path.clone()?;
+        let default = rec.sources.default_entry().id.clone();
+        let shows = |v: &ViewDoc| v.recording.path == path && v.recording.source.as_deref().unwrap_or(&default) == source && v.recording.channels.is_none();
+        if let Some(v) = self.doc.views.iter().find(|v| shows(v)) {
+            return Some(v.id.clone());
+        }
+        let recording = RecordingRef { path: path.clone(), source: Some(source.to_string()), channels: None };
+        self.execute(SessionCommand::OpenView { recording, name: None }, cx).ok()?;
+        let id = self.doc.views.iter().find(|v| shows(v)).map(|v| v.id.clone());
+        if let Some(id) = &id {
+            self.rebuild_preview(id, cx);
+        }
+        id
+    }
+
+    /// What session view `view` draws when it shows its processed preview (it has enabled ops and
+    /// `Show::Processed`); `None`: the recording as stored.
+    pub fn preview_of(&self, view: &str) -> Option<Arc<dyn SignalBackend>> {
+        let v = self.doc.view(view)?;
+        if v.display.show != Show::Processed {
+            return None;
+        }
+        self.previews.get(view).map(|p| p.clone() as Arc<dyn SignalBackend>)
     }
 
     /// Whether the visible window of `samples` samples is previewed processed (else raw).
@@ -918,6 +951,14 @@ impl Store {
 
     /// Lists and opens `path`'s sources on a background thread.
     pub fn open(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if self.recording.as_ref().is_some_and(|r| r.path.as_ref() == Some(&path)) {
+            return;
+        }
+        if let Some(at) = self.loaded.iter().position(|r| r.path.as_ref() == Some(&path)) {
+            let recording = self.loaded.remove(at);
+            self.install(recording, cx);
+            return;
+        }
         let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
         self.opening = Some(name.clone());
         self.set_status(format!("Opening {name}…"), cx);
@@ -971,10 +1012,48 @@ impl Store {
         self.picked_channel = None;
         self.picked_op = None;
         self.status = format!("Opened {} ({})", recording.name, recording.summary());
+        // The one it replaces stays loaded (files only: a synthetic one is gone once replaced)
+        if let Some(old) = self.recording.take().filter(|r| r.path.is_some() && r.path != recording.path) {
+            self.loaded.retain(|r| r.path != old.path);
+            self.loaded.push(old);
+        }
+        self.loaded.retain(|r| r.path.is_none() || r.path != recording.path);
         self.recording = Some(recording);
         self.save_session();
         cx.emit(AppEvent::RecordingChanged);
         cx.emit(AppEvent::Status);
+    }
+
+    /// Every loaded recording, the active one first.
+    pub fn recordings(&self) -> impl Iterator<Item = &Recording> {
+        self.recording.iter().chain(self.loaded.iter())
+    }
+
+    /// Unloads the recording at `path` (`None`: the active one). Its views stay in the session
+    /// document; closing the active one switches to the last loaded, or to no recording.
+    pub fn close_recording(&mut self, path: Option<&Path>, cx: &mut Context<Self>) {
+        let active = self.recording.as_ref().is_some_and(|r| path.is_none() || r.path.as_deref() == path);
+        if !active {
+            self.loaded.retain(|r| r.path.as_deref() != path);
+            cx.emit(AppEvent::RecordingChanged);
+            return;
+        }
+        let closed = self.recording.take().map(|r| r.name).unwrap_or_default();
+        if let Some(next) = self.loaded.pop() {
+            self.install(next, cx);
+        } else {
+            self.stop_clock();
+            self.timeline = TimelineState::new(1.0);
+            self.selection.clear();
+            self.pyramids.clear();
+            self.previews.clear();
+            self.preview_cache.clear();
+            self.applied_view = None;
+            self.picked_channel = None;
+            self.picked_op = None;
+            cx.emit(AppEvent::RecordingChanged);
+        }
+        self.set_status(format!("Closed {closed}"), cx);
     }
 
     pub fn set_workspace(&mut self, workspace: Workspace, cx: &mut Context<Self>) {

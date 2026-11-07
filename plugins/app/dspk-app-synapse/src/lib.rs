@@ -35,7 +35,7 @@ use std::sync::Arc;
 use dspk_app_core::data::store::{AppEvent, Store};
 use dspk_app_core::domain::session::ViewDoc;
 use dspk_app_core::navigation::route::Workspace;
-use dspk_app_core::plugin::{AppPlugin, OverlayMark, OverlayUnit, Raster, RasterRow, SourceOpener, TraceOverlay};
+use dspk_app_core::plugin::{AppPlugin, Layers, OverlayMark, OverlayUnit, Raster, RasterRow, SourceOpener, TraceOverlay};
 use dspk_core::RecordingSource;
 use dspk_synapse::io::{SyntheticParams, SyntheticRecording};
 use gpui_kit::{AnyElement, AnyView, App, AppContext as _, Context, Entity, EventEmitter, Global, Subscription, Window};
@@ -342,14 +342,12 @@ impl AppPlugin for SynapsePlugin {
 
     /// The active view's sorting over `source`: every spike near the window, on its unit's
     /// extent channels, over its template's samples; the traces faint.
-    fn trace_overlay(&self, store: &Store, source: &str, window_sec: Range<f64>, cx: &App) -> Option<TraceOverlay> {
+    fn trace_overlay(&self, store: &Store, view: &ViewDoc, window_sec: Range<f64>, cx: &App) -> Option<TraceOverlay> {
         if window_sec.end - window_sec.start > OVERLAY_MAX_SEC {
             return None;
         }
-        let view = store.active_view()?;
-        if store.view_source(view) != source {
-            return None;
-        }
+        let source = store.view_source(view);
+        let source = source.as_str();
         let state = state(cx)?;
         let state = state.read(cx);
         let path = sorting_of(view)?;
@@ -398,11 +396,15 @@ impl AppPlugin for SynapsePlugin {
 
     /// The active view's sorting as raster rows: units by primary channel (depth along the
     /// probe), hidden units left out, spikes in the window.
-    fn raster(&self, store: &Store, source: &str, window_sec: Range<f64>, cx: &App) -> Option<Raster> {
-        let view = store.active_view()?;
-        if store.view_source(view) != source {
-            return None;
-        }
+    fn layers(&self, _store: &Store, view: &ViewDoc, _cx: &App) -> Layers {
+        // A linked sorting gives both: spike times on the traces, units in a raster
+        let linked = sorting_of(view).is_some();
+        Layers { spikes: linked, units: linked }
+    }
+
+    fn raster(&self, store: &Store, view: &ViewDoc, window_sec: Range<f64>, cx: &App) -> Option<Raster> {
+        let source = store.view_source(view);
+        let source = source.as_str();
         let state = state(cx)?;
         let state = state.read(cx);
         let path = sorting_of(view)?;

@@ -63,6 +63,10 @@ pub struct TimeView {
     /// Source display name, for the title.
     #[serde(default)]
     pub source_name: String,
+    /// The session view this view shows (its processing; Explore's views): empty follows the
+    /// active session view (the workspaces' strips).
+    #[serde(default)]
+    pub doc_view: String,
     /// Fit the amplitude to the visible data.
     #[serde(default = "yes")]
     pub auto_scale: bool,
@@ -129,6 +133,7 @@ impl TimeView {
             gain: 1.0,
             source: String::new(),
             source_name: String::new(),
+            doc_view: String::new(),
             auto_scale: true,
             remove_dc: true,
             pinned_selection: false,

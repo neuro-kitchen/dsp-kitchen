@@ -34,11 +34,15 @@ struct Track {
     start: f64,
     length: f64,
     open: bool,
+    /// Loaded (active or kept): its sources (id, name, channels) are listed under it.
+    loaded: bool,
+    sources: Vec<(String, String, usize)>,
     placed: bool,
 }
 
 pub struct TimelineTab {
     store: Entity<Store>,
+    explore: Entity<ExploreVm>,
     dock: DockToggle,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
@@ -59,7 +63,7 @@ impl TimelineTab {
                 cx.notify();
             }
         })];
-        Self { store, dock, focus: cx.focus_handle(), _subs: subs }
+        Self { store, explore, dock, focus: cx.focus_handle(), _subs: subs }
     }
 
     fn header_extra(&self, cx: &App) -> Option<AnyElement> {
@@ -81,7 +85,8 @@ impl TimelineTab {
         )
     }
 
-    /// The recordings the session knows: placed ones, the open one, the views' others.
+    /// The recordings the session knows, each once: loaded ones (the active first), placed ones,
+    /// the views' others.
     fn tracks(&self, cx: &App) -> Vec<Track> {
         let s = self.store.read(cx);
         let open = s.recording.as_ref().and_then(|r| r.path.clone());
@@ -92,14 +97,18 @@ impl TimelineTab {
             }
             let placed = s.doc.placements.iter().find(|p| p.path == path).map(|p| p.start_sec);
             let is_open = open.as_ref() == Some(&path);
-            let length = if is_open { s.sources().map_or(0.0, |ss| ss.extent_sec()) } else { 0.0 };
-            tracks.push(Track { path, source, start: placed.unwrap_or(0.0), length, open: is_open, placed: placed.is_some() });
+            let loaded = s.recordings().find(|r| r.path.as_ref() == Some(&path));
+            let length = loaded.map_or(0.0, |r| r.sources.extent_sec());
+            let sources = loaded.map(|r| r.sources.entries().iter().map(|e| (e.id.clone(), e.name.clone(), e.channels)).collect()).unwrap_or_default();
+            tracks.push(Track { path, source, start: placed.unwrap_or(0.0), length, open: is_open, loaded: loaded.is_some(), sources, placed: placed.is_some() });
         };
+        for r in s.recordings() {
+            if let Some(p) = &r.path {
+                add(p.clone(), r.sources.default_entry().id.clone());
+            }
+        }
         for p in &s.doc.placements {
             add(p.path.clone(), p.source.clone().unwrap_or_default());
-        }
-        if let Some(p) = &open {
-            add(p.clone(), s.sources().map(|ss| ss.default_entry().id.clone()).unwrap_or_default());
         }
         for v in &s.doc.views {
             add(v.recording.path.clone(), v.recording.source.clone().unwrap_or_default());
@@ -120,6 +129,33 @@ impl TimelineTab {
             let (a, w) = ((tr.start / span) as f32, ((tr.length.max(span * 0.01)) / span) as f32);
             let (store, store2, store3, store4) = (self.store.clone(), self.store.clone(), self.store.clone(), self.store.clone());
             let (p1, p2, p3, src) = (tr.path.clone(), tr.path.clone(), tr.path.clone(), tr.source.clone());
+            let (store5, p5, loaded) = (self.store.clone(), tr.path.clone(), tr.loaded);
+            let source_rows = tr.sources.iter().enumerate().map(|(j, (id, name, channels))| {
+                let (store, explore, path, id, id2) = (self.store.clone(), self.explore.clone(), tr.path.clone(), id.clone(), id.clone());
+                let (store2, path2) = (self.store.clone(), tr.path.clone());
+                h_flex()
+                    .id(("timeline-source", i * 1000 + j))
+                    .pl_5()
+                    .h(px(22.))
+                    .gap_1p5()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .child(div().flex_1().min_w_0().truncate().text_xs().child(name.clone()))
+                    .child(div().text_xs().text_color(muted).child(format!("{channels} ch")))
+                    .on_click(move |_, _, cx| store.update(cx, |s, cx| s.open_floating(Floating::Metadata { path: path.clone(), source: id.clone() }, cx)))
+                    .context_menu(move |m: PopupMenu, _, _| {
+                        let (store2, explore, path2, id2, id3) = (store2.clone(), explore.clone(), path2.clone(), id2.clone(), id2.clone());
+                        let store3 = store2.clone();
+                        let path3 = path2.clone();
+                        m.item(PopupMenuItem::new("Metadata…").on_click(move |_, _, cx| store2.update(cx, |s, cx| s.open_floating(Floating::Metadata { path: path2.clone(), source: id2.clone() }, cx))))
+                            .item(PopupMenuItem::new("Add traces view").on_click(move |_, _, cx| {
+                                store3.update(cx, |s, cx| s.open(path3.clone(), cx));
+                                explore.update(cx, |vm, cx| {
+                                    vm.add_on(crate::screens::explore::trace::renderer::TimeViewKind::Traces, &id3, cx);
+                                });
+                            }))
+                    })
+            });
             v_flex()
                 .id(("timeline-track", i))
                 .p_1p5()
@@ -147,13 +183,18 @@ impl TimelineTab {
                     let (store, store2, store3, store4) = (store.clone(), store2.clone(), store3.clone(), store4.clone());
                     let (p1, p2, p3, src) = (p1.clone(), p2.clone(), p3.clone(), src.clone());
                     m.item(PopupMenuItem::new("Metadata…").on_click(move |_, _, cx| store.update(cx, |s, cx| s.open_floating(Floating::Metadata { path: p1.clone(), source: src.clone() }, cx))))
-                        .item(PopupMenuItem::new("Open in Explore").on_click(move |_, _, cx| store2.update(cx, |s, cx| s.open(p2.clone(), cx))))
+                        .item(PopupMenuItem::new(if loaded { "Show in Explore" } else { "Open in Explore" }).on_click(move |_, _, cx| store2.update(cx, |s, cx| s.open(p2.clone(), cx))))
                         .item(PopupMenuItem::new("New epoch here").on_click(move |_, _, cx| new_epoch(&store4, cx)))
                         .separator()
                         .item(PopupMenuItem::new("Take off the timeline").on_click(move |_, _, cx| {
                             let _ = store3.update(cx, |s, cx| s.execute(SessionCommand::UnplaceRecording { path: p3.clone() }, cx));
                         }))
+                        .when(loaded, |m| {
+                            let (store5, p5) = (store5.clone(), p5.clone());
+                            m.separator().item(PopupMenuItem::new("Close recording").on_click(move |_, _, cx| store5.update(cx, |s, cx| s.close_recording(Some(&p5), cx))))
+                        })
                 })
+                .children(source_rows)
         });
         // Epochs of each recording
         let mut list = v_flex().gap_0p5();

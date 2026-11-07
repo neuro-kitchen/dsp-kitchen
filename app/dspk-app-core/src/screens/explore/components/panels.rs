@@ -505,13 +505,26 @@ impl SettingsPanel {
                 })
             })
         };
+        // What this view's data holds beyond its signal: spikes (a linked sorting or detected
+        // events) and units (a linked sorting); the layers that need them show only then
+        let (has_spikes, has_units) = {
+            let vm_ref = vm.read(cx);
+            let store = vm_ref.store().read(cx);
+            let layers = vm_ref.shown_view(store).map(|sv| crate::plugin::layers(store, sv, cx)).unwrap_or_default();
+            let events = store.recording.as_ref().is_some_and(|r| !r.events.is_empty());
+            (layers.spikes || events, layers.units)
+        };
         let kind = h_flex()
             .gap_1()
             .flex_wrap()
             .child(layer("kind-traces", gpui_kit::assets::IconName::AudioWaveform, "Traces", "The traces alone", traces && !v.spikes, TimeViewKind::Traces, false))
-            .child(layer("kind-spikes", gpui_kit::assets::IconName::Activity, "Spikes", "Traces faint, each spike in its unit's colour (a linked sorting)", traces && v.spikes, TimeViewKind::Traces, true))
-            .child(layer("kind-heatmap", gpui_kit::assets::IconName::Flame, "Heatmap", "Every channel as a row, colour = amplitude", v.kind == TimeViewKind::Heatmap, TimeViewKind::Heatmap, false))
-            .child(layer("kind-raster", gpui_kit::assets::IconName::GitCommitVertical, "Raster", "Spike times, one row per unit (a linked sorting)", v.kind == TimeViewKind::Raster, TimeViewKind::Raster, false));
+            .when(has_spikes || (traces && v.spikes), |row| {
+                row.child(layer("kind-spikes", gpui_kit::assets::IconName::Activity, "Spikes", "Traces faint, each spike in its unit's colour", traces && v.spikes, TimeViewKind::Traces, true))
+            })
+            .when(has_units || v.kind == TimeViewKind::Raster, |row| {
+                row.child(layer("kind-raster", gpui_kit::assets::IconName::GitCommitVertical, "Raster", "Spike times, one row per unit", v.kind == TimeViewKind::Raster, TimeViewKind::Raster, false))
+            })
+            .child(layer("kind-heatmap", gpui_kit::assets::IconName::Flame, "Heatmap", "Every channel as a row, colour = amplitude", v.kind == TimeViewKind::Heatmap, TimeViewKind::Heatmap, false));
         let color_by = {
             let vm = vm.clone();
             let names: Vec<SharedString> = ColorBy::ALL.iter().map(|c| SharedString::from(c.name())).collect();
