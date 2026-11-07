@@ -106,10 +106,15 @@ impl Recording {
 
     /// `32 ch · 30.0 kHz · 5 min 00 s` of the default source.
     pub fn summary(&self) -> String {
-        let e = self.sources.default_entry();
+        self.summary_of(&self.sources.default_entry().id)
+    }
+
+    /// `32 ch · 30.0 kHz · 5 min 00 s` of source `id`.
+    pub fn summary_of(&self, id: &str) -> String {
+        let e = self.sources.entry(id);
         let hz = e.sample_rate.rate_hz();
         let rate = if hz >= 1000.0 { format!("{:.1} kHz", hz / 1000.0) } else { format!("{hz:.1} Hz") };
-        format!("{} ch · {rate} · {}", e.channels, duration(self.sources.extent_sec()))
+        format!("{} ch · {rate} · {}", e.channels, duration(e.duration_sec()))
     }
 }
 

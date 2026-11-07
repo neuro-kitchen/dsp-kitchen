@@ -683,6 +683,7 @@ impl GraphCanvas {
             Some(NodeRun::Failed(e)) => Some((e.clone(), danger)),
             _ => None,
         };
+        let inner_radius = px((12.0 * z - if selected { 2.0 } else { 1.0 }).max(0.0));
         div()
             .id(SharedString::from(format!("node-{id}")))
             .test_support()
@@ -700,15 +701,23 @@ impl GraphCanvas {
             .when(faded, |d| d.opacity(0.35))
             .when(!enabled && !faded, |d| d.opacity(0.55))
             .child(
+                // The kind's colour fills the card inside its border (with the card's own rounded
+                // corners: clipping is rectangular, so a bar would poke out square), and the body
+                // covers all of it but a strip on the left that follows the card's curve
                 h_flex()
                     .size_full()
                     .overflow_hidden()
-                    .rounded(px(12.0 * z))
-                    .child(div().w(px(4.0 * z.max(0.5))).h_full().bg(accent))
+                    .rounded(inner_radius)
+                    .bg(accent)
                     .child(
                         v_flex()
                             .flex_1()
+                            .h_full()
                             .min_w_0()
+                            .ml(px(4.0 * z.max(0.5)))
+                            .bg(t.background)
+                            .rounded_r(inner_radius)
+                            .rounded_l(px(8.0 * z))
                             .px(px(10.0 * z))
                             .gap(px(3.0 * z))
                             .justify_center()

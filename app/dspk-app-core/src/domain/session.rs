@@ -175,12 +175,22 @@ impl SessionDoc {
         Ok(self)
     }
 
-    /// A graph for a document with views only, then the views from the graph.
+    /// A graph for a document with views only, then the views from the graph. Views still named
+    /// the old default way (`file · /source/path`) take their source's name.
     pub fn normalize(&mut self) {
         if self.graph.is_empty() && !self.views.is_empty() {
             self.graph = GraphDoc::from_views(&self.views);
         }
         self.compile();
+        let renames: Vec<(String, String)> = self.views.iter().filter(|v| v.name == legacy_view_name(&v.recording)).map(|v| (v.id.clone(), view_name(&v.recording))).collect();
+        if !renames.is_empty() {
+            for (id, name) in renames {
+                if let Some(super::graph::NodeKind::View { name: old, .. }) = self.graph.nodes.iter_mut().find(|n| n.id == id).map(|n| &mut n.kind) {
+                    *old = name;
+                }
+            }
+            self.compile();
+        }
     }
 
     /// The views from the graph; the active view stays when it is still one, else the first.
@@ -327,6 +337,10 @@ pub fn op_name(node: &Node) -> &'static str {
         Node::GaussianSmooth { .. } => "gaussian_smooth",
         Node::Median { .. } => "median",
         Node::TeagerKaiser { .. } => "teager_kaiser",
+        Node::Rectify {} => "rectify",
+        Node::Square {} => "square",
+        Node::Sqrt {} => "sqrt",
+        Node::Log10 {} => "log10",
     }
 }
 
@@ -405,5 +419,31 @@ mod tests {
     #[test]
     fn test_schema_names_the_document() {
         assert!(SessionDoc::json_schema().contains("dspk_session"));
+    }
+}
+
+/// The name of a view of `r`: its source's name (the last part of the source's path: `EMG` for
+/// `/acquisition/EMG`), or the file's name for a file of one source.
+pub fn view_name(r: &RecordingRef) -> String {
+    match r.source.as_deref().filter(|s| !s.is_empty() && *s != dspk_io::sources::MAIN) {
+        Some(s) => source_name(s),
+        None => file_name(&r.path),
+    }
+}
+
+/// A source's short name: the last part of its path (`EMG` for `/acquisition/EMG`).
+pub fn source_name(id: &str) -> String {
+    id.rsplit('/').find(|p| !p.is_empty()).unwrap_or(id).to_string()
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())
+}
+
+/// The default view name before views were named by source (`file · /source/path`).
+fn legacy_view_name(r: &RecordingRef) -> String {
+    match &r.source {
+        Some(s) => format!("{} · {s}", file_name(&r.path)),
+        None => file_name(&r.path),
     }
 }

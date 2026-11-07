@@ -310,11 +310,15 @@ impl DspApp {
     fn title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let s = self.store.read(cx);
         let t = cx.theme();
+        // The file, then the source the active view reads (what is drawn and edited)
         let recording = s.recording.as_ref().map(|r| {
+            let source = s.active_view().map(|v| s.view_source(v)).unwrap_or_else(|| r.sources.default_entry().id.clone());
+            let several = r.sources.entries().len() > 1;
             h_flex()
                 .gap_2()
                 .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(t.foreground).child(r.name.clone()))
-                .child(div().text_xs().text_color(t.muted_foreground).child(r.summary()))
+                .when(several, |d| d.child(div().text_sm().text_color(t.foreground).child(r.sources.entry(&source).name.clone())))
+                .child(div().text_xs().text_color(t.muted_foreground).child(r.summary_of(&source)))
         });
         let opening = s.opening.clone().map(|n| div().text_xs().text_color(t.muted_foreground).child(format!("Opening {n}…")));
         TitleBar::new().child(

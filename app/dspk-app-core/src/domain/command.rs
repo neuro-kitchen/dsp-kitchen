@@ -168,7 +168,7 @@ fn apply_graph(doc: &mut SessionDoc, cmd: SessionCommand) -> Result<Changed, Com
     match cmd {
         C::OpenView { recording, name } => {
             check_channels(&recording.channels)?;
-            let name = name.unwrap_or_else(|| recording_name(&recording));
+            let name = name.unwrap_or_else(|| crate::domain::session::view_name(&recording));
             let y = doc.graph.next_row();
             let s = source_id(doc);
             let v = doc.new_view_id();
@@ -639,15 +639,6 @@ fn chain_op<'a>(doc: &'a mut SessionDoc, view: &str, op: &str) -> Result<&'a mut
     doc.graph.node_mut(op).ok_or_else(|| CommandError::NoOp { view: view.to_string(), op: op.to_string() })
 }
 
-/// `rec.bin` or `rec.nwb · ecephys` for a new view.
-fn recording_name(r: &RecordingRef) -> String {
-    let file = r.path.file_name().map_or_else(|| r.path.display().to_string(), |n| n.to_string_lossy().into_owned());
-    match &r.source {
-        Some(s) => format!("{file} · {s}"),
-        None => file,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -679,6 +670,22 @@ mod tests {
         assert_eq!(d.views[0].ops[0].id, "cmr");
         apply(&mut d, SessionCommand::RemoveOp { view: "v1".into(), op: "cmr".into() }).unwrap();
         assert_eq!(d.views[0].ops.len(), 1);
+    }
+
+    /// Views are named by their source (the file for a file of one source); a document saved with
+    /// the old default names (`file · /source`) loads with the new ones.
+    #[test]
+    fn test_views_are_named_by_source() {
+        let mut d = opened();
+        let emg = RecordingRef { path: "/data/meps.nwb.zarr".into(), source: Some("/acquisition/EMG".into()), channels: None };
+        apply(&mut d, SessionCommand::OpenView { recording: emg.clone(), name: None }).unwrap();
+        assert_eq!(d.active().unwrap().name, "EMG");
+        let main = RecordingRef { path: "/data/rec.zarr".into(), source: Some(dspk_io::sources::MAIN.into()), channels: None };
+        assert_eq!(crate::domain::session::view_name(&main), "rec.zarr");
+        let view = d.active_view.clone().unwrap();
+        apply(&mut d, SessionCommand::RenameView { view, name: "meps.nwb.zarr · /acquisition/EMG".into() }).unwrap();
+        let loaded = SessionDoc::from_json(&serde_json::to_string(&d).unwrap()).unwrap();
+        assert!(loaded.views.iter().any(|v| v.name == "EMG"), "{:?}", loaded.views.iter().map(|v| &v.name).collect::<Vec<_>>());
     }
 
     #[test]
