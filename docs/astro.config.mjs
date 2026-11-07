@@ -37,6 +37,7 @@ export default defineConfig({
       social: [{ icon: 'github', label: 'GitHub', href: repo }],
       editLink: { baseUrl: `${repo}/edit/main/docs/` },
       lastUpdated: true,
+      routeMiddleware: './src/route-middleware.ts',
       customCss: [
         '@fontsource-variable/inter-tight',
         '@fontsource/jetbrains-mono/400.css',

@@ -35,3 +35,36 @@
   --sl-color-black: #ffffff;
   --sl-color-text-invert: #ffffff;
 }
+
+/* Notes in the brand's accent instead of Starlight's blue. */
+.starlight-aside--note {
+  --sl-color-asides-text-accent: var(--sl-color-text-accent);
+  --sl-color-asides-border: var(--sl-color-accent);
+  background-color: var(--sl-color-accent-low);
+}
+
+/* The landing hero: the headline set large and tight, as on the website. */
+.hero h1 {
+  font-size: clamp(2.5rem, 5vw, 3.75rem);
+  letter-spacing: -0.035em;
+  line-height: 1.05;
+  max-width: 18ch;
+}
+.hero .tagline {
+  max-width: 46ch;
+}
+.hero {
+  padding-block: 3rem 1rem;
+}
+.install {
+  color: var(--sl-color-gray-2);
+}
+/* Left-aligned at every width, like the channel list under it. */
+.hero,
+.hero > .stack {
+  text-align: start;
+  align-items: flex-start;
+}
+.hero .actions {
+  justify-content: flex-start;
+}

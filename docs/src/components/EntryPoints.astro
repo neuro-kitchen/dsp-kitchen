@@ -1,0 +1,130 @@
+---
+// The landing page's entry points, drawn as the channels of a recording: each row names a topic,
+// says what a reader comes for, and carries a strip of real signal (scripts/strips.py).
+import strips from '../data/strips.json';
+
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+
+const entries = [
+  { label: 'Learn', goal: 'Install dsp-kitchen and run a first filter', href: 'learn/' },
+  { label: 'App', goal: 'Look at recordings and build pipelines without code', href: 'app/' },
+  { label: 'Operations', goal: 'See what an operation does, in Python, Rust or the app', href: 'operations/' },
+  { label: 'Spike sorting', goal: 'Sort recordings on the GPU and check the result', href: 'sorting/' },
+  { label: 'Reference', goal: 'Look up what a function takes and returns', href: 'reference/' },
+  { label: 'Validation', goal: 'See how the numbers are checked', href: 'validation/' },
+  { label: 'GPU lessons', goal: 'Learn how signal processing is made fast on GPUs', href: 'gpu/' },
+  { label: 'Lab notebook', goal: 'Read real runs, with their hardware and timings', href: 'notebook/' },
+  { label: 'Deploy', goal: 'Run dsp-kitchen on a server for a lab', href: 'deploy/' },
+  { label: 'Extend', goal: 'Add a format, a sorter or an operation', href: 'extend/' },
+];
+---
+
+<nav class="channels not-content" aria-label="Where to start">
+  <ul>
+    {
+      entries.map((e, i) => (
+        <li>
+          <a href={`${base}/${e.href}`} style={`--row: ${i}`}>
+            <span class="label">{e.label}</span>
+            <span class="goal">{e.goal}</span>
+            <svg
+              class="strip"
+              viewBox={`0 0 ${strips.width} ${strips.height}`}
+              preserveAspectRatio="none"
+              aria-hidden="true"
+            >
+              <path d={strips.paths[i % strips.paths.length]} pathLength="1" />
+            </svg>
+          </a>
+        </li>
+      ))
+    }
+  </ul>
+</nav>
+
+<style>
+  .channels {
+    margin-block: 1.5rem 1rem;
+    border-block-start: 1px solid var(--sl-color-gray-5);
+  }
+  .channels ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+  .channels a {
+    display: grid;
+    grid-template-columns: 9.5rem minmax(0, 1fr) minmax(8rem, 22rem);
+    align-items: center;
+    gap: 1.5rem;
+    min-height: 3.5rem;
+    padding-inline: 0.75rem;
+    border-block-end: 1px solid var(--sl-color-gray-5);
+    color: var(--sl-color-gray-2);
+    text-decoration: none;
+  }
+  .label {
+    color: var(--sl-color-white);
+    font-weight: 600;
+    font-size: var(--sl-text-lg);
+    letter-spacing: -0.01em;
+  }
+  .goal {
+    font-size: var(--sl-text-base);
+  }
+  .strip {
+    width: 100%;
+    height: 2.25rem;
+    overflow: visible;
+  }
+  .strip path {
+    fill: none;
+    stroke: var(--sl-color-gray-4);
+    stroke-width: 1;
+    vector-effect: non-scaling-stroke;
+  }
+
+  .channels a:hover,
+  .channels a:focus-visible {
+    background: var(--sl-color-gray-6);
+  }
+  .channels a:hover .label,
+  .channels a:focus-visible .label {
+    color: var(--sl-color-text-accent);
+  }
+  .channels a:hover .strip path,
+  .channels a:focus-visible .strip path {
+    stroke: var(--sl-color-accent);
+    stroke-width: 1.5;
+  }
+  .channels a:focus-visible {
+    outline: 2px solid var(--sl-color-accent);
+    outline-offset: -2px;
+  }
+
+  /* The one moment of motion: the traces draw in once, channel after channel. */
+  @media (prefers-reduced-motion: no-preference) {
+    .strip path {
+      stroke-dasharray: 1;
+      stroke-dashoffset: 1;
+      animation: draw 900ms ease-out forwards;
+      animation-delay: calc(var(--row) * 60ms + 150ms);
+    }
+    @keyframes draw {
+      to {
+        stroke-dashoffset: 0;
+      }
+    }
+  }
+
+  @media (max-width: 50rem) {
+    .channels a {
+      grid-template-columns: 1fr;
+      gap: 0.15rem;
+      padding-block: 0.75rem;
+    }
+    .strip {
+      display: none;
+    }
+  }
+</style>
