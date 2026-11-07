@@ -19,9 +19,9 @@ Templates are `(units, rows, samples)`; row `r` of unit `u` is recording channel
 
 | | |
 |---|---|
-| [`matching_pursuit`](#matching_pursuit) | Spikes of `data` `(channels, samples)` found by subtracting the best-fitting template pass after pass. |
-| [`suggest_merges`](#suggest_merges) | `(i, j, similarity)` of the unit pairs at least `threshold` alike. |
-| [`template_similarity`](#template_similarity) | `(units, units)` cosine similarity, each pair at its best lag (up to `max_lag_samples`). |
+| [`matching_pursuit`](#matching_pursuit) | Finds spikes by subtracting the best-fitting template, pass after pass, on the device. |
+| [`suggest_merges`](#suggest_merges) | Pairs of units whose templates are alike enough to be one unit. |
+| [`template_similarity`](#template_similarity) | Cosine similarity of every pair of templates, each at its best lag. |
 
 ## Functions
 
@@ -41,19 +41,30 @@ matching_pursuit(
 ) -> dict
 ```
 
-Spikes of `data` `(channels, samples)` found by subtracting the best-fitting template
-pass after pass: `samples` (troughs), `units`, `amplitudes` (scales), `scores`.
+Finds spikes by subtracting the best-fitting template, pass after pass, on the device.
 
 **Parameters**
 
-- **`data`**
-- **`templates`**
-- **`min_amplitude_scale`** : `float`, default `DEFAULT_MIN_AMPLITUDE_SCALE` (0.65)
-- **`max_amplitude_scale`** : `float`, default `DEFAULT_MAX_AMPLITUDE_SCALE` (1.45)
-- **`min_explained_energy`** : `float`, default `DEFAULT_MIN_EXPLAINED_ENERGY` (500.0)
-- **`max_passes`** : `int`, default `DEFAULT_MAX_PASSES` (4)
-- **`channels`**, default `None`
-- **`runtime`** : `str | None`, default `None`
+- **`data`** : `array_like`  
+  Signal `(channels, samples)` in µV, converted to float32 on the host.
+- **`templates`** : `array_like`  
+  `(units, rows, samples)`, or `(units, samples)` for one row each.
+- **`min_amplitude_scale`** : `float`, default `DEFAULT_MIN_AMPLITUDE_SCALE` (0.65)  
+  Range a template may be scaled by to fit.
+- **`max_amplitude_scale`** : `float`, default `DEFAULT_MAX_AMPLITUDE_SCALE` (1.45)  
+  Range a template may be scaled by to fit.
+- **`min_explained_energy`** : `float`, default `DEFAULT_MIN_EXPLAINED_ENERGY` (500.0)  
+  Least energy (µV²) a fit must remove to count; rescale it with the data's unit.
+- **`max_passes`** : `int`, default `DEFAULT_MAX_PASSES` (4)  
+  Passes over the data.
+- **`channels`** : `array_like`, default `None`  
+  `(units, rows)`: the recording channel of each template row; by default rows are channels `0..rows`. Only rows on shared channels are compared.
+- **`runtime`** : `str`, default `None`  
+  A runtime from [`runtime.available`](/dsp-kitchen/reference/python/runtime/#available); by default the current one.
+
+**Returns**
+
+- `dict of np.ndarray` — `samples` (troughs), `units`, `amplitudes` (scales), `scores`.
 
 ### `suggest_merges`
 
@@ -67,14 +78,22 @@ suggest_merges(
 ) -> list[tuple[int, int, float]]
 ```
 
-`(i, j, similarity)` of the unit pairs at least `threshold` alike.
+Pairs of units whose templates are alike enough to be one unit.
 
 **Parameters**
 
-- **`templates`**
-- **`max_lag_samples`** : `int`, default `DEFAULT_MAX_LAG_SAMPLES`
-- **`threshold`** : `float`, default `DEFAULT_MERGE_THRESHOLD`
-- **`channels`**, default `None`
+- **`templates`** : `array_like`  
+  `(units, rows, samples)`, or `(units, samples)` for one row each.
+- **`max_lag_samples`** : `int`, default `DEFAULT_MAX_LAG_SAMPLES`  
+  Lags tried, up to this many samples each way.
+- **`threshold`** : `float`, default `DEFAULT_MERGE_THRESHOLD`  
+  Least similarity of a suggested pair.
+- **`channels`** : `array_like`, default `None`  
+  `(units, rows)`: the recording channel of each template row; by default rows are channels `0..rows`. Only rows on shared channels are compared.
+
+**Returns**
+
+- `list of (int, int, float)` — `(i, j, similarity)` of each pair.
 
 ### `template_similarity`
 
@@ -87,13 +106,31 @@ template_similarity(
 ) -> np.ndarray
 ```
 
-`(units, units)` cosine similarity, each pair at its best lag (up to `max_lag_samples`).
+Cosine similarity of every pair of templates, each at its best lag.
 
 **Parameters**
 
-- **`templates`**
-- **`max_lag_samples`** : `int`, default `DEFAULT_MAX_LAG_SAMPLES`
-- **`channels`**, default `None`
+- **`templates`** : `array_like`  
+  `(units, rows, samples)`, or `(units, samples)` for one row each.
+- **`max_lag_samples`** : `int`, default `DEFAULT_MAX_LAG_SAMPLES`  
+  Lags tried, up to this many samples each way.
+- **`channels`** : `array_like`, default `None`  
+  `(units, rows)`: the recording channel of each template row; by default rows are channels `0..rows`. Only rows on shared channels are compared.
+
+**Returns**
+
+- `np.ndarray` — `(units, units)`, in `[-1, 1]`.
+
+**Examples**
+
+```python
+>>> import numpy as np
+>>> import dspk
+>>> t = np.sin(np.linspace(0, 6, 60, dtype=np.float32))
+>>> sim = dspk.synapse.matching.template_similarity(np.stack([t, np.roll(t, 3)]))
+>>> bool(sim[0, 1] > 0.9)
+True
+```
 
 ## Constants
 

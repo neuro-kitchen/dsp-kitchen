@@ -38,15 +38,42 @@ def localize(
     z_values_um=DEFAULT_GRID_Z_VALUES_UM,
     softmax_temperature: float = DEFAULT_GRID_SOFTMAX_TEMPERATURE,
 ) -> np.ndarray:
-    """``(spikes, 3)`` positions from ``snippets`` (``waveforms`` ``(spikes, k, samples)`` and
-    ``channels`` ``(spikes, k)``, the spike's own channel first, as
-:func:`dspk.synapse.extraction.snippets` returns them).
+    """Where each spike comes from on the probe.
 
-    ``method``: ``center_of_mass`` (peak-to-peak weights to ``power``), ``monopolar``
-    (Levenberg–Marquardt fit of a point source), ``grid_convolution`` (a grid of candidate
-    sources, ``xy_radius_um`` / ``xy_step_um`` / ``z_values_um``, softmax at
-    ``softmax_temperature``) or ``dipole`` (signed peaks). ``max_iterations`` defaults to the
-    method's (monopolar 35, dipole 40)."""
+    Parameters
+    ----------
+    snippets : dict
+        ``waveforms`` ``(spikes, k, samples)`` and ``channels`` ``(spikes, k)``, the spike's own
+        channel first, as :func:`dspk.synapse.extraction.snippets` returns them.
+    probe : Probe
+        The probe.
+    method : {"center_of_mass", "monopolar", "grid_convolution", "dipole"}
+        ``"center_of_mass"``: the sites weighted by peak-to-peak height to ``power``.
+        ``"monopolar"``: a point source fitted by Levenberg–Marquardt. ``"grid_convolution"``: a
+        grid of candidate sources, weighted by a softmax. ``"dipole"``: a dipole fitted to the
+        signed peaks.
+    power : float
+        Exponent of the weights (``"center_of_mass"``).
+    max_iterations : int, optional
+        Fit iterations (``"monopolar"``, ``"dipole"``); by default
+        :data:`DEFAULT_MONOPOLAR_ITERATIONS` or :data:`DEFAULT_DIPOLE_ITERATIONS`.
+    xy_radius_um, xy_step_um : float
+        Extent and step of the candidate grid (``"grid_convolution"``).
+    z_values_um : sequence of float
+        Candidate distances from the probe plane (``"grid_convolution"``).
+    softmax_temperature : float
+        Sharpness of the grid weights (``"grid_convolution"``).
+
+    Returns
+    -------
+    numpy.ndarray
+        Positions ``(spikes, 3)`` in µm, in the probe's coordinates.
+
+    Raises
+    ------
+    ValueError
+        For an unknown ``method``.
+    """
     if method not in METHODS:
         raise ValueError(f"method is one of {METHODS}, got {method!r}")
     if max_iterations is None:
@@ -72,10 +99,39 @@ def drift(
     depth_blocks: int = DEFAULT_DRIFT_DEPTH_BLOCKS,
     rigid: bool = True,
 ) -> dict:
-    """Probe drift from spikes (``samples`` of a recording of ``total_samples`` at
-    ``sample_rate`` Hz, their ``depths_um`` and ``amplitudes_uv``). Rigid: ``times_s``,
-    ``drift_um``, ``activity`` ``(time bins, depth bins)``; non-rigid (``rigid=False``):
-    ``times_s``, ``block_centers_um``, ``drift_um`` ``(depth_blocks, time bins)``."""
+    """How the probe moved over the recording, from where and when spikes occurred.
+
+    Parameters
+    ----------
+    samples : array_like
+        Sample of every spike.
+    depths_um : array_like
+        Depth of every spike, in µm.
+    amplitudes_uv : array_like
+        Amplitude of every spike, in µV.
+    total_samples : int
+        Samples in the recording.
+    sample_rate : float
+        Sample rate in Hz.
+    depth_min_um, depth_max_um : float
+        The depth range considered.
+    time_bin_s : float
+        Time resolution of the estimate.
+    depth_bin_um : float
+        Depth resolution of the activity map.
+    max_drift_um : float
+        Largest shift searched.
+    depth_blocks : int
+        Blocks along depth, each with its own drift (``rigid=False``).
+    rigid : bool
+        One drift for the whole probe, or one per depth block.
+
+    Returns
+    -------
+    dict
+        Rigid: ``times_s``, ``drift_um``, ``activity`` ``(time bins, depth bins)``. Non-rigid:
+        ``times_s``, ``block_centers_um``, ``drift_um`` ``(depth_blocks, time bins)``.
+    """
     return _s.drift(np.ascontiguousarray(samples, dtype=np.uint64), np.ascontiguousarray(depths_um, dtype=np.float32),
                     np.ascontiguousarray(amplitudes_uv, dtype=np.float32), int(total_samples), float(sample_rate),
                     depth_min_um=depth_min_um, depth_max_um=depth_max_um, time_bin_s=time_bin_s, depth_bin_um=depth_bin_um,

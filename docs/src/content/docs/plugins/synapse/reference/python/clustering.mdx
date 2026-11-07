@@ -17,12 +17,12 @@ the random choice of peaks sorters cluster on. Labels are `int64` (`-1`: noise /
 
 | | |
 |---|---|
-| [`density_peaks`](#density_peaks) | Rodriguez–Laio density peaks. |
-| [`gmm`](#gmm) | A Gaussian mixture with its number of components chosen by BIC in `k_min..=k_max`. |
-| [`hdbscan`](#hdbscan) | HDBSCAN labels (as the `hdbscan` package. |
-| [`kde_merge`](#kde_merge) | k-means over-clustering (`initial_k`), then merges of clusters with no density valley between them. |
-| [`kmeans`](#kmeans) | k-means (k-means++ starts; the best of `n_init`). |
-| [`subsample_peaks`](#subsample_peaks) | Indices of `n_peaks` peaks chosen at random (in total, or of each channel), by sample. |
+| [`density_peaks`](#density_peaks) | Density-peaks clustering (Rodriguez & Laio, 2014), on the host. |
+| [`gmm`](#gmm) | A Gaussian mixture on the device, its number of components chosen by BIC. |
+| [`hdbscan`](#hdbscan) | HDBSCAN clustering on the device, as the `hdbscan` package (excess of mass). |
+| [`kde_merge`](#kde_merge) | Over-clusters with k-means, then merges clusters with no density valley between them (host). |
+| [`kmeans`](#kmeans) | k-means clustering on the device. |
+| [`subsample_peaks`](#subsample_peaks) | Chooses peaks at random, as sorters do before clustering. |
 
 ## Functions
 
@@ -38,15 +38,22 @@ density_peaks(
 ) -> dict
 ```
 
-Rodriguez–Laio density peaks: `labels`, `centers` (exemplar indices), `densities`,
-`deltas`. `max_points` bounds the O(n²) work with an evenly strided subsample.
+Density-peaks clustering (Rodriguez & Laio, 2014), on the host.
 
 **Parameters**
 
-- **`points`**
-- **`cutoff_distance`** : `float`
-- **`num_clusters`** : `int`
-- **`max_points`** : `int | None`, default `None`
+- **`points`** : `array_like`  
+  Feature points `(n, d)` (spike features, principal components, positions), converted to float32 on the host; 1-D is `(n, 1)`.
+- **`cutoff_distance`** : `float`  
+  Neighbourhood radius of the density.
+- **`num_clusters`** : `int`  
+  Clusters (the points of highest density times distance).
+- **`max_points`** : `int`, default `None`  
+  Bounds the O(n²) work with an evenly strided subsample.
+
+**Returns**
+
+- `dict` — `labels`, `centers` (exemplar indices), `densities`, `deltas`.
 
 ### `gmm`
 
@@ -66,23 +73,34 @@ gmm(
 ) -> dict
 ```
 
-A Gaussian mixture with its number of components chosen by BIC in `k_min..=k_max`.
-`covariance`: `full`, `diagonal` or `masked` (KlustaKwik's masked EM, with `mask`
-`(n, d)`). Returns `labels`, `weights`, `means`, `covariances`,
-`responsibilities`, `mahalanobis_sq`, `log_likelihood`, `bic`.
+A Gaussian mixture on the device, its number of components chosen by BIC.
 
 **Parameters**
 
-- **`points`**
-- **`k_min`** : `int`, default `DEFAULT_GMM_K_MIN` (1)
-- **`k_max`** : `int`, default `DEFAULT_GMM_K_MAX` (8)
-- **`covariance`** : `str`, default `'full'`
-- **`max_iterations`** : `int`, default `DEFAULT_GMM_MAX_ITERATIONS` (100)
-- **`tolerance`** : `float`, default `DEFAULT_GMM_TOLERANCE` (0.001)
-- **`regularization`** : `float`, default `DEFAULT_GMM_REGULARIZATION` (0.0001)
-- **`outlier_mahalanobis_sq`** : `float | None`, default `None`
-- **`mask`**, default `None`
-- **`runtime`** : `str | None`, default `None`
+- **`points`** : `array_like`  
+  Feature points `(n, d)` (spike features, principal components, positions), converted to float32 on the host; 1-D is `(n, 1)`.
+- **`k_min`** : `int`, default `DEFAULT_GMM_K_MIN` (1)  
+  Components tried, `k_min` to `k_max` included.
+- **`k_max`** : `int`, default `DEFAULT_GMM_K_MAX` (8)  
+  Components tried, `k_min` to `k_max` included.
+- **`covariance`** : `{"full", "diagonal", "masked"}`, default `'full'`  
+  Covariance model; `"masked"` is KlustaKwik's masked EM and needs `mask`.
+- **`max_iterations`** : `int`, default `DEFAULT_GMM_MAX_ITERATIONS` (100)  
+  EM iterations.
+- **`tolerance`** : `float`, default `DEFAULT_GMM_TOLERANCE` (0.001)  
+  Convergence tolerance of the log-likelihood.
+- **`regularization`** : `float`, default `DEFAULT_GMM_REGULARIZATION` (0.0001)  
+  Added to each covariance's diagonal.
+- **`outlier_mahalanobis_sq`** : `float`, default `None`  
+  Points beyond this squared Mahalanobis distance get the label `-1` (`25`: beyond 5 sigma).
+- **`mask`** : `array_like`, default `None`  
+  `(n, d)`: a weight for each feature of each point (`"masked"` only).
+- **`runtime`** : `str`, default `None`  
+  A runtime from [`runtime.available`](/dsp-kitchen/reference/python/runtime/#available); by default the current one.
+
+**Returns**
+
+- `dict` — `labels`, `weights`, `means`, `covariances`, `responsibilities`, `mahalanobis_sq`, `log_likelihood`, `bic`.
 
 ### `hdbscan`
 
@@ -96,14 +114,22 @@ hdbscan(
 ) -> np.ndarray
 ```
 
-HDBSCAN labels (as the `hdbscan` package: excess of mass, `-1` for noise).
+HDBSCAN clustering on the device, as the `hdbscan` package (excess of mass).
 
 **Parameters**
 
-- **`points`**
-- **`min_cluster_size`** : `int`, default `DEFAULT_MIN_CLUSTER_SIZE` (5)
-- **`allow_single_cluster`** : `bool`, default `False`
-- **`runtime`** : `str | None`, default `None`
+- **`points`** : `array_like`  
+  Feature points `(n, d)` (spike features, principal components, positions), converted to float32 on the host; 1-D is `(n, 1)`.
+- **`min_cluster_size`** : `int`, default `DEFAULT_MIN_CLUSTER_SIZE` (5)  
+  Smallest group of points that counts as a cluster.
+- **`allow_single_cluster`** : `bool`, default `False`  
+  Allow all points to form one cluster.
+- **`runtime`** : `str`, default `None`  
+  A runtime from [`runtime.available`](/dsp-kitchen/reference/python/runtime/#available); by default the current one.
+
+**Returns**
+
+- `np.ndarray` — `labels` `(n,)` int64; `-1` for noise.
 
 ### `kde_merge`
 
@@ -117,15 +143,22 @@ kde_merge(
 ) -> dict
 ```
 
-k-means over-clustering (`initial_k`), then merges of clusters with no density valley
-between them: `labels`, `centroids`.
+Over-clusters with k-means, then merges clusters with no density valley between them (host).
 
 **Parameters**
 
-- **`points`**
-- **`initial_k`** : `int`
-- **`dip_threshold`** : `float`, default `DEFAULT_DIP_THRESHOLD` (1.5)
-- **`min_cluster_size`** : `int`, default `DEFAULT_KDE_MIN_CLUSTER_SIZE` (5)
+- **`points`** : `array_like`  
+  Feature points `(n, d)` (spike features, principal components, positions), converted to float32 on the host; 1-D is `(n, 1)`.
+- **`initial_k`** : `int`  
+  Clusters of the first k-means.
+- **`dip_threshold`** : `float`, default `DEFAULT_DIP_THRESHOLD` (1.5)  
+  Pairs whose dip score (`0` to `3`: the depth of the density valley between them) is below this merge.
+- **`min_cluster_size`** : `int`, default `DEFAULT_KDE_MIN_CLUSTER_SIZE` (5)  
+  Smaller clusters are merged into their nearest.
+
+**Returns**
+
+- `dict` — `labels`, `centroids`.
 
 ### `kmeans`
 
@@ -142,18 +175,40 @@ kmeans(
 ) -> dict
 ```
 
-k-means (k-means++ starts; the best of `n_init`): `labels`, `centers` `(k, d)`,
-`inertia`. `tol` is relative to the data's mean per-feature variance (as scikit-learn).
+k-means clustering on the device: k-means++ starts, the best of `n_init` runs.
 
 **Parameters**
 
-- **`points`**
-- **`k`** : `int`
-- **`n_init`** : `int`, default `DEFAULT_N_INIT` (10)
-- **`max_iter`** : `int`, default `DEFAULT_MAX_ITER` (300)
-- **`tol`** : `float`, default `DEFAULT_TOL` (0.0001)
-- **`seed`** : `int`, default `0`
-- **`runtime`** : `str | None`, default `None`
+- **`points`** : `array_like`  
+  Feature points `(n, d)` (spike features, principal components, positions), converted to float32 on the host; 1-D is `(n, 1)`.
+- **`k`** : `int`  
+  Clusters.
+- **`n_init`** : `int`, default `DEFAULT_N_INIT` (10)  
+  Runs from different starts; the one with the lowest inertia is kept.
+- **`max_iter`** : `int`, default `DEFAULT_MAX_ITER` (300)  
+  Iterations per run.
+- **`tol`** : `float`, default `DEFAULT_TOL` (0.0001)  
+  Convergence tolerance, relative to the data's mean per-feature variance (as scikit-learn).
+- **`seed`** : `int`, default `0`  
+  Seed of the starts.
+- **`runtime`** : `str`, default `None`  
+  A runtime from [`runtime.available`](/dsp-kitchen/reference/python/runtime/#available); by default the current one.
+
+**Returns**
+
+- `dict` — `labels` `(n,)` int64, `centers` `(k, d)`, `inertia`.
+
+**Examples**
+
+```python
+>>> import numpy as np
+>>> import dspk
+>>> rng = np.random.default_rng(0)
+>>> pts = np.concatenate([rng.normal(0, 1, (100, 2)), rng.normal(8, 1, (100, 2))])
+>>> out = dspk.synapse.clustering.kmeans(pts, 2)
+>>> len(set(out["labels"][:100])), len(set(out["labels"][100:]))
+(1, 1)
+```
 
 ### `subsample_peaks`
 
@@ -168,15 +223,24 @@ subsample_peaks(
 ) -> np.ndarray
 ```
 
-Indices of `n_peaks` peaks chosen at random (in total, or of each channel), by sample.
+Chooses peaks at random, as sorters do before clustering.
 
 **Parameters**
 
-- **`samples`**
-- **`channels`**
-- **`n_peaks`** : `int`
-- **`per_channel`** : `bool`, default `False`
-- **`seed`** : `int`, default `0`
+- **`samples`** : `array_like`  
+  Sample of every peak.
+- **`channels`** : `array_like`  
+  Channel of every peak.
+- **`n_peaks`** : `int`  
+  Peaks to choose: in total, or on each channel with `per_channel`.
+- **`per_channel`** : `bool`, default `False`  
+  Choose `n_peaks` on every channel.
+- **`seed`** : `int`, default `0`  
+  Seed of the choice.
+
+**Returns**
+
+- `np.ndarray` — Indices of the chosen peaks, in sample order.
 
 ## Constants
 

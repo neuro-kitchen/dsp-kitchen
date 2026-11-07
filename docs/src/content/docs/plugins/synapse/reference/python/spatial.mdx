@@ -16,8 +16,8 @@ Space: where each spike comes from on the probe (four localisers), and how the p
 
 | | |
 |---|---|
-| [`drift`](#drift) | Probe drift from spikes (`samples` of a recording of `total_samples` at `sample_rate` Hz, their `depths_um` and `amplitudes_uv`). |
-| [`localize`](#localize) | `(spikes, 3)` positions from `snippets` (`waveforms` `(spikes, k, samples)` and `channels` `(spikes, k)`, the spike's own channel first, as [`synapse.extraction.snippets`](/dsp-kitchen/plugins/synapse/reference/python/extraction/#snippets) returns them). |
+| [`drift`](#drift) | How the probe moved over the recording, from where and when spikes occurred. |
+| [`localize`](#localize) | Where each spike comes from on the probe. |
 
 ## Functions
 
@@ -41,25 +41,38 @@ drift(
 ) -> dict
 ```
 
-Probe drift from spikes (`samples` of a recording of `total_samples` at
-`sample_rate` Hz, their `depths_um` and `amplitudes_uv`). Rigid: `times_s`,
-`drift_um`, `activity` `(time bins, depth bins)`; non-rigid (`rigid=False`):
-`times_s`, `block_centers_um`, `drift_um` `(depth_blocks, time bins)`.
+How the probe moved over the recording, from where and when spikes occurred.
 
 **Parameters**
 
-- **`samples`**
-- **`depths_um`**
-- **`amplitudes_uv`**
-- **`total_samples`** : `int`
-- **`sample_rate`** : `float`
-- **`depth_min_um`** : `float`
-- **`depth_max_um`** : `float`
-- **`time_bin_s`** : `float`, default `DEFAULT_DRIFT_TIME_BIN_S` (2.0)
-- **`depth_bin_um`** : `float`, default `DEFAULT_DRIFT_DEPTH_BIN_UM` (5.0)
-- **`max_drift_um`** : `float`, default `DEFAULT_MAX_DRIFT_UM` (50.0)
-- **`depth_blocks`** : `int`, default `DEFAULT_DRIFT_DEPTH_BLOCKS` (5)
-- **`rigid`** : `bool`, default `True`
+- **`samples`** : `array_like`  
+  Sample of every spike.
+- **`depths_um`** : `array_like`  
+  Depth of every spike, in µm.
+- **`amplitudes_uv`** : `array_like`  
+  Amplitude of every spike, in µV.
+- **`total_samples`** : `int`  
+  Samples in the recording.
+- **`sample_rate`** : `float`  
+  Sample rate in Hz.
+- **`depth_min_um`** : `float`  
+  The depth range considered.
+- **`depth_max_um`** : `float`  
+  The depth range considered.
+- **`time_bin_s`** : `float`, default `DEFAULT_DRIFT_TIME_BIN_S` (2.0)  
+  Time resolution of the estimate.
+- **`depth_bin_um`** : `float`, default `DEFAULT_DRIFT_DEPTH_BIN_UM` (5.0)  
+  Depth resolution of the activity map.
+- **`max_drift_um`** : `float`, default `DEFAULT_MAX_DRIFT_UM` (50.0)  
+  Largest shift searched.
+- **`depth_blocks`** : `int`, default `DEFAULT_DRIFT_DEPTH_BLOCKS` (5)  
+  Blocks along depth, each with its own drift (`rigid=False`).
+- **`rigid`** : `bool`, default `True`  
+  One drift for the whole probe, or one per depth block.
+
+**Returns**
+
+- `dict` — Rigid: `times_s`, `drift_um`, `activity` `(time bins, depth bins)`. Non-rigid: `times_s`, `block_centers_um`, `drift_um` `(depth_blocks, time bins)`.
 
 ### `localize`
 
@@ -78,27 +91,36 @@ localize(
 ) -> np.ndarray
 ```
 
-`(spikes, 3)` positions from `snippets` (`waveforms` `(spikes, k, samples)` and
-    `channels` `(spikes, k)`, the spike's own channel first, as
-[`synapse.extraction.snippets`](/dsp-kitchen/plugins/synapse/reference/python/extraction/#snippets) returns them).
-
-    `method`: `center_of_mass` (peak-to-peak weights to `power`), `monopolar`
-    (Levenberg–Marquardt fit of a point source), `grid_convolution` (a grid of candidate
-    sources, `xy_radius_um` / `xy_step_um` / `z_values_um`, softmax at
-    `softmax_temperature`) or `dipole` (signed peaks). `max_iterations` defaults to the
-    method's (monopolar 35, dipole 40).
+Where each spike comes from on the probe.
 
 **Parameters**
 
-- **`snippets`** : `dict`
-- **`probe`** : `Probe`
-- **`method`** : `str`, default `'center_of_mass'`
-- **`power`** : `float`, default `DEFAULT_COM_POWER` (1.0)
-- **`max_iterations`** : `int | None`, default `None`
-- **`xy_radius_um`** : `float`, default `DEFAULT_GRID_XY_RADIUS_UM` (30.0)
-- **`xy_step_um`** : `float`, default `DEFAULT_GRID_XY_STEP_UM` (5.0)
-- **`z_values_um`**, default `DEFAULT_GRID_Z_VALUES_UM` ([5.0, 10.0, 20.0, 35.0, 50.0])
-- **`softmax_temperature`** : `float`, default `DEFAULT_GRID_SOFTMAX_TEMPERATURE` (0.05)
+- **`snippets`** : `dict`  
+  `waveforms` `(spikes, k, samples)` and `channels` `(spikes, k)`, the spike's own channel first, as [`synapse.extraction.snippets`](/dsp-kitchen/plugins/synapse/reference/python/extraction/#snippets) returns them.
+- **`probe`** : `Probe`  
+  The probe.
+- **`method`** : `{"center_of_mass", "monopolar", "grid_convolution", "dipole"}`, default `'center_of_mass'`  
+  `"center_of_mass"`: the sites weighted by peak-to-peak height to `power`. `"monopolar"`: a point source fitted by Levenberg–Marquardt. `"grid_convolution"`: a grid of candidate sources, weighted by a softmax. `"dipole"`: a dipole fitted to the signed peaks.
+- **`power`** : `float`, default `DEFAULT_COM_POWER` (1.0)  
+  Exponent of the weights (`"center_of_mass"`).
+- **`max_iterations`** : `int`, default `None`  
+  Fit iterations (`"monopolar"`, `"dipole"`); by default [`DEFAULT_MONOPOLAR_ITERATIONS`](/dsp-kitchen/plugins/synapse/reference/python/spatial/#default_monopolar_iterations) or [`DEFAULT_DIPOLE_ITERATIONS`](/dsp-kitchen/plugins/synapse/reference/python/spatial/#default_dipole_iterations).
+- **`xy_radius_um`** : `float`, default `DEFAULT_GRID_XY_RADIUS_UM` (30.0)  
+  Extent and step of the candidate grid (`"grid_convolution"`).
+- **`xy_step_um`** : `float`, default `DEFAULT_GRID_XY_STEP_UM` (5.0)  
+  Extent and step of the candidate grid (`"grid_convolution"`).
+- **`z_values_um`** : `sequence of float`, default `DEFAULT_GRID_Z_VALUES_UM` ([5.0, 10.0, 20.0, 35.0, 50.0])  
+  Candidate distances from the probe plane (`"grid_convolution"`).
+- **`softmax_temperature`** : `float`, default `DEFAULT_GRID_SOFTMAX_TEMPERATURE` (0.05)  
+  Sharpness of the grid weights (`"grid_convolution"`).
+
+**Returns**
+
+- `np.ndarray` — Positions `(spikes, 3)` in µm, in the probe's coordinates.
+
+**Raises**
+
+- `ValueError`: For an unknown `method`.
 
 ## Constants
 

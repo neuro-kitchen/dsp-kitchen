@@ -36,12 +36,55 @@ def _channels(c):
 
 
 def template_similarity(templates, *, max_lag_samples: int = DEFAULT_MAX_LAG_SAMPLES, channels=None) -> np.ndarray:
-    """``(units, units)`` cosine similarity, each pair at its best lag (up to ``max_lag_samples``)."""
+    """Cosine similarity of every pair of templates, each at its best lag.
+
+    Parameters
+    ----------
+    templates : array_like
+        ``(units, rows, samples)``, or ``(units, samples)`` for one row each.
+    max_lag_samples : int
+        Lags tried, up to this many samples each way.
+    channels : array_like, optional
+        ``(units, rows)``: the recording channel of each template row; by default rows are channels
+        ``0..rows``. Only rows on shared channels are compared.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(units, units)``, in ``[-1, 1]``.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import dspk
+    >>> t = np.sin(np.linspace(0, 6, 60, dtype=np.float32))
+    >>> sim = dspk.synapse.matching.template_similarity(np.stack([t, np.roll(t, 3)]))
+    >>> bool(sim[0, 1] > 0.9)
+    True
+    """
     return _m.template_similarity(_templates(templates), max_lag_samples=max_lag_samples, channels=_channels(channels))
 
 
 def suggest_merges(templates, *, max_lag_samples: int = DEFAULT_MAX_LAG_SAMPLES, threshold: float = DEFAULT_MERGE_THRESHOLD, channels=None) -> list[tuple[int, int, float]]:
-    """``(i, j, similarity)`` of the unit pairs at least ``threshold`` alike."""
+    """Pairs of units whose templates are alike enough to be one unit.
+
+    Parameters
+    ----------
+    templates : array_like
+        ``(units, rows, samples)``, or ``(units, samples)`` for one row each.
+    max_lag_samples : int
+        Lags tried, up to this many samples each way.
+    threshold : float
+        Least similarity of a suggested pair.
+    channels : array_like, optional
+        ``(units, rows)``: the recording channel of each template row; by default rows are channels
+        ``0..rows``. Only rows on shared channels are compared.
+
+    Returns
+    -------
+    list of (int, int, float)
+        ``(i, j, similarity)`` of each pair.
+    """
     return _m.suggest_merges(_templates(templates), max_lag_samples=max_lag_samples, threshold=threshold, channels=_channels(channels))
 
 
@@ -56,8 +99,31 @@ def matching_pursuit(
     channels=None,
     runtime: str | None = None,
 ) -> dict:
-    """Spikes of ``data`` ``(channels, samples)`` found by subtracting the best-fitting template
-    pass after pass: ``samples`` (troughs), ``units``, ``amplitudes`` (scales), ``scores``."""
+    """Finds spikes by subtracting the best-fitting template, pass after pass, on the device.
+
+    Parameters
+    ----------
+    data : array_like
+        Signal ``(channels, samples)`` in µV, converted to float32 on the host.
+    templates : array_like
+        ``(units, rows, samples)``, or ``(units, samples)`` for one row each.
+    min_amplitude_scale, max_amplitude_scale : float
+        Range a template may be scaled by to fit.
+    min_explained_energy : float
+        Least energy (µV²) a fit must remove to count; rescale it with the data's unit.
+    max_passes : int
+        Passes over the data.
+    channels : array_like, optional
+        ``(units, rows)``: the recording channel of each template row; by default rows are channels
+        ``0..rows``. Only rows on shared channels are compared.
+    runtime : str, optional
+        A runtime from :func:`dspk.runtime.available`; by default the current one.
+
+    Returns
+    -------
+    dict of numpy.ndarray
+        ``samples`` (troughs), ``units``, ``amplitudes`` (scales), ``scores``.
+    """
     return _m.matching_pursuit(np.ascontiguousarray(data, dtype=np.float32), _templates(templates), min_amplitude_scale=min_amplitude_scale,
                                max_amplitude_scale=max_amplitude_scale, min_explained_energy=min_explained_energy, max_passes=max_passes,
                                channels=_channels(channels), runtime=runtime)
