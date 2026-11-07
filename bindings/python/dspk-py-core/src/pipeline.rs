@@ -175,8 +175,8 @@ pub fn schema() -> String {
     PipelineSpec::json_schema()
 }
 
-pyo3_stub_gen::module_variable!("dspk._native.pipeline", "SPEC_VERSION", u32);
-pyo3_stub_gen::module_variable!("dspk._native.pipeline", "DEFAULT_CHUNK_SAMPLES", usize);
+pyo3_stub_gen::module_variable!("dspk._native.pipeline", "SPEC_VERSION", u32, dspk_pipeline::SPEC_VERSION);
+pyo3_stub_gen::module_variable!("dspk._native.pipeline", "DEFAULT_CHUNK_SAMPLES", usize, dspk_pipeline::DEFAULT_CHUNK_SAMPLES);
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(canonical, m)?)?;

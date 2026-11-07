@@ -86,9 +86,9 @@ pub fn gaussian_smooth<'py>(py: Python<'py>, data: DeviceInput, sigma_samples: f
     })
 }
 
-pyo3_stub_gen::module_variable!("dspk._native.ops.filter", "FIR_DEFAULT_EDGE", String);
-pyo3_stub_gen::module_variable!("dspk._native.ops.filter", "GAUSSIAN_DEFAULT_EDGE", String);
-pyo3_stub_gen::module_variable!("dspk._native.ops.filter", "GAUSSIAN_TRUNCATE", f32);
+pyo3_stub_gen::module_variable!("dspk._native.ops.filter", "FIR_DEFAULT_EDGE", String, edge_name(FIR_DEFAULT_EDGE).to_string());
+pyo3_stub_gen::module_variable!("dspk._native.ops.filter", "GAUSSIAN_DEFAULT_EDGE", String, edge_name(GAUSSIAN_DEFAULT_EDGE).to_string());
+pyo3_stub_gen::module_variable!("dspk._native.ops.filter", "GAUSSIAN_TRUNCATE", f32, GAUSSIAN_TRUNCATE);
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(firwin, m)?)?;

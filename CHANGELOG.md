@@ -4,6 +4,53 @@ All notable changes, newest first. Versions follow [Semantic Versioning](https:/
 0.0.x any release may change the API. The crates, the Python package and `dspk-sorters` share one
 version number.
 
+## 0.0.8 — 2026-11-07
+
+### Added
+
+- **Documentation site** (`docs/`, Starlight): entry points by purpose as header tabs (Learn, App,
+  Operations, Reference, Plugins, More), each with its own sidebar of small chapters; Synapse as
+  the first plugin. Not published yet.
+- **Python API reference**, generated from the package's source and stubs (no build needed): one
+  page per module, numpy style. Every public function and class has Parameters, Returns, Raises
+  and Examples; the examples run as doctests on the CPU. Defaults are shown with their values;
+  pipeline specs and channel maps in JSON and TOML tabs.
+- **`dspk.custom`**: your own Python functions over a recording, window by window (`measure`,
+  `transform` with a halo, `apply`, `write` to Zarr; the next window is read on another thread).
+  **`dspk.io.ZarrWriter`** writes a store block by block.
+- **`dspk.remote`**: a client of `dspk serve` (`Session`: info, files, open a recording read on
+  the server, sort / status / wait / stop / logs, fetch; mutual TLS with the enrolled identity).
+- **Python `dspk.synapse`**: `clustering` (kmeans, hdbscan, gmm with BIC, density_peaks,
+  kde_merge, subsample_peaks), `matching` (template_similarity, suggest_merges,
+  matching_pursuit), `spatial` (localize with four methods, drift).
+- **Spike locations from the streaming detector** (`locate`; `dspk detect --locate`,
+  `detect_recording(locate=True)`): every spike's centre of mass over its K neighbours.
+- **Pipeline ops**: `laplacian` (surface Laplacian of an electrode grid), `whiten` (global ZCA
+  fitted before the run), per-sample `rectify`, `square`, `sqrt`, `log10`; also as
+  `dspk.ops.stage` stages.
+- **App**: Add view or container (Rerun-style: tabs, horizontal, vertical, grid; traces, heatmap,
+  raster), keyboard-driven; one Inspector for the focused view; views bound to session views and
+  named by their source; the Pipeline's Channels family (remap tables, map files in TOML or JSON),
+  remaps anywhere in a view's chain previewed as the pipeline runs them; the full operation
+  catalog in Explore's Add op; whitening fitted in the background; an Analytics workspace tab
+  (placeholder).
+- **Playground**: chapters 08 (detection) and 09 (sorting a Neuropixels recording).
+
+### Changed
+
+- The Python stubs state every constant's value, so editors and the docs show defaults, not only
+  names.
+- A spatial stage made for another channel count is an error with the reason (was a panic).
+- IIR autotune benchmarks at most 2^20 steps; pinned passes split time into blocks by channel
+  count. App previews never stop to autotune.
+
+### Fixed
+
+- App: views closed or switched to another source no longer leave source and view nodes in the
+  Pipeline; icons used by Add view and the Channels family are bundled (a test checks every icon
+  the sources name).
+- App: a preview read by a branch computes only what it asks for (no slack growing per level).
+
 ## 0.0.7 — 2026-11-06
 
 ### Changed (breaking)

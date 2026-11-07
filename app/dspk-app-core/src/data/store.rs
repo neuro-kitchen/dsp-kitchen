@@ -3,6 +3,7 @@
 //! Changes go through its methods, which emit the [`AppEvent`] they caused (never a blanket
 //! `notify`); view models subscribe to the events they show.
 
+use dspk_ops::PipelineStage;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -106,15 +107,37 @@ impl Recording {
 
     /// `32 ch · 30.0 kHz · 5 min 00 s` of the default source.
     pub fn summary(&self) -> String {
-        let e = self.sources.default_entry();
+        self.summary_of(&self.sources.default_entry().id)
+    }
+
+    /// `32 ch · 30.0 kHz · 5 min 00 s` of source `id`.
+    pub fn summary_of(&self, id: &str) -> String {
+        let e = self.sources.entry(id);
         let hz = e.sample_rate.rate_hz();
         let rate = if hz >= 1000.0 { format!("{:.1} kHz", hz / 1000.0) } else { format!("{hz:.1} Hz") };
-        format!("{} ch · {rate} · {}", e.channels, duration(self.sources.extent_sec()))
+        format!("{} ch · {rate} · {}", e.channels, duration(e.duration_sec()))
     }
 }
 
+/// How a view is previewed ([`Store::view_plan`]).
+pub struct ViewPlan {
+    /// Source channels read, in order.
+    pub group: Vec<usize>,
+    /// Device steps and their keys (for sharing computed prefixes).
+    pub steps: Vec<(String, PipelineStage)>,
+    /// Source channels shown, in order.
+    pub shown: Vec<usize>,
+    /// Whitening steps (by index in `steps`, identities until fitted) and how to fit them.
+    pub fits: Vec<(usize, dspk_pipeline::WhitenFit)>,
+}
+
 pub struct Store {
+    /// The active recording (what Explore draws and Processing edits).
     pub recording: Option<Recording>,
+    /// Other recordings loaded this session (each file once): switching to one is instant.
+    pub loaded: Vec<Recording>,
+    /// A recording's source the Inspector shows (picked under Recordings; a view's focus clears it).
+    pub inspected: Option<(PathBuf, String)>,
     pub timeline: TimelineState,
     /// Channels shown, per source id, in display order.
     selection: HashMap<String, Vec<usize>>,
@@ -144,6 +167,11 @@ pub struct Store {
     /// Previews by chain (source, channels, enabled ops), most recent last: views with the same
     /// chain share one, and a branch reads the preview of the ops it shares with another.
     preview_cache: Vec<(Vec<String>, Arc<ProcessedSignal>)>,
+    /// Whitenings fitted for previews, by the key of the chain up to them (fitting reads the
+    /// recording: once per chain, not per redraw).
+    whiten_cache: HashMap<String, dspk_ops::spatial::SpatialWhitening>,
+    /// Whitening fits running in the background (their keys).
+    whiten_fitting: std::collections::HashSet<String>,
     /// The channel the Processing panel is about, and the op selected in it.
     pub picked_channel: Option<usize>,
     pub picked_op: Option<String>,
@@ -169,6 +197,8 @@ impl Store {
         crate::data::remote::set_profiles(&session.servers);
         Self {
             recording: None,
+            loaded: Vec::new(),
+            inspected: None,
             timeline: TimelineState::new(1.0),
             selection: HashMap::new(),
             workspace: session.workspace,
@@ -186,6 +216,8 @@ impl Store {
             _doc_watch: None,
             previews: HashMap::new(),
             preview_cache: Vec::new(),
+            whiten_cache: HashMap::new(),
+            whiten_fitting: Default::default(),
             picked_channel: None,
             picked_op: None,
             job: None,
@@ -414,6 +446,46 @@ impl Store {
         self.previews.get(&v.id).map(|p| p.clone() as Arc<dyn SignalBackend>)
     }
 
+    /// The session view showing `source` of the open recording with all its channels (made when
+    /// none does; it becomes the active view then); `None` for a recording without a file.
+    pub fn view_for_source(&mut self, source: &str, cx: &mut Context<Self>) -> Option<String> {
+        let rec = self.recording.as_ref()?;
+        let path = rec.path.clone()?;
+        let default = rec.sources.default_entry().id.clone();
+        let shows = |v: &ViewDoc| v.recording.path == path && v.recording.source.as_deref().unwrap_or(&default) == source && v.recording.channels.is_none();
+        if let Some(v) = self.doc.views.iter().find(|v| shows(v)) {
+            return Some(v.id.clone());
+        }
+        let recording = RecordingRef { path: path.clone(), source: Some(source.to_string()), channels: None };
+        self.execute(SessionCommand::OpenView { recording, name: None }, cx).ok()?;
+        let id = self.doc.views.iter().find(|v| shows(v)).map(|v| v.id.clone());
+        if let Some(id) = &id {
+            self.rebuild_preview(id, cx);
+        }
+        id
+    }
+
+    /// Closes session view `id` when it holds no work: no ops (its source feeds it directly),
+    /// all channels, its default name, no plugin data. Views with work stay (the Pipeline shows them).
+    pub fn close_view_if_untouched(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(v) = self.doc.view(id) else { return };
+        let direct = self.doc.graph.input(id).and_then(|i| self.doc.graph.node(i)).is_some_and(|n| matches!(n.kind, crate::domain::graph::NodeKind::Source { .. }));
+        let untouched = direct && v.ops.is_empty() && v.recording.channels.is_none() && v.name == crate::domain::session::view_name(&v.recording) && v.plugins.is_empty();
+        if untouched {
+            let _ = self.execute(SessionCommand::CloseView { view: id.to_string() }, cx);
+        }
+    }
+
+    /// What session view `view` draws when it shows its processed preview (it has enabled ops and
+    /// `Show::Processed`); `None`: the recording as stored.
+    pub fn preview_of(&self, view: &str) -> Option<Arc<dyn SignalBackend>> {
+        let v = self.doc.view(view)?;
+        if v.display.show != Show::Processed {
+            return None;
+        }
+        self.previews.get(view).map(|p| p.clone() as Arc<dyn SignalBackend>)
+    }
+
     /// Whether the visible window of `samples` samples is previewed processed (else raw).
     pub fn preview_covers(&self, source: &str, samples: u64) -> Option<bool> {
         let v = self.doc.active()?;
@@ -434,29 +506,61 @@ impl Store {
         let Some(sources) = self.sources().cloned() else { return };
         let ds = sources.get(&source);
         let Some(raw) = ds.source.clone() else { return };
-        let mut stages = Vec::new();
-        for op in v.ops.iter().filter(|o| o.enabled) {
-            match op.node.stage() {
-                Ok(Some(stage)) => stages.push(stage),
-                Ok(None) => {}
-                Err(e) => {
-                    self.set_status(format!("{}: op {}: {e}", v.name, op.id), cx);
-                    return;
-                }
+        let plan = match self.view_plan(&v, ds.total_channels) {
+            Ok(p) => p,
+            Err(e) => {
+                self.set_status(format!("{}: {e}", v.name), cx);
+                return;
             }
-        }
-        if stages.is_empty() {
+        };
+        if plan.steps.is_empty() {
             return;
         }
-        let group = v.recording.channels.clone().unwrap_or_else(|| (0..ds.total_channels).collect());
-        // The chain's key, step by step: [source and channels, op 1, op 2, …]
+        let group = plan.group;
+        let mut stages: Vec<PipelineStage> = plan.steps.iter().map(|(_, st)| st.clone()).collect();
+        // The chain's key, step by step: [source and channels, step 1, step 2, …]
         let mut key = vec![format!("{source}|{group:?}")];
-        key.extend(v.ops.iter().filter(|o| o.enabled && o.node.stage().ok().flatten().is_some()).map(|o| serde_json::to_string(&o.node).unwrap_or_default()));
+        key.extend(plan.steps.into_iter().map(|(k, _)| k));
+        // Whitenings fitted on the signal of the steps before them, as the pipeline does. A fit
+        // reads the recording: it runs in the background (the view draws the raw signal
+        // meanwhile) and the preview is built again when it is done
+        for (at, fit) in plan.fits {
+            let up_to = key[..at + 2].join("\n");
+            let Some(fitted) = self.whiten_cache.get(&up_to).cloned() else {
+                if self.whiten_fitting.insert(up_to.clone()) {
+                    self.set_status(format!("{}: fitting the whitening…", v.name), cx);
+                    let (before, group, raw, view, name) = (stages[..at].to_vec(), group.clone(), raw.clone(), id.to_string(), v.name.clone());
+                    let task = cx.background_spawn(async move {
+                        let target = dspk_core::ComputeTarget::from_env().map_err(|e| e.to_string())?;
+                        dspk_pipeline::fit_whitening(target, raw.as_ref(), &group, &before, &fit).map_err(|e| e.to_string())
+                    });
+                    cx.spawn(async move |this, cx| {
+                        let result = task.await;
+                        let _ = this.update(cx, |s, cx| {
+                            s.whiten_fitting.remove(&up_to);
+                            match result {
+                                Ok(w) => {
+                                    s.whiten_cache.insert(up_to, w);
+                                    s.set_status(format!("{name}: whitening fitted"), cx);
+                                    s.rebuild_preview(&view, cx);
+                                    cx.emit(AppEvent::WindowMoved);
+                                }
+                                Err(e) => s.set_status(format!("{name}: whiten: {e}"), cx),
+                            }
+                        });
+                    })
+                    .detach();
+                }
+                return;
+            };
+            stages[at] = PipelineStage::SpatialWhitening(fitted);
+        }
         // The longest computed prefix of this chain
         let found = (2..=key.len()).rev().find_map(|k| self.preview_cache.iter().find(|(c, _)| c[..] == key[..k]).map(|(_, p)| (k, p.clone())));
         let built = match found {
             Some((k, p)) if k == key.len() => Ok(p),
-            Some((k, p)) => ProcessedSignal::new(ds.signal().clone(), Arc::new(PreviewSource::new(p)), group, stages[k - 1..].to_vec()).map(Arc::new),
+            // A branch reads the shared prefix's rows, in the order that prefix leaves them
+            Some((k, p)) => ProcessedSignal::new(ds.signal().clone(), Arc::new(PreviewSource::new(p.clone())), p.out_channels().to_vec(), stages[k - 1..].to_vec()).map(Arc::new),
             None => ProcessedSignal::new(ds.signal().clone(), raw, group, stages).map(Arc::new),
         };
         match built {
@@ -472,21 +576,90 @@ impl Store {
         }
     }
 
-    /// The active view's channel subset becomes the shown selection of its source (once per
-    /// change of view or subset, so the user's own selection is kept otherwise).
+    /// How view `v` is previewed, as the pipeline runs it: `group`, the channels it reads (its
+    /// subset, or all `total`, through the remaps that open its chain: they fold into the read
+    /// and may drop); `steps`, its processing on the device with each step's key (a remap between
+    /// processing steps reorders there and keeps every channel); `shown`, the channels it ends
+    /// with (through the remaps after the last processing step: they may drop). Resampling is not
+    /// previewed.
+    pub fn view_plan(&self, v: &ViewDoc, total: usize) -> Result<ViewPlan, String> {
+        let mut group: Vec<usize> = v.recording.channels.clone().unwrap_or_else(|| (0..total).collect());
+        let base_dir = self.doc_path.as_ref().and_then(|p| p.parent().map(Path::to_path_buf)).unwrap_or_default();
+        let ops: Vec<&dspk_pipeline::Node> = v.ops.iter().filter(|o| o.enabled).map(|o| &o.node).collect();
+        let is_remap = |n: &dspk_pipeline::Node| matches!(n, dspk_pipeline::Node::Remap { .. });
+        let map_of = |n: &dspk_pipeline::Node| n.channel_map(Some(&base_dir)).map_err(|e| e.to_string()).map(|m| m.expect("a remap has a map"));
+        let lead = ops.iter().take_while(|n| is_remap(n)).count();
+        for n in &ops[..lead] {
+            let order = map_of(n)?.resolve(group.len()).map_err(|e| e.to_string())?;
+            group = order.into_iter().map(|i| group[i]).collect();
+        }
+        let last_processing = ops.iter().rposition(|n| !is_remap(n));
+        let mut steps = Vec::new();
+        let mut fits = Vec::new();
+        let mut current = group.clone();
+        for (i, n) in ops.iter().enumerate().skip(lead) {
+            let key = serde_json::to_string(n).unwrap_or_default();
+            if is_remap(n) {
+                let order = map_of(n)?.resolve(current.len()).map_err(|e| e.to_string())?;
+                if last_processing.is_some_and(|last| i > last) {
+                    // After the last processing step: the channels shown (may drop)
+                    current = order.into_iter().map(|j| current[j]).collect();
+                    continue;
+                }
+                let mut seen = order.clone();
+                seen.sort_unstable();
+                if seen != (0..current.len()).collect::<Vec<_>>() {
+                    return Err(format!("a remap between processing steps keeps every channel ({}; it reorders them): drop channels in a remap first or last", current.len()));
+                }
+                current = order.iter().map(|&j| current[j]).collect();
+                steps.push((key, PipelineStage::ReorderChannels { order }));
+            } else if let Some(fit) = n.whiten_fit() {
+                n.stage().map_err(|e| e.to_string())?;
+                fits.push((steps.len(), fit));
+                steps.push((key, PipelineStage::SpatialWhitening(dspk_pipeline::unfitted_whitening(current.len()))));
+            } else if let Some(stage) = n.stage().map_err(|e| e.to_string())? {
+                // A grid's operator is made for its electrodes
+                if let PipelineStage::SurfaceLaplacian(lap) = &stage
+                    && lap.num_channels != current.len()
+                {
+                    return Err(format!("the Laplacian's grid has {} electrodes; the view has {} channels", lap.num_channels, current.len()));
+                }
+                steps.push((key, stage));
+            }
+        }
+        Ok(ViewPlan { group, steps, shown: current, fits })
+    }
+
+    /// The channels view `v` shows, in order (see [`Self::view_plan`]).
+    pub fn view_channels(&self, v: &ViewDoc, total: usize) -> Result<Vec<usize>, String> {
+        self.view_plan(v, total).map(|p| p.shown)
+    }
+
+    /// The active view's channels (its subset, through its remaps) become the shown
+    /// selection of its source (once per change of them, so the user's own selection is kept
+    /// otherwise).
     fn apply_active_view(&mut self, cx: &mut Context<Self>) {
         let Some(v) = self.doc.active().cloned() else { return };
-        let key = (v.id.clone(), v.recording.channels.clone());
-        if self.applied_view.as_ref() == Some(&key) {
-            return;
-        }
         let source = self.view_source(&v);
         if !self.on_open_recording(&v, &source) {
             return;
         }
+        let total = self.sources().map_or(0, |ss| ss.entry(&source).channels);
+        let channels = match self.view_channels(&v, total) {
+            Ok(c) => c,
+            Err(e) => {
+                self.set_status(format!("{}: {e}", v.name), cx);
+                v.recording.channels.clone().unwrap_or_else(|| (0..total).collect())
+            }
+        };
+        let subset = (channels.len() != total || channels.iter().enumerate().any(|(i, &c)| i != c)).then_some(channels);
+        let key = (v.id.clone(), subset.clone());
+        if self.applied_view.as_ref() == Some(&key) {
+            return;
+        }
         self.applied_view = Some(key);
-        match &v.recording.channels {
-            Some(ch) => self.set_selection(&source, ch.clone(), cx),
+        match subset {
+            Some(ch) => self.set_selection(&source, ch, cx),
             None => self.select_all(&source, cx),
         }
     }
@@ -508,6 +681,10 @@ impl Store {
             }
             Changed::Ops(id) => {
                 self.rebuild_preview(id, cx);
+                // A remap at the head of the chain changes the channels shown
+                if self.doc.active_view.as_deref() == Some(id.as_str()) {
+                    self.apply_active_view(cx);
+                }
                 if self.picked_op.as_ref().is_some_and(|op| self.doc.view(id).is_some_and(|v| v.op(op).is_none())) {
                     self.picked_op = None;
                 }
@@ -918,6 +1095,14 @@ impl Store {
 
     /// Lists and opens `path`'s sources on a background thread.
     pub fn open(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if self.recording.as_ref().is_some_and(|r| r.path.as_ref() == Some(&path)) {
+            return;
+        }
+        if let Some(at) = self.loaded.iter().position(|r| r.path.as_ref() == Some(&path)) {
+            let recording = self.loaded.remove(at);
+            self.install(recording, cx);
+            return;
+        }
         let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
         self.opening = Some(name.clone());
         self.set_status(format!("Opening {name}…"), cx);
@@ -967,14 +1152,64 @@ impl Store {
         self.pyramids.clear();
         self.previews.clear();
         self.preview_cache.clear();
+        self.whiten_cache.clear();
         self.applied_view = None;
         self.picked_channel = None;
         self.picked_op = None;
         self.status = format!("Opened {} ({})", recording.name, recording.summary());
+        // The one it replaces stays loaded (files only: a synthetic one is gone once replaced)
+        if let Some(old) = self.recording.take().filter(|r| r.path.is_some() && r.path != recording.path) {
+            self.loaded.retain(|r| r.path != old.path);
+            self.loaded.push(old);
+        }
+        self.loaded.retain(|r| r.path.is_none() || r.path != recording.path);
         self.recording = Some(recording);
         self.save_session();
         cx.emit(AppEvent::RecordingChanged);
         cx.emit(AppEvent::Status);
+    }
+
+    /// Shows `source` of the recording at `path` in the Inspector (`None`: back to the view).
+    pub fn inspect(&mut self, what: Option<(PathBuf, String)>, cx: &mut Context<Self>) {
+        if self.inspected != what {
+            let show = what.is_some();
+            self.inspected = what;
+            cx.emit(if show { AppEvent::Picked } else { AppEvent::Status });
+            cx.notify();
+        }
+    }
+
+    /// Every loaded recording, the active one first.
+    pub fn recordings(&self) -> impl Iterator<Item = &Recording> {
+        self.recording.iter().chain(self.loaded.iter())
+    }
+
+    /// Unloads the recording at `path` (`None`: the active one). Its views stay in the session
+    /// document; closing the active one switches to the last loaded, or to no recording.
+    pub fn close_recording(&mut self, path: Option<&Path>, cx: &mut Context<Self>) {
+        let active = self.recording.as_ref().is_some_and(|r| path.is_none() || r.path.as_deref() == path);
+        if !active {
+            self.loaded.retain(|r| r.path.as_deref() != path);
+            cx.emit(AppEvent::RecordingChanged);
+            return;
+        }
+        let closed = self.recording.take().map(|r| r.name).unwrap_or_default();
+        if let Some(next) = self.loaded.pop() {
+            self.install(next, cx);
+        } else {
+            self.stop_clock();
+            self.timeline = TimelineState::new(1.0);
+            self.selection.clear();
+            self.pyramids.clear();
+            self.previews.clear();
+            self.preview_cache.clear();
+        self.whiten_cache.clear();
+            self.applied_view = None;
+            self.picked_channel = None;
+            self.picked_op = None;
+            cx.emit(AppEvent::RecordingChanged);
+        }
+        self.set_status(format!("Closed {closed}"), cx);
     }
 
     pub fn set_workspace(&mut self, workspace: Workspace, cx: &mut Context<Self>) {

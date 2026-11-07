@@ -17,7 +17,12 @@ use crate::detection::{SpikeSpacing, StreamingDedup, detection_heights, execute_
 use crate::extraction::{execute_extract_sinc_in_vram, extraction_margin};
 use super::accumulator::TemplateAccumulator;
 use super::config::StreamingDetectionConfig;
-use super::kernels::execute_reduce_templates_in_vram;
+use super::kernels::{execute_reduce_templates_in_vram, execute_snippet_peak_to_peak};
+use crate::spatial::localize_spike_center_of_mass;
+
+/// Exponent of the peak-to-peak heights in the centre of mass that locates each spike (1: the
+/// heights themselves, as `CenterOfMassLocalizer`'s default).
+pub const LOCATION_POWER: f32 = 1.0;
 
 /// Result of running out-of-core threshold spike sorting over a recording.
 #[derive(Debug, Clone)]
@@ -42,6 +47,9 @@ pub struct StreamingDetectionResult {
     pub channel_templates: Vec<Option<WaveformTemplate>>,
     /// Deduplicated spike events with global `sample_index` across the recording.
     pub spikes: Vec<DeduplicatedSpike>,
+    /// Location of each spike of `spikes` (µm, centre of mass over its K neighbours); empty when
+    /// not located (`StreamingDetectionConfig::locate`).
+    pub spike_locations_um: Vec<[f32; 3]>,
 }
 
 impl StreamingDetectionResult {
@@ -54,10 +62,15 @@ impl StreamingDetectionResult {
     ) -> SortingOutput {
         let mut per_ch_samples: Vec<Vec<u64>> = vec![Vec::new(); self.channels];
         let mut per_ch_amps: Vec<Vec<f32>> = vec![Vec::new(); self.channels];
-        for s in &self.spikes {
+        let mut per_ch_locs: Vec<Vec<[f32; 3]>> = vec![Vec::new(); self.channels];
+        let located = self.spike_locations_um.len() == self.spikes.len();
+        for (i, s) in self.spikes.iter().enumerate() {
             if s.primary_channel < self.channels {
                 per_ch_samples[s.primary_channel].push(s.sample_index);
                 per_ch_amps[s.primary_channel].push(s.peak_amplitude_uv);
+                if located {
+                    per_ch_locs[s.primary_channel].push(self.spike_locations_um[i]);
+                }
             }
         }
 
@@ -74,7 +87,7 @@ impl StreamingDetectionResult {
                 ch,
                 std::mem::take(&mut per_ch_samples[ch]),
                 std::mem::take(&mut per_ch_amps[ch]),
-                Vec::new(),
+                std::mem::take(&mut per_ch_locs[ch]),
                 template,
                 self.sample_rate_hz,
                 self.total_samples,
@@ -203,6 +216,8 @@ impl StreamingDetector {
         let mut total_raw_crossings = 0u64;
         let mut total_dedup_spikes = 0u64;
         let mut global_spikes = Vec::new();
+        let mut global_locations: Vec<[f32; 3]> = Vec::new();
+        let locate = self.config.locate;
         let elems_per_spike = k_neighbors * snippet_samples;
         let mut dedup = StreamingDedup::new(probe, self.config.spatial_radius_um, refrac_samples as u64);
         // Detection looks `spacing.distance()` samples past each window's own range (exact
@@ -262,6 +277,8 @@ impl StreamingDetector {
                 .collect();
 
             // 4. Extract Blackman-Harris sinc-realigned snippets and reduce moments directly in VRAM
+            //    (and locate each spike from its snippet's heights; unknown, NaN, if not extracted)
+            let mut locations = vec![[f32::NAN; 3]; if locate { finalized.len() } else { 0 }];
             if let Some(extracted) = execute_extract_sinc_in_vram::<f32>(
                 &client,
                 &filt_handle,
@@ -275,6 +292,14 @@ impl StreamingDetector {
                 self.config.apply_sinc_shift,
             ) {
                 debug_assert_eq!(extracted.dropped, 0, "finalized spikes lie inside the window");
+                if locate {
+                    let ptp = execute_snippet_peak_to_peak(&client, &extracted.snippets, extracted.kept.len(), k_neighbors, snippet_samples);
+                    for (row, (&spike, &primary)) in extracted.kept.iter().zip(&extracted.primaries).enumerate() {
+                        let p = primary as usize;
+                        let ids: Vec<usize> = knn_table[p * k_neighbors..(p + 1) * k_neighbors].iter().map(|&c| c as usize).collect();
+                        locations[spike] = localize_spike_center_of_mass(&ids, &ptp[row * k_neighbors..(row + 1) * k_neighbors], probe, LOCATION_POWER);
+                    }
+                }
                 let batch_stats = execute_reduce_templates_in_vram(
                     &client,
                     &extracted.snippets,
@@ -299,7 +324,8 @@ impl StreamingDetector {
                 }
             }
 
-            // 6. Record global spike timestamps
+            // 6. Record global spike timestamps (and locations)
+            global_locations.extend(locations);
             for d in finalized {
                 if d.primary_channel < channels {
                     channel_spike_counts[d.primary_channel] += 1;
@@ -337,6 +363,7 @@ impl StreamingDetector {
             channel_spike_counts,
             channel_templates,
             spikes: global_spikes,
+            spike_locations_um: global_locations,
         })
     }
 }

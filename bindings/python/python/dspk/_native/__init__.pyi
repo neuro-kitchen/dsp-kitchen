@@ -5,14 +5,16 @@ import builtins
 from . import io
 from . import ops
 from . import pipeline
+from . import remote
 from . import runtime
 from . import synapse
 __all__ = [
     "io",
     "ops",
     "pipeline",
+    "remote",
     "runtime",
     "synapse",
 ]
 
-__version__: builtins.str
+__version__: builtins.str = '0.0.8'

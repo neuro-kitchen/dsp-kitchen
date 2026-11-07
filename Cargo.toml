@@ -39,7 +39,7 @@ members = [
 
 
 [workspace.package]
-version = "0.0.7"
+version = "0.0.8"
 edition = "2024"
 authors = ["jesusdpa1 <17010046+jesusdpa1@users.noreply.github.com>"]
 license = "MIT OR Apache-2.0"
@@ -49,20 +49,20 @@ keywords = ["dsp", "gpu", "signal-processing", "cubecl", "electrophysiology"]
 categories = ["science", "algorithms", "concurrency"]
 
 [workspace.dependencies]
-dspk-core = { path = "crates/dspk-core", version = "0.0.7", default-features = false }
-dspk-ops = { path = "crates/dspk-ops", version = "0.0.7", default-features = false }
-dspk-synapse = { path = "synapse/dspk-synapse", version = "0.0.7", default-features = false }
-dspk-synapse-ml = { path = "synapse/dspk-synapse-ml", version = "0.0.7", default-features = false }
-dspk-sorter-kilosort = { path = "synapse/sorters/kilosort", version = "0.0.7", default-features = false }
-dspk-sorter-ms5 = { path = "synapse/sorters/ms5", version = "0.0.7", default-features = false }
-dspk-sorter-si = { path = "synapse/sorters/si", version = "0.0.7", default-features = false }
-dspk-hub = { path = "hub/dspk-hub", version = "0.0.7", default-features = false }
-dspk-stream = { path = "serve/dspk-stream", version = "0.0.7", default-features = false }
-dspk-view = { path = "serve/dspk-view", version = "0.0.7", default-features = false }
-dspk-io = { path = "crates/dspk-io", version = "0.0.7", default-features = false }
-dspk-pipeline = { path = "engine/dspk-pipeline", version = "0.0.7", default-features = false }
-dspk-app-core = { path = "app/dspk-app-core", version = "0.0.7", default-features = false }
-dspk-app-synapse = { path = "plugins/app/dspk-app-synapse", version = "0.0.7", default-features = false }
+dspk-core = { path = "crates/dspk-core", version = "0.0.8", default-features = false }
+dspk-ops = { path = "crates/dspk-ops", version = "0.0.8", default-features = false }
+dspk-synapse = { path = "synapse/dspk-synapse", version = "0.0.8", default-features = false }
+dspk-synapse-ml = { path = "synapse/dspk-synapse-ml", version = "0.0.8", default-features = false }
+dspk-sorter-kilosort = { path = "synapse/sorters/kilosort", version = "0.0.8", default-features = false }
+dspk-sorter-ms5 = { path = "synapse/sorters/ms5", version = "0.0.8", default-features = false }
+dspk-sorter-si = { path = "synapse/sorters/si", version = "0.0.8", default-features = false }
+dspk-hub = { path = "hub/dspk-hub", version = "0.0.8", default-features = false }
+dspk-stream = { path = "serve/dspk-stream", version = "0.0.8", default-features = false }
+dspk-view = { path = "serve/dspk-view", version = "0.0.8", default-features = false }
+dspk-io = { path = "crates/dspk-io", version = "0.0.8", default-features = false }
+dspk-pipeline = { path = "engine/dspk-pipeline", version = "0.0.8", default-features = false }
+dspk-app-core = { path = "app/dspk-app-core", version = "0.0.8", default-features = false }
+dspk-app-synapse = { path = "plugins/app/dspk-app-synapse", version = "0.0.8", default-features = false }
 dspk-py-core = { path = "bindings/python/dspk-py-core", default-features = false }
 dspk-py-synapse = { path = "bindings/python/dspk-py-synapse", default-features = false }
 

@@ -18,7 +18,8 @@ MODULES = [
     "dspk._native", "dspk._native.io", "dspk._native.ops", "dspk._native.ops.filter", "dspk._native.ops.layout", "dspk._native.ops.linalg", "dspk._native.ops.math",
     "dspk._native.ops.peaks", "dspk._native.ops.resample", "dspk._native.ops.spatial",
     "dspk._native.pipeline", "dspk._native.synapse", "dspk._native.synapse.io", "dspk._native.synapse.detection", "dspk._native.synapse.extraction", "dspk._native.synapse.features", "dspk._native.synapse.metrics",
-    "dspk._native.runtime",
+    "dspk._native.synapse.clustering", "dspk._native.synapse.matching", "dspk._native.synapse.spatial",
+    "dspk._native.runtime", "dspk._native.remote",
 ]
 
 

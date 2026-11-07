@@ -118,11 +118,15 @@ impl<F: DspFloat> PipelineWorkspace<F> {
                     plan.push(Planned::Filter { filter, state });
                 }
                 PipelineStage::SpatialWhitening(w) => {
-                    assert_eq!(w.num_channels, channels, "SpatialWhitening channel mismatch");
+                    if w.num_channels != channels {
+                        return Err(OpsError::SpatialChannelMismatch { stage: "spatial whitening", expected: w.num_channels, actual: channels });
+                    }
                     plan.push(Planned::SpatialMatrix(DeviceSpatialMatrix::upload::<F>(&client, &w.matrix, channels)));
                 }
                 PipelineStage::SurfaceLaplacian(lap) => {
-                    assert_eq!(lap.num_channels, channels, "SurfaceLaplacian channel mismatch");
+                    if lap.num_channels != channels {
+                        return Err(OpsError::SpatialChannelMismatch { stage: "the surface Laplacian", expected: lap.num_channels, actual: channels });
+                    }
                     plan.push(Planned::SpatialMatrix(DeviceSpatialMatrix::upload::<F>(&client, &lap.matrix, channels)));
                 }
                 PipelineStage::Fir { taps, centered, edge } => {
@@ -266,6 +270,7 @@ impl<F: DspFloat> PipelineWorkspace<F> {
                     PipelineStage::Clamp { min, max } => {
                         execute_clamp::<F>(client, &current_in, &out, total, cast(*min as f64), cast(*max as f64))
                     }
+                    PipelineStage::Elementwise(f) => crate::math::execute_elementwise::<F>(client, &current_in, &out, total, *f),
                     PipelineStage::CommonAverageReference => {
                         execute_direct_car::<F>(client, &current_in, &out, channels, samples)
                     }

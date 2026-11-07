@@ -46,7 +46,7 @@ pub fn subtract_template<'py>(
     })
 }
 
-pyo3_stub_gen::module_variable!("dspk._native.ops.filter", "TEMPLATE_DEFAULT_MAX_LAG", usize);
+pyo3_stub_gen::module_variable!("dspk._native.ops.filter", "TEMPLATE_DEFAULT_MAX_LAG", usize, DEFAULT_MAX_LAG);
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(subtract_template, m)?)?;

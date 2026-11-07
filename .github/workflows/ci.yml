@@ -3,8 +3,9 @@
 # suite on wgpu and CUDA runs locally on a GPU machine before a release.
 #
 # The `changes` job reads which files changed and runs only the checks they can affect:
-# documentation alone (Markdown, CITATION.cff, docs/, assets/, playground/, benchmarks/) runs
-# nothing. When the changes cannot be listed (a new branch, a force push), everything runs.
+# documentation alone (Markdown, CITATION.cff, assets/, playground/, benchmarks/) runs nothing;
+# the docs site (docs/) and the Python sources its API reference is generated from run the docs
+# build. When the changes cannot be listed (a new branch, a force push), everything runs.
 name: ci
 
 on:
@@ -31,6 +32,7 @@ jobs:
     outputs:
       rust: ${{ steps.classify.outputs.rust }}
       python: ${{ steps.classify.outputs.python }}
+      docs: ${{ steps.classify.outputs.docs }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -47,6 +49,7 @@ jobs:
             echo "changes cannot be listed: running everything"
             echo "rust=true" >> "$GITHUB_OUTPUT"
             echo "python=true" >> "$GITHUB_OUTPUT"
+            echo "docs=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "$files"
@@ -61,9 +64,15 @@ jobs:
           if echo "$code" | grep -qE '^bindings/python/|^pyproject\.toml$|^uv\.lock$'; then
             python=true
           fi
-          echo "rust=$rust python=$python"
+          # The site, and the Python sources and stubs its API reference is generated from
+          docs=false
+          if echo "$files" | grep -qE '^docs/|^bindings/python/python/|^\.github/workflows/ci\.yml$'; then
+            docs=true
+          fi
+          echo "rust=$rust python=$python docs=$docs"
           echo "rust=$rust" >> "$GITHUB_OUTPUT"
           echo "python=$python" >> "$GITHUB_OUTPUT"
+          echo "docs=$docs" >> "$GITHUB_OUTPUT"
 
   rust:
     name: Rust (check, CPU-runtime tests)
@@ -122,3 +131,37 @@ jobs:
         run: uv run --project ../.. maturin develop --profile validate
       - name: Tests
         run: uv run python -m pytest bindings/python/tests -q
+      # Every docstring example, as the API reference shows it (the CPU runtime: no GPU here)
+      - name: Docstring examples
+        working-directory: bindings/python
+        env:
+          DSPK_RUNTIME: cpu
+        run: uv run --project ../.. python -m pytest -q --doctest-modules python/dspk
+
+  docs:
+    name: Docs (API reference current, site builds)
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+      # The reference is generated from the sources (read statically, no build): regenerate it and
+      # fail when the committed pages differ
+      - name: Python API reference is up to date
+        run: |
+          uv run --no-project --with griffe==2.4.1 python -I docs/scripts/python_api.py
+          git status --porcelain docs/src/content/docs
+          test -z "$(git status --porcelain docs/src/content/docs)" || {
+            echo "the Python API reference is out of date: run docs/scripts/python_api.py and commit"; git diff --stat; exit 1; }
+      - name: Install
+        working-directory: docs
+        run: npm ci --no-audit --no-fund
+      - name: Build the site
+        working-directory: docs
+        run: npm run build

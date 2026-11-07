@@ -224,6 +224,13 @@ impl DspApp {
                         store.update(cx, |s, cx| s.forget_recent(None, cx));
                     }));
                 }
+                if open {
+                    let t = this.clone();
+                    menu = menu.separator().item(PopupMenuItem::new("Close recording").on_click(move |_, _, cx| {
+                        let store = t.read(cx).store.clone();
+                        store.update(cx, |s, cx| s.close_recording(None, cx));
+                    }));
+                }
                 let t = this.clone();
                 menu.separator()
                     .item(PopupMenuItem::new("Settings…").on_click(move |_, window, cx| t.update(cx, |a, cx| a.toggle_settings(window, cx))))
@@ -242,7 +249,7 @@ impl DspApp {
                     .item(item("Add heatmap view", |a, _, cx| a.add_view(TimeViewKind::Heatmap, cx)))
                     .separator()
                     .item(item("Channels", |a, w, cx| a.toggle_dock(DockPlacement::Left, w, cx)))
-                    .item(item("View settings", |a, w, cx| a.toggle_dock(DockPlacement::Right, w, cx)))
+                    .item(item("Inspector", |a, w, cx| a.toggle_dock(DockPlacement::Right, w, cx)))
                     .item(item("Timeline", |a, w, cx| a.toggle_dock(DockPlacement::Bottom, w, cx)))
                     .separator()
                     .item({
@@ -303,11 +310,15 @@ impl DspApp {
     fn title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let s = self.store.read(cx);
         let t = cx.theme();
+        // The file, then the source the active view reads (what is drawn and edited)
         let recording = s.recording.as_ref().map(|r| {
+            let source = s.active_view().map(|v| s.view_source(v)).unwrap_or_else(|| r.sources.default_entry().id.clone());
+            let several = r.sources.entries().len() > 1;
             h_flex()
                 .gap_2()
                 .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(t.foreground).child(r.name.clone()))
-                .child(div().text_xs().text_color(t.muted_foreground).child(r.summary()))
+                .when(several, |d| d.child(div().text_sm().text_color(t.foreground).child(r.sources.entry(&source).name.clone())))
+                .child(div().text_xs().text_color(t.muted_foreground).child(r.summary_of(&source)))
         });
         let opening = s.opening.clone().map(|n| div().text_xs().text_color(t.muted_foreground).child(format!("Opening {n}…")));
         TitleBar::new().child(
@@ -697,6 +708,228 @@ mod tests {
         })
     }
 
+    /// Recordings load once each; closing the active one switches to another, then to none, and
+    /// Explore is left with no views (its empty state), every view closable.
+    #[gpui_kit::test]
+    fn recordings_load_once_and_close(cx: &mut TestAppContext) {
+        let (window, store, app) = open(cx);
+        let rec = |name: &str| Recording::new(SourceSet::single(Dataset::generate_synthetic(4, 1_000.0, 2.0)), Some(std::path::PathBuf::from(format!("/nonexistent/{name}.zarr"))));
+        cx.update(|cx| store.update(cx, |s, cx| s.install(rec("a"), cx)));
+        cx.update(|cx| store.update(cx, |s, cx| s.install(rec("b"), cx)));
+        cx.update(|cx| store.update(cx, |s, cx| s.install(rec("a"), cx)));
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let names: Vec<String> = store.read(cx).recordings().map(|r| r.name.clone()).collect();
+            assert_eq!(names, ["a.zarr", "b.zarr"], "each file once, the active first");
+        });
+        cx.update(|cx| store.update(cx, |s, cx| s.close_recording(None, cx)));
+        cx.run_until_parked();
+        cx.update(|cx| assert_eq!(store.read(cx).recording.as_ref().map(|r| r.name.clone()).as_deref(), Some("b.zarr")));
+        cx.update(|cx| store.update(cx, |s, cx| s.close_recording(None, cx)));
+        cx.run_until_parked();
+        cx.update(|cx| assert!(store.read(cx).recording.is_none() && store.read(cx).loaded.is_empty()));
+        assert!(views(cx, &app).is_empty(), "no recording, no views");
+        cx.update_window(window, |_, window, cx| window.render_frame(cx)).unwrap();
+    }
+
+    /// Every view closes, the last one too (Explore then offers "Add view…"), and adding one
+    /// after that lays out the dock again.
+    #[gpui_kit::test]
+    fn every_view_closes(cx: &mut TestAppContext) {
+        let (window, store, app) = open(cx);
+        install(cx, &store);
+        cx.update_window(window, |_, window, cx| window.render_frame(cx)).unwrap();
+        let ex = explore(cx, &app);
+        for vm in views(cx, &app) {
+            let id = cx.update(|cx| vm.read(cx).id());
+            cx.update(|cx| ex.update(cx, |ex, cx| ex.close(id, cx)));
+            cx.run_until_parked();
+        }
+        assert!(views(cx, &app).is_empty(), "the last view closes too");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("explore-empty-add-view").is_some(), "the empty state offers Add view");
+        })
+        .unwrap();
+        let source = cx.update(|cx| store.read(cx).sources().unwrap().default_entry().id.clone());
+        cx.update(|cx| ex.update(cx, |ex, cx| {
+            ex.add_on(TimeViewKind::Traces, &source, cx);
+        }));
+        cx.run_until_parked();
+        assert_eq!(views(cx, &app).len(), 1);
+        cx.update_window(window, |_, window, cx| window.render_frame(cx)).unwrap();
+    }
+
+    /// "Add view or container": a view kind adds a view (Raster only with units), a container
+    /// arranges the views, Close and Esc close it, the arrow keys and Enter run a row.
+    #[gpui_kit::test]
+    fn add_view_or_container(cx: &mut TestAppContext) {
+        let (window, store, app) = open(cx);
+        install(cx, &store);
+        let before = views(cx, &app).len();
+        let explore = cx.update(|cx| app.read(cx).explore.clone());
+        let dialog_open = |cx: &mut TestAppContext| cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find("add-view-dialog").is_some()
+        }).unwrap();
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("explore-add-view", cx);
+        }).unwrap();
+        cx.run_until_parked();
+        assert!(dialog_open(cx), "Add view… opens the dialog");
+        cx.update_window(window, |_, window, cx| window.click("add-view-kind-raster", cx)).unwrap();
+        cx.run_until_parked();
+        assert_eq!(views(cx, &app).len(), before, "no units: Raster adds nothing");
+        cx.update_window(window, |_, window, cx| window.click("add-view-kind-heatmap", cx)).unwrap();
+        cx.run_until_parked();
+        assert_eq!(views(cx, &app).len(), before + 1, "a heatmap view");
+        assert!(!dialog_open(cx), "adding closes the dialog");
+        cx.update(|cx| explore.update(cx, |e, cx| e.set_add_dialog(true, cx)));
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("add-container-grid", cx);
+        }).unwrap();
+        cx.run_until_parked();
+        assert!(!dialog_open(cx));
+        assert_eq!(views(cx, &app).len(), before + 1, "arranging keeps every view");
+        cx.update(|cx| explore.update(cx, |e, cx| e.set_add_dialog(true, cx)));
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("add-view-close", cx);
+        }).unwrap();
+        cx.run_until_parked();
+        assert!(!dialog_open(cx), "Close closes it");
+        // The keyboard: Esc closes; from the first row, ↑ wraps to the last it can run (Heatmap:
+        // Raster has no units) and Enter adds it
+        let open_with_click = |cx: &mut TestAppContext| {
+            cx.update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window.click("explore-add-view", cx);
+            }).unwrap();
+            cx.run_until_parked();
+        };
+        open_with_click(cx);
+        cx.simulate_keystrokes(window, "escape");
+        assert!(!dialog_open(cx), "Esc closes it");
+        open_with_click(cx);
+        let n = views(cx, &app).len();
+        cx.simulate_keystrokes(window, "up enter");
+        cx.run_until_parked();
+        assert!(!dialog_open(cx));
+        assert_eq!(views(cx, &app).len(), n + 1, "↑ then Enter added a heatmap");
+    }
+
+    /// A remap at the head of a view's chain is what Explore shows: its order, without the
+    /// channels it drops.
+    #[gpui_kit::test]
+    fn explore_follows_a_leading_remap(cx: &mut TestAppContext) {
+        let (window, store, _app) = open(cx);
+        cx.update(|cx| {
+            let ds = Dataset::generate_synthetic(8, 10_000.0, 2.0);
+            store.update(cx, |s, cx| s.install(Recording::new(SourceSet::single(ds), Some("/nonexistent/remap.zarr".into())), cx));
+        });
+        cx.update_window(window, |_, window, cx| window.render_frame(cx)).unwrap();
+        cx.run_until_parked();
+        let source = cx.update(|cx| store.read(cx).sources().unwrap().default_entry().id.clone());
+        let view = cx.update(|cx| store.update(cx, |s, cx| s.view_for_source(&source, cx))).expect("a view of the source");
+        cx.update(|cx| store.update(cx, |s, cx| s.execute(crate::domain::command::SessionCommand::SelectView { view: view.clone() }, cx)).unwrap());
+        cx.run_until_parked();
+        let node = crate::screens::pipeline::channel_table::Rows { base: 0, inputs: vec![3, 1, 2], names: vec![None; 3] }.node();
+        cx.update(|cx| store.update(cx, |s, cx| s.execute(crate::domain::command::SessionCommand::AddOp { view, node, index: Some(0), id: None }, cx)).unwrap());
+        cx.run_until_parked();
+        cx.update(|cx| assert_eq!(store.read(cx).selection(&source), &[3, 1, 2]));
+    }
+
+    /// Remaps anywhere in a chain preview as the pipeline runs them: between processing steps a
+    /// reorder (each channel still its own data), after the last one the channels shown (may
+    /// drop); between steps, dropping is refused.
+    #[gpui_kit::test]
+    fn explore_follows_remaps_anywhere(cx: &mut TestAppContext) {
+        use crate::domain::command::SessionCommand;
+        use crate::screens::pipeline::channel_table::Rows;
+        let (window, store, _app) = open(cx);
+        cx.update(|cx| {
+            let ds = Dataset::generate_synthetic(8, 10_000.0, 2.0);
+            store.update(cx, |s, cx| s.install(Recording::new(SourceSet::single(ds), Some("/nonexistent/remaps.zarr".into())), cx));
+        });
+        cx.update_window(window, |_, window, cx| window.render_frame(cx)).unwrap();
+        cx.run_until_parked();
+        let source = cx.update(|cx| store.read(cx).sources().unwrap().default_entry().id.clone());
+        let view = cx.update(|cx| store.update(cx, |s, cx| s.view_for_source(&source, cx))).expect("a view");
+        let run = |cx: &mut TestAppContext, cmd: SessionCommand| cx.update(|cx| store.update(cx, |s, cx| s.execute(cmd, cx)));
+        run(cx, SessionCommand::SelectView { view: view.clone() }).unwrap();
+        let scale = |a: f32| serde_json::from_value::<dspk_pipeline::Node>(serde_json::json!({"op": "scale", "alpha": a, "beta": 0.0})).unwrap();
+        let reverse = Rows { base: 0, inputs: (0..8).rev().collect(), names: vec![None; 8] }.node();
+        for node in [scale(2.0), reverse, scale(1.0)] {
+            run(cx, SessionCommand::AddOp { view: view.clone(), node, index: None, id: None }).unwrap();
+        }
+        cx.run_until_parked();
+        cx.update(|cx| assert_eq!(store.read(cx).selection(&source), &[7, 6, 5, 4, 3, 2, 1, 0], "the reorder is shown"));
+        let (preview, raw) = cx.update(|cx| (store.read(cx).preview_of(&view).expect("a preview"), store.read(cx).sources().unwrap().get(&source).signal().clone()));
+        for c in [0usize, 3, 7] {
+            let (mut p, mut r) = (vec![0.0f32; 500], vec![0.0f32; 500]);
+            preview.read(&[c], 5_000..5_500, &mut p).unwrap();
+            raw.read(&[c], 5_000..5_500, &mut r).unwrap();
+            assert!(p.iter().zip(&r).all(|(p, r)| (p - 2.0 * r).abs() < 1e-3 * r.abs().max(1.0)), "channel {c} carries its own data");
+        }
+        // After the last processing step: keep the first two shown
+        let keep = Rows { base: 0, inputs: vec![0, 1], names: vec![None; 2] }.node();
+        run(cx, SessionCommand::AddOp { view: view.clone(), node: keep, index: None, id: None }).unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| assert_eq!(store.read(cx).selection(&source), &[7, 6]));
+        // Between processing steps, dropping is refused (no preview, the reason in the status)
+        let drop = Rows { base: 0, inputs: vec![0, 1], names: vec![None; 2] }.node();
+        run(cx, SessionCommand::AddOp { view: view.clone(), node: drop, index: Some(1), id: None }).unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let s = store.read(cx);
+            assert!(s.preview_of(&view).is_none());
+            assert!(s.status.contains("keeps every channel"), "{}", s.status);
+        });
+    }
+
+    /// A whitening op previews fitted on the view's signal (channels of about unit variance), the
+    /// fit in the background; an edit after it reuses the fit.
+    #[gpui_kit::test]
+    fn whitening_previews_fitted(cx: &mut TestAppContext) {
+        use crate::domain::command::SessionCommand;
+        let (window, store, _app) = open(cx);
+        cx.update(|cx| {
+            let ds = Dataset::generate_synthetic(6, 10_000.0, 4.0);
+            store.update(cx, |s, cx| s.install(Recording::new(SourceSet::single(ds), Some("/nonexistent/whiten.zarr".into())), cx));
+        });
+        cx.update_window(window, |_, window, cx| window.render_frame(cx)).unwrap();
+        cx.run_until_parked();
+        let source = cx.update(|cx| store.read(cx).sources().unwrap().default_entry().id.clone());
+        let view = cx.update(|cx| store.update(cx, |s, cx| s.view_for_source(&source, cx))).expect("a view");
+        let add = |cx: &mut TestAppContext, op: serde_json::Value| {
+            let node: dspk_pipeline::Node = serde_json::from_value(op).unwrap();
+            cx.update(|cx| store.update(cx, |s, cx| s.execute(SessionCommand::AddOp { view: view.clone(), node, index: None, id: None }, cx))).unwrap();
+            cx.run_until_parked();
+        };
+        let read = |cx: &mut TestAppContext| {
+            // The fit runs in the background: the preview comes when it is done
+            wait_long(cx, window, |cx| cx.update(|cx| store.read(cx).preview_of(&view).is_some()));
+            let preview = cx.update(|cx| store.read(cx).preview_of(&view)).expect("a preview");
+            let mut x = vec![0.0f32; 6 * 20_000];
+            preview.read(&[0, 1, 2, 3, 4, 5], 10_000..30_000, &mut x).unwrap();
+            x
+        };
+        add(cx, serde_json::json!({"op": "iir", "band": "highpass", "cutoff": [100.0]}));
+        add(cx, serde_json::json!({"op": "whiten"}));
+        let x = read(cx);
+        for c in 0..6 {
+            let row = &x[c * 20_000..(c + 1) * 20_000];
+            let mean = row.iter().map(|&v| v as f64).sum::<f64>() / row.len() as f64;
+            let var = row.iter().map(|&v| (v as f64 - mean).powi(2)).sum::<f64>() / row.len() as f64;
+            assert!((var - 1.0).abs() < 0.3, "channel {c}: variance {var:.3}");
+        }
+        add(cx, serde_json::json!({"op": "scale", "alpha": 2.0, "beta": 0.0}));
+        let y = read(cx);
+        assert!(x.iter().zip(&y).all(|(a, b)| (2.0 * a - b).abs() < 1e-4 * a.abs().max(1.0)), "the same fit after an edit downstream");
+    }
+
     #[gpui_kit::test]
     fn start_screen_then_workspaces(cx: &mut TestAppContext) {
         let (window, store, _) = open(cx);
@@ -785,7 +1018,7 @@ mod tests {
         // An operation from the catalogue (what the toolbar's menu does) goes into the graph
         cx.update_window(window, |_, window, cx| {
             let pipeline = app.read(cx).pipeline.clone();
-            let template = crate::screens::pipeline::catalog::catalog()[1].items[0].template.clone();
+            let template = crate::screens::pipeline::catalog::catalog().into_iter().find(|c| c.name == "Filter").expect("a Filter family").items[0].template.clone();
             pipeline.update(cx, |p, cx| p.add(&template, window, cx));
         })
         .unwrap();
@@ -828,8 +1061,8 @@ mod tests {
                 let b = window.find(("time-view", id)).bounds().size;
                 assert!(b.width > px(300.) && b.height > px(100.), "view {id}: {b:?}");
             }
-            // One panel per side: Channels, Processing (the default right panel), the timeline
-            for id in ["channels-panel", "processing-panel", "timeline-panel"] {
+            // One panel per side: Channels, the Inspector (the default right panel), the timeline
+            for id in ["channels-panel", "inspector-panel", "timeline-panel"] {
                 assert!(window.try_find(id).is_some(), "{id} on screen");
             }
         })
@@ -896,22 +1129,28 @@ mod tests {
         .unwrap();
         cx.run_until_parked();
         assert!(!open(cx));
-        // The right bar shows one panel at a time; its icon again hides the side
+        // The right bar: the Inspector shows by default; its icon hides the side, and shows it again
         let right = |cx: &mut TestAppContext| cx.update(|cx| explore.read(cx).is_side_open(DockPlacement::Right));
+        assert!(right(cx));
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
-            window.click("rail-display", cx);
-        })
-        .unwrap();
-        cx.run_until_parked();
-        cx.update_window(window, |_, window, cx| {
-            window.render_frame(cx);
-            assert!(window.try_find("settings-panel").is_some() && window.try_find("processing-panel").is_none(), "one panel at a time");
-            window.click("rail-display", cx);
+            window.click("rail-inspector", cx);
         })
         .unwrap();
         cx.run_until_parked();
         assert!(!right(cx));
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("inspector-panel").is_none());
+            window.click("rail-inspector", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("inspector-panel").is_some(), "the inspector: one panel for view, display and processing");
+        })
+        .unwrap();
     }
 
     /// Second pixel of the top row of the traces view's frame (BGRA): background (the first column
@@ -963,5 +1202,195 @@ mod tests {
             assert_eq!(p.done, p.total);
         });
         wait_until(cx, window, |cx| all_drawn_for_window(cx, &store, &app));
+    }
+
+    /// Test formats: `*.twosource` (in memory: `array`, 16 channels, and `emg`, 2 channels, at
+    /// 10 kHz for 60 s) and the formats of dspk-synapse (NWB, SpikeGLX…), as the app's plugin.
+    struct TestFormats;
+
+    impl TestFormats {
+        fn memory(id: &str) -> dspk_core::MemoryRecording {
+            let (channels, rate, samples) = (if id == "emg" { 2 } else { 16 }, 10_000.0, 600_000);
+            let data: Vec<f32> = (0..channels * samples).map(|i| (((i % samples) as f32) * 0.05 * (1 + i / samples) as f32).sin() * 100.0).collect();
+            dspk_core::MemoryRecording::new(id, data, channels, rate).unwrap()
+        }
+    }
+
+    impl crate::plugin::SourceOpener for TestFormats {
+        fn reads(&self, path: &std::path::Path) -> bool {
+            path.extension().is_some_and(|e| e == "twosource") || dspk_synapse::io::detect(path).is_ok()
+        }
+        fn sources(&self, path: &std::path::Path) -> dspk_core::DspResult<Vec<dspk_io::SourceEntry>> {
+            if path.extension().is_some_and(|e| e == "twosource") {
+                return Ok(["array", "emg"].iter().map(|id| {
+                    let mut e = dspk_io::core::single_source(&Self::memory(id));
+                    e.id = id.to_string();
+                    e.name = id.to_uppercase();
+                    e
+                }).collect());
+            }
+            dspk_synapse::io::sources(path)
+        }
+        fn open(&self, path: &std::path::Path, id: &str) -> dspk_core::DspResult<Box<dyn dspk_core::RecordingSource>> {
+            if path.extension().is_some_and(|e| e == "twosource") {
+                return Ok(Box::new(Self::memory(id)));
+            }
+            dspk_synapse::io::open_source(path, id)
+        }
+    }
+
+    impl crate::plugin::AppPlugin for TestFormats {
+        fn id(&self) -> &'static str {
+            "test-formats"
+        }
+        fn name(&self) -> &'static str {
+            "Test formats"
+        }
+        fn opener(&self) -> Option<&dyn crate::plugin::SourceOpener> {
+            Some(self)
+        }
+    }
+
+    /// Registers [`TestFormats`] (once per test binary).
+    fn test_formats() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| crate::plugin::register(vec![std::sync::Arc::new(TestFormats)]));
+    }
+
+    /// As [`wait_until`], for a real file (up to two minutes).
+    fn wait_long(cx: &mut TestAppContext, window: AnyWindowHandle, mut done: impl FnMut(&mut TestAppContext) -> bool) {
+        cx.executor().allow_parking();
+        for _ in 0..12_000 {
+            cx.update_window(window, |_, window, cx| window.render_frame(cx)).unwrap();
+            cx.run_until_parked();
+            if done(cx) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("timed out");
+    }
+
+    /// A view of a source that is closed, or switched to another source, leaves nothing behind in
+    /// the session (Pipeline) unless it holds work: a view with ops stays.
+    #[gpui_kit::test]
+    fn closed_views_leave_no_trace_unless_they_hold_work(cx: &mut TestAppContext) {
+        use crate::domain::command::SessionCommand;
+        test_formats();
+        let dir = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/dspk-app-core-tests"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("release.twosource");
+        std::fs::write(&path, b"").unwrap();
+        let (window, store, app) = open(cx);
+        cx.update(|cx| store.update(cx, |s, cx| s.open(path.clone(), cx)));
+        wait_long(cx, window, |cx| cx.update(|cx| store.read(cx).recording.is_some()));
+        let ex = explore(cx, &app);
+        let sessions = |cx: &mut TestAppContext| cx.update(|cx| store.read(cx).doc.views.iter().map(|v| v.recording.source.clone().unwrap_or_default()).collect::<Vec<_>>());
+        let count = |cx: &mut TestAppContext, src: &str| sessions(cx).iter().filter(|s| *s == src).count();
+        // An untouched view of EMG, closed: gone from the session
+        let vm = cx.update(|cx| ex.update(cx, |ex, cx| ex.add_on(TimeViewKind::Traces, "emg", cx)));
+        wait_long(cx, window, |cx| cx.update(|cx| !vm.read(cx).view.doc_view.is_empty()));
+        assert_eq!(count(cx, "emg"), 1);
+        let id = cx.update(|cx| vm.read(cx).id());
+        cx.update(|cx| ex.update(cx, |ex, cx| ex.removed(id, cx)));
+        cx.run_until_parked();
+        assert_eq!(count(cx, "emg"), 0, "closing an untouched view removes it: {:?}", sessions(cx));
+        // Switched to another source: the old one goes the same way
+        let vm = cx.update(|cx| ex.update(cx, |ex, cx| ex.add_on(TimeViewKind::Traces, "emg", cx)));
+        wait_long(cx, window, |cx| cx.update(|cx| !vm.read(cx).view.doc_view.is_empty()));
+        cx.update(|cx| vm.update(cx, |vm, cx| vm.set_source("array", cx)));
+        cx.run_until_parked();
+        assert_eq!(count(cx, "emg"), 0, "switching away removes it");
+        // A view with work stays when closed
+        cx.update(|cx| vm.update(cx, |vm, cx| vm.set_source("emg", cx)));
+        wait_long(cx, window, |cx| cx.update(|cx| !vm.read(cx).view.doc_view.is_empty()));
+        let doc_view = cx.update(|cx| vm.read(cx).view.doc_view.clone());
+        let node: dspk_pipeline::Node = serde_json::from_value(serde_json::json!({"op": "rectify"})).unwrap();
+        cx.update(|cx| store.update(cx, |s, cx| s.execute(SessionCommand::AddOp { view: doc_view, node, index: None, id: None }, cx))).unwrap();
+        // Drawn with the op (the device open) before the view closes: a process must not exit
+        // while a render thread is still opening the device (the driver's libraries unload under it)
+        cx.update(|cx| vm.update(cx, |vm, _| vm.shown = None));
+        cx.update(|cx| store.update(cx, |s, cx| s.redraw(cx)));
+        wait_long(cx, window, |cx| cx.update(|cx| vm.read(cx).shown.is_some()));
+        let id = cx.update(|cx| vm.read(cx).id());
+        cx.update(|cx| ex.update(cx, |ex, cx| ex.removed(id, cx)));
+        cx.run_until_parked();
+        assert_eq!(count(cx, "emg"), 1, "its processing is kept");
+    }
+
+    /// The ops of the bug report: a band-pass, CMR, Teager–Kaiser energy, a 20 Hz low-pass.
+    fn report_chain() -> Vec<dspk_pipeline::Node> {
+        serde_json::from_str(
+            r#"[
+            {"op": "iir", "band": "bandpass", "cutoff": [300.0, 3000.0], "order": 5, "design": "butterworth", "mode": "forward_backward", "start": "rest"},
+            {"op": "cmr"},
+            {"op": "teager_kaiser", "edge": "reflect"},
+            {"op": "iir", "band": "lowpass", "cutoff": [20.0], "order": 5, "design": "butterworth", "mode": "forward_backward", "start": "rest"}]"#,
+        )
+        .unwrap()
+    }
+
+    /// Opens `path`, shows its `source` (not the default one) in a new view, focuses it and adds
+    /// the report's ops one by one: after each, the view's preview exists, a window of `window_s`
+    /// seconds reads processed (not raw) within `limit_s`, and the view draws.
+    fn ops_on_a_second_source(cx: &mut TestAppContext, path: std::path::PathBuf, source: &str, window_s: f64, limit_s: f64) {
+        use crate::domain::command::SessionCommand;
+        test_formats();
+        let (window, store, app) = open(cx);
+        cx.update(|cx| store.update(cx, |s, cx| s.open(path.clone(), cx)));
+        wait_long(cx, window, |cx| cx.update(|cx| store.read(cx).opening.is_none()));
+        cx.update(|cx| assert!(store.read(cx).recording.is_some(), "{}", store.read(cx).status));
+        cx.update(|cx| assert_ne!(store.read(cx).sources().unwrap().default_entry().id, source, "a second source"));
+        let ex = explore(cx, &app);
+        let vm = cx.update(|cx| ex.update(cx, |ex, cx| ex.add_on(TimeViewKind::Traces, source, cx)));
+        wait_long(cx, window, |cx| cx.update(|cx| !vm.read(cx).view.doc_view.is_empty()));
+        let view = cx.update(|cx| vm.read(cx).view.doc_view.clone());
+        cx.update(|cx| ex.update(cx, |ex, cx| ex.focus(vm.clone(), cx)));
+        cx.run_until_parked();
+        cx.update(|cx| assert_eq!(store.read(cx).doc.active_view.as_deref(), Some(view.as_str()), "the focused view is the one edited"));
+        for node in report_chain() {
+            let name = format!("{node:?}");
+            cx.update(|cx| store.update(cx, |s, cx| s.execute(SessionCommand::AddOp { view: view.clone(), node, index: None, id: None }, cx)).unwrap());
+            cx.run_until_parked();
+            let (preview, status, raw) = cx.update(|cx| {
+                let s = store.read(cx);
+                (s.preview_of(&view), s.status.clone(), s.sources().unwrap().get(source).signal().clone())
+            });
+            let preview = preview.unwrap_or_else(|| panic!("no preview after {name}; status: {status}"));
+            let rate = preview.info().sample_rate_hz();
+            let n = ((window_s * rate) as u64).min(preview.info().samples);
+            let v = dspk_view::View { channels: vec![0, 1], start: 0, end: n, width: 2000 };
+            let (mut a, mut b) = (dspk_view::Envelope::Samples(Vec::new()), dspk_view::Envelope::Samples(Vec::new()));
+            let t0 = std::time::Instant::now();
+            preview.view(&v, &mut a).unwrap();
+            let took = t0.elapsed().as_secs_f64();
+            eprintln!("{name}: {window_s} s window in {:.0} ms", took * 1e3);
+            assert!(took < limit_s, "{name}: the preview took {took:.1} s");
+            raw.view(&v, &mut b).unwrap();
+            assert_ne!(a, b, "{name}: the view shows the processed signal");
+            // The view draws the processed signal
+            cx.update(|cx| vm.update(cx, |vm, _| vm.shown = None));
+            cx.update(|cx| store.update(cx, |s, cx| s.redraw(cx)));
+            wait_long(cx, window, |cx| cx.update(|cx| vm.read(cx).shown.is_some()));
+        }
+    }
+
+    /// Ops edited on a view of a file's second source preview there, at once, after every edit.
+    #[gpui_kit::test]
+    fn ops_preview_on_a_second_source(cx: &mut TestAppContext) {
+        // The sources are in memory; the file only has to exist (the views' caches key on it)
+        let dir = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/dspk-app-core-tests"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("two.twosource");
+        std::fs::write(&path, b"").unwrap();
+        ops_on_a_second_source(cx, path, "emg", 30.0, 60.0);
+    }
+
+    /// The file of the bug report (local only): its EMG source, the report's 4 min 35 s window.
+    #[gpui_kit::test]
+    #[ignore = "needs .data/nwb/15-25-33_meps.nwb.zarr"]
+    fn ops_preview_on_the_report_file(cx: &mut TestAppContext) {
+        let path = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../.data/nwb/15-25-33_meps.nwb.zarr"));
+        ops_on_a_second_source(cx, path, "/acquisition/EMG", 275.0, 15.0);
     }
 }

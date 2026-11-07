@@ -12,6 +12,7 @@ __all__ = [
     "Source",
     "WRITE_CHUNK_SAMPLES",
     "ZARR_CHUNK_SAMPLES",
+    "ZarrWriter",
     "formats",
     "open",
     "sources",
@@ -19,16 +20,29 @@ __all__ = [
     "write_zarr",
 ]
 
-WRITE_CHUNK_SAMPLES: builtins.int
-ZARR_CHUNK_SAMPLES: builtins.int
+WRITE_CHUNK_SAMPLES: builtins.int = 65536
+ZARR_CHUNK_SAMPLES: builtins.int = 5000
 @typing.final
 class Recording:
     r"""
-    A recording opened from a file. Reads return scaled `float32` values in each channel's unit,
-    shape `(channels, samples)`.
+    A recording opened from a file, read in pieces.
+    
+    Opening reads only the metadata; `read` returns the samples you ask for, scaled to each
+    channel's unit, as float32. Make one with `open`.
+    
+    Examples
+    --------
+    >>> import dspk
+    >>> rec = dspk.io.open("session.zarr")  # doctest: +SKIP
+    >>> rec.channel_count, rec.sample_rate  # doctest: +SKIP
+    (32, 30000.0)
+    >>> first_second = rec.read(start=0, stop=30_000)  # doctest: +SKIP
     """
     @property
-    def name(self) -> builtins.str: ...
+    def name(self) -> builtins.str:
+        r"""
+        Name of the recording, from the file or its source.
+        """
     @property
     def channel_count(self) -> builtins.int:
         r"""
@@ -55,7 +69,10 @@ class Recording:
         Stored sample type (`"int16"`, `"float32"`, …).
         """
     @property
-    def channel_names(self) -> builtins.list[builtins.str]: ...
+    def channel_names(self) -> builtins.list[builtins.str]:
+        r"""
+        Name of each channel.
+        """
     @property
     def units(self) -> builtins.list[builtins.str]:
         r"""
@@ -63,14 +80,37 @@ class Recording:
         """
     def read(self, channels: typing.Optional[typing.Sequence[builtins.int]] = None, start: builtins.int = 0, stop: typing.Optional[builtins.int] = None) -> numpy.typing.NDArray[numpy.float32]:
         r"""
-        Reads `channels` (default: all) over samples `start..stop` (default: to the end).
+        Reads samples into memory.
+        
+        Parameters
+        ----------
+        channels : sequence of int, optional
+            Channel indices, in the order wanted; by default all.
+        start : int
+            First sample.
+        stop : int, optional
+            The sample after the last; by default the end.
+        
+        Returns
+        -------
+        numpy.ndarray
+            `(len(channels), stop - start)`, float32, in each channel's unit.
+        
+        Raises
+        ------
+        IndexError
+            When a channel or the sample range is outside the recording.
+        OSError
+            When the file cannot be read.
         """
     def __repr__(self) -> builtins.str: ...
 
 @typing.final
 class Source:
     r"""
-    One source of a file (most files have one; containers such as NWB have several).
+    One source of a file: what `sources` lists and `open(path, source=...)` opens.
+    
+    Most files have one; containers such as NWB have several (one per electrical series).
     """
     @property
     def id(self) -> builtins.str:
@@ -78,18 +118,30 @@ class Source:
         Id to pass to `open(path, source=...)`.
         """
     @property
-    def name(self) -> builtins.str: ...
+    def name(self) -> builtins.str:
+        r"""
+        Name of the source.
+        """
     @property
-    def channel_count(self) -> builtins.int: ...
+    def channel_count(self) -> builtins.int:
+        r"""
+        Number of channels.
+        """
     @property
-    def samples(self) -> builtins.int: ...
+    def samples(self) -> builtins.int:
+        r"""
+        Samples per channel.
+        """
     @property
     def sample_rate(self) -> builtins.float:
         r"""
         Sampling rate in Hz.
         """
     @property
-    def format(self) -> builtins.str: ...
+    def format(self) -> builtins.str:
+        r"""
+        Stored sample type (`"int16"`, `"float32"`, …).
+        """
     @property
     def unit(self) -> builtins.str:
         r"""
@@ -97,19 +149,152 @@ class Source:
         """
     def __repr__(self) -> builtins.str: ...
 
+@typing.final
+class ZarrWriter:
+    r"""
+    A Zarr store (`/traces`, float32) written block by block.
+    
+    For data that does not fit in memory at once, such as a recording processed window by window:
+    create the store for its full size, `push` blocks in order until every sample is written, then
+    `finish`.
+    
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import dspk
+    >>> w = dspk.io.ZarrWriter("out.zarr", 4, 60_000, 30_000.0, unit="µV")  # doctest: +SKIP
+    >>> for _ in range(2):  # doctest: +SKIP
+    ...     w.push(np.zeros((4, 30_000), dtype=np.float32))
+    >>> w.finish()  # doctest: +SKIP
+    """
+    def __new__(cls, path: builtins.str | os.PathLike | pathlib.Path, channels: builtins.int, samples: builtins.int, sample_rate: builtins.float, *, unit: builtins.str = '', chunk_samples: builtins.int = 5000, compression: builtins.str = 'zstd', level: typing.Optional[builtins.int] = None, parallel: builtins.bool = True, channel_names: typing.Optional[typing.Sequence[builtins.str]] = None) -> ZarrWriter:
+        r"""
+        Creates the store.
+        
+        Parameters
+        ----------
+        path : str or os.PathLike
+            The store (a folder) to create.
+        channels : int
+            Number of channels.
+        samples : int
+            Samples per channel, in total.
+        sample_rate : float
+            Sample rate in Hz.
+        unit : str
+            Unit symbol of the values (`""` for dimensionless).
+        chunk_samples : int
+            Samples per Zarr chunk.
+        compression : {"zstd", "blosc_lz4", "none"}
+            How chunks are compressed.
+        level : int, optional
+            Compression level: zstd's (default 3) or blosc's 0–9 (default 5); `"none"` takes none.
+        parallel : bool
+            Compress and store on several threads; `False` uses one.
+        channel_names : list of str, optional
+            A name per channel.
+        
+        Raises
+        ------
+        ValueError
+            For zero channels or samples, a non-positive sample rate, or an invalid option.
+        OSError
+            When the store cannot be created.
+        """
+    def push(self, block: numpy.typing.NDArray[numpy.float32]) -> None:
+        r"""
+        Writes the next block of samples.
+        
+        Parameters
+        ----------
+        block : numpy.ndarray
+            The next `n` samples, `(channels, n)` float32.
+        
+        Raises
+        ------
+        ValueError
+            When `block` has another channel count, goes past the store's samples, or the writer is
+            finished.
+        OSError
+            When the store cannot be written.
+        """
+    def finish(self) -> None:
+        r"""
+        Closes the store, after checking that every sample was written.
+        
+        Raises
+        ------
+        ValueError
+            When samples are missing or the writer is already finished.
+        OSError
+            When the store cannot be closed.
+        """
+
 def formats() -> builtins.list[builtins.str]:
     r"""
-    Names of the formats `open` recognizes, in detection order.
+    Names of the formats `open` recognizes, in the order they are tried.
+    
+    Returns
+    -------
+    list of str
     """
 
 def open(path: builtins.str | os.PathLike | pathlib.Path, source: typing.Optional[builtins.str] = None) -> Recording:
     r"""
-    Opens the recording at `path`: its default source, or `source` (an id from `sources(path)`).
+    Opens a recording file.
+    
+    The format is detected from the file (see `formats`). Only metadata is read here; samples are
+    read with `Recording.read`.
+    
+    Parameters
+    ----------
+    path : str or os.PathLike
+        The recording: a file, or a folder for stores such as Zarr.
+    source : str, optional
+        Which source to open, an id from `sources(path)`; by default the file's default source.
+    
+    Returns
+    -------
+    Recording
+    
+    Raises
+    ------
+    OSError
+        When the file cannot be read.
+    ValueError
+        When the format is not recognized or `source` is not in the file.
+    
+    Examples
+    --------
+    >>> import dspk
+    >>> rec = dspk.io.open("session.zarr")  # doctest: +SKIP
     """
 
 def sources(path: builtins.str | os.PathLike | pathlib.Path) -> builtins.list[Source]:
     r"""
-    Every source of the file at `path`, from its metadata only.
+    Lists the sources of a file, reading only its metadata.
+    
+    Parameters
+    ----------
+    path : str or os.PathLike
+        The recording file or folder.
+    
+    Returns
+    -------
+    list of Source
+    
+    Raises
+    ------
+    OSError
+        When the file cannot be read.
+    ValueError
+        When the format is not recognized.
+    
+    Examples
+    --------
+    >>> import dspk
+    >>> for s in dspk.io.sources("session.nwb"):  # doctest: +SKIP
+    ...     print(s.id, s.channel_count, s.sample_rate)
     """
 
 def write_raw(data: typing.Any, path: builtins.str | os.PathLike | pathlib.Path, sample_rate: builtins.float, *, format: typing.Optional[builtins.str] = None, order: builtins.str = 'channel_major', gain: builtins.float = 1.0, unit: builtins.str = '', chunk_samples: builtins.int = 65536) -> None:

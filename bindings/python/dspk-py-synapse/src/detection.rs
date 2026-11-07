@@ -134,12 +134,13 @@ pub fn deduplicate<'py>(py: Python<'py>, samples: PyReadonlyArray1<'_, u64>, cha
 
 /// The streaming detector over a whole recording, read in place in batches: optional CAR, a
 /// zero-phase band-pass, noise calibrated on spread-out chunks, threshold crossings, spatial
-/// de-duplication, snippets and per-channel templates — as `dspk detect`. Returns the spikes as a
+/// de-duplication, snippets and per-channel templates, every spike located (`locate`: the centre
+/// of mass of its snippet's heights over its neighbours) — as `dspk detect`. Returns the spikes as a
 /// [`Sorting`] (one unit per channel) and a summary (`sigmas_uv`, `raw_crossings`, `spikes`,
 /// `channel_counts`).
 #[gen_stub_pyfunction(module = "dspk._native.synapse.detection")]
 #[pyfunction]
-#[pyo3(signature = (recording, probe, *, band, car, threshold, refractory_ms, polarity, spacing, radius_um, k_neighbors, pre_ms, post_ms, sinc_shift, batch_s, calibration_s, calibration_chunks, runtime))]
+#[pyo3(signature = (recording, probe, *, band, car, threshold, refractory_ms, polarity, spacing, radius_um, k_neighbors, pre_ms, post_ms, sinc_shift, locate, batch_s, calibration_s, calibration_chunks, runtime))]
 #[allow(clippy::too_many_arguments)]
 pub fn detect_recording<'py>(
     py: Python<'py>,
@@ -156,6 +157,7 @@ pub fn detect_recording<'py>(
     pre_ms: f64,
     post_ms: f64,
     sinc_shift: bool,
+    locate: bool,
     batch_s: f64,
     calibration_s: f64,
     calibration_chunks: usize,
@@ -174,6 +176,7 @@ pub fn detect_recording<'py>(
         pre_ms,
         post_ms,
         apply_sinc_shift: sinc_shift,
+        locate,
     };
     let mut pipeline = Pipeline::new();
     if car {
@@ -220,14 +223,14 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-pyo3_stub_gen::module_variable!("dspk._native.synapse.detection", "DEFAULT_THRESHOLD", f32);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.detection", "DEFAULT_RECORDING_THRESHOLD", f32);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.detection", "DEFAULT_REFRACTORY_MS", f64);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.detection", "DEFAULT_RADIUS_UM", f32);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.detection", "DEFAULT_K_NEIGHBORS", usize);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.detection", "DEFAULT_PRE_MS", f64);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.detection", "DEFAULT_POST_MS", f64);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.detection", "DEFAULT_BATCH_S", f64);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.detection", "DEFAULT_CALIBRATION_S", f64);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.detection", "DEFAULT_CALIBRATION_CHUNKS", usize);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.detection", "DEFAULT_NEO_THRESHOLD", f32);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.detection", "DEFAULT_THRESHOLD", f32, syn::ThresholdSpikeDetector::default().threshold_factor);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.detection", "DEFAULT_RECORDING_THRESHOLD", f32, StreamingDetectionConfig::default().threshold_factor);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.detection", "DEFAULT_REFRACTORY_MS", f64, StreamingDetectionConfig::default().refractory_ms);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.detection", "DEFAULT_RADIUS_UM", f32, StreamingDetectionConfig::default().spatial_radius_um);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.detection", "DEFAULT_K_NEIGHBORS", usize, StreamingDetectionConfig::default().k_neighbors);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.detection", "DEFAULT_PRE_MS", f64, StreamingDetectionConfig::default().pre_ms);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.detection", "DEFAULT_POST_MS", f64, StreamingDetectionConfig::default().post_ms);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.detection", "DEFAULT_BATCH_S", f64, StreamingDetectionConfig::default().batch_duration_sec);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.detection", "DEFAULT_CALIBRATION_S", f64, StreamingDetectionConfig::default().calibration_duration_sec);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.detection", "DEFAULT_CALIBRATION_CHUNKS", usize, StreamingDetectionConfig::default().calibration_chunks);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.detection", "DEFAULT_NEO_THRESHOLD", f32, syn::NeoSpikeDetector::default().threshold_factor);

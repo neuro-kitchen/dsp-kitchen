@@ -3,6 +3,8 @@
 data/
 # The app's data layer is code, not data
 !app/dspk-app-core/src/data/
+# The docs site's data (topic groups, landing-page signal strips) is source too
+!docs/src/data/
 .data/
 .docs-old/
 .env

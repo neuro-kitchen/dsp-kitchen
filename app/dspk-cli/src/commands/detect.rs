@@ -80,6 +80,10 @@ pub struct DetectArgs {
     /// Realign snippets to the sub-sample trough
     #[arg(long, default_value_t = DEFAULTS.apply_sinc_shift, action = clap::ArgAction::Set)]
     sinc_shift: bool,
+
+    /// Locate every spike (centre of mass of its snippet's heights over its neighbours)
+    #[arg(long, default_value_t = DEFAULTS.locate, action = clap::ArgAction::Set)]
+    locate: bool,
     /// Length of each processing window (s); memory only, not results
     #[arg(long, default_value_t = DEFAULTS.batch_duration_sec)]
     batch_sec: f64,
@@ -113,6 +117,7 @@ impl DetectArgs {
             pre_ms: self.pre_ms,
             post_ms: self.post_ms,
             apply_sinc_shift: self.sinc_shift,
+            locate: self.locate,
         }
     }
 

@@ -51,6 +51,16 @@ pub fn open_client(target: ComputeTarget) -> Result<cubecl::prelude::Client, Str
 }
 
 /// Names of the runtimes compiled into this build, in preference order (GPUs first).
+///
+/// Returns
+/// -------
+/// list of str
+///     Runtime names, such as `["cuda", "wgpu", "cpu"]`.
+///
+/// Examples
+/// --------
+/// >>> import dspk
+/// >>> names = dspk.runtime.available()
 #[gen_stub_pyfunction(module = "dspk._native.runtime")]
 #[pyfunction]
 pub fn available() -> Vec<&'static str> {
@@ -58,6 +68,19 @@ pub fn available() -> Vec<&'static str> {
 }
 
 /// The runtime calls use when they are not given `runtime=`.
+///
+/// The one chosen with `set`, else the `DSPK_RUNTIME` environment variable, else the first of
+/// `available()`.
+///
+/// Returns
+/// -------
+/// str
+///     A runtime name.
+///
+/// Raises
+/// ------
+/// ValueError
+///     When `DSPK_RUNTIME` names a runtime that is unknown or not compiled in.
 #[gen_stub_pyfunction(module = "dspk._native.runtime")]
 #[pyfunction]
 pub fn current() -> PyResult<&'static str> {
@@ -66,8 +89,24 @@ pub fn current() -> PyResult<&'static str> {
 
 /// Chooses the runtime of every later call that is not given `runtime=`.
 ///
-/// `name`: `"wgpu"`, `"cpu"`, `"cuda"` or `"hip"` (one of `available()`); `None` goes back to the
-/// default (`DSPK_RUNTIME`, else the first compiled in).
+/// Parameters
+/// ----------
+/// name : str or None
+///     A runtime from `available()` (`"cuda"`, `"hip"`, `"wgpu"`, `"cpu"`), or `None` to go back
+///     to the default (`DSPK_RUNTIME`, else the first available).
+///
+/// Raises
+/// ------
+/// ValueError
+///     When `name` is unknown or not compiled into this build.
+///
+/// Examples
+/// --------
+/// >>> import dspk
+/// >>> dspk.runtime.set("cpu")
+/// >>> dspk.runtime.current()
+/// 'cpu'
+/// >>> dspk.runtime.set(None)
 #[gen_stub_pyfunction(module = "dspk._native.runtime")]
 #[pyfunction]
 #[pyo3(signature = (name))]

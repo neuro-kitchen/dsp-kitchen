@@ -48,6 +48,9 @@ pub struct StreamingDetectionConfig {
     pub post_ms: f64,
     /// Whether to apply sub-sample windowed-sinc (Blackman-Harris) realignment (default: `true`).
     pub apply_sinc_shift: bool,
+    /// Whether to locate every spike: the centre of mass of its snippet's peak-to-peak heights
+    /// over its K neighbours (default: `true`; else locations are unknown, NaN).
+    pub locate: bool,
 }
 
 impl Default for StreamingDetectionConfig {
@@ -65,6 +68,7 @@ impl Default for StreamingDetectionConfig {
             pre_ms: 1.0,
             post_ms: 2.0,
             apply_sinc_shift: true,
+            locate: true,
         }
     }
 }

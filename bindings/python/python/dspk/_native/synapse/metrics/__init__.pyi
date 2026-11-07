@@ -51,26 +51,26 @@ __all__ = [
     "stimulus_average",
 ]
 
-AMPLITUDE_CUTOFF_BINS: builtins.int
-AMPLITUDE_CUTOFF_MIN_RATIO: builtins.float
-AMPLITUDE_CUTOFF_SMOOTHING: builtins.float
-DEFAULT_ACG_PROBABILITY: builtins.float
-DEFAULT_ACG_RATIO: builtins.float
-DEFAULT_AGREEMENT_THRESHOLD: builtins.float
-DEFAULT_CCG_PROBABILITY: builtins.float
-DEFAULT_CCG_RATIO: builtins.float
-DEFAULT_CORRELOGRAM_BIN_MS: builtins.float
-DEFAULT_CORRELOGRAM_WINDOW_MS: builtins.float
-DEFAULT_ISI_THRESHOLD_MS: builtins.float
-DEFAULT_MATCH_DELTA_MS: builtins.float
-DEFAULT_MIN_ISI_MS: builtins.float
-DEFAULT_PRESENCE_BIN_S: builtins.float
-DEFAULT_PRESENCE_MEAN_RATE_RATIO: builtins.float
-DEFAULT_PSTH_BIN_MS: builtins.float
-DEFAULT_PSTH_POST_MS: builtins.float
-DEFAULT_PSTH_PRE_MS: builtins.float
-DEFAULT_REFRACTORY_BIN_MS: builtins.float
-DEFAULT_REFRACTORY_WINDOW_MS: builtins.float
+AMPLITUDE_CUTOFF_BINS: builtins.int = 100
+AMPLITUDE_CUTOFF_MIN_RATIO: builtins.float = 5.0
+AMPLITUDE_CUTOFF_SMOOTHING: builtins.float = 3.0
+DEFAULT_ACG_PROBABILITY: builtins.float = 0.2
+DEFAULT_ACG_RATIO: builtins.float = 0.2
+DEFAULT_AGREEMENT_THRESHOLD: builtins.float = 0.5
+DEFAULT_CCG_PROBABILITY: builtins.float = 0.05
+DEFAULT_CCG_RATIO: builtins.float = 0.25
+DEFAULT_CORRELOGRAM_BIN_MS: builtins.float = 1.0
+DEFAULT_CORRELOGRAM_WINDOW_MS: builtins.float = 50.0
+DEFAULT_ISI_THRESHOLD_MS: builtins.float = 1.5
+DEFAULT_MATCH_DELTA_MS: builtins.float = 0.4
+DEFAULT_MIN_ISI_MS: builtins.float = 0.0
+DEFAULT_PRESENCE_BIN_S: builtins.float = 60.0
+DEFAULT_PRESENCE_MEAN_RATE_RATIO: builtins.float = 0.0
+DEFAULT_PSTH_BIN_MS: builtins.float = 10.0
+DEFAULT_PSTH_POST_MS: builtins.float = 500.0
+DEFAULT_PSTH_PRE_MS: builtins.float = 100.0
+DEFAULT_REFRACTORY_BIN_MS: builtins.float = 1.0
+DEFAULT_REFRACTORY_WINDOW_MS: builtins.float = 500.0
 def acg_refractory(train: numpy.typing.NDArray[numpy.uint64], sample_rate: builtins.float, bin_ms: builtins.float, window_ms: builtins.float, ratio: builtins.float, probability: builtins.float) -> dict:
     r"""
     Whether a unit's auto-correlogram looks refractory (Kilosort4's test): `ratio`,

@@ -182,6 +182,33 @@ fn spikes_are_identical_for_any_batch_size_and_whole_recording() {
     }
 }
 
+/// Every spike is located (centre of mass of its snippet's heights over its neighbours): the same
+/// for any batch size, near its primary channel, carried into the sorting; `locate: false` leaves
+/// them unknown.
+#[test]
+fn spikes_are_located_whatever_the_batch_size() {
+    let rec = recording();
+    let layout = probe();
+    let runs: Vec<_> = [1.0, 10.0].iter().map(|&b| StreamingDetector::new(config(b)).run_with(default_target(), &rec, &pipeline(), &layout).unwrap()).collect();
+    for r in &runs {
+        assert_eq!(r.spike_locations_um.len(), r.spikes.len());
+        for (s, p) in r.spikes.iter().zip(&r.spike_locations_um) {
+            assert!(p.iter().all(|v| v.is_finite()), "spike at {} not located", s.sample_index);
+            let site = layout.get_site(s.primary_channel).unwrap().position;
+            let d = ((p[0] - site.x_um).powi(2) + (p[1] - site.y_um).powi(2)).sqrt();
+            assert!(d < 40.0, "spike at {} placed {d:.0} µm from its channel", s.sample_index);
+        }
+    }
+    for (a, b) in runs[0].spike_locations_um.iter().zip(&runs[1].spike_locations_um) {
+        assert!((0..3).all(|i| (a[i] - b[i]).abs() < 0.5), "{a:?} vs {b:?}");
+    }
+    let sorting = runs[0].to_sorting_output("test", Some(layout.clone()));
+    let (_, _, _, locations) = sorting.flattened_spikes();
+    assert!(locations.iter().all(|p| p.iter().all(|v| v.is_finite())), "locations reach the sorting");
+    let off = StreamingDetectionConfig { locate: false, ..config(10.0) };
+    assert!(StreamingDetector::new(off).run_with(default_target(), &rec, &pipeline(), &layout).unwrap().spike_locations_um.is_empty());
+}
+
 #[test]
 fn every_runtime_returns_the_same_spikes() {
     use dspk_core::ComputeTarget;

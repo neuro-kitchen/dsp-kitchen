@@ -14,9 +14,12 @@ pub struct SpikeEventStore {
 }
 
 impl SpikeEventStore {
-    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.times_sec.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.times_sec.is_empty()
     }
 
     /// Number of events detected on `channel`.

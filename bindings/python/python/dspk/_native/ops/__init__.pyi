@@ -13,6 +13,7 @@ from . import peaks
 from . import resample
 from . import spatial
 __all__ = [
+    "LOG10_FLOOR",
     "Pipeline",
     "Stage",
     "filter",
@@ -25,6 +26,7 @@ __all__ = [
     "stage_car",
     "stage_clamp",
     "stage_cmr",
+    "stage_elementwise",
     "stage_fir",
     "stage_gaussian_smooth",
     "stage_iir",
@@ -39,6 +41,7 @@ __all__ = [
     "stage_whiten",
 ]
 
+LOG10_FLOOR: builtins.float = 9.999999960041972e-13
 @typing.final
 class Pipeline:
     r"""
@@ -88,6 +91,12 @@ def stage_car() -> Stage: ...
 def stage_clamp(min: builtins.float, max: builtins.float) -> Stage: ...
 
 def stage_cmr() -> Stage: ...
+
+def stage_elementwise(function: builtins.str) -> Stage:
+    r"""
+    One function of each sample: `abs`, `square`, `sqrt` (negative values as 0) or `log10` (of
+    `|x|`, magnitudes below `LOG10_FLOOR` as it).
+    """
 
 def stage_fir(taps: typing.Sequence[builtins.float], centered: builtins.bool, edge: builtins.str) -> Stage: ...
 

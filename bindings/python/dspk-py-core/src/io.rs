@@ -23,8 +23,18 @@ pub const WRITE_CHUNK_SAMPLES: usize = 65_536;
 /// Samples per Zarr chunk of [`write_zarr`] (dspk-io's default).
 pub const ZARR_CHUNK_SAMPLES: usize = dspk_io::generic::zarr_traces::DEFAULT_CHUNK_SAMPLES;
 
-/// A recording opened from a file. Reads return scaled `float32` values in each channel's unit,
-/// shape `(channels, samples)`.
+/// A recording opened from a file, read in pieces.
+///
+/// Opening reads only the metadata; `read` returns the samples you ask for, scaled to each
+/// channel's unit, as float32. Make one with `open`.
+///
+/// Examples
+/// --------
+/// >>> import dspk
+/// >>> rec = dspk.io.open("session.zarr")  # doctest: +SKIP
+/// >>> rec.channel_count, rec.sample_rate  # doctest: +SKIP
+/// (32, 30000.0)
+/// >>> first_second = rec.read(start=0, stop=30_000)  # doctest: +SKIP
 #[gen_stub_pyclass]
 #[pyclass(module = "dspk._native.io", frozen)]
 pub struct Recording {
@@ -36,11 +46,17 @@ impl Recording {
     pub fn source(&self) -> Arc<dyn RecordingSource> {
         self.inner.clone()
     }
+
+    /// A recording over any source (a recording on a server: `dspk.remote`).
+    pub fn from_source(inner: Arc<dyn RecordingSource>) -> Self {
+        Self { inner }
+    }
 }
 
 #[gen_stub_pymethods]
 #[pymethods]
 impl Recording {
+    /// Name of the recording, from the file or its source.
     #[getter]
     fn name(&self) -> &str {
         &self.inner.info().name
@@ -76,6 +92,7 @@ impl Recording {
         self.inner.info().format.name()
     }
 
+    /// Name of each channel.
     #[getter]
     fn channel_names(&self) -> Vec<String> {
         self.inner.info().channels.iter().map(|c| c.name.clone()).collect()
@@ -87,7 +104,28 @@ impl Recording {
         self.inner.info().channels.iter().map(|c| c.unit.symbol().to_string()).collect()
     }
 
-    /// Reads `channels` (default: all) over samples `start..stop` (default: to the end).
+    /// Reads samples into memory.
+    ///
+    /// Parameters
+    /// ----------
+    /// channels : sequence of int, optional
+    ///     Channel indices, in the order wanted; by default all.
+    /// start : int
+    ///     First sample.
+    /// stop : int, optional
+    ///     The sample after the last; by default the end.
+    ///
+    /// Returns
+    /// -------
+    /// numpy.ndarray
+    ///     `(len(channels), stop - start)`, float32, in each channel's unit.
+    ///
+    /// Raises
+    /// ------
+    /// IndexError
+    ///     When a channel or the sample range is outside the recording.
+    /// OSError
+    ///     When the file cannot be read.
     #[pyo3(signature = (channels=None, start=0, stop=None))]
     fn read<'py>(&self, py: Python<'py>, channels: Option<Vec<usize>>, start: u64, stop: Option<u64>) -> PyResult<Bound<'py, PyArray2<f32>>> {
         let info = self.inner.info();
@@ -118,17 +156,23 @@ impl Recording {
     }
 }
 
-/// One source of a file (most files have one; containers such as NWB have several).
+/// One source of a file: what `sources` lists and `open(path, source=...)` opens.
+///
+/// Most files have one; containers such as NWB have several (one per electrical series).
 #[gen_stub_pyclass]
 #[pyclass(module = "dspk._native.io", frozen, get_all)]
 pub struct Source {
     /// Id to pass to `open(path, source=...)`.
     id: String,
+    /// Name of the source.
     name: String,
+    /// Number of channels.
     channel_count: usize,
+    /// Samples per channel.
     samples: u64,
     /// Sampling rate in Hz.
     sample_rate: f64,
+    /// Stored sample type (`"int16"`, `"float32"`, …).
     format: &'static str,
     /// Unit symbol of the values (`""` when dimensionless).
     unit: String,
@@ -142,7 +186,33 @@ impl Source {
     }
 }
 
-/// Opens the recording at `path`: its default source, or `source` (an id from `sources(path)`).
+/// Opens a recording file.
+///
+/// The format is detected from the file (see `formats`). Only metadata is read here; samples are
+/// read with `Recording.read`.
+///
+/// Parameters
+/// ----------
+/// path : str or os.PathLike
+///     The recording: a file, or a folder for stores such as Zarr.
+/// source : str, optional
+///     Which source to open, an id from `sources(path)`; by default the file's default source.
+///
+/// Returns
+/// -------
+/// Recording
+///
+/// Raises
+/// ------
+/// OSError
+///     When the file cannot be read.
+/// ValueError
+///     When the format is not recognized or `source` is not in the file.
+///
+/// Examples
+/// --------
+/// >>> import dspk
+/// >>> rec = dspk.io.open("session.zarr")  # doctest: +SKIP
 #[gen_stub_pyfunction(module = "dspk._native.io")]
 #[pyfunction]
 #[pyo3(signature = (path, source=None))]
@@ -155,7 +225,29 @@ pub fn open(path: PathBuf, source: Option<&str>) -> PyResult<Recording> {
     Ok(Recording { inner: Arc::from(inner) })
 }
 
-/// Every source of the file at `path`, from its metadata only.
+/// Lists the sources of a file, reading only its metadata.
+///
+/// Parameters
+/// ----------
+/// path : str or os.PathLike
+///     The recording file or folder.
+///
+/// Returns
+/// -------
+/// list of Source
+///
+/// Raises
+/// ------
+/// OSError
+///     When the file cannot be read.
+/// ValueError
+///     When the format is not recognized.
+///
+/// Examples
+/// --------
+/// >>> import dspk
+/// >>> for s in dspk.io.sources("session.nwb"):  # doctest: +SKIP
+/// ...     print(s.id, s.channel_count, s.sample_rate)
 #[gen_stub_pyfunction(module = "dspk._native.io")]
 #[pyfunction]
 pub fn sources(path: PathBuf) -> PyResult<Vec<Source>> {
@@ -174,7 +266,11 @@ pub fn sources(path: PathBuf) -> PyResult<Vec<Source>> {
         .collect())
 }
 
-/// Names of the formats `open` recognizes, in detection order.
+/// Names of the formats `open` recognizes, in the order they are tried.
+///
+/// Returns
+/// -------
+/// list of str
 #[gen_stub_pyfunction(module = "dspk._native.io")]
 #[pyfunction]
 pub fn formats() -> Vec<&'static str> {
@@ -328,6 +424,13 @@ pub fn write_zarr(
     level: Option<i32>,
     parallel: bool,
 ) -> PyResult<()> {
+    let options = zarr_options(chunk_samples, compression, level, parallel)?;
+    let source = ArrayRecording::new(data, sample_rate, 1.0, unit)?;
+    py.detach(|| dspk_io::write_zarr(&source, &path, &options, |_, _| {})).map_err(to_py)
+}
+
+/// The Zarr options of `write_zarr` and `ZarrWriter`.
+fn zarr_options(chunk_samples: usize, compression: &str, level: Option<i32>, parallel: bool) -> PyResult<dspk_io::ZarrOptions> {
     let compression = match (compression, level) {
         ("zstd", level) => dspk_io::ZarrCompression::Zstd { level: level.unwrap_or(DEFAULT_ZSTD_LEVEL) },
         ("blosc_lz4", level) => {
@@ -342,9 +445,129 @@ pub fn write_zarr(
     if chunk_samples == 0 {
         return Err(PyValueError::new_err("chunk_samples must be at least 1"));
     }
-    let options = dspk_io::ZarrOptions { chunk_samples, compression, parallel };
-    let source = ArrayRecording::new(data, sample_rate, 1.0, unit)?;
-    py.detach(|| dspk_io::write_zarr(&source, &path, &options, |_, _| {})).map_err(to_py)
+    Ok(dspk_io::ZarrOptions { chunk_samples, compression, parallel })
+}
+
+/// A Zarr store (`/traces`, float32) written block by block.
+///
+/// For data that does not fit in memory at once, such as a recording processed window by window:
+/// create the store for its full size, `push` blocks in order until every sample is written, then
+/// `finish`.
+///
+/// Examples
+/// --------
+/// >>> import numpy as np
+/// >>> import dspk
+/// >>> w = dspk.io.ZarrWriter("out.zarr", 4, 60_000, 30_000.0, unit="µV")  # doctest: +SKIP
+/// >>> for _ in range(2):  # doctest: +SKIP
+/// ...     w.push(np.zeros((4, 30_000), dtype=np.float32))
+/// >>> w.finish()  # doctest: +SKIP
+#[gen_stub_pyclass]
+#[pyclass(module = "dspk._native.io")]
+pub struct ZarrWriter {
+    inner: Option<dspk_io::ZarrWriter>,
+    channels: usize,
+}
+
+#[gen_stub_pymethods]
+#[pymethods]
+impl ZarrWriter {
+    /// Creates the store.
+    ///
+    /// Parameters
+    /// ----------
+    /// path : str or os.PathLike
+    ///     The store (a folder) to create.
+    /// channels : int
+    ///     Number of channels.
+    /// samples : int
+    ///     Samples per channel, in total.
+    /// sample_rate : float
+    ///     Sample rate in Hz.
+    /// unit : str
+    ///     Unit symbol of the values (`""` for dimensionless).
+    /// chunk_samples : int
+    ///     Samples per Zarr chunk.
+    /// compression : {"zstd", "blosc_lz4", "none"}
+    ///     How chunks are compressed.
+    /// level : int, optional
+    ///     Compression level: zstd's (default 3) or blosc's 0–9 (default 5); `"none"` takes none.
+    /// parallel : bool
+    ///     Compress and store on several threads; `False` uses one.
+    /// channel_names : list of str, optional
+    ///     A name per channel.
+    ///
+    /// Raises
+    /// ------
+    /// ValueError
+    ///     For zero channels or samples, a non-positive sample rate, or an invalid option.
+    /// OSError
+    ///     When the store cannot be created.
+    #[new]
+    #[pyo3(signature = (path, channels, samples, sample_rate, *, unit="", chunk_samples=ZARR_CHUNK_SAMPLES, compression="zstd", level=None, parallel=true, channel_names=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        path: PathBuf,
+        channels: usize,
+        samples: u64,
+        sample_rate: f64,
+        unit: &str,
+        chunk_samples: usize,
+        compression: &str,
+        level: Option<i32>,
+        parallel: bool,
+        channel_names: Option<Vec<String>>,
+    ) -> PyResult<Self> {
+        if channels == 0 || samples == 0 || !(sample_rate.is_finite() && sample_rate > 0.0) {
+            return Err(PyValueError::new_err(format!("channels and samples at least 1, sample_rate positive; got {channels}, {samples}, {sample_rate}")));
+        }
+        let options = zarr_options(chunk_samples, compression, level, parallel)?;
+        let mut w = dspk_io::ZarrWriter::create(&path, channels, samples, sample_rate, &parse_unit(unit), &options).map_err(to_py)?;
+        if let Some(names) = channel_names {
+            w.set_channel_names(&names).map_err(to_py)?;
+        }
+        Ok(Self { inner: Some(w), channels })
+    }
+
+    /// Writes the next block of samples.
+    ///
+    /// Parameters
+    /// ----------
+    /// block : numpy.ndarray
+    ///     The next `n` samples, `(channels, n)` float32.
+    ///
+    /// Raises
+    /// ------
+    /// ValueError
+    ///     When `block` has another channel count, goes past the store's samples, or the writer is
+    ///     finished.
+    /// OSError
+    ///     When the store cannot be written.
+    fn push(&mut self, py: Python<'_>, block: PyReadonlyArray2<'_, f32>) -> PyResult<()> {
+        let (rows, n) = block.as_array().dim();
+        if rows != self.channels {
+            return Err(PyValueError::new_err(format!("a block of {rows} channels; the store has {}", self.channels)));
+        }
+        let data: std::borrow::Cow<'_, [f32]> = match block.as_slice() {
+            Ok(s) => std::borrow::Cow::Borrowed(s),
+            Err(_) => std::borrow::Cow::Owned(block.as_array().iter().copied().collect()),
+        };
+        let w = self.inner.as_mut().ok_or_else(|| PyValueError::new_err("the writer is finished"))?;
+        py.detach(|| w.push(&data, n, 0..n)).map_err(to_py)
+    }
+
+    /// Closes the store, after checking that every sample was written.
+    ///
+    /// Raises
+    /// ------
+    /// ValueError
+    ///     When samples are missing or the writer is already finished.
+    /// OSError
+    ///     When the store cannot be closed.
+    fn finish(&mut self) -> PyResult<()> {
+        let w = self.inner.take().ok_or_else(|| PyValueError::new_err("the writer is finished"))?;
+        w.finish().map_err(to_py)
+    }
 }
 
 /// Default zstd level of [`write_zarr`].
@@ -352,8 +575,8 @@ const DEFAULT_ZSTD_LEVEL: i32 = 3;
 /// Default blosc LZ4 level of [`write_zarr`].
 const DEFAULT_BLOSC_LEVEL: i32 = 5;
 
-pyo3_stub_gen::module_variable!("dspk._native.io", "WRITE_CHUNK_SAMPLES", usize);
-pyo3_stub_gen::module_variable!("dspk._native.io", "ZARR_CHUNK_SAMPLES", usize);
+pyo3_stub_gen::module_variable!("dspk._native.io", "WRITE_CHUNK_SAMPLES", usize, WRITE_CHUNK_SAMPLES);
+pyo3_stub_gen::module_variable!("dspk._native.io", "ZARR_CHUNK_SAMPLES", usize, ZARR_CHUNK_SAMPLES);
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Recording>()?;
@@ -363,6 +586,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(formats, m)?)?;
     m.add_function(wrap_pyfunction!(write_raw, m)?)?;
     m.add_function(wrap_pyfunction!(write_zarr, m)?)?;
+    m.add_class::<ZarrWriter>()?;
     m.add("WRITE_CHUNK_SAMPLES", WRITE_CHUNK_SAMPLES)?;
     m.add("ZARR_CHUNK_SAMPLES", ZARR_CHUNK_SAMPLES)?;
     Ok(())

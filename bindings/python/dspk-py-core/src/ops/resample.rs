@@ -77,13 +77,13 @@ pub fn resample_poly<'py>(
     })
 }
 
-pyo3_stub_gen::module_variable!("dspk._native.ops.resample", "DECIMATE_IIR_CUTOFF", f64);
-pyo3_stub_gen::module_variable!("dspk._native.ops.resample", "DECIMATE_DEFAULT_ORDER", usize);
-pyo3_stub_gen::module_variable!("dspk._native.ops.resample", "DECIMATE_DEFAULT_RIPPLE_DB", f64);
-pyo3_stub_gen::module_variable!("dspk._native.ops.resample", "RESAMPLE_POLY_BETA", f64);
-pyo3_stub_gen::module_variable!("dspk._native.ops.resample", "DECIMATE_FIR_TAPS_PER_FACTOR", usize);
-pyo3_stub_gen::module_variable!("dspk._native.ops.resample", "RESAMPLE_POLY_HALF_LEN_PER_RATE", usize);
-pyo3_stub_gen::module_variable!("dspk._native.ops.resample", "RESAMPLE_POLY_DEFAULT_EDGE", String);
+pyo3_stub_gen::module_variable!("dspk._native.ops.resample", "DECIMATE_IIR_CUTOFF", f64, DECIMATE_IIR_CUTOFF);
+pyo3_stub_gen::module_variable!("dspk._native.ops.resample", "DECIMATE_DEFAULT_ORDER", usize, { let DecimateFilter::Iir { order, .. } = DECIMATE_DEFAULT else { unreachable!("decimate's default is the IIR") }; order });
+pyo3_stub_gen::module_variable!("dspk._native.ops.resample", "DECIMATE_DEFAULT_RIPPLE_DB", f64, { let DecimateFilter::Iir { ripple_db, .. } = DECIMATE_DEFAULT else { unreachable!("decimate's default is the IIR") }; ripple_db });
+pyo3_stub_gen::module_variable!("dspk._native.ops.resample", "RESAMPLE_POLY_BETA", f64, { let FirWindow::Kaiser { beta } = RESAMPLE_POLY_WINDOW else { unreachable!("resample_poly's default window is Kaiser") }; beta });
+pyo3_stub_gen::module_variable!("dspk._native.ops.resample", "DECIMATE_FIR_TAPS_PER_FACTOR", usize, DECIMATE_FIR_TAPS_PER_FACTOR);
+pyo3_stub_gen::module_variable!("dspk._native.ops.resample", "RESAMPLE_POLY_HALF_LEN_PER_RATE", usize, RESAMPLE_POLY_HALF_LEN_PER_RATE);
+pyo3_stub_gen::module_variable!("dspk._native.ops.resample", "RESAMPLE_POLY_DEFAULT_EDGE", String, edge_name(RESAMPLE_POLY_DEFAULT_EDGE).to_string());
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(decimate, m)?)?;

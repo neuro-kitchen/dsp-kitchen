@@ -13,7 +13,7 @@ __all__ = [
     "cmr",
 ]
 
-DEFAULT_WHITENING_EPSILON: builtins.float
+DEFAULT_WHITENING_EPSILON: builtins.float = 9.999999974752427e-07
 @typing.final
 class Laplacian:
     r"""

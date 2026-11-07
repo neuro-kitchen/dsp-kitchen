@@ -17,6 +17,8 @@ pub enum ExploreEvent {
     Added { vm: Entity<TraceVm>, below: bool },
     /// The focused view changed, or one of its settings did.
     Focus,
+    /// A view to take out of the dock (its header menu's Close).
+    Close(ViewId),
 }
 
 pub struct ExploreVm {
@@ -63,9 +65,12 @@ impl ExploreVm {
         });
         let sub = cx.subscribe(&vm, |this, vm, event, cx| match event {
             TraceEvent::Pressed => this.focus(vm, cx),
+            TraceEvent::Released(id) => this.release(id.clone(), cx),
             TraceEvent::Changed => {
                 this.persist_views(cx);
                 if this.focused.as_ref() == Some(&vm) {
+                    // Its source (so its session view) may have changed
+                    this.select_view_of(&vm, cx);
                     cx.emit(ExploreEvent::Focus);
                 }
             }
@@ -86,15 +91,23 @@ impl ExploreVm {
             vm.update(cx, |vm, cx| vm.close(cx));
         }
         self.subs.clear();
-        let default_source = self.store.read(cx).sources().map(|s| s.default_entry().id.clone()).unwrap_or_default();
-        let saved = self.store.read(cx).session.explore.views.clone();
+        let Some(sources) = self.store.read(cx).sources().cloned() else {
+            // No recording: no views (Explore shows its empty state)
+            self.focused = None;
+            cx.emit(ExploreEvent::Reset(Vec::new()));
+            cx.emit(ExploreEvent::Focus);
+            return;
+        };
+        let default_source = sources.default_entry().id.clone();
+        let known = |id: &str| sources.entries().iter().any(|e| e.id == id);
+        let saved: Vec<_> = self.store.read(cx).session.explore.views.clone();
         let created: Vec<Entity<TraceVm>> = if saved.is_empty() {
             vec![self.make(TimeViewKind::Traces, &default_source, None, cx), self.make(TimeViewKind::Heatmap, &default_source, None, cx)]
         } else {
             saved
                 .iter()
                 .map(|s| {
-                    let src = if s.source.is_empty() { &default_source } else { &s.source };
+                    let src = if known(&s.source) { &s.source } else { &default_source };
                     self.make(s.kind, src, Some(s), cx)
                 })
                 .collect()
@@ -121,7 +134,22 @@ impl ExploreVm {
         vm
     }
 
+    /// `vm`'s session view becomes the active one (what Processing edits).
+    fn select_view_of(&self, vm: &Entity<TraceVm>, cx: &mut Context<Self>) {
+        let doc_view = vm.read(cx).view.doc_view.clone();
+        if !doc_view.is_empty() && self.store.read(cx).doc.active_view.as_deref() != Some(doc_view.as_str()) {
+            self.store.update(cx, |s, cx| {
+                let _ = s.execute(crate::domain::command::SessionCommand::SelectView { view: doc_view }, cx);
+            });
+        }
+    }
+
+    /// Focuses `vm`: its session view becomes the active one (what Processing edits).
     pub fn focus(&mut self, vm: Entity<TraceVm>, cx: &mut Context<Self>) {
+        self.select_view_of(&vm, cx);
+        if self.store.read(cx).inspected.is_some() {
+            self.store.update(cx, |s, cx| s.inspect(None, cx));
+        }
         if self.focused.as_ref() != Some(&vm) {
             self.focused = Some(vm);
             cx.emit(ExploreEvent::Focus);
@@ -129,11 +157,26 @@ impl ExploreVm {
         }
     }
 
+    /// The suggested layout: traces over a heatmap on the default source (saved views forgotten).
+    pub fn reset_layout(&mut self, cx: &mut Context<Self>) {
+        self.store.update(cx, |s, _| s.set_explore_views(Vec::new()));
+        self.reset(cx);
+    }
+
+    /// Asks the dock to close view `id` (the dock then reports it [`Self::removed`]).
+    pub fn close(&mut self, id: ViewId, cx: &mut Context<Self>) {
+        cx.emit(ExploreEvent::Close(id));
+    }
+
     /// A view left the dock (its tab was closed).
     pub fn removed(&mut self, id: ViewId, cx: &mut Context<Self>) {
         let Some(at) = self.views.iter().position(|v| v.read(cx).id() == id) else { return };
         let vm = self.views.remove(at);
+        let doc_view = vm.read(cx).view.doc_view.clone();
         vm.update(cx, |vm, cx| vm.close(cx));
+        if !doc_view.is_empty() {
+            self.release(doc_view, cx);
+        }
         self.subs.retain(|(v, _)| *v != id);
         if self.focused.as_ref() == Some(&vm) {
             self.focused = self.views.first().cloned();
@@ -141,6 +184,15 @@ impl ExploreVm {
         }
         self.persist_views(cx);
         cx.notify();
+    }
+
+    /// A view stopped showing session view `doc_view`: when no other view shows it and it holds
+    /// no work, it leaves the session (the Pipeline loses its source and view nodes).
+    fn release(&mut self, doc_view: String, cx: &mut Context<Self>) {
+        if self.views.iter().any(|v| v.read(cx).view.doc_view == doc_view) {
+            return;
+        }
+        self.store.update(cx, |s, cx| s.close_view_if_untouched(&doc_view, cx));
     }
 
     /// Double-click on a heatmap row: show `channel` in a traces view of the same source (a new one

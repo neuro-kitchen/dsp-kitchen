@@ -98,6 +98,8 @@ pub(crate) struct Prepared {
     /// Chunking and compression of Zarr output; `parallel` also applies to raw output.
     pub(crate) zarr: dspk_io::ZarrOptions,
     pub(crate) input_label: String,
+    /// Whitening stages still to fit, by their index in `stages` (identities until then).
+    pub(crate) fits: Vec<(usize, crate::WhitenFit)>,
 }
 
 impl Prepared {
@@ -190,6 +192,7 @@ pub(crate) fn prepare(
     enum Step {
         Stage(PipelineStage),
         Reorder(dspk_core::ChannelMap),
+        Whiten(crate::WhitenFit),
     }
     let mut steps: Vec<(String, Step)> = Vec::with_capacity(chain.stages.len());
     let mut resample = None;
@@ -211,6 +214,7 @@ pub(crate) fn prepare(
                 }
                 resample = Some(Resample::new(*up, *down, *beta, (*edge).into()));
             }
+            (Node::Whiten { .. }, None) => steps.push((id.to_string(), Step::Whiten(node.whiten_fit().expect("a whiten node")))),
             (_, Some(stage)) => steps.push((id.to_string(), Step::Stage(stage))),
             (_, None) => unreachable!("every other processing node has a stage"),
         }
@@ -249,9 +253,14 @@ pub(crate) fn prepare(
     }
     let nch = channels.len();
     let mut stages = Vec::with_capacity(steps.len());
+    let mut fits = Vec::new();
     for (id, step) in steps {
         let stage = match step {
             Step::Stage(stage) => stage,
+            Step::Whiten(fit) => {
+                fits.push((stages.len(), fit));
+                PipelineStage::SpatialWhitening(crate::unfitted_whitening(nch))
+            }
             Step::Reorder(map) => {
                 let order = map.resolve(nch).map_err(|e| PipelineError::Invalid(format!("node {id:?}: {e}")))?;
                 if order.len() != nch {
@@ -330,6 +339,7 @@ pub(crate) fn prepare(
         format: *format,
         zarr,
         input_label,
+        fits,
     })
 }
 
@@ -398,5 +408,22 @@ fn resolve_mode(requested: ExecMode, pipeline: &Pipeline, sample_rate: f64) -> R
         ))),
         (ExecMode::Stream, None) | (ExecMode::Auto, None) => Ok(ExecutedMode::Stream),
         (ExecMode::Windows, _) | (ExecMode::Auto, Some(_)) => windows(),
+    }
+}
+
+impl Prepared {
+    /// Fits the whitening stages on the device (each on the signal of the stages before it, the
+    /// ones fitted before included), so the pipeline is ready to run.
+    pub(crate) fn fit(&mut self, target: dspk_core::ComputeTarget) -> Result<(), PipelineError> {
+        if self.fits.is_empty() {
+            return Ok(());
+        }
+        for (at, fit) in std::mem::take(&mut self.fits) {
+            let before: Vec<PipelineStage> = self.stages[..at].iter().map(|(_, s)| s.clone()).collect();
+            let fitted = crate::fit_whitening(target, self.source.as_ref(), &self.channels, &before, &fit)?;
+            self.stages[at].1 = PipelineStage::SpatialWhitening(fitted);
+        }
+        self.pipeline = Pipeline::with_stages(self.stages.iter().map(|(_, s)| s.clone()).collect());
+        Ok(())
     }
 }

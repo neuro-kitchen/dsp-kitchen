@@ -1,18 +1,44 @@
-"""Pipelines as data: a versioned node-graph spec, checked and run by dspk-pipeline.
+"""Pipelines as data: a versioned spec of nodes and edges, checked and run by dspk-pipeline.
 
-A spec is a dict (or a ``.json`` / ``.toml`` file); one spec can run over many inputs (globs,
-lists) and read several recordings as one (merges)::
+A spec is a dict, or a ``.json`` / ``.toml`` file. One spec can run over many inputs (globs,
+lists) and read several recordings as one (merges). The same spec in each format:
 
-    {"dspk_pipeline": 1,
-     "nodes": {"raw": {"op": "read", "path": "recording.bin"},
-               "hp":  {"op": "iir", "band": "highpass", "cutoff": [300.0], "mode": "forward"},
-               "out": {"op": "write", "path": "filtered.zarr", "format": "zarr"}},
-     "edges": [["raw", "hp"], ["hp", "out"]]}
+JSON::
 
-Processing nodes mirror :mod:`dspk.ops.stage`. The run streams the recording window by window
-through the device (one upload, one download per window) and writes the canonical spec next to the
-output (``<output>.pipeline.json``). Without ``execution.runtime`` the spec runs on the runtime
-:mod:`dspk.runtime` selects.
+    {
+      "dspk_pipeline": 1,
+      "nodes": {
+        "raw": {"op": "read", "path": "recording.bin"},
+        "hp": {"op": "iir", "band": "highpass", "cutoff": [300.0], "mode": "forward"},
+        "out": {"op": "write", "path": "filtered.zarr", "format": "zarr"}
+      },
+      "edges": [["raw", "hp"], ["hp", "out"]]
+    }
+
+TOML::
+
+    dspk_pipeline = 1
+    edges = [["raw", "hp"], ["hp", "out"]]
+
+    [nodes.raw]
+    op = "read"
+    path = "recording.bin"
+
+    [nodes.hp]
+    op = "iir"
+    band = "highpass"
+    cutoff = [300.0]
+    mode = "forward"
+
+    [nodes.out]
+    op = "write"
+    path = "filtered.zarr"
+    format = "zarr"
+
+Processing nodes mirror :mod:`dspk.ops.stage`. A run streams the recording window by window
+through the device (one upload, one download per window) and writes the canonical spec next to
+the output (``<output>.pipeline.json``). Without ``execution.runtime`` the spec runs on the
+runtime :mod:`dspk.runtime` selects.
 """
 
 from __future__ import annotations
@@ -39,23 +65,86 @@ def _text(spec: Spec | str | PathLike) -> tuple[str, bool, Path]:
 
 
 def canonical(spec: Spec | str | PathLike) -> Spec:
-    """Checks ``spec`` and returns its canonical form (every default written out).
+    """Checks a spec and returns its canonical form, every default written out.
 
-    Raises ``ValueError`` with the reason when the spec is invalid.
+    Parameters
+    ----------
+    spec : dict, str or os.PathLike
+        A spec dict, or the path of a ``.json`` / ``.toml`` spec file.
+
+    Returns
+    -------
+    dict
+        The canonical spec.
+
+    Raises
+    ------
+    ValueError
+        With the reason, when the spec is invalid.
+
+    Examples
+    --------
+    >>> import dspk
+    >>> spec = {
+    ...     "dspk_pipeline": 1,
+    ...     "nodes": {
+    ...         "raw": {"op": "read", "path": "in.bin"},
+    ...         "hp": {"op": "iir", "band": "highpass", "cutoff": [300.0]},
+    ...         "out": {"op": "write", "path": "out.zarr", "format": "zarr"},
+    ...     },
+    ...     "edges": [["raw", "hp"], ["hp", "out"]],
+    ... }
+    >>> full = dspk.pipeline.canonical(spec)
     """
     text, toml, _ = _text(spec)
     return json.loads(_pipeline.canonical(text, toml=toml))
 
 
 def load(path: str | PathLike) -> Spec:
-    """Reads a ``.json`` or ``.toml`` spec file and returns its canonical form."""
+    """Reads a spec file and returns its canonical form.
+
+    Parameters
+    ----------
+    path : str or os.PathLike
+        A ``.json`` or ``.toml`` spec.
+
+    Returns
+    -------
+    dict
+
+    Raises
+    ------
+    ValueError
+        When the spec is invalid.
+    OSError
+        When the file cannot be read.
+    """
     return canonical(Path(path))
 
 
 def plan(spec: Spec | str | PathLike, base_dir: str | PathLike | None = None) -> list[dict[str, Any]]:
-    """What :func:`run` would do for each input, without touching the device: input, output, mode,
-    halo, stored_upload, channels, input/output samples and rates, windows, max_window_samples and
-    ``bytes`` (read, uploaded). Raises ``ValueError`` for what ``run`` would refuse."""
+    """What :func:`run` would do for each input, without touching the device (a dry run).
+
+    Parameters
+    ----------
+    spec : dict, str or os.PathLike
+        A spec dict, or the path of a ``.json`` / ``.toml`` spec file.
+    base_dir : str or os.PathLike, optional
+        Where relative paths resolve; by default the spec file's folder, or the working directory
+        for a dict.
+
+    Returns
+    -------
+    list of dict
+        One plan per input: ``input``, ``output``, ``mode``, ``halo``, ``stored_upload``,
+        ``channels``, input and output samples and rates, ``windows``, ``max_window_samples`` and
+        ``bytes`` (read, uploaded).
+
+    Raises
+    ------
+    ValueError
+        For anything :func:`run` would refuse.
+    """
     text, toml, folder = _text(spec)
     return _pipeline.plan(text, Path(base_dir) if base_dir is not None else folder, toml=toml)
 
@@ -69,28 +158,58 @@ def run(
     *,
     progress: Progress | None = None,
 ) -> list[dict[str, Any]]:
-    """Runs ``spec`` once per input; relative paths resolve against ``base_dir`` (default: the spec
-    file's folder, or the working directory for a dict).
+    """Runs a spec once per input, window by window through the device.
 
-    Inputs: ``read.path`` (a file or a glob such as ``"sessions/*.bin"``) or ``read.inputs`` (paths,
-    globs and ``{"merge": [...]}`` items, a merge reading several recordings side by side). With
-    several inputs the write path needs ``{stem}`` or ``{index}``.
+    Inputs are ``read.path`` (a file or a glob such as ``"sessions/*.bin"``) or ``read.inputs``
+    (paths, globs and ``{"merge": [...]}`` items, which read several recordings side by side). With
+    several inputs, the write path needs ``{stem}`` or ``{index}``. The canonical spec is written
+    next to each output (``<output>.pipeline.json``).
 
-    Returns one report per input: mode, halo, runtime, stored_upload, channels, samples,
-    sample_rate, windows, output, provenance, seconds, ``bytes`` (read from the input, uploaded,
-    downloaded, written) and ``timings`` in seconds (read_wait, device, write_wait, encode, disk:
-    reading, the device and the writer overlap, so the largest of read_wait, device and
-    encode + disk is the bottleneck).
+    Parameters
+    ----------
+    spec : dict, str or os.PathLike
+        A spec dict, or the path of a ``.json`` / ``.toml`` spec file.
+    base_dir : str or os.PathLike, optional
+        Where relative paths resolve; by default the spec file's folder, or the working directory
+        for a dict.
+    progress : callable, optional
+        ``progress(input, inputs, windows_done, windows)``, called after each window; returning
+        ``False`` cancels.
 
-    ``progress(input, inputs, windows_done, windows)`` is called after each window; returning
-    ``False`` cancels with ``KeyboardInterrupt`` (the unfinished output is removed, finished inputs
-    stay). Ctrl+C cancels the same way."""
+    Returns
+    -------
+    list of dict
+        One report per input: ``mode``, ``halo``, ``runtime``, ``stored_upload``, ``channels``,
+        ``samples``, ``sample_rate``, ``windows``, ``output``, ``provenance``, ``seconds``,
+        ``bytes`` (read, uploaded, downloaded, written) and ``timings``.
+
+    Raises
+    ------
+    ValueError
+        When the spec is invalid.
+    OSError
+        When an input cannot be read or an output written.
+    KeyboardInterrupt
+        When ``progress`` returns ``False`` or on Ctrl+C. The unfinished output is removed;
+        finished inputs stay.
+
+    Notes
+    -----
+    ``timings`` are seconds spent in ``read_wait``, ``device``, ``write_wait``, ``encode`` and
+    ``disk``. Reading, the device and the writer run at the same time, so the largest of
+    ``read_wait``, ``device`` and ``encode + disk`` is what limits the run.
+    """
     text, toml, folder = _text(spec)
     return _pipeline.run(text, Path(base_dir) if base_dir is not None else folder, toml=toml, progress=progress)
 
 
 def schema() -> dict[str, Any]:
-    """JSON Schema of the spec (for editors and validators)."""
+    """The JSON Schema of a spec, for editors and validators.
+
+    Returns
+    -------
+    dict
+    """
     return json.loads(_pipeline.schema())
 
 

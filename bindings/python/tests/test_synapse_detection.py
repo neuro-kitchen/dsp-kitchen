@@ -83,3 +83,9 @@ def test_detect_recording_streams_a_file(tmp_path, recording):
     assert summary["spikes"] > 0 and summary["sigmas_uv"].shape == (CHANNELS,)
     spikes = sorting.spikes()
     assert near(spikes["samples"], times).mean() >= 0.9
+    # Every spike located between the two channels that see it (y 20 and 40 µm), nearer the larger
+    y = spikes["locations"][:, 1]
+    assert np.all(np.isfinite(spikes["locations"]))
+    assert 20.0 <= np.median(y) <= 32.0, np.median(y)
+    unlocated, _ = detection.detect_recording(dspk.io.open(tmp_path / "r.bin"), probe, batch_s=0.5, calibration_s=1.0, locate=False)
+    assert np.all(np.isnan(unlocated.spikes()["locations"]))

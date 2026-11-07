@@ -277,6 +277,21 @@ impl GraphCanvas {
                     return;
                 }
             },
+            Template::Remap => {
+                // Every channel of the input in order: of the selected node's recording when it is
+                // loaded, else of the open recording's default source
+                let s = self.store.read(cx);
+                let g = self.graph(cx);
+                let from_path = after.as_ref().and_then(|a| g.path(a)).and_then(|p| match g.node(&p[0]).map(|n| &n.kind) {
+                    Some(NodeKind::Source { recording }) => s.recordings().find(|r| r.path.as_ref() == Some(&recording.path)).map(|r| {
+                        let e = r.sources.entry(recording.source.as_deref().unwrap_or(&r.sources.default_entry().id));
+                        recording.channels.as_ref().map_or(e.channels, Vec::len)
+                    }),
+                    _ => None,
+                });
+                let channels = from_path.or_else(|| s.sources().map(|ss| ss.default_entry().channels)).unwrap_or(1);
+                NodeKind::Op { enabled: true, node: super::channel_table::Rows::identity(channels).node() }
+            }
             Template::View => {
                 let n = self.graph(cx).nodes.iter().filter(|n| matches!(n.kind, NodeKind::View { .. })).count() + 1;
                 crate::domain::command::view_kind(format!("View {n}"))
@@ -668,6 +683,7 @@ impl GraphCanvas {
             Some(NodeRun::Failed(e)) => Some((e.clone(), danger)),
             _ => None,
         };
+        let inner_radius = px((12.0 * z - if selected { 2.0 } else { 1.0 }).max(0.0));
         div()
             .id(SharedString::from(format!("node-{id}")))
             .test_support()
@@ -685,15 +701,23 @@ impl GraphCanvas {
             .when(faded, |d| d.opacity(0.35))
             .when(!enabled && !faded, |d| d.opacity(0.55))
             .child(
+                // The kind's colour fills the card inside its border (with the card's own rounded
+                // corners: clipping is rectangular, so a bar would poke out square), and the body
+                // covers all of it but a strip on the left that follows the card's curve
                 h_flex()
                     .size_full()
                     .overflow_hidden()
-                    .rounded(px(12.0 * z))
-                    .child(div().w(px(4.0 * z.max(0.5))).h_full().bg(accent))
+                    .rounded(inner_radius)
+                    .bg(accent)
                     .child(
                         v_flex()
                             .flex_1()
+                            .h_full()
                             .min_w_0()
+                            .ml(px(4.0 * z.max(0.5)))
+                            .bg(t.background)
+                            .rounded_r(inner_radius)
+                            .rounded_l(px(8.0 * z))
                             .px(px(10.0 * z))
                             .gap(px(3.0 * z))
                             .justify_center()

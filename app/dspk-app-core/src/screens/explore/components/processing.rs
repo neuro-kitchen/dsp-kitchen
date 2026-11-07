@@ -21,7 +21,7 @@ use gpui_kit::{
     div, px, AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render,
     SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
 };
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::ui::param_editor::{Commit, ParamEditor};
 
@@ -29,24 +29,37 @@ use crate::data::store::{AppEvent, Store};
 use crate::domain::command::SessionCommand;
 use crate::domain::session::{op_name, DisplayDoc, Show};
 use crate::screens::explore::ExploreVm;
-use crate::ui::widgets::{icon_button, MenuSelect, PanelHeader, Section};
+use crate::ui::widgets::{icon_button, PanelHeader, Section};
 
 use super::panels::{side_panel, DockToggle};
 
-/// Ops the Add menu offers: label and the node (defaults filled in by the spec).
-pub fn presets() -> Vec<(&'static str, Value)> {
-    vec![
-        ("Band-pass 300–6000 Hz", json!({"op": "iir", "band": "bandpass", "cutoff": [300.0, 6000.0]})),
-        ("High-pass 300 Hz", json!({"op": "iir", "band": "highpass", "cutoff": [300.0]})),
-        ("Low-pass 6000 Hz", json!({"op": "iir", "band": "lowpass", "cutoff": [6000.0]})),
-        ("Notch 60 Hz", json!({"op": "notch", "freq": 60.0, "q": 30.0})),
-        ("Common median reference", json!({"op": "cmr"})),
-        ("Common average reference", json!({"op": "car"})),
-        ("Median (5 samples)", json!({"op": "median", "width": 5})),
-        ("Gaussian smoothing (σ 2 samples)", json!({"op": "gaussian_smooth", "sigma_samples": 2.0})),
-        ("Scale", json!({"op": "scale", "alpha": 1.0, "beta": 0.0})),
-        ("Teager–Kaiser energy", json!({"op": "teager_kaiser"})),
-    ]
+/// A family of the ops a view can run (the Pipeline catalog's, previewed live): its name and
+/// each op's label and default node.
+pub struct ViewOps {
+    pub name: &'static str,
+    pub ops: Vec<(&'static str, Value)>,
+}
+
+/// The catalog's ops a view previews (resampling, channel maps and outputs are the Pipeline's).
+pub fn view_ops() -> Vec<ViewOps> {
+    crate::screens::pipeline::catalog::catalog()
+        .into_iter()
+        .map(|c| ViewOps {
+            name: c.name,
+            ops: c
+                .items
+                .into_iter()
+                .filter_map(|it| match it.template {
+                    crate::screens::pipeline::catalog::Template::Op(v) => {
+                        let node: Node = serde_json::from_value(v.clone()).ok()?;
+                        (matches!(node.stage(), Ok(Some(_))) || node.whiten_fit().is_some()).then_some((it.label, v))
+                    }
+                    _ => None,
+                })
+                .collect(),
+        })
+        .filter(|f| !f.ops.is_empty())
+        .collect()
 }
 
 /// `Band-pass 300–6000 Hz · order 3 · zero phase`
@@ -75,6 +88,12 @@ pub fn op_summary(node: &Node) -> String {
         Node::GaussianSmooth { sigma_samples, .. } => format!("Gaussian smoothing σ {sigma_samples}"),
         Node::Median { width, .. } => format!("Median (width {width})"),
         Node::TeagerKaiser { .. } => "Teager–Kaiser energy".into(),
+        Node::Rectify {} => "Rectify |x|".into(),
+        Node::Square {} => "Square x²".into(),
+        Node::Sqrt {} => "Square root √x".into(),
+        Node::Log10 {} => "Log₁₀ |x|".into(),
+        Node::Laplacian { grid: [r, c] } => format!("Surface Laplacian, grid {r} × {c}"),
+        Node::Whiten { fit_s, chunks, .. } => format!("Whitening (ZCA, fitted on {fit_s} s in {chunks} chunks)"),
         other => op_name(other).to_string(),
     }
 }
@@ -109,13 +128,19 @@ impl ProcessingPanel {
     }
 
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let sections = self.sections(window, cx);
+        v_flex().id("processing-panel").test_support().size_full().gap_3().p_3().overflow_y_scroll().children(sections).into_any_element()
+    }
+
+    /// The active view's processing (raw / processed, the op chain, the picked op's parameters)
+    /// and its output: the Inspector's lower half.
+    pub fn sections(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let t = cx.theme();
         let (muted, accent, border) = (t.muted_foreground, t.accent, t.border);
         let s = self.store.read(cx);
         let Some(view) = s.active_view().cloned() else {
-            return v_flex().id("processing-panel").test_support().size_full().p_4().text_sm().text_color(muted).child("Open a recording: its view and processing show here.").into_any_element();
+            return vec![div().text_sm().text_color(muted).child("Open a recording: its view's processing shows here.").into_any_element()];
         };
-        let views: Vec<(String, String)> = s.doc.views.iter().map(|v| (v.id.clone(), v.name.clone())).collect();
         let source = s.view_source(&view);
         let total = s.sources().map_or(0, |ss| ss.entry(&source).channels);
         let picked = s.picked_channel;
@@ -127,48 +152,8 @@ impl ProcessingPanel {
         };
         let covers = s.preview_covers(&source, window_samples);
         let job = s.job.as_ref().map(|j| (j.label.clone(), j.fraction, j.line.clone()));
-        let selection: Vec<usize> = s.selection(&source).to_vec();
         let in_view = view.recording.channels.as_ref().map_or(total, Vec::len);
         let id = view.id.clone();
-
-        // View: which one, copy, close
-        let names: Vec<SharedString> = views.iter().map(|(_, n)| n.clone().into()).collect();
-        let ids: Vec<String> = views.iter().map(|(i, _)| i.clone()).collect();
-        let selected = ids.iter().position(|i| *i == id);
-        let store = self.store.clone();
-        let view_pick = MenuSelect::new("processing-view", names, selected, move |i, _, cx| {
-            let view = ids[i].clone();
-            let _ = store.update(cx, |s, cx| s.execute(SessionCommand::SelectView { view }, cx));
-        })
-        .full_width();
-        let copy = {
-            let (store, id, sel) = (self.store.clone(), id.clone(), selection.clone());
-            Button::new("copy-view")
-                .outline()
-                .small()
-                .icon(IconName::Copy)
-                .label("Copy with shown channels")
-                .tooltip("A new view of the channels shown now, with this view's chain: edit it for those channels only")
-                .on_click(move |_, _, cx| {
-                    let channels = (!sel.is_empty()).then(|| sel.clone());
-                    let _ = store.update(cx, |s, cx| s.execute(SessionCommand::CopyView { view: id.clone(), channels, name: None }, cx));
-                })
-        };
-        let close = {
-            let (store, id) = (self.store.clone(), id.clone());
-            icon_button("close-view", IconName::Close, "Close this view (the recording stays open)")
-                .on_click(move |_, _, cx| {
-                    let _ = store.update(cx, |s, cx| s.execute(SessionCommand::CloseView { view: id.clone() }, cx));
-                })
-        };
-        let recording = format!(
-            "{} · {}",
-            view.recording.path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
-            match &view.recording.channels {
-                Some(c) => format!("{} of {total} channels", c.len()),
-                None => format!("all {total} channels"),
-            }
-        );
 
         // Raw / processed
         let show_store = self.store.clone();
@@ -240,19 +225,43 @@ impl ProcessingPanel {
             }));
         let add = {
             let (store, id) = (self.store.clone(), id.clone());
-            Button::new("add-op").outline().small().icon(IconName::Plus).label("Add op").dropdown_menu(move |menu, _, _| {
-                let mut menu = menu;
-                for (label, value) in presets() {
-                    let (store, id) = (store.clone(), id.clone());
-                    menu = menu.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
+            // The Pipeline's families (one catalog for both), with the ops a view previews; an op
+            // with presets opens them (its default first)
+            Button::new("add-op").outline().small().icon(IconName::Plus).label("Add op").dropdown_menu(move |menu, window, cx| {
+                let add = |store: Entity<Store>, id: String, value: Value| {
+                    move |_: &gpui_kit::ClickEvent, _: &mut Window, cx: &mut App| {
                         let Ok(node) = serde_json::from_value::<Node>(value.clone()) else { return };
                         store.update(cx, |s, cx| {
-                            if let Ok(_) = s.execute(SessionCommand::AddOp { view: id.clone(), node, index: None, id: None }, cx) {
+                            if s.execute(SessionCommand::AddOp { view: id.clone(), node, index: None, id: None }, cx).is_ok() {
                                 let new = s.active_view().and_then(|v| v.ops.last()).map(|o| o.id.clone());
                                 s.pick_op(new, cx);
                             }
                         });
-                    }));
+                    }
+                };
+                let mut menu = menu;
+                for family in view_ops() {
+                    let (store, id) = (store.clone(), id.clone());
+                    menu = menu.submenu(family.name, window, cx, move |m, window, cx| {
+                        let mut m = m;
+                        for (label, value) in &family.ops {
+                            let node: Node = serde_json::from_value(value.clone()).expect("catalog ops are valid");
+                            let presets = crate::screens::pipeline::catalog::presets(&node);
+                            let (store, id, value) = (store.clone(), id.clone(), value.clone());
+                            if presets.is_empty() {
+                                m = m.item(PopupMenuItem::new(*label).on_click(add(store, id, value)));
+                            } else {
+                                m = m.submenu(*label, window, cx, move |sub, _, _| {
+                                    let mut sub = sub.item(PopupMenuItem::new("Default").on_click(add(store.clone(), id.clone(), value.clone()))).separator();
+                                    for (preset, v) in &presets {
+                                        sub = sub.item(PopupMenuItem::new(*preset).on_click(add(store.clone(), id.clone(), v.clone())));
+                                    }
+                                    sub
+                                });
+                            }
+                        }
+                        m
+                    });
                 }
                 menu
             })
@@ -291,30 +300,18 @@ impl ProcessingPanel {
                 .into_any_element(),
         };
 
-        v_flex()
-            .id("processing-panel")
-            .test_support()
-            .size_full()
-            .gap_3()
-            .p_3()
-            .overflow_y_scroll()
-            .child(
-                Section::new("View")
-                    .child(view_pick)
-                    .child(div().text_xs().text_color(muted).child(recording))
-                    .child(h_flex().gap_1().child(copy).child(div().flex_1()).child(close)),
-            )
-            .child(
+        let mut out = vec![
                 Section::new("Processing")
                     .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(channel_line))
                     .child(h_flex().gap_1().child(show(Show::Processed, "Processed")).child(show(Show::Raw, "Raw")))
                     .children(preview_note.map(|n| div().text_xs().text_color(muted).child(n)))
                     .child(tree)
-                    .child(add),
-            )
-            .children(params)
-            .child(Section::new("Output").child(output))
-            .into_any_element()
+                    .child(add)
+                    .into_any_element(),
+        ];
+        out.extend(params.map(IntoElement::into_any_element));
+        out.push(Section::new("Output").child(output).into_any_element());
+        out
     }
 }
 
@@ -322,12 +319,26 @@ impl ProcessingPanel {
 mod tests {
     use super::*;
 
+    /// Every op Explore offers previews, and its presets are ops of its type; the new
+    /// per-sample ops are there.
     #[test]
-    fn test_presets_are_valid_view_ops() {
-        for (label, value) in presets() {
-            let node: Node = serde_json::from_value(value).unwrap_or_else(|e| panic!("{label}: {e}"));
-            assert!(node.stage().is_ok(), "{label}");
-            assert!(!op_summary(&node).is_empty());
+    fn test_view_ops_preview_with_their_presets() {
+        let mut labels = Vec::new();
+        for family in view_ops() {
+            for (label, value) in family.ops {
+                let node: Node = serde_json::from_value(value).unwrap_or_else(|e| panic!("{label}: {e}"));
+                assert!(matches!(node.stage(), Ok(Some(_))) || node.whiten_fit().is_some(), "{label}");
+                assert!(!op_summary(&node).is_empty());
+                for (preset, v) in crate::screens::pipeline::catalog::presets(&node) {
+                    let p: Node = serde_json::from_value(v).unwrap_or_else(|e| panic!("{preset}: {e}"));
+                    assert_eq!(op_name(&p), op_name(&node), "{preset}");
+                }
+                labels.push(label);
+            }
         }
+        for op in ["IIR", "Rectify", "Square", "Square root", "Log₁₀", "Teager–Kaiser", "Laplacian", "Whiten"] {
+            assert!(labels.contains(&op), "{op} in {labels:?}");
+        }
+        assert!(!labels.contains(&"Resample"), "resampling is not previewed");
     }
 }

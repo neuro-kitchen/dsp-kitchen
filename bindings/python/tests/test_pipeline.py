@@ -71,3 +71,17 @@ def test_settling_and_stage_checks():
         stage.clamp(1.0, -1.0)
     with pytest.raises(ValueError):
         Pipeline([stage.iir("lowpass", 20_000.0)], FS)  # above Nyquist
+
+
+@pytest.mark.parametrize("runtime", RUNTIMES)
+def test_per_sample_functions_and_the_envelopes_they_make(data, runtime):
+    x = data.astype(np.float64)
+    for st, f in ((stage.rectify(), np.abs), (stage.square(), np.square), (stage.sqrt(), lambda v: np.sqrt(np.maximum(v, 0))), (stage.log10(), lambda v: np.log10(np.maximum(np.abs(v), stage.LOG10_FLOOR)))):
+        got = Pipeline([st], FS, runtime=runtime).process(data)
+        np.testing.assert_allclose(got, f(x), rtol=1e-5, atol=1e-6)
+    # Moving RMS: square, low-pass, square root — of a sine of amplitude A, A / sqrt(2)
+    t = np.arange(30_000) / FS
+    sine = (200.0 * np.sin(2 * np.pi * 1000.0 * t))[None, :].astype(np.float32)
+    rms = Pipeline([stage.square(), stage.iir("lowpass", 10.0, order=4), stage.sqrt()], FS, runtime=runtime).process(sine)
+    middle = rms[0, 10_000:20_000]
+    assert np.allclose(middle, 200.0 / np.sqrt(2), rtol=0.01), (middle.min(), middle.max())

@@ -4,6 +4,7 @@ use crate::filter::fir::gaussian::{gaussian_radius, GAUSSIAN_DEFAULT_EDGE, GAUSS
 use crate::filter::fir::FIR_DEFAULT_EDGE;
 use crate::filter::non_linear::{MEDIAN9_RADIUS, MEDIAN_DEFAULT_EDGE, TEAGER_KAISER_DEFAULT_EDGE};
 use crate::spatial::{SpatialWhitening, SurfaceLaplacian};
+use crate::math::Elementwise;
 
 /// Individual processing stage within an in-VRAM DSP pipeline.
 #[derive(Debug, Clone, PartialEq)]
@@ -14,6 +15,8 @@ pub enum PipelineStage {
     SubtractBaseline { baseline: f32 },
     /// Sample clamping / rectification: $\text{clamp}(x, \min, \max)$
     Clamp { min: f32, max: f32 },
+    /// One function of each sample: rectify, square, square root, log ([`Elementwise`]).
+    Elementwise(Elementwise),
     /// IIR filter (Butterworth of any order and band, notch, or explicit sections), run forward or
     /// forward-backward. Build with [`PipelineStage::bandpass`], [`PipelineStage::highpass`], ….
     Filter(FilterSpec),
@@ -136,6 +139,7 @@ impl PipelineStage {
             PipelineStage::Scale { .. }
             | PipelineStage::SubtractBaseline { .. }
             | PipelineStage::Clamp { .. }
+            | PipelineStage::Elementwise(_)
             | PipelineStage::CommonAverageReference
             | PipelineStage::CommonMedianReference
             | PipelineStage::SpatialWhitening(_)

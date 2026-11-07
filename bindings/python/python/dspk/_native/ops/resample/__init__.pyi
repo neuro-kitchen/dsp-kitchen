@@ -17,13 +17,13 @@ __all__ = [
     "resample_poly",
 ]
 
-DECIMATE_DEFAULT_ORDER: builtins.int
-DECIMATE_DEFAULT_RIPPLE_DB: builtins.float
-DECIMATE_FIR_TAPS_PER_FACTOR: builtins.int
-DECIMATE_IIR_CUTOFF: builtins.float
-RESAMPLE_POLY_BETA: builtins.float
-RESAMPLE_POLY_DEFAULT_EDGE: builtins.str
-RESAMPLE_POLY_HALF_LEN_PER_RATE: builtins.int
+DECIMATE_DEFAULT_ORDER: builtins.int = 8
+DECIMATE_DEFAULT_RIPPLE_DB: builtins.float = 0.05
+DECIMATE_FIR_TAPS_PER_FACTOR: builtins.int = 20
+DECIMATE_IIR_CUTOFF: builtins.float = 0.8
+RESAMPLE_POLY_BETA: builtins.float = 5.0
+RESAMPLE_POLY_DEFAULT_EDGE: builtins.str = 'zeros'
+RESAMPLE_POLY_HALF_LEN_PER_RATE: builtins.int = 10
 def decimate(data: numpy.typing.NDArray[typing.Any], q: builtins.int, *, ftype: builtins.str, order: builtins.int, ripple_db: builtins.float, taps_per_factor: builtins.int, runtime: typing.Optional[builtins.str]) -> numpy.typing.NDArray[numpy.float32]:
     r"""
     Down-samples `data` `(channels, samples)` by `q` behind an anti-alias filter, as

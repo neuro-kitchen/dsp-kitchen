@@ -12,7 +12,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-pyo3_stub_gen::module_variable!("dspk._native", "__version__", String);
+pyo3_stub_gen::module_variable!("dspk._native", "__version__", String, env!("CARGO_PKG_VERSION").to_string());
 
 /// Stub information for `src/bin/stub_gen.rs`, read from `bindings/python/pyproject.toml` (one
 /// level above this crate: module name, Python source folder).

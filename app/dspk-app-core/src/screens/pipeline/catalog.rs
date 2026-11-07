@@ -18,6 +18,8 @@ pub enum Template {
     RecordingFile,
     /// An op (its node as spec JSON).
     Op(Value),
+    /// A channel map, every channel of the input in order to start (edited in the inspector).
+    Remap,
     View,
     Write,
 }
@@ -54,6 +56,11 @@ pub fn catalog() -> Vec<Category> {
             ],
         },
         Category {
+            name: "Channels",
+            icon: IconName::ListOrdered,
+            items: vec![Item { label: "Remap", hint: "Reorder, drop and name channels (a channel table, or a map file)", template: Template::Remap }],
+        },
+        Category {
             name: "Filter",
             icon: IconName::SlidersHorizontal,
             items: vec![
@@ -69,6 +76,8 @@ pub fn catalog() -> Vec<Category> {
             items: vec![
                 op("CMR", "Common median reference", json!({"op": "cmr"})),
                 op("CAR", "Common average reference", json!({"op": "car"})),
+                op("Laplacian", "Each electrode minus its grid neighbours (HD-EMG, ECoG)", json!({"op": "laplacian", "grid": [4, 8]})),
+                op("Whiten", "Decorrelates the channels (ZCA), fitted on the signal before it", json!({"op": "whiten"})),
             ],
         },
         Category {
@@ -87,7 +96,16 @@ pub fn catalog() -> Vec<Category> {
                 op("Subtract baseline", "x − baseline", json!({"op": "subtract_baseline", "baseline": 0.0})),
                 op("Clamp", "Limits the values", json!({"op": "clamp", "min": -1000.0, "max": 1000.0})),
                 op("Teager–Kaiser", "Instantaneous energy (spike detection)", json!({"op": "teager_kaiser"})),
+                op("Rectify", "|x| (then a low-pass: an envelope)", json!({"op": "rectify"})),
+                op("Square", "x² (instantaneous power)", json!({"op": "square"})),
+                op("Square root", "√x (after a squared, smoothed signal: RMS)", json!({"op": "sqrt"})),
+                op("Log₁₀", "log₁₀ |x| (energies over decades)", json!({"op": "log10"})),
             ],
+        },
+        Category {
+            name: "Rate",
+            icon: IconName::ChartNoAxesColumn,
+            items: vec![op("Resample", "up / down (polyphase FIR); the last op before Write", json!({"op": "resample", "up": 1, "down": 2}))],
         },
         Category {
             name: "Output",
@@ -115,6 +133,12 @@ pub fn type_name(node: &Node) -> &'static str {
         Node::SubtractBaseline { .. } => "Subtract baseline",
         Node::Clamp { .. } => "Clamp",
         Node::TeagerKaiser { .. } => "Teager–Kaiser",
+        Node::Rectify {} => "Rectify",
+        Node::Square {} => "Square",
+        Node::Sqrt {} => "Square root",
+        Node::Log10 {} => "Log₁₀",
+        Node::Laplacian { .. } => "Laplacian",
+        Node::Whiten { .. } => "Whiten",
         Node::Resample { .. } => "Resample",
         Node::Remap { .. } => "Remap",
         Node::Read { .. } => "Read",
@@ -139,7 +163,13 @@ pub fn presets(node: &Node) -> Vec<(&'static str, Value)> {
         Node::Notch { .. } => vec![("Mains 60 Hz", json!({"op": "notch", "freq": 60.0, "q": 30.0})), ("Mains 50 Hz", json!({"op": "notch", "freq": 50.0, "q": 30.0})), ("Harmonic 120 Hz", json!({"op": "notch", "freq": 120.0, "q": 30.0}))],
         Node::Median { .. } => vec![("3 samples", json!({"op": "median", "width": 3})), ("5 samples", json!({"op": "median", "width": 5})), ("9 samples", json!({"op": "median", "width": 9}))],
         Node::GaussianSmooth { .. } => vec![("σ 1 sample", json!({"op": "gaussian_smooth", "sigma_samples": 1.0})), ("σ 2 samples", json!({"op": "gaussian_smooth", "sigma_samples": 2.0})), ("σ 5 samples", json!({"op": "gaussian_smooth", "sigma_samples": 5.0}))],
-        Node::Fir { .. } => vec![("Moving average, 5 taps", json!({"op": "fir", "taps": [0.2, 0.2, 0.2, 0.2, 0.2], "centered": true})), ("Moving average, 9 taps", json!({"op": "fir", "taps": [0.111111, 0.111111, 0.111111, 0.111111, 0.111111, 0.111111, 0.111111, 0.111111, 0.111111], "centered": true}))],
+        Node::Fir { .. } => vec![("Derivative (first difference)", json!({"op": "fir", "taps": [1.0, -1.0], "centered": false})), ("Moving average, 5 taps", json!({"op": "fir", "taps": [0.2, 0.2, 0.2, 0.2, 0.2], "centered": true})), ("Moving average, 9 taps", json!({"op": "fir", "taps": [0.111111, 0.111111, 0.111111, 0.111111, 0.111111, 0.111111, 0.111111, 0.111111, 0.111111], "centered": true}))],
+        Node::Laplacian { .. } => vec![
+            ("Grid 4 × 8 (32 electrodes)", json!({"op": "laplacian", "grid": [4, 8]})),
+            ("Grid 8 × 4 (32 electrodes)", json!({"op": "laplacian", "grid": [8, 4]})),
+            ("Grid 8 × 8 (64 electrodes)", json!({"op": "laplacian", "grid": [8, 8]})),
+            ("Grid 16 × 4 (64 electrodes)", json!({"op": "laplacian", "grid": [16, 4]})),
+        ],
         Node::Scale { .. } => vec![("Invert", json!({"op": "scale", "alpha": -1.0, "beta": 0.0})), ("µV → mV", json!({"op": "scale", "alpha": 0.001, "beta": 0.0}))],
         _ => Vec::new(),
     }
@@ -170,6 +200,12 @@ pub fn flow_call(node: &Node) -> String {
         Node::GaussianSmooth { sigma_samples, .. } => format!(".gaussianSmooth(sigma = {sigma_samples})"),
         Node::Median { width, .. } => format!(".median(width = {width})"),
         Node::TeagerKaiser { .. } => ".teagerKaiser()".into(),
+        Node::Rectify {} => ".map { abs(it) }".into(),
+        Node::Square {} => ".map { it * it }".into(),
+        Node::Sqrt {} => ".map { sqrt(it) }".into(),
+        Node::Log10 {} => ".map { log10(abs(it)) }".into(),
+        Node::Laplacian { grid: [r, c] } => format!(".laplacian(grid = {r} × {c})"),
+        Node::Whiten { fit_s, .. } => format!(".whiten(fit = {fit_s} s)"),
         Node::Resample { up, down, .. } => format!(".resample({up}, {down})"),
         Node::Remap { pairs, path, .. } => match path {
             Some(p) => format!(".remap({:?})", p.display().to_string()),
@@ -184,9 +220,9 @@ pub fn flow_call(node: &Node) -> String {
 pub fn describe(kind: &NodeKind) -> (String, String, IconName) {
     match kind {
         NodeKind::Source { recording } => {
-            let file = recording.path.file_name().map_or_else(|| recording.path.display().to_string(), |n| n.to_string_lossy().into_owned());
+            let name = crate::domain::session::view_name(recording);
             let channels = recording.channels.as_ref().map_or_else(|| "all channels".to_string(), |c| format!("{} channels", c.len()));
-            (file, format!("flowOf(recording) · {channels}"), IconName::AudioWaveform)
+            (name, format!("flowOf(recording) · {channels}"), IconName::AudioWaveform)
         }
         NodeKind::Op { node, .. } => (type_name(node).to_string(), op_summary(node), IconName::SlidersHorizontal),
         NodeKind::View { name, .. } => (name.clone(), ".collect(view) · shown in Explore".into(), IconName::Eye),

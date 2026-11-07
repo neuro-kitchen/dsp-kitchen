@@ -28,17 +28,17 @@ __all__ = [
     "threshold",
 ]
 
-DEFAULT_BATCH_S: builtins.float
-DEFAULT_CALIBRATION_CHUNKS: builtins.int
-DEFAULT_CALIBRATION_S: builtins.float
-DEFAULT_K_NEIGHBORS: builtins.int
-DEFAULT_NEO_THRESHOLD: builtins.float
-DEFAULT_POST_MS: builtins.float
-DEFAULT_PRE_MS: builtins.float
-DEFAULT_RADIUS_UM: builtins.float
-DEFAULT_RECORDING_THRESHOLD: builtins.float
-DEFAULT_REFRACTORY_MS: builtins.float
-DEFAULT_THRESHOLD: builtins.float
+DEFAULT_BATCH_S: builtins.float = 10.0
+DEFAULT_CALIBRATION_CHUNKS: builtins.int = 5
+DEFAULT_CALIBRATION_S: builtins.float = 5.0
+DEFAULT_K_NEIGHBORS: builtins.int = 4
+DEFAULT_NEO_THRESHOLD: builtins.float = 8.0
+DEFAULT_POST_MS: builtins.float = 2.0
+DEFAULT_PRE_MS: builtins.float = 1.0
+DEFAULT_RADIUS_UM: builtins.float = 150.0
+DEFAULT_RECORDING_THRESHOLD: builtins.float = 5.0
+DEFAULT_REFRACTORY_MS: builtins.float = 1.0
+DEFAULT_THRESHOLD: builtins.float = 4.5
 def deduplicate(samples: numpy.typing.NDArray[numpy.uint64], channels: numpy.typing.NDArray[numpy.uint32], amplitudes: numpy.typing.NDArray[numpy.float32], probe: io.Probe, radius_um: builtins.float, window_samples: builtins.int) -> dict:
     r"""
     One spike per event seen on several neighbouring channels ("locally exclusive": the largest
@@ -46,11 +46,12 @@ def deduplicate(samples: numpy.typing.NDArray[numpy.uint64], channels: numpy.typ
     `amplitudes`, and `participating` (channel lists).
     """
 
-def detect_recording(recording: io.Recording, probe: io.Probe, *, band: tuple[builtins.float, builtins.float], car: builtins.bool, threshold: builtins.float, refractory_ms: builtins.float, polarity: builtins.str, spacing: builtins.str, radius_um: builtins.float, k_neighbors: builtins.int, pre_ms: builtins.float, post_ms: builtins.float, sinc_shift: builtins.bool, batch_s: builtins.float, calibration_s: builtins.float, calibration_chunks: builtins.int, runtime: typing.Optional[builtins.str]) -> tuple[io.Sorting, dict]:
+def detect_recording(recording: io.Recording, probe: io.Probe, *, band: tuple[builtins.float, builtins.float], car: builtins.bool, threshold: builtins.float, refractory_ms: builtins.float, polarity: builtins.str, spacing: builtins.str, radius_um: builtins.float, k_neighbors: builtins.int, pre_ms: builtins.float, post_ms: builtins.float, sinc_shift: builtins.bool, locate: builtins.bool, batch_s: builtins.float, calibration_s: builtins.float, calibration_chunks: builtins.int, runtime: typing.Optional[builtins.str]) -> tuple[io.Sorting, dict]:
     r"""
     The streaming detector over a whole recording, read in place in batches: optional CAR, a
     zero-phase band-pass, noise calibrated on spread-out chunks, threshold crossings, spatial
-    de-duplication, snippets and per-channel templates — as `dspk detect`. Returns the spikes as a
+    de-duplication, snippets and per-channel templates, every spike located (`locate`: the centre
+    of mass of its snippet's heights over its neighbours) — as `dspk detect`. Returns the spikes as a
     [`Sorting`] (one unit per channel) and a summary (`sigmas_uv`, `raw_crossings`, `spikes`,
     `channel_counts`).
     """

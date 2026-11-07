@@ -1,0 +1,180 @@
+---
+// Starlight's header with a row of topic tabs under it: the main topics, then "Plugins" and
+// "More" menus (grouping in src/data/nav.mjs). On narrow screens the tabs are one scrolling row
+// with every topic, since a menu inside a scrolling row would be clipped.
+import Default from '@astrojs/starlight/components/Header.astro';
+import { MAIN, MORE, PLUGINS } from '../data/nav.mjs';
+
+const topics = Astro.locals.starlightSidebarTopics?.topics ?? [];
+const pick = (labels: string[]) =>
+  labels.map((l) => topics.find((t) => t.label === l)).filter((t) => t !== undefined);
+const main = pick(MAIN);
+const plugins = pick(PLUGINS);
+const more = pick(MORE);
+const anyCurrent = (list: typeof topics) => list.some((t) => t.isCurrent);
+---
+
+<div class="bar"><Default {...Astro.props} /></div>
+
+<nav class="tabs wide" aria-label="Topics">
+  {
+    main.map((t) => (
+      <a href={t.link} aria-current={t.isCurrent ? 'page' : undefined}>
+        {t.label}
+      </a>
+    ))
+  }
+  {
+    [
+      { label: 'Plugins', list: plugins },
+      { label: 'More', list: more },
+    ].map(({ label, list }) => (
+      <details class="menu" data-current={anyCurrent(list) ? '' : undefined}>
+        <summary>{label}</summary>
+        <ul>
+          {list.map((t) => (
+            <li>
+              <a href={t.link} aria-current={t.isCurrent ? 'page' : undefined}>
+                {t.label}
+              </a>
+            </li>
+          ))}
+        </ul>
+      </details>
+    ))
+  }
+</nav>
+
+<nav class="tabs narrow" aria-label="Topics">
+  {
+    [...main, ...plugins, ...more].map((t) => (
+      <a href={t.link} aria-current={t.isCurrent ? 'page' : undefined}>
+        {t.label}
+      </a>
+    ))
+  }
+</nav>
+
+<script>
+  // One menu open at a time; a click elsewhere or Escape closes it.
+  const menus = [...document.querySelectorAll<HTMLDetailsElement>('.tabs .menu')];
+  for (const m of menus) {
+    m.addEventListener('toggle', () => {
+      if (m.open) menus.filter((o) => o !== m).forEach((o) => (o.open = false));
+    });
+  }
+  document.addEventListener('click', (e) => {
+    for (const m of menus) if (!m.contains(e.target as Node)) m.open = false;
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    for (const m of menus) {
+      if (m.open) {
+        m.open = false;
+        m.querySelector('summary')?.focus();
+      }
+    }
+  });
+</script>
+
+<style>
+  .bar {
+    height: calc(var(--dk-nav-base) - 2 * var(--sl-nav-pad-y));
+  }
+
+  .tabs {
+    display: flex;
+    align-items: stretch;
+    gap: 0.25rem;
+    height: calc(var(--dk-tabs) + var(--sl-nav-pad-y));
+    margin-block-end: calc(-1 * var(--sl-nav-pad-y));
+    padding-block-start: var(--sl-nav-pad-y);
+    margin-inline: -0.75rem;
+  }
+  .tabs a,
+  .tabs summary {
+    display: flex;
+    align-items: center;
+    padding-inline: 0.75rem;
+    border-block-end: 2px solid transparent;
+    color: var(--sl-color-gray-2);
+    font-size: var(--sl-text-sm);
+    font-weight: 500;
+    text-decoration: none;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .tabs a:hover,
+  .tabs summary:hover {
+    color: var(--sl-color-white);
+  }
+  .tabs > a[aria-current='page'],
+  .tabs .menu[data-current] > summary {
+    color: var(--sl-color-white);
+    border-block-end-color: var(--sl-color-accent);
+  }
+
+  .menu {
+    position: relative;
+    display: flex;
+  }
+  .menu summary {
+    list-style: none;
+    gap: 0.35rem;
+  }
+  .menu summary::-webkit-details-marker {
+    display: none;
+  }
+  /* A small caret that turns when the menu opens. */
+  .menu summary::after {
+    content: '';
+    width: 0.4rem;
+    height: 0.4rem;
+    border-inline-end: 1.5px solid currentColor;
+    border-block-end: 1.5px solid currentColor;
+    transform: translateY(-0.15rem) rotate(45deg);
+  }
+  .menu[open] summary::after {
+    transform: translateY(0.1rem) rotate(-135deg);
+  }
+  .menu ul {
+    position: absolute;
+    inset-block-start: calc(100% + 1px);
+    inset-inline-start: 0;
+    min-width: 12rem;
+    margin: 0;
+    padding: 0.35rem;
+    list-style: none;
+    background: var(--sl-color-bg-nav);
+    border: 1px solid var(--sl-color-gray-5);
+    border-radius: 0.5rem;
+    box-shadow: var(--sl-shadow-md);
+  }
+  .menu ul a {
+    padding: 0.5rem 0.65rem;
+    border: none;
+    border-radius: 0.35rem;
+  }
+  .menu ul a:hover {
+    background: var(--sl-color-gray-6);
+  }
+  .menu ul a[aria-current='page'] {
+    color: var(--sl-color-text-accent);
+  }
+
+  .narrow {
+    display: none;
+  }
+  @media (max-width: 50rem) {
+    .wide {
+      display: none;
+    }
+    .narrow {
+      display: flex;
+      overflow-x: auto;
+      scrollbar-width: none;
+      /* The row fades at the edge: there are more topics to scroll to. */
+      mask-image: linear-gradient(to right, #000 calc(100% - 2.5rem), transparent);
+    }
+  }
+</style>

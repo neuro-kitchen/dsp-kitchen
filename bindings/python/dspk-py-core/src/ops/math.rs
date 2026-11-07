@@ -74,7 +74,7 @@ pub fn window<'py>(py: Python<'py>, name: &str, length: usize, sigma: Option<f32
     Ok(values.into_pyarray(py))
 }
 
-pyo3_stub_gen::module_variable!("dspk._native.ops.math", "MAD_TO_SIGMA", f32);
+pyo3_stub_gen::module_variable!("dspk._native.ops.math", "MAD_TO_SIGMA", f32, MAD_TO_SIGMA);
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(channel_mad, m)?)?;

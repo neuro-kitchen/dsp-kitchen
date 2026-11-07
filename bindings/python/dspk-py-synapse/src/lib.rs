@@ -5,10 +5,12 @@ pub mod detection;
 pub mod features;
 pub mod io;
 pub mod metrics;
+pub mod sorting;
 
 use pyo3::prelude::*;
 
-/// Adds `synapse` (with `io`, `detection`, `extraction`, `features`, `metrics`) to the extension
+/// Adds `synapse` (with `io`, `detection`, `extraction`, `features`, `metrics`, `clustering`,
+/// `matching`, `spatial`) to the extension
 /// module `m`.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let synapse = PyModule::new(m.py(), "synapse")?;
@@ -18,6 +20,9 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         ("extraction", features::register_extraction),
         ("features", features::register_features),
         ("metrics", metrics::register),
+        ("clustering", sorting::register_clustering),
+        ("matching", sorting::register_matching),
+        ("spatial", sorting::register_spatial),
     ] {
         let sub = PyModule::new(m.py(), name)?;
         register(&sub)?;

@@ -1,0 +1,113 @@
+/* The website's palette (neuro-kitchen.github.io src/styles/global.css) on Starlight's tokens.
+   Starlight's dark theme is the base (:root); light is :root[data-theme='light']. Its gray
+   scale runs from "white" (strongest text) to "black" (page background) in both themes. */
+
+:root {
+  --sl-font: 'Inter Tight Variable', system-ui, sans-serif;
+  --sl-font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  --sl-color-accent-low: #26330d;
+  --sl-color-accent: #c6f26b;
+  --sl-color-accent-high: #e2faa8;
+  --sl-color-white: #ffffff;
+  --sl-color-gray-1: #e8ecf4;
+  --sl-color-gray-2: #a7b0c0;
+  --sl-color-gray-3: #8691a3;
+  --sl-color-gray-4: #3a4458;
+  --sl-color-gray-5: #2c3546;
+  --sl-color-gray-6: #1a2130;
+  --sl-color-black: #0a0e17;
+  --sl-color-text-invert: #0a0e17;
+}
+
+:root[data-theme='light'] {
+  --sl-color-accent-low: #e3f5c0;
+  --sl-color-accent: #3f6212;
+  --sl-color-accent-high: #2c4709;
+  --sl-color-white: #0a0e17;
+  --sl-color-gray-1: #1a2130;
+  --sl-color-gray-2: #4a5466;
+  --sl-color-gray-3: #5d6778;
+  --sl-color-gray-4: #aeb6c2;
+  --sl-color-gray-5: #cfd5de;
+  --sl-color-gray-6: #e9ecf1;
+  --sl-color-gray-7: #f6f7f9;
+  --sl-color-black: #ffffff;
+  --sl-color-text-invert: #ffffff;
+}
+
+/* Notes in the brand's accent instead of Starlight's blue. */
+.starlight-aside--note {
+  --sl-color-asides-text-accent: var(--sl-color-text-accent);
+  --sl-color-asides-border: var(--sl-color-accent);
+  background-color: var(--sl-color-accent-low);
+}
+
+/* The landing hero: the headline set large and tight, as on the website. */
+.hero h1 {
+  font-size: clamp(2.5rem, 5vw, 3.75rem);
+  letter-spacing: -0.035em;
+  line-height: 1.05;
+  max-width: 18ch;
+}
+.hero .tagline {
+  max-width: 46ch;
+}
+.hero {
+  padding-block: 3rem 1rem;
+}
+.install {
+  color: var(--sl-color-gray-2);
+}
+/* Left-aligned at every width, like the channel list under it. */
+.hero,
+.hero > .stack {
+  text-align: start;
+  align-items: flex-start;
+}
+.hero .actions {
+  justify-content: flex-start;
+}
+
+/* Room in the header for the topic tabs (src/components/Header.astro). */
+:root {
+  --dk-tabs: 2.5rem;
+  --dk-nav-base: 3.5rem;
+  --sl-nav-height: calc(var(--dk-nav-base) + var(--dk-tabs));
+}
+@media (min-width: 50em) {
+  :root {
+    --dk-nav-base: 4rem;
+    --sl-nav-height: calc(var(--dk-nav-base) + var(--dk-tabs));
+  }
+}
+/* The logo and the phone menu button keep to the top row, not the whole header with the tabs. */
+.site-title img {
+  height: calc(var(--dk-nav-base) - 2 * var(--sl-nav-pad-y));
+}
+.sl-menu-button {
+  top: calc((var(--dk-nav-base) - var(--sl-menu-button-size)) / 2);
+}
+
+/* Reference pages: a function's name as the heading, in the code face but without a code box. */
+.sl-markdown-content :is(h3, h4) > code {
+  padding: 0;
+  background: none;
+  font-size: 0.9em;
+  font-weight: 600;
+}
+.sl-markdown-content h3:has(> code) {
+  font-size: var(--sl-text-2xl);
+  margin-top: 2.5rem;
+}
+.sl-markdown-content h4:has(> code) {
+  font-size: var(--sl-text-xl);
+}
+/* Parameter lists (a name in bold code first): no bullets, a gap between entries. */
+.sl-markdown-content ul:has(> li > strong:first-child > code) {
+  list-style: none;
+  padding-inline-start: 0;
+}
+.sl-markdown-content li:has(> strong:first-child > code) + li {
+  margin-top: 0.85rem;
+}
