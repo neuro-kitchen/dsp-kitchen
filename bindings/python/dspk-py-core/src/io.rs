@@ -333,6 +333,13 @@ pub fn write_zarr(
     level: Option<i32>,
     parallel: bool,
 ) -> PyResult<()> {
+    let options = zarr_options(chunk_samples, compression, level, parallel)?;
+    let source = ArrayRecording::new(data, sample_rate, 1.0, unit)?;
+    py.detach(|| dspk_io::write_zarr(&source, &path, &options, |_, _| {})).map_err(to_py)
+}
+
+/// The Zarr options of `write_zarr` and `ZarrWriter`.
+fn zarr_options(chunk_samples: usize, compression: &str, level: Option<i32>, parallel: bool) -> PyResult<dspk_io::ZarrOptions> {
     let compression = match (compression, level) {
         ("zstd", level) => dspk_io::ZarrCompression::Zstd { level: level.unwrap_or(DEFAULT_ZSTD_LEVEL) },
         ("blosc_lz4", level) => {
@@ -347,9 +354,68 @@ pub fn write_zarr(
     if chunk_samples == 0 {
         return Err(PyValueError::new_err("chunk_samples must be at least 1"));
     }
-    let options = dspk_io::ZarrOptions { chunk_samples, compression, parallel };
-    let source = ArrayRecording::new(data, sample_rate, 1.0, unit)?;
-    py.detach(|| dspk_io::write_zarr(&source, &path, &options, |_, _| {})).map_err(to_py)
+    Ok(dspk_io::ZarrOptions { chunk_samples, compression, parallel })
+}
+
+/// A Zarr store written block by block (`/traces`, float32): created for `channels × samples`,
+/// then blocks `(channels, n)` pushed in order until every sample is written, then `finish()`.
+/// For data that does not fit in memory at once (a recording processed window by window).
+#[gen_stub_pyclass]
+#[pyclass(module = "dspk._native.io")]
+pub struct ZarrWriter {
+    inner: Option<dspk_io::ZarrWriter>,
+    channels: usize,
+}
+
+#[gen_stub_pymethods]
+#[pymethods]
+impl ZarrWriter {
+    /// Creates the store at `path` (options as `write_zarr`).
+    #[new]
+    #[pyo3(signature = (path, channels, samples, sample_rate, *, unit="", chunk_samples=ZARR_CHUNK_SAMPLES, compression="zstd", level=None, parallel=true, channel_names=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        path: PathBuf,
+        channels: usize,
+        samples: u64,
+        sample_rate: f64,
+        unit: &str,
+        chunk_samples: usize,
+        compression: &str,
+        level: Option<i32>,
+        parallel: bool,
+        channel_names: Option<Vec<String>>,
+    ) -> PyResult<Self> {
+        if channels == 0 || samples == 0 || !(sample_rate.is_finite() && sample_rate > 0.0) {
+            return Err(PyValueError::new_err(format!("channels and samples at least 1, sample_rate positive; got {channels}, {samples}, {sample_rate}")));
+        }
+        let options = zarr_options(chunk_samples, compression, level, parallel)?;
+        let mut w = dspk_io::ZarrWriter::create(&path, channels, samples, sample_rate, &parse_unit(unit), &options).map_err(to_py)?;
+        if let Some(names) = channel_names {
+            w.set_channel_names(&names).map_err(to_py)?;
+        }
+        Ok(Self { inner: Some(w), channels })
+    }
+
+    /// Appends `block` `(channels, n)` float32 (the next `n` samples).
+    fn push(&mut self, py: Python<'_>, block: PyReadonlyArray2<'_, f32>) -> PyResult<()> {
+        let (rows, n) = block.as_array().dim();
+        if rows != self.channels {
+            return Err(PyValueError::new_err(format!("a block of {rows} channels; the store has {}", self.channels)));
+        }
+        let data: std::borrow::Cow<'_, [f32]> = match block.as_slice() {
+            Ok(s) => std::borrow::Cow::Borrowed(s),
+            Err(_) => std::borrow::Cow::Owned(block.as_array().iter().copied().collect()),
+        };
+        let w = self.inner.as_mut().ok_or_else(|| PyValueError::new_err("the writer is finished"))?;
+        py.detach(|| w.push(&data, n, 0..n)).map_err(to_py)
+    }
+
+    /// Checks every sample was written and closes the store.
+    fn finish(&mut self) -> PyResult<()> {
+        let w = self.inner.take().ok_or_else(|| PyValueError::new_err("the writer is finished"))?;
+        w.finish().map_err(to_py)
+    }
 }
 
 /// Default zstd level of [`write_zarr`].
@@ -368,6 +434,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(formats, m)?)?;
     m.add_function(wrap_pyfunction!(write_raw, m)?)?;
     m.add_function(wrap_pyfunction!(write_zarr, m)?)?;
+    m.add_class::<ZarrWriter>()?;
     m.add("WRITE_CHUNK_SAMPLES", WRITE_CHUNK_SAMPLES)?;
     m.add("ZARR_CHUNK_SAMPLES", ZARR_CHUNK_SAMPLES)?;
     Ok(())

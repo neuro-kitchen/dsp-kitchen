@@ -14,6 +14,7 @@ import numpy as np
 from dspk._native import io as _io
 
 Recording = _io.Recording
+ZarrWriter = _io.ZarrWriter
 Source = _io.Source
 open = _io.open  # noqa: A001 (mirrors the Rust name)
 sources = _io.sources
@@ -86,6 +87,6 @@ def write_zarr(
 
 
 __all__ = [
-    "STORED_DTYPES", "Recording", "Source", "WRITE_CHUNK_SAMPLES", "ZARR_CHUNK_SAMPLES",
+    "STORED_DTYPES", "Recording", "Source", "WRITE_CHUNK_SAMPLES", "ZARR_CHUNK_SAMPLES", "ZarrWriter",
     "formats", "open", "sources", "write_raw", "write_zarr",
 ]

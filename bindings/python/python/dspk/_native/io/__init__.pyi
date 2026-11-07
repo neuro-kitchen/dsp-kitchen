@@ -12,6 +12,7 @@ __all__ = [
     "Source",
     "WRITE_CHUNK_SAMPLES",
     "ZARR_CHUNK_SAMPLES",
+    "ZarrWriter",
     "formats",
     "open",
     "sources",
@@ -96,6 +97,26 @@ class Source:
         Unit symbol of the values (`""` when dimensionless).
         """
     def __repr__(self) -> builtins.str: ...
+
+@typing.final
+class ZarrWriter:
+    r"""
+    A Zarr store written block by block (`/traces`, float32): created for `channels × samples`,
+    then blocks `(channels, n)` pushed in order until every sample is written, then `finish()`.
+    For data that does not fit in memory at once (a recording processed window by window).
+    """
+    def __new__(cls, path: builtins.str | os.PathLike | pathlib.Path, channels: builtins.int, samples: builtins.int, sample_rate: builtins.float, *, unit: builtins.str = '', chunk_samples: builtins.int = 5000, compression: builtins.str = 'zstd', level: typing.Optional[builtins.int] = None, parallel: builtins.bool = True, channel_names: typing.Optional[typing.Sequence[builtins.str]] = None) -> ZarrWriter:
+        r"""
+        Creates the store at `path` (options as `write_zarr`).
+        """
+    def push(self, block: numpy.typing.NDArray[numpy.float32]) -> None:
+        r"""
+        Appends `block` `(channels, n)` float32 (the next `n` samples).
+        """
+    def finish(self) -> None:
+        r"""
+        Checks every sample was written and closes the store.
+        """
 
 def formats() -> builtins.list[builtins.str]:
     r"""
