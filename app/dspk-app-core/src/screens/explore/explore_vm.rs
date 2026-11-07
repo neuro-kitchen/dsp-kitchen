@@ -146,6 +146,9 @@ impl ExploreVm {
     /// Focuses `vm`: its session view becomes the active one (what Processing edits).
     pub fn focus(&mut self, vm: Entity<TraceVm>, cx: &mut Context<Self>) {
         self.select_view_of(&vm, cx);
+        if self.store.read(cx).inspected.is_some() {
+            self.store.update(cx, |s, cx| s.inspect(None, cx));
+        }
         if self.focused.as_ref() != Some(&vm) {
             self.focused = Some(vm);
             cx.emit(ExploreEvent::Focus);

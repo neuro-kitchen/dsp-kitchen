@@ -2,5 +2,6 @@
 
 pub mod panels;
 pub mod plugin_panel;
+pub mod inspector;
 pub mod processing;
 pub mod timeline_tab;

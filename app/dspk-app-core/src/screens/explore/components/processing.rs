@@ -29,7 +29,7 @@ use crate::data::store::{AppEvent, Store};
 use crate::domain::command::SessionCommand;
 use crate::domain::session::{op_name, DisplayDoc, Show};
 use crate::screens::explore::ExploreVm;
-use crate::ui::widgets::{icon_button, MenuSelect, PanelHeader, Section};
+use crate::ui::widgets::{icon_button, PanelHeader, Section};
 
 use super::panels::{side_panel, DockToggle};
 
@@ -109,13 +109,19 @@ impl ProcessingPanel {
     }
 
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let sections = self.sections(window, cx);
+        v_flex().id("processing-panel").test_support().size_full().gap_3().p_3().overflow_y_scroll().children(sections).into_any_element()
+    }
+
+    /// The active view's processing (raw / processed, the op chain, the picked op's parameters)
+    /// and its output: the Inspector's lower half.
+    pub fn sections(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let t = cx.theme();
         let (muted, accent, border) = (t.muted_foreground, t.accent, t.border);
         let s = self.store.read(cx);
         let Some(view) = s.active_view().cloned() else {
-            return v_flex().id("processing-panel").test_support().size_full().p_4().text_sm().text_color(muted).child("Open a recording: its view and processing show here.").into_any_element();
+            return vec![div().text_sm().text_color(muted).child("Open a recording: its view's processing shows here.").into_any_element()];
         };
-        let views: Vec<(String, String)> = s.doc.views.iter().map(|v| (v.id.clone(), v.name.clone())).collect();
         let source = s.view_source(&view);
         let total = s.sources().map_or(0, |ss| ss.entry(&source).channels);
         let picked = s.picked_channel;
@@ -127,48 +133,8 @@ impl ProcessingPanel {
         };
         let covers = s.preview_covers(&source, window_samples);
         let job = s.job.as_ref().map(|j| (j.label.clone(), j.fraction, j.line.clone()));
-        let selection: Vec<usize> = s.selection(&source).to_vec();
         let in_view = view.recording.channels.as_ref().map_or(total, Vec::len);
         let id = view.id.clone();
-
-        // View: which one, copy, close
-        let names: Vec<SharedString> = views.iter().map(|(_, n)| n.clone().into()).collect();
-        let ids: Vec<String> = views.iter().map(|(i, _)| i.clone()).collect();
-        let selected = ids.iter().position(|i| *i == id);
-        let store = self.store.clone();
-        let view_pick = MenuSelect::new("processing-view", names, selected, move |i, _, cx| {
-            let view = ids[i].clone();
-            let _ = store.update(cx, |s, cx| s.execute(SessionCommand::SelectView { view }, cx));
-        })
-        .full_width();
-        let copy = {
-            let (store, id, sel) = (self.store.clone(), id.clone(), selection.clone());
-            Button::new("copy-view")
-                .outline()
-                .small()
-                .icon(IconName::Copy)
-                .label("Copy with shown channels")
-                .tooltip("A new view of the channels shown now, with this view's chain: edit it for those channels only")
-                .on_click(move |_, _, cx| {
-                    let channels = (!sel.is_empty()).then(|| sel.clone());
-                    let _ = store.update(cx, |s, cx| s.execute(SessionCommand::CopyView { view: id.clone(), channels, name: None }, cx));
-                })
-        };
-        let close = {
-            let (store, id) = (self.store.clone(), id.clone());
-            icon_button("close-view", IconName::Close, "Close this view (the recording stays open)")
-                .on_click(move |_, _, cx| {
-                    let _ = store.update(cx, |s, cx| s.execute(SessionCommand::CloseView { view: id.clone() }, cx));
-                })
-        };
-        let recording = format!(
-            "{} · {}",
-            view.recording.path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned()),
-            match &view.recording.channels {
-                Some(c) => format!("{} of {total} channels", c.len()),
-                None => format!("all {total} channels"),
-            }
-        );
 
         // Raw / processed
         let show_store = self.store.clone();
@@ -291,30 +257,18 @@ impl ProcessingPanel {
                 .into_any_element(),
         };
 
-        v_flex()
-            .id("processing-panel")
-            .test_support()
-            .size_full()
-            .gap_3()
-            .p_3()
-            .overflow_y_scroll()
-            .child(
-                Section::new("View")
-                    .child(view_pick)
-                    .child(div().text_xs().text_color(muted).child(recording))
-                    .child(h_flex().gap_1().child(copy).child(div().flex_1()).child(close)),
-            )
-            .child(
+        let mut out = vec![
                 Section::new("Processing")
                     .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(channel_line))
                     .child(h_flex().gap_1().child(show(Show::Processed, "Processed")).child(show(Show::Raw, "Raw")))
                     .children(preview_note.map(|n| div().text_xs().text_color(muted).child(n)))
                     .child(tree)
-                    .child(add),
-            )
-            .children(params)
-            .child(Section::new("Output").child(output))
-            .into_any_element()
+                    .child(add)
+                    .into_any_element(),
+        ];
+        out.extend(params.map(IntoElement::into_any_element));
+        out.push(Section::new("Output").child(output).into_any_element());
+        out
     }
 }
 

@@ -249,7 +249,7 @@ impl DspApp {
                     .item(item("Add heatmap view", |a, _, cx| a.add_view(TimeViewKind::Heatmap, cx)))
                     .separator()
                     .item(item("Channels", |a, w, cx| a.toggle_dock(DockPlacement::Left, w, cx)))
-                    .item(item("View settings", |a, w, cx| a.toggle_dock(DockPlacement::Right, w, cx)))
+                    .item(item("Inspector", |a, w, cx| a.toggle_dock(DockPlacement::Right, w, cx)))
                     .item(item("Timeline", |a, w, cx| a.toggle_dock(DockPlacement::Bottom, w, cx)))
                     .separator()
                     .item({
@@ -887,8 +887,8 @@ mod tests {
                 let b = window.find(("time-view", id)).bounds().size;
                 assert!(b.width > px(300.) && b.height > px(100.), "view {id}: {b:?}");
             }
-            // One panel per side: Channels, Processing (the default right panel), the timeline
-            for id in ["channels-panel", "processing-panel", "timeline-panel"] {
+            // One panel per side: Channels, the Inspector (the default right panel), the timeline
+            for id in ["channels-panel", "inspector-panel", "timeline-panel"] {
                 assert!(window.try_find(id).is_some(), "{id} on screen");
             }
         })
@@ -955,22 +955,28 @@ mod tests {
         .unwrap();
         cx.run_until_parked();
         assert!(!open(cx));
-        // The right bar shows one panel at a time; its icon again hides the side
+        // The right bar: the Inspector shows by default; its icon hides the side, and shows it again
         let right = |cx: &mut TestAppContext| cx.update(|cx| explore.read(cx).is_side_open(DockPlacement::Right));
+        assert!(right(cx));
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
-            window.click("rail-display", cx);
-        })
-        .unwrap();
-        cx.run_until_parked();
-        cx.update_window(window, |_, window, cx| {
-            window.render_frame(cx);
-            assert!(window.try_find("settings-panel").is_some() && window.try_find("processing-panel").is_none(), "one panel at a time");
-            window.click("rail-display", cx);
+            window.click("rail-inspector", cx);
         })
         .unwrap();
         cx.run_until_parked();
         assert!(!right(cx));
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("inspector-panel").is_none());
+            window.click("rail-inspector", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("inspector-panel").is_some(), "the inspector: one panel for view, display and processing");
+        })
+        .unwrap();
     }
 
     /// Second pixel of the top row of the traces view's frame (BGRA): background (the first column

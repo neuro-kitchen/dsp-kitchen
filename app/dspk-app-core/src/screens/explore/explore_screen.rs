@@ -1,6 +1,6 @@
 //! The Explore workspace, laid out as Zed / VS Code: the time views in the centre (a dock: tabs
 //! and splits the user rearranges by dragging tabs); an icon bar at each side edge that shows
-//! one panel at a time on that side (left: Channels; right: Processing, Display, and the
+//! one panel at a time on that side (left: Channels or Timeline; right: the Inspector and the
 //! plugins' panels such as Sorting), clicking the shown panel's icon hides the side; the
 //! Timeline fixed at the bottom (minimised to its header, never shared).
 
@@ -26,10 +26,10 @@ use crate::screens::explore::{ExploreEvent, ExploreVm, TraceVm};
 use crate::ui::panel_edge::{follow_panel_drag, panel_edge, PanelResize, Side};
 use crate::ui::widgets::HEADER_HEIGHT;
 
-use super::components::panels::{ChannelsPanel, DockToggle, SettingsPanel, TimelinePanel};
+use super::components::inspector::InspectorPanel;
+use super::components::panels::{ChannelsPanel, DockToggle, TimelinePanel};
 use super::components::plugin_panel::PluginPanel;
 use super::components::timeline_tab::TimelineTab;
-use super::components::processing::ProcessingPanel;
 use super::trace::trace_panel::TracePanel;
 
 /// Widths of the side panels and their icon bars, and the open timeline's height (logical px).
@@ -41,8 +41,8 @@ const TIMELINE_H: f32 = 136.;
 /// The panel shown on the right.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RightPanel {
-    Processing,
-    Display,
+    /// The selected view (source, display, processing, output) or recording source.
+    Inspector,
     /// The i-th plugin panel.
     Plugin(usize),
 }
@@ -50,17 +50,15 @@ pub enum RightPanel {
 impl RightPanel {
     fn key(self) -> String {
         match self {
-            Self::Processing => "processing".into(),
-            Self::Display => "display".into(),
+            Self::Inspector => "inspector".into(),
             Self::Plugin(i) => format!("plugin{i}"),
         }
     }
 
     fn from_key(key: &str) -> Self {
         match key {
-            "display" => Self::Display,
-            k if k.starts_with("plugin") => k[6..].parse().map(Self::Plugin).unwrap_or(Self::Processing),
-            _ => Self::Processing,
+            k if k.starts_with("plugin") => k[6..].parse().map(Self::Plugin).unwrap_or(Self::Inspector),
+            _ => Self::Inspector,
         }
     }
 }
@@ -75,8 +73,7 @@ pub struct ExploreView {
     timeline_tab: Entity<TimelineTab>,
     /// The left side shows the timeline tab (else Channels).
     left_timeline: bool,
-    processing: Entity<ProcessingPanel>,
-    settings: Entity<SettingsPanel>,
+    inspector: Entity<InspectorPanel>,
     timeline: Entity<TimelinePanel>,
     /// Plugins' panels: title, icon, view.
     plugin_panels: Vec<(SharedString, Rc<dyn Fn() -> Icon>, Entity<PluginPanel>)>,
@@ -115,8 +112,7 @@ impl ExploreView {
         let me = cx.weak_entity();
         let channels = cx.new(|cx| ChannelsPanel::new(vm.clone(), toggle_of(me.clone(), DockPlacement::Left), window, cx));
         let timeline_tab = cx.new(|cx| TimelineTab::new(vm.clone(), toggle_of(me.clone(), DockPlacement::Left), cx));
-        let settings = cx.new(|cx| SettingsPanel::new(vm.clone(), toggle_of(me.clone(), DockPlacement::Right), cx));
-        let processing = cx.new(|cx| ProcessingPanel::new(vm.clone(), toggle_of(me.clone(), DockPlacement::Right), cx));
+        let inspector = cx.new(|cx| InspectorPanel::new(vm.clone(), toggle_of(me.clone(), DockPlacement::Right), cx));
         let timeline = cx.new(|cx| TimelinePanel::new(store.clone(), toggle_of(me.clone(), DockPlacement::Bottom), cx));
         let plugin_panels = crate::plugin::plugins()
             .iter()
@@ -143,8 +139,8 @@ impl ExploreView {
         });
         // Picking a channel shows its processing
         let picked = cx.subscribe(&store, |this, _, e: &AppEvent, cx| {
-            if matches!(e, AppEvent::Picked) && this.right != Some(RightPanel::Processing) {
-                this.show_right(RightPanel::Processing, cx);
+            if matches!(e, AppEvent::Picked) && this.right != Some(RightPanel::Inspector) {
+                this.show_right(RightPanel::Inspector, cx);
             }
             if matches!(e, AppEvent::Document(_) | AppEvent::RecordingChanged) {
                 cx.notify();
@@ -158,8 +154,7 @@ impl ExploreView {
             channels,
             timeline_tab,
             left_timeline: false,
-            processing,
-            settings,
+            inspector,
             timeline,
             plugin_panels,
             left_open: saved.left_open,
@@ -273,8 +268,7 @@ impl ExploreView {
 
     fn right_view(&self, which: RightPanel) -> Option<AnyView> {
         Some(match which {
-            RightPanel::Processing => self.processing.clone().into(),
-            RightPanel::Display => self.settings.clone().into(),
+            RightPanel::Inspector => self.inspector.clone().into(),
             RightPanel::Plugin(i) => self.plugin_panels.get(i)?.2.clone().into(),
         })
     }
@@ -389,8 +383,7 @@ impl Render for ExploreView {
                 }))
         };
         let mut items: Vec<(String, Icon, SharedString, RightPanel)> = vec![
-            ("rail-processing".into(), Icon::new(gpui_kit::assets::IconName::Workflow), "Processing".into(), RightPanel::Processing),
-            ("rail-display".into(), Icon::new(gpui_kit::assets::IconName::SlidersHorizontal), "Display".into(), RightPanel::Display),
+            ("rail-inspector".into(), Icon::new(gpui_kit::assets::IconName::SlidersHorizontal), "Inspector: the selected view or source".into(), RightPanel::Inspector),
         ];
         for (i, (title, icon, _)) in self.plugin_panels.iter().enumerate() {
             items.push((format!("rail-plugin-{i}"), icon(), title.clone(), RightPanel::Plugin(i)));

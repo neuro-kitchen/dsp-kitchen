@@ -484,10 +484,17 @@ impl SettingsPanel {
         None
     }
 
-    fn body(&mut self, _: &mut Window, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+    fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        let sections = self.sections(window, cx);
+        v_flex().id("settings-panel").test_support().size_full().gap_4().p_3().overflow_y_scroll().children(sections).into_any_element()
+    }
+
+    /// The focused view: its title, its source (picked here only, with what the source is), and
+    /// how it is drawn: the Inspector's upper half.
+    pub fn sections(&mut self, _: &mut Window, cx: &mut Context<Self>) -> Vec<gpui_kit::AnyElement> {
         let muted = cx.theme().muted_foreground;
         let Some(vm) = self.explore.read(cx).focused.clone() else {
-            return v_flex().size_full().p_3().text_sm().text_color(muted).child("Click a view to see its settings here.").into_any_element();
+            return vec![div().text_sm().text_color(muted).child("Click a view to inspect it here, or a recording's source (Timeline → Recordings) for what it holds.").into_any_element()];
         };
         let v = vm.read(cx).view.clone();
         let sources = vm.read(cx).store().read(cx).sources().cloned();
@@ -583,20 +590,29 @@ impl SettingsPanel {
             Switch::new("remove-dc").checked(v.remove_dc).label("Remove DC offset").on_click(move |on, _, cx| vm.update(cx, |vm, cx| vm.set_remove_dc(*on, cx)))
         };
 
-        v_flex()
-            .id("settings-panel")
-            .test_support()
-            .size_full()
-            .gap_4()
-            .p_3()
-            .overflow_y_scroll()
-            .child(div().text_sm().font_weight(gpui_kit::FontWeight::SEMIBOLD).truncate().child(v.title.clone()))
-            .child(Section::new("Layer").child(kind).when(traces, |d| d.child(row("Colour", color_by, cx))))
-            .child(Section::new("Source").children(source).child(row("Range", div().text_sm().child(v.range_label()), cx)))
-            .when(traces, |d| d.child(Section::new("Traces").child(row("On screen", lanes_row, cx)).child(row("Gain", gain_row, cx))))
-            .child(Section::new("Scaling").child(auto).child(dc))
-            .into_any_element()
+        let facts = sources.as_ref().map(|ss| source_facts(ss.entry(&v.source), muted));
+        let mut out = vec![
+            div().text_sm().font_weight(gpui_kit::FontWeight::SEMIBOLD).truncate().child(v.title.clone()).into_any_element(),
+            Section::new("Source").children(source).children(facts).child(row("Range", div().text_sm().child(v.range_label()), cx)).into_any_element(),
+            Section::new("Layer").child(kind).when(traces, |d| d.child(row("Colour", color_by, cx))).into_any_element(),
+        ];
+        if traces {
+            out.push(Section::new("Traces").child(row("On screen", lanes_row, cx)).child(row("Gain", gain_row, cx)).into_any_element());
+        }
+        out.push(Section::new("Scaling").child(auto).child(dc).into_any_element());
+        out
     }
+}
+
+/// What a source is: channels, rate, length, how it is stored.
+pub fn source_facts(e: &dspk_io::SourceEntry, muted: gpui_kit::Hsla) -> gpui_kit::Div {
+    let fact = |k: &'static str, v: String| h_flex().gap_2().child(div().w(px(84.)).text_xs().text_color(muted).child(k)).child(div().flex_1().min_w_0().truncate().text_xs().child(v));
+    v_flex()
+        .gap_0p5()
+        .child(fact("Channels", e.channels.to_string()))
+        .child(fact("Rate", format!("{} Hz", e.sample_rate.rate_hz())))
+        .child(fact("Length", format!("{} ({} samples)", crate::data::store::duration(e.duration_sec()), e.samples)))
+        .child(fact("Stored as", format!("{} · {}", e.format.name(), e.unit.symbol())))
 }
 
 /// The open recording's default source.

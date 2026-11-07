@@ -142,7 +142,7 @@ impl TimelineTab {
                     .cursor_pointer()
                     .child(div().flex_1().min_w_0().truncate().text_xs().child(name.clone()))
                     .child(div().text_xs().text_color(muted).child(format!("{channels} ch")))
-                    .on_click(move |_, _, cx| store.update(cx, |s, cx| s.open_floating(Floating::Metadata { path: path.clone(), source: id.clone() }, cx)))
+                    .on_click(move |_, _, cx| store.update(cx, |s, cx| s.inspect(Some((path.clone(), id.clone())), cx)))
                     .context_menu(move |m: PopupMenu, _, _| {
                         let (store2, explore, path2, id2, id3) = (store2.clone(), explore.clone(), path2.clone(), id2.clone(), id2.clone());
                         let store3 = store2.clone();

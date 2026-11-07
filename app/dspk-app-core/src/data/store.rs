@@ -118,6 +118,8 @@ pub struct Store {
     pub recording: Option<Recording>,
     /// Other recordings loaded this session (each file once): switching to one is instant.
     pub loaded: Vec<Recording>,
+    /// A recording's source the Inspector shows (picked under Recordings; a view's focus clears it).
+    pub inspected: Option<(PathBuf, String)>,
     pub timeline: TimelineState,
     /// Channels shown, per source id, in display order.
     selection: HashMap<String, Vec<usize>>,
@@ -173,6 +175,7 @@ impl Store {
         Self {
             recording: None,
             loaded: Vec::new(),
+            inspected: None,
             timeline: TimelineState::new(1.0),
             selection: HashMap::new(),
             workspace: session.workspace,
@@ -1022,6 +1025,16 @@ impl Store {
         self.save_session();
         cx.emit(AppEvent::RecordingChanged);
         cx.emit(AppEvent::Status);
+    }
+
+    /// Shows `source` of the recording at `path` in the Inspector (`None`: back to the view).
+    pub fn inspect(&mut self, what: Option<(PathBuf, String)>, cx: &mut Context<Self>) {
+        if self.inspected != what {
+            let show = what.is_some();
+            self.inspected = what;
+            cx.emit(if show { AppEvent::Picked } else { AppEvent::Status });
+            cx.notify();
+        }
     }
 
     /// Every loaded recording, the active one first.

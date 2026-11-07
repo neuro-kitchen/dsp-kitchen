@@ -386,6 +386,29 @@ impl Panel for TracePanel {
         let (explore, id) = (self.explore.clone(), self.vm.read(cx).id());
         menu.item(PopupMenuItem::new("Add traces view").on_click(add(TimeViewKind::Traces)))
             .item(PopupMenuItem::new("Add heatmap view").on_click(add(TimeViewKind::Heatmap)))
+            .item({
+                // A new session view of the channels shown now, with this view's chain
+                let vm = self.vm.clone();
+                PopupMenuItem::new("Copy with shown channels").on_click(move |_, _, cx| {
+                    let (store, doc_view, source) = {
+                        let v = vm.read(cx);
+                        (v.store().clone(), v.shown_view(v.store().read(cx)).map(|d| d.id.clone()), v.view.source.clone())
+                    };
+                    let Some(view) = doc_view else { return };
+                    store.update(cx, |s, cx| {
+                        let sel = s.selection(&source).to_vec();
+                        let channels = (!sel.is_empty()).then_some(sel);
+                        let _ = s.execute(crate::domain::command::SessionCommand::CopyView { view, channels, name: None }, cx);
+                    });
+                    // This panel now shows (and the Inspector edits) the copy
+                    if let Some(copy) = store.read(cx).doc.active_view.clone() {
+                        vm.update(cx, |vm, cx| {
+                            vm.view.doc_view = copy;
+                            cx.notify();
+                        });
+                    }
+                })
+            })
             .separator()
             .item(PopupMenuItem::new("Close view").on_click(move |_, _, cx| {
                 if let Some(ex) = explore.upgrade() {
