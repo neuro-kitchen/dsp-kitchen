@@ -1,11 +1,8 @@
 .worktrees
 .claude
-data/
-# The app's data layer is code, not data
-!app/dspk-app-core/src/data/
-# The docs site's data (topic groups, landing-page signal strips) is source too
-!docs/src/data/
-.data/
+# Local datasets (recordings for tests, benchmarks and the playground; never in the repository).
+# Exact paths only: a generic `data/` rule once hid source folders named data.
+/.datasets/
 .docs-old/
 .env
 .knowledge
@@ -264,7 +261,7 @@ __marimo__/
 .streamlit/secrets.toml
 # Playground scratch (the curated figures live in each chapter's figures/, committed)
 playground/output/
-playground/data/
+/playground/datasets/
 # Benchmark results: the JSON records and their PNGs are committed (plating.results); anything
 # else a run leaves there (sortings, folders, logs) is not
 benchmarks/*/results/*

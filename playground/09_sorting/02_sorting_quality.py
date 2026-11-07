@@ -23,7 +23,7 @@ import plating
 from dspk.synapse import io, metrics
 
 FIG = Path(__file__).parent / "figures"
-DATA = Path(__file__).resolve().parents[1] / "data" / "kilosort4"
+DATA = Path(__file__).resolve().parents[1] / "datasets" / "kilosort4"
 OURS = DATA / "ZFM-02370_mini.imec0.ap.short.kilosort4.sorting.zarr"
 REFERENCE = DATA / "saved_results"
 for path in (OURS, REFERENCE):

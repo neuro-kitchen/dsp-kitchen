@@ -2,7 +2,7 @@
 # # 09 · Sorting — 0. The Kilosort test recording
 # From here on the playground uses real data: Kilosort4's test recording, a Neuropixels 1.0 probe
 # (385 channels, 30 kHz, 45 s, int16, SpikeGLX). This downloads it once into
-# `playground/data/kilosort4/` (git-ignored), checks it against the SHA-256 the playground was
+# `playground/datasets/kilosort4/` (git-ignored), checks it against the SHA-256 the playground was
 # written with, and writes the JSON `.meta` dspk reads raw binaries with.
 #
 #     uv run python playground/09_sorting/00_fetch_kilosort_data.py [--url URL] [--dest DIR]
@@ -31,7 +31,7 @@ META = {"channels": 385, "sample_rate_hz": 30000.0, "format": "int16", "order": 
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--url", default=DEFAULT_URL)
-parser.add_argument("--dest", type=Path, default=Path(__file__).resolve().parents[1] / "data" / "kilosort4")
+parser.add_argument("--dest", type=Path, default=Path(__file__).resolve().parents[1] / "datasets" / "kilosort4")
 parser.add_argument("--from", dest="source", type=Path, help="copy this local .bin instead of downloading")
 args, _ = parser.parse_known_args()
 

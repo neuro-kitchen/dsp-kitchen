@@ -1388,9 +1388,9 @@ mod tests {
 
     /// The file of the bug report (local only): its EMG source, the report's 4 min 35 s window.
     #[gpui_kit::test]
-    #[ignore = "needs .data/nwb/15-25-33_meps.nwb.zarr"]
+    #[ignore = "needs .datasets/nwb/15-25-33_meps.nwb.zarr"]
     fn ops_preview_on_the_report_file(cx: &mut TestAppContext) {
-        let path = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../.data/nwb/15-25-33_meps.nwb.zarr"));
+        let path = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../.datasets/nwb/15-25-33_meps.nwb.zarr"));
         ops_on_a_second_source(cx, path, "/acquisition/EMG", 275.0, 15.0);
     }
 }
