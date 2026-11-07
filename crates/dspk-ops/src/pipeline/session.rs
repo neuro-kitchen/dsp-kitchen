@@ -118,11 +118,15 @@ impl<F: DspFloat> PipelineWorkspace<F> {
                     plan.push(Planned::Filter { filter, state });
                 }
                 PipelineStage::SpatialWhitening(w) => {
-                    assert_eq!(w.num_channels, channels, "SpatialWhitening channel mismatch");
+                    if w.num_channels != channels {
+                        return Err(OpsError::SpatialChannelMismatch { stage: "spatial whitening", expected: w.num_channels, actual: channels });
+                    }
                     plan.push(Planned::SpatialMatrix(DeviceSpatialMatrix::upload::<F>(&client, &w.matrix, channels)));
                 }
                 PipelineStage::SurfaceLaplacian(lap) => {
-                    assert_eq!(lap.num_channels, channels, "SurfaceLaplacian channel mismatch");
+                    if lap.num_channels != channels {
+                        return Err(OpsError::SpatialChannelMismatch { stage: "the surface Laplacian", expected: lap.num_channels, actual: channels });
+                    }
                     plan.push(Planned::SpatialMatrix(DeviceSpatialMatrix::upload::<F>(&client, &lap.matrix, channels)));
                 }
                 PipelineStage::Fir { taps, centered, edge } => {

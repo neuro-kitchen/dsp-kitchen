@@ -731,3 +731,21 @@ fn remaps_fold_into_the_read() {
     assert_eq!(dspk_io::open(&dir.join("few.zarr")).unwrap().info().channels[0].name, "c3");
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// The per-sample ops and a grid's surface Laplacian run as written (equal to the stages over the
+/// whole recording); a grid of another size than the chain's channels is refused with the reason.
+#[test]
+fn per_sample_ops_and_the_laplacian_of_a_grid() {
+    let dir = scratch("laplacian");
+    write_input(&dir);
+    let chain = spec(r#""r": {"op": "rectify"}, "l": {"op": "laplacian", "grid": [2, 3]}, "q": {"op": "sqrt"},"#, r#"[["in", "r"], ["r", "l"], ["l", "q"], ["q", "out"]]"#, "");
+    run(&chain, &dir).unwrap();
+    let got = read_all(&dir.join("out.bin"));
+    let expected = whole_recording(&chain, targets()[0], false);
+    assert!(max_rel_err(&got, &expected) < 1e-5, "{}", max_rel_err(&got, &expected));
+    let wrong = spec(r#""l": {"op": "laplacian", "grid": [2, 2]},"#, r#"[["in", "l"], ["l", "out"]]"#, "");
+    let err = run(&wrong, &dir).unwrap_err().to_string();
+    assert!(err.contains("made for 4 channels") && err.contains("has 6"), "{err}");
+    let empty = spec(r#""l": {"op": "laplacian", "grid": [1, 1]},"#, r#"[["in", "l"], ["l", "out"]]"#, "");
+    assert!(empty.chain().unwrap().stages[0].1.stage().unwrap_err().to_string().contains("at least two"));
+}

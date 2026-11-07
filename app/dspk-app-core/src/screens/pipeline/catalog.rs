@@ -76,6 +76,7 @@ pub fn catalog() -> Vec<Category> {
             items: vec![
                 op("CMR", "Common median reference", json!({"op": "cmr"})),
                 op("CAR", "Common average reference", json!({"op": "car"})),
+                op("Laplacian", "Each electrode minus its grid neighbours (HD-EMG, ECoG)", json!({"op": "laplacian", "grid": [4, 8]})),
             ],
         },
         Category {
@@ -135,6 +136,7 @@ pub fn type_name(node: &Node) -> &'static str {
         Node::Square {} => "Square",
         Node::Sqrt {} => "Square root",
         Node::Log10 {} => "Log₁₀",
+        Node::Laplacian { .. } => "Laplacian",
         Node::Resample { .. } => "Resample",
         Node::Remap { .. } => "Remap",
         Node::Read { .. } => "Read",
@@ -160,6 +162,12 @@ pub fn presets(node: &Node) -> Vec<(&'static str, Value)> {
         Node::Median { .. } => vec![("3 samples", json!({"op": "median", "width": 3})), ("5 samples", json!({"op": "median", "width": 5})), ("9 samples", json!({"op": "median", "width": 9}))],
         Node::GaussianSmooth { .. } => vec![("σ 1 sample", json!({"op": "gaussian_smooth", "sigma_samples": 1.0})), ("σ 2 samples", json!({"op": "gaussian_smooth", "sigma_samples": 2.0})), ("σ 5 samples", json!({"op": "gaussian_smooth", "sigma_samples": 5.0}))],
         Node::Fir { .. } => vec![("Derivative (first difference)", json!({"op": "fir", "taps": [1.0, -1.0], "centered": false})), ("Moving average, 5 taps", json!({"op": "fir", "taps": [0.2, 0.2, 0.2, 0.2, 0.2], "centered": true})), ("Moving average, 9 taps", json!({"op": "fir", "taps": [0.111111, 0.111111, 0.111111, 0.111111, 0.111111, 0.111111, 0.111111, 0.111111, 0.111111], "centered": true}))],
+        Node::Laplacian { .. } => vec![
+            ("Grid 4 × 8 (32 electrodes)", json!({"op": "laplacian", "grid": [4, 8]})),
+            ("Grid 8 × 4 (32 electrodes)", json!({"op": "laplacian", "grid": [8, 4]})),
+            ("Grid 8 × 8 (64 electrodes)", json!({"op": "laplacian", "grid": [8, 8]})),
+            ("Grid 16 × 4 (64 electrodes)", json!({"op": "laplacian", "grid": [16, 4]})),
+        ],
         Node::Scale { .. } => vec![("Invert", json!({"op": "scale", "alpha": -1.0, "beta": 0.0})), ("µV → mV", json!({"op": "scale", "alpha": 0.001, "beta": 0.0}))],
         _ => Vec::new(),
     }
@@ -194,6 +202,7 @@ pub fn flow_call(node: &Node) -> String {
         Node::Square {} => ".map { it * it }".into(),
         Node::Sqrt {} => ".map { sqrt(it) }".into(),
         Node::Log10 {} => ".map { log10(abs(it)) }".into(),
+        Node::Laplacian { grid: [r, c] } => format!(".laplacian(grid = {r} × {c})"),
         Node::Resample { up, down, .. } => format!(".resample({up}, {down})"),
         Node::Remap { pairs, path, .. } => match path {
             Some(p) => format!(".remap({:?})", p.display().to_string()),

@@ -559,6 +559,12 @@ impl Store {
                 current = order.iter().map(|&j| current[j]).collect();
                 steps.push((key, PipelineStage::ReorderChannels { order }));
             } else if let Some(stage) = n.stage().map_err(|e| e.to_string())? {
+                // A grid's operator is made for its electrodes
+                if let PipelineStage::SurfaceLaplacian(lap) = &stage
+                    && lap.num_channels != current.len()
+                {
+                    return Err(format!("the Laplacian's grid has {} electrodes; the view has {} channels", lap.num_channels, current.len()));
+                }
                 steps.push((key, stage));
             }
         }

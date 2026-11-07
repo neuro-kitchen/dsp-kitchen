@@ -28,6 +28,8 @@ pub enum OpsError {
     ForwardBackwardOnLiveStream,
     #[error("channel order: {0}")]
     InvalidChannelOrder(String),
+    #[error("{stage} is made for {expected} channels; the data has {actual}")]
+    SpatialChannelMismatch { stage: &'static str, expected: usize, actual: usize },
     #[error(transparent)]
     Core(#[from] DspError),
 }

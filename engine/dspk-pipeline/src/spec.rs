@@ -20,6 +20,7 @@ use dspk_ops::resampler::poly::{RESAMPLE_POLY_DEFAULT_EDGE, RESAMPLE_POLY_WINDOW
 use dspk_ops::resampler::FirWindow;
 use dspk_core::{ChannelMap, ChannelPair};
 use dspk_ops::math::Elementwise;
+use dspk_ops::spatial::SurfaceLaplacian;
 use dspk_ops::PipelineStage;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -115,6 +116,11 @@ pub enum Node {
     Sqrt {},
     /// `y = log₁₀ |x|`, magnitudes below 1e-12 taken as 1e-12.
     Log10 {},
+    /// Surface Laplacian of an electrode grid of `[rows, cols]` (channels in row-major order:
+    /// channel `r · cols + c`): each channel minus the mean of its orthogonal neighbours, which
+    /// removes what volume conduction spreads over the grid (HD-EMG, ECoG). The chain's channels
+    /// must number `rows · cols`.
+    Laplacian { grid: [usize; 2] },
     /// IIR filter designed for the recording's sample rate.
     Iir {
         band: Band,
@@ -800,6 +806,12 @@ impl Node {
             Node::Square {} => Ok(Some(PipelineStage::Elementwise(Elementwise::Square))),
             Node::Sqrt {} => Ok(Some(PipelineStage::Elementwise(Elementwise::Sqrt))),
             Node::Log10 {} => Ok(Some(PipelineStage::Elementwise(Elementwise::Log10))),
+            Node::Laplacian { grid: [rows, cols] } => {
+                if *rows == 0 || *cols == 0 || rows * cols < 2 {
+                    return Err(PipelineError::Invalid(format!("laplacian: a grid of at least two electrodes, got {rows} × {cols}")));
+                }
+                Ok(Some(PipelineStage::SurfaceLaplacian(SurfaceLaplacian::from_grid_2d(*rows, *cols))))
+            }
             Node::Cmr {} => Ok(Some(PipelineStage::CommonMedianReference)),
             Node::GaussianSmooth { sigma_samples, edge } => Ok(Some(PipelineStage::GaussianSmooth { sigma_samples: *sigma_samples, edge: (*edge).into() })),
             Node::Median { width, edge } => Ok(Some(PipelineStage::Median { width: *width, edge: (*edge).into() })),

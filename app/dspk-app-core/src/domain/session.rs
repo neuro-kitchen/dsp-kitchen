@@ -311,7 +311,7 @@ impl ViewDoc {
 pub fn op_family(node: &Node) -> &'static str {
     match node {
         Node::Iir { .. } | Node::Fir { .. } | Node::Sos { .. } | Node::Notch { .. } => "filter",
-        Node::Car {} | Node::Cmr {} => "reference",
+        Node::Car {} | Node::Cmr {} | Node::Laplacian { .. } => "reference",
         Node::Median { .. } | Node::GaussianSmooth { .. } => "smooth",
         Node::Remap { .. } => "channels",
         _ => "transform",
@@ -341,6 +341,7 @@ pub fn op_name(node: &Node) -> &'static str {
         Node::Square {} => "square",
         Node::Sqrt {} => "sqrt",
         Node::Log10 {} => "log10",
+        Node::Laplacian { .. } => "laplacian",
     }
 }
 

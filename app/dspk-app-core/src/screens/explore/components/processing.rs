@@ -92,6 +92,7 @@ pub fn op_summary(node: &Node) -> String {
         Node::Square {} => "Square x²".into(),
         Node::Sqrt {} => "Square root √x".into(),
         Node::Log10 {} => "Log₁₀ |x|".into(),
+        Node::Laplacian { grid: [r, c] } => format!("Surface Laplacian, grid {r} × {c}"),
         other => op_name(other).to_string(),
     }
 }
