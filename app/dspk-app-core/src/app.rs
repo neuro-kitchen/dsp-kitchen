@@ -760,6 +760,48 @@ mod tests {
         cx.update_window(window, |_, window, cx| window.render_frame(cx)).unwrap();
     }
 
+    /// "Add view or container": a view kind adds a view (Raster only with units), a container
+    /// arranges the views, Close closes it.
+    #[gpui_kit::test]
+    fn add_view_or_container(cx: &mut TestAppContext) {
+        let (window, store, app) = open(cx);
+        install(cx, &store);
+        let before = views(cx, &app).len();
+        let explore = cx.update(|cx| app.read(cx).explore.clone());
+        let dialog_open = |cx: &mut TestAppContext| cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find("add-view-dialog").is_some()
+        }).unwrap();
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("explore-add-view", cx);
+        }).unwrap();
+        cx.run_until_parked();
+        assert!(dialog_open(cx), "Add view… opens the dialog");
+        cx.update_window(window, |_, window, cx| window.click("add-view-kind-raster", cx)).unwrap();
+        cx.run_until_parked();
+        assert_eq!(views(cx, &app).len(), before, "no units: Raster adds nothing");
+        cx.update_window(window, |_, window, cx| window.click("add-view-kind-heatmap", cx)).unwrap();
+        cx.run_until_parked();
+        assert_eq!(views(cx, &app).len(), before + 1, "a heatmap view");
+        assert!(!dialog_open(cx), "adding closes the dialog");
+        cx.update(|cx| explore.update(cx, |e, cx| e.set_add_dialog(true, cx)));
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("add-container-grid", cx);
+        }).unwrap();
+        cx.run_until_parked();
+        assert!(!dialog_open(cx));
+        assert_eq!(views(cx, &app).len(), before + 1, "arranging keeps every view");
+        cx.update(|cx| explore.update(cx, |e, cx| e.set_add_dialog(true, cx)));
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("add-view-close", cx);
+        }).unwrap();
+        cx.run_until_parked();
+        assert!(!dialog_open(cx), "Close closes it");
+    }
+
     /// A remap at the head of a view's chain is what Explore shows: its order, without the
     /// channels it drops.
     #[gpui_kit::test]

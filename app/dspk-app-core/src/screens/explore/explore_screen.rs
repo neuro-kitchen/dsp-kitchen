@@ -10,13 +10,13 @@ use std::rc::Rc;
 use gpui_kit::base::dock::{DockArea, DockLayout, DockPlacement, InsertTarget};
 use gpui_kit::base::Placement;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
+use gpui_kit::TestSupportExt as _;
 use gpui_kit::component::dock::{panel_handle, DockSkin};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     div, px, AnyView, App, AppContext as _, Context, DragMoveEvent, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    Styled as _, Subscription, WeakEntity, Window,
+    StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window,
 };
 
 use crate::data::store::{AppEvent, Store};
@@ -82,7 +82,23 @@ pub struct ExploreView {
     right: Option<RightPanel>,
     last_right: RightPanel,
     timeline_open: bool,
+    /// "Add view or container" is open over the views.
+    add_dialog: bool,
     _subs: Vec<Subscription>,
+}
+
+/// How [`ExploreView::arrange`] lays out the views (the dialog's containers: the dock has no empty
+/// containers, so a container is a layout of the views there are).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arrangement {
+    /// One tab group holding every view.
+    Tabs,
+    /// Side by side, left to right.
+    Horizontal,
+    /// Stacked, top to bottom.
+    Vertical,
+    /// Rows of up to ⌈√n⌉ views.
+    Grid,
 }
 
 /// Opens / closes one side of `explore` (the panels' hide buttons).
@@ -161,6 +177,7 @@ impl ExploreView {
             right: saved.right_open.then_some(last_right),
             last_right,
             timeline_open: saved.bottom_open,
+            add_dialog: false,
             _subs: vec![sub, picked],
         };
         let views = this.vm.read(cx).views.clone();
@@ -214,6 +231,35 @@ impl ExploreView {
             layout = layout.child(DockLayout::tabs().panel_view(panel_handle(p), cx), size);
         }
         self.dock.update(cx, |d, cx| d.set_center(layout, window, cx));
+    }
+
+    /// Lays the views out as `how` (in the order they were added).
+    pub fn arrange(&mut self, how: Arrangement, window: &mut Window, cx: &mut Context<Self>) {
+        let order: Vec<ViewId> = self.vm.read(cx).views.iter().map(|v| v.read(cx).id()).collect();
+        let panels: Vec<Entity<TracePanel>> = order.iter().filter_map(|id| self.panels.get(id).cloned()).collect();
+        if panels.is_empty() {
+            return;
+        }
+        let group = |p: &Entity<TracePanel>, cx: &App| DockLayout::tabs().panel_view(panel_handle(p.clone()), cx);
+        let layout = match how {
+            Arrangement::Tabs => panels.iter().fold(DockLayout::tabs(), |l, p| l.panel_view(panel_handle(p.clone()), cx)),
+            Arrangement::Horizontal => panels.iter().fold(DockLayout::h_split(), |l, p| l.child(group(p, cx), None)),
+            Arrangement::Vertical => panels.iter().fold(DockLayout::v_split(), |l, p| l.child(group(p, cx), None)),
+            Arrangement::Grid => {
+                let cols = (panels.len() as f64).sqrt().ceil().max(1.0) as usize;
+                panels.chunks(cols).fold(DockLayout::v_split(), |l, row| l.child(row.iter().fold(DockLayout::h_split(), |r, p| r.child(group(p, cx), None)), None))
+            }
+        };
+        self.dock.update(cx, |d, cx| d.set_center(layout, window, cx));
+        cx.notify();
+    }
+
+    /// Opens or closes "Add view or container".
+    pub fn set_add_dialog(&mut self, open: bool, cx: &mut Context<Self>) {
+        if self.add_dialog != open {
+            self.add_dialog = open;
+            cx.notify();
+        }
     }
 
     /// A new view in its own group beside the focused view's group (to its right, or under it).
@@ -275,45 +321,146 @@ impl ExploreView {
 }
 
 impl ExploreView {
-    /// "Add view…": a view of each source of the open recording, of the kinds its data supports
-    /// (a raster needs units: a linked sorting), and the suggested layout.
-    fn add_view_menu(&self, m: PopupMenu, cx: &App) -> PopupMenu {
-        let s = self.store.read(cx);
-        let Some(sources) = s.sources().cloned() else {
-            return m.label("Open a recording first");
-        };
-        let path = s.recording.as_ref().and_then(|r| r.path.clone());
-        let mut m = m;
-        for e in sources.entries() {
-            let units = path.as_ref().and_then(|p| s.doc.views.iter().find(|v| &v.recording.path == p && v.recording.source.as_deref().unwrap_or(&sources.default_entry().id) == e.id)).is_some_and(|v| crate::plugin::layers(s, v, cx).units);
-            m = m.label(format!("{} · {} ch", e.name, e.channels));
-            let mut kinds = vec![("Traces", TimeViewKind::Traces), ("Heatmap", TimeViewKind::Heatmap)];
-            if units {
-                kinds.push(("Raster", TimeViewKind::Raster));
-            }
-            for (label, kind) in kinds {
-                let (vm, source) = (self.vm.clone(), e.id.clone());
-                m = m.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
-                    vm.update(cx, |vm, cx| {
-                        vm.add_on(kind, &source, cx);
-                    });
-                }));
-            }
-        }
-        let (vm, store) = (self.vm.clone(), self.store.clone());
-        m.separator()
-            .item(PopupMenuItem::new("Reset to suggested layout").on_click(move |_, _, cx| vm.update(cx, |vm, cx| vm.reset_layout(cx))))
-            .item(PopupMenuItem::new("New stream: branch in Pipeline…").on_click(move |_, _, cx| store.update(cx, |s, cx| s.set_workspace(crate::navigation::route::Workspace::Pipeline, cx))))
-    }
-
+    /// "Add view…": opens "Add view or container".
     fn add_view_button(&self, id: &'static str, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let me = cx.entity().downgrade();
-        Button::new(id).ghost().xsmall().icon(IconName::Plus).label("Add view…").tooltip("A view of a source of the open recording").dropdown_menu(move |m: PopupMenu, _, cx| {
-            match me.upgrade() {
-                Some(e) => e.read(cx).add_view_menu(m, cx),
-                None => m,
-            }
+        Button::new(id).ghost().xsmall().icon(IconName::Plus).label("Add view…").tooltip("Add a view, or arrange the views").on_click(move |_, _, cx| {
+            let _ = me.update(cx, |e, cx| e.set_add_dialog(true, cx));
         })
+    }
+
+    /// "Add view or container" (as Rerun's): containers arrange the views; a view kind adds a
+    /// view beside the focused one, on its source (changed in the Inspector, which opens).
+    fn add_dialog(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        use gpui_kit::assets::IconName as Assets;
+        let t = cx.theme();
+        let (muted, border, hover, popover, fg) = (t.muted_foreground, t.border, t.accent, t.popover, t.foreground);
+        let me = cx.entity().downgrade();
+        // A row: icon, title, one line of description; disabled rows say why
+        let row = |id: String, icon: Assets, title: &'static str, text: String, enabled: bool, on: Rc<dyn Fn(&mut Window, &mut App)>| {
+            h_flex()
+                .id(SharedString::from(id))
+                .test_support()
+                .min_h(px(48.))
+                .px_2()
+                .gap_3()
+                .rounded_md()
+                .when(enabled, |d| d.cursor_pointer().hover(move |d| d.bg(hover)).on_click(move |_, window, cx| on(window, cx)))
+                .when(!enabled, |d| d.opacity(0.5))
+                .child(div().flex_none().size(px(32.)).rounded_md().border_1().border_color(border).flex().items_center().justify_center().child(Icon::new(icon).text_color(fg)))
+                .child(v_flex().min_w_0().child(div().text_sm().font_weight(gpui_kit::FontWeight::MEDIUM).child(title)).child(div().text_xs().text_color(muted).truncate().child(text)))
+        };
+        let close = {
+            let me = me.clone();
+            move |_: &mut Window, cx: &mut App| {
+                let _ = me.update(cx, |e, cx| e.set_add_dialog(false, cx));
+            }
+        };
+        let arrange = |how: Arrangement| -> Rc<dyn Fn(&mut Window, &mut App)> {
+            let me = me.clone();
+            Rc::new(move |window, cx| {
+                let _ = me.update(cx, |e, cx| {
+                    e.arrange(how, window, cx);
+                    e.set_add_dialog(false, cx);
+                });
+            })
+        };
+        let add = |kind: TimeViewKind| -> Rc<dyn Fn(&mut Window, &mut App)> {
+            let me = me.clone();
+            Rc::new(move |_, cx| {
+                let _ = me.update(cx, |e, cx| {
+                    e.set_add_dialog(false, cx);
+                    e.vm.update(cx, |vm, cx| {
+                        vm.add(kind, cx);
+                    });
+                    e.show_right(RightPanel::Inspector, cx);
+                });
+            })
+        };
+        // The focused view's source, and whether it has units (a raster needs them)
+        let s = self.store.read(cx);
+        let source = self.vm.read(cx).focused.as_ref().map(|f| f.read(cx).view.source.clone()).or_else(|| s.sources().map(|ss| ss.default_entry().id.clone()));
+        let source_name = source.as_ref().and_then(|id| s.sources().map(|ss| ss.entry(id).name.clone())).unwrap_or_default();
+        let units = s.active_view().is_some_and(|v| crate::plugin::layers(s, v, cx).units);
+        let has_views = !self.vm.read(cx).views.is_empty();
+        let containers = [
+            (Arrangement::Tabs, Assets::AppWindow, "Tabs", "Every view as a tab of one group"),
+            (Arrangement::Horizontal, Assets::Columns2, "Horizontal", "Every view side by side"),
+            (Arrangement::Vertical, Assets::Rows2, "Vertical", "Every view stacked"),
+            (Arrangement::Grid, Assets::LayoutGrid, "Grid", "Every view in a grid"),
+        ];
+        let on = |what: &str| if source_name.is_empty() { what.to_string() } else { format!("{what} of {source_name}") };
+        let views = [
+            (TimeViewKind::Traces, Assets::AudioWaveform, "Traces", on("The signals"), true),
+            (TimeViewKind::Heatmap, Assets::Flame, "Heatmap", on("Amplitude by channel and time"), true),
+            (TimeViewKind::Raster, Assets::ChartGantt, "Raster", if units { on("Spike times by unit") } else { "Needs a linked sorting (Sorting panel)".to_string() }, units),
+        ];
+        let heading = |text: &'static str, hint: &'static str| v_flex().px_2().pt_3().pb_1().child(div().text_xs().font_weight(gpui_kit::FontWeight::SEMIBOLD).child(text)).child(div().text_xs().text_color(muted).child(hint));
+        let card = v_flex()
+            .id("add-view-dialog")
+            .test_support()
+            .occlude()
+            .w(px(440.))
+            .max_h(px(620.))
+            .overflow_y_scroll()
+            .p_2()
+            .rounded_lg()
+            .border_1()
+            .border_color(border)
+            .bg(popover)
+            .shadow_lg()
+            .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                h_flex()
+                    .px_2()
+                    .py_1()
+                    .justify_between()
+                    .child(div().text_sm().font_weight(gpui_kit::FontWeight::SEMIBOLD).child("Add view or container"))
+                    .child(Button::new("add-view-close").ghost().small().icon(IconName::Close).tooltip("Close").on_click({
+                        let close = close.clone();
+                        move |_, w, cx| close(w, cx)
+                    })),
+            )
+            .child(heading("Containers", "Arrange the views"))
+            .children(containers.into_iter().map(|(how, icon, title, text)| {
+                let id = format!("add-container-{}", title.to_lowercase());
+                row(id, icon, title, text.into(), has_views, arrange(how))
+            }))
+            .child(div().mx_2().my_2().h(px(1.)).bg(border))
+            .child(heading("Views", "Added beside the focused view; change its source in the Inspector"))
+            .children(views.into_iter().map(|(kind, icon, title, text, enabled)| {
+                let id = format!("add-view-kind-{}", title.to_lowercase());
+                row(id, icon, title, text, enabled, add(kind))
+            }))
+            .child(div().mx_2().my_2().h(px(1.)).bg(border))
+            .child({
+                let (vm, store) = (self.vm.clone(), self.store.clone());
+                let (me2, me3) = (me.clone(), me.clone());
+                h_flex()
+                    .px_1()
+                    .gap_1()
+                    .child(Button::new("add-view-reset").ghost().small().label("Reset to suggested layout").on_click(move |_, _, cx| {
+                        vm.update(cx, |vm, cx| vm.reset_layout(cx));
+                        let _ = me2.update(cx, |e, cx| e.set_add_dialog(false, cx));
+                    }))
+                    .child(Button::new("add-view-pipeline").ghost().small().label("New stream: branch in Pipeline…").on_click(move |_, _, cx| {
+                        store.update(cx, |s, cx| s.set_workspace(crate::navigation::route::Workspace::Pipeline, cx));
+                        let _ = me3.update(cx, |e, cx| e.set_add_dialog(false, cx));
+                    }))
+            });
+        // The backdrop over the views closes it
+        div()
+            .id("add-view-backdrop")
+            .test_support()
+            .absolute()
+            .inset_0()
+            .bg(gpui_kit::black().opacity(0.35))
+            .flex()
+            .items_start()
+            .justify_center()
+            .pt(px(48.))
+            .on_mouse_down(gpui_kit::MouseButton::Left, move |_, w, cx| close(w, cx))
+            .child(card)
     }
 
     /// Above the views: what the focused view shows, and "Add view…".
@@ -425,12 +572,15 @@ impl Render for ExploreView {
                     })
                     .child({
                         let empty = self.vm.read(cx).views.is_empty();
+                        let dialog = self.add_dialog.then(|| self.add_dialog(cx));
                         v_flex()
+                            .relative()
                             .flex_1()
                             .min_w_0()
                             .h_full()
                             .child(self.toolbar(cx))
                             .child(div().flex_1().min_h_0().map(|d| if empty { d.child(self.empty_state(cx)) } else { d.child(self.dock.clone()) }))
+                            .children(dialog)
                     })
                     .when_some(right_panel, |d, p| {
                         d.child(
