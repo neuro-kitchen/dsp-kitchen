@@ -73,7 +73,11 @@ export default defineConfig({
           topic('Synapse', 'plugins/synapse', [
             'plugins/synapse',
             chapter('Learn', 'plugins/synapse/learn'),
-            chapter('Reference', 'plugins/synapse/reference'),
+            {
+              label: 'Reference',
+              collapsed: true,
+              items: [chapter('Python API', 'plugins/synapse/reference/python'), chapter('Sorters', 'plugins/synapse/reference/sorters')],
+            },
             chapter('Validation', 'plugins/synapse/validation'),
           ]),
           topic('Validation', 'validation'),

@@ -88,3 +88,18 @@
 .sl-menu-button {
   top: calc((var(--dk-nav-base) - var(--sl-menu-button-size)) / 2);
 }
+
+/* Reference pages: a function's name as the heading, in the code face but without a code box. */
+.sl-markdown-content :is(h3, h4) > code {
+  padding: 0;
+  background: none;
+  font-size: 0.9em;
+  font-weight: 600;
+}
+.sl-markdown-content h3:has(> code) {
+  font-size: var(--sl-text-2xl);
+  margin-top: 2.5rem;
+}
+.sl-markdown-content h4:has(> code) {
+  font-size: var(--sl-text-xl);
+}
