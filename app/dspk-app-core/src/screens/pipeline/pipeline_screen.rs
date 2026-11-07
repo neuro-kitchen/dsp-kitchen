@@ -683,6 +683,67 @@ impl Inspector {
                     })
                     .into_any_element()
             }
+            NodeKind::Op { enabled, node: op @ dspk_pipeline::Node::Remap { path: map_path, .. } } => {
+                // The input's channels: of the node's recording, when it is loaded
+                let input = path.as_ref().and_then(|p| match g.node(&p[0]).map(|n| &n.kind) {
+                    Some(NodeKind::Source { recording }) => s.recordings().find(|r| r.path.as_ref() == Some(&recording.path)).map(|r| {
+                        let src = recording.source.clone().unwrap_or_else(|| r.sources.default_entry().id.clone());
+                        let ds = r.sources.get(&src);
+                        let read: Vec<usize> = recording.channels.clone().unwrap_or_else(|| (0..r.sources.entry(&src).channels).collect());
+                        let labels: Vec<Option<String>> = read.iter().map(|&c| ds.channel_label(c).map(str::to_string)).collect();
+                        (read.len(), labels)
+                    }),
+                    _ => None,
+                });
+                let (channels, labels) = match input {
+                    Some((n, l)) => (Some(n), l),
+                    None => (None, Vec::new()),
+                };
+                let on = *enabled;
+                let this = cx.entity().downgrade();
+                let id2 = id.clone();
+                let enabled_box = Checkbox::new("inspector-enabled").checked(on).label("On").on_click(move |v: &bool, _, cx| {
+                    let v = *v;
+                    let _ = this.update(cx, |i, cx| i.exec(SessionCommand::EnableNode { id: id2.clone(), enabled: v }, cx));
+                });
+                let table: AnyElement = match map_path {
+                    Some(file) => {
+                        let (store, id, file) = (self.store.clone(), id.clone(), file.clone());
+                        v_flex()
+                            .gap_2()
+                            .child(div().text_xs().text_color(muted).child(format!("Reads the map file {}", file.display())))
+                            .child(Button::new("remap-edit-here").outline().small().label("Edit here (copy the file's map into the node)").on_click(move |_, _, cx| {
+                                match dspk_io::read_channel_map(&file).map_err(|e| e.to_string()).and_then(|m| super::channel_table::Rows::of(&m)) {
+                                    Ok(rows) => {
+                                        let _ = store.update(cx, |s, cx| s.execute(SessionCommand::SetNode { id: id.clone(), node: rows.node() }, cx));
+                                    }
+                                    Err(e) => store.update(cx, |s, cx| s.set_status(format!("{}: {e}", file.display()), cx)),
+                                }
+                            }))
+                            .into_any_element()
+                    }
+                    None => match op.channel_map(None).map_err(|e| e.to_string()).and_then(|m| m.map(|m| super::channel_table::Rows::of(&m)).transpose()) {
+                        Ok(Some(rows)) => super::channel_table::editor(&self.store, &id, rows, channels, |c| labels.get(c).cloned().flatten(), muted),
+                        Ok(None) => div().into_any_element(),
+                        Err(e) => v_flex()
+                            .gap_1()
+                            .child(div().text_xs().text_color(cx.theme().danger).child(e))
+                            .children(channels.map(|c| {
+                                let (store, id) = (self.store.clone(), id.clone());
+                                Button::new("remap-fix").outline().small().label("Start over: every channel in order").on_click(move |_, _, cx| {
+                                    let _ = store.update(cx, |s, cx| s.execute(SessionCommand::SetNode { id: id.clone(), node: super::channel_table::Rows::identity(c).node() }, cx));
+                                })
+                            }))
+                            .into_any_element(),
+                    },
+                };
+                v_flex()
+                    .gap_2()
+                    .child(enabled_box)
+                    .child(Section::new("Channels").child(table))
+                    .child(div().text_xs().text_color(muted).child("Right after the recording it folds into the read (Explore shows the new order); later in the chain it reorders on the device."))
+                    .into_any_element()
+            }
             NodeKind::Op { enabled, node: op } => {
                 let commit: Commit = {
                     let (store, id) = (self.store.clone(), id.clone());

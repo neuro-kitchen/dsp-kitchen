@@ -18,6 +18,8 @@ pub enum Template {
     RecordingFile,
     /// An op (its node as spec JSON).
     Op(Value),
+    /// A channel map, every channel of the input in order to start (edited in the inspector).
+    Remap,
     View,
     Write,
 }
@@ -52,6 +54,11 @@ pub fn catalog() -> Vec<Category> {
                 Item { label: "Open recording", hint: "The recording open in Explore", template: Template::OpenRecording },
                 Item { label: "Recording from file…", hint: "SpikeGLX, raw .bin + .meta, NWB Zarr", template: Template::RecordingFile },
             ],
+        },
+        Category {
+            name: "Channels",
+            icon: IconName::ListOrdered,
+            items: vec![Item { label: "Remap", hint: "Reorder, drop and name channels (a channel table, or a map file)", template: Template::Remap }],
         },
         Category {
             name: "Filter",

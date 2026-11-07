@@ -756,6 +756,27 @@ mod tests {
         cx.update_window(window, |_, window, cx| window.render_frame(cx)).unwrap();
     }
 
+    /// A remap at the head of a view's chain is what Explore shows: its order, without the
+    /// channels it drops.
+    #[gpui_kit::test]
+    fn explore_follows_a_leading_remap(cx: &mut TestAppContext) {
+        let (window, store, _app) = open(cx);
+        cx.update(|cx| {
+            let ds = Dataset::generate_synthetic(8, 10_000.0, 2.0);
+            store.update(cx, |s, cx| s.install(Recording::new(SourceSet::single(ds), Some("/nonexistent/remap.zarr".into())), cx));
+        });
+        cx.update_window(window, |_, window, cx| window.render_frame(cx)).unwrap();
+        cx.run_until_parked();
+        let source = cx.update(|cx| store.read(cx).sources().unwrap().default_entry().id.clone());
+        let view = cx.update(|cx| store.update(cx, |s, cx| s.view_for_source(&source, cx))).expect("a view of the source");
+        cx.update(|cx| store.update(cx, |s, cx| s.execute(crate::domain::command::SessionCommand::SelectView { view: view.clone() }, cx)).unwrap());
+        cx.run_until_parked();
+        let node = crate::screens::pipeline::channel_table::Rows { base: 0, inputs: vec![3, 1, 2], names: vec![None; 3] }.node();
+        cx.update(|cx| store.update(cx, |s, cx| s.execute(crate::domain::command::SessionCommand::AddOp { view, node, index: Some(0), id: None }, cx)).unwrap());
+        cx.run_until_parked();
+        cx.update(|cx| assert_eq!(store.read(cx).selection(&source), &[3, 1, 2]));
+    }
+
     #[gpui_kit::test]
     fn start_screen_then_workspaces(cx: &mut TestAppContext) {
         let (window, store, _) = open(cx);
@@ -844,7 +865,7 @@ mod tests {
         // An operation from the catalogue (what the toolbar's menu does) goes into the graph
         cx.update_window(window, |_, window, cx| {
             let pipeline = app.read(cx).pipeline.clone();
-            let template = crate::screens::pipeline::catalog::catalog()[1].items[0].template.clone();
+            let template = crate::screens::pipeline::catalog::catalog().into_iter().find(|c| c.name == "Filter").expect("a Filter family").items[0].template.clone();
             pipeline.update(cx, |p, cx| p.add(&template, window, cx));
         })
         .unwrap();

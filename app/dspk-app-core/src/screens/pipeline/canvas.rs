@@ -277,6 +277,21 @@ impl GraphCanvas {
                     return;
                 }
             },
+            Template::Remap => {
+                // Every channel of the input in order: of the selected node's recording when it is
+                // loaded, else of the open recording's default source
+                let s = self.store.read(cx);
+                let g = self.graph(cx);
+                let from_path = after.as_ref().and_then(|a| g.path(a)).and_then(|p| match g.node(&p[0]).map(|n| &n.kind) {
+                    Some(NodeKind::Source { recording }) => s.recordings().find(|r| r.path.as_ref() == Some(&recording.path)).map(|r| {
+                        let e = r.sources.entry(recording.source.as_deref().unwrap_or(&r.sources.default_entry().id));
+                        recording.channels.as_ref().map_or(e.channels, Vec::len)
+                    }),
+                    _ => None,
+                });
+                let channels = from_path.or_else(|| s.sources().map(|ss| ss.default_entry().channels)).unwrap_or(1);
+                NodeKind::Op { enabled: true, node: super::channel_table::Rows::identity(channels).node() }
+            }
             Template::View => {
                 let n = self.graph(cx).nodes.iter().filter(|n| matches!(n.kind, NodeKind::View { .. })).count() + 1;
                 crate::domain::command::view_kind(format!("View {n}"))

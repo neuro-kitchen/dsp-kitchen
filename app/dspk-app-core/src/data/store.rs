@@ -484,7 +484,13 @@ impl Store {
         if stages.is_empty() {
             return;
         }
-        let group = v.recording.channels.clone().unwrap_or_else(|| (0..ds.total_channels).collect());
+        let group = match self.view_channels(&v, ds.total_channels) {
+            Ok(g) => g,
+            Err(e) => {
+                self.set_status(format!("{}: {e}", v.name), cx);
+                return;
+            }
+        };
         // The chain's key, step by step: [source and channels, op 1, op 2, …]
         let mut key = vec![format!("{source}|{group:?}")];
         key.extend(v.ops.iter().filter(|o| o.enabled && o.node.stage().ok().flatten().is_some()).map(|o| serde_json::to_string(&o.node).unwrap_or_default()));
@@ -508,21 +514,48 @@ impl Store {
         }
     }
 
-    /// The active view's channel subset becomes the shown selection of its source (once per
-    /// change of view or subset, so the user's own selection is kept otherwise).
+    /// The channels view `v` reads, in its order: its subset (or all `total`), through the
+    /// remaps that open its chain (folded into the read, as the pipeline does: they may reorder
+    /// and drop). A remap later in the chain is not previewed.
+    pub fn view_channels(&self, v: &ViewDoc, total: usize) -> Result<Vec<usize>, String> {
+        let mut group: Vec<usize> = v.recording.channels.clone().unwrap_or_else(|| (0..total).collect());
+        let base_dir = self.doc_path.as_ref().and_then(|p| p.parent().map(Path::to_path_buf)).unwrap_or_default();
+        for op in v.ops.iter().filter(|o| o.enabled) {
+            if !matches!(op.node, dspk_pipeline::Node::Remap { .. }) {
+                break;
+            }
+            let Some(map) = op.node.channel_map(Some(&base_dir)).map_err(|e| e.to_string())? else { break };
+            let order = map.resolve(group.len()).map_err(|e| e.to_string())?;
+            group = order.into_iter().map(|i| group[i]).collect();
+        }
+        Ok(group)
+    }
+
+    /// The active view's channels (its subset, through its leading remaps) become the shown
+    /// selection of its source (once per change of them, so the user's own selection is kept
+    /// otherwise).
     fn apply_active_view(&mut self, cx: &mut Context<Self>) {
         let Some(v) = self.doc.active().cloned() else { return };
-        let key = (v.id.clone(), v.recording.channels.clone());
-        if self.applied_view.as_ref() == Some(&key) {
-            return;
-        }
         let source = self.view_source(&v);
         if !self.on_open_recording(&v, &source) {
             return;
         }
+        let total = self.sources().map_or(0, |ss| ss.entry(&source).channels);
+        let channels = match self.view_channels(&v, total) {
+            Ok(c) => c,
+            Err(e) => {
+                self.set_status(format!("{}: {e}", v.name), cx);
+                v.recording.channels.clone().unwrap_or_else(|| (0..total).collect())
+            }
+        };
+        let subset = (channels.len() != total || channels.iter().enumerate().any(|(i, &c)| i != c)).then_some(channels);
+        let key = (v.id.clone(), subset.clone());
+        if self.applied_view.as_ref() == Some(&key) {
+            return;
+        }
         self.applied_view = Some(key);
-        match &v.recording.channels {
-            Some(ch) => self.set_selection(&source, ch.clone(), cx),
+        match subset {
+            Some(ch) => self.set_selection(&source, ch, cx),
             None => self.select_all(&source, cx),
         }
     }
@@ -544,6 +577,10 @@ impl Store {
             }
             Changed::Ops(id) => {
                 self.rebuild_preview(id, cx);
+                // A remap at the head of the chain changes the channels shown
+                if self.doc.active_view.as_deref() == Some(id.as_str()) {
+                    self.apply_active_view(cx);
+                }
                 if self.picked_op.as_ref().is_some_and(|op| self.doc.view(id).is_some_and(|v| v.op(op).is_none())) {
                     self.picked_op = None;
                 }
