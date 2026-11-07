@@ -1,12 +1,10 @@
 ---
-title: "Get started"
-description: "Install dsp-kitchen and run a first operation."
+title: "Learn"
+description: "Where to start, in short steps: install, the ideas, Python, then the course."
+sidebar:
+  order: 0
 ---
 
 :::note[Being written]
-This page is being written. Planned:
-
-- Install: cargo, pip, the container
-- Check your device (doctor)
-- A first filter, in Python, Rust and the app
+Where to start, in short steps: install, the ideas, Python, then the course.
 :::

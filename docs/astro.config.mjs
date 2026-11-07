@@ -11,12 +11,14 @@ const repo = 'https://github.com/neuro-kitchen/dsp-kitchen';
  * An entry point: its own sidebar, opened at the folder's index page. `items` lists the pages
  * in order; by default, every page of the folder.
  */
-const topic = (label, directory, icon, items = [{ autogenerate: { directory } }]) => ({
+const topic = (label, directory, items = [{ autogenerate: { directory } }]) => ({
   label,
-  icon,
   link: `/${directory}/`,
   items,
 });
+
+/** A chapter of a topic: a few pages, folded unless the current page is in it. */
+const chapter = (label, directory) => ({ label, collapsed: true, items: [{ autogenerate: { directory } }] });
 
 export default defineConfig({
   site: 'https://neuro-kitchen.github.io',
@@ -43,25 +45,42 @@ export default defineConfig({
         '@fontsource/jetbrains-mono/400.css',
         './src/styles/theme.css',
       ],
-      // One entry point per purpose, each with its own sidebar (see .tasks/28).
+      // One entry point per purpose, each with its own sidebar (see .tasks/28). The topics are drawn as tabs in the header (src/components/Header.astro, grouped by
+      // src/data/nav.mjs); the sidebar shows only the current topic's pages, in small chapters.
+      components: {
+        Header: './src/components/Header.astro',
+        Sidebar: './src/components/Sidebar.astro',
+      },
       plugins: [
         starlightSidebarTopics([
-          topic('Learn', 'learn', 'open-book', ['learn', 'learn/concepts', 'learn/python', 'learn/course']),
-          topic('App', 'app', 'laptop'),
-          topic('Operations', 'operations', 'puzzle', ['operations', 'operations/pipelines']),
-          topic('Spike sorting', 'sorting', 'analytics'),
-          topic('Reference', 'reference', 'document', [
+          topic('Learn', 'learn', [
+            'learn',
+            chapter('Get started', 'learn/get-started'),
+            chapter('Concepts', 'learn/concepts'),
+            chapter('Python', 'learn/python'),
+            chapter('Course', 'learn/course'),
+          ]),
+          topic('App', 'app'),
+          topic('Operations', 'operations', ['operations', 'operations/pipelines']),
+          topic('Reference', 'reference', [
             'reference',
-            { label: 'Python API', items: [{ autogenerate: { directory: 'reference/python' } }] },
-            { label: 'Rust API', items: [{ autogenerate: { directory: 'reference/rust' } }] },
+            chapter('Python API', 'reference/python'),
+            chapter('Rust API', 'reference/rust'),
             'reference/cli',
             'reference/schemas',
           ]),
-          topic('Validation', 'validation', 'approve-check-circle'),
-          topic('GPU lessons', 'gpu', 'rocket'),
-          topic('Lab notebook', 'notebook', 'pencil'),
-          topic('Deploy', 'deploy', 'server'),
-          topic('Extend', 'extend', 'code-branch'),
+          // Plugins: each the same shape (overview, learn, reference, validation).
+          topic('Synapse', 'plugins/synapse', [
+            'plugins/synapse',
+            chapter('Learn', 'plugins/synapse/learn'),
+            chapter('Reference', 'plugins/synapse/reference'),
+            chapter('Validation', 'plugins/synapse/validation'),
+          ]),
+          topic('Validation', 'validation'),
+          topic('GPU lessons', 'gpu'),
+          topic('Lab notebook', 'notebook'),
+          topic('Deploy', 'deploy'),
+          topic('Extend', 'extend'),
         ]),
       ],
     }),

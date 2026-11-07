@@ -68,3 +68,23 @@
 .hero .actions {
   justify-content: flex-start;
 }
+
+/* Room in the header for the topic tabs (src/components/Header.astro). */
+:root {
+  --dk-tabs: 2.5rem;
+  --dk-nav-base: 3.5rem;
+  --sl-nav-height: calc(var(--dk-nav-base) + var(--dk-tabs));
+}
+@media (min-width: 50em) {
+  :root {
+    --dk-nav-base: 4rem;
+    --sl-nav-height: calc(var(--dk-nav-base) + var(--dk-tabs));
+  }
+}
+/* The logo and the phone menu button keep to the top row, not the whole header with the tabs. */
+.site-title img {
+  height: calc(var(--dk-nav-base) - 2 * var(--sl-nav-pad-y));
+}
+.sl-menu-button {
+  top: calc((var(--dk-nav-base) - var(--sl-menu-button-size)) / 2);
+}

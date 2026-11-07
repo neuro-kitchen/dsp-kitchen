@@ -5,47 +5,83 @@ import strips from '../data/strips.json';
 
 const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 
-const entries = [
+const core = [
   { label: 'Learn', goal: 'Install dsp-kitchen and run a first filter', href: 'learn/' },
   { label: 'App', goal: 'Look at recordings and build pipelines without code', href: 'app/' },
   { label: 'Operations', goal: 'See what an operation does, in Python, Rust or the app', href: 'operations/' },
-  { label: 'Spike sorting', goal: 'Sort recordings on the GPU and check the result', href: 'sorting/' },
   { label: 'Reference', goal: 'Look up what a function takes and returns', href: 'reference/' },
   { label: 'Validation', goal: 'See how the numbers are checked', href: 'validation/' },
   { label: 'GPU lessons', goal: 'Learn how signal processing is made fast on GPUs', href: 'gpu/' },
   { label: 'Lab notebook', goal: 'Read real runs, with their hardware and timings', href: 'notebook/' },
   { label: 'Deploy', goal: 'Run dsp-kitchen on a server for a lab', href: 'deploy/' },
-  { label: 'Extend', goal: 'Add a format, a sorter or an operation', href: 'extend/' },
+  { label: 'Extend', goal: 'Add a format, an operation or a plugin', href: 'extend/' },
+];
+
+// Plugins add a domain on top of the core; each has the same pages (overview, learn, reference,
+// validation).
+const plugins = [{ label: 'Synapse', goal: 'Sort spikes on the GPU and check the units', href: 'plugins/synapse/' }];
+
+const groups = [
+  { id: 'core', rows: core },
+  { id: 'plugins', title: 'Plugins', note: 'Domains built on the core.', rows: plugins },
 ];
 ---
 
 <nav class="channels not-content" aria-label="Where to start">
-  <ul>
-    {
-      entries.map((e, i) => (
-        <li>
-          <a href={`${base}/${e.href}`} style={`--row: ${i}`}>
-            <span class="label">{e.label}</span>
-            <span class="goal">{e.goal}</span>
-            <svg
-              class="strip"
-              viewBox={`0 0 ${strips.width} ${strips.height}`}
-              preserveAspectRatio="none"
-              aria-hidden="true"
-            >
-              <path d={strips.paths[i % strips.paths.length]} pathLength="1" />
-            </svg>
-          </a>
-        </li>
-      ))
-    }
-  </ul>
+  {
+    groups.map((g, gi) => (
+      <section class={g.id}>
+        {g.title && (
+          <h2>
+            {g.title} <span>{g.note}</span>
+          </h2>
+        )}
+        <ul>
+          {g.rows.map((e, i) => {
+            const row = gi * core.length + i;
+            return (
+              <li>
+                <a href={`${base}/${e.href}`} style={`--row: ${row}`}>
+                  <span class="label">{e.label}</span>
+                  <span class="goal">{e.goal}</span>
+                  <svg
+                    class="strip"
+                    viewBox={`0 0 ${strips.width} ${strips.height}`}
+                    preserveAspectRatio="none"
+                    aria-hidden="true"
+                  >
+                    <path d={strips.paths[row % strips.paths.length]} pathLength="1" />
+                  </svg>
+                </a>
+              </li>
+            );
+          })}
+        </ul>
+      </section>
+    ))
+  }
 </nav>
 
 <style>
   .channels {
     margin-block: 1.5rem 1rem;
+  }
+  .channels ul {
     border-block-start: 1px solid var(--sl-color-gray-5);
+  }
+  .channels h2 {
+    margin: 2.5rem 0 0.75rem;
+    padding-inline: 0.75rem;
+    color: var(--sl-color-white);
+    font-size: var(--sl-text-xl);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .channels h2 span {
+    margin-inline-start: 0.5rem;
+    color: var(--sl-color-gray-3);
+    font-size: var(--sl-text-base);
+    font-weight: 400;
   }
   .channels ul {
     list-style: none;
