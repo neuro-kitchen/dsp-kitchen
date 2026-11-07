@@ -1,8 +1,8 @@
 # 10 · Remote: a GPU server, a laptop
 
 `dspk serve` shares a folder of recordings and runs sorts on its GPU; clients connect over QUIC
-with a certificate the server issues them (mutual TLS). This chapter is a walkthrough of
-commands for now; a Python client is an open question (`.tasks/27`).
+with a certificate the server issues them (mutual TLS). This chapter walks through the commands,
+then the same from Python (`dspk.remote`).
 
 On the server (or in the container, `deploy/`):
 
@@ -26,3 +26,18 @@ dspk remote 192.168.1.20:50051 --server-name gpu-box fetch session1/rec.kilosort
 
 The app does the same from Settings (servers) and File → Open from server: a remote recording
 opens like a local one and sorts on the server.
+
+From Python, the same session:
+
+```python
+import dspk
+
+with dspk.remote.Session("192.168.1.20:50051", "laptop.dspk-identity.pem", server_name="gpu-box") as server:
+    print(server.info())                                   # who it is, who you are, its runtime
+    print([f["name"] for f in server.files("session1")])   # the recordings it shares
+    rec = server.open("session1/rec.bin")                  # a dspk.io.Recording read on the server
+    window = rec.read(start=0, stop=30_000)                # small reads: windows, snippets
+    server.sort("kilosort4", "session1/rec.bin")
+    status = server.wait(progress=lambda s: print(s["stage"], s["done"], "/", s["total"]))
+    server.fetch(status["output"], "rec.kilosort4.sorting.zarr")
+```

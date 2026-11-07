@@ -37,9 +37,9 @@ dspk itself).
 | **05_spatial** | `01_whitening` · `02_laplacian` | decorrelating channels as sorters do; keeping what is local on a grid |
 | **06_pipelines** | `01_chain_on_device` · `02_streaming` · `03_specs` · `04_branches` | chaining stages on the device; streaming in pieces equal to the whole; pipelines as JSON / TOML files; one read, several outputs |
 | **07_channels** | `01_remap_with_pairs` · `02_maps_in_specs` | channel maps written as pairs; maps in pipeline specs (reorder, drop, name) |
-| **08_detection** | — | waits for the synapse Python bindings (`.tasks/27`) |
-| **09_sorting** | `00_fetch_kilosort_data` | the Kilosort4 test recording, verified; the sorting scripts wait for the synapse bindings |
-| **10_remote** | README | a GPU server and a laptop: `dspk serve`, `dspk clients`, `dspk remote` |
+| **08_detection** | `01_threshold_and_scoring` · `02_features_and_clusters` · `03_templates_and_matching` | finding spikes and scoring the finds; snippets, principal components and clusters; templates and matching pursuit |
+| **09_sorting** | `00_fetch_kilosort_data` · `01_detect_and_locate` · `02_sorting_quality` | a real Neuropixels recording: every spike located, the drift map; a sorting judged against a reference and unit by unit |
+| **10_remote** | README | a GPU server and a laptop: `dspk serve`, `dspk clients`, `dspk remote`, and `dspk.remote` in Python |
 
 Measurements against other tools (time, agreement) are in [`benchmarks/`](../benchmarks/README.md),
 not here: the playground teaches, the benchmarks measure.
