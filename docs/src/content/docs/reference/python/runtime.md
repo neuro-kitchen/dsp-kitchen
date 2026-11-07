@@ -30,6 +30,17 @@ available() -> list[str]
 
 Names of the runtimes compiled into this build, in preference order (GPUs first).
 
+**Returns**
+
+- `list of str` — Runtime names, such as `["cuda", "wgpu", "cpu"]`.
+
+**Examples**
+
+```python
+>>> import dspk
+>>> names = dspk.runtime.available()
+```
+
 ### `current`
 
 ```python
@@ -37,6 +48,17 @@ current() -> str
 ```
 
 The runtime calls use when they are not given `runtime=`.
+
+The one chosen with `set`, else the `DSPK_RUNTIME` environment variable, else the first of
+`available()`.
+
+**Returns**
+
+- `str` — A runtime name.
+
+**Raises**
+
+- `ValueError`: When `DSPK_RUNTIME` names a runtime that is unknown or not compiled in.
 
 ### `set`
 
@@ -46,9 +68,21 @@ set(name: str | None) -> None
 
 Chooses the runtime of every later call that is not given `runtime=`.
 
-`name`: `"wgpu"`, `"cpu"`, `"cuda"` or `"hip"` (one of `available()`); `None` goes back to the
-default (`DSPK_RUNTIME`, else the first compiled in).
-
 **Parameters**
 
-- **`name`** : `str | None`
+- **`name`** : `str | None`  
+  A runtime from `available()` (`"cuda"`, `"hip"`, `"wgpu"`, `"cpu"`), or `None` to go back to the default (`DSPK_RUNTIME`, else the first available).
+
+**Raises**
+
+- `ValueError`: When `name` is unknown or not compiled into this build.
+
+**Examples**
+
+```python
+>>> import dspk
+>>> dspk.runtime.set("cpu")
+>>> dspk.runtime.current()
+'cpu'
+>>> dspk.runtime.set(None)
+```

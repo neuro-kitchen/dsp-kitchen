@@ -41,8 +41,9 @@ def subtract_template(
     dynamic_scaling : bool
         Scale the template to each event (least squares); ``False`` subtracts it as it is.
     runtime : str, optional
-        ``"cuda"``, ``"wgpu"`` or ``"cpu"`` for this call. By default: the runtime chosen with
-        :func:`dspk.runtime.set`, else ``DSPK_RUNTIME``, else the first available (GPUs first).
+        A runtime from :func:`dspk.runtime.available` (``"cuda"``, ``"hip"``, ``"wgpu"``,
+        ``"cpu"``) for this call. By default: the one chosen with :func:`dspk.runtime.set`, else
+        ``DSPK_RUNTIME``, else the first available (GPUs first).
 
     Returns
     -------

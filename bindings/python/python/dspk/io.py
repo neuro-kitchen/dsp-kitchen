@@ -50,13 +50,48 @@ def write_raw(
     unit: str = "",
     chunk_samples: int = WRITE_CHUNK_SAMPLES,
 ) -> None:
-    """Writes ``data`` ``(channels, samples)`` as raw binary at ``path`` with its JSON sidecar.
+    """Writes a recording as raw binary with a JSON sidecar.
 
-    Integer ``data`` is the stored integers, ``value = stored * gain`` (an int16 amplifier array and
-    its volts per bit); float ``data`` is the values. ``format`` defaults to ``data``'s dtype, so
-    integers are written as they are, with no conversion; float values stored in an integer
-    ``format`` become ``round(value / gain)``. ``order`` is ``"channel_major"`` or ``"time_major"``;
-    ``unit`` is the symbol of the values (``""``: dimensionless).
+    Integers are written as they are: an int16 array from an amplifier is stored as int16, its
+    ``gain`` (units per bit) in the sidecar. Float values stored in an integer ``format`` become
+    ``round(value / gain)``.
+
+    Parameters
+    ----------
+    data : array_like
+        Samples ``(channels, samples)``: integer arrays are the stored integers
+        (``value = stored * gain``), float arrays the values. NumPy arrays of a
+        :data:`STORED_DTYPES` dtype are written as they are; anything else becomes float32.
+    path : str or os.PathLike
+        The binary file to write; the sidecar is written next to it.
+    sample_rate : float
+        Sample rate in Hz.
+    format : str, optional
+        Stored type (``"int16"``, ``"float32"``, ...); by default ``data``'s dtype.
+    order : {"channel_major", "time_major"}
+        Sample layout in the file: each channel's samples together, or each time step's channels
+        together.
+    gain : float
+        Units per stored integer.
+    unit : str
+        Unit symbol of the values: ``"V"``, ``"mV"``, ``"µV"`` (or ``"uV"``), ``"A"``, ...;
+        ``""`` for dimensionless.
+    chunk_samples : int
+        Samples per channel written at a time (bounds memory, not the result).
+
+    Raises
+    ------
+    ValueError
+        When ``data`` is not 2-D or an option is invalid.
+    OSError
+        When the file cannot be written.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import dspk
+    >>> counts = np.zeros((4, 30_000), dtype=np.int16)
+    >>> dspk.io.write_raw(counts, "session.bin", 30_000.0, gain=0.195, unit="µV")  # doctest: +SKIP
     """
     _io.write_raw(
         _as_channels(data), path, sample_rate,
@@ -75,11 +110,43 @@ def write_zarr(
     level: int | None = None,
     parallel: bool = True,
 ) -> None:
-    """Writes ``data`` ``(channels, samples)`` as a Zarr store at ``path`` (``/traces``, float32).
+    """Writes a recording as a Zarr store (``/traces``, float32).
 
-    Chunks of ``chunk_samples`` (all channels) are compressed with ``compression`` (``"zstd"``,
-    ``"blosc_lz4"`` or ``"none"``; ``level``: zstd's, default 3, or blosc's 0-9, default 5) and
-    stored on several threads; ``parallel=False`` writes on one thread."""
+    Chunks of ``chunk_samples`` (all channels) are compressed and stored on several threads.
+
+    Parameters
+    ----------
+    data : array_like
+        Values ``(channels, samples)``.
+    path : str or os.PathLike
+        The store (a folder) to create.
+    sample_rate : float
+        Sample rate in Hz.
+    unit : str
+        Unit symbol of the values (``""`` for dimensionless).
+    chunk_samples : int
+        Samples per Zarr chunk.
+    compression : {"zstd", "blosc_lz4", "none"}
+        How chunks are compressed.
+    level : int, optional
+        Compression level: zstd's (default 3) or blosc's 0–9 (default 5); ``"none"`` takes none.
+    parallel : bool
+        Compress and store on several threads; ``False`` uses one.
+
+    Raises
+    ------
+    ValueError
+        When ``data`` is not 2-D or an option is invalid.
+    OSError
+        When the store cannot be written.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import dspk
+    >>> x = np.random.default_rng(0).standard_normal((4, 30_000)).astype(np.float32)
+    >>> dspk.io.write_zarr(x, "session.zarr", 30_000.0, unit="µV")  # doctest: +SKIP
+    """
     _io.write_zarr(
         _as_channels(data), path, sample_rate,
         unit=unit, chunk_samples=chunk_samples, compression=compression, level=level, parallel=parallel,

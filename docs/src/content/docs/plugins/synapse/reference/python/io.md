@@ -58,15 +58,7 @@ channel map that reads a recording in that order (`.mat` files are refused).
 
 ### `Probe`
 
-```python
-Probe(native: _io.Probe) -> None
-```
-
 A probe's geometry: one site per recording channel (µm; `y` is depth).
-
-**Parameters**
-
-- **`native`** : `_io.Probe`
 
 **Properties**
 
@@ -189,15 +181,7 @@ to_json() -> str
 
 ### `Sorting`
 
-```python
-Sorting(native: _io.Sorting) -> None
-```
-
 Units with their spike trains (sample indices), templates and quality metrics.
-
-**Parameters**
-
-- **`native`** : `_io.Sorting`
 
 **Properties**
 

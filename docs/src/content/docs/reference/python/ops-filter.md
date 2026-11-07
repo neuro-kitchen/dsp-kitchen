@@ -62,7 +62,7 @@ Filters with FIR taps on the device.
 - **`edge`** : `{"zeros", "odd", "reflect", "nearest"}`, default `FIR_DEFAULT_EDGE` ('zeros')  
   What the samples past each end are taken to be.
 - **`runtime`** : `str | None`, default `None`  
-  `"cuda"`, `"wgpu"` or `"cpu"` for this call. By default: the runtime chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
+  A runtime from [`runtime.available`](/dsp-kitchen/reference/python/runtime/#available) (`"cuda"`, `"hip"`, `"wgpu"`, `"cpu"`) for this call. By default: the one chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
 
 **Returns**
 
@@ -151,7 +151,7 @@ The kernel is cut at [`GAUSSIAN_TRUNCATE`](/dsp-kitchen/reference/python/ops-fil
 - **`edge`** : `{"zeros", "odd", "reflect", "nearest"}`, default `GAUSSIAN_DEFAULT_EDGE` ('reflect')  
   What the samples past each end are taken to be (scipy's `mode`).
 - **`runtime`** : `str | None`, default `None`  
-  `"cuda"`, `"wgpu"` or `"cpu"` for this call. By default: the runtime chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
+  A runtime from [`runtime.available`](/dsp-kitchen/reference/python/runtime/#available) (`"cuda"`, `"hip"`, `"wgpu"`, `"cpu"`) for this call. By default: the one chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
 
 **Returns**
 
@@ -214,7 +214,7 @@ The design is [`sos`](/dsp-kitchen/reference/python/ops-filter/#sos)'s; filterin
 - **`start`** : `{"rest", "steady_state"}`, default `'rest'`  
   Where a `"forward"` pass starts: at rest, as if the signal were zero before the first sample (`sosfilt` without `zi`), or from the steady state of the first sample (`zi = sosfilt_zi(sos) * x[0]`: no step at the start). Forward-backward passes always start from the steady state.
 - **`runtime`** : `str | None`, default `None`  
-  `"cuda"`, `"wgpu"` or `"cpu"` for this call. By default: the runtime chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
+  A runtime from [`runtime.available`](/dsp-kitchen/reference/python/runtime/#available) (`"cuda"`, `"hip"`, `"wgpu"`, `"cpu"`) for this call. By default: the one chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
 
 **Returns**
 
@@ -266,7 +266,7 @@ Running median along time, as `scipy.signal.medfilt` (with `edge="zeros"`).
 - **`edge`** : `{"zeros", "odd", "reflect", "nearest"}`, default `MEDIAN_DEFAULT_EDGE` ('zeros')  
   What the samples past each end are taken to be.
 - **`runtime`** : `str | None`, default `None`  
-  `"cuda"`, `"wgpu"` or `"cpu"` for this call. By default: the runtime chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
+  A runtime from [`runtime.available`](/dsp-kitchen/reference/python/runtime/#available) (`"cuda"`, `"hip"`, `"wgpu"`, `"cpu"`) for this call. By default: the one chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
 
 **Returns**
 
@@ -318,7 +318,7 @@ Removes one frequency (a second-order notch), as `scipy.signal.iirnotch`.
 - **`start`** : `{"rest", "steady_state"}`, default `'rest'`  
   Where a `"forward"` pass starts: at rest, as if the signal were zero before the first sample (`sosfilt` without `zi`), or from the steady state of the first sample (`zi = sosfilt_zi(sos) * x[0]`: no step at the start). Forward-backward passes always start from the steady state.
 - **`runtime`** : `str | None`, default `None`  
-  `"cuda"`, `"wgpu"` or `"cpu"` for this call. By default: the runtime chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
+  A runtime from [`runtime.available`](/dsp-kitchen/reference/python/runtime/#available) (`"cuda"`, `"hip"`, `"wgpu"`, `"cpu"`) for this call. By default: the one chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
 
 **Returns**
 
@@ -439,7 +439,7 @@ Applies second-order sections on the device.
 - **`start`** : `{"rest", "steady_state"}`, default `'rest'`  
   Where a `"forward"` pass starts: at rest, as if the signal were zero before the first sample (`sosfilt` without `zi`), or from the steady state of the first sample (`zi = sosfilt_zi(sos) * x[0]`: no step at the start). Forward-backward passes always start from the steady state.
 - **`runtime`** : `str | None`, default `None`  
-  `"cuda"`, `"wgpu"` or `"cpu"` for this call. By default: the runtime chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
+  A runtime from [`runtime.available`](/dsp-kitchen/reference/python/runtime/#available) (`"cuda"`, `"hip"`, `"wgpu"`, `"cpu"`) for this call. By default: the one chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
 
 **Returns**
 
@@ -496,7 +496,7 @@ The template's sample `center_offset` is placed on each event, then shifted by u
 - **`dynamic_scaling`** : `bool`, default `True`  
   Scale the template to each event (least squares); `False` subtracts it as it is.
 - **`runtime`** : `str | None`, default `None`  
-  `"cuda"`, `"wgpu"` or `"cpu"` for this call. By default: the runtime chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
+  A runtime from [`runtime.available`](/dsp-kitchen/reference/python/runtime/#available) (`"cuda"`, `"hip"`, `"wgpu"`, `"cpu"`) for this call. By default: the one chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
 
 **Returns**
 
@@ -535,7 +535,7 @@ It is large where the signal is both large and fast, so spikes stand out from sl
 - **`edge`** : `{"zeros", "odd", "reflect", "nearest"}`, default `TEAGER_KAISER_DEFAULT_EDGE` ('reflect')  
   What the neighbours of the first and last samples are taken to be.
 - **`runtime`** : `str | None`, default `None`  
-  `"cuda"`, `"wgpu"` or `"cpu"` for this call. By default: the runtime chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
+  A runtime from [`runtime.available`](/dsp-kitchen/reference/python/runtime/#available) (`"cuda"`, `"hip"`, `"wgpu"`, `"cpu"`) for this call. By default: the one chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
 
 **Returns**
 

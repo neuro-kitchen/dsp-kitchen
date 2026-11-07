@@ -24,8 +24,9 @@ def median(data, width: int, *, edge: str = MEDIAN_DEFAULT_EDGE, runtime: str | 
     edge : {"zeros", "odd", "reflect", "nearest"}
         What the samples past each end are taken to be.
     runtime : str, optional
-        ``"cuda"``, ``"wgpu"`` or ``"cpu"`` for this call. By default: the runtime chosen with
-        :func:`dspk.runtime.set`, else ``DSPK_RUNTIME``, else the first available (GPUs first).
+        A runtime from :func:`dspk.runtime.available` (``"cuda"``, ``"hip"``, ``"wgpu"``,
+        ``"cpu"``) for this call. By default: the one chosen with :func:`dspk.runtime.set`, else
+        ``DSPK_RUNTIME``, else the first available (GPUs first).
 
     Returns
     -------
@@ -62,8 +63,9 @@ def teager_kaiser(data, *, edge: str = TEAGER_KAISER_DEFAULT_EDGE, runtime: str 
     edge : {"zeros", "odd", "reflect", "nearest"}
         What the neighbours of the first and last samples are taken to be.
     runtime : str, optional
-        ``"cuda"``, ``"wgpu"`` or ``"cpu"`` for this call. By default: the runtime chosen with
-        :func:`dspk.runtime.set`, else ``DSPK_RUNTIME``, else the first available (GPUs first).
+        A runtime from :func:`dspk.runtime.available` (``"cuda"``, ``"hip"``, ``"wgpu"``,
+        ``"cpu"``) for this call. By default: the one chosen with :func:`dspk.runtime.set`, else
+        ``DSPK_RUNTIME``, else the first available (GPUs first).
 
     Returns
     -------

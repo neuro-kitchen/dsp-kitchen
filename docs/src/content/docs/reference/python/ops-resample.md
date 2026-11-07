@@ -13,8 +13,8 @@ Sample-rate changes on the device, with `scipy.signal.decimate` / `resample_poly
 
 | | |
 |---|---|
-| [`decimate`](#decimate) | Down-samples `data` `(channels, samples)` by `q` behind an anti-alias filter, as `scipy.signal.decimate(x, q, ftype=ftype, zero_phase=True)`; `ceil(samples / q)` samples out. |
-| [`resample_poly`](#resample_poly) | Resamples `data` `(channels, samples)` by `up / down` (polyphase FIR, Kaiser `beta` window), as `scipy.signal.resample_poly`; samples past the ends come from `edge`. |
+| [`decimate`](#decimate) | Lowers the sample rate by an integer factor, behind an anti-alias filter. |
+| [`resample_poly`](#resample_poly) | Changes the sample rate by `up / down` with a polyphase FIR filter. |
 
 ## Functions
 
@@ -33,22 +33,51 @@ decimate(
 ) -> np.ndarray
 ```
 
-Down-samples `data` `(channels, samples)` by `q` behind an anti-alias filter, as
-`scipy.signal.decimate(x, q, ftype=ftype, zero_phase=True)`; `ceil(samples / q)` samples out.
+Lowers the sample rate by an integer factor, behind an anti-alias filter.
 
-`ftype="iir"`: Chebyshev I of `order` / `ripple_db` at [`DECIMATE_IIR_CUTOFF`](/dsp-kitchen/reference/python/ops-resample/#decimate_iir_cutoff) of the
-new Nyquist, zero phase (samples near the ends can differ slightly from scipy's padding).
-`ftype="fir"`: Hamming `firwin` of `taps_per_factor * q + 1` taps through `resample_poly`.
+As `scipy.signal.decimate(x, q, ftype=ftype, zero_phase=True)`.
 
 **Parameters**
 
-- **`data`**
-- **`q`** : `int`
-- **`ftype`** : `str`, default `'iir'`
-- **`order`** : `int`, default `DECIMATE_DEFAULT_ORDER` (8)
-- **`ripple_db`** : `float`, default `DECIMATE_DEFAULT_RIPPLE_DB` (0.05)
-- **`taps_per_factor`** : `int`, default `DECIMATE_FIR_TAPS_PER_FACTOR` (20)
-- **`runtime`** : `str | None`, default `None`
+- **`data`** : `array_like`  
+  Signal `(channels, samples)`. float32, int8, int16, uint16 and int32 arrays go to the device as they are and are converted there; other dtypes and lists become float32 first.
+- **`q`** : `int`  
+  Factor: every `q`-th sample is kept, `ceil(samples / q)` samples out.
+- **`ftype`** : `{"iir", "fir"}`, default `'iir'`  
+  `"iir"`: a zero-phase Chebyshev I of `order` and `ripple_db`, cut at [`DECIMATE_IIR_CUTOFF`](/dsp-kitchen/reference/python/ops-resample/#decimate_iir_cutoff) of the new Nyquist. `"fir"`: a Hamming `firwin` of `taps_per_factor * q + 1` taps, applied as [`resample_poly`](/dsp-kitchen/reference/python/ops-resample/#resample_poly) does.
+- **`order`** : `int`, default `DECIMATE_DEFAULT_ORDER` (8)  
+  Order of the IIR filter.
+- **`ripple_db`** : `float`, default `DECIMATE_DEFAULT_RIPPLE_DB` (0.05)  
+  Passband ripple of the IIR filter, in dB.
+- **`taps_per_factor`** : `int`, default `DECIMATE_FIR_TAPS_PER_FACTOR` (20)  
+  FIR taps per unit of `q`.
+- **`runtime`** : `str | None`, default `None`  
+  A runtime from [`runtime.available`](/dsp-kitchen/reference/python/runtime/#available) (`"cuda"`, `"hip"`, `"wgpu"`, `"cpu"`) for this call. By default: the one chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
+
+**Returns**
+
+- `np.ndarray` — `(channels, ceil(samples / q))`, float32.
+
+**Raises**
+
+- `ValueError`: For `q` below 1, an unknown `ftype`, or `data` not 2-D.
+- `RuntimeError`: When the runtime has no device.
+
+**Notes**
+
+With `"iir"`, samples near the ends can differ slightly from scipy's, which pads the edges
+differently; the interior matches.
+
+**Examples**
+
+```python
+>>> import numpy as np
+>>> import dspk
+>>> x = np.random.default_rng(0).standard_normal((4, 30_000)).astype(np.float32)
+>>> lfp = dspk.ops.resample.decimate(x, 30)
+>>> lfp.shape
+(4, 1000)
+```
 
 ### `resample_poly`
 
@@ -64,17 +93,45 @@ resample_poly(
 ) -> np.ndarray
 ```
 
-Resamples `data` `(channels, samples)` by `up / down` (polyphase FIR, Kaiser `beta`
-window), as `scipy.signal.resample_poly`; samples past the ends come from `edge`.
+Changes the sample rate by `up / down` with a polyphase FIR filter.
+
+As `scipy.signal.resample_poly`: up-sample by `up`, low-pass with a Kaiser-windowed FIR,
+down-sample by `down`.
 
 **Parameters**
 
-- **`data`**
-- **`up`** : `int`
-- **`down`** : `int`
-- **`beta`** : `float`, default `RESAMPLE_POLY_BETA` (5.0)
-- **`edge`** : `str`, default `RESAMPLE_POLY_DEFAULT_EDGE` ('zeros')
-- **`runtime`** : `str | None`, default `None`
+- **`data`** : `array_like`  
+  Signal `(channels, samples)`. float32, int8, int16, uint16 and int32 arrays go to the device as they are and are converted there; other dtypes and lists become float32 first.
+- **`up`** : `int`  
+  Up-sampling factor.
+- **`down`** : `int`  
+  Down-sampling factor.
+- **`beta`** : `float`, default `RESAMPLE_POLY_BETA` (5.0)  
+  Kaiser window shape (larger: less ripple, wider transition).
+- **`edge`** : `{"zeros", "odd", "reflect", "nearest"}`, default `RESAMPLE_POLY_DEFAULT_EDGE` ('zeros')  
+  What the samples past each end are taken to be.
+- **`runtime`** : `str | None`, default `None`  
+  A runtime from [`runtime.available`](/dsp-kitchen/reference/python/runtime/#available) (`"cuda"`, `"hip"`, `"wgpu"`, `"cpu"`) for this call. By default: the one chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
+
+**Returns**
+
+- `np.ndarray` — `(channels, ceil(samples * up / down))`, float32.
+
+**Raises**
+
+- `ValueError`: For `up` or `down` below 1, an unknown `edge`, or `data` not 2-D.
+- `RuntimeError`: When the runtime has no device.
+
+**Examples**
+
+```python
+>>> import numpy as np
+>>> import dspk
+>>> x = np.random.default_rng(0).standard_normal((4, 30_000)).astype(np.float32)
+>>> y = dspk.ops.resample.resample_poly(x, 2, 3)
+>>> y.shape
+(4, 20000)
+```
 
 ## Constants
 

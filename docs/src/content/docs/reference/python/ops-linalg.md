@@ -16,31 +16,36 @@ follows once its iterations run on the device.
 
 | | |
 |---|---|
-| [`PCA`](#pca) | Principal component analysis; covariance and eigendecomposition on the device. |
-| [`PPCA`](#ppca) | Probabilistic PCA (Tipping & Bishop), closed-form maximum likelihood. |
+| [`PCA`](#pca) | Principal component analysis, fitted on the device. |
+| [`PPCA`](#ppca) | Probabilistic PCA (Tipping & Bishop). |
 
 ## Classes
 
 ### `PCA`
 
+Principal component analysis, fitted on the device.
+
+Channels are the features and samples the observations. Make one with `fit`.
+
+**Examples**
+
 ```python
-PCA(native) -> None
+>>> import numpy as np
+>>> import dspk
+>>> x = np.random.default_rng(0).standard_normal((8, 5_000)).astype(np.float32)
+>>> pca = dspk.ops.linalg.PCA.fit(x, 3)
+>>> pca.transform(x).shape
+(3, 5000)
 ```
-
-Principal component analysis; covariance and eigendecomposition on the device.
-
-**Parameters**
-
-- **`native`**
 
 **Properties**
 
 | Name | Type | Description |
 |---|---|---|
-| `components` | `np.ndarray` | `(channels, n_components)`: one component per column. |
-| `mean` | `np.ndarray` |  |
-| `explained_variance` | `np.ndarray` |  |
-| `explained_variance_ratio` | `np.ndarray` |  |
+| `components` | `np.ndarray` | The components `(channels, n_components)`, one per column. |
+| `mean` | `np.ndarray` | Mean of each channel `(channels,)`, removed before projecting. |
+| `explained_variance` | `np.ndarray` | Variance along each component `(n_components,)`. |
+| `explained_variance_ratio` | `np.ndarray` | Each component's share of the total variance `(n_components,)`. |
 
 #### `PCA.fit`
 
@@ -53,13 +58,25 @@ fit(
 ) -> PCA
 ```
 
-Fits `n_components` components on `data` `(channels, samples)`.
+Fits `n_components` principal components.
 
 **Parameters**
 
-- **`data`**
-- **`n_components`** : `int`
-- **`runtime`** : `str | None`, default `None`
+- **`data`** : `array_like`  
+  Signal `(channels, samples)`, converted to float32 on the host first (these models read host data).
+- **`n_components`** : `int`  
+  Components to keep, `1` to `channels`.
+- **`runtime`** : `str | None`, default `None`  
+  A runtime from [`runtime.available`](/dsp-kitchen/reference/python/runtime/#available) (`"cuda"`, `"hip"`, `"wgpu"`, `"cpu"`) for this call. By default: the one chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
+
+**Returns**
+
+- `PCA`
+
+**Raises**
+
+- `ValueError`: For `n_components` outside `1..channels`, or fewer than two samples.
+- `RuntimeError`: When the runtime has no device.
 
 #### `PCA.transform`
 
@@ -67,32 +84,36 @@ Fits `n_components` components on `data` `(channels, samples)`.
 transform(data, *, runtime: str | None = None) -> np.ndarray
 ```
 
-Projects `data` `(channels, samples)` onto the components: `(n_components, samples)`.
+Projects `data` onto the components.
 
 **Parameters**
 
-- **`data`**
-- **`runtime`** : `str | None`, default `None`
+- **`data`** : `array_like`  
+  Signal `(channels, samples)`, converted to float32 on the host first (these models read host data).
+- **`runtime`** : `str | None`, default `None`  
+  A runtime from [`runtime.available`](/dsp-kitchen/reference/python/runtime/#available) (`"cuda"`, `"hip"`, `"wgpu"`, `"cpu"`) for this call. By default: the one chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
+
+**Returns**
+
+- `np.ndarray` — `(n_components, samples)`.
+
+**Raises**
+
+- `ValueError`: When `data` has another channel count than the fit.
 
 ### `PPCA`
 
-```python
-PPCA(native) -> None
-```
+Probabilistic PCA (Tipping & Bishop): principal components plus an isotropic noise level.
 
-Probabilistic PCA (Tipping & Bishop), closed-form maximum likelihood.
-
-**Parameters**
-
-- **`native`**
+Closed-form maximum likelihood, fitted on the device. Make one with `fit`.
 
 **Properties**
 
 | Name | Type | Description |
 |---|---|---|
-| `weights` | `np.ndarray` | Loadings `W` `(channels, n_components)`. |
-| `mean` | `np.ndarray` |  |
-| `noise_variance` | `float` | Isotropic noise variance sigma squared. |
+| `weights` | `np.ndarray` | The loadings `W` `(channels, n_components)`. |
+| `mean` | `np.ndarray` | Mean of each channel `(channels,)`. |
+| `noise_variance` | `float` | The isotropic noise variance, sigma squared. |
 
 #### `PPCA.fit`
 
@@ -105,13 +126,25 @@ fit(
 ) -> PPCA
 ```
 
-Fits `n_components` latent dimensions on `data` `(channels, samples)`.
+Fits `n_components` latent dimensions.
 
 **Parameters**
 
-- **`data`**
-- **`n_components`** : `int`
-- **`runtime`** : `str | None`, default `None`
+- **`data`** : `array_like`  
+  Signal `(channels, samples)`, converted to float32 on the host first (these models read host data).
+- **`n_components`** : `int`  
+  Latent dimensions, `1` to `channels`.
+- **`runtime`** : `str | None`, default `None`  
+  A runtime from [`runtime.available`](/dsp-kitchen/reference/python/runtime/#available) (`"cuda"`, `"hip"`, `"wgpu"`, `"cpu"`) for this call. By default: the one chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
+
+**Returns**
+
+- `PPCA`
+
+**Raises**
+
+- `ValueError`: For `n_components` outside `1..channels`, or fewer than two samples.
+- `RuntimeError`: When the runtime has no device.
 
 #### `PPCA.transform`
 
@@ -119,9 +152,19 @@ Fits `n_components` latent dimensions on `data` `(channels, samples)`.
 transform(data, *, runtime: str | None = None) -> np.ndarray
 ```
 
-Posterior mean `E[z | x]` of `data` `(channels, samples)`: `(n_components, samples)`.
+The posterior mean of the latent variables, `E[z | x]`, for `data`.
 
 **Parameters**
 
-- **`data`**
-- **`runtime`** : `str | None`, default `None`
+- **`data`** : `array_like`  
+  Signal `(channels, samples)`, converted to float32 on the host first (these models read host data).
+- **`runtime`** : `str | None`, default `None`  
+  A runtime from [`runtime.available`](/dsp-kitchen/reference/python/runtime/#available) (`"cuda"`, `"hip"`, `"wgpu"`, `"cpu"`) for this call. By default: the one chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
+
+**Returns**
+
+- `np.ndarray` — `(n_components, samples)`.
+
+**Raises**
+
+- `ValueError`: When `data` has another channel count than the fit.

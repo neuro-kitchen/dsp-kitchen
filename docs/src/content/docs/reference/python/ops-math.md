@@ -13,10 +13,10 @@ Per-channel statistics on the device, and window designs.
 
 | | |
 |---|---|
-| [`channel_mad`](#channel_mad) | Median absolute deviation of every channel, `median(\|x - median(x)\|)`, unscaled (NumPy's median for an even count). |
-| [`channel_mean_std`](#channel_mean_std) | Mean and population standard deviation of every channel of `data` `(channels, samples)`. |
+| [`channel_mad`](#channel_mad) | Median absolute deviation of every channel, `median(\|x - median(x)\|)`. |
+| [`channel_mean_std`](#channel_mean_std) | Mean and population standard deviation of every channel. |
 | [`channel_noise_std`](#channel_noise_std) | Robust noise level of every channel. |
-| [`window`](#window) | Window of `length` values. |
+| [`window`](#window) | A symmetric window of `length` values. |
 
 ## Functions
 
@@ -26,14 +26,30 @@ Per-channel statistics on the device, and window designs.
 channel_mad(data, *, runtime: str | None = None) -> np.ndarray
 ```
 
-Median absolute deviation of every channel, `median(|x - median(x)|)`, unscaled (NumPy's
-median for an even count). SpikeInterface's `get_noise_levels(method="mad")` divides it by
-0.6744897501960817.
+Median absolute deviation of every channel, `median(|x - median(x)|)`.
+
+Unscaled: divide by [`MAD_TO_SIGMA`](/dsp-kitchen/reference/python/ops-math/#mad_to_sigma) for a standard deviation (SpikeInterface's
+`get_noise_levels(method="mad")` does). Medians of an even count are NumPy's.
 
 **Parameters**
 
-- **`data`**
-- **`runtime`** : `str | None`, default `None`
+- **`data`** : `array_like`  
+  Signal `(channels, samples)`. float32, int8, int16, uint16 and int32 arrays go to the device as they are and are converted there; other dtypes and lists become float32 first.
+- **`runtime`** : `str | None`, default `None`  
+  A runtime from [`runtime.available`](/dsp-kitchen/reference/python/runtime/#available) (`"cuda"`, `"hip"`, `"wgpu"`, `"cpu"`) for this call. By default: the one chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
+
+**Returns**
+
+- `np.ndarray` — One value per channel `(channels,)`.
+
+**Examples**
+
+```python
+>>> import numpy as np
+>>> import dspk
+>>> x = np.random.default_rng(0).standard_normal((4, 30_000)).astype(np.float32)
+>>> mad = dspk.ops.math.channel_mad(x)
+```
 
 ### `channel_mean_std`
 
@@ -45,12 +61,28 @@ channel_mean_std(
 ) -> tuple[np.ndarray, np.ndarray]
 ```
 
-Mean and population standard deviation of every channel of `data` `(channels, samples)`.
+Mean and population standard deviation of every channel.
 
 **Parameters**
 
-- **`data`**
-- **`runtime`** : `str | None`, default `None`
+- **`data`** : `array_like`  
+  Signal `(channels, samples)`. float32, int8, int16, uint16 and int32 arrays go to the device as they are and are converted there; other dtypes and lists become float32 first.
+- **`runtime`** : `str | None`, default `None`  
+  A runtime from [`runtime.available`](/dsp-kitchen/reference/python/runtime/#available) (`"cuda"`, `"hip"`, `"wgpu"`, `"cpu"`) for this call. By default: the one chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
+
+**Returns**
+
+- `np.ndarray` — `(channels,)`.
+- `np.ndarray` — `(channels,)`, population (`ddof=0`).
+
+**Examples**
+
+```python
+>>> import numpy as np
+>>> import dspk
+>>> x = np.random.default_rng(0).standard_normal((4, 30_000)).astype(np.float32)
+>>> mean, std = dspk.ops.math.channel_mean_std(x)
+```
 
 ### `channel_noise_std`
 
@@ -62,13 +94,30 @@ channel_noise_std(
 ) -> np.ndarray
 ```
 
-Robust noise level of every channel: `median(|x|) / MAD_TO_SIGMA` (the magnitude at index
-`samples // 2` when sorted).
+Robust noise level of every channel: `median(|x|) / MAD_TO_SIGMA`.
+
+The usual threshold for spike detection: unlike the standard deviation it is barely moved by
+the spikes themselves. The median here is the magnitude at index `samples // 2` when sorted.
 
 **Parameters**
 
-- **`data`**
-- **`runtime`** : `str | None`, default `None`
+- **`data`** : `array_like`  
+  Signal `(channels, samples)`. float32, int8, int16, uint16 and int32 arrays go to the device as they are and are converted there; other dtypes and lists become float32 first.
+- **`runtime`** : `str | None`, default `None`  
+  A runtime from [`runtime.available`](/dsp-kitchen/reference/python/runtime/#available) (`"cuda"`, `"hip"`, `"wgpu"`, `"cpu"`) for this call. By default: the one chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
+
+**Returns**
+
+- `np.ndarray` — One value per channel `(channels,)`.
+
+**Examples**
+
+```python
+>>> import numpy as np
+>>> import dspk
+>>> x = np.random.default_rng(0).standard_normal((4, 30_000)).astype(np.float32)
+>>> noise = dspk.ops.math.channel_noise_std(x)
+```
 
 ### `window`
 
@@ -82,15 +131,33 @@ window(
 ) -> np.ndarray
 ```
 
-Window of `length` values: `"hann"`, `"hamming"`, `"gaussian"` (`sigma`) or
-`"kaiser"` (`beta`), symmetric.
+A symmetric window of `length` values.
 
 **Parameters**
 
-- **`name`** : `str`
-- **`length`** : `int`
-- **`sigma`** : `float | None`, default `None`
-- **`beta`** : `float | None`, default `None`
+- **`name`** : `{"hann", "hamming", "gaussian", "kaiser"}`  
+  The window.
+- **`length`** : `int`  
+  Number of values.
+- **`sigma`** : `float | None`, default `None`  
+  Standard deviation, in samples; `"gaussian"` needs it.
+- **`beta`** : `float | None`, default `None`  
+  Shape; `"kaiser"` needs it.
+
+**Returns**
+
+- `np.ndarray` — `(length,)`.
+
+**Raises**
+
+- `ValueError`: For an unknown `name`, or `sigma` / `beta` missing from (or given to) a window.
+
+**Examples**
+
+```python
+>>> import dspk
+>>> w = dspk.ops.math.window("kaiser", 51, beta=5.0)
+```
 
 ## Constants
 

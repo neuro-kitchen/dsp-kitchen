@@ -299,7 +299,10 @@ def render_doc(doc_sections, module: str, linker: Linker, *, level: int) -> list
         elif kind == "examples":
             out += ["**Examples**", ""]
             for k, v in s.value:
-                out += ([f"```python\n{v}\n```"] if k.value == "examples" else [markdown(v, module, linker)]) + [""]
+                # doctest directives (``# doctest: +SKIP`` on examples that need a real file)
+                # are for the test run, not the reader
+                shown = re.sub(r"\s*# doctest:[^\n]*", "", v)
+                out += ([f"```python\n{shown}\n```"] if k.value == "examples" else [markdown(v, module, linker)]) + [""]
         elif kind == "admonition":
             out += [f"**{s.title}**", "", markdown(s.value.description, module, linker), ""]
     return out
@@ -320,6 +323,9 @@ def render_function(name: str, obj, module, linker, values, *, level=3, owner=No
 def render_class(name: str, obj, module, linker, values) -> list[str]:
     out = [f"### `{name}`", ""]
     init = obj.members.get("__init__") or obj.members.get("__new__")
+    # A wrapper built by its classmethods (``Whitening(native)``) has no public constructor.
+    if init is not None and init.is_function and [p.name for p in init.parameters if p.name not in ("self", "cls")] == ["native"]:
+        init = None
     if init is not None and init.is_function:
         out += ["```python", signature(name, init, skip_self=True), "```", ""]
     doc = sections(obj)

@@ -15,8 +15,8 @@ Operations across channels on the device.
 |---|---|
 | [`car`](#car) | Common average reference. |
 | [`cmr`](#cmr) | Common median reference. |
-| [`Laplacian`](#laplacian) | Surface Laplacian `(channels, channels)`, applied on the device. |
-| [`Whitening`](#whitening) | Spatial whitening `(channels, channels)`, fitted and applied on the device. |
+| [`Laplacian`](#laplacian) | Surface Laplacian. |
+| [`Whitening`](#whitening) | Spatial whitening. |
 
 ## Functions
 
@@ -26,12 +26,32 @@ Operations across channels on the device.
 car(data, *, runtime: str | None = None) -> np.ndarray
 ```
 
-Common average reference: the mean over channels subtracted at every sample.
+Common average reference: subtracts the mean over channels at every sample.
 
 **Parameters**
 
-- **`data`**
-- **`runtime`** : `str | None`, default `None`
+- **`data`** : `array_like`  
+  Signal `(channels, samples)`. float32, int8, int16, uint16 and int32 arrays go to the device as they are and are converted there; other dtypes and lists become float32 first.
+- **`runtime`** : `str | None`, default `None`  
+  A runtime from [`runtime.available`](/dsp-kitchen/reference/python/runtime/#available) (`"cuda"`, `"hip"`, `"wgpu"`, `"cpu"`) for this call. By default: the one chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
+
+**Returns**
+
+- `np.ndarray` — `(channels, samples)`, float32.
+
+**Raises**
+
+- `ValueError`: When `data` is not 2-D.
+- `RuntimeError`: When the runtime has no device.
+
+**Examples**
+
+```python
+>>> import numpy as np
+>>> import dspk
+>>> x = np.random.default_rng(0).standard_normal((4, 30_000)).astype(np.float32)
+>>> referenced = dspk.ops.spatial.car(x)
+```
 
 ### `cmr`
 
@@ -39,32 +59,62 @@ Common average reference: the mean over channels subtracted at every sample.
 cmr(data, *, runtime: str | None = None) -> np.ndarray
 ```
 
-Common median reference: the median over channels subtracted at every sample.
+Common median reference: subtracts the median over channels at every sample.
+
+The median ignores a single bad channel where the mean would spread it to all. With an even
+number of channels it is the mean of the two middle values, as NumPy's.
 
 **Parameters**
 
-- **`data`**
-- **`runtime`** : `str | None`, default `None`
+- **`data`** : `array_like`  
+  Signal `(channels, samples)`. float32, int8, int16, uint16 and int32 arrays go to the device as they are and are converted there; other dtypes and lists become float32 first.
+- **`runtime`** : `str | None`, default `None`  
+  A runtime from [`runtime.available`](/dsp-kitchen/reference/python/runtime/#available) (`"cuda"`, `"hip"`, `"wgpu"`, `"cpu"`) for this call. By default: the one chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
+
+**Returns**
+
+- `np.ndarray` — `(channels, samples)`, float32.
+
+**Raises**
+
+- `ValueError`: When `data` is not 2-D.
+- `RuntimeError`: When the runtime has no device.
+
+**Examples**
+
+```python
+>>> import numpy as np
+>>> import dspk
+>>> x = np.random.default_rng(0).standard_normal((4, 30_000)).astype(np.float32)
+>>> referenced = dspk.ops.spatial.cmr(x)
+```
 
 ## Classes
 
 ### `Laplacian`
 
+Surface Laplacian: a `(channels, channels)` matrix that keeps what is local to each
+electrode.
+
+Each channel minus the mean of its neighbours, which removes what spreads over the whole
+array (volume-conducted cross-talk). Make one with `from_grid` or
+`from_positions`, then `apply` it.
+
+**Examples**
+
 ```python
-Laplacian(native) -> None
+>>> import numpy as np
+>>> import dspk
+>>> x = np.random.default_rng(0).standard_normal((64, 30_000)).astype(np.float32)
+>>> lap = dspk.ops.spatial.Laplacian.from_grid(8, 8)
+>>> local = lap.apply(x)
 ```
-
-Surface Laplacian `(channels, channels)`, applied on the device.
-
-**Parameters**
-
-- **`native`**
 
 **Properties**
 
 | Name | Type | Description |
 |---|---|---|
-| `matrix` | `np.ndarray` |  |
+| `matrix` | `np.ndarray` | The Laplacian matrix `(channels, channels)`. |
 
 #### `Laplacian.from_grid`
 
@@ -72,12 +122,25 @@ Surface Laplacian `(channels, channels)`, applied on the device.
 from_grid(rows: int, cols: int) -> Laplacian
 ```
 
-5-point Laplacian on a `rows x cols` grid (channel `row * cols + col`).
+The 5-point Laplacian of a `rows x cols` electrode grid.
+
+Channel `row * cols + col` sits at `(row, col)`. Each channel's neighbours are the ones
+above, below, left and right: 4 inside the grid, 3 on an edge, 2 in a corner.
 
 **Parameters**
 
-- **`rows`** : `int`
-- **`cols`** : `int`
+- **`rows`** : `int`  
+  Grid rows.
+- **`cols`** : `int`  
+  Grid columns.
+
+**Returns**
+
+- `Laplacian`
+
+**Raises**
+
+- `ValueError`: When `rows` or `cols` is 0.
 
 #### `Laplacian.from_positions`
 
@@ -85,12 +148,20 @@ from_grid(rows: int, cols: int) -> Laplacian
 from_positions(positions, k: int) -> Laplacian
 ```
 
-Distance-weighted Hjorth Laplacian over each channel's `k` nearest.
+A distance-weighted (Hjorth) Laplacian from electrode positions.
+
+Each channel minus a distance-weighted mean of its `k` nearest channels.
 
 **Parameters**
 
-- **`positions`**
-- **`k`** : `int`
+- **`positions`** : `array_like`  
+  Electrode positions `(channels, 2)`, `(x, y)`.
+- **`k`** : `int`  
+  Neighbours per channel.
+
+**Returns**
+
+- `Laplacian`
 
 #### `Laplacian.apply`
 
@@ -98,30 +169,41 @@ Distance-weighted Hjorth Laplacian over each channel's `k` nearest.
 apply(data, *, runtime: str | None = None) -> np.ndarray
 ```
 
-`matrix @ data` on the device.
+Applies the Laplacian, `matrix @ data`, on the device.
 
 **Parameters**
 
-- **`data`**
-- **`runtime`** : `str | None`, default `None`
+- **`data`** : `array_like`  
+  Signal `(channels, samples)`. float32, int8, int16, uint16 and int32 arrays go to the device as they are and are converted there; other dtypes and lists become float32 first.
+- **`runtime`** : `str | None`, default `None`  
+  A runtime from [`runtime.available`](/dsp-kitchen/reference/python/runtime/#available) (`"cuda"`, `"hip"`, `"wgpu"`, `"cpu"`) for this call. By default: the one chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
+
+**Returns**
+
+- `np.ndarray` — `(channels, samples)`, float32.
 
 ### `Whitening`
 
+Spatial whitening: a `(channels, channels)` matrix that decorrelates the channels.
+
+Make one with `fit_zca`, `fit_local_knn` or `from_matrix`, then
+`apply` it.
+
+**Examples**
+
 ```python
-Whitening(native) -> None
+>>> import numpy as np
+>>> import dspk
+>>> x = np.random.default_rng(0).standard_normal((4, 30_000)).astype(np.float32)
+>>> w = dspk.ops.spatial.Whitening.fit_zca(x)
+>>> white = w.apply(x)
 ```
-
-Spatial whitening `(channels, channels)`, fitted and applied on the device.
-
-**Parameters**
-
-- **`native`**
 
 **Properties**
 
 | Name | Type | Description |
 |---|---|---|
-| `matrix` | `np.ndarray` |  |
+| `matrix` | `np.ndarray` | The whitening matrix `(channels, channels)`. |
 
 #### `Whitening.fit_zca`
 
@@ -134,13 +216,25 @@ fit_zca(
 ) -> Whitening
 ```
 
-Global ZCA `U (L + epsilon)^-1/2 U^T` of `data` `(channels, samples)`.
+Fits a global ZCA whitening, `U (L + epsilon)^-1/2 U^T` of the channel covariance.
 
 **Parameters**
 
-- **`data`**
-- **`epsilon`** : `float`, default `DEFAULT_WHITENING_EPSILON` (1e-06)
-- **`runtime`** : `str | None`, default `None`
+- **`data`** : `array_like`  
+  Signal `(channels, samples)`, converted to float32 on the host first (these models read host data).
+- **`epsilon`** : `float`, default `DEFAULT_WHITENING_EPSILON` (1e-06)  
+  Added to every eigenvalue: keeps near-silent directions from being amplified.
+- **`runtime`** : `str | None`, default `None`  
+  A runtime from [`runtime.available`](/dsp-kitchen/reference/python/runtime/#available) (`"cuda"`, `"hip"`, `"wgpu"`, `"cpu"`) for this call. By default: the one chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
+
+**Returns**
+
+- `Whitening`
+
+**Raises**
+
+- `ValueError`: When `data` is not 2-D.
+- `RuntimeError`: When the runtime has no device.
 
 #### `Whitening.fit_local_knn`
 
@@ -155,16 +249,32 @@ fit_local_knn(
 ) -> Whitening
 ```
 
-Local ZCA: each channel whitened over its `k` nearest channels (`positions`
-`(channels, 2)`), as Kilosort4.
+Fits a local ZCA whitening: each channel whitened over its `k` nearest channels.
+
+As Kilosort4: for each channel, the `k` closest channels (itself included) give a local
+covariance whose ZCA row becomes that channel's row of the matrix.
 
 **Parameters**
 
-- **`data`**
-- **`positions`**
-- **`k`** : `int`
-- **`epsilon`** : `float`, default `DEFAULT_WHITENING_EPSILON` (1e-06)
-- **`runtime`** : `str | None`, default `None`
+- **`data`** : `array_like`  
+  Signal `(channels, samples)`, converted to float32 on the host first (these models read host data).
+- **`positions`** : `array_like`  
+  Electrode positions `(channels, 2)`, `(x, y)`.
+- **`k`** : `int`  
+  Channels per neighbourhood, `1` to `channels`.
+- **`epsilon`** : `float`, default `DEFAULT_WHITENING_EPSILON` (1e-06)  
+  Added to every eigenvalue of each local covariance.
+- **`runtime`** : `str | None`, default `None`  
+  A runtime from [`runtime.available`](/dsp-kitchen/reference/python/runtime/#available) (`"cuda"`, `"hip"`, `"wgpu"`, `"cpu"`) for this call. By default: the one chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
+
+**Returns**
+
+- `Whitening`
+
+**Raises**
+
+- `ValueError`: For `k` outside `1..channels`, `positions` not `(channels, 2)`, or `data` not 2-D.
+- `RuntimeError`: When the runtime has no device.
 
 #### `Whitening.from_matrix`
 
@@ -172,11 +282,20 @@ Local ZCA: each channel whitened over its `k` nearest channels (`positions`
 from_matrix(matrix) -> Whitening
 ```
 
-A whitening from an explicit `(channels, channels)` matrix.
+A whitening from a matrix you already have.
 
 **Parameters**
 
-- **`matrix`**
+- **`matrix`** : `array_like`  
+  `(channels, channels)`.
+
+**Returns**
+
+- `Whitening`
+
+**Raises**
+
+- `ValueError`: When `matrix` is not square.
 
 #### `Whitening.apply`
 
@@ -184,12 +303,18 @@ A whitening from an explicit `(channels, channels)` matrix.
 apply(data, *, runtime: str | None = None) -> np.ndarray
 ```
 
-`matrix @ data` on the device.
+Applies the whitening, `matrix @ data`, on the device.
 
 **Parameters**
 
-- **`data`**
-- **`runtime`** : `str | None`, default `None`
+- **`data`** : `array_like`  
+  Signal `(channels, samples)`. float32, int8, int16, uint16 and int32 arrays go to the device as they are and are converted there; other dtypes and lists become float32 first.
+- **`runtime`** : `str | None`, default `None`  
+  A runtime from [`runtime.available`](/dsp-kitchen/reference/python/runtime/#available) (`"cuda"`, `"hip"`, `"wgpu"`, `"cpu"`) for this call. By default: the one chosen with [`runtime.set`](/dsp-kitchen/reference/python/runtime/#set), else `DSPK_RUNTIME`, else the first available (GPUs first).
+
+**Returns**
+
+- `np.ndarray` — `(channels, samples)`, float32.
 
 ## Constants
 

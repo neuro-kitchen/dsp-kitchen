@@ -17,14 +17,14 @@ the synapse bindings.
 
 | | |
 |---|---|
-| [`formats`](#formats) | Names of the formats `open` recognizes, in detection order. |
-| [`open`](#open) | Opens the recording at `path`. |
-| [`sources`](#sources) | Every source of the file at `path`, from its metadata only. |
-| [`write_raw`](#write_raw) | Writes `data` `(channels, samples)` as raw binary at `path` with its JSON sidecar. |
-| [`write_zarr`](#write_zarr) | Writes `data` `(channels, samples)` as a Zarr store at `path` (`/traces`, float32). |
-| [`Recording`](#recording) | A recording opened from a file. |
-| [`Source`](#source) | One source of a file (most files have one; containers such as NWB have several). |
-| [`ZarrWriter`](#zarrwriter) | A Zarr store written block by block (`/traces`, float32). |
+| [`formats`](#formats) | Names of the formats `open` recognizes, in the order they are tried. |
+| [`open`](#open) | Opens a recording file. |
+| [`sources`](#sources) | Lists the sources of a file, reading only its metadata. |
+| [`write_raw`](#write_raw) | Writes a recording as raw binary with a JSON sidecar. |
+| [`write_zarr`](#write_zarr) | Writes a recording as a Zarr store (`/traces`, float32). |
+| [`Recording`](#recording) | A recording opened from a file, read in pieces. |
+| [`Source`](#source) | One source of a file. |
+| [`ZarrWriter`](#zarrwriter) | A Zarr store (`/traces`, float32) written block by block. |
 
 ## Functions
 
@@ -34,7 +34,11 @@ the synapse bindings.
 formats() -> list[str]
 ```
 
-Names of the formats `open` recognizes, in detection order.
+Names of the formats `open` recognizes, in the order they are tried.
+
+**Returns**
+
+- `list of str`
 
 ### `open`
 
@@ -45,12 +49,33 @@ open(
 ) -> Recording
 ```
 
-Opens the recording at `path`: its default source, or `source` (an id from `sources(path)`).
+Opens a recording file.
+
+The format is detected from the file (see `formats`). Only metadata is read here; samples are
+read with `Recording.read`.
 
 **Parameters**
 
-- **`path`** : `str | PathLike | Path`
-- **`source`** : `str | None`, default `None`
+- **`path`** : `str | PathLike | Path`  
+  The recording: a file, or a folder for stores such as Zarr.
+- **`source`** : `str | None`, default `None`  
+  Which source to open, an id from `sources(path)`; by default the file's default source.
+
+**Returns**
+
+- `Recording`
+
+**Raises**
+
+- `OSError`: When the file cannot be read.
+- `ValueError`: When the format is not recognized or `source` is not in the file.
+
+**Examples**
+
+```python
+>>> import dspk
+>>> rec = dspk.io.open("session.zarr")
+```
 
 ### `sources`
 
@@ -58,11 +83,29 @@ Opens the recording at `path`: its default source, or `source` (an id from `sour
 sources(path: str | PathLike | Path) -> list[Source]
 ```
 
-Every source of the file at `path`, from its metadata only.
+Lists the sources of a file, reading only its metadata.
 
 **Parameters**
 
-- **`path`** : `str | PathLike | Path`
+- **`path`** : `str | PathLike | Path`  
+  The recording file or folder.
+
+**Returns**
+
+- `list of Source`
+
+**Raises**
+
+- `OSError`: When the file cannot be read.
+- `ValueError`: When the format is not recognized.
+
+**Examples**
+
+```python
+>>> import dspk
+>>> for s in dspk.io.sources("session.nwb"):
+...     print(s.id, s.channel_count, s.sample_rate)
+```
 
 ### `write_raw`
 
@@ -80,24 +123,44 @@ write_raw(
 ) -> None
 ```
 
-Writes `data` `(channels, samples)` as raw binary at `path` with its JSON sidecar.
+Writes a recording as raw binary with a JSON sidecar.
 
-Integer `data` is the stored integers, `value = stored * gain` (an int16 amplifier array and
-its volts per bit); float `data` is the values. `format` defaults to `data`'s dtype, so
-integers are written as they are, with no conversion; float values stored in an integer
-`format` become `round(value / gain)`. `order` is `"channel_major"` or `"time_major"`;
-`unit` is the symbol of the values (`""`: dimensionless).
+Integers are written as they are: an int16 array from an amplifier is stored as int16, its
+`gain` (units per bit) in the sidecar. Float values stored in an integer `format` become
+`round(value / gain)`.
 
 **Parameters**
 
-- **`data`**
-- **`path`** : `str | PathLike`
-- **`sample_rate`** : `float`
-- **`format`** : `str | None`, default `None`
-- **`order`** : `str`, default `'channel_major'`
-- **`gain`** : `float`, default `1.0`
-- **`unit`** : `str`, default `''`
-- **`chunk_samples`** : `int`, default `WRITE_CHUNK_SAMPLES` (65536)
+- **`data`** : `array_like`  
+  Samples `(channels, samples)`: integer arrays are the stored integers (`value = stored * gain`), float arrays the values. NumPy arrays of a [`STORED_DTYPES`](/dsp-kitchen/reference/python/io/#stored_dtypes) dtype are written as they are; anything else becomes float32.
+- **`path`** : `str | PathLike`  
+  The binary file to write; the sidecar is written next to it.
+- **`sample_rate`** : `float`  
+  Sample rate in Hz.
+- **`format`** : `str | None`, default `None`  
+  Stored type (`"int16"`, `"float32"`, ...); by default `data`'s dtype.
+- **`order`** : `{"channel_major", "time_major"}`, default `'channel_major'`  
+  Sample layout in the file: each channel's samples together, or each time step's channels together.
+- **`gain`** : `float`, default `1.0`  
+  Units per stored integer.
+- **`unit`** : `str`, default `''`  
+  Unit symbol of the values: `"V"`, `"mV"`, `"µV"` (or `"uV"`), `"A"`, ...; `""` for dimensionless.
+- **`chunk_samples`** : `int`, default `WRITE_CHUNK_SAMPLES` (65536)  
+  Samples per channel written at a time (bounds memory, not the result).
+
+**Raises**
+
+- `ValueError`: When `data` is not 2-D or an option is invalid.
+- `OSError`: When the file cannot be written.
+
+**Examples**
+
+```python
+>>> import numpy as np
+>>> import dspk
+>>> counts = np.zeros((4, 30_000), dtype=np.int16)
+>>> dspk.io.write_raw(counts, "session.bin", 30_000.0, gain=0.195, unit="µV")
+```
 
 ### `write_zarr`
 
@@ -115,41 +178,73 @@ write_zarr(
 ) -> None
 ```
 
-Writes `data` `(channels, samples)` as a Zarr store at `path` (`/traces`, float32).
+Writes a recording as a Zarr store (`/traces`, float32).
 
-Chunks of `chunk_samples` (all channels) are compressed with `compression` (`"zstd"`,
-`"blosc_lz4"` or `"none"`; `level`: zstd's, default 3, or blosc's 0-9, default 5) and
-stored on several threads; `parallel=False` writes on one thread.
+Chunks of `chunk_samples` (all channels) are compressed and stored on several threads.
 
 **Parameters**
 
-- **`data`**
-- **`path`** : `str | PathLike`
-- **`sample_rate`** : `float`
-- **`unit`** : `str`, default `''`
-- **`chunk_samples`** : `int`, default `ZARR_CHUNK_SAMPLES` (5000)
-- **`compression`** : `str`, default `'zstd'`
-- **`level`** : `int | None`, default `None`
-- **`parallel`** : `bool`, default `True`
+- **`data`** : `array_like`  
+  Values `(channels, samples)`.
+- **`path`** : `str | PathLike`  
+  The store (a folder) to create.
+- **`sample_rate`** : `float`  
+  Sample rate in Hz.
+- **`unit`** : `str`, default `''`  
+  Unit symbol of the values (`""` for dimensionless).
+- **`chunk_samples`** : `int`, default `ZARR_CHUNK_SAMPLES` (5000)  
+  Samples per Zarr chunk.
+- **`compression`** : `{"zstd", "blosc_lz4", "none"}`, default `'zstd'`  
+  How chunks are compressed.
+- **`level`** : `int | None`, default `None`  
+  Compression level: zstd's (default 3) or blosc's 0–9 (default 5); `"none"` takes none.
+- **`parallel`** : `bool`, default `True`  
+  Compress and store on several threads; `False` uses one.
+
+**Raises**
+
+- `ValueError`: When `data` is not 2-D or an option is invalid.
+- `OSError`: When the store cannot be written.
+
+**Examples**
+
+```python
+>>> import numpy as np
+>>> import dspk
+>>> x = np.random.default_rng(0).standard_normal((4, 30_000)).astype(np.float32)
+>>> dspk.io.write_zarr(x, "session.zarr", 30_000.0, unit="µV")
+```
 
 ## Classes
 
 ### `Recording`
 
-A recording opened from a file. Reads return scaled `float32` values in each channel's unit,
-shape `(channels, samples)`.
+A recording opened from a file, read in pieces.
+
+Opening reads only the metadata; `read` returns the samples you ask for, scaled to each
+channel's unit, as float32. Make one with `open`.
+
+**Examples**
+
+```python
+>>> import dspk
+>>> rec = dspk.io.open("session.zarr")
+>>> rec.channel_count, rec.sample_rate
+(32, 30000.0)
+>>> first_second = rec.read(start=0, stop=30_000)
+```
 
 **Properties**
 
 | Name | Type | Description |
 |---|---|---|
-| `name` | `str` |  |
+| `name` | `str` | Name of the recording, from the file or its source. |
 | `channel_count` | `int` | Number of channels. |
 | `samples` | `int` | Samples per channel. |
 | `sample_rate` | `float` | Sampling rate in Hz. |
 | `duration` | `float` | Duration in seconds. |
 | `format` | `str` | Stored sample type (`"int16"`, `"float32"`, …). |
-| `channel_names` | `list[str]` |  |
+| `channel_names` | `list[str]` | Name of each channel. |
 | `units` | `list[str]` | Unit symbol of each channel's values (`"µV"`, `"mV"`, …; `""` when dimensionless). |
 
 #### `Recording.read`
@@ -162,28 +257,42 @@ read(
 ) -> NDArray[np.float32]
 ```
 
-Reads `channels` (default: all) over samples `start..stop` (default: to the end).
+Reads samples into memory.
 
 **Parameters**
 
-- **`channels`** : `Sequence[int] | None`, default `None`
-- **`start`** : `int`, default `0`
-- **`stop`** : `int | None`, default `None`
+- **`channels`** : `Sequence[int] | None`, default `None`  
+  Channel indices, in the order wanted; by default all.
+- **`start`** : `int`, default `0`  
+  First sample.
+- **`stop`** : `int | None`, default `None`  
+  The sample after the last; by default the end.
+
+**Returns**
+
+- `np.ndarray` — `(len(channels), stop - start)`, float32, in each channel's unit.
+
+**Raises**
+
+- `IndexError`: When a channel or the sample range is outside the recording.
+- `OSError`: When the file cannot be read.
 
 ### `Source`
 
-One source of a file (most files have one; containers such as NWB have several).
+One source of a file: what `sources` lists and `open(path, source=...)` opens.
+
+Most files have one; containers such as NWB have several (one per electrical series).
 
 **Properties**
 
 | Name | Type | Description |
 |---|---|---|
 | `id` | `str` | Id to pass to `open(path, source=...)`. |
-| `name` | `str` |  |
-| `channel_count` | `int` |  |
-| `samples` | `int` |  |
+| `name` | `str` | Name of the source. |
+| `channel_count` | `int` | Number of channels. |
+| `samples` | `int` | Samples per channel. |
 | `sample_rate` | `float` | Sampling rate in Hz. |
-| `format` | `str` |  |
+| `format` | `str` | Stored sample type (`"int16"`, `"float32"`, …). |
 | `unit` | `str` | Unit symbol of the values (`""` when dimensionless). |
 
 ### `ZarrWriter`
@@ -204,22 +313,45 @@ ZarrWriter(
 ) -> ZarrWriter
 ```
 
-A Zarr store written block by block (`/traces`, float32): created for `channels × samples`,
-then blocks `(channels, n)` pushed in order until every sample is written, then `finish()`.
-For data that does not fit in memory at once (a recording processed window by window).
+A Zarr store (`/traces`, float32) written block by block.
+
+For data that does not fit in memory at once, such as a recording processed window by window:
+create the store for its full size, `push` blocks in order until every sample is written, then
+`finish`.
+
+**Examples**
+
+```python
+>>> import numpy as np
+>>> import dspk
+>>> w = dspk.io.ZarrWriter("out.zarr", 4, 60_000, 30_000.0, unit="µV")
+>>> for _ in range(2):
+...     w.push(np.zeros((4, 30_000), dtype=np.float32))
+>>> w.finish()
+```
 
 **Parameters**
 
-- **`path`** : `str | PathLike | Path`
-- **`channels`** : `int`
-- **`samples`** : `int`
-- **`sample_rate`** : `float`
-- **`unit`** : `str`, default `''`
-- **`chunk_samples`** : `int`, default `5000`
-- **`compression`** : `str`, default `'zstd'`
-- **`level`** : `int | None`, default `None`
-- **`parallel`** : `bool`, default `True`
-- **`channel_names`** : `Sequence[str] | None`, default `None`
+- **`path`** : `str | PathLike | Path`  
+  The store (a folder) to create.
+- **`channels`** : `int`  
+  Number of channels.
+- **`samples`** : `int`  
+  Samples per channel, in total.
+- **`sample_rate`** : `float`  
+  Sample rate in Hz.
+- **`unit`** : `str`, default `''`  
+  Unit symbol of the values (`""` for dimensionless).
+- **`chunk_samples`** : `int`, default `5000`  
+  Samples per Zarr chunk.
+- **`compression`** : `{"zstd", "blosc_lz4", "none"}`, default `'zstd'`  
+  How chunks are compressed.
+- **`level`** : `int | None`, default `None`  
+  Compression level: zstd's (default 3) or blosc's 0–9 (default 5); `"none"` takes none.
+- **`parallel`** : `bool`, default `True`  
+  Compress and store on several threads; `False` uses one.
+- **`channel_names`** : `Sequence[str] | None`, default `None`  
+  A name per channel.
 
 #### `ZarrWriter.push`
 
@@ -227,11 +359,17 @@ For data that does not fit in memory at once (a recording processed window by wi
 push(block: NDArray[np.float32]) -> None
 ```
 
-Appends `block` `(channels, n)` float32 (the next `n` samples).
+Writes the next block of samples.
 
 **Parameters**
 
-- **`block`** : `NDArray[np.float32]`
+- **`block`** : `NDArray[np.float32]`  
+  The next `n` samples, `(channels, n)` float32.
+
+**Raises**
+
+- `ValueError`: When `block` has another channel count, goes past the store's samples, or the writer is finished.
+- `OSError`: When the store cannot be written.
 
 #### `ZarrWriter.finish`
 
@@ -239,7 +377,12 @@ Appends `block` `(channels, n)` float32 (the next `n` samples).
 finish() -> None
 ```
 
-Checks every sample was written and closes the store.
+Closes the store, after checking that every sample was written.
+
+**Raises**
+
+- `ValueError`: When samples are missing or the writer is already finished.
+- `OSError`: When the store cannot be closed.
 
 ## Constants
 
