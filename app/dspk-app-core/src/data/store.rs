@@ -3,6 +3,7 @@
 //! Changes go through its methods, which emit the [`AppEvent`] they caused (never a blanket
 //! `notify`); view models subscribe to the events they show.
 
+use dspk_ops::PipelineStage;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -116,6 +117,16 @@ impl Recording {
         let rate = if hz >= 1000.0 { format!("{:.1} kHz", hz / 1000.0) } else { format!("{hz:.1} Hz") };
         format!("{} ch · {rate} · {}", e.channels, duration(e.duration_sec()))
     }
+}
+
+/// How a view is previewed ([`Store::view_plan`]).
+pub struct ViewPlan {
+    /// Source channels read, in order.
+    pub group: Vec<usize>,
+    /// Device steps and their keys (for sharing computed prefixes).
+    pub steps: Vec<(String, PipelineStage)>,
+    /// Source channels shown, in order.
+    pub shown: Vec<usize>,
 }
 
 pub struct Store {
@@ -475,35 +486,27 @@ impl Store {
         let Some(sources) = self.sources().cloned() else { return };
         let ds = sources.get(&source);
         let Some(raw) = ds.source.clone() else { return };
-        let mut stages = Vec::new();
-        for op in v.ops.iter().filter(|o| o.enabled) {
-            match op.node.stage() {
-                Ok(Some(stage)) => stages.push(stage),
-                Ok(None) => {}
-                Err(e) => {
-                    self.set_status(format!("{}: op {}: {e}", v.name, op.id), cx);
-                    return;
-                }
-            }
-        }
-        if stages.is_empty() {
-            return;
-        }
-        let group = match self.view_channels(&v, ds.total_channels) {
-            Ok(g) => g,
+        let plan = match self.view_plan(&v, ds.total_channels) {
+            Ok(p) => p,
             Err(e) => {
                 self.set_status(format!("{}: {e}", v.name), cx);
                 return;
             }
         };
-        // The chain's key, step by step: [source and channels, op 1, op 2, …]
+        if plan.steps.is_empty() {
+            return;
+        }
+        let group = plan.group;
+        let stages: Vec<PipelineStage> = plan.steps.iter().map(|(_, st)| st.clone()).collect();
+        // The chain's key, step by step: [source and channels, step 1, step 2, …]
         let mut key = vec![format!("{source}|{group:?}")];
-        key.extend(v.ops.iter().filter(|o| o.enabled && o.node.stage().ok().flatten().is_some()).map(|o| serde_json::to_string(&o.node).unwrap_or_default()));
+        key.extend(plan.steps.into_iter().map(|(k, _)| k));
         // The longest computed prefix of this chain
         let found = (2..=key.len()).rev().find_map(|k| self.preview_cache.iter().find(|(c, _)| c[..] == key[..k]).map(|(_, p)| (k, p.clone())));
         let built = match found {
             Some((k, p)) if k == key.len() => Ok(p),
-            Some((k, p)) => ProcessedSignal::new(ds.signal().clone(), Arc::new(PreviewSource::new(p)), group, stages[k - 1..].to_vec()).map(Arc::new),
+            // A branch reads the shared prefix's rows, in the order that prefix leaves them
+            Some((k, p)) => ProcessedSignal::new(ds.signal().clone(), Arc::new(PreviewSource::new(p.clone())), p.out_channels().to_vec(), stages[k - 1..].to_vec()).map(Arc::new),
             None => ProcessedSignal::new(ds.signal().clone(), raw, group, stages).map(Arc::new),
         };
         match built {
@@ -519,24 +522,55 @@ impl Store {
         }
     }
 
-    /// The channels view `v` reads, in its order: its subset (or all `total`), through the
-    /// remaps that open its chain (folded into the read, as the pipeline does: they may reorder
-    /// and drop). A remap later in the chain is not previewed.
-    pub fn view_channels(&self, v: &ViewDoc, total: usize) -> Result<Vec<usize>, String> {
+    /// How view `v` is previewed, as the pipeline runs it: `group`, the channels it reads (its
+    /// subset, or all `total`, through the remaps that open its chain: they fold into the read
+    /// and may drop); `steps`, its processing on the device with each step's key (a remap between
+    /// processing steps reorders there and keeps every channel); `shown`, the channels it ends
+    /// with (through the remaps after the last processing step: they may drop). Resampling is not
+    /// previewed.
+    pub fn view_plan(&self, v: &ViewDoc, total: usize) -> Result<ViewPlan, String> {
         let mut group: Vec<usize> = v.recording.channels.clone().unwrap_or_else(|| (0..total).collect());
         let base_dir = self.doc_path.as_ref().and_then(|p| p.parent().map(Path::to_path_buf)).unwrap_or_default();
-        for op in v.ops.iter().filter(|o| o.enabled) {
-            if !matches!(op.node, dspk_pipeline::Node::Remap { .. }) {
-                break;
-            }
-            let Some(map) = op.node.channel_map(Some(&base_dir)).map_err(|e| e.to_string())? else { break };
-            let order = map.resolve(group.len()).map_err(|e| e.to_string())?;
+        let ops: Vec<&dspk_pipeline::Node> = v.ops.iter().filter(|o| o.enabled).map(|o| &o.node).collect();
+        let is_remap = |n: &dspk_pipeline::Node| matches!(n, dspk_pipeline::Node::Remap { .. });
+        let map_of = |n: &dspk_pipeline::Node| n.channel_map(Some(&base_dir)).map_err(|e| e.to_string()).map(|m| m.expect("a remap has a map"));
+        let lead = ops.iter().take_while(|n| is_remap(n)).count();
+        for n in &ops[..lead] {
+            let order = map_of(n)?.resolve(group.len()).map_err(|e| e.to_string())?;
             group = order.into_iter().map(|i| group[i]).collect();
         }
-        Ok(group)
+        let last_processing = ops.iter().rposition(|n| !is_remap(n));
+        let mut steps = Vec::new();
+        let mut current = group.clone();
+        for (i, n) in ops.iter().enumerate().skip(lead) {
+            let key = serde_json::to_string(n).unwrap_or_default();
+            if is_remap(n) {
+                let order = map_of(n)?.resolve(current.len()).map_err(|e| e.to_string())?;
+                if last_processing.is_some_and(|last| i > last) {
+                    // After the last processing step: the channels shown (may drop)
+                    current = order.into_iter().map(|j| current[j]).collect();
+                    continue;
+                }
+                let mut seen = order.clone();
+                seen.sort_unstable();
+                if seen != (0..current.len()).collect::<Vec<_>>() {
+                    return Err(format!("a remap between processing steps keeps every channel ({}; it reorders them): drop channels in a remap first or last", current.len()));
+                }
+                current = order.iter().map(|&j| current[j]).collect();
+                steps.push((key, PipelineStage::ReorderChannels { order }));
+            } else if let Some(stage) = n.stage().map_err(|e| e.to_string())? {
+                steps.push((key, stage));
+            }
+        }
+        Ok(ViewPlan { group, steps, shown: current })
     }
 
-    /// The active view's channels (its subset, through its leading remaps) become the shown
+    /// The channels view `v` shows, in order (see [`Self::view_plan`]).
+    pub fn view_channels(&self, v: &ViewDoc, total: usize) -> Result<Vec<usize>, String> {
+        self.view_plan(v, total).map(|p| p.shown)
+    }
+
+    /// The active view's channels (its subset, through its remaps) become the shown
     /// selection of its source (once per change of them, so the user's own selection is kept
     /// otherwise).
     fn apply_active_view(&mut self, cx: &mut Context<Self>) {

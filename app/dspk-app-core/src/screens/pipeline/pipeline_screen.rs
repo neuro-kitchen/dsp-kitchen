@@ -743,7 +743,7 @@ impl Inspector {
                     .gap_2()
                     .child(enabled_box)
                     .child(Section::new("Channels").child(table))
-                    .child(div().text_xs().text_color(muted).child("Right after the recording it folds into the read (Explore shows the new order); later in the chain it reorders on the device."))
+                    .child(div().text_xs().text_color(muted).child("Explore shows the new order. First in the chain it folds into the read and may drop channels; between processing steps it reorders on the device and keeps them all; last, it may drop again."))
                     .into_any_element()
             }
             NodeKind::Op { enabled, node: op } => {

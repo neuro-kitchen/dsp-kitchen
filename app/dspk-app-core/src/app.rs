@@ -841,6 +841,55 @@ mod tests {
         cx.update(|cx| assert_eq!(store.read(cx).selection(&source), &[3, 1, 2]));
     }
 
+    /// Remaps anywhere in a chain preview as the pipeline runs them: between processing steps a
+    /// reorder (each channel still its own data), after the last one the channels shown (may
+    /// drop); between steps, dropping is refused.
+    #[gpui_kit::test]
+    fn explore_follows_remaps_anywhere(cx: &mut TestAppContext) {
+        use crate::domain::command::SessionCommand;
+        use crate::screens::pipeline::channel_table::Rows;
+        use dspk_view::SignalBackend as _;
+        let (window, store, _app) = open(cx);
+        cx.update(|cx| {
+            let ds = Dataset::generate_synthetic(8, 10_000.0, 2.0);
+            store.update(cx, |s, cx| s.install(Recording::new(SourceSet::single(ds), Some("/nonexistent/remaps.zarr".into())), cx));
+        });
+        cx.update_window(window, |_, window, cx| window.render_frame(cx)).unwrap();
+        cx.run_until_parked();
+        let source = cx.update(|cx| store.read(cx).sources().unwrap().default_entry().id.clone());
+        let view = cx.update(|cx| store.update(cx, |s, cx| s.view_for_source(&source, cx))).expect("a view");
+        let run = |cx: &mut TestAppContext, cmd: SessionCommand| cx.update(|cx| store.update(cx, |s, cx| s.execute(cmd, cx)));
+        run(cx, SessionCommand::SelectView { view: view.clone() }).unwrap();
+        let scale = |a: f32| serde_json::from_value::<dspk_pipeline::Node>(serde_json::json!({"op": "scale", "alpha": a, "beta": 0.0})).unwrap();
+        let reverse = Rows { base: 0, inputs: (0..8).rev().collect(), names: vec![None; 8] }.node();
+        for node in [scale(2.0), reverse, scale(1.0)] {
+            run(cx, SessionCommand::AddOp { view: view.clone(), node, index: None, id: None }).unwrap();
+        }
+        cx.run_until_parked();
+        cx.update(|cx| assert_eq!(store.read(cx).selection(&source), &[7, 6, 5, 4, 3, 2, 1, 0], "the reorder is shown"));
+        let (preview, raw) = cx.update(|cx| (store.read(cx).preview_of(&view).expect("a preview"), store.read(cx).sources().unwrap().get(&source).signal().clone()));
+        for c in [0usize, 3, 7] {
+            let (mut p, mut r) = (vec![0.0f32; 500], vec![0.0f32; 500]);
+            preview.read(&[c], 5_000..5_500, &mut p).unwrap();
+            raw.read(&[c], 5_000..5_500, &mut r).unwrap();
+            assert!(p.iter().zip(&r).all(|(p, r)| (p - 2.0 * r).abs() < 1e-3 * r.abs().max(1.0)), "channel {c} carries its own data");
+        }
+        // After the last processing step: keep the first two shown
+        let keep = Rows { base: 0, inputs: vec![0, 1], names: vec![None; 2] }.node();
+        run(cx, SessionCommand::AddOp { view: view.clone(), node: keep, index: None, id: None }).unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| assert_eq!(store.read(cx).selection(&source), &[7, 6]));
+        // Between processing steps, dropping is refused (no preview, the reason in the status)
+        let drop = Rows { base: 0, inputs: vec![0, 1], names: vec![None; 2] }.node();
+        run(cx, SessionCommand::AddOp { view: view.clone(), node: drop, index: Some(1), id: None }).unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let s = store.read(cx);
+            assert!(s.preview_of(&view).is_none());
+            assert!(s.status.contains("keeps every channel"), "{}", s.status);
+        });
+    }
+
     #[gpui_kit::test]
     fn start_screen_then_workspaces(cx: &mut TestAppContext) {
         let (window, store, _) = open(cx);

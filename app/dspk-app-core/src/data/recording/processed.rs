@@ -43,8 +43,10 @@ struct State {
 pub struct ProcessedSignal {
     raw: Arc<dyn SignalBackend>,
     source: Arc<dyn RecordingSource>,
-    /// Channels processed together, in source order (indices of the source).
+    /// Channels processed together, in the order they are read (indices of the source).
     group: Vec<usize>,
+    /// The source channel each output row stands for: `group` through the chain's reorders.
+    out_channels: Vec<usize>,
     pipeline: Pipeline,
     halo: (usize, usize),
     stored: bool,
@@ -59,7 +61,21 @@ impl ProcessedSignal {
         let pipeline = Pipeline::with_stages(stages);
         let halo = pipeline.settling(info.sample_rate_hz())?;
         let stored = info.format != SampleFormat::F64;
-        Ok(Self { raw, source, group, pipeline, halo, stored, state: Mutex::new(State { workspace: None, block: None }) })
+        let mut out_channels = group.clone();
+        for stage in pipeline.stages() {
+            if let PipelineStage::ReorderChannels { order } = stage {
+                if order.len() != out_channels.len() || order.iter().any(|&i| i >= out_channels.len()) {
+                    return Err(DspError::InvalidConfig(format!("a reorder of {} channels over {}", order.len(), out_channels.len())));
+                }
+                out_channels = order.iter().map(|&i| out_channels[i]).collect();
+            }
+        }
+        Ok(Self { raw, source, group, out_channels, pipeline, halo, stored, state: Mutex::new(State { workspace: None, block: None }) })
+    }
+
+    /// The source channel each output row stands for (the read channels through the reorders).
+    pub fn out_channels(&self) -> &[usize] {
+        &self.out_channels
     }
 
     /// Whether a window of `samples` samples is previewed processed (else drawn raw).
@@ -139,7 +155,7 @@ impl ProcessedSignal {
     /// channels, raw for the others.
     fn fill(&self, channels: &[usize], samples: Range<u64>, slack: bool, out: &mut [f32]) -> DspResult<()> {
         let n = (samples.end - samples.start) as usize;
-        let rows: Vec<Option<usize>> = channels.iter().map(|c| self.group.iter().position(|g| g == c)).collect();
+        let rows: Vec<Option<usize>> = channels.iter().map(|c| self.out_channels.iter().position(|g| g == c)).collect();
         if rows.iter().any(Option::is_some) {
             self.with_block(samples.clone(), slack, |b| {
                 let (m, a) = ((b.range.end - b.range.start) as usize, (samples.start - b.range.start) as usize);
