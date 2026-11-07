@@ -44,6 +44,7 @@ SYNAPSE = "plugins/synapse/reference/python"
 PAGES = [
     Page("dspk.runtime", CORE, "runtime", "runtime"),
     Page("dspk.io", CORE, "io", "io"),
+    Page("dspk.ops", CORE, "ops", "ops"),
     Page("dspk.ops.filter", CORE, "ops-filter", "ops.filter"),
     Page("dspk.ops.resample", CORE, "ops-resample", "ops.resample"),
     Page("dspk.ops.spatial", CORE, "ops-spatial", "ops.spatial"),

@@ -15,6 +15,7 @@ The dspk package, module by module: what each function takes and returns.
 |---|---|
 | [`dspk.runtime`](/dsp-kitchen/reference/python/runtime/) | Compute runtime choice. |
 | [`dspk.io`](/dsp-kitchen/reference/python/io/) | Recordings. |
+| [`dspk.ops`](/dsp-kitchen/reference/python/ops/) | Signal-processing operations of dspk-ops, run on the chosen runtime (see `dspk.runtime`). |
 | [`dspk.ops.filter`](/dsp-kitchen/reference/python/ops-filter/) | Filters on the device, one module per family (mirroring `dspk_ops::filter`). |
 | [`dspk.ops.resample`](/dsp-kitchen/reference/python/ops-resample/) | Sample-rate changes on the device, with `scipy.signal.decimate` / `resample_poly` semantics. |
 | [`dspk.ops.spatial`](/dsp-kitchen/reference/python/ops-spatial/) | Operations across channels on the device. |
