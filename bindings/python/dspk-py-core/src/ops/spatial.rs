@@ -175,4 +175,4 @@ fn square_array<'py>(py: Python<'py>, values: &[f32], n: usize) -> Bound<'py, Py
     numpy::ndarray::Array2::from_shape_vec((n, n), values.to_vec()).expect("n × n").into_pyarray(py)
 }
 
-pyo3_stub_gen::module_variable!("dspk._native.ops.spatial", "DEFAULT_WHITENING_EPSILON", f32);
+pyo3_stub_gen::module_variable!("dspk._native.ops.spatial", "DEFAULT_WHITENING_EPSILON", f32, DEFAULT_WHITENING_EPSILON);

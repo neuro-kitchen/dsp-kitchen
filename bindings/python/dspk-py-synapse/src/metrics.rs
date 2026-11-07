@@ -307,26 +307,26 @@ pub fn compare_sortings<'py>(py: Python<'py>, a: &Sorting, b: &Sorting, delta_ms
     Ok(out)
 }
 
-pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_ISI_THRESHOLD_MS", f64);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_PSTH_PRE_MS", f64);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_PSTH_POST_MS", f64);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_PSTH_BIN_MS", f64);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_MIN_ISI_MS", f64);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_PRESENCE_BIN_S", f64);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_PRESENCE_MEAN_RATE_RATIO", f64);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_CORRELOGRAM_BIN_MS", f32);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_CORRELOGRAM_WINDOW_MS", f32);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_MATCH_DELTA_MS", f64);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_AGREEMENT_THRESHOLD", f32);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "AMPLITUDE_CUTOFF_BINS", usize);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "AMPLITUDE_CUTOFF_SMOOTHING", f64);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "AMPLITUDE_CUTOFF_MIN_RATIO", f64);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_REFRACTORY_BIN_MS", f32);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_REFRACTORY_WINDOW_MS", f32);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_ACG_RATIO", f64);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_ACG_PROBABILITY", f64);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_CCG_RATIO", f64);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_CCG_PROBABILITY", f64);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_ISI_THRESHOLD_MS", f64, m::DEFAULT_ISI_THRESHOLD_MS);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_PSTH_PRE_MS", f64, m::DEFAULT_PSTH_PRE_MS);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_PSTH_POST_MS", f64, m::DEFAULT_PSTH_POST_MS);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_PSTH_BIN_MS", f64, m::DEFAULT_PSTH_BIN_MS);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_MIN_ISI_MS", f64, m::DEFAULT_MIN_ISI_MS);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_PRESENCE_BIN_S", f64, m::DEFAULT_PRESENCE_BIN_SEC);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_PRESENCE_MEAN_RATE_RATIO", f64, m::DEFAULT_PRESENCE_MEAN_FR_RATIO);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_CORRELOGRAM_BIN_MS", f32, m::DEFAULT_CORRELOGRAM_BIN_MS);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_CORRELOGRAM_WINDOW_MS", f32, m::DEFAULT_CORRELOGRAM_WINDOW_MS);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_MATCH_DELTA_MS", f64, m::DEFAULT_MATCH_DELTA_MS);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_AGREEMENT_THRESHOLD", f32, m::DEFAULT_AGREEMENT_THRESHOLD);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "AMPLITUDE_CUTOFF_BINS", usize, m::firing::AMPLITUDE_CUTOFF_BINS);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "AMPLITUDE_CUTOFF_SMOOTHING", f64, m::firing::AMPLITUDE_CUTOFF_SMOOTHING);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "AMPLITUDE_CUTOFF_MIN_RATIO", f64, m::firing::AMPLITUDE_CUTOFF_MIN_RATIO);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_REFRACTORY_BIN_MS", f32, RefractoryOptions::default().bin_ms);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_REFRACTORY_WINDOW_MS", f32, RefractoryOptions::default().window_ms);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_ACG_RATIO", f64, RefractoryOptions::default().acg_ratio);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_ACG_PROBABILITY", f64, RefractoryOptions::default().acg_probability);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_CCG_RATIO", f64, RefractoryOptions::default().ccg_ratio);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.metrics", "DEFAULT_CCG_PROBABILITY", f64, RefractoryOptions::default().ccg_probability);
 
 pub(crate) fn register(md: &Bound<'_, PyModule>) -> PyResult<()> {
     md.add("DEFAULT_ISI_THRESHOLD_MS", m::DEFAULT_ISI_THRESHOLD_MS)?;

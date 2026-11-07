@@ -47,9 +47,9 @@ new Nyquist, zero phase (samples near the ends can differ slightly from scipy's 
 | `data` |  |  |
 | `q` | `int` |  |
 | `ftype` | `str` | `'iir'` |
-| `order` | `int` | `DECIMATE_DEFAULT_ORDER` |
-| `ripple_db` | `float` | `DECIMATE_DEFAULT_RIPPLE_DB` |
-| `taps_per_factor` | `int` | `DECIMATE_FIR_TAPS_PER_FACTOR` |
+| `order` | `int` | `DECIMATE_DEFAULT_ORDER` (8) |
+| `ripple_db` | `float` | `DECIMATE_DEFAULT_RIPPLE_DB` (0.05) |
+| `taps_per_factor` | `int` | `DECIMATE_FIR_TAPS_PER_FACTOR` (20) |
 | `runtime` | `str \| None` | `None` |
 
 ### `resample_poly`
@@ -76,18 +76,18 @@ window), as `scipy.signal.resample_poly`; samples past the ends come from `edge`
 | `data` |  |  |
 | `up` | `int` |  |
 | `down` | `int` |  |
-| `beta` | `float` | `RESAMPLE_POLY_BETA` |
-| `edge` | `str` | `RESAMPLE_POLY_DEFAULT_EDGE` |
+| `beta` | `float` | `RESAMPLE_POLY_BETA` (5.0) |
+| `edge` | `str` | `RESAMPLE_POLY_DEFAULT_EDGE` ('zeros') |
 | `runtime` | `str \| None` | `None` |
 
 ## Constants
 
 | Name | Type | Value | Description |
 |---|---|---|---|
-| <a id="decimate_default_order"></a>`DECIMATE_DEFAULT_ORDER` | `int` |  |  |
-| <a id="decimate_default_ripple_db"></a>`DECIMATE_DEFAULT_RIPPLE_DB` | `float` |  |  |
-| <a id="decimate_fir_taps_per_factor"></a>`DECIMATE_FIR_TAPS_PER_FACTOR` | `int` |  |  |
-| <a id="decimate_iir_cutoff"></a>`DECIMATE_IIR_CUTOFF` | `float` |  |  |
-| <a id="resample_poly_beta"></a>`RESAMPLE_POLY_BETA` | `float` |  |  |
-| <a id="resample_poly_default_edge"></a>`RESAMPLE_POLY_DEFAULT_EDGE` | `str` |  |  |
-| <a id="resample_poly_half_len_per_rate"></a>`RESAMPLE_POLY_HALF_LEN_PER_RATE` | `int` |  |  |
+| <a id="decimate_default_order"></a>`DECIMATE_DEFAULT_ORDER` | `int` | `8` |  |
+| <a id="decimate_default_ripple_db"></a>`DECIMATE_DEFAULT_RIPPLE_DB` | `float` | `0.05` |  |
+| <a id="decimate_fir_taps_per_factor"></a>`DECIMATE_FIR_TAPS_PER_FACTOR` | `int` | `20` |  |
+| <a id="decimate_iir_cutoff"></a>`DECIMATE_IIR_CUTOFF` | `float` | `0.8` |  |
+| <a id="resample_poly_beta"></a>`RESAMPLE_POLY_BETA` | `float` | `5.0` |  |
+| <a id="resample_poly_default_edge"></a>`RESAMPLE_POLY_DEFAULT_EDGE` | `str` | `'zeros'` |  |
+| <a id="resample_poly_half_len_per_rate"></a>`RESAMPLE_POLY_HALF_LEN_PER_RATE` | `int` | `10` |  |

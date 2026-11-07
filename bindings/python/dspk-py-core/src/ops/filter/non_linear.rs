@@ -40,9 +40,9 @@ pub fn teager_kaiser<'py>(py: Python<'py>, data: DeviceInput, edge: &str, runtim
     })
 }
 
-pyo3_stub_gen::module_variable!("dspk._native.ops.filter", "MEDIAN_DEFAULT_EDGE", String);
-pyo3_stub_gen::module_variable!("dspk._native.ops.filter", "TEAGER_KAISER_DEFAULT_EDGE", String);
-pyo3_stub_gen::module_variable!("dspk._native.ops.filter", "MAX_MEDIAN_WIDTH", usize);
+pyo3_stub_gen::module_variable!("dspk._native.ops.filter", "MEDIAN_DEFAULT_EDGE", String, edge_name(MEDIAN_DEFAULT_EDGE).to_string());
+pyo3_stub_gen::module_variable!("dspk._native.ops.filter", "TEAGER_KAISER_DEFAULT_EDGE", String, edge_name(TEAGER_KAISER_DEFAULT_EDGE).to_string());
+pyo3_stub_gen::module_variable!("dspk._native.ops.filter", "MAX_MEDIAN_WIDTH", usize, MAX_MEDIAN_WIDTH);
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(median, m)?)?;

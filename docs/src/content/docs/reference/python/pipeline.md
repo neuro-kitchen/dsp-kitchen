@@ -133,7 +133,7 @@ JSON Schema of the spec (for editors and validators).
 
 | Name | Type | Value | Description |
 |---|---|---|---|
-| <a id="default_chunk_samples"></a>`DEFAULT_CHUNK_SAMPLES` | `int` |  |  |
-| <a id="spec_version"></a>`SPEC_VERSION` | `int` |  |  |
+| <a id="default_chunk_samples"></a>`DEFAULT_CHUNK_SAMPLES` | `int` | `65536` |  |
+| <a id="spec_version"></a>`SPEC_VERSION` | `int` | `1` |  |
 | <a id="progress"></a>`Progress` |  | `Callable[[int, int, int, int], 'bool \| None']` |  |
 | <a id="spec"></a>`Spec` |  | `dict[str, Any]` |  |

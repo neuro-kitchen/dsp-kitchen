@@ -314,4 +314,4 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-pyo3_stub_gen::module_variable!("dspk._native.ops", "LOG10_FLOOR", f32);
+pyo3_stub_gen::module_variable!("dspk._native.ops", "LOG10_FLOOR", f32, dspk_ops::math::LOG10_FLOOR);

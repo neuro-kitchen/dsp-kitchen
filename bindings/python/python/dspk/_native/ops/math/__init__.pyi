@@ -13,7 +13,7 @@ __all__ = [
     "window",
 ]
 
-MAD_TO_SIGMA: builtins.float
+MAD_TO_SIGMA: builtins.float = 0.6744897365570068
 def channel_mad(data: numpy.typing.NDArray[typing.Any], *, runtime: typing.Optional[builtins.str]) -> numpy.typing.NDArray[numpy.float64]:
     r"""
     Median absolute deviation per channel, `median(|x − median(x)|)`, unscaled (NumPy's median:

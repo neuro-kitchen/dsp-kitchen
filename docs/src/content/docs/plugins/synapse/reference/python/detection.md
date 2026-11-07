@@ -51,7 +51,7 @@ One spike per event seen on several channels: the largest within `radius_um` and
 | `spikes` | `dict` |  |
 | `probe` | `Probe` |  |
 | `sample_rate` | `float` |  |
-| `radius_um` | `float` | `DEFAULT_RADIUS_UM` |
+| `radius_um` | `float` | `DEFAULT_RADIUS_UM` (150.0) |
 | `window_ms` | `float` | `0.5` |
 
 ### `detect_recording`
@@ -95,19 +95,19 @@ channel) and a summary (`sigmas_uv`, `raw_crossings`, `spikes`, `channel_counts`
 | `probe` | `Probe` |  |
 | `band` | `tuple[float, float]` | `DEFAULT_BAND` |
 | `car` | `bool` | `False` |
-| `threshold` | `float` | `DEFAULT_RECORDING_THRESHOLD` |
-| `refractory_ms` | `float` | `DEFAULT_REFRACTORY_MS` |
+| `threshold` | `float` | `DEFAULT_RECORDING_THRESHOLD` (5.0) |
+| `refractory_ms` | `float` | `DEFAULT_REFRACTORY_MS` (1.0) |
 | `polarity` | `str` | `'negative'` |
 | `spacing` | `str` | `'locally_exclusive'` |
-| `radius_um` | `float` | `DEFAULT_RADIUS_UM` |
-| `k_neighbors` | `int` | `DEFAULT_K_NEIGHBORS` |
-| `pre_ms` | `float` | `DEFAULT_PRE_MS` |
-| `post_ms` | `float` | `DEFAULT_POST_MS` |
+| `radius_um` | `float` | `DEFAULT_RADIUS_UM` (150.0) |
+| `k_neighbors` | `int` | `DEFAULT_K_NEIGHBORS` (4) |
+| `pre_ms` | `float` | `DEFAULT_PRE_MS` (1.0) |
+| `post_ms` | `float` | `DEFAULT_POST_MS` (2.0) |
 | `sinc_shift` | `bool` | `True` |
 | `locate` | `bool` | `True` |
-| `batch_s` | `float` | `DEFAULT_BATCH_S` |
-| `calibration_s` | `float` | `DEFAULT_CALIBRATION_S` |
-| `calibration_chunks` | `int` | `DEFAULT_CALIBRATION_CHUNKS` |
+| `batch_s` | `float` | `DEFAULT_BATCH_S` (10.0) |
+| `calibration_s` | `float` | `DEFAULT_CALIBRATION_S` (5.0) |
+| `calibration_chunks` | `int` | `DEFAULT_CALIBRATION_CHUNKS` (5) |
 | `runtime` | `str \| None` | `None` |
 
 ### `heights`
@@ -126,7 +126,7 @@ Detection height per channel: `threshold · σ` (`inf` where σ is not positive)
 | Name | Type | Default |
 |---|---|---|
 | `sigmas` |  |  |
-| `threshold` | `float` | `DEFAULT_THRESHOLD` |
+| `threshold` | `float` | `DEFAULT_THRESHOLD` (4.5) |
 
 ### `matched_filter`
 
@@ -154,8 +154,8 @@ peaking beyond `threshold · σ(score)` where the signal is negative.
 | `sample_rate` | `float` |  |
 | `prototype_ms` | `float` | `1.0` |
 | `prototype_` |  | `None` |
-| `threshold` | `float` | `DEFAULT_THRESHOLD` |
-| `refractory_ms` | `float` | `DEFAULT_REFRACTORY_MS` |
+| `threshold` | `float` | `DEFAULT_THRESHOLD` (4.5) |
+| `refractory_ms` | `float` | `DEFAULT_REFRACTORY_MS` (1.0) |
 | `spacing` | `str` | `'locally_exclusive'` |
 
 ### `neo`
@@ -179,8 +179,8 @@ Teager–Kaiser energy peaks beyond `threshold · σ(energy)` per channel.
 |---|---|---|
 | `data` |  |  |
 | `sample_rate` | `float` |  |
-| `threshold` | `float` | `DEFAULT_NEO_THRESHOLD` |
-| `refractory_ms` | `float` | `DEFAULT_REFRACTORY_MS` |
+| `threshold` | `float` | `DEFAULT_NEO_THRESHOLD` (8.0) |
+| `refractory_ms` | `float` | `DEFAULT_REFRACTORY_MS` (1.0) |
 | `spacing` | `str` | `'locally_exclusive'` |
 
 ### `prototype`
@@ -223,9 +223,9 @@ median-based). Spikes on a channel stay more than `refractory_ms` apart (`spacin
 |---|---|---|
 | `data` |  |  |
 | `sample_rate` | `float` |  |
-| `threshold` | `float` | `DEFAULT_THRESHOLD` |
+| `threshold` | `float` | `DEFAULT_THRESHOLD` (4.5) |
 | `polarity` | `str` | `'negative'` |
-| `refractory_ms` | `float` | `DEFAULT_REFRACTORY_MS` |
+| `refractory_ms` | `float` | `DEFAULT_REFRACTORY_MS` (1.0) |
 | `sigmas` |  | `None` |
 | `spacing` | `str` | `'locally_exclusive'` |
 
@@ -234,14 +234,14 @@ median-based). Spikes on a channel stay more than `refractory_ms` apart (`spacin
 | Name | Type | Value | Description |
 |---|---|---|---|
 | <a id="default_band"></a>`DEFAULT_BAND` | `tuple[float, float]` | `(300.0, 6000.0)` |  |
-| <a id="default_batch_s"></a>`DEFAULT_BATCH_S` | `float` |  |  |
-| <a id="default_calibration_chunks"></a>`DEFAULT_CALIBRATION_CHUNKS` | `int` |  |  |
-| <a id="default_calibration_s"></a>`DEFAULT_CALIBRATION_S` | `float` |  |  |
-| <a id="default_k_neighbors"></a>`DEFAULT_K_NEIGHBORS` | `int` |  |  |
-| <a id="default_neo_threshold"></a>`DEFAULT_NEO_THRESHOLD` | `float` |  |  |
-| <a id="default_post_ms"></a>`DEFAULT_POST_MS` | `float` |  |  |
-| <a id="default_pre_ms"></a>`DEFAULT_PRE_MS` | `float` |  |  |
-| <a id="default_radius_um"></a>`DEFAULT_RADIUS_UM` | `float` |  |  |
-| <a id="default_recording_threshold"></a>`DEFAULT_RECORDING_THRESHOLD` | `float` |  |  |
-| <a id="default_refractory_ms"></a>`DEFAULT_REFRACTORY_MS` | `float` |  |  |
-| <a id="default_threshold"></a>`DEFAULT_THRESHOLD` | `float` |  |  |
+| <a id="default_batch_s"></a>`DEFAULT_BATCH_S` | `float` | `10.0` |  |
+| <a id="default_calibration_chunks"></a>`DEFAULT_CALIBRATION_CHUNKS` | `int` | `5` |  |
+| <a id="default_calibration_s"></a>`DEFAULT_CALIBRATION_S` | `float` | `5.0` |  |
+| <a id="default_k_neighbors"></a>`DEFAULT_K_NEIGHBORS` | `int` | `4` |  |
+| <a id="default_neo_threshold"></a>`DEFAULT_NEO_THRESHOLD` | `float` | `8.0` |  |
+| <a id="default_post_ms"></a>`DEFAULT_POST_MS` | `float` | `2.0` |  |
+| <a id="default_pre_ms"></a>`DEFAULT_PRE_MS` | `float` | `1.0` |  |
+| <a id="default_radius_um"></a>`DEFAULT_RADIUS_UM` | `float` | `150.0` |  |
+| <a id="default_recording_threshold"></a>`DEFAULT_RECORDING_THRESHOLD` | `float` | `5.0` |  |
+| <a id="default_refractory_ms"></a>`DEFAULT_REFRACTORY_MS` | `float` | `1.0` |  |
+| <a id="default_threshold"></a>`DEFAULT_THRESHOLD` | `float` | `4.5` |  |

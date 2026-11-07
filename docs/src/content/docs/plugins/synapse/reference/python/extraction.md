@@ -46,7 +46,7 @@ to its sub-sample trough. Spikes too near an edge are skipped (`kept`: the input
 | `spikes` | `dict` |  |
 | `probe` | `Probe` |  |
 | `sample_rate` | `float` |  |
-| `k` | `int` | `DEFAULT_K_NEIGHBORS` |
-| `pre_ms` | `float` | `DEFAULT_PRE_MS` |
-| `post_ms` | `float` | `DEFAULT_POST_MS` |
+| `k` | `int` | `DEFAULT_K_NEIGHBORS` (4) |
+| `pre_ms` | `float` | `DEFAULT_PRE_MS` (1.0) |
+| `post_ms` | `float` | `DEFAULT_POST_MS` (2.0) |
 | `sinc_shift` | `bool` | `False` |

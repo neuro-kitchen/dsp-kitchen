@@ -15,10 +15,10 @@ __all__ = [
     "template_similarity",
 ]
 
-DEFAULT_MAX_AMPLITUDE_SCALE: builtins.float
-DEFAULT_MAX_PASSES: builtins.int
-DEFAULT_MIN_AMPLITUDE_SCALE: builtins.float
-DEFAULT_MIN_EXPLAINED_ENERGY: builtins.float
+DEFAULT_MAX_AMPLITUDE_SCALE: builtins.float = 1.4500000476837158
+DEFAULT_MAX_PASSES: builtins.int = 4
+DEFAULT_MIN_AMPLITUDE_SCALE: builtins.float = 0.6499999761581421
+DEFAULT_MIN_EXPLAINED_ENERGY: builtins.float = 500.0
 def matching_pursuit(data: numpy.typing.NDArray[numpy.float32], templates: numpy.typing.NDArray[numpy.float32], *, min_amplitude_scale: builtins.float, max_amplitude_scale: builtins.float, min_explained_energy: builtins.float, max_passes: builtins.int, channels: typing.Optional[numpy.typing.NDArray[numpy.int64]] = None, runtime: typing.Optional[builtins.str] = None) -> dict:
     r"""
     Matching pursuit of `data` `(channels, samples)` against `templates` `(units, rows, samples)`

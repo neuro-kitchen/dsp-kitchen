@@ -22,17 +22,17 @@ __all__ = [
     "localize",
 ]
 
-DEFAULT_COM_POWER: builtins.float
-DEFAULT_DIPOLE_ITERATIONS: builtins.int
-DEFAULT_DRIFT_DEPTH_BIN_UM: builtins.float
-DEFAULT_DRIFT_DEPTH_BLOCKS: builtins.int
-DEFAULT_DRIFT_TIME_BIN_S: builtins.float
-DEFAULT_GRID_SOFTMAX_TEMPERATURE: builtins.float
-DEFAULT_GRID_XY_RADIUS_UM: builtins.float
-DEFAULT_GRID_XY_STEP_UM: builtins.float
-DEFAULT_GRID_Z_VALUES_UM: builtins.list[builtins.float]
-DEFAULT_MAX_DRIFT_UM: builtins.float
-DEFAULT_MONOPOLAR_ITERATIONS: builtins.int
+DEFAULT_COM_POWER: builtins.float = 1.0
+DEFAULT_DIPOLE_ITERATIONS: builtins.int = 40
+DEFAULT_DRIFT_DEPTH_BIN_UM: builtins.float = 5.0
+DEFAULT_DRIFT_DEPTH_BLOCKS: builtins.int = 5
+DEFAULT_DRIFT_TIME_BIN_S: builtins.float = 2.0
+DEFAULT_GRID_SOFTMAX_TEMPERATURE: builtins.float = 0.05000000074505806
+DEFAULT_GRID_XY_RADIUS_UM: builtins.float = 30.0
+DEFAULT_GRID_XY_STEP_UM: builtins.float = 5.0
+DEFAULT_GRID_Z_VALUES_UM: builtins.list[builtins.float] = [5.0, 10.0, 20.0, 35.0, 50.0]
+DEFAULT_MAX_DRIFT_UM: builtins.float = 50.0
+DEFAULT_MONOPOLAR_ITERATIONS: builtins.int = 35
 def drift(samples: numpy.typing.NDArray[numpy.uint64], depths_um: numpy.typing.NDArray[numpy.float32], amplitudes_uv: numpy.typing.NDArray[numpy.float32], total_samples: builtins.int, sample_rate: builtins.float, *, depth_min_um: builtins.float, depth_max_um: builtins.float, time_bin_s: builtins.float, depth_bin_um: builtins.float, max_drift_um: builtins.float, depth_blocks: builtins.int, rigid: builtins.bool) -> dict:
     r"""
     Probe drift from spikes at `samples` (of a recording of `total_samples` at `sample_rate` Hz)

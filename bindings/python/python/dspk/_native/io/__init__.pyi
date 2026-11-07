@@ -20,8 +20,8 @@ __all__ = [
     "write_zarr",
 ]
 
-WRITE_CHUNK_SAMPLES: builtins.int
-ZARR_CHUNK_SAMPLES: builtins.int
+WRITE_CHUNK_SAMPLES: builtins.int = 65536
+ZARR_CHUNK_SAMPLES: builtins.int = 5000
 @typing.final
 class Recording:
     r"""

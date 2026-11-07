@@ -68,4 +68,4 @@ job failed, `TimeoutError` after `timeout_s`.
 | Name | Type | Value | Description |
 |---|---|---|---|
 | <a id="default_poll_s"></a>`DEFAULT_POLL_S` | `float` | `1.0` |  |
-| <a id="default_server_name"></a>`DEFAULT_SERVER_NAME` | `str` |  |  |
+| <a id="default_server_name"></a>`DEFAULT_SERVER_NAME` | `str` | `'localhost'` |  |

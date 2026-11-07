@@ -14,6 +14,7 @@ sections); a docstring without sections still gets a parameter table from the si
 from __future__ import annotations
 
 import re
+import struct
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -194,6 +195,30 @@ def signature(name: str, obj, *, skip_self: bool = False) -> str:
     return f"{name}(\n{inner}){ret}"
 
 
+NUMBER = re.compile(r"-?\d+\.\d+(?:e-?\d+)?|-?\d+e-?\d+")
+
+
+def _f32(x: float) -> float:
+    return struct.unpack("f", struct.pack("f", x))[0]
+
+
+def tidy_numbers(text: str) -> str:
+    """Floats written as the shortest decimal with the same float32 value: a float32 constant
+    reaches Python as its float64 expansion (``1e-6`` as ``9.999999974752427e-07``)."""
+
+    def short(m):
+        v = float(m.group(0))
+        if len(m.group(0)) < 10 or _f32(v) != v:
+            return m.group(0)
+        for digits in range(1, 10):
+            s = f"{v:.{digits}g}"
+            if _f32(float(s)) == v:
+                return s if ("." in s or "e" in s) else s + ".0"
+        return m.group(0)
+
+    return NUMBER.sub(short, text)
+
+
 def constant_values(pkg) -> dict[str, str]:
     """Values of the native constants the stubs state (``NAME: int = 4``), by name."""
     out: dict[str, str] = {}
@@ -205,7 +230,7 @@ def constant_values(pkg) -> dict[str, str]:
             if m.is_module:
                 walk(m)
             elif m.is_attribute and name.isupper() and m.value is not None:
-                out.setdefault(name, str(m.value))
+                out.setdefault(name, tidy_numbers(str(m.value)))
 
     walk(pkg["_native"])
     return out

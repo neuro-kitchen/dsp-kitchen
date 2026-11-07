@@ -25,17 +25,17 @@ __all__ = [
     "subsample_peaks",
 ]
 
-DEFAULT_DIP_THRESHOLD: builtins.float
-DEFAULT_GMM_K_MAX: builtins.int
-DEFAULT_GMM_K_MIN: builtins.int
-DEFAULT_GMM_MAX_ITERATIONS: builtins.int
-DEFAULT_GMM_REGULARIZATION: builtins.float
-DEFAULT_GMM_TOLERANCE: builtins.float
-DEFAULT_KDE_MIN_CLUSTER_SIZE: builtins.int
-DEFAULT_MAX_ITER: builtins.int
-DEFAULT_MIN_CLUSTER_SIZE: builtins.int
-DEFAULT_N_INIT: builtins.int
-DEFAULT_TOL: builtins.float
+DEFAULT_DIP_THRESHOLD: builtins.float = 1.5
+DEFAULT_GMM_K_MAX: builtins.int = 8
+DEFAULT_GMM_K_MIN: builtins.int = 1
+DEFAULT_GMM_MAX_ITERATIONS: builtins.int = 100
+DEFAULT_GMM_REGULARIZATION: builtins.float = 9.999999747378752e-05
+DEFAULT_GMM_TOLERANCE: builtins.float = 0.001
+DEFAULT_KDE_MIN_CLUSTER_SIZE: builtins.int = 5
+DEFAULT_MAX_ITER: builtins.int = 300
+DEFAULT_MIN_CLUSTER_SIZE: builtins.int = 5
+DEFAULT_N_INIT: builtins.int = 10
+DEFAULT_TOL: builtins.float = 0.0001
 def density_peaks(points: numpy.typing.NDArray[numpy.float32], *, cutoff_distance: builtins.float, num_clusters: builtins.int, max_points: typing.Optional[builtins.int] = None) -> dict:
     r"""
     Rodriguez–Laio density peaks of `points` `(n, d)` (host): `labels`, `centers` (indices of the

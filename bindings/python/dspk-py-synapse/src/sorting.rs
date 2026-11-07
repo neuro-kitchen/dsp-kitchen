@@ -368,32 +368,32 @@ pub fn drift<'py>(
     Ok(out)
 }
 
-pyo3_stub_gen::module_variable!("dspk._native.synapse.clustering", "DEFAULT_N_INIT", usize);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.clustering", "DEFAULT_MAX_ITER", usize);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.clustering", "DEFAULT_TOL", f64);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.clustering", "DEFAULT_MIN_CLUSTER_SIZE", usize);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.clustering", "DEFAULT_GMM_K_MIN", usize);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.clustering", "DEFAULT_GMM_K_MAX", usize);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.clustering", "DEFAULT_GMM_MAX_ITERATIONS", usize);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.clustering", "DEFAULT_GMM_TOLERANCE", f64);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.clustering", "DEFAULT_GMM_REGULARIZATION", f32);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.clustering", "DEFAULT_DIP_THRESHOLD", f32);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.clustering", "DEFAULT_KDE_MIN_CLUSTER_SIZE", usize);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.matching", "DEFAULT_MIN_AMPLITUDE_SCALE", f32);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.matching", "DEFAULT_MAX_AMPLITUDE_SCALE", f32);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.matching", "DEFAULT_MIN_EXPLAINED_ENERGY", f32);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.matching", "DEFAULT_MAX_PASSES", usize);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.spatial", "DEFAULT_COM_POWER", f32);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.spatial", "DEFAULT_MONOPOLAR_ITERATIONS", usize);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.spatial", "DEFAULT_DIPOLE_ITERATIONS", usize);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.spatial", "DEFAULT_GRID_XY_RADIUS_UM", f32);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.spatial", "DEFAULT_GRID_XY_STEP_UM", f32);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.spatial", "DEFAULT_GRID_Z_VALUES_UM", Vec<f32>);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.spatial", "DEFAULT_GRID_SOFTMAX_TEMPERATURE", f32);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.spatial", "DEFAULT_DRIFT_TIME_BIN_S", f64);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.spatial", "DEFAULT_DRIFT_DEPTH_BIN_UM", f32);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.spatial", "DEFAULT_MAX_DRIFT_UM", f32);
-pyo3_stub_gen::module_variable!("dspk._native.synapse.spatial", "DEFAULT_DRIFT_DEPTH_BLOCKS", usize);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.clustering", "DEFAULT_N_INIT", usize, KMeansOptions::default().n_init);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.clustering", "DEFAULT_MAX_ITER", usize, KMeansOptions::default().max_iter);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.clustering", "DEFAULT_TOL", f64, KMeansOptions::default().tol);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.clustering", "DEFAULT_MIN_CLUSTER_SIZE", usize, HdbscanOptions::default().min_cluster_size);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.clustering", "DEFAULT_GMM_K_MIN", usize, GmmClusterer::default().k_min);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.clustering", "DEFAULT_GMM_K_MAX", usize, GmmClusterer::default().k_max);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.clustering", "DEFAULT_GMM_MAX_ITERATIONS", usize, GmmClusterer::default().max_iterations);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.clustering", "DEFAULT_GMM_TOLERANCE", f64, GmmClusterer::default().tolerance);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.clustering", "DEFAULT_GMM_REGULARIZATION", f32, GmmClusterer::default().regularization);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.clustering", "DEFAULT_DIP_THRESHOLD", f32, srt::DEFAULT_DIP_THRESHOLD);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.clustering", "DEFAULT_KDE_MIN_CLUSTER_SIZE", usize, srt::DEFAULT_KDE_MIN_CLUSTER_SIZE);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.matching", "DEFAULT_MIN_AMPLITUDE_SCALE", f32, MatchingPursuitMatcher::default().min_amplitude_scale);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.matching", "DEFAULT_MAX_AMPLITUDE_SCALE", f32, MatchingPursuitMatcher::default().max_amplitude_scale);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.matching", "DEFAULT_MIN_EXPLAINED_ENERGY", f32, MatchingPursuitMatcher::default().min_explained_energy);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.matching", "DEFAULT_MAX_PASSES", usize, MatchingPursuitMatcher::default().max_passes);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.spatial", "DEFAULT_COM_POWER", f32, syn::CenterOfMassLocalizer::default().amplitude_power);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.spatial", "DEFAULT_MONOPOLAR_ITERATIONS", usize, syn::MonopolarTriangulator::default().max_iterations);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.spatial", "DEFAULT_DIPOLE_ITERATIONS", usize, syn::DipoleLocalizer::default().max_iterations);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.spatial", "DEFAULT_GRID_XY_RADIUS_UM", f32, GridConvolutionLocalizer::default().xy_radius_um);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.spatial", "DEFAULT_GRID_XY_STEP_UM", f32, GridConvolutionLocalizer::default().xy_step_um);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.spatial", "DEFAULT_GRID_Z_VALUES_UM", Vec<f32>, GridConvolutionLocalizer::default().z_values_um.clone());
+pyo3_stub_gen::module_variable!("dspk._native.synapse.spatial", "DEFAULT_GRID_SOFTMAX_TEMPERATURE", f32, GridConvolutionLocalizer::default().softmax_temperature);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.spatial", "DEFAULT_DRIFT_TIME_BIN_S", f64, DriftOptions::new(0.0, 1.0).time_bin_s);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.spatial", "DEFAULT_DRIFT_DEPTH_BIN_UM", f32, DriftOptions::new(0.0, 1.0).depth_bin_um);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.spatial", "DEFAULT_MAX_DRIFT_UM", f32, DriftOptions::new(0.0, 1.0).max_drift_um);
+pyo3_stub_gen::module_variable!("dspk._native.synapse.spatial", "DEFAULT_DRIFT_DEPTH_BLOCKS", usize, DriftOptions::new(0.0, 1.0).depth_blocks);
 
 pub(crate) fn register_clustering(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let k = KMeansOptions::default();

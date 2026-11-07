@@ -55,10 +55,10 @@ Probe drift from spikes (`samples` of a recording of `total_samples` at
 | `sample_rate` | `float` |  |
 | `depth_min_um` | `float` |  |
 | `depth_max_um` | `float` |  |
-| `time_bin_s` | `float` | `DEFAULT_DRIFT_TIME_BIN_S` |
-| `depth_bin_um` | `float` | `DEFAULT_DRIFT_DEPTH_BIN_UM` |
-| `max_drift_um` | `float` | `DEFAULT_MAX_DRIFT_UM` |
-| `depth_blocks` | `int` | `DEFAULT_DRIFT_DEPTH_BLOCKS` |
+| `time_bin_s` | `float` | `DEFAULT_DRIFT_TIME_BIN_S` (2.0) |
+| `depth_bin_um` | `float` | `DEFAULT_DRIFT_DEPTH_BIN_UM` (5.0) |
+| `max_drift_um` | `float` | `DEFAULT_MAX_DRIFT_UM` (50.0) |
+| `depth_blocks` | `int` | `DEFAULT_DRIFT_DEPTH_BLOCKS` (5) |
 | `rigid` | `bool` | `True` |
 
 ### `localize`
@@ -95,26 +95,26 @@ localize(
 | `snippets` | `dict` |  |
 | `probe` | `Probe` |  |
 | `method` | `str` | `'center_of_mass'` |
-| `power` | `float` | `DEFAULT_COM_POWER` |
+| `power` | `float` | `DEFAULT_COM_POWER` (1.0) |
 | `max_iterations` | `int \| None` | `None` |
-| `xy_radius_um` | `float` | `DEFAULT_GRID_XY_RADIUS_UM` |
-| `xy_step_um` | `float` | `DEFAULT_GRID_XY_STEP_UM` |
-| `z_values_um` |  | `DEFAULT_GRID_Z_VALUES_UM` |
-| `softmax_temperature` | `float` | `DEFAULT_GRID_SOFTMAX_TEMPERATURE` |
+| `xy_radius_um` | `float` | `DEFAULT_GRID_XY_RADIUS_UM` (30.0) |
+| `xy_step_um` | `float` | `DEFAULT_GRID_XY_STEP_UM` (5.0) |
+| `z_values_um` |  | `DEFAULT_GRID_Z_VALUES_UM` ([5.0, 10.0, 20.0, 35.0, 50.0]) |
+| `softmax_temperature` | `float` | `DEFAULT_GRID_SOFTMAX_TEMPERATURE` (0.05) |
 
 ## Constants
 
 | Name | Type | Value | Description |
 |---|---|---|---|
-| <a id="default_com_power"></a>`DEFAULT_COM_POWER` | `float` |  |  |
-| <a id="default_dipole_iterations"></a>`DEFAULT_DIPOLE_ITERATIONS` | `int` |  |  |
-| <a id="default_drift_depth_bin_um"></a>`DEFAULT_DRIFT_DEPTH_BIN_UM` | `float` |  |  |
-| <a id="default_drift_depth_blocks"></a>`DEFAULT_DRIFT_DEPTH_BLOCKS` | `int` |  |  |
-| <a id="default_drift_time_bin_s"></a>`DEFAULT_DRIFT_TIME_BIN_S` | `float` |  |  |
-| <a id="default_grid_softmax_temperature"></a>`DEFAULT_GRID_SOFTMAX_TEMPERATURE` | `float` |  |  |
-| <a id="default_grid_xy_radius_um"></a>`DEFAULT_GRID_XY_RADIUS_UM` | `float` |  |  |
-| <a id="default_grid_xy_step_um"></a>`DEFAULT_GRID_XY_STEP_UM` | `float` |  |  |
-| <a id="default_grid_z_values_um"></a>`DEFAULT_GRID_Z_VALUES_UM` | `tuple[float, ...]` | `tuple(_s.DEFAULT_GRID_Z_VALUES_UM)` |  |
-| <a id="default_max_drift_um"></a>`DEFAULT_MAX_DRIFT_UM` | `float` |  |  |
-| <a id="default_monopolar_iterations"></a>`DEFAULT_MONOPOLAR_ITERATIONS` | `int` |  |  |
+| <a id="default_com_power"></a>`DEFAULT_COM_POWER` | `float` | `1.0` |  |
+| <a id="default_dipole_iterations"></a>`DEFAULT_DIPOLE_ITERATIONS` | `int` | `40` |  |
+| <a id="default_drift_depth_bin_um"></a>`DEFAULT_DRIFT_DEPTH_BIN_UM` | `float` | `5.0` |  |
+| <a id="default_drift_depth_blocks"></a>`DEFAULT_DRIFT_DEPTH_BLOCKS` | `int` | `5` |  |
+| <a id="default_drift_time_bin_s"></a>`DEFAULT_DRIFT_TIME_BIN_S` | `float` | `2.0` |  |
+| <a id="default_grid_softmax_temperature"></a>`DEFAULT_GRID_SOFTMAX_TEMPERATURE` | `float` | `0.05` |  |
+| <a id="default_grid_xy_radius_um"></a>`DEFAULT_GRID_XY_RADIUS_UM` | `float` | `30.0` |  |
+| <a id="default_grid_xy_step_um"></a>`DEFAULT_GRID_XY_STEP_UM` | `float` | `5.0` |  |
+| <a id="default_grid_z_values_um"></a>`DEFAULT_GRID_Z_VALUES_UM` | `tuple[float, ...]` | `[5.0, 10.0, 20.0, 35.0, 50.0]` |  |
+| <a id="default_max_drift_um"></a>`DEFAULT_MAX_DRIFT_UM` | `float` | `50.0` |  |
+| <a id="default_monopolar_iterations"></a>`DEFAULT_MONOPOLAR_ITERATIONS` | `int` | `35` |  |
 | <a id="methods"></a>`METHODS` |  | `('center_of_mass', 'monopolar', 'grid_convolution', 'dipole')` |  |

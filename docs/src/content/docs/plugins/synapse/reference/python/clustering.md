@@ -76,12 +76,12 @@ A Gaussian mixture with its number of components chosen by BIC in `k_min..=k_max
 | Name | Type | Default |
 |---|---|---|
 | `points` |  |  |
-| `k_min` | `int` | `DEFAULT_GMM_K_MIN` |
-| `k_max` | `int` | `DEFAULT_GMM_K_MAX` |
+| `k_min` | `int` | `DEFAULT_GMM_K_MIN` (1) |
+| `k_max` | `int` | `DEFAULT_GMM_K_MAX` (8) |
 | `covariance` | `str` | `'full'` |
-| `max_iterations` | `int` | `DEFAULT_GMM_MAX_ITERATIONS` |
-| `tolerance` | `float` | `DEFAULT_GMM_TOLERANCE` |
-| `regularization` | `float` | `DEFAULT_GMM_REGULARIZATION` |
+| `max_iterations` | `int` | `DEFAULT_GMM_MAX_ITERATIONS` (100) |
+| `tolerance` | `float` | `DEFAULT_GMM_TOLERANCE` (0.001) |
+| `regularization` | `float` | `DEFAULT_GMM_REGULARIZATION` (0.0001) |
 | `outlier_mahalanobis_sq` | `float \| None` | `None` |
 | `mask` |  | `None` |
 | `runtime` | `str \| None` | `None` |
@@ -105,7 +105,7 @@ HDBSCAN labels (as the `hdbscan` package: excess of mass, `-1` for noise).
 | Name | Type | Default |
 |---|---|---|
 | `points` |  |  |
-| `min_cluster_size` | `int` | `DEFAULT_MIN_CLUSTER_SIZE` |
+| `min_cluster_size` | `int` | `DEFAULT_MIN_CLUSTER_SIZE` (5) |
 | `allow_single_cluster` | `bool` | `False` |
 | `runtime` | `str \| None` | `None` |
 
@@ -130,8 +130,8 @@ between them: `labels`, `centroids`.
 |---|---|---|
 | `points` |  |  |
 | `initial_k` | `int` |  |
-| `dip_threshold` | `float` | `DEFAULT_DIP_THRESHOLD` |
-| `min_cluster_size` | `int` | `DEFAULT_KDE_MIN_CLUSTER_SIZE` |
+| `dip_threshold` | `float` | `DEFAULT_DIP_THRESHOLD` (1.5) |
+| `min_cluster_size` | `int` | `DEFAULT_KDE_MIN_CLUSTER_SIZE` (5) |
 
 ### `kmeans`
 
@@ -157,9 +157,9 @@ k-means (k-means++ starts; the best of `n_init`): `labels`, `centers` `(k, d)`,
 |---|---|---|
 | `points` |  |  |
 | `k` | `int` |  |
-| `n_init` | `int` | `DEFAULT_N_INIT` |
-| `max_iter` | `int` | `DEFAULT_MAX_ITER` |
-| `tol` | `float` | `DEFAULT_TOL` |
+| `n_init` | `int` | `DEFAULT_N_INIT` (10) |
+| `max_iter` | `int` | `DEFAULT_MAX_ITER` (300) |
+| `tol` | `float` | `DEFAULT_TOL` (0.0001) |
 | `seed` | `int` | `0` |
 | `runtime` | `str \| None` | `None` |
 
@@ -192,14 +192,14 @@ Indices of `n_peaks` peaks chosen at random (in total, or of each channel), by s
 
 | Name | Type | Value | Description |
 |---|---|---|---|
-| <a id="default_dip_threshold"></a>`DEFAULT_DIP_THRESHOLD` | `float` |  |  |
-| <a id="default_gmm_k_max"></a>`DEFAULT_GMM_K_MAX` | `int` |  |  |
-| <a id="default_gmm_k_min"></a>`DEFAULT_GMM_K_MIN` | `int` |  |  |
-| <a id="default_gmm_max_iterations"></a>`DEFAULT_GMM_MAX_ITERATIONS` | `int` |  |  |
-| <a id="default_gmm_regularization"></a>`DEFAULT_GMM_REGULARIZATION` | `float` |  |  |
-| <a id="default_gmm_tolerance"></a>`DEFAULT_GMM_TOLERANCE` | `float` |  |  |
-| <a id="default_kde_min_cluster_size"></a>`DEFAULT_KDE_MIN_CLUSTER_SIZE` | `int` |  |  |
-| <a id="default_max_iter"></a>`DEFAULT_MAX_ITER` | `int` |  |  |
-| <a id="default_min_cluster_size"></a>`DEFAULT_MIN_CLUSTER_SIZE` | `int` |  |  |
-| <a id="default_n_init"></a>`DEFAULT_N_INIT` | `int` |  |  |
-| <a id="default_tol"></a>`DEFAULT_TOL` | `float` |  |  |
+| <a id="default_dip_threshold"></a>`DEFAULT_DIP_THRESHOLD` | `float` | `1.5` |  |
+| <a id="default_gmm_k_max"></a>`DEFAULT_GMM_K_MAX` | `int` | `8` |  |
+| <a id="default_gmm_k_min"></a>`DEFAULT_GMM_K_MIN` | `int` | `1` |  |
+| <a id="default_gmm_max_iterations"></a>`DEFAULT_GMM_MAX_ITERATIONS` | `int` | `100` |  |
+| <a id="default_gmm_regularization"></a>`DEFAULT_GMM_REGULARIZATION` | `float` | `0.0001` |  |
+| <a id="default_gmm_tolerance"></a>`DEFAULT_GMM_TOLERANCE` | `float` | `0.001` |  |
+| <a id="default_kde_min_cluster_size"></a>`DEFAULT_KDE_MIN_CLUSTER_SIZE` | `int` | `5` |  |
+| <a id="default_max_iter"></a>`DEFAULT_MAX_ITER` | `int` | `300` |  |
+| <a id="default_min_cluster_size"></a>`DEFAULT_MIN_CLUSTER_SIZE` | `int` | `5` |  |
+| <a id="default_n_init"></a>`DEFAULT_N_INIT` | `int` | `10` |  |
+| <a id="default_tol"></a>`DEFAULT_TOL` | `float` | `0.0001` |  |

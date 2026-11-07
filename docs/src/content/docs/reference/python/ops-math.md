@@ -104,4 +104,4 @@ Window of `length` values: `"hann"`, `"hamming"`, `"gaussian"` (`sigma`) or
 
 | Name | Type | Value | Description |
 |---|---|---|---|
-| <a id="mad_to_sigma"></a>`MAD_TO_SIGMA` | `float` |  |  |
+| <a id="mad_to_sigma"></a>`MAD_TO_SIGMA` | `float` | `0.67448974` |  |

@@ -28,17 +28,17 @@ __all__ = [
     "threshold",
 ]
 
-DEFAULT_BATCH_S: builtins.float
-DEFAULT_CALIBRATION_CHUNKS: builtins.int
-DEFAULT_CALIBRATION_S: builtins.float
-DEFAULT_K_NEIGHBORS: builtins.int
-DEFAULT_NEO_THRESHOLD: builtins.float
-DEFAULT_POST_MS: builtins.float
-DEFAULT_PRE_MS: builtins.float
-DEFAULT_RADIUS_UM: builtins.float
-DEFAULT_RECORDING_THRESHOLD: builtins.float
-DEFAULT_REFRACTORY_MS: builtins.float
-DEFAULT_THRESHOLD: builtins.float
+DEFAULT_BATCH_S: builtins.float = 10.0
+DEFAULT_CALIBRATION_CHUNKS: builtins.int = 5
+DEFAULT_CALIBRATION_S: builtins.float = 5.0
+DEFAULT_K_NEIGHBORS: builtins.int = 4
+DEFAULT_NEO_THRESHOLD: builtins.float = 8.0
+DEFAULT_POST_MS: builtins.float = 2.0
+DEFAULT_PRE_MS: builtins.float = 1.0
+DEFAULT_RADIUS_UM: builtins.float = 150.0
+DEFAULT_RECORDING_THRESHOLD: builtins.float = 5.0
+DEFAULT_REFRACTORY_MS: builtins.float = 1.0
+DEFAULT_THRESHOLD: builtins.float = 4.5
 def deduplicate(samples: numpy.typing.NDArray[numpy.uint64], channels: numpy.typing.NDArray[numpy.uint32], amplitudes: numpy.typing.NDArray[numpy.float32], probe: io.Probe, radius_um: builtins.float, window_samples: builtins.int) -> dict:
     r"""
     One spike per event seen on several neighbouring channels ("locally exclusive": the largest

@@ -28,15 +28,15 @@ __all__ = [
     "teager_kaiser",
 ]
 
-DEFAULT_ORDER: builtins.int
-FIR_DEFAULT_EDGE: builtins.str
-GAUSSIAN_DEFAULT_EDGE: builtins.str
-GAUSSIAN_TRUNCATE: builtins.float
-MAX_MEDIAN_WIDTH: builtins.int
-MEDIAN_DEFAULT_EDGE: builtins.str
-SETTLING_TOLERANCE: builtins.float
-TEAGER_KAISER_DEFAULT_EDGE: builtins.str
-TEMPLATE_DEFAULT_MAX_LAG: builtins.int
+DEFAULT_ORDER: builtins.int = 5
+FIR_DEFAULT_EDGE: builtins.str = 'zeros'
+GAUSSIAN_DEFAULT_EDGE: builtins.str = 'reflect'
+GAUSSIAN_TRUNCATE: builtins.float = 4.0
+MAX_MEDIAN_WIDTH: builtins.int = 31
+MEDIAN_DEFAULT_EDGE: builtins.str = 'zeros'
+SETTLING_TOLERANCE: builtins.float = 0.001
+TEAGER_KAISER_DEFAULT_EDGE: builtins.str = 'reflect'
+TEMPLATE_DEFAULT_MAX_LAG: builtins.int = 8
 def fir(data: numpy.typing.NDArray[typing.Any], taps: numpy.typing.NDArray[numpy.float32], *, centered: builtins.bool, edge: builtins.str, runtime: typing.Optional[builtins.str]) -> numpy.typing.NDArray[numpy.float32]:
     r"""
     FIR filtering of `data` `(channels, samples)` with `taps` on the device.

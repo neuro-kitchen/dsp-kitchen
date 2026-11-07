@@ -423,8 +423,8 @@ const DEFAULT_ZSTD_LEVEL: i32 = 3;
 /// Default blosc LZ4 level of [`write_zarr`].
 const DEFAULT_BLOSC_LEVEL: i32 = 5;
 
-pyo3_stub_gen::module_variable!("dspk._native.io", "WRITE_CHUNK_SAMPLES", usize);
-pyo3_stub_gen::module_variable!("dspk._native.io", "ZARR_CHUNK_SAMPLES", usize);
+pyo3_stub_gen::module_variable!("dspk._native.io", "WRITE_CHUNK_SAMPLES", usize, WRITE_CHUNK_SAMPLES);
+pyo3_stub_gen::module_variable!("dspk._native.io", "ZARR_CHUNK_SAMPLES", usize, ZARR_CHUNK_SAMPLES);
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Recording>()?;

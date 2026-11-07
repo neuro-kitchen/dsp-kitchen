@@ -41,7 +41,7 @@ __all__ = [
     "stage_whiten",
 ]
 
-LOG10_FLOOR: builtins.float
+LOG10_FLOOR: builtins.float = 9.999999960041972e-13
 @typing.final
 class Pipeline:
     r"""

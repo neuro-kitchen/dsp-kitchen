@@ -61,10 +61,10 @@ Kilosort4's test of a refractory auto-correlogram: `ratio`, `probability`, `base
 |---|---|---|
 | `train` |  |  |
 | `sample_rate` | `float` |  |
-| `bin_ms` | `float` | `DEFAULT_REFRACTORY_BIN_MS` |
-| `window_ms` | `float` | `DEFAULT_REFRACTORY_WINDOW_MS` |
-| `ratio` | `float` | `DEFAULT_ACG_RATIO` |
-| `probability` | `float` | `DEFAULT_ACG_PROBABILITY` |
+| `bin_ms` | `float` | `DEFAULT_REFRACTORY_BIN_MS` (1.0) |
+| `window_ms` | `float` | `DEFAULT_REFRACTORY_WINDOW_MS` (500.0) |
+| `ratio` | `float` | `DEFAULT_ACG_RATIO` (0.2) |
+| `probability` | `float` | `DEFAULT_ACG_PROBABILITY` (0.2) |
 
 ### `amplitude_cutoff`
 
@@ -85,9 +85,9 @@ Estimated fraction of spikes below the detection threshold, in `[0, 0.5]`.
 | Name | Type | Default |
 |---|---|---|
 | `amplitudes` |  |  |
-| `bins` | `int` | `AMPLITUDE_CUTOFF_BINS` |
-| `smoothing_bins` | `float` | `AMPLITUDE_CUTOFF_SMOOTHING` |
-| `min_ratio` | `float` | `AMPLITUDE_CUTOFF_MIN_RATIO` |
+| `bins` | `int` | `AMPLITUDE_CUTOFF_BINS` (100) |
+| `smoothing_bins` | `float` | `AMPLITUDE_CUTOFF_SMOOTHING` (3.0) |
+| `min_ratio` | `float` | `AMPLITUDE_CUTOFF_MIN_RATIO` (5.0) |
 
 ### `autocorrelogram`
 
@@ -109,8 +109,8 @@ Auto-correlogram (zero lag excluded): `lags_ms`, `counts`.
 |---|---|---|
 | `train` |  |  |
 | `sample_rate` | `float` |  |
-| `bin_ms` | `float` | `DEFAULT_CORRELOGRAM_BIN_MS` |
-| `window_ms` | `float` | `DEFAULT_CORRELOGRAM_WINDOW_MS` |
+| `bin_ms` | `float` | `DEFAULT_CORRELOGRAM_BIN_MS` (1.0) |
+| `window_ms` | `float` | `DEFAULT_CORRELOGRAM_WINDOW_MS` (50.0) |
 
 ### `bursts`
 
@@ -165,10 +165,10 @@ Kilosort4's test of a refractory cross-correlogram (two trains likely one unit).
 | `a` |  |  |
 | `b` |  |  |
 | `sample_rate` | `float` |  |
-| `bin_ms` | `float` | `DEFAULT_REFRACTORY_BIN_MS` |
-| `window_ms` | `float` | `DEFAULT_REFRACTORY_WINDOW_MS` |
-| `ratio` | `float` | `DEFAULT_CCG_RATIO` |
-| `probability` | `float` | `DEFAULT_CCG_PROBABILITY` |
+| `bin_ms` | `float` | `DEFAULT_REFRACTORY_BIN_MS` (1.0) |
+| `window_ms` | `float` | `DEFAULT_REFRACTORY_WINDOW_MS` (500.0) |
+| `ratio` | `float` | `DEFAULT_CCG_RATIO` (0.25) |
+| `probability` | `float` | `DEFAULT_CCG_PROBABILITY` (0.05) |
 
 ### `compare_sortings`
 
@@ -191,8 +191,8 @@ Two [`Sorting`](/dsp-kitchen/plugins/synapse/reference/python/io/#sorting) compa
 |---|---|---|
 | `a` |  |  |
 | `b` |  |  |
-| `delta_ms` | `float` | `DEFAULT_MATCH_DELTA_MS` |
-| `threshold` | `float` | `DEFAULT_AGREEMENT_THRESHOLD` |
+| `delta_ms` | `float` | `DEFAULT_MATCH_DELTA_MS` (0.4) |
+| `threshold` | `float` | `DEFAULT_AGREEMENT_THRESHOLD` (0.5) |
 
 ### `compare_trains`
 
@@ -257,8 +257,8 @@ Cross-correlogram of `b` around `a` (lags `t_b − t_a`): `lags_ms`, `counts`.
 | `a` |  |  |
 | `b` |  |  |
 | `sample_rate` | `float` |  |
-| `bin_ms` | `float` | `DEFAULT_CORRELOGRAM_BIN_MS` |
-| `window_ms` | `float` | `DEFAULT_CORRELOGRAM_WINDOW_MS` |
+| `bin_ms` | `float` | `DEFAULT_CORRELOGRAM_BIN_MS` (1.0) |
+| `window_ms` | `float` | `DEFAULT_CORRELOGRAM_WINDOW_MS` (50.0) |
 
 ### `d_prime`
 
@@ -371,8 +371,8 @@ ISI violations (Hill et al. 2011, SpikeInterface's `isi_violations_ratio`): `vio
 | `train` |  |  |
 | `total_samples` | `int` |  |
 | `sample_rate` | `float` |  |
-| `threshold_ms` | `float` | `DEFAULT_ISI_THRESHOLD_MS` |
-| `min_isi_ms` | `float` | `DEFAULT_MIN_ISI_MS` |
+| `threshold_ms` | `float` | `DEFAULT_ISI_THRESHOLD_MS` (1.5) |
+| `min_isi_ms` | `float` | `DEFAULT_MIN_ISI_MS` (0.0) |
 
 ### `isolation_distance`
 
@@ -412,8 +412,8 @@ Refractory-period contamination (Llobet et al. 2022).
 | `train` |  |  |
 | `total_samples` | `int` |  |
 | `sample_rate` | `float` |  |
-| `refractory_ms` | `float` | `DEFAULT_ISI_THRESHOLD_MS` |
-| `censored_ms` | `float` | `DEFAULT_MIN_ISI_MS` |
+| `refractory_ms` | `float` | `DEFAULT_ISI_THRESHOLD_MS` (1.5) |
+| `censored_ms` | `float` | `DEFAULT_MIN_ISI_MS` (0.0) |
 
 ### `presence_ratio`
 
@@ -437,8 +437,8 @@ Fraction of `bin_s` bins where the unit fires above `mean_rate_ratio` × its mea
 | `train` |  |  |
 | `total_samples` | `int` |  |
 | `sample_rate` | `float` |  |
-| `bin_s` | `float` | `DEFAULT_PRESENCE_BIN_S` |
-| `mean_rate_ratio` | `float` | `DEFAULT_PRESENCE_MEAN_RATE_RATIO` |
+| `bin_s` | `float` | `DEFAULT_PRESENCE_BIN_S` (60.0) |
+| `mean_rate_ratio` | `float` | `DEFAULT_PRESENCE_MEAN_RATE_RATIO` (0.0) |
 
 ### `psth`
 
@@ -464,9 +464,9 @@ Peri-stimulus time histogram of a train around stimuli (both in samples): `time_
 | `train` |  |  |
 | `stimulus_samples` |  |  |
 | `sample_rate` | `float` |  |
-| `pre_ms` | `float` | `DEFAULT_PSTH_PRE_MS` |
-| `post_ms` | `float` | `DEFAULT_PSTH_POST_MS` |
-| `bin_ms` | `float` | `DEFAULT_PSTH_BIN_MS` |
+| `pre_ms` | `float` | `DEFAULT_PSTH_PRE_MS` (100.0) |
+| `post_ms` | `float` | `DEFAULT_PSTH_POST_MS` (500.0) |
+| `bin_ms` | `float` | `DEFAULT_PSTH_BIN_MS` (10.0) |
 
 ### `refractory_violations`
 
@@ -549,23 +549,23 @@ Stimulus-triggered average of `data` `(channels, samples)`: `time_ms`, `mean` /
 
 | Name | Type | Value | Description |
 |---|---|---|---|
-| <a id="amplitude_cutoff_bins"></a>`AMPLITUDE_CUTOFF_BINS` | `int` |  |  |
-| <a id="amplitude_cutoff_min_ratio"></a>`AMPLITUDE_CUTOFF_MIN_RATIO` | `float` |  |  |
-| <a id="amplitude_cutoff_smoothing"></a>`AMPLITUDE_CUTOFF_SMOOTHING` | `float` |  |  |
-| <a id="default_acg_probability"></a>`DEFAULT_ACG_PROBABILITY` | `float` |  |  |
-| <a id="default_acg_ratio"></a>`DEFAULT_ACG_RATIO` | `float` |  |  |
-| <a id="default_agreement_threshold"></a>`DEFAULT_AGREEMENT_THRESHOLD` | `float` |  |  |
-| <a id="default_ccg_probability"></a>`DEFAULT_CCG_PROBABILITY` | `float` |  |  |
-| <a id="default_ccg_ratio"></a>`DEFAULT_CCG_RATIO` | `float` |  |  |
-| <a id="default_correlogram_bin_ms"></a>`DEFAULT_CORRELOGRAM_BIN_MS` | `float` |  |  |
-| <a id="default_correlogram_window_ms"></a>`DEFAULT_CORRELOGRAM_WINDOW_MS` | `float` |  |  |
-| <a id="default_isi_threshold_ms"></a>`DEFAULT_ISI_THRESHOLD_MS` | `float` |  |  |
-| <a id="default_match_delta_ms"></a>`DEFAULT_MATCH_DELTA_MS` | `float` |  |  |
-| <a id="default_psth_bin_ms"></a>`DEFAULT_PSTH_BIN_MS` | `float` |  |  |
-| <a id="default_psth_post_ms"></a>`DEFAULT_PSTH_POST_MS` | `float` |  |  |
-| <a id="default_psth_pre_ms"></a>`DEFAULT_PSTH_PRE_MS` | `float` |  |  |
-| <a id="default_min_isi_ms"></a>`DEFAULT_MIN_ISI_MS` | `float` |  |  |
-| <a id="default_presence_bin_s"></a>`DEFAULT_PRESENCE_BIN_S` | `float` |  |  |
-| <a id="default_presence_mean_rate_ratio"></a>`DEFAULT_PRESENCE_MEAN_RATE_RATIO` | `float` |  |  |
-| <a id="default_refractory_bin_ms"></a>`DEFAULT_REFRACTORY_BIN_MS` | `float` |  |  |
-| <a id="default_refractory_window_ms"></a>`DEFAULT_REFRACTORY_WINDOW_MS` | `float` |  |  |
+| <a id="amplitude_cutoff_bins"></a>`AMPLITUDE_CUTOFF_BINS` | `int` | `100` |  |
+| <a id="amplitude_cutoff_min_ratio"></a>`AMPLITUDE_CUTOFF_MIN_RATIO` | `float` | `5.0` |  |
+| <a id="amplitude_cutoff_smoothing"></a>`AMPLITUDE_CUTOFF_SMOOTHING` | `float` | `3.0` |  |
+| <a id="default_acg_probability"></a>`DEFAULT_ACG_PROBABILITY` | `float` | `0.2` |  |
+| <a id="default_acg_ratio"></a>`DEFAULT_ACG_RATIO` | `float` | `0.2` |  |
+| <a id="default_agreement_threshold"></a>`DEFAULT_AGREEMENT_THRESHOLD` | `float` | `0.5` |  |
+| <a id="default_ccg_probability"></a>`DEFAULT_CCG_PROBABILITY` | `float` | `0.05` |  |
+| <a id="default_ccg_ratio"></a>`DEFAULT_CCG_RATIO` | `float` | `0.25` |  |
+| <a id="default_correlogram_bin_ms"></a>`DEFAULT_CORRELOGRAM_BIN_MS` | `float` | `1.0` |  |
+| <a id="default_correlogram_window_ms"></a>`DEFAULT_CORRELOGRAM_WINDOW_MS` | `float` | `50.0` |  |
+| <a id="default_isi_threshold_ms"></a>`DEFAULT_ISI_THRESHOLD_MS` | `float` | `1.5` |  |
+| <a id="default_match_delta_ms"></a>`DEFAULT_MATCH_DELTA_MS` | `float` | `0.4` |  |
+| <a id="default_psth_bin_ms"></a>`DEFAULT_PSTH_BIN_MS` | `float` | `10.0` |  |
+| <a id="default_psth_post_ms"></a>`DEFAULT_PSTH_POST_MS` | `float` | `500.0` |  |
+| <a id="default_psth_pre_ms"></a>`DEFAULT_PSTH_PRE_MS` | `float` | `100.0` |  |
+| <a id="default_min_isi_ms"></a>`DEFAULT_MIN_ISI_MS` | `float` | `0.0` |  |
+| <a id="default_presence_bin_s"></a>`DEFAULT_PRESENCE_BIN_S` | `float` | `60.0` |  |
+| <a id="default_presence_mean_rate_ratio"></a>`DEFAULT_PRESENCE_MEAN_RATE_RATIO` | `float` | `0.0` |  |
+| <a id="default_refractory_bin_ms"></a>`DEFAULT_REFRACTORY_BIN_MS` | `float` | `1.0` |  |
+| <a id="default_refractory_window_ms"></a>`DEFAULT_REFRACTORY_WINDOW_MS` | `float` | `500.0` |  |

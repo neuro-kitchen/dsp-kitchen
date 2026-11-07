@@ -98,8 +98,8 @@ pub fn settling_samples(sos: PyReadonlyArray2<'_, f64>) -> PyResult<usize> {
     Ok(sos_from_numpy(sos)?.settling_samples(DEFAULT_SETTLING_TOLERANCE))
 }
 
-pyo3_stub_gen::module_variable!("dspk._native.ops.filter", "DEFAULT_ORDER", usize);
-pyo3_stub_gen::module_variable!("dspk._native.ops.filter", "SETTLING_TOLERANCE", f64);
+pyo3_stub_gen::module_variable!("dspk._native.ops.filter", "DEFAULT_ORDER", usize, DEFAULT_BUTTERWORTH_ORDER);
+pyo3_stub_gen::module_variable!("dspk._native.ops.filter", "SETTLING_TOLERANCE", f64, DEFAULT_SETTLING_TOLERANCE);
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sos, m)?)?;

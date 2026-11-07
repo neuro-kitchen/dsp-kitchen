@@ -103,7 +103,7 @@ integers are written as they are, with no conversion; float values stored in an 
 | `order` | `str` | `'channel_major'` |
 | `gain` | `float` | `1.0` |
 | `unit` | `str` | `''` |
-| `chunk_samples` | `int` | `WRITE_CHUNK_SAMPLES` |
+| `chunk_samples` | `int` | `WRITE_CHUNK_SAMPLES` (65536) |
 
 ### `write_zarr`
 
@@ -135,7 +135,7 @@ stored on several threads; `parallel=False` writes on one thread.
 | `path` | `str \| PathLike` |  |
 | `sample_rate` | `float` |  |
 | `unit` | `str` | `''` |
-| `chunk_samples` | `int` | `ZARR_CHUNK_SAMPLES` |
+| `chunk_samples` | `int` | `ZARR_CHUNK_SAMPLES` (5000) |
 | `compression` | `str` | `'zstd'` |
 | `level` | `int \| None` | `None` |
 | `parallel` | `bool` | `True` |
@@ -260,5 +260,5 @@ Checks every sample was written and closes the store.
 | Name | Type | Value | Description |
 |---|---|---|---|
 | <a id="stored_dtypes"></a>`STORED_DTYPES` |  | `('int8', 'int16', 'uint16', 'int32', 'float32', 'float64')` |  |
-| <a id="write_chunk_samples"></a>`WRITE_CHUNK_SAMPLES` | `int` |  |  |
-| <a id="zarr_chunk_samples"></a>`ZARR_CHUNK_SAMPLES` | `int` |  |  |
+| <a id="write_chunk_samples"></a>`WRITE_CHUNK_SAMPLES` | `int` | `65536` |  |
+| <a id="zarr_chunk_samples"></a>`ZARR_CHUNK_SAMPLES` | `int` | `5000` |  |

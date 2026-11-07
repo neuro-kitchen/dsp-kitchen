@@ -245,7 +245,7 @@ impl Session {
     }
 }
 
-pyo3_stub_gen::module_variable!("dspk._native.remote", "DEFAULT_SERVER_NAME", String);
+pyo3_stub_gen::module_variable!("dspk._native.remote", "DEFAULT_SERVER_NAME", String, DEFAULT_SERVER_NAME.to_string());
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("DEFAULT_SERVER_NAME", DEFAULT_SERVER_NAME)?;

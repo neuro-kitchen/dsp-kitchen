@@ -14,8 +14,8 @@ __all__ = [
     "schema",
 ]
 
-DEFAULT_CHUNK_SAMPLES: builtins.int
-SPEC_VERSION: builtins.int
+DEFAULT_CHUNK_SAMPLES: builtins.int = 65536
+SPEC_VERSION: builtins.int = 1
 def canonical(text: builtins.str, toml: builtins.bool = False) -> builtins.str:
     r"""
     Checks a spec (`toml=True` for TOML text) and returns its canonical JSON (every default

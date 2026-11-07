@@ -155,7 +155,7 @@ Global ZCA `U (L + epsilon)^-1/2 U^T` of `data` `(channels, samples)`.
 | Name | Type | Default |
 |---|---|---|
 | `data` |  |  |
-| `epsilon` | `float` | `DEFAULT_WHITENING_EPSILON` |
+| `epsilon` | `float` | `DEFAULT_WHITENING_EPSILON` (1e-06) |
 | `runtime` | `str \| None` | `None` |
 
 #### `Whitening.fit_local_knn`
@@ -181,7 +181,7 @@ Local ZCA: each channel whitened over its `k` nearest channels (`positions`
 | `data` |  |  |
 | `positions` |  |  |
 | `k` | `int` |  |
-| `epsilon` | `float` | `DEFAULT_WHITENING_EPSILON` |
+| `epsilon` | `float` | `DEFAULT_WHITENING_EPSILON` (1e-06) |
 | `runtime` | `str \| None` | `None` |
 
 #### `Whitening.from_matrix`
@@ -217,4 +217,4 @@ apply(data, *, runtime: str | None = None) -> np.ndarray
 
 | Name | Type | Value | Description |
 |---|---|---|---|
-| <a id="default_whitening_epsilon"></a>`DEFAULT_WHITENING_EPSILON` | `float` |  |  |
+| <a id="default_whitening_epsilon"></a>`DEFAULT_WHITENING_EPSILON` | `float` | `1e-06` |  |

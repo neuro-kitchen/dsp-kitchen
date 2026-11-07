@@ -48,10 +48,10 @@ pass after pass: `samples` (troughs), `units`, `amplitudes` (scales), `scores`.
 |---|---|---|
 | `data` |  |  |
 | `templates` |  |  |
-| `min_amplitude_scale` | `float` | `DEFAULT_MIN_AMPLITUDE_SCALE` |
-| `max_amplitude_scale` | `float` | `DEFAULT_MAX_AMPLITUDE_SCALE` |
-| `min_explained_energy` | `float` | `DEFAULT_MIN_EXPLAINED_ENERGY` |
-| `max_passes` | `int` | `DEFAULT_MAX_PASSES` |
+| `min_amplitude_scale` | `float` | `DEFAULT_MIN_AMPLITUDE_SCALE` (0.65) |
+| `max_amplitude_scale` | `float` | `DEFAULT_MAX_AMPLITUDE_SCALE` (1.45) |
+| `min_explained_energy` | `float` | `DEFAULT_MIN_EXPLAINED_ENERGY` (500.0) |
+| `max_passes` | `int` | `DEFAULT_MAX_PASSES` (4) |
 | `channels` |  | `None` |
 | `runtime` | `str \| None` | `None` |
 
@@ -103,9 +103,9 @@ template_similarity(
 
 | Name | Type | Value | Description |
 |---|---|---|---|
-| <a id="default_max_amplitude_scale"></a>`DEFAULT_MAX_AMPLITUDE_SCALE` | `float` |  |  |
+| <a id="default_max_amplitude_scale"></a>`DEFAULT_MAX_AMPLITUDE_SCALE` | `float` | `1.45` |  |
 | <a id="default_max_lag_samples"></a>`DEFAULT_MAX_LAG_SAMPLES` | `int` | `10` |  |
-| <a id="default_max_passes"></a>`DEFAULT_MAX_PASSES` | `int` |  |  |
+| <a id="default_max_passes"></a>`DEFAULT_MAX_PASSES` | `int` | `4` |  |
 | <a id="default_merge_threshold"></a>`DEFAULT_MERGE_THRESHOLD` | `float` | `0.9` |  |
-| <a id="default_min_amplitude_scale"></a>`DEFAULT_MIN_AMPLITUDE_SCALE` | `float` |  |  |
-| <a id="default_min_explained_energy"></a>`DEFAULT_MIN_EXPLAINED_ENERGY` | `float` |  |  |
+| <a id="default_min_amplitude_scale"></a>`DEFAULT_MIN_AMPLITUDE_SCALE` | `float` | `0.65` |  |
+| <a id="default_min_explained_energy"></a>`DEFAULT_MIN_EXPLAINED_ENERGY` | `float` | `500.0` |  |

@@ -11,7 +11,7 @@ __all__ = [
     "Session",
 ]
 
-DEFAULT_SERVER_NAME: builtins.str
+DEFAULT_SERVER_NAME: builtins.str = 'localhost'
 class Session:
     r"""
     A connection to a `dspk serve` server.

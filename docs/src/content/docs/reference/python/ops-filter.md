@@ -63,7 +63,7 @@ taps centred on each sample (zero phase for symmetric taps). Samples past the en
 | `data` |  |  |
 | `taps` |  |  |
 | `centered` | `bool` | `False` |
-| `edge` | `str` | `FIR_DEFAULT_EDGE` |
+| `edge` | `str` | `FIR_DEFAULT_EDGE` ('zeros') |
 | `runtime` | `str \| None` | `None` |
 
 ### `firwin`
@@ -115,7 +115,7 @@ Zero-phase Gaussian smoothing, standard deviation `sigma_samples`, cut at
 |---|---|---|
 | `data` |  |  |
 | `sigma_samples` | `float` |  |
-| `edge` | `str` | `GAUSSIAN_DEFAULT_EDGE` |
+| `edge` | `str` | `GAUSSIAN_DEFAULT_EDGE` ('reflect') |
 | `runtime` | `str \| None` | `None` |
 
 ### `iir`
@@ -146,7 +146,7 @@ Designs an IIR filter (as [`sos`](/dsp-kitchen/reference/python/ops-filter/#sos)
 | `sample_rate` | `float` |  |
 | `band` | `str` |  |
 | `cutoff` | `float \| Sequence[float]` |  |
-| `order` | `int` | `DEFAULT_ORDER` |
+| `order` | `int` | `DEFAULT_ORDER` (5) |
 | `design` | `str` | `'butterworth'` |
 | `ripple_db` | `float \| None` | `None` |
 | `mode` | `str` | `'forward_backward'` |
@@ -174,7 +174,7 @@ default `edge="zeros"` this is `scipy.signal.medfilt`.
 |---|---|---|
 | `data` |  |  |
 | `width` | `int` |  |
-| `edge` | `str` | `MEDIAN_DEFAULT_EDGE` |
+| `edge` | `str` | `MEDIAN_DEFAULT_EDGE` ('zeros') |
 | `runtime` | `str \| None` | `None` |
 
 ### `notch`
@@ -247,7 +247,7 @@ Second-order sections `(sections, 6)` of an IIR design, scipy layout `[b, a]`.
 | `band` | `str` |  |
 | `cutoff` | `float \| Sequence[float]` |  |
 | `sample_rate` | `float` |  |
-| `order` | `int` | `DEFAULT_ORDER` |
+| `order` | `int` | `DEFAULT_ORDER` (5) |
 | `design` | `str` | `'butterworth'` |
 | `ripple_db` | `float \| None` | `None` |
 
@@ -308,7 +308,7 @@ samples apart in the tests); isolated events are removed to well under 1 %.
 | `template` |  |  |
 | `events` |  |  |
 | `center_offset` | `int` |  |
-| `max_lag` | `int` | `TEMPLATE_DEFAULT_MAX_LAG` |
+| `max_lag` | `int` | `TEMPLATE_DEFAULT_MAX_LAG` (8) |
 | `dynamic_scaling` | `bool` | `True` |
 | `runtime` | `str \| None` | `None` |
 
@@ -331,19 +331,19 @@ samples come from `edge`.
 | Name | Type | Default |
 |---|---|---|
 | `data` |  |  |
-| `edge` | `str` | `TEAGER_KAISER_DEFAULT_EDGE` |
+| `edge` | `str` | `TEAGER_KAISER_DEFAULT_EDGE` ('reflect') |
 | `runtime` | `str \| None` | `None` |
 
 ## Constants
 
 | Name | Type | Value | Description |
 |---|---|---|---|
-| <a id="default_order"></a>`DEFAULT_ORDER` | `int` |  |  |
-| <a id="fir_default_edge"></a>`FIR_DEFAULT_EDGE` | `str` |  |  |
-| <a id="gaussian_default_edge"></a>`GAUSSIAN_DEFAULT_EDGE` | `str` |  |  |
-| <a id="gaussian_truncate"></a>`GAUSSIAN_TRUNCATE` | `float` |  |  |
-| <a id="max_median_width"></a>`MAX_MEDIAN_WIDTH` | `int` |  |  |
-| <a id="median_default_edge"></a>`MEDIAN_DEFAULT_EDGE` | `str` |  |  |
-| <a id="settling_tolerance"></a>`SETTLING_TOLERANCE` | `float` |  |  |
-| <a id="teager_kaiser_default_edge"></a>`TEAGER_KAISER_DEFAULT_EDGE` | `str` |  |  |
-| <a id="template_default_max_lag"></a>`TEMPLATE_DEFAULT_MAX_LAG` | `int` |  |  |
+| <a id="default_order"></a>`DEFAULT_ORDER` | `int` | `5` |  |
+| <a id="fir_default_edge"></a>`FIR_DEFAULT_EDGE` | `str` | `'zeros'` |  |
+| <a id="gaussian_default_edge"></a>`GAUSSIAN_DEFAULT_EDGE` | `str` | `'reflect'` |  |
+| <a id="gaussian_truncate"></a>`GAUSSIAN_TRUNCATE` | `float` | `4.0` |  |
+| <a id="max_median_width"></a>`MAX_MEDIAN_WIDTH` | `int` | `31` |  |
+| <a id="median_default_edge"></a>`MEDIAN_DEFAULT_EDGE` | `str` | `'zeros'` |  |
+| <a id="settling_tolerance"></a>`SETTLING_TOLERANCE` | `float` | `0.001` |  |
+| <a id="teager_kaiser_default_edge"></a>`TEAGER_KAISER_DEFAULT_EDGE` | `str` | `'reflect'` |  |
+| <a id="template_default_max_lag"></a>`TEMPLATE_DEFAULT_MAX_LAG` | `int` | `8` |  |

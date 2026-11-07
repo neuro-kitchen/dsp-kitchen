@@ -89,7 +89,7 @@ across; run it on independent chunks with `settling` of context, which is exact 
 |---|---|---|
 | `taps` |  |  |
 | `centered` | `bool` | `False` |
-| `edge` | `str` | `FIR_DEFAULT_EDGE` |
+| `edge` | `str` | `FIR_DEFAULT_EDGE` ('zeros') |
 
 ### `gaussian_smooth`
 
@@ -108,7 +108,7 @@ Zero-phase Gaussian smoothing, standard deviation `sigma_samples`.
 | Name | Type | Default |
 |---|---|---|
 | `sigma_samples` | `float` |  |
-| `edge` | `str` | `GAUSSIAN_DEFAULT_EDGE` |
+| `edge` | `str` | `GAUSSIAN_DEFAULT_EDGE` ('reflect') |
 
 ### `laplacian`
 
@@ -161,7 +161,7 @@ IIR filter, as [`iir`](/dsp-kitchen/reference/python/ops-filter/#iir).
 |---|---|---|
 | `band` | `str` |  |
 | `cutoff` | `float \| Sequence[float]` |  |
-| `order` | `int` | `DEFAULT_ORDER` |
+| `order` | `int` | `DEFAULT_ORDER` (5) |
 | `design` | `str` | `'butterworth'` |
 | `ripple_db` | `float \| None` | `None` |
 | `mode` | `str` | `'forward_backward'` |
@@ -180,7 +180,7 @@ Running median over an odd `width` (`scipy.signal.medfilt` with the default edge
 | Name | Type | Default |
 |---|---|---|
 | `width` | `int` |  |
-| `edge` | `str` | `MEDIAN_DEFAULT_EDGE` |
+| `edge` | `str` | `MEDIAN_DEFAULT_EDGE` ('zeros') |
 
 ### `notch`
 
@@ -301,7 +301,7 @@ Teager–Kaiser energy `x[t]**2 - x[t-1] * x[t+1]`.
 
 | Name | Type | Default |
 |---|---|---|
-| `edge` | `str` | `TEAGER_KAISER_DEFAULT_EDGE` |
+| `edge` | `str` | `TEAGER_KAISER_DEFAULT_EDGE` ('reflect') |
 
 ### `rectify`
 
@@ -345,9 +345,9 @@ One pipeline stage (build with the functions of `dspk.ops.stage`).
 
 | Name | Type | Value | Description |
 |---|---|---|---|
-| <a id="gaussian_default_edge"></a>`GAUSSIAN_DEFAULT_EDGE` | `str` |  |  |
-| <a id="max_median_width"></a>`MAX_MEDIAN_WIDTH` | `int` |  |  |
-| <a id="median_default_edge"></a>`MEDIAN_DEFAULT_EDGE` | `str` |  |  |
-| <a id="teager_kaiser_default_edge"></a>`TEAGER_KAISER_DEFAULT_EDGE` | `str` |  |  |
-| <a id="fir_default_edge"></a>`FIR_DEFAULT_EDGE` | `str` |  |  |
-| <a id="log10_floor"></a>`LOG10_FLOOR` | `float` |  |  |
+| <a id="gaussian_default_edge"></a>`GAUSSIAN_DEFAULT_EDGE` | `str` | `'reflect'` |  |
+| <a id="max_median_width"></a>`MAX_MEDIAN_WIDTH` | `int` | `31` |  |
+| <a id="median_default_edge"></a>`MEDIAN_DEFAULT_EDGE` | `str` | `'zeros'` |  |
+| <a id="teager_kaiser_default_edge"></a>`TEAGER_KAISER_DEFAULT_EDGE` | `str` | `'reflect'` |  |
+| <a id="fir_default_edge"></a>`FIR_DEFAULT_EDGE` | `str` | `'zeros'` |  |
+| <a id="log10_floor"></a>`LOG10_FLOOR` | `float` | `1e-12` |  |
