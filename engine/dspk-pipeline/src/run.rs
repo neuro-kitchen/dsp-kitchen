@@ -153,6 +153,13 @@ fn execute(
     mut observe: impl FnMut(usize, usize, DataMovement) -> bool,
 ) -> Result<RunReport, PipelineError> {
     let started = Instant::now();
+    let target = match &spec.execution.runtime {
+        Some(name) => ComputeTarget::parse(name).and_then(ComputeTarget::checked),
+        None => ComputeTarget::from_env(),
+    }
+    .map_err(|e| PipelineError::Compute(e.to_string()))?;
+    let mut p = p;
+    p.fit(target)?;
     let Prepared {
         source, pipeline, resample, channels, range, unit, sample_rate, stored_format, stored_upload, mode, schedule,
         out_rate, out_samples, output, format, zarr, names, keep, ..
@@ -161,11 +168,6 @@ fn execute(
     let nch = channels.len();
     // Channels written: the kept ones, gathered on the device before the download
     let out_nch = names.len();
-    let target = match &spec.execution.runtime {
-        Some(name) => ComputeTarget::parse(name).and_then(ComputeTarget::checked),
-        None => ComputeTarget::from_env(),
-    }
-    .map_err(|e| PipelineError::Compute(e.to_string()))?;
     let client = target.client().map_err(|e| PipelineError::Compute(e.to_string()))?;
     let capacity = schedule.max_read_samples().max(1);
     let mut workspace = match mode {
@@ -356,6 +358,16 @@ fn execute_fanout(
     mut observe: impl FnMut(usize, usize, DataMovement) -> bool,
 ) -> Result<Vec<RunReport>, PipelineError> {
     let started = Instant::now();
+    // Whitening stages fitted first, on the device the branches run on
+    let fit_target = match &specs[0].execution.runtime {
+        Some(name) => ComputeTarget::parse(name).and_then(ComputeTarget::checked),
+        None => ComputeTarget::from_env(),
+    }
+    .map_err(|e| PipelineError::Compute(e.to_string()))?;
+    let mut prepared = prepared;
+    for p in &mut prepared {
+        p.fit(fit_target)?;
+    }
     let invalid = |m: &str| Err(PipelineError::Invalid(m.to_string()));
     let first = &prepared[0];
     if prepared.iter().any(|p| p.channels != first.channels || p.range != first.range || p.stored_upload != first.stored_upload || p.stored_format != first.stored_format) {

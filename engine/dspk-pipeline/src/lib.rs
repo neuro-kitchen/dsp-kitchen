@@ -20,15 +20,17 @@
 //! - [`plan`] says what a run would do (mode, halos, windows, bytes) without touching the device;
 //!   [`run_with`] reports progress after each window and can cancel.
 
+mod fit;
 mod prepare;
 mod run;
 mod spec;
 
+pub use fit::{fit_whitening, unfitted_whitening, WhitenFit};
 pub use prepare::{default_open, plan, plan_with, ExecutedMode, Plan};
 pub use run::{run, run_with, DataMovement, Progress, RunReport, StageTimings, PROVENANCE_SUFFIX, WRITE_QUEUE_WINDOWS};
 pub use spec::{
     Band, Chain, Compression, Design, Edge, ExecMode, Execution, Input, MergePart, Mode, Node, OutputFormat, PipelineSpec, Start, Upload,
-    DEFAULT_BLOSC_LEVEL, DEFAULT_CHUNK_SAMPLES, DEFAULT_ZSTD_LEVEL, SPEC_VERSION,
+    DEFAULT_BLOSC_LEVEL, DEFAULT_CHUNK_SAMPLES, DEFAULT_ZSTD_LEVEL, SPEC_VERSION, WHITEN_DEFAULT_CHUNKS, WHITEN_DEFAULT_FIT_S,
 };
 
 /// Why a pipeline could not be read, checked or run.

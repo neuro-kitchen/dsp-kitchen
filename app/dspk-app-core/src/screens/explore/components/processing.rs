@@ -52,7 +52,7 @@ pub fn view_ops() -> Vec<ViewOps> {
                 .filter_map(|it| match it.template {
                     crate::screens::pipeline::catalog::Template::Op(v) => {
                         let node: Node = serde_json::from_value(v.clone()).ok()?;
-                        matches!(node.stage(), Ok(Some(_))).then_some((it.label, v))
+                        (matches!(node.stage(), Ok(Some(_))) || node.whiten_fit().is_some()).then_some((it.label, v))
                     }
                     _ => None,
                 })
@@ -93,6 +93,7 @@ pub fn op_summary(node: &Node) -> String {
         Node::Sqrt {} => "Square root √x".into(),
         Node::Log10 {} => "Log₁₀ |x|".into(),
         Node::Laplacian { grid: [r, c] } => format!("Surface Laplacian, grid {r} × {c}"),
+        Node::Whiten { fit_s, chunks, .. } => format!("Whitening (ZCA, fitted on {fit_s} s in {chunks} chunks)"),
         other => op_name(other).to_string(),
     }
 }
@@ -326,7 +327,7 @@ mod tests {
         for family in view_ops() {
             for (label, value) in family.ops {
                 let node: Node = serde_json::from_value(value).unwrap_or_else(|e| panic!("{label}: {e}"));
-                assert!(matches!(node.stage(), Ok(Some(_))), "{label}");
+                assert!(matches!(node.stage(), Ok(Some(_))) || node.whiten_fit().is_some(), "{label}");
                 assert!(!op_summary(&node).is_empty());
                 for (preset, v) in crate::screens::pipeline::catalog::presets(&node) {
                     let p: Node = serde_json::from_value(v).unwrap_or_else(|e| panic!("{preset}: {e}"));
@@ -335,7 +336,7 @@ mod tests {
                 labels.push(label);
             }
         }
-        for op in ["IIR", "Rectify", "Square", "Square root", "Log₁₀", "Teager–Kaiser"] {
+        for op in ["IIR", "Rectify", "Square", "Square root", "Log₁₀", "Teager–Kaiser", "Laplacian", "Whiten"] {
             assert!(labels.contains(&op), "{op} in {labels:?}");
         }
         assert!(!labels.contains(&"Resample"), "resampling is not previewed");

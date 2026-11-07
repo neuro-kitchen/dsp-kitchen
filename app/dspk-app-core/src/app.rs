@@ -890,6 +890,46 @@ mod tests {
         });
     }
 
+    /// A whitening op previews fitted on the view's signal (channels of about unit variance); an
+    /// edit after it reuses the fit.
+    #[gpui_kit::test]
+    fn whitening_previews_fitted(cx: &mut TestAppContext) {
+        use crate::domain::command::SessionCommand;
+        use dspk_view::SignalBackend as _;
+        let (window, store, _app) = open(cx);
+        cx.update(|cx| {
+            let ds = Dataset::generate_synthetic(6, 10_000.0, 4.0);
+            store.update(cx, |s, cx| s.install(Recording::new(SourceSet::single(ds), Some("/nonexistent/whiten.zarr".into())), cx));
+        });
+        cx.update_window(window, |_, window, cx| window.render_frame(cx)).unwrap();
+        cx.run_until_parked();
+        let source = cx.update(|cx| store.read(cx).sources().unwrap().default_entry().id.clone());
+        let view = cx.update(|cx| store.update(cx, |s, cx| s.view_for_source(&source, cx))).expect("a view");
+        let add = |cx: &mut TestAppContext, op: serde_json::Value| {
+            let node: dspk_pipeline::Node = serde_json::from_value(op).unwrap();
+            cx.update(|cx| store.update(cx, |s, cx| s.execute(SessionCommand::AddOp { view: view.clone(), node, index: None, id: None }, cx))).unwrap();
+            cx.run_until_parked();
+        };
+        let read = |cx: &mut TestAppContext| {
+            let preview = cx.update(|cx| store.read(cx).preview_of(&view)).expect("a preview");
+            let mut x = vec![0.0f32; 6 * 20_000];
+            preview.read(&[0, 1, 2, 3, 4, 5], 10_000..30_000, &mut x).unwrap();
+            x
+        };
+        add(cx, serde_json::json!({"op": "iir", "band": "highpass", "cutoff": [100.0]}));
+        add(cx, serde_json::json!({"op": "whiten"}));
+        let x = read(cx);
+        for c in 0..6 {
+            let row = &x[c * 20_000..(c + 1) * 20_000];
+            let mean = row.iter().map(|&v| v as f64).sum::<f64>() / row.len() as f64;
+            let var = row.iter().map(|&v| (v as f64 - mean).powi(2)).sum::<f64>() / row.len() as f64;
+            assert!((var - 1.0).abs() < 0.3, "channel {c}: variance {var:.3}");
+        }
+        add(cx, serde_json::json!({"op": "scale", "alpha": 2.0, "beta": 0.0}));
+        let y = read(cx);
+        assert!(x.iter().zip(&y).all(|(a, b)| (2.0 * a - b).abs() < 1e-4 * a.abs().max(1.0)), "the same fit after an edit downstream");
+    }
+
     #[gpui_kit::test]
     fn start_screen_then_workspaces(cx: &mut TestAppContext) {
         let (window, store, _) = open(cx);

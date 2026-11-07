@@ -127,6 +127,8 @@ pub struct ViewPlan {
     pub steps: Vec<(String, PipelineStage)>,
     /// Source channels shown, in order.
     pub shown: Vec<usize>,
+    /// Whitening steps (by index in `steps`, identities until fitted) and how to fit them.
+    pub fits: Vec<(usize, dspk_pipeline::WhitenFit)>,
 }
 
 pub struct Store {
@@ -165,6 +167,9 @@ pub struct Store {
     /// Previews by chain (source, channels, enabled ops), most recent last: views with the same
     /// chain share one, and a branch reads the preview of the ops it shares with another.
     preview_cache: Vec<(Vec<String>, Arc<ProcessedSignal>)>,
+    /// Whitenings fitted for previews, by the key of the chain up to them (fitting reads the
+    /// recording: once per chain, not per redraw).
+    whiten_cache: HashMap<String, dspk_ops::spatial::SpatialWhitening>,
     /// The channel the Processing panel is about, and the op selected in it.
     pub picked_channel: Option<usize>,
     pub picked_op: Option<String>,
@@ -209,6 +214,7 @@ impl Store {
             _doc_watch: None,
             previews: HashMap::new(),
             preview_cache: Vec::new(),
+            whiten_cache: HashMap::new(),
             picked_channel: None,
             picked_op: None,
             job: None,
@@ -497,10 +503,37 @@ impl Store {
             return;
         }
         let group = plan.group;
-        let stages: Vec<PipelineStage> = plan.steps.iter().map(|(_, st)| st.clone()).collect();
+        let mut stages: Vec<PipelineStage> = plan.steps.iter().map(|(_, st)| st.clone()).collect();
         // The chain's key, step by step: [source and channels, step 1, step 2, …]
         let mut key = vec![format!("{source}|{group:?}")];
         key.extend(plan.steps.into_iter().map(|(k, _)| k));
+        // Whitenings fitted on the signal of the steps before them, as the pipeline does
+        for (at, fit) in plan.fits {
+            let up_to = key[..at + 2].join("\n");
+            let fitted = match self.whiten_cache.get(&up_to) {
+                Some(w) => w.clone(),
+                None => {
+                    let target = match dspk_core::ComputeTarget::from_env() {
+                        Ok(t) => t,
+                        Err(e) => {
+                            self.set_status(format!("{}: whiten: {e}", v.name), cx);
+                            return;
+                        }
+                    };
+                    match dspk_pipeline::fit_whitening(target, raw.as_ref(), &group, &stages[..at], &fit) {
+                        Ok(w) => {
+                            self.whiten_cache.insert(up_to, w.clone());
+                            w
+                        }
+                        Err(e) => {
+                            self.set_status(format!("{}: {e}", v.name), cx);
+                            return;
+                        }
+                    }
+                }
+            };
+            stages[at] = PipelineStage::SpatialWhitening(fitted);
+        }
         // The longest computed prefix of this chain
         let found = (2..=key.len()).rev().find_map(|k| self.preview_cache.iter().find(|(c, _)| c[..] == key[..k]).map(|(_, p)| (k, p.clone())));
         let built = match found {
@@ -541,6 +574,7 @@ impl Store {
         }
         let last_processing = ops.iter().rposition(|n| !is_remap(n));
         let mut steps = Vec::new();
+        let mut fits = Vec::new();
         let mut current = group.clone();
         for (i, n) in ops.iter().enumerate().skip(lead) {
             let key = serde_json::to_string(n).unwrap_or_default();
@@ -558,6 +592,10 @@ impl Store {
                 }
                 current = order.iter().map(|&j| current[j]).collect();
                 steps.push((key, PipelineStage::ReorderChannels { order }));
+            } else if let Some(fit) = n.whiten_fit() {
+                n.stage().map_err(|e| e.to_string())?;
+                fits.push((steps.len(), fit));
+                steps.push((key, PipelineStage::SpatialWhitening(dspk_pipeline::unfitted_whitening(current.len()))));
             } else if let Some(stage) = n.stage().map_err(|e| e.to_string())? {
                 // A grid's operator is made for its electrodes
                 if let PipelineStage::SurfaceLaplacian(lap) = &stage
@@ -568,7 +606,7 @@ impl Store {
                 steps.push((key, stage));
             }
         }
-        Ok(ViewPlan { group, steps, shown: current })
+        Ok(ViewPlan { group, steps, shown: current, fits })
     }
 
     /// The channels view `v` shows, in order (see [`Self::view_plan`]).
@@ -1093,6 +1131,7 @@ impl Store {
         self.pyramids.clear();
         self.previews.clear();
         self.preview_cache.clear();
+        self.whiten_cache.clear();
         self.applied_view = None;
         self.picked_channel = None;
         self.picked_op = None;
@@ -1143,6 +1182,7 @@ impl Store {
             self.pyramids.clear();
             self.previews.clear();
             self.preview_cache.clear();
+        self.whiten_cache.clear();
             self.applied_view = None;
             self.picked_channel = None;
             self.picked_op = None;

@@ -121,6 +121,18 @@ pub enum Node {
     /// removes what volume conduction spreads over the grid (HD-EMG, ECoG). The chain's channels
     /// must number `rows · cols`.
     Laplacian { grid: [usize; 2] },
+    /// Spatial whitening (global ZCA): decorrelates the channels and gives each unit variance, as
+    /// sorters do before detection. Fitted before the run on the signal the nodes before it
+    /// produce: `fit_s` seconds in `chunks` chunks spread over the recording; `epsilon`
+    /// regularises the covariance (in the signal's unit squared).
+    Whiten {
+        #[serde(default = "default_whiten_epsilon")]
+        epsilon: f32,
+        #[serde(default = "default_whiten_fit_s")]
+        fit_s: f64,
+        #[serde(default = "default_whiten_chunks")]
+        chunks: usize,
+    },
     /// IIR filter designed for the recording's sample rate.
     Iir {
         band: Band,
@@ -383,6 +395,21 @@ fn default_order() -> usize {
 fn default_chunk_samples() -> usize {
     DEFAULT_CHUNK_SAMPLES
 }
+/// Seconds a `whiten` node fits on, by default.
+pub const WHITEN_DEFAULT_FIT_S: f64 = 10.0;
+/// Chunks those seconds are split into, by default.
+pub const WHITEN_DEFAULT_CHUNKS: usize = 5;
+
+fn default_whiten_epsilon() -> f32 {
+    dspk_ops::spatial::DEFAULT_WHITENING_EPSILON
+}
+fn default_whiten_fit_s() -> f64 {
+    WHITEN_DEFAULT_FIT_S
+}
+fn default_whiten_chunks() -> usize {
+    WHITEN_DEFAULT_CHUNKS
+}
+
 fn default_resample_beta() -> f64 {
     match RESAMPLE_POLY_WINDOW {
         FirWindow::Kaiser { beta } => beta,
@@ -740,8 +767,17 @@ impl Node {
         }
     }
 
+    /// How a `whiten` node is fitted (`None` for other nodes).
+    pub fn whiten_fit(&self) -> Option<crate::WhitenFit> {
+        match self {
+            Node::Whiten { epsilon, fit_s, chunks } => Some(crate::WhitenFit { epsilon: *epsilon, fit_s: *fit_s, chunks: *chunks }),
+            _ => None,
+        }
+    }
+
     /// The dspk-ops stage of a processing node (`None` for `read`, `write`, `remap` and
-    /// `resample`, which the executor runs itself).
+    /// `resample`, which the executor runs itself, and `whiten`, fitted before a run:
+    /// [`Node::whiten_fit`]).
     pub fn stage(&self) -> Result<Option<PipelineStage>, PipelineError> {
         let filter = |design: FilterDesign, mode: Mode, start: Start| {
             Ok(Some(PipelineStage::Filter(FilterSpec { design, mode: mode.into(), start: start.into() })))
@@ -806,6 +842,13 @@ impl Node {
             Node::Square {} => Ok(Some(PipelineStage::Elementwise(Elementwise::Square))),
             Node::Sqrt {} => Ok(Some(PipelineStage::Elementwise(Elementwise::Sqrt))),
             Node::Log10 {} => Ok(Some(PipelineStage::Elementwise(Elementwise::Log10))),
+            // Fitted on the data before a run (`crate::fit_whitening`)
+            Node::Whiten { epsilon, fit_s, chunks } => {
+                if !(epsilon.is_finite() && *epsilon > 0.0) || !(fit_s.is_finite() && *fit_s > 0.0) || *chunks == 0 {
+                    return Err(PipelineError::Invalid(format!("whiten: epsilon and fit_s positive, chunks at least 1; got {epsilon}, {fit_s}, {chunks}")));
+                }
+                Ok(None)
+            }
             Node::Laplacian { grid: [rows, cols] } => {
                 if *rows == 0 || *cols == 0 || rows * cols < 2 {
                     return Err(PipelineError::Invalid(format!("laplacian: a grid of at least two electrodes, got {rows} × {cols}")));

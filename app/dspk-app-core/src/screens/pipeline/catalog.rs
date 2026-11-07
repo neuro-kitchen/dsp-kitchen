@@ -77,6 +77,7 @@ pub fn catalog() -> Vec<Category> {
                 op("CMR", "Common median reference", json!({"op": "cmr"})),
                 op("CAR", "Common average reference", json!({"op": "car"})),
                 op("Laplacian", "Each electrode minus its grid neighbours (HD-EMG, ECoG)", json!({"op": "laplacian", "grid": [4, 8]})),
+                op("Whiten", "Decorrelates the channels (ZCA), fitted on the signal before it", json!({"op": "whiten"})),
             ],
         },
         Category {
@@ -137,6 +138,7 @@ pub fn type_name(node: &Node) -> &'static str {
         Node::Sqrt {} => "Square root",
         Node::Log10 {} => "Log₁₀",
         Node::Laplacian { .. } => "Laplacian",
+        Node::Whiten { .. } => "Whiten",
         Node::Resample { .. } => "Resample",
         Node::Remap { .. } => "Remap",
         Node::Read { .. } => "Read",
@@ -203,6 +205,7 @@ pub fn flow_call(node: &Node) -> String {
         Node::Sqrt {} => ".map { sqrt(it) }".into(),
         Node::Log10 {} => ".map { log10(abs(it)) }".into(),
         Node::Laplacian { grid: [r, c] } => format!(".laplacian(grid = {r} × {c})"),
+        Node::Whiten { fit_s, .. } => format!(".whiten(fit = {fit_s} s)"),
         Node::Resample { up, down, .. } => format!(".resample({up}, {down})"),
         Node::Remap { pairs, path, .. } => match path {
             Some(p) => format!(".remap({:?})", p.display().to_string()),
