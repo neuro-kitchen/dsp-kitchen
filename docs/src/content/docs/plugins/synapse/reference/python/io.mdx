@@ -20,10 +20,10 @@ A [`Sorting`](/dsp-kitchen/plugins/synapse/reference/python/io/#sorting) holds u
 
 | | |
 |---|---|
-| [`probe_of`](#probe_of) | The probe a recording file carries (SpikeGLX), or `None`. |
-| [`read_probe_file`](#read_probe_file) | A probe file (`.json`. |
+| [`probe_of`](#probe_of) | The probe a recording file carries, if any (SpikeGLX metadata). |
+| [`read_probe_file`](#read_probe_file) | Reads a probe file and the channel map that puts a recording in its contact order. |
 | [`Probe`](#probe) | A probe's geometry. |
-| [`Sorting`](#sorting) | Units with their spike trains (sample indices), templates and quality metrics. |
+| [`Sorting`](#sorting) | A spike sorting. |
 
 ## Functions
 
@@ -36,12 +36,18 @@ probe_of(
 ) -> Probe | None
 ```
 
-The probe a recording file carries (SpikeGLX), or `None`.
+The probe a recording file carries, if any (SpikeGLX metadata).
 
 **Parameters**
 
-- **`path`** : `str | PathLike`
-- **`source`** : `str | None`, default `None`
+- **`path`** : `str or os.PathLike`  
+  The recording.
+- **`source`** : `str`, default `None`  
+  One of the file's sources.
+
+**Returns**
+
+- `Probe or None`
 
 ### `read_probe_file`
 
@@ -49,27 +55,49 @@ The probe a recording file carries (SpikeGLX), or `None`.
 read_probe_file(path: str | PathLike) -> tuple[Probe, dict]
 ```
 
-A probe file (`.json`: probeinterface or Kilosort 4): the probe in contact order and the
-channel map that reads a recording in that order (`.mat` files are refused).
+Reads a probe file and the channel map that puts a recording in its contact order.
 
 **Parameters**
 
-- **`path`** : `str | PathLike`
+- **`path`** : `str or os.PathLike`  
+  A `.json` probe: probeinterface or Kilosort 4. `.mat` files are refused.
+
+**Returns**
+
+- `Probe` — The probe, in contact order.
+- `dict` — The channel map that reads a recording in that order.
+
+**Raises**
+
+- `OSError`: When the file cannot be read.
+- `ValueError`: When it is not a probe file dspk reads.
 
 ## Classes
 
 ### `Probe`
 
-A probe's geometry: one site per recording channel (µm; `y` is depth).
+A probe's geometry: the position of the site under every recording channel.
+
+Positions are in µm, `y` is depth. Make one with `preset`, `grid`,
+`from_positions`, [`read_probe_file`](/dsp-kitchen/plugins/synapse/reference/python/io/#read_probe_file) or [`probe_of`](/dsp-kitchen/plugins/synapse/reference/python/io/#probe_of).
+
+**Examples**
+
+```python
+>>> import dspk
+>>> probe = dspk.synapse.io.Probe.preset("tetrode")
+>>> len(probe)
+4
+```
 
 **Properties**
 
 | Name | Type | Description |
 |---|---|---|
-| `name` | `str` |  |
+| `name` | `str` | The probe's name. |
 | `channels` | `list[int]` | The recording channel of every site, in site order. |
-| `positions` | `np.ndarray` | Site positions `(sites, 3)` in µm (x, y = depth, z). |
-| `shanks` | `list[int]` |  |
+| `positions` | `np.ndarray` | Site positions `(sites, 3)` in µm: `x`, `y` (depth), `z`. |
+| `shanks` | `list[int]` | The shank of every site. |
 
 #### `Probe.preset`
 
@@ -81,12 +109,22 @@ preset(
 ) -> Probe
 ```
 
-A nominal layout, one of [`PRESETS`](/dsp-kitchen/plugins/synapse/reference/python/io/#presets) (`pitch_um`: HD-EMG grids only).
+A nominal layout by name.
 
 **Parameters**
 
-- **`name`** : `str`
-- **`pitch_um`** : `float`, default `DEFAULT_HDEMG_PITCH_UM`
+- **`name`** : `{"neuropixels1", "neuropixels2", "tetrode", "utah", "hdemg4x8", "hdemg8x8"}`  
+  One of [`PRESETS`](/dsp-kitchen/plugins/synapse/reference/python/io/#presets).
+- **`pitch_um`** : `float`, default `DEFAULT_HDEMG_PITCH_UM`  
+  Electrode spacing of the HD-EMG grids, in µm; the other presets ignore it.
+
+**Returns**
+
+- `Probe`
+
+**Raises**
+
+- `ValueError`: For an unknown name.
 
 #### `Probe.grid`
 
@@ -94,13 +132,20 @@ A nominal layout, one of [`PRESETS`](/dsp-kitchen/plugins/synapse/reference/pyth
 grid(rows: int, cols: int, pitch_um: float) -> Probe
 ```
 
-A `rows × cols` grid, channel `row * cols + col`.
+A `rows x cols` grid; channel `row * cols + col` sits at `(col, row) * pitch_um`.
 
 **Parameters**
 
-- **`rows`** : `int`
-- **`cols`** : `int`
-- **`pitch_um`** : `float`
+- **`rows`** : `int`  
+  Grid rows.
+- **`cols`** : `int`  
+  Grid columns.
+- **`pitch_um`** : `float`  
+  Electrode spacing, in µm.
+
+**Returns**
+
+- `Probe`
 
 #### `Probe.from_positions`
 
@@ -113,13 +158,20 @@ from_positions(
 ) -> Probe
 ```
 
-Sites at `positions` (`(channels, 2)` or `(channels, 3)` µm), channel `i` at row `i`.
+Sites at given positions, channel `i` at row `i`.
 
 **Parameters**
 
-- **`positions`**
-- **`shanks`** : `Sequence[int] | None`, default `None`
-- **`name`** : `str`, default `'probe'`
+- **`positions`** : `array_like`  
+  `(channels, 2)` or `(channels, 3)` in µm.
+- **`shanks`** : `sequence of int`, default `None`  
+  The shank of each site; by default all on one.
+- **`name`** : `str`, default `'probe'`  
+  A name for the probe.
+
+**Returns**
+
+- `Probe`
 
 #### `Probe.from_json`
 
@@ -127,9 +179,20 @@ Sites at `positions` (`(channels, 2)` or `(channels, 3)` µm), channel `i` at ro
 from_json(text: str) -> Probe
 ```
 
+A probe from the JSON `to_json` writes.
+
 **Parameters**
 
-- **`text`** : `str`
+- **`text`** : `str`  
+  The JSON.
+
+**Returns**
+
+- `Probe`
+
+**Raises**
+
+- `ValueError`: When the JSON is not a probe.
 
 #### `Probe.remap`
 
@@ -137,11 +200,20 @@ from_json(text: str) -> Probe
 remap(map) -> Probe
 ```
 
-The geometry after a channel map (any form [`ops.layout.as_map`](/dsp-kitchen/reference/python/ops-layout/#as_map) takes).
+The geometry after a channel map, so it follows a remapped recording.
 
 **Parameters**
 
-- **`map`**
+- **`map`** : `dict, list of dict, str or os.PathLike`  
+  Any form [`ops.layout.as_map`](/dsp-kitchen/reference/python/ops-layout/#as_map) takes.
+
+**Returns**
+
+- `Probe`
+
+**Raises**
+
+- `ValueError`: When the map is invalid for this probe.
 
 #### `Probe.depth_order`
 
@@ -149,7 +221,11 @@ The geometry after a channel map (any form [`ops.layout.as_map`](/dsp-kitchen/re
 depth_order() -> dict
 ```
 
-A channel map sorting the channels by shank, depth, then x (`{"base", "pairs"}`).
+A channel map that sorts the channels by shank, then depth, then `x`.
+
+**Returns**
+
+- `dict` — `{"base", "pairs"}`, for [`ops.layout.remap`](/dsp-kitchen/reference/python/ops-layout/#remap) and [`remap`](/dsp-kitchen/reference/python/ops-layout/#remap).
 
 #### `Probe.select`
 
@@ -157,11 +233,16 @@ A channel map sorting the channels by shank, depth, then x (`{"base", "pairs"}`)
 select(channels: Sequence[int]) -> Probe
 ```
 
-The sites of `channels` (in that order), renumbered `0..`.
+The sites of some channels, renumbered from 0 in the order given.
 
 **Parameters**
 
-- **`channels`** : `Sequence[int]`
+- **`channels`** : `sequence of int`  
+  Recording channels to keep.
+
+**Returns**
+
+- `Probe`
 
 #### `Probe.neighbours`
 
@@ -169,11 +250,16 @@ The sites of `channels` (in that order), renumbered `0..`.
 neighbours(k: int) -> np.ndarray
 ```
 
-The `k` nearest sites of every channel (itself first): `(channels, k)`.
+The `k` nearest sites of every channel, itself first.
 
 **Parameters**
 
-- **`k`** : `int`
+- **`k`** : `int`  
+  Sites per channel.
+
+**Returns**
+
+- `np.ndarray` — `(channels, k)` channel indices.
 
 #### `Probe.to_json`
 
@@ -181,19 +267,34 @@ The `k` nearest sites of every channel (itself first): `(channels, k)`.
 to_json() -> str
 ```
 
+The probe as JSON (read back with `from_json`).
+
 ### `Sorting`
 
-Units with their spike trains (sample indices), templates and quality metrics.
+A spike sorting: units with their spike trains (sample indices), templates and quality
+metrics.
+
+Make one with [`load`](/dsp-kitchen/reference/python/pipeline/#load), `from_spikes` or [`synapse.detection.detect_recording`](/dsp-kitchen/plugins/synapse/reference/python/detection/#detect_recording).
+
+**Examples**
+
+```python
+>>> import numpy as np
+>>> import dspk
+>>> s = dspk.synapse.io.Sorting.from_spikes([100, 900, 1500], [0, 1, 0], 30_000.0, 30_000)
+>>> s.unit_ids
+[0, 1]
+```
 
 **Properties**
 
 | Name | Type | Description |
 |---|---|---|
-| `sorter_name` | `str` |  |
-| `sample_rate` | `float` |  |
-| `total_samples` | `int` |  |
-| `unit_ids` | `list[int]` |  |
-| `probe` | `Probe \| None` |  |
+| `sorter_name` | `str` | Who made the sorting. |
+| `sample_rate` | `float` | Sample rate of the recording, in Hz. |
+| `total_samples` | `int` | Samples in the recording. |
+| `unit_ids` | `list[int]` | The unit ids. |
+| `probe` | `Probe \| None` | The probe, when the sorting has one. |
 
 #### `Sorting.load`
 
@@ -201,11 +302,21 @@ Units with their spike trains (sample indices), templates and quality metrics.
 load(path: str | PathLike) -> Sorting
 ```
 
-A Phy / Kilosort folder, a `.sorting.zarr` store or an NWB `.nwb.zarr` (`/units`).
+Loads a sorting, its format detected from its contents.
 
 **Parameters**
 
-- **`path`** : `str | PathLike`
+- **`path`** : `str or os.PathLike`  
+  A Phy / Kilosort folder, a `.sorting.zarr` store, or an NWB `.nwb.zarr` (`/units`).
+
+**Returns**
+
+- `Sorting`
+
+**Raises**
+
+- `OSError`: When `path` does not exist or cannot be read.
+- `ValueError`: When it is not a sorting dspk reads.
 
 #### `Sorting.from_spikes`
 
@@ -221,16 +332,28 @@ from_spikes(
 ) -> Sorting
 ```
 
-From flat arrays: the sample of every spike and its unit; metrics computed from the trains.
+A sorting from flat arrays: the sample of every spike and its unit.
+
+Metrics are computed from the spike trains.
 
 **Parameters**
 
-- **`spike_samples`**
-- **`spike_units`**
-- **`sample_rate`** : `float`
-- **`total_samples`** : `int`
-- **`sorter_name`** : `str`, default `'dspk'`
-- **`probe`** : `Probe | None`, default `None`
+- **`spike_samples`** : `array_like`  
+  Sample index of every spike.
+- **`spike_units`** : `array_like`  
+  Unit of every spike.
+- **`sample_rate`** : `float`  
+  Sample rate in Hz.
+- **`total_samples`** : `int`  
+  Samples in the recording (for rates and presence).
+- **`sorter_name`** : `str`, default `'dspk'`  
+  Who made it.
+- **`probe`** : `Probe`, default `None`  
+  The probe the recording was made with.
+
+**Returns**
+
+- `Sorting`
 
 #### `Sorting.save`
 
@@ -238,12 +361,18 @@ From flat arrays: the sample of every spike and its unit; metrics computed from 
 save(path: str | PathLike, format: str | None = None) -> None
 ```
 
-As `"phy"`, `"sorting_zarr"` or `"nwb_units"` (default: from the path's name).
+Saves the sorting.
 
 **Parameters**
 
-- **`path`** : `str | PathLike`
-- **`format`** : `str | None`, default `None`
+- **`path`** : `str or os.PathLike`  
+  Where to write it.
+- **`format`** : `{"phy", "sorting_zarr", "nwb_units"}`, default `None`  
+  By default from the path's name: `.nwb.zarr` → `"nwb_units"`, other `.zarr` → `"sorting_zarr"`, anything else → `"phy"` (a folder).
+
+**Raises**
+
+- `OSError`: When it cannot be written.
 
 #### `Sorting.spikes`
 
@@ -251,7 +380,11 @@ As `"phy"`, `"sorting_zarr"` or `"nwb_units"` (default: from the path's name).
 spikes() -> dict[str, np.ndarray]
 ```
 
-Every spike, by time: `samples`, `units`, `amplitudes` (µV), `locations` (µm).
+Every spike, by time.
+
+**Returns**
+
+- `dict of np.ndarray` — `samples`, `units`, `amplitudes` (µV) and `locations` (µm; NaN where not located).
 
 #### `Sorting.spike_train`
 
@@ -259,11 +392,16 @@ Every spike, by time: `samples`, `units`, `amplitudes` (µV), `locations` (µm).
 spike_train(unit_id: int) -> np.ndarray
 ```
 
-Sample indices of `unit_id`'s spikes (sorted, `uint64`).
+The spike times of one unit.
 
 **Parameters**
 
-- **`unit_id`** : `int`
+- **`unit_id`** : `int`  
+  The unit.
+
+**Returns**
+
+- `np.ndarray` — Sample indices, sorted, uint64.
 
 #### `Sorting.template`
 
@@ -271,11 +409,16 @@ Sample indices of `unit_id`'s spikes (sorted, `uint64`).
 template(unit_id: int) -> dict | None
 ```
 
-`mean` / `std` / `se` `(channels, samples)` µV on `channels`, `count`, `trough_index`.
+The template of one unit, when the sorting has templates.
 
 **Parameters**
 
-- **`unit_id`** : `int`
+- **`unit_id`** : `int`  
+  The unit.
+
+**Returns**
+
+- `dict or None` — `mean`, `std` and `se` `(channels, samples)` in µV on `channels`, `count` (spikes averaged) and `trough_index`.
 
 #### `Sorting.units`
 
@@ -283,9 +426,11 @@ template(unit_id: int) -> dict | None
 units() -> dict
 ```
 
-One row per unit (columns): `unit_id`, `primary_channel`, `spikes`,
-`firing_rate_hz`, `snr`, `isi_violation_ratio`, `presence_ratio`,
-`amplitude_cutoff`, `composite_score`, `label`.
+One row per unit, as columns.
+
+**Returns**
+
+- `dict of list` — `unit_id`, `primary_channel`, `spikes`, `firing_rate_hz`, `snr`, `isi_violation_ratio`, `presence_ratio`, `amplitude_cutoff`, `composite_score`, `label`.
 
 ## Constants
 

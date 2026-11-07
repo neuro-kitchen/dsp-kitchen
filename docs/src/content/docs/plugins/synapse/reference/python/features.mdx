@@ -16,9 +16,9 @@ an HD-EMG motor unit. Principal components are [`ops.linalg.PCA`](/dsp-kitchen/r
 
 | | |
 |---|---|
-| [`conduction_velocity`](#conduction_velocity) | Muscle-fibre conduction velocity from an HD-EMG template `(rows · cols, samples)` (row-major grid, `pitch_um` apart). |
-| [`haar_wavelet`](#haar_wavelet) | Multi-level Haar wavelet transform (coefficients concatenated, approximation first). |
-| [`morphology`](#morphology) | Per waveform (rows of `(spikes, samples)`, one channel). |
+| [`conduction_velocity`](#conduction_velocity) | Muscle-fibre conduction velocity of an HD-EMG motor unit, from its template. |
+| [`haar_wavelet`](#haar_wavelet) | Multi-level Haar wavelet transform of a signal. |
+| [`morphology`](#morphology) | Shape features of single-channel waveforms. |
 
 ## Functions
 
@@ -34,16 +34,24 @@ conduction_velocity(
 ) -> dict
 ```
 
-Muscle-fibre conduction velocity from an HD-EMG template `(rows · cols, samples)` (row-major
-grid, `pitch_um` apart): `velocity_m_per_s`, `mean_delay_ms`, `correlation`.
+Muscle-fibre conduction velocity of an HD-EMG motor unit, from its template.
 
 **Parameters**
 
-- **`template`**
-- **`rows`** : `int`
-- **`cols`** : `int`
-- **`pitch_um`** : `float`
-- **`sample_rate`** : `float`
+- **`template`** : `array_like`  
+  `(rows * cols, samples)` on a row-major grid.
+- **`rows`** : `int`  
+  The grid.
+- **`cols`** : `int`  
+  The grid.
+- **`pitch_um`** : `float`  
+  Electrode spacing, in µm.
+- **`sample_rate`** : `float`  
+  Sample rate in Hz.
+
+**Returns**
+
+- `dict` — `velocity_m_per_s`, `mean_delay_ms`, `correlation`.
 
 ### `haar_wavelet`
 
@@ -51,12 +59,18 @@ grid, `pitch_um` apart): `velocity_m_per_s`, `mean_delay_ms`, `correlation`.
 haar_wavelet(signal, levels: int = 4) -> np.ndarray
 ```
 
-Multi-level Haar wavelet transform (coefficients concatenated, approximation first).
+Multi-level Haar wavelet transform of a signal.
 
 **Parameters**
 
-- **`signal`**
-- **`levels`** : `int`, default `4`
+- **`signal`** : `array_like`  
+  1-D.
+- **`levels`** : `int`, default `4`  
+  Decomposition levels.
+
+**Returns**
+
+- `np.ndarray` — The coefficients concatenated, approximation first.
 
 ### `morphology`
 
@@ -64,9 +78,13 @@ Multi-level Haar wavelet transform (coefficients concatenated, approximation fir
 morphology(waveforms) -> dict
 ```
 
-Per waveform (rows of `(spikes, samples)`, one channel): `trough_uv`,
-`trough_to_peak_samples`, `half_width_samples`, `repolarization_slope`.
+Shape features of single-channel waveforms.
 
 **Parameters**
 
-- **`waveforms`**
+- **`waveforms`** : `array_like`  
+  `(spikes, samples)` in µV, one channel.
+
+**Returns**
+
+- `dict of np.ndarray` — Per waveform: `trough_uv`, `trough_to_peak_samples`, `half_width_samples`, `repolarization_slope`.

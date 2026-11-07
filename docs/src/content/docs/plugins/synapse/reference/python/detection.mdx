@@ -20,13 +20,13 @@ Detections are dicts of arrays sorted by time: `samples` (sample index), `channe
 
 | | |
 |---|---|
-| [`deduplicate`](#deduplicate) | One spike per event seen on several channels. |
-| [`detect_recording`](#detect_recording) | Detects spikes over a whole [`io.Recording`](/dsp-kitchen/reference/python/io/#recording), read in place in `batch_s` batches (optional CAR, zero-phase band-pass, noise calibrated on spread-out chunks, crossings, spatial de-duplication, snippets, per-channel templates) as `dspk detect`; with `locate`, every spike located (centre of mass of its snippet's heights over its `k_neighbors`. |
-| [`heights`](#heights) | Detection height per channel. |
-| [`matched_filter`](#matched_filter) | Correlation with a spike shape (`prototype_`, default [`prototype`](/dsp-kitchen/plugins/synapse/reference/python/detection/#prototype) of `prototype_ms`) peaking beyond `threshold · σ(score)` where the signal is negative. |
-| [`neo`](#neo) | Teager–Kaiser energy peaks beyond `threshold · σ(energy)` per channel. |
-| [`prototype`](#prototype) | A zero-mean, unit-norm biphasic spike shape of `samples` samples. |
-| [`threshold`](#threshold) | Local extrema beyond `threshold · σ` per channel of `data` `(channels, samples)` (`polarity`. |
+| [`deduplicate`](#deduplicate) | One spike per event seen on several neighbouring channels. |
+| [`detect_recording`](#detect_recording) | Detects spikes over a whole recording, as `dspk detect` does. |
+| [`heights`](#heights) | Detection height of every channel. |
+| [`matched_filter`](#matched_filter) | Matched-filter detection. |
+| [`neo`](#neo) | Peaks of the Teager–Kaiser energy (NEO) beyond `threshold * sigma(energy)` on each channel. |
+| [`prototype`](#prototype) | A biphasic spike shape. |
+| [`threshold`](#threshold) | Threshold crossings. |
 
 ## Functions
 
@@ -43,16 +43,24 @@ deduplicate(
 ) -> dict
 ```
 
-One spike per event seen on several channels: the largest within `radius_um` and
-`window_ms` stays. Adds `participating` (the channels each event was seen on).
+One spike per event seen on several neighbouring channels: the largest stays.
 
 **Parameters**
 
-- **`spikes`** : `dict`
-- **`probe`** : `Probe`
-- **`sample_rate`** : `float`
-- **`radius_um`** : `float`, default `DEFAULT_RADIUS_UM` (150.0)
-- **`window_ms`** : `float`, default `0.5`
+- **`spikes`** : `dict of numpy.ndarray`  
+  `samples`, `channels` and `amplitudes`, as the detectors return.
+- **`probe`** : `Probe`  
+  The probe, for distances between channels.
+- **`sample_rate`** : `float`  
+  Sample rate in Hz.
+- **`radius_um`** : `float`, default `DEFAULT_RADIUS_UM` (150.0)  
+  Spikes on channels closer than this...
+- **`window_ms`** : `float`, default `0.5`  
+  ...and closer in time than this are one event.
+
+**Returns**
+
+- `dict of np.ndarray` — The spikes kept, plus `participating`: the channels each event was seen on.
 
 ### `detect_recording`
 
@@ -80,33 +88,70 @@ detect_recording(
 ) -> tuple[Sorting, dict]
 ```
 
-Detects spikes over a whole [`io.Recording`](/dsp-kitchen/reference/python/io/#recording), read in place in `batch_s` batches
-(optional CAR, zero-phase band-pass, noise calibrated on spread-out chunks, crossings,
-spatial de-duplication, snippets, per-channel templates) as `dspk detect`; with `locate`,
-every spike located (centre of mass of its snippet's heights over its `k_neighbors`: the
-sorting's `spikes()["locations"]`, else NaN). Returns a [`Sorting`](/dsp-kitchen/plugins/synapse/reference/python/io/#sorting) (one unit per
-channel) and a summary (`sigmas_uv`, `raw_crossings`, `spikes`, `channel_counts`).
+Detects spikes over a whole recording, as `dspk detect` does.
+
+The recording is read in place in `batch_s` batches: optional CAR, zero-phase band-pass,
+noise calibrated on chunks spread over the recording, threshold crossings, spatial
+de-duplication, snippets and per-channel templates.
 
 **Parameters**
 
-- **`recording`**
-- **`probe`** : `Probe`
-- **`band`** : `tuple[float, float]`, default `DEFAULT_BAND`
-- **`car`** : `bool`, default `False`
-- **`threshold`** : `float`, default `DEFAULT_RECORDING_THRESHOLD` (5.0)
-- **`refractory_ms`** : `float`, default `DEFAULT_REFRACTORY_MS` (1.0)
-- **`polarity`** : `str`, default `'negative'`
-- **`spacing`** : `str`, default `'locally_exclusive'`
-- **`radius_um`** : `float`, default `DEFAULT_RADIUS_UM` (150.0)
-- **`k_neighbors`** : `int`, default `DEFAULT_K_NEIGHBORS` (4)
-- **`pre_ms`** : `float`, default `DEFAULT_PRE_MS` (1.0)
-- **`post_ms`** : `float`, default `DEFAULT_POST_MS` (2.0)
-- **`sinc_shift`** : `bool`, default `True`
-- **`locate`** : `bool`, default `True`
-- **`batch_s`** : `float`, default `DEFAULT_BATCH_S` (10.0)
-- **`calibration_s`** : `float`, default `DEFAULT_CALIBRATION_S` (5.0)
-- **`calibration_chunks`** : `int`, default `DEFAULT_CALIBRATION_CHUNKS` (5)
-- **`runtime`** : `str | None`, default `None`
+- **`recording`** : `dspk.io.Recording`  
+  The recording.
+- **`probe`** : `Probe`  
+  Its probe.
+- **`band`** : `float, float`, default `DEFAULT_BAND`  
+  Band-pass `(low, high)` in Hz.
+- **`car`** : `bool`, default `False`  
+  Subtract the common average first.
+- **`threshold`** : `float`, default `DEFAULT_RECORDING_THRESHOLD` (5.0)  
+  Height in units of each channel's noise.
+- **`refractory_ms`** : `float`, default `DEFAULT_REFRACTORY_MS` (1.0)  
+  Spikes on one channel stay more than this apart.
+- **`polarity`** : `{"negative", "positive", "both"}`, default `'negative'`  
+  Which extrema count.
+- **`spacing`** : `{"locally_exclusive", "scipy"}`, default `'locally_exclusive'`  
+  Which of two nearer spikes stays (see [`threshold`](/dsp-kitchen/plugins/synapse/reference/python/detection/#threshold)).
+- **`radius_um`** : `float`, default `DEFAULT_RADIUS_UM` (150.0)  
+  De-duplication radius.
+- **`k_neighbors`** : `int`, default `DEFAULT_K_NEIGHBORS` (4)  
+  Channels per snippet (the spike's nearest).
+- **`pre_ms`** : `float`, default `DEFAULT_PRE_MS` (1.0)  
+  Snippet span around each spike.
+- **`post_ms`** : `float`, default `DEFAULT_POST_MS` (2.0)  
+  Snippet span around each spike.
+- **`sinc_shift`** : `bool`, default `True`  
+  Realign each snippet to its sub-sample trough.
+- **`locate`** : `bool`, default `True`  
+  Locate every spike: the centre of mass of its snippet's heights over its `k_neighbors`.
+- **`batch_s`** : `float`, default `DEFAULT_BATCH_S` (10.0)  
+  Seconds read and processed at a time.
+- **`calibration_s`** : `float`, default `DEFAULT_CALIBRATION_S` (5.0)  
+  Seconds of signal the noise is measured on.
+- **`calibration_chunks`** : `int`, default `DEFAULT_CALIBRATION_CHUNKS` (5)  
+  Pieces those seconds are spread over.
+- **`runtime`** : `str`, default `None`  
+  A runtime from [`runtime.available`](/dsp-kitchen/reference/python/runtime/#available); by default the current one.
+
+**Returns**
+
+- `Sorting` — One unit per channel; `spikes()["locations"]` holds the locations (NaN without `locate`).
+- `dict` — `sigmas_uv` (noise per channel), `raw_crossings`, `spikes`, `channel_counts`.
+
+**Raises**
+
+- `ValueError`: For an invalid option.
+- `OSError`: When the recording cannot be read.
+- `RuntimeError`: When the runtime has no device.
+
+**Examples**
+
+```python
+>>> import dspk
+>>> rec = dspk.io.open("session.bin")
+>>> probe = dspk.synapse.io.Probe.preset("neuropixels1")
+>>> sorting, summary = dspk.synapse.detection.detect_recording(rec, probe)
+```
 
 ### `heights`
 
@@ -117,12 +162,18 @@ heights(
 ) -> np.ndarray
 ```
 
-Detection height per channel: `threshold · σ` (`inf` where σ is not positive).
+Detection height of every channel: `threshold * sigma`.
 
 **Parameters**
 
-- **`sigmas`**
-- **`threshold`** : `float`, default `DEFAULT_THRESHOLD` (4.5)
+- **`sigmas`** : `array_like`  
+  Each channel's noise `(channels,)`.
+- **`threshold`** : `float`, default `DEFAULT_THRESHOLD` (4.5)  
+  Height in units of noise.
+
+**Returns**
+
+- `np.ndarray` — `(channels,)`; `inf` where `sigma` is not positive (the channel never detects).
 
 ### `matched_filter`
 
@@ -139,18 +190,30 @@ matched_filter(
 ) -> dict
 ```
 
-Correlation with a spike shape (`prototype_`, default [`prototype`](/dsp-kitchen/plugins/synapse/reference/python/detection/#prototype) of `prototype_ms`)
-peaking beyond `threshold · σ(score)` where the signal is negative.
+Matched-filter detection: correlation with a spike shape, peaks beyond `threshold * sigma`.
+
+Only peaks where the signal is negative count.
 
 **Parameters**
 
-- **`data`**
-- **`sample_rate`** : `float`
-- **`prototype_ms`** : `float`, default `1.0`
-- **`prototype_`**, default `None`
-- **`threshold`** : `float`, default `DEFAULT_THRESHOLD` (4.5)
-- **`refractory_ms`** : `float`, default `DEFAULT_REFRACTORY_MS` (1.0)
-- **`spacing`** : `str`, default `'locally_exclusive'`
+- **`data`** : `array_like`  
+  Signal `(channels, samples)` in µV, converted to float32 on the host.
+- **`sample_rate`** : `float`  
+  Sample rate in Hz.
+- **`prototype_ms`** : `float`, default `1.0`  
+  Length of the default shape ([`prototype`](/dsp-kitchen/plugins/synapse/reference/python/detection/#prototype)), in ms.
+- **`prototype_`** : `array_like`, default `None`  
+  Your own shape, instead of the default.
+- **`threshold`** : `float`, default `DEFAULT_THRESHOLD` (4.5)  
+  Height in units of each channel's correlation noise.
+- **`refractory_ms`** : `float`, default `DEFAULT_REFRACTORY_MS` (1.0)  
+  Spikes on one channel stay more than this apart.
+- **`spacing`** : `{"locally_exclusive", "scipy"}`, default `'locally_exclusive'`  
+  Which of two nearer spikes stays. `"locally_exclusive"`: a spike stays unless a larger one is nearer, which chunked detection reproduces exactly. `"scipy"`: as `scipy.signal.find_peaks` with `distance`.
+
+**Returns**
+
+- `dict of np.ndarray` — `samples` (sample index), `channels` and `amplitudes` (µV at the extremum), sorted by time.
 
 ### `neo`
 
@@ -165,15 +228,27 @@ neo(
 ) -> dict
 ```
 
-Teager–Kaiser energy peaks beyond `threshold · σ(energy)` per channel.
+Peaks of the Teager–Kaiser energy (NEO) beyond `threshold * sigma(energy)` on each channel.
+
+The energy is large where the signal is both large and fast, so it favours spikes over slow
+waves.
 
 **Parameters**
 
-- **`data`**
-- **`sample_rate`** : `float`
-- **`threshold`** : `float`, default `DEFAULT_NEO_THRESHOLD` (8.0)
-- **`refractory_ms`** : `float`, default `DEFAULT_REFRACTORY_MS` (1.0)
-- **`spacing`** : `str`, default `'locally_exclusive'`
+- **`data`** : `array_like`  
+  Signal `(channels, samples)` in µV, converted to float32 on the host.
+- **`sample_rate`** : `float`  
+  Sample rate in Hz.
+- **`threshold`** : `float`, default `DEFAULT_NEO_THRESHOLD` (8.0)  
+  Height in units of each channel's energy noise.
+- **`refractory_ms`** : `float`, default `DEFAULT_REFRACTORY_MS` (1.0)  
+  Spikes on one channel stay more than this apart.
+- **`spacing`** : `{"locally_exclusive", "scipy"}`, default `'locally_exclusive'`  
+  Which of two nearer spikes stays. `"locally_exclusive"`: a spike stays unless a larger one is nearer, which chunked detection reproduces exactly. `"scipy"`: as `scipy.signal.find_peaks` with `distance`.
+
+**Returns**
+
+- `dict of np.ndarray` — `samples` (sample index), `channels` and `amplitudes` (µV at the extremum), sorted by time.
 
 ### `prototype`
 
@@ -181,11 +256,16 @@ Teager–Kaiser energy peaks beyond `threshold · σ(energy)` per channel.
 prototype(samples: int) -> np.ndarray
 ```
 
-A zero-mean, unit-norm biphasic spike shape of `samples` samples.
+A biphasic spike shape: zero mean, unit norm.
 
 **Parameters**
 
-- **`samples`** : `int`
+- **`samples`** : `int`  
+  Length.
+
+**Returns**
+
+- `np.ndarray` — `(samples,)`, float32.
 
 ### `threshold`
 
@@ -202,20 +282,44 @@ threshold(
 ) -> dict
 ```
 
-Local extrema beyond `threshold · σ` per channel of `data` `(channels, samples)`
-(`polarity`: negative, positive, both). `sigmas`: each channel's noise (default: estimated,
-median-based). Spikes on a channel stay more than `refractory_ms` apart (`spacing`:
-`locally_exclusive`, which chunked detection reproduces exactly, or `scipy`).
+Threshold crossings: local extrema beyond `threshold * sigma` on each channel.
 
 **Parameters**
 
-- **`data`**
-- **`sample_rate`** : `float`
-- **`threshold`** : `float`, default `DEFAULT_THRESHOLD` (4.5)
-- **`polarity`** : `str`, default `'negative'`
-- **`refractory_ms`** : `float`, default `DEFAULT_REFRACTORY_MS` (1.0)
-- **`sigmas`**, default `None`
-- **`spacing`** : `str`, default `'locally_exclusive'`
+- **`data`** : `array_like`  
+  Signal `(channels, samples)` in µV, converted to float32 on the host.
+- **`sample_rate`** : `float`  
+  Sample rate in Hz.
+- **`threshold`** : `float`, default `DEFAULT_THRESHOLD` (4.5)  
+  Height in units of each channel's noise.
+- **`polarity`** : `{"negative", "positive", "both"}`, default `'negative'`  
+  Which extrema count.
+- **`refractory_ms`** : `float`, default `DEFAULT_REFRACTORY_MS` (1.0)  
+  Spikes on one channel stay more than this apart.
+- **`sigmas`** : `array_like`, default `None`  
+  Each channel's noise `(channels,)`; by default estimated as `median(|x|) / 0.6745` ([`ops.math.channel_noise_std`](/dsp-kitchen/reference/python/ops-math/#channel_noise_std)).
+- **`spacing`** : `{"locally_exclusive", "scipy"}`, default `'locally_exclusive'`  
+  Which of two nearer spikes stays. `"locally_exclusive"`: a spike stays unless a larger one is nearer, which chunked detection reproduces exactly. `"scipy"`: as `scipy.signal.find_peaks` with `distance`.
+
+**Returns**
+
+- `dict of np.ndarray` — `samples` (sample index), `channels` and `amplitudes` (µV at the extremum), sorted by time.
+
+**Raises**
+
+- `ValueError`: For an unknown `polarity` or `spacing`, or `sigmas` of another length.
+
+**Examples**
+
+```python
+>>> import numpy as np
+>>> import dspk
+>>> x = np.random.default_rng(0).standard_normal((4, 30_000)).astype(np.float32) * 10
+>>> x[1, 15_000:15_010] -= 120  # one spike
+>>> spikes = dspk.synapse.detection.threshold(x, 30_000.0)
+>>> int(spikes["channels"][0]), int(spikes["samples"][0])  # the spike's most negative sample
+(1, 15004)
+```
 
 ## Constants
 
