@@ -34,9 +34,21 @@ DEFAULT_WINDOW_S: float = 1.0
 
 @dataclass(frozen=True)
 class Window:
-    """Where a window's samples come from. ``start``–``stop``: its own samples (recording
-    samples); ``read_start``–``read_stop``: what was read, its context included; ``inner``: the
-    slice of the read array that holds its own samples; ``index``: its number (from 0)."""
+    """Where a window's samples come from.
+
+    Attributes
+    ----------
+    index : int
+        Its number, from 0.
+    start, stop : int
+        Its own samples, in recording samples.
+    read_start, read_stop : int
+        What was read, its context included.
+    sample_rate : float
+        In Hz.
+    channels : tuple of int
+        The channels read.
+    """
 
     index: int
     start: int
@@ -52,10 +64,14 @@ class Window:
 
     @property
     def start_s(self) -> float:
+        """Start of the window, in seconds.
+        """
         return self.start / self.sample_rate
 
     @property
     def stop_s(self) -> float:
+        """End of the window, in seconds.
+        """
         return self.stop / self.sample_rate
 
 
@@ -81,9 +97,8 @@ def windows(
     start: int = 0,
     stop: int | None = None,
 ) -> Iterator[tuple[np.ndarray, Window]]:
-    """The windows of ``rec`` (``start``–``stop``, ``channels``; all by default), each read with
-    ``halo`` samples of context on each side where the recording has them: yields ``(x, w)``. The
-    next window is read on another thread while the caller works on this one."""
+    """The slice of the read array that holds the window's own samples.
+        """
     if halo < 0:
         raise ValueError(f"halo must be at least 0, got {halo}")
     start, stop = _span(rec, start, stop)
@@ -128,11 +143,45 @@ def measure(
     start: int = 0,
     stop: int | None = None,
 ) -> dict[str, np.ndarray]:
-    """``fn(x, w)`` (or ``fn(x)``) on every window of ``rec``, its results gathered: a dict with
-    ``start_s`` and ``stop_s`` (each window's span) and one array per value ``fn`` returns, stacked
-    by window (a number per window gives ``(windows,)``, a row per channel ``(windows, channels)``).
-    ``fn`` returns a value or a dict of values (a value alone is called ``"value"``); every window
-    must return the same keys and shapes. The last window may be shorter."""
+    """Calls your function on every window and gathers what it returns into a table.
+
+    Parameters
+    ----------
+    rec : dspk.io.Recording
+        The recording.
+    fn : callable
+        ``fn(x)`` or ``fn(x, w)``: ``x`` the window ``(channels, samples)`` float32, ``w`` its
+        :class:`Window`. Returns a value (a number, a row per channel) or a dict of values, with
+        the same keys and shapes for every window.
+    window_s : float
+        Seconds per window: one row of the table each.
+    channels : sequence of int, optional
+        Channels to read; by default all.
+    start : int
+        First sample.
+    stop : int, optional
+        The sample after the last; by default the end.
+
+    Returns
+    -------
+    dict of numpy.ndarray
+        ``start_s`` and ``stop_s`` of each window, and each value ``fn`` returns, stacked by
+        window (a number per window gives ``(windows,)``, a row per channel
+        ``(windows, channels)``). A value returned alone is called ``"value"``. The last window may
+        be shorter.
+
+    Raises
+    ------
+    ValueError
+        When windows return different keys or shapes.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import dspk
+    >>> rec = dspk.io.open("session.zarr")  # doctest: +SKIP
+    >>> table = dspk.custom.measure(rec, lambda x: {"rms": np.sqrt((x**2).mean(axis=1))})  # doctest: +SKIP
+    """
     with_w = _calls_with_window(fn)
     rows: dict[str, list] = {}
     starts, stops = [], []
@@ -155,8 +204,13 @@ def measure(
 
 
 class Transform:
-    """A function of a window with ``halo`` samples of context on each side, run over recordings
-    window by window (see the module). Make one with :func:`transform`."""
+    """Your function of a window, run over recordings window by window.
+
+    Windows are read with ``halo`` samples of context on each side and the output is trimmed back,
+    so the result equals ``fn`` on the whole array for any ``fn`` that looks at most ``halo``
+    samples away (a moving average of ``2 * halo + 1`` samples, a filter whose response dies out
+    within ``halo``). Make one with :func:`transform`.
+    """
 
     def __init__(self, fn: Callable, *, halo: int = 0, window_s: float = DEFAULT_WINDOW_S):
         if halo < 0:
@@ -169,12 +223,36 @@ class Transform:
         return f"Transform({name}, halo={self.halo}, window_s={self.window_s})"
 
     def __call__(self, x: np.ndarray, w: Window | None = None) -> np.ndarray:
-        """``fn`` on one array (no windows)."""
+        """``fn`` on one array, without windows.
+        """
         return self.fn(x, w) if self._with_w else self.fn(x)
 
     def blocks(self, rec, *, channels: Sequence[int] | None = None, start: int = 0, stop: int | None = None) -> Iterator[tuple[np.ndarray, Window]]:
-        """The processed windows of ``rec``: ``(y, w)`` with ``y`` the window's own samples
-        ``(channels, w.stop - w.start)`` float32."""
+        """The processed windows of a recording, one at a time.
+
+        Parameters
+        ----------
+        rec : dspk.io.Recording
+            The recording.
+        channels : sequence of int, optional
+            Channels to read; by default all.
+        start : int
+            First sample.
+        stop : int, optional
+            The sample after the last; by default the end.
+
+        Yields
+        ------
+        y : numpy.ndarray
+            The window's own samples, processed ``(channels, w.stop - w.start)``, float32.
+        w : Window
+            Where they are.
+
+        Raises
+        ------
+        ValueError
+            When ``fn`` returns another shape than it was given.
+        """
         for x, w in windows(rec, window_s=self.window_s, halo=self.halo, channels=channels, start=start, stop=stop):
             y = np.asarray(self.fn(x, w) if self._with_w else self.fn(x))
             if y.shape != x.shape:
@@ -182,7 +260,24 @@ class Transform:
             yield np.ascontiguousarray(y[:, w.inner], dtype=np.float32), w
 
     def apply(self, rec, *, channels: Sequence[int] | None = None, start: int = 0, stop: int | None = None) -> np.ndarray:
-        """``rec`` (``start``–``stop``, ``channels``) processed, as one array ``(channels, samples)``."""
+        """A recording processed, as one array in memory.
+
+        Parameters
+        ----------
+        rec : dspk.io.Recording
+            The recording.
+        channels : sequence of int, optional
+            Channels to read; by default all.
+        start : int
+            First sample.
+        stop : int, optional
+            The sample after the last; by default the end.
+
+        Returns
+        -------
+        numpy.ndarray
+            ``(channels, stop - start)``, float32.
+        """
         return np.concatenate([y for y, _ in self.blocks(rec, channels=channels, start=start, stop=stop)], axis=1)
 
     def write(
@@ -196,8 +291,34 @@ class Transform:
         chunk_samples: int = io.ZARR_CHUNK_SAMPLES,
         compression: str = "zstd",
     ) -> None:
-        """``rec`` processed, written to a new Zarr store at ``path`` window by window (never the
-        whole recording in memory); channel names and units as ``rec``'s."""
+        """A recording processed and written to a new Zarr store, window by window.
+
+        The whole recording is never held in memory. Channel names and units are the recording's.
+
+        Parameters
+        ----------
+        rec : dspk.io.Recording
+            The recording.
+        path : str or os.PathLike
+            The store to create.
+        channels : sequence of int, optional
+            Channels to read; by default all.
+        start : int
+            First sample.
+        stop : int, optional
+            The sample after the last; by default the end.
+        chunk_samples : int
+            Samples per Zarr chunk.
+        compression : {"zstd", "blosc_lz4", "none"}
+            How chunks are compressed.
+
+        Raises
+        ------
+        ValueError
+            When ``fn`` returns another shape than it was given, or the range is outside the recording.
+        OSError
+            When the store cannot be written.
+        """
         start, stop = _span(rec, start, stop)
         chans = list(range(rec.channel_count)) if channels is None else [int(c) for c in channels]
         units = {rec.units[c] for c in chans}
@@ -211,7 +332,33 @@ class Transform:
 
 
 def transform(fn: Callable | None = None, *, halo: int = 0, window_s: float = DEFAULT_WINDOW_S):
-    """A :class:`Transform` of ``fn``; also a decorator (``@dspk.custom.transform(halo=12)``)."""
+    """Wraps a function of a window as a :class:`Transform`; also a decorator.
+
+    Parameters
+    ----------
+    fn : callable, optional
+        ``fn(x)`` or ``fn(x, w)``, returning the window processed, the same shape as ``x``.
+        Leave it out to use ``transform(...)`` as a decorator.
+    halo : int
+        Samples of context ``fn`` needs on each side.
+    window_s : float
+        Seconds per window (memory only: results do not depend on it).
+
+    Returns
+    -------
+    Transform
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import dspk
+    >>> @dspk.custom.transform(halo=12)
+    ... def smooth(x):
+    ...     k = np.ones(25, dtype=np.float32) / 25
+    ...     return np.stack([np.convolve(c, k, mode="same") for c in x])
+    >>> rec = dspk.io.open("session.zarr")  # doctest: +SKIP
+    >>> smooth.write(rec, "smoothed.zarr")  # doctest: +SKIP
+    """
     if fn is None:
         return lambda f: Transform(f, halo=halo, window_s=window_s)
     return Transform(fn, halo=halo, window_s=window_s)

@@ -31,14 +31,59 @@ DEFAULT_POLL_S: float = 1.0
 
 
 class Session(_remote.Session):
-    """A connection to a ``dspk serve`` server (``address``: ``IP:port``; ``identity``: the
-    enrolled client's file; ``server_name``: a name on the server's certificate). Use it as a
-    context manager, or :meth:`close` it."""
+    """A connection to a ``dspk serve`` server: a GPU machine that holds the data and runs the sorts.
+
+    Use it as a context manager, or :meth:`close` it.
+
+    Parameters
+    ----------
+    address : str
+        The server's ``IP:port``, such as ``"192.168.1.20:50051"``.
+    identity : str or os.PathLike
+        The client's identity file, written by ``dspk clients enroll <name>`` on the server
+        (``--control`` to run jobs). Keep it private: it is the client's key.
+    server_name : str
+        A name on the server's certificate (``dspk serve --name`` adds names).
+
+    Raises
+    ------
+    ValueError
+        When ``address`` is not an ``IP:port`` or the identity file does not exist.
+    RuntimeError
+        When the server cannot be reached or refuses the client.
+
+    Examples
+    --------
+    >>> import dspk
+    >>> with dspk.remote.Session("192.168.1.20:50051", "me.dspk-identity.pem") as server:  # doctest: +SKIP
+    ...     rec = server.open("sessions/a.zarr")
+    ...     window = rec.read(start=0, stop=30_000)
+    """
 
     def wait(self, *, poll_s: float = DEFAULT_POLL_S, progress: Callable[[dict], None] | None = None, timeout_s: float | None = None) -> dict:
-        """Follows the server's job until it stops; calls ``progress(status)`` each ``poll_s``.
-        Returns the last status; raises ``RuntimeError`` (with the job's last log lines) when the
-        job failed, ``TimeoutError`` after ``timeout_s``."""
+        """Follows the server's job until it stops.
+
+        Parameters
+        ----------
+        poll_s : float
+            Seconds between status requests.
+        progress : callable, optional
+            ``progress(status)``, called at each request while the job runs.
+        timeout_s : float, optional
+            Give up after this many seconds; by default wait as long as it takes.
+
+        Returns
+        -------
+        dict
+            The last status (see :meth:`status`).
+
+        Raises
+        ------
+        RuntimeError
+            When the job failed, with its last log lines.
+        TimeoutError
+            After ``timeout_s``.
+        """
         start = time.monotonic()
         while True:
             status = self.status()

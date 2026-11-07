@@ -59,7 +59,33 @@ fn status_dict<'py>(py: Python<'py>, s: &wire::Status) -> PyResult<Bound<'py, Py
     Ok(d)
 }
 
-/// A connection to a `dspk serve` server.
+/// A connection to a `dspk serve` server: a GPU machine that holds the data and runs the sorts.
+///
+/// Use it as a context manager, or `close` it.
+///
+/// Parameters
+/// ----------
+/// address : str
+///     The server's `IP:port`, such as `"192.168.1.20:50051"`.
+/// identity : str or os.PathLike
+///     The client's identity file, written by `dspk clients enroll <name>` on the server
+///     (`--control` to run jobs). Keep it private: it is the client's key.
+/// server_name : str
+///     A name on the server's certificate (`dspk serve --name` adds names).
+///
+/// Raises
+/// ------
+/// ValueError
+///     When `address` is not an `IP:port` or the identity file does not exist.
+/// RuntimeError
+///     When the server cannot be reached or refuses the client.
+///
+/// Examples
+/// --------
+/// >>> import dspk
+/// >>> with dspk.remote.Session("192.168.1.20:50051", "me.dspk-identity.pem") as server:  # doctest: +SKIP
+/// ...     rec = server.open("sessions/a.zarr")
+/// ...     window = rec.read(start=0, stop=30_000)
 #[gen_stub_pyclass]
 #[pyclass(module = "dspk._native.remote", subclass)]
 pub struct Session {
@@ -97,8 +123,7 @@ impl Session {
 #[gen_stub_pymethods]
 #[pymethods]
 impl Session {
-    /// Connects to the server at `address` (`IP:port`) as the client of `identity` (the file
-    /// `dspk clients enroll` wrote); `server_name` is a name on the server's certificate.
+    /// Connects to the server (parameters as the class).
     #[new]
     #[pyo3(signature = (address, identity, *, server_name=DEFAULT_SERVER_NAME.to_string()))]
     fn new(py: Python<'_>, address: &str, identity: PathBuf, server_name: String) -> PyResult<Self> {
@@ -110,8 +135,13 @@ impl Session {
         Ok(Self { inner: Mutex::new(Some(Arc::new(session))), address, server_name, identity })
     }
 
-    /// Who the server is and who this client is to it: `server_name`, `server_version`,
-    /// `peer_name`, `permission` (`read` or `control`), `state`, `has_files`, `runtime`.
+    /// Who the server is, and who this client is to it.
+    ///
+    /// Returns
+    /// -------
+    /// dict
+    ///     `server_name`, `server_version`, `peer_name` (this client), `permission` (`"read"` or
+    ///     `"control"`), `state`, `has_files`, `runtime`.
     fn info<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let s = self.session()?;
         let i = s.server();
@@ -126,8 +156,18 @@ impl Session {
         Ok(d)
     }
 
-    /// The entries of `dir` under the server's data root: `name`, `kind` (`directory`,
-    /// `recording`, `sorting`, `other`), `size`, `modified_unix`, `directory`.
+    /// Lists a folder of the server's data root.
+    ///
+    /// Parameters
+    /// ----------
+    /// dir : str
+    ///     A folder under the data root; `""` for the root itself.
+    ///
+    /// Returns
+    /// -------
+    /// list of dict
+    ///     One per entry: `name`, `kind` (`"directory"`, `"recording"`, `"sorting"`, `"other"`),
+    ///     `size`, `modified_unix`, `directory`.
     #[pyo3(signature = (dir=String::new()))]
     fn files<'py>(&self, py: Python<'py>, dir: String) -> PyResult<Vec<Bound<'py, PyDict>>> {
         let list = self.call(py, move |s| async move { s.list_files(&dir).await })?;
@@ -153,9 +193,21 @@ impl Session {
             .collect()
     }
 
-    /// The recording at `path` under the data root (`source`: one of the file's sources), read on
-    /// the server: a `dspk.io.Recording` like a local one, for small reads (windows, snippets);
-    /// whole-recording work belongs on the server (`sort`).
+    /// Opens a recording on the server, read over the connection.
+    ///
+    /// A `dspk.io.Recording` like a local one, for small reads (windows, snippets); work on the whole
+    /// recording belongs on the server (`sort`).
+    ///
+    /// Parameters
+    /// ----------
+    /// path : str
+    ///     The recording, under the data root.
+    /// source : str, optional
+    ///     One of the file's sources; by default its default source.
+    ///
+    /// Returns
+    /// -------
+    /// dspk.io.Recording
     #[pyo3(signature = (path, *, source=None))]
     fn open(&self, py: Python<'_>, path: String, source: Option<String>) -> PyResult<Recording> {
         let (address, server_name, identity) = (self.address, self.server_name.clone(), self.identity.clone());
@@ -171,11 +223,29 @@ impl Session {
         Ok(Recording::from_source(Arc::new(source)))
     }
 
-    /// Configures and starts a sort on the server: `sorter` (one the server has) on `recording`
-    /// (under the data root; `source` within it), into `output` (`""`: next to the recording,
-    /// never overwritten). `params`: sorter flags away from their defaults (name without `--` →
-    /// value); `probe`: a preset (`""`: the recording's geometry); `start_s` / `duration_s`: the
-    /// part to sort (0, 0: all). Returns the status (`status()`).
+    /// Starts a sort on the server. Needs a client enrolled with `--control`.
+    ///
+    /// Parameters
+    /// ----------
+    /// sorter : str
+    ///     A sorter the server has, such as `"mountainsort5"`.
+    /// recording : str
+    ///     The recording, under the data root.
+    /// output : str
+    ///     Where the sorting goes; `""` puts it next to the recording. Never overwritten.
+    /// params : dict of str to str
+    ///     Sorter options away from their defaults: the flag's name without `--`, and its value.
+    /// source : str
+    ///     One of the file's sources; `""` for its default.
+    /// probe : str
+    ///     A probe preset; `""` uses the recording's own geometry.
+    /// start_s, duration_s : float
+    ///     The part to sort, in seconds; `0, 0` sorts it all.
+    ///
+    /// Returns
+    /// -------
+    /// dict
+    ///     The server's status, as `status` gives it.
     #[pyo3(signature = (sorter, recording, *, output=String::new(), params=HashMap::new(), source=String::new(), probe=String::new(), start_s=0.0, duration_s=0.0))]
     #[allow(clippy::too_many_arguments)]
     fn sort<'py>(
@@ -198,28 +268,64 @@ impl Session {
         status_dict(py, &status)
     }
 
-    /// The server's state and its job's progress: `state` (`stopped`, `running`, `error`),
-    /// `job`, `stage`, `step` of `steps`, `done` of `total` (`unit`), `message`, `output`,
-    /// `started_by`, `started_unix`.
+    /// The server's state and its job's progress.
+    ///
+    /// Returns
+    /// -------
+    /// dict
+    ///     `state` (`"stopped"`, `"running"`, `"error"`), `job`, `stage`, `step` of `steps`, `done` of
+    ///     `total` (in `unit`), `message`, `output`, `started_by`, `started_unix`.
     fn status<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let s = self.call(py, |s| async move { s.status().await })?;
         status_dict(py, &s)
     }
 
-    /// Stops the running job; returns the status.
+    /// Stops the running job.
+    ///
+    /// Returns
+    /// -------
+    /// dict
+    ///     The server's status, as `status` gives it.
     fn stop<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let s = self.call(py, |s| async move { s.stop().await })?;
         status_dict(py, &s)
     }
 
-    /// The job's last `lines` log lines (0: all the server keeps).
+    /// The job's last log lines.
+    ///
+    /// Parameters
+    /// ----------
+    /// lines : int
+    ///     How many; `0` for all the server keeps.
+    ///
+    /// Returns
+    /// -------
+    /// list of str
     #[pyo3(signature = (lines=200))]
     fn logs(&self, py: Python<'_>, lines: u32) -> PyResult<Vec<String>> {
         self.call(py, move |s| async move { s.logs(lines).await })
     }
 
-    /// Fetches `path` (a file, or a directory such as a `.sorting.zarr`) from under the data root
-    /// to the new local path `dest` (never overwritten); returns `(files, bytes)`.
+    /// Copies a file or folder from the server to this machine.
+    ///
+    /// Parameters
+    /// ----------
+    /// path : str
+    ///     Under the data root: a file, or a folder such as a `.sorting.zarr`.
+    /// dest : str or os.PathLike
+    ///     A new local path; an existing one is never overwritten.
+    ///
+    /// Returns
+    /// -------
+    /// files : int
+    ///     Files copied.
+    /// bytes : int
+    ///     Bytes copied.
+    ///
+    /// Raises
+    /// ------
+    /// ValueError
+    ///     When `dest` exists.
     fn fetch(&self, py: Python<'_>, path: String, dest: PathBuf) -> PyResult<(usize, u64)> {
         if dest.exists() {
             return Err(PyValueError::new_err(format!("{} exists: fetch writes a new path", dest.display())));
@@ -227,7 +333,7 @@ impl Session {
         self.call(py, move |s| async move { s.fetch(path.trim_end_matches('/'), &dest).await })
     }
 
-    /// Ends the connection (recordings opened from it have their own and stay readable).
+    /// Ends the connection. Recordings opened from it have their own and stay readable.
     fn close(&self, py: Python<'_>) {
         let taken = self.inner.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(session) = taken.and_then(|s| Arc::try_unwrap(s).ok()) {

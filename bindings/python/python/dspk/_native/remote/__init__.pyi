@@ -14,59 +14,165 @@ __all__ = [
 DEFAULT_SERVER_NAME: builtins.str = 'localhost'
 class Session:
     r"""
-    A connection to a `dspk serve` server.
+    A connection to a `dspk serve` server: a GPU machine that holds the data and runs the sorts.
+    
+    Use it as a context manager, or `close` it.
+    
+    Parameters
+    ----------
+    address : str
+        The server's `IP:port`, such as `"192.168.1.20:50051"`.
+    identity : str or os.PathLike
+        The client's identity file, written by `dspk clients enroll <name>` on the server
+        (`--control` to run jobs). Keep it private: it is the client's key.
+    server_name : str
+        A name on the server's certificate (`dspk serve --name` adds names).
+    
+    Raises
+    ------
+    ValueError
+        When `address` is not an `IP:port` or the identity file does not exist.
+    RuntimeError
+        When the server cannot be reached or refuses the client.
+    
+    Examples
+    --------
+    >>> import dspk
+    >>> with dspk.remote.Session("192.168.1.20:50051", "me.dspk-identity.pem") as server:  # doctest: +SKIP
+    ...     rec = server.open("sessions/a.zarr")
+    ...     window = rec.read(start=0, stop=30_000)
     """
     def __new__(cls, address: builtins.str, identity: builtins.str | os.PathLike | pathlib.Path, *, server_name: builtins.str = 'localhost') -> Session:
         r"""
-        Connects to the server at `address` (`IP:port`) as the client of `identity` (the file
-        `dspk clients enroll` wrote); `server_name` is a name on the server's certificate.
+        Connects to the server (parameters as the class).
         """
     def info(self) -> dict:
         r"""
-        Who the server is and who this client is to it: `server_name`, `server_version`,
-        `peer_name`, `permission` (`read` or `control`), `state`, `has_files`, `runtime`.
+        Who the server is, and who this client is to it.
+        
+        Returns
+        -------
+        dict
+            `server_name`, `server_version`, `peer_name` (this client), `permission` (`"read"` or
+            `"control"`), `state`, `has_files`, `runtime`.
         """
     def files(self, dir: builtins.str = '') -> builtins.list[dict]:
         r"""
-        The entries of `dir` under the server's data root: `name`, `kind` (`directory`,
-        `recording`, `sorting`, `other`), `size`, `modified_unix`, `directory`.
+        Lists a folder of the server's data root.
+        
+        Parameters
+        ----------
+        dir : str
+            A folder under the data root; `""` for the root itself.
+        
+        Returns
+        -------
+        list of dict
+            One per entry: `name`, `kind` (`"directory"`, `"recording"`, `"sorting"`, `"other"`),
+            `size`, `modified_unix`, `directory`.
         """
     def open(self, path: builtins.str, *, source: typing.Optional[builtins.str] = None) -> io.Recording:
         r"""
-        The recording at `path` under the data root (`source`: one of the file's sources), read on
-        the server: a `dspk.io.Recording` like a local one, for small reads (windows, snippets);
-        whole-recording work belongs on the server (`sort`).
+        Opens a recording on the server, read over the connection.
+        
+        A `dspk.io.Recording` like a local one, for small reads (windows, snippets); work on the whole
+        recording belongs on the server (`sort`).
+        
+        Parameters
+        ----------
+        path : str
+            The recording, under the data root.
+        source : str, optional
+            One of the file's sources; by default its default source.
+        
+        Returns
+        -------
+        dspk.io.Recording
         """
     def sort(self, sorter: builtins.str, recording: builtins.str, *, output: builtins.str = '', params: typing.Mapping[builtins.str, builtins.str] = {}, source: builtins.str = '', probe: builtins.str = '', start_s: builtins.float = 0.0, duration_s: builtins.float = 0.0) -> dict:
         r"""
-        Configures and starts a sort on the server: `sorter` (one the server has) on `recording`
-        (under the data root; `source` within it), into `output` (`""`: next to the recording,
-        never overwritten). `params`: sorter flags away from their defaults (name without `--` →
-        value); `probe`: a preset (`""`: the recording's geometry); `start_s` / `duration_s`: the
-        part to sort (0, 0: all). Returns the status (`status()`).
+        Starts a sort on the server. Needs a client enrolled with `--control`.
+        
+        Parameters
+        ----------
+        sorter : str
+            A sorter the server has, such as `"mountainsort5"`.
+        recording : str
+            The recording, under the data root.
+        output : str
+            Where the sorting goes; `""` puts it next to the recording. Never overwritten.
+        params : dict of str to str
+            Sorter options away from their defaults: the flag's name without `--`, and its value.
+        source : str
+            One of the file's sources; `""` for its default.
+        probe : str
+            A probe preset; `""` uses the recording's own geometry.
+        start_s, duration_s : float
+            The part to sort, in seconds; `0, 0` sorts it all.
+        
+        Returns
+        -------
+        dict
+            The server's status, as `status` gives it.
         """
     def status(self) -> dict:
         r"""
-        The server's state and its job's progress: `state` (`stopped`, `running`, `error`),
-        `job`, `stage`, `step` of `steps`, `done` of `total` (`unit`), `message`, `output`,
-        `started_by`, `started_unix`.
+        The server's state and its job's progress.
+        
+        Returns
+        -------
+        dict
+            `state` (`"stopped"`, `"running"`, `"error"`), `job`, `stage`, `step` of `steps`, `done` of
+            `total` (in `unit`), `message`, `output`, `started_by`, `started_unix`.
         """
     def stop(self) -> dict:
         r"""
-        Stops the running job; returns the status.
+        Stops the running job.
+        
+        Returns
+        -------
+        dict
+            The server's status, as `status` gives it.
         """
     def logs(self, lines: builtins.int = 200) -> builtins.list[builtins.str]:
         r"""
-        The job's last `lines` log lines (0: all the server keeps).
+        The job's last log lines.
+        
+        Parameters
+        ----------
+        lines : int
+            How many; `0` for all the server keeps.
+        
+        Returns
+        -------
+        list of str
         """
     def fetch(self, path: builtins.str, dest: builtins.str | os.PathLike | pathlib.Path) -> tuple[builtins.int, builtins.int]:
         r"""
-        Fetches `path` (a file, or a directory such as a `.sorting.zarr`) from under the data root
-        to the new local path `dest` (never overwritten); returns `(files, bytes)`.
+        Copies a file or folder from the server to this machine.
+        
+        Parameters
+        ----------
+        path : str
+            Under the data root: a file, or a folder such as a `.sorting.zarr`.
+        dest : str or os.PathLike
+            A new local path; an existing one is never overwritten.
+        
+        Returns
+        -------
+        files : int
+            Files copied.
+        bytes : int
+            Bytes copied.
+        
+        Raises
+        ------
+        ValueError
+            When `dest` exists.
         """
     def close(self) -> None:
         r"""
-        Ends the connection (recordings opened from it have their own and stay readable).
+        Ends the connection. Recordings opened from it have their own and stay readable.
         """
     def __enter__(self) -> Session: ...
     def __exit__(self, *_args: typing.Any) -> None: ...

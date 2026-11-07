@@ -39,6 +39,8 @@ export default defineConfig({
       social: [{ icon: 'github', label: 'GitHub', href: repo }],
       editLink: { baseUrl: `${repo}/edit/main/docs/` },
       lastUpdated: true,
+      // Long code lines wrap (indentation kept) instead of scrolling sideways.
+      expressiveCode: { defaultProps: { wrap: true } },
       routeMiddleware: './src/route-middleware.ts',
       customCss: [
         '@fontsource-variable/inter-tight',
