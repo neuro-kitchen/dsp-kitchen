@@ -889,8 +889,8 @@ mod tests {
         });
     }
 
-    /// A whitening op previews fitted on the view's signal (channels of about unit variance); an
-    /// edit after it reuses the fit.
+    /// A whitening op previews fitted on the view's signal (channels of about unit variance), the
+    /// fit in the background; an edit after it reuses the fit.
     #[gpui_kit::test]
     fn whitening_previews_fitted(cx: &mut TestAppContext) {
         use crate::domain::command::SessionCommand;
@@ -909,6 +909,8 @@ mod tests {
             cx.run_until_parked();
         };
         let read = |cx: &mut TestAppContext| {
+            // The fit runs in the background: the preview comes when it is done
+            wait_long(cx, window, |cx| cx.update(|cx| store.read(cx).preview_of(&view).is_some()));
             let preview = cx.update(|cx| store.read(cx).preview_of(&view)).expect("a preview");
             let mut x = vec![0.0f32; 6 * 20_000];
             preview.read(&[0, 1, 2, 3, 4, 5], 10_000..30_000, &mut x).unwrap();

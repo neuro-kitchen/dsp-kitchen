@@ -170,6 +170,8 @@ pub struct Store {
     /// Whitenings fitted for previews, by the key of the chain up to them (fitting reads the
     /// recording: once per chain, not per redraw).
     whiten_cache: HashMap<String, dspk_ops::spatial::SpatialWhitening>,
+    /// Whitening fits running in the background (their keys).
+    whiten_fitting: std::collections::HashSet<String>,
     /// The channel the Processing panel is about, and the op selected in it.
     pub picked_channel: Option<usize>,
     pub picked_op: Option<String>,
@@ -215,6 +217,7 @@ impl Store {
             previews: HashMap::new(),
             preview_cache: Vec::new(),
             whiten_cache: HashMap::new(),
+            whiten_fitting: Default::default(),
             picked_channel: None,
             picked_op: None,
             job: None,
@@ -518,30 +521,37 @@ impl Store {
         // The chain's key, step by step: [source and channels, step 1, step 2, …]
         let mut key = vec![format!("{source}|{group:?}")];
         key.extend(plan.steps.into_iter().map(|(k, _)| k));
-        // Whitenings fitted on the signal of the steps before them, as the pipeline does
+        // Whitenings fitted on the signal of the steps before them, as the pipeline does. A fit
+        // reads the recording: it runs in the background (the view draws the raw signal
+        // meanwhile) and the preview is built again when it is done
         for (at, fit) in plan.fits {
             let up_to = key[..at + 2].join("\n");
-            let fitted = match self.whiten_cache.get(&up_to) {
-                Some(w) => w.clone(),
-                None => {
-                    let target = match dspk_core::ComputeTarget::from_env() {
-                        Ok(t) => t,
-                        Err(e) => {
-                            self.set_status(format!("{}: whiten: {e}", v.name), cx);
-                            return;
-                        }
-                    };
-                    match dspk_pipeline::fit_whitening(target, raw.as_ref(), &group, &stages[..at], &fit) {
-                        Ok(w) => {
-                            self.whiten_cache.insert(up_to, w.clone());
-                            w
-                        }
-                        Err(e) => {
-                            self.set_status(format!("{}: {e}", v.name), cx);
-                            return;
-                        }
-                    }
+            let Some(fitted) = self.whiten_cache.get(&up_to).cloned() else {
+                if self.whiten_fitting.insert(up_to.clone()) {
+                    self.set_status(format!("{}: fitting the whitening…", v.name), cx);
+                    let (before, group, raw, view, name) = (stages[..at].to_vec(), group.clone(), raw.clone(), id.to_string(), v.name.clone());
+                    let task = cx.background_spawn(async move {
+                        let target = dspk_core::ComputeTarget::from_env().map_err(|e| e.to_string())?;
+                        dspk_pipeline::fit_whitening(target, raw.as_ref(), &group, &before, &fit).map_err(|e| e.to_string())
+                    });
+                    cx.spawn(async move |this, cx| {
+                        let result = task.await;
+                        let _ = this.update(cx, |s, cx| {
+                            s.whiten_fitting.remove(&up_to);
+                            match result {
+                                Ok(w) => {
+                                    s.whiten_cache.insert(up_to, w);
+                                    s.set_status(format!("{name}: whitening fitted"), cx);
+                                    s.rebuild_preview(&view, cx);
+                                    cx.emit(AppEvent::WindowMoved);
+                                }
+                                Err(e) => s.set_status(format!("{name}: whiten: {e}"), cx),
+                            }
+                        });
+                    })
+                    .detach();
                 }
+                return;
             };
             stages[at] = PipelineStage::SpatialWhitening(fitted);
         }
