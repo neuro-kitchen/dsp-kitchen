@@ -6,7 +6,7 @@ runs pipelines described as data (JSON / TOML), ``dspk.synapse`` adds electrophy
 sortings, unit metrics).
 """
 
-from dspk import io, ops, pipeline, runtime, synapse
+from dspk import io, ops, pipeline, remote, runtime, synapse
 from dspk._native import __version__
 
-__all__ = ["__version__", "io", "ops", "pipeline", "runtime", "synapse"]
+__all__ = ["__version__", "io", "ops", "pipeline", "remote", "runtime", "synapse"]

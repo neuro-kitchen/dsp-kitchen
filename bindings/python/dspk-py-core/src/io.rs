@@ -36,6 +36,11 @@ impl Recording {
     pub fn source(&self) -> Arc<dyn RecordingSource> {
         self.inner.clone()
     }
+
+    /// A recording over any source (a recording on a server: `dspk.remote`).
+    pub fn from_source(inner: Arc<dyn RecordingSource>) -> Self {
+        Self { inner }
+    }
 }
 
 #[gen_stub_pymethods]

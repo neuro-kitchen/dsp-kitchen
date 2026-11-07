@@ -18,6 +18,9 @@ dspk-core = { workspace = true, features = ["compute"] }
 dspk-io = { workspace = true, features = ["zarr"] }
 dspk-ops.workspace = true
 dspk-pipeline.workspace = true
+# dspk.remote: a client of `dspk serve`
+dspk-stream.workspace = true
+tokio.workspace = true
 cubecl.workspace = true
 pyo3.workspace = true
 numpy.workspace = true

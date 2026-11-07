@@ -6,11 +6,12 @@ pub mod error;
 pub mod io;
 pub mod ops;
 pub mod pipeline;
+pub mod remote;
 pub mod runtime;
 
 use pyo3::prelude::*;
 
-/// Adds the `runtime`, `io`, `ops` and `pipeline` submodules to the extension module `m`.
+/// Adds the `runtime`, `io`, `ops`, `pipeline` and `remote` submodules to the extension module `m`.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let runtime = PyModule::new(m.py(), "runtime")?;
     runtime::register(&runtime)?;
@@ -24,5 +25,8 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let pipeline = PyModule::new(m.py(), "pipeline")?;
     pipeline::register(&pipeline)?;
     m.add_submodule(&pipeline)?;
+    let remote = PyModule::new(m.py(), "remote")?;
+    remote::register(&remote)?;
+    m.add_submodule(&remote)?;
     Ok(())
 }
