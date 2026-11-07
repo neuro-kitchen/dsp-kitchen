@@ -1,5 +1,7 @@
+pub mod peak_to_peak;
 pub mod template_reduce;
 
+pub use peak_to_peak::execute_snippet_peak_to_peak;
 pub use template_reduce::{BatchTemplateStats, execute_reduce_templates_in_vram};
 
 #[cfg(test)]

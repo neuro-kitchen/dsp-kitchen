@@ -79,18 +79,19 @@ def deduplicate(spikes: dict, probe: Probe, sample_rate: float, *, radius_um: fl
 def detect_recording(recording, probe: Probe, *, band: tuple[float, float] = DEFAULT_BAND, car: bool = False, threshold: float = DEFAULT_RECORDING_THRESHOLD,  # noqa: A002
                      refractory_ms: float = DEFAULT_REFRACTORY_MS, polarity: str = "negative", spacing: str = "locally_exclusive",
                      radius_um: float = DEFAULT_RADIUS_UM, k_neighbors: int = DEFAULT_K_NEIGHBORS, pre_ms: float = DEFAULT_PRE_MS,
-                     post_ms: float = DEFAULT_POST_MS, sinc_shift: bool = True, batch_s: float = DEFAULT_BATCH_S,
+                     post_ms: float = DEFAULT_POST_MS, sinc_shift: bool = True, locate: bool = True, batch_s: float = DEFAULT_BATCH_S,
                      calibration_s: float = DEFAULT_CALIBRATION_S, calibration_chunks: int = DEFAULT_CALIBRATION_CHUNKS,
                      runtime: str | None = None) -> tuple[Sorting, dict]:
     """Detects spikes over a whole :class:`dspk.io.Recording`, read in place in ``batch_s`` batches
     (optional CAR, zero-phase band-pass, noise calibrated on spread-out chunks, crossings,
-    spatial de-duplication, snippets, per-channel templates) as ``dspk detect``. Returns a
-    :class:`Sorting` (one unit per channel) and a summary (``sigmas_uv``, ``raw_crossings``,
-    ``spikes``, ``channel_counts``)."""
+    spatial de-duplication, snippets, per-channel templates) as ``dspk detect``; with ``locate``,
+    every spike located (centre of mass of its snippet's heights over its ``k_neighbors``: the
+    sorting's ``spikes()["locations"]``, else NaN). Returns a :class:`Sorting` (one unit per
+    channel) and a summary (``sigmas_uv``, ``raw_crossings``, ``spikes``, ``channel_counts``)."""
     native, summary = _d.detect_recording(
         recording, probe._native, band=tuple(band), car=car, threshold=threshold, refractory_ms=refractory_ms, polarity=polarity,
         spacing=spacing, radius_um=radius_um, k_neighbors=k_neighbors, pre_ms=pre_ms, post_ms=post_ms, sinc_shift=sinc_shift,
-        batch_s=batch_s, calibration_s=calibration_s, calibration_chunks=calibration_chunks, runtime=runtime,
+        locate=locate, batch_s=batch_s, calibration_s=calibration_s, calibration_chunks=calibration_chunks, runtime=runtime,
     )
     return Sorting(native), summary
 
