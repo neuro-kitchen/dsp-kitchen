@@ -71,8 +71,10 @@ impl ProcessedSignal {
         self.group.len() * (samples as usize + self.halo.0 + self.halo.1)
     }
 
-    /// The processed block holding `range` (computed now when the cached one does not).
-    fn with_block<R>(&self, range: Range<u64>, f: impl FnOnce(&Block) -> R) -> DspResult<R> {
+    /// The processed block holding `range` (computed now when the cached one does not). `slack`:
+    /// with half a window more on each side, so small pans reuse it (a view's reads); a branch
+    /// reading this preview asks for exactly what it needs (its own block has the slack).
+    fn with_block<R>(&self, range: Range<u64>, slack: bool, f: impl FnOnce(&Block) -> R) -> DspResult<R> {
         let mut state = self.state.lock().unwrap();
         if let Some(b) = state.block.as_ref().filter(|b| b.range.start <= range.start && range.end <= b.range.end) {
             return Ok(f(b));
@@ -80,7 +82,7 @@ impl ProcessedSignal {
         let total = self.source.info().samples;
         // Half a window of margin each side while it fits the budget: small pans reuse the block
         let len = range.end - range.start;
-        let margin = if self.block_values(2 * len) <= PREVIEW_MAX_VALUES { len / 2 } else { 0 };
+        let margin = if slack && self.block_values(2 * len) <= PREVIEW_MAX_VALUES { len / 2 } else { 0 };
         let want = range.start.saturating_sub(margin)..(range.end + margin).min(total);
         let read = want.start.saturating_sub(self.halo.0 as u64)..(want.end + self.halo.1 as u64).min(total);
         let n = (read.end - read.start) as usize;
@@ -135,11 +137,11 @@ impl ProcessedSignal {
 
     /// `channels` over `samples` (channel-major into `out`): processed rows for the group's
     /// channels, raw for the others.
-    fn fill(&self, channels: &[usize], samples: Range<u64>, out: &mut [f32]) -> DspResult<()> {
+    fn fill(&self, channels: &[usize], samples: Range<u64>, slack: bool, out: &mut [f32]) -> DspResult<()> {
         let n = (samples.end - samples.start) as usize;
         let rows: Vec<Option<usize>> = channels.iter().map(|c| self.group.iter().position(|g| g == c)).collect();
         if rows.iter().any(Option::is_some) {
-            self.with_block(samples.clone(), |b| {
+            self.with_block(samples.clone(), slack, |b| {
                 let (m, a) = ((b.range.end - b.range.start) as usize, (samples.start - b.range.start) as usize);
                 for (k, row) in rows.iter().enumerate() {
                     if let Some(r) = row {
@@ -161,7 +163,7 @@ impl ProcessedSignal {
     /// `channels` over `samples`, processed whatever the size (a branch reading this preview
     /// as its input: its halo makes the request larger than a view's).
     pub fn read_processed(&self, channels: &[usize], samples: Range<u64>, out: &mut [f32]) -> DspResult<()> {
-        self.fill(channels, samples, out)
+        self.fill(channels, samples, false, out)
     }
 }
 
@@ -207,7 +209,7 @@ impl SignalBackend for ProcessedSignal {
         view.validate(self.info().channel_count(), self.info().samples)?;
         let rows = view.channels.len();
         let mut samples = vec![0.0f32; rows * n as usize];
-        self.fill(&view.channels, view.start..view.end, &mut samples)?;
+        self.fill(&view.channels, view.start..view.end, true, &mut samples)?;
         if n <= view.width as u64 {
             *out = Envelope::Samples(samples);
             return Ok(());
@@ -226,7 +228,7 @@ impl SignalBackend for ProcessedSignal {
         if !self.covers(samples.end - samples.start) {
             return self.raw.read(channels, samples, out);
         }
-        self.fill(channels, samples, out)
+        self.fill(channels, samples, true, out)
     }
 
     fn focus(&self, sample: u64) {

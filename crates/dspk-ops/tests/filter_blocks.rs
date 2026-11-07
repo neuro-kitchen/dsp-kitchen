@@ -133,10 +133,12 @@ fn block_parallel_pass_matches_reference_on_every_runtime() {
 }
 
 /// Under `pin_tuned_choices`, an untuned filter runs the documented fixed split
-/// (`PINNED_BLOCK_COUNT` blocks, channel-major): bit-identical to setting it explicitly.
+/// (`pinned_block_count(channels)` blocks, channel-major): bit-identical to setting it explicitly.
 #[test]
 fn pinned_choices_match_the_fixed_split() {
-    use dspk_ops::filter::iir::sos::PINNED_BLOCK_COUNT;
+    use dspk_ops::filter::iir::sos::pinned_block_count;
+    // Few channels: more blocks, so the device has enough walks; many: the floor
+    assert_eq!([2, 3, 64, 384].map(pinned_block_count), [256, 256, 64, 16]);
     struct Pinned;
     impl ComputeTask for Pinned {
         type Output = ();
@@ -159,7 +161,7 @@ fn pinned_choices_match_the_fixed_split() {
             // Each forward-backward pass covers the padded signal; the split is per pass length
             let filter = DeviceFilter::<f32>::new(&client, &spec, FS).unwrap();
             let steps = n + 2 * filter.settling_samples().min(n - 1);
-            let explicit = run(filter.with_block_len(steps.div_ceil(PINNED_BLOCK_COUNT)).with_layout(PassLayout::ChannelMajor));
+            let explicit = run(filter.with_block_len(steps.div_ceil(pinned_block_count(CHANNELS))).with_layout(PassLayout::ChannelMajor));
             assert_eq!(pinned, explicit, "{}", client.name());
         }
     }

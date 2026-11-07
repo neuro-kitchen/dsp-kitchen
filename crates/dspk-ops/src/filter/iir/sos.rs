@@ -21,11 +21,26 @@ use crate::filter::design::{OpsError, FilterMode, FilterSpec, FilterStart, Sos};
 /// [`dspk_core::compute::tune`]).
 const BLOCK_COUNT_CANDIDATES: [usize; 5] = [1, 4, 16, 64, 256];
 
-/// Time blocks of every pass while tuned choices are pinned
-/// ([`dspk_core::compute::pin_tuned_choices`]): one of the tuned candidates, keeping several-way
-/// parallelism for few channels; with channel-major order the result depends only on the signal
-/// length, not on the device's timings.
+/// Fewest time blocks of a pass while tuned choices are pinned
+/// ([`dspk_core::compute::pin_tuned_choices`]); see [`pinned_block_count`].
 pub const PINNED_BLOCK_COUNT: usize = 16;
+
+/// Parallel walks (channels × time blocks) a pinned pass aims for: enough to keep a GPU busy
+/// when a recording has few channels.
+pub const PINNED_PARALLEL_WALKS: usize = 2048;
+
+/// Time blocks of a pinned pass over `channels` channels: the smallest of the tuned candidates
+/// ([`BLOCK_COUNT_CANDIDATES`], at least [`PINNED_BLOCK_COUNT`]) giving [`PINNED_PARALLEL_WALKS`]
+/// walks, else the largest. With channel-major order the result depends only on the channel count
+/// and the signal length, not on the device's timings (2 channels: 256 blocks; 384: 16).
+pub fn pinned_block_count(channels: usize) -> usize {
+    let want = PINNED_PARALLEL_WALKS.div_ceil(channels.max(1));
+    BLOCK_COUNT_CANDIDATES
+        .into_iter()
+        .filter(|&b| b >= PINNED_BLOCK_COUNT)
+        .find(|&b| b >= want)
+        .unwrap_or(BLOCK_COUNT_CANDIDATES[BLOCK_COUNT_CANDIDATES.len() - 1])
+}
 
 /// Longest pass (steps) the autotuner benchmarks: longer passes are timed on their first
 /// `TUNE_MAX_STEPS` steps and share one tuning result. A pass's cost per step does not change past
@@ -269,7 +284,7 @@ impl<F: DspFloat> DeviceFilter<F> {
         match (self.block_len, self.layout) {
             // Block splits round differently: pinned runs use a fixed split
             (None, None) if dspk_core::compute::tuned_choices_pinned() => {
-                inputs.run(inputs.steps().div_ceil(PINNED_BLOCK_COUNT), PassLayout::ChannelMajor)
+                inputs.run(inputs.steps().div_ceil(pinned_block_count(inputs.pass.channels)), PassLayout::ChannelMajor)
             }
             (None, None) => tuned_pass(inputs),
             (len, layout) => inputs.run(len.unwrap_or(usize::MAX), layout.unwrap_or(PassLayout::ChannelMajor)),
