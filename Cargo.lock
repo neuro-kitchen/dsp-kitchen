@@ -3460,6 +3460,7 @@ dependencies = [
 name = "dspk-py-synapse"
 version = "0.0.7"
 dependencies = [
+ "cubecl",
  "dspk-core",
  "dspk-io",
  "dspk-ops",
