@@ -20,7 +20,7 @@ import plating
 from dspk.synapse import detection, io, spatial
 
 FIG = Path(__file__).parent / "figures"
-DATA = Path(__file__).resolve().parents[1] / "data" / "kilosort4" / "ZFM-02370_mini.imec0.ap.short.bin"
+DATA = Path(__file__).resolve().parents[1] / "datasets" / "kilosort4" / "ZFM-02370_mini.imec0.ap.short.bin"
 if not DATA.exists():
     raise SystemExit(f"{DATA} is missing: run playground/09_sorting/00_fetch_kilosort_data.py first")
 

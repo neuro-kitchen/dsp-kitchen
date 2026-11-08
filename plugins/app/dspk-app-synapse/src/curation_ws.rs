@@ -1508,9 +1508,9 @@ mod bench {
     use super::*;
 
     #[test]
-    #[ignore = "needs .data/kilosort4"]
+    #[ignore = "needs .datasets/kilosort4"]
     fn bench_curation_click() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.data/kilosort4");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.datasets/kilosort4");
         let rec = root.join("ZFM-02370_mini.imec0.ap.short.bin");
         let store = root.join("ZFM-02370_mini.imec0.ap.short.kilosort4.sorting.zarr");
         let t = Instant::now();

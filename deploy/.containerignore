@@ -1,6 +1,6 @@
 # Build context of deploy/Containerfile (the repository root): sources only
 target/
-.data/
+.datasets/
 .git/
 .tasks/
 .venv/
@@ -8,7 +8,7 @@ target/
 **/__pycache__/
 **/*.so
 bindings/python/dist/
-playground/data/
+playground/datasets/
 benchmarks/results/
 node_modules/
 *.zarr/

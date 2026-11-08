@@ -47,5 +47,5 @@ not here: the playground teaches, the benchmarks measure.
 ## Data
 
 Chapters 01–07 need no data. From chapter 09 on, data is local and not in the repository:
-`playground/data/` (what `09_sorting/00_fetch_kilosort_data.py` downloads), and the benchmarks'
-`<repository>/.data/` (see `benchmarks/README.md`). Both are git-ignored.
+`playground/datasets/` (what `09_sorting/00_fetch_kilosort_data.py` downloads), and the benchmarks'
+`<repository>/.datasets/` (see `benchmarks/README.md`). Both are git-ignored.

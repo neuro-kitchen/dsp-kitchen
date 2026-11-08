@@ -1,7 +1,7 @@
 # 09 · Sorting
 
 Real data from here on: Kilosort4's Neuropixels 1.0 test recording (45 s, 384 sites), fetched once
-and checked by SHA-256 into `playground/data/` (git-ignored):
+and checked by SHA-256 into `playground/datasets/` (git-ignored):
 
 ```bash
 uv run python playground/09_sorting/00_fetch_kilosort_data.py          # or --from <a local copy of the .bin>
@@ -14,7 +14,7 @@ uv run python playground/09_sorting/00_fetch_kilosort_data.py          # or --fr
 
 `02_sorting_quality` reads two sortings next to the recording:
 
-- `<recording>.kilosort4.sorting.zarr`: `dspk sort kilosort4 playground/data/kilosort4/ZFM-02370_mini.imec0.ap.short.bin -o playground/data/kilosort4/ZFM-02370_mini.imec0.ap.short.kilosort4.sorting.zarr`
+- `<recording>.kilosort4.sorting.zarr`: `dspk sort kilosort4 playground/datasets/kilosort4/ZFM-02370_mini.imec0.ap.short.bin -o playground/datasets/kilosort4/ZFM-02370_mini.imec0.ap.short.kilosort4.sorting.zarr`
   (`dspk sort kilosort4 --help`; `--probe-file probe.json` / `--channel-map map.toml` when the
   file's channel order is not the probe's);
 - `saved_results/`: Kilosort4's own output on the recording (a Phy folder).

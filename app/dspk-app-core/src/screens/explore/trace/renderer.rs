@@ -693,7 +693,7 @@ mod tests {
     #[test]
     #[ignore]
     fn bench_render() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../playground/data");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../playground/datasets");
         let cases = [
             ("mearec_32ch_10s.bin", TimeViewKind::Traces, 0.1),
             ("mearec_32ch_10s.bin", TimeViewKind::Traces, 1.0),
