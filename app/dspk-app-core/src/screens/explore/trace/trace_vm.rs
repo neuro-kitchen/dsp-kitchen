@@ -261,6 +261,11 @@ impl TraceVm {
         }
     }
 
+    /// Whether it is the tab shown in its tab group.
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+
     /// Shown or hidden in its tab group (or its dock opened / closed).
     pub fn set_active(&mut self, active: bool, cx: &mut Context<Self>) {
         self.active = active;

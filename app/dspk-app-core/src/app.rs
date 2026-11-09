@@ -773,6 +773,34 @@ mod tests {
         cx.update_window(window, |_, window, cx| window.render_frame(cx)).unwrap();
     }
 
+    /// Choosing a view's tab selects that view: the Inspector follows the selected view.
+    #[gpui_kit::test]
+    fn showing_a_tab_selects_its_view(cx: &mut TestAppContext) {
+        use gpui_kit::base::dock::Panel as _;
+        let (window, store, app) = open(cx);
+        install(cx, &store);
+        cx.update_window(window, |_, window, cx| window.render_frame(cx)).unwrap();
+        let ex = explore(cx, &app);
+        let source = cx.update(|cx| store.read(cx).sources().unwrap().default_entry().id.clone());
+        cx.update(|cx| ex.update(cx, |ex, cx| {
+            ex.add_on(TimeViewKind::Traces, &source, cx);
+        }));
+        cx.run_until_parked();
+        let first = views(cx, &app)[0].clone();
+        cx.update(|cx| assert_ne!(ex.read(cx).focused.as_ref(), Some(&first), "the view just added is the focused one"));
+        let id = cx.update(|cx| first.read(cx).id());
+        cx.update_window(window, |_, window, cx| {
+            let panel = app.read(cx).explore.read(cx).panels[&id].clone();
+            panel.update(cx, |p, cx| {
+                p.set_active(false, window, cx);
+                p.set_active(true, window, cx);
+            });
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| assert_eq!(ex.read(cx).focused.as_ref(), Some(&first)));
+    }
+
     /// "Add view or container": a view kind adds a view (Raster only with units), a container
     /// arranges the views, Close and Esc close it, the arrow keys and Enter run a row.
     #[gpui_kit::test]
