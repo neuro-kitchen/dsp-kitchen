@@ -1000,6 +1000,15 @@ impl Store {
         self.recording.as_ref().map(|r| &r.sources)
     }
 
+    /// At the first launch, says how to avoid the slow first run.
+    pub fn suggest_tuning_once(&mut self, cx: &mut Context<Self>) {
+        if !self.session.tune_suggested {
+            self.session.tune_suggested = true;
+            self.save_session();
+            self.set_status("First run on this device? File → Tune this device makes first runs and previews faster", cx);
+        }
+    }
+
     fn save_session(&mut self) {
         self.session.workspace = self.workspace;
         if let Err(e) = self.session.save(self.session_path.as_deref()) {

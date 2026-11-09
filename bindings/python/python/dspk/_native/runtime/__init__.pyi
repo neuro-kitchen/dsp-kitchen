@@ -4,10 +4,44 @@
 import builtins
 import typing
 __all__ = [
+    "autotune",
     "available",
     "current",
     "set",
 ]
+
+def autotune(runtime: typing.Optional[builtins.str] = None, channels: typing.Sequence[builtins.int] = [32, 64, 128, 384], samples: typing.Sequence[builtins.int] = [8192, 32768, 131072, 524288]) -> builtins.dict[builtins.str, builtins.dict[builtins.str, builtins.float]]:
+    r"""
+    Tunes the operations on this machine's devices ahead of time, and compiles their kernels.
+    
+    An operation benchmarks its kernels the first time it meets a device and problem size, which can
+    stall a first run. This does that work now, over a grid of common sizes, and saves the results
+    for every later process. A size off the grid still tunes when it is first met.
+    
+    Parameters
+    ----------
+    runtime : str, optional
+        One runtime to tune; by default every runtime compiled in that can open a device here.
+    channels : list of int, default `[32, 64, 128, 384]`
+        Channel counts to tune.
+    samples : list of int, default `[8192, 32768, 131072, 524288]`
+        Samples per channel to tune.
+    
+    Returns
+    -------
+    dict
+        Per runtime tuned, `{"sizes": int, "seconds": float}`.
+    
+    Raises
+    ------
+    ValueError
+        When `runtime` is not one of this build's runtimes.
+    
+    Examples
+    --------
+    >>> import dspk
+    >>> dspk.runtime.autotune(channels=[4], samples=[512], runtime="cpu")  # doctest: +SKIP
+    """
 
 def available() -> builtins.list[builtins.str]:
     r"""

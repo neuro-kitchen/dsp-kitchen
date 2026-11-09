@@ -34,6 +34,8 @@ enum Command {
     Spec(commands::spec::SpecArgs),
     /// What this build can do here: version, features, runtimes and their devices
     Doctor,
+    /// Tune this machine's devices ahead of time, so first runs don't stop to benchmark
+    Autotune(commands::autotune::AutotuneArgs),
     /// Launch geometries the selected runtime gives for a channels × samples buffer
     Inspect(commands::inspect::InspectArgs),
     /// Open a recording (any format dspk-io reads) and report its layout and read speed
@@ -105,6 +107,7 @@ async fn dispatch(cli: &Cli) -> anyhow::Result<()> {
         Command::Run(args) => commands::run::run(cli.runtime.as_deref(), args).await,
         Command::Spec(args) => commands::spec::run(args),
         Command::Doctor => commands::doctor::run(),
+        Command::Autotune(args) => commands::autotune::run(args),
         Command::Inspect(args) => commands::inspect::run(cli.target()?, args),
         Command::Open(args) => commands::open::run(args),
         Command::Probe(args) => commands::probe::run(args),

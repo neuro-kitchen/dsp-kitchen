@@ -49,6 +49,7 @@ impl DspApp {
     pub fn new(store: Entity<Store>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let choice = store.read(cx).session.dark;
         Self::apply_theme(&store, choice, window, cx);
+        store.update(cx, |s, cx| s.suggest_tuning_once(cx));
         let explore = cx.new(|cx| ExploreView::new(store.clone(), window, cx));
         let pipeline = cx.new(|cx| crate::screens::pipeline::PipelineView::new(store.clone(), window, cx));
         let floating = cx.new(|cx| crate::screens::floating::FloatingLayer::new(store.clone(), window, cx));
@@ -110,6 +111,26 @@ impl DspApp {
         .detach();
     }
 
+    /// Tunes this device in the background, so first runs and previews don't stop to benchmark.
+    fn tune_device(&mut self, cx: &mut Context<Self>) {
+        self.store.update(cx, |s, cx| s.set_status("Tuning this device in the background (about a minute on a GPU)…", cx));
+        let store = self.store.clone();
+        cx.spawn(async move |_, cx| {
+            let tuned = cx
+                .background_spawn(async move {
+                    let client = dspk_core::ComputeTarget::from_env().map_err(|e| e.to_string())?.client().map_err(|e| e.to_string())?;
+                    dspk_ops::autotune::autotune(&client, &Default::default(), |_, _| {}).map_err(|e| e.to_string())
+                })
+                .await;
+            let text = match tuned {
+                Ok(done) => format!("This device is tuned: {} sizes in {:.0} s", done.sizes, done.seconds),
+                Err(e) => format!("Could not tune this device: {e}"),
+            };
+            let _ = store.update(cx, |s, cx| s.set_status(text, cx));
+        })
+        .detach();
+    }
+
     fn open_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.store.update(cx, |s, cx| s.open(path, cx));
     }
@@ -145,6 +166,7 @@ impl DspApp {
             add("File", label.into(), Rc::new(move |a, _, cx| a.prompt_open(pick, cx)));
         }
         add("File", "Synthetic recording".into(), Rc::new(|a, _, cx| a.open_synthetic(cx)));
+        add("File", "Tune this device".into(), Rc::new(|a, _, cx| a.tune_device(cx)));
         for (name, kind) in [("Traces", TimeViewKind::Traces), ("Heatmap", TimeViewKind::Heatmap), ("Raster", TimeViewKind::Raster)] {
             add("View", format!("Add a {} view", name.to_lowercase()), Rc::new(move |a, _, cx| a.add_view(kind, cx)));
         }
@@ -220,6 +242,8 @@ impl DspApp {
                 menu = menu.item(PopupMenuItem::new("Open from server…").on_click(move |_, _, cx| t.update(cx, |a, cx| a.toggle_browser(cx))));
                 let t = this.clone();
                 menu = menu.item(PopupMenuItem::new("Synthetic recording (32 ch, 5 min)").on_click(move |_, _, cx| t.update(cx, |a, cx| a.open_synthetic(cx))));
+                let t = this.clone();
+                menu = menu.item(PopupMenuItem::new("Tune this device").on_click(move |_, _, cx| t.update(cx, |a, cx| a.tune_device(cx))));
                 if !recent.is_empty() {
                     menu = menu.separator().label("Recent");
                     for p in &recent {

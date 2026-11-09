@@ -9,5 +9,6 @@ from dspk._native import runtime as _runtime
 available = _runtime.available
 current = _runtime.current
 set = _runtime.set  # noqa: A001 (mirrors the Rust name)
+autotune = _runtime.autotune
 
-__all__ = ["available", "current", "set"]
+__all__ = ["autotune", "available", "current", "set"]
