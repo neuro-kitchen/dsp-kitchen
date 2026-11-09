@@ -322,10 +322,10 @@ impl GraphCanvas {
         }
     }
 
-    fn prompt_recording(&mut self, x: f32, y: f32, _window: &mut Window, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(gpui_kit::PathPromptOptions { files: true, directories: true, multiple: false, prompt: Some("Add recording".into()) });
+    fn prompt_recording(&mut self, x: f32, y: f32, window: &mut Window, cx: &mut Context<Self>) {
+        let picked = crate::ui::recording_picker::ask_and_pick("Add recording", false, window, cx);
         cx.spawn(async move |this, cx| {
-            if let Ok(Ok(Some(paths))) = rx.await {
+            if let Some(paths) = picked.await {
                 if let Some(path) = paths.into_iter().next() {
                     let _ = this.update(cx, |c, cx| {
                         let kind = NodeKind::Source { recording: crate::domain::session::RecordingRef { path, source: None, channels: None } };

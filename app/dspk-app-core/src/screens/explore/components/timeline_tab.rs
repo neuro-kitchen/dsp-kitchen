@@ -15,7 +15,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
     div, px, relative, AnyElement, App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
-    PathPromptOptions, Render, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
+    Render, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
 };
 
 use crate::data::store::{duration, file_label, AppEvent, Floating, Store};
@@ -78,7 +78,7 @@ impl TimelineTab {
                 .tooltip("Add a recording or an epoch")
                 .dropdown_menu(move |m: PopupMenu, _, _| {
                     let (a, b) = (store.clone(), store2.clone());
-                    m.item(PopupMenuItem::new("Recording…").on_click(move |_, _, cx| add_recording(&a, cx)))
+                    m.item(PopupMenuItem::new("Recording…").on_click(move |_, window, cx| add_recording(&a, window, cx)))
                         .item(PopupMenuItem::new("Epoch (the visible window)").on_click(move |_, _, cx| new_epoch(&b, cx)))
                 })
                 .into_any_element(),
@@ -257,11 +257,11 @@ impl TimelineTab {
 }
 
 /// Picks a recording and places it after the last one on the session's time.
-fn add_recording(store: &Entity<Store>, cx: &mut App) {
-    let rx = cx.prompt_for_paths(PathPromptOptions { files: true, directories: true, multiple: true, prompt: Some("Add to the timeline".into()) });
+fn add_recording(store: &Entity<Store>, window: &mut Window, cx: &mut App) {
+    let picked = crate::ui::recording_picker::ask_and_pick("Add to the timeline", true, window, cx);
     let store = store.clone();
     cx.spawn(async move |cx| {
-        if let Ok(Ok(Some(paths))) = rx.await {
+        if let Some(paths) = picked.await {
             let _ = store.update(cx, |s, cx| {
                 for path in paths {
                     let end = s.doc.placements.iter().map(|p| p.start_sec).fold(0.0f64, f64::max);
