@@ -40,7 +40,7 @@ body:
     id: version
     attributes:
       label: dspk version and runtime
-      placeholder: "0.0.8, CUDA (does another runtime give the same result?)"
+      placeholder: "0.0.9, CUDA (does another runtime give the same result?)"
     validations:
       required: true
   - type: textarea

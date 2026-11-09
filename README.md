@@ -1,8 +1,8 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/neuro-kitchen/dsp-kitchen/main/assets/img/neuro-kitchen-lockup-on-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/neuro-kitchen/dsp-kitchen/main/assets/img/neuro-kitchen-lockup-on-light.svg">
-    <img alt="neuro-kitchen" width="360" src="https://raw.githubusercontent.com/neuro-kitchen/dsp-kitchen/main/assets/img/neuro-kitchen-lockup-on-light.svg">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/neuro-kitchen/dsp-kitchen/main/assets/logo/neuro-kitchen-lockup-on-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/neuro-kitchen/dsp-kitchen/main/assets/logo/neuro-kitchen-lockup-on-light.svg">
+    <img alt="neuro-kitchen" width="360" src="https://raw.githubusercontent.com/neuro-kitchen/dsp-kitchen/main/assets/logo/neuro-kitchen-lockup-on-light.svg">
   </picture>
 </p>
 
@@ -71,8 +71,8 @@ Runtimes are crate features; the device is picked at run time with `dspk::core::
 
 ```toml
 [dependencies]
-dspk = "0.0.8"                                                                  # wgpu, cuda and cpu (default)
-# dspk = { version = "0.0.8", default-features = false, features = ["wgpu", "zarr"] }  # wgpu only
+dspk = "0.0.9"                                                                  # wgpu, cuda and cpu (default)
+# dspk = { version = "0.0.9", default-features = false, features = ["wgpu", "zarr"] }  # wgpu only
 ```
 
 | Feature | Runtime | Tested |

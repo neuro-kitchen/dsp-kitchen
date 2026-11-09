@@ -25,6 +25,11 @@ for (const entry of await readdir(playground, { withFileTypes: true })) {
 const img = new URL('../public/img/', import.meta.url);
 await mkdir(img, { recursive: true });
 await cp(new URL('../../assets/img/dsp-app_main-darkmode.png', import.meta.url), new URL('dsp-app_main-darkmode.png', img));
+// The app's screens, for the App pages
+const screens = new URL('../../assets/img/app-display/', import.meta.url);
+const app = new URL('app/', img);
+await mkdir(app, { recursive: true });
+for (const file of (await readdir(screens)).filter((f) => f.endsWith('.png'))) await cp(new URL(file, screens), new URL(file, app));
 // The committed benchmark figures, for the Validation pages
 const results = new URL('../../benchmarks/signal-operations/results/', import.meta.url);
 const benchmarks = new URL('../public/benchmarks/', import.meta.url);

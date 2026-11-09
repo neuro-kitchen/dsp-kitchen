@@ -66,10 +66,10 @@ estimation, per window:
 cargo test -p dspk-benchmarks-sorters --profile validate --test bench_detection -- --ignored --nocapture
 ```
 
-> [!NOTE]
-> The Python scripts below use the previous Python API (`dsp_kitchen`) and wait for the synapse
-> bindings (`.tasks/27`); they do not run on the current `dspk` package. When they move over, they
-> write `plating.results` records like the others.
+The Python scripts below run the sorter program `dspk-cli-sorter` (found through
+`DSPK_CLI_SORTER_BIN`, `dspk sorters install`'s folder, else `target/validate`; see
+`sorter_cli.py`) and write a JSON summary in `results/`. Timings mean something only with a release
+build of the program.
 
 | Script | What it does |
 |---|---|

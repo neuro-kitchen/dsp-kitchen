@@ -1,0 +1,55 @@
+{
+ "date": "2026-11-09",
+ "program": "dspk-cli-sorter 0.0.8",
+ "machine": "NVIDIA GeForce RTX 2070 with Max-Q Design \u00b7 Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz (12 threads) \u00b7 Linux 7.2.15-300.fc45.x86_64",
+ "sorter": "emusort",
+ "source": "HD-EMG 4 \u00d7 8 grid",
+ "sample_rate": 24414.0625,
+ "duration_sec": 200.00002048,
+ "runtime": "wgpu",
+ "channels": 32,
+ "signal_f32_gib": 0.5820766687393188,
+ "gpu": "NVIDIA GeForce RTX 2070 with Max-Q Design",
+ "process_max_rss_mib": 685.55859375,
+ "runs": [
+  {
+   "wall_sec": 18.95314617999975,
+   "stages_sec": {
+    "Fitting preprocessing": 1.8265243210007611,
+    "Finding clips": 2.0318668429990794,
+    "Learning templates": 0.813133800000287,
+    "Detecting spikes": 2.7980453740001394,
+    "Clustering spikes": 3.642218351998963,
+    "Matching templates": 3.0088609800004633,
+    "Clustering matched spikes": 4.234613168000578,
+    "Merging units": 0.5978833419994771
+   },
+   "peak_rss_mib": 685.55859375,
+   "peak_gpu_mib": 566.0,
+   "units": 69,
+   "spikes": 126153,
+   "settings": {},
+   "exit_code": 0
+  },
+  {
+   "wall_sec": 19.5583652230016,
+   "stages_sec": {
+    "Fitting preprocessing": 1.8367137000004732,
+    "Finding clips": 2.093150754999442,
+    "Learning templates": 0.9564271510007529,
+    "Detecting spikes": 2.818091502000243,
+    "Clustering spikes": 3.6690232139990258,
+    "Matching templates": 3.4494107110003824,
+    "Clustering matched spikes": 4.128045835001103,
+    "Merging units": 0.6075023550001788
+   },
+   "peak_rss_mib": 669.15234375,
+   "peak_gpu_mib": 566.0,
+   "units": 69,
+   "spikes": 126153,
+   "settings": {},
+   "exit_code": 0
+  }
+ ],
+ "reproducible": true
+}

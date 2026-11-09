@@ -6,24 +6,28 @@ sidebar:
 ---
 
 :::note
-Measured in October 2026 on the setup in the [overview](/dsp-kitchen/plugins/synapse/validation/). The scripts in `benchmarks/sorters` still use the previous Python API and don't run on the current package, so these results haven't been re-run since.
+Measured on 2026-11-09 with the release build of `dspk-cli-sorter`, on the setup in the [overview](/dsp-kitchen/plugins/synapse/validation/). `benchmarks/sorters` has the scripts, and their results are in `benchmarks/sorters/results/`.
 :::
 
 ## Processing time
 
-**Kilosort4**, Neuropixels (warm; cold in brackets):
+**Kilosort4**, Neuropixels, warm (kernels already compiled and tuned):
 
-| Stage | Time (s) |
-|---|---|
-| Fitting preprocessing | 0.04 (0.40) |
-| Finding clips | 0.31 (0.49) |
-| Learning templates | 0.22 (0.27) |
-| Detecting spikes | 5.99 (5.05) |
-| Clustering spikes | 4.30 (5.14) |
-| Learned templates + matching | 5.15 (7.72) |
-| Clustering matched spikes | 3.61 (4.32) |
-| **Total** | **19.6 (23.4)**: 2.3× real time (1.9× cold) |
+| Stage | wgpu (s) | CUDA (s) |
+|---|---|---|
+| Fitting preprocessing | 0.5 | 0.3 |
+| Finding clips | 0.2 | 0.2 |
+| Learning templates | 0.3 | 0.1 |
+| Detecting spikes | 5.3 | 3.0 |
+| Clustering spikes | 6.1 | 2.9 |
+| Matching templates | 7.5 | 2.9 |
+| Clustering matched spikes | 4.5 | 2.3 |
+| Merging units | 2.4 | 1.3 |
+| **Whole program** | **26.9**: 1.7× real time | **13.0**: 3.4× real time |
 
+The whole program includes starting up and writing the output; the last stage runs to the end of the process. wgpu peaks at 3.2 GB of GPU memory and 1.6 GB of host memory, and two runs give identical spikes and units. A first run on a device also compiles and tunes: CUDA took 39 s the first time here.
+
+**Slower than October.** On wgpu the stages October timed took 19.6 s then and 24.5 s now, mostly in clustering and template matching. The cause hasn't been investigated: the code, the system (a kernel and Mesa update on 2026-11-04) and how stages are timed all changed. Results are unchanged.
 
 ## Agreement with Kilosort4's results
 
@@ -67,12 +71,12 @@ precision is low (a quarter of the good units below 0.55: two neurons in one uni
 refractory criteria and the global merges were meant to address; with both in place (numbers above,
 rerun 2026-10-09) the good units' median precision is 0.95, its 25th percentile still 0.52.
 
-Earlier stages, checked against the same results:
+Earlier stages, checked against the same results (October, except where noted):
 
 | Check | Result |
 |---|---|
 | Learned `wTEMP` / `wPCA` vs Kilosort4's (best \|cos\| per row) | 0.98–1.00 / 0.94–1.00 |
-| Detection with Kilosort4's own learned templates | same match as with ours: learning is not where they differ |
+| Detection with Kilosort4's own learned templates (re-run 2026-11-09) | same match as with ours (0.860 and 0.862): learning is not where they differ |
 | Template centres vs `ops['xcup']`, `ops['ycup']` | identical (1532); channel sets differ only among equidistant channels |
 | Spike times | difference ours − Kilosort4 peaks at 0 samples (troughs, as Kilosort4) |
 | Spike positions (a well-isolated unit) | median 8 µm apart |

@@ -12,6 +12,7 @@ on:
       - "CHANGELOG.md"
       - "playground/*/figures/**"
       - "benchmarks/signal-operations/results/**"
+      - "assets/img/**"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 

@@ -8,6 +8,8 @@ sidebar:
 Pipeline shows the session as a graph: recordings feed operations, operations feed views and writes.
 Every edit is a session command, so the canvas and Explore are always the same graph.
 
+![The Pipeline canvas with a recording feeding a view](/dsp-kitchen/img/app/14_define-pipeline.png)
+
 | Area | What it holds |
 |---|---|
 | Top | A menu per family of operations, and a floating toolbar on the canvas |
@@ -33,6 +35,8 @@ connect two nodes. A minimap and controls sit in the corners.
 | Rate | Resample, as the last op before Write |
 | Output | View (a stream shown in Explore), Write (a float32 Zarr file) |
 
+![The operations menu open on the canvas](/dsp-kitchen/img/app/16_add-ops.png)
+
 Add one from a menu, or click it to add it after the selected node.
 
 ## Channel maps
@@ -48,8 +52,12 @@ shared stages once, then each branch.
 
 ## Recipes
 
+![Two selected nodes, with Make recipe in the inspector](/dsp-kitchen/img/app/15-1_design-recepies.png)
+
 Select a group of nodes and **Make recipe** to reuse it. A recipe has typed ports and exposed
 parameters. **Save to library** keeps it for other sessions, and **Ungroup** opens it back up.
 Built-in recipes include an EMG envelope and an RMS envelope.
+
+![The Recipes panel listing built-in recipes such as EMG envelope and spike band](/dsp-kitchen/img/app/15-0_design-recepies.png)
 
 Recipes hold chains of operations for now, not branches.

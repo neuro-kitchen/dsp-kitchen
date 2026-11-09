@@ -8,6 +8,10 @@ sidebar:
 The first time a kernel runs on a device, it is compiled, and for kernels with several exact
 implementations each one is timed. Both results are saved, so later runs start in about a second.
 
+To do that work ahead of time, run `dspk autotune` or `dspk.runtime.autotune()`, or use **File → Tune
+this device** in the app. It covers a grid of common sizes; a size off the grid still tunes when
+it is first met.
+
 ## Where it is
 
 One SQLite database, `default.db`, in CubeCL's folder of your cache directory:

@@ -17,11 +17,19 @@ what they found, channel by channel.
 
 ## A first sort
 
+![The Sorting workspace: sorter, part of the recording, probe and parameters](/dsp-kitchen/img/app/09_sorting-menu.png)
+
 1. Open a recording, and pick the view to sort.
 2. Choose a sorter and a short part of the recording, such as 30 seconds.
 3. **Run.** Progress shows like the app's other jobs.
 4. Click a run to show it everywhere. Compare two runs side by side: units, spikes, labels and matched
    units.
+
+![A Kilosort4 run in progress, with its stage and steps](/dsp-kitchen/img/app/11_running-kilosort.png)
+
+![The templates of the units a run found, above the traces](/dsp-kitchen/img/app/12_kilosort-output.png)
+
+![The Compare runs tab](/dsp-kitchen/img/app/13_compare-different-runs.png)
 
 The sorting is linked to the view and saved as a `.sorting.zarr`.
 

@@ -45,6 +45,13 @@ still reproduces. 2 channels get 256 blocks, and 384 get 16.
 With that, and with nested previews no longer requesting extra margin at every level, a preview went
 from 5.5 s to 1.5 s.
 
+## Tuning ahead of time
+
+Only the two kernels whose choice changes the numbers are pinned: the IIR filter and the exact matrix
+product. Every other tuned kernel reads its saved choice in a preview too, and benchmarks only when
+none exists. So `dspk autotune`, which fills the cache for common sizes, is what keeps those previews
+from stopping on a first use.
+
 ## The lesson
 
 Autotuning is a measurement, and a measurement takes time. Decide where you can afford it: on first use

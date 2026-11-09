@@ -20,6 +20,7 @@ dspk [OPTIONS] <COMMAND>
 | [`run`](/dsp-kitchen/reference/cli/run/) | Run a pipeline spec (.json or .toml) over its inputs, or inputs given here |
 | [`spec`](/dsp-kitchen/reference/cli/spec/) | Check a pipeline spec, or print the spec's JSON Schema |
 | [`doctor`](/dsp-kitchen/reference/cli/doctor/) | What this build can do here: version, features, runtimes and their devices |
+| [`autotune`](/dsp-kitchen/reference/cli/autotune/) | Tune this machine's devices ahead of time, so first runs don't stop to benchmark |
 | [`inspect`](/dsp-kitchen/reference/cli/inspect/) | Launch geometries the selected runtime gives for a channels × samples buffer |
 | [`open`](/dsp-kitchen/reference/cli/open/) | Open a recording (any format dspk-io reads) and report its layout and read speed |
 | [`probe`](/dsp-kitchen/reference/cli/probe/) | Show a probe layout preset |

@@ -9,7 +9,8 @@ sidebar:
 
 | Keys | Action |
 |---|---|
-| Ctrl+O | Open a recording |
+| Ctrl+O | Open a recording file |
+| Ctrl+Shift+O | Open a recording folder (Zarr) |
 | Ctrl+T / Ctrl+H | Add a traces / heatmap view |
 | Ctrl+B / Ctrl+Alt+B / Ctrl+J | Show or hide Channels / View settings / Timeline |
 | Ctrl+K | Command palette: any action, view, operation or recipe by name |

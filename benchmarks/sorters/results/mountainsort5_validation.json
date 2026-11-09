@@ -1,0 +1,75 @@
+{
+ "date": "2026-11-09",
+ "program": "dspk-cli-sorter 0.0.8",
+ "machine": "NVIDIA GeForce RTX 2070 with Max-Q Design \u00b7 Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz (12 threads) \u00b7 Linux 7.2.15-300.fc45.x86_64",
+ "sorter": "mountainsort5",
+ "near_um": 60.0,
+ "wall_sec": 645.8555017119998,
+ "exit_code": 0,
+ "stages_sec": {
+  "Fitting whitening": 1.2087749809998058,
+  "Detecting (phase 1)": 8.827795599000638,
+  "Clustering (phase 1)": 470.74791621699933,
+  "Training classifiers": 160.20024755500071,
+  "Classifying spikes": 4.870767359999263
+ },
+ "spikes": 34942,
+ "units": 167,
+ "units_good": 134,
+ "ks4_spikes": 138666,
+ "ks4_units": 267,
+ "ks4_units_good": 127,
+ "ks4_spikes_found": 0.29216967389266296,
+ "offset_peak_samples": 0,
+ "per_channel": {
+  "spikes": 34942,
+  "channels": 215,
+  "count_correlation": 0.3536746157733941,
+  "recall_same_channel": 0.20358992110538993,
+  "recall_neighbours": 0.2742200683657133,
+  "precision_neighbours": 1.0882319271936352,
+  "offset_peak": 0
+ },
+ "all_units": {
+  "units": 267,
+  "found": {
+   "median": 0.19023136246786632,
+   "p25": 0.04851865903290336
+  },
+  "not_split": {
+   "median": 0.7176470588235294,
+   "p25": 0.43223443223443225
+  },
+  "precision": {
+   "median": 0.5794392523364486,
+   "p25": 0.03059423543610574
+  },
+  "accuracy": {
+   "median": 0.09710743801652892,
+   "p25": 0.01102804950348303
+  },
+  "accuracy_ge_0_8": 0.1797752808988764,
+  "accuracy_ge_0_5": 0.31086142322097376
+ },
+ "good_units": {
+  "units": 127,
+  "found": {
+   "median": 0.8355555555555556,
+   "p25": 0.0861254295532646
+  },
+  "not_split": {
+   "median": 0.9347826086956522,
+   "p25": 0.6666666666666666
+  },
+  "precision": {
+   "median": 0.8923611111111112,
+   "p25": 0.060435562884997816
+  },
+  "accuracy": {
+   "median": 0.6073170731707317,
+   "p25": 0.02511107661861431
+  },
+  "accuracy_ge_0_8": 0.3700787401574803,
+  "accuracy_ge_0_5": 0.5590551181102362
+ }
+}

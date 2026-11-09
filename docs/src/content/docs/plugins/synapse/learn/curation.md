@@ -7,6 +7,8 @@ sidebar:
 
 ## In the app
 
+![Curation: the unit table, similar units, waveforms, features, correlograms, ISI, amplitude over time and template of one unit](/dsp-kitchen/img/app/18-data-curation.png)
+
 **Curation** shows the active view's sorting in views you arrange: each is a dock panel you can drag,
 snap or close. The **Views** menu toggles each one, and the **Layout** menu applies a grid.
 

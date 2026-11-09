@@ -6,38 +6,42 @@ sidebar:
 ---
 
 :::note
-Measured in October 2026 on the setup in the [overview](/dsp-kitchen/plugins/synapse/validation/). The scripts in `benchmarks/sorters` still use the previous Python API and don't run on the current package, so these results haven't been re-run since.
+Measured on 2026-11-09 with the release build of `dspk-cli-sorter`, on the setup in the [overview](/dsp-kitchen/plugins/synapse/validation/). `benchmarks/sorters` has the scripts, and their results are in `benchmarks/sorters/results/`.
 :::
 
 ## Processing time
 
-**EMUsort**, HD-EMG, 200 s (warm; cold in brackets):
+**EMUsort**, HD-EMG, 200 s, wgpu, warm (default `nt = 61`):
 
-| Stage | `nt = 61` | `nt = 121` |
-|---|---|---|
-| Fitting preprocessing (incl. channel delays) | 1.12 (1.44) | 1.21 (1.42) |
-| Finding clips | 2.27 (2.64) | 2.02 (2.62) |
-| Learning templates (incl. HDBSCAN) | 0.60 (0.72) | 0.62 (0.99) |
-| Detecting spikes | 2.39 (2.53) | 2.48 (2.60) |
-| Clustering spikes | 2.20 (2.84) | 1.60 (2.12) |
-| Learned templates + matching | 3.32 (3.50) | 4.19 (4.19) |
-| Clustering matched spikes | 3.42 (3.53) | 2.65 (2.99) |
-| **Total** | **15.3 (17.2)**: 13.0× real time | **14.8 (16.9)**: 13.5× real time |
+| Stage | Time (s) |
+|---|---|
+| Fitting preprocessing | 1.84 |
+| Finding clips | 2.09 |
+| Learning templates | 0.96 |
+| Detecting spikes | 2.82 |
+| Clustering spikes | 3.67 |
+| Matching templates | 3.45 |
+| Clustering matched spikes | 4.13 |
+| Merging units | 0.61 |
+| **Whole program** | **19.6**: 10.2× real time |
 
-Two runs of the same input give identical spikes and units on both recordings.
+Peaks at 0.55 GB of GPU memory and 0.65 GB of host memory. Two runs of the same input give identical spikes and units.
+
+**Slower than October**, 15.3 s then and 19.0 s now on the stages October timed. As for [Kilosort4](/dsp-kitchen/plugins/synapse/validation/kilosort4/), the cause hasn't been investigated.
 
 
 ## Checks without ground truth
 
 There is no reference sorting for the HD-EMG recording, so the checks are those a reference does not
-need (first 200 s, `nt = 61` / `121`):
+need (first 200 s, default `nt = 61`):
 
-| | `nt = 61` | `nt = 121` |
-|---|---|---|
-| Spikes / units | 125 603 / 62 | 103 362 / 51 |
-| Units with > 1% / > 5% of inter-spike intervals < 2 ms | 38 / 13 | 30 / 9 |
-| Template energy in the outer 10% of the window (truncation) | 4.1% | 0.8% |
-| Presence over the segment (median) | 1.00 | 1.00 |
+| | |
+|---|---|
+| Spikes / units | 126 153 / 69 |
+| Units with > 1% / > 5% of inter-spike intervals < 2 ms | 33 / 9 |
+| Presence over the segment (median) | 1.00 |
+
+October's run also compared `nt = 121` (103 362 spikes, 51 units, 0.8% of template energy in the outer 10% of the window against 4.1% at `nt = 61`). That comparison hasn't been repeated.
 
 Two fixes came out of these checks: duplicate detections at bit-identical neighbouring centres (before:
 94 000 spikes, 53% of a median unit's intervals under 2 ms) and the template length (see

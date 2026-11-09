@@ -24,9 +24,11 @@ The tabs along the top are workspaces. They share one session and one timeline.
 | [Curation](/dsp-kitchen/plugins/synapse/learn/curation/) | Judge a sorting: label, merge, split (Synapse plugin) |
 | Analytics | Charts across recordings and runs; still to be built |
 
+![The start screen, with Open file, Open folder and Synthetic recording](/dsp-kitchen/img/app/00_main-dark.png)
+
 ## Start here
 
-1. **File → Open recording…** (Ctrl+O), or **Synthetic recording** to try it with no data.
+1. **File → Open file…** (Ctrl+O) for a `.bin` or `.cbin`, **Open folder…** (Ctrl+Shift+O) for a Zarr store, or **Synthetic recording** to try it with no data.
 2. Follow [Filter and inspect a recording](/dsp-kitchen/app/workflows/).
 
 Press **F1** at any time for the [keyboard and mouse list](/dsp-kitchen/app/keyboard/), and **Ctrl+K**

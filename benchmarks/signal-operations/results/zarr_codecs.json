@@ -1,0 +1,243 @@
+{
+  "schema": 1,
+  "benchmark": "zarr_codecs",
+  "date": "2026-11-09",
+  "dspk": {
+    "version": "0.0.8",
+    "commit": "ea206bc",
+    "runtime": "host"
+  },
+  "reference": null,
+  "machine": "NVIDIA GeForce RTX 2070 with Max-Q Design · Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz (12 threads) · Linux 7.2.15-300.fc45.x86_64",
+  "notes": "10 s of 384 Neuropixels channels at 30000 Hz, float32 in µV, default chunking. Median of 3 runs. dspk_ms is the write; extra holds read_ms (from the page cache), size_bytes and ratio.",
+  "cases": [
+    {
+      "name": "raw / none",
+      "shape": [
+        384,
+        300000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 3484.7540840000875,
+      "reference_ms": null,
+      "max_abs_err": 0.0,
+      "rel_err": 0.0,
+      "tolerance": 0.0,
+      "extra": {
+        "read_ms": 730.4294639998261,
+        "size_bytes": 460806615,
+        "ratio": 0.9999856447373265
+      },
+      "pass": true
+    },
+    {
+      "name": "raw / zstd 1",
+      "shape": [
+        384,
+        300000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 3038.436447001004,
+      "reference_ms": null,
+      "max_abs_err": 0.0,
+      "rel_err": 0.0,
+      "tolerance": 0.0,
+      "extra": {
+        "read_ms": 874.9423999997816,
+        "size_bytes": 116921138,
+        "ratio": 3.9411179867236665
+      },
+      "pass": true
+    },
+    {
+      "name": "raw / zstd 3 (default)",
+      "shape": [
+        384,
+        300000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 3515.495239998927,
+      "reference_ms": null,
+      "max_abs_err": 0.0,
+      "rel_err": 0.0,
+      "tolerance": 0.0,
+      "extra": {
+        "read_ms": 941.5030290001596,
+        "size_bytes": 113237008,
+        "ratio": 4.069341005548292
+      },
+      "pass": true
+    },
+    {
+      "name": "raw / zstd 3, one thread",
+      "shape": [
+        384,
+        300000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 4706.712520999645,
+      "reference_ms": null,
+      "max_abs_err": 0.0,
+      "rel_err": 0.0,
+      "tolerance": 0.0,
+      "extra": {
+        "read_ms": 801.5355869993073,
+        "size_bytes": 113237008,
+        "ratio": 4.069341005548292
+      },
+      "pass": true
+    },
+    {
+      "name": "raw / zstd 9",
+      "shape": [
+        384,
+        300000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 5755.4550410004595,
+      "reference_ms": null,
+      "max_abs_err": 0.0,
+      "rel_err": 0.0,
+      "tolerance": 0.0,
+      "extra": {
+        "read_ms": 828.4705389996816,
+        "size_bytes": 105700515,
+        "ratio": 4.359486800986732
+      },
+      "pass": true
+    },
+    {
+      "name": "raw / blosc_lz4",
+      "shape": [
+        384,
+        300000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 2907.320582999091,
+      "reference_ms": null,
+      "max_abs_err": 0.0,
+      "rel_err": 0.0,
+      "tolerance": 0.0,
+      "extra": {
+        "read_ms": 707.1384110004146,
+        "size_bytes": 247466450,
+        "ratio": 1.8620705958322836
+      },
+      "pass": true
+    },
+    {
+      "name": "high-passed / none",
+      "shape": [
+        384,
+        300000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 3267.9007450005884,
+      "reference_ms": null,
+      "max_abs_err": 0.0,
+      "rel_err": 0.0,
+      "tolerance": 0.0,
+      "extra": {
+        "read_ms": 680.8768640003109,
+        "size_bytes": 460806615,
+        "ratio": 0.9999856447373265
+      },
+      "pass": true
+    },
+    {
+      "name": "high-passed / zstd 1",
+      "shape": [
+        384,
+        300000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 2826.002496998626,
+      "reference_ms": null,
+      "max_abs_err": 0.0,
+      "rel_err": 0.0,
+      "tolerance": 0.0,
+      "extra": {
+        "read_ms": 701.2578009998833,
+        "size_bytes": 427013770,
+        "ratio": 1.0791221088725078
+      },
+      "pass": true
+    },
+    {
+      "name": "high-passed / zstd 3 (default)",
+      "shape": [
+        384,
+        300000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 3152.678112999638,
+      "reference_ms": null,
+      "max_abs_err": 0.0,
+      "rel_err": 0.0,
+      "tolerance": 0.0,
+      "extra": {
+        "read_ms": 672.3229019989958,
+        "size_bytes": 427478744,
+        "ratio": 1.0779483341983431
+      },
+      "pass": true
+    },
+    {
+      "name": "high-passed / zstd 3, one thread",
+      "shape": [
+        384,
+        300000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 3795.3076510002575,
+      "reference_ms": null,
+      "max_abs_err": 0.0,
+      "rel_err": 0.0,
+      "tolerance": 0.0,
+      "extra": {
+        "read_ms": 710.2482000009331,
+        "size_bytes": 427478744,
+        "ratio": 1.0779483341983431
+      },
+      "pass": true
+    },
+    {
+      "name": "high-passed / zstd 9",
+      "shape": [
+        384,
+        300000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 3242.411589000767,
+      "reference_ms": null,
+      "max_abs_err": 0.0,
+      "rel_err": 0.0,
+      "tolerance": 0.0,
+      "extra": {
+        "read_ms": 704.9158749996423,
+        "size_bytes": 427014075,
+        "ratio": 1.0791213380964082
+      },
+      "pass": true
+    },
+    {
+      "name": "high-passed / blosc_lz4",
+      "shape": [
+        384,
+        300000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 2945.492868999281,
+      "reference_ms": null,
+      "max_abs_err": 0.0,
+      "rel_err": 0.0,
+      "tolerance": 0.0,
+      "extra": {
+        "read_ms": 812.8651869992609,
+        "size_bytes": 422914715,
+        "ratio": 1.089581382856352
+      },
+      "pass": true
+    }
+  ]
+}

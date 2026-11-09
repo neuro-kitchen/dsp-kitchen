@@ -158,8 +158,9 @@ jobs:
           uv run --no-project --with griffe==2.4.1 python -I docs/scripts/python_api.py
           python3 docs/scripts/course.py
           python3 docs/scripts/benchmarks.py
-          git status --porcelain docs/src/content/docs
-          test -z "$(git status --porcelain docs/src/content/docs)" || {
+          python3 docs/scripts/rust_snippets.py
+          git status --porcelain docs/src/content/docs crates/dspk/tests
+          test -z "$(git status --porcelain docs/src/content/docs crates/dspk/tests)" || {
             echo "the Python API reference is out of date: run docs/scripts/python_api.py and commit"; git diff --stat; exit 1; }
       - name: Install
         working-directory: docs

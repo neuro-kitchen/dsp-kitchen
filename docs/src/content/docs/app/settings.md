@@ -14,6 +14,8 @@ sidebar:
 | Compute runtime | Which runtime the app uses |
 | Theme | Light or dark, or follow the system. **View** also has "Dark plots in the light theme" |
 
+![Settings with the compute runtime menu open: automatic, wgpu, CUDA or CPU](/dsp-kitchen/img/app/10_Settings-select-runtime.png)
+
 ## Add a server
 
 You need a [running server](/dsp-kitchen/deploy/run/) and an
