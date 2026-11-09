@@ -1,14 +1,33 @@
 ---
-title: "App"
-description: "The desktop app, screen by screen."
+title: App
+description: "The desktop app: look at recordings and build pipelines without writing code."
+sidebar:
+  order: 0
 ---
 
-:::note[Being written]
-This page is being written. Planned:
+`dspk-app` is a desktop workbench for long multi-channel recordings. It draws hours of signal from
+[pyramids](/dsp-kitchen/learn/concepts/pyramids/), and previews processing live on your GPU.
 
-- A tour of the window: workspaces, views, the inspector
-- Explore: views and containers, traces, heatmap, raster
-- Pipeline: the canvas, operations, presets, remaps
-- Settings, sessions, opening sources
-- Workflows: filter and inspect a recording, build a pipeline, curate a sort
-:::
+![dspk-app showing 385 channels of a Neuropixels recording as traces and a heatmap](/dsp-kitchen/img/dsp-app_main-darkmode.png)
+
+Install it with `cargo install dspk-app` ([Linux needs a few system libraries](/dsp-kitchen/learn/get-started/install/#the-desktop-app-on-linux)).
+
+## Workspaces
+
+The tabs along the top are workspaces. They share one session and one timeline.
+
+| Workspace | What it's for |
+|---|---|
+| [Explore](/dsp-kitchen/app/explore/) | Look at the recording: traces, heatmaps, channels, timeline |
+| [Pipeline](/dsp-kitchen/app/pipeline/) | The processing graph: recordings, operations, views and writes on a canvas |
+| [Sorting](/dsp-kitchen/plugins/synapse/learn/sorting-in-the-app/) | Run the installed sorters and compare their units (Synapse plugin) |
+| [Curation](/dsp-kitchen/plugins/synapse/learn/curation/) | Judge a sorting: label, merge, split (Synapse plugin) |
+| Analytics | Charts across recordings and runs; still to be built |
+
+## Start here
+
+1. **File → Open recording…** (Ctrl+O), or **Synthetic recording** to try it with no data.
+2. Follow [Filter and inspect a recording](/dsp-kitchen/app/workflows/).
+
+Press **F1** at any time for the [keyboard and mouse list](/dsp-kitchen/app/keyboard/), and **Ctrl+K**
+for the command palette: any action, view, operation or recipe by name.

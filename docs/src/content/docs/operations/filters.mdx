@@ -1,0 +1,227 @@
+---
+title: Filters
+description: "IIR, notch, FIR, Gaussian, median and Teager–Kaiser on the device."
+sidebar:
+  order: 1
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+## IIR
+
+Butterworth, Chebyshev I or Bessel, as low-pass, high-pass, band-pass or band-stop.
+
+<Tabs syncKey="language">
+<TabItem label="Python">
+
+```python
+y = dspk.ops.filter.iir(x, 30_000.0, "bandpass", (300.0, 6000.0), order=5)
+```
+
+</TabItem>
+<TabItem label="Rust">
+
+```rust
+pipeline.add(PipelineStage::bandpass(300.0, 6_000.0));   // also highpass, lowpass, bandstop
+```
+
+</TabItem>
+<TabItem label="Spec">
+
+```json
+{"op": "iir", "band": "bandpass", "cutoff": [300.0, 6000.0], "order": 5}
+```
+
+</TabItem>
+<TabItem label="App">
+
+**Filter → IIR**, with presets for spikes, LFP, EMG, ECG, EEG and mains.
+
+</TabItem>
+</Tabs>
+
+**Zero phase or causal.** `mode="forward_backward"` (the default) runs the filter forward and back, as
+`scipy.signal.sosfiltfilt`, so nothing shifts in time, and the magnitude response applies twice.
+`mode="forward"` is causal, as `sosfilt`, and is what streaming needs.
+
+:::note[Matching SciPy exactly]
+Zero-phase runs pad each end by the filter's settling length. SciPy's `sosfiltfilt` pads
+`3 * (2 * len(sos) + 1)` samples by default, so the interior is the same and the first and last
+samples can differ. To match to float32 precision:
+`sosfiltfilt(sos, x, padlen=dspk.ops.filter.settling_samples(sos))`.
+:::
+
+## Notch
+
+Takes out one frequency, as `scipy.signal.iirnotch`. The notch is `freq / q` Hz wide at −3 dB.
+
+<Tabs syncKey="language">
+<TabItem label="Python">
+
+```python
+y = dspk.ops.filter.notch(x, 30_000.0, 60.0, 30.0)
+```
+
+</TabItem>
+<TabItem label="Rust">
+
+```rust
+pipeline.add(PipelineStage::notch(60.0, 30.0));
+```
+
+</TabItem>
+<TabItem label="Spec">
+
+```json
+{"op": "notch", "freq": 60.0, "q": 30.0}
+```
+
+</TabItem>
+<TabItem label="App">
+
+**Filter → Notch**.
+
+</TabItem>
+</Tabs>
+
+## FIR
+
+Taps you give, causal (as `scipy.signal.lfilter(taps, 1, x)`) or centred on each sample. Design taps
+with `firwin`.
+
+<Tabs syncKey="language">
+<TabItem label="Python">
+
+```python
+taps = dspk.ops.filter.firwin(101, 250.0, sample_rate=30_000.0)
+y = dspk.ops.filter.fir(x, taps, centered=True)
+```
+
+</TabItem>
+<TabItem label="Rust">
+
+```rust
+pipeline.add(PipelineStage::fir(taps));                  // causal
+```
+
+</TabItem>
+<TabItem label="Spec">
+
+```json
+{"op": "fir", "taps": [0.2, 0.2, 0.2, 0.2, 0.2], "centered": true}
+```
+
+</TabItem>
+<TabItem label="App">
+
+**Filter → FIR**.
+
+</TabItem>
+</Tabs>
+
+## Gaussian smoothing
+
+Zero phase, as `scipy.ndimage.gaussian_filter1d`, with the kernel cut at 4 standard deviations.
+
+<Tabs syncKey="language">
+<TabItem label="Python">
+
+```python
+y = dspk.ops.filter.gaussian_smooth(x, 30.0)            # sigma in samples
+```
+
+</TabItem>
+<TabItem label="Rust">
+
+```rust
+pipeline.add(PipelineStage::gaussian_smooth(30.0));
+```
+
+</TabItem>
+<TabItem label="Spec">
+
+```json
+{"op": "gaussian_smooth", "sigma_samples": 30.0}
+```
+
+</TabItem>
+<TabItem label="App">
+
+**Smooth → Gaussian**.
+
+</TabItem>
+</Tabs>
+
+## Running median
+
+Over an odd width of at most 31 samples. With the default edge it is `scipy.signal.medfilt`.
+
+<Tabs syncKey="language">
+<TabItem label="Python">
+
+```python
+y = dspk.ops.filter.median(x, 31)
+```
+
+</TabItem>
+<TabItem label="Rust">
+
+```rust
+pipeline.add(PipelineStage::median(31));
+```
+
+</TabItem>
+<TabItem label="Spec">
+
+```json
+{"op": "median", "width": 31}
+```
+
+</TabItem>
+<TabItem label="App">
+
+**Smooth → Median**.
+
+</TabItem>
+</Tabs>
+
+## Teager–Kaiser energy
+
+`x[t]**2 - x[t-1] * x[t+1]`: large where the signal is both large and fast, so spikes stand out from
+slow waves.
+
+<Tabs syncKey="language">
+<TabItem label="Python">
+
+```python
+energy = dspk.ops.filter.teager_kaiser(x)
+```
+
+</TabItem>
+<TabItem label="Rust">
+
+```rust
+pipeline.add(PipelineStage::teager_kaiser());
+```
+
+</TabItem>
+<TabItem label="Spec">
+
+```json
+{"op": "teager_kaiser"}
+```
+
+</TabItem>
+<TabItem label="App">
+
+**Transform → Teager–Kaiser**.
+
+</TabItem>
+</Tabs>
+
+## Template subtraction
+
+Removes a known waveform at each event, such as stimulation artefacts, aligned and scaled per event.
+Python only: [`subtract_template`](/dsp-kitchen/reference/python/ops-filter/#subtract_template).
+
+Worked examples: [Filtering](/dsp-kitchen/learn/course/filtering/lowpass-highpass/).

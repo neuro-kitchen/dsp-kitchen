@@ -1,12 +1,18 @@
 ---
-title: "Extend"
-description: "Adding to dsp-kitchen."
+title: Extend
+description: "How dsp-kitchen is put together, and how to add to it."
+sidebar:
+  order: 0
 ---
 
-:::note[Being written]
-This page is being written. Planned:
+| To | Read |
+|---|---|
+| Understand how the pieces fit | [Architecture](/dsp-kitchen/extend/architecture/) |
+| Read another file format | [Add a format](/dsp-kitchen/extend/add-a-format/) |
+| Add an operation | [Add an operation](/dsp-kitchen/extend/add-an-operation/) |
+| Implement a published sorter | [Add a sorter](/dsp-kitchen/extend/add-a-sorter/) |
+| Add a domain to the app | [Add an app plugin](/dsp-kitchen/extend/add-an-app-plugin/) |
+| Send a change | [Contributing](/dsp-kitchen/extend/contributing/) |
 
-- Architecture and a crate map
-- Adding a format, a sorter, a custom operation, an app plugin
-- Contributing
-:::
+To run your own Python function without changing dsp-kitchen, use
+[custom operations](/dsp-kitchen/learn/python/custom-operations/).

@@ -9,7 +9,9 @@
 # dspk
 
 > [!WARNING]
-> **Early development (0.0.x).** APIs change between releases. Documentation is being rewritten.
+> **Early development (0.0.x).** APIs change between releases.
+
+**[Documentation](https://neuro-kitchen.github.io/dsp-kitchen/)** · [Python API](https://neuro-kitchen.github.io/dsp-kitchen/reference/python/) · [Rust API](https://docs.rs/dspk) · [Changelog](https://neuro-kitchen.github.io/dsp-kitchen/changelog/)
 
 Multi-channel signal processing written once in [CubeCL](https://github.com/tracel-ai/cubecl) and
 run on any GPU (wgpu: Vulkan, Metal, DirectX 12; CUDA; ROCm / HIP) or the CPU, with the device

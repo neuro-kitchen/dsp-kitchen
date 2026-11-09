@@ -3,3 +3,6 @@ dist/
 .astro/
 # Written from ../CHANGELOG.md before every build (scripts/changelog.mjs)
 src/content/docs/changelog/
+public/course/
+public/img/
+public/benchmarks/

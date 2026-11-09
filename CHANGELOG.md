@@ -4,6 +4,16 @@ All notable changes, newest first. Versions follow [Semantic Versioning](https:/
 0.0.x any release may change the API. The crates, the Python package and `dspk-sorters` share one
 version number.
 
+## Unreleased
+
+### Added
+
+- **[Documentation](https://neuro-kitchen.github.io/dsp-kitchen/)**: Learn (get started, concepts,
+  Python, a course generated from the playground), the App, Operations, Deploy, GPU lessons,
+  Validation, Extend, a Lab notebook and the Synapse plugin's guides and sorter pages. CLI, sorter
+  settings and pipeline-spec references are generated from the programs.
+- Release notes on GitHub come from this file.
+
 ## 0.0.8 — 2026-11-07
 
 ### Added

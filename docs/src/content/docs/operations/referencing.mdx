@@ -1,0 +1,126 @@
+---
+title: Referencing
+description: "Remove what channels share, or keep what is local."
+sidebar:
+  order: 2
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+## Common average and median reference
+
+At every sample, subtract the mean (CAR) or the median (CMR) over channels. The median survives a bad
+channel, where the mean would spread it to all the others.
+
+<Tabs syncKey="language">
+<TabItem label="Python">
+
+```python
+y = dspk.ops.spatial.cmr(x)       # or car
+```
+
+</TabItem>
+<TabItem label="Rust">
+
+```rust
+pipeline.add(PipelineStage::common_median_reference());   // or common_average_reference()
+```
+
+</TabItem>
+<TabItem label="Spec">
+
+```json
+{"op": "cmr"}
+```
+
+</TabItem>
+<TabItem label="App">
+
+**Reference → CMR** or **CAR**.
+
+</TabItem>
+</Tabs>
+
+## Surface Laplacian
+
+Each electrode minus the mean of its neighbours, on a grid. It removes what spreads across the whole
+array and keeps what is local: useful for HD-EMG and ECoG. Inside the grid a channel has 4 neighbours,
+on an edge 3, and in a corner 2. Channels are row-major: channel `row * cols + col`.
+
+<Tabs syncKey="language">
+<TabItem label="Python">
+
+```python
+lap = dspk.ops.spatial.Laplacian.from_grid(8, 8)
+y = lap.apply(x)
+```
+
+</TabItem>
+<TabItem label="Rust">
+
+```rust
+pipeline.add(PipelineStage::SurfaceLaplacian(SurfaceLaplacian::from_grid_2d(8, 8)));
+```
+
+</TabItem>
+<TabItem label="Spec">
+
+```json
+{"op": "laplacian", "grid": [8, 8]}
+```
+
+</TabItem>
+<TabItem label="App">
+
+**Reference → Laplacian**, with presets for 4×8, 8×4, 8×8 and 16×4 grids.
+
+</TabItem>
+</Tabs>
+
+A grid of another size than the chain's channels is refused, with the reason. Python also has a
+distance-weighted version from electrode positions, `Laplacian.from_positions`.
+
+## Whitening
+
+Decorrelates the channels, as sorters do before matching: the result has uncorrelated channels of
+unit variance. It is a matrix fitted on the signal.
+
+<Tabs syncKey="language">
+<TabItem label="Python">
+
+```python
+w = dspk.ops.spatial.Whitening.fit_zca(x)
+y = w.apply(x)
+```
+
+</TabItem>
+<TabItem label="Rust">
+
+```rust
+let white = SpatialWhitening::fit_zca::<f32>(&client, &data, channels, samples, epsilon);
+pipeline.add(PipelineStage::SpatialWhitening(white));
+```
+
+</TabItem>
+<TabItem label="Spec">
+
+The fit runs before the pipeline, on the signal of the nodes before it: `fit_s` seconds, in `chunks`
+pieces spread over the recording.
+
+```json
+{"op": "whiten"}
+```
+
+</TabItem>
+<TabItem label="App">
+
+**Reference → Whiten**. The fit runs in the background, and the raw signal shows until it's done.
+
+</TabItem>
+</Tabs>
+
+Python also has `Whitening.fit_local_knn`, which whitens each channel over its nearest channels, as
+Kilosort4 does.
+
+Worked examples: [Referencing](/dsp-kitchen/learn/course/referencing/car-and-cmr/),
+[Spatial](/dsp-kitchen/learn/course/spatial/whitening/).

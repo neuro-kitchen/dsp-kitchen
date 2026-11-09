@@ -17,6 +17,11 @@
 //! The spike sorters are separate crates, each under its upstream's licence: `dspk-sorter-kilosort`
 //! (GPL-3.0), `dspk-sorter-ms5` (Apache-2.0), `dspk-sorter-si` (MIT OR Apache-2.0).
 //!
+//! # Start here
+//!
+//! [`ops::Pipeline`] chains operations on the device; the guides and every operation are in the
+//! [documentation](https://neuro-kitchen.github.io/dsp-kitchen/).
+//!
 //! Early development (0.0.x): APIs change between releases.
 
 pub use dspk_core as core;

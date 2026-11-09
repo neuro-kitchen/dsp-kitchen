@@ -1,0 +1,42 @@
+{
+  "core": [
+    {
+      "label": "Basics",
+      "directory": "learn/course/basics"
+    },
+    {
+      "label": "Filtering",
+      "directory": "learn/course/filtering"
+    },
+    {
+      "label": "Referencing",
+      "directory": "learn/course/referencing"
+    },
+    {
+      "label": "Resampling",
+      "directory": "learn/course/resampling"
+    },
+    {
+      "label": "Spatial",
+      "directory": "learn/course/spatial"
+    },
+    {
+      "label": "Pipelines",
+      "directory": "learn/course/pipelines"
+    },
+    {
+      "label": "Channels",
+      "directory": "learn/course/channels"
+    }
+  ],
+  "synapse": [
+    {
+      "label": "Detection",
+      "directory": "plugins/synapse/learn/course/detection"
+    },
+    {
+      "label": "Sorting",
+      "directory": "plugins/synapse/learn/course/sorting"
+    }
+  ]
+}
