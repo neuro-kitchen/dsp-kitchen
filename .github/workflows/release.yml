@@ -252,13 +252,32 @@ jobs:
       # Wheels and the sdist only (the sorters' builds are artifacts too, for the GitHub release)
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: wheel-*
+          # dspk and dspk-synapse; dspk-app publishes from its own job below
+          pattern: wheel-dspk-[!a]*
           path: dist
           merge-multiple: true
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: sdist
           path: dist
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+
+  # Its own job and environment: PyPI lets one workflow + environment be the pending publisher of
+  # only one new project, and a failure here shouldn't hold up the rest of the release.
+  publish-pypi-app:
+    name: Publish dspk-app to PyPI
+    needs: [check, app-wheels]
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    environment: pypi-app
+    permissions:
+      id-token: write # trusted publishing
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: wheel-dspk-app-*
+          path: dist
+          merge-multiple: true
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
 
   github-release:
