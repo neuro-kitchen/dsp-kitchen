@@ -1,0 +1,20 @@
+[build-system]
+requires = ["maturin>=1.15,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "dspk-app"
+dynamic = ["version"]
+description = "The dspk desktop app: install with pip install dspk[app]"
+readme = "README.md"
+authors = [{ name = "jesusdpa1" }]
+license = "MIT OR Apache-2.0"
+license-files = ["LICENSE-MIT", "LICENSE-APACHE"]
+requires-python = ">=3.10"
+
+[project.urls]
+Repository = "https://github.com/neuro-kitchen/dsp-kitchen"
+
+[tool.maturin]
+manifest-path = "../../../../app/dspk-app/Cargo.toml"
+bindings = "bin"

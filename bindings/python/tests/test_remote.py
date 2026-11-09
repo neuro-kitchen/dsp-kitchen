@@ -25,6 +25,9 @@ def cli() -> Path | None:
         if path.is_file():
             return path
     found = shutil.which("dspk")
+    # The Python package's own small `dspk` command has no servers: only the full program counts
+    if found and subprocess.run([found, "clients", "--help"], capture_output=True).returncode != 0:
+        found = None
     return Path(found) if found else None
 
 
