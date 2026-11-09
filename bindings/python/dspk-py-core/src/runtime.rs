@@ -3,9 +3,11 @@
 //! One rule for every native call: an explicit `runtime=` argument, else the runtime chosen with
 //! `dspk.runtime.set(...)`, else `DSPK_RUNTIME`, else the first compiled-in runtime (GPUs first).
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 use dspk_core::ComputeTarget;
+use dspk_ops::autotune::{AutotuneOptions, DEFAULT_CHANNELS, DEFAULT_SAMPLES};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3_stub_gen::derive::gen_stub_pyfunction;
@@ -116,7 +118,60 @@ pub fn set(name: Option<&str>) -> PyResult<()> {
     Ok(())
 }
 
+/// Tunes the operations on this machine's devices ahead of time, and compiles their kernels.
+///
+/// An operation benchmarks its kernels the first time it meets a device and problem size, which can
+/// stall a first run. This does that work now, over a grid of common sizes, and saves the results
+/// for every later process. A size off the grid still tunes when it is first met.
+///
+/// Parameters
+/// ----------
+/// runtime : str, optional
+///     One runtime to tune; by default every runtime compiled in that can open a device here.
+/// channels : list of int, default `[32, 64, 128, 384]`
+///     Channel counts to tune.
+/// samples : list of int, default `[8192, 32768, 131072, 524288]`
+///     Samples per channel to tune.
+///
+/// Returns
+/// -------
+/// dict
+///     Per runtime tuned, `{"sizes": int, "seconds": float}`.
+///
+/// Raises
+/// ------
+/// ValueError
+///     When `runtime` is not one of this build's runtimes.
+///
+/// Examples
+/// --------
+/// >>> import dspk
+/// >>> dspk.runtime.autotune(channels=[4], samples=[512], runtime="cpu")  # doctest: +SKIP
+#[gen_stub_pyfunction(module = "dspk._native.runtime")]
+#[pyfunction]
+#[pyo3(signature = (runtime=None, channels=DEFAULT_CHANNELS.to_vec(), samples=DEFAULT_SAMPLES.to_vec()))]
+pub fn autotune(py: Python<'_>, runtime: Option<&str>, channels: Vec<usize>, samples: Vec<usize>) -> PyResult<HashMap<String, HashMap<String, f64>>> {
+    let targets: Vec<ComputeTarget> = match runtime {
+        Some(name) => vec![parse(name)?],
+        None => available().into_iter().filter_map(|n| parse(n).ok()).collect(),
+    };
+    let options = AutotuneOptions { channels, samples, ..Default::default() };
+    let mut results = HashMap::new();
+    for target in targets {
+        let Ok(client) = open_client(target) else {
+            if runtime.is_some() {
+                return Err(PyValueError::new_err(format!("could not open a {} device", target.name())));
+            }
+            continue;
+        };
+        let summary = py.detach(|| dspk_ops::autotune::autotune(&client, &options, |_, _| {})).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        results.insert(target.name().to_string(), HashMap::from([("sizes".to_string(), summary.sizes as f64), ("seconds".to_string(), summary.seconds)]));
+    }
+    Ok(results)
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(autotune, m)?)?;
     m.add_function(wrap_pyfunction!(available, m)?)?;
     m.add_function(wrap_pyfunction!(current, m)?)?;
     m.add_function(wrap_pyfunction!(set, m)?)?;

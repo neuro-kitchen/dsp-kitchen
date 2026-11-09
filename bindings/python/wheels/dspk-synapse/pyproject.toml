@@ -1,0 +1,23 @@
+[build-system]
+requires = ["maturin>=1.15,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "dspk-synapse"
+dynamic = ["version"]
+description = "The compiled part of dspk.synapse: install with pip install dspk[synapse]"
+readme = "README.md"
+authors = [{ name = "jesusdpa1" }]
+license = "MIT OR Apache-2.0"
+license-files = ["LICENSE-MIT", "LICENSE-APACHE"]
+requires-python = ">=3.10"
+dependencies = ["numpy>=2.2"]
+
+[project.urls]
+Repository = "https://github.com/neuro-kitchen/dsp-kitchen"
+
+[tool.maturin]
+manifest-path = "../../dspk-py/Cargo.toml"
+module-name = "dspk_synapse._native"
+python-source = "python"
+features = ["extension-module", "synapse"]

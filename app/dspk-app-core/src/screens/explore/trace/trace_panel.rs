@@ -347,7 +347,14 @@ impl BasePanel for TracePanel {
     }
 
     fn set_active(&mut self, active: bool, _: &mut Window, cx: &mut Context<Self>) {
-        self.vm.update(cx, |vm, cx| vm.set_active(active, cx));
+        self.vm.update(cx, |vm, cx| {
+            // Its tab was just chosen: that selects the view, so the Inspector follows
+            let shown_now = active && !vm.is_active();
+            vm.set_active(active, cx);
+            if shown_now {
+                vm.pressed(cx);
+            }
+        });
     }
 
     fn on_removed(&mut self, _: &mut Window, cx: &mut Context<Self>) {

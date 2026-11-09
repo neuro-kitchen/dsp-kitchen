@@ -34,6 +34,8 @@ enum Command {
     Spec(commands::spec::SpecArgs),
     /// What this build can do here: version, features, runtimes and their devices
     Doctor,
+    /// Tune this machine's devices ahead of time, so first runs don't stop to benchmark
+    Autotune(commands::autotune::AutotuneArgs),
     /// Launch geometries the selected runtime gives for a channels × samples buffer
     Inspect(commands::inspect::InspectArgs),
     /// Open a recording (any format dspk-io reads) and report its layout and read speed
@@ -88,13 +90,16 @@ async fn main() {
     // about it would only repeat that
     let quiet = if matches!(cli.command, Command::Doctor) { tracing::Level::ERROR } else { DEFAULT_LOG_LEVEL };
     tracing_subscriber::fmt().with_max_level(if cli.verbose { tracing::Level::DEBUG } else { quiet }).init();
+    let mut status = 0;
     if let Err(e) = dispatch(&cli).await {
         anstream::eprintln!("{} {e}", style::paint(style::ERROR, "error:"));
         for cause in e.chain().skip(1) {
             anstream::eprintln!("  {} {cause}", style::paint(style::DIM, "caused by:"));
         }
-        std::process::exit(1);
+        status = 1;
     }
+    // Results are written: no device teardown, which can crash or deadlock in the GPU driver
+    dspk_core::compute::exit_now(status);
 }
 
 async fn dispatch(cli: &Cli) -> anyhow::Result<()> {
@@ -102,6 +107,7 @@ async fn dispatch(cli: &Cli) -> anyhow::Result<()> {
         Command::Run(args) => commands::run::run(cli.runtime.as_deref(), args).await,
         Command::Spec(args) => commands::spec::run(args),
         Command::Doctor => commands::doctor::run(),
+        Command::Autotune(args) => commands::autotune::run(args),
         Command::Inspect(args) => commands::inspect::run(cli.target()?, args),
         Command::Open(args) => commands::open::run(args),
         Command::Probe(args) => commands::probe::run(args),

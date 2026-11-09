@@ -14,6 +14,15 @@ license-files = ["LICENSE-MIT", "LICENSE-APACHE"]
 requires-python = ">=3.10"
 dependencies = ["numpy>=2.2"]
 
+[project.optional-dependencies]
+# Pinned to this release; .github/workflows/release.yml checks them against the workspace version
+synapse = ["dspk-synapse==0.0.8"]
+app = ["dspk-app==0.0.8"]
+all = ["dspk-synapse==0.0.8", "dspk-app==0.0.8"]
+
+[project.scripts]
+dspk = "dspk._cli:main"
+
 [project.urls]
 Repository = "https://github.com/neuro-kitchen/dsp-kitchen"
 

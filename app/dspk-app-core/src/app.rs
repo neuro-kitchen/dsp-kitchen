@@ -13,13 +13,14 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
     div, px, AnyElement, App, AppContext as _, Context, Entity, ExternalPaths, FocusHandle, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
-    PathPromptOptions, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
+    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
 };
 
 use crate::navigation::actions::*;
 use crate::screens::explore::trace::renderer::TimeViewKind;
 use crate::data::store::{file_label, AppEvent, Store};
 use crate::screens::explore::ExploreView;
+use crate::ui::recording_picker::{open_actions, Pick};
 use crate::ui::widgets::EmptyState;
 use crate::navigation::route::Workspace;
 
@@ -48,6 +49,7 @@ impl DspApp {
     pub fn new(store: Entity<Store>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let choice = store.read(cx).session.dark;
         Self::apply_theme(&store, choice, window, cx);
+        store.update(cx, |s, cx| s.suggest_tuning_once(cx));
         let explore = cx.new(|cx| ExploreView::new(store.clone(), window, cx));
         let pipeline = cx.new(|cx| crate::screens::pipeline::PipelineView::new(store.clone(), window, cx));
         let floating = cx.new(|cx| crate::screens::floating::FloatingLayer::new(store.clone(), window, cx));
@@ -94,8 +96,8 @@ impl DspApp {
         self.store.update(cx, |s, cx| s.open(path, cx));
     }
 
-    fn prompt_open(&mut self, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(PathPromptOptions { files: true, directories: true, multiple: false, prompt: Some("Open recording".into()) });
+    fn prompt_open(&mut self, pick: Pick, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(pick.options("Open recording", false, cx));
         let store = self.store.clone();
         cx.spawn(async move |_, cx| match rx.await {
             Ok(Ok(Some(paths))) => {
@@ -105,6 +107,26 @@ impl DspApp {
             }
             Ok(Err(e)) => store.update(cx, |s, cx| s.set_status(format!("File dialog failed: {e}"), cx)),
             _ => {}
+        })
+        .detach();
+    }
+
+    /// Tunes this device in the background, so first runs and previews don't stop to benchmark.
+    fn tune_device(&mut self, cx: &mut Context<Self>) {
+        self.store.update(cx, |s, cx| s.set_status("Tuning this device in the background (about a minute on a GPU)…", cx));
+        let store = self.store.clone();
+        cx.spawn(async move |_, cx| {
+            let tuned = cx
+                .background_spawn(async move {
+                    let client = dspk_core::ComputeTarget::from_env().map_err(|e| e.to_string())?.client().map_err(|e| e.to_string())?;
+                    dspk_ops::autotune::autotune(&client, &Default::default(), |_, _| {}).map_err(|e| e.to_string())
+                })
+                .await;
+            let text = match tuned {
+                Ok(done) => format!("This device is tuned: {} sizes in {:.0} s", done.sizes, done.seconds),
+                Err(e) => format!("Could not tune this device: {e}"),
+            };
+            let _ = store.update(cx, |s, cx| s.set_status(text, cx));
         })
         .detach();
     }
@@ -128,6 +150,7 @@ impl DspApp {
         use crate::screens::palette::Command;
         use std::rc::Rc;
         let me = cx.entity().downgrade();
+        let open_actions = open_actions(cx);
         let mut out = Vec::new();
         let mut add = |group: &'static str, name: String, f: Rc<dyn Fn(&mut DspApp, &mut Window, &mut Context<DspApp>)>| {
             let me = me.clone();
@@ -139,8 +162,11 @@ impl DspApp {
         for ws in Workspace::ALL {
             add("Go to", format!("{} workspace", ws.title()), Rc::new(move |a, _, cx| a.store.update(cx, |s, cx| s.set_workspace(ws, cx))));
         }
-        add("File", "Open recording…".into(), Rc::new(|a, _, cx| a.prompt_open(cx)));
+        for &(label, pick) in open_actions {
+            add("File", label.into(), Rc::new(move |a, _, cx| a.prompt_open(pick, cx)));
+        }
         add("File", "Synthetic recording".into(), Rc::new(|a, _, cx| a.open_synthetic(cx)));
+        add("File", "Tune this device".into(), Rc::new(|a, _, cx| a.tune_device(cx)));
         for (name, kind) in [("Traces", TimeViewKind::Traces), ("Heatmap", TimeViewKind::Heatmap), ("Raster", TimeViewKind::Raster)] {
             add("View", format!("Add a {} view", name.to_lowercase()), Rc::new(move |a, _, cx| a.add_view(kind, cx)));
         }
@@ -203,15 +229,21 @@ impl DspApp {
         let recent = self.store.read(cx).session.recent.clone();
         let open = self.store.read(cx).recording.is_some();
         let (dark_plots, follow) = (self.store.read(cx).session.dark_plots, self.store.read(cx).session.dark.is_none());
+        let open_actions = open_actions(cx);
         let file = {
             let this = this.clone();
             Button::new("menu-file").ghost().small().label("File").dropdown_menu(move |menu: PopupMenu, _, _| {
-                let t = this.clone();
-                let mut menu = menu.item(PopupMenuItem::new("Open recording…").on_click(move |_, _, cx| t.update(cx, |a, cx| a.prompt_open(cx))));
+                let mut menu = menu;
+                for &(label, pick) in open_actions {
+                    let t = this.clone();
+                    menu = menu.item(PopupMenuItem::new(label).on_click(move |_, _, cx| t.update(cx, |a, cx| a.prompt_open(pick, cx))));
+                }
                 let t = this.clone();
                 menu = menu.item(PopupMenuItem::new("Open from server…").on_click(move |_, _, cx| t.update(cx, |a, cx| a.toggle_browser(cx))));
                 let t = this.clone();
                 menu = menu.item(PopupMenuItem::new("Synthetic recording (32 ch, 5 min)").on_click(move |_, _, cx| t.update(cx, |a, cx| a.open_synthetic(cx))));
+                let t = this.clone();
+                menu = menu.item(PopupMenuItem::new("Tune this device").on_click(move |_, _, cx| t.update(cx, |a, cx| a.tune_device(cx))));
                 if !recent.is_empty() {
                     menu = menu.separator().label("Recent");
                     for p in &recent {
@@ -354,13 +386,17 @@ impl DspApp {
         let mut screen = EmptyState::new(
             gpui_kit::assets::IconName::AudioWaveform,
             "Open a recording",
-            "SpikeGLX (.bin / .cbin), raw binary with a JSON .meta, or an NWB Zarr store. Or try a synthetic recording: no file needed.",
+            ".bin · .cbin · .zarr · .nwb.zarr",
         )
         .child(
             h_flex()
                 .gap_2()
-                .child(Button::new("start-open").primary().icon(IconName::FolderOpen).label("Open recording…").on_click(cx.listener(|this, _, _, cx| this.prompt_open(cx))))
-                .child(Button::new("start-synthetic").outline().label("Synthetic recording").on_click(cx.listener(|this, _, _, cx| this.open_synthetic(cx)))),
+                .children(open_actions(cx).iter().enumerate().map(|(i, &(label, pick))| {
+                    let button = Button::new(("start-open", i)).icon(if pick == Pick::File { IconName::File } else { IconName::FolderOpen }).label(label);
+                    let button = if i == 0 { button.primary() } else { button.outline() };
+                    button.on_click(cx.listener(move |this, _, _, cx| this.prompt_open(pick, cx)))
+                }))
+                .child(Button::new("start-synthetic").ghost().label("Synthetic recording").on_click(cx.listener(|this, _, _, cx| this.open_synthetic(cx)))),
         );
         if !recent.is_empty() {
             screen = screen.child(
@@ -595,7 +631,8 @@ impl Render for DspApp {
             .relative()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
-            .on_action(cx.listener(|this, _: &OpenRecording, _, cx| this.prompt_open(cx)))
+            .on_action(cx.listener(|this, _: &OpenRecording, _, cx| this.prompt_open(Pick::File, cx)))
+            .on_action(cx.listener(|this, _: &OpenRecordingFolder, _, cx| this.prompt_open(Pick::Folder, cx)))
             .on_action(cx.listener(|this, _: &OpenSynthetic, _, cx| this.open_synthetic(cx)))
             .on_action(cx.listener(|this, _: &AddTraces, _, cx| this.add_view(TimeViewKind::Traces, cx)))
             .on_action(cx.listener(|this, _: &AddHeatmap, _, cx| this.add_view(TimeViewKind::Heatmap, cx)))
@@ -758,6 +795,34 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(views(cx, &app).len(), 1);
         cx.update_window(window, |_, window, cx| window.render_frame(cx)).unwrap();
+    }
+
+    /// Choosing a view's tab selects that view: the Inspector follows the selected view.
+    #[gpui_kit::test]
+    fn showing_a_tab_selects_its_view(cx: &mut TestAppContext) {
+        use gpui_kit::base::dock::Panel as _;
+        let (window, store, app) = open(cx);
+        install(cx, &store);
+        cx.update_window(window, |_, window, cx| window.render_frame(cx)).unwrap();
+        let ex = explore(cx, &app);
+        let source = cx.update(|cx| store.read(cx).sources().unwrap().default_entry().id.clone());
+        cx.update(|cx| ex.update(cx, |ex, cx| {
+            ex.add_on(TimeViewKind::Traces, &source, cx);
+        }));
+        cx.run_until_parked();
+        let first = views(cx, &app)[0].clone();
+        cx.update(|cx| assert_ne!(ex.read(cx).focused.as_ref(), Some(&first), "the view just added is the focused one"));
+        let id = cx.update(|cx| first.read(cx).id());
+        cx.update_window(window, |_, window, cx| {
+            let panel = app.read(cx).explore.read(cx).panels[&id].clone();
+            panel.update(cx, |p, cx| {
+                p.set_active(false, window, cx);
+                p.set_active(true, window, cx);
+            });
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| assert_eq!(ex.read(cx).focused.as_ref(), Some(&first)));
     }
 
     /// "Add view or container": a view kind adds a view (Raster only with units), a container

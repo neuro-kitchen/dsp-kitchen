@@ -61,6 +61,8 @@ parts/
 sdist/
 var/
 wheels/
+# Source of the dspk-synapse and dspk-app wheels
+!/bindings/python/wheels/
 share/python-wheels/
 *.egg-info/
 .installed.cfg

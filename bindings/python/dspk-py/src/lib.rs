@@ -1,12 +1,14 @@
 //! `dspk._native`: the one extension module behind the `dspk` Python package. Binding crates add
 //! their submodules here; one extension keeps one CubeCL device per runtime, so device buffers move
-//! between modules without a copy through the host.
+//! between modules without a copy through the host. It is built twice, without Synapse for the
+//! `dspk` wheel and with it for the `dspk-synapse` wheel; only one is ever loaded (`dspk/__init__.py`).
 
 use pyo3::prelude::*;
 
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     dspk_py_core::register(m)?;
+    #[cfg(feature = "synapse")]
     dspk_py_synapse::register(m)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
