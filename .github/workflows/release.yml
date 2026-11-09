@@ -59,13 +59,13 @@ jobs:
         include:
           # `dspk` is the core; `dspk-synapse` is the same extension built with Synapse in
           # HIP (AMD): Linux only in cubecl-hip; compiled in, not run (no AMD GPU to test on)
-          - { os: ubuntu-latest, target: x86_64, project: ".", wheel: dspk, features: "extension-module,wgpu,cuda,hip,cpu" }
-          - { os: ubuntu-latest, target: x86_64, project: wheels/dspk-synapse, wheel: dspk-synapse, features: "extension-module,synapse,wgpu,cuda,hip,cpu" }
-          - { os: windows-latest, target: x64, project: ".", wheel: dspk, features: "extension-module,wgpu,cuda,cpu" }
-          - { os: windows-latest, target: x64, project: wheels/dspk-synapse, wheel: dspk-synapse, features: "extension-module,synapse,wgpu,cuda,cpu" }
+          - { os: ubuntu-latest, target: x86_64, project: bindings/python, wheel: dspk, features: "extension-module,wgpu,cuda,hip,cpu" }
+          - { os: ubuntu-latest, target: x86_64, project: bindings/python/wheels/dspk-synapse, wheel: dspk-synapse, features: "extension-module,synapse,wgpu,cuda,hip,cpu" }
+          - { os: windows-latest, target: x64, project: bindings/python, wheel: dspk, features: "extension-module,wgpu,cuda,cpu" }
+          - { os: windows-latest, target: x64, project: bindings/python/wheels/dspk-synapse, wheel: dspk-synapse, features: "extension-module,synapse,wgpu,cuda,cpu" }
           # No CUDA on macOS
-          - { os: macos-latest, target: aarch64, project: ".", wheel: dspk, features: "extension-module,wgpu,cpu" }
-          - { os: macos-latest, target: aarch64, project: wheels/dspk-synapse, wheel: dspk-synapse, features: "extension-module,synapse,wgpu,cpu" }
+          - { os: macos-latest, target: aarch64, project: bindings/python, wheel: dspk, features: "extension-module,wgpu,cpu" }
+          - { os: macos-latest, target: aarch64, project: bindings/python/wheels/dspk-synapse, wheel: dspk-synapse, features: "extension-module,synapse,wgpu,cpu" }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -73,7 +73,7 @@ jobs:
           python-version: "3.10"
       - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
-          working-directory: bindings/python/${{ matrix.project }}
+          working-directory: ${{ matrix.project }}
           target: ${{ matrix.target }}
           # 2_34: CubeCL's CPU runtime downloads a prebuilt LLVM that needs glibc >= 2.34 (2_28 fails
           # with "GLIBC_2.33 not found"); the wheel runs on Ubuntu 22.04+, Debian 12+, RHEL 9+
@@ -83,7 +83,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: wheel-${{ matrix.wheel }}-${{ matrix.os }}
-          path: bindings/python/${{ matrix.project }}/dist
+          path: ${{ matrix.project }}/dist
 
   # The desktop app as a wheel (`dspk[app]`). Its own job: a failure here leaves that platform
   # without `dspk[app]` and doesn't hold up the rest of the release.
@@ -97,9 +97,9 @@ jobs:
       matrix:
         include:
           # glibc 2.35: Ubuntu 22.04+, Debian 12+. The system's GUI libraries aren't bundled
-          - { os: ubuntu-22.04, target: x86_64, features: "wgpu,cuda,cpu,synapse", args: "--compatibility manylinux_2_35 --auditwheel skip" }
-          - { os: windows-latest, target: x64, features: "wgpu,cuda,cpu,synapse", args: "" }
-          - { os: macos-latest, target: aarch64, features: "wgpu,cpu,synapse", args: "" }
+          - { os: ubuntu-22.04, target: x86_64, features: "wgpu,cuda,cpu,synapse", manylinux: "2_35", args: "--auditwheel skip" }
+          - { os: windows-latest, target: x64, features: "wgpu,cuda,cpu,synapse", manylinux: "off", args: "" }
+          - { os: macos-latest, target: aarch64, features: "wgpu,cpu,synapse", manylinux: "off", args: "" }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: System libraries for dspk-app
@@ -112,7 +112,9 @@ jobs:
         with:
           working-directory: bindings/python/wheels/dspk-app
           target: ${{ matrix.target }}
-          manylinux: "off"
+          manylinux: ${{ matrix.manylinux }}
+          # On the runner itself: the GUI's system libraries are installed there, not in a container
+          container: "off"
           args: --release --strip --out dist --no-default-features --features ${{ matrix.features }} ${{ matrix.args }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
