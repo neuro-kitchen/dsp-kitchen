@@ -169,7 +169,8 @@ impl<F: DspFloat> SecondMomentAccumulator<F> {
     /// The `[channels, channels]` mean second moment (row-major); zeros before any batch.
     pub fn finish(self) -> Vec<f64> {
         let k = self.batches.max(1) as f64;
-        buffer::download::<F>(&self.client, self.sum).into_iter().map(|v| crate::core::to_f64(v) / k).collect()
+        // Only the matrix: `buffer::zeros` can be longer than asked (CUDA pads to 512 bytes)
+        buffer::download_prefix::<F>(&self.client, self.sum, self.channels * self.channels).into_iter().map(|v| crate::core::to_f64(v) / k).collect()
     }
 }
 
@@ -234,11 +235,21 @@ mod tests {
             }
         }
         assert_eq!(acc.batches(), 2);
-        for (k, (got, want)) in acc.finish().iter().zip(&want).enumerate() {
+        let got = acc.finish();
+        assert_eq!(got.len(), want.len(), "{}", client.name());
+        for (k, (got, want)) in got.iter().zip(&want).enumerate() {
             assert!((got - want).abs() < 1e-3 * want.abs().max(1.0), "{} [{k}]: {got} vs {want}", client.name());
         }
     }
     runtime_test!(test_second_moment_matches_host, second_moment_matches_host);
+
+    /// Exactly `channels²` values for any channel count: 383² `f32` is not a multiple of the 512
+    /// bytes CUDA pads to (384² is, which hid this), and 0 batches read the same buffer.
+    fn second_moment_has_exact_length(client: &Client) {
+        let channels = 383;
+        assert_eq!(SecondMomentAccumulator::<f32>::new(client, channels).finish().len(), channels * channels, "{}", client.name());
+    }
+    runtime_test!(test_second_moment_has_exact_length, second_moment_has_exact_length);
 
     /// On runtimes with `f64`, both paths compute in `f64`: they match the host to ~1e-12, which an
     /// `f32` step anywhere (≈1e-7 relative) would miss.

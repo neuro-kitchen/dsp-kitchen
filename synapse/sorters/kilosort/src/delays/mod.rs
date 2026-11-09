@@ -165,7 +165,9 @@ impl ChannelDelayEstimator {
     /// download); zeros before any batch.
     pub fn cross_correlation(self) -> Vec<f64> {
         let k = self.batches.max(1) as f64;
-        buffer::download::<f32>(&self.client, self.cc).into_iter().map(|v| v as f64 / k).collect()
+        // Only the array: `buffer::zeros` can be longer than asked (CUDA pads to 512 bytes)
+        let len = self.channels * self.channels * (2 * self.max_lag + 1);
+        buffer::download_prefix::<f32>(&self.client, self.cc, len).into_iter().map(|v| v as f64 / k).collect()
     }
 
     /// `(delays, reference)` ([`delays_from_cross_correlation`]); zeros and channel 0 before any

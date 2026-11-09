@@ -11,12 +11,20 @@
 //! `libnvidia-gpucomp`, with the main thread inside `exit()`). Every device a client is made for is
 //! recorded, and an exit handler, registered after each device is opened (so it runs before the
 //! handlers of the libraries and layers loaded until then), shuts them down: [`shutdown_devices`].
+//! That teardown can itself deadlock in the driver (`vkDestroyDevice` against those same threads),
+//! so it has a time limit, after which the process ends at once. Programs, which own their whole
+//! process, end with [`exit_now`] and skip the teardown altogether.
 //!
 //! **Autotune decisions and compiled kernels persist across processes** ([`configure_runtime`]):
 //! without it every process re-tuned (about a minute on a GPU, several with the CPU runtime) and
 //! recompiled every kernel.
 
+use std::ffi::c_int;
+#[cfg(target_os = "linux")]
+use std::ffi::c_void;
+use std::io::Write as _;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use cubecl::device::{AmdDevice, CpuDevice, CudaDevice, WgpuDevice};
 use cubecl::device_handle::DeviceHandle;
@@ -86,9 +94,42 @@ impl ComputeTarget {
 /// Devices a client was made for, shut down at exit.
 static OPENED: Mutex<Vec<Device>> = Mutex::new(Vec::new());
 
+/// How long the exit handler waits for the wgpu devices to shut down. A teardown takes well under
+/// a second; past this the driver is deadlocked and the process ends without it.
+const EXIT_TEARDOWN_LIMIT: Duration = Duration::from_secs(10);
+
 unsafe extern "C" {
     /// The C library's exit-handler registration (handlers run in reverse order of registration).
-    fn atexit(handler: extern "C" fn()) -> std::ffi::c_int;
+    #[cfg(not(target_os = "linux"))]
+    fn atexit(handler: extern "C" fn()) -> c_int;
+    /// As `atexit`, and the handler receives the process's exit status (glibc).
+    #[cfg(target_os = "linux")]
+    fn on_exit(handler: extern "C" fn(c_int, *mut c_void), arg: *mut c_void) -> c_int;
+    /// Ends the process now: no exit handlers, no library destructors.
+    fn _exit(status: c_int) -> !;
+}
+
+/// Ends the process now with `status`, after flushing standard output and error: no exit handlers,
+/// no device teardown, so the GPU driver's threads cannot crash or deadlock it (the operating
+/// system releases the device). For a program's last line, once its results are written; a library
+/// must not call this, it would end the process of whoever loaded it.
+pub fn exit_now(status: i32) -> ! {
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    // SAFETY: `_exit` takes any status and does not return
+    unsafe { _exit(status) }
+}
+
+/// Runs `teardown`, ending the process with `status` if it has not returned within `limit`.
+fn teardown_within(limit: Duration, status: c_int, teardown: impl FnOnce()) {
+    let watchdog = std::thread::Builder::new().name("dspk-exit-limit".into()).spawn(move || {
+        std::thread::sleep(limit);
+        // SAFETY: as in `exit_now`
+        unsafe { _exit(status) }
+    });
+    // Without the thread (none left at exit) the teardown still runs, unguarded, as before
+    drop(watchdog);
+    teardown();
 }
 
 /// The exit handler: shuts down the opened wgpu devices only. They must be destroyed before the
@@ -96,8 +137,22 @@ unsafe extern "C" {
 /// runners are left running: ending a runner thread drops CubeCL's kernel-cache connection during
 /// thread-local teardown, where turso can abort the process ("thread local panicked on drop",
 /// tracel-ai/cubecl#1981); the process exit ends them without their thread-local destructors.
-extern "C" fn shutdown_at_exit() {
-    shutdown_devices_where(|device| matches!(device, Device::Wgpu(_)));
+fn shutdown_at_exit(status: c_int) {
+    let is_wgpu = |device: &Device| matches!(device, Device::Wgpu(_));
+    if OPENED.lock().unwrap_or_else(|e| e.into_inner()).iter().any(is_wgpu) {
+        teardown_within(EXIT_TEARDOWN_LIMIT, status, || shutdown_devices_where(is_wgpu));
+    }
+}
+
+#[cfg(target_os = "linux")]
+extern "C" fn exit_handler(status: c_int, _arg: *mut c_void) {
+    shutdown_at_exit(status);
+}
+
+/// Without `on_exit` the status is not known: a process that hits the time limit ends with 0.
+#[cfg(not(target_os = "linux"))]
+extern "C" fn exit_handler() {
+    shutdown_at_exit(0);
 }
 
 /// Records `device`, newly opened, and registers [`shutdown_devices`] to run at exit. Called after
@@ -116,7 +171,10 @@ fn opened(device: &Device) {
     // SAFETY: registers a plain `extern "C"` function; failure (no slot left) only means the
     // device is not shut down at exit, as before
     unsafe {
-        atexit(shutdown_at_exit);
+        #[cfg(target_os = "linux")]
+        on_exit(exit_handler, std::ptr::null_mut());
+        #[cfg(not(target_os = "linux"))]
+        atexit(exit_handler);
     }
 }
 
@@ -186,6 +244,42 @@ mod tests {
         assert!(closed < open, "{open} threads with the device open, {closed} after shutdown");
         let again = target.client().unwrap();
         assert!(!again.name().is_empty());
+    }
+
+    /// The body of the two exit tests, in a process of its own (see `in_child`).
+    #[test]
+    fn exit_child() {
+        match std::env::var("DSPK_EXIT_TEST").as_deref() {
+            Ok("now") => {
+                print!("flushed");
+                exit_now(7);
+            }
+            Ok("limit") => teardown_within(Duration::from_millis(100), 3, || std::thread::sleep(Duration::from_secs(600))),
+            _ => {}
+        }
+    }
+
+    fn in_child(mode: &str) -> std::process::Output {
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "compute::target::tests::exit_child", "--nocapture"])
+            .env("DSPK_EXIT_TEST", mode)
+            .output()
+            .unwrap()
+    }
+
+    #[test]
+    fn exit_now_flushes_and_keeps_the_status() {
+        let out = in_child("now");
+        assert_eq!(out.status.code(), Some(7));
+        assert!(String::from_utf8_lossy(&out.stdout).contains("flushed"));
+    }
+
+    /// A teardown that never returns (a driver deadlock) still ends the process, with its status.
+    #[test]
+    fn a_stuck_teardown_ends_the_process_with_its_status() {
+        let start = std::time::Instant::now();
+        assert_eq!(in_child("limit").status.code(), Some(3));
+        assert!(start.elapsed() < Duration::from_secs(60), "took {:?}", start.elapsed());
     }
 
     #[test]

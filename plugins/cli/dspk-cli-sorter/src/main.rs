@@ -77,6 +77,7 @@ fn main() {
     let cli = Cli::parse();
     let _ = JSON_PROGRESS.set(cli.progress == ProgressMode::Json);
     tracing_subscriber::fmt().with_max_level(if cli.verbose { tracing::Level::DEBUG } else { DEFAULT_LOG_LEVEL }).init();
+    let mut status = 0;
     if let Err(e) = dispatch(&cli) {
         if json_progress() {
             dspk_cli::progress::json_line(&serde_json::json!({"event": "error", "message": format!("{e:#}")}));
@@ -85,8 +86,10 @@ fn main() {
         for cause in e.chain().skip(1) {
             anstream::eprintln!("  {} {cause}", style::paint(style::DIM, "caused by:"));
         }
-        std::process::exit(1);
+        status = 1;
     }
+    // Results are written: no device teardown, which can crash or deadlock in the GPU driver
+    dspk_core::compute::exit_now(status);
 }
 
 fn dispatch(cli: &Cli) -> anyhow::Result<()> {
