@@ -18,6 +18,7 @@ from pathlib import Path
 
 import dspk
 
+_COMMANDS = ("sorters", "app")
 _PROGRAM = "dspk-cli-sorter"
 _MANIFEST = "dspk-cli-sorter-manifest.json"
 _RELEASES = "https://github.com/neuro-kitchen/dsp-kitchen/releases/download"
@@ -84,6 +85,9 @@ def _install_sorters(version: str, force: bool) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
+    words = sys.argv[1:] if argv is None else argv
+    if words and not words[0].startswith("-") and words[0] not in _COMMANDS:
+        sys.exit(f"`dspk {words[0]}` is in the full command line: cargo install --path app/dspk-cli, from a clone of dsp-kitchen")
     parser = argparse.ArgumentParser(prog="dspk", description=__doc__.split("\n")[0])
     commands = parser.add_subparsers(dest="command", required=True)
     sorters = commands.add_parser("sorters", help=f"the {_PROGRAM} program (GPL-3.0)").add_subparsers(dest="action", required=True)
