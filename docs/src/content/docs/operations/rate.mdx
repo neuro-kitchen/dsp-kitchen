@@ -1,0 +1,50 @@
+---
+title: Rate
+description: "Change the sample rate on the device."
+sidebar:
+  order: 3
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+## Polyphase resampling
+
+Changes the rate by `up / down` with a Kaiser-windowed FIR, as `scipy.signal.resample_poly`. The
+output has `ceil(samples * up / down)` samples.
+
+<Tabs syncKey="language">
+<TabItem label="Python">
+
+```python
+y = dspk.ops.resample.resample_poly(x, 2, 3)
+```
+
+</TabItem>
+<TabItem label="Spec">
+
+The last operation before `write`.
+
+```json
+{"op": "resample", "up": 2, "down": 3}
+```
+
+</TabItem>
+<TabItem label="App">
+
+**Rate → Resample**, as the last op before Write.
+
+</TabItem>
+</Tabs>
+
+## Decimate
+
+Lowers the rate by an integer factor behind an anti-alias filter, as
+`scipy.signal.decimate(x, q, zero_phase=True)`. Python only; in a spec, use `resample`.
+
+```python
+lfp = dspk.ops.resample.decimate(x, 30)      # (channels, ceil(samples / 30))
+```
+
+With `ftype="iir"`, samples near the ends can differ slightly from SciPy's, which pads differently.
+
+Worked example: [Resampling](/dsp-kitchen/learn/course/resampling/resample-poly/).

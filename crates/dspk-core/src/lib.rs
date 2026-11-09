@@ -1,4 +1,15 @@
 //! Foundational primitives, timestamps, buffers, and masks for `dspk`.
+//!
+//! # Start here
+//!
+//! | Need | Look at |
+//! |---|---|
+//! | Choose a device | [`ComputeTarget`]: `ComputeTarget::from_env()?.client()?` picks the runtime named by `DSPK_RUNTIME`, else the first compiled in |
+//! | Describe or read a recording | [`RecordingSource`], [`RecordingInfo`], [`MemoryRecording`] |
+//! | Walk a recording larger than memory | [`ChunkSchedule`], [`HaloWindow`], [`WindowLoader`] |
+//! | Exact sample rates and times | [`SampleRate`], [`RationalTime`], [`TimeRange`] |
+//!
+//! Guides: <https://neuro-kitchen.github.io/dsp-kitchen/>.
 
 pub mod error;
 pub mod time;

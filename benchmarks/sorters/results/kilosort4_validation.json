@@ -1,0 +1,84 @@
+{
+ "date": "2026-11-09",
+ "program": "dspk-cli-sorter 0.0.8",
+ "machine": "NVIDIA GeForce RTX 2070 with Max-Q Design \u00b7 Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz (12 threads) \u00b7 Linux 7.2.15-300.fc45.x86_64",
+ "sorter": "kilosort4",
+ "near_um": 40.0,
+ "wall_sec": 26.767426237999643,
+ "exit_code": 0,
+ "stages_sec": {
+  "Fitting preprocessing": 0.690008053999918,
+  "Finding clips": 0.27226852500007226,
+  "Learning templates": 0.4537582539996947,
+  "Detecting spikes": 4.825400917000479,
+  "Clustering spikes": 6.666804227999819,
+  "Matching templates": 7.2621250550000696,
+  "Clustering matched spikes": 4.434923329999947,
+  "Merging units": 2.162137874999644
+ },
+ "spikes": 130551,
+ "units": 291,
+ "units_good": 152,
+ "ks4_spikes": 138666,
+ "ks4_units": 267,
+ "ks4_units_good": 127,
+ "ks4_spikes_found": 0.8662902225491469,
+ "offset_peak_samples": 0,
+ "per_channel": {
+  "spikes": 130551,
+  "channels": 197,
+  "count_correlation": 0.5677331008933505,
+  "recall_same_channel": 0.5216996235558825,
+  "recall_neighbours": 0.8616459694517762,
+  "precision_neighbours": 0.9152055518532987,
+  "offset_peak": 0
+ },
+ "all_units": {
+  "units": 267,
+  "found": {
+   "median": 0.947584789311408,
+   "p25": 0.819672298678294
+  },
+  "not_split": {
+   "median": 0.9119601328903655,
+   "p25": 0.7273386302308649
+  },
+  "precision": {
+   "median": 0.8229755178907722,
+   "p25": 0.527588644257796
+  },
+  "accuracy": {
+   "median": 0.574167507568113,
+   "p25": 0.38847372366925437
+  },
+  "accuracy_ge_0_8": 0.2958801498127341,
+  "accuracy_ge_0_5": 0.5955056179775281
+ },
+ "good_units": {
+  "units": 127,
+  "found": {
+   "median": 1.0,
+   "p25": 0.9708590177852854
+  },
+  "not_split": {
+   "median": 0.9798657718120806,
+   "p25": 0.9284233285286617
+  },
+  "precision": {
+   "median": 0.9541284403669725,
+   "p25": 0.5212932174191739
+  },
+  "accuracy": {
+   "median": 0.825,
+   "p25": 0.4544360547428032
+  },
+  "accuracy_ge_0_8": 0.5196850393700787,
+  "accuracy_ge_0_5": 0.7165354330708661
+ },
+ "export_checks": {
+  "same spike times": true,
+  "same units": true,
+  "phy sample rate": true,
+  "Phy files Kilosort4 writes (missing: none)": true
+ }
+}

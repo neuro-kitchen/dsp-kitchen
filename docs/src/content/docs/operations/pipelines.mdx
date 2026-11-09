@@ -1,0 +1,109 @@
+---
+title: Pipelines
+description: "Chains of operations over whole recordings, as data."
+sidebar:
+  order: 7
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+A pipeline spec is a graph: `read` nodes, processing nodes, `write` nodes, and the edges between them.
+Because it's data, it can be checked, saved next to a result, and run from any tool.
+
+<Tabs syncKey="format">
+<TabItem label="JSON">
+
+```json
+{
+  "dspk_pipeline": 1,
+  "nodes": {
+    "raw": {"op": "read", "path": "recording.bin"},
+    "band": {"op": "iir", "band": "bandpass", "cutoff": [300.0, 6000.0]},
+    "cmr": {"op": "cmr"},
+    "out": {"op": "write", "path": "filtered.zarr", "format": "zarr"}
+  },
+  "edges": [["raw", "band"], ["band", "cmr"], ["cmr", "out"]]
+}
+```
+
+</TabItem>
+<TabItem label="TOML">
+
+```toml
+dspk_pipeline = 1
+edges = [["raw", "band"], ["band", "cmr"], ["cmr", "out"]]
+
+[nodes.raw]
+op = "read"
+path = "recording.bin"
+
+[nodes.band]
+op = "iir"
+band = "bandpass"
+cutoff = [300.0, 6000.0]
+
+[nodes.cmr]
+op = "cmr"
+
+[nodes.out]
+op = "write"
+path = "filtered.zarr"
+format = "zarr"
+```
+
+</TabItem>
+</Tabs>
+
+## Run it
+
+```sh
+dspk spec check spec.toml         # check it and print its canonical JSON
+dspk run spec.toml --dry-run      # what would run: inputs, outputs, mode, windows, bytes
+dspk run spec.toml
+```
+
+Next to each output goes `<output>.pipeline.json`: the spec with every default written out and the
+runtime that ran. So every result says how it was made.
+
+## Many inputs
+
+| In `read` | What it means |
+|---|---|
+| `"path": "sessions/*.bin"` | Runs once per file; the write path needs `{stem}` or `{index}` |
+| `"inputs": ["a.bin", "b.bin"]` | The listed files, one after the other |
+| `"inputs": [{"merge": ["a.bin", "b.bin"]}]` | Reads them as one recording, channels side by side |
+
+`--input`, `--merge` and `--output` on `dspk run` replace the spec's.
+
+## Part of a recording
+
+`channels`, `start` and `stop` on `read`, in samples, so a range is exact.
+
+## Output
+
+`write` gives float32, as raw binary or Zarr ([size and speed of each codec](/dsp-kitchen/validation/zarr-codecs/)). For Zarr:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `compression` | zstd level 3 | Also `blosc_lz4` with byte shuffle, or none |
+| `chunk_samples` | 5000 | Zarr chunk length, separate from the processing windows |
+| `parallel` | true | Compress and store on several threads |
+
+Several chunks per processing window are what make parallel writing possible.
+
+## Branches
+
+A node can feed several others. Stages the branches share run once:
+
+```json
+"edges": [["in", "f"], ["f", "w"], ["w", "a"], ["f", "b"]]
+```
+
+## Execution
+
+The `execution` block sets `mode` (`auto`, `stream`, `windows`; see
+[Windows and halos](/dsp-kitchen/learn/concepts/windows-and-halos/)), `chunk_samples`, `upload` and
+`runtime`.
+
+Every field: the [spec reference](/dsp-kitchen/reference/schemas/pipeline/). Worked examples:
+[Pipelines](/dsp-kitchen/learn/course/pipelines/chain-on-device/).

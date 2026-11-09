@@ -1,0 +1,78 @@
+---
+title: Channels
+description: "Channel maps: reorder, drop and name channels."
+sidebar:
+  order: 5
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+A channel map says which input channel becomes which output channel, as pairs, like a hardware channel
+mapper. Every output channel `0..n` gets exactly one input, inputs left out are dropped, the same input
+twice is refused, and names are optional. `base` is 0, or 1 for 1-based numbers (TDT, MATLAB).
+
+<Tabs syncKey="format">
+<TabItem label="TOML">
+
+```toml
+[remap]
+base = 0
+pairs = [
+  { from = 4, to = 0, name = "A1" },
+  { from = 2, to = 1, name = "A2" },
+]
+```
+
+</TabItem>
+<TabItem label="JSON">
+
+```json
+{
+  "remap": {
+    "base": 0,
+    "pairs": [
+      {"from": 4, "to": 0, "name": "A1"},
+      {"from": 2, "to": 1, "name": "A2"}
+    ]
+  }
+}
+```
+
+</TabItem>
+</Tabs>
+
+## Using a map
+
+<Tabs syncKey="language">
+<TabItem label="Python">
+
+```python
+y = dspk.ops.layout.remap(x, "map.toml")
+```
+
+</TabItem>
+<TabItem label="Spec">
+
+```json
+{"op": "remap", "path": "map.toml"}
+```
+
+The pairs can also be inline: `{"op": "remap", "pairs": [...]}`.
+
+</TabItem>
+<TabItem label="App">
+
+**Channels → Remap** on the Pipeline canvas opens a channel table.
+
+</TabItem>
+</Tabs>
+
+## Where a remap can go
+
+| Position in a chain | What it can do |
+|---|---|
+| Right after `read` | Anything: it folds into the read, so only the channels kept are read |
+| In the middle | Reorder only: every channel must stay |
+| Right before `write` | Anything, including dropping channels |
+
+Worked examples: [Channels](/dsp-kitchen/learn/course/channels/remap-with-pairs/).

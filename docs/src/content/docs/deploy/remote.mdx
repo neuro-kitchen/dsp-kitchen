@@ -1,0 +1,61 @@
+---
+title: Work from a client
+description: "List files, read recordings, sort on the server and fetch the result."
+sidebar:
+  order: 4
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+Below, `192.168.1.20` stands for the server's address, and `gpu-box` for a name its certificate
+carries (one of its `--name` values, or `localhost`).
+
+<Tabs syncKey="client">
+<TabItem label="Command line">
+
+```sh
+export DSPK_IDENTITY=laptop.dspk-identity.pem
+S="192.168.1.20:50051 --server-name gpu-box"
+
+dspk remote $S info                                   # who it is, who you are, its runtime
+dspk remote $S files                                  # the recordings it shares
+dspk remote $S sort session1/rec.bin --sorter kilosort4 --wait
+dspk remote $S fetch session1/rec.kilosort4.sorting.zarr
+```
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+import dspk
+
+with dspk.remote.Session("192.168.1.20:50051", "laptop.dspk-identity.pem", server_name="gpu-box") as server:
+    server.info()                                 # who it is, who you are, its runtime
+    server.files("session1/")                     # the recordings it shares
+    rec = server.open("session1/rec.bin")         # a dspk.io.Recording, read on the server
+    window = rec.read(start=0, stop=30_000)
+    server.sort("kilosort4", "session1/rec.bin")
+    status = server.wait()                        # follows it; raises with the logs if it failed
+    server.fetch(status["output"], "rec.kilosort4.sorting.zarr")
+```
+
+</TabItem>
+<TabItem label="App">
+
+Add the server in **Settings** (Ctrl+,): its address, its name and your identity file. Then
+**File → Open from server** walks the data root. A remote recording opens in Explore like a local
+one, and sorts run on the server.
+
+</TabItem>
+</Tabs>
+
+## What runs where
+
+- Reads of a remote recording are for windows and snippets. Work on a whole recording belongs on
+  the server, as a sort.
+- One job runs at a time, and starting or stopping one needs a client enrolled with `--control`.
+- A sorting goes next to the recording unless you name an output, and never overwrites anything.
+- `fetch` writes to a new local path, and refuses one that exists.
+
+See the [`dspk.remote` reference](/dsp-kitchen/reference/python/remote/) and the
+[CLI reference](/dsp-kitchen/reference/cli/) for every option.

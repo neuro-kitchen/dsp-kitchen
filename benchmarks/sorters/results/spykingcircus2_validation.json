@@ -1,0 +1,77 @@
+{
+ "date": "2026-11-09",
+ "program": "dspk-cli-sorter 0.0.8",
+ "machine": "NVIDIA GeForce RTX 2070 with Max-Q Design \u00b7 Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz (12 threads) \u00b7 Linux 7.2.15-300.fc45.x86_64",
+ "sorter": "spykingcircus2",
+ "near_um": 60.0,
+ "wall_sec": 47.1580042380001,
+ "exit_code": 0,
+ "stages_sec": {
+  "Fitting preprocessing": 1.3402308830000038,
+  "Learning the prototype": 2.4281578479995005,
+  "Detecting spikes": 3.7375236660000155,
+  "Computing features": 1.4430381880001732,
+  "Clustering": 10.544281100999797,
+  "Matching templates": 26.436265358000128,
+  "Merging units": 1.2285071940004855
+ },
+ "spikes": 120469,
+ "units": 452,
+ "units_good": 249,
+ "ks4_spikes": 138666,
+ "ks4_units": 267,
+ "ks4_units_good": 127,
+ "ks4_spikes_found": 0.7131596786523012,
+ "offset_peak_samples": 0,
+ "per_channel": {
+  "spikes": 120469,
+  "channels": 338,
+  "count_correlation": 0.35926536693592115,
+  "recall_same_channel": 0.427696767772922,
+  "recall_neighbours": 0.6895201419237592,
+  "precision_neighbours": 0.7936730611194581,
+  "offset_peak": 0
+ },
+ "all_units": {
+  "units": 267,
+  "found": {
+   "median": 0.8683385579937304,
+   "p25": 0.6751750694146397
+  },
+  "not_split": {
+   "median": 0.7522388059701492,
+   "p25": 0.4831781527974063
+  },
+  "precision": {
+   "median": 0.7555555555555555,
+   "p25": 0.45355798192771085
+  },
+  "accuracy": {
+   "median": 0.4437564499484004,
+   "p25": 0.22635207026916895
+  },
+  "accuracy_ge_0_8": 0.2209737827715356,
+  "accuracy_ge_0_5": 0.4419475655430712
+ },
+ "good_units": {
+  "units": 127,
+  "found": {
+   "median": 0.9881796690307328,
+   "p25": 0.9422015700761949
+  },
+  "not_split": {
+   "median": 0.9351145038167938,
+   "p25": 0.7651440410418311
+  },
+  "precision": {
+   "median": 0.93,
+   "p25": 0.5245721807810444
+  },
+  "accuracy": {
+   "median": 0.7035460992907802,
+   "p25": 0.40646887871375104
+  },
+  "accuracy_ge_0_8": 0.4251968503937008,
+  "accuracy_ge_0_5": 0.6456692913385826
+ }
+}

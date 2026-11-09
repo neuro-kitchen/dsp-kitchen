@@ -1,0 +1,77 @@
+{
+ "date": "2026-11-09",
+ "program": "dspk-cli-sorter 0.0.8",
+ "machine": "NVIDIA GeForce RTX 2070 with Max-Q Design \u00b7 Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz (12 threads) \u00b7 Linux 7.2.15-300.fc45.x86_64",
+ "sorter": "tridesclous2",
+ "near_um": 60.0,
+ "wall_sec": 44.87308312699952,
+ "exit_code": 0,
+ "stages_sec": {
+  "Fitting preprocessing": 1.6967170109992367,
+  "Detecting spikes": 3.1550703510001767,
+  "Computing features": 1.47801486499975,
+  "Clustering": 2.466677532000176,
+  "Estimating templates": 6.9408473220000815,
+  "Matching templates": 28.00412469799994,
+  "Merging units": 1.1316313480001554
+ },
+ "spikes": 83110,
+ "units": 562,
+ "units_good": 371,
+ "ks4_spikes": 138666,
+ "ks4_units": 267,
+ "ks4_units_good": 127,
+ "ks4_spikes_found": 0.5876278251337747,
+ "offset_peak_samples": 0,
+ "per_channel": {
+  "spikes": 83110,
+  "channels": 353,
+  "count_correlation": 0.460297879256664,
+  "recall_same_channel": 0.3817374121990971,
+  "recall_neighbours": 0.5651493516795754,
+  "precision_neighbours": 0.942931055228011,
+  "offset_peak": 0
+ },
+ "all_units": {
+  "units": 267,
+  "found": {
+   "median": 0.7555110220440882,
+   "p25": 0.44145131039519325
+  },
+  "not_split": {
+   "median": 0.7455830388692579,
+   "p25": 0.45481527604815275
+  },
+  "precision": {
+   "median": 0.956953642384106,
+   "p25": 0.6950823580161425
+  },
+  "accuracy": {
+   "median": 0.47530864197530864,
+   "p25": 0.1927568230298439
+  },
+  "accuracy_ge_0_8": 0.24719101123595505,
+  "accuracy_ge_0_5": 0.4794007490636704
+ },
+ "good_units": {
+  "units": 127,
+  "found": {
+   "median": 0.984375,
+   "p25": 0.8445276924706131
+  },
+  "not_split": {
+   "median": 0.9038961038961039,
+   "p25": 0.8026423012671637
+  },
+  "precision": {
+   "median": 0.9844236760124611,
+   "p25": 0.9160469667318982
+  },
+  "accuracy": {
+   "median": 0.7950819672131147,
+   "p25": 0.5438730982427173
+  },
+  "accuracy_ge_0_8": 0.49606299212598426,
+  "accuracy_ge_0_5": 0.7795275590551181
+ }
+}

@@ -4,6 +4,7 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import starlightSidebarTopics from 'starlight-sidebar-topics';
+import course from './src/data/course.json' with { type: 'json' };
 
 const repo = 'https://github.com/neuro-kitchen/dsp-kitchen';
 
@@ -60,25 +61,40 @@ export default defineConfig({
             chapter('Get started', 'learn/get-started'),
             chapter('Concepts', 'learn/concepts'),
             chapter('Python', 'learn/python'),
-            chapter('Course', 'learn/course'),
+            { label: 'Course', collapsed: true, items: ['learn/course', ...course.core.map((c) => chapter(c.label, c.directory))] },
           ]),
           topic('App', 'app'),
-          topic('Operations', 'operations', ['operations', 'operations/pipelines']),
+          topic('Operations', 'operations'),
           topic('Reference', 'reference', [
             'reference',
             chapter('Python API', 'reference/python'),
             chapter('Rust API', 'reference/rust'),
-            'reference/cli',
-            'reference/schemas',
+            chapter('CLI', 'reference/cli'),
+            chapter('File formats', 'reference/schemas'),
           ]),
           // Plugins: each the same shape (overview, learn, reference, validation).
           topic('Synapse', 'plugins/synapse', [
             'plugins/synapse',
-            chapter('Learn', 'plugins/synapse/learn'),
+            {
+              label: 'Learn',
+              collapsed: true,
+              items: [
+                'plugins/synapse/learn/formats-and-probes',
+                'plugins/synapse/learn/detection',
+                'plugins/synapse/learn/sorting',
+                'plugins/synapse/learn/sorting-in-the-app',
+                'plugins/synapse/learn/curation',
+                ...course.synapse.map((c) => chapter(`Course: ${c.label}`, c.directory)),
+              ],
+            },
             {
               label: 'Reference',
               collapsed: true,
-              items: [chapter('Python API', 'plugins/synapse/reference/python'), chapter('Sorters', 'plugins/synapse/reference/sorters')],
+              items: [
+                chapter('Python API', 'plugins/synapse/reference/python'),
+                chapter('Sorters', 'plugins/synapse/reference/sorters'),
+                chapter('Sorter settings', 'plugins/synapse/reference/settings'),
+              ],
             },
             chapter('Validation', 'plugins/synapse/validation'),
           ]),
@@ -87,6 +103,7 @@ export default defineConfig({
           topic('Lab notebook', 'notebook'),
           topic('Deploy', 'deploy'),
           topic('Extend', 'extend'),
+          topic('Changelog', 'changelog'),
         ]),
       ],
     }),

@@ -4,13 +4,45 @@ All notable changes, newest first. Versions follow [Semantic Versioning](https:/
 0.0.x any release may change the API. The crates, the Python package and `dspk-sorters` share one
 version number.
 
+## 0.0.9 — 2026-11-09
+
+### Added
+
+- **Install what you need**: `pip install dspk` is the core; `dspk[synapse]` adds electrophysiology and
+  the neural formats, `dspk[app]` the desktop app, `dspk[all]` both. `import dspk.synapse` without
+  it says what to install. **Breaking**: `pip install dspk` no longer includes Synapse.
+- **`dspk autotune`**, `dspk.runtime.autotune()` and **File → Tune this device**: tune a device
+  ahead of time, so first runs and previews don't stop to benchmark.
+- **HIP (AMD) runtime** in the Linux wheels and sorter build. Compiled in, but untested: no AMD GPU.
+- `dspk.app.open(path)`, and a `dspk` command from the Python package (`sorters`, `app`, `autotune`).
+- `dspk.io.open` opens NWB, SpikeGLX and mtscomp files when Synapse is installed.
+- Sorter benchmarks run the current sorter program, and the Validation pages are re-measured. The Zarr
+  codec comparison and 24 screens of the app are in the docs.
+- **[Documentation](https://neuro-kitchen.github.io/dsp-kitchen/)**: Learn (get started, concepts,
+  Python, a course generated from the playground), the App, Operations, Deploy, GPU lessons,
+  Validation, Extend, a Lab notebook and the Synapse plugin's guides and sorter pages. CLI, sorter
+  settings and pipeline-spec references are generated from the programs.
+- Release notes on GitHub come from this file.
+
+### Changed
+
+- App, on Linux: **Open file…** (Ctrl+O) and **Open folder…** (Ctrl+Shift+O) are separate, because the
+  desktop's dialog shows either files or folders; the Add actions ask which.
+
+### Fixed
+
+- CUDA: sorters panicked at a channel count not divisible by 16 (a buffer read back with its padding).
+- Programs could hang or crash at exit in NVIDIA's Vulkan teardown, with all work already done. The
+  sorter and `dspk` programs now skip the teardown; Python and the app limit it to 10 s.
+- App: choosing a view's tab selects that view, so the Inspector follows it.
+
 ## 0.0.8 — 2026-11-07
 
 ### Added
 
 - **Documentation site** (`docs/`, Starlight): entry points by purpose as header tabs (Learn, App,
   Operations, Reference, Plugins, More), each with its own sidebar of small chapters; Synapse as
-  the first plugin. Not published yet.
+  the first plugin.
 - **Python API reference**, generated from the package's source and stubs (no build needed): one
   page per module, numpy style. Every public function and class has Parameters, Returns, Raises
   and Examples; the examples run as doctests on the CPU. Defaults are shown with their values;

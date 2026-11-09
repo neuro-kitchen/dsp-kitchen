@@ -10,7 +10,7 @@
 //! ([`matching`]), the clustering of the matched spikes with the refractory criterion, global
 //! merges ([`merges`]), duplicate-spike removal and good / mua labels, driven over a whole
 //! recording by [`runner`] (preprocessing fit: CAR, high-pass, local whitening). Not yet: drift
-//! correction. See the book's *Sorters* pages.
+//! correction. See the [documentation](https://neuro-kitchen.github.io/dsp-kitchen/plugins/synapse/reference/sorters/kilosort4/).
 
 pub mod clustering;
 pub mod delays;

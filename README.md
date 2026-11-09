@@ -1,15 +1,17 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/neuro-kitchen/dsp-kitchen/main/assets/img/neuro-kitchen-lockup-on-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/neuro-kitchen/dsp-kitchen/main/assets/img/neuro-kitchen-lockup-on-light.svg">
-    <img alt="neuro-kitchen" width="360" src="https://raw.githubusercontent.com/neuro-kitchen/dsp-kitchen/main/assets/img/neuro-kitchen-lockup-on-light.svg">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/neuro-kitchen/dsp-kitchen/main/assets/logo/neuro-kitchen-lockup-on-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/neuro-kitchen/dsp-kitchen/main/assets/logo/neuro-kitchen-lockup-on-light.svg">
+    <img alt="neuro-kitchen" width="360" src="https://raw.githubusercontent.com/neuro-kitchen/dsp-kitchen/main/assets/logo/neuro-kitchen-lockup-on-light.svg">
   </picture>
 </p>
 
 # dspk
 
 > [!WARNING]
-> **Early development (0.0.x).** APIs change between releases. Documentation is being rewritten.
+> **Early development (0.0.x).** APIs change between releases.
+
+**[Documentation](https://neuro-kitchen.github.io/dsp-kitchen/)** · [Python API](https://neuro-kitchen.github.io/dsp-kitchen/reference/python/) · [Rust API](https://docs.rs/dspk) · [Changelog](https://neuro-kitchen.github.io/dsp-kitchen/changelog/)
 
 Multi-channel signal processing written once in [CubeCL](https://github.com/tracel-ai/cubecl) and
 run on any GPU (wgpu: Vulkan, Metal, DirectX 12; CUDA; ROCm / HIP) or the CPU, with the device
@@ -69,8 +71,8 @@ Runtimes are crate features; the device is picked at run time with `dspk::core::
 
 ```toml
 [dependencies]
-dspk = "0.0.8"                                                                  # wgpu, cuda and cpu (default)
-# dspk = { version = "0.0.8", default-features = false, features = ["wgpu", "zarr"] }  # wgpu only
+dspk = "0.0.9"                                                                  # wgpu, cuda and cpu (default)
+# dspk = { version = "0.0.9", default-features = false, features = ["wgpu", "zarr"] }  # wgpu only
 ```
 
 | Feature | Runtime | Tested |

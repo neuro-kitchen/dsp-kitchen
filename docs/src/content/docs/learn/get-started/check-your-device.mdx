@@ -1,0 +1,59 @@
+---
+title: Check your device
+description: "See which runtimes your machine can use."
+sidebar:
+  order: 2
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+dsp-kitchen runs the same code on several *runtimes*. Being compiled in doesn't mean a runtime works
+on your machine: it also needs a device and a driver.
+
+<Tabs syncKey="language">
+<TabItem label="Command line">
+
+```sh
+dspk doctor
+```
+
+```text
+dspk 0.0.8 (linux / x86_64)
+Features:   wgpu, cpu, cuda, hub
+Runtimes (compiled in, in preference order):
+  wgpu  usable wgpu<wgsl> (plane 32, ≤ 1024 units per cube)
+  cuda  usable cuda (plane 32, ≤ 1024 units per cube, 36 multiprocessors)
+  cpu   usable cpu (plane 1, ≤ 12 units per cube, 12 cores)
+Selected:   wgpu (DSPK_RUNTIME or the first compiled in)
+```
+
+A runtime that can't work here says why instead of `usable`.
+
+</TabItem>
+<TabItem label="Python">
+
+```python
+import dspk
+
+dspk.runtime.available()   # ['wgpu', 'cuda', 'cpu']: compiled in, GPUs first
+dspk.runtime.current()     # what calls use without runtime=
+```
+
+</TabItem>
+</Tabs>
+
+## Choose one
+
+In order of precedence:
+
+1. A `runtime=` argument on the call, or `--runtime` on the command line.
+2. `dspk.runtime.set("cuda")` in Python.
+3. The `DSPK_RUNTIME` environment variable.
+4. The first one compiled in.
+
+:::note
+The first run on a device is slow, because kernels are compiled and tuned. Later runs start in about
+a second. See [the kernel cache](/dsp-kitchen/learn/concepts/kernel-cache/).
+:::
+
+Next: [a first filter](/dsp-kitchen/learn/get-started/first-filter/).

@@ -1,0 +1,84 @@
+{
+ "date": "2026-11-09",
+ "program": "dspk-cli-sorter 0.0.8",
+ "machine": "NVIDIA GeForce RTX 2070 with Max-Q Design \u00b7 Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz (12 threads) \u00b7 Linux 7.2.15-300.fc45.x86_64",
+ "runs": [
+  {
+   "runtime": "wgpu",
+   "run": 1,
+   "wall_sec": 26.986020190999625,
+   "stages_sec": {
+    "Fitting preprocessing": 0.5442778010001348,
+    "Finding clips": 0.23460252999939257,
+    "Learning templates": 0.4327410610003426,
+    "Detecting spikes": 5.134114489999774,
+    "Clustering spikes": 6.372596152999904,
+    "Matching templates": 7.448196363000534,
+    "Clustering matched spikes": 4.571523487000377,
+    "Merging units": 2.2479683059991658
+   },
+   "real_time": 1.6675300648818308,
+   "units": 291,
+   "spikes": 130551
+  },
+  {
+   "runtime": "wgpu",
+   "run": 2,
+   "wall_sec": 26.944747475999975,
+   "stages_sec": {
+    "Fitting preprocessing": 0.5355997649985511,
+    "Finding clips": 0.23018531600064307,
+    "Learning templates": 0.3040861480003514,
+    "Detecting spikes": 5.322602328000357,
+    "Clustering spikes": 6.08787428100004,
+    "Matching templates": 7.491298902999915,
+    "Clustering matched spikes": 4.545349537998845,
+    "Merging units": 2.427751197001271
+   },
+   "real_time": 1.6700843101269391,
+   "units": 291,
+   "spikes": 130551
+  },
+  {
+   "runtime": "cuda",
+   "run": 1,
+   "wall_sec": 39.44054691499878,
+   "stages_sec": {
+    "Fitting preprocessing": 0.7467996420000418,
+    "Finding clips": 0.23846548499932396,
+    "Learning templates": 0.31314077299975906,
+    "Detecting spikes": 3.403803508001147,
+    "Clustering spikes": 18.01162372899853,
+    "Matching templates": 3.2397669769998174,
+    "Clustering matched spikes": 7.689193017000434,
+    "Merging units": 5.797753783999724
+   },
+   "real_time": 1.1409578091546957,
+   "units": 301,
+   "spikes": 130836
+  },
+  {
+   "runtime": "cuda",
+   "run": 2,
+   "wall_sec": 13.047264499999073,
+   "stages_sec": {
+    "Fitting preprocessing": 0.25623120599993854,
+    "Finding clips": 0.21992758399937884,
+    "Learning templates": 0.13469962999988638,
+    "Detecting spikes": 3.039691928001048,
+    "Clustering spikes": 2.867162403999828,
+    "Matching templates": 2.9071726339989254,
+    "Clustering matched spikes": 2.315261523001027,
+    "Merging units": 1.3071175909990416
+   },
+   "real_time": 3.448998830368097,
+   "units": 301,
+   "spikes": 130836
+  }
+ ],
+ "recall": 0.8961677551269531,
+ "precision": 0.9497997760772705,
+ "units_found": 267,
+ "ks4_units": 267,
+ "median_unit_recall": 0.9964028776978417
+}

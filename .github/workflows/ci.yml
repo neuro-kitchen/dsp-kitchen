@@ -66,7 +66,7 @@ jobs:
           fi
           # The site, and the Python sources and stubs its API reference is generated from
           docs=false
-          if echo "$files" | grep -qE '^docs/|^bindings/python/python/|^\.github/workflows/ci\.yml$'; then
+          if echo "$files" | grep -qE '^docs/|^bindings/python/python/|^playground/|^benchmarks/signal-operations/results/|^CHANGELOG\.md$|^\.github/workflows/ci\.yml$'; then
             docs=true
           fi
           echo "rust=$rust python=$python docs=$docs"
@@ -153,11 +153,14 @@ jobs:
           cache-dependency-path: docs/package-lock.json
       # The reference is generated from the sources (read statically, no build): regenerate it and
       # fail when the committed pages differ
-      - name: Python API reference is up to date
+      - name: Python API reference and Course are up to date
         run: |
           uv run --no-project --with griffe==2.4.1 python -I docs/scripts/python_api.py
-          git status --porcelain docs/src/content/docs
-          test -z "$(git status --porcelain docs/src/content/docs)" || {
+          python3 docs/scripts/course.py
+          python3 docs/scripts/benchmarks.py
+          python3 docs/scripts/rust_snippets.py
+          git status --porcelain docs/src/content/docs crates/dspk/tests
+          test -z "$(git status --porcelain docs/src/content/docs crates/dspk/tests)" || {
             echo "the Python API reference is out of date: run docs/scripts/python_api.py and commit"; git diff --stat; exit 1; }
       - name: Install
         working-directory: docs

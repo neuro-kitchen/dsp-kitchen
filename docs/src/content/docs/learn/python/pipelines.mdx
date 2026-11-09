@@ -1,0 +1,75 @@
+---
+title: Pipelines
+description: "Run a chain of operations over whole recordings, from a spec."
+sidebar:
+  order: 3
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+A *spec* names the recordings, the operations and the output. It's data, so the same spec runs from
+Python, the command line and the app, and it's saved beside each result.
+
+<Tabs syncKey="format">
+<TabItem label="JSON">
+
+```json
+{
+  "dspk_pipeline": 1,
+  "nodes": {
+    "raw": {"op": "read", "path": "recording.bin"},
+    "hp": {"op": "iir", "band": "highpass", "cutoff": [300.0], "mode": "forward"},
+    "out": {"op": "write", "path": "filtered.zarr", "format": "zarr"}
+  },
+  "edges": [["raw", "hp"], ["hp", "out"]]
+}
+```
+
+</TabItem>
+<TabItem label="TOML">
+
+```toml
+dspk_pipeline = 1
+edges = [["raw", "hp"], ["hp", "out"]]
+
+[nodes.raw]
+op = "read"
+path = "recording.bin"
+
+[nodes.hp]
+op = "iir"
+band = "highpass"
+cutoff = [300.0]
+mode = "forward"
+
+[nodes.out]
+op = "write"
+path = "filtered.zarr"
+format = "zarr"
+```
+
+</TabItem>
+</Tabs>
+
+```python
+import dspk
+
+dspk.pipeline.plan("spec.toml")             # what it would do, without touching the device
+reports = dspk.pipeline.run("spec.toml")
+```
+
+## Progress and cancelling
+
+```python
+def progress(input, inputs, done, windows):
+    print(f"file {input + 1}/{inputs}: {done}/{windows}")
+    # return False to cancel
+
+dspk.pipeline.run("spec.toml", progress=progress)
+```
+
+Cancelling (or Ctrl+C) raises `KeyboardInterrupt`, removes the unfinished output and keeps inputs
+already finished.
+
+More on specs: [Pipelines](/dsp-kitchen/operations/pipelines/) and the
+[spec reference](/dsp-kitchen/reference/schemas/pipeline/).

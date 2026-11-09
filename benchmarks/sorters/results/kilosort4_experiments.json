@@ -1,0 +1,25 @@
+{
+ "date": "2026-11-09",
+ "program": "dspk-cli-sorter 0.0.8",
+ "machine": "NVIDIA GeForce RTX 2070 with Max-Q Design \u00b7 Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz (12 threads) \u00b7 Linux 7.2.15-300.fc45.x86_64",
+ "outcome": {
+  "learned": {
+   "spikes": 130551,
+   "channels": 197,
+   "count_correlation": 0.5677331008933505,
+   "recall_same_channel": 0.5216996235558825,
+   "recall_neighbours": 0.8616459694517762,
+   "precision_neighbours": 0.9152055518532987,
+   "offset_peak": 0
+  },
+  "ks4_templates": {
+   "spikes": 129513,
+   "channels": 197,
+   "count_correlation": 0.7706883197326473,
+   "recall_same_channel": 0.5552262270491685,
+   "recall_neighbours": 0.8604849061774336,
+   "precision_neighbours": 0.9212974759290573,
+   "offset_peak": 0
+  }
+ }
+}

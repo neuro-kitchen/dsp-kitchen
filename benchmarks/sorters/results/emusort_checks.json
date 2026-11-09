@@ -1,0 +1,36 @@
+{
+ "date": "2026-11-09",
+ "program": "dspk-cli-sorter 0.0.8",
+ "machine": "NVIDIA GeForce RTX 2070 with Max-Q Design \u00b7 Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz (12 threads) \u00b7 Linux 7.2.15-300.fc45.x86_64",
+ "segment_sec": 200.0,
+ "wall_sec": [
+  18.599835160999646,
+  19.446908305999386
+ ],
+ "stages_sec": {
+  "Fitting preprocessing": 1.8148206019995996,
+  "Finding clips": 1.8995828500010248,
+  "Learning templates": 0.81595681699946,
+  "Detecting spikes": 2.672658916999353,
+  "Clustering spikes": 3.6473615690010774,
+  "Matching templates": 3.01479758700043,
+  "Clustering matched spikes": 4.123672936999355,
+  "Merging units": 0.6109838819993456
+ },
+ "second_stages_sec": {
+  "Fitting preprocessing": 1.8804343060000974,
+  "Finding clips": 2.1005818439989525,
+  "Learning templates": 0.8423413740001706,
+  "Detecting spikes": 2.87651636100054,
+  "Clustering spikes": 3.535674700000527,
+  "Matching templates": 3.2155107959988527,
+  "Clustering matched spikes": 4.3502648810008395,
+  "Merging units": 0.6455840439994063
+ },
+ "spikes": 126153,
+ "units": 69,
+ "reproducible": true,
+ "units_over_1pct_violations": 33,
+ "units_over_5pct_violations": 9,
+ "median_presence": 1.0
+}

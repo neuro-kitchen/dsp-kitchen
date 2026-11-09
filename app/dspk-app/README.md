@@ -1,5 +1,5 @@
 <p align="center">
-  <img alt="neuro-kitchen" width="120" src="https://raw.githubusercontent.com/neuro-kitchen/dsp-kitchen/main/assets/img/neuro-kitchen-logo.png">
+  <img alt="neuro-kitchen" width="120" src="https://raw.githubusercontent.com/neuro-kitchen/dsp-kitchen/main/assets/logo/neuro-kitchen-logo.png">
 </p>
 
 # `dspk-app`: DSP App, the desktop workbench of dspk

@@ -1,0 +1,84 @@
+---
+title: A first filter
+description: "High-pass a signal from Python, Rust, a pipeline spec and the app."
+sidebar:
+  order: 3
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+The same 300 Hz high-pass, four ways. Data is always `(channels, samples)`.
+
+<Tabs syncKey="language">
+<TabItem label="Python">
+
+```python
+import numpy as np
+import dspk
+
+x = np.random.default_rng(0).standard_normal((4, 30_000)).astype(np.float32)
+spikes = dspk.ops.filter.iir(x, 30_000.0, "highpass", 300.0)
+spikes.shape   # (4, 30000)
+```
+
+</TabItem>
+<TabItem label="Rust">
+
+```rust
+use dspk::core::compute::ComputeTarget;
+use dspk::ops::core::buffer;
+use dspk::ops::{Pipeline, PipelineStage};
+
+let client = ComputeTarget::from_env()?.client()?;
+let (channels, samples, fs) = (4, 30_000, 30_000.0);
+let x = vec![0.0_f32; channels * samples];
+
+let mut pipeline = Pipeline::new();
+pipeline.add(PipelineStage::highpass(300.0));
+pipeline.validate(fs)?;
+
+let input = buffer::upload(&client, &x);
+let output = pipeline.execute::<f32>(&client, &input, channels, samples, fs)?;
+let y: Vec<f32> = buffer::download(&client, output);
+```
+
+</TabItem>
+<TabItem label="Pipeline spec">
+
+A spec works on files. Save it as `highpass.toml` and run `dspk run highpass.toml`.
+
+```toml
+dspk_pipeline = 1
+edges = [["raw", "hp"], ["hp", "out"]]
+
+[nodes.raw]
+op = "read"
+path = "recording.bin"
+
+[nodes.hp]
+op = "iir"
+band = "highpass"
+cutoff = [300.0]
+
+[nodes.out]
+op = "write"
+path = "filtered.zarr"
+format = "zarr"
+```
+
+</TabItem>
+<TabItem label="App">
+
+1. Open a recording with **File → Open**.
+2. In the **Inspector** on the right, under processing, use **Add op → Filter → IIR** and pick the preset **Spikes · high-pass 300 Hz**.
+3. The view previews the result on the device, and updates as you change the values.
+
+</TabItem>
+</Tabs>
+
+That's the shape of every operation: data in, the same shape out, on the device.
+
+Where next:
+
+- [Concepts](/dsp-kitchen/learn/concepts/runtimes/) explains what happens underneath.
+- [Operations](/dsp-kitchen/operations/) lists everything you can run.
