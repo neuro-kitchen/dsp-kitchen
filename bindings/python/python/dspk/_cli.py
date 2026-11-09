@@ -18,7 +18,7 @@ from pathlib import Path
 
 import dspk
 
-_COMMANDS = ("sorters", "app")
+_COMMANDS = ("sorters", "app", "autotune")
 _PROGRAM = "dspk-cli-sorter"
 _MANIFEST = "dspk-cli-sorter-manifest.json"
 _RELEASES = "https://github.com/neuro-kitchen/dsp-kitchen/releases/download"
@@ -94,6 +94,8 @@ def main(argv: list[str] | None = None) -> None:
     install = sorters.add_parser("install", help="download and verify it for this version and platform")
     install.add_argument("--force", action="store_true", help="download again even when it is installed")
     sorters.add_parser("status", help="where it is installed")
+    tune = commands.add_parser("autotune", help="tune this machine's devices ahead of time (a minute per GPU, longer on the CPU)")
+    tune.add_argument("--runtime", help="one runtime; by default every runtime that can open a device")
     app = commands.add_parser("app", help="open the desktop app")
     app.add_argument("path", nargs="?", help="a recording to open")
     args = parser.parse_args(argv)
@@ -102,6 +104,9 @@ def main(argv: list[str] | None = None) -> None:
             dspk.app.open(args.path)
         except RuntimeError as error:
             sys.exit(str(error))
+    elif args.command == "autotune":
+        for runtime, result in dspk.runtime.autotune(runtime=args.runtime).items():
+            print(f"{runtime}: {result['sizes']:.0f} sizes in {result['seconds']:.0f} s")
     elif args.action == "install":
         _install_sorters(dspk.__version__, args.force)
     else:

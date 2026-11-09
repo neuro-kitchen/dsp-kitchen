@@ -108,6 +108,9 @@ pub struct Session {
     /// `Some(true)`: dark, `Some(false)`: light, `None`: follow the system.
     #[serde(default)]
     pub dark: Option<bool>,
+    /// "Tune this device" was suggested (once, at the first launch).
+    #[serde(default)]
+    pub tune_suggested: bool,
     /// Keep plots dark in the light theme.
     #[serde(default)]
     pub dark_plots: bool,

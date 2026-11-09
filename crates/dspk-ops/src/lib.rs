@@ -24,6 +24,7 @@
 #[macro_use]
 mod test_support;
 
+pub mod autotune;
 pub mod error;
 pub mod core;
 pub mod filter;

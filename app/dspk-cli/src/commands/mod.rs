@@ -1,5 +1,6 @@
 //! One module per command (file name = command name); each defines its arguments and `run`.
 
+pub mod autotune;
 pub mod benchmark;
 pub mod convert;
 pub mod detect;
