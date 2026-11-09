@@ -11,8 +11,10 @@ pub const PLOT: &str = "TimePlot";
 actions!(
     dspk_app,
     [
-        /// Choose a recording file and open it.
+        /// Choose a recording stored as a file and open it.
         OpenRecording,
+        /// Choose a recording stored as a folder (Zarr) and open it.
+        OpenRecordingFolder,
         /// Open a procedural recording (no file needed).
         OpenSynthetic,
         AddTraces,
@@ -56,6 +58,7 @@ fn os_binding<A: Action>(keys: &str, action: A, cx: &App) -> KeyBinding {
 pub fn bind_keys(cx: &mut App) {
     let global = [
         os_binding("secondary-o", OpenRecording, cx),
+        os_binding("secondary-shift-o", OpenRecordingFolder, cx),
         os_binding("secondary-t", AddTraces, cx),
         os_binding("secondary-h", AddHeatmap, cx),
         os_binding("secondary-b", ToggleChannels, cx),
@@ -96,7 +99,8 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
     (
         "Anywhere",
         &[
-            ("Ctrl+O", "Open a recording"),
+            ("Ctrl+O", "Open a recording file"),
+            ("Ctrl+Shift+O", "Open a recording folder (Zarr)"),
             ("Ctrl+T / Ctrl+H", "Add a traces / heatmap view"),
             ("Ctrl+B / Ctrl+Alt+B / Ctrl+J", "Show or hide Channels / View settings / Timeline"),
             ("Ctrl+K", "Command palette: any action, view, operation or recipe by name"),
