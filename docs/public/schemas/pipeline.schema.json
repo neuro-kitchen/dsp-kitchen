@@ -1,0 +1,911 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PipelineSpec",
+  "description": "A pipeline: operations (nodes, by id) and the edges between them.",
+  "type": "object",
+  "properties": {
+    "dspk_pipeline": {
+      "description": "Spec version; must equal [`SPEC_VERSION`].",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "name": {
+      "description": "Free-form name.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "nodes": {
+      "description": "Every operation, by node id.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/Node"
+      }
+    },
+    "edges": {
+      "description": "`[from, to]` node ids.",
+      "type": "array",
+      "items": {
+        "type": "array",
+        "prefixItems": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "string"
+          }
+        ],
+        "minItems": 2,
+        "maxItems": 2
+      }
+    },
+    "execution": {
+      "$ref": "#/$defs/Execution",
+      "default": {
+        "mode": "auto",
+        "chunk_samples": 65536,
+        "upload": "auto"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "dspk_pipeline",
+    "nodes",
+    "edges"
+  ],
+  "$defs": {
+    "Node": {
+      "description": "One operation. `read` and `write` are the ends; the others mirror `dspk.ops.stage`.",
+      "oneOf": [
+        {
+          "description": "The input recording(s): `path` (one file, or a glob such as `sessions/*.bin`, which runs the\npipeline once per match) or `inputs` (a list of paths / globs and merges, run one after the\nother). A merge reads several recordings as one, channels side by side. Relative paths are\nrelative to the spec file. With several inputs the write path needs `{stem}` or `{index}`.",
+          "type": "object",
+          "properties": {
+            "op": {
+              "type": "string",
+              "const": "read"
+            },
+            "path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "inputs": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "$ref": "#/$defs/Input"
+              }
+            },
+            "source": {
+              "description": "Source id within the file (`dspk_io::sources`; with `path` only); default: the file's\ndefault source.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "channels": {
+              "description": "Channels to read, in this order; default: all.",
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "integer",
+                "format": "uint",
+                "minimum": 0
+              }
+            },
+            "start": {
+              "description": "First sample to process (samples, not seconds, so a range is exact); default: 0.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0
+            },
+            "stop": {
+              "description": "Sample after the last one to process; default: the end of the recording. Halos of\nwindow mode may read real data outside `start..stop`.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ]
+        },
+        {
+          "description": "The output file, float32 whatever the input's stored type (every recording processed by\na pipeline comes out in the same form). Relative paths are relative to the spec file.",
+          "type": "object",
+          "properties": {
+            "op": {
+              "type": "string",
+              "const": "write"
+            },
+            "path": {
+              "type": "string"
+            },
+            "format": {
+              "$ref": "#/$defs/OutputFormat",
+              "default": "raw"
+            },
+            "compression": {
+              "description": "Zarr only: chunk compression; default zstd level 3 (`dspk_io::DEFAULT_ZARR_COMPRESSION`).\nChunks are compressed and stored in parallel.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Compression"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "chunk_samples": {
+              "description": "Zarr only: samples per chunk along time (every chunk spans all channels); default\n`dspk_io::generic::zarr_traces::DEFAULT_CHUNK_SAMPLES` (5000).",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint",
+              "minimum": 0
+            },
+            "parallel": {
+              "description": "Write in parallel (Zarr: chunks compressed and stored on several threads; raw: frames\nbuilt on several threads); default `true`. `false` writes on one thread (e.g. a\nmachine busy with other work, or to compare).",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "path"
+          ]
+        },
+        {
+          "description": "`y = alpha * x + beta`.",
+          "type": "object",
+          "properties": {
+            "op": {
+              "type": "string",
+              "const": "scale"
+            },
+            "alpha": {
+              "type": "number",
+              "format": "float"
+            },
+            "beta": {
+              "type": "number",
+              "format": "float",
+              "default": 0.0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "alpha"
+          ]
+        },
+        {
+          "description": "`y = x - baseline`.",
+          "type": "object",
+          "properties": {
+            "op": {
+              "type": "string",
+              "const": "subtract_baseline"
+            },
+            "baseline": {
+              "type": "number",
+              "format": "float"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "baseline"
+          ]
+        },
+        {
+          "description": "`y = clip(x, min, max)`.",
+          "type": "object",
+          "properties": {
+            "op": {
+              "type": "string",
+              "const": "clamp"
+            },
+            "min": {
+              "type": "number",
+              "format": "float"
+            },
+            "max": {
+              "type": "number",
+              "format": "float"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "min",
+            "max"
+          ]
+        },
+        {
+          "description": "`y = |x|` (full-wave rectification; then a low-pass gives an EMG envelope).",
+          "type": "object",
+          "properties": {
+            "op": {
+              "type": "string",
+              "const": "rectify"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ]
+        },
+        {
+          "description": "`y = x²` (instantaneous power; then a moving average and `sqrt` give a moving RMS).",
+          "type": "object",
+          "properties": {
+            "op": {
+              "type": "string",
+              "const": "square"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ]
+        },
+        {
+          "description": "`y = √x`, negative values taken as 0.",
+          "type": "object",
+          "properties": {
+            "op": {
+              "type": "string",
+              "const": "sqrt"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ]
+        },
+        {
+          "description": "`y = log₁₀ |x|`, magnitudes below 1e-12 taken as 1e-12.",
+          "type": "object",
+          "properties": {
+            "op": {
+              "type": "string",
+              "const": "log10"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ]
+        },
+        {
+          "description": "Surface Laplacian of an electrode grid of `[rows, cols]` (channels in row-major order:\nchannel `r · cols + c`): each channel minus the mean of its orthogonal neighbours, which\nremoves what volume conduction spreads over the grid (HD-EMG, ECoG). The chain's channels\nmust number `rows · cols`.",
+          "type": "object",
+          "properties": {
+            "op": {
+              "type": "string",
+              "const": "laplacian"
+            },
+            "grid": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "uint",
+                "minimum": 0
+              },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "grid"
+          ]
+        },
+        {
+          "description": "Spatial whitening (global ZCA): decorrelates the channels and gives each unit variance, as\nsorters do before detection. Fitted before the run on the signal the nodes before it\nproduce: `fit_s` seconds in `chunks` chunks spread over the recording; `epsilon`\nregularises the covariance (in the signal's unit squared).",
+          "type": "object",
+          "properties": {
+            "op": {
+              "type": "string",
+              "const": "whiten"
+            },
+            "epsilon": {
+              "type": "number",
+              "format": "float",
+              "default": 9.999999974752427e-7
+            },
+            "fit_s": {
+              "type": "number",
+              "format": "double",
+              "default": 10.0
+            },
+            "chunks": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0,
+              "default": 5
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ]
+        },
+        {
+          "description": "IIR filter designed for the recording's sample rate.",
+          "type": "object",
+          "properties": {
+            "op": {
+              "type": "string",
+              "const": "iir"
+            },
+            "band": {
+              "$ref": "#/$defs/Band"
+            },
+            "cutoff": {
+              "description": "Hz: one value (lowpass, highpass) or `[low, high]` (bandpass, bandstop).",
+              "type": "array",
+              "items": {
+                "type": "number",
+                "format": "double"
+              }
+            },
+            "order": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0,
+              "default": 5
+            },
+            "design": {
+              "$ref": "#/$defs/Design",
+              "default": "butterworth"
+            },
+            "ripple_db": {
+              "description": "Pass-band ripple, chebyshev1 only.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "mode": {
+              "$ref": "#/$defs/Mode",
+              "default": "forward_backward"
+            },
+            "start": {
+              "$ref": "#/$defs/Start",
+              "default": "rest"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "band",
+            "cutoff"
+          ]
+        },
+        {
+          "description": "Second-order notch (`scipy.signal.iirnotch`).",
+          "type": "object",
+          "properties": {
+            "op": {
+              "type": "string",
+              "const": "notch"
+            },
+            "freq": {
+              "type": "number",
+              "format": "double"
+            },
+            "q": {
+              "type": "number",
+              "format": "double"
+            },
+            "mode": {
+              "$ref": "#/$defs/Mode",
+              "default": "forward_backward"
+            },
+            "start": {
+              "$ref": "#/$defs/Start",
+              "default": "rest"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "freq",
+            "q"
+          ]
+        },
+        {
+          "description": "Explicit second-order sections `[b0, b1, b2, a0, a1, a2]` (scipy layout), already designed\nfor the recording's sample rate.",
+          "type": "object",
+          "properties": {
+            "op": {
+              "type": "string",
+              "const": "sos"
+            },
+            "sections": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "number",
+                  "format": "double"
+                },
+                "minItems": 6,
+                "maxItems": 6
+              }
+            },
+            "mode": {
+              "$ref": "#/$defs/Mode",
+              "default": "forward_backward"
+            },
+            "start": {
+              "$ref": "#/$defs/Start",
+              "default": "rest"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "sections"
+          ]
+        },
+        {
+          "description": "FIR filter with explicit `taps` (design them with `dspk.ops.filter.firwin` or scipy):\ncausal, or `centered` (odd number of taps around each sample).",
+          "type": "object",
+          "properties": {
+            "op": {
+              "type": "string",
+              "const": "fir"
+            },
+            "taps": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "format": "float"
+              }
+            },
+            "centered": {
+              "type": "boolean",
+              "default": false
+            },
+            "edge": {
+              "$ref": "#/$defs/Edge",
+              "default": "zeros"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "taps"
+          ]
+        },
+        {
+          "description": "Resampling by `up / down` (`scipy.signal.resample_poly`: polyphase FIR, Kaiser `beta`\nwindow); must be the last node before `write`. The output's sample rate is\n`rate · up / down`; with a `read` range, its `start` must be a multiple of `down`.",
+          "type": "object",
+          "properties": {
+            "op": {
+              "type": "string",
+              "const": "resample"
+            },
+            "up": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "down": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "beta": {
+              "type": "number",
+              "format": "double",
+              "default": 5.0
+            },
+            "edge": {
+              "$ref": "#/$defs/Edge",
+              "default": "zeros"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "up",
+            "down"
+          ]
+        },
+        {
+          "description": "Channels reordered, dropped and renamed by pairs, like a hardware channel mapper: `pairs`\nwritten here (`base` 0, or 1 for 1-based numbers), or `path` to a map file (`.toml` /\n`.json` with the pairs under `remap`; relative to the spec file). Output channel `to` reads\ninput `from`; inputs left out are dropped. Right after `read` (or another remap): it folds\ninto the read, at no cost.",
+          "type": "object",
+          "properties": {
+            "op": {
+              "type": "string",
+              "const": "remap"
+            },
+            "base": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0,
+              "default": 0
+            },
+            "pairs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ChannelPair"
+              }
+            },
+            "path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ]
+        },
+        {
+          "description": "Common average reference.",
+          "type": "object",
+          "properties": {
+            "op": {
+              "type": "string",
+              "const": "car"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ]
+        },
+        {
+          "description": "Common median reference.",
+          "type": "object",
+          "properties": {
+            "op": {
+              "type": "string",
+              "const": "cmr"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ]
+        },
+        {
+          "description": "Zero-phase Gaussian smoothing.",
+          "type": "object",
+          "properties": {
+            "op": {
+              "type": "string",
+              "const": "gaussian_smooth"
+            },
+            "sigma_samples": {
+              "type": "number",
+              "format": "float"
+            },
+            "edge": {
+              "$ref": "#/$defs/Edge",
+              "default": "reflect"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "sigma_samples"
+          ]
+        },
+        {
+          "description": "Running median over an odd `width`.",
+          "type": "object",
+          "properties": {
+            "op": {
+              "type": "string",
+              "const": "median"
+            },
+            "width": {
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0
+            },
+            "edge": {
+              "$ref": "#/$defs/Edge",
+              "default": "zeros"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "width"
+          ]
+        },
+        {
+          "description": "Teager–Kaiser energy.",
+          "type": "object",
+          "properties": {
+            "op": {
+              "type": "string",
+              "const": "teager_kaiser"
+            },
+            "edge": {
+              "$ref": "#/$defs/Edge",
+              "default": "reflect"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ]
+        }
+      ]
+    },
+    "Input": {
+      "description": "One input of a `read` node: a path (or glob), or several recordings merged side by side.",
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "merge": {
+              "description": "The recordings, in channel order; same sample rate and length.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/MergePart"
+              }
+            }
+          },
+          "required": [
+            "merge"
+          ]
+        }
+      ]
+    },
+    "MergePart": {
+      "description": "One recording of a merge.",
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "source": {
+          "description": "Source id within the file; default: the file's default source.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "channels": {
+          "description": "Channels taken from this recording, in order; default: all.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "path"
+      ]
+    },
+    "OutputFormat": {
+      "oneOf": [
+        {
+          "description": "Raw float32, time-major, with a JSON sidecar (`.meta`).",
+          "type": "string",
+          "const": "raw"
+        },
+        {
+          "description": "Zarr `/traces`, float32.",
+          "type": "string",
+          "const": "zarr"
+        }
+      ]
+    },
+    "Compression": {
+      "description": "Compression of Zarr chunks: `{\"codec\": \"zstd\", \"level\": 3}`, `{\"codec\": \"blosc_lz4\", \"level\":\n5}` (LZ4 after a byte shuffle; faster, usually a little larger) or `{\"codec\": \"none\"}`.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "codec": {
+              "type": "string",
+              "const": "none"
+            }
+          },
+          "required": [
+            "codec"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "codec": {
+              "type": "string",
+              "const": "zstd"
+            },
+            "level": {
+              "type": "integer",
+              "format": "int32",
+              "default": 3
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "codec"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "codec": {
+              "type": "string",
+              "const": "blosc_lz4"
+            },
+            "level": {
+              "type": "integer",
+              "format": "uint8",
+              "minimum": 0,
+              "maximum": 255,
+              "default": 5
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "codec"
+          ]
+        }
+      ]
+    },
+    "Band": {
+      "type": "string",
+      "enum": [
+        "lowpass",
+        "highpass",
+        "bandpass",
+        "bandstop"
+      ]
+    },
+    "Design": {
+      "type": "string",
+      "enum": [
+        "butterworth",
+        "chebyshev1",
+        "bessel"
+      ]
+    },
+    "Mode": {
+      "description": "`forward_backward`: zero phase (`sosfiltfilt`); `forward`: causal (`sosfilt`).",
+      "type": "string",
+      "enum": [
+        "forward_backward",
+        "forward"
+      ]
+    },
+    "Start": {
+      "description": "How a forward filter starts: at rest, or from the steady state of the first sample.",
+      "type": "string",
+      "enum": [
+        "rest",
+        "steady_state"
+      ]
+    },
+    "Edge": {
+      "description": "Samples past the ends of a window (scipy names: `constant` 0, `odd`, `reflect`, `nearest`).",
+      "type": "string",
+      "enum": [
+        "zeros",
+        "odd",
+        "reflect",
+        "nearest"
+      ]
+    },
+    "ChannelPair": {
+      "description": "One output channel: input channel `from` becomes output channel `to`, optionally named.",
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "to": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "to"
+      ]
+    },
+    "Execution": {
+      "description": "How the executor runs the chain.",
+      "type": "object",
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/ExecMode",
+          "default": "auto"
+        },
+        "chunk_samples": {
+          "description": "Samples per channel processed per window.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "default": 65536
+        },
+        "runtime": {
+          "description": "`wgpu`, `cuda`, `hip`, `cpu`; default: `DSPK_RUNTIME`, else the first compiled in.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "upload": {
+          "$ref": "#/$defs/Upload",
+          "default": "auto"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ExecMode": {
+      "description": "`stream`: windows in order, filter state carried (exact; forward filters, point-wise and\nspatial stages only). `windows`: each window on its own with halos of the chain's settling\n(zero-phase filters, stencil stages). `auto`: `stream` when the chain allows it.",
+      "type": "string",
+      "enum": [
+        "auto",
+        "stream",
+        "windows"
+      ]
+    },
+    "Upload": {
+      "description": "What crosses to the device. `stored`: the recording's stored integers, scaled on the device\n(int16 moves half the bytes of float32). `scaled`: float32 values scaled on the host. `auto`:\n`stored` for integer recordings, `scaled` otherwise (float32 is the same either way; float64 is\nscaled on the host).",
+      "type": "string",
+      "enum": [
+        "auto",
+        "stored",
+        "scaled"
+      ]
+    }
+  }
+}

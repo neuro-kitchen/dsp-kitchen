@@ -10,7 +10,7 @@ version number.
 
 - **Documentation site** (`docs/`, Starlight): entry points by purpose as header tabs (Learn, App,
   Operations, Reference, Plugins, More), each with its own sidebar of small chapters; Synapse as
-  the first plugin. Not published yet.
+  the first plugin.
 - **Python API reference**, generated from the package's source and stubs (no build needed): one
   page per module, numpy style. Every public function and class has Parameters, Returns, Raises
   and Examples; the examples run as doctests on the CPU. Defaults are shown with their values;

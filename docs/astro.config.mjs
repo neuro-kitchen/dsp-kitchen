@@ -63,13 +63,13 @@ export default defineConfig({
             chapter('Course', 'learn/course'),
           ]),
           topic('App', 'app'),
-          topic('Operations', 'operations', ['operations', 'operations/pipelines']),
+          topic('Operations', 'operations'),
           topic('Reference', 'reference', [
             'reference',
             chapter('Python API', 'reference/python'),
             chapter('Rust API', 'reference/rust'),
-            'reference/cli',
-            'reference/schemas',
+            chapter('CLI', 'reference/cli'),
+            chapter('File formats', 'reference/schemas'),
           ]),
           // Plugins: each the same shape (overview, learn, reference, validation).
           topic('Synapse', 'plugins/synapse', [
@@ -78,7 +78,11 @@ export default defineConfig({
             {
               label: 'Reference',
               collapsed: true,
-              items: [chapter('Python API', 'plugins/synapse/reference/python'), chapter('Sorters', 'plugins/synapse/reference/sorters')],
+              items: [
+                chapter('Python API', 'plugins/synapse/reference/python'),
+                chapter('Sorters', 'plugins/synapse/reference/sorters'),
+                chapter('Sorter settings', 'plugins/synapse/reference/settings'),
+              ],
             },
             chapter('Validation', 'plugins/synapse/validation'),
           ]),
@@ -87,6 +91,7 @@ export default defineConfig({
           topic('Lab notebook', 'notebook'),
           topic('Deploy', 'deploy'),
           topic('Extend', 'extend'),
+          topic('Changelog', 'changelog'),
         ]),
       ],
     }),

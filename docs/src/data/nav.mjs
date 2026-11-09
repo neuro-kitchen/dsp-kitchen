@@ -2,4 +2,4 @@
 // and the rest under "More".
 export const MAIN = ['Learn', 'App', 'Operations', 'Reference'];
 export const PLUGINS = ['Synapse'];
-export const MORE = ['Validation', 'GPU lessons', 'Lab notebook', 'Deploy', 'Extend'];
+export const MORE = ['Validation', 'GPU lessons', 'Lab notebook', 'Deploy', 'Extend', 'Changelog'];
