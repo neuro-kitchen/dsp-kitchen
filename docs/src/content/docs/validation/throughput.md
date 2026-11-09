@@ -17,8 +17,6 @@ time, on an RTX 2070 Max-Q and an i7-9750H.
 
 With a Zarr file written (`dspk run`), Neuropixels dropped to 2–4×.
 
-![Speed per runtime, release 0.0.4](/dsp-kitchen/benchmarks/release-0.0.4-speed.png)
-
 :::note[These numbers are from before two improvements]
 Since then, vector kernels handle [odd row lengths](/dsp-kitchen/gpu/vector-widths/), which is what held
 the CPU runtime back on 385 channels, and the writer runs on its own thread and compresses in parallel.

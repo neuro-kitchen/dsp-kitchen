@@ -30,5 +30,4 @@ const results = new URL('../../benchmarks/signal-operations/results/', import.me
 const benchmarks = new URL('../public/benchmarks/', import.meta.url);
 await mkdir(benchmarks, { recursive: true });
 for (const file of (await readdir(results)).filter((f) => f.endsWith('.png'))) await cp(new URL(file, results), new URL(file, benchmarks));
-await cp(new URL('release-0.0.4/speed.png', results), new URL('release-0.0.4-speed.png', benchmarks));
 console.log(`figures: ${copied} copied from the playground`);
