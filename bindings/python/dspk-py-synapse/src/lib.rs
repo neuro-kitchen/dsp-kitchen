@@ -13,6 +13,13 @@ use pyo3::prelude::*;
 /// `matching`, `spatial`) to the extension
 /// module `m`.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // `dspk.io` opens the neural formats too once Synapse is built in
+    dspk_py_core::io::use_formats(dspk_py_core::io::FormatSet {
+        open: dspk_synapse::io::open,
+        open_source: dspk_synapse::io::open_source,
+        sources: dspk_synapse::io::sources,
+        all: dspk_synapse::io::formats,
+    });
     let synapse = PyModule::new(m.py(), "synapse")?;
     for (name, register) in [
         ("io", io::register as fn(&Bound<'_, PyModule>) -> PyResult<()>),

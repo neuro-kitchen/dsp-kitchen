@@ -37,6 +37,11 @@ jobs:
         run: |
           version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "dspk") | .version')
           test "v${version}" = "${GITHUB_REF_NAME}" || { echo "tag ${GITHUB_REF_NAME} != workspace version ${version}"; exit 1; }
+      - name: dspk's extras pin this version
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "dspk") | .version')
+          wrong=$(grep -oE '"dspk-(synapse|app)==[^"]+"' bindings/python/pyproject.toml | grep -v "==${version}\"" || true)
+          test -z "$wrong" || { echo "bindings/python/pyproject.toml pins $wrong, the workspace is ${version}"; exit 1; }
       - name: Package and verify the publishable crates
         run: cargo publish --dry-run --workspace
       # Nothing is published with a known vulnerability, a yanked crate or a licence not allowed
@@ -52,16 +57,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            target: x86_64
-            features: extension-module,wgpu,cuda,cpu
-          - os: windows-latest
-            target: x64
-            features: extension-module,wgpu,cuda,cpu
+          # `dspk` is the core; `dspk-synapse` is the same extension built with Synapse in
+          # HIP (AMD): Linux only in cubecl-hip; compiled in, not run (no AMD GPU to test on)
+          - { os: ubuntu-latest, target: x86_64, project: ".", wheel: dspk, features: "extension-module,wgpu,cuda,hip,cpu" }
+          - { os: ubuntu-latest, target: x86_64, project: wheels/dspk-synapse, wheel: dspk-synapse, features: "extension-module,synapse,wgpu,cuda,hip,cpu" }
+          - { os: windows-latest, target: x64, project: ".", wheel: dspk, features: "extension-module,wgpu,cuda,cpu" }
+          - { os: windows-latest, target: x64, project: wheels/dspk-synapse, wheel: dspk-synapse, features: "extension-module,synapse,wgpu,cuda,cpu" }
           # No CUDA on macOS
-          - os: macos-latest
-            target: aarch64
-            features: extension-module,wgpu,cpu
+          - { os: macos-latest, target: aarch64, project: ".", wheel: dspk, features: "extension-module,wgpu,cpu" }
+          - { os: macos-latest, target: aarch64, project: wheels/dspk-synapse, wheel: dspk-synapse, features: "extension-module,synapse,wgpu,cpu" }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -69,7 +73,7 @@ jobs:
           python-version: "3.10"
       - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
-          working-directory: bindings/python
+          working-directory: bindings/python/${{ matrix.project }}
           target: ${{ matrix.target }}
           # 2_34: CubeCL's CPU runtime downloads a prebuilt LLVM that needs glibc >= 2.34 (2_28 fails
           # with "GLIBC_2.33 not found"); the wheel runs on Ubuntu 22.04+, Debian 12+, RHEL 9+
@@ -78,8 +82,42 @@ jobs:
           args: --release --strip --out dist --no-default-features --features ${{ matrix.features }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: wheel-${{ matrix.os }}
-          path: bindings/python/dist
+          name: wheel-${{ matrix.wheel }}-${{ matrix.os }}
+          path: bindings/python/${{ matrix.project }}/dist
+
+  # The desktop app as a wheel (`dspk[app]`). Its own job: a failure here leaves that platform
+  # without `dspk[app]` and doesn't hold up the rest of the release.
+  app-wheels:
+    name: App wheel (${{ matrix.os }})
+    needs: check
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # glibc 2.35: Ubuntu 22.04+, Debian 12+. The system's GUI libraries aren't bundled
+          - { os: ubuntu-22.04, target: x86_64, features: "wgpu,cuda,cpu,synapse", args: "--compatibility manylinux_2_35 --auditwheel skip" }
+          - { os: windows-latest, target: x64, features: "wgpu,cuda,cpu,synapse", args: "" }
+          - { os: macos-latest, target: aarch64, features: "wgpu,cpu,synapse", args: "" }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: System libraries for dspk-app
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends \
+            libfontconfig-dev libfreetype-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          working-directory: bindings/python/wheels/dspk-app
+          target: ${{ matrix.target }}
+          manylinux: "off"
+          args: --release --strip --out dist --no-default-features --features ${{ matrix.features }} ${{ matrix.args }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wheel-dspk-app-${{ matrix.os }}
+          path: bindings/python/wheels/dspk-app/dist
 
   sdist:
     name: Source distribution
@@ -110,7 +148,7 @@ jobs:
           # glibc 2.35 (Ubuntu 22.04+, Debian 12+); the CPU runtime's prebuilt LLVM needs >= 2.34
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            features: wgpu,cuda,cpu,hub
+            features: wgpu,cuda,hip,cpu,hub
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             features: wgpu,cuda,cpu,hub
@@ -230,6 +268,7 @@ jobs:
     permissions:
       contents: write # create the release and attach files
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: sorters-*
@@ -249,11 +288,21 @@ jobs:
           json.dump({"version": version, "assets": assets}, open("out/dspk-cli-sorter-manifest.json", "w"), indent=2)
           print(json.dumps(assets, indent=2))
           PY
+      # CHANGELOG.md is the one source: this version's section becomes the release notes
+      - name: Release notes from CHANGELOG.md
+        run: |
+          awk -v v="${GITHUB_REF_NAME#v}" 'index($0, "## " v " ") == 1 { f = 1; next } /^## / { f = 0 } f' CHANGELOG.md > release-notes.md
+          test -s release-notes.md || { echo "CHANGELOG.md has no section for ${GITHUB_REF_NAME#v}"; exit 1; }
+          cat >> release-notes.md <<'NOTES'
+
+          ## Install
+
+          Crates are on crates.io, and `pip install dspk` gets the Python package. The files below are `dspk-cli-sorter` (every spike sorter, GPL-3.0 as a whole; source: this tag), installed by `dspk sorters install`.
+          NOTES
       - name: Create the release and attach the files
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1 ||
-            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --verify-tag \
-              --notes "dspk ${GITHUB_REF_NAME}: crates on crates.io, \`pip install dspk\`. The files below are \`dspk-cli-sorter\` (every spike sorter, GPL-3.0 as a whole; source: this tag), installed by \`dspk sorters install\`."
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --verify-tag --notes-file release-notes.md
           gh release upload "$GITHUB_REF_NAME" out/* --repo "$GITHUB_REPOSITORY" --clobber

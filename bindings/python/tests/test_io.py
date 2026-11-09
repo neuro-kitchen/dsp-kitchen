@@ -15,8 +15,10 @@ def signal() -> np.ndarray:
     return np.stack([100.0 * np.sin(0.01 * (c + 1) * t) for c in range(4)]).astype(np.float32)
 
 
-def test_formats_are_the_generic_ones():
-    assert dspk.io.formats() == ["zarr-traces", "raw"]
+def test_formats_include_the_generic_ones():
+    # Synapse, when built in, adds the neural formats
+    assert {"zarr-traces", "raw"} <= set(dspk.io.formats())
+    assert ("nwb" in dspk.io.formats()) == ("synapse" in dspk.__all__)
 
 
 def test_raw_float32_round_trip(tmp_path, signal):

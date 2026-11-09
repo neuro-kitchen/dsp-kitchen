@@ -4,10 +4,11 @@
 //! neural formats (NWB, SpikeGLX, …) come with the synapse bindings.
 
 use std::ops::Range;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
-use dspk_core::{MemoryOrder, RecordingInfo, RecordingSource, SampleFormat, SampleRate, SignalUnit};
+use dspk_core::{DspResult, MemoryOrder, RecordingInfo, RecordingSource, SampleFormat, SampleRate, SignalUnit};
+use dspk_io::{Format, SourceEntry};
 use dspk_core::recording::{check_read, check_read_stored};
 use numpy::ndarray::Array2;
 use numpy::{IntoPyArray, PyArray2, PyReadonlyArray2};
@@ -16,6 +17,27 @@ use pyo3::prelude::*;
 use pyo3_stub_gen::derive::{gen_stub_pyclass, gen_stub_pyfunction, gen_stub_pymethods};
 
 use crate::error::to_py;
+
+/// How `open`, `sources` and `formats` find a format. The generic ones of `dspk-io` by default; the
+/// Synapse bindings replace them with the set that adds the neural formats.
+#[derive(Clone, Copy)]
+pub struct FormatSet {
+    pub open: fn(&Path) -> DspResult<Box<dyn RecordingSource>>,
+    pub open_source: fn(&Path, &str) -> DspResult<Box<dyn RecordingSource>>,
+    pub sources: fn(&Path) -> DspResult<Vec<SourceEntry>>,
+    pub all: fn() -> &'static [&'static dyn Format],
+}
+
+static FORMAT_SET: OnceLock<FormatSet> = OnceLock::new();
+
+/// Makes `set` the formats of `dspk.io` (the first call wins).
+pub fn use_formats(set: FormatSet) {
+    let _ = FORMAT_SET.set(set);
+}
+
+fn format_set() -> &'static FormatSet {
+    FORMAT_SET.get_or_init(|| FormatSet { open: dspk_io::open, open_source: dspk_io::open_source, sources: dspk_io::sources, all: dspk_io::formats })
+}
 
 /// Samples per channel each writer step reads from the source (bounds memory while writing).
 pub const WRITE_CHUNK_SAMPLES: usize = 65_536;
@@ -217,9 +239,10 @@ impl Source {
 #[pyfunction]
 #[pyo3(signature = (path, source=None))]
 pub fn open(path: PathBuf, source: Option<&str>) -> PyResult<Recording> {
+    let formats = format_set();
     let inner = match source {
-        Some(id) => dspk_io::open_source(&path, id),
-        None => dspk_io::open(&path),
+        Some(id) => (formats.open_source)(&path, id),
+        None => (formats.open)(&path),
     }
     .map_err(to_py)?;
     Ok(Recording { inner: Arc::from(inner) })
@@ -251,7 +274,7 @@ pub fn open(path: PathBuf, source: Option<&str>) -> PyResult<Recording> {
 #[gen_stub_pyfunction(module = "dspk._native.io")]
 #[pyfunction]
 pub fn sources(path: PathBuf) -> PyResult<Vec<Source>> {
-    Ok(dspk_io::sources(&path)
+    Ok((format_set().sources)(&path)
         .map_err(to_py)?
         .into_iter()
         .map(|e| Source {
@@ -274,7 +297,7 @@ pub fn sources(path: PathBuf) -> PyResult<Vec<Source>> {
 #[gen_stub_pyfunction(module = "dspk._native.io")]
 #[pyfunction]
 pub fn formats() -> Vec<&'static str> {
-    dspk_io::formats().iter().map(|f| f.name()).collect()
+    (format_set().all)().iter().map(|f| f.name()).collect()
 }
 
 /// A NumPy array `(channels, samples)` seen as a recording, so the Rust writers can read it.
