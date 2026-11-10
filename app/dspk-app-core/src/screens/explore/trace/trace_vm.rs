@@ -162,8 +162,52 @@ impl TraceVm {
         &self.store
     }
 
+    /// The sources this view reads: its own recording's when it shows one beside the open one.
     fn sources(&self, cx: &App) -> Option<Arc<SourceSet>> {
-        self.store.read(cx).sources().cloned()
+        let s = self.store.read(cx);
+        match self.foreign(cx) {
+            Some(path) => s.sources_of(&path).cloned(),
+            None => s.sources().cloned(),
+        }
+    }
+
+    /// The recording this view reads when it is not the open one.
+    pub fn foreign(&self, cx: &App) -> Option<std::path::PathBuf> {
+        let path = self.view.recording.as_ref()?;
+        let open = self.store.read(cx).recording.as_ref().and_then(|r| r.path.clone());
+        (open.as_ref() != Some(path)).then(|| path.clone())
+    }
+
+    /// The timeline in this view's recording's time (shifted by the placements for a view of
+    /// another recording).
+    fn timeline(&self, cx: &App) -> crate::domain::timeline::TimelineState {
+        let s = self.store.read(cx);
+        let mut tl = s.timeline.clone();
+        if let Some(path) = self.foreign(cx) {
+            let offset = s.time_offset_of(&path);
+            tl.window_start_sec += offset;
+            tl.current_time_sec += offset;
+        }
+        tl
+    }
+
+    /// Points this view at `source` of the loaded recording `path` (beside the open one): its own
+    /// channel selection (all channels), titled with the file. False when it isn't loaded.
+    pub fn pin_recording(&mut self, path: &std::path::Path, source: &str, cx: &mut Context<Self>) -> bool {
+        let Some(sources) = self.store.read(cx).sources_of(path).cloned() else { return false };
+        let e = sources.entry(source);
+        self.view.recording = Some(path.to_path_buf());
+        self.view.set_source(&e.id, &e.name, &e.unit, e.channels);
+        if self.view.selection.is_empty() || self.view.selection.iter().any(|&c| c >= e.channels) {
+            self.view.set_selection(0..e.channels, e.channels);
+        }
+        self.view.pinned_selection = true;
+        self.view.doc_view.clear();
+        let file = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        self.view.source_name = format!("{file} · {}", e.name);
+        cx.emit(TraceEvent::Changed);
+        self.request_render(cx);
+        true
     }
 
     // ------------------------------------------------------------------------
@@ -198,20 +242,29 @@ impl TraceVm {
         }
         let Some(sources) = self.sources(cx) else { return };
         self.view.needs_render = false;
-        // The pyramid builds in the background, nearest what this view shows first
-        let (source_id, focus) = (self.view.source.clone(), self.store.read(cx).timeline.window_start_sec);
-        self.store.update(cx, |s, cx| s.focus_pyramid(&source_id, focus, cx));
+        let foreign = self.foreign(cx).is_some();
+        let timeline = self.timeline(cx);
+        // The pyramid builds in the background, nearest what this view shows first (a view of
+        // another recording asks its signal directly)
+        let (source_id, focus) = (self.view.source.clone(), timeline.window_start_sec);
+        if foreign {
+            let ds = sources.get(&self.view.source);
+            ds.signal().focus((focus.max(0.0) * ds.sample_rate) as u64);
+        } else {
+            self.store.update(cx, |s, cx| s.focus_pyramid(&source_id, focus, cx));
+        }
         let store = self.store.read(cx);
         let dataset = sources.get(&self.view.source);
         let on_default = sources.index_of(&self.view.source) == sources.index_of("");
         let events = match &store.recording {
-            Some(r) if on_default => r.events.clone(),
+            Some(r) if on_default && !foreign => r.events.clone(),
             _ => Default::default(),
         };
-        // This view's session view: its processed preview, else the recording as stored
-        let shown = self.shown_view(store);
+        // This view's session view: its processed preview, else the recording as stored (a view
+        // of another recording: as stored)
+        let shown = if foreign { None } else { self.shown_view(store) };
         let signal = shown.and_then(|v| store.preview_of(&v.id)).unwrap_or_else(|| dataset.signal().clone());
-        let mut req = self.view.render_request(&store.timeline, signal, events, store.palette());
+        let mut req = self.view.render_request(&timeline, signal, events, store.palette());
         let window = req.window_start_sec..req.window_start_sec + req.window_sec;
         match req.mode {
             TimeViewKind::Traces if self.view.spikes => {
@@ -410,7 +463,7 @@ impl TraceVm {
         if !pinned {
             let s = self.store.read(cx);
             let channels = s.selection(&self.view.source).to_vec();
-            let total = s.sources().map_or(0, |ss| ss.entry(&self.view.source).channels);
+            let total = self.sources(cx).map_or(0, |ss| ss.entry(&self.view.source).channels);
             self.view.set_selection(channels, total);
         }
         cx.emit(TraceEvent::Changed);
@@ -418,7 +471,7 @@ impl TraceVm {
     }
 
     fn total_channels(&self, cx: &App) -> usize {
-        self.store.read(cx).sources().map_or(0, |s| s.entry(&self.view.source).channels)
+        self.sources(cx).map_or(0, |s| s.entry(&self.view.source).channels)
     }
 
     pub fn set_selection(&mut self, channels: impl IntoIterator<Item = usize>, cx: &mut Context<Self>) {
@@ -465,7 +518,7 @@ impl TraceVm {
             // Back from solo on a view that follows the shared selection: catch up with it
             let s = self.store.read(cx);
             let channels = s.selection(&self.view.source).to_vec();
-            let total = s.sources().map_or(0, |ss| ss.entry(&self.view.source).channels);
+            let total = self.sources(cx).map_or(0, |ss| ss.entry(&self.view.source).channels);
             self.view.set_selection(channels, total);
         }
         cx.emit(TraceEvent::Changed);
@@ -502,7 +555,8 @@ impl TraceVm {
         let dataset = sources.get(&self.view.source);
         let (w, h) = (self.view.canvas_width as f32, self.view.canvas_height as f32);
         self.view.hover_seq += 1;
-        let target = self.view.hover_target(fx * w, fy * h, &dataset, &self.store.read(cx).timeline);
+        let timeline = self.timeline(cx);
+        let target = self.view.hover_target(fx * w, fy * h, &dataset, &timeline);
         match target {
             HoverTarget::Text(text) => {
                 self.hover = text;

@@ -108,6 +108,10 @@ pub struct TimeView {
     /// One channel shown alone (double-click): what the view showed before, restored on leaving.
     #[serde(skip)]
     pub solo: Option<Box<Solo>>,
+    /// The loaded recording this view reads when it isn't the open one (a view beside the open
+    /// recording's, aligned by the recordings' placements); `None`: the open recording.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording: Option<std::path::PathBuf>,
 }
 
 /// A view's channels, lanes and pin before it showed one channel alone.
@@ -162,6 +166,7 @@ impl TimeView {
             hover: String::new(),
             hover_seq: 0,
             solo: None,
+            recording: None,
         }
     }
 

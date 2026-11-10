@@ -76,6 +76,19 @@ Shift+drag on the timeline, or use **Mark**, then **Save as epoch…**. The dial
 
 ![The New epoch dialog: name, type, start, end and notes](/dsp-kitchen/img/app/07_adding-epoch.png)
 
+## Several recordings
+
+To see another recording beside the open one, right-click it in the Timeline tab and choose
+**Show beside the open recording**. It loads in the background and a traces view of it opens under
+the focused view; the open recording stays the active one (its processing, selection and
+Inspector).
+
+Both views follow the one timeline. When the recordings are placed on the session's time
+(right-click → Metadata), the view of the other recording is shifted by the difference, so events
+at the same session time line up. A view of another recording shows it as stored (previews and
+spikes belong to the open recording) and keeps its own channel selection. It's saved with the
+layout and comes back while that recording is loaded.
+
 ## Several sources
 
 ![The Timeline panel with two recordings and a Baseline epoch](/dsp-kitchen/img/app/08_add-multiple-recordings.png)

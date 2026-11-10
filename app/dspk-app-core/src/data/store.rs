@@ -36,6 +36,8 @@ const DOCUMENT_POLL: Duration = Duration::from_millis(500);
 pub enum AppEvent {
     /// A recording was opened (or closed): views start over.
     RecordingChanged,
+    /// A recording was loaded beside the open one (its views can be added).
+    RecordingLoaded(PathBuf),
     /// The visible time window moved (views redraw).
     WindowMoved,
     /// The playhead, play state, loop or speed changed (overlays and transport only).
@@ -1261,6 +1263,50 @@ impl Store {
             });
         })
         .detach();
+    }
+
+    /// Loads the recording at `path` beside the open one (it stays the active one), for views of
+    /// both; [`AppEvent::RecordingLoaded`] when it is ready (at once when already loaded).
+    pub fn load_beside(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if self.recordings().any(|r| r.path.as_ref() == Some(&path)) {
+            cx.emit(AppEvent::RecordingLoaded(path));
+            return;
+        }
+        let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+        self.set_status(format!("Loading {name}…"), cx);
+        let task = cx.background_spawn({
+            let path = path.clone();
+            async move { SourceSet::open(&path) }
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |store, cx| match result {
+                Ok(sources) => {
+                    store.loaded.retain(|r| r.path.as_ref() != Some(&path));
+                    store.loaded.push(Recording::new(sources, Some(path.clone())));
+                    store.set_status(format!("Loaded {name} beside the open recording"), cx);
+                    cx.emit(AppEvent::RecordingLoaded(path));
+                }
+                Err(e) => store.set_status(format!("Could not load {name}: {e:#}"), cx),
+            });
+        })
+        .detach();
+    }
+
+    /// The sources of the loaded recording at `path` (the open one, or one loaded beside it).
+    pub fn sources_of(&self, path: &Path) -> Option<&Arc<SourceSet>> {
+        self.recordings().find(|r| r.path.as_deref() == Some(path)).map(|r| &r.sources)
+    }
+
+    /// Seconds to add to the open recording's time to get `path`'s: the difference of their
+    /// placements on the session's time (0 when either is not placed).
+    pub fn time_offset_of(&self, path: &Path) -> f64 {
+        let open = self.recording.as_ref().and_then(|r| r.path.clone());
+        let at = |p: &Path| self.doc.placements.iter().find(|pl| pl.path == p).map(|pl| pl.start_sec);
+        match (open.as_deref().and_then(at), at(path)) {
+            (Some(a), Some(b)) => a - b,
+            _ => 0.0,
+        }
     }
 
     /// Opens the recording at `path` on a server (a `dspk://` path: drawn from the server's

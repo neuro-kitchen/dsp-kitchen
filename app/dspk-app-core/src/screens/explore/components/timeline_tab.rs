@@ -133,6 +133,7 @@ impl TimelineTab {
             let (store, store2, store3, store4) = (self.store.clone(), self.store.clone(), self.store.clone(), self.store.clone());
             let (p1, p2, p3, src) = (tr.path.clone(), tr.path.clone(), tr.path.clone(), tr.source.clone());
             let (store5, p5, loaded) = (self.store.clone(), tr.path.clone(), tr.loaded);
+            let (explore_beside, p6, open_here) = (self.explore.clone(), tr.path.clone(), tr.open);
             let source_rows = tr.sources.iter().enumerate().map(|(j, (id, name, channels))| {
                 let (store, explore, path, id, id2) = (self.store.clone(), self.explore.clone(), tr.path.clone(), id.clone(), id.clone());
                 let (store2, path2) = (self.store.clone(), tr.path.clone());
@@ -187,6 +188,12 @@ impl TimelineTab {
                     let (p1, p2, p3, src) = (p1.clone(), p2.clone(), p3.clone(), src.clone());
                     m.item(PopupMenuItem::new("Metadata…").on_click(move |_, _, cx| store.update(cx, |s, cx| s.open_floating(Floating::Metadata { path: p1.clone(), source: src.clone() }, cx))))
                         .item(PopupMenuItem::new(if loaded { "Show in Explore" } else { "Open in Explore" }).on_click(move |_, _, cx| store2.update(cx, |s, cx| s.open(p2.clone(), cx))))
+                        .when(!open_here, |m| {
+                            let (explore, p6) = (explore_beside.clone(), p6.clone());
+                            m.item(PopupMenuItem::new("Show beside the open recording").on_click(move |_, _, cx| {
+                                explore.update(cx, |vm, cx| vm.show_beside(crate::screens::explore::trace::renderer::TimeViewKind::Traces, p6.clone(), cx));
+                            }))
+                        })
                         .item(PopupMenuItem::new("New epoch here").on_click(move |_, _, cx| new_epoch(&store4, cx)))
                         .separator()
                         .item(PopupMenuItem::new("Take off the timeline").on_click(move |_, _, cx| {

@@ -35,6 +35,9 @@ pub struct SavedTimeView {
     pub spikes: bool,
     #[serde(default)]
     pub color_by: crate::screens::explore::trace::renderer::ColorBy,
+    /// A view of another loaded recording (see `TimeView::recording`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording: Option<std::path::PathBuf>,
 }
 
 impl SavedTimeView {
@@ -49,6 +52,7 @@ impl SavedTimeView {
             pinned_selection: v.pinned_selection,
             spikes: v.spikes,
             color_by: v.color_by,
+            recording: v.recording.clone(),
         }
     }
 
@@ -60,6 +64,7 @@ impl SavedTimeView {
         v.pinned_selection = self.pinned_selection;
         v.spikes = self.spikes;
         v.color_by = self.color_by;
+        v.recording = self.recording.clone();
         v.needs_render = true;
     }
 }
