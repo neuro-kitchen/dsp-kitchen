@@ -358,9 +358,61 @@ impl TracePanel {
             }
         }
         // The values, once, at the top lane's line
-        let label = if (release - level).abs() > f32::EPSILON { format!("level {} · release {} {unit}", fmt_value(level), fmt_value(release)) } else { format!("level {} {unit}", fmt_value(level)) };
+        let mut label = if (release - level).abs() > f32::EPSILON { format!("level {} · release {} {unit}", fmt_value(level), fmt_value(release)) } else { format!("level {} {unit}", fmt_value(level)) };
+        if let Some((_, events)) = &vm.live {
+            label.push_str(&format!(" · {} event{} here", events.len(), if events.len() == 1 { "" } else { "s" }));
+        }
         let y0 = ((0.5 * lane_h - level * k) / h).clamp(0.0, 0.95);
         out.push(div().absolute().left(px(8.)).top(relative(y0)).mt(px(-18.)).px_1().rounded(px(3.)).bg(color(palette.background)).text_xs().text_color(amber).child(label).into_any_element());
+        out
+    }
+
+    /// The live events of the window (the chain ends with Crossings): a tick at each onset and a
+    /// faint band to its offset, in the event's lane; or why there are none.
+    fn live_ticks(&self, cx: &App) -> Vec<gpui_kit::AnyElement> {
+        let vm = self.vm.read(cx);
+        if vm.view.remove_dc {
+            return Vec::new();
+        }
+        let store = vm.store().read(cx);
+        let palette = store.palette();
+        if let Some(note) = &vm.live_note {
+            return vec![div()
+                .absolute()
+                .top(px(6.))
+                .right(px(8.))
+                .h(px(24.))
+                .px_2()
+                .flex()
+                .items_center()
+                .rounded(px(4.))
+                .bg(color(palette.background))
+                .text_xs()
+                .text_color(color(palette.text))
+                .child(format!("Live events: {note}"))
+                .into_any_element()];
+        }
+        let Some((_, events)) = &vm.live else { return Vec::new() };
+        let drawn = vm.view.drawn_channels();
+        let lanes = drawn.len().max(1) as f32;
+        let (t0, win) = (store.timeline.window_start_sec, store.timeline.visible_window_sec.max(1e-9));
+        let amber = crate::screens::explore::components::timeline_tab::tick_color(45.0, 1.0);
+        let mut out = Vec::new();
+        for e in events.iter().take(Self::MAX_TICKS) {
+            let Some(lane) = drawn.iter().position(|&c| c == e.channel as usize) else { continue };
+            let x = ((e.onset_s - t0) / win) as f32;
+            let top = lane as f32 / lanes;
+            let h = 1.0 / lanes;
+            if let Some(off) = e.offset_s {
+                let x1 = (((off - t0) / win) as f32).min(1.0);
+                if x1 > x {
+                    out.push(div().absolute().left(relative(x.max(0.0))).w(relative(x1 - x.max(0.0))).top(relative(top + 0.1 * h)).h(relative(0.8 * h)).bg(amber.opacity(0.10)).into_any_element());
+                }
+            }
+            if (0.0..=1.0).contains(&x) {
+                out.push(div().absolute().left(relative(x)).ml(px(-1.)).w(px(2.)).top(relative(top + 0.1 * h)).h(relative(0.8 * h)).bg(amber.opacity(0.95)).into_any_element());
+            }
+        }
         out
     }
 
@@ -459,6 +511,7 @@ impl TracePanel {
         }
         // Event sets of this recording as ticks in their channel's lane (traces only)
         out.extend(self.event_ticks(cx));
+        out.extend(self.live_ticks(cx));
         out.extend(self.ruler_lines(cx));
         // One channel shown alone: say so; the chip (or double-click, or Esc) goes back
         if let Some(solo) = &vm.view.solo {

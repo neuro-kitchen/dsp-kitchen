@@ -7,6 +7,7 @@ pub mod derived;
 pub mod epochs;
 pub mod events;
 pub mod jobs;
+pub mod live;
 pub mod preferences;
 pub mod recording;
 pub mod remote;

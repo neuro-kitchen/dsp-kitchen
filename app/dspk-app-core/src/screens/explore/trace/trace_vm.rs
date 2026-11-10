@@ -65,6 +65,12 @@ pub struct TraceVm {
     _tasks: Vec<Task<()>>,
     _store: Subscription,
     home: Workspace,
+    /// Live events of the window (the chain ends with Crossings), what they were found for, and a
+    /// detection on its way.
+    pub live: Option<(crate::data::live::LiveKey, Arc<Vec<crate::data::events::Event>>)>,
+    live_pending: Option<crate::data::live::LiveKey>,
+    /// Why no live events show (e.g. the window is too wide).
+    pub live_note: Option<String>,
 }
 
 impl EventEmitter<TraceEvent> for TraceVm {}
@@ -135,7 +141,55 @@ impl TraceVm {
             _tasks: vec![frame_task, hover_task],
             _store: sub,
             home: Workspace::Explore,
+            live: None,
+            live_pending: None,
+            live_note: None,
         }
+    }
+
+    /// Finds the window's events again when the view's chain ends with Crossings and the window,
+    /// the channels shown or the chain changed (in the background; the ticks follow).
+    fn update_live(&mut self, signal: &Arc<dyn dspk_view::SignalBackend>, window: (f64, f64), cx: &mut Context<Self>) {
+        let store = self.store.read(cx);
+        let node = if self.view.kind == TimeViewKind::Traces { self.shown_view(store).and_then(|v| crate::data::live::crossings_of(v).map(|n| (v.clone(), n.clone()))) } else { None };
+        let Some((doc, node)) = node else {
+            if self.live.is_some() || self.live_note.is_some() {
+                (self.live, self.live_note) = (None, None);
+                cx.notify();
+            }
+            return;
+        };
+        let rate = signal.info().sample_rate_hz();
+        let samples = (window.0.max(0.0) * rate) as u64..((window.0 + window.1).max(0.0) * rate).ceil() as u64;
+        let channels = self.view.drawn_channels().to_vec();
+        let key = crate::data::live::LiveKey::new(&doc, &channels, samples.clone(), signal);
+        if self.live.as_ref().is_some_and(|(k, _)| *k == key) || self.live_pending.as_ref() == Some(&key) {
+            return;
+        }
+        self.live_pending = Some(key.clone());
+        let signal = signal.clone();
+        let task = gpui_kit::AppContext::background_spawn(cx, async move { crate::data::live::detect(&signal, &channels, samples, &node) });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |vm, cx| {
+                if vm.live_pending.as_ref() != Some(&key) {
+                    return;
+                }
+                vm.live_pending = None;
+                match result {
+                    Ok(events) => {
+                        vm.live = Some((key, Arc::new(events)));
+                        vm.live_note = None;
+                    }
+                    Err(e) => {
+                        vm.live = None;
+                        vm.live_note = Some(e.to_string().trim_start_matches("invalid configuration: ").to_string());
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// The workspace showing this view (Explore's views by default; a plugin's strip its own):
@@ -275,6 +329,8 @@ impl TraceVm {
             }
             _ => {}
         }
+        let live_signal = (!foreign).then(|| req.signal.clone());
+        let live_window = (req.window_start_sec, req.window_sec);
         let samples_per_px = req.window_sec * dataset.sample_rate / req.width.max(1) as f64;
         let (start, window) = (req.window_start_sec, req.window_sec);
         let tx = self.frames.clone();
@@ -289,6 +345,9 @@ impl TraceVm {
             let _ = tx.try_send(Delivered { shown, scale: Some(scale), complete, elapsed: t0.elapsed(), samples_per_px });
         });
         cx.global::<Services>().pool.request(JobKey::new(self.view.id, RENDER_SLOT), work);
+        if let Some(signal) = live_signal {
+            self.update_live(&signal, live_window, cx);
+        }
     }
 
     fn on_frame(&mut self, d: Delivered, cx: &mut Context<Self>) {
