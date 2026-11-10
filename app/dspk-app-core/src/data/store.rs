@@ -38,6 +38,8 @@ pub enum AppEvent {
     RecordingChanged,
     /// A recording was loaded beside the open one (its views can be added).
     RecordingLoaded(PathBuf),
+    /// Show the Epochs view of session view `id` in Explore.
+    ShowEpochs(String),
     /// The visible time window moved (views redraw).
     WindowMoved,
     /// The playhead, play state, loop or speed changed (overlays and transport only).
@@ -1001,6 +1003,22 @@ impl Store {
             self.open(v.recording.path.clone(), cx);
         }
         self.set_workspace(Workspace::Explore, cx);
+        if v.display.layout == crate::domain::session::ViewLayout::Epochs {
+            cx.emit(AppEvent::ShowEpochs(id.to_string()));
+        }
+    }
+
+    /// The event set a Write of `view`'s chain saved (the same recording and ops), if any.
+    pub fn saved_events_of(&self, view: &ViewDoc) -> Option<&crate::domain::epoch::EventSetDoc> {
+        let g = &self.doc.graph;
+        g.nodes.iter().filter(|n| matches!(n.kind, crate::domain::graph::NodeKind::Write {})).find_map(|w| {
+            let (recording, ops) = g.chain(&w.id, &self.doc.recipes)?;
+            if recording.path != view.recording.path || ops != view.ops {
+                return None;
+            }
+            let table = crate::data::derived::events_group(&recording.path, &w.id);
+            self.doc.event_sets.iter().find(|s| s.table == table)
+        })
     }
 
     /// Writes the active view (its recording through its enabled ops) to

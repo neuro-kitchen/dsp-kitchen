@@ -21,6 +21,8 @@ pub enum Template {
     /// A channel map, every channel of the input in order to start (edited in the inspector).
     Remap,
     View,
+    /// A view whose events' windows are stacked (Epochs layout).
+    EpochsView,
     Write,
 }
 
@@ -120,7 +122,8 @@ pub fn catalog() -> Vec<Category> {
             name: "Output",
             icon: IconName::Eye,
             items: vec![
-                Item { label: "View", hint: "A stream shown in Explore", template: Template::View },
+                Item { label: "View", hint: "A stream shown in Explore (traces, with ticks after Crossings)", template: Template::View },
+                Item { label: "Epochs view", hint: "Each event's window stacked per channel, mean ± SD (after Crossings)", template: Template::EpochsView },
                 Item { label: "Write", hint: "The chain written to a processed file (float32 Zarr); after Crossings, its events as an event set", template: Template::Write },
             ],
         },
@@ -236,6 +239,7 @@ pub fn describe(kind: &NodeKind) -> (String, String, IconName) {
             (name, format!("flowOf(recording) · {channels}"), IconName::AudioWaveform)
         }
         NodeKind::Op { node, .. } => (type_name(node).to_string(), op_summary(node), IconName::SlidersHorizontal),
+        NodeKind::View { name, display, .. } if display.layout == crate::domain::session::ViewLayout::Epochs => (name.clone(), ".collect(epochs) · stacked in Explore".into(), IconName::Activity),
         NodeKind::View { name, .. } => (name.clone(), ".collect(view) · shown in Explore".into(), IconName::Eye),
         NodeKind::Write {} => ("Write".into(), ".collect(write) · processed file".into(), IconName::ArrowDown),
         NodeKind::Recipe { recipe, overrides, .. } => {

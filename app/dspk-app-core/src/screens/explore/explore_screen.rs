@@ -86,6 +86,8 @@ pub struct ExploreView {
     add_dialog: bool,
     dialog_focus: gpui_kit::FocusHandle,
     dialog_cursor: usize,
+    /// The Epochs views shown, by session view.
+    epochs: HashMap<String, Entity<super::components::epochs_panel::EpochsPanel>>,
     /// The Pipeline as a panel of the dock, and whether it is in the dock.
     pipeline: Entity<super::components::pipeline_panel::PipelinePanel>,
     pipeline_shown: bool,
@@ -114,8 +116,6 @@ pub enum Arrangement {
 enum DialogRow {
     Arrange(Arrangement),
     Add(TimeViewKind),
-    /// The Epochs view: each event's window stacked.
-    Epochs,
 }
 
 /// Opens / closes one side of `explore` (the panels' hide buttons).
@@ -171,6 +171,12 @@ impl ExploreView {
                 cx.notify();
             }
         });
+        // An Epochs view double-clicked in the Pipeline
+        let epochs = cx.subscribe_in(&store, window, |this, _, e: &AppEvent, window, cx| {
+            if let AppEvent::ShowEpochs(view) = e {
+                this.show_epochs(view.clone(), window, cx);
+            }
+        });
         // Picking a channel shows its processing
         let picked = cx.subscribe(&store, |this, _, e: &AppEvent, cx| {
             if matches!(e, AppEvent::Picked) && this.right != Some(RightPanel::Inspector) {
@@ -198,9 +204,10 @@ impl ExploreView {
             add_dialog: false,
             dialog_focus: cx.focus_handle(),
             dialog_cursor: 0,
+            epochs: HashMap::new(),
             pipeline,
             pipeline_shown: false,
-            _subs: vec![sub, picked],
+            _subs: vec![sub, picked, epochs],
         };
         let views = this.vm.read(cx).views.clone();
         if !views.is_empty() {
@@ -346,7 +353,7 @@ impl ExploreView {
         let units = s.active_view().is_some_and(|v| crate::plugin::layers(s, v, cx).units);
         let has_views = !self.vm.read(cx).views.is_empty();
         let mut rows: Vec<(DialogRow, bool)> = [Arrangement::Tabs, Arrangement::Horizontal, Arrangement::Vertical, Arrangement::Grid].into_iter().map(|a| (DialogRow::Arrange(a), has_views)).collect();
-        rows.extend([(DialogRow::Add(TimeViewKind::Traces), true), (DialogRow::Add(TimeViewKind::Heatmap), true), (DialogRow::Add(TimeViewKind::Raster), units), (DialogRow::Epochs, true)]);
+        rows.extend([(DialogRow::Add(TimeViewKind::Traces), true), (DialogRow::Add(TimeViewKind::Heatmap), true), (DialogRow::Add(TimeViewKind::Raster), units)]);
         rows
     }
 
@@ -362,13 +369,20 @@ impl ExploreView {
                 });
                 self.show_right(RightPanel::Inspector, cx);
             }
-            DialogRow::Epochs => self.add_epochs(window, cx),
         }
     }
 
-    /// An Epochs view under the focused view.
-    pub fn add_epochs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let panel = cx.new(|cx| super::components::epochs_panel::EpochsPanel::new(self.store.clone(), cx));
+    /// Shows the Epochs view of session view `view` beside the focused view (again when its tab
+    /// was closed; nothing when it shows).
+    pub fn show_epochs(&mut self, view: String, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(p) = self.epochs.get(&view) {
+            let id = gpui_kit::base::dock::PanelId::from(p.entity_id());
+            if self.dock.read(cx).layout(DockPlacement::Center).and_then(|l| l.find_panel_node(id)).is_some() {
+                return;
+            }
+        }
+        let panel = cx.new(|cx| super::components::epochs_panel::EpochsPanel::new(self.store.clone(), view.clone(), cx));
+        self.epochs.insert(view, panel.clone());
         let focused = self.vm.read(cx).focused.as_ref().and_then(|f| self.panels.get(&f.read(cx).id())).map(|p| p.entity_id());
         let id = gpui_kit::base::dock::PanelId::from(panel.entity_id());
         self.dock.update(cx, |d, cx| {
@@ -568,15 +582,7 @@ impl ExploreView {
                 let id = format!("add-view-kind-{}", title.to_lowercase());
                 row(4 + i, id, icon, title, text, enabled[4 + i], DialogRow::Add(kind))
             }))
-            .child(row(
-                7,
-                "add-view-kind-epochs".to_string(),
-                Assets::Activity,
-                "Epochs",
-                "Each event's window stacked per channel, mean ± SD (live while the level is tuned)".to_string(),
-                enabled[7],
-                DialogRow::Epochs,
-            ))
+
             .child(div().mx_2().my_2().h(px(1.)).bg(border))
             .child({
                 let (vm, store) = (self.vm.clone(), self.store.clone());

@@ -296,6 +296,14 @@ impl GraphCanvas {
                 let n = self.graph(cx).nodes.iter().filter(|n| matches!(n.kind, NodeKind::View { .. })).count() + 1;
                 crate::domain::command::view_kind(format!("View {n}"))
             }
+            Template::EpochsView => {
+                let n = self.graph(cx).nodes.iter().filter(|n| matches!(&n.kind, NodeKind::View { display, .. } if display.layout == crate::domain::session::ViewLayout::Epochs)).count() + 1;
+                let mut kind = crate::domain::command::view_kind(format!("Epochs {n}"));
+                if let NodeKind::View { display, .. } = &mut kind {
+                    display.layout = crate::domain::session::ViewLayout::Epochs;
+                }
+                kind
+            }
             Template::Write => NodeKind::Write {},
             Template::OpenRecording => {
                 let s = self.store.read(cx);

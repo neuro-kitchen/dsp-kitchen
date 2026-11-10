@@ -49,6 +49,29 @@ change, so Ctrl+Z undoes it. The view shows the signal Crossings looks at, the e
 The ruler needs **Remove DC** off, since removing each lane's offset would move the lines away from
 the values they stand for. A button on the plot turns it off.
 
+### Live events, ticks only, and the Epochs view
+
+While a view's chain ends with Crossings, the view finds the events of the visible window itself,
+before any Write: an amber tick at each onset and a faint band to its offset, counted in the
+ruler's label. They follow the level as you change it.
+
+In the Inspector's **Layer** section, **Events as ticks** turns the ticks on or off for that view,
+and **Events only** hides the signal and keeps the ticks in each channel's lane. Stack views of the
+same chain to separate them: traces in one, events only in another.
+
+The Pipeline's **Output** menu has three outputs for a chain:
+
+| Output | What it shows |
+|---|---|
+| **View** | The stream: traces (with ticks after Crossings), heatmap, raster |
+| **Epochs view** | Each event's window stacked per channel (up to 60, faint), the mean ± SD and a line at the event |
+| **Write** | Saves the processed file, or after Crossings, the event set |
+
+Outputs are part of the session: double-click one to show it in Explore; closing its tab only hides
+it. An Epochs view's window (−50 … +150 ms to −1 … +3 s) and the source of its events are saved
+with it: **Auto** uses the event set a Write of the same chain saved, else the live events of the
+visible window; **Live** and **Saved** pick one.
+
 ## Event sets
 
 Event sets are listed under **EVENTS** in Explore's Timeline tab, with their colour and number of

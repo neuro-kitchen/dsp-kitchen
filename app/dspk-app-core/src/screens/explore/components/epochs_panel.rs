@@ -1,8 +1,10 @@
-//! The Epochs view of Explore: every event's window of the active view's signal stacked per
-//! channel (faint), with the mean ± SD on top and a line at the event. Its events are the live
+//! An Epochs view (a session view with the Epochs layout, from the Pipeline's Output menu) shown
+//! in Explore: every event's window of the view's signal stacked per channel (faint), with the
+//! mean ± SD on top and a line at the event. Its events (the view's `epochs_from`) are the live
 //! ones of the visible window (the chain ends with Crossings: they follow the level while it is
-//! tuned) or a saved event set. Computed off the UI thread; redrawn when the chain, the level, the
-//! window or the choice changes.
+//! tuned) or the set a Write of the same chain saved. Its window and source are the view's
+//! display settings (saved in the session). Computed off the UI thread; redrawn when the chain,
+//! the level, the window or a setting changes.
 
 use std::sync::Arc;
 
@@ -19,6 +21,8 @@ use gpui_kit::{
 
 use crate::data::events::Event;
 use crate::data::store::{AppEvent, Store};
+use crate::domain::command::SessionCommand;
+use crate::domain::session::EpochsFrom;
 use crate::screens::analytics::aligned::{self, aligned_average, AlignTo, ChannelAverage};
 use crate::screens::analytics::WINDOWS_MS;
 use crate::screens::explore::components::timeline_tab::tick_color;
@@ -27,15 +31,13 @@ use crate::screens::explore::components::timeline_tab::tick_color;
 const SNIPPETS: usize = 60;
 const CARD_W: f32 = 240.;
 const CARD_H: f32 = 120.;
-/// Default window: −200 … +800 ms.
-const DEFAULT_WINDOW: usize = 2;
 /// Tick hue of live events (the ruler's).
 const LIVE_HUE: f32 = 45.0;
 
-/// Where the events come from.
+/// Where the events of one computation come from.
 #[derive(Debug, Clone, PartialEq)]
 enum Source {
-    /// Found now in the visible window by the Crossings op the active view's chain ends with.
+    /// Found now in the visible window by the Crossings op the chain ends with.
     Live,
     /// A saved event set (by id).
     Set(String),
@@ -59,8 +61,8 @@ struct Card {
 
 pub struct EpochsPanel {
     store: Entity<Store>,
-    source: Source,
-    window: usize,
+    /// The session view (Epochs layout) shown.
+    pub view: String,
     shown: Option<(Key, Vec<Card>, usize)>,
     computing: Option<Key>,
     note: Option<String>,
@@ -69,43 +71,79 @@ pub struct EpochsPanel {
 }
 
 impl EpochsPanel {
-    pub fn new(store: Entity<Store>, cx: &mut Context<Self>) -> Self {
+    pub fn new(store: Entity<Store>, view: String, cx: &mut Context<Self>) -> Self {
         let sub = cx.subscribe(&store, |this, _, e: &AppEvent, cx| {
             if matches!(e, AppEvent::Document(_) | AppEvent::WindowMoved | AppEvent::RecordingChanged) {
                 this.refresh(cx);
             }
         });
-        let mut this = Self { store, source: Source::Live, window: DEFAULT_WINDOW, shown: None, computing: None, note: None, focus: cx.focus_handle(), _sub: sub };
+        let mut this = Self { store, view, shown: None, computing: None, note: None, focus: cx.focus_handle(), _sub: sub };
         this.refresh(cx);
         this
     }
 
-    fn refresh(&mut self, cx: &mut Context<Self>) {
+    /// Where the events come from now: the setting, the saved set falling back to live in Auto.
+    fn source(&self, cx: &App) -> Result<Source, String> {
         let s = self.store.read(cx);
-        let Some(view) = s.doc.active().cloned() else { return };
+        let view = s.doc.view(&self.view).ok_or("This Epochs view is no longer in the session.")?;
+        let saved = s.saved_events_of(view).map(|set| set.id.clone());
+        match (view.display.epochs_from, saved) {
+            (EpochsFrom::Live, _) | (EpochsFrom::Auto, None) => Ok(Source::Live),
+            (_, Some(id)) => Ok(Source::Set(id)),
+            (EpochsFrom::Saved, None) => Err("No saved events yet: double-click the Write after Crossings in Pipeline (or switch to Live).".into()),
+        }
+    }
+
+    /// Changes the view's display settings (saved in the session).
+    fn set_display(&self, f: impl FnOnce(&mut crate::domain::session::DisplayDoc), cx: &mut App) {
+        let Some(mut display) = self.store.read(cx).doc.view(&self.view).map(|v| v.display.clone()) else { return };
+        f(&mut display);
+        let cmd = SessionCommand::SetDisplay { view: self.view.clone(), display };
+        self.store.update(cx, |s, cx| {
+            let _ = s.execute(cmd, cx);
+        });
+    }
+
+    fn refresh(&mut self, cx: &mut Context<Self>) {
+        let source = match self.source(cx) {
+            Ok(source) => source,
+            Err(e) => {
+                (self.note, self.shown) = (Some(e), None);
+                cx.notify();
+                return;
+            }
+        };
+        let s = self.store.read(cx);
+        let Some(view) = s.doc.view(&self.view).cloned() else { return };
+        if s.recording.as_ref().and_then(|r| r.path.as_ref()) != Some(&view.recording.path) {
+            (self.note, self.shown) = (Some("Its recording isn't the open one: open it to see its epochs.".into()), None);
+            cx.notify();
+            return;
+        }
         let Some(sources) = s.sources() else { return };
         let dataset = sources.get(&s.view_source(&view));
         let signal = s.preview_of(&view.id).unwrap_or_else(|| dataset.signal().clone());
         let rate = signal.info().sample_rate_hz();
         let (t0, win) = (s.timeline.window_start_sec.max(0.0), s.timeline.visible_window_sec);
         let span = ((t0 * rate) as u64, ((t0 + win) * rate).ceil() as u64);
-        let (pre_ms, post_ms) = WINDOWS_MS[self.window];
+        let window = view.display.epochs_window.min(WINDOWS_MS.len() - 1);
+        let (pre_ms, post_ms) = WINDOWS_MS[window];
         let key = Key {
-            source: self.source.clone(),
-            window: self.window,
+            source: source.clone(),
+            window,
             chain: serde_json::to_string(&view.ops).unwrap_or_default(),
-            span: if self.source == Source::Live { span } else { (0, 0) },
+            span: if source == Source::Live { span } else { (0, 0) },
             signal: Arc::as_ptr(&signal) as *const () as usize,
         };
         if self.shown.as_ref().is_some_and(|(k, _, _)| *k == key) || self.computing.as_ref() == Some(&key) {
             return;
         }
         // The events: live ones are found with the averaging, in the background
-        let (hue, live, saved): (f32, Option<dspk_pipeline::Node>, Option<Arc<Vec<Event>>>) = match &self.source {
+        let (hue, live, saved): (f32, Option<dspk_pipeline::Node>, Option<Arc<Vec<Event>>>) = match &source {
             Source::Live => match crate::data::live::crossings_of(&view) {
                 Some(n) => (LIVE_HUE, Some(n.clone()), None),
                 None => {
-                    self.note = Some("The active view's chain doesn't end with Crossings: pick a saved event set, or add Crossings in Pipeline.".into());
+                    self.note = Some("Its chain doesn't end with Crossings: add Crossings before this output in Pipeline.".into());
                     self.shown = None;
                     cx.notify();
                     return;
@@ -113,10 +151,7 @@ impl EpochsPanel {
             },
             Source::Set(id) => match s.doc.event_sets.iter().find(|e| &e.id == id) {
                 Some(set) => (set.hue, None, s.events_of(set)),
-                None => {
-                    self.source = Source::Live;
-                    return self.refresh(cx);
-                }
+                None => return,
             },
         };
         let selection: Vec<usize> = s.selection(&s.view_source(&view)).to_vec();
@@ -175,10 +210,6 @@ impl EpochsPanel {
         cx.notify();
     }
 
-    fn set_source(&mut self, source: Source, cx: &mut Context<Self>) {
-        self.source = source;
-        self.refresh(cx);
-    }
 }
 
 impl Render for EpochsPanel {
@@ -186,15 +217,17 @@ impl Render for EpochsPanel {
         let t = cx.theme();
         let (muted, border) = (t.muted_foreground, t.border);
         let s = self.store.read(cx);
-        let open = s.recording.as_ref().and_then(|r| r.path.clone());
-        let sets: Vec<(String, String)> = s.doc.event_sets.iter().filter(|e| Some(&e.recording) == open.as_ref()).map(|e| (e.id.clone(), e.name.clone())).collect();
-        let source_label = match &self.source {
-            Source::Live => "Live: this window".to_string(),
-            Source::Set(id) => sets.iter().find(|(i, _)| i == id).map_or("Event set".into(), |(_, n)| n.clone()),
+        let display = s.doc.view(&self.view).map(|v| v.display.clone()).unwrap_or_default();
+        let saved = s.doc.view(&self.view).and_then(|v| s.saved_events_of(v)).map(|set| set.name.clone());
+        let source_label = match (display.epochs_from, &saved) {
+            (EpochsFrom::Live, _) | (EpochsFrom::Auto, None) => "Live: this window".to_string(),
+            (_, Some(name)) => format!("Saved: {name}"),
+            (EpochsFrom::Saved, None) => "Saved (none yet)".to_string(),
         };
-        let (pre, post) = WINDOWS_MS[self.window];
+        let window = display.epochs_window.min(WINDOWS_MS.len() - 1);
+        let (pre, post) = WINDOWS_MS[window];
         let me = cx.entity();
-        let (me2, me3) = (me.clone(), me.clone());
+        let me2 = me.clone();
         let status = if self.computing.is_some() {
             "Finding and stacking…".to_string()
         } else {
@@ -207,34 +240,22 @@ impl Render for EpochsPanel {
             .border_b_1()
             .border_color(border)
             .child(Button::new("epochs-source").outline().small().label(source_label).dropdown_menu(move |m: PopupMenu, _, _| {
-                let me = me.clone();
-                let live = me.clone();
-                let mut m = m.item(PopupMenuItem::new("Live: this window").on_click(move |_, _, cx| live.update(cx, |p, cx| p.set_source(Source::Live, cx))));
-                if !sets.is_empty() {
-                    m = m.separator();
-                }
-                for (id, name) in &sets {
-                    let (me, id) = (me.clone(), id.clone());
-                    m = m.item(PopupMenuItem::new(name.clone()).on_click(move |_, _, cx| me.update(cx, |p, cx| p.set_source(Source::Set(id.clone()), cx))));
-                }
-                m
+                let pick = |label: &str, from: EpochsFrom| {
+                    let me = me.clone();
+                    PopupMenuItem::new(label.to_string()).on_click(move |_, _, cx| me.update(cx, |p, cx| p.set_display(|d| d.epochs_from = from, cx)))
+                };
+                m.item(pick("Auto: saved set, else live", EpochsFrom::Auto)).item(pick("Live: this window", EpochsFrom::Live)).item(pick("Saved: the Write's event set", EpochsFrom::Saved))
             }))
             .child(Button::new("epochs-window").outline().small().label(format!("−{pre:.0} … +{post:.0} ms")).dropdown_menu(move |mut m: PopupMenu, _, _| {
                 for (i, (a, b)) in WINDOWS_MS.iter().enumerate() {
                     let me = me2.clone();
-                    m = m.item(PopupMenuItem::new(format!("−{a:.0} … +{b:.0} ms")).on_click(move |_, _, cx| {
-                        me.update(cx, |p, cx| {
-                            p.window = i;
-                            p.refresh(cx);
-                        })
-                    }));
+                    m = m.item(PopupMenuItem::new(format!("−{a:.0} … +{b:.0} ms")).on_click(move |_, _, cx| me.update(cx, |p, cx| p.set_display(|d| d.epochs_window = i, cx))));
                 }
                 m
             }))
             .child(div().flex_1())
             .child(div().text_xs().text_color(muted).child(status));
-        let _ = me3;
-        let unit = s.doc.active().and_then(|v| s.sources().map(|ss| ss.entry(&s.view_source(v)).unit.symbol().to_string())).unwrap_or_default();
+        let unit = s.doc.view(&self.view).and_then(|v| s.sources().map(|ss| ss.entry(&s.view_source(v)).unit.symbol().to_string())).unwrap_or_default();
         let cards = self.shown.as_ref().map(|(_, cards, _)| {
             cards
                 .iter()
@@ -294,7 +315,7 @@ impl BasePanel for EpochsPanel {
 }
 
 impl Panel for EpochsPanel {
-    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        "Epochs"
+    fn title(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.store.read(cx).doc.view(&self.view).map_or_else(|| "Epochs".to_string(), |v| v.name.clone())
     }
 }
