@@ -1,7 +1,7 @@
 //! Epochs: named spans of a recording (a baseline, a stimulus, an artefact…) with a type and
 //! notes, made by dragging on the timeline; and where recordings sit on the session's time
 //! (placements). Both live in the session document; each recording's epochs are also written next
-//! to it (`<recording>.dspk/epochs.parquet`, see `data::epochs`).
+//! to it (the `epochs` group of `<recording>.dspk.zarr`, see `data::epochs`).
 
 use std::path::PathBuf;
 
@@ -45,8 +45,8 @@ pub fn kind_hue(kind: &str) -> f32 {
 }
 
 /// A set of events of a recording (a crossings output, a selection), drawn as ticks over its
-/// traces. The events themselves are in `table` (Parquet, `data::events`); the session keeps how
-/// they look.
+/// traces. The events themselves are in `table` (a Zarr group, usually
+/// `<recording>.dspk.zarr/events/<name>`; `data::events`); the session keeps how they look.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EventSetDoc {
@@ -55,7 +55,7 @@ pub struct EventSetDoc {
     /// The recording the events are on.
     pub recording: PathBuf,
     pub name: String,
-    /// The events table (usually `<recording>.dspk/events/<name>.parquet`).
+    /// The events group (usually `<recording>.dspk.zarr/events/<name>`).
     pub table: PathBuf,
     /// Tick colour (hue, degrees).
     #[serde(default = "tick_hue")]

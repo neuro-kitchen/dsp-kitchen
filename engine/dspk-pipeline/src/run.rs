@@ -822,10 +822,18 @@ pub fn events_frame(events: &[dspk_ops::crossings::CrossingEvent], names: &[Stri
     )
 }
 
-/// Writes the events table at `path`: CSV when it ends in `.csv`, Parquet otherwise. Returns the
-/// bytes written.
+/// Format version of an events Zarr group (`dspk_events` attribute).
+pub const EVENTS_VERSION: u32 = 1;
+
+/// Writes the events at `path`: a Zarr group when it ends in `.zarr` (or is inside one; see
+/// [`write_events_zarr`]), CSV when it ends in `.csv`, Parquet otherwise. Returns the bytes
+/// written (Zarr: the values).
 pub fn write_events(path: &Path, events: &[dspk_ops::crossings::CrossingEvent], names: &[String], sample_rate: f64) -> Result<u64, PipelineError> {
     let io = |e: std::io::Error| PipelineError::Io(format!("{}: {e}", path.display()));
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("zarr")) {
+        write_events_zarr(path, events, names, sample_rate)?;
+        return Ok((events.len() * 32) as u64);
+    }
     if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("csv")) {
         let csv = events_csv(events, names, sample_rate);
         std::fs::write(path, &csv).map_err(io)?;
@@ -834,6 +842,61 @@ pub fn write_events(path: &Path, events: &[dspk_ops::crossings::CrossingEvent], 
     let mut df = events_frame(events, names, sample_rate).map_err(|e| PipelineError::Io(format!("events table: {e}")))?;
     let file = File::create(path).map_err(io)?;
     polars::prelude::ParquetWriter::new(file).finish(&mut df).map_err(|e| PipelineError::Io(format!("{}: {e}", path.display())))
+}
+
+/// Writes the events as a Zarr group rooted at directory `dir` (replacing it), the layout of
+/// dspk's Zarr outputs: arrays `channel` (int32), `onset_sample`, `peak_sample` (uint64),
+/// `offset_sample` (int64, −1 for an event still open at the end) and `peak_value` (float32), one
+/// entry per event along `events`; attributes `dspk_events` (version), `sample_rate_hz` and
+/// `channel_names`. A group inside another store (e.g. `rec.dspk.zarr/events/<name>`) is written
+/// the same way.
+pub fn write_events_zarr(dir: &Path, events: &[dspk_ops::crossings::CrossingEvent], names: &[String], sample_rate: f64) -> Result<(), PipelineError> {
+    use dspk_io::container::zarr::{open_rw_store, write_array_f32, write_array_i32, write_array_i64, write_array_u64, write_group};
+    use serde_json::{json, Map};
+    if dir.exists() {
+        std::fs::remove_dir_all(dir).map_err(|e| PipelineError::Io(format!("{}: {e}", dir.display())))?;
+    }
+    let store = open_rw_store(dir)?;
+    let mut attrs = Map::new();
+    attrs.insert("dspk_events".into(), json!(EVENTS_VERSION));
+    attrs.insert("sample_rate_hz".into(), json!(sample_rate));
+    attrs.insert("channel_names".into(), json!(names));
+    write_group(&store, dir, "/", attrs)?;
+    let n = [events.len()];
+    let dims = ["events"];
+    write_array_i32(&store, dir, "/channel", &events.iter().map(|e| e.channel as i32).collect::<Vec<_>>(), &n, &dims, Map::new())?;
+    write_array_u64(&store, dir, "/onset_sample", &events.iter().map(|e| e.onset).collect::<Vec<_>>(), &n, &dims, Map::new())?;
+    write_array_i64(&store, dir, "/offset_sample", &events.iter().map(|e| e.offset.map_or(-1, |o| o as i64)).collect::<Vec<_>>(), &n, &dims, Map::new())?;
+    write_array_u64(&store, dir, "/peak_sample", &events.iter().map(|e| e.peak_sample).collect::<Vec<_>>(), &n, &dims, Map::new())?;
+    write_array_f32(&store, dir, "/peak_value", &events.iter().map(|e| e.peak_value).collect::<Vec<_>>(), &n, &dims, Map::new())?;
+    Ok(())
+}
+
+/// The events of a Zarr group written by [`write_events_zarr`], with its sample rate and channel
+/// names.
+pub fn read_events_zarr(dir: &Path) -> Result<(Vec<dspk_ops::crossings::CrossingEvent>, f64, Vec<String>), PipelineError> {
+    use dspk_io::container::zarr::{read_array, read_node_attributes};
+    let attrs = read_node_attributes(dir, "/").unwrap_or_default();
+    if attrs.get("dspk_events").is_none() {
+        return Err(PipelineError::Io(format!("{}: not an events group (no dspk_events attribute)", dir.display())));
+    }
+    let rate = attrs.get("sample_rate_hz").and_then(|v| v.as_f64()).unwrap_or(1.0);
+    let names: Vec<String> = attrs.get("channel_names").and_then(|v| v.as_array()).map(|a| a.iter().map(|v| v.as_str().unwrap_or_default().to_string()).collect()).unwrap_or_default();
+    let channel = read_array::<i32>(dir, "/channel")?.data;
+    let onset = read_array::<u64>(dir, "/onset_sample")?.data;
+    let offset = read_array::<i64>(dir, "/offset_sample")?.data;
+    let peak_sample = read_array::<u64>(dir, "/peak_sample")?.data;
+    let peak_value = read_array::<f32>(dir, "/peak_value")?.data;
+    let events = (0..channel.len())
+        .map(|i| dspk_ops::crossings::CrossingEvent {
+            channel: channel[i].max(0) as usize,
+            onset: onset[i],
+            offset: u64::try_from(offset[i]).ok(),
+            peak_sample: peak_sample[i],
+            peak_value: peak_value[i],
+        })
+        .collect();
+    Ok((events, rate, names))
 }
 
 /// The events table as CSV (the columns of [`events_frame`]).

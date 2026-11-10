@@ -840,6 +840,12 @@ fn crossings_in_windows_equal_the_whole_recording() {
         let table = ParquetReader::new(std::fs::File::open(dir.join("events.parquet")).unwrap()).finish().unwrap();
         let expected = dspk_pipeline::events_frame(&events, &names, FS).unwrap();
         assert!(table.equals_missing(&expected), "{}: {table} vs {expected}", target.name());
+
+        // As a Zarr group: the same events, rate and names back
+        spec.set_output(dir.join("events.zarr")).unwrap();
+        run(&spec, &dir).unwrap();
+        let (back, rate, back_names) = dspk_pipeline::read_events_zarr(&dir.join("events.zarr")).unwrap();
+        assert_eq!((back, rate, back_names), (events.clone(), FS, names.clone()), "{}", target.name());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

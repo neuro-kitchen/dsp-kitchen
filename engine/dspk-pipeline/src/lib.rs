@@ -27,7 +27,7 @@ mod spec;
 
 pub use fit::{fit_whitening, unfitted_whitening, WhitenFit};
 pub use prepare::{default_open, plan, plan_with, ExecutedMode, Plan};
-pub use run::{events_csv, events_frame, run, run_with, write_events, DataMovement, Progress, RunReport, StageTimings, PROVENANCE_SUFFIX, WRITE_QUEUE_WINDOWS};
+pub use run::{events_csv, events_frame, read_events_zarr, run, run_with, write_events, write_events_zarr, EVENTS_VERSION, DataMovement, Progress, RunReport, StageTimings, PROVENANCE_SUFFIX, WRITE_QUEUE_WINDOWS};
 pub use spec::{
     Band, Chain, Compression, Design, Direction, Edge, ExecMode, Execution, Input, MergePart, Mode, Node, OutputFormat, PipelineSpec, Start, Upload,
     DEFAULT_BLOSC_LEVEL, DEFAULT_CHUNK_SAMPLES, DEFAULT_ZSTD_LEVEL, SPEC_VERSION, WHITEN_DEFAULT_CHUNKS, WHITEN_DEFAULT_FIT_S,

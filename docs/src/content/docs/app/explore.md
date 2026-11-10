@@ -66,8 +66,9 @@ The [full list](/dsp-kitchen/app/keyboard/) is one F1 away.
 ## Epochs
 
 Mark spans of a recording as epochs on the timeline. They're saved in the session, and in the
-recording's own folder of results, `<recording>.dspk/epochs.parquet` (a table Polars or pandas
-reads). Epochs saved by older versions in `<recording>.epochs.zarr` are still read.
+`epochs` group of `<recording>.dspk.zarr`, the one Zarr store that holds what the app derives
+from a recording (epochs, event sets). Epochs saved by older versions in
+`<recording>.epochs.zarr` are still read.
 
 Shift+drag on the timeline, or use **Mark**, then **Save as epoch…**. The dialog names the epoch and gives it a type.
 

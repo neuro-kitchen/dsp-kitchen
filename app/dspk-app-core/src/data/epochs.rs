@@ -1,6 +1,7 @@
-//! A recording's epochs, saved after every change of them and read when the recording opens:
-//! `<recording>.dspk/epochs.parquet` ([`crate::data::derived`]), one row per epoch (`id`, `name`,
-//! `kind`, `start_s`, `end_s`, `notes`; seconds from the recording's start).
+//! A recording's epochs, saved after every change of them and read when the recording opens: the
+//! `epochs` group of `<recording>.dspk.zarr` ([`crate::data::derived`]): arrays `start_s` and
+//! `end_s` (seconds from the recording's start, `float64`); ids, names, types and notes as
+//! attributes in the same order (`dspk_epochs`: format version).
 //!
 //! Earlier versions wrote `<recording>.epochs.zarr` next to the recording (arrays `/start_us`,
 //! `/end_us`; ids, names, types and notes in the root attributes): still read when there is no
@@ -9,7 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use dspk_core::{DspError, DspResult};
-use dspk_io::container::zarr::{has_array, open_rw_store, read_array, read_node_json, write_array_u64, write_group};
+use dspk_io::container::zarr::{has_array, open_rw_store, read_array, read_node_attributes, read_node_json, write_array_f64, write_array_u64, write_group};
 use serde_json::{json, Map, Value};
 
 use crate::domain::epoch::EpochDoc;
@@ -17,53 +18,51 @@ use crate::domain::epoch::EpochDoc;
 /// Format version written in the root attributes.
 pub const EPOCHS_VERSION: u32 = 1;
 
-/// Saves `recording`'s epochs (all of them) in its derived folder, replacing what is there.
+/// Saves `recording`'s epochs (all of them) as the `epochs` group of its derived store, replacing
+/// what is there. Returns the store.
 pub fn save(recording: &Path, epochs: &[EpochDoc]) -> DspResult<PathBuf> {
-    use polars::prelude::*;
-    let path = crate::data::derived::epochs_file(recording);
-    let io = |e: &dyn std::fmt::Display| DspError::Io(format!("{}: {e}", path.display()));
-    let col = |f: fn(&EpochDoc) -> String| epochs.iter().map(f).collect::<Vec<String>>();
-    let mut df = df!(
-        "id" => col(|e| e.id.clone()),
-        "name" => col(|e| e.name.clone()),
-        "kind" => col(|e| e.kind.clone()),
-        "start_s" => epochs.iter().map(|e| e.start_sec).collect::<Vec<f64>>(),
-        "end_s" => epochs.iter().map(|e| e.end_sec).collect::<Vec<f64>>(),
-        "notes" => col(|e| e.notes.clone()),
-    )
-    .map_err(|e| io(&e))?;
-    std::fs::create_dir_all(path.parent().expect("a derived folder")).map_err(|e| io(&e))?;
-    let file = std::fs::File::create(&path).map_err(|e| io(&e))?;
-    ParquetWriter::new(file).finish(&mut df).map_err(|e| io(&e))?;
-    Ok(path)
+    let dir = crate::data::derived::ensure(recording, &[])?;
+    let group = dir.join("epochs");
+    if group.exists() {
+        std::fs::remove_dir_all(&group).map_err(|e| DspError::Io(format!("{}: {e}", group.display())))?;
+    }
+    let store = open_rw_store(&dir)?;
+    let list = |f: fn(&EpochDoc) -> String| Value::Array(epochs.iter().map(|e| json!(f(e))).collect());
+    let mut attrs = Map::new();
+    attrs.insert("dspk_epochs".into(), json!(EPOCHS_VERSION));
+    attrs.insert("ids".into(), list(|e| e.id.clone()));
+    attrs.insert("names".into(), list(|e| e.name.clone()));
+    attrs.insert("kinds".into(), list(|e| e.kind.clone()));
+    attrs.insert("notes".into(), list(|e| e.notes.clone()));
+    write_group(&store, &dir, "/epochs", attrs)?;
+    let n = [epochs.len()];
+    write_array_f64(&store, &dir, "/epochs/start_s", &epochs.iter().map(|e| e.start_sec).collect::<Vec<_>>(), &n, &["epochs"], Map::new())?;
+    write_array_f64(&store, &dir, "/epochs/end_s", &epochs.iter().map(|e| e.end_sec).collect::<Vec<_>>(), &n, &["epochs"], Map::new())?;
+    Ok(dir)
 }
 
-/// `recording`'s saved epochs: the Parquet table, else the older `.epochs.zarr`; none when
-/// neither exists.
+/// `recording`'s saved epochs: the derived store's `epochs` group, else the older
+/// `.epochs.zarr`; none when neither exists.
 pub fn load(recording: &Path) -> DspResult<Vec<EpochDoc>> {
-    use polars::prelude::*;
-    let path = crate::data::derived::epochs_file(recording);
-    if !path.exists() {
+    let dir = crate::data::derived::derived_store(recording);
+    if !has_array(&dir, "/epochs/start_s") {
         return read_zarr(&legacy_path(recording), recording);
     }
-    let io = |e: &dyn std::fmt::Display| DspError::Io(format!("{}: {e}", path.display()));
-    let file = std::fs::File::open(&path).map_err(|e| io(&e))?;
-    let df = ParquetReader::new(file).finish().map_err(|e| io(&e))?;
-    let text = |name: &str| -> DspResult<Vec<String>> {
-        Ok(df.column(name).and_then(|c| c.str().cloned()).map_err(|e| io(&e))?.iter().map(|v| v.unwrap_or_default().to_string()).collect())
-    };
-    let secs = |name: &str| -> DspResult<Vec<f64>> { Ok(df.column(name).and_then(|c| c.f64().cloned()).map_err(|e| io(&e))?.iter().map(|v| v.unwrap_or(0.0)).collect()) };
-    let (id, name, kind, notes) = (text("id")?, text("name")?, text("kind")?, text("notes")?);
-    let (start, end) = (secs("start_s")?, secs("end_s")?);
-    Ok((0..df.height())
-        .map(|i| EpochDoc {
-            id: id[i].clone(),
+    let attrs = read_node_attributes(&dir, "/epochs").unwrap_or_default();
+    let text = |key: &str, i: usize| attrs.get(key).and_then(|v| v.get(i)).and_then(Value::as_str).unwrap_or_default().to_string();
+    let (start, end) = (read_array::<f64>(&dir, "/epochs/start_s")?.data, read_array::<f64>(&dir, "/epochs/end_s")?.data);
+    Ok(start
+        .iter()
+        .zip(&end)
+        .enumerate()
+        .map(|(i, (&a, &b))| EpochDoc {
+            id: text("ids", i),
             recording: recording.to_path_buf(),
-            name: name[i].clone(),
-            kind: Some(kind[i].clone()).filter(|k| !k.is_empty()).unwrap_or_else(|| "other".into()),
-            start_sec: start[i],
-            end_sec: end[i],
-            notes: notes[i].clone(),
+            name: text("names", i),
+            kind: Some(text("kinds", i)).filter(|k| !k.is_empty()).unwrap_or_else(|| "other".into()),
+            start_sec: a,
+            end_sec: b,
+            notes: text("notes", i),
         })
         .collect())
 }
@@ -134,10 +133,11 @@ mod tests {
         assert_eq!(legacy_path(&rec), dir.join("rec.epochs.zarr"));
         write_zarr(&legacy_path(&rec), std::slice::from_ref(&e)).unwrap();
         assert_eq!(load(&rec).unwrap(), vec![e.clone()]);
-        // Saved as Parquet in the derived folder, which then wins
+        // Saved in the derived store, which then wins; saving again replaces the group
         let mut f = e.clone();
         f.name = "tone 2".into();
-        assert_eq!(save(&rec, std::slice::from_ref(&f)).unwrap(), dir.join("rec.dspk/epochs.parquet"));
+        assert_eq!(save(&rec, &[e.clone(), f.clone()]).unwrap(), dir.join("rec.dspk.zarr"));
+        assert_eq!(save(&rec, std::slice::from_ref(&f)).unwrap(), dir.join("rec.dspk.zarr"));
         assert_eq!(load(&rec).unwrap(), vec![f]);
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -151,7 +151,7 @@ impl FloatingLayer {
             .child(row("End (s)", div().w_full().child(Input::new(&self.end).small()), cx))
             .child(row("Notes", div().w_full().child(Input::new(&self.notes).small()), cx))
             .children(self.error.clone().map(|e| div().text_xs().text_color(cx.theme().danger).child(e)))
-            .child(div().text_xs().text_color(muted).child("Saved in the session and in the recording's .dspk folder (epochs.parquet)."))
+            .child(div().text_xs().text_color(muted).child("Saved in the session and in the recording's .dspk.zarr store (epochs group)."))
             .child(
                 h_flex()
                     .gap_1()
