@@ -1,7 +1,10 @@
-//! A recording's epochs next to it, `<recording>.epochs.zarr`: arrays `/start_us` and `/end_us`
-//! (microseconds from the recording's start, `uint64`) and, in the root attributes, the epochs'
-//! ids, names, types and notes in the same order (`dspk_epochs`: format version). Written after
-//! every change of the recording's epochs; read when the recording opens.
+//! A recording's epochs, saved after every change of them and read when the recording opens:
+//! `<recording>.dspk/epochs.parquet` ([`crate::data::derived`]), one row per epoch (`id`, `name`,
+//! `kind`, `start_s`, `end_s`, `notes`; seconds from the recording's start).
+//!
+//! Earlier versions wrote `<recording>.epochs.zarr` next to the recording (arrays `/start_us`,
+//! `/end_us`; ids, names, types and notes in the root attributes): still read when there is no
+//! Parquet table yet, and left in place.
 
 use std::path::{Path, PathBuf};
 
@@ -14,15 +17,65 @@ use crate::domain::epoch::EpochDoc;
 /// Format version written in the root attributes.
 pub const EPOCHS_VERSION: u32 = 1;
 
-/// `rec.bin` → `rec.epochs.zarr` next to it.
-pub fn epochs_path(recording: &Path) -> PathBuf {
-    let name = recording.file_name().map_or_else(|| "recording".into(), |n| n.to_string_lossy().into_owned());
-    let stem = name.trim_end_matches('/').trim_end_matches(".zarr").trim_end_matches(".nwb").trim_end_matches(".bin").trim_end_matches(".cbin");
-    recording.with_file_name(format!("{stem}.epochs.zarr"))
+/// Saves `recording`'s epochs (all of them) in its derived folder, replacing what is there.
+pub fn save(recording: &Path, epochs: &[EpochDoc]) -> DspResult<PathBuf> {
+    use polars::prelude::*;
+    let path = crate::data::derived::epochs_file(recording);
+    let io = |e: &dyn std::fmt::Display| DspError::Io(format!("{}: {e}", path.display()));
+    let col = |f: fn(&EpochDoc) -> String| epochs.iter().map(f).collect::<Vec<String>>();
+    let mut df = df!(
+        "id" => col(|e| e.id.clone()),
+        "name" => col(|e| e.name.clone()),
+        "kind" => col(|e| e.kind.clone()),
+        "start_s" => epochs.iter().map(|e| e.start_sec).collect::<Vec<f64>>(),
+        "end_s" => epochs.iter().map(|e| e.end_sec).collect::<Vec<f64>>(),
+        "notes" => col(|e| e.notes.clone()),
+    )
+    .map_err(|e| io(&e))?;
+    std::fs::create_dir_all(path.parent().expect("a derived folder")).map_err(|e| io(&e))?;
+    let file = std::fs::File::create(&path).map_err(|e| io(&e))?;
+    ParquetWriter::new(file).finish(&mut df).map_err(|e| io(&e))?;
+    Ok(path)
 }
 
-/// Writes `epochs` (all of one recording) into `path` (replacing what is there).
-pub fn write(path: &Path, epochs: &[EpochDoc]) -> DspResult<()> {
+/// `recording`'s saved epochs: the Parquet table, else the older `.epochs.zarr`; none when
+/// neither exists.
+pub fn load(recording: &Path) -> DspResult<Vec<EpochDoc>> {
+    use polars::prelude::*;
+    let path = crate::data::derived::epochs_file(recording);
+    if !path.exists() {
+        return read_zarr(&legacy_path(recording), recording);
+    }
+    let io = |e: &dyn std::fmt::Display| DspError::Io(format!("{}: {e}", path.display()));
+    let file = std::fs::File::open(&path).map_err(|e| io(&e))?;
+    let df = ParquetReader::new(file).finish().map_err(|e| io(&e))?;
+    let text = |name: &str| -> DspResult<Vec<String>> {
+        Ok(df.column(name).and_then(|c| c.str().cloned()).map_err(|e| io(&e))?.iter().map(|v| v.unwrap_or_default().to_string()).collect())
+    };
+    let secs = |name: &str| -> DspResult<Vec<f64>> { Ok(df.column(name).and_then(|c| c.f64().cloned()).map_err(|e| io(&e))?.iter().map(|v| v.unwrap_or(0.0)).collect()) };
+    let (id, name, kind, notes) = (text("id")?, text("name")?, text("kind")?, text("notes")?);
+    let (start, end) = (secs("start_s")?, secs("end_s")?);
+    Ok((0..df.height())
+        .map(|i| EpochDoc {
+            id: id[i].clone(),
+            recording: recording.to_path_buf(),
+            name: name[i].clone(),
+            kind: Some(kind[i].clone()).filter(|k| !k.is_empty()).unwrap_or_else(|| "other".into()),
+            start_sec: start[i],
+            end_sec: end[i],
+            notes: notes[i].clone(),
+        })
+        .collect())
+}
+
+/// `rec.bin` → `rec.epochs.zarr` next to it (where earlier versions saved epochs).
+pub fn legacy_path(recording: &Path) -> PathBuf {
+    recording.with_file_name(format!("{}.epochs.zarr", crate::data::derived::stem(recording)))
+}
+
+/// Writes `epochs` as the older Zarr store at `path` (replacing what is there); tests and
+/// migration checks only.
+pub fn write_zarr(path: &Path, epochs: &[EpochDoc]) -> DspResult<()> {
     if path.exists() {
         std::fs::remove_dir_all(path).map_err(|e| DspError::Io(e.to_string()))?;
     }
@@ -42,8 +95,8 @@ pub fn write(path: &Path, epochs: &[EpochDoc]) -> DspResult<()> {
     Ok(())
 }
 
-/// The epochs stored at `path`, marking `recording`; none when there is no store.
-pub fn read(path: &Path, recording: &Path) -> DspResult<Vec<EpochDoc>> {
+/// The epochs of the older Zarr store at `path`, marking `recording`; none when there is no store.
+pub fn read_zarr(path: &Path, recording: &Path) -> DspResult<Vec<EpochDoc>> {
     if !has_array(path, "/start_us") {
         return Ok(Vec::new());
     }
@@ -72,15 +125,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_epochs_round_trip() {
+    fn test_epochs_round_trip_and_legacy() {
         let dir = std::env::temp_dir().join(format!("dspk_epochs_{}", std::process::id()));
         let rec = dir.join("rec.bin");
         std::fs::create_dir_all(&dir).unwrap();
-        let path = epochs_path(&rec);
-        assert_eq!(path, dir.join("rec.epochs.zarr"));
         let e = EpochDoc { id: "e1".into(), recording: rec.clone(), name: "tone".into(), kind: "stimulus".into(), start_sec: 1.25, end_sec: 2.5, notes: "60 dB".into() };
-        write(&path, std::slice::from_ref(&e)).unwrap();
-        assert_eq!(read(&path, &rec).unwrap(), vec![e]);
+        // An older store is read while there is no table
+        assert_eq!(legacy_path(&rec), dir.join("rec.epochs.zarr"));
+        write_zarr(&legacy_path(&rec), std::slice::from_ref(&e)).unwrap();
+        assert_eq!(load(&rec).unwrap(), vec![e.clone()]);
+        // Saved as Parquet in the derived folder, which then wins
+        let mut f = e.clone();
+        f.name = "tone 2".into();
+        assert_eq!(save(&rec, std::slice::from_ref(&f)).unwrap(), dir.join("rec.dspk/epochs.parquet"));
+        assert_eq!(load(&rec).unwrap(), vec![f]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

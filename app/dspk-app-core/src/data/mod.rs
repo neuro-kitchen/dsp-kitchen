@@ -3,7 +3,9 @@
 //! `services`), and the servers it works with (`remote`). Screens reach it through view models
 //! only.
 
+pub mod derived;
 pub mod epochs;
+pub mod events;
 pub mod jobs;
 pub mod preferences;
 pub mod recording;

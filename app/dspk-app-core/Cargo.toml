@@ -27,6 +27,8 @@ dspk-io = { workspace = true, features = ["zarr"] }
 dspk-view = { workspace = true, default-features = false }
 # Views' op chains are dspk-pipeline nodes; writing a view runs its pipeline
 dspk-pipeline.workspace = true
+# Tables the app writes next to a recording (epochs, event sets) as Parquet
+polars = { version = "0.55.2", default-features = false, features = ["parquet", "dtype-slim"] }
 # Servers (`dspk serve`): remote recordings (RemoteSignal), jobs, fetching results
 dspk-stream.workspace = true
 tokio.workspace = true

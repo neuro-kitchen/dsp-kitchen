@@ -3298,6 +3298,7 @@ dependencies = [
  "dspk-view",
  "gpui-kit",
  "image",
+ "polars",
  "schemars",
  "serde",
  "serde_json",

@@ -188,6 +188,8 @@ pub struct Store {
     future: Vec<SessionDoc>,
     /// The active view and channel subset last applied to the selection.
     applied_view: Option<(String, Option<Vec<usize>>)>,
+    /// Event tables read so far, by path (read on first use; dropped when the set is set again).
+    event_tables: HashMap<PathBuf, Arc<Vec<crate::data::events::Event>>>,
 }
 
 impl EventEmitter<AppEvent> for Store {}
@@ -228,6 +230,7 @@ impl Store {
             history: Vec::new(),
             future: Vec::new(),
             applied_view: None,
+            event_tables: HashMap::new(),
         }
     }
 
@@ -340,17 +343,57 @@ impl Store {
             if now == of(before, &r) || !r.exists() {
                 continue;
             }
-            let file = crate::data::epochs::epochs_path(&r);
-            if let Err(e) = crate::data::epochs::write(&file, &now) {
-                self.set_status(format!("Epochs not saved to {}: {e}", file.display()), cx);
+            if let Err(e) = crate::data::epochs::save(&r, &now) {
+                self.set_status(format!("Epochs of {} not saved: {e}", r.display()), cx);
             }
+        }
+    }
+
+    /// The events of `set`, once its table is read ([`Self::add_event_set`], or on opening the
+    /// recording).
+    pub fn events_of(&self, set: &crate::domain::epoch::EventSetDoc) -> Option<Arc<Vec<crate::data::events::Event>>> {
+        self.event_tables.get(&set.table).cloned()
+    }
+
+    /// Reads `set`'s table (again) and adds the set to the session, or updates it.
+    pub fn add_event_set(&mut self, set: crate::domain::epoch::EventSetDoc, cx: &mut Context<Self>) {
+        match crate::data::events::read(&set.table) {
+            Ok(events) => {
+                self.event_tables.insert(set.table.clone(), Arc::new(events));
+            }
+            Err(e) => self.set_status(format!("Events {}: {e}", set.name), cx),
+        }
+        let _ = self.execute(SessionCommand::SetEventSet { set }, cx);
+    }
+
+    /// Reads the tables of the session's event sets not read yet (a session opened from a file).
+    pub fn read_event_tables(&mut self) {
+        for set in &self.doc.event_sets {
+            if !self.event_tables.contains_key(&set.table) {
+                if let Ok(events) = crate::data::events::read(&set.table) {
+                    self.event_tables.insert(set.table.clone(), Arc::new(events));
+                }
+            }
+        }
+    }
+
+    /// The event tables in `path`'s derived folder that the session does not list yet.
+    fn load_event_sets(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let Ok(dir) = std::fs::read_dir(crate::data::derived::events_dir(path)) else { return };
+        let mut tables: Vec<PathBuf> = dir.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "parquet")).collect();
+        tables.sort();
+        for table in tables {
+            if self.doc.event_sets.iter().any(|s| s.table == table) {
+                continue;
+            }
+            let name = table.file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned());
+            self.add_event_set(crate::domain::epoch::EventSetDoc::new(path.to_path_buf(), name, table), cx);
         }
     }
 
     /// The epochs saved next to `path` that the session does not have yet.
     fn load_epochs(&mut self, path: &Path, cx: &mut Context<Self>) {
-        let file = crate::data::epochs::epochs_path(path);
-        match crate::data::epochs::read(&file, path) {
+        match crate::data::epochs::load(path) {
             Ok(found) => {
                 for mut e in found {
                     if self.doc.epochs.iter().any(|d| d.recording == e.recording && d.start_sec == e.start_sec && d.end_sec == e.end_sec) {
@@ -362,7 +405,7 @@ impl Store {
                     let _ = self.execute(SessionCommand::SetEpoch { epoch: e }, cx);
                 }
             }
-            Err(e) => self.set_status(format!("{}: {e}", file.display()), cx),
+            Err(e) => self.set_status(format!("Epochs of {}: {e}", path.display()), cx),
         }
     }
 
@@ -1130,6 +1173,8 @@ impl Store {
                         store.install(Recording::new(sources, Some(path.clone())), cx);
                         store.ensure_view(&path, &source, cx);
                         store.load_epochs(&path, cx);
+                        store.load_event_sets(&path, cx);
+                        store.read_event_tables();
                     }
                     Err(e) => store.set_status(format!("Could not open {name}: {e:#}"), cx),
                 }
