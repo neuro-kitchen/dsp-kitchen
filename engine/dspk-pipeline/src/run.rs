@@ -779,10 +779,8 @@ fn execute_events(
     if let Some(dir) = output.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir).map_err(|e| PipelineError::Io(format!("{}: {e}", dir.display())))?;
     }
-    let csv = events_csv(&events, &names, sample_rate);
     bytes.downloaded += (events.len() * 24) as u64;
-    bytes.written += csv.len() as u64;
-    std::fs::write(&output, csv).map_err(|e| PipelineError::Io(format!("{}: {e}", output.display())))?;
+    bytes.written += write_events(&output, &events, &names, sample_rate)?;
     let provenance = provenance_path(&output);
     std::fs::write(&provenance, spec.to_json()).map_err(|e| PipelineError::Io(format!("{}: {e}", provenance.display())))?;
     timings.disk = disk.elapsed().as_secs_f64();
@@ -804,7 +802,41 @@ fn execute_events(
     })
 }
 
-/// The events table written by a `crossings` chain (see [`OutputFormat::Events`]).
+/// The events of a `crossings` chain as a table, one row per event (see [`OutputFormat::Events`]):
+/// `channel` (u32), `channel_name`, `onset_sample` / `offset_sample` / `peak_sample` (u64; offset
+/// null when the range ended inside the event), `peak_value` (f32), `onset_s` / `offset_s` /
+/// `duration_s` (f64).
+pub fn events_frame(events: &[dspk_ops::crossings::CrossingEvent], names: &[String], sample_rate: f64) -> polars::prelude::PolarsResult<polars::prelude::DataFrame> {
+    use polars::prelude::*;
+    let secs = |s: u64| s as f64 / sample_rate;
+    df!(
+        "channel" => events.iter().map(|e| e.channel as u32).collect::<Vec<u32>>(),
+        "channel_name" => events.iter().map(|e| names.get(e.channel).cloned().unwrap_or_default()).collect::<Vec<String>>(),
+        "onset_sample" => events.iter().map(|e| e.onset).collect::<Vec<u64>>(),
+        "offset_sample" => events.iter().map(|e| e.offset).collect::<Vec<Option<u64>>>(),
+        "peak_sample" => events.iter().map(|e| e.peak_sample).collect::<Vec<u64>>(),
+        "peak_value" => events.iter().map(|e| e.peak_value).collect::<Vec<f32>>(),
+        "onset_s" => events.iter().map(|e| secs(e.onset)).collect::<Vec<f64>>(),
+        "offset_s" => events.iter().map(|e| e.offset.map(secs)).collect::<Vec<Option<f64>>>(),
+        "duration_s" => events.iter().map(|e| e.offset.map(|o| secs(o - e.onset))).collect::<Vec<Option<f64>>>(),
+    )
+}
+
+/// Writes the events table at `path`: CSV when it ends in `.csv`, Parquet otherwise. Returns the
+/// bytes written.
+pub fn write_events(path: &Path, events: &[dspk_ops::crossings::CrossingEvent], names: &[String], sample_rate: f64) -> Result<u64, PipelineError> {
+    let io = |e: std::io::Error| PipelineError::Io(format!("{}: {e}", path.display()));
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("csv")) {
+        let csv = events_csv(events, names, sample_rate);
+        std::fs::write(path, &csv).map_err(io)?;
+        return Ok(csv.len() as u64);
+    }
+    let mut df = events_frame(events, names, sample_rate).map_err(|e| PipelineError::Io(format!("events table: {e}")))?;
+    let file = File::create(path).map_err(io)?;
+    polars::prelude::ParquetWriter::new(file).finish(&mut df).map_err(|e| PipelineError::Io(format!("{}: {e}", path.display())))
+}
+
+/// The events table as CSV (the columns of [`events_frame`]).
 pub fn events_csv(events: &[dspk_ops::crossings::CrossingEvent], names: &[String], sample_rate: f64) -> String {
     let mut out = String::from("channel,channel_name,onset_sample,offset_sample,peak_sample,peak_value,onset_s,offset_s,duration_s\n");
     let quote = |s: &str| if s.contains([',', '"', '\n']) { format!("\"{}\"", s.replace('"', "\"\"")) } else { s.to_string() };

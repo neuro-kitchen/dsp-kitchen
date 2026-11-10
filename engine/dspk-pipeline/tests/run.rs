@@ -831,6 +831,15 @@ fn crossings_in_windows_equal_the_whole_recording() {
         assert!(events.len() > 50, "{} events", events.len());
         let names: Vec<String> = (0..CHANNELS).map(|c| recording().info().channels[c].name.clone()).collect();
         assert_eq!(got, dspk_pipeline::events_csv(&events, &names, FS), "{}", target.name());
+
+        // The same as Parquet (any other extension), read back as a data frame
+        let mut spec = spec;
+        spec.set_output(dir.join("events.parquet")).unwrap();
+        run(&spec, &dir).unwrap();
+        use polars::prelude::{ParquetReader, SerReader};
+        let table = ParquetReader::new(std::fs::File::open(dir.join("events.parquet")).unwrap()).finish().unwrap();
+        let expected = dspk_pipeline::events_frame(&events, &names, FS).unwrap();
+        assert!(table.equals_missing(&expected), "{}: {table} vs {expected}", target.name());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

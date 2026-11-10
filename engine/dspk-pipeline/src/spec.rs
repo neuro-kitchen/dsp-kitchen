@@ -297,7 +297,8 @@ pub enum OutputFormat {
     Raw,
     /// Zarr `/traces`, float32.
     Zarr,
-    /// The events of a `crossings` node: a CSV table, one row per event (`channel`, `channel_name`,
+    /// The events of a `crossings` node: a table, Parquet (or CSV when the path ends in `.csv`),
+    /// one row per event (`channel`, `channel_name`,
     /// `onset_sample`, `offset_sample`, `peak_sample`, `peak_value`, `onset_s`, `offset_s`,
     /// `duration_s`; samples of the recording, an empty offset when the range ended inside the
     /// event).
