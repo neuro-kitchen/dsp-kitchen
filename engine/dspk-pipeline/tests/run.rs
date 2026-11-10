@@ -846,6 +846,10 @@ fn crossings_in_windows_equal_the_whole_recording() {
         run(&spec, &dir).unwrap();
         let (back, rate, back_names) = dspk_pipeline::read_events_zarr(&dir.join("events.zarr")).unwrap();
         assert_eq!((back, rate, back_names), (events.clone(), FS, names.clone()), "{}", target.name());
+        // A group inside a store (the app's `<recording>.dspk.zarr/events/<name>`) is Zarr too
+        spec.set_output(dir.join("rec.dspk.zarr/events/on")).unwrap();
+        run(&spec, &dir).unwrap();
+        assert_eq!(dspk_pipeline::read_events_zarr(&dir.join("rec.dspk.zarr/events/on")).unwrap().0, events, "{}", target.name());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

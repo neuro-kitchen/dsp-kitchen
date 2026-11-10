@@ -825,12 +825,12 @@ pub fn events_frame(events: &[dspk_ops::crossings::CrossingEvent], names: &[Stri
 /// Format version of an events Zarr group (`dspk_events` attribute).
 pub const EVENTS_VERSION: u32 = 1;
 
-/// Writes the events at `path`: a Zarr group when it ends in `.zarr` (or is inside one; see
-/// [`write_events_zarr`]), CSV when it ends in `.csv`, Parquet otherwise. Returns the bytes
+/// Writes the events at `path`: a Zarr group when it ends in `.zarr` or lies inside a `.zarr`
+/// store (e.g. `rec.dspk.zarr/events/biceps`; see [`write_events_zarr`]), CSV when it ends in `.csv`, Parquet otherwise. Returns the bytes
 /// written (Zarr: the values).
 pub fn write_events(path: &Path, events: &[dspk_ops::crossings::CrossingEvent], names: &[String], sample_rate: f64) -> Result<u64, PipelineError> {
     let io = |e: std::io::Error| PipelineError::Io(format!("{}: {e}", path.display()));
-    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("zarr")) {
+    if path.ancestors().any(|a| a.extension().is_some_and(|e| e.eq_ignore_ascii_case("zarr"))) {
         write_events_zarr(path, events, names, sample_rate)?;
         return Ok((events.len() * 32) as u64);
     }

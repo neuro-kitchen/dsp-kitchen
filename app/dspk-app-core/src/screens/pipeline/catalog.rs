@@ -103,6 +103,15 @@ pub fn catalog() -> Vec<Category> {
             ],
         },
         Category {
+            name: "Events",
+            icon: IconName::ChartNoAxesColumn,
+            items: vec![op(
+                "Crossings",
+                "Events where each channel goes past a level and back (onsets, offsets, peaks); then Write saves them as an event set",
+                json!({"op": "crossings", "level": 50.0, "release": 25.0, "refractory_ms": 50.0}),
+            )],
+        },
+        Category {
             name: "Rate",
             icon: IconName::ChartNoAxesColumn,
             items: vec![op("Resample", "up / down (polyphase FIR); the last op before Write", json!({"op": "resample", "up": 1, "down": 2}))],
@@ -112,7 +121,7 @@ pub fn catalog() -> Vec<Category> {
             icon: IconName::Eye,
             items: vec![
                 Item { label: "View", hint: "A stream shown in Explore", template: Template::View },
-                Item { label: "Write", hint: "The chain written to a processed file (float32 Zarr)", template: Template::Write },
+                Item { label: "Write", hint: "The chain written to a processed file (float32 Zarr); after Crossings, its events as an event set", template: Template::Write },
             ],
         },
     ]
