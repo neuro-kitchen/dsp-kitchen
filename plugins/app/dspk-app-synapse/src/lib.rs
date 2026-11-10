@@ -445,6 +445,33 @@ impl AppPlugin for SynapsePlugin {
         }
     }
 
+    fn recording_epochs(&self, path: &std::path::Path, start_sec: f64) -> Vec<dspk_app_core::domain::epoch::EpochDoc> {
+        if !dspk_synapse::io::nwb::is_nwb_zarr(path) {
+            return Vec::new();
+        }
+        let intervals = dspk_synapse::io::nwb::read_intervals(path).unwrap_or_else(|e| {
+            tracing::warn!("NWB intervals of {}: {e}", path.display());
+            Vec::new()
+        });
+        intervals
+            .into_iter()
+            .filter(|i| i.stop_sec > start_sec)
+            .map(|i| {
+                // `epochs` → epoch, `trials` → trial: the type; named after the table and row
+                let kind = i.table.strip_suffix('s').unwrap_or(&i.table).to_string();
+                dspk_app_core::domain::epoch::EpochDoc {
+                    id: String::new(),
+                    recording: path.to_path_buf(),
+                    name: format!("{kind} {}", i.row + 1),
+                    kind,
+                    start_sec: (i.start_sec - start_sec).max(0.0),
+                    end_sec: i.stop_sec - start_sec,
+                    notes: format!("NWB /intervals/{} row {}", i.table, i.row),
+                }
+            })
+            .collect()
+    }
+
     fn aligned(&self, store: &Entity<Store>, events_s: &[f64], pre_ms: f64, post_ms: f64, _: &mut Window, cx: &mut App) -> Option<AnyElement> {
         aligned::section(&self.aligned, store, events_s, pre_ms, post_ms, cx)
     }

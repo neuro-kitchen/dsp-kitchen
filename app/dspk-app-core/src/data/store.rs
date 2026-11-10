@@ -429,19 +429,38 @@ impl Store {
 
     /// The epochs saved next to `path` that the session does not have yet.
     fn load_epochs(&mut self, path: &Path, cx: &mut Context<Self>) {
-        match crate::data::epochs::load(path) {
-            Ok(found) => {
-                for mut e in found {
-                    if self.doc.epochs.iter().any(|d| d.recording == e.recording && d.start_sec == e.start_sec && d.end_sec == e.end_sec) {
-                        continue;
-                    }
-                    if self.doc.epochs.iter().any(|d| d.id == e.id) {
-                        e.id.clear();
-                    }
-                    let _ = self.execute(SessionCommand::SetEpoch { epoch: e }, cx);
-                }
+        let mut found = match crate::data::epochs::load(path) {
+            Ok(found) => found,
+            Err(e) => {
+                self.set_status(format!("Epochs of {}: {e}", path.display()), cx);
+                Vec::new()
             }
-            Err(e) => self.set_status(format!("Epochs of {}: {e}", path.display()), cx),
+        };
+        // Epochs the file holds itself (e.g. NWB intervals), from the recording's start
+        let start = self.sources().map_or(0.0, |s| s.get(&s.default_entry().id.clone()).start_time_sec);
+        found.extend(crate::plugin::plugins().iter().flat_map(|p| p.recording_epochs(path, start)));
+        let same = |a: &crate::domain::epoch::EpochDoc, b: &crate::domain::epoch::EpochDoc| a.recording == b.recording && (a.start_sec - b.start_sec).abs() < 1e-9 && (a.end_sec - b.end_sec).abs() < 1e-9;
+        let mut new: Vec<crate::domain::epoch::EpochDoc> = Vec::new();
+        for mut e in found {
+            if self.doc.epochs.iter().chain(&new).any(|d| same(d, &e)) {
+                continue;
+            }
+            if self.doc.epochs.iter().chain(&new).any(|d| d.id == e.id) {
+                e.id.clear();
+            }
+            new.push(e);
+        }
+        // Ids for the ones without, unique among the new ones too
+        let mut next = 1;
+        for e in new.iter_mut().filter(|e| e.id.is_empty()) {
+            while self.doc.epochs.iter().any(|d| d.id == format!("e{next}")) {
+                next += 1;
+            }
+            e.id = format!("e{next}");
+            next += 1;
+        }
+        if !new.is_empty() {
+            let _ = self.execute(SessionCommand::SetEpochs { epochs: new }, cx);
         }
     }
 

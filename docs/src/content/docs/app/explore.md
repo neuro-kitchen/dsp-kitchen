@@ -70,6 +70,10 @@ Mark spans of a recording as epochs on the timeline. They're saved in the sessio
 from a recording (epochs, event sets). Epochs saved by older versions in
 `<recording>.epochs.zarr` are still read.
 
+An NWB recording (`.nwb.zarr`) brings its own intervals: every row of its `/intervals` tables
+(`epochs`, `trials`, …) becomes an epoch when the recording opens, typed after its table (*epoch*,
+*trial*) and shifted to the recording's start. Epochs already in the session are not added twice.
+
 Shift+drag on the timeline, or use **Mark**, then **Save as epoch…**. The dialog names the epoch and gives it a type.
 
 ![A span marked on the timeline, with Save as epoch in its menu](/dsp-kitchen/img/app/06_add-epoch.png)
