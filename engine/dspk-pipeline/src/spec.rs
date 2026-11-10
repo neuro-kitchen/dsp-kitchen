@@ -833,9 +833,19 @@ impl Node {
         };
         match self {
             Node::Read { .. } | Node::Write { .. } => Ok(None),
-            Node::Crossings { level, release, min_duration_ms, refractory_ms, .. } => {
+            Node::Crossings { level, release, direction, min_duration_ms, refractory_ms } => {
                 if !level.is_finite() || release.is_some_and(|r| !r.is_finite()) {
                     return Err(PipelineError::Invalid("crossings: level and release must be finite".into()));
+                }
+                if let Some(r) = release {
+                    let (bad, rule) = match direction {
+                        Direction::Rising => (r > level, "at most the level (rising: it ends below the level)"),
+                        Direction::Falling => (r < level, "at least the level (falling: it ends above the level)"),
+                        Direction::Both => (r.abs() > level.abs(), "in magnitude at most the level's"),
+                    };
+                    if bad {
+                        return Err(PipelineError::Invalid(format!("crossings: the release ({r}) must be {rule}, which is {level}; change the release first")));
+                    }
                 }
                 if !(*min_duration_ms >= 0.0 && *refractory_ms >= 0.0) {
                     return Err(PipelineError::Invalid("crossings: min_duration_ms and refractory_ms must be at least 0".into()));

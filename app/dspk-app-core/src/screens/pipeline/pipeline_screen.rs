@@ -292,7 +292,7 @@ impl PipelineView {
                     }))
                     .child(div().w(px(1.)).h(px(20.)).mx_1().bg(t.border))
                     .child(menu("tool-input", IconName::AudioWaveform, "Input", vec!["Sources"]))
-                    .child(menu("tool-op", IconName::SlidersHorizontal, "Operation", vec!["Filter", "Reference", "Smooth", "Transform"]))
+                    .child(menu("tool-op", IconName::SlidersHorizontal, "Operation", vec!["Filter", "Reference", "Smooth", "Transform", "Events"]))
                     .child(menu("tool-output", IconName::Eye, "Output", vec!["Output"]))
                     .child(div().w(px(1.)).h(px(20.)).mx_1().bg(t.border))
                     .child({
@@ -320,7 +320,7 @@ impl PipelineView {
         let canvas = self.canvas.downgrade();
         let selected = !self.canvas.read(cx).selected.is_empty();
         let writable = self.canvas.read(cx).single().and_then(|id| self.store.read(cx).doc.graph.node(id)).is_some_and(|n| matches!(n.kind, NodeKind::Write {} | NodeKind::View { .. }));
-        let menu = |id: &'static str, title: &'static str, build: Rc<dyn Fn(PopupMenu) -> PopupMenu>| {
+        let menu = |id: SharedString, title: &'static str, build: Rc<dyn Fn(PopupMenu) -> PopupMenu>| {
             Button::new(id).ghost().small().label(title).dropdown_menu(move |m: PopupMenu, _, _| build(m))
         };
         let item_canvas = canvas.clone();
@@ -379,8 +379,8 @@ impl PipelineView {
             .gap_0p5()
             .border_b_1()
             .border_color(t.border)
-            .child(menu("pipeline-menu-file", "File", file))
-            .child(menu("pipeline-menu-edit", "Edit", edit));
+            .child(menu("pipeline-menu-file".into(), "File", file))
+            .child(menu("pipeline-menu-edit".into(), "Edit", edit));
         // One menu per kind of operation (Sources are in File)
         for c in catalog().into_iter().filter(|c| c.name != "Sources") {
             let canvas = canvas.clone();
@@ -395,18 +395,11 @@ impl PipelineView {
                 }
                 m
             });
-            let id: &'static str = match c.name {
-                "Filter" => "pipeline-menu-filter",
-                "Reference" => "pipeline-menu-reference",
-                "Smooth" => "pipeline-menu-smooth",
-                "Transform" => "pipeline-menu-transform",
-                "Channels" => "pipeline-menu-channels",
-                "Rate" => "pipeline-menu-rate",
-                _ => "pipeline-menu-output",
-            };
+            // Each menu its own id, from its name (a shared id shares the popup)
+            let id = SharedString::from(format!("pipeline-menu-{}", c.name.to_lowercase()));
             bar = bar.child(menu(id, c.name, build));
         }
-        bar.child(menu("pipeline-menu-view", "View", view))
+        bar.child(menu("pipeline-menu-view".into(), "View", view))
             .child(div().flex_1())
             .child(div().text_xs().text_color(t.muted_foreground).child("Wheel: pan · Ctrl+wheel: zoom · Space+drag: move · drag an output onto a node: connect"))
     }

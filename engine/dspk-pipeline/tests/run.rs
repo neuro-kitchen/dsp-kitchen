@@ -863,6 +863,8 @@ fn crossings_in_windows_equal_the_whole_recording() {
     };
     let e = refused(r#""on": {"op": "crossings", "level": 1.0}, "out": {"op": "write", "path": "o.bin"}"#, r#"[["in", "on"], ["on", "out"]]"#);
     assert!(e.contains("format = \"events\""), "{e}");
+    let e = refused(r#""on": {"op": "crossings", "level": 0.1, "release": 25.0}, "out": {"op": "write", "path": "o.csv", "format": "events"}"#, r#"[["in", "on"], ["on", "out"]]"#);
+    assert!(e.contains("release (25) must be at most the level"), "{e}");
     let e = refused(r#""out": {"op": "write", "path": "o.csv", "format": "events"}"#, r#"[["in", "out"]]"#);
     assert!(e.contains("needs a crossings node"), "{e}");
     let e = refused(
