@@ -13,7 +13,7 @@ import numpy as np
 
 from dspk._native import ops as _ops
 from dspk.ops.filter._common import _channels
-from dspk.ops import filter, layout, linalg, math, peaks, resample, spatial, stage
+from dspk.ops import crossings, filter, layout, linalg, math, peaks, resample, spatial, stage
 
 
 class Pipeline:
@@ -123,4 +123,4 @@ class Pipeline:
         return repr(self._native)
 
 
-__all__ = ["Pipeline", "filter", "layout", "linalg", "math", "peaks", "resample", "spatial", "stage"]
+__all__ = ["Pipeline", "crossings", "filter", "layout", "linalg", "math", "peaks", "resample", "spatial", "stage"]
