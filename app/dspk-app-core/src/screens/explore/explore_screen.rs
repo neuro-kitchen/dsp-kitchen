@@ -114,6 +114,8 @@ pub enum Arrangement {
 enum DialogRow {
     Arrange(Arrangement),
     Add(TimeViewKind),
+    /// The Epochs view: each event's window stacked.
+    Epochs,
 }
 
 /// Opens / closes one side of `explore` (the panels' hide buttons).
@@ -344,7 +346,7 @@ impl ExploreView {
         let units = s.active_view().is_some_and(|v| crate::plugin::layers(s, v, cx).units);
         let has_views = !self.vm.read(cx).views.is_empty();
         let mut rows: Vec<(DialogRow, bool)> = [Arrangement::Tabs, Arrangement::Horizontal, Arrangement::Vertical, Arrangement::Grid].into_iter().map(|a| (DialogRow::Arrange(a), has_views)).collect();
-        rows.extend([(DialogRow::Add(TimeViewKind::Traces), true), (DialogRow::Add(TimeViewKind::Heatmap), true), (DialogRow::Add(TimeViewKind::Raster), units)]);
+        rows.extend([(DialogRow::Add(TimeViewKind::Traces), true), (DialogRow::Add(TimeViewKind::Heatmap), true), (DialogRow::Add(TimeViewKind::Raster), units), (DialogRow::Epochs, true)]);
         rows
     }
 
@@ -360,7 +362,23 @@ impl ExploreView {
                 });
                 self.show_right(RightPanel::Inspector, cx);
             }
+            DialogRow::Epochs => self.add_epochs(window, cx),
         }
+    }
+
+    /// An Epochs view under the focused view.
+    pub fn add_epochs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let panel = cx.new(|cx| super::components::epochs_panel::EpochsPanel::new(self.store.clone(), cx));
+        let focused = self.vm.read(cx).focused.as_ref().and_then(|f| self.panels.get(&f.read(cx).id())).map(|p| p.entity_id());
+        let id = gpui_kit::base::dock::PanelId::from(panel.entity_id());
+        self.dock.update(cx, |d, cx| {
+            let target = focused.and_then(|f| d.layout(DockPlacement::Center)?.find_panel_node(gpui_kit::base::dock::PanelId::from(f)));
+            d.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
+            if let Some(node) = target {
+                d.move_panel(id, InsertTarget::Split { node, placement: Placement::Right, size: None }, window, cx);
+            }
+        });
+        cx.notify();
     }
 
     /// The dialog's keys: Esc closes, ↑ / ↓ move between the rows it can run, Enter runs one.
@@ -550,6 +568,15 @@ impl ExploreView {
                 let id = format!("add-view-kind-{}", title.to_lowercase());
                 row(4 + i, id, icon, title, text, enabled[4 + i], DialogRow::Add(kind))
             }))
+            .child(row(
+                7,
+                "add-view-kind-epochs".to_string(),
+                Assets::Activity,
+                "Epochs",
+                "Each event's window stacked per channel, mean ± SD (live while the level is tuned)".to_string(),
+                enabled[7],
+                DialogRow::Epochs,
+            ))
             .child(div().mx_2().my_2().h(px(1.)).bg(border))
             .child({
                 let (vm, store) = (self.vm.clone(), self.store.clone());

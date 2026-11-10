@@ -870,8 +870,8 @@ mod tests {
         }).unwrap();
         cx.run_until_parked();
         assert!(!dialog_open(cx), "Close closes it");
-        // The keyboard: Esc closes; from the first row, ↑ wraps to the last it can run (Heatmap:
-        // Raster has no units) and Enter adds it
+        // The keyboard: Esc closes; from the first row, ↑ wraps to the last it can run (Epochs),
+        // ↑ again goes to Heatmap (Raster has no units) and Enter adds it
         let open_with_click = |cx: &mut TestAppContext| {
             cx.update_window(window, |_, window, cx| {
                 window.render_frame(cx);
@@ -884,7 +884,7 @@ mod tests {
         assert!(!dialog_open(cx), "Esc closes it");
         open_with_click(cx);
         let n = views(cx, &app).len();
-        cx.simulate_keystrokes(window, "up enter");
+        cx.simulate_keystrokes(window, "up up enter");
         cx.run_until_parked();
         assert!(!dialog_open(cx));
         assert_eq!(views(cx, &app).len(), n + 1, "↑ then Enter added a heatmap");

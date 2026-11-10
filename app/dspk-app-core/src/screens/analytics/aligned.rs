@@ -28,6 +28,8 @@ pub struct ChannelAverage {
     pub mean: Vec<f32>,
     /// Across-event standard deviation (sample, ddof 1).
     pub sd: Vec<f32>,
+    /// The first events' own windows (as many as asked for), to draw under the mean.
+    pub snippets: Vec<Vec<f32>>,
 }
 
 /// The average of every channel, on a common time axis.
@@ -50,6 +52,7 @@ pub fn aligned_average(
     align: AlignTo,
     pre_s: f64,
     post_s: f64,
+    keep: usize,
 ) -> DspResult<AlignedAverage> {
     let pre = (pre_s * rate).round().max(0.0) as u64;
     let post = (post_s * rate).round().max(1.0) as u64;
@@ -59,6 +62,7 @@ pub fn aligned_average(
     let mut out = Vec::with_capacity(channels.len());
     for &ch in channels {
         let mut m = RunningMoments::new(len);
+        let mut snippets = Vec::new();
         for e in events.iter().filter(|e| align == AlignTo::AllEvents || e.channel as usize == ch) {
             let at = (e.onset_s * rate).round() as i64;
             let (a, b) = (at - pre as i64, at + post as i64);
@@ -67,6 +71,9 @@ pub fn aligned_average(
             }
             read(ch, a as u64..b as u64, &mut buf)?;
             m.push(&buf);
+            if snippets.len() < keep {
+                snippets.push(buf.clone());
+            }
         }
         let trials = m.count() as usize;
         out.push(ChannelAverage {
@@ -74,6 +81,7 @@ pub fn aligned_average(
             trials,
             mean: m.mean().iter().map(|&v| v as f32).collect(),
             sd: m.std(1).into_iter().map(|v| v as f32).collect(),
+            snippets,
         });
     }
     Ok(AlignedAverage { time_ms, channels: out })
@@ -90,8 +98,9 @@ pub fn draw(avg: &ChannelAverage, event_frac: f32, width: u32, height: u32, back
     if n < 2 || avg.trials == 0 {
         return frame;
     }
-    let lo = avg.mean.iter().zip(&avg.sd).map(|(m, s)| m - s).fold(f32::INFINITY, f32::min).min(0.0);
-    let hi = avg.mean.iter().zip(&avg.sd).map(|(m, s)| m + s).fold(f32::NEG_INFINITY, f32::max).max(0.0);
+    let snip = avg.snippets.iter().flatten().copied();
+    let lo = avg.mean.iter().zip(&avg.sd).map(|(m, s)| m - s).chain(snip.clone()).fold(f32::INFINITY, f32::min).min(0.0);
+    let hi = avg.mean.iter().zip(&avg.sd).map(|(m, s)| m + s).chain(snip).fold(f32::NEG_INFINITY, f32::max).max(0.0);
     let span = (hi - lo).max(1e-12);
     let (w, h) = (width as f32, height as f32);
     let pad = 4.0 * scale;
@@ -101,6 +110,12 @@ pub fn draw(avg: &ChannelAverage, event_frac: f32, width: u32, height: u32, back
     c.rect(0.0, zero_y - 0.5, w, zero_y + 0.5, grid, 0.8);
     let ex = event_frac.clamp(0.0, 1.0) * (w - 1.0);
     c.rect(ex - 0.5 * scale, 0.0, ex + 0.5 * scale, h, grid, 1.0);
+    // Each event's own window, faint, under the band and the mean
+    let faint = (0.6 / (avg.snippets.len() as f32).sqrt().max(1.0)).clamp(0.08, 0.35);
+    for s in &avg.snippets {
+        let points: Vec<(f32, f32)> = (0..n).map(|i| (x(i), y(s[i]))).collect();
+        polyline(&mut c, &points, colour, faint, 1.0 * scale);
+    }
     for col in 0..width as usize {
         let i = ((col as f32 / (w - 1.0).max(1.0)) * (n - 1) as f32).round() as usize;
         let (m, s) = (avg.mean[i], avg.sd[i]);
@@ -144,7 +159,8 @@ mod tests {
     fn averages_each_channel_around_its_events() {
         let ev = |ch: u32, t: f64| Event { channel: ch, onset_s: t, offset_s: None, peak_value: 0.0 };
         let events = [ev(0, 0.1), ev(0, 0.3), ev(1, 0.2), ev(0, 0.001)];
-        let a = aligned_average(read, 1000, 1000.0, &[0, 1], &events, AlignTo::OwnEvents, 0.01, 0.02).unwrap();
+        let a = aligned_average(read, 1000, 1000.0, &[0, 1], &events, AlignTo::OwnEvents, 0.01, 0.02, 1).unwrap();
+        assert_eq!(a.channels[0].snippets.len(), 1, "one kept");
         assert_eq!(a.time_ms.len(), 30);
         assert_eq!((a.time_ms[0], a.time_ms[10]), (-10.0, 0.0));
         // Channel 0: events at 100 and 300 (the one at 1 ms has no room before it): mean at t = 0 is 200
@@ -154,7 +170,7 @@ mod tests {
         assert!((c0.sd[10] - 141.42136).abs() < 1e-3);
         // Channel 1 to its own event only; to all events: 3 usable
         assert_eq!(a.channels[1].trials, 1);
-        let all = aligned_average(read, 1000, 1000.0, &[1], &events, AlignTo::AllEvents, 0.01, 0.02).unwrap();
+        let all = aligned_average(read, 1000, 1000.0, &[1], &events, AlignTo::AllEvents, 0.01, 0.02, 0).unwrap();
         assert_eq!((all.channels[0].trials, all.channels[0].mean[0], all.channels[0].sd[0]), (3, 5.0, 0.0));
         let f = draw(&c0.clone(), 1.0 / 3.0, 120, 40, Pixel::rgb(0, 0, 0), Pixel::rgb(60, 60, 60), Pixel::rgb(250, 200, 50), 1.0);
         assert!(f.pixels().iter().any(|p| p.r > 200 && p.g > 150), "the mean is drawn");

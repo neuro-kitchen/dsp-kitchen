@@ -130,7 +130,7 @@ impl AnalyticsWorkspace {
         let task = cx.background_spawn(async move {
             let info = signal.info().clone();
             let read = |ch: usize, r: std::ops::Range<u64>, out: &mut [f32]| signal.read(&[ch], r, out);
-            let avg = aligned_average(read, info.samples, info.sample_rate_hz(), &channels, &events, align, pre_ms * 1e-3, post_ms * 1e-3).map_err(|e| e.to_string())?;
+            let avg = aligned_average(read, info.samples, info.sample_rate_hz(), &channels, &events, align, pre_ms * 1e-3, post_ms * 1e-3, 0).map_err(|e| e.to_string())?;
             let rgb = crate::screens::explore::components::timeline_tab::tick_color(hue, 1.0).to_rgb();
             let colour = crate::ui::plot::canvas::Pixel::rgb((rgb.r * 255.0) as u8, (rgb.g * 255.0) as u8, (rgb.b * 255.0) as u8);
             let frac = (pre_ms / (pre_ms + post_ms)) as f32;
