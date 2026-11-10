@@ -78,6 +78,42 @@ pub fn compute_psth(spike_samples: &[u64], stimulus_samples: &[u64], sample_rate
     psth_seconds(&to_s(spike_samples), &to_s(stimulus_samples), options.pre_ms, options.post_ms, options.bin_ms)
 }
 
+/// Spikes around each event, for a raster aligned to the events: every spike within
+/// `[-pre_ms, +post_ms)` of an event, as its trial (the event's index) and its time from the event.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AlignedRaster {
+    /// Index into the events of each spike's trial.
+    pub trial: Vec<u32>,
+    /// Time of each spike from its event, in milliseconds.
+    pub time_ms: Vec<f64>,
+    pub num_trials: usize,
+}
+
+/// [`AlignedRaster`] of a spike train around events (both in samples at `sample_rate_hz`); a
+/// spike near several events appears once per event. Trials in event order, spikes in time
+/// within each.
+pub fn compute_aligned_raster(spike_samples: &[u64], event_samples: &[u64], sample_rate_hz: f64, pre_ms: f64, post_ms: f64) -> AlignedRaster {
+    let mut spikes = spike_samples.to_vec();
+    spikes.sort_unstable();
+    let to_samples = |ms: f64| (ms * 1e-3 * sample_rate_hz).ceil().max(0.0) as u64;
+    let (pre, post) = (to_samples(pre_ms), to_samples(post_ms));
+    let mut out = AlignedRaster { num_trials: event_samples.len(), ..Default::default() };
+    for (trial, &e) in event_samples.iter().enumerate() {
+        let lo = spikes.partition_point(|&s| s < e.saturating_sub(pre));
+        for &s in &spikes[lo..] {
+            let ms = (s as f64 - e as f64) * 1e3 / sample_rate_hz;
+            if ms >= post_ms || s >= e + post {
+                break;
+            }
+            if ms >= -pre_ms {
+                out.trial.push(trial as u32);
+                out.time_ms.push(ms);
+            }
+        }
+    }
+    out
+}
+
 fn psth_seconds(
     spike_times_sec: &[f64],
     stim_times_sec: &[f64],
@@ -346,6 +382,17 @@ pub fn quantify_mep(sta: &StimulusTriggeredAverage, options: &MepOptions) -> Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aligned_raster_keeps_spikes_around_each_event() {
+        // 1 kHz, window -30..+50 ms: events at 1000 and 1050; spikes at 980, 1010, 1060 (1010 is
+        // 40 ms before the second event, outside its window)
+        let r = compute_aligned_raster(&[1060, 980, 1010], &[1000, 1050], 1000.0, 30.0, 50.0);
+        assert_eq!(r.num_trials, 2);
+        assert_eq!(r.trial, vec![0, 0, 1]);
+        assert_eq!(r.time_ms, vec![-20.0, 10.0, 10.0]);
+        assert!(compute_aligned_raster(&[5], &[], 1000.0, 10.0, 10.0).trial.is_empty());
+    }
 
     #[test]
     fn test_sta_se_and_mep_quantification() {
