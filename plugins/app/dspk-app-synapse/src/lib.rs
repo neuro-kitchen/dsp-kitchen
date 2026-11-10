@@ -14,6 +14,7 @@
 //!   similarity; labels and merges kept as a log in the store) — [`curation_ws`], [`curation`];
 //! - the bottom strip of both: a simple trace view or raster over the shared timeline — [`strip`].
 
+pub mod aligned;
 pub mod chart;
 pub mod curation;
 pub mod curation_ws;
@@ -295,11 +296,13 @@ impl SynapseState {
 
 pub struct SynapsePlugin {
     opener: opener::SynapseOpener,
+    /// Analytics: the last units-aligned-to-events cards.
+    aligned: aligned::Cache,
 }
 
 impl SynapsePlugin {
     pub fn new() -> Self {
-        Self { opener: opener::SynapseOpener }
+        Self { opener: opener::SynapseOpener, aligned: aligned::Cache::default() }
     }
 }
 
@@ -440,6 +443,10 @@ impl AppPlugin for SynapsePlugin {
             Workspace::Curation => Some(cx.new(|cx| curation_ws::CurationWorkspace::new(store.clone(), window, cx)).into()),
             _ => None,
         }
+    }
+
+    fn aligned(&self, store: &Entity<Store>, events_s: &[f64], pre_ms: f64, post_ms: f64, _: &mut Window, cx: &mut App) -> Option<AnyElement> {
+        aligned::section(&self.aligned, store, events_s, pre_ms, post_ms, cx)
     }
 
     fn panel(&self) -> Option<(&'static str, std::rc::Rc<dyn Fn() -> gpui_kit::component::Icon>)> {
