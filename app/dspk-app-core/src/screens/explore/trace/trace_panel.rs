@@ -89,6 +89,12 @@ impl TracePanel {
             }
             return;
         }
+        if e.click_count == 2 && self.vm.read(cx).view.kind == TimeViewKind::Traces {
+            if let Some(ch) = self.vm.read(cx).channel_at(fy) {
+                self.vm.update(cx, |vm, cx| vm.toggle_solo(ch, cx));
+            }
+            return;
+        }
         let _ = fx;
         let start = self.vm.read(cx).store().read(cx).timeline.window_start_sec;
         self.drag = Some(Drag { x: e.position.x.as_f32(), start, fy, moved: false });
@@ -190,6 +196,32 @@ impl TracePanel {
                     .text_xs()
                     .text_color(color(palette.text))
                     .child(label)
+                    .into_any_element(),
+            );
+        }
+        // One channel shown alone: say so; the chip (or double-click, or Esc) goes back
+        if let Some(solo) = &vm.view.solo {
+            let ch = solo.channel;
+            out.push(
+                div()
+                    .id("solo")
+                    .absolute()
+                    .top(px(6.))
+                    .right(px(8.))
+                    .h(px(24.))
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .rounded(px(4.))
+                    .bg(color(palette.background))
+                    .text_xs()
+                    .text_color(color(palette.text))
+                    .cursor(CursorStyle::PointingHand)
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.vm.update(cx, |vm, cx| vm.leave_solo(cx));
+                    }))
+                    .child(format!("Ch {ch} alone · Show all (Esc)"))
                     .into_any_element(),
             );
         }
@@ -328,6 +360,7 @@ impl Render for TracePanel {
             .on_action(cx.listener(|this, _: &ChannelPageDown, _, cx| this.vm.update(cx, |vm, cx| vm.page(true, cx))))
             .on_action(cx.listener(|this, _: &GainUp, _, cx| this.vm.update(cx, |vm, cx| vm.zoom_gain(1.0 / 0.75, cx))))
             .on_action(cx.listener(|this, _: &GainDown, _, cx| this.vm.update(cx, |vm, cx| vm.zoom_gain(0.75, cx))))
+            .on_action(cx.listener(|this, _: &LeaveSolo, _, cx| this.vm.update(cx, |vm, cx| vm.leave_solo(cx))))
             .child(div().flex_1().min_h_0().flex().child(gutter).child(plot))
             .child(axis)
     }

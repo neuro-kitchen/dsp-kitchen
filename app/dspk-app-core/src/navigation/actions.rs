@@ -42,6 +42,8 @@ actions!(
         ChannelPageDown,
         GainUp,
         GainDown,
+        /// Back from a channel shown alone (double-click) to the view's channels.
+        LeaveSolo,
         ToggleLoop,
         Undo,
         Redo,
@@ -90,6 +92,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("pagedown", ChannelPageDown, Some(PLOT)),
         KeyBinding::new("]", GainUp, Some(PLOT)),
         KeyBinding::new("[", GainDown, Some(PLOT)),
+        KeyBinding::new("escape", LeaveSolo, Some(PLOT)),
         KeyBinding::new("l", ToggleLoop, Some(PLOT)),
     ]);
 }
@@ -120,6 +123,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
             ("Home / End", "Start / end of the recording"),
             ("Space · L", "Play / pause · loop"),
             ("Double-click a heatmap", "Show that channel in a traces view"),
+            ("Double-click a trace · Esc", "Show that channel alone · back to all"),
             ("Drag a view's tab", "Snap it beside another view (edges) or onto its tabs"),
         ],
     ),

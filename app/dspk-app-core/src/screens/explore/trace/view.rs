@@ -105,6 +105,19 @@ pub struct TimeView {
     /// Latest hover request of this view (older readouts arriving late are dropped).
     #[serde(skip)]
     pub hover_seq: u64,
+    /// One channel shown alone (double-click): what the view showed before, restored on leaving.
+    #[serde(skip)]
+    pub solo: Option<Box<Solo>>,
+}
+
+/// A view's channels, lanes and pin before it showed one channel alone.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Solo {
+    pub channel: usize,
+    selection: Vec<usize>,
+    lanes: usize,
+    scroll: usize,
+    pinned_selection: bool,
 }
 
 fn one() -> f32 {
@@ -148,6 +161,7 @@ impl TimeView {
             needs_render: true,
             hover: String::new(),
             hover_seq: 0,
+            solo: None,
         }
     }
 
@@ -273,6 +287,28 @@ impl TimeView {
     }
 
     /// Scrolls so `ch` is on screen (roughly centred). Returns false if not selected.
+    /// Shows `ch` alone in one lane, pinned so the shared selection doesn't replace it. False when
+    /// a channel is already shown alone.
+    pub fn solo(&mut self, ch: usize) -> bool {
+        if self.solo.is_some() {
+            return false;
+        }
+        let before = Solo { channel: ch, selection: std::mem::replace(&mut self.selection, vec![ch]), lanes: self.lanes, scroll: self.scroll, pinned_selection: self.pinned_selection };
+        self.solo = Some(Box::new(before));
+        (self.lanes, self.scroll, self.pinned_selection) = (1, 0, true);
+        self.needs_render = true;
+        true
+    }
+
+    /// Back to the channels shown before [`Self::solo`]; false when none was shown alone.
+    pub fn unsolo(&mut self) -> bool {
+        let Some(b) = self.solo.take() else { return false };
+        (self.selection, self.lanes, self.pinned_selection) = (b.selection, b.lanes, b.pinned_selection);
+        self.scroll = b.scroll.min(self.max_scroll());
+        self.needs_render = true;
+        true
+    }
+
     pub fn reveal(&mut self, ch: usize) -> bool {
         let Some(i) = self.selection.iter().position(|&c| c == ch) else { return false };
         self.scroll = i.saturating_sub(self.lanes_on_screen() / 2).min(self.max_scroll());
@@ -468,6 +504,19 @@ pub fn parse_channel_ranges(text: &str, total: usize) -> Result<Vec<usize>, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_channel_shown_alone_and_back() {
+        let mut v = TimeView::new(1, TimeViewKind::Traces, (0..20).collect());
+        (v.lanes, v.scroll) = (8, 5);
+        assert!(v.solo(12));
+        assert_eq!((v.selection.clone(), v.lanes, v.drawn_channels().to_vec()), (vec![12], 1, vec![12]));
+        assert!(v.pinned_selection, "the shared selection must not replace it");
+        assert!(!v.solo(3), "already alone");
+        assert!(v.unsolo());
+        assert_eq!((v.selection.len(), v.lanes, v.scroll, v.pinned_selection), (20, 8, 5, false));
+        assert!(!v.unsolo());
+    }
 
     #[test]
     fn test_parse_channel_ranges() {

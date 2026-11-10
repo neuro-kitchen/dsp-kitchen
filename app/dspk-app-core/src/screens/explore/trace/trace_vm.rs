@@ -456,6 +456,29 @@ impl TraceVm {
         Ok(())
     }
 
+    /// Double-click on a channel: show it alone, or go back when one is already shown alone.
+    pub fn toggle_solo(&mut self, channel: usize, cx: &mut Context<Self>) {
+        if !self.view.unsolo() {
+            self.view.solo(channel);
+        }
+        if !self.view.pinned_selection {
+            // Back from solo on a view that follows the shared selection: catch up with it
+            let s = self.store.read(cx);
+            let channels = s.selection(&self.view.source).to_vec();
+            let total = s.sources().map_or(0, |ss| ss.entry(&self.view.source).channels);
+            self.view.set_selection(channels, total);
+        }
+        cx.emit(TraceEvent::Changed);
+        self.request_render(cx);
+    }
+
+    /// Esc: back from a channel shown alone (nothing otherwise).
+    pub fn leave_solo(&mut self, cx: &mut Context<Self>) {
+        if let Some(ch) = self.view.solo.as_ref().map(|s| s.channel) {
+            self.toggle_solo(ch, cx);
+        }
+    }
+
     /// Scrolls so `channel` is on screen; false when this view does not show it.
     pub fn reveal(&mut self, channel: usize, cx: &mut Context<Self>) -> bool {
         let found = self.view.reveal(channel);
