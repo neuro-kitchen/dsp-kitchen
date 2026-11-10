@@ -106,6 +106,8 @@ pub enum SessionCommand {
     /// Adds an epoch, or replaces the one with its id (an empty id: a new one).
     SetEpoch { epoch: EpochDoc },
     RemoveEpoch { id: String },
+    /// Adds several epochs as one change (one undo step); none when one of them is invalid.
+    SetEpochs { epochs: Vec<EpochDoc> },
     /// Adds an event set (empty id: a new one) or replaces the one with its id (its look).
     SetEventSet { set: EventSetDoc },
     RemoveEventSet { id: String },
@@ -536,6 +538,14 @@ fn apply_graph(doc: &mut SessionDoc, cmd: SessionCommand) -> Result<Changed, Com
             }
             Ok(Changed::Timeline)
         }
+        C::SetEpochs { epochs } => {
+            let mut d = doc.clone();
+            for epoch in epochs {
+                apply(&mut d, C::SetEpoch { epoch })?;
+            }
+            *doc = d;
+            Ok(Changed::Timeline)
+        }
         C::SetEventSet { mut set } => {
             if !(set.tick_height.is_finite() && set.tick_width.is_finite() && set.hue.is_finite()) {
                 return Err(CommandError::Invalid("an event set's look must be finite".into()));
@@ -823,6 +833,12 @@ mod tests {
         assert_eq!((s.id.as_str(), s.name.as_str(), s.tick_height, s.tick_width), ("ev1", "events 1", 1.0, 0.5));
         apply(&mut d, SessionCommand::RemoveEventSet { id: "ev1".into() }).unwrap();
         assert!(d.event_sets.is_empty());
+        // Several epochs at once, or none when one is invalid
+        let ep = |a: f64, b: f64| EpochDoc { id: String::new(), recording: "/r.bin".into(), name: String::new(), kind: "response".into(), start_sec: a, end_sec: b, notes: String::new() };
+        assert!(apply(&mut d, SessionCommand::SetEpochs { epochs: vec![ep(1.0, 2.0), ep(3.0, 2.0)] }).is_err());
+        assert!(d.epochs.is_empty(), "nothing added");
+        apply(&mut d, SessionCommand::SetEpochs { epochs: vec![ep(1.0, 2.0), ep(3.0, 4.0)] }).unwrap();
+        assert_eq!(d.epochs.len(), 2);
         apply(&mut d, SessionCommand::PlaceRecording { path: "/data/rec.bin".into(), source: None, start_sec: 60.0 }).unwrap();
         apply(&mut d, SessionCommand::PlaceRecording { path: "/data/rec.bin".into(), source: None, start_sec: 90.0 }).unwrap();
         assert_eq!((d.placements.len(), d.placements[0].start_sec), (1, 90.0));

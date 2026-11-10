@@ -202,7 +202,7 @@ impl TracePanel {
                         .top(relative(y))
                         .h(relative(h))
                         .w(px(w))
-                        .bg(gpui_kit::hsla(set.hue / 360.0, 0.85, 0.6, alpha))
+                        .bg(crate::screens::explore::components::timeline_tab::tick_color(set.hue, alpha))
                         .into_any_element(),
                 )
             };

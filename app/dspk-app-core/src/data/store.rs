@@ -366,6 +366,40 @@ impl Store {
         let _ = self.execute(SessionCommand::SetEventSet { set }, cx);
     }
 
+    /// Every event of set `id` that has an offset becomes an epoch of type `response`, named after
+    /// the set (one change: one undo step).
+    pub fn epochs_from_events(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(set) = self.doc.event_sets.iter().find(|s| s.id == id).cloned() else { return };
+        let Some(events) = self.events_of(&set) else {
+            self.set_status(format!("Events {}: not read", set.name), cx);
+            return;
+        };
+        let epochs: Vec<crate::domain::epoch::EpochDoc> = events
+            .iter()
+            .filter_map(|e| Some((e.onset_s, e.offset_s?)))
+            .filter(|(a, b)| b > a)
+            .enumerate()
+            .map(|(i, (a, b))| crate::domain::epoch::EpochDoc { id: String::new(), recording: set.recording.clone(), name: format!("{} {}", set.name, i + 1), kind: "response".into(), start_sec: a, end_sec: b, notes: String::new() })
+            .collect();
+        let n = epochs.len();
+        if self.execute(SessionCommand::SetEpochs { epochs }, cx).is_ok() {
+            self.set_status(format!("{n} epochs from {}", set.name), cx);
+        }
+    }
+
+    /// Moves the window to the first event of set `id` after the window's centre (wrapping to the
+    /// first), and returns its onset.
+    pub fn next_event(&mut self, id: &str, cx: &mut Context<Self>) -> Option<f64> {
+        let set = self.doc.event_sets.iter().find(|s| s.id == id)?.clone();
+        let events = self.events_of(&set)?;
+        let (a, w) = (self.timeline.window_start_sec, self.timeline.visible_window_sec);
+        let mid = a + w / 2.0;
+        let e = events.iter().find(|e| e.onset_s > mid + 1e-9).or_else(|| events.first())?;
+        let t = e.onset_s;
+        self.set_window(t - w / 2.0, t + w / 2.0, cx);
+        Some(t)
+    }
+
     /// Reads the tables of the session's event sets not read yet (a session opened from a file).
     pub fn read_event_tables(&mut self) {
         for set in &self.doc.event_sets {
@@ -377,10 +411,10 @@ impl Store {
         }
     }
 
-    /// The event tables in `path`'s derived folder that the session does not list yet.
+    /// The event sets in `path`'s derived store that the session does not list yet.
     fn load_event_sets(&mut self, path: &Path, cx: &mut Context<Self>) {
         let Ok(dir) = std::fs::read_dir(crate::data::derived::events_dir(path)) else { return };
-        let mut tables: Vec<PathBuf> = dir.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "parquet")).collect();
+        let mut tables: Vec<PathBuf> = dir.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.join("zarr.json").exists()).collect();
         tables.sort();
         for table in tables {
             if self.doc.event_sets.iter().any(|s| s.table == table) {
@@ -914,6 +948,12 @@ impl Store {
         let mut outputs = Vec::new();
         for w in &writes {
             let Some((recording, ops)) = self.doc.graph.chain(w, &self.doc.recipes) else { continue };
+            let v = ViewDoc { id: w.clone(), name: w.clone(), recording: recording.clone(), ops: ops.clone(), display: Default::default(), plugins: Default::default() };
+            if jobs::gives_events(&v) {
+                // Events are found on their own (a branched run writes signals)
+                self.set_status(format!("{w} gives events: run it on its own (double-click it)"), cx);
+                continue;
+            }
             outputs.push(jobs::processed_path(&recording.path, w));
             chains.push(ViewDoc { id: w.clone(), name: w.clone(), recording, ops, display: Default::default(), plugins: Default::default() });
         }
@@ -954,6 +994,9 @@ impl Store {
             self.set_status(format!("{}: no enabled ops to write", v.name), cx);
             return;
         }
+        if jobs::gives_events(&v) {
+            return self.write_events(v, cx);
+        }
         let output = jobs::processed_path(&v.recording.path, &v.id);
         let nodes = self.chain_nodes(&v.id);
         self.start_job_on(
@@ -961,6 +1004,35 @@ impl Store {
             format!("Write {}", v.name),
             move |send| jobs::write_view(&v, output, move |m| send(m)),
             |s, path, cx| s.set_status(format!("Written: {}", path.display()), cx),
+            cx,
+        );
+    }
+
+    /// Finds the events of `v` (a chain ending with Crossings) into the recording's derived store,
+    /// `events/<write id>`, and adds them to the session as an event set (ticks on its traces).
+    fn write_events(&mut self, v: ViewDoc, cx: &mut Context<Self>) {
+        let recording = v.recording.path.clone();
+        if let Err(e) = crate::data::derived::ensure(&recording, &["/events"]) {
+            self.set_status(format!("Events of {}: {e}", recording.display()), cx);
+            return;
+        }
+        let output = crate::data::derived::events_group(&recording, &v.id);
+        let nodes = self.chain_nodes(&v.id);
+        let name = v.name.clone();
+        self.start_job_on(
+            nodes,
+            format!("Events {}", v.name),
+            move |send| jobs::write_events(&v, output, move |m| send(m)),
+            move |s, path, cx| {
+                // The set keeps its look when it is found again
+                let set = match s.doc.event_sets.iter().find(|e| e.table == path) {
+                    Some(e) => e.clone(),
+                    None => crate::domain::epoch::EventSetDoc::new(recording.clone(), name.clone(), path.clone()),
+                };
+                s.add_event_set(set, cx);
+                let n = s.doc.event_sets.iter().find(|e| e.table == path).and_then(|e| s.events_of(e)).map_or(0, |e| e.len());
+                s.set_status(format!("{n} events: {}", path.display()), cx);
+            },
             cx,
         );
     }
