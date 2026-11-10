@@ -222,6 +222,43 @@ pub enum Node {
         #[serde(default = "default_teager_kaiser_edge")]
         edge: Edge,
     },
+    /// Events where each channel crosses `level` (`dspk_ops::onsets`): an event starts at the
+    /// crossing and ends where the signal crosses back past `release` (default: `level`; between
+    /// the baseline and the level it keeps noise around the level from splitting events). Events
+    /// shorter than `min_duration_ms` are dropped; onsets within `refractory_ms` after an event's
+    /// end are ignored. The last processing node: the `write` after it (remaps may come between)
+    /// has `format = "events"`. Typical chain: band-pass → rectify → low-pass → onsets.
+    Onsets {
+        /// In the signal's unit (after the nodes before).
+        level: f32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        release: Option<f32>,
+        #[serde(default)]
+        direction: Direction,
+        #[serde(default)]
+        min_duration_ms: f64,
+        #[serde(default)]
+        refractory_ms: f64,
+    },
+}
+
+/// Which way an `onsets` node's signal crosses its level: `rising` (up through a level above the
+/// baseline) or `falling` (down through a level below it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Direction {
+    #[default]
+    Rising,
+    Falling,
+}
+
+impl From<Direction> for dspk_ops::onsets::Direction {
+    fn from(d: Direction) -> Self {
+        match d {
+            Direction::Rising => dspk_ops::onsets::Direction::Rising,
+            Direction::Falling => dspk_ops::onsets::Direction::Falling,
+        }
+    }
 }
 
 /// One input of a `read` node: a path (or glob), or several recordings merged side by side.
@@ -256,6 +293,11 @@ pub enum OutputFormat {
     Raw,
     /// Zarr `/traces`, float32.
     Zarr,
+    /// The events of an `onsets` node: a CSV table, one row per event (`channel`, `channel_name`,
+    /// `onset_sample`, `offset_sample`, `peak_sample`, `peak_value`, `onset_s`, `offset_s`,
+    /// `duration_s`; samples of the recording, an empty offset when the range ended inside the
+    /// event).
+    Events,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -784,6 +826,15 @@ impl Node {
         };
         match self {
             Node::Read { .. } | Node::Write { .. } => Ok(None),
+            Node::Onsets { level, release, min_duration_ms, refractory_ms, .. } => {
+                if !level.is_finite() || release.is_some_and(|r| !r.is_finite()) {
+                    return Err(PipelineError::Invalid("onsets: level and release must be finite".into()));
+                }
+                if !(*min_duration_ms >= 0.0 && *refractory_ms >= 0.0) {
+                    return Err(PipelineError::Invalid("onsets: min_duration_ms and refractory_ms must be at least 0".into()));
+                }
+                Ok(None)
+            }
             Node::Remap { .. } => {
                 if let Some(map) = self.channel_map(None)? {
                     map.order().map_err(|e| PipelineError::Invalid(e.to_string()))?;

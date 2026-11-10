@@ -160,6 +160,9 @@ fn execute(
     .map_err(|e| PipelineError::Compute(e.to_string()))?;
     let mut p = p;
     p.fit(target)?;
+    if p.onsets.is_some() {
+        return execute_events(spec, p, target, started, observe);
+    }
     let Prepared {
         source, pipeline, resample, channels, range, unit, sample_rate, stored_format, stored_upload, mode, schedule,
         out_rate, out_samples, output, format, zarr, names, keep, ..
@@ -194,6 +197,7 @@ fn execute(
             w.set_channel_names(&names)?;
             Sink::Zarr(w)
         }
+        OutputFormat::Events => unreachable!("an events chain runs in execute_events"),
     };
 
     let mut bytes = DataMovement::default();
@@ -288,6 +292,7 @@ fn execute(
     let cleanup = || match format {
         OutputFormat::Raw => drop(std::fs::remove_file(&output)),
         OutputFormat::Zarr => drop(std::fs::remove_dir_all(&output)),
+        OutputFormat::Events => {}
     };
     // A cancelled run leaves the output incomplete (a Zarr writer then reports missing samples)
     if cancelled {
@@ -376,6 +381,9 @@ fn execute_fanout(
     if prepared.iter().any(|p| p.resample.is_some()) {
         return invalid("resample in a branched spec: write that branch with its own spec");
     }
+    if prepared.iter().any(|p| p.onsets.is_some()) {
+        return invalid("onsets in a branched spec: write those events with their own spec");
+    }
     // One schedule for all: stream when every branch streams, else windows with the largest halo
     let stream = prepared.iter().all(|p| p.mode == ExecutedMode::Stream);
     let mut halo = (0usize, 0usize);
@@ -441,6 +449,7 @@ fn execute_fanout(
                 w.set_channel_names(&p.names)?;
                 Sink::Zarr(w)
             }
+            OutputFormat::Events => unreachable!("branched specs refuse onsets"),
         });
     }
 
@@ -547,6 +556,7 @@ fn execute_fanout(
             match p.format {
                 OutputFormat::Raw => drop(std::fs::remove_file(&p.output)),
                 OutputFormat::Zarr => drop(std::fs::remove_dir_all(&p.output)),
+                OutputFormat::Events => {}
             }
         }
     };
@@ -678,6 +688,136 @@ impl Sink {
         stats.disk += clock.elapsed();
         Ok(stats)
     }
+}
+
+/// Runs one prepared input whose chain ends with an `onsets` node: each processed window stays on
+/// the device, where its crossings are found ([`dspk_ops::onsets::OnsetTracker`]); only those are
+/// downloaded, and the events are written as CSV at the end.
+fn execute_events(
+    spec: &PipelineSpec,
+    p: Prepared,
+    target: ComputeTarget,
+    started: Instant,
+    mut observe: impl FnMut(usize, usize, DataMovement) -> bool,
+) -> Result<RunReport, PipelineError> {
+    let Prepared { source, pipeline, channels, range, sample_rate, stored_format, stored_upload, mode, schedule, out_samples, output, names, keep, onsets, .. } = p;
+    let options = onsets.expect("an onsets chain");
+    let info = source.info();
+    let nch = channels.len();
+    let out_nch = names.len();
+    let client = target.client().map_err(|e| PipelineError::Compute(e.to_string()))?;
+    let capacity = schedule.max_read_samples().max(1);
+    let mut workspace = match mode {
+        ExecutedMode::Stream => PipelineWorkspace::<f32>::new_stateful(client, pipeline, nch, capacity, sample_rate),
+        ExecutedMode::Windows { .. } => PipelineWorkspace::<f32>::new(client, pipeline, nch, capacity, sample_rate),
+    }
+    .map_err(|e| PipelineError::Invalid(e.to_string()))?;
+    if stored_upload {
+        let gains: Vec<f32> = channels.iter().map(|&c| info.channels[c].gain).collect();
+        let offsets: Vec<f32> = channels.iter().map(|&c| info.channels[c].offset).collect();
+        workspace.set_stored_scaling(&gains, &offsets);
+    }
+    let mut tracker = dspk_ops::onsets::OnsetTracker::new(out_nch, &options).map_err(|e| PipelineError::Invalid(format!("onsets: {e}")))?;
+    let keep_rows = keep.as_ref().map(|k| buffer::upload(workspace.client(), &k.iter().map(|&c| c as u32).collect::<Vec<u32>>()));
+
+    let mut bytes = DataMovement::default();
+    let mut timings = StageTimings::default();
+    let loader = WindowLoader::with_channels(source.as_ref(), channels.clone());
+    let total_windows = schedule.len();
+    let mut done = 0;
+    let mut cancelled = false;
+    let read_bytes = |win: &HaloWindow| (nch * win.read_len() * stored_format.bytes()) as u64;
+    let detect = |win: &HaloWindow, handle: Handle, client: &Client, tracker: &mut dspk_ops::onsets::OnsetTracker| {
+        let n = win.read_len();
+        let handle = match &keep_rows {
+            Some(rows) => {
+                let kept = buffer::empty::<f32>(client, out_nch * n);
+                execute_gather_rows::<f32>(client, &handle, rows, &kept, nch, out_nch, n);
+                kept
+            }
+            None => handle,
+        };
+        tracker.push_device_window::<f32>(client, &handle, n, win.valid_local.clone(), win.read_global.start);
+    };
+    let mut idle = Instant::now();
+    let streamed = if stored_upload {
+        loader.stream_stored_owned_while(schedule.windows(), |win, stored| {
+            let t0 = Instant::now();
+            timings.read_wait += (t0 - idle).as_secs_f64();
+            bytes.read += read_bytes(win);
+            bytes.uploaded += stored_word_bytes(stored.len()) as u64;
+            let handle = workspace.process_owned_stored_chunk_in_vram(stored, stored_format, win.read_len())?;
+            detect(win, handle, workspace.client(), &mut tracker);
+            timings.device += t0.elapsed().as_secs_f64();
+            done += 1;
+            cancelled = !observe(done, total_windows, bytes);
+            idle = Instant::now();
+            Ok(!cancelled)
+        })
+    } else {
+        loader.stream_while(schedule.windows(), |win, samples| {
+            let t0 = Instant::now();
+            timings.read_wait += (t0 - idle).as_secs_f64();
+            bytes.read += read_bytes(win);
+            bytes.uploaded += (samples.len() * 4) as u64;
+            let handle = workspace.process_chunk_in_vram(samples, win.read_len());
+            detect(win, handle, workspace.client(), &mut tracker);
+            timings.device += t0.elapsed().as_secs_f64();
+            done += 1;
+            cancelled = !observe(done, total_windows, bytes);
+            idle = Instant::now();
+            Ok(!cancelled)
+        })
+    };
+    if cancelled {
+        return Err(PipelineError::Cancelled);
+    }
+    streamed?;
+    let events = tracker.finish();
+
+    let disk = Instant::now();
+    if let Some(dir) = output.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir).map_err(|e| PipelineError::Io(format!("{}: {e}", dir.display())))?;
+    }
+    let csv = events_csv(&events, &names, sample_rate);
+    bytes.downloaded += (events.len() * 24) as u64;
+    bytes.written += csv.len() as u64;
+    std::fs::write(&output, csv).map_err(|e| PipelineError::Io(format!("{}: {e}", output.display())))?;
+    let provenance = provenance_path(&output);
+    std::fs::write(&provenance, spec.to_json()).map_err(|e| PipelineError::Io(format!("{}: {e}", provenance.display())))?;
+    timings.disk = disk.elapsed().as_secs_f64();
+    let _ = range;
+
+    Ok(RunReport {
+        mode,
+        runtime: target.name(),
+        stored_upload,
+        channels: out_nch,
+        samples: out_samples,
+        sample_rate_hz: sample_rate,
+        windows: total_windows,
+        bytes,
+        output,
+        provenance,
+        seconds: started.elapsed().as_secs_f64(),
+        timings,
+    })
+}
+
+/// The events table written by an `onsets` chain (see [`OutputFormat::Events`]).
+pub fn events_csv(events: &[dspk_ops::onsets::OnsetEvent], names: &[String], sample_rate: f64) -> String {
+    let mut out = String::from("channel,channel_name,onset_sample,offset_sample,peak_sample,peak_value,onset_s,offset_s,duration_s\n");
+    let quote = |s: &str| if s.contains([',', '"', '\n']) { format!("\"{}\"", s.replace('"', "\"\"")) } else { s.to_string() };
+    for e in events {
+        let name = names.get(e.channel).map(String::as_str).unwrap_or("");
+        let onset_s = e.onset as f64 / sample_rate;
+        let (offset, offset_s, duration_s) = match e.offset {
+            Some(o) => (o.to_string(), format!("{}", o as f64 / sample_rate), format!("{}", (o - e.onset) as f64 / sample_rate)),
+            None => (String::new(), String::new(), String::new()),
+        };
+        out.push_str(&format!("{},{},{},{},{},{},{},{},{}\n", e.channel, quote(name), e.onset, offset, e.peak_sample, e.peak_value, onset_s, offset_s, duration_s));
+    }
+    out
 }
 
 fn provenance_path(output: &Path) -> PathBuf {
