@@ -73,6 +73,33 @@ pub fn write_view(view: &ViewDoc, output: PathBuf, send: impl Fn(JobMessage) + S
     cancel
 }
 
+/// The events of `view` (its chain ends with a `crossings` op) written as the Zarr group `output`
+/// (inside the recording's `.dspk.zarr`).
+pub fn write_events(view: &ViewDoc, output: PathBuf, send: impl Fn(JobMessage) + Send + 'static) -> Cancel {
+    let spec: PipelineSpec = view.pipeline(output.clone(), OutputFormat::Events);
+    let cancel = Cancel::default();
+    let c = cancel.clone();
+    std::thread::spawn(move || {
+        let base = output.parent().map(Path::to_path_buf).unwrap_or_default();
+        let open = |p: &Path, source: Option<&str>| crate::plugin::open(p, source);
+        let result = dspk_pipeline::run_with(&spec, &base, open, |p| {
+            let f = p.windows_done as f32 / p.windows.max(1) as f32;
+            send(JobMessage::Progress(format!("Finding events · {:.0} %", f * 100.0), Some(f)));
+            !c.cancelled()
+        });
+        send(match result {
+            Ok(_) => JobMessage::Done(output),
+            Err(e) => JobMessage::Failed(format!("Events failed: {e}")),
+        });
+    });
+    cancel
+}
+
+/// Whether `view`'s chain gives events (its last enabled op is `crossings`).
+pub fn gives_events(view: &ViewDoc) -> bool {
+    view.ops.iter().rev().find(|o| o.enabled).is_some_and(|o| matches!(o.node, dspk_pipeline::Node::Crossings { .. }))
+}
+
 /// Writes several chains of one recording in one read of it (a branched spec: chains that start
 /// with the same ops share those nodes in the spec); `outputs[i]` is chain `i`'s file.
 pub fn write_branches(chains: Vec<ViewDoc>, outputs: Vec<PathBuf>, send: impl Fn(JobMessage) + Send + 'static) -> Cancel {

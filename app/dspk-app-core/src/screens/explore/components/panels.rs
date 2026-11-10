@@ -589,12 +589,20 @@ impl SettingsPanel {
             let vm = vm.clone();
             Switch::new("remove-dc").checked(v.remove_dc).label("Remove DC offset").on_click(move |on, _, cx| vm.update(cx, |vm, cx| vm.set_remove_dc(*on, cx)))
         };
+        let events = {
+            let vm = vm.clone();
+            Switch::new("view-events").checked(v.events).label("Events as ticks").on_click(move |on, _, cx| vm.update(cx, |vm, cx| vm.set_events(*on, cx)))
+        };
+        let events_only = {
+            let vm = vm.clone();
+            Switch::new("view-events-only").checked(v.events_only).label("Events only (hide the signal)").on_click(move |on, _, cx| vm.update(cx, |vm, cx| vm.set_events_only(*on, cx)))
+        };
 
         let facts = sources.as_ref().map(|ss| source_facts(ss.entry(&v.source), muted));
         let mut out = vec![
             div().text_sm().font_weight(gpui_kit::FontWeight::SEMIBOLD).truncate().child(v.title.clone()).into_any_element(),
             Section::new("Source").children(source).children(facts).child(row("Range", div().text_sm().child(v.range_label()), cx)).into_any_element(),
-            Section::new("Layer").child(kind).when(traces, |d| d.child(row("Colour", color_by, cx))).into_any_element(),
+            Section::new("Layer").child(kind).when(traces, |d| d.child(row("Colour", color_by, cx)).child(events).child(events_only)).into_any_element(),
         ];
         if traces {
             out.push(Section::new("Traces").child(row("On screen", lanes_row, cx)).child(row("Gain", gain_row, cx)).into_any_element());

@@ -65,14 +65,33 @@ The [full list](/dsp-kitchen/app/keyboard/) is one F1 away.
 
 ## Epochs
 
-Mark spans of a recording as epochs on the timeline. They're saved in the session, and in
-`<recording>.epochs.zarr` next to the recording.
+Mark spans of a recording as epochs on the timeline. They're saved in the session, and in the
+`epochs` group of `<recording>.dspk.zarr`, the one Zarr store that holds what the app derives
+from a recording (epochs, event sets). Epochs saved by older versions in
+`<recording>.epochs.zarr` are still read.
+
+An NWB recording (`.nwb.zarr`) brings its own intervals: every row of its `/intervals` tables
+(`epochs`, `trials`, …) becomes an epoch when the recording opens, typed after its table (*epoch*,
+*trial*) and shifted to the recording's start. Epochs already in the session are not added twice.
 
 Shift+drag on the timeline, or use **Mark**, then **Save as epoch…**. The dialog names the epoch and gives it a type.
 
 ![A span marked on the timeline, with Save as epoch in its menu](/dsp-kitchen/img/app/06_add-epoch.png)
 
 ![The New epoch dialog: name, type, start, end and notes](/dsp-kitchen/img/app/07_adding-epoch.png)
+
+## Several recordings
+
+To see another recording beside the open one, right-click it in the Timeline tab and choose
+**Show beside the open recording**. It loads in the background and a traces view of it opens under
+the focused view; the open recording stays the active one (its processing, selection and
+Inspector).
+
+Both views follow the one timeline. When the recordings are placed on the session's time
+(right-click → Metadata), the view of the other recording is shifted by the difference, so events
+at the same session time line up. A view of another recording shows it as stored (previews and
+spikes belong to the open recording) and keeps its own channel selection. It's saved with the
+layout and comes back while that recording is loaded.
 
 ## Several sources
 

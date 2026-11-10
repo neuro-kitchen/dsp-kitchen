@@ -840,6 +840,16 @@ fn crossings_in_windows_equal_the_whole_recording() {
         let table = ParquetReader::new(std::fs::File::open(dir.join("events.parquet")).unwrap()).finish().unwrap();
         let expected = dspk_pipeline::events_frame(&events, &names, FS).unwrap();
         assert!(table.equals_missing(&expected), "{}: {table} vs {expected}", target.name());
+
+        // As a Zarr group: the same events, rate and names back
+        spec.set_output(dir.join("events.zarr")).unwrap();
+        run(&spec, &dir).unwrap();
+        let (back, rate, back_names) = dspk_pipeline::read_events_zarr(&dir.join("events.zarr")).unwrap();
+        assert_eq!((back, rate, back_names), (events.clone(), FS, names.clone()), "{}", target.name());
+        // A group inside a store (the app's `<recording>.dspk.zarr/events/<name>`) is Zarr too
+        spec.set_output(dir.join("rec.dspk.zarr/events/on")).unwrap();
+        run(&spec, &dir).unwrap();
+        assert_eq!(dspk_pipeline::read_events_zarr(&dir.join("rec.dspk.zarr/events/on")).unwrap().0, events, "{}", target.name());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -853,6 +863,8 @@ fn crossings_in_windows_equal_the_whole_recording() {
     };
     let e = refused(r#""on": {"op": "crossings", "level": 1.0}, "out": {"op": "write", "path": "o.bin"}"#, r#"[["in", "on"], ["on", "out"]]"#);
     assert!(e.contains("format = \"events\""), "{e}");
+    let e = refused(r#""on": {"op": "crossings", "level": 0.1, "release": 25.0}, "out": {"op": "write", "path": "o.csv", "format": "events"}"#, r#"[["in", "on"], ["on", "out"]]"#);
+    assert!(e.contains("release (25) must be at most the level"), "{e}");
     let e = refused(r#""out": {"op": "write", "path": "o.csv", "format": "events"}"#, r#"[["in", "out"]]"#);
     assert!(e.contains("needs a crossings node"), "{e}");
     let e = refused(

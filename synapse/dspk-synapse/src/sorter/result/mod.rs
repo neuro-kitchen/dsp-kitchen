@@ -103,6 +103,8 @@ impl SorterResult {
                     QualityCriteria::default(),
                 );
                 unit.quality_label = if good { UnitQualityLabel::SingleUnit } else { UnitQualityLabel::MultiUnit };
+                // `from_spikes_with` has no noise level here, so its SNR is NaN: keep the one computed above.
+                unit.snr = snr as f32;
                 unit.composite_score =
                     compute_composite_score(&unit.spike_samples, &unit.amplitudes_uv, snr, self.total_samples, self.sample_rate_hz, &self.composite).score;
                 unit
@@ -196,5 +198,14 @@ mod tests {
         let whitened = result(AmplitudeScale::Whitened).to_sorting_output(None).units[0].composite_score;
         let noisy = result(AmplitudeScale::Recording { noise_levels: vec![1.0, 1.0, 40.0] }).to_sorting_output(None).units[0].composite_score;
         assert!(noisy < whitened * 0.1, "SNR 1 (40 / 40) must cut the score: {noisy} vs {whitened}");
+    }
+
+    /// The SNR used for the score is also the unit's own `snr` (it was left NaN before).
+    #[test]
+    fn units_keep_their_snr() {
+        let whitened = result(AmplitudeScale::Whitened).to_sorting_output(None);
+        assert!(whitened.units.iter().all(|u| (u.snr - 8.0).abs() < 1e-6), "median |amplitude|");
+        let rec = result(AmplitudeScale::Recording { noise_levels: vec![1.0, 1.0, 40.0] }).to_sorting_output(None);
+        assert!((rec.units[0].snr - 1.0).abs() < 1e-6, "40 / 40: {}", rec.units[0].snr);
     }
 }

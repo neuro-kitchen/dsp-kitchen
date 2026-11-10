@@ -29,6 +29,20 @@ use crate::screens::explore::{ExploreVm, TraceVm};
 pub const GUTTER: f32 = 64.;
 pub const AXIS: f32 = 22.;
 
+/// A dragged ruler value rounded to 3 significant digits (what is typed in the inspector).
+fn nice_value(v: f32) -> f32 {
+    if v == 0.0 || !v.is_finite() {
+        return 0.0;
+    }
+    let mag = 10f32.powf(v.abs().log10().floor() - 2.0);
+    (v / mag).round() * mag
+}
+
+fn fmt_value(v: f32) -> String {
+    let s = format!("{:.3}", v);
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
 pub fn color(p: Pixel) -> gpui_kit::Hsla {
     rgb(((p.r as u32) << 16) | ((p.g as u32) << 8) | p.b as u32).into()
 }
@@ -46,6 +60,29 @@ struct Drag {
 
 /// Pointer travel (logical px) that turns a press into a drag.
 const CLICK_SLOP: f32 = 3.0;
+/// How close (logical px) a press must be to a ruler line to grab it.
+const RULER_GRAB: f32 = 5.0;
+
+/// The level ruler: the Crossings op the view's chain ends with, drawn as lines at its level and
+/// release in every lane; dragging one sets that value.
+#[derive(Debug, Clone)]
+struct Ruler {
+    /// Session view and op the values belong to.
+    view: String,
+    op: String,
+    node: dspk_pipeline::Node,
+    level: f32,
+    release: f32,
+    /// Lines on both sides of the baseline (`direction = both`).
+    both: bool,
+}
+
+/// A ruler line being dragged: which one, and its value now.
+#[derive(Debug, Clone, Copy)]
+struct RulerDrag {
+    release: bool,
+    value: f32,
+}
 
 pub struct TracePanel {
     vm: Entity<TraceVm>,
@@ -57,13 +94,14 @@ pub struct TracePanel {
     wheel: f32,
     /// Pointer in the plot (fractions), for the crosshair.
     pointer: Option<(f32, f32)>,
+    ruler_drag: Option<RulerDrag>,
     _vm: Subscription,
 }
 
 impl TracePanel {
     pub fn new(vm: Entity<TraceVm>, explore: WeakEntity<ExploreVm>, cx: &mut Context<Self>) -> Self {
         let sub = cx.observe(&vm, |_, _, cx| cx.notify());
-        Self { vm, explore, focus: cx.focus_handle(), plot: Rc::new(Cell::new(Bounds::default())), drag: None, wheel: 0.0, pointer: None, _vm: sub }
+        Self { vm, explore, focus: cx.focus_handle(), plot: Rc::new(Cell::new(Bounds::default())), drag: None, wheel: 0.0, pointer: None, ruler_drag: None, _vm: sub }
     }
 
     /// Position of `p` in the plot as fractions (clamped).
@@ -78,14 +116,76 @@ impl TracePanel {
         store.update(cx, f);
     }
 
+    /// The ruler of this view, when its chain ends with an enabled Crossings op (traces only).
+    fn ruler(&self, cx: &App) -> Option<Ruler> {
+        let vm = self.vm.read(cx);
+        if vm.view.kind != TimeViewKind::Traces {
+            return None;
+        }
+        let s = vm.store().read(cx);
+        let id = if vm.view.doc_view.is_empty() { s.doc.active()?.id.clone() } else { vm.view.doc_view.clone() };
+        let v = s.doc.view(&id)?;
+        let op = v.ops.iter().rev().find(|o| o.enabled)?;
+        let dspk_pipeline::Node::Crossings { level, release, direction, .. } = &op.node else { return None };
+        let both = *direction == dspk_pipeline::Direction::Both;
+        let (level, release) = if both { (level.abs(), release.unwrap_or(*level).abs()) } else { (*level, release.unwrap_or(*level)) };
+        Some(Ruler { view: id, op: op.id.clone(), node: op.node.clone(), level, release, both })
+    }
+
+    /// Pixels (physical) per signal unit in a lane, and the lane height (physical px).
+    fn lane_scale(&self, cx: &App) -> (f32, f32) {
+        let v = &self.vm.read(cx).view;
+        let h = v.canvas_height.max(1) as f32;
+        let lanes = v.drawn_channels().len().max(1) as f32;
+        let lane_h = h / lanes;
+        (crate::screens::explore::trace::renderer::px_per_unit(lane_h, v.gain, v.amp_scale), lane_h)
+    }
+
+    /// The ruler line near plot height `fy` (fraction), if any: whether it is the release.
+    fn ruler_hit(&self, fy: f32, cx: &App) -> Option<bool> {
+        let r = self.ruler(cx)?;
+        if self.vm.read(cx).view.remove_dc {
+            return None;
+        }
+        let (k, lane_h) = self.lane_scale(cx);
+        let v = &self.vm.read(cx).view;
+        let h = v.canvas_height.max(1) as f32;
+        let y = fy * h;
+        let lane = (y / lane_h).floor();
+        let center = (lane + 0.5) * lane_h;
+        let grab = RULER_GRAB * v.scale_factor;
+        let signs: &[f32] = if r.both { &[1.0, -1.0] } else { &[1.0] };
+        for &s in signs {
+            if (center - s * r.level * k - y).abs() <= grab {
+                return Some(false);
+            }
+            if (r.release - r.level).abs() > f32::EPSILON && (center - s * r.release * k - y).abs() <= grab {
+                return Some(true);
+            }
+        }
+        None
+    }
+
     fn on_down(&mut self, e: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus, cx);
         self.vm.update(cx, |vm, cx| vm.pressed(cx));
         let (fx, fy) = self.fractions(e.position);
+        if let Some(release) = self.ruler_hit(fy, cx) {
+            let r = self.ruler(cx).expect("a ruler was hit");
+            self.ruler_drag = Some(RulerDrag { release, value: if release { r.release } else { r.level } });
+            cx.notify();
+            return;
+        }
         if e.click_count == 2 && self.vm.read(cx).view.kind == TimeViewKind::Heatmap {
             if let (Some(ch), Some(explore)) = (self.vm.read(cx).channel_at(fy), self.explore.upgrade()) {
                 let vm = self.vm.clone();
                 explore.update(cx, |ex, cx| ex.reveal_in_traces(&vm, ch, cx));
+            }
+            return;
+        }
+        if e.click_count == 2 && self.vm.read(cx).view.kind == TimeViewKind::Traces {
+            if let Some(ch) = self.vm.read(cx).channel_at(fy) {
+                self.vm.update(cx, |vm, cx| vm.toggle_solo(ch, cx));
             }
             return;
         }
@@ -96,6 +196,24 @@ impl TracePanel {
 
     fn on_move(&mut self, e: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
         let (fx, fy) = self.fractions(e.position);
+        if let Some(d) = self.ruler_drag {
+            if e.pressed_button != Some(MouseButton::Left) {
+                self.ruler_drag = None;
+            } else {
+                // The value under the pointer in its lane (magnitudes for `both`)
+                let (k, lane_h) = self.lane_scale(cx);
+                let h = self.vm.read(cx).view.canvas_height.max(1) as f32;
+                let y = fy * h;
+                let center = ((y / lane_h).floor() + 0.5) * lane_h;
+                let mut value = (center - y) / k.max(f32::MIN_POSITIVE);
+                if self.ruler(cx).is_some_and(|r| r.both) {
+                    value = value.abs();
+                }
+                self.ruler_drag = Some(RulerDrag { value, ..d });
+                cx.notify();
+                return;
+            }
+        }
         match self.drag {
             Some(d) if e.pressed_button == Some(MouseButton::Left) => {
                 let w = self.plot.get().size.width.as_f32().max(1.0) as f64;
@@ -122,6 +240,29 @@ impl TracePanel {
     }
 
     fn on_up(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(d) = self.ruler_drag.take() {
+            // One change on release (one undo step), the level and release kept in order
+            if let Some(r) = self.ruler(cx) {
+                let mut node = r.node.clone();
+                if let dspk_pipeline::Node::Crossings { level, release, direction, .. } = &mut node {
+                    let falling = *direction == dspk_pipeline::Direction::Falling;
+                    let v = nice_value(d.value);
+                    if d.release {
+                        let below = if falling { v.max(*level) } else { v.min(level.abs()) };
+                        *release = Some(below);
+                    } else {
+                        *level = v;
+                        if let Some(rel) = release.as_mut() {
+                            *rel = if falling { rel.max(v) } else { rel.min(v.abs()) };
+                        }
+                    }
+                }
+                let cmd = crate::domain::command::SessionCommand::SetOp { view: r.view, op: r.op, node };
+                let _ = self.vm.read(cx).store().clone().update(cx, |s, cx| s.execute(cmd, cx));
+            }
+            cx.notify();
+            return;
+        }
         if let Some(d) = self.drag.take() {
             if !d.moved {
                 if let Some(ch) = self.vm.read(cx).channel_at(d.fy) {
@@ -161,6 +302,184 @@ impl TracePanel {
         cx.stop_propagation();
     }
 
+    /// The ruler's lines in every lane (or, with Remove DC on, a button to turn it off: lanes are
+    /// then shifted by an offset the ruler can't know).
+    fn ruler_lines(&self, cx: &App) -> Vec<gpui_kit::AnyElement> {
+        let Some(r) = self.ruler(cx) else { return Vec::new() };
+        if self.vm.read(cx).view.events_only {
+            return Vec::new();
+        }
+        let vm = self.vm.read(cx);
+        let palette = vm.store().read(cx).palette();
+        if vm.view.remove_dc {
+            let vm_entity = self.vm.clone();
+            return vec![div()
+                .id("ruler-dc")
+                .absolute()
+                .top(px(6.))
+                .left(px(8.))
+                .h(px(24.))
+                .px_2()
+                .flex()
+                .items_center()
+                .rounded(px(4.))
+                .bg(color(palette.background))
+                .text_xs()
+                .text_color(color(palette.text))
+                .cursor(CursorStyle::PointingHand)
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    cx.stop_propagation();
+                    vm_entity.update(cx, |vm, cx| vm.set_remove_dc(false, cx));
+                })
+                .child("Level ruler: turn off Remove DC")
+                .into_any_element()];
+        }
+        let (k, lane_h) = self.lane_scale(cx);
+        let h = vm.view.canvas_height.max(1) as f32;
+        let lanes = vm.view.drawn_channels().len();
+        let (mut level, mut release) = (r.level, r.release);
+        if let Some(d) = self.ruler_drag {
+            if d.release { release = d.value } else { level = d.value }
+        }
+        let amber = crate::screens::explore::components::timeline_tab::tick_color(45.0, 1.0);
+        let unit = vm.view.unit.clone();
+        let mut out = Vec::new();
+        let signs: &[f32] = if r.both { &[1.0, -1.0] } else { &[1.0] };
+        for lane in 0..lanes {
+            let center = (lane as f32 + 0.5) * lane_h;
+            for &s in signs {
+                for (value, alpha, thick) in [(level, 0.95, 1.5), (release, 0.5, 1.0)] {
+                    if thick < 1.5 && (release - level).abs() <= f32::EPSILON {
+                        continue;
+                    }
+                    let y = (center - s * value * k) / h;
+                    if !(0.0..=1.0).contains(&y) {
+                        continue;
+                    }
+                    out.push(div().absolute().left_0().right_0().top(relative(y)).mt(px(-thick / 2.0)).h(px(thick)).bg(amber.opacity(alpha)).into_any_element());
+                }
+            }
+        }
+        // The values, once, at the top lane's line
+        let mut label = if (release - level).abs() > f32::EPSILON { format!("level {} · release {} {unit}", fmt_value(level), fmt_value(release)) } else { format!("level {} {unit}", fmt_value(level)) };
+        if let Some((_, events)) = &vm.live {
+            label.push_str(&format!(" · {} event{} here", events.len(), if events.len() == 1 { "" } else { "s" }));
+        }
+        let y0 = ((0.5 * lane_h - level * k) / h).clamp(0.0, 0.95);
+        out.push(div().absolute().left(px(8.)).top(relative(y0)).mt(px(-18.)).px_1().rounded(px(3.)).bg(color(palette.background)).text_xs().text_color(amber).child(label).into_any_element());
+        out
+    }
+
+    /// The live events of the window (the chain ends with Crossings): a tick at each onset and a
+    /// faint band to its offset, in the event's lane; or why there are none.
+    fn live_ticks(&self, cx: &App) -> Vec<gpui_kit::AnyElement> {
+        let vm = self.vm.read(cx);
+        if !vm.view.events || (vm.view.remove_dc && !vm.view.events_only) {
+            return Vec::new();
+        }
+        let store = vm.store().read(cx);
+        let palette = store.palette();
+        if let Some(note) = &vm.live_note {
+            return vec![div()
+                .absolute()
+                .top(px(6.))
+                .right(px(8.))
+                .h(px(24.))
+                .px_2()
+                .flex()
+                .items_center()
+                .rounded(px(4.))
+                .bg(color(palette.background))
+                .text_xs()
+                .text_color(color(palette.text))
+                .child(format!("Live events: {note}"))
+                .into_any_element()];
+        }
+        let Some((_, events)) = &vm.live else { return Vec::new() };
+        let drawn = vm.view.drawn_channels();
+        let lanes = drawn.len().max(1) as f32;
+        let (t0, win) = (store.timeline.window_start_sec, store.timeline.visible_window_sec.max(1e-9));
+        let amber = crate::screens::explore::components::timeline_tab::tick_color(45.0, 1.0);
+        let mut out = Vec::new();
+        for e in events.iter().take(Self::MAX_TICKS) {
+            let Some(lane) = drawn.iter().position(|&c| c == e.channel as usize) else { continue };
+            let x = ((e.onset_s - t0) / win) as f32;
+            let top = lane as f32 / lanes;
+            let h = 1.0 / lanes;
+            if let Some(off) = e.offset_s {
+                let x1 = (((off - t0) / win) as f32).min(1.0);
+                if x1 > x {
+                    out.push(div().absolute().left(relative(x.max(0.0))).w(relative(x1 - x.max(0.0))).top(relative(top + 0.1 * h)).h(relative(0.8 * h)).bg(amber.opacity(0.10)).into_any_element());
+                }
+            }
+            if (0.0..=1.0).contains(&x) {
+                out.push(div().absolute().left(relative(x)).ml(px(-1.)).w(px(2.)).top(relative(top + 0.1 * h)).h(relative(0.8 * h)).bg(amber.opacity(0.95)).into_any_element());
+            }
+        }
+        out
+    }
+
+    /// Most ticks drawn at once (a zoomed-out view of a dense set shows the first ones).
+    const MAX_TICKS: usize = 4000;
+
+    /// The visible event sets of the open recording, as ticks: onsets (and offsets, fainter, when
+    /// the set shows them) inside the window, in the lane of their channel.
+    fn event_ticks(&self, cx: &App) -> Vec<gpui_kit::AnyElement> {
+        let vm = self.vm.read(cx);
+        if vm.view.kind != TimeViewKind::Traces || !vm.view.events {
+            return Vec::new();
+        }
+        let store = vm.store().read(cx);
+        let Some(rec) = store.recording.as_ref().and_then(|r| r.path.clone()) else { return Vec::new() };
+        let drawn = vm.view.drawn_channels().to_vec();
+        let lanes = drawn.len().max(1) as f32;
+        let (t0, win) = (store.timeline.window_start_sec, store.timeline.visible_window_sec.max(1e-9));
+        let mut out = Vec::new();
+        for set in store.doc.event_sets.iter().filter(|s| s.visible && s.recording == rec) {
+            let Some(events) = store.events_of(set) else { continue };
+            let tick = |t: f64, channel: u32, alpha: f32| -> Option<gpui_kit::AnyElement> {
+                let x = ((t - t0) / win) as f32;
+                let lane = drawn.iter().position(|&c| c == channel as usize)? as f32;
+                if !(0.0..=1.0).contains(&x) {
+                    return None;
+                }
+                let h = set.tick_height / lanes;
+                let y = (lane + 0.5) / lanes - h / 2.0;
+                let w = set.tick_width;
+                Some(
+                    div()
+                        .absolute()
+                        .left(relative(x))
+                        .ml(px(-w / 2.0))
+                        .top(relative(y))
+                        .h(relative(h))
+                        .w(px(w))
+                        .bg(crate::screens::explore::components::timeline_tab::tick_color(set.hue, alpha))
+                        .into_any_element(),
+                )
+            };
+            let first = events.partition_point(|e| e.onset_s < t0);
+            for e in events[first..].iter().take_while(|e| e.onset_s <= t0 + win) {
+                if out.len() >= Self::MAX_TICKS {
+                    return out;
+                }
+                out.extend(tick(e.onset_s, e.channel, 1.0));
+            }
+            if set.show_offsets {
+                // An offset in the window may belong to an event that began before it
+                for e in events.iter().take_while(|e| e.onset_s <= t0 + win) {
+                    if out.len() >= Self::MAX_TICKS {
+                        return out;
+                    }
+                    if let Some(off) = e.offset_s.filter(|&o| o >= t0) {
+                        out.extend(tick(off, e.channel, 0.45));
+                    }
+                }
+            }
+        }
+        out
+    }
+
     fn overlays(&self, cx: &mut Context<Self>) -> Vec<gpui_kit::AnyElement> {
         let vm = self.vm.read(cx);
         let palette = vm.store().read(cx).palette();
@@ -193,6 +512,36 @@ impl TracePanel {
                     .into_any_element(),
             );
         }
+        // Event sets of this recording as ticks in their channel's lane (traces only)
+        out.extend(self.event_ticks(cx));
+        out.extend(self.live_ticks(cx));
+        out.extend(self.ruler_lines(cx));
+        // One channel shown alone: say so; the chip (or double-click, or Esc) goes back
+        if let Some(solo) = &vm.view.solo {
+            let ch = solo.channel;
+            out.push(
+                div()
+                    .id("solo")
+                    .absolute()
+                    .top(px(6.))
+                    .right(px(8.))
+                    .h(px(24.))
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .rounded(px(4.))
+                    .bg(color(palette.background))
+                    .text_xs()
+                    .text_color(color(palette.text))
+                    .cursor(CursorStyle::PointingHand)
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.vm.update(cx, |vm, cx| vm.leave_solo(cx));
+                    }))
+                    .child(format!("Ch {ch} alone · Show all (Esc)"))
+                    .into_any_element(),
+            );
+        }
         out
     }
 }
@@ -210,6 +559,7 @@ impl Render for TracePanel {
         let shown = vm.shown.clone();
         let (canvas_w, canvas_h, canvas_scale) = (view.canvas_width, view.canvas_height, view.scale_factor);
         let empty = view.selection.is_empty();
+        let events_only = view.events_only && view.kind == TimeViewKind::Traces;
         let view_id = view.id as usize;
         let muted = color(palette.text);
         let _ = window;
@@ -274,7 +624,8 @@ impl Render for TracePanel {
                     this.vm.update(cx, |vm, cx| vm.hover_left(cx));
                 }
             }))
-            .child(raster)
+            // Events only: the ticks over an empty plot
+            .when(!events_only, |d| d.child(raster))
             .children(self.overlays(cx))
             .when(empty, |d| {
                 d.child(div().absolute().size_full().flex().items_center().justify_center().text_sm().text_color(muted).child("No channels selected: pick some in Channels"))
@@ -328,6 +679,7 @@ impl Render for TracePanel {
             .on_action(cx.listener(|this, _: &ChannelPageDown, _, cx| this.vm.update(cx, |vm, cx| vm.page(true, cx))))
             .on_action(cx.listener(|this, _: &GainUp, _, cx| this.vm.update(cx, |vm, cx| vm.zoom_gain(1.0 / 0.75, cx))))
             .on_action(cx.listener(|this, _: &GainDown, _, cx| this.vm.update(cx, |vm, cx| vm.zoom_gain(0.75, cx))))
+            .on_action(cx.listener(|this, _: &LeaveSolo, _, cx| this.vm.update(cx, |vm, cx| vm.leave_solo(cx))))
             .child(div().flex_1().min_h_0().flex().child(gutter).child(plot))
             .child(axis)
     }
@@ -426,5 +778,20 @@ impl Panel for TracePanel {
 
     fn inner_padding(&self, _: &App) -> bool {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dragged_ruler_values_are_rounded_to_three_digits() {
+        assert_eq!(nice_value(52.3456), 52.3);
+        assert!((nice_value(0.012345) - 0.0123).abs() < 1e-7);
+        assert_eq!(nice_value(-1234.5), -1230.0);
+        assert_eq!(nice_value(0.0), 0.0);
+        assert_eq!(fmt_value(50.0), "50");
+        assert_eq!(fmt_value(0.125), "0.125");
     }
 }

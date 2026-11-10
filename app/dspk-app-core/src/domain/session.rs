@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use dspk_pipeline::{Node, OutputFormat, PipelineSpec, SPEC_VERSION};
 
-use super::epoch::{EpochDoc, Placement};
+use super::epoch::{EpochDoc, EventSetDoc, Placement};
 use super::graph::{GraphDoc, Recipes};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -42,6 +42,9 @@ pub struct SessionDoc {
     /// Where recordings sit on the session's time.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub placements: Vec<Placement>,
+    /// Event sets drawn over the recordings' traces.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_sets: Vec<EventSetDoc>,
     /// Every view, in the order they are listed: compiled from `graph` (a document with views
     /// and no graph gets one on load).
     #[serde(default)]
@@ -53,7 +56,7 @@ pub struct SessionDoc {
 
 impl Default for SessionDoc {
     fn default() -> Self {
-        Self { dspk_session: SESSION_VERSION, graph: GraphDoc::default(), recipes: Recipes::new(), epochs: Vec::new(), placements: Vec::new(), views: Vec::new(), active_view: None }
+        Self { dspk_session: SESSION_VERSION, graph: GraphDoc::default(), recipes: Recipes::new(), epochs: Vec::new(), placements: Vec::new(), event_sets: Vec::new(), views: Vec::new(), active_view: None }
     }
 }
 
@@ -123,6 +126,51 @@ pub struct DisplayDoc {
     /// Visible time window, seconds from the recording's start: `[start, end]`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<[f64; 2]>,
+    /// What the view is in Explore: the stream (time views), or its events' windows stacked.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub layout: ViewLayout,
+    /// Epochs layout: the window around each event, an index into the Analytics windows
+    /// (`screens::analytics::WINDOWS_MS`, default −200 … +800 ms).
+    #[serde(default = "default_epochs_window")]
+    pub epochs_window: usize,
+    /// Epochs layout: where the events come from.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub epochs_from: EpochsFrom,
+}
+
+/// What a view is in Explore.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ViewLayout {
+    /// Time views of the stream (traces, heatmap, raster).
+    #[default]
+    Stream,
+    /// Each event's window stacked per channel, mean ± SD (the chain ends with Crossings).
+    Epochs,
+}
+
+/// Where an Epochs view's events come from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EpochsFrom {
+    /// The event set a Write of the same chain saved, else the live ones of the visible window.
+    #[default]
+    Auto,
+    /// Found now in the visible window (follows the level while it is tuned).
+    Live,
+    /// The saved event set of the chain's Write.
+    Saved,
+}
+
+fn is_default<T: Default + PartialEq>(v: &T) -> bool {
+    *v == T::default()
+}
+
+/// Default window of an Epochs view (−200 … +800 ms).
+pub const DEFAULT_EPOCHS_WINDOW: usize = 2;
+
+fn default_epochs_window() -> usize {
+    DEFAULT_EPOCHS_WINDOW
 }
 
 /// Default amplitude gain of a view.
@@ -139,7 +187,7 @@ fn default_lanes() -> usize {
 
 impl Default for DisplayDoc {
     fn default() -> Self {
-        Self { show: Show::default(), gain: DEFAULT_GAIN, lanes: DEFAULT_LANES, window: None }
+        Self { show: Show::default(), gain: DEFAULT_GAIN, lanes: DEFAULT_LANES, window: None, layout: ViewLayout::Stream, epochs_window: DEFAULT_EPOCHS_WINDOW, epochs_from: EpochsFrom::Auto }
     }
 }
 

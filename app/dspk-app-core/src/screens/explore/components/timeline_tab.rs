@@ -2,7 +2,9 @@
 //! one axis, at its placement; right-click: metadata, open, take off) and the epochs (by
 //! recording, coloured by type; click: go there; right-click: edit, delete). `+` adds a recording
 //! (after the last one) or an epoch (the visible window, to edit). Epochs are drawn on the bottom
-//! timeline too, where Shift+drag marks a new one.
+//! timeline too, where Shift+drag marks a new one. Below them the event sets (drawn as ticks over
+//! the traces; click: the next event; the eye shows or hides; right-click: the ticks' look, epochs
+//! from the events, remove).
 
 use std::path::PathBuf;
 
@@ -20,7 +22,8 @@ use gpui_kit::{
 
 use crate::data::store::{duration, file_label, AppEvent, Floating, Store};
 use crate::domain::command::SessionCommand;
-use crate::domain::epoch::{kind_hue, EpochDoc};
+use crate::domain::epoch::{kind_hue, EpochDoc, EventSetDoc};
+use crate::ui::widgets::icon_button;
 use crate::screens::explore::ExploreVm;
 use crate::ui::widgets::PanelHeader;
 
@@ -130,6 +133,7 @@ impl TimelineTab {
             let (store, store2, store3, store4) = (self.store.clone(), self.store.clone(), self.store.clone(), self.store.clone());
             let (p1, p2, p3, src) = (tr.path.clone(), tr.path.clone(), tr.path.clone(), tr.source.clone());
             let (store5, p5, loaded) = (self.store.clone(), tr.path.clone(), tr.loaded);
+            let (explore_beside, p6, open_here) = (self.explore.clone(), tr.path.clone(), tr.open);
             let source_rows = tr.sources.iter().enumerate().map(|(j, (id, name, channels))| {
                 let (store, explore, path, id, id2) = (self.store.clone(), self.explore.clone(), tr.path.clone(), id.clone(), id.clone());
                 let (store2, path2) = (self.store.clone(), tr.path.clone());
@@ -184,6 +188,12 @@ impl TimelineTab {
                     let (p1, p2, p3, src) = (p1.clone(), p2.clone(), p3.clone(), src.clone());
                     m.item(PopupMenuItem::new("Metadata…").on_click(move |_, _, cx| store.update(cx, |s, cx| s.open_floating(Floating::Metadata { path: p1.clone(), source: src.clone() }, cx))))
                         .item(PopupMenuItem::new(if loaded { "Show in Explore" } else { "Open in Explore" }).on_click(move |_, _, cx| store2.update(cx, |s, cx| s.open(p2.clone(), cx))))
+                        .when(!open_here, |m| {
+                            let (explore, p6) = (explore_beside.clone(), p6.clone());
+                            m.item(PopupMenuItem::new("Show beside the open recording").on_click(move |_, _, cx| {
+                                explore.update(cx, |vm, cx| vm.show_beside(crate::screens::explore::trace::renderer::TimeViewKind::Traces, p6.clone(), cx));
+                            }))
+                        })
                         .item(PopupMenuItem::new("New epoch here").on_click(move |_, _, cx| new_epoch(&store4, cx)))
                         .separator()
                         .item(PopupMenuItem::new("Take off the timeline").on_click(move |_, _, cx| {
@@ -239,6 +249,36 @@ impl TimelineTab {
                 }),
             );
         }
+        let sets: Vec<EventSetDoc> = s.doc.event_sets.clone();
+        let counts: Vec<Option<usize>> = sets.iter().map(|set| s.events_of(set).map(|e| e.len())).collect();
+        let event_rows = sets.iter().zip(counts).enumerate().map(|(i, (set, count))| {
+            let (store, store_eye, store_menu) = (self.store.clone(), self.store.clone(), self.store.clone());
+            let (id, set_eye, set_menu) = (set.id.clone(), set.clone(), set.clone());
+            let count = count.map_or_else(|| "not read".to_string(), |n| format!("{n} event{}", if n == 1 { "" } else { "s" }));
+            h_flex()
+                .id(("timeline-events", i))
+                .h(px(26.))
+                .px_1p5()
+                .gap_2()
+                .rounded_md()
+                .cursor_pointer()
+                .child(div().size(px(8.)).flex_none().rounded_sm().bg(tick_color(set.hue, 1.0)))
+                .child(div().flex_1().min_w_0().truncate().text_sm().when(!set.visible, |d| d.text_color(muted)).child(set.name.clone()))
+                .child(div().text_xs().text_color(muted).child(if set.visible { count } else { format!("{count} · hidden") }))
+                .child(
+                    icon_button(("events-eye", i), if set.visible { IconName::Eye } else { IconName::EyeOff }, if set.visible { "Hide the ticks" } else { "Show the ticks" })
+                        .on_click(move |_, _, cx| {
+                            let set = EventSetDoc { visible: !set_eye.visible, ..set_eye.clone() };
+                            let _ = store_eye.update(cx, |s, cx| s.execute(SessionCommand::SetEventSet { set }, cx));
+                        }),
+                )
+                .on_click(move |_, _, cx| {
+                    store.update(cx, |s, cx| {
+                        s.next_event(&id, cx);
+                    })
+                })
+                .context_menu(move |m: PopupMenu, _, _| event_set_menu(m, &store_menu, &set_menu))
+        });
         v_flex()
             .id("timeline-tab")
             .test_support()
@@ -252,8 +292,60 @@ impl TimelineTab {
             .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(muted).child("EPOCHS"))
             .when(epochs.is_empty(), |d| d.child(div().px_1().text_xs().text_color(muted).child("None yet: Shift+drag on the bottom timeline, or + → Epoch.")))
             .child(list)
+            .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(muted).child("EVENTS"))
+            .when(sets.is_empty(), |d| d.child(div().px_1().text_xs().text_color(muted).child("None yet: a Crossings op with an Events output adds a set.")))
+            .child(v_flex().gap_0p5().children(event_rows))
             .into_any_element()
     }
+}
+
+/// Tick colour of an event set: its hue, at a saturation that doesn't glare on dark plots.
+pub fn tick_color(hue: f32, alpha: f32) -> gpui_kit::Hsla {
+    gpui_kit::hsla(hue / 360.0, 0.65, 0.62, alpha)
+}
+
+/// Colours offered for an event set's ticks (named; no red/green pair).
+pub const TICK_COLOURS: [(&str, f32); 6] = [("Amber", 45.0), ("Sky", 200.0), ("Violet", 270.0), ("Pink", 330.0), ("Teal", 170.0), ("Orange", 25.0)];
+
+/// The right-click menu of an event set: the ticks' look, epochs from its events, remove.
+fn event_set_menu(m: PopupMenu, store: &Entity<Store>, set: &EventSetDoc) -> PopupMenu {
+    let change = |label: &str, f: fn(&mut EventSetDoc)| {
+        let (store, set) = (store.clone(), set.clone());
+        PopupMenuItem::new(label.to_string()).on_click(move |_, _, cx| {
+            let mut set = set.clone();
+            f(&mut set);
+            let _ = store.update(cx, |s, cx| s.execute(SessionCommand::SetEventSet { set }, cx));
+        })
+    };
+    let (next_store, next_id) = (store.clone(), set.id.clone());
+    let (ep_store, ep_id) = (store.clone(), set.id.clone());
+    let (rm_store, rm_id) = (store.clone(), set.id.clone());
+    let mut m = m
+        .item(PopupMenuItem::new("Next event").on_click(move |_, _, cx| {
+            next_store.update(cx, |s, cx| {
+                s.next_event(&next_id, cx);
+            })
+        }))
+        .separator()
+        .item(change("Ticks taller", |s| s.tick_height *= 1.4))
+        .item(change("Ticks shorter", |s| s.tick_height /= 1.4))
+        .item(change("Ticks thicker", |s| s.tick_width *= 1.5))
+        .item(change("Ticks thinner", |s| s.tick_width /= 1.5))
+        .item(change(if set.show_offsets { "Hide offsets" } else { "Show offsets" }, |s| s.show_offsets = !s.show_offsets))
+        .separator();
+    for (name, hue) in TICK_COLOURS {
+        let (store, set) = (store.clone(), set.clone());
+        let label = if (set.hue - hue).abs() < 0.5 { format!("✓ {name}") } else { name.to_string() };
+        m = m.item(PopupMenuItem::new(label).on_click(move |_, _, cx| {
+            let set = EventSetDoc { hue, ..set.clone() };
+            let _ = store.update(cx, |s, cx| s.execute(SessionCommand::SetEventSet { set }, cx));
+        }));
+    }
+    m.separator()
+        .item(PopupMenuItem::new("Make epochs from events").on_click(move |_, _, cx| ep_store.update(cx, |s, cx| s.epochs_from_events(&ep_id, cx))))
+        .item(PopupMenuItem::new("Remove from session").on_click(move |_, _, cx| {
+            let _ = rm_store.update(cx, |s, cx| s.execute(SessionCommand::RemoveEventSet { id: rm_id.clone() }, cx));
+        }))
 }
 
 /// Picks a recording and places it after the last one on the session's time.

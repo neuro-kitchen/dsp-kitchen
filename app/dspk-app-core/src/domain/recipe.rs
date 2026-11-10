@@ -239,7 +239,18 @@ pub fn builtin() -> Vec<RecipeDoc> {
         ],
     );
     rms.description = "Square, low-pass 10 Hz (a moving mean of the power), square root: the moving RMS.".into();
-    vec![spike, lfp, emg, rectified, rms, mains]
+    let mut onsets = RecipeDoc::new(
+        "EMG onsets",
+        vec!["events".into(), "emg".into()],
+        vec![
+            op("bandpass", json!({"op": "iir", "band": "bandpass", "cutoff": [20.0, 450.0], "order": 4})),
+            op("rectify", json!({"op": "rectify"})),
+            op("lowpass", json!({"op": "iir", "band": "lowpass", "cutoff": [6.0], "order": 4})),
+            op("crossings", json!({"op": "crossings", "level": 50.0, "release": 25.0, "min_duration_ms": 30.0, "refractory_ms": 80.0})),
+        ],
+    );
+    onsets.description = "The linear envelope, then its crossings of a level: contractions as events (set the level with the ruler on the traces; a Write saves them).".into();
+    vec![spike, lfp, emg, rectified, rms, mains, onsets]
 }
 
 #[cfg(test)]

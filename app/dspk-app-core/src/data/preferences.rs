@@ -35,6 +35,13 @@ pub struct SavedTimeView {
     pub spikes: bool,
     #[serde(default)]
     pub color_by: crate::screens::explore::trace::renderer::ColorBy,
+    #[serde(default = "yes")]
+    pub events: bool,
+    #[serde(default)]
+    pub events_only: bool,
+    /// A view of another loaded recording (see `TimeView::recording`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording: Option<std::path::PathBuf>,
 }
 
 impl SavedTimeView {
@@ -49,6 +56,9 @@ impl SavedTimeView {
             pinned_selection: v.pinned_selection,
             spikes: v.spikes,
             color_by: v.color_by,
+            recording: v.recording.clone(),
+            events: v.events,
+            events_only: v.events_only,
         }
     }
 
@@ -60,6 +70,9 @@ impl SavedTimeView {
         v.pinned_selection = self.pinned_selection;
         v.spikes = self.spikes;
         v.color_by = self.color_by;
+        v.recording = self.recording.clone();
+        v.events = self.events;
+        v.events_only = self.events_only;
         v.needs_render = true;
     }
 }
@@ -88,11 +101,14 @@ pub struct ExploreSession {
     /// The panel shown on the right side bar (`processing`, `display`, `plugin0`, …).
     #[serde(default)]
     pub right_panel: String,
+    /// The Pipeline docked under the views.
+    #[serde(default)]
+    pub pipeline_dock: bool,
 }
 
 impl Default for ExploreSession {
     fn default() -> Self {
-        Self { left_open: true, right_open: true, bottom_open: true, views: Vec::new(), right_panel: String::new() }
+        Self { left_open: true, right_open: true, bottom_open: true, views: Vec::new(), right_panel: String::new(), pipeline_dock: false }
     }
 }
 

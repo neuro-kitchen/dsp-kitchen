@@ -297,8 +297,10 @@ pub enum OutputFormat {
     Raw,
     /// Zarr `/traces`, float32.
     Zarr,
-    /// The events of a `crossings` node: a table, Parquet (or CSV when the path ends in `.csv`),
-    /// one row per event (`channel`, `channel_name`,
+    /// The events of a `crossings` node, by the path's extension: `.zarr` a Zarr group (arrays
+    /// `channel`, `onset_sample`, `offset_sample`, `peak_sample`, `peak_value`; the sample rate and
+    /// channel names as attributes), `.csv` CSV, anything else Parquet. The tables have one row per
+    /// event (`channel`, `channel_name`,
     /// `onset_sample`, `offset_sample`, `peak_sample`, `peak_value`, `onset_s`, `offset_s`,
     /// `duration_s`; samples of the recording, an empty offset when the range ended inside the
     /// event).
@@ -831,9 +833,19 @@ impl Node {
         };
         match self {
             Node::Read { .. } | Node::Write { .. } => Ok(None),
-            Node::Crossings { level, release, min_duration_ms, refractory_ms, .. } => {
+            Node::Crossings { level, release, direction, min_duration_ms, refractory_ms } => {
                 if !level.is_finite() || release.is_some_and(|r| !r.is_finite()) {
                     return Err(PipelineError::Invalid("crossings: level and release must be finite".into()));
+                }
+                if let Some(r) = release {
+                    let (bad, rule) = match direction {
+                        Direction::Rising => (r > level, "at most the level (rising: it ends below the level)"),
+                        Direction::Falling => (r < level, "at least the level (falling: it ends above the level)"),
+                        Direction::Both => (r.abs() > level.abs(), "in magnitude at most the level's"),
+                    };
+                    if bad {
+                        return Err(PipelineError::Invalid(format!("crossings: the release ({r}) must be {rule}, which is {level}; change the release first")));
+                    }
                 }
                 if !(*min_duration_ms >= 0.0 && *refractory_ms >= 0.0) {
                     return Err(PipelineError::Invalid("crossings: min_duration_ms and refractory_ms must be at least 0".into()));

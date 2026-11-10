@@ -735,7 +735,7 @@ impl SortingWorkspace {
                         .child(div().text_xs().text_color(muted).child(info.quality_label.clone())),
                 )
                 .child(img(image.clone()).w(px(CARD_W)).h(px(CARD_IMG_H)))
-                .child(h_flex().h(px(22.)).px_2().text_xs().text_color(muted).child(format!("spikes {} · {:.2} Hz · SNR {:.1}", info.num_spikes, info.firing_rate_hz, info.snr)))
+                .child(h_flex().h(px(22.)).px_2().text_xs().text_color(muted).child(format!("spikes {} · {:.2} Hz · SNR {}", info.num_spikes, info.firing_rate_hz, if info.snr.is_finite() { format!("{:.1}", info.snr) } else { "—".into() })))
         });
         let title = match channel {
             Some(c) => format!("Channel {c} · {n_units} unit{}{}", if n_units == 1 { "" } else { "s" }, if n_units > MAX_CARDS { format!(" (largest {MAX_CARDS} shown)") } else { String::new() }),

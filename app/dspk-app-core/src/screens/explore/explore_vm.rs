@@ -27,6 +27,8 @@ pub struct ExploreVm {
     pub focused: Option<Entity<TraceVm>>,
     next_id: ViewId,
     subs: Vec<(ViewId, Subscription)>,
+    /// Views asked for recordings still loading beside the open one: (recording, kind).
+    pending: Vec<(std::path::PathBuf, TimeViewKind)>,
     _store: Subscription,
 }
 
@@ -34,12 +36,18 @@ impl EventEmitter<ExploreEvent> for ExploreVm {}
 
 impl ExploreVm {
     pub fn new(store: Entity<Store>, cx: &mut Context<Self>) -> Self {
-        let sub = cx.subscribe(&store, |vm, _, event, cx| {
-            if *event == AppEvent::RecordingChanged {
-                vm.reset(cx);
+        let sub = cx.subscribe(&store, |vm, _, event, cx| match event {
+            AppEvent::RecordingChanged => vm.reset(cx),
+            AppEvent::RecordingLoaded(path) => {
+                let (now, later): (Vec<_>, Vec<_>) = std::mem::take(&mut vm.pending).into_iter().partition(|(p, _)| p == path);
+                vm.pending = later;
+                for (path, kind) in now {
+                    vm.add_beside(kind, &path, cx);
+                }
             }
+            _ => {}
         });
-        let mut vm = Self { store, views: Vec::new(), focused: None, next_id: 1, subs: Vec::new(), _store: sub };
+        let mut vm = Self { store, views: Vec::new(), focused: None, next_id: 1, subs: Vec::new(), pending: Vec::new(), _store: sub };
         if vm.store.read(cx).recording.is_some() {
             vm.reset(cx);
         }
@@ -106,9 +114,19 @@ impl ExploreVm {
         } else {
             saved
                 .iter()
-                .map(|s| {
-                    let src = if known(&s.source) { &s.source } else { &default_source };
-                    self.make(s.kind, src, Some(s), cx)
+                .filter_map(|s| match &s.recording {
+                    // A view of another recording: kept while that recording is loaded
+                    Some(path) if self.store.read(cx).sources_of(path).is_some() => {
+                        let vm = self.make(s.kind, &default_source, Some(s), cx);
+                        let source = s.source.clone();
+                        let path = path.clone();
+                        vm.update(cx, |vm, cx| vm.pin_recording(&path, &source, cx)).then_some(vm)
+                    }
+                    Some(_) => None,
+                    None => {
+                        let src = if known(&s.source) { &s.source } else { &default_source };
+                        Some(self.make(s.kind, src, Some(s), cx))
+                    }
                 })
                 .collect()
         };
@@ -123,6 +141,32 @@ impl ExploreVm {
         let sources = self.store.read(cx).sources().cloned()?;
         let source = self.focused.as_ref().map(|f| f.read(cx).view.source.clone()).unwrap_or_else(|| sources.default_entry().id.clone());
         Some(self.add_on(kind, &source, cx))
+    }
+
+    /// A view of `kind` of the recording at `path` beside the open recording's views (the open
+    /// one stays active; time aligned by the placements). Loads `path` first when needed; with
+    /// no recording open, opens it instead.
+    pub fn show_beside(&mut self, kind: TimeViewKind, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        let open = self.store.read(cx).recording.as_ref().and_then(|r| r.path.clone());
+        if open.is_none() || open.as_ref() == Some(&path) {
+            self.store.update(cx, |s, cx| s.open(path, cx));
+            return;
+        }
+        self.pending.push((path.clone(), kind));
+        self.store.update(cx, |s, cx| s.load_beside(path, cx));
+    }
+
+    /// Adds the view of the loaded recording `path` (its default source).
+    fn add_beside(&mut self, kind: TimeViewKind, path: &std::path::Path, cx: &mut Context<Self>) {
+        let Some(active) = self.store.read(cx).sources().map(|s| s.default_entry().id.clone()) else { return };
+        let Some(source) = self.store.read(cx).sources_of(path).map(|s| s.default_entry().id.clone()) else { return };
+        let vm = self.make(kind, &active, None, cx);
+        if !vm.update(cx, |vm, cx| vm.pin_recording(path, &source, cx)) {
+            return;
+        }
+        self.persist_views(cx);
+        cx.emit(ExploreEvent::Added { vm: vm.clone(), below: true });
+        self.focus(vm, cx);
     }
 
     /// A new view of `kind` on `source`, beside the focused one.
