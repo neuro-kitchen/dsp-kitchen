@@ -51,8 +51,8 @@ impl DspApp {
         let choice = store.read(cx).session.dark;
         Self::apply_theme(&store, choice, window, cx);
         store.update(cx, |s, cx| s.suggest_tuning_once(cx));
-        let explore = cx.new(|cx| ExploreView::new(store.clone(), window, cx));
         let pipeline = cx.new(|cx| crate::screens::pipeline::PipelineView::new(store.clone(), window, cx));
+        let explore = cx.new(|cx| ExploreView::new(store.clone(), pipeline.clone(), window, cx));
         let analytics = cx.new(|cx| crate::screens::analytics::AnalyticsWorkspace::new(store.clone(), window, cx));
         let floating = cx.new(|cx| crate::screens::floating::FloatingLayer::new(store.clone(), window, cx));
         let subs = vec![

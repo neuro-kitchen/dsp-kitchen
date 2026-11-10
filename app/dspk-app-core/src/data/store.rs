@@ -1131,6 +1131,14 @@ impl Store {
         }
     }
 
+    /// Remembers whether Explore shows the Pipeline docked.
+    pub fn set_pipeline_dock(&mut self, on: bool) {
+        if self.session.explore.pipeline_dock != on {
+            self.session.explore.pipeline_dock = on;
+            self.save_session();
+        }
+    }
+
     pub fn set_explore_docks(&mut self, left: bool, right: bool, bottom: bool) {
         let ex = &mut self.session.explore;
         if (ex.left_open, ex.right_open, ex.bottom_open) != (left, right, bottom) {

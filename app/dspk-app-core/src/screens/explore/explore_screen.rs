@@ -86,8 +86,14 @@ pub struct ExploreView {
     add_dialog: bool,
     dialog_focus: gpui_kit::FocusHandle,
     dialog_cursor: usize,
+    /// The Pipeline as a panel of the dock, and whether it is in the dock.
+    pipeline: Entity<super::components::pipeline_panel::PipelinePanel>,
+    pipeline_shown: bool,
     _subs: Vec<Subscription>,
 }
+
+/// Height of the docked Pipeline when it opens (logical px).
+const PIPELINE_H: f32 = 300.;
 
 /// How [`ExploreView::arrange`] lays out the views (the dialog's containers: the dock has no empty
 /// containers, so a container is a layout of the views there are).
@@ -123,7 +129,7 @@ fn toggle_of(explore: WeakEntity<ExploreView>, placement: DockPlacement) -> Dock
 }
 
 impl ExploreView {
-    pub fn new(store: Entity<Store>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(store: Entity<Store>, pipeline: Entity<crate::screens::pipeline::PipelineView>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let vm = cx.new(|cx| ExploreVm::new(store.clone(), cx));
         let mut skin = None;
         let dock = cx.new(|cx| {
@@ -135,6 +141,7 @@ impl ExploreView {
             skin.set_toggle_button_visible(false, cx);
         }
         let me = cx.weak_entity();
+        let pipeline = cx.new(|cx| super::components::pipeline_panel::PipelinePanel::new(pipeline, me.clone(), cx));
         let channels = cx.new(|cx| ChannelsPanel::new(vm.clone(), toggle_of(me.clone(), DockPlacement::Left), window, cx));
         let timeline_tab = cx.new(|cx| TimelineTab::new(vm.clone(), toggle_of(me.clone(), DockPlacement::Left), cx));
         let inspector = cx.new(|cx| InspectorPanel::new(vm.clone(), toggle_of(me.clone(), DockPlacement::Right), cx));
@@ -189,11 +196,16 @@ impl ExploreView {
             add_dialog: false,
             dialog_focus: cx.focus_handle(),
             dialog_cursor: 0,
+            pipeline,
+            pipeline_shown: false,
             _subs: vec![sub, picked],
         };
         let views = this.vm.read(cx).views.clone();
         if !views.is_empty() {
             this.reset(views, window, cx);
+        }
+        if saved.pipeline_dock {
+            this.set_pipeline(true, window, cx);
         }
         this
     }
@@ -241,7 +253,51 @@ impl ExploreView {
             let size = (n > 1 && i == 0).then(|| px(420.));
             layout = layout.child(DockLayout::tabs().panel_view(panel_handle(p), cx), size);
         }
+        let layout = self.with_pipeline(layout, cx);
         self.dock.update(cx, |d, cx| d.set_center(layout, window, cx));
+    }
+
+    /// `views` with the docked Pipeline under them, when it is shown.
+    fn with_pipeline(&self, views: DockLayout, cx: &App) -> DockLayout {
+        if self.pipeline_shown {
+            DockLayout::v_split().child(views, None).child(DockLayout::tabs().panel_view(panel_handle(self.pipeline.clone()), cx), Some(px(PIPELINE_H)))
+        } else {
+            views
+        }
+    }
+
+    /// Shows the Pipeline (under the focused view, as a panel the user can drag anywhere) or
+    /// takes it away; remembered for the next start.
+    pub fn set_pipeline(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if on == self.pipeline_shown {
+            return;
+        }
+        self.pipeline_shown = on;
+        let pipeline = self.pipeline.clone();
+        if on {
+            let focused = self.vm.read(cx).focused.as_ref().and_then(|f| self.panels.get(&f.read(cx).id())).map(|p| p.entity_id());
+            let id = gpui_kit::base::dock::PanelId::from(pipeline.entity_id());
+            self.dock.update(cx, |d, cx| {
+                let target = focused.and_then(|f| d.layout(DockPlacement::Center)?.find_panel_node(gpui_kit::base::dock::PanelId::from(f)));
+                d.add_panel_view(panel_handle(pipeline), DockPlacement::Center, None, window, cx);
+                if let Some(node) = target {
+                    d.move_panel(id, InsertTarget::Split { node, placement: Placement::Bottom, size: Some(px(PIPELINE_H)) }, window, cx);
+                }
+            });
+        } else {
+            self.dock.update(cx, |d, cx| d.remove_panel(pipeline, window, cx));
+        }
+        self.store.update(cx, |s, _| s.set_pipeline_dock(on));
+        cx.notify();
+    }
+
+    /// The docked Pipeline's tab was closed.
+    pub fn pipeline_closed(&mut self, cx: &mut Context<Self>) {
+        if self.pipeline_shown {
+            self.pipeline_shown = false;
+            self.store.update(cx, |s, _| s.set_pipeline_dock(false));
+            cx.notify();
+        }
     }
 
     /// Lays the views out as `how` (in the order they were added).
@@ -261,6 +317,7 @@ impl ExploreView {
                 panels.chunks(cols).fold(DockLayout::v_split(), |l, row| l.child(row.iter().fold(DockLayout::h_split(), |r, p| r.child(group(p, cx), None)), None))
             }
         };
+        let layout = self.with_pipeline(layout, cx);
         self.dock.update(cx, |d, cx| d.set_center(layout, window, cx));
         cx.notify();
     }
@@ -396,7 +453,7 @@ impl ExploreView {
     /// "Add view…": opens "Add view or container".
     fn add_view_button(&self, id: &'static str, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let me = cx.entity().downgrade();
-        Button::new(id).ghost().xsmall().icon(IconName::Plus).label("Add view…").tooltip("Add a view, or arrange the views").on_click(move |_, window, cx| {
+        Button::new(id).ghost().small().icon(IconName::Plus).label("Add view…").tooltip("Add a view, or arrange the views").on_click(move |_, window, cx| {
             let _ = me.update(cx, |e, cx| e.open_add_dialog(window, cx));
         })
     }
@@ -541,6 +598,18 @@ impl ExploreView {
             .border_b_1()
             .border_color(border)
             .child(self.add_view_button("explore-add-view", cx))
+            .child({
+                let me = cx.entity();
+                let on = self.pipeline_shown;
+                Button::new("explore-pipeline")
+                    .ghost()
+                    .small()
+                    .icon(gpui_kit::assets::IconName::Workflow)
+                    .label("Pipeline")
+                    .selected(on)
+                    .tooltip(if on { "Hide the docked Pipeline" } else { "Dock the Pipeline under the focused view: edit the chain beside its preview" })
+                    .on_click(move |_, window, cx| me.update(cx, |e, cx| e.set_pipeline(!on, window, cx)))
+            })
             .when_some(shown, |d, label| d.child(div().text_xs().text_color(muted).truncate().child(label)))
     }
 

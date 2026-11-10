@@ -88,11 +88,14 @@ pub struct ExploreSession {
     /// The panel shown on the right side bar (`processing`, `display`, `plugin0`, …).
     #[serde(default)]
     pub right_panel: String,
+    /// The Pipeline docked under the views.
+    #[serde(default)]
+    pub pipeline_dock: bool,
 }
 
 impl Default for ExploreSession {
     fn default() -> Self {
-        Self { left_open: true, right_open: true, bottom_open: true, views: Vec::new(), right_panel: String::new() }
+        Self { left_open: true, right_open: true, bottom_open: true, views: Vec::new(), right_panel: String::new(), pipeline_dock: false }
     }
 }
 
