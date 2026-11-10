@@ -167,6 +167,67 @@ impl TracePanel {
         cx.stop_propagation();
     }
 
+    /// Most ticks drawn at once (a zoomed-out view of a dense set shows the first ones).
+    const MAX_TICKS: usize = 4000;
+
+    /// The visible event sets of the open recording, as ticks: onsets (and offsets, fainter, when
+    /// the set shows them) inside the window, in the lane of their channel.
+    fn event_ticks(&self, cx: &App) -> Vec<gpui_kit::AnyElement> {
+        let vm = self.vm.read(cx);
+        if vm.view.kind != TimeViewKind::Traces {
+            return Vec::new();
+        }
+        let store = vm.store().read(cx);
+        let Some(rec) = store.recording.as_ref().and_then(|r| r.path.clone()) else { return Vec::new() };
+        let drawn = vm.view.drawn_channels().to_vec();
+        let lanes = drawn.len().max(1) as f32;
+        let (t0, win) = (store.timeline.window_start_sec, store.timeline.visible_window_sec.max(1e-9));
+        let mut out = Vec::new();
+        for set in store.doc.event_sets.iter().filter(|s| s.visible && s.recording == rec) {
+            let Some(events) = store.events_of(set) else { continue };
+            let tick = |t: f64, channel: u32, alpha: f32| -> Option<gpui_kit::AnyElement> {
+                let x = ((t - t0) / win) as f32;
+                let lane = drawn.iter().position(|&c| c == channel as usize)? as f32;
+                if !(0.0..=1.0).contains(&x) {
+                    return None;
+                }
+                let h = set.tick_height / lanes;
+                let y = (lane + 0.5) / lanes - h / 2.0;
+                let w = set.tick_width;
+                Some(
+                    div()
+                        .absolute()
+                        .left(relative(x))
+                        .ml(px(-w / 2.0))
+                        .top(relative(y))
+                        .h(relative(h))
+                        .w(px(w))
+                        .bg(gpui_kit::hsla(set.hue / 360.0, 0.85, 0.6, alpha))
+                        .into_any_element(),
+                )
+            };
+            let first = events.partition_point(|e| e.onset_s < t0);
+            for e in events[first..].iter().take_while(|e| e.onset_s <= t0 + win) {
+                if out.len() >= Self::MAX_TICKS {
+                    return out;
+                }
+                out.extend(tick(e.onset_s, e.channel, 1.0));
+            }
+            if set.show_offsets {
+                // An offset in the window may belong to an event that began before it
+                for e in events.iter().take_while(|e| e.onset_s <= t0 + win) {
+                    if out.len() >= Self::MAX_TICKS {
+                        return out;
+                    }
+                    if let Some(off) = e.offset_s.filter(|&o| o >= t0) {
+                        out.extend(tick(off, e.channel, 0.45));
+                    }
+                }
+            }
+        }
+        out
+    }
+
     fn overlays(&self, cx: &mut Context<Self>) -> Vec<gpui_kit::AnyElement> {
         let vm = self.vm.read(cx);
         let palette = vm.store().read(cx).palette();
@@ -199,6 +260,8 @@ impl TracePanel {
                     .into_any_element(),
             );
         }
+        // Event sets of this recording as ticks in their channel's lane (traces only)
+        out.extend(self.event_ticks(cx));
         // One channel shown alone: say so; the chip (or double-click, or Esc) goes back
         if let Some(solo) = &vm.view.solo {
             let ch = solo.channel;

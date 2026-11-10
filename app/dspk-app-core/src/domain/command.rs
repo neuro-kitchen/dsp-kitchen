@@ -14,7 +14,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::graph::{GraphNode, NodeKind, COLUMN};
-use super::epoch::{EpochDoc, Placement};
+use super::epoch::{EpochDoc, EventSetDoc, Placement};
 use super::recipe::RecipeDoc;
 use super::session::{op_name, DisplayDoc, RecordingRef, SessionDoc};
 
@@ -106,6 +106,9 @@ pub enum SessionCommand {
     /// Adds an epoch, or replaces the one with its id (an empty id: a new one).
     SetEpoch { epoch: EpochDoc },
     RemoveEpoch { id: String },
+    /// Adds an event set (empty id: a new one) or replaces the one with its id (its look).
+    SetEventSet { set: EventSetDoc },
+    RemoveEventSet { id: String },
     /// Puts a recording at `start_sec` on the session's time.
     PlaceRecording {
         path: std::path::PathBuf,
@@ -533,6 +536,33 @@ fn apply_graph(doc: &mut SessionDoc, cmd: SessionCommand) -> Result<Changed, Com
             }
             Ok(Changed::Timeline)
         }
+        C::SetEventSet { mut set } => {
+            if !(set.tick_height.is_finite() && set.tick_width.is_finite() && set.hue.is_finite()) {
+                return Err(CommandError::Invalid("an event set's look must be finite".into()));
+            }
+            set.tick_height = set.tick_height.clamp(0.05, 1.0);
+            set.tick_width = set.tick_width.clamp(0.5, 8.0);
+            set.hue = set.hue.rem_euclid(360.0);
+            if set.name.trim().is_empty() {
+                set.name = format!("events {}", doc.event_sets.len() + 1);
+            }
+            if set.id.is_empty() {
+                set.id = (1..).map(|i| format!("ev{i}")).find(|id| !doc.event_sets.iter().any(|e| e.id == *id)).expect("ids are unbounded");
+            }
+            match doc.event_sets.iter_mut().find(|e| e.id == set.id) {
+                Some(e) => *e = set,
+                None => doc.event_sets.push(set),
+            }
+            Ok(Changed::Timeline)
+        }
+        C::RemoveEventSet { id } => {
+            let n = doc.event_sets.len();
+            doc.event_sets.retain(|e| e.id != id);
+            if doc.event_sets.len() == n {
+                return Err(CommandError::Invalid(format!("no event set {id:?}")));
+            }
+            Ok(Changed::Timeline)
+        }
         C::PlaceRecording { path, source, start_sec } => {
             if !(start_sec.is_finite() && start_sec >= 0.0) {
                 return Err(CommandError::Invalid("a recording starts at or after 0 s".into()));
@@ -786,6 +816,13 @@ mod tests {
         apply(&mut d, SessionCommand::SetEpoch { epoch: EpochDoc { id: "e1".into(), name: "tone".into(), ..e } }).unwrap();
         assert_eq!((d.epochs.len(), d.epochs[0].name.as_str()), (1, "tone"));
         apply(&mut d, SessionCommand::RemoveEpoch { id: "e1".into() }).unwrap();
+        // Event sets: ids given, the look clamped, removed by id
+        let set = EventSetDoc { tick_height: 3.0, tick_width: 0.0, ..EventSetDoc::new("/r.bin".into(), "", "/r.dspk/events/a.parquet".into()) };
+        apply(&mut d, SessionCommand::SetEventSet { set }).unwrap();
+        let s = &d.event_sets[0];
+        assert_eq!((s.id.as_str(), s.name.as_str(), s.tick_height, s.tick_width), ("ev1", "events 1", 1.0, 0.5));
+        apply(&mut d, SessionCommand::RemoveEventSet { id: "ev1".into() }).unwrap();
+        assert!(d.event_sets.is_empty());
         apply(&mut d, SessionCommand::PlaceRecording { path: "/data/rec.bin".into(), source: None, start_sec: 60.0 }).unwrap();
         apply(&mut d, SessionCommand::PlaceRecording { path: "/data/rec.bin".into(), source: None, start_sec: 90.0 }).unwrap();
         assert_eq!((d.placements.len(), d.placements[0].start_sec), (1, 90.0));

@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use dspk_pipeline::{Node, OutputFormat, PipelineSpec, SPEC_VERSION};
 
-use super::epoch::{EpochDoc, Placement};
+use super::epoch::{EpochDoc, EventSetDoc, Placement};
 use super::graph::{GraphDoc, Recipes};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -42,6 +42,9 @@ pub struct SessionDoc {
     /// Where recordings sit on the session's time.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub placements: Vec<Placement>,
+    /// Event sets drawn over the recordings' traces.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_sets: Vec<EventSetDoc>,
     /// Every view, in the order they are listed: compiled from `graph` (a document with views
     /// and no graph gets one on load).
     #[serde(default)]
@@ -53,7 +56,7 @@ pub struct SessionDoc {
 
 impl Default for SessionDoc {
     fn default() -> Self {
-        Self { dspk_session: SESSION_VERSION, graph: GraphDoc::default(), recipes: Recipes::new(), epochs: Vec::new(), placements: Vec::new(), views: Vec::new(), active_view: None }
+        Self { dspk_session: SESSION_VERSION, graph: GraphDoc::default(), recipes: Recipes::new(), epochs: Vec::new(), placements: Vec::new(), event_sets: Vec::new(), views: Vec::new(), active_view: None }
     }
 }
 
