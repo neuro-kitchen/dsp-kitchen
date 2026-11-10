@@ -31,6 +31,7 @@ pub struct DspApp {
     store: Entity<Store>,
     pub explore: Entity<ExploreView>,
     pipeline: Entity<crate::screens::pipeline::PipelineView>,
+    analytics: Entity<crate::screens::analytics::AnalyticsWorkspace>,
     floating: Entity<crate::screens::floating::FloatingLayer>,
     palette: Option<(Entity<crate::screens::palette::CommandPalette>, Subscription)>,
     show_help: bool,
@@ -52,6 +53,7 @@ impl DspApp {
         store.update(cx, |s, cx| s.suggest_tuning_once(cx));
         let explore = cx.new(|cx| ExploreView::new(store.clone(), window, cx));
         let pipeline = cx.new(|cx| crate::screens::pipeline::PipelineView::new(store.clone(), window, cx));
+        let analytics = cx.new(|cx| crate::screens::analytics::AnalyticsWorkspace::new(store.clone(), window, cx));
         let floating = cx.new(|cx| crate::screens::floating::FloatingLayer::new(store.clone(), window, cx));
         let subs = vec![
             // Follow the system's light / dark until the user picks one
@@ -69,7 +71,7 @@ impl DspApp {
         ];
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
-        Self { store, explore, pipeline, floating, palette: None, show_help: false, show_about: false, settings: None, browser: None, plugin_views: Default::default(), focus, _subs: subs }
+        Self { store, explore, pipeline, analytics, floating, palette: None, show_help: false, show_about: false, settings: None, browser: None, plugin_views: Default::default(), focus, _subs: subs }
     }
 
     /// Light, dark, or the system's (`None`); the store learns which, for the plot colours.
@@ -447,6 +449,9 @@ impl DspApp {
         }
         if workspace == Workspace::Pipeline {
             return self.pipeline.clone().into_any_element();
+        }
+        if workspace == Workspace::Analytics {
+            return self.analytics.clone().into_any_element();
         }
         let s = self.store.read(cx);
         if let Some(text) = workspace.planned() {
