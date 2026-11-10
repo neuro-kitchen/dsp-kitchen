@@ -1,6 +1,6 @@
 //! Signal processing for multi-channel recordings on the device (any GPU through wgpu, CUDA or HIP,
 //! or the CPU), written as CubeCL kernels: filters, spatial operators, statistics, linear algebra,
-//! peak finding, onset detection and resampling.
+//! peak finding, threshold crossings and resampling.
 //!
 //! # Where things are
 //!
@@ -12,7 +12,7 @@
 //! | Noise, percentiles, element-wise math | [`math`] | [`math::estimate_noise_std`] |
 //! | Matrix products, PCA, ICA | [`linalg`] | [`PcaModel`], [`linalg::matmul`](fn@linalg::matmul) |
 //! | Peaks (`find_peaks`) | [`peaks`] | [`peaks::find_peak_candidates`] |
-//! | Onsets and offsets past a level (events) | [`onsets`] | [`onsets::detect_onsets_on_device`] |
+//! | Threshold crossings as events (onset, offset, peak) | [`crossings`] | [`crossings::detect_crossings_on_device`] |
 //! | Resampling | [`resampler`] | [`resampler::execute_resample_poly`] |
 //! | Device buffers and shared kernels | [`core`] | [`core::buffer`] |
 //!
@@ -32,7 +32,7 @@ pub mod filter;
 pub mod spatial;
 pub mod math;
 pub mod linalg;
-pub mod onsets;
+pub mod crossings;
 pub mod peaks;
 pub mod pipeline;
 pub mod resampler;

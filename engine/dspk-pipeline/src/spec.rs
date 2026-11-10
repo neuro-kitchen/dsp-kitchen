@@ -222,13 +222,14 @@ pub enum Node {
         #[serde(default = "default_teager_kaiser_edge")]
         edge: Edge,
     },
-    /// Events where each channel crosses `level` (`dspk_ops::onsets`): an event starts at the
-    /// crossing and ends where the signal crosses back past `release` (default: `level`; between
-    /// the baseline and the level it keeps noise around the level from splitting events). Events
-    /// shorter than `min_duration_ms` are dropped; onsets within `refractory_ms` after an event's
-    /// end are ignored. The last processing node: the `write` after it (remaps may come between)
-    /// has `format = "events"`. Typical chain: band-pass → rectify → low-pass → onsets.
-    Onsets {
+    /// Threshold crossings as events (`dspk_ops::crossings`): an event starts where a channel
+    /// crosses `level` and ends where it crosses back past `release` (default: `level`, a plain
+    /// threshold crossing; between the baseline and the level it keeps noise around the level from
+    /// splitting events). Events shorter than `min_duration_ms` are dropped; onsets within
+    /// `refractory_ms` after an event's end are ignored. The last processing node: the `write`
+    /// after it (remaps may come between) has `format = "events"`. E.g. EMG contractions:
+    /// band-pass → rectify → low-pass → crossings.
+    Crossings {
         /// In the signal's unit (after the nodes before).
         level: f32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -242,21 +243,24 @@ pub enum Node {
     },
 }
 
-/// Which way an `onsets` node's signal crosses its level: `rising` (up through a level above the
-/// baseline) or `falling` (down through a level below it).
+/// Which way a `crossings` node's signal goes past its level: `rising` (up through a level above
+/// the baseline), `falling` (down through a level below it) or `both` (past `+|level|` upwards or
+/// `−|level|` downwards; an event's sign is its peak's).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Direction {
     #[default]
     Rising,
     Falling,
+    Both,
 }
 
-impl From<Direction> for dspk_ops::onsets::Direction {
+impl From<Direction> for dspk_ops::crossings::Direction {
     fn from(d: Direction) -> Self {
         match d {
-            Direction::Rising => dspk_ops::onsets::Direction::Rising,
-            Direction::Falling => dspk_ops::onsets::Direction::Falling,
+            Direction::Rising => dspk_ops::crossings::Direction::Rising,
+            Direction::Falling => dspk_ops::crossings::Direction::Falling,
+            Direction::Both => dspk_ops::crossings::Direction::Both,
         }
     }
 }
@@ -293,7 +297,7 @@ pub enum OutputFormat {
     Raw,
     /// Zarr `/traces`, float32.
     Zarr,
-    /// The events of an `onsets` node: a CSV table, one row per event (`channel`, `channel_name`,
+    /// The events of a `crossings` node: a CSV table, one row per event (`channel`, `channel_name`,
     /// `onset_sample`, `offset_sample`, `peak_sample`, `peak_value`, `onset_s`, `offset_s`,
     /// `duration_s`; samples of the recording, an empty offset when the range ended inside the
     /// event).
@@ -826,12 +830,12 @@ impl Node {
         };
         match self {
             Node::Read { .. } | Node::Write { .. } => Ok(None),
-            Node::Onsets { level, release, min_duration_ms, refractory_ms, .. } => {
+            Node::Crossings { level, release, min_duration_ms, refractory_ms, .. } => {
                 if !level.is_finite() || release.is_some_and(|r| !r.is_finite()) {
-                    return Err(PipelineError::Invalid("onsets: level and release must be finite".into()));
+                    return Err(PipelineError::Invalid("crossings: level and release must be finite".into()));
                 }
                 if !(*min_duration_ms >= 0.0 && *refractory_ms >= 0.0) {
-                    return Err(PipelineError::Invalid("onsets: min_duration_ms and refractory_ms must be at least 0".into()));
+                    return Err(PipelineError::Invalid("crossings: min_duration_ms and refractory_ms must be at least 0".into()));
                 }
                 Ok(None)
             }

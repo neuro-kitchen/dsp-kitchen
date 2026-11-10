@@ -160,7 +160,7 @@ fn execute(
     .map_err(|e| PipelineError::Compute(e.to_string()))?;
     let mut p = p;
     p.fit(target)?;
-    if p.onsets.is_some() {
+    if p.crossings.is_some() {
         return execute_events(spec, p, target, started, observe);
     }
     let Prepared {
@@ -381,8 +381,8 @@ fn execute_fanout(
     if prepared.iter().any(|p| p.resample.is_some()) {
         return invalid("resample in a branched spec: write that branch with its own spec");
     }
-    if prepared.iter().any(|p| p.onsets.is_some()) {
-        return invalid("onsets in a branched spec: write those events with their own spec");
+    if prepared.iter().any(|p| p.crossings.is_some()) {
+        return invalid("crossings in a branched spec: write those events with their own spec");
     }
     // One schedule for all: stream when every branch streams, else windows with the largest halo
     let stream = prepared.iter().all(|p| p.mode == ExecutedMode::Stream);
@@ -449,7 +449,7 @@ fn execute_fanout(
                 w.set_channel_names(&p.names)?;
                 Sink::Zarr(w)
             }
-            OutputFormat::Events => unreachable!("branched specs refuse onsets"),
+            OutputFormat::Events => unreachable!("branched specs refuse crossings"),
         });
     }
 
@@ -690,8 +690,8 @@ impl Sink {
     }
 }
 
-/// Runs one prepared input whose chain ends with an `onsets` node: each processed window stays on
-/// the device, where its crossings are found ([`dspk_ops::onsets::OnsetTracker`]); only those are
+/// Runs one prepared input whose chain ends with a `crossings` node: each processed window stays on
+/// the device, where its crossings are found ([`dspk_ops::crossings::CrossingTracker`]); only those are
 /// downloaded, and the events are written as CSV at the end.
 fn execute_events(
     spec: &PipelineSpec,
@@ -700,8 +700,8 @@ fn execute_events(
     started: Instant,
     mut observe: impl FnMut(usize, usize, DataMovement) -> bool,
 ) -> Result<RunReport, PipelineError> {
-    let Prepared { source, pipeline, channels, range, sample_rate, stored_format, stored_upload, mode, schedule, out_samples, output, names, keep, onsets, .. } = p;
-    let options = onsets.expect("an onsets chain");
+    let Prepared { source, pipeline, channels, range, sample_rate, stored_format, stored_upload, mode, schedule, out_samples, output, names, keep, crossings, .. } = p;
+    let options = crossings.expect("a crossings chain");
     let info = source.info();
     let nch = channels.len();
     let out_nch = names.len();
@@ -717,7 +717,7 @@ fn execute_events(
         let offsets: Vec<f32> = channels.iter().map(|&c| info.channels[c].offset).collect();
         workspace.set_stored_scaling(&gains, &offsets);
     }
-    let mut tracker = dspk_ops::onsets::OnsetTracker::new(out_nch, &options).map_err(|e| PipelineError::Invalid(format!("onsets: {e}")))?;
+    let mut tracker = dspk_ops::crossings::CrossingTracker::new(out_nch, &options).map_err(|e| PipelineError::Invalid(format!("crossings: {e}")))?;
     let keep_rows = keep.as_ref().map(|k| buffer::upload(workspace.client(), &k.iter().map(|&c| c as u32).collect::<Vec<u32>>()));
 
     let mut bytes = DataMovement::default();
@@ -727,7 +727,7 @@ fn execute_events(
     let mut done = 0;
     let mut cancelled = false;
     let read_bytes = |win: &HaloWindow| (nch * win.read_len() * stored_format.bytes()) as u64;
-    let detect = |win: &HaloWindow, handle: Handle, client: &Client, tracker: &mut dspk_ops::onsets::OnsetTracker| {
+    let detect = |win: &HaloWindow, handle: Handle, client: &Client, tracker: &mut dspk_ops::crossings::CrossingTracker| {
         let n = win.read_len();
         let handle = match &keep_rows {
             Some(rows) => {
@@ -804,8 +804,8 @@ fn execute_events(
     })
 }
 
-/// The events table written by an `onsets` chain (see [`OutputFormat::Events`]).
-pub fn events_csv(events: &[dspk_ops::onsets::OnsetEvent], names: &[String], sample_rate: f64) -> String {
+/// The events table written by a `crossings` chain (see [`OutputFormat::Events`]).
+pub fn events_csv(events: &[dspk_ops::crossings::CrossingEvent], names: &[String], sample_rate: f64) -> String {
     let mut out = String::from("channel,channel_name,onset_sample,offset_sample,peak_sample,peak_value,onset_s,offset_s,duration_s\n");
     let quote = |s: &str| if s.contains([',', '"', '\n']) { format!("\"{}\"", s.replace('"', "\"\"")) } else { s.to_string() };
     for e in events {

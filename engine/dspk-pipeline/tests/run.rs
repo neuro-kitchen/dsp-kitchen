@@ -799,19 +799,19 @@ fn whitening_is_fitted_before_the_run() {
     }
 }
 
-/// An `onsets` chain run in uneven windows writes the events found on the whole recording at
-/// once, and the spec checks where `onsets` and `format = "events"` may go.
+/// A `crossings` chain run in uneven windows writes the events found on the whole recording at
+/// once, and the spec checks where `crossings` and `format = "events"` may go.
 #[test]
-fn onsets_in_windows_equal_the_whole_recording() {
+fn crossings_in_windows_equal_the_whole_recording() {
     use dspk_core::RecordingSource as _;
     for target in targets() {
-        let dir = scratch(&format!("onsets_{}", target.name()));
+        let dir = scratch(&format!("crossings_{}", target.name()));
         write_input(&dir);
         let spec = PipelineSpec::from_json(&format!(
             r#"{{"dspk_pipeline": 1,
                 "nodes": {{"in": {{"op": "read", "path": "in.bin"}},
                            "s": {{"op": "scale", "alpha": 0.5}},
-                           "on": {{"op": "onsets", "level": 200.0, "release": 150.0, "min_duration_ms": 0.1}},
+                           "on": {{"op": "crossings", "level": 200.0, "release": 150.0, "min_duration_ms": 0.1}},
                            "out": {{"op": "write", "path": "events.csv", "format": "events"}}}},
                 "edges": [["in", "s"], ["s", "on"], ["on", "out"]],
                 "execution": {{"chunk_samples": {CHUNK}, "runtime": "{}"}}}}"#,
@@ -824,10 +824,10 @@ fn onsets_in_windows_equal_the_whole_recording() {
         assert!(dir.join(format!("events.csv{PROVENANCE_SUFFIX}")).exists());
 
         let halved: Vec<f32> = recording().data().iter().map(|v| v * 0.5).collect();
-        let mut o = dspk_ops::onsets::OnsetOptions::new(200.0);
+        let mut o = dspk_ops::crossings::CrossingOptions::new(200.0);
         o.releases = vec![150.0];
         o.min_duration_samples = 3; // 0.1 ms at 30 kHz
-        let events = dspk_ops::onsets::detect_onsets(&halved, CHANNELS, SAMPLES, &o).unwrap();
+        let events = dspk_ops::crossings::detect_crossings(&halved, CHANNELS, SAMPLES, &o).unwrap();
         assert!(events.len() > 50, "{} events", events.len());
         let names: Vec<String> = (0..CHANNELS).map(|c| recording().info().channels[c].name.clone()).collect();
         assert_eq!(got, dspk_pipeline::events_csv(&events, &names, FS), "{}", target.name());
@@ -835,19 +835,19 @@ fn onsets_in_windows_equal_the_whole_recording() {
     }
 
     let refused = |nodes: &str, edges: &str| {
-        let dir = scratch("onsets_refused");
+        let dir = scratch("crossings_refused");
         write_input(&dir);
         let spec = PipelineSpec::from_json(&format!(r#"{{"dspk_pipeline": 1, "nodes": {{"in": {{"op": "read", "path": "in.bin"}}, {nodes}}}, "edges": {edges}}}"#)).unwrap();
         let err = run(&spec, &dir).unwrap_err().to_string();
         std::fs::remove_dir_all(&dir).unwrap();
         err
     };
-    let e = refused(r#""on": {"op": "onsets", "level": 1.0}, "out": {"op": "write", "path": "o.bin"}"#, r#"[["in", "on"], ["on", "out"]]"#);
+    let e = refused(r#""on": {"op": "crossings", "level": 1.0}, "out": {"op": "write", "path": "o.bin"}"#, r#"[["in", "on"], ["on", "out"]]"#);
     assert!(e.contains("format = \"events\""), "{e}");
     let e = refused(r#""out": {"op": "write", "path": "o.csv", "format": "events"}"#, r#"[["in", "out"]]"#);
-    assert!(e.contains("needs an onsets node"), "{e}");
+    assert!(e.contains("needs a crossings node"), "{e}");
     let e = refused(
-        r#""on": {"op": "onsets", "level": 1.0}, "s": {"op": "scale", "alpha": 2.0}, "out": {"op": "write", "path": "o.csv", "format": "events"}"#,
+        r#""on": {"op": "crossings", "level": 1.0}, "s": {"op": "scale", "alpha": 2.0}, "out": {"op": "write", "path": "o.csv", "format": "events"}"#,
         r#"[["in", "on"], ["on", "s"], ["s", "out"]]"#,
     );
     assert!(e.contains("last processing node"), "{e}");

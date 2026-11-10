@@ -343,7 +343,7 @@ pub fn op_name(node: &Node) -> &'static str {
         Node::Log10 {} => "log10",
         Node::Laplacian { .. } => "laplacian",
         Node::Whiten { .. } => "whiten",
-        Node::Onsets { .. } => "onsets",
+        Node::Crossings { .. } => "crossings",
     }
 }
 

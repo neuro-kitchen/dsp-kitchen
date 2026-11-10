@@ -100,8 +100,8 @@ pub(crate) struct Prepared {
     pub(crate) input_label: String,
     /// Whitening stages still to fit, by their index in `stages` (identities until then).
     pub(crate) fits: Vec<(usize, crate::WhitenFit)>,
-    /// An `onsets` node ending the chain: its events are the output (`format = "events"`).
-    pub(crate) onsets: Option<dspk_ops::onsets::OnsetOptions>,
+    /// A `crossings` node ending the chain: its events are the output (`format = "events"`).
+    pub(crate) crossings: Option<dspk_ops::crossings::CrossingOptions>,
 }
 
 impl Prepared {
@@ -198,8 +198,8 @@ pub(crate) fn prepare(
     }
     let mut steps: Vec<(String, Step)> = Vec::with_capacity(chain.stages.len());
     let mut resample = None;
-    // (level, release, direction, min duration ms, refractory ms) of a final `onsets` node
-    let mut onsets_node = None;
+    // (level, release, direction, min duration ms, refractory ms) of a final `crossings` node
+    let mut crossings_node = None;
     for (i, (id, node)) in chain.stages.iter().enumerate() {
         let stage = node.stage().map_err(|e| PipelineError::Invalid(format!("node {id:?}: {e}")))?;
         match (node, stage) {
@@ -218,11 +218,11 @@ pub(crate) fn prepare(
                 }
                 resample = Some(Resample::new(*up, *down, *beta, (*edge).into()));
             }
-            (Node::Onsets { level, release, direction, min_duration_ms, refractory_ms }, _) => {
+            (Node::Crossings { level, release, direction, min_duration_ms, refractory_ms }, _) => {
                 if last_processing != Some(i) {
-                    return Err(PipelineError::Invalid(format!("node {id:?}: onsets must be the last processing node before write (only remaps may follow)")));
+                    return Err(PipelineError::Invalid(format!("node {id:?}: crossings must be the last processing node before write (only remaps may follow)")));
                 }
-                onsets_node = Some((*level, *release, *direction, *min_duration_ms, *refractory_ms));
+                crossings_node = Some((*level, *release, *direction, *min_duration_ms, *refractory_ms));
             }
             (Node::Whiten { .. }, None) => steps.push((id.to_string(), Step::Whiten(node.whiten_fit().expect("a whiten node")))),
             (_, Some(stage)) => steps.push((id.to_string(), Step::Stage(stage))),
@@ -295,20 +295,20 @@ pub(crate) fn prepare(
         names = rename(&names, &map, &order);
         Some(order)
     };
-    match (&onsets_node, format) {
+    match (&crossings_node, format) {
         (Some(_), OutputFormat::Events) | (None, OutputFormat::Raw | OutputFormat::Zarr) => {}
-        (Some(_), _) => return Err(PipelineError::Invalid("an onsets node gives events: write them with format = \"events\"".into())),
-        (None, _) => return Err(PipelineError::Invalid("write: format = \"events\" needs an onsets node before it".into())),
+        (Some(_), _) => return Err(PipelineError::Invalid("a crossings node gives events: write them with format = \"events\"".into())),
+        (None, _) => return Err(PipelineError::Invalid("write: format = \"events\" needs a crossings node before it".into())),
     }
-    if onsets_node.is_some() && resample.is_some() {
-        return Err(PipelineError::Invalid("onsets after resample: detect on the signal at its own rate".into()));
+    if crossings_node.is_some() && resample.is_some() {
+        return Err(PipelineError::Invalid("crossings after resample: detect on the signal at its own rate".into()));
     }
     let stage_ids = stages.clone();
     let pipeline = Pipeline::with_stages(stages.into_iter().map(|(_, s)| s).collect());
     let range = select_range(*start, *stop, total)?;
     let unit = info.channels[channels[0]].unit.clone();
     let to_samples = |ms: f64| (ms * 1e-3 * sample_rate).round() as u64;
-    let onsets = onsets_node.map(|(level, release, direction, min_ms, refr_ms)| dspk_ops::onsets::OnsetOptions {
+    let crossings = crossings_node.map(|(level, release, direction, min_ms, refr_ms)| dspk_ops::crossings::CrossingOptions {
         levels: vec![level],
         releases: release.map(|r| vec![r]).unwrap_or_default(),
         direction: direction.into(),
@@ -366,7 +366,7 @@ pub(crate) fn prepare(
         zarr,
         input_label,
         fits,
-        onsets,
+        crossings,
     })
 }
 

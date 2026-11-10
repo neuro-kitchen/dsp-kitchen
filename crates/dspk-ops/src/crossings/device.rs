@@ -1,4 +1,4 @@
-//! Onsets of a device buffer: crossings and stretch extrema found on the device, paired on the host.
+//! Threshold crossings of a device buffer: crossings and stretch extrema found on the device, paired on the host.
 
 use std::ops::Range;
 
@@ -7,7 +7,7 @@ use cubecl::server::Handle;
 use dspk_core::compute::LaunchGeometry;
 
 use super::kernels::{column_kernel, count_crossings_kernel, stretch_extrema_kernel, write_crossings_kernel};
-use super::{OnsetEvent, OnsetOptions, OnsetTracker};
+use super::{CrossingEvent, CrossingOptions, CrossingTracker};
 use crate::core::{buffer, cast, cast_f32, to_f64, DspFloat};
 use crate::error::OpsResult;
 use crate::peaks::kernels::scan_candidate_counts_kernel;
@@ -16,7 +16,7 @@ use crate::peaks::kernels::scan_candidate_counts_kernel;
 /// envelope; contiguous blocks keep each channel's crossings in time order).
 const BLOCK: usize = 1024;
 
-impl OnsetTracker {
+impl CrossingTracker {
     /// One window held on the device: `trace` is `[channels, samples]` of `F`, local sample 0 is
     /// sample `origin` of the run, and `scan` the local samples this window owns. Only the
     /// crossings, one extremum per stretch between them, and the window's last column are
@@ -27,9 +27,33 @@ impl OnsetTracker {
         if channels == 0 || scan.is_empty() {
             return;
         }
-        let sign: F = cast(self.sign as f64);
-        let levels = buffer::upload(client, &cast_f32::<F>(&self.levels));
-        let releases = buffer::upload(client, &cast_f32::<F>(&self.releases));
+        for side in 0..self.sides.len() {
+            self.push_side::<F>(side, client, trace, samples, scan.clone(), origin);
+        }
+        let last = buffer::empty::<F>(client, channels);
+        let per_channel = LaunchGeometry::per_channel(client, channels);
+        // SAFETY: `trace` holds `channels · samples` values of `F`, `last` `channels`
+        unsafe {
+            column_kernel::launch::<F>(
+                client,
+                per_channel.cube_count,
+                per_channel.cube_dim,
+                BufferArg::from_raw_parts(trace.clone(), channels * samples),
+                BufferArg::from_raw_parts(last.clone(), channels),
+                channels as u32,
+                samples as u32,
+                (scan.end - 1) as u32,
+            );
+        }
+        self.prev = buffer::download_prefix::<F>(client, last, channels).into_iter().map(|v| to_f64(v) as f32).collect();
+    }
+
+    /// One side's crossings and stretch extrema of a window (see [`Self::push_device_window`]).
+    fn push_side<F: DspFloat>(&mut self, side: usize, client: &Client, trace: &Handle, samples: usize, scan: Range<usize>, origin: u64) {
+        let channels = self.channels();
+        let sign: F = cast(self.sides[side].sign as f64);
+        let levels = buffer::upload(client, &cast_f32::<F>(&self.sides[side].levels));
+        let releases = buffer::upload(client, &cast_f32::<F>(&self.sides[side].releases));
         let prev = buffer::upload(client, &cast_f32::<F>(&self.prev));
         let len = scan.len();
         let blocks = len.div_ceil(BLOCK);
@@ -124,9 +148,8 @@ impl OnsetTracker {
         }
         let values = buffer::empty::<F>(client, stretches);
         let at = buffer::empty::<u32>(client, stretches);
-        let last = buffer::empty::<F>(client, channels);
         let per_stretch = LaunchGeometry::per_channel(client, stretches);
-        // SAFETY: the stretch arrays and outputs hold `stretches` elements, `last` `channels`
+        // SAFETY: the stretch arrays and outputs hold `stretches` elements
         unsafe {
             stretch_extrema_kernel::launch::<F>(
                 client,
@@ -142,20 +165,9 @@ impl OnsetTracker {
                 samples as u32,
                 sign,
             );
-            column_kernel::launch::<F>(
-                client,
-                per_channel.cube_count,
-                per_channel.cube_dim,
-                BufferArg::from_raw_parts(trace.clone(), channels * samples),
-                BufferArg::from_raw_parts(last.clone(), channels),
-                channels as u32,
-                samples as u32,
-                (scan.end - 1) as u32,
-            );
         }
         let values: Vec<f32> = buffer::download_prefix::<F>(client, values, stretches).into_iter().map(|v| to_f64(v) as f32).collect();
         let at = buffer::download_prefix::<u32>(client, at, stretches);
-        let last: Vec<f32> = buffer::download_prefix::<F>(client, last, channels).into_iter().map(|v| to_f64(v) as f32).collect();
 
         let mut crossings = Vec::new();
         let mut extrema = Vec::new();
@@ -167,15 +179,14 @@ impl OnsetTracker {
             let s = bases[ch] + ch..bases[ch + 1] + ch + 1;
             extrema.clear();
             extrema.extend(s.map(|i| (values[i], at[i])));
-            self.take(ch, origin, &crossings, &extrema);
+            self.take(side, ch, origin, &crossings, &extrema);
         }
-        self.prev = last;
     }
 }
 
-/// Onsets of every channel of the `[channels, samples]` device buffer `trace` (see the module docs).
-pub fn detect_onsets_on_device<F: DspFloat>(client: &Client, trace: &Handle, channels: usize, samples: usize, options: &OnsetOptions) -> OpsResult<Vec<OnsetEvent>> {
-    let mut tracker = OnsetTracker::new(channels, options)?;
+/// Threshold-crossing events of every channel of the `[channels, samples]` device buffer `trace` (see the module docs).
+pub fn detect_crossings_on_device<F: DspFloat>(client: &Client, trace: &Handle, channels: usize, samples: usize, options: &CrossingOptions) -> OpsResult<Vec<CrossingEvent>> {
+    let mut tracker = CrossingTracker::new(channels, options)?;
     tracker.push_device_window::<F>(client, trace, samples, 0..samples, 0);
     Ok(tracker.finish())
 }
@@ -183,7 +194,7 @@ pub fn detect_onsets_on_device<F: DspFloat>(client: &Client, trace: &Handle, cha
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::onsets::{detect_onsets, Direction};
+    use crate::crossings::{detect_crossings, Direction};
 
     /// A noisy envelope with bursts on 3 channels, more samples than one block.
     fn envelope(channels: usize, samples: usize) -> Vec<f32> {
@@ -203,20 +214,24 @@ mod tests {
     fn matches_host(client: &Client) {
         let (channels, samples) = (3usize, 5000usize);
         let x = envelope(channels, samples);
-        let trace = buffer::upload(client, &x);
-        for direction in [Direction::Rising, Direction::Falling] {
-            let s = direction.sign();
-            let data: Vec<f32> = x.iter().map(|v| s * v).collect();
-            let trace = if s > 0.0 { trace.clone() } else { buffer::upload(client, &data) };
-            let mut o = OnsetOptions::new(s * 4.0);
+        // Both: bursts up on even samples' stretches and down on odd ones (every 700 samples)
+        let mixed: Vec<f32> = x.iter().enumerate().map(|(i, v)| if (i % samples) / 700 % 2 == 0 { *v } else { -v }).collect();
+        for direction in [Direction::Rising, Direction::Falling, Direction::Both] {
+            let (s, data): (f32, Vec<f32>) = match direction {
+                Direction::Rising => (1.0, x.clone()),
+                Direction::Falling => (-1.0, x.iter().map(|v| -v).collect()),
+                Direction::Both => (1.0, mixed.clone()),
+            };
+            let trace = buffer::upload(client, &data);
+            let mut o = CrossingOptions::new(s * 4.0);
             o.releases = vec![s * 2.0];
             o.direction = direction;
             o.min_duration_samples = 50;
-            let host = detect_onsets(&data, channels, samples, &o).unwrap();
+            let host = detect_crossings(&data, channels, samples, &o).unwrap();
             assert!(host.len() > 6, "{direction:?}: {}", host.len());
-            assert_eq!(detect_onsets_on_device::<f32>(client, &trace, channels, samples, &o).unwrap(), host, "{direction:?}");
+            assert_eq!(detect_crossings_on_device::<f32>(client, &trace, channels, samples, &o).unwrap(), host, "{direction:?}");
             // Windows of 1500 samples (with a 10-sample left halo, as pipeline windows have)
-            let mut t = OnsetTracker::new(channels, &o).unwrap();
+            let mut t = CrossingTracker::new(channels, &o).unwrap();
             let mut start = 0;
             while start < samples {
                 let read = start.saturating_sub(10);
@@ -231,5 +246,5 @@ mod tests {
         }
     }
 
-    runtime_test!(device_onsets_match_host, matches_host);
+    runtime_test!(device_crossings_match_host, matches_host);
 }
