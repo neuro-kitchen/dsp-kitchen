@@ -82,6 +82,14 @@ pub struct TimeView {
     pub spikes: bool,
     #[serde(default)]
     pub color_by: ColorBy,
+    /// Traces: events drawn as ticks (event sets, and live ones when the chain ends with
+    /// Crossings).
+    #[serde(default = "yes")]
+    pub events: bool,
+    /// Traces: the ticks alone in each channel's lane, the signal hidden (stack it under a traces
+    /// view of the same chain).
+    #[serde(default)]
+    pub events_only: bool,
     /// Units that fill a lane at gain 1: reported by the renderer (auto-scale) or nominal.
     #[serde(skip, default = "nominal")]
     pub amp_scale: f32,
@@ -167,6 +175,8 @@ impl TimeView {
             hover_seq: 0,
             solo: None,
             recording: None,
+            events: true,
+            events_only: false,
         }
     }
 

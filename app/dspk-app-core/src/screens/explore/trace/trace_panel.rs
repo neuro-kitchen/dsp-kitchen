@@ -306,6 +306,9 @@ impl TracePanel {
     /// then shifted by an offset the ruler can't know).
     fn ruler_lines(&self, cx: &App) -> Vec<gpui_kit::AnyElement> {
         let Some(r) = self.ruler(cx) else { return Vec::new() };
+        if self.vm.read(cx).view.events_only {
+            return Vec::new();
+        }
         let vm = self.vm.read(cx);
         let palette = vm.store().read(cx).palette();
         if vm.view.remove_dc {
@@ -371,7 +374,7 @@ impl TracePanel {
     /// faint band to its offset, in the event's lane; or why there are none.
     fn live_ticks(&self, cx: &App) -> Vec<gpui_kit::AnyElement> {
         let vm = self.vm.read(cx);
-        if vm.view.remove_dc {
+        if !vm.view.events || (vm.view.remove_dc && !vm.view.events_only) {
             return Vec::new();
         }
         let store = vm.store().read(cx);
@@ -423,7 +426,7 @@ impl TracePanel {
     /// the set shows them) inside the window, in the lane of their channel.
     fn event_ticks(&self, cx: &App) -> Vec<gpui_kit::AnyElement> {
         let vm = self.vm.read(cx);
-        if vm.view.kind != TimeViewKind::Traces {
+        if vm.view.kind != TimeViewKind::Traces || !vm.view.events {
             return Vec::new();
         }
         let store = vm.store().read(cx);
@@ -556,6 +559,7 @@ impl Render for TracePanel {
         let shown = vm.shown.clone();
         let (canvas_w, canvas_h, canvas_scale) = (view.canvas_width, view.canvas_height, view.scale_factor);
         let empty = view.selection.is_empty();
+        let events_only = view.events_only && view.kind == TimeViewKind::Traces;
         let view_id = view.id as usize;
         let muted = color(palette.text);
         let _ = window;
@@ -620,7 +624,8 @@ impl Render for TracePanel {
                     this.vm.update(cx, |vm, cx| vm.hover_left(cx));
                 }
             }))
-            .child(raster)
+            // Events only: the ticks over an empty plot
+            .when(!events_only, |d| d.child(raster))
             .children(self.overlays(cx))
             .when(empty, |d| {
                 d.child(div().absolute().size_full().flex().items_center().justify_center().text_sm().text_color(muted).child("No channels selected: pick some in Channels"))

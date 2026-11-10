@@ -417,6 +417,27 @@ impl TraceVm {
         }
     }
 
+    /// Events as ticks on (`events`), or off.
+    pub fn set_events(&mut self, events: bool, cx: &mut Context<Self>) {
+        if self.view.events != events {
+            self.view.events = events;
+            cx.emit(TraceEvent::Changed);
+            cx.notify();
+        }
+    }
+
+    /// The ticks alone (the signal hidden), or over the traces.
+    pub fn set_events_only(&mut self, only: bool, cx: &mut Context<Self>) {
+        if self.view.events_only != only {
+            self.view.events_only = only;
+            if only {
+                self.view.events = true;
+            }
+            cx.emit(TraceEvent::Changed);
+            self.request_render(cx);
+        }
+    }
+
     pub fn set_color_by(&mut self, color_by: crate::screens::explore::trace::renderer::ColorBy, cx: &mut Context<Self>) {
         if self.view.color_by != color_by {
             self.view.color_by = color_by;
