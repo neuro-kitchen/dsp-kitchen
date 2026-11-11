@@ -99,6 +99,15 @@ rustls = { version = "0.23.46", default-features = false, features = ["ring", "s
 rustls-pki-types = "1.15.1"
 
 # UI & Graphics
+# GPUI through gpui-kit. Pinned exactly: gpui-kit pins a weekly GPUI snapshot (gpui-pre); update
+# deliberately, together with kitchen-ui (the two must share one gpui-kit: one `Theme` global)
+gpui-kit = "=0.9.1"
+# The neuro-kitchen apps' shared UI: design tokens, themes and accent, widgets, the parameter
+# editor, icon bundling. Working on kitchen too: a git-ignored `.cargo/config.toml` with
+# [patch.crates-io] kitchen-ui = { path = "../kitchen/crates/kitchen-ui" }
+kitchen-ui = "0.0.1"
+# The status bar's CPU and memory meters
+sysinfo = { version = "0.40.1", default-features = false, features = ["system"] }
 slint = "1.18.1"
 slint-build = "1.18.1"
 image = { version = "0.25.10", default-features = false, features = ["png"] }

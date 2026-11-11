@@ -30,10 +30,10 @@ serde_json.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 image.workspace = true
-gpui-kit = "=0.9.0"
+gpui-kit.workspace = true
 async-channel = "2.5.0"
 # Unit analytics (the Sorting view's table: sort, filter) as data frames
 polars = { version = "0.55.2", default-features = false, features = ["dtype-slim"] }
 
 [dev-dependencies]
-gpui-kit = { version = "=0.9.0", features = ["test-support"] }
+gpui-kit = { workspace = true, features = ["test-support"] }
