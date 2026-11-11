@@ -7,7 +7,7 @@ use gpui_kit::{AssetSource, SharedString};
 
 gpui_kit::assets::icon_assets!(
     ExtraIcons,
-    [AudioWaveform, SlidersHorizontal, Workflow, Microscope, SkipBack, SkipForward, StepBack, StepForward, Repeat, Rows3, Flame, LayoutGrid, Table, Activity, ChartScatter, GitCommitVertical, ZoomIn, ZoomOut, Unlink, Trash, Merge, Tag, Save, Undo2, Redo2, Cpu, ChartGantt, Package, Layers, MousePointer2, Hand, Scissors, ChartColumn, ChartLine, ChartNoAxesColumn, ChartSpline, Grid2x2, MapPin, Settings2, AppWindow, Columns2, Rows2, ListOrdered, Clock, X]
+    [AudioWaveform, SlidersHorizontal, Workflow, Microscope, SkipBack, SkipForward, StepBack, StepForward, Repeat, Rows3, Flame, LayoutGrid, Table, Activity, ChartScatter, GitCommitVertical, ZoomIn, ZoomOut, Unlink, Trash, Merge, Tag, Save, Undo2, Redo2, Cpu, ChartGantt, Package, Layers, MousePointer2, Hand, Scissors, ChartColumn, ChartLine, ChartNoAxesColumn, ChartSpline, Grid2x2, MapPin, Settings2, AppWindow, Columns2, Rows2, ListOrdered, Clock, X, Server]
 );
 
 /// The neuro-kitchen logo (256 px PNG), for `img(BRAND_LOGO)`: the about dialog.
@@ -55,7 +55,7 @@ mod tests {
                     stack.push(path);
                 } else if path.extension().is_some_and(|x| x == "rs") {
                     let text = std::fs::read_to_string(&path).unwrap();
-                    for marker in ["IconName::", "Assets::"] {
+                    for marker in ["IconName::", "Assets::", "I::"] {
                         for part in text.split(marker).skip(1) {
                             let name: String = part.chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
                             if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
