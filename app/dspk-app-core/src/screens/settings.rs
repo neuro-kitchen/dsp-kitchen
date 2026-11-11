@@ -12,13 +12,13 @@ use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Disableable as _, Si
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     div, px, AnyElement, App, AppContext as _, Context, Entity, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Task, Window,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window,
 };
 
 use crate::data::preferences::Session;
 use crate::data::remote::{self, ServerProfile, DEFAULT_SERVER_NAME};
 use crate::data::store::Store;
-use crate::ui::widgets::{row, MenuSelect};
+use crate::ui::widgets::{row, AccentChanged, AccentPicker, MenuSelect};
 
 /// Compute runtimes offered (the first: whatever is compiled in first).
 const RUNTIMES: [(&str, Option<&str>); 4] = [("Automatic (first compiled in)", None), ("wgpu (Vulkan, Metal, DX12)", Some("wgpu")), ("CUDA", Some("cuda")), ("CPU", Some("cpu"))];
@@ -82,6 +82,9 @@ pub struct SettingsScreen {
     message: Option<(bool, String)>,
     testing: bool,
     section: Section,
+    /// The accent picker (made on the first draw: it needs the window).
+    accent: Option<Entity<AccentPicker>>,
+    _subs: Vec<Subscription>,
     _tasks: Vec<Task<()>>,
 }
 
@@ -95,7 +98,7 @@ impl SettingsScreen {
         let default_results = crate::domain::paths::short_path(&Session::default_results_dir());
         let current = store.read(cx).session.results_dir.clone().map(|p| p.display().to_string()).unwrap_or_default();
         let results = cx.new(|cx| InputState::new(window, cx).placeholder(default_results).default_value(current));
-        Self { store, name, address, server_name, identity, results, form: Form::Closed, message: None, testing: false, section: Section::Appearance, _tasks: Vec::new() }
+        Self { store, name, address, server_name, identity, results, form: Form::Closed, message: None, testing: false, section: Section::Appearance, accent: None, _subs: Vec::new(), _tasks: Vec::new() }
     }
 
     fn text(input: &Entity<InputState>, cx: &App) -> String {
@@ -238,7 +241,26 @@ impl SettingsScreen {
 }
 
 impl Render for SettingsScreen {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The accent: lime, a suggested colour or any colour (kitchen-ui keeps it readable)
+        let accent_now = self.store.read(cx).session.accent;
+        let picker = match &self.accent {
+            Some(p) => p.clone(),
+            None => {
+                let p = cx.new(|cx| AccentPicker::new(accent_now, window, cx));
+                self._subs.push(cx.subscribe_in(&p, window, |this, _, e: &AccentChanged, window, cx| {
+                    let accent = e.0;
+                    this.store.update(cx, |s, cx| s.set_accent(accent, cx));
+                    let dark = this.store.read(cx).session.dark;
+                    crate::app::DspApp::apply_theme(&this.store, dark, window, cx);
+                }));
+                self.accent = Some(p.clone());
+                p
+            }
+        };
+        if picker.read(cx).current() != accent_now {
+            picker.update(cx, |p, cx| p.set_current(accent_now, cx));
+        }
         let t = cx.theme();
         let (muted, danger, ok, border) = (t.muted_foreground, t.danger, t.success, t.border);
         let me = cx.entity().downgrade();
@@ -290,9 +312,9 @@ impl Render for SettingsScreen {
                 .border_1()
                 .border_color(border)
                 .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child(if self.form == Form::New { "New server" } else { "Edit server" }))
-                .child(row("Name", div().w_full().child(Input::new(&self.name).small()), cx))
-                .child(row("Address", div().w_full().child(Input::new(&self.address).small()), cx))
-                .child(row("Certificate name", div().w_full().child(Input::new(&self.server_name).small()), cx))
+                .child(row("Name", div().w_full().child(Input::new(&self.name).small())))
+                .child(row("Address", div().w_full().child(Input::new(&self.address).small())))
+                .child(row("Certificate name", div().w_full().child(Input::new(&self.server_name).small())))
                 .child(row(
                     "Identity file",
                     h_flex()
@@ -302,7 +324,6 @@ impl Render for SettingsScreen {
                         .child(Button::new("server-identity-browse").outline().small().label("Browse…").on_click(move |_, window, cx| {
                             let _ = m1.update(cx, |s, cx| s.browse(identity.clone(), false, "Identity file", window, cx));
                         })),
-                    cx,
                 ))
                 .child(div().text_xs().text_color(muted).child(format!("Certificate name: default {DEFAULT_SERVER_NAME}; one of the names the server was started with (--name).")))
                 .child(
@@ -388,6 +409,13 @@ impl Render for SettingsScreen {
         let body: Vec<AnyElement> = match self.section {
             Section::Appearance => vec![
                 Self::setting("Theme", "Dark or light, or as the system is set.", "Follow the system", theme_menu, cx),
+                Self::setting(
+                    "Accent",
+                    "The colour of selections, primary buttons and the status bar's place: dsp-kitchen's lime, a suggested colour or any colour (kept readable in both themes).",
+                    "Lime",
+                    div().max_w(px(380.)).child(picker),
+                    cx,
+                ),
                 Self::setting("Dark plots", "Traces, heatmaps and charts on a dark background, whatever the theme.", "Off", plots, cx),
             ],
             Section::Compute => vec![

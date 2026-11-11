@@ -107,7 +107,7 @@ fn main() -> Result<()> {
         .or_else(|| session.reopen_last.then(|| session.recent.first().cloned().filter(|p| p.exists())).flatten());
     let (channels, rate) = (args.channels, args.sample_rate);
 
-    gpui_kit::application().with_assets(assets::AppAssets).run(move |cx: &mut App| {
+    gpui_kit::application().with_assets(assets::app_assets()).run(move |cx: &mut App| {
         gpui_kit::init(cx);
         actions::bind_keys(cx);
         di::install(cx);

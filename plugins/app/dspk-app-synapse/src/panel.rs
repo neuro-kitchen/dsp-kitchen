@@ -25,7 +25,7 @@ pub fn section(store: &Entity<Store>, view: &ViewDoc, _window: &mut Window, cx: 
     let linked = sorting_of(view);
     let loaded = state.read(cx).active_sorting(cx);
     let running = store.read(cx).job.is_some();
-    let mut section = Section::new("Linked sorting");
+    let mut section = Section::new("Linked sorting").boxed();
 
     // The linked sorting and its units
     match (&linked, &loaded) {
@@ -102,9 +102,9 @@ pub fn section(store: &Entity<Store>, view: &ViewDoc, _window: &mut Window, cx: 
         .gap_6()
         .child(section)
         .child(
-            Section::new("Sort")
-                .child(dspk_app_core::ui::widgets::row("Sorter", sorter_pick, cx))
-                .child(dspk_app_core::ui::widgets::row("Probe", probe_pick, cx))
+            Section::new("Sort").boxed()
+                .child(dspk_app_core::ui::widgets::row("Sorter", sorter_pick))
+                .child(dspk_app_core::ui::widgets::row("Probe", probe_pick))
                 .child(run)
                 .child(div().text_xs().text_color(muted).child(input_note)),
         )

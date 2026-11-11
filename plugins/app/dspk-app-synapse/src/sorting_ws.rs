@@ -543,8 +543,8 @@ impl SortingWorkspace {
         let running = self.store.read(cx).job.as_ref().map(|j| (j.label.clone(), j.fraction, j.line.clone()));
         let me = cx.entity().downgrade();
         let sorter_section = match &self.described {
-            None => Section::new("Sorter").child(div().text_xs().text_color(muted).child("Asking dspk-cli-sorter what it runs…")),
-            Some(Err(e)) => Section::new("Sorter").child(div().text_xs().text_color(danger).child(e.clone())).child({
+            None => Section::new("Sorter").boxed().child(div().text_xs().text_color(muted).child("Asking dspk-cli-sorter what it runs…")),
+            Some(Err(e)) => Section::new("Sorter").boxed().child(div().text_xs().text_color(danger).child(e.clone())).child({
                 let me = me.clone();
                 Button::new("sorters-retry").outline().small().label("Look again").on_click(move |_, _, cx| {
                     let _ = me.update(cx, |w, cx| w.describe(cx));
@@ -560,11 +560,10 @@ impl SortingWorkspace {
                             cx.notify();
                         });
                     })
-                    .full_width()
                 };
                 let about = d.sorters.get(self.sorter).map(|s| s.about.clone()).unwrap_or_default();
                 let recipes: Vec<String> = self.store.read(cx).doc.recipes.values().filter(|r| r.is_sorter()).map(|r| r.name.clone()).collect();
-                Section::new("Sorter")
+                Section::new("Sorter").boxed()
                     .child(pick)
                     .child(div().text_xs().text_color(muted).child(about))
                     .when(!recipes.is_empty(), |d| {
@@ -585,9 +584,9 @@ impl SortingWorkspace {
                 });
             }
         });
-        let part = Section::new("Part of the recording")
-            .child(row("Start (s)", div().w_full().child(Input::new(&self.start).small()), cx))
-            .child(row("Duration (s)", div().w_full().child(Input::new(&self.duration).small()), cx))
+        let part = Section::new("Part of the recording").boxed()
+            .child(row("Start (s)", div().w_full().child(Input::new(&self.start).small())))
+            .child(row("Duration (s)", div().w_full().child(Input::new(&self.duration).small())))
             .child({
                 let me = me.clone();
                 Button::new("sorting-visible-window").ghost().xsmall().label("Use the visible window").on_click(move |_, window, cx| {
@@ -595,7 +594,7 @@ impl SortingWorkspace {
                 })
             })
             .child(div().text_xs().text_color(muted).child("Sort a minute first to try settings; an empty duration sorts to the end."))
-            .child(row("Probe", probe_pick, cx));
+            .child(row("Probe", probe_pick));
         // Each parameter: its name over a full-width input (its default as the placeholder), its
         // help under it; nothing wider than the panel
         let params = v_flex().gap_3().children(self.inputs.iter().map(|(p, input)| {
@@ -861,8 +860,12 @@ impl Render for SortingWorkspace {
                 .into_any_element(),
         };
         let _ = muted;
-        let left_rail = rail(vec![toggle_item(&self.store, "sorting.left", Icon::new(gpui_kit::assets::IconName::SlidersHorizontal), "Sorter, part of the recording, runs", cx)], true, cx);
-        let right_rail = rail(vec![toggle_item(&self.store, "sorting.right", Icon::new(gpui_kit::assets::IconName::Settings2), "The sorter's parameters", cx)], false, cx);
+        let left_rail = rail(vec![toggle_item(&self.store, "sorting.left", Icon::new(gpui_kit::assets::IconName::SlidersHorizontal), "Sorter, part of the recording, runs", cx)]);
+        let right_rail = rail(vec![toggle_item(&self.store, "sorting.right", Icon::new(gpui_kit::assets::IconName::Settings2), "The sorter's parameters", cx)]);
+        // The rails, panels, the centre and the strip are cards on the chrome, PANE_GAP apart
+        // (kitchen-ui); a side panel starts after the padding, its rail and a gap
+        let side_offset = PANE_GAP + RAIL_W + PANE_GAP;
+        let card = || div().rounded(px(RADIUS_LG)).overflow_hidden().bg(bg);
         v_flex()
             .id("sorting-workspace")
             .size_full()

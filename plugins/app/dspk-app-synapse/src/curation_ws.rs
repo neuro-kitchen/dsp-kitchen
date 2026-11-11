@@ -908,7 +908,7 @@ impl Render for CurationWorkspace {
                 }
             })
             .collect();
-        let rail = dspk_app_core::ui::panel_edge::rail(rail_items, true, cx);
+        let rail = dspk_app_core::ui::panel_edge::rail(rail_items);
         v_flex()
             .id("curation-workspace")
             .track_focus(&self.focus)

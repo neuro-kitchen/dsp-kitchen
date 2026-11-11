@@ -548,7 +548,6 @@ impl SettingsPanel {
                 let id = ids[i].clone();
                 vm.update(cx, |vm, cx| vm.set_source(&id, cx));
             })
-            .full_width()
         });
 
         let stepper = |id: &'static str, value: String, tip_down: &'static str, tip_up: &'static str, down: Rc<dyn Fn(&mut App)>, up: Rc<dyn Fn(&mut App)>| {
@@ -601,13 +600,13 @@ impl SettingsPanel {
         let facts = sources.as_ref().map(|ss| source_facts(ss.entry(&v.source), muted));
         let mut out = vec![
             div().text_sm().font_weight(gpui_kit::FontWeight::SEMIBOLD).truncate().child(v.title.clone()).into_any_element(),
-            Section::new("Source").children(source).children(facts).child(row("Range", div().text_sm().child(v.range_label()), cx)).into_any_element(),
-            Section::new("Layer").child(kind).when(traces, |d| d.child(row("Colour", color_by, cx)).child(events).child(events_only)).into_any_element(),
+            Section::new("Source").boxed().children(source).children(facts).child(row("Range", div().text_sm().child(v.range_label()))).into_any_element(),
+            Section::new("Layer").boxed().child(kind).when(traces, |d| d.child(row("Colour", color_by)).child(events).child(events_only)).into_any_element(),
         ];
         if traces {
-            out.push(Section::new("Traces").child(row("On screen", lanes_row, cx)).child(row("Gain", gain_row, cx)).into_any_element());
+            out.push(Section::new("Traces").boxed().child(row("On screen", lanes_row)).child(row("Gain", gain_row)).into_any_element());
         }
-        out.push(Section::new("Scaling").child(auto).child(dc).into_any_element());
+        out.push(Section::new("Scaling").boxed().child(auto).child(dc).into_any_element());
         out
     }
 }

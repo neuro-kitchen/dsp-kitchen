@@ -127,6 +127,10 @@ pub struct Session {
     /// "Tune this device" was suggested (once, at the first launch).
     #[serde(default)]
     pub tune_suggested: bool,
+    /// The accent the user picked (`None`: dsp-kitchen's lime). Saved as `"#rrggbb"`; a number
+    /// (`0xRRGGBB`) or a colour that does not parse still reads.
+    #[serde(default, deserialize_with = "accent_or_old", skip_serializing_if = "Option::is_none")]
+    pub accent: Option<kitchen_ui::Rgb>,
     /// Keep plots dark in the light theme.
     #[serde(default)]
     pub dark_plots: bool,
@@ -151,6 +155,17 @@ pub struct Session {
     /// Open the last recording when the app starts (default off: the start screen).
     #[serde(default)]
     pub reopen_last: bool,
+}
+
+/// `"#rrggbb"`, `null`, or a colour as a number (lime, the app's own accent, is `None`); anything
+/// else is `None` rather than an error, so the rest of the session still loads.
+fn accent_or_old<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<kitchen_ui::Rgb>, D::Error> {
+    let own = |rgb: kitchen_ui::Rgb| (rgb != kitchen_ui::Rgb(0xc6f26b)).then_some(rgb);
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::String(t) => kitchen_ui::Rgb::parse(&t).and_then(own),
+        serde_json::Value::Number(n) => n.as_u64().and_then(|v| own(kitchen_ui::Rgb(v as u32 & 0xffffff))),
+        _ => None,
+    })
 }
 
 impl Session {
@@ -285,6 +300,22 @@ mod tests {
         s.push_recent_sorting(Path::new("/c"));
         s.clear_recent();
         assert!(s.recent.is_empty() && s.recent_sortings.is_empty());
+    }
+
+    #[test]
+    fn the_accent_is_saved_as_hex_and_old_values_read() {
+        let read = |json: &str| serde_json::from_str::<Session>(&format!("{{\"version\": 1, \"accent\": {json}}}")).unwrap().accent;
+        assert_eq!(read("\"#2b7f86\""), Some(kitchen_ui::Rgb(0x2b7f86)));
+        assert_eq!(read("2850694"), Some(kitchen_ui::Rgb(0x2b7f86)), "a number still reads");
+        assert_eq!(read("\"#c6f26b\""), None, "lime is the app's own accent");
+        assert_eq!(read("\"rose\""), None, "a colour that does not parse: the app's");
+        assert_eq!(read("null"), None);
+        let old: Session = serde_json::from_str(r#"{"version": 1}"#).unwrap();
+        assert_eq!(old.accent, None, "a session from before accents");
+        let s = Session { accent: Some(kitchen_ui::Rgb(0x2b7f86)), ..Session::new() };
+        let text = serde_json::to_string(&s).unwrap();
+        assert!(text.contains("\"accent\":\"#2b7f86\""), "{text}");
+        assert_eq!(serde_json::from_str::<Session>(&text).unwrap(), s);
     }
 
     #[test]

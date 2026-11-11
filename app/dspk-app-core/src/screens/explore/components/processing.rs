@@ -23,7 +23,7 @@ use gpui_kit::{
 };
 use serde_json::Value;
 
-use crate::ui::param_editor::{Commit, ParamEditor};
+use crate::ui::param_editor::{Commit, EditNode as _, ParamEditor};
 
 use crate::data::store::{AppEvent, Store};
 use crate::domain::command::SessionCommand;
@@ -273,8 +273,8 @@ impl ProcessingPanel {
                 let (store, view, op) = (self.store.clone(), view.id.clone(), op.id.clone());
                 Rc::new(move |node, cx| store.update(cx, |s, cx| s.execute(SessionCommand::SetOp { view: view.clone(), op: op.clone(), node }, cx)).map(|_| ()).map_err(|e| e.to_string()))
             };
-            self.params.update(cx, |p, cx| p.set_target(&format!("{}/{}", view.id, op.id), &op.node, commit, window, cx));
-            Section::new("Parameters")
+            self.params.update(cx, |p, cx| p.set_node(&format!("{}/{}", view.id, op.id), &op.node, commit, window, cx));
+            Section::new("Parameters").boxed()
                 .child(self.params.clone())
                 .child(div().text_xs().text_color(muted).child(format!("Applies to the {in_view} channels of this view. Enter applies a value.")))
         });
@@ -301,7 +301,7 @@ impl ProcessingPanel {
         };
 
         let mut out = vec![
-                Section::new("Processing")
+                Section::new("Processing").boxed()
                     .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(channel_line))
                     .child(h_flex().gap_1().child(show(Show::Processed, "Processed")).child(show(Show::Raw, "Raw")))
                     .children(preview_note.map(|n| div().text_xs().text_color(muted).child(n)))
@@ -310,7 +310,7 @@ impl ProcessingPanel {
                     .into_any_element(),
         ];
         out.extend(params.map(IntoElement::into_any_element));
-        out.push(Section::new("Output").child(output).into_any_element());
+        out.push(Section::new("Output").boxed().child(output).into_any_element());
         out
     }
 }

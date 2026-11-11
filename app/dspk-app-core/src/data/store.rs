@@ -1085,6 +1085,11 @@ impl Store {
         Palette::of(self.dark || self.session.dark_plots)
     }
 
+    /// Whether the app is drawn dark now (the user's choice or the system's).
+    pub fn is_dark(&self) -> bool {
+        self.dark
+    }
+
     /// The theme the app is drawn with now.
     pub fn set_dark(&mut self, dark: bool, cx: &mut Context<Self>) {
         let before = self.palette();
@@ -1097,6 +1102,14 @@ impl Store {
     /// The user's theme choice (`None`: follow the system), saved.
     pub fn set_theme_choice(&mut self, dark: Option<bool>, cx: &mut Context<Self>) {
         self.session.dark = dark;
+        self.save_session();
+        cx.notify();
+    }
+
+    /// The accent the user picked (`None`: lime), saved. The caller applies the look
+    /// (`DspApp::apply_theme`).
+    pub fn set_accent(&mut self, accent: Option<kitchen_ui::Rgb>, cx: &mut Context<Self>) {
+        self.session.accent = accent;
         self.save_session();
         cx.notify();
     }

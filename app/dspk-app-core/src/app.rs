@@ -9,7 +9,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::assets::IconName;
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Icon, Selectable as _, Sizable as _, Theme, ThemeMode, TitleBar};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Icon, Selectable as _, Sizable as _, TitleBar};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
@@ -21,6 +21,7 @@ use crate::navigation::actions::*;
 use crate::screens::explore::trace::renderer::TimeViewKind;
 use crate::data::store::{file_label, AppEvent, Store};
 use crate::screens::explore::ExploreView;
+use crate::ui::theme::{self, color};
 use crate::ui::recording_picker::{open_actions, Pick};
 use crate::ui::widgets::EmptyState;
 use crate::navigation::route::Workspace;
@@ -77,17 +78,15 @@ impl DspApp {
 
     /// Light, dark, or the system's (`None`); the store learns which, for the plot colours.
     pub(crate) fn apply_theme(store: &Entity<Store>, dark: Option<bool>, window: &mut Window, cx: &mut App) {
-        match dark {
-            Some(true) => Theme::change(ThemeMode::Dark, Some(window), cx),
-            Some(false) => Theme::change(ThemeMode::Light, Some(window), cx),
-            None => Theme::sync_system_appearance(Some(window), cx),
-        }
-        let is_dark = cx.theme().is_dark();
+        let accent = store.read(cx).session.accent;
+        theme::configure(dark, accent, window);
+        theme::apply(window, cx);
+        let is_dark = dark.unwrap_or_else(|| theme::system_dark(window));
         store.update(cx, |s, cx| s.set_dark(is_dark, cx));
     }
 
     fn toggle_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let dark = !cx.theme().is_dark();
+        let dark = !self.store.read(cx).is_dark();
         self.store.update(cx, |s, cx| s.set_theme_choice(Some(dark), cx));
         Self::apply_theme(&self.store, Some(dark), window, cx);
         cx.notify();
@@ -345,7 +344,7 @@ impl DspApp {
                         let t = this.clone();
                         PopupMenuItem::new("Follow the system theme").checked(follow).on_click(move |_, window, cx| {
                             t.update(cx, |a, cx| {
-                                let choice = if follow { Some(cx.theme().is_dark()) } else { None };
+                                let choice = if follow { Some(a.store.read(cx).is_dark()) } else { None };
                                 a.store.update(cx, |s, cx| s.set_theme_choice(choice, cx));
                                 Self::apply_theme(&a.store, choice, window, cx);
                             })
@@ -473,7 +472,7 @@ impl DspApp {
                 .children(opening)
                 .children(recording)
                 .child({
-                    let dark = cx.theme().is_dark();
+                    let dark = self.store.read(cx).is_dark();
                     Button::new("theme")
                         .ghost()
                         .small()
