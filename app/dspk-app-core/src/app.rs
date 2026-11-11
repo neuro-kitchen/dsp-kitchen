@@ -7,7 +7,6 @@ use std::path::PathBuf;
 use gpui_kit::base::dock::DockPlacement;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
-use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Icon, Selectable as _, Sizable as _, TitleBar};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -21,10 +20,155 @@ use crate::navigation::actions::*;
 use crate::screens::explore::trace::renderer::TimeViewKind;
 use crate::data::store::{file_label, AppEvent, Store};
 use crate::screens::explore::ExploreView;
-use crate::ui::theme::{self, color};
 use crate::ui::recording_picker::{open_actions, Pick};
+use crate::ui::theme::{self, color};
 use crate::ui::widgets::EmptyState;
 use crate::navigation::route::Workspace;
+
+/// The bottom bar: where the app runs (this computer), the last message, the latest frame's
+/// numbers, and this computer's CPU and memory. Its own entity, so the meters redraw only it.
+pub struct StatusBar {
+    store: Entity<Store>,
+    /// This computer's load (CPU %, memory used and total in bytes), every 2 s.
+    meters: Option<(f32, u64, u64)>,
+    _subs: Vec<Subscription>,
+}
+
+impl StatusBar {
+    fn new(store: Entity<Store>, cx: &mut Context<Self>) -> Self {
+        let subs = vec![cx.subscribe(&store, |_, _, _: &AppEvent, cx| cx.notify()), cx.observe(&store, |_, _, cx| cx.notify())];
+        // CPU and memory meters (as VS Code's resource monitor), read off the UI thread
+        cx.spawn(async move |this, cx| {
+            // No meters where the system cannot be read
+            let Ok(mut sys) = sysinfo::System::new() else { return };
+            loop {
+                let m = cx
+                    .background_executor()
+                    .spawn(async move {
+                        sys.refresh_cpu_usage();
+                        sys.refresh_memory();
+                        let m = (sys.global_cpu_usage(), sys.used_memory(), sys.total_memory());
+                        (sys, m)
+                    })
+                    .await;
+                sys = m.0;
+                let shown = this.update(cx, |s, cx| {
+                    s.meters = Some(m.1);
+                    cx.notify();
+                });
+                if shown.is_err() {
+                    break;
+                }
+                cx.background_executor().timer(std::time::Duration::from_secs(2)).await;
+            }
+        })
+        .detach();
+        Self { store, meters: None, _subs: subs }
+    }
+}
+
+/// A status bar reading: an icon and its value, muted (the meters).
+fn meter(icon: IconName, text: String, tip: &'static str) -> impl IntoElement {
+    h_flex()
+        .id(tip)
+        .gap(px(theme::XS))
+        .items_center()
+        .text_color(color::text_muted())
+        .child(Icon::new(icon).small())
+        .child(text)
+        .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(tip).build(w, cx))
+}
+
+impl Render for StatusBar {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let rounded = frame_rounded(window);
+        let s = self.store.read(cx);
+        h_flex()
+            .id("status-bar")
+            .flex_none()
+            .h(px(theme::STATUS_BAR_H))
+            .pr(px(theme::MD))
+            .gap(px(theme::LG))
+            .items_center()
+            .bg(color::chrome())
+            .when(rounded, |d| d.rounded_b(px(WINDOW_RADIUS - 1.0)))
+            .text_xs()
+            .child(remote_button())
+            .child(div().flex_1().min_w_0().truncate().child(s.status.clone()))
+            .child(div().flex_none().text_color(color::text_muted()).child(s.render_info.clone()))
+            .children(self.meters.map(|(cpu, used, total)| {
+                let gb = |b: u64| b as f64 / 1e9;
+                h_flex()
+                    .flex_none()
+                    .gap(px(theme::MD))
+                    .child(meter(IconName::Cpu, format!("{cpu:.0} %"), "CPU in use, all cores"))
+                    .child(meter(IconName::MemoryStick, format!("{:.1} / {:.1} GB", gb(used), gb(total)), "Memory in use / installed"))
+            }))
+    }
+}
+
+/// Where the app runs, at the left of the status bar (as VS Code's remote indicator): this
+/// computer, or a dsp-kitchen server once one can be connected here. In the accent, so it reads
+/// as a place.
+fn remote_button() -> impl IntoElement {
+    let face = h_flex()
+        .h_full()
+        .px(px(theme::MD))
+        .gap(px(theme::SM))
+        .items_center()
+        .text_sm()
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(Icon::new(IconName::Server).small())
+        .child("This computer");
+    Button::new("remote")
+        .primary()
+        .small()
+        .h_full()
+        .rounded_none()
+        .child(face)
+        .tooltip("Where dsp-kitchen runs: this computer or a dsp-kitchen server")
+        .dropdown_menu(|menu: PopupMenu, _, _| {
+            menu.label("Run on")
+                .item(PopupMenuItem::new("This computer").icon(Icon::new(IconName::Monitor)).checked(true))
+                .separator()
+                .item(PopupMenuItem::new("Connect to a dsp-kitchen server…").icon(Icon::new(IconName::Server)).disabled(true))
+                .label("Servers you added in Settings open recordings from File → Open from server")
+        })
+}
+
+/// The band at the window's own edge that resizes it while it floats (px). There is no
+/// transparent shadow margin outside the window: compositors that do not draw it showed what was
+/// behind the window there.
+const RESIZE_BAND: f32 = 6.;
+/// Rounded corners of the window when it floats.
+const WINDOW_RADIUS: f32 = 10.;
+
+/// The edge a press at `p` (window px) resizes, within [`RESIZE_BAND`] of a `size` window's edge.
+fn resize_edge(p: gpui_kit::Point<gpui_kit::Pixels>, size: gpui_kit::Size<gpui_kit::Pixels>) -> Option<gpui_kit::ResizeEdge> {
+    use gpui_kit::ResizeEdge as E;
+    let band = RESIZE_BAND;
+    let (x, y, w, h) = (p.x.as_f32(), p.y.as_f32(), size.width.as_f32(), size.height.as_f32());
+    let (l, r, t, b) = (x < band, x > w - band, y < band, y > h - band);
+    Some(match (l, r, t, b) {
+        (true, _, true, _) => E::TopLeft,
+        (_, true, true, _) => E::TopRight,
+        (true, _, _, true) => E::BottomLeft,
+        (_, true, _, true) => E::BottomRight,
+        (true, ..) => E::Left,
+        (_, true, ..) => E::Right,
+        (_, _, true, _) => E::Top,
+        (_, _, _, true) => E::Bottom,
+        _ => return None,
+    })
+}
+
+/// Whether the window draws its own rounded frame: client-side decorations on a floating window.
+fn frame_rounded(window: &Window) -> bool {
+    match window.window_decorations() {
+        gpui_kit::Decorations::Client { tiling } => !(tiling.top || tiling.left || tiling.right || tiling.bottom) && !window.is_maximized() && !window.is_fullscreen(),
+        gpui_kit::Decorations::Server => false,
+    }
+}
 
 /// The synthetic recording of the start screen and the File menu.
 pub const SYNTHETIC: (usize, f64, f64) = (32, 30_000.0, 300.0);
@@ -35,6 +179,7 @@ pub struct DspApp {
     pipeline: Entity<crate::screens::pipeline::PipelineView>,
     analytics: Entity<crate::screens::analytics::AnalyticsWorkspace>,
     floating: Entity<crate::screens::floating::FloatingLayer>,
+    status: Entity<StatusBar>,
     palette: Option<(Entity<crate::screens::palette::CommandPalette>, Subscription)>,
     show_help: bool,
     show_about: bool,
@@ -57,6 +202,7 @@ impl DspApp {
         let explore = cx.new(|cx| ExploreView::new(store.clone(), pipeline.clone(), window, cx));
         let analytics = cx.new(|cx| crate::screens::analytics::AnalyticsWorkspace::new(store.clone(), window, cx));
         let floating = cx.new(|cx| crate::screens::floating::FloatingLayer::new(store.clone(), window, cx));
+        let status = cx.new(|cx| StatusBar::new(store.clone(), cx));
         let subs = vec![
             // Follow the system's light / dark until the user picks one
             cx.observe_window_appearance(window, |this, window, cx| {
@@ -73,10 +219,12 @@ impl DspApp {
         ];
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
-        Self { store, explore, pipeline, analytics, floating, palette: None, show_help: false, show_about: false, settings: None, browser: None, plugin_views: Default::default(), focus, _subs: subs }
+        Self { store, explore, pipeline, analytics, floating, status, palette: None, show_help: false, show_about: false, settings: None, browser: None, plugin_views: Default::default(), focus, _subs: subs }
     }
 
-    /// Light, dark, or the system's (`None`); the store learns which, for the plot colours.
+    /// Light, dark, or the system's (`None`), with the user's accent (kitchen-ui's look: shared
+    /// grey neutrals, lime unless the user picked another accent); the store learns which, for
+    /// the plot colours.
     pub(crate) fn apply_theme(store: &Entity<Store>, dark: Option<bool>, window: &mut Window, cx: &mut App) {
         let accent = store.read(cx).session.accent;
         theme::configure(dark, accent, window);
@@ -446,7 +594,7 @@ impl DspApp {
         }))
     }
 
-    fn title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn title_bar(&self, rounded: bool, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let s = self.store.read(cx);
         let t = cx.theme();
         // The file, then the source the active view reads (what is drawn and edited)
@@ -460,7 +608,8 @@ impl DspApp {
                 .child(div().text_xs().text_color(t.muted_foreground).child(r.summary_of(&source)))
         });
         let opening = s.opening.clone().map(|n| div().text_xs().text_color(t.muted_foreground).child(format!("Opening {n}…")));
-        TitleBar::new().child(
+        // On the chrome, no line under it: the workspace's cards start below (kitchen-ui)
+        TitleBar::new().bg(color::chrome()).border_b_0().when(rounded, |t| t.rounded_t(px(WINDOW_RADIUS - 1.0))).child(
             h_flex()
                 .w_full()
                 .gap_3()
@@ -571,12 +720,6 @@ impl DspApp {
             return self.start_screen(cx);
         }
         self.explore.clone().into_any_element()
-    }
-
-    fn status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let s = self.store.read(cx);
-        let muted = cx.theme().muted_foreground;
-        StatusBar::new().left(div().text_xs().child(s.status.clone())).right(div().text_xs().text_color(muted).child(s.render_info.clone()))
     }
 
     fn help(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -734,13 +877,23 @@ impl DspApp {
 
 impl Render for DspApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
+        // Linux draws the window frame itself (client-side decorations): rounded corners (no
+        // shadow margin) while the window floats, square edges when maximised, full screen or
+        // tiled. GPUI clips children to rectangles, not rounded corners: the title bar and the
+        // status bar round their own corners, or their square backgrounds show past the curve
+        let csd = matches!(window.window_decorations(), gpui_kit::Decorations::Client { .. });
+        let rounded = frame_rounded(window);
+        if csd {
+            window.set_client_inset(px(0.0));
+        }
+        let app = v_flex()
             .id("dspk-app")
             .track_focus(&self.focus)
             .size_full()
             .relative()
-            .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
+            // The chrome under everything: the panes are cards on it (kitchen-ui)
+            .bg(color::chrome())
+            .text_color(color::text())
             .on_action(cx.listener(|this, _: &OpenRecording, _, cx| this.prompt_open(Pick::File, cx)))
             .on_action(cx.listener(|this, _: &OpenRecordingFolder, _, cx| this.prompt_open(Pick::Folder, cx)))
             .on_action(cx.listener(|this, _: &OpenSynthetic, _, cx| this.open_synthetic(cx)))
@@ -768,15 +921,28 @@ impl Render for DspApp {
                     this.open_any(p, cx);
                 }
             }))
-            .child(self.title_bar(cx))
+            .child(self.title_bar(rounded, cx))
             .child(div().flex_1().min_h_0().child(self.body(window, cx)))
-            .child(self.status_bar(cx))
+            .child(self.status.clone())
             .child(self.floating.clone())
             .children(self.palette.as_ref().map(|(p, _)| p.clone()))
             .when(self.show_help, |d| d.child(self.help(cx)))
             .when(self.show_about, |d| d.child(self.about(cx)))
             .children(self.settings.clone().map(|s| self.modal("settings", s.into_any_element(), |a| a.settings = None, cx)))
             .children(self.browser.as_ref().map(|(b, _)| b.clone()).map(|b| self.modal("server-browser", b.into_any_element(), |a| a.browser = None, cx)))
+            // No outline: the frame's shadow sets a floating window apart (as lumen)
+            .when(rounded, |d| d.rounded(px(WINDOW_RADIUS)).overflow_hidden());
+        div()
+            .id("window-frame")
+            .size_full()
+            .when(rounded, |d| {
+                d.on_mouse_down(gpui_kit::MouseButton::Left, |e, window, _| {
+                    if let Some(edge) = resize_edge(e.position, window.viewport_size()) {
+                        window.start_window_resize(edge);
+                    }
+                })
+            })
+            .child(app)
     }
 }
 

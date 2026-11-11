@@ -131,6 +131,10 @@ fn main() -> Result<()> {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(1400.), px(880.)), cx))),
             window_min_size: Some(size(px(760.), px(520.))),
             app_id: Some("org.neuro-kitchen.dspk-app".into()),
+            // The app draws its own frame on Linux (rounded corners and a shadow while it floats,
+            // no shadow margin around it): the window behind the corners is transparent
+            window_background: gpui_kit::WindowBackgroundAppearance::Transparent,
+            window_decorations: Some(gpui_kit::WindowDecorations::Client),
             ..TitleBar::window_options()
         };
         let s = store.clone();
