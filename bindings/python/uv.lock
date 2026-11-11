@@ -16,8 +16,52 @@ dependencies = [
     { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
 
+[package.optional-dependencies]
+all = [
+    { name = "dspk-app" },
+    { name = "dspk-synapse" },
+]
+app = [
+    { name = "dspk-app" },
+]
+synapse = [
+    { name = "dspk-synapse" },
+]
+
 [package.metadata]
-requires-dist = [{ name = "numpy", specifier = ">=2.2" }]
+requires-dist = [
+    { name = "dspk-app", marker = "extra == 'all'", specifier = "==0.0.9" },
+    { name = "dspk-app", marker = "extra == 'app'", specifier = "==0.0.9" },
+    { name = "dspk-synapse", marker = "extra == 'all'", specifier = "==0.0.9" },
+    { name = "dspk-synapse", marker = "extra == 'synapse'", specifier = "==0.0.9" },
+    { name = "numpy", specifier = ">=2.2" },
+]
+provides-extras = ["all", "app", "synapse"]
+
+[[package]]
+name = "dspk-app"
+version = "0.0.9"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9c/fc/75e6f1e087020954cbb4262c4744213b767f7832a62f30fa064362a29f4e/dspk_app-0.0.9-py3-none-macosx_11_0_arm64.whl", hash = "sha256:f36eb59011c0b2efbfaeb601b1479efa7bf04e5867406671a8dacf95d473c3d7", size = 56700795, upload-time = "2026-11-09T21:05:08.033Z" },
+    { url = "https://files.pythonhosted.org/packages/8c/21/c980997a5dbc669a44e745e643490863c931ba1ef19fbaee73e1692cfc21/dspk_app-0.0.9-py3-none-manylinux_2_35_x86_64.whl", hash = "sha256:041355a4bd98890cdc01525e98565a9ee3f20f4a5a7278e9e88ae99c684ee664", size = 74174864, upload-time = "2026-11-09T21:05:12.303Z" },
+    { url = "https://files.pythonhosted.org/packages/a2/12/088b94ce692763291a0bffdd2cddc5562091309164fab05c72982e0b2dd5/dspk_app-0.0.9-py3-none-win_amd64.whl", hash = "sha256:ce17276597bdf1f6686798f37486525c7d8597448c2715ad388eeaf357974d66", size = 64654051, upload-time = "2026-11-09T21:05:15.786Z" },
+]
+
+[[package]]
+name = "dspk-synapse"
+version = "0.0.9"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
+    { name = "numpy", version = "2.5.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/04/15/2e562784d5cc455a2c5b2377074d8c2a047064044fb065c17991d99697c5/dspk_synapse-0.0.9-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:2f672c31d92b2208d115ed8f824ba93acc2d1ee6b4bb15647415c19e39746f9b", size = 44197850, upload-time = "2026-11-09T21:05:29.847Z" },
+    { url = "https://files.pythonhosted.org/packages/34/c3/35596dcf73e1e034bddb433e8733c83ef3db570de05ec4958a269526d6fb/dspk_synapse-0.0.9-cp310-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:edd76cea7f6e35615e17afff8402ce11f4b5ac0c8165a48bf58f502803000efc", size = 64442803, upload-time = "2026-11-09T21:05:35.894Z" },
+    { url = "https://files.pythonhosted.org/packages/4d/83/26fcc6023a9c459c03aa034acb4bb34d64d16b57963f60fef5271d1c18af/dspk_synapse-0.0.9-cp310-abi3-win_amd64.whl", hash = "sha256:0bcc2f932d9b3d293aed8591a7d486cdabf7fad1892fe825de6bc051397ec8c5", size = 50868594, upload-time = "2026-11-09T21:05:41.243Z" },
+]
 
 [[package]]
 name = "numpy"
