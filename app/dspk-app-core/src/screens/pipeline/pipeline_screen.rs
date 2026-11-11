@@ -264,10 +264,11 @@ impl PipelineView {
                 m
             })
         };
+        // Only the pill takes the pointer: the strip it is centred in must not cover the canvas'
+        // own bar (zoom, fit, grid, minimap) at the bottom left and the minimap at the right
         h_flex()
             .id("pipeline-toolbar")
             .test_support()
-            .occlude()
             .absolute()
             .bottom_4()
             .left_0()
@@ -275,6 +276,8 @@ impl PipelineView {
             .justify_center()
             .child(
                 h_flex()
+                    .id("pipeline-toolbar-pill")
+                    .occlude()
                     .gap_0p5()
                     .p_1()
                     .rounded_lg()
@@ -319,6 +322,7 @@ impl PipelineView {
         let t = cx.theme();
         let canvas = self.canvas.downgrade();
         let selected = !self.canvas.read(cx).selected.is_empty();
+        let (grid_on, map_on) = (self.canvas.read(cx).show_grid, self.canvas.read(cx).show_minimap);
         let writable = self.canvas.read(cx).single().and_then(|id| self.store.read(cx).doc.graph.node(id)).is_some_and(|n| matches!(n.kind, NodeKind::Write {} | NodeKind::View { .. }));
         let menu = |id: SharedString, title: &'static str, build: Rc<dyn Fn(PopupMenu) -> PopupMenu>| {
             Button::new(id).ghost().small().label(title).dropdown_menu(move |m: PopupMenu, _, _| build(m))
@@ -365,11 +369,11 @@ impl PipelineView {
                     .item(item("Dot grid", true, |c, _, cx| {
                         c.show_grid = !c.show_grid;
                         cx.notify();
-                    }))
+                    }).checked(grid_on))
                     .item(item("Minimap", true, |c, _, cx| {
                         c.show_minimap = !c.show_minimap;
                         cx.notify();
-                    }))
+                    }).checked(map_on))
             }) as Rc<dyn Fn(PopupMenu) -> PopupMenu>
         };
         let mut bar = h_flex()
