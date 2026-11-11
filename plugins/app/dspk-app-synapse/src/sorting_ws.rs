@@ -37,6 +37,7 @@ use crate::sorting::{compute_isi_histogram, write_start_sec, Snippets, SortingDa
 use crate::strip::{view_signal, BottomStrip};
 use crate::templates::TemplateGrid;
 use dspk_app_core::ui::panel_edge::{follow_panel_drag, panel_edge, rail, toggle_item, PanelResize, Side, RAIL_W};
+use dspk_app_core::ui::theme::{PANE_GAP, RADIUS_LG};
 use crate::{plots, plugin_data, runs_of, sorting_of, state, SynapseEvent, ID};
 
 /// Widths of the side columns (logical px), card size (logical and rendered px).
@@ -869,7 +870,9 @@ impl Render for SortingWorkspace {
         v_flex()
             .id("sorting-workspace")
             .size_full()
-            .bg(bg)
+            .p(px(PANE_GAP))
+            .gap(px(PANE_GAP))
+            .bg(dspk_app_core::ui::theme::color::chrome())
             .on_drag_move(cx.listener(|this, e: &DragMoveEvent<PanelResize>, _, cx| {
                 follow_panel_drag(&this.store, e, cx);
                 cx.notify();
@@ -879,14 +882,11 @@ impl Render for SortingWorkspace {
                 h_flex()
                     .flex_1()
                     .min_h_0()
+                    .gap(px(PANE_GAP))
                     .child(left_rail)
-                    .when(left_open, |d| {
-                        d.child(div().relative().w(px(left_w)).flex_none().h_full().border_r_1().border_color(border).child(controls).child(panel_edge("sorting.left", Side::Left, RAIL_W)))
-                    })
-                    .child(v_flex().flex_1().min_w_0().h_full().child(tabs).child(centre))
-                    .when(right_open, |d| {
-                        d.child(div().relative().w(px(right_w)).flex_none().h_full().border_l_1().border_color(border).child(parameters).child(panel_edge("sorting.right", Side::Right, RAIL_W)))
-                    })
+                    .when(left_open, |d| d.child(card().relative().w(px(left_w)).flex_none().h_full().child(controls).child(panel_edge("sorting.left", Side::Left, side_offset))))
+                    .child(card().flex().flex_col().flex_1().min_w_0().h_full().child(tabs).child(centre))
+                    .when(right_open, |d| d.child(card().relative().w(px(right_w)).flex_none().h_full().child(parameters).child(panel_edge("sorting.right", Side::Right, side_offset))))
                     .child(right_rail),
             )
             .child(self.strip.clone())

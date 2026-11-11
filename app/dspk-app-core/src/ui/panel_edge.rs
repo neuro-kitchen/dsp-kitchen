@@ -4,7 +4,7 @@
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::resizable::{resize_handle, HandleEdge};
-use gpui_kit::component::{v_flex, ActiveTheme as _, Icon, Selectable as _};
+use gpui_kit::component::{v_flex, Icon, Selectable as _};
 use gpui_kit::{div, px, App, AppContext as _, Axis, Context, DragMoveEvent, Entity, IntoElement, ParentElement as _, Render, SharedString, Styled as _, Window};
 
 use crate::data::store::Store;
@@ -23,7 +23,7 @@ pub enum Side {
 }
 
 /// What a panel-edge drag carries: the panel's key in the preferences, its side, and how far
-/// from the root's edge the panel starts (e.g. an icon bar).
+/// from the root's edge the panel starts (e.g. an icon bar and the gaps between the cards).
 #[derive(Debug, Clone)]
 pub struct PanelResize {
     pub key: &'static str,
@@ -79,12 +79,10 @@ pub struct RailItem {
     pub on_click: Box<dyn Fn(&mut Window, &mut App)>,
 }
 
-/// An icon rail on a workspace's edge (as Explore's): a click on a panel's icon shows it, a
-/// click on the shown one hides its side.
-pub fn rail(items: Vec<RailItem>, left: bool, cx: &App) -> impl IntoElement + use<> {
-    let t = cx.theme();
-    let bar = v_flex().w(px(RAIL_W)).flex_none().h_full().py_2().gap_1().items_center().bg(t.sidebar).border_color(t.border);
-    let bar = if left { bar.border_r_1() } else { bar.border_l_1() };
+/// An icon rail on a workspace's edge (as Explore's), a card on the chrome: a click on a panel's
+/// icon shows it, a click on the shown one hides its side.
+pub fn rail(items: Vec<RailItem>) -> impl IntoElement + use<> {
+    let bar = v_flex().w(px(RAIL_W)).flex_none().h_full().py_2().gap_1().items_center().rounded(px(crate::ui::theme::RADIUS_LG)).bg(crate::ui::theme::color::panel());
     bar.children(items.into_iter().map(|it| {
         let f = it.on_click;
         Button::new(gpui_kit::ElementId::Name(it.id)).ghost().icon(it.icon).tooltip(it.tip).selected(it.selected).on_click(move |_, window, cx| f(window, cx))

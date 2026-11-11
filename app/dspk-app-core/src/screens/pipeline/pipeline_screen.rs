@@ -377,13 +377,12 @@ impl PipelineView {
                     }).checked(map_on))
             }) as Rc<dyn Fn(PopupMenu) -> PopupMenu>
         };
+        // On the chrome, above the cards (no line under it)
         let mut bar = h_flex()
             .h(px(34.))
             .flex_none()
             .px_2()
             .gap_0p5()
-            .border_b_1()
-            .border_color(t.border)
             .child(menu("pipeline-menu-file".into(), "File", file))
             .child(menu("pipeline-menu-edit".into(), "Edit", edit));
         // One menu per kind of operation (Sources are in File)
@@ -442,14 +441,20 @@ impl Render for PipelineView {
             LeftTab::Recipes => "RECIPES",
         };
         let muted = cx.theme().muted_foreground;
+        // The rails, panels and the canvas are cards on the chrome, PANE_GAP apart (kitchen-ui);
+        // a side panel starts after its rail and a gap
+        let side_offset = RAIL_W + theme::PANE_GAP;
         v_flex()
             .id("pipeline-workspace")
             .size_full()
+            .bg(color::chrome())
             .child(self.menu_bar(cx))
             .child(
                 h_flex()
                     .flex_1()
                     .min_h_0()
+                    .p(px(theme::PANE_GAP))
+                    .gap(px(theme::PANE_GAP))
                     .on_drag_move(cx.listener(|this, e: &DragMoveEvent<PanelResize>, _, cx| {
                         follow_panel_drag(&this.store, e, cx);
                         cx.notify();
@@ -457,30 +462,30 @@ impl Render for PipelineView {
                     .child(left_rail)
                     .when(left_open, |d| {
                         d.child(
-                            v_flex()
+                            pane()
                                 .relative()
+                                .flex()
+                                .flex_col()
                                 .w(px(left_w))
                                 .flex_none()
                                 .h_full()
-                                .border_r_1()
-                                .border_color(border)
                                 .child(h_flex().h(px(32.)).flex_none().px_3().border_b_1().border_color(border).child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(muted).child(title)))
                                 .child(left_body)
-                                .child(panel_edge("pipeline.left", Side::Left, RAIL_W)),
+                                .child(panel_edge("pipeline.left", Side::Left, theme::PANE_GAP + side_offset)),
                         )
                     })
-                    .child(div().relative().flex_1().min_w_0().h_full().child(self.canvas.clone()).child(self.toolbar(cx)))
+                    .child(pane().relative().flex_1().min_w_0().h_full().child(self.canvas.clone()).child(self.toolbar(cx)))
                     .when(right_open, |d| {
                         d.child(
-                            v_flex()
+                            pane()
                                 .relative()
+                                .flex()
+                                .flex_col()
                                 .w(px(side_w))
                                 .flex_none()
                                 .h_full()
-                                .border_l_1()
-                                .border_color(border)
                                 .child(div().flex_1().min_h_0().child(self.inspector.clone()))
-                                .child(panel_edge("pipeline.right", Side::Right, RAIL_W)),
+                                .child(panel_edge("pipeline.right", Side::Right, theme::PANE_GAP + side_offset)),
                         )
                     })
                     .child(right_rail),
@@ -664,7 +669,6 @@ impl Inspector {
                     .child(row(
                         "Channels",
                         div().text_xs().child(recording.channels.as_ref().map_or_else(|| "all".to_string(), |c| format!("{} ({}…)", c.len(), c.iter().take(4).map(|c| c.to_string()).collect::<Vec<_>>().join(", ")))),
-                        cx,
                     ))
                     .child(div().text_xs().text_color(muted).child(format!("Feeds {} node(s).", g.outputs(&id).len())))
                     .when(s.writes_of(&id).len() >= 2, |d| {
@@ -764,7 +768,6 @@ impl Inspector {
                                 let _ = store.update(cx, |s, cx| s.execute(SessionCommand::SetNode { id: id.clone(), node }, cx));
                             }
                         }),
-                        cx,
                     )
                 });
                 v_flex()

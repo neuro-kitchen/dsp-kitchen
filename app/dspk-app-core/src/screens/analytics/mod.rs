@@ -19,7 +19,8 @@ use gpui_kit::{
 
 use crate::data::store::{AppEvent, Store};
 use crate::navigation::route::Workspace;
-use crate::ui::widgets::EmptyState;
+use crate::ui::theme::{self, color};
+use crate::ui::widgets::{pane, EmptyState};
 use aligned::{aligned_average, AlignTo, ChannelAverage};
 
 /// Windows offered, (before, after) the event in milliseconds.
@@ -184,8 +185,6 @@ impl AnalyticsWorkspace {
             .h(px(44.))
             .px_3()
             .gap_2()
-            .border_b_1()
-            .border_color(cx.theme().border)
             .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Aligned to"))
             .child(Button::new("analytics-set").outline().small().label(set_label).dropdown_menu(move |mut m: PopupMenu, _, _| {
                 for (id, name) in &sets {
@@ -286,15 +285,22 @@ impl Render for AnalyticsWorkspace {
             Some(s.events_of(set)?.iter().map(|e| e.onset_s).collect())
         });
         let extra: Vec<AnyElement> = events.map_or_else(Vec::new, |ev| crate::plugin::plugins().iter().filter_map(|p| p.aligned(&store, &ev, pre, post, window, cx)).collect());
+        // The controls and the results are cards on the chrome, PANE_GAP apart (kitchen-ui)
         v_flex()
             .id("analytics")
             .test_support()
             .size_full()
-            .child(controls)
+            .p(px(theme::PANE_GAP))
+            .gap(px(theme::PANE_GAP))
+            .bg(color::chrome())
+            .child(pane().flex_none().child(controls))
             .child(
                 v_flex()
                     .id("analytics-body")
                     .flex_1()
+                    .min_h_0()
+                    .rounded(px(theme::RADIUS_LG))
+                    .bg(color::panel())
                     .overflow_y_scroll()
                     .p_3()
                     .gap_3()
