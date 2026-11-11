@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Disableable as _, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     div, px, AnyElement, App, AppContext as _, Context, Entity, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render, SharedString,
@@ -413,15 +413,21 @@ impl Render for SettingsScreen {
                 Self::setting("Settings file", &crate::data::preferences::Session::path().map(|p| p.display().to_string()).unwrap_or_else(|| "not saved (no config folder)".into()), "per user", div(), cx),
             ],
         };
+        // Rows of their own (a button centres its label): icon and name, left-aligned, as lumen's
+        let (on_bg, hover_bg, muted_fg, accent_fg) = { let t = cx.theme(); (t.accent, t.secondary, t.muted_foreground, t.primary) };
         let nav = v_flex().flex_none().w(px(180.)).h_full().p_2().gap(px(2.)).border_r_1().border_color(border).children(Section::ALL.into_iter().map(|sec| {
-            Button::new(SharedString::from(format!("settings-section-{}", sec.title().to_lowercase())))
-                .ghost()
-                .small()
-                .w_full()
-                .justify_start()
-                .icon(gpui_kit::component::Icon::new(sec.icon()))
-                .label(sec.title())
-                .selected(sec == self.section)
+            let on = sec == self.section;
+            h_flex()
+                .id(SharedString::from(format!("settings-section-{}", sec.title().to_lowercase())))
+                .h(px(30.))
+                .px_2()
+                .gap_2()
+                .rounded_md()
+                .cursor_pointer()
+                .when(on, |d| d.bg(on_bg))
+                .when(!on, |d| d.hover(|d| d.bg(hover_bg)))
+                .child(gpui_kit::component::Icon::new(sec.icon()).small().text_color(if on { accent_fg } else { muted_fg }))
+                .child(div().text_sm().child(sec.title()))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.section = sec;
                     cx.notify();
