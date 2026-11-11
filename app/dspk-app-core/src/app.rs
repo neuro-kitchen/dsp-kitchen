@@ -8,7 +8,8 @@ use gpui_kit::base::dock::DockPlacement;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::status_bar::StatusBar;
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, IconName, Selectable as _, Sizable as _, Theme, ThemeMode, TitleBar};
+use gpui_kit::assets::IconName;
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Icon, Selectable as _, Sizable as _, Theme, ThemeMode, TitleBar};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
@@ -147,43 +148,75 @@ impl DspApp {
         self.explore.update(cx, |e, cx| e.add_view(kind, cx));
     }
 
-    /// Every command the palette offers.
-    fn commands(&self, cx: &mut Context<Self>) -> Vec<crate::screens::palette::Command> {
+    /// Every command the search offers (`ops_only`: the operations and recipes, as Process ▸
+    /// "Find an operation…" lists them).
+    fn commands(&self, ops_only: bool, cx: &mut Context<Self>) -> Vec<crate::screens::palette::Command> {
         use crate::screens::palette::Command;
         use std::rc::Rc;
         let me = cx.entity().downgrade();
         let open_actions = open_actions(cx);
+        let open = self.store.read(cx).recording.is_some();
         let mut out = Vec::new();
-        let mut add = |group: &'static str, name: String, f: Rc<dyn Fn(&mut DspApp, &mut Window, &mut Context<DspApp>)>| {
+        let mut add = |group: &'static str, icon: IconName, name: String, hint: String, f: Rc<dyn Fn(&mut DspApp, &mut Window, &mut Context<DspApp>)>| {
             let me = me.clone();
-            out.push(Command { group, name, run: Rc::new(move |w, cx| {
-                let f = f.clone();
-                let _ = me.update(cx, |a, cx| f(a, w, cx));
-            }) });
+            out.push(Command {
+                group,
+                name,
+                hint,
+                icon,
+                run: Rc::new(move |w, cx| {
+                    let f = f.clone();
+                    let _ = me.update(cx, |a, cx| f(a, w, cx));
+                }),
+            });
         };
-        for ws in Workspace::ALL {
-            add("Go to", format!("{} workspace", ws.title()), Rc::new(move |a, _, cx| a.store.update(cx, |s, cx| s.set_workspace(ws, cx))));
+        if !ops_only {
+            for ws in Workspace::ALL {
+                add("Go to", ws.icon(), format!("{} workspace", ws.title()), ws.hint().into(), Rc::new(move |a, _, cx| a.store.update(cx, |s, cx| s.set_workspace(ws, cx))));
+            }
+            for &(label, pick) in open_actions {
+                add("File", IconName::FolderOpen, label.into(), "Open a recording from this computer".into(), Rc::new(move |a, _, cx| a.prompt_open(pick, cx)));
+            }
+            add("File", IconName::FolderOpen, "Open from server…".into(), "Browse the recordings a dspk server offers".into(), Rc::new(|a, _, cx| a.toggle_browser(cx)));
+            add("File", IconName::AudioWaveform, "Synthetic recording".into(), "32 channels, 5 minutes: to try things out".into(), Rc::new(|a, _, cx| a.open_synthetic(cx)));
+            if open {
+                add("File", IconName::X, "Close recording".into(), "Close the recording shown".into(), Rc::new(|a, _, cx| a.store.update(cx, |s, cx| s.close_recording(None, cx))));
+            }
+            add("File", IconName::Settings, "Settings".into(), "Compute, plugins, appearance".into(), Rc::new(|a, w, cx| {
+                if a.settings.is_none() {
+                    a.toggle_settings(w, cx);
+                }
+            }));
+            add("File", IconName::Settings, "Tune this device".into(), "Benchmark this GPU once, in the background".into(), Rc::new(|a, _, cx| a.tune_device(cx)));
+            add("Edit", IconName::Undo2, "Undo".into(), "Ctrl+Z".into(), Rc::new(|a, _, cx| a.store.update(cx, |s, cx| s.undo(false, cx))));
+            add("Edit", IconName::Redo2, "Redo".into(), "Ctrl+Shift+Z".into(), Rc::new(|a, _, cx| a.store.update(cx, |s, cx| s.undo(true, cx))));
+            if open {
+                for (name, kind, icon) in [("traces", TimeViewKind::Traces, IconName::AudioWaveform), ("heatmap", TimeViewKind::Heatmap, IconName::LayoutGrid), ("raster", TimeViewKind::Raster, IconName::ChartColumn)] {
+                    add("View", icon, format!("Add a {name} view"), "In Explore, next to the views open".into(), Rc::new(move |a, _, cx| a.add_view(kind, cx)));
+                }
+                for (name, placement, hint) in [("Channels", DockPlacement::Left, "Show or hide the channel list"), ("Inspector", DockPlacement::Right, "Show or hide the inspector"), ("Timeline", DockPlacement::Bottom, "Show or hide the timeline")] {
+                    add("View", IconName::PanelRight, name.into(), hint.into(), Rc::new(move |a, w, cx| {
+                        a.store.update(cx, |s, cx| s.set_workspace(Workspace::Explore, cx));
+                        a.toggle_dock(placement, w, cx);
+                    }));
+                }
+                add("Timeline", IconName::Clock, "New epoch from the visible window".into(), "Marks the span shown as an epoch".into(), Rc::new(|a, _, cx| crate::screens::explore::components::timeline_tab::new_epoch(&a.store, cx)));
+            }
+            add("View", IconName::Sun, "Light / dark theme".into(), "Switch the theme".into(), Rc::new(|a, w, cx| a.toggle_theme(w, cx)));
+            add("Help", IconName::Info, "Keyboard & mouse".into(), "Every key and gesture".into(), Rc::new(|a, _, cx| {
+                a.show_help = true;
+                cx.notify();
+            }));
+            add("Help", IconName::Info, "About DSP App".into(), "Version, runtimes".into(), Rc::new(|a, _, cx| {
+                a.show_about = true;
+                cx.notify();
+            }));
         }
-        for &(label, pick) in open_actions {
-            add("File", label.into(), Rc::new(move |a, _, cx| a.prompt_open(pick, cx)));
-        }
-        add("File", "Synthetic recording".into(), Rc::new(|a, _, cx| a.open_synthetic(cx)));
-        add("File", "Tune this device".into(), Rc::new(|a, _, cx| a.tune_device(cx)));
-        for (name, kind) in [("Traces", TimeViewKind::Traces), ("Heatmap", TimeViewKind::Heatmap), ("Raster", TimeViewKind::Raster)] {
-            add("View", format!("Add a {} view", name.to_lowercase()), Rc::new(move |a, _, cx| a.add_view(kind, cx)));
-        }
-        add("Edit", "Undo".into(), Rc::new(|a, _, cx| a.store.update(cx, |s, cx| s.undo(false, cx))));
-        add("Edit", "Redo".into(), Rc::new(|a, _, cx| a.store.update(cx, |s, cx| s.undo(true, cx))));
-        add("Timeline", "New epoch from the visible window".into(), Rc::new(|a, _, cx| crate::screens::explore::components::timeline_tab::new_epoch(&a.store, cx)));
-        add("View", "Light / dark theme".into(), Rc::new(|a, w, cx| a.toggle_theme(w, cx)));
-        add("Help", "Keyboard & mouse".into(), Rc::new(|a, _, cx| {
-            a.show_help = true;
-            cx.notify();
-        }));
+        // Operations under their family, as Process ▸ shows them
         for c in crate::screens::pipeline::catalog::catalog() {
             for it in c.items {
                 let template = it.template.clone();
-                add("Pipeline", format!("Add {} · {}", c.name.to_lowercase(), it.label), Rc::new(move |a, w, cx| {
+                add(c.name, c.icon, it.label.to_string(), format!("{} · a node on the Pipeline canvas", it.hint), Rc::new(move |a, w, cx| {
                     let template = template.clone();
                     a.store.update(cx, |s, cx| s.set_workspace(Workspace::Pipeline, cx));
                     a.pipeline.update(cx, |p, cx| p.add(&template, w, cx));
@@ -192,7 +225,7 @@ impl DspApp {
         }
         for r in crate::domain::recipe::builtin().into_iter().chain(self.store.read(cx).doc.recipes.values().cloned()) {
             let name = r.name.clone();
-            add("Recipe", format!("Add {name}"), Rc::new(move |a, _, cx| {
+            add("Recipe", IconName::Workflow, name, "A recipe: a chain of operations as one node".into(), Rc::new(move |a, _, cx| {
                 let r = r.clone();
                 a.store.update(cx, |s, cx| s.set_workspace(Workspace::Pipeline, cx));
                 a.pipeline.update(cx, |p, cx| p.add_recipe(r, cx));
@@ -202,17 +235,31 @@ impl DspApp {
     }
 
     fn toggle_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_search(false, window, cx);
+    }
+
+    /// The search (Ctrl+K: everything; Process ▸ Find an operation: operations only); closes it
+    /// when open.
+    pub fn open_search(&mut self, ops_only: bool, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::screens::palette::{CommandPalette, PaletteEvent};
         if self.palette.take().is_some() {
             window.focus(&self.focus, cx);
             cx.notify();
             return;
         }
-        let commands = self.commands(cx);
-        let palette = cx.new(|cx| crate::screens::palette::CommandPalette::new(commands, window, cx));
-        let sub = cx.subscribe_in(&palette, window, |this, _, _: &crate::screens::palette::PaletteEvent, window, cx| {
+        let commands = self.commands(ops_only, cx);
+        let (title, placeholder) = if ops_only { ("Find an operation", "Bandpass, notch, CMR, spikes…") } else { ("Search", "An operation, a view or an action…") };
+        let palette = cx.new(|cx| CommandPalette::new(commands, title, placeholder, window, cx));
+        let sub = cx.subscribe_in(&palette, window, |this, _, e: &PaletteEvent, window, cx| {
             this.palette = None;
             window.focus(&this.focus, cx);
             cx.notify();
+            // The chosen command runs once the search is gone, on the window with no view
+            // borrowed (it may update the app itself: Settings, a workspace)
+            if let PaletteEvent::Run(run) = e {
+                let run = run.clone();
+                window.defer(cx, move |window, cx| run(window, cx));
+            }
         });
         self.palette = Some((palette, sub));
         cx.notify();
@@ -236,16 +283,17 @@ impl DspApp {
             let this = this.clone();
             Button::new("menu-file").ghost().small().label("File").dropdown_menu(move |menu: PopupMenu, _, _| {
                 let mut menu = menu;
+                let item = |label: &str, icon: IconName| PopupMenuItem::new(label.to_string()).icon(Icon::new(icon));
                 for &(label, pick) in open_actions {
                     let t = this.clone();
-                    menu = menu.item(PopupMenuItem::new(label).on_click(move |_, _, cx| t.update(cx, |a, cx| a.prompt_open(pick, cx))));
+                    menu = menu.item(item(label, IconName::FolderOpen).on_click(move |_, _, cx| t.update(cx, |a, cx| a.prompt_open(pick, cx))));
                 }
                 let t = this.clone();
-                menu = menu.item(PopupMenuItem::new("Open from server…").on_click(move |_, _, cx| t.update(cx, |a, cx| a.toggle_browser(cx))));
+                menu = menu.item(item("Open from server…", IconName::FolderOpen).on_click(move |_, _, cx| t.update(cx, |a, cx| a.toggle_browser(cx))));
                 let t = this.clone();
-                menu = menu.item(PopupMenuItem::new("Synthetic recording (32 ch, 5 min)").on_click(move |_, _, cx| t.update(cx, |a, cx| a.open_synthetic(cx))));
+                menu = menu.item(item("Synthetic recording (32 ch, 5 min)", IconName::AudioWaveform).on_click(move |_, _, cx| t.update(cx, |a, cx| a.open_synthetic(cx))));
                 let t = this.clone();
-                menu = menu.item(PopupMenuItem::new("Tune this device").on_click(move |_, _, cx| t.update(cx, |a, cx| a.tune_device(cx))));
+                menu = menu.item(item("Tune this device", IconName::Settings).on_click(move |_, _, cx| t.update(cx, |a, cx| a.tune_device(cx))));
                 if !recent.is_empty() {
                     menu = menu.separator().label("Recent");
                     for p in &recent {
@@ -260,31 +308,32 @@ impl DspApp {
                 }
                 if open {
                     let t = this.clone();
-                    menu = menu.separator().item(PopupMenuItem::new("Close recording").on_click(move |_, _, cx| {
+                    menu = menu.separator().item(item("Close recording", IconName::X).on_click(move |_, _, cx| {
                         let store = t.read(cx).store.clone();
                         store.update(cx, |s, cx| s.close_recording(None, cx));
                     }));
                 }
                 let t = this.clone();
                 menu.separator()
-                    .item(PopupMenuItem::new("Settings…").on_click(move |_, window, cx| t.update(cx, |a, cx| a.toggle_settings(window, cx))))
+                    .item(item("Settings…", IconName::Settings).on_click(move |_, window, cx| t.update(cx, |a, cx| a.toggle_settings(window, cx))))
                     .separator()
-                    .item(PopupMenuItem::new("Quit").on_click(|_, _, cx| cx.quit()))
+                    .item(item("Quit  Ctrl+Q", IconName::X).on_click(|_, _, cx| cx.quit()))
             })
         };
         let view = {
             let this = this.clone();
             Button::new("menu-view").ghost().small().label("View").dropdown_menu(move |menu: PopupMenu, _, _| {
-                let item = |label: &'static str, f: fn(&mut DspApp, &mut Window, &mut Context<DspApp>)| {
+                let item = |label: &'static str, icon: IconName, f: fn(&mut DspApp, &mut Window, &mut Context<DspApp>)| {
                     let t = this.clone();
-                    PopupMenuItem::new(label).disabled(!open).on_click(move |_, window, cx| t.update(cx, |a, cx| f(a, window, cx)))
+                    PopupMenuItem::new(label).icon(Icon::new(icon)).disabled(!open).on_click(move |_, window, cx| t.update(cx, |a, cx| f(a, window, cx)))
                 };
-                menu.item(item("Add traces view", |a, _, cx| a.add_view(TimeViewKind::Traces, cx)))
-                    .item(item("Add heatmap view", |a, _, cx| a.add_view(TimeViewKind::Heatmap, cx)))
+                menu.item(item("Add traces view", IconName::AudioWaveform, |a, _, cx| a.add_view(TimeViewKind::Traces, cx)))
+                    .item(item("Add heatmap view", IconName::LayoutGrid, |a, _, cx| a.add_view(TimeViewKind::Heatmap, cx)))
+                    .item(item("Add raster view", IconName::ChartColumn, |a, _, cx| a.add_view(TimeViewKind::Raster, cx)))
                     .separator()
-                    .item(item("Channels", |a, w, cx| a.toggle_dock(DockPlacement::Left, w, cx)))
-                    .item(item("Inspector", |a, w, cx| a.toggle_dock(DockPlacement::Right, w, cx)))
-                    .item(item("Timeline", |a, w, cx| a.toggle_dock(DockPlacement::Bottom, w, cx)))
+                    .item(item("Channels", IconName::PanelRight, |a, w, cx| a.toggle_dock(DockPlacement::Left, w, cx)))
+                    .item(item("Inspector", IconName::PanelRight, |a, w, cx| a.toggle_dock(DockPlacement::Right, w, cx)))
+                    .item(item("Timeline", IconName::PanelRight, |a, w, cx| a.toggle_dock(DockPlacement::Bottom, w, cx)))
                     .separator()
                     .item({
                         let t = this.clone();
@@ -308,14 +357,18 @@ impl DspApp {
             let this = this.clone();
             Button::new("menu-help").ghost().small().label("Help").dropdown_menu(move |menu: PopupMenu, _, _| {
                 let (t1, t2) = (this.clone(), this.clone());
-                menu.item(PopupMenuItem::new("Keyboard & mouse").on_click(move |_, _, cx| {
+                menu.item(PopupMenuItem::new("Search…  Ctrl+K").icon(Icon::new(IconName::Search)).on_click({
+                    let t = this.clone();
+                    move |_, window, cx| t.update(cx, |a, cx| a.open_search(false, window, cx))
+                }))
+                .item(PopupMenuItem::new("Keyboard & mouse").icon(Icon::new(IconName::Info)).on_click(move |_, _, cx| {
                     t1.update(cx, |a, cx| {
                         a.show_help = true;
                         cx.notify();
                     })
                 }))
                 .separator()
-                .item(PopupMenuItem::new("About DSP App").on_click(move |_, _, cx| {
+                .item(PopupMenuItem::new("About DSP App").icon(Icon::new(IconName::Info)).on_click(move |_, _, cx| {
                     t2.update(cx, |a, cx| {
                         a.show_about = true;
                         cx.notify();
@@ -323,7 +376,60 @@ impl DspApp {
                 }))
             })
         };
-        h_flex().gap_0p5().child(file).child(view).child(help)
+        let edit = {
+            let this = this.clone();
+            Button::new("menu-edit").ghost().small().label("Edit").dropdown_menu(move |menu: PopupMenu, _, _| {
+                let (a, b) = (this.clone(), this.clone());
+                menu.item(PopupMenuItem::new("Undo  Ctrl+Z").icon(Icon::new(IconName::Undo2)).on_click(move |_, _, cx| a.update(cx, |a, cx| a.store.update(cx, |s, cx| s.undo(false, cx)))))
+                    .item(PopupMenuItem::new("Redo  Ctrl+Shift+Z").icon(Icon::new(IconName::Redo2)).on_click(move |_, _, cx| b.update(cx, |a, cx| a.store.update(cx, |s, cx| s.undo(true, cx)))))
+            })
+        };
+        // Process: a node on the Pipeline canvas, one submenu per family (as the operations
+        // tree), then the recipes
+        let process = {
+            let this = this.clone();
+            let recipes: Vec<crate::domain::recipe::RecipeDoc> = crate::domain::recipe::builtin().into_iter().chain(self.store.read(cx).doc.recipes.values().cloned()).collect();
+            Button::new("menu-process").ghost().small().label("Process").dropdown_menu(move |menu: PopupMenu, window, cx| {
+                let find = this.clone();
+                let mut m = menu
+                    .item(PopupMenuItem::new("Find an operation…  Ctrl+K").icon(Icon::new(IconName::Search)).on_click(move |_, window, cx| find.update(cx, |a, cx| a.open_search(true, window, cx))))
+                    .separator()
+                    .label("A node on the Pipeline canvas");
+                for c in crate::screens::pipeline::catalog::catalog() {
+                    let (this, icon, items) = (this.clone(), c.icon, c.items);
+                    m = m.submenu_with_icon(Some(Icon::new(icon)), c.name, window, cx, move |mut sub, _, _| {
+                        for it in &items {
+                            let (t, template) = (this.clone(), it.template.clone());
+                            sub = sub.item(PopupMenuItem::new(format!("{}   {}", it.label, it.hint)).icon(Icon::new(icon)).on_click(move |_, window, cx| {
+                                t.update(cx, |a, cx| {
+                                    a.store.update(cx, |s, cx| s.set_workspace(Workspace::Pipeline, cx));
+                                    a.pipeline.update(cx, |p, cx| p.add(&template, window, cx));
+                                })
+                            }));
+                        }
+                        sub
+                    });
+                }
+                if !recipes.is_empty() {
+                    let (this, recipes) = (this.clone(), recipes.clone());
+                    m = m.separator().submenu_with_icon(Some(Icon::new(IconName::Workflow)), "Recipes", window, cx, move |mut sub, _, _| {
+                        for r in &recipes {
+                            let (t, r) = (this.clone(), r.clone());
+                            sub = sub.item(PopupMenuItem::new(r.name.clone()).icon(Icon::new(IconName::Workflow)).on_click(move |_, _, cx| {
+                                let r = r.clone();
+                                t.update(cx, |a, cx| {
+                                    a.store.update(cx, |s, cx| s.set_workspace(Workspace::Pipeline, cx));
+                                    a.pipeline.update(cx, |p, cx| p.add_recipe(r, cx));
+                                })
+                            }));
+                        }
+                        sub
+                    });
+                }
+                m
+            })
+        };
+        h_flex().gap_0p5().child(file).child(edit).child(view).child(process).child(help)
     }
 
     fn workspaces(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
