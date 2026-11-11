@@ -236,7 +236,7 @@ impl SynapseState {
     pub fn save_curation(&mut self, path: &PathBuf, cx: &mut Context<Self>) {
         let Some(log) = self.curations.get_mut(path) else { return };
         let status = match log.save(path) {
-            Ok(file) => format!("Curation saved: {} ({} edits)", file.display(), log.ops.len()),
+            Ok(file) => format!("Curation saved: {} ({} edits)", dspk_app_core::domain::paths::short_path(&file), log.ops.len()),
             Err(e) => format!("Curation not saved: {e:#}"),
         };
         self.store.update(cx, |s, cx| s.set_status(status, cx));

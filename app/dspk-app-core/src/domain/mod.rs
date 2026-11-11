@@ -3,6 +3,7 @@
 pub mod command;
 pub mod epoch;
 pub mod graph;
+pub mod paths;
 pub mod recipe;
 pub mod session;
 pub mod timeline;

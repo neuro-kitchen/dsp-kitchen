@@ -151,7 +151,7 @@ pub fn editor(store: &Entity<Store>, id: &str, rows: Rows, channels: Option<usiz
                 let Some(path) = paths.into_iter().next() else { return };
                 let _ = cx.update(|cx| match dspk_io::read_channel_map(&path).map_err(|e| e.to_string()).and_then(|m| Rows::of(&m)) {
                     Ok(rows) => set(rows, cx),
-                    Err(e) => store.update(cx, |s, cx| s.set_status(format!("{}: {e}", path.display()), cx)),
+                    Err(e) => store.update(cx, |s, cx| s.set_status(format!("{}: {e}", crate::domain::paths::short_path(&path)), cx)),
                 });
             })
             .detach();
@@ -168,8 +168,8 @@ pub fn editor(store: &Entity<Store>, id: &str, rows: Rows, channels: Option<usiz
                 let result = std::fs::write(&path, map_text(&map, &path));
                 let _ = cx.update(|cx| {
                     let text = match result {
-                        Ok(()) => format!("Channel map written to {}", path.display()),
-                        Err(e) => format!("{}: {e}", path.display()),
+                        Ok(()) => format!("Channel map written to {}", crate::domain::paths::short_path(&path)),
+                        Err(e) => format!("{}: {e}", crate::domain::paths::short_path(&path)),
                     };
                     store.update(cx, |s, cx| s.set_status(text, cx));
                 });

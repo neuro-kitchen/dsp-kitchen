@@ -257,7 +257,7 @@ impl SessionDoc {
 
     /// Reads a document (JSON).
     pub fn load(path: &Path) -> Result<Self, SessionError> {
-        let text = std::fs::read_to_string(path).map_err(|e| SessionError::Io(format!("{}: {e}", path.display())))?;
+        let text = std::fs::read_to_string(path).map_err(|e| SessionError::Io(format!("{}: {e}", crate::domain::paths::short_path(&path))))?;
         Self::from_json(&text)
     }
 

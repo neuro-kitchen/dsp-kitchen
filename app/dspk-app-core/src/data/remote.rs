@@ -52,7 +52,7 @@ impl ServerProfile {
         }
         self.address.parse::<SocketAddr>().map_err(|_| format!("address {:?}: an IP and port, e.g. 192.168.1.20:50051", self.address))?;
         if !self.identity.is_file() {
-            return Err(format!("identity file {} not found", self.identity.display()));
+            return Err(format!("identity file {} not found", crate::domain::paths::short_path(&self.identity)));
         }
         Ok(())
     }
@@ -93,7 +93,7 @@ pub fn profile_named(name: &str) -> Option<ServerProfile> {
 /// Opens the `dspk://` recording `path` (blocking: from a background thread, never on the
 /// network runtime).
 pub fn open_uri(path: &Path) -> anyhow::Result<Arc<RemoteSignal>> {
-    let (server, remote) = parse_uri(path).with_context(|| format!("{} is not a dspk:// path", path.display()))?;
+    let (server, remote) = parse_uri(path).with_context(|| format!("{} is not a dspk:// path", crate::domain::paths::short_path(&path)))?;
     let profile = profile_named(&server).with_context(|| format!("no server named {server:?} in Settings"))?;
     runtime().block_on(open_recording(profile, remote))
 }
@@ -114,7 +114,7 @@ pub fn runtime() -> &'static tokio::runtime::Runtime {
 /// A new session with `profile`'s server (its identity presented, the server trusted through it).
 pub async fn connect(profile: &ServerProfile) -> anyhow::Result<Session> {
     profile.check().map_err(anyhow::Error::msg)?;
-    let identity = ClientIdentity::from_file(&profile.identity).with_context(|| format!("reading {}", profile.identity.display()))?;
+    let identity = ClientIdentity::from_file(&profile.identity).with_context(|| format!("reading {}", crate::domain::paths::short_path(&profile.identity)))?;
     let config = client_config_with(&ServerTrust::from_identity(&identity), Some(&identity))?;
     let addr: SocketAddr = profile.address.parse()?;
     Session::connect(addr, &profile.server_name, config).await.with_context(|| format!("connecting to {} ({})", profile.name, profile.address))

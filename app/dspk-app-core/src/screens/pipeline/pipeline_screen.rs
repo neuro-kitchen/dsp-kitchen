@@ -225,7 +225,7 @@ impl PipelineView {
                 .on_drag(drag, |d: &RecipeDrag, _, _, cx| cx.new(|_| DragGhost(d.recipe.name.clone().into())))
                 .on_click(move |_, _, cx| Self::canvas_do(&canvas, cx, |c, cx| c.add_recipe(recipe.clone(), None, cx)))
         });
-        let dir = Session::recipes_dir().map(|d| d.display().to_string()).unwrap_or_default();
+        let dir = Session::recipes_dir().map(|d| crate::domain::paths::short_path(&d)).unwrap_or_default();
         v_flex()
             .id("pipeline-recipes")
             .flex_1()
@@ -632,7 +632,7 @@ impl Inspector {
                 let path = recording.path.clone();
                 v_flex()
                     .gap_2()
-                    .child(row("File", div().text_xs().truncate().child(recording.path.display().to_string()), cx))
+                    .child(row("File", div().text_xs().truncate().child(crate::domain::paths::short_path(&recording.path))))
                     .child({
                         // The file's sources (when loaded): pick which one this node reads
                         let loaded = s.recordings().find(|r| r.path.as_ref() == Some(&recording.path)).map(|r| r.sources.clone());
@@ -710,13 +710,13 @@ impl Inspector {
                         let (store, id, file) = (self.store.clone(), id.clone(), file.clone());
                         v_flex()
                             .gap_2()
-                            .child(div().text_xs().text_color(muted).child(format!("Reads the map file {}", file.display())))
+                            .child(div().text_xs().text_color(muted).child(format!("Reads the map file {}", crate::domain::paths::short_path(&file))))
                             .child(Button::new("remap-edit-here").outline().small().label("Edit here (copy the file's map into the node)").on_click(move |_, _, cx| {
                                 match dspk_io::read_channel_map(&file).map_err(|e| e.to_string()).and_then(|m| super::channel_table::Rows::of(&m)) {
                                     Ok(rows) => {
                                         let _ = store.update(cx, |s, cx| s.execute(SessionCommand::SetNode { id: id.clone(), node: rows.node() }, cx));
                                     }
-                                    Err(e) => store.update(cx, |s, cx| s.set_status(format!("{}: {e}", file.display()), cx)),
+                                    Err(e) => store.update(cx, |s, cx| s.set_status(format!("{}: {e}", crate::domain::paths::short_path(&file)), cx)),
                                 }
                             }))
                             .into_any_element()
@@ -824,7 +824,7 @@ impl Inspector {
                 let id2 = id.clone();
                 v_flex()
                     .gap_2()
-                    .child(row("Output", div().text_xs().truncate().child(out.as_ref().map_or_else(|| "connect it first".into(), |p| p.display().to_string())), cx))
+                    .child(row("Output", div().text_xs().truncate().child(out.as_ref().map_or_else(|| "connect it first".into(), |p| crate::domain::paths::short_path(&p)))))
                     .child(div().text_xs().text_color(muted).child("float32, Zarr, compressed; the whole recording through the enabled ops of its path."))
                     .child(match &job {
                         Some((label, fraction)) => div().text_xs().child(format!("{label}{}", fraction.map(|f| format!(" · {:.0} %", f * 100.0)).unwrap_or_default())).into_any_element(),
@@ -939,7 +939,7 @@ impl Inspector {
                         let store = self.store.clone();
                         Button::new("recipe-save").outline().small().icon(Icon::new(IconName::Save)).label("Save to library").on_click(move |_, _, cx| {
                             let status = match Session::recipes_dir().map(|d| save_def.save_in(&d)) {
-                                Some(Ok(p)) => format!("Recipe saved: {}", p.display()),
+                                Some(Ok(p)) => format!("Recipe saved: {}", crate::domain::paths::short_path(&p)),
                                 Some(Err(e)) => format!("Recipe not saved: {e}"),
                                 None => "No configuration folder for the library".to_string(),
                             };

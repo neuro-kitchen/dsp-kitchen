@@ -33,7 +33,7 @@ impl SourceSet {
             set.path = Some(path.to_path_buf());
             return Ok(set);
         }
-        let entries = crate::plugin::sources(path).with_context(|| format!("Failed to open {}", path.display()))?;
+        let entries = crate::plugin::sources(path).with_context(|| format!("Failed to open {}", crate::domain::paths::short_path(&path)))?;
         let default_id = dspk_io::default_source(&entries).map(|e| e.id.clone()).unwrap_or_default();
         let default = entries.iter().position(|e| e.id == default_id).unwrap_or(0);
         let set = Self { path: Some(path.to_path_buf()), opened: Mutex::new(vec![None; entries.len()]), entries, default };

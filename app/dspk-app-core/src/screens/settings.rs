@@ -92,7 +92,7 @@ impl SettingsScreen {
             cx.new(|cx| InputState::new(window, cx).placeholder(placeholder))
         };
         let (name, address, server_name, identity) = (input(cx, "e.g. lab GPU"), input(cx, "e.g. 192.168.1.20:50051"), input(cx, DEFAULT_SERVER_NAME), input(cx, "the file `dspk clients enroll` wrote"));
-        let default_results = Session::default_results_dir().display().to_string();
+        let default_results = crate::domain::paths::short_path(&Session::default_results_dir());
         let current = store.read(cx).session.results_dir.clone().map(|p| p.display().to_string()).unwrap_or_default();
         let results = cx.new(|cx| InputState::new(window, cx).placeholder(default_results).default_value(current));
         Self { store, name, address, server_name, identity, results, form: Form::Closed, message: None, testing: false, section: Section::Appearance, _tasks: Vec::new() }
@@ -384,7 +384,7 @@ impl Render for SettingsScreen {
             .disabled(recent == 0)
             .on_click(move |_, _, cx| s5.update(cx, |s, cx| s.forget_recent(None, cx)));
 
-        let now_results = format!("Now {}; each server's results in a folder of its own.", results_dir.display());
+        let now_results = format!("Now {}; each server's results in a folder of its own.", crate::domain::paths::short_path(&results_dir));
         let body: Vec<AnyElement> = match self.section {
             Section::Appearance => vec![
                 Self::setting("Theme", "Dark or light, or as the system is set.", "Follow the system", theme_menu, cx),
@@ -406,11 +406,11 @@ impl Render for SettingsScreen {
                 v
             }
             Section::Results => vec![
-                Self::setting("Fetched results", &now_results, &Session::default_results_dir().display().to_string(), div().w(px(300.)).child(results), cx),
+                Self::setting("Fetched results", &now_results, &crate::domain::paths::short_path(&Session::default_results_dir()), div().w(px(300.)).child(results), cx),
             ],
             Section::About => vec![
                 Self::setting("dspk-app", "Multichannel signal processing on any GPU: explore, process, sort and analyse recordings.", env!("CARGO_PKG_VERSION"), div(), cx),
-                Self::setting("Settings file", &crate::data::preferences::Session::path().map(|p| p.display().to_string()).unwrap_or_else(|| "not saved (no config folder)".into()), "per user", div(), cx),
+                Self::setting("Settings file", &crate::data::preferences::Session::path().map(|p| crate::domain::paths::short_path(&p)).unwrap_or_else(|| "not saved (no config folder)".into()), "per user", div(), cx),
             ],
         };
         // Rows of their own (a button centres its label): icon and name, left-aligned, as lumen's

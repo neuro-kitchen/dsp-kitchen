@@ -515,7 +515,7 @@ impl DspApp {
                     .child(div().text_xs().text_color(muted).child("Recent"))
                     .children(recent.into_iter().take(6).enumerate().map(|(i, p)| {
                         let label = file_label(&p);
-                        let dir = p.parent().map(|d| d.display().to_string()).unwrap_or_default();
+                        let dir = p.parent().map(|d| crate::domain::paths::short_path(&d)).unwrap_or_default();
                         let forget = p.clone();
                         h_flex()
                             .w_full()

@@ -210,7 +210,7 @@ impl FloatingLayer {
         }
         let size = std::fs::metadata(path).map(|m| m.len()).ok();
         let fact = |k: &'static str, v: String| h_flex().gap_2().child(div().w(px(110.)).text_xs().text_color(muted).child(k)).child(div().flex_1().min_w_0().text_xs().child(v));
-        let mut body = v_flex().gap_1().child(fact("File", path.display().to_string()));
+        let mut body = v_flex().gap_1().child(fact("File", crate::domain::paths::short_path(&path)));
         if let Some(b) = size {
             body = body.child(fact("Size", format!("{:.1} MB", b as f64 / 1e6)));
         }

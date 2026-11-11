@@ -129,18 +129,18 @@ pub struct Described {
 /// Runs `dspk-cli-sorter describe` (blocking: call it off the UI thread).
 pub fn describe() -> Result<Described, String> {
     let program = locate().ok_or_else(|| format!("{} not found: install it with `dspk sorters install`, or set {SORTER_BIN_ENV}", program_file_name()))?;
-    let out = Command::new(&program).arg("describe").output().map_err(|e| format!("{}: {e}", program.display()))?;
+    let out = Command::new(&program).arg("describe").output().map_err(|e| format!("{}: {e}", dspk_app_core::domain::paths::short_path(&program)))?;
     if !out.status.success() {
-        return Err(format!("{} describe: {}", program.display(), String::from_utf8_lossy(&out.stderr).trim()));
+        return Err(format!("{} describe: {}", dspk_app_core::domain::paths::short_path(&program), String::from_utf8_lossy(&out.stderr).trim()));
     }
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|e| format!("{} describe: {e}", program.display()))?;
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|e| format!("{} describe: {e}", dspk_app_core::domain::paths::short_path(&program)))?;
     parse_describe(program, &v)
 }
 
 /// The sorters of a `describe` document (interface 1).
 pub fn parse_describe(program: PathBuf, v: &serde_json::Value) -> Result<Described, String> {
     if v["interface"].as_u64() != Some(1) {
-        return Err(format!("{}: describe interface {} (this app reads 1): update the program", program.display(), v["interface"]));
+        return Err(format!("{}: describe interface {} (this app reads 1): update the program", dspk_app_core::domain::paths::short_path(&program), v["interface"]));
     }
     let text = |x: &serde_json::Value| match x {
         serde_json::Value::Null => String::new(),

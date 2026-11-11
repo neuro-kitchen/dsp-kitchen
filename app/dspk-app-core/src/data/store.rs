@@ -348,7 +348,7 @@ impl Store {
                 continue;
             }
             if let Err(e) = crate::data::epochs::save(&r, &now) {
-                self.set_status(format!("Epochs of {} not saved: {e}", r.display()), cx);
+                self.set_status(format!("Epochs of {} not saved: {e}", crate::domain::paths::short_path(&r)), cx);
             }
         }
     }
@@ -434,7 +434,7 @@ impl Store {
         let mut found = match crate::data::epochs::load(path) {
             Ok(found) => found,
             Err(e) => {
-                self.set_status(format!("Epochs of {}: {e}", path.display()), cx);
+                self.set_status(format!("Epochs of {}: {e}", crate::domain::paths::short_path(&path)), cx);
                 Vec::new()
             }
         };
@@ -1042,7 +1042,7 @@ impl Store {
             nodes,
             format!("Write {}", v.name),
             move |send| jobs::write_view(&v, output, move |m| send(m)),
-            |s, path, cx| s.set_status(format!("Written: {}", path.display()), cx),
+            |s, path, cx| s.set_status(format!("Written: {}", crate::domain::paths::short_path(&path)), cx),
             cx,
         );
     }
@@ -1052,7 +1052,7 @@ impl Store {
     fn write_events(&mut self, v: ViewDoc, cx: &mut Context<Self>) {
         let recording = v.recording.path.clone();
         if let Err(e) = crate::data::derived::ensure(&recording, &["/events"]) {
-            self.set_status(format!("Events of {}: {e}", recording.display()), cx);
+            self.set_status(format!("Events of {}: {e}", crate::domain::paths::short_path(&recording)), cx);
             return;
         }
         let output = crate::data::derived::events_group(&recording, &v.id);
@@ -1070,7 +1070,7 @@ impl Store {
                 };
                 s.add_event_set(set, cx);
                 let n = s.doc.event_sets.iter().find(|e| e.table == path).and_then(|e| s.events_of(e)).map_or(0, |e| e.len());
-                s.set_status(format!("{n} events: {}", path.display()), cx);
+                s.set_status(format!("{n} events: {}", crate::domain::paths::short_path(&path)), cx);
             },
             cx,
         );

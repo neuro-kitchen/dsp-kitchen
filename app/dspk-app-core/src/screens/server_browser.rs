@@ -90,7 +90,7 @@ impl ServerBrowser {
             let result = handle.await;
             let _ = this.update(cx, |b, cx| {
                 b.message = Some(match result {
-                    Ok(Ok(local)) => (true, format!("Fetched {path} → {}", local.display())),
+                    Ok(Ok(local)) => (true, format!("Fetched {path} → {}", crate::domain::paths::short_path(&local))),
                     Ok(Err(e)) => (false, format!("{e:#}")),
                     Err(e) => (false, e.to_string()),
                 });
