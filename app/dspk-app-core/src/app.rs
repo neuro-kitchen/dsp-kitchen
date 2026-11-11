@@ -856,6 +856,53 @@ mod tests {
         })
     }
 
+    /// Every search command runs (those opening a system file dialog, quitting or benchmarking
+    /// the GPU aside), and the app still draws after each.
+    #[gpui_kit::test]
+    fn every_search_command_runs(cx: &mut TestAppContext) {
+        let (window, store, app) = open(cx);
+        install(cx, &store);
+        let commands = cx.update_window(window, |_, _, cx| app.update(cx, |a, cx| a.commands(false, cx))).unwrap();
+        assert!(commands.len() > 30, "the search lists every action: {}", commands.len());
+        for c in commands {
+            let skip = c.name.contains('…') && c.group == "File" || c.name.starts_with("Open") || c.name.contains("Tune") || c.name == "Close recording";
+            if skip {
+                continue;
+            }
+            let run = c.run.clone();
+            cx.update_window(window, |_, window, cx| run(window, cx)).unwrap();
+            cx.run_until_parked();
+            cx.update_window(window, |_, window, cx| window.render_frame(cx)).unwrap();
+            // Close what it opened before the next
+            cx.update(|cx| {
+                app.update(cx, |a, cx| {
+                    a.settings = None;
+                    a.show_help = false;
+                    a.show_about = false;
+                    a.browser = None;
+                    cx.notify();
+                })
+            });
+        }
+    }
+
+    /// Settings chosen in the search opens (the command runs once the search has closed).
+    #[gpui_kit::test]
+    fn settings_opens_from_the_search(cx: &mut TestAppContext) {
+        let (window, _store, app) = open(cx);
+        cx.update_window(window, |_, window, cx| app.update(cx, |a, cx| a.open_search(false, window, cx))).unwrap();
+        let palette = cx.update(|cx| app.read(cx).palette.as_ref().map(|(p, _)| p.clone()).expect("the search is open"));
+        let settings = cx.update(|cx| app.update(cx, |a, cx| a.commands(false, cx)).into_iter().find(|c| c.name == "Settings").expect("Settings is listed").run);
+        cx.update(|cx| palette.update(cx, |_, cx| cx.emit(crate::screens::palette::PaletteEvent::Run(settings))));
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| window.render_frame(cx)).unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert!(app.read(cx).palette.is_none(), "the search closed");
+            assert!(app.read(cx).settings.is_some(), "Settings opened");
+        });
+    }
+
     /// Recordings load once each; closing the active one switches to another, then to none, and
     /// Explore is left with no views (its empty state), every view closable.
     #[gpui_kit::test]
