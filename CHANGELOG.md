@@ -15,6 +15,8 @@ version number.
   capitals, and in a narrow panel a control drops under its label instead of cutting it.
 - App: the status bar shows where the app runs ("This computer", at its left, as VS Code's remote
   indicator), and this computer's CPU and memory at its right.
+- Dependencies: cubecl 0.11.4, flate2 1.1.11, prost 0.14.5, rustls-pki-types 1.16.0, rfd 0.18.0,
+  toml 1.2.1 (the newest of each).
 - App: paths show only their last two parts (`…/folder/file`) in messages, errors, file details,
   recent lists and Settings.
 
