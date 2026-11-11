@@ -4,6 +4,25 @@ All notable changes, newest first. Versions follow [Semantic Versioning](https:/
 0.0.x any release may change the API. The crates, the Python package and `dspk-sorters` share one
 version number.
 
+## Unreleased
+
+### Changed
+
+- **App: the shared neuro-kitchen look** (kitchen-ui, as lumen): plain grey neutrals, lime accent,
+  15 px text; the workspaces' rails, panels, views and strips are rounded cards on the chrome, with
+  no lines between them; the window has no outline or shadow margin around it. Widgets (dropdowns,
+  sections, rows, empty states) and the parameter editor come from kitchen-ui; section titles are
+  capitals, and in a narrow panel a control drops under its label instead of cutting it.
+- App: the status bar shows where the app runs ("This computer", at its left, as VS Code's remote
+  indicator), and this computer's CPU and memory at its right.
+- App: paths show only their last two parts (`…/folder/file`) in messages, errors, file details,
+  recent lists and Settings.
+
+### Added
+
+- App: **Settings → Appearance → Accent**: lime, a suggested colour or any colour, kept readable in
+  both themes.
+
 ## 0.0.9 — 2026-11-09
 
 ### Added
