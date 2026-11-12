@@ -37,7 +37,7 @@ impl Workspace {
             Workspace::Sorting => "Run the installed sorters on the recording or a part of it, compare their units",
             Workspace::Pipeline => "The processing graph: recordings, operations, views and writes on a canvas",
             Workspace::Curation => "Judge a sorting: units, waveforms, features, correlograms; label and merge",
-            Workspace::Analytics => "Charts across recordings, sortings and runs (coming)",
+            Workspace::Analytics => "Signals and units aligned to events: averages, rasters, PETHs",
         }
     }
 
@@ -54,10 +54,7 @@ impl Workspace {
                 "Inspect and judge sorting results: clusters, waveforms, correlograms and amplitudes, \
                  with merges and splits recorded for the sorting files.",
             ),
-            Workspace::Analytics => Some(
-                "Charts across the session: recordings, sortings, metrics and runs side by side. \
-                 What it shows is being designed.",
-            ),
+            Workspace::Analytics => None,
         }
     }
 

@@ -24,7 +24,8 @@ use crate::screens::explore::trace::renderer::TimeViewKind;
 use crate::screens::explore::trace::view::ViewId;
 use crate::screens::explore::{ExploreEvent, ExploreVm, TraceVm};
 use crate::ui::panel_edge::{follow_panel_drag, panel_edge, PanelResize, Side};
-use crate::ui::widgets::HEADER_HEIGHT;
+use crate::ui::theme::{self, color};
+use crate::ui::widgets::{pane, HEADER_HEIGHT};
 
 use super::components::inspector::InspectorPanel;
 use super::components::panels::{ChannelsPanel, DockToggle, TimelinePanel};
@@ -86,8 +87,16 @@ pub struct ExploreView {
     add_dialog: bool,
     dialog_focus: gpui_kit::FocusHandle,
     dialog_cursor: usize,
+    /// The Epochs views shown, by session view.
+    epochs: HashMap<String, Entity<super::components::epochs_panel::EpochsPanel>>,
+    /// The Pipeline as a panel of the dock, and whether it is in the dock.
+    pipeline: Entity<super::components::pipeline_panel::PipelinePanel>,
+    pipeline_shown: bool,
     _subs: Vec<Subscription>,
 }
+
+/// Height of the docked Pipeline when it opens (logical px).
+const PIPELINE_H: f32 = 300.;
 
 /// How [`ExploreView::arrange`] lays out the views (the dialog's containers: the dock has no empty
 /// containers, so a container is a layout of the views there are).
@@ -123,7 +132,7 @@ fn toggle_of(explore: WeakEntity<ExploreView>, placement: DockPlacement) -> Dock
 }
 
 impl ExploreView {
-    pub fn new(store: Entity<Store>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(store: Entity<Store>, pipeline: Entity<crate::screens::pipeline::PipelineView>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let vm = cx.new(|cx| ExploreVm::new(store.clone(), cx));
         let mut skin = None;
         let dock = cx.new(|cx| {
@@ -135,6 +144,7 @@ impl ExploreView {
             skin.set_toggle_button_visible(false, cx);
         }
         let me = cx.weak_entity();
+        let pipeline = cx.new(|cx| super::components::pipeline_panel::PipelinePanel::new(pipeline, me.clone(), cx));
         let channels = cx.new(|cx| ChannelsPanel::new(vm.clone(), toggle_of(me.clone(), DockPlacement::Left), window, cx));
         let timeline_tab = cx.new(|cx| TimelineTab::new(vm.clone(), toggle_of(me.clone(), DockPlacement::Left), cx));
         let inspector = cx.new(|cx| InspectorPanel::new(vm.clone(), toggle_of(me.clone(), DockPlacement::Right), cx));
@@ -160,6 +170,12 @@ impl ExploreView {
                     this.dock.update(cx, |d, cx| d.remove_panel(panel, window, cx));
                 }
                 cx.notify();
+            }
+        });
+        // An Epochs view double-clicked in the Pipeline
+        let epochs = cx.subscribe_in(&store, window, |this, _, e: &AppEvent, window, cx| {
+            if let AppEvent::ShowEpochs(view) = e {
+                this.show_epochs(view.clone(), window, cx);
             }
         });
         // Picking a channel shows its processing
@@ -189,11 +205,17 @@ impl ExploreView {
             add_dialog: false,
             dialog_focus: cx.focus_handle(),
             dialog_cursor: 0,
-            _subs: vec![sub, picked],
+            epochs: HashMap::new(),
+            pipeline,
+            pipeline_shown: false,
+            _subs: vec![sub, picked, epochs],
         };
         let views = this.vm.read(cx).views.clone();
         if !views.is_empty() {
             this.reset(views, window, cx);
+        }
+        if saved.pipeline_dock {
+            this.set_pipeline(true, window, cx);
         }
         this
     }
@@ -241,7 +263,51 @@ impl ExploreView {
             let size = (n > 1 && i == 0).then(|| px(420.));
             layout = layout.child(DockLayout::tabs().panel_view(panel_handle(p), cx), size);
         }
+        let layout = self.with_pipeline(layout, cx);
         self.dock.update(cx, |d, cx| d.set_center(layout, window, cx));
+    }
+
+    /// `views` with the docked Pipeline under them, when it is shown.
+    fn with_pipeline(&self, views: DockLayout, cx: &App) -> DockLayout {
+        if self.pipeline_shown {
+            DockLayout::v_split().child(views, None).child(DockLayout::tabs().panel_view(panel_handle(self.pipeline.clone()), cx), Some(px(PIPELINE_H)))
+        } else {
+            views
+        }
+    }
+
+    /// Shows the Pipeline (under the focused view, as a panel the user can drag anywhere) or
+    /// takes it away; remembered for the next start.
+    pub fn set_pipeline(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if on == self.pipeline_shown {
+            return;
+        }
+        self.pipeline_shown = on;
+        let pipeline = self.pipeline.clone();
+        if on {
+            let focused = self.vm.read(cx).focused.as_ref().and_then(|f| self.panels.get(&f.read(cx).id())).map(|p| p.entity_id());
+            let id = gpui_kit::base::dock::PanelId::from(pipeline.entity_id());
+            self.dock.update(cx, |d, cx| {
+                let target = focused.and_then(|f| d.layout(DockPlacement::Center)?.find_panel_node(gpui_kit::base::dock::PanelId::from(f)));
+                d.add_panel_view(panel_handle(pipeline), DockPlacement::Center, None, window, cx);
+                if let Some(node) = target {
+                    d.move_panel(id, InsertTarget::Split { node, placement: Placement::Bottom, size: Some(px(PIPELINE_H)) }, window, cx);
+                }
+            });
+        } else {
+            self.dock.update(cx, |d, cx| d.remove_panel(pipeline, window, cx));
+        }
+        self.store.update(cx, |s, _| s.set_pipeline_dock(on));
+        cx.notify();
+    }
+
+    /// The docked Pipeline's tab was closed.
+    pub fn pipeline_closed(&mut self, cx: &mut Context<Self>) {
+        if self.pipeline_shown {
+            self.pipeline_shown = false;
+            self.store.update(cx, |s, _| s.set_pipeline_dock(false));
+            cx.notify();
+        }
     }
 
     /// Lays the views out as `how` (in the order they were added).
@@ -261,6 +327,7 @@ impl ExploreView {
                 panels.chunks(cols).fold(DockLayout::v_split(), |l, row| l.child(row.iter().fold(DockLayout::h_split(), |r, p| r.child(group(p, cx), None)), None))
             }
         };
+        let layout = self.with_pipeline(layout, cx);
         self.dock.update(cx, |d, cx| d.set_center(layout, window, cx));
         cx.notify();
     }
@@ -304,6 +371,29 @@ impl ExploreView {
                 self.show_right(RightPanel::Inspector, cx);
             }
         }
+    }
+
+    /// Shows the Epochs view of session view `view` beside the focused view (again when its tab
+    /// was closed; nothing when it shows).
+    pub fn show_epochs(&mut self, view: String, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(p) = self.epochs.get(&view) {
+            let id = gpui_kit::base::dock::PanelId::from(p.entity_id());
+            if self.dock.read(cx).layout(DockPlacement::Center).and_then(|l| l.find_panel_node(id)).is_some() {
+                return;
+            }
+        }
+        let panel = cx.new(|cx| super::components::epochs_panel::EpochsPanel::new(self.store.clone(), view.clone(), cx));
+        self.epochs.insert(view, panel.clone());
+        let focused = self.vm.read(cx).focused.as_ref().and_then(|f| self.panels.get(&f.read(cx).id())).map(|p| p.entity_id());
+        let id = gpui_kit::base::dock::PanelId::from(panel.entity_id());
+        self.dock.update(cx, |d, cx| {
+            let target = focused.and_then(|f| d.layout(DockPlacement::Center)?.find_panel_node(gpui_kit::base::dock::PanelId::from(f)));
+            d.add_panel_view(panel_handle(panel), DockPlacement::Center, None, window, cx);
+            if let Some(node) = target {
+                d.move_panel(id, InsertTarget::Split { node, placement: Placement::Right, size: None }, window, cx);
+            }
+        });
+        cx.notify();
     }
 
     /// The dialog's keys: Esc closes, ↑ / ↓ move between the rows it can run, Enter runs one.
@@ -396,7 +486,7 @@ impl ExploreView {
     /// "Add view…": opens "Add view or container".
     fn add_view_button(&self, id: &'static str, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let me = cx.entity().downgrade();
-        Button::new(id).ghost().xsmall().icon(IconName::Plus).label("Add view…").tooltip("Add a view, or arrange the views").on_click(move |_, window, cx| {
+        Button::new(id).ghost().small().icon(IconName::Plus).label("Add view…").tooltip("Add a view, or arrange the views").on_click(move |_, window, cx| {
             let _ = me.update(cx, |e, cx| e.open_add_dialog(window, cx));
         })
     }
@@ -493,6 +583,7 @@ impl ExploreView {
                 let id = format!("add-view-kind-{}", title.to_lowercase());
                 row(4 + i, id, icon, title, text, enabled[4 + i], DialogRow::Add(kind))
             }))
+
             .child(div().mx_2().my_2().h(px(1.)).bg(border))
             .child({
                 let (vm, store) = (self.vm.clone(), self.store.clone());
@@ -541,6 +632,18 @@ impl ExploreView {
             .border_b_1()
             .border_color(border)
             .child(self.add_view_button("explore-add-view", cx))
+            .child({
+                let me = cx.entity();
+                let on = self.pipeline_shown;
+                Button::new("explore-pipeline")
+                    .ghost()
+                    .small()
+                    .icon(gpui_kit::assets::IconName::Workflow)
+                    .label("Pipeline")
+                    .selected(on)
+                    .tooltip(if on { "Hide the docked Pipeline" } else { "Dock the Pipeline under the focused view: edit the chain beside its preview" })
+                    .on_click(move |_, window, cx| me.update(cx, |e, cx| e.set_pipeline(!on, window, cx)))
+            })
             .when_some(shown, |d, label| d.child(div().text_xs().text_color(muted).truncate().child(label)))
     }
 
@@ -566,20 +669,12 @@ fn rail_button(id: impl Into<SharedString>, icon: Icon, tip: SharedString, selec
 
 impl Render for ExploreView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = cx.theme();
-        let (border, bar) = (t.border, t.sidebar);
         let me = cx.weak_entity();
+        // The rails and panels are cards on the chrome, PANE_GAP apart (kitchen-ui)
+        let rail_card = || v_flex().w(px(RAIL_W)).flex_none().h_full().py_2().gap_1().items_center().rounded(px(theme::RADIUS_LG)).bg(color::panel());
         let left_rail = {
             let me = me.clone();
-            v_flex()
-                .w(px(RAIL_W))
-                .h_full()
-                .py_2()
-                .gap_1()
-                .items_center()
-                .bg(bar)
-                .border_r_1()
-                .border_color(border)
+            rail_card()
                 .child(rail_button("rail-channels", Icon::new(gpui_kit::assets::IconName::Rows3), "Channels".into(), self.left_open && !self.left_timeline, {
                     let me = me.clone();
                     move |w, cx| {
@@ -596,7 +691,7 @@ impl Render for ExploreView {
         for (i, (title, icon, _)) in self.plugin_panels.iter().enumerate() {
             items.push((format!("rail-plugin-{i}"), icon(), title.clone(), RightPanel::Plugin(i)));
         }
-        let right_rail = v_flex().w(px(RAIL_W)).h_full().py_2().gap_1().items_center().bg(bar).border_l_1().border_color(border).children(items.into_iter().map(|(id, icon, tip, which)| {
+        let right_rail = rail_card().children(items.into_iter().map(|(id, icon, tip, which)| {
             let me = me.clone();
             rail_button(id, icon, tip, self.right == Some(which), move |_, cx| {
                 let _ = me.update(cx, |e, cx| e.show_right(which, cx));
@@ -607,12 +702,18 @@ impl Render for ExploreView {
             let s = self.store.read(cx);
             (s.panel_width("explore.left", LEFT_W), s.panel_width("explore.right", RIGHT_W))
         };
+        // The row of cards has no padding of its own: a side panel starts after its rail and a gap
+        let side_offset = RAIL_W + theme::PANE_GAP;
         v_flex()
             .size_full()
+            .p(px(theme::PANE_GAP))
+            .gap(px(theme::PANE_GAP))
+            .bg(color::chrome())
             .child(
                 h_flex()
                     .flex_1()
                     .min_h_0()
+                    .gap(px(theme::PANE_GAP))
                     .on_drag_move(cx.listener(|this, e: &DragMoveEvent<PanelResize>, _, cx| {
                         follow_panel_drag(&this.store, e, cx);
                         cx.notify();
@@ -620,22 +721,22 @@ impl Render for ExploreView {
                     .child(left_rail)
                     .when(self.left_open, |d| {
                         d.child(
-                            div()
+                            pane()
                                 .relative()
                                 .w(px(left_w))
                                 .flex_none()
                                 .h_full()
-                                .border_r_1()
-                                .border_color(border)
                                 .map(|d| if self.left_timeline { d.child(self.timeline_tab.clone()) } else { d.child(self.channels.clone()) })
-                                .child(panel_edge("explore.left", Side::Left, RAIL_W)),
+                                .child(panel_edge("explore.left", Side::Left, side_offset)),
                         )
                     })
                     .child({
                         let empty = self.vm.read(cx).views.is_empty();
                         let dialog = self.add_dialog.then(|| self.add_dialog(cx));
-                        v_flex()
+                        pane()
                             .relative()
+                            .flex()
+                            .flex_col()
                             .flex_1()
                             .min_w_0()
                             .h_full()
@@ -645,28 +746,18 @@ impl Render for ExploreView {
                     })
                     .when_some(right_panel, |d, p| {
                         d.child(
-                            div()
+                            pane()
                                 .relative()
                                 .w(px(right_w))
                                 .flex_none()
                                 .h_full()
-                                .border_l_1()
-                                .border_color(border)
                                 .child(p)
-                                .child(panel_edge("explore.right", Side::Right, RAIL_W)),
+                                .child(panel_edge("explore.right", Side::Right, side_offset)),
                         )
                     })
                     .child(right_rail),
             )
             // Fixed at the bottom: open, or minimised to its header; nothing else goes here
-            .child(
-                div()
-                    .flex_none()
-                    .h(px(if self.timeline_open { TIMELINE_H } else { HEADER_HEIGHT }))
-                    .overflow_hidden()
-                    .border_t_1()
-                    .border_color(border)
-                    .child(self.timeline.clone()),
-            )
+            .child(pane().flex_none().h(px(if self.timeline_open { TIMELINE_H } else { HEADER_HEIGHT })).child(self.timeline.clone()))
     }
 }

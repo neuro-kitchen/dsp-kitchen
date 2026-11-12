@@ -30,3 +30,5 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 toml.workspace = true
+# Event tables (`format = "events"`) as Parquet, the table format of dspk's analytics
+polars = { version = "0.55.2", default-features = false, features = ["parquet", "dtype-slim"] }

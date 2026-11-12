@@ -146,9 +146,9 @@ impl RecipeDoc {
     }
 
     pub fn load(path: &Path) -> Result<Self, RecipeError> {
-        let text = std::fs::read_to_string(path).map_err(|e| RecipeError::Io(format!("{}: {e}", path.display())))?;
+        let text = std::fs::read_to_string(path).map_err(|e| RecipeError::Io(format!("{}: {e}", crate::domain::paths::short_path(&path))))?;
         Self::from_json(&text).map_err(|e| match e {
-            RecipeError::Parse(_, m) => RecipeError::Parse(path.display().to_string(), m),
+            RecipeError::Parse(_, m) => RecipeError::Parse(crate::domain::paths::short_path(&path), m),
             other => other,
         })
     }
@@ -239,7 +239,18 @@ pub fn builtin() -> Vec<RecipeDoc> {
         ],
     );
     rms.description = "Square, low-pass 10 Hz (a moving mean of the power), square root: the moving RMS.".into();
-    vec![spike, lfp, emg, rectified, rms, mains]
+    let mut onsets = RecipeDoc::new(
+        "EMG onsets",
+        vec!["events".into(), "emg".into()],
+        vec![
+            op("bandpass", json!({"op": "iir", "band": "bandpass", "cutoff": [20.0, 450.0], "order": 4})),
+            op("rectify", json!({"op": "rectify"})),
+            op("lowpass", json!({"op": "iir", "band": "lowpass", "cutoff": [6.0], "order": 4})),
+            op("crossings", json!({"op": "crossings", "level": 50.0, "release": 25.0, "min_duration_ms": 30.0, "refractory_ms": 80.0})),
+        ],
+    );
+    onsets.description = "The linear envelope, then its crossings of a level: contractions as events (set the level with the ruler on the traces; a Write saves them).".into();
+    vec![spike, lfp, emg, rectified, rms, mains, onsets]
 }
 
 #[cfg(test)]

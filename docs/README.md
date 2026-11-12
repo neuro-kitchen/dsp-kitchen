@@ -3,9 +3,9 @@
 Starlight (Astro), deployed to <https://neuro-kitchen.github.io/dsp-kitchen/> on pushes to `main`.
 
 ```sh
-npm install
-npm run dev      # http://localhost:4321/dsp-kitchen/
-npm run build    # dist/
+bun install
+bun run dev      # http://localhost:4321/dsp-kitchen/
+bun run build    # dist/
 ```
 
 Node 22. A build also writes the Changelog page from `../CHANGELOG.md` and copies the committed

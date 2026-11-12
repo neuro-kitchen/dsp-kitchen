@@ -8,6 +8,8 @@
 //! | [`AppPlugin::synthetic`] | a recording made up on demand | drifting units, noise, hum |
 //! | [`AppPlugin::trace_overlay`] | what to draw over the traces of a window | spikes coloured by unit |
 //! | [`AppPlugin::workspace`] | the body of a workspace tab | Sorting |
+//! | [`AppPlugin::recording_epochs`] | the epochs a recording file holds | NWB `/intervals` (epochs, trials) |
+//! | [`AppPlugin::aligned`] | what to show in Analytics around a set of events | units: raster and PETH |
 //! | [`AppPlugin::panel`], [`AppPlugin::view_section`] | a panel on the right side bar, for the active view | Sorting: the linked sorting, units, Sort… |
 //! | per-view data in the session document | `views[i].plugins.<id>` (any JSON) | the linked `.sorting.zarr` |
 //!
@@ -153,6 +155,18 @@ pub trait AppPlugin: Send + Sync + 'static {
     /// What this plugin can draw for session view `view` (e.g. a linked sorting: spikes, units).
     fn layers(&self, _store: &Store, _view: &ViewDoc, _cx: &App) -> Layers {
         Layers::default()
+    }
+
+    /// Epochs the recording file at `path` holds itself (electrophysiology: NWB's `/intervals`
+    /// tables), in seconds from the recording's start, which is `start_sec` of the session.
+    fn recording_epochs(&self, _path: &Path, _start_sec: f64) -> Vec<crate::domain::epoch::EpochDoc> {
+        Vec::new()
+    }
+
+    /// What it shows in Analytics aligned to events `events_s` (seconds of the open recording),
+    /// `pre_ms` before to `post_ms` after each (electrophysiology: each unit's raster and PETH).
+    fn aligned(&self, _store: &Entity<Store>, _events_s: &[f64], _pre_ms: f64, _post_ms: f64, _window: &mut Window, _cx: &mut App) -> Option<AnyElement> {
+        None
     }
 
     /// The body of workspace `ws` when this plugin provides it.

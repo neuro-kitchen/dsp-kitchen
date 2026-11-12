@@ -90,7 +90,7 @@ impl ServerBrowser {
             let result = handle.await;
             let _ = this.update(cx, |b, cx| {
                 b.message = Some(match result {
-                    Ok(Ok(local)) => (true, format!("Fetched {path} → {}", local.display())),
+                    Ok(Ok(local)) => (true, format!("Fetched {path} → {}", crate::domain::paths::short_path(&local))),
                     Ok(Err(e)) => (false, format!("{e:#}")),
                     Err(e) => (false, e.to_string()),
                 });
@@ -192,7 +192,7 @@ impl Render for ServerBrowser {
             .child(if servers.is_empty() {
                 div().text_sm().text_color(muted).child("No servers yet: add one in Settings (Ctrl+,).").into_any_element()
             } else {
-                row("Server", picker, cx).into_any_element()
+                row("Server", picker).into_any_element()
             })
             .child(
                 h_flex()

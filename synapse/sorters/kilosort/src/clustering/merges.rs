@@ -9,8 +9,8 @@
 //! nothing merges any more, the unit is complete and leaves the pool.
 //!
 //! Similarities come from the units' templates in PC space, as for the learned templates
-//! (`learned::pair_similarities`: one `matmul` on the device, the `units²` maxima back), recomputed
-//! after every merge. Choices of ours where the paper is silent: a merged template is the
+//! (`learned::pair_similarities`: one `matmul` on the device, the `units²` maxima back), computed
+//! once for every pair; after a merge, the merged unit's row and column only. Choices of ours where the paper is silent: a merged template is the
 //! spike-count-weighted mean of the two, without a relative shift.
 
 use cubecl::prelude::Client;
@@ -76,6 +76,25 @@ pub fn global_merges(
     let lags = 2 * nt - 1;
     let mut order: Vec<usize> = (0..units).filter(|&u| alive[u]).collect();
     order.sort_by(|&a, &b| trains[b].len().cmp(&trains[a].len()).then(a.cmp(&b)));
+    // Every pair's best lagged inner product, once (`sim[a · units + b]`; the diagonal: squared
+    // norms). After a merge only the merged unit's row and column change: they are recomputed
+    // against the units still standing. Before, the pool's whole matrix was recomputed for every
+    // unit and every merge and only its first row was used (O(units³) for an O(units²) answer).
+    let mut sim = vec![0.0f32; units * units];
+    let similarities_of = |ids: &[usize], templates: &[Vec<f32>]| {
+        let packed: Vec<f32> = ids.iter().flat_map(|&u| templates[u].iter().copied()).collect();
+        pair_similarities(client, &packed, ids.len(), channels, np, &wtw, lags)
+    };
+    {
+        let standing: Vec<usize> = (0..units).filter(|&u| alive[u]).collect();
+        let m = standing.len();
+        let all = similarities_of(&standing, &templates);
+        for (i, &a) in standing.iter().enumerate() {
+            for (j, &b) in standing.iter().enumerate() {
+                sim[a * units + b] = all[i * m + j];
+            }
+        }
+    }
     let mut merges = 0;
     for a in order {
         if !alive[a] {
@@ -87,13 +106,11 @@ pub fn global_merges(
             if pool.is_empty() {
                 break;
             }
-            let packed: Vec<f32> = std::iter::once(a).chain(pool.iter().copied()).flat_map(|u| templates[u].iter().copied()).collect();
-            let n = pool.len() + 1;
-            let sim = pair_similarities(client, &packed, n, channels, np, &wtw, lags);
-            let norm = |i: usize| (sim[i * n + i].max(0.0) as f64).sqrt();
-            let mut candidates: Vec<(f64, usize)> = (1..n)
-                .filter(|&i| norm(0) > 0.0 && norm(i) > 0.0)
-                .map(|i| (sim[i] as f64 / (norm(0) * norm(i)), pool[i - 1]))
+            let norm = |u: usize| (sim[u * units + u].max(0.0) as f64).sqrt();
+            let mut candidates: Vec<(f64, usize)> = pool
+                .iter()
+                .filter(|&&b| norm(a) > 0.0 && norm(b) > 0.0)
+                .map(|&b| (sim[a * units + b] as f64 / (norm(a) * norm(b)), b))
                 .filter(|&(r, _)| r > opts.min_similarity)
                 .collect();
             candidates.sort_by(|x, y| y.0.total_cmp(&x.0).then(x.1.cmp(&y.1)));
@@ -119,6 +136,14 @@ pub fn global_merges(
             alive[b] = false;
             into[b] = a;
             merges += 1;
+            // `a`'s template changed: its row and column, against every unit still standing
+            let row: Vec<usize> = std::iter::once(a).chain((0..units).filter(|&u| u != a && alive[u])).collect();
+            let m = row.len();
+            let fresh = similarities_of(&row, &templates);
+            for (j, &u) in row.iter().enumerate() {
+                sim[a * units + u] = fresh[j];
+                sim[u * units + a] = fresh[j * m];
+            }
         }
         complete[a] = true;
     }

@@ -39,7 +39,7 @@ members = [
 
 
 [workspace.package]
-version = "0.0.9"
+version = "0.0.10"
 edition = "2024"
 authors = ["jesusdpa1 <17010046+jesusdpa1@users.noreply.github.com>"]
 license = "MIT OR Apache-2.0"
@@ -49,27 +49,27 @@ keywords = ["dsp", "gpu", "signal-processing", "cubecl", "electrophysiology"]
 categories = ["science", "algorithms", "concurrency"]
 
 [workspace.dependencies]
-dspk-core = { path = "crates/dspk-core", version = "0.0.9", default-features = false }
-dspk-ops = { path = "crates/dspk-ops", version = "0.0.9", default-features = false }
-dspk-synapse = { path = "synapse/dspk-synapse", version = "0.0.9", default-features = false }
-dspk-synapse-ml = { path = "synapse/dspk-synapse-ml", version = "0.0.9", default-features = false }
-dspk-sorter-kilosort = { path = "synapse/sorters/kilosort", version = "0.0.9", default-features = false }
-dspk-sorter-ms5 = { path = "synapse/sorters/ms5", version = "0.0.9", default-features = false }
-dspk-sorter-si = { path = "synapse/sorters/si", version = "0.0.9", default-features = false }
-dspk-hub = { path = "hub/dspk-hub", version = "0.0.9", default-features = false }
-dspk-stream = { path = "serve/dspk-stream", version = "0.0.9", default-features = false }
-dspk-view = { path = "serve/dspk-view", version = "0.0.9", default-features = false }
-dspk-io = { path = "crates/dspk-io", version = "0.0.9", default-features = false }
-dspk-pipeline = { path = "engine/dspk-pipeline", version = "0.0.9", default-features = false }
-dspk-app-core = { path = "app/dspk-app-core", version = "0.0.9", default-features = false }
-dspk-app-synapse = { path = "plugins/app/dspk-app-synapse", version = "0.0.9", default-features = false }
+dspk-core = { path = "crates/dspk-core", version = "0.0.10", default-features = false }
+dspk-ops = { path = "crates/dspk-ops", version = "0.0.10", default-features = false }
+dspk-synapse = { path = "synapse/dspk-synapse", version = "0.0.10", default-features = false }
+dspk-synapse-ml = { path = "synapse/dspk-synapse-ml", version = "0.0.10", default-features = false }
+dspk-sorter-kilosort = { path = "synapse/sorters/kilosort", version = "0.0.10", default-features = false }
+dspk-sorter-ms5 = { path = "synapse/sorters/ms5", version = "0.0.10", default-features = false }
+dspk-sorter-si = { path = "synapse/sorters/si", version = "0.0.10", default-features = false }
+dspk-hub = { path = "hub/dspk-hub", version = "0.0.10", default-features = false }
+dspk-stream = { path = "serve/dspk-stream", version = "0.0.10", default-features = false }
+dspk-view = { path = "serve/dspk-view", version = "0.0.10", default-features = false }
+dspk-io = { path = "crates/dspk-io", version = "0.0.10", default-features = false }
+dspk-pipeline = { path = "engine/dspk-pipeline", version = "0.0.10", default-features = false }
+dspk-app-core = { path = "app/dspk-app-core", version = "0.0.10", default-features = false }
+dspk-app-synapse = { path = "plugins/app/dspk-app-synapse", version = "0.0.10", default-features = false }
 dspk-py-core = { path = "bindings/python/dspk-py-core", default-features = false }
 dspk-py-synapse = { path = "bindings/python/dspk-py-synapse", default-features = false }
 
 # Compute & Tensors
 # `persistence`: autotune decisions and compiled kernels survive the process (dspk-core
 # `configure_runtime` keeps them in the user cache directory)
-cubecl = { version = "0.11.3", default-features = false, features = ["std", "stdlib", "persistence"] }
+cubecl = { version = "0.11.4", default-features = false, features = ["std", "stdlib", "persistence"] }
 # Kernel library on CubeCL (matmul); CubeCL itself has no matmul since 0.11
 cubek-matmul = "0.3.1"
 cubek-std = "0.3.1"
@@ -87,22 +87,39 @@ anstyle = "1.0.14"
 # IPC & Transport
 shared_memory = "0.12.4"
 memmap2 = "0.9.12"
-flate2 = "1.1.10"
+flate2 = "1.1.11"
 zarrs = { version = "0.23.14", default-features = false, features = ["filesystem", "blosc", "crc32c", "gzip", "sharding", "zstd"] }
 quinn = "0.11.12"
 tonic = "0.14.9"
-prost = "0.14.4"
-prost-build = "0.14.4"
+prost = "0.14.5"
+prost-build = "0.14.5"
 protox = "0.10.0"
 rcgen = "0.14.10"
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std"] }
-rustls-pki-types = "1.15.1"
+rustls-pki-types = "1.16.0"
 
 # UI & Graphics
+# GPUI through gpui-kit. Pinned exactly: gpui-kit pins a weekly GPUI snapshot (gpui-pre); update
+# deliberately, together with kitchen-ui (the two must share one gpui-kit: one `Theme` global)
+gpui-kit = "=0.9.1"
+# The neuro-kitchen apps' shared crates (github.com/neuro-kitchen/kitchen), from crates.io:
+# kitchen-ui (tokens, widgets, the parameter editor, icon bundling) and kitchen-shell (the frame,
+# the command registry, menus, search, jobs). Both from the same source, so there is one kitchen-ui
+# (one `Theme` global); from crates.io, so the app crates can be published. Working on kitchen too:
+# a git-ignored `.cargo/config.toml` with
+# [patch.crates-io]
+# kitchen-ui = { path = "../kitchen/crates/kitchen-ui" }
+# kitchen-shell = { path = "../kitchen/crates/kitchen-shell" }
+kitchen-ui = "0.0.3"
+kitchen-shell = "0.0.3"
+# The wgpu adapters the app names (the version CubeCL uses: one wgpu in the build)
+wgpu = "30.0.1"
+# The status bar's CPU and memory meters
+sysinfo = { version = "0.40.1", default-features = false, features = ["system"] }
 slint = "1.18.1"
 slint-build = "1.18.1"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
-rfd = "0.17.2"
+rfd = "0.18.0"
 
 # Python Interop
 pyo3 = { version = "0.30.1" }
@@ -118,7 +135,7 @@ tokio = { version = "1.54.1", features = ["full"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 # Pipeline specs: TOML input, JSON Schema of the spec types
-toml = "1.2.0"
+toml = "1.2.1"
 # Pipeline specs: input globs
 glob = "0.3.4"
 schemars = "1.2.3"

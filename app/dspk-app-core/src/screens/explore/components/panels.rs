@@ -75,7 +75,8 @@ macro_rules! side_panel {
                     None => header,
                 };
                 let body = self.body(window, cx);
-                v_flex().size_full().child(header).child(div().flex_1().min_h_0().child(body))
+                // The panel colour at the root, as lumen's panels: the dock behind is not shown
+                v_flex().size_full().bg($crate::ui::theme::color::panel()).child(header).child(div().flex_1().min_h_0().child(body))
             }
         }
 
@@ -548,7 +549,6 @@ impl SettingsPanel {
                 let id = ids[i].clone();
                 vm.update(cx, |vm, cx| vm.set_source(&id, cx));
             })
-            .full_width()
         });
 
         let stepper = |id: &'static str, value: String, tip_down: &'static str, tip_up: &'static str, down: Rc<dyn Fn(&mut App)>, up: Rc<dyn Fn(&mut App)>| {
@@ -589,15 +589,23 @@ impl SettingsPanel {
             let vm = vm.clone();
             Switch::new("remove-dc").checked(v.remove_dc).label("Remove DC offset").on_click(move |on, _, cx| vm.update(cx, |vm, cx| vm.set_remove_dc(*on, cx)))
         };
+        let events = {
+            let vm = vm.clone();
+            Switch::new("view-events").checked(v.events).label("Events as ticks").on_click(move |on, _, cx| vm.update(cx, |vm, cx| vm.set_events(*on, cx)))
+        };
+        let events_only = {
+            let vm = vm.clone();
+            Switch::new("view-events-only").checked(v.events_only).label("Events only (hide the signal)").on_click(move |on, _, cx| vm.update(cx, |vm, cx| vm.set_events_only(*on, cx)))
+        };
 
         let facts = sources.as_ref().map(|ss| source_facts(ss.entry(&v.source), muted));
         let mut out = vec![
             div().text_sm().font_weight(gpui_kit::FontWeight::SEMIBOLD).truncate().child(v.title.clone()).into_any_element(),
-            Section::new("Source").children(source).children(facts).child(row("Range", div().text_sm().child(v.range_label()), cx)).into_any_element(),
-            Section::new("Layer").child(kind).when(traces, |d| d.child(row("Colour", color_by, cx))).into_any_element(),
+            Section::new("Source").children(source).children(facts).child(row("Range", div().text_sm().child(v.range_label()))).into_any_element(),
+            Section::new("Layer").child(kind).when(traces, |d| d.child(row("Colour", color_by)).child(events).child(events_only)).into_any_element(),
         ];
         if traces {
-            out.push(Section::new("Traces").child(row("On screen", lanes_row, cx)).child(row("Gain", gain_row, cx)).into_any_element());
+            out.push(Section::new("Traces").child(row("On screen", lanes_row)).child(row("Gain", gain_row)).into_any_element());
         }
         out.push(Section::new("Scaling").child(auto).child(dc).into_any_element());
         out

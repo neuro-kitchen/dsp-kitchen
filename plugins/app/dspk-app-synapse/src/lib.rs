@@ -14,6 +14,7 @@
 //!   similarity; labels and merges kept as a log in the store) — [`curation_ws`], [`curation`];
 //! - the bottom strip of both: a simple trace view or raster over the shared timeline — [`strip`].
 
+pub mod aligned;
 pub mod chart;
 pub mod curation;
 pub mod curation_ws;
@@ -235,7 +236,7 @@ impl SynapseState {
     pub fn save_curation(&mut self, path: &PathBuf, cx: &mut Context<Self>) {
         let Some(log) = self.curations.get_mut(path) else { return };
         let status = match log.save(path) {
-            Ok(file) => format!("Curation saved: {} ({} edits)", file.display(), log.ops.len()),
+            Ok(file) => format!("Curation saved: {} ({} edits)", dspk_app_core::domain::paths::short_path(&file), log.ops.len()),
             Err(e) => format!("Curation not saved: {e:#}"),
         };
         self.store.update(cx, |s, cx| s.set_status(status, cx));
@@ -295,11 +296,13 @@ impl SynapseState {
 
 pub struct SynapsePlugin {
     opener: opener::SynapseOpener,
+    /// Analytics: the last units-aligned-to-events cards.
+    aligned: aligned::Cache,
 }
 
 impl SynapsePlugin {
     pub fn new() -> Self {
-        Self { opener: opener::SynapseOpener }
+        Self { opener: opener::SynapseOpener, aligned: aligned::Cache::default() }
     }
 }
 
@@ -440,6 +443,37 @@ impl AppPlugin for SynapsePlugin {
             Workspace::Curation => Some(cx.new(|cx| curation_ws::CurationWorkspace::new(store.clone(), window, cx)).into()),
             _ => None,
         }
+    }
+
+    fn recording_epochs(&self, path: &std::path::Path, start_sec: f64) -> Vec<dspk_app_core::domain::epoch::EpochDoc> {
+        if !dspk_synapse::io::nwb::is_nwb_zarr(path) {
+            return Vec::new();
+        }
+        let intervals = dspk_synapse::io::nwb::read_intervals(path).unwrap_or_else(|e| {
+            tracing::warn!("NWB intervals of {}: {e}", path.display());
+            Vec::new()
+        });
+        intervals
+            .into_iter()
+            .filter(|i| i.stop_sec > start_sec)
+            .map(|i| {
+                // `epochs` → epoch, `trials` → trial: the type; named after the table and row
+                let kind = i.table.strip_suffix('s').unwrap_or(&i.table).to_string();
+                dspk_app_core::domain::epoch::EpochDoc {
+                    id: String::new(),
+                    recording: path.to_path_buf(),
+                    name: format!("{kind} {}", i.row + 1),
+                    kind,
+                    start_sec: (i.start_sec - start_sec).max(0.0),
+                    end_sec: i.stop_sec - start_sec,
+                    notes: format!("NWB /intervals/{} row {}", i.table, i.row),
+                }
+            })
+            .collect()
+    }
+
+    fn aligned(&self, store: &Entity<Store>, events_s: &[f64], pre_ms: f64, post_ms: f64, _: &mut Window, cx: &mut App) -> Option<AnyElement> {
+        aligned::section(&self.aligned, store, events_s, pre_ms, post_ms, cx)
     }
 
     fn panel(&self) -> Option<(&'static str, std::rc::Rc<dyn Fn() -> gpui_kit::component::Icon>)> {

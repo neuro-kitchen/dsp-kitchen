@@ -100,6 +100,27 @@ macro_rules! kilosort4_settings {
             /// Same input on the same device gives the same spikes
             #[arg(long, default_value_t = $defaults.reproducible, action = clap::ArgAction::Set)]
             reproducible: bool,
+            /// How the universal templates are clustered: emeans (the default: mini-batch, much faster on large runs) or kmeans (Kilosort4's, 10 restarts)
+            #[arg(long, default_value_t = $defaults.template_clustering.name().to_string(), value_parser = ["kmeans", "emeans"])]
+            template_clustering: String,
+            /// Drift correction: non-overlapping depth blocks (1: rigid, Kilosort4's default; 0: off)
+            #[arg(long, default_value_t = $defaults.drift.nblocks)]
+            nblocks: usize,
+            /// Drift correction: depth bin of the spike fingerprints (µm)
+            #[arg(long, default_value_t = $defaults.drift.binning_depth_um)]
+            binning_depth: f32,
+            /// Drift correction: spatial smoothness of the interpolation (µm)
+            #[arg(long, default_value_t = $defaults.drift.sig_interp_um)]
+            sig_interp: f32,
+            /// Drift correction: Gaussian σ along (shift, batch, block), comma-separated
+            #[arg(long, value_delimiter = ',', num_args = 3, default_values_t = $defaults.drift.smoothing.to_vec())]
+            drift_smoothing: Vec<f32>,
+            /// Flip the data's sign first (recordings whose spikes are positive)
+            #[arg(long, default_value_t = $defaults.invert_sign, action = clap::ArgAction::Set)]
+            invert_sign: bool,
+            /// Zero a window holding a whitened value at or above this (σ) as an artifact; 0: off
+            #[arg(long, default_value_t = $defaults.artifact_threshold.unwrap_or(0.0))]
+            artifact_threshold: f32,
         }
 
         impl $name {
@@ -128,6 +149,15 @@ macro_rules! kilosort4_settings {
                 c.global_merge.min_similarity = self.merge_similarity;
                 c.duplicate_spike_ms = self.duplicate_spike_ms;
                 c.reproducible = self.reproducible;
+                c.template_clustering = dspk_sorter_kilosort::TemplateClustering::parse(&self.template_clustering).expect("checked by clap");
+                c.drift.nblocks = self.nblocks;
+                c.drift.binning_depth_um = self.binning_depth;
+                c.drift.sig_interp_um = self.sig_interp;
+                if let [a, b, d] = self.drift_smoothing[..] {
+                    c.drift.smoothing = [a, b, d];
+                }
+                c.invert_sign = self.invert_sign;
+                c.artifact_threshold = (self.artifact_threshold > 0.0).then_some(self.artifact_threshold);
             }
         }
     };
@@ -291,6 +321,13 @@ fn execute(target: ComputeTarget, args: &RunArgs, plan: impl Fn(f64) -> RunPlan)
         result.duplicates,
         t.elapsed().as_secs_f64()
     );
+    if let Some(drift) = &result.drift {
+        let (lo, hi) = drift.dshift.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), &v| (a.min(v), b.max(v)));
+        println!("drift: {} batches × {} block(s), {lo:.1} … {hi:.1} µm", drift.batches, drift.blocks);
+        if std::env::var_os("DSPK_PRINT_DRIFT").is_some() {
+            println!("dshift {:?}", drift.dshift);
+        }
+    }
     let sorting = result.to_sorting_output(Some(opened.probe));
     args.output.save(&sorting)?;
     done_line(sorting.num_units(), sorting.total_spikes(), t.elapsed().as_secs_f64(), &args.output.output);

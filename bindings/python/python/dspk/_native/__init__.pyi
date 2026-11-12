@@ -17,4 +17,4 @@ __all__ = [
     "synapse",
 ]
 
-__version__: builtins.str = '0.0.9'
+__version__: builtins.str = '0.0.10'

@@ -160,6 +160,9 @@ fn execute(
     .map_err(|e| PipelineError::Compute(e.to_string()))?;
     let mut p = p;
     p.fit(target)?;
+    if p.crossings.is_some() {
+        return execute_events(spec, p, target, started, observe);
+    }
     let Prepared {
         source, pipeline, resample, channels, range, unit, sample_rate, stored_format, stored_upload, mode, schedule,
         out_rate, out_samples, output, format, zarr, names, keep, ..
@@ -194,6 +197,7 @@ fn execute(
             w.set_channel_names(&names)?;
             Sink::Zarr(w)
         }
+        OutputFormat::Events => unreachable!("an events chain runs in execute_events"),
     };
 
     let mut bytes = DataMovement::default();
@@ -288,6 +292,7 @@ fn execute(
     let cleanup = || match format {
         OutputFormat::Raw => drop(std::fs::remove_file(&output)),
         OutputFormat::Zarr => drop(std::fs::remove_dir_all(&output)),
+        OutputFormat::Events => {}
     };
     // A cancelled run leaves the output incomplete (a Zarr writer then reports missing samples)
     if cancelled {
@@ -376,6 +381,9 @@ fn execute_fanout(
     if prepared.iter().any(|p| p.resample.is_some()) {
         return invalid("resample in a branched spec: write that branch with its own spec");
     }
+    if prepared.iter().any(|p| p.crossings.is_some()) {
+        return invalid("crossings in a branched spec: write those events with their own spec");
+    }
     // One schedule for all: stream when every branch streams, else windows with the largest halo
     let stream = prepared.iter().all(|p| p.mode == ExecutedMode::Stream);
     let mut halo = (0usize, 0usize);
@@ -441,6 +449,7 @@ fn execute_fanout(
                 w.set_channel_names(&p.names)?;
                 Sink::Zarr(w)
             }
+            OutputFormat::Events => unreachable!("branched specs refuse crossings"),
         });
     }
 
@@ -547,6 +556,7 @@ fn execute_fanout(
             match p.format {
                 OutputFormat::Raw => drop(std::fs::remove_file(&p.output)),
                 OutputFormat::Zarr => drop(std::fs::remove_dir_all(&p.output)),
+                OutputFormat::Events => {}
             }
         }
     };
@@ -678,6 +688,231 @@ impl Sink {
         stats.disk += clock.elapsed();
         Ok(stats)
     }
+}
+
+/// Runs one prepared input whose chain ends with a `crossings` node: each processed window stays on
+/// the device, where its crossings are found ([`dspk_ops::crossings::CrossingTracker`]); only those are
+/// downloaded, and the events are written as CSV at the end.
+fn execute_events(
+    spec: &PipelineSpec,
+    p: Prepared,
+    target: ComputeTarget,
+    started: Instant,
+    mut observe: impl FnMut(usize, usize, DataMovement) -> bool,
+) -> Result<RunReport, PipelineError> {
+    let Prepared { source, pipeline, channels, range, sample_rate, stored_format, stored_upload, mode, schedule, out_samples, output, names, keep, crossings, .. } = p;
+    let options = crossings.expect("a crossings chain");
+    let info = source.info();
+    let nch = channels.len();
+    let out_nch = names.len();
+    let client = target.client().map_err(|e| PipelineError::Compute(e.to_string()))?;
+    let capacity = schedule.max_read_samples().max(1);
+    let mut workspace = match mode {
+        ExecutedMode::Stream => PipelineWorkspace::<f32>::new_stateful(client, pipeline, nch, capacity, sample_rate),
+        ExecutedMode::Windows { .. } => PipelineWorkspace::<f32>::new(client, pipeline, nch, capacity, sample_rate),
+    }
+    .map_err(|e| PipelineError::Invalid(e.to_string()))?;
+    if stored_upload {
+        let gains: Vec<f32> = channels.iter().map(|&c| info.channels[c].gain).collect();
+        let offsets: Vec<f32> = channels.iter().map(|&c| info.channels[c].offset).collect();
+        workspace.set_stored_scaling(&gains, &offsets);
+    }
+    let mut tracker = dspk_ops::crossings::CrossingTracker::new(out_nch, &options).map_err(|e| PipelineError::Invalid(format!("crossings: {e}")))?;
+    let keep_rows = keep.as_ref().map(|k| buffer::upload(workspace.client(), &k.iter().map(|&c| c as u32).collect::<Vec<u32>>()));
+
+    let mut bytes = DataMovement::default();
+    let mut timings = StageTimings::default();
+    let loader = WindowLoader::with_channels(source.as_ref(), channels.clone());
+    let total_windows = schedule.len();
+    let mut done = 0;
+    let mut cancelled = false;
+    let read_bytes = |win: &HaloWindow| (nch * win.read_len() * stored_format.bytes()) as u64;
+    let detect = |win: &HaloWindow, handle: Handle, client: &Client, tracker: &mut dspk_ops::crossings::CrossingTracker| {
+        let n = win.read_len();
+        let handle = match &keep_rows {
+            Some(rows) => {
+                let kept = buffer::empty::<f32>(client, out_nch * n);
+                execute_gather_rows::<f32>(client, &handle, rows, &kept, nch, out_nch, n);
+                kept
+            }
+            None => handle,
+        };
+        tracker.push_device_window::<f32>(client, &handle, n, win.valid_local.clone(), win.read_global.start);
+    };
+    let mut idle = Instant::now();
+    let streamed = if stored_upload {
+        loader.stream_stored_owned_while(schedule.windows(), |win, stored| {
+            let t0 = Instant::now();
+            timings.read_wait += (t0 - idle).as_secs_f64();
+            bytes.read += read_bytes(win);
+            bytes.uploaded += stored_word_bytes(stored.len()) as u64;
+            let handle = workspace.process_owned_stored_chunk_in_vram(stored, stored_format, win.read_len())?;
+            detect(win, handle, workspace.client(), &mut tracker);
+            timings.device += t0.elapsed().as_secs_f64();
+            done += 1;
+            cancelled = !observe(done, total_windows, bytes);
+            idle = Instant::now();
+            Ok(!cancelled)
+        })
+    } else {
+        loader.stream_while(schedule.windows(), |win, samples| {
+            let t0 = Instant::now();
+            timings.read_wait += (t0 - idle).as_secs_f64();
+            bytes.read += read_bytes(win);
+            bytes.uploaded += (samples.len() * 4) as u64;
+            let handle = workspace.process_chunk_in_vram(samples, win.read_len());
+            detect(win, handle, workspace.client(), &mut tracker);
+            timings.device += t0.elapsed().as_secs_f64();
+            done += 1;
+            cancelled = !observe(done, total_windows, bytes);
+            idle = Instant::now();
+            Ok(!cancelled)
+        })
+    };
+    if cancelled {
+        return Err(PipelineError::Cancelled);
+    }
+    streamed?;
+    let events = tracker.finish();
+
+    let disk = Instant::now();
+    if let Some(dir) = output.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir).map_err(|e| PipelineError::Io(format!("{}: {e}", dir.display())))?;
+    }
+    bytes.downloaded += (events.len() * 24) as u64;
+    bytes.written += write_events(&output, &events, &names, sample_rate)?;
+    let provenance = provenance_path(&output);
+    std::fs::write(&provenance, spec.to_json()).map_err(|e| PipelineError::Io(format!("{}: {e}", provenance.display())))?;
+    timings.disk = disk.elapsed().as_secs_f64();
+    let _ = range;
+
+    Ok(RunReport {
+        mode,
+        runtime: target.name(),
+        stored_upload,
+        channels: out_nch,
+        samples: out_samples,
+        sample_rate_hz: sample_rate,
+        windows: total_windows,
+        bytes,
+        output,
+        provenance,
+        seconds: started.elapsed().as_secs_f64(),
+        timings,
+    })
+}
+
+/// The events of a `crossings` chain as a table, one row per event (see [`OutputFormat::Events`]):
+/// `channel` (u32), `channel_name`, `onset_sample` / `offset_sample` / `peak_sample` (u64; offset
+/// null when the range ended inside the event), `peak_value` (f32), `onset_s` / `offset_s` /
+/// `duration_s` (f64).
+pub fn events_frame(events: &[dspk_ops::crossings::CrossingEvent], names: &[String], sample_rate: f64) -> polars::prelude::PolarsResult<polars::prelude::DataFrame> {
+    use polars::prelude::*;
+    let secs = |s: u64| s as f64 / sample_rate;
+    df!(
+        "channel" => events.iter().map(|e| e.channel as u32).collect::<Vec<u32>>(),
+        "channel_name" => events.iter().map(|e| names.get(e.channel).cloned().unwrap_or_default()).collect::<Vec<String>>(),
+        "onset_sample" => events.iter().map(|e| e.onset).collect::<Vec<u64>>(),
+        "offset_sample" => events.iter().map(|e| e.offset).collect::<Vec<Option<u64>>>(),
+        "peak_sample" => events.iter().map(|e| e.peak_sample).collect::<Vec<u64>>(),
+        "peak_value" => events.iter().map(|e| e.peak_value).collect::<Vec<f32>>(),
+        "onset_s" => events.iter().map(|e| secs(e.onset)).collect::<Vec<f64>>(),
+        "offset_s" => events.iter().map(|e| e.offset.map(secs)).collect::<Vec<Option<f64>>>(),
+        "duration_s" => events.iter().map(|e| e.offset.map(|o| secs(o - e.onset))).collect::<Vec<Option<f64>>>(),
+    )
+}
+
+/// Format version of an events Zarr group (`dspk_events` attribute).
+pub const EVENTS_VERSION: u32 = 1;
+
+/// Writes the events at `path`: a Zarr group when it ends in `.zarr` or lies inside a `.zarr`
+/// store (e.g. `rec.dspk.zarr/events/biceps`; see [`write_events_zarr`]), CSV when it ends in `.csv`, Parquet otherwise. Returns the bytes
+/// written (Zarr: the values).
+pub fn write_events(path: &Path, events: &[dspk_ops::crossings::CrossingEvent], names: &[String], sample_rate: f64) -> Result<u64, PipelineError> {
+    let io = |e: std::io::Error| PipelineError::Io(format!("{}: {e}", path.display()));
+    if path.ancestors().any(|a| a.extension().is_some_and(|e| e.eq_ignore_ascii_case("zarr"))) {
+        write_events_zarr(path, events, names, sample_rate)?;
+        return Ok((events.len() * 32) as u64);
+    }
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("csv")) {
+        let csv = events_csv(events, names, sample_rate);
+        std::fs::write(path, &csv).map_err(io)?;
+        return Ok(csv.len() as u64);
+    }
+    let mut df = events_frame(events, names, sample_rate).map_err(|e| PipelineError::Io(format!("events table: {e}")))?;
+    let file = File::create(path).map_err(io)?;
+    polars::prelude::ParquetWriter::new(file).finish(&mut df).map_err(|e| PipelineError::Io(format!("{}: {e}", path.display())))
+}
+
+/// Writes the events as a Zarr group rooted at directory `dir` (replacing it), the layout of
+/// dspk's Zarr outputs: arrays `channel` (int32), `onset_sample`, `peak_sample` (uint64),
+/// `offset_sample` (int64, −1 for an event still open at the end) and `peak_value` (float32), one
+/// entry per event along `events`; attributes `dspk_events` (version), `sample_rate_hz` and
+/// `channel_names`. A group inside another store (e.g. `rec.dspk.zarr/events/<name>`) is written
+/// the same way.
+pub fn write_events_zarr(dir: &Path, events: &[dspk_ops::crossings::CrossingEvent], names: &[String], sample_rate: f64) -> Result<(), PipelineError> {
+    use dspk_io::container::zarr::{open_rw_store, write_array_f32, write_array_i32, write_array_i64, write_array_u64, write_group};
+    use serde_json::{json, Map};
+    if dir.exists() {
+        std::fs::remove_dir_all(dir).map_err(|e| PipelineError::Io(format!("{}: {e}", dir.display())))?;
+    }
+    let store = open_rw_store(dir)?;
+    let mut attrs = Map::new();
+    attrs.insert("dspk_events".into(), json!(EVENTS_VERSION));
+    attrs.insert("sample_rate_hz".into(), json!(sample_rate));
+    attrs.insert("channel_names".into(), json!(names));
+    write_group(&store, dir, "/", attrs)?;
+    let n = [events.len()];
+    let dims = ["events"];
+    write_array_i32(&store, dir, "/channel", &events.iter().map(|e| e.channel as i32).collect::<Vec<_>>(), &n, &dims, Map::new())?;
+    write_array_u64(&store, dir, "/onset_sample", &events.iter().map(|e| e.onset).collect::<Vec<_>>(), &n, &dims, Map::new())?;
+    write_array_i64(&store, dir, "/offset_sample", &events.iter().map(|e| e.offset.map_or(-1, |o| o as i64)).collect::<Vec<_>>(), &n, &dims, Map::new())?;
+    write_array_u64(&store, dir, "/peak_sample", &events.iter().map(|e| e.peak_sample).collect::<Vec<_>>(), &n, &dims, Map::new())?;
+    write_array_f32(&store, dir, "/peak_value", &events.iter().map(|e| e.peak_value).collect::<Vec<_>>(), &n, &dims, Map::new())?;
+    Ok(())
+}
+
+/// The events of a Zarr group written by [`write_events_zarr`], with its sample rate and channel
+/// names.
+pub fn read_events_zarr(dir: &Path) -> Result<(Vec<dspk_ops::crossings::CrossingEvent>, f64, Vec<String>), PipelineError> {
+    use dspk_io::container::zarr::{read_array, read_node_attributes};
+    let attrs = read_node_attributes(dir, "/").unwrap_or_default();
+    if attrs.get("dspk_events").is_none() {
+        return Err(PipelineError::Io(format!("{}: not an events group (no dspk_events attribute)", dir.display())));
+    }
+    let rate = attrs.get("sample_rate_hz").and_then(|v| v.as_f64()).unwrap_or(1.0);
+    let names: Vec<String> = attrs.get("channel_names").and_then(|v| v.as_array()).map(|a| a.iter().map(|v| v.as_str().unwrap_or_default().to_string()).collect()).unwrap_or_default();
+    let channel = read_array::<i32>(dir, "/channel")?.data;
+    let onset = read_array::<u64>(dir, "/onset_sample")?.data;
+    let offset = read_array::<i64>(dir, "/offset_sample")?.data;
+    let peak_sample = read_array::<u64>(dir, "/peak_sample")?.data;
+    let peak_value = read_array::<f32>(dir, "/peak_value")?.data;
+    let events = (0..channel.len())
+        .map(|i| dspk_ops::crossings::CrossingEvent {
+            channel: channel[i].max(0) as usize,
+            onset: onset[i],
+            offset: u64::try_from(offset[i]).ok(),
+            peak_sample: peak_sample[i],
+            peak_value: peak_value[i],
+        })
+        .collect();
+    Ok((events, rate, names))
+}
+
+/// The events table as CSV (the columns of [`events_frame`]).
+pub fn events_csv(events: &[dspk_ops::crossings::CrossingEvent], names: &[String], sample_rate: f64) -> String {
+    let mut out = String::from("channel,channel_name,onset_sample,offset_sample,peak_sample,peak_value,onset_s,offset_s,duration_s\n");
+    let quote = |s: &str| if s.contains([',', '"', '\n']) { format!("\"{}\"", s.replace('"', "\"\"")) } else { s.to_string() };
+    for e in events {
+        let name = names.get(e.channel).map(String::as_str).unwrap_or("");
+        let onset_s = e.onset as f64 / sample_rate;
+        let (offset, offset_s, duration_s) = match e.offset {
+            Some(o) => (o.to_string(), format!("{}", o as f64 / sample_rate), format!("{}", (o - e.onset) as f64 / sample_rate)),
+            None => (String::new(), String::new(), String::new()),
+        };
+        out.push_str(&format!("{},{},{},{},{},{},{},{},{}\n", e.channel, quote(name), e.onset, offset, e.peak_sample, e.peak_value, onset_s, offset_s, duration_s));
+    }
+    out
 }
 
 fn provenance_path(output: &Path) -> PathBuf {

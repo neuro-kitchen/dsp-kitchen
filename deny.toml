@@ -3,7 +3,8 @@
 # - licenses: only the licences listed (dspk itself is MIT OR Apache-2.0; the sorters keep their
 #   upstream licences, named per crate below);
 # - bans: no wildcard version requirements;
-# - sources: crates.io only (no git dependencies, no other registries).
+# - sources: crates.io, and the neuro-kitchen shared crates from their git repository (kitchen-ui
+#   and kitchen-shell come from one kitchen tag); no other git dependencies or registries.
 
 [graph]
 all-features = true
@@ -57,4 +58,5 @@ allow-wildcard-paths = true
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+allow-git = ["https://github.com/neuro-kitchen/kitchen"]
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]

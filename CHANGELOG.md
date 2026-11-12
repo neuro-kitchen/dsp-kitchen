@@ -4,6 +4,134 @@ All notable changes, newest first. Versions follow [Semantic Versioning](https:/
 0.0.x any release may change the API. The crates, the Python package and `dspk-sorters` share one
 version number.
 
+## Unreleased
+
+## 0.0.10 — 2026-11-12
+
+### Performance
+
+- **Kilosort4 / EMUsort: 34 % faster on the Kilosort4 sample** (CUDA, RTX 2070, warm: 13.4 s →
+  8.9 s; EMUsort on 600 s of HD-EMG: 36.2 s → 33.3 s), with the same units (93 % of the good units
+  match the earlier run at ≥ 0.9; agreement with upstream's saved results unchanged).
+  - The k-means++ seeding of the graph clustering scores its trials with one unit per point:
+    coalesced reads, every point read once for all trials, the sums reduced per cube (before: one
+    unit per trial and block of 16 points, reads 16 apart, each point read once per trial). Seeding
+    200 seeds of 1 416 points × 102 features: 76 → 11 ms; the two clustering stages 3.1 → 1.1 s and
+    2.3 → 0.7 s.
+  - The global merges compute every pair's similarity once and, after a merge, only the merged
+    unit's row and column; before, the pool's whole matrix was recomputed for every unit and every
+    merge and only one row used (1.6 → 0.6 s).
+
+### Fixed
+
+- **Explore shows the chain built in the Pipeline at once.** Explore's views kept the session view
+  they opened with, so a chain built on the canvas (or picked there with Show, or by an agent) was
+  drawn only after the app started again. The active view now shows in Explore: every view of its
+  recording that drew it unprocessed follows (traces and heatmap together), and the focused one;
+  the empty view the recording opened with leaves the session. A chain edited in the Pipeline
+  becomes the active one while the active one holds no work.
+
+### Added
+
+- **Kilosort4's drift correction** (`dspk_sorter_kilosort::drift`), on by default as upstream
+  (rigid, `--nblocks 1`; `0` turns it off, more corrects blocks along the shank): the universal-
+  template spikes of every window give per-batch fingerprints (depth × log amplitude), aligned to
+  each other and smoothed; the later passes are corrected on the device by kriging interpolation
+  after whitening, one shift per channel crossing per window. On the Kilosort4 sample it matches
+  upstream's `dshift` (within ±0.5 µm, the same in 19 of 23 batches); it costs one more detection
+  pass (3.4 s there), as upstream. Off for EMUsort, as its configs. The drift is printed and saved
+  with the sorting (`SortingOutput::drift`).
+- Kilosort4's other missing settings: `--invert-sign`, `--artifact-threshold` (windows holding a
+  whitened value at or above it are zeroed; upstream compares raw units, here σ, so one value fits
+  every recording), and for every sorter `--bad-channels` (left out of the data and the probe) and
+  `--keep-good-only` (as SpikeInterface's).
+- Kilosort4 learns its universal templates again on the drift-corrected windows, as upstream's
+  second detection: on the Kilosort4 sample, agreement of the good units with upstream's saved
+  results rises from a median 0.810 to 0.867.
+- Drift checked on a second recording (IBL Neuropixels, 100 s): the per-batch drift matches
+  upstream Kilosort 4.1.7's (40 of 50 batches identical, at most 0.5 µm apart, r = 0.90), sorted
+  in 27 s against upstream's 165 s on the same GPU.
+
+### Fixed
+
+- Kilosort4's template centres take their contacts from their own shank (a centre near the edge
+  of closely spaced shanks mixed them; upstream fixed the same in v4.0.22). A shank with fewer
+  contacts than `nearest_chans` is filled from the nearest of the others.
+
+- **e-means** (`dspk_synapse::sorting::emeans`): mini-batch k-means whose centres follow an
+  exponential moving average of the batches' counts and sums, the step annealed on a cosine, the
+  batch size and step from fitted scaling laws, dead clusters revived by splitting (Bessa et al.,
+  arXiv:2611.09501; constants and details as the authors' faiss reference). The whole run stays on
+  the device: the epoch's shuffle is a keyed permutation computed per point, the batch
+  assignments and sums, the EMA update and the closing means are kernels; per batch only scalar
+  arguments cross. Same result type as k-means. Against k-means (k-means++, 10 restarts) on wgpu:
+  6× faster at n 50k / k 6, 31× at n 200k / k 64, 191× at n 500k / k 256, inertia within 0.21 %.
+  With few, well-separated clusters, random starts can merge two (the reference does the same),
+  so small `k` should start from k-means++.
+- **Kilosort4 / EMUsort: `--template-clustering emeans`** learns the universal templates with
+  e-means (k-means++ start) instead of k-means. **e-means is the default** (in the app too);
+  `--template-clustering kmeans` gives Kilosort4's k-means with 10 restarts.
+
+### Changed
+
+- kitchen-ui and kitchen-shell 0.0.3 come from crates.io (the same code as the v0.0.3 tag), so
+  `dspk-app-core` can be published again.
+
+- The kitchen crates (git, tag v0.0.3) carry their version too, so cargo-deny no longer reads them
+  as wildcard dependencies of `dspk-app-core`.
+
+- **App: lumen's greys in the plots.** The dark plots' background, grid, baselines and labels are
+  lumen's neutrals (#161616 like lumen's image area, #222222, #2a2a2a, muted grey) instead of a
+  blue-black; the heatmap starts from the same background; the light plots' greys lose their
+  blue tint. Channel colours, markers and the playhead are unchanged.
+- **App: lumen's surfaces.** Every pane is one flat panel (the panel colour at the root of each
+  panel: Inspector, Channels, Timeline, Processing, the plugin panels, Epochs, the docked Pipeline,
+  Curation's views), so the dock's darker fill no longer shows through; sections are a title and
+  their rows, without a box or a lighter fill (Inspector, Processing, Pipeline, Sorting). Wells stay
+  only under drawn data (traces, heatmaps, plots).
+- **App: the compute device in the status bar** (as lumen's): the runtime chosen in Settings, else
+  wgpu, with the adapter wgpu opens (the discrete GPU first: "GPU · Vulkan · NVIDIA GeForce RTX
+  2070 …"), and "working" while a job runs. Settings › Compute names it and every adapter wgpu found.
+- App: named **dsp-kitchen** in its menu, window title and About (was "DSP App").
+- **App: kitchen-shell's frame, as lumen's.** The title bar (the dsp-kitchen menu, Help, the
+  workspaces, the recording, where the app runs, the panel toggles, the theme), the workspace's
+  menu row, the status bar (status line, every job with its cancel button, the frame's numbers,
+  CPU and memory), Settings, the search and the window frame (rounded while it floats, resized
+  from its edge) are kitchen-shell's (kitchen v0.0.3), shared with lumen.
+- **App: every action is a command** of one registry (`commands.rs` and the Pipeline's own):
+  id, title, icon, what it does, group, key, when it can run and why not, and the JSON Schema of
+  its arguments. The menus, the keys, the search (Ctrl+K; F3 for the operations) and, next, an
+  agent's tools come from that one list; an entry that cannot run is greyed with the reason.
+  Recent files and recipes are menu entries made when the menu opens.
+- App: the Pipeline's menus (File, Edit, a menu per kind of operation, View) sit in the frame's
+  menu row; docked in Explore, its own bar draws the same menus.
+- App: Settings has the frame's Appearance (theme, accent, text size) first, then Display (a
+  theme that follows the system, dark plots), Compute, Start, Servers, Results and About.
+  Keyboard & mouse (F1), About and Open from server show over the frame.
+- App: a job is listed in the frame's status bar too; its cancel button stops it.
+- The search palette of our own is gone (the frame's search replaces it).
+- Dependencies: kitchen-ui and kitchen-shell from kitchen's v0.0.3 tag (one revision for both:
+  kitchen-shell uses kitchen-ui by path); cargo-deny allows that git repository.
+
+- **App: the shared neuro-kitchen look** (kitchen-ui, as lumen): plain grey neutrals, lime accent,
+  15 px text; the workspaces' rails, panels, views and strips are rounded cards on the chrome, with
+  no lines between them; the window has no outline or shadow margin around it. Widgets (dropdowns,
+  sections, rows, empty states) and the parameter editor come from kitchen-ui; section titles are
+  capitals, and in a narrow panel a control drops under its label instead of cutting it.
+- App: the status bar shows where the app runs ("This computer", at its left, as VS Code's remote
+  indicator), and this computer's CPU and memory at its right.
+- kitchen-ui 0.0.2 (released 2026-11-12): code, diff and text views and the chat pane available;
+  nothing in the app changed for it.
+- Dependencies: cubecl 0.11.4, flate2 1.1.11, prost 0.14.5, rustls-pki-types 1.16.0, rfd 0.18.0,
+  toml 1.2.1 (the newest of each).
+- App: paths show only their last two parts (`…/folder/file`) in messages, errors, file details,
+  recent lists and Settings.
+
+### Added
+
+- App: **Settings → Appearance → Accent**: lime, a suggested colour or any colour, kept readable in
+  both themes.
+
 ## 0.0.9 — 2026-11-09
 
 ### Added

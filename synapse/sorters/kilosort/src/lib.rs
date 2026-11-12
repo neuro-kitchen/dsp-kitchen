@@ -9,12 +9,14 @@
 //! units ([`clustering`]), learned templates ([`learned`]), learned-template matching
 //! ([`matching`]), the clustering of the matched spikes with the refractory criterion, global
 //! merges ([`merges`]), duplicate-spike removal and good / mua labels, driven over a whole
-//! recording by [`runner`] (preprocessing fit: CAR, high-pass, local whitening). Not yet: drift
-//! correction. See the [documentation](https://neuro-kitchen.github.io/dsp-kitchen/plugins/synapse/reference/sorters/kilosort4/).
+//! recording by [`runner`] (preprocessing fit: CAR, high-pass, local whitening), with Kilosort4's
+//! drift correction ([`drift`]) and artifact blanking ([`artifacts`]). See the [documentation](https://neuro-kitchen.github.io/dsp-kitchen/plugins/synapse/reference/sorters/kilosort4/).
 
+pub mod artifacts;
 pub mod clustering;
 pub mod delays;
 pub mod detect;
+pub mod drift;
 #[cfg(feature = "emusort")]
 pub mod emusort;
 #[cfg(feature = "ks4")]
@@ -32,13 +34,14 @@ pub use learned::{learned_templates, LearnedTemplates, TemplateMergeOptions};
 pub use emusort::{Emusort, EmusortConfig};
 #[cfg(feature = "ks4")]
 pub use ks4::{kilosort4_provenance, Kilosort4};
+pub use drift::{estimate_drift, DriftCorrector, DriftModel, DriftOptions, DriftSpike};
 pub use detect::{detect_universal, CentreOptions, TemplateCentres, UniversalDetector, UniversalSpike};
 pub use runner::{
     fit_kilosort4_preprocessing, fit_preprocessing, run_plan, ChannelDelays, FitSettings, FittedPreprocessing, Kilosort4Result,
     RunPlan,
 };
 pub use templates::{
-    extract_clips, learn_universal_templates, learn_universal_templates_with_progress, ClipOptions, ClipScaling, LearnOptions, UniversalTemplates,
+    extract_clips, learn_universal_templates, learn_universal_templates_with_progress, ClipOptions, ClipScaling, LearnOptions, TemplateClustering, UniversalTemplates,
 };
 
 use dspk_synapse::NeuralBand;
@@ -126,6 +129,16 @@ pub struct Kilosort4Config {
     /// ([`dspk_core::compute::pin_tuned_choices`]). Off, the tuner may pick differently between runs
     /// (last-bit differences that can move a spike across a threshold).
     pub reproducible: bool,
+    /// How the universal templates are clustered: Kilosort4's k-means, or e-means to compare.
+    pub template_clustering: TemplateClustering,
+    /// Drift correction ([`drift`]): rigid by default, as upstream (`nblocks = 1`); `nblocks = 0`
+    /// turns it off.
+    pub drift: DriftOptions,
+    /// Flip the data's sign first (`invert_sign`), for recordings whose spikes are positive.
+    pub invert_sign: bool,
+    /// Windows holding a whitened value at or above this (σ) are zeroed as artifacts
+    /// ([`artifacts`]); `None`: off, upstream's default.
+    pub artifact_threshold: Option<f32>,
 }
 
 impl Default for Kilosort4Config {
@@ -157,6 +170,10 @@ impl Default for Kilosort4Config {
             global_merge: GlobalMergeOptions::default(),
             duplicate_spike_ms: 0.25,
             reproducible: true,
+            template_clustering: TemplateClustering::EMeans,
+            drift: DriftOptions::default(),
+            invert_sign: false,
+            artifact_threshold: None,
         }
     }
 }
@@ -187,6 +204,7 @@ impl Kilosort4Config {
             n_pcs: self.n_pcs,
             n_templates: self.n_templates,
             clip_scaling: ClipScaling::PerClip,
+            clustering: self.template_clustering,
             outlier_min_cluster_size: None,
             seed: 0,
         }

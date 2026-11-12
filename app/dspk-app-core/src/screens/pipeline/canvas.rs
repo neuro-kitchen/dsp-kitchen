@@ -20,7 +20,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Icon, Sizable as _};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Icon, Selectable as _, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
@@ -295,6 +295,14 @@ impl GraphCanvas {
             Template::View => {
                 let n = self.graph(cx).nodes.iter().filter(|n| matches!(n.kind, NodeKind::View { .. })).count() + 1;
                 crate::domain::command::view_kind(format!("View {n}"))
+            }
+            Template::EpochsView => {
+                let n = self.graph(cx).nodes.iter().filter(|n| matches!(&n.kind, NodeKind::View { display, .. } if display.layout == crate::domain::session::ViewLayout::Epochs)).count() + 1;
+                let mut kind = crate::domain::command::view_kind(format!("Epochs {n}"));
+                if let NodeKind::View { display, .. } = &mut kind {
+                    display.layout = crate::domain::session::ViewLayout::Epochs;
+                }
+                kind
             }
             Template::Write => NodeKind::Write {},
             Template::OpenRecording => {
@@ -867,14 +875,15 @@ impl GraphCanvas {
             .child(div().w(px(44.)).text_xs().text_center().child(format!("{:.0} %", self.zoom * 100.0)))
             .child(b("zoom-in", IconName::ZoomIn, "Zoom in (Ctrl +)", |c, cx| c.zoom_by(1.25, None, cx)))
             .child(b("fit", IconName::Maximize, "Fit the graph (F)", |c, cx| c.fit(cx)))
+            // Toggles show whether they are on
             .child(b("grid", IconName::LayoutGrid, "Dot grid", |c, cx| {
                 c.show_grid = !c.show_grid;
                 cx.notify();
-            }))
+            }).selected(self.show_grid))
             .child(b("minimap", IconName::Map, "Minimap", |c, cx| {
                 c.show_minimap = !c.show_minimap;
                 cx.notify();
-            }))
+            }).selected(self.show_minimap))
     }
 
     /// The whole graph small, the view as a frame; a press moves the view there.

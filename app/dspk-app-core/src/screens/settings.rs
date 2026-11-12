@@ -1,5 +1,8 @@
-//! Settings (Ctrl+,): the servers the app works with (add, edit, remove, test), where results
-//! fetched from them go, the compute runtime, the theme. Every value shows its default.
+//! dsp-kitchen's sections of Settings (Ctrl+,): the frame (kitchen-shell) draws Settings, its own
+//! Appearance first (theme, accent, text size), then these. Each setting says what it does and
+//! what its default is, with its control at the right; changes apply at once. Sections: Display
+//! (a theme that follows the system, dark plots), Compute (runtime), Start (what opens, recent
+//! lists), Servers (add, edit, remove, test), Results (where fetched results go), About.
 
 use std::path::PathBuf;
 
@@ -7,9 +10,10 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Disableable as _, Sizable as _};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    div, px, App, AppContext as _, Context, Entity, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Task, Window,
+    div, px, AnyElement, App, AppContext as _, Context, Entity, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render, SharedString,
+    Styled as _, Subscription, Task, Window,
 };
 
 use crate::data::preferences::Session;
@@ -20,6 +24,44 @@ use crate::ui::widgets::{row, MenuSelect};
 /// Compute runtimes offered (the first: whatever is compiled in first).
 const RUNTIMES: [(&str, Option<&str>); 4] = [("Automatic (first compiled in)", None), ("wgpu (Vulkan, Metal, DX12)", Some("wgpu")), ("CUDA", Some("cuda")), ("CPU", Some("cpu"))];
 const THEMES: [(&str, Option<bool>); 3] = [("Follow the system", None), ("Dark", Some(true)), ("Light", Some(false))];
+
+/// A section of the settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Section {
+    Display,
+    Compute,
+    Start,
+    Servers,
+    Results,
+    About,
+}
+
+impl Section {
+    pub const ALL: [Section; 6] = [Section::Display, Section::Compute, Section::Start, Section::Servers, Section::Results, Section::About];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Section::Display => "Display",
+            Section::Compute => "Compute",
+            Section::Start => "Start",
+            Section::Servers => "Servers",
+            Section::Results => "Results",
+            Section::About => "About",
+        }
+    }
+
+    pub fn icon(self) -> gpui_kit::assets::IconName {
+        use gpui_kit::assets::IconName as I;
+        match self {
+            Section::Display => I::Monitor,
+            Section::Compute => I::Cpu,
+            Section::Start => I::Play,
+            Section::Servers => I::Server,
+            Section::Results => I::FolderOpen,
+            Section::About => I::Info,
+        }
+    }
+}
 
 /// What the server form is doing.
 #[derive(Clone, Copy, PartialEq)]
@@ -40,6 +82,7 @@ pub struct SettingsScreen {
     /// The last test or save: ok, and what to say.
     message: Option<(bool, String)>,
     testing: bool,
+    _subs: Vec<Subscription>,
     _tasks: Vec<Task<()>>,
 }
 
@@ -50,10 +93,10 @@ impl SettingsScreen {
             cx.new(|cx| InputState::new(window, cx).placeholder(placeholder))
         };
         let (name, address, server_name, identity) = (input(cx, "e.g. lab GPU"), input(cx, "e.g. 192.168.1.20:50051"), input(cx, DEFAULT_SERVER_NAME), input(cx, "the file `dspk clients enroll` wrote"));
-        let default_results = Session::default_results_dir().display().to_string();
+        let default_results = crate::domain::paths::short_path(&Session::default_results_dir());
         let current = store.read(cx).session.results_dir.clone().map(|p| p.display().to_string()).unwrap_or_default();
         let results = cx.new(|cx| InputState::new(window, cx).placeholder(default_results).default_value(current));
-        Self { store, name, address, server_name, identity, results, form: Form::Closed, message: None, testing: false, _tasks: Vec::new() }
+        Self { store, name, address, server_name, identity, results, form: Form::Closed, message: None, testing: false, _subs: Vec::new(), _tasks: Vec::new() }
     }
 
     fn text(input: &Entity<InputState>, cx: &App) -> String {
@@ -172,13 +215,39 @@ impl SettingsScreen {
         cx.notify();
     }
 
-    fn section(title: &str, cx: &App) -> impl IntoElement + use<> {
-        div().pt_3().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(cx.theme().foreground).child(title.to_string())
+    /// A setting: its name, what it does and its default on the left, the control on the right.
+    fn setting(title: &str, what: &str, default: &str, control: impl IntoElement, cx: &App) -> AnyElement {
+        let t = cx.theme();
+        h_flex()
+            .w_full()
+            .py_2p5()
+            .gap_4()
+            .border_b_1()
+            .border_color(t.border)
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap(px(2.))
+                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(title.to_string()))
+                    .child(div().text_xs().text_color(t.muted_foreground).child(what.to_string()))
+                    .when(!default.is_empty(), |d| d.child(div().text_xs().text_color(t.muted_foreground).child(format!("Default: {default}")))),
+            )
+            .child(div().flex_none().child(control))
+            .into_any_element()
     }
 }
 
+/// Alone (its tests), Settings shows its Servers section.
 impl Render for SettingsScreen {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex().id("settings").size_full().p_4().child(self.body(Section::Servers, window, cx))
+    }
+}
+
+impl SettingsScreen {
+    /// The settings of `section`.
+    pub fn body(&mut self, section: Section, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.theme();
         let (muted, danger, ok, border) = (t.muted_foreground, t.danger, t.success, t.border);
         let me = cx.entity().downgrade();
@@ -209,13 +278,13 @@ impl Render for SettingsScreen {
                             .child(div().text_sm().font_weight(FontWeight::MEDIUM).truncate().child(p.name.clone()))
                             .child(div().text_xs().text_color(muted).truncate().child(format!("{} · certificate name {}", p.address, p.server_name))),
                     )
-                    .child(Button::new(SharedString::from(format!("server-test-{i}"))).outline().xsmall().label("Test").disabled(self.testing).on_click(move |_, _, cx| {
+                    .child(Button::new(SharedString::from(format!("server-test-{i}"))).outline().small().label("Test").disabled(self.testing).on_click(move |_, _, cx| {
                         let _ = m1.update(cx, |s, cx| s.test(profile.clone(), cx));
                     }))
-                    .child(Button::new(SharedString::from(format!("server-edit-{i}"))).ghost().xsmall().label("Edit").on_click(move |_, window, cx| {
+                    .child(Button::new(SharedString::from(format!("server-edit-{i}"))).ghost().small().label("Edit").on_click(move |_, window, cx| {
                         let _ = m2.update(cx, |s, cx| s.open_form(Form::Edit(i), window, cx));
                     }))
-                    .child(Button::new(SharedString::from(format!("server-remove-{i}"))).ghost().xsmall().label("Remove").on_click(move |_, _, cx| {
+                    .child(Button::new(SharedString::from(format!("server-remove-{i}"))).ghost().small().label("Remove").on_click(move |_, _, cx| {
                         let _ = m3.update(cx, |s, cx| s.remove(i, cx));
                     })),
             );
@@ -230,19 +299,18 @@ impl Render for SettingsScreen {
                 .border_1()
                 .border_color(border)
                 .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child(if self.form == Form::New { "New server" } else { "Edit server" }))
-                .child(row("Name", div().w_full().child(Input::new(&self.name).small()), cx))
-                .child(row("Address", div().w_full().child(Input::new(&self.address).small()), cx))
-                .child(row("Certificate name", div().w_full().child(Input::new(&self.server_name).small()), cx))
+                .child(row("Name", div().w_full().child(Input::new(&self.name).small())))
+                .child(row("Address", div().w_full().child(Input::new(&self.address).small())))
+                .child(row("Certificate name", div().w_full().child(Input::new(&self.server_name).small())))
                 .child(row(
                     "Identity file",
                     h_flex()
                         .w_full()
                         .gap_1()
                         .child(div().flex_1().min_w_0().child(Input::new(&self.identity).small()))
-                        .child(Button::new("server-identity-browse").outline().xsmall().label("Browse…").on_click(move |_, window, cx| {
+                        .child(Button::new("server-identity-browse").outline().small().label("Browse…").on_click(move |_, window, cx| {
                             let _ = m1.update(cx, |s, cx| s.browse(identity.clone(), false, "Identity file", window, cx));
                         })),
-                    cx,
                 ))
                 .child(div().text_xs().text_color(muted).child(format!("Certificate name: default {DEFAULT_SERVER_NAME}; one of the names the server was started with (--name).")))
                 .child(
@@ -275,20 +343,16 @@ impl Render for SettingsScreen {
         // Results
         let (m_rb, m_rs) = (me.clone(), me.clone());
         let results_input = self.results.clone();
-        let results = row(
-            "Fetched results",
-            h_flex()
+        let results = h_flex()
                 .w_full()
                 .gap_1()
                 .child(div().flex_1().min_w_0().child(Input::new(&self.results).small()))
-                .child(Button::new("results-browse").outline().xsmall().label("Browse…").on_click(move |_, window, cx| {
+                .child(Button::new("results-browse").outline().small().label("Browse…").on_click(move |_, window, cx| {
                     let _ = m_rb.update(cx, |s, cx| s.browse(results_input.clone(), true, "Folder for fetched results", window, cx));
                 }))
-                .child(Button::new("results-save").outline().xsmall().label("Save").on_click(move |_, _, cx| {
+                .child(Button::new("results-save").outline().small().label("Save").on_click(move |_, _, cx| {
                     let _ = m_rs.update(cx, |s, cx| s.save_results(cx));
-                })),
-            cx,
-        );
+                }));
 
         // Compute and appearance
         let store = self.store.clone();
@@ -328,31 +392,47 @@ impl Render for SettingsScreen {
             .disabled(recent == 0)
             .on_click(move |_, _, cx| s5.update(cx, |s, cx| s.forget_recent(None, cx)));
 
-        v_flex()
-            .id("settings")
-            .w(px(560.))
-            .max_h(gpui_kit::relative(0.85))
-            .overflow_y_scroll()
-            .gap_2()
-            .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Settings"))
-            .child(Self::section("Servers", cx))
-            .child(list)
-            .children(form)
-            .children(add)
-            .children(self.message.clone().map(|(good, text)| div().text_xs().text_color(if good { ok } else { danger }).child(text)))
-            .child(Self::section("Results", cx))
-            .child(results)
-            .child(div().text_xs().text_color(muted).child(format!("Now: {} (default {}); each server's results in a folder of its own.", results_dir.display(), Session::default_results_dir().display())))
-            .child(Self::section("Start", cx))
-            .child(row("Open the last recording", reopen, cx))
-            .child(row("Recent recordings and sortings", clear, cx))
-            .child(div().text_xs().text_color(muted).child("Off by default: the app starts on the start screen. Clearing forgets the lists only; the files stay."))
-            .child(Self::section("Compute", cx))
-            .child(row("Runtime", runtime_menu, cx))
-            .child(div().text_xs().text_color(muted).child(format!("Takes effect at the next start (now: {now}). DSPK_RUNTIME in the environment overrides it.")))
-            .child(Self::section("Appearance", cx))
-            .child(row("Theme", theme_menu, cx))
-            .child(row("Dark plots", plots, cx))
+        let now_results = format!("Now {}; each server's results in a folder of its own.", crate::domain::paths::short_path(&results_dir));
+        let body: Vec<AnyElement> = match section {
+            Section::Display => vec![
+                Self::setting("Theme", "Dark or light, or as the system is set (follows it while running). Appearance has the accent and the text size.", "Follow the system", theme_menu, cx),
+                Self::setting("Dark plots", "Traces, heatmaps and charts on a dark background, whatever the theme.", "Off", plots, cx),
+            ],
+            Section::Compute => vec![
+                Self::setting(
+                    "Device",
+                    &match &self.store.read(cx).device {
+                        Some(d) if !d.adapters.is_empty() => format!("Processing runs on {}. Adapters wgpu found: {}.", d.label, d.adapters.join("; ")),
+                        Some(d) => format!("Processing runs on {}.", d.label),
+                        None => "Looking for the GPU…".to_string(),
+                    },
+                    "",
+                    div(),
+                    cx,
+                ),
+                Self::setting("Runtime", &format!("Where processing and sorting run. Takes effect at the next start (now: {now}); DSPK_RUNTIME in the environment overrides it."), "Automatic (first compiled in)", runtime_menu, cx),
+                Self::setting("Tune this device", "Measures the fastest kernel settings once and keeps them, so first runs and previews are fast: File → Tune this device.", "", div(), cx),
+            ],
+            Section::Start => vec![
+                Self::setting("Open the last recording", "Start on the recording open when the app closed, instead of the start screen.", "Off", reopen, cx),
+                Self::setting("Recent recordings and sortings", "Clearing forgets the lists only; the files stay.", "", clear, cx),
+            ],
+            Section::Servers => {
+                let mut v = vec![div().text_xs().text_color(muted).pb_2().child("Servers run sorting and serve recordings over QUIC + TLS. Add one with the identity file its administrator gave you (`dspk clients enroll`).").into_any_element(), list.into_any_element()];
+                v.extend(form.map(|f| f.into_any_element()));
+                v.extend(add.map(|a| div().pt_2().child(a).into_any_element()));
+                v.extend(self.message.clone().map(|(good, text)| div().pt_1().text_xs().text_color(if good { ok } else { danger }).child(text).into_any_element()));
+                v
+            }
+            Section::Results => vec![
+                Self::setting("Fetched results", &now_results, &crate::domain::paths::short_path(&Session::default_results_dir()), div().w(px(300.)).child(results), cx),
+            ],
+            Section::About => vec![
+                Self::setting("dspk-app", "Multichannel signal processing on any GPU: explore, process, sort and analyse recordings.", env!("CARGO_PKG_VERSION"), div(), cx),
+                Self::setting("Settings file", &crate::data::preferences::Session::path().map(|p| crate::domain::paths::short_path(&p)).unwrap_or_else(|| "not saved (no config folder)".into()), "per user", div(), cx),
+            ],
+        };
+        v_flex().id(SharedString::from(format!("settings-{}", section.title().to_lowercase()))).w_full().children(body).into_any_element()
     }
 }
 

@@ -1,477 +1,109 @@
-//! The root view: a title bar with the menus, the workspaces (Explore · Sorting · Pipeline ·
-//! Curation) and the open recording; the workspace shown; a status bar. Without a recording the
-//! body is a start screen (open a file, a recent one, or a synthetic recording).
+//! The root view: kitchen-shell's frame (title bar with the DSP App menu, Help, the workspaces
+//! (Explore · Sorting · Pipeline · Curation · Analytics), the recording and where the app runs;
+//! the workspace's menu row; the workspace as a card; the status bar with the jobs and this
+//! computer's load; Settings; the search) around dsp-kitchen's workspaces, as lumen's. Every
+//! action is a command of one registry (`crate::commands`), so the menus, the keys, the search and
+//! an agent see the same list. Without a recording Explore shows the start screen.
 
 use std::path::PathBuf;
+use std::rc::Rc;
 
-use gpui_kit::base::dock::DockPlacement;
+use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
-use gpui_kit::component::status_bar::StatusBar;
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, IconName, Selectable as _, Sizable as _, Theme, ThemeMode, TitleBar};
-use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Sizable as _};
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
-    div, px, AnyElement, App, AppContext as _, Context, Entity, ExternalPaths, FocusHandle, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
-    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
+    div, px, AnyElement, AnyView, App, AppContext as _, Context, Entity, ExternalPaths, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window,
 };
+use kitchen_shell::{MenuItem, Registry, RemoteSpec, SettingsSection, Shell, ShellEvent, ShellSpec, WorkspaceSpec};
 
-use crate::navigation::actions::*;
-use crate::screens::explore::trace::renderer::TimeViewKind;
+use crate::commands::{self, Ctx};
 use crate::data::store::{file_label, AppEvent, Store};
-use crate::screens::explore::ExploreView;
-use crate::ui::recording_picker::{open_actions, Pick};
-use crate::ui::widgets::EmptyState;
+use crate::navigation::actions::HELP;
 use crate::navigation::route::Workspace;
+use crate::screens::explore::ExploreView;
+use crate::screens::settings::{Section, SettingsScreen};
+use crate::ui::recording_picker::{open_actions, Pick};
+use crate::ui::theme::{self, color};
+use crate::ui::widgets::EmptyState;
 
 /// The synthetic recording of the start screen and the File menu.
-pub const SYNTHETIC: (usize, f64, f64) = (32, 30_000.0, 300.0);
+pub const SYNTHETIC: (usize, f64, f64) = commands::SYNTHETIC;
 
-pub struct DspApp {
+/// dsp-kitchen's readings in the frame's status bar: the latest frame's numbers. Its own entity,
+/// so a new frame redraws only this.
+pub struct StatusReadings {
     store: Entity<Store>,
-    pub explore: Entity<ExploreView>,
-    pipeline: Entity<crate::screens::pipeline::PipelineView>,
-    floating: Entity<crate::screens::floating::FloatingLayer>,
-    palette: Option<(Entity<crate::screens::palette::CommandPalette>, Subscription)>,
-    show_help: bool,
-    show_about: bool,
-    /// Settings, while open.
-    settings: Option<Entity<crate::screens::settings::SettingsScreen>>,
-    /// Open from server, while open.
-    browser: Option<(Entity<crate::screens::server_browser::ServerBrowser>, Subscription)>,
-    /// Workspaces plugins provide (built the first time they are shown).
-    plugin_views: std::collections::HashMap<Workspace, gpui_kit::AnyView>,
-    focus: FocusHandle,
     _subs: Vec<Subscription>,
 }
 
-impl DspApp {
-    pub fn new(store: Entity<Store>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let choice = store.read(cx).session.dark;
-        Self::apply_theme(&store, choice, window, cx);
-        store.update(cx, |s, cx| s.suggest_tuning_once(cx));
-        let explore = cx.new(|cx| ExploreView::new(store.clone(), window, cx));
-        let pipeline = cx.new(|cx| crate::screens::pipeline::PipelineView::new(store.clone(), window, cx));
-        let floating = cx.new(|cx| crate::screens::floating::FloatingLayer::new(store.clone(), window, cx));
-        let subs = vec![
-            // Follow the system's light / dark until the user picks one
-            cx.observe_window_appearance(window, |this, window, cx| {
-                if this.store.read(cx).session.dark.is_none() {
-                    Self::apply_theme(&this.store, None, window, cx);
-                }
-            }),
-            cx.subscribe(&store, |_, _, e: &AppEvent, cx| {
-                if matches!(e, AppEvent::RecordingChanged | AppEvent::WorkspaceChanged | AppEvent::Status) {
-                    cx.notify();
-                }
-            }),
-            cx.observe(&store, |_, _, cx| cx.notify()),
-        ];
-        let focus = cx.focus_handle();
-        window.focus(&focus, cx);
-        Self { store, explore, pipeline, floating, palette: None, show_help: false, show_about: false, settings: None, browser: None, plugin_views: Default::default(), focus, _subs: subs }
-    }
-
-    /// Light, dark, or the system's (`None`); the store learns which, for the plot colours.
-    pub(crate) fn apply_theme(store: &Entity<Store>, dark: Option<bool>, window: &mut Window, cx: &mut App) {
-        match dark {
-            Some(true) => Theme::change(ThemeMode::Dark, Some(window), cx),
-            Some(false) => Theme::change(ThemeMode::Light, Some(window), cx),
-            None => Theme::sync_system_appearance(Some(window), cx),
-        }
-        let is_dark = cx.theme().is_dark();
-        store.update(cx, |s, cx| s.set_dark(is_dark, cx));
-    }
-
-    fn toggle_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let dark = !cx.theme().is_dark();
-        self.store.update(cx, |s, cx| s.set_theme_choice(Some(dark), cx));
-        Self::apply_theme(&self.store, Some(dark), window, cx);
-        cx.notify();
-    }
-
-    /// Opens the recording at `path` in Explore. (Sorting folders open in Curation, parked in
-    /// `.refactoring/dspk-app/`.)
-    pub fn open_any(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        self.store.update(cx, |s, cx| s.open(path, cx));
-    }
-
-    fn prompt_open(&mut self, pick: Pick, cx: &mut Context<Self>) {
-        let rx = cx.prompt_for_paths(pick.options("Open recording", false, cx));
-        let store = self.store.clone();
-        cx.spawn(async move |_, cx| match rx.await {
-            Ok(Ok(Some(paths))) => {
-                if let Some(path) = paths.into_iter().next() {
-                    store.update(cx, |s, cx| s.open(path, cx));
-                }
-            }
-            Ok(Err(e)) => store.update(cx, |s, cx| s.set_status(format!("File dialog failed: {e}"), cx)),
-            _ => {}
-        })
-        .detach();
-    }
-
-    /// Tunes this device in the background, so first runs and previews don't stop to benchmark.
-    fn tune_device(&mut self, cx: &mut Context<Self>) {
-        self.store.update(cx, |s, cx| s.set_status("Tuning this device in the background (about a minute on a GPU)…", cx));
-        let store = self.store.clone();
-        cx.spawn(async move |_, cx| {
-            let tuned = cx
-                .background_spawn(async move {
-                    let client = dspk_core::ComputeTarget::from_env().map_err(|e| e.to_string())?.client().map_err(|e| e.to_string())?;
-                    dspk_ops::autotune::autotune(&client, &Default::default(), |_, _| {}).map_err(|e| e.to_string())
-                })
-                .await;
-            let text = match tuned {
-                Ok(done) => format!("This device is tuned: {} sizes in {:.0} s", done.sizes, done.seconds),
-                Err(e) => format!("Could not tune this device: {e}"),
-            };
-            let _ = store.update(cx, |s, cx| s.set_status(text, cx));
-        })
-        .detach();
-    }
-
-    fn open_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        self.store.update(cx, |s, cx| s.open(path, cx));
-    }
-
-    fn open_synthetic(&mut self, cx: &mut Context<Self>) {
-        let (ch, rate, dur) = SYNTHETIC;
-        self.store.update(cx, |s, cx| s.open_synthetic(ch, rate, dur, cx));
-    }
-
-    fn add_view(&mut self, kind: TimeViewKind, cx: &mut Context<Self>) {
-        self.store.update(cx, |s, cx| s.set_workspace(Workspace::Explore, cx));
-        self.explore.update(cx, |e, cx| e.add_view(kind, cx));
-    }
-
-    /// Every command the palette offers.
-    fn commands(&self, cx: &mut Context<Self>) -> Vec<crate::screens::palette::Command> {
-        use crate::screens::palette::Command;
-        use std::rc::Rc;
-        let me = cx.entity().downgrade();
-        let open_actions = open_actions(cx);
-        let mut out = Vec::new();
-        let mut add = |group: &'static str, name: String, f: Rc<dyn Fn(&mut DspApp, &mut Window, &mut Context<DspApp>)>| {
-            let me = me.clone();
-            out.push(Command { group, name, run: Rc::new(move |w, cx| {
-                let f = f.clone();
-                let _ = me.update(cx, |a, cx| f(a, w, cx));
-            }) });
-        };
-        for ws in Workspace::ALL {
-            add("Go to", format!("{} workspace", ws.title()), Rc::new(move |a, _, cx| a.store.update(cx, |s, cx| s.set_workspace(ws, cx))));
-        }
-        for &(label, pick) in open_actions {
-            add("File", label.into(), Rc::new(move |a, _, cx| a.prompt_open(pick, cx)));
-        }
-        add("File", "Synthetic recording".into(), Rc::new(|a, _, cx| a.open_synthetic(cx)));
-        add("File", "Tune this device".into(), Rc::new(|a, _, cx| a.tune_device(cx)));
-        for (name, kind) in [("Traces", TimeViewKind::Traces), ("Heatmap", TimeViewKind::Heatmap), ("Raster", TimeViewKind::Raster)] {
-            add("View", format!("Add a {} view", name.to_lowercase()), Rc::new(move |a, _, cx| a.add_view(kind, cx)));
-        }
-        add("Edit", "Undo".into(), Rc::new(|a, _, cx| a.store.update(cx, |s, cx| s.undo(false, cx))));
-        add("Edit", "Redo".into(), Rc::new(|a, _, cx| a.store.update(cx, |s, cx| s.undo(true, cx))));
-        add("Timeline", "New epoch from the visible window".into(), Rc::new(|a, _, cx| crate::screens::explore::components::timeline_tab::new_epoch(&a.store, cx)));
-        add("View", "Light / dark theme".into(), Rc::new(|a, w, cx| a.toggle_theme(w, cx)));
-        add("Help", "Keyboard & mouse".into(), Rc::new(|a, _, cx| {
-            a.show_help = true;
-            cx.notify();
-        }));
-        for c in crate::screens::pipeline::catalog::catalog() {
-            for it in c.items {
-                let template = it.template.clone();
-                add("Pipeline", format!("Add {} · {}", c.name.to_lowercase(), it.label), Rc::new(move |a, w, cx| {
-                    let template = template.clone();
-                    a.store.update(cx, |s, cx| s.set_workspace(Workspace::Pipeline, cx));
-                    a.pipeline.update(cx, |p, cx| p.add(&template, w, cx));
-                }));
-            }
-        }
-        for r in crate::domain::recipe::builtin().into_iter().chain(self.store.read(cx).doc.recipes.values().cloned()) {
-            let name = r.name.clone();
-            add("Recipe", format!("Add {name}"), Rc::new(move |a, _, cx| {
-                let r = r.clone();
-                a.store.update(cx, |s, cx| s.set_workspace(Workspace::Pipeline, cx));
-                a.pipeline.update(cx, |p, cx| p.add_recipe(r, cx));
-            }));
-        }
-        out
-    }
-
-    fn toggle_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.palette.take().is_some() {
-            window.focus(&self.focus, cx);
-            cx.notify();
-            return;
-        }
-        let commands = self.commands(cx);
-        let palette = cx.new(|cx| crate::screens::palette::CommandPalette::new(commands, window, cx));
-        let sub = cx.subscribe_in(&palette, window, |this, _, _: &crate::screens::palette::PaletteEvent, window, cx| {
-            this.palette = None;
-            window.focus(&this.focus, cx);
-            cx.notify();
-        });
-        self.palette = Some((palette, sub));
-        cx.notify();
-    }
-
-    fn toggle_dock(&mut self, placement: DockPlacement, window: &mut Window, cx: &mut Context<Self>) {
-        self.explore.update(cx, |e, cx| e.toggle_dock(placement, window, cx));
-    }
-
-    // ------------------------------------------------------------------------
-    // Title bar
-    // ------------------------------------------------------------------------
-
-    fn menus(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let this = cx.entity();
-        let recent = self.store.read(cx).session.recent.clone();
-        let open = self.store.read(cx).recording.is_some();
-        let (dark_plots, follow) = (self.store.read(cx).session.dark_plots, self.store.read(cx).session.dark.is_none());
-        let open_actions = open_actions(cx);
-        let file = {
-            let this = this.clone();
-            Button::new("menu-file").ghost().small().label("File").dropdown_menu(move |menu: PopupMenu, _, _| {
-                let mut menu = menu;
-                for &(label, pick) in open_actions {
-                    let t = this.clone();
-                    menu = menu.item(PopupMenuItem::new(label).on_click(move |_, _, cx| t.update(cx, |a, cx| a.prompt_open(pick, cx))));
-                }
-                let t = this.clone();
-                menu = menu.item(PopupMenuItem::new("Open from server…").on_click(move |_, _, cx| t.update(cx, |a, cx| a.toggle_browser(cx))));
-                let t = this.clone();
-                menu = menu.item(PopupMenuItem::new("Synthetic recording (32 ch, 5 min)").on_click(move |_, _, cx| t.update(cx, |a, cx| a.open_synthetic(cx))));
-                let t = this.clone();
-                menu = menu.item(PopupMenuItem::new("Tune this device").on_click(move |_, _, cx| t.update(cx, |a, cx| a.tune_device(cx))));
-                if !recent.is_empty() {
-                    menu = menu.separator().label("Recent");
-                    for p in &recent {
-                        let (t, p) = (this.clone(), p.clone());
-                        menu = menu.item(PopupMenuItem::new(file_label(&p)).on_click(move |_, _, cx| t.update(cx, |a, cx| a.open_path(p.clone(), cx))));
-                    }
-                    let t = this.clone();
-                    menu = menu.item(PopupMenuItem::new("Clear recent").on_click(move |_, _, cx| {
-                        let store = t.read(cx).store.clone();
-                        store.update(cx, |s, cx| s.forget_recent(None, cx));
-                    }));
-                }
-                if open {
-                    let t = this.clone();
-                    menu = menu.separator().item(PopupMenuItem::new("Close recording").on_click(move |_, _, cx| {
-                        let store = t.read(cx).store.clone();
-                        store.update(cx, |s, cx| s.close_recording(None, cx));
-                    }));
-                }
-                let t = this.clone();
-                menu.separator()
-                    .item(PopupMenuItem::new("Settings…").on_click(move |_, window, cx| t.update(cx, |a, cx| a.toggle_settings(window, cx))))
-                    .separator()
-                    .item(PopupMenuItem::new("Quit").on_click(|_, _, cx| cx.quit()))
-            })
-        };
-        let view = {
-            let this = this.clone();
-            Button::new("menu-view").ghost().small().label("View").dropdown_menu(move |menu: PopupMenu, _, _| {
-                let item = |label: &'static str, f: fn(&mut DspApp, &mut Window, &mut Context<DspApp>)| {
-                    let t = this.clone();
-                    PopupMenuItem::new(label).disabled(!open).on_click(move |_, window, cx| t.update(cx, |a, cx| f(a, window, cx)))
-                };
-                menu.item(item("Add traces view", |a, _, cx| a.add_view(TimeViewKind::Traces, cx)))
-                    .item(item("Add heatmap view", |a, _, cx| a.add_view(TimeViewKind::Heatmap, cx)))
-                    .separator()
-                    .item(item("Channels", |a, w, cx| a.toggle_dock(DockPlacement::Left, w, cx)))
-                    .item(item("Inspector", |a, w, cx| a.toggle_dock(DockPlacement::Right, w, cx)))
-                    .item(item("Timeline", |a, w, cx| a.toggle_dock(DockPlacement::Bottom, w, cx)))
-                    .separator()
-                    .item({
-                        let t = this.clone();
-                        PopupMenuItem::new("Dark plots in the light theme").checked(dark_plots).on_click(move |_, _, cx| {
-                            t.update(cx, |a, cx| a.store.update(cx, |s, cx| s.set_dark_plots(!dark_plots, cx)))
-                        })
-                    })
-                    .item({
-                        let t = this.clone();
-                        PopupMenuItem::new("Follow the system theme").checked(follow).on_click(move |_, window, cx| {
-                            t.update(cx, |a, cx| {
-                                let choice = if follow { Some(cx.theme().is_dark()) } else { None };
-                                a.store.update(cx, |s, cx| s.set_theme_choice(choice, cx));
-                                Self::apply_theme(&a.store, choice, window, cx);
-                            })
-                        })
-                    })
-            })
-        };
-        let help = {
-            let this = this.clone();
-            Button::new("menu-help").ghost().small().label("Help").dropdown_menu(move |menu: PopupMenu, _, _| {
-                let (t1, t2) = (this.clone(), this.clone());
-                menu.item(PopupMenuItem::new("Keyboard & mouse").on_click(move |_, _, cx| {
-                    t1.update(cx, |a, cx| {
-                        a.show_help = true;
-                        cx.notify();
-                    })
-                }))
-                .separator()
-                .item(PopupMenuItem::new("About DSP App").on_click(move |_, _, cx| {
-                    t2.update(cx, |a, cx| {
-                        a.show_about = true;
-                        cx.notify();
-                    })
-                }))
-            })
-        };
-        h_flex().gap_0p5().child(file).child(view).child(help)
-    }
-
-    fn workspaces(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let current = self.store.read(cx).workspace;
-        h_flex().gap_0p5().children(Workspace::ALL.into_iter().map(|w| {
-            let store = self.store.clone();
-            Button::new(SharedString::from(format!("workspace-{}", w.title().to_lowercase())))
-                .small()
-                .ghost()
-                .icon(w.icon())
-                .label(w.title())
-                .tooltip(w.hint())
-                .selected(w == current)
-                .on_click(move |_, _, cx| store.update(cx, |s, cx| s.set_workspace(w, cx)))
-        }))
-    }
-
-    fn title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+impl Render for StatusReadings {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let s = self.store.read(cx);
+        let opening = s.opening.clone().map(|n| div().text_color(color::text_muted()).child(format!("Opening {n}…")));
+        // The compute device (as lumen's): what it is, and whether a job is running on it
+        let device = match (&s.device, &s.job) {
+            (None, _) => "Finding the GPU…".to_string(),
+            (Some(d), Some(_)) => format!("{} · working", d.label),
+            (Some(d), None) => d.label.clone(),
+        };
+        h_flex()
+            .gap(px(theme::LG))
+            .items_center()
+            .text_xs()
+            .children(opening)
+            .child(div().text_color(color::text_muted()).child(s.render_info.clone()))
+            .child(meter(IconName::Gpu, device, "Where processing runs: the compute device (Settings › Compute)"))
+    }
+}
+
+/// A status bar reading: an icon and its value, muted (as lumen's).
+fn meter(icon: IconName, text: String, tip: &'static str) -> impl IntoElement {
+    h_flex()
+        .id(tip)
+        .gap(px(theme::XS))
+        .items_center()
+        .text_color(color::text_muted())
+        .child(gpui_kit::component::Icon::new(icon).small())
+        .child(text)
+        .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(tip).build(w, cx))
+}
+
+/// A view shown over the frame in a card; a click outside it, or its own close, runs `close`.
+pub struct Modal {
+    pub content: AnyView,
+    pub close: Rc<dyn Fn(&mut Window, &mut App)>,
+}
+
+impl Render for Modal {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme();
-        // The file, then the source the active view reads (what is drawn and edited)
-        let recording = s.recording.as_ref().map(|r| {
-            let source = s.active_view().map(|v| s.view_source(v)).unwrap_or_else(|| r.sources.default_entry().id.clone());
-            let several = r.sources.entries().len() > 1;
-            h_flex()
-                .gap_2()
-                .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(t.foreground).child(r.name.clone()))
-                .when(several, |d| d.child(div().text_sm().text_color(t.foreground).child(r.sources.entry(&source).name.clone())))
-                .child(div().text_xs().text_color(t.muted_foreground).child(r.summary_of(&source)))
-        });
-        let opening = s.opening.clone().map(|n| div().text_xs().text_color(t.muted_foreground).child(format!("Opening {n}…")));
-        TitleBar::new().child(
-            h_flex()
-                .w_full()
-                .gap_3()
-                .pr_2()
-                .child(self.menus(cx))
-                .child(div().h(px(18.)).w(px(1.)).bg(cx.theme().border))
-                .child(self.workspaces(cx))
-                .child(div().flex_1())
-                .children(opening)
-                .children(recording)
-                .child({
-                    let dark = cx.theme().is_dark();
-                    Button::new("theme")
-                        .ghost()
-                        .small()
-                        .icon(if dark { IconName::Sun } else { IconName::Moon })
-                        .tooltip(if dark { "Light theme" } else { "Dark theme" })
-                        .on_click(cx.listener(|this, _, window, cx| this.toggle_theme(window, cx)))
-                }),
-        )
+        let (bg, border) = (t.popover, t.border);
+        let close = self.close.clone();
+        div()
+            .id("modal-overlay")
+            .absolute()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(gpui_kit::hsla(0., 0., 0., 0.5))
+            .on_click(move |_, w, cx| close(w, cx))
+            .child(div().id("modal-card").p_4().rounded_lg().border_1().border_color(border).bg(bg).on_click(|_, _, cx| cx.stop_propagation()).child(self.content.clone()))
     }
+}
 
-    // ------------------------------------------------------------------------
-    // Body
-    // ------------------------------------------------------------------------
+/// The Keyboard & mouse sheet (F1).
+pub struct HelpSheet {
+    close: Rc<dyn Fn(&mut Window, &mut App)>,
+}
 
-    fn start_screen(&self, cx: &mut Context<Self>) -> AnyElement {
-        let recent = self.store.read(cx).session.recent.clone();
-        let muted = cx.theme().muted_foreground;
-        let mut screen = EmptyState::new(
-            gpui_kit::assets::IconName::AudioWaveform,
-            "Open a recording",
-            ".bin · .cbin · .zarr · .nwb.zarr",
-        )
-        .child(
-            h_flex()
-                .gap_2()
-                .children(open_actions(cx).iter().enumerate().map(|(i, &(label, pick))| {
-                    let button = Button::new(("start-open", i)).icon(if pick == Pick::File { IconName::File } else { IconName::FolderOpen }).label(label);
-                    let button = if i == 0 { button.primary() } else { button.outline() };
-                    button.on_click(cx.listener(move |this, _, _, cx| this.prompt_open(pick, cx)))
-                }))
-                .child(Button::new("start-synthetic").ghost().label("Synthetic recording").on_click(cx.listener(|this, _, _, cx| this.open_synthetic(cx)))),
-        );
-        if !recent.is_empty() {
-            screen = screen.child(
-                v_flex()
-                    .mt_4()
-                    .w(px(420.))
-                    .gap_1()
-                    .child(div().text_xs().text_color(muted).child("Recent"))
-                    .children(recent.into_iter().take(6).enumerate().map(|(i, p)| {
-                        let label = file_label(&p);
-                        let dir = p.parent().map(|d| d.display().to_string()).unwrap_or_default();
-                        let forget = p.clone();
-                        h_flex()
-                            .w_full()
-                            .gap_1()
-                            .child(
-                                Button::new(("recent", i))
-                                    .ghost()
-                                    .flex_1()
-                                    .child(h_flex().w_full().gap_2().child(div().text_sm().child(label)).child(div().flex_1().text_xs().text_color(muted).truncate().child(dir)))
-                                    .on_click(cx.listener(move |this, _, _, cx| this.open_path(p.clone(), cx))),
-                            )
-                            .child(
-                                crate::ui::widgets::icon_button(("recent-forget", i), IconName::Close, "Remove from the list (the file stays)")
-                                    .xsmall()
-                                    .on_click(cx.listener(move |this, _, _, cx| this.store.update(cx, |s, cx| s.forget_recent(Some(&forget), cx)))),
-                            )
-                    })),
-            );
-        }
-        div().id("start-screen").test_support().size_full().child(screen).into_any_element()
-    }
-
-    fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let workspace = self.store.read(cx).workspace;
-        // A workspace a plugin provides (e.g. Sorting), built once
-        if workspace != Workspace::Explore {
-            if !self.plugin_views.contains_key(&workspace) {
-                let store = self.store.clone();
-                let built = crate::plugin::plugins().iter().filter(|p| p.provides(workspace)).find_map(|p| p.workspace(workspace, &store, window, cx));
-                if let Some(view) = built {
-                    self.plugin_views.insert(workspace, view);
-                }
-            }
-            if let Some(view) = self.plugin_views.get(&workspace) {
-                return view.clone().into_any_element();
-            }
-        }
-        if workspace == Workspace::Pipeline {
-            return self.pipeline.clone().into_any_element();
-        }
-        let s = self.store.read(cx);
-        if let Some(text) = workspace.planned() {
-            return div()
-                .id("planned-workspace")
-                .test_support()
-                .size_full()
-                .child(EmptyState::new(workspace.icon(), format!("{} is on its way", workspace.title()), text))
-                .into_any_element();
-        }
-        if s.recording.is_none() {
-            return self.start_screen(cx);
-        }
-        self.explore.clone().into_any_element()
-    }
-
-    fn status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let s = self.store.read(cx);
-        let muted = cx.theme().muted_foreground;
-        StatusBar::new().left(div().text_xs().child(s.status.clone())).right(div().text_xs().text_color(muted).child(s.render_info.clone()))
-    }
-
-    fn help(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+impl Render for HelpSheet {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme();
         let (muted, bg, border) = (t.muted_foreground, t.popover, t.border);
+        let (c1, c2) = (self.close.clone(), self.close.clone());
         div()
             .id("help-overlay")
             .absolute()
@@ -480,10 +112,7 @@ impl DspApp {
             .items_center()
             .justify_center()
             .bg(gpui_kit::hsla(0., 0., 0., 0.5))
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.show_help = false;
-                cx.notify();
-            }))
+            .on_click(move |_, w, cx| c1(w, cx))
             .child(
                 v_flex()
                     .id("help")
@@ -501,70 +130,21 @@ impl DspApp {
                             rows.iter().map(|(keys, what)| h_flex().gap_3().child(div().w(px(230.)).text_sm().font_weight(FontWeight::MEDIUM).child(*keys)).child(div().text_sm().child(*what))),
                         )
                     }))
-                    .child(h_flex().justify_end().child(Button::new("help-close").outline().small().label("Close").on_click(cx.listener(|this, _, _, cx| {
-                        this.show_help = false;
-                        cx.notify();
-                    })))),
+                    .child(h_flex().justify_end().child(Button::new("help-close").outline().small().label("Close").on_click(move |_, w, cx| c2(w, cx)))),
             )
     }
+}
 
-    /// Opens Settings, or closes it when open.
-    fn toggle_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.settings = match self.settings.take() {
-            Some(_) => None,
-            None => Some(cx.new(|cx| crate::screens::settings::SettingsScreen::new(self.store.clone(), window, cx))),
-        };
-        cx.notify();
-    }
+/// About dsp-kitchen.
+pub struct AboutSheet {
+    close: Rc<dyn Fn(&mut Window, &mut App)>,
+}
 
-    /// Opens Open from server, or closes it when open.
-    fn toggle_browser(&mut self, cx: &mut Context<Self>) {
-        if self.browser.take().is_none() {
-            let browser = cx.new(|cx| crate::screens::server_browser::ServerBrowser::new(self.store.clone(), cx));
-            let sub = cx.subscribe(&browser, |this, _, e: &crate::screens::server_browser::BrowserEvent, cx| match e {
-                crate::screens::server_browser::BrowserEvent::Opened => {
-                    this.browser = None;
-                    this.store.update(cx, |s, cx| s.set_workspace(Workspace::Explore, cx));
-                    cx.notify();
-                }
-            });
-            self.browser = Some((browser, sub));
-        }
-        cx.notify();
-    }
-
-    /// `content` over everything, in a card; a click outside it runs `close`.
-    fn modal(&self, id: &'static str, content: AnyElement, close: fn(&mut Self), cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let t = cx.theme();
-        let (bg, border) = (t.popover, t.border);
-        div()
-            .id(SharedString::from(format!("{id}-overlay")))
-            .absolute()
-            .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(gpui_kit::hsla(0., 0., 0., 0.5))
-            .on_click(cx.listener(move |this, _, _, cx| {
-                close(this);
-                cx.notify();
-            }))
-            .child(
-                div()
-                    .id(SharedString::from(format!("{id}-card")))
-                    .p_4()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(border)
-                    .bg(bg)
-                    .on_click(|_, _, cx| cx.stop_propagation())
-                    .child(content),
-            )
-    }
-
-    fn about(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+impl Render for AboutSheet {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme();
         let (muted, bg, border) = (t.muted_foreground, t.popover, t.border);
+        let (c1, c2) = (self.close.clone(), self.close.clone());
         div()
             .id("about-overlay")
             .test_support()
@@ -574,10 +154,7 @@ impl DspApp {
             .items_center()
             .justify_center()
             .bg(gpui_kit::hsla(0., 0., 0., 0.5))
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.show_about = false;
-                cx.notify();
-            }))
+            .on_click(move |_, w, cx| c1(w, cx))
             .child(
                 v_flex()
                     .id("about")
@@ -597,76 +174,321 @@ impl DspApp {
                             .child(
                                 v_flex()
                                     .gap_1()
-                                    .child(
-                                        h_flex()
-                                            .gap_2()
-                                            .items_center()
-                                            .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("DSP App"))
-                                            .child(div().text_xs().text_color(muted).child(format!("v{}", env!("CARGO_PKG_VERSION")))),
-                                    )
+                                    .child(h_flex().gap_2().items_center().child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("dsp-kitchen")).child(div().text_xs().text_color(muted).child(format!("v{}", env!("CARGO_PKG_VERSION")))))
                                     .child(div().text_xs().text_color(muted).child("by neuro-kitchen")),
                             ),
                     )
                     .child(div().text_sm().text_color(muted).child(
                         "Electrophysiology workbench built with GPUI and gpui-kit. Explore multi-channel recordings across docked time views and curate spike-sorting results.",
                     ))
-                    .child(
-                        h_flex()
-                            .justify_end()
-                            .child(Button::new("about-close").outline().small().label("Close").on_click(cx.listener(|this, _, _, cx| {
-                                this.show_about = false;
-                                cx.notify();
-                            }))),
-                    ),
+                    .child(h_flex().justify_end().child(Button::new("about-close").outline().small().label("Close").on_click(move |_, w, cx| c2(w, cx)))),
             )
     }
 }
 
-impl Render for DspApp {
+/// The body of one workspace: Explore's start screen or its views; a workspace a plugin provides
+/// (built the first time it is shown); the Pipeline; Analytics; or what a workspace still to come
+/// will hold.
+pub struct WorkspaceBody {
+    store: Entity<Store>,
+    workspace: Workspace,
+    explore: Entity<ExploreView>,
+    pipeline: Entity<crate::screens::pipeline::PipelineView>,
+    analytics: Entity<crate::screens::analytics::AnalyticsWorkspace>,
+    plugin_view: Option<AnyView>,
+    _subs: Vec<Subscription>,
+}
+
+impl WorkspaceBody {
+    fn start_screen(&self, cx: &mut Context<Self>) -> AnyElement {
+        let recent = self.store.read(cx).session.recent.clone();
+        let muted = cx.theme().muted_foreground;
+        let store = self.store.clone();
+        let mut screen = EmptyState::new(IconName::AudioWaveform, "Open a recording", ".bin · .cbin · .zarr · .nwb.zarr").child(
+            h_flex()
+                .gap_2()
+                .children(open_actions(cx).iter().enumerate().map(|(i, &(label, pick))| {
+                    let button = Button::new(("start-open", i)).icon(if pick == Pick::File { IconName::File } else { IconName::FolderOpen }).label(label);
+                    let button = if i == 0 { button.primary() } else { button.outline() };
+                    let store = store.clone();
+                    button.on_click(move |_, _, cx| commands::prompt_open(&store, pick, cx))
+                }))
+                .child({
+                    let store = store.clone();
+                    Button::new("start-synthetic").ghost().label("Synthetic recording").on_click(move |_, _, cx| commands::open_synthetic(&store, cx))
+                }),
+        );
+        if !recent.is_empty() {
+            screen = screen.child(
+                v_flex()
+                    .mt_4()
+                    .w(px(420.))
+                    .gap_1()
+                    .child(div().text_xs().text_color(muted).child("Recent"))
+                    .children(recent.into_iter().take(6).enumerate().map(|(i, p)| {
+                        let label = file_label(&p);
+                        let dir = p.parent().map(|d| crate::domain::paths::short_path(&d)).unwrap_or_default();
+                        let (open, forget) = (store.clone(), store.clone());
+                        let forget_path = p.clone();
+                        h_flex()
+                            .w_full()
+                            .gap_1()
+                            .child(
+                                Button::new(("recent", i))
+                                    .ghost()
+                                    .flex_1()
+                                    .child(h_flex().w_full().gap_2().child(div().text_sm().child(label)).child(div().flex_1().text_xs().text_color(muted).truncate().child(dir)))
+                                    .on_click(move |_, _, cx| open.update(cx, |s, cx| s.open(p.clone(), cx))),
+                            )
+                            .child(
+                                crate::ui::widgets::icon_button(("recent-forget", i), IconName::Close, "Remove from the list (the file stays)")
+                                    .xsmall()
+                                    .on_click(move |_, _, cx| forget.update(cx, |s, cx| s.forget_recent(Some(&forget_path), cx))),
+                            )
+                    })),
+            );
+        }
+        div().id("start-screen").test_support().size_full().child(screen).into_any_element()
+    }
+}
+
+impl Render for WorkspaceBody {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
+        let workspace = self.workspace;
+        // A workspace a plugin provides (e.g. Sorting), built once
+        if workspace != Workspace::Explore {
+            if self.plugin_view.is_none() {
+                let store = self.store.clone();
+                self.plugin_view = crate::plugin::plugins().iter().filter(|p| p.provides(workspace)).find_map(|p| p.workspace(workspace, &store, window, cx));
+            }
+            if let Some(view) = &self.plugin_view {
+                return view.clone().into_any_element();
+            }
+        }
+        match workspace {
+            Workspace::Pipeline => return self.pipeline.clone().into_any_element(),
+            Workspace::Analytics => return self.analytics.clone().into_any_element(),
+            _ => {}
+        }
+        if let Some(text) = workspace.planned() {
+            return div().id("planned-workspace").test_support().size_full().child(EmptyState::new(workspace.icon(), format!("{} is on its way", workspace.title()), text)).into_any_element();
+        }
+        if self.store.read(cx).recording.is_none() {
+            return self.start_screen(cx);
+        }
+        self.explore.clone().into_any_element()
+    }
+}
+
+pub struct DspApp {
+    store: Entity<Store>,
+    /// The frame: menus, search, status bar, Settings.
+    pub shell: Entity<Shell>,
+    /// Every command (menus, keys, search, agents).
+    pub registry: Registry,
+    pub explore: Entity<ExploreView>,
+    pipeline: Entity<crate::screens::pipeline::PipelineView>,
+    floating: Entity<crate::screens::floating::FloatingLayer>,
+    _subs: Vec<Subscription>,
+}
+
+/// Shows `view` over the frame, or hides it when it is the one shown (`toggle`).
+fn overlay(shell: &Rc<std::cell::OnceCell<WeakEntity<Shell>>>, view: Option<AnyView>, toggle: bool, window: &mut Window, cx: &mut App) {
+    if let Some(s) = shell.get().and_then(|w| w.upgrade()) {
+        s.update(cx, |s, cx| {
+            let view = if toggle && s.has_overlay() { None } else { view };
+            s.set_overlay(view, window, cx)
+        });
+    }
+}
+
+impl DspApp {
+    pub fn new(store: Entity<Store>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let choice = store.read(cx).session.dark;
+        Self::apply_theme(&store, choice, window, cx);
+        store.update(cx, |s, cx| s.suggest_tuning_once(cx));
+        // Name the compute device once, off the UI thread (wgpu lists its adapters)
+        let found = store.clone();
+        cx.spawn(async move |_, cx| {
+            let device = cx.background_spawn(async { crate::data::device::DeviceInfo::discover() }).await;
+            let _ = found.update(cx, |s, cx| s.set_device(device, cx));
+        })
+        .detach();
+        let pipeline = cx.new(|cx| crate::screens::pipeline::PipelineView::new(store.clone(), window, cx));
+        let explore = cx.new(|cx| ExploreView::new(store.clone(), pipeline.clone(), window, cx));
+        let analytics = cx.new(|cx| crate::screens::analytics::AnalyticsWorkspace::new(store.clone(), window, cx));
+        let floating = cx.new(|cx| crate::screens::floating::FloatingLayer::new(store.clone(), window, cx));
+
+        // The commands, then the frame that draws them
+        let registry = Registry::default();
+        let shell_cell: Rc<std::cell::OnceCell<WeakEntity<Shell>>> = Rc::default();
+        let close: Rc<dyn Fn(&mut Window, &mut App)> = {
+            let cell = shell_cell.clone();
+            Rc::new(move |w, cx| overlay(&cell, None, false, w, cx))
+        };
+        let help = cx.new(|_| HelpSheet { close: close.clone() });
+        let about = cx.new(|_| AboutSheet { close: close.clone() });
+        let (c1, c2, c3) = (shell_cell.clone(), shell_cell.clone(), shell_cell.clone());
+        let browser_store = store.clone();
+        let ctx = Ctx {
+            store: store.clone(),
+            shell: shell_cell.clone(),
+            explore: explore.downgrade(),
+            pipeline: pipeline.downgrade(),
+            toggle_help: Rc::new(move |w, cx| overlay(&c1, Some(help.clone().into()), true, w, cx)),
+            toggle_about: Rc::new(move |w, cx| overlay(&c2, Some(about.clone().into()), true, w, cx)),
+            open_browser: {
+                let close = close.clone();
+                Rc::new(move |w, cx| {
+                    let browser = cx.new(|cx| crate::screens::server_browser::ServerBrowser::new(browser_store.clone(), cx));
+                    let (cell, store, handle) = (c3.clone(), browser_store.clone(), w.window_handle());
+                    cx.subscribe(&browser, move |_, e: &crate::screens::server_browser::BrowserEvent, cx| match e {
+                        crate::screens::server_browser::BrowserEvent::Opened => {
+                            store.update(cx, |s, cx| s.set_workspace(Workspace::Explore, cx));
+                            let cell = cell.clone();
+                            let _ = handle.update(cx, move |_, window, cx| overlay(&cell, None, false, window, cx));
+                        }
+                    })
+                    .detach();
+                    let modal = commands::modal(browser.into(), close.clone(), cx);
+                    overlay(&c3, Some(modal.into()), false, w, cx);
+                })
+            },
+        };
+        commands::register(&registry, &ctx);
+        registry.extend(crate::screens::pipeline::PipelineView::commands(pipeline.downgrade(), store.clone()));
+        pipeline.update(cx, |p, _| p.set_registry(registry.clone()));
+
+        let body = |w: Workspace, cx: &mut Context<Self>| {
+            let (store, explore, pipeline, analytics) = (store.clone(), explore.clone(), pipeline.clone(), analytics.clone());
+            cx.new(|cx| WorkspaceBody { store: store.clone(), workspace: w, explore, pipeline, analytics, plugin_view: None, _subs: vec![cx.subscribe(&store, |_, _, _: &AppEvent, cx| cx.notify())] })
+        };
+        let workspaces: Vec<WorkspaceSpec> = Workspace::ALL
+            .into_iter()
+            .map(|w| {
+                let menus = match w {
+                    Workspace::Explore => commands::explore_menus(),
+                    Workspace::Pipeline => crate::screens::pipeline::PipelineView::menu_specs(),
+                    _ => commands::other_menus(),
+                };
+                WorkspaceSpec::new(commands::workspace_id(w), w.title(), w.icon(), body(w, cx)).hint(w.hint()).menus(menus)
+            })
+            .collect();
+        let settings_view = cx.new(|cx| SettingsScreen::new(store.clone(), window, cx));
+        let sections = Section::ALL
+            .into_iter()
+            .map(|sec| {
+                let view = settings_view.clone();
+                SettingsSection::new(sec.title(), sec.icon(), move |window, cx| view.update(cx, |v, cx| v.body(sec, window, cx)))
+            })
+            .collect();
+        let readings = cx.new(|cx| StatusReadings { store: store.clone(), _subs: vec![cx.subscribe(&store, |_, _, _: &AppEvent, cx| cx.notify()), cx.observe(&store, |_, _, cx| cx.notify())] });
+        let mut spec = ShellSpec::new("dsp-kitchen", registry.clone(), workspaces);
+        spec.app_menu = commands::app_menu(cx);
+        spec.help_menu = vec![MenuItem::command("help.keys"), MenuItem::command("help.about")];
+        spec.settings = sections;
+        spec.layout_toggles = vec!["view.channels".into(), "view.inspector".into()];
+        spec.remote = Some(RemoteSpec { label: "This computer".into(), icon: IconName::Server, menu: vec![MenuItem::command("remote.this"), MenuItem::Separator, MenuItem::command("remote.connect")] });
+        spec.status_items = Some(Rc::new(move |_, _| readings.clone().into_any_element()));
+        let shell = cx.new(|cx| Shell::new(spec, window, cx));
+        let _ = shell_cell.set(shell.downgrade());
+
+        // Keys: every command's (the time views bind their own)
+        for bad in registry.bind_keys(None, cx) {
+            eprintln!("key binding: {bad}");
+        }
+
+        // The frame and the store follow each other: workspace, status line, recording, look
+        let subs = vec![
+            cx.subscribe(&shell, |this, _, e: &ShellEvent, cx| match e {
+                ShellEvent::WorkspaceChanged(id) => {
+                    if let Some(w) = Workspace::ALL.into_iter().find(|w| commands::workspace_id(*w) == *id) {
+                        this.store.update(cx, |s, cx| s.set_workspace(w, cx));
+                    }
+                }
+                ShellEvent::LookChanged(look) => {
+                    let look = *look;
+                    this.store.update(cx, |s, cx| {
+                        s.set_theme_choice(Some(look.dark), cx);
+                        s.set_accent(look.accent, cx);
+                        s.set_dark(look.dark, cx);
+                    });
+                }
+            }),
+            cx.subscribe(&store, |this, _, e: &AppEvent, cx| {
+                if matches!(e, AppEvent::RecordingChanged | AppEvent::WorkspaceChanged | AppEvent::Status | AppEvent::JobChanged) {
+                    this.sync_shell(cx);
+                    cx.notify();
+                }
+            }),
+            // Follow the system's light / dark until the user picks one
+            cx.observe_window_appearance(window, |this, window, cx| {
+                if this.store.read(cx).session.dark.is_none() {
+                    Self::apply_theme(&this.store, None, window, cx);
+                }
+            }),
+        ];
+        let this = Self { store, shell, registry, explore, pipeline, floating, _subs: subs };
+        this.sync_shell(cx);
+        this
+    }
+
+    /// Tells the frame what changed in the store: the workspace, the status line, the recording.
+    fn sync_shell(&self, cx: &mut App) {
+        let s = self.store.read(cx);
+        let workspace = commands::workspace_id(s.workspace);
+        let status = s.status.clone();
+        // The file, then the source the active view reads (what is drawn and edited)
+        let project: Option<SharedString> = s.recording.as_ref().map(|r| {
+            let source = s.active_view().map(|v| s.view_source(v)).unwrap_or_else(|| r.sources.default_entry().id.clone());
+            let several = r.sources.entries().len() > 1;
+            let name = if several { format!("{} · {}", r.name, r.sources.entry(&source).name) } else { r.name.clone() };
+            format!("{name} · {}", r.summary_of(&source)).into()
+        });
+        self.shell.update(cx, |sh, cx| {
+            if sh.workspace_id() != workspace {
+                sh.set_workspace(&workspace, cx);
+            }
+            if sh.status().as_ref() != status.as_str() {
+                sh.set_status(status, cx);
+            }
+            sh.set_project(Some(project.unwrap_or_else(|| "No recording".into())), cx);
+        });
+    }
+
+    /// Light, dark, or the system's (`None`), with the user's accent (kitchen-ui's look: shared
+    /// grey neutrals, lime unless the user picked another accent); the store learns which, for
+    /// the plot colours.
+    pub(crate) fn apply_theme(store: &Entity<Store>, dark: Option<bool>, window: &mut Window, cx: &mut App) {
+        let accent = store.read(cx).session.accent;
+        theme::configure(dark, accent, window);
+        theme::apply(window, cx);
+        let is_dark = dark.unwrap_or_else(|| theme::system_dark(window));
+        store.update(cx, |s, cx| s.set_dark(is_dark, cx));
+    }
+
+    /// Opens the recording at `path` in Explore. (Sorting folders open in Curation, parked in
+    /// `.refactoring/dspk-app/`.)
+    pub fn open_any(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.store.update(cx, |s, cx| s.open(path, cx));
+    }
+}
+
+impl Render for DspApp {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _ = &self.pipeline;
+        div()
             .id("dspk-app")
-            .track_focus(&self.focus)
             .size_full()
             .relative()
-            .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
-            .on_action(cx.listener(|this, _: &OpenRecording, _, cx| this.prompt_open(Pick::File, cx)))
-            .on_action(cx.listener(|this, _: &OpenRecordingFolder, _, cx| this.prompt_open(Pick::Folder, cx)))
-            .on_action(cx.listener(|this, _: &OpenSynthetic, _, cx| this.open_synthetic(cx)))
-            .on_action(cx.listener(|this, _: &AddTraces, _, cx| this.add_view(TimeViewKind::Traces, cx)))
-            .on_action(cx.listener(|this, _: &AddHeatmap, _, cx| this.add_view(TimeViewKind::Heatmap, cx)))
-            .on_action(cx.listener(|this, _: &ToggleChannels, w, cx| this.toggle_dock(DockPlacement::Left, w, cx)))
-            .on_action(cx.listener(|this, _: &ToggleSettings, w, cx| this.toggle_dock(DockPlacement::Right, w, cx)))
-            .on_action(cx.listener(|this, _: &ToggleTimeline, w, cx| this.toggle_dock(DockPlacement::Bottom, w, cx)))
-            .on_action(cx.listener(|this, _: &ShowHelp, _, cx| {
-                this.show_help = !this.show_help;
-                cx.notify();
-            }))
-            .on_action(cx.listener(|this, _: &ShowPreferences, window, cx| this.toggle_settings(window, cx)))
-            .on_action(cx.listener(|this, _: &ShowAbout, _, cx| {
-                this.show_about = !this.show_about;
-                cx.notify();
-            }))
-            .on_action(|_: &Quit, _, cx: &mut App| cx.quit())
-            .on_action(cx.listener(|this, _: &Undo, _, cx| this.store.update(cx, |s, cx| s.undo(false, cx))))
-            .on_action(cx.listener(|this, _: &Redo, _, cx| this.store.update(cx, |s, cx| s.undo(true, cx))))
-            .on_action(cx.listener(|this, _: &CommandPalette, w, cx| this.toggle_palette(w, cx)))
             // A file or folder dropped anywhere opens it
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
                 if let Some(p) = paths.paths().first().cloned() {
                     this.open_any(p, cx);
                 }
             }))
-            .child(self.title_bar(cx))
-            .child(div().flex_1().min_h_0().child(self.body(window, cx)))
-            .child(self.status_bar(cx))
+            .child(self.shell.clone())
             .child(self.floating.clone())
-            .children(self.palette.as_ref().map(|(p, _)| p.clone()))
-            .when(self.show_help, |d| d.child(self.help(cx)))
-            .when(self.show_about, |d| d.child(self.about(cx)))
-            .children(self.settings.clone().map(|s| self.modal("settings", s.into_any_element(), |a| a.settings = None, cx)))
-            .children(self.browser.as_ref().map(|(b, _)| b.clone()).map(|b| self.modal("server-browser", b.into_any_element(), |a| a.browser = None, cx)))
     }
 }
 
@@ -743,6 +565,114 @@ mod tests {
             let start = store.read(cx).timeline.window_start_sec;
             vs.iter().all(|v| v.read(cx).shown.as_ref().is_some_and(|s| (s.start - start).abs() < 1e-9))
         })
+    }
+
+    /// Closes whatever a command opened (Settings, the search, an overlay), so the next starts
+    /// from the plain app.
+    fn reset(cx: &mut TestAppContext, window: AnyWindowHandle, app: &Entity<DspApp>) {
+        let shell = cx.update(|cx| app.read(cx).shell.clone());
+        cx.update_window(window, |_, window, cx| {
+            shell.update(cx, |s, cx| {
+                s.show_settings(None, window, cx);
+                s.set_overlay(None, window, cx);
+                if s.search().is_some() {
+                    s.open_search(window, cx);
+                }
+            })
+        })
+        .unwrap();
+    }
+
+    /// Every command runs and the app still draws after each (those opening a system file dialog,
+    /// quitting, benchmarking the GPU or writing files aside; those that cannot run now say why,
+    /// those needing arguments say which).
+    #[gpui_kit::test]
+    fn every_command_runs(cx: &mut TestAppContext) {
+        let (window, store, app) = open(cx);
+        install(cx, &store);
+        let registry = cx.update(|cx| app.read(cx).registry.clone());
+        let commands = registry.all();
+        assert!(commands.len() > 60, "every action is a command: {}", commands.len());
+        let skip = ["file.open", "file.open_folder", "file.open_server", "file.tune", "file.close_recording", "file.clear_recent", "app.quit", "pipeline.add_recording_file", "pipeline.write", "process.op.recording_from_file"];
+        for c in commands.into_iter().filter(|c| !skip.contains(&c.id.as_ref())) {
+            let r = cx.update_window(window, |_, window, cx| registry.run(&c.id, serde_json::Value::Null, window, cx)).unwrap();
+            if let Err(e) = r {
+                assert!(!e.is_empty(), "{} says why it did not run", c.id);
+            }
+            cx.run_until_parked();
+            cx.update_window(window, |_, window, cx| window.render_frame(cx)).unwrap();
+            reset(cx, window, &app);
+        }
+    }
+
+    /// Every menu of every workspace names registered commands, its providers' entries too.
+    #[gpui_kit::test]
+    fn every_menu_entry_is_a_command(cx: &mut TestAppContext) {
+        use kitchen_shell::MenuItem;
+        let (_window, store, app) = open(cx);
+        install(cx, &store);
+        let registry = cx.update(|cx| app.read(cx).registry.clone());
+        fn walk(items: &[MenuItem], registry: &kitchen_shell::Registry, cx: &gpui_kit::App, out: &mut Vec<String>) {
+            for i in items {
+                match i {
+                    MenuItem::Command(id) | MenuItem::Run { command: id, .. } => out.push(id.to_string()),
+                    MenuItem::Submenu { items, .. } => walk(items, registry, cx, out),
+                    MenuItem::Provided(p) => walk(&registry.provided(p, cx), registry, cx, out),
+                    _ => {}
+                }
+            }
+        }
+        let mut menus = crate::commands::explore_menus();
+        menus.extend(crate::commands::other_menus());
+        menus.extend(crate::screens::pipeline::PipelineView::menu_specs());
+        let mut ids = Vec::new();
+        cx.update(|cx| {
+            for m in &menus {
+                walk(&m.items, &registry, cx, &mut ids);
+            }
+            walk(&crate::commands::app_menu(cx), &registry, cx, &mut ids);
+        });
+        assert!(ids.len() > 60, "the menus hold the commands: {}", ids.len());
+        for id in ids {
+            assert!(registry.get(&id).is_some(), "{id} is registered");
+        }
+    }
+
+    /// Settings chosen in the search opens (the command runs once the search has closed), with
+    /// dsp-kitchen's sections after the frame's Appearance.
+    #[gpui_kit::test]
+    fn settings_opens_from_the_search(cx: &mut TestAppContext) {
+        let (window, _store, app) = open(cx);
+        let shell = cx.update(|cx| app.read(cx).shell.clone());
+        cx.update_window(window, |_, window, cx| shell.update(cx, |s, cx| s.open_search(window, cx))).unwrap();
+        let search = cx.update(|cx| shell.read(cx).search().expect("the search is open"));
+        cx.update(|cx| search.update(cx, |_, cx| cx.emit(kitchen_shell::SearchEvent::Run("shell.settings".into()))));
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| window.render_frame(cx)).unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert!(shell.read(cx).search().is_none(), "the search closed");
+            assert_eq!(shell.read(cx).settings_section(), Some(0), "Settings opened");
+        });
+        for (i, sec) in crate::screens::settings::Section::ALL.iter().enumerate() {
+            assert_eq!(cx.update(|cx| shell.read(cx).settings_index(sec.title())), Some(i + 1));
+            cx.update_window(window, |_, window, cx| shell.update(cx, |s, cx| s.show_settings(Some(i + 1), window, cx))).unwrap();
+            cx.update_window(window, |_, window, cx| window.render_frame(cx)).unwrap();
+        }
+    }
+
+    /// The workspace follows the store and the frame alike.
+    #[gpui_kit::test]
+    fn the_frame_and_the_store_share_the_workspace(cx: &mut TestAppContext) {
+        let (window, store, app) = open(cx);
+        let shell = cx.update(|cx| app.read(cx).shell.clone());
+        cx.update(|cx| store.update(cx, |s, cx| s.set_workspace(Workspace::Analytics, cx)));
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| window.render_frame(cx)).unwrap();
+        assert_eq!(cx.update(|cx| shell.read(cx).workspace_id()).as_ref(), "analytics");
+        cx.update(|cx| shell.update(cx, |s, cx| s.set_workspace("pipeline", cx)));
+        cx.run_until_parked();
+        assert_eq!(cx.update(|cx| store.read(cx).workspace), Workspace::Pipeline);
     }
 
     /// Recordings load once each; closing the active one switches to another, then to none, and
@@ -1154,7 +1084,8 @@ mod tests {
         wait_until(cx, window, |cx| all_drawn_for_window(cx, &store, &app));
 
         // A third view joins the dock beside the focused one and renders too
-        cx.update(|cx| app.update(cx, |a, cx| a.add_view(TimeViewKind::Traces, cx)));
+        let registry = cx.update(|cx| app.read(cx).registry.clone());
+        cx.update_window(window, |_, window, cx| registry.run("view.add_traces", serde_json::Value::Null, window, cx)).unwrap().unwrap();
         cx.run_until_parked();
         assert_eq!(views(cx, &app).len(), 3);
         wait_until(cx, window, |cx| all_drawn_for_window(cx, &store, &app));
@@ -1174,7 +1105,7 @@ mod tests {
         // The sides open and close: the icon bar at the left edge, and the panel's hide button
         let explore = cx.update(|cx| app.read(cx).explore.clone());
         let open = |cx: &mut TestAppContext| cx.update(|cx| explore.read(cx).is_side_open(DockPlacement::Left));
-        cx.update_window(window, |_, window, cx| app.update(cx, |a, cx| a.toggle_dock(DockPlacement::Left, window, cx))).unwrap();
+        cx.update_window(window, |_, window, cx| registry.run("view.channels", serde_json::Value::Null, window, cx)).unwrap().unwrap();
         cx.run_until_parked();
         assert!(!open(cx));
         cx.update_window(window, |_, window, cx| {
@@ -1236,7 +1167,7 @@ mod tests {
 
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
-            window.click("theme", cx);
+            window.click("title-theme", cx);
         })
         .unwrap();
         cx.run_until_parked();
@@ -1449,6 +1380,134 @@ mod tests {
         let path = dir.join("two.twosource");
         std::fs::write(&path, b"").unwrap();
         ops_on_a_second_source(cx, path, "emg", 30.0, 60.0);
+    }
+
+    /// An op added on the Pipeline canvas (a node after the recording, wired into the view, as the
+    /// canvas does) shows in Explore's view at once, back on Explore, without reopening anything.
+    #[gpui_kit::test]
+    fn pipeline_edits_show_in_explore(cx: &mut TestAppContext) {
+        use crate::domain::command::SessionCommand;
+        use crate::domain::graph::NodeKind;
+        test_formats();
+        let dir = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/dspk-app-core-tests"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("canvas.twosource");
+        std::fs::write(&path, b"").unwrap();
+        let (window, store, app) = open(cx);
+        cx.update(|cx| store.update(cx, |s, cx| s.open(path.clone(), cx)));
+        wait_long(cx, window, |cx| cx.update(|cx| store.read(cx).recording.is_some()));
+        let vm = views(cx, &app).into_iter().next().expect("an Explore view");
+        wait_long(cx, window, |cx| cx.update(|cx| !vm.read(cx).view.doc_view.is_empty()));
+        let view = cx.update(|cx| vm.read(cx).view.doc_view.clone());
+        eprintln!("explore draws {view}; active {:?}; views {:?}", cx.update(|cx| store.read(cx).doc.active_view.clone()), cx.update(|cx| store.read(cx).doc.views.iter().map(|v| v.id.clone()).collect::<Vec<_>>()));
+        cx.update(|cx| store.update(cx, |s, cx| s.set_workspace(crate::navigation::route::Workspace::Pipeline, cx)));
+        cx.run_until_parked();
+        // The canvas: a node after the view's recording, then wired into the view
+        let source = cx.update(|cx| store.read(cx).doc.graph.input(&view).map(str::to_string)).expect("the view's input");
+        let node: dspk_pipeline::Node = serde_json::from_value(serde_json::json!({"op": "scale", "alpha": 3.0, "beta": 0.0})).unwrap();
+        cx.update(|cx| store.update(cx, |s, cx| s.execute(SessionCommand::AddNode { kind: NodeKind::Op { enabled: true, node }, x: 0.0, y: 0.0, id: Some("triple".into()), after: Some(source.clone()) }, cx))).unwrap();
+        cx.update(|cx| store.update(cx, |s, cx| s.execute(SessionCommand::Connect { from: "triple".into(), to: view.clone() }, cx))).unwrap();
+        cx.run_until_parked();
+        let ops = cx.update(|cx| store.read(cx).doc.view(&view).map(|v| v.ops.len()));
+        assert_eq!(ops, Some(1), "the view's chain has the op");
+        assert!(cx.update(|cx| store.read(cx).preview_of(&view).is_some()), "a preview of the edited view; status: {}", cx.update(|cx| store.read(cx).status.clone()));
+        // Back on Explore: the view draws the preview
+        cx.update(|cx| vm.update(cx, |vm, _| vm.shown = None));
+        cx.update(|cx| store.update(cx, |s, cx| s.set_workspace(crate::navigation::route::Workspace::Explore, cx)));
+        wait_long(cx, window, |cx| cx.update(|cx| vm.read(cx).shown.is_some()));
+        let drawn = cx.update(|cx| vm.read(cx).shown_view(store.read(cx)).map(|v| v.id.clone()));
+        assert_eq!(drawn.as_deref(), Some(view.as_str()), "Explore draws the edited view");
+    }
+
+    /// A chain built in the Pipeline from scratch (the recording added again, an op, a new view)
+    /// is what Explore draws at once: the view the recording opened with, empty, leaves.
+    #[gpui_kit::test]
+    fn a_chain_built_in_the_pipeline_shows_in_explore(cx: &mut TestAppContext) {
+        use crate::domain::command::{view_kind, SessionCommand};
+        use crate::domain::graph::NodeKind;
+        test_formats();
+        let dir = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/dspk-app-core-tests"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("built.twosource");
+        std::fs::write(&path, b"").unwrap();
+        let (window, store, app) = open(cx);
+        cx.update(|cx| store.update(cx, |s, cx| s.open(path.clone(), cx)));
+        wait_long(cx, window, |cx| cx.update(|cx| store.read(cx).recording.is_some()));
+        let vm = views(cx, &app).into_iter().next().expect("an Explore view");
+        wait_long(cx, window, |cx| cx.update(|cx| !vm.read(cx).view.doc_view.is_empty()));
+        let first = cx.update(|cx| vm.read(cx).view.doc_view.clone());
+        let recording = cx.update(|cx| store.read(cx).doc.view(&first).unwrap().recording.clone());
+        cx.update(|cx| store.update(cx, |s, cx| s.set_workspace(crate::navigation::route::Workspace::Pipeline, cx)));
+        // As the canvas: the open recording, a node after it, a view after that
+        let node: dspk_pipeline::Node = serde_json::from_value(serde_json::json!({"op": "scale", "alpha": 3.0, "beta": 0.0})).unwrap();
+        cx.update(|cx| {
+            store.update(cx, |s, cx| {
+                s.execute(SessionCommand::AddNode { kind: NodeKind::Source { recording }, x: 0.0, y: 300.0, id: Some("mine".into()), after: None }, cx).unwrap();
+                s.execute(SessionCommand::AddNode { kind: NodeKind::Op { enabled: true, node }, x: 260.0, y: 300.0, id: Some("triple".into()), after: Some("mine".into()) }, cx).unwrap();
+                s.execute(SessionCommand::AddNode { kind: view_kind("Mine".into()), x: 520.0, y: 300.0, id: Some("shown".into()), after: Some("triple".into()) }, cx).unwrap();
+            })
+        });
+        cx.run_until_parked();
+        cx.update(|cx| store.update(cx, |s, cx| s.set_workspace(crate::navigation::route::Workspace::Explore, cx)));
+        wait_long(cx, window, |cx| cx.update(|cx| vm.read(cx).view.doc_view == "shown"));
+        cx.run_until_parked();
+        let s = cx.update(|cx| (store.read(cx).doc.active_view.clone(), store.read(cx).doc.view(&first).is_some(), store.read(cx).preview_of("shown").is_some()));
+        assert_eq!(s, (Some("shown".into()), false, true), "the new chain is active and previewed; the empty view left");
+    }
+
+    /// As the app starts on the Kilosort4 sample with a session document whose chain is already
+    /// there: an op added on the canvas, then one edited, each shows in Explore's view.
+    #[gpui_kit::test]
+    #[ignore = "needs .datasets/kilosort4/ZFM-02370_mini.imec0.ap.short.bin"]
+    fn pipeline_edits_on_the_kilosort_sample(cx: &mut TestAppContext) {
+        use crate::domain::command::SessionCommand;
+        use crate::domain::graph::NodeKind;
+        let root = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
+        let path = std::fs::canonicalize(root.join(".datasets/kilosort4/ZFM-02370_mini.imec0.ap.short.bin")).unwrap();
+        let dir = root.join("target/dspk-app-core-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let doc = dir.join("start-session.json");
+        let chain = serde_json::json!({"dspk_session": crate::domain::session::SESSION_VERSION, "graph": {"nodes": [
+            {"id": "s3", "kind": {"type": "source", "recording": {"path": path, "source": "main"}}},
+            {"id": "iir", "kind": {"type": "op", "node": {"op": "iir", "band": "highpass", "cutoff": [300.0]}}},
+            {"id": "v1", "kind": {"type": "view", "name": "ZFM"}}],
+            "edges": [{"from": "s3", "to": "iir"}, {"from": "iir", "to": "v1"}]}, "active_view": "v1"});
+        std::fs::write(&doc, chain.to_string()).unwrap();
+        let (window, store, app) = open(cx);
+        cx.update(|cx| store.update(cx, |s, cx| s.attach_document(doc.clone(), cx)));
+        cx.update(|cx| store.update(cx, |s, cx| s.open(path.clone(), cx)));
+        wait_long(cx, window, |cx| cx.update(|cx| store.read(cx).recording.is_some()));
+        let vm = views(cx, &app).into_iter().next().expect("an Explore view");
+        wait_long(cx, window, |cx| cx.update(|cx| !vm.read(cx).view.doc_view.is_empty()));
+        let view = cx.update(|cx| vm.read(cx).view.doc_view.clone());
+        let state = |cx: &mut TestAppContext| cx.update(|cx| {
+            let s = store.read(cx);
+            format!("explore draws {view}; active {:?}; views {:?}; preview {}; status {}", s.doc.active_view, s.doc.views.iter().map(|v| (v.id.clone(), v.ops.len())).collect::<Vec<_>>(), s.preview_of(&view).is_some(), s.status)
+        });
+        eprintln!("start: {}", state(cx));
+        assert_eq!(view, "v1", "Explore draws the document's view of the file");
+        let first = cx.update(|cx| store.read(cx).preview_of(&view)).expect("a preview of the chain at start");
+        let read = |p: &std::sync::Arc<dyn dspk_view::SignalBackend>| {
+            let mut x = vec![0.0f32; 2 * 3000];
+            p.read(&[0, 1], 30_000..33_000, &mut x).unwrap();
+            x
+        };
+        let a = read(&first);
+        cx.update(|cx| store.update(cx, |s, cx| s.set_workspace(crate::navigation::route::Workspace::Pipeline, cx)));
+        cx.run_until_parked();
+        let node: dspk_pipeline::Node = serde_json::from_value(serde_json::json!({"op": "scale", "alpha": 3.0, "beta": 0.0})).unwrap();
+        cx.update(|cx| store.update(cx, |s, cx| s.execute(SessionCommand::AddNode { kind: NodeKind::Op { enabled: true, node }, x: 0.0, y: 0.0, id: Some("triple".into()), after: Some("iir".into()) }, cx))).unwrap();
+        cx.update(|cx| store.update(cx, |s, cx| s.execute(SessionCommand::Connect { from: "triple".into(), to: view.clone() }, cx))).unwrap();
+        cx.run_until_parked();
+        eprintln!("after the canvas edit: {}", state(cx));
+        let p = cx.update(|cx| store.read(cx).preview_of(&view)).expect("a preview after the edit");
+        let b = read(&p);
+        assert!(a.iter().zip(&b).all(|(x, y)| (3.0 * x - y).abs() <= 1e-3 * x.abs().max(1.0)), "the preview is the chain with the new op");
+        cx.update(|cx| vm.update(cx, |vm, _| vm.shown = None));
+        cx.update(|cx| store.update(cx, |s, cx| s.set_workspace(crate::navigation::route::Workspace::Explore, cx)));
+        wait_long(cx, window, |cx| cx.update(|cx| vm.read(cx).shown.is_some()));
+        let on_disk = std::fs::read_to_string(&doc).unwrap();
+        assert!(on_disk.contains("triple"), "the edit is saved in the document");
     }
 
     /// The file of the bug report (local only): its EMG source, the report's 4 min 35 s window.

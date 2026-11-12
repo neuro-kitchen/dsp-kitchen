@@ -43,11 +43,14 @@ use super::points::DevicePoints;
 const MAX_CHUNK_DOTS: usize = 1 << 25;
 /// Rows of a chunk are a multiple of this (keeps every chunk's start aligned for binding).
 const CHUNK_ROWS_ALIGN: usize = 64;
-/// Points per partial sum of the k-means++ trial potentials and per block of the draws. Each unit
+/// Points per block of the k-means++ draws (and, before 2026-11-12, of the trial potentials). Each unit
 /// walks its block serially, so small blocks keep the chains short: seeding 200 seeds of 1 416
 /// points × 102 features took 3.4 s with 1024, 241 ms with 64, 76 ms with 16 (RTX 2070; then
 /// launch overhead dominates). Measured by `time_seeding_blocks`.
 const TRIAL_BLOCK: usize = 16;
+/// Points per cube of the trial potentials (one unit per point; a power of two, the runtime's
+/// limit permitting).
+const POTENTIAL_UNITS: usize = 256;
 
 /// Settings of [`execute_bipartite_clustering`] (defaults: the Kilosort4 paper's).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -182,11 +185,14 @@ fn kmeans_plus_plus_seeds_blocked(client: &Client, points: &DevicePoints, k: usi
     let seeds = buffer::upload(client, &init);
     let chosen = buffer::upload(client, &[first]);
     let closest = buffer::upload(client, &vec![f32::MAX; n]);
-    let (sums, cand, partial) = (buffer::empty::<f32>(client, blocks), buffer::empty::<u32>(client, trials), buffer::empty::<f32>(client, trials * blocks));
+    // Trial potentials: one unit per point, a partial sum per cube of `units` points
+    let units = LaunchGeometry::per_row(client, 1, POTENTIAL_UNITS).cube_dim.x as usize;
+    let cubes = n.div_ceil(units);
+    let per_cube = LaunchGeometry::per_row(client, cubes, POTENTIAL_UNITS);
+    let (sums, cand, partial) = (buffer::empty::<f32>(client, blocks), buffer::empty::<u32>(client, trials), buffer::empty::<f32>(client, trials * cubes));
     let per_point = LaunchGeometry::elementwise(client, n);
     let per_block = LaunchGeometry::elementwise(client, blocks);
     let per_trial = LaunchGeometry::elementwise(client, trials);
-    let per_partial = LaunchGeometry::elementwise(client, trials * blocks);
     let update = || {
         // SAFETY: `points` holds `d · n`, `closest` `n`, `chosen` one value
         unsafe {
@@ -205,7 +211,7 @@ fn kmeans_plus_plus_seeds_blocked(client: &Client, points: &DevicePoints, k: usi
     update();
     for s in 1..k {
         // SAFETY: `closest` holds `n`, `sums` `blocks`, `uniforms` `k · trials`, `cand` `trials`,
-        // `partial` `trials · blocks`, `seeds` `k`, `chosen` one value
+        // `partial` `trials · cubes`, `seeds` `k`, `chosen` one value
         unsafe {
             block_sums_kernel::launch::<f32>(
                 client,
@@ -233,28 +239,28 @@ fn kmeans_plus_plus_seeds_blocked(client: &Client, points: &DevicePoints, k: usi
             );
             trial_potentials_kernel::launch::<f32>(
                 client,
-                per_partial.cube_count.clone(),
-                per_partial.cube_dim.clone(),
+                per_cube.cube_count.clone(),
+                per_cube.cube_dim.clone(),
                 BufferArg::from_raw_parts(points.handle.clone(), d * n),
                 BufferArg::from_raw_parts(closest.clone(), n),
                 BufferArg::from_raw_parts(cand.clone(), trials),
-                BufferArg::from_raw_parts(partial.clone(), trials * blocks),
+                BufferArg::from_raw_parts(partial.clone(), trials * cubes),
                 n as u32,
                 d as u32,
+                cubes as u32,
                 trials as u32,
-                block as u32,
-                blocks as u32,
+                units as u32,
             );
             pick_seed_kernel::launch::<f32>(
                 client,
                 CubeCount::Static(1, 1, 1),
                 CubeDim::new_1d(1),
-                BufferArg::from_raw_parts(partial.clone(), trials * blocks),
+                BufferArg::from_raw_parts(partial.clone(), trials * cubes),
                 BufferArg::from_raw_parts(cand.clone(), trials),
                 BufferArg::from_raw_parts(seeds.clone(), k),
                 BufferArg::from_raw_parts(chosen.clone(), 1),
                 trials as u32,
-                blocks as u32,
+                cubes as u32,
                 s as u32,
             );
         }

@@ -65,6 +65,12 @@ pub struct TraceVm {
     _tasks: Vec<Task<()>>,
     _store: Subscription,
     home: Workspace,
+    /// Live events of the window (the chain ends with Crossings), what they were found for, and a
+    /// detection on its way.
+    pub live: Option<(crate::data::live::LiveKey, Arc<Vec<crate::data::events::Event>>)>,
+    live_pending: Option<crate::data::live::LiveKey>,
+    /// Why no live events show (e.g. the window is too wide).
+    pub live_note: Option<String>,
 }
 
 impl EventEmitter<TraceEvent> for TraceVm {}
@@ -135,7 +141,55 @@ impl TraceVm {
             _tasks: vec![frame_task, hover_task],
             _store: sub,
             home: Workspace::Explore,
+            live: None,
+            live_pending: None,
+            live_note: None,
         }
+    }
+
+    /// Finds the window's events again when the view's chain ends with Crossings and the window,
+    /// the channels shown or the chain changed (in the background; the ticks follow).
+    fn update_live(&mut self, signal: &Arc<dyn dspk_view::SignalBackend>, window: (f64, f64), cx: &mut Context<Self>) {
+        let store = self.store.read(cx);
+        let node = if self.view.kind == TimeViewKind::Traces { self.shown_view(store).and_then(|v| crate::data::live::crossings_of(v).map(|n| (v.clone(), n.clone()))) } else { None };
+        let Some((doc, node)) = node else {
+            if self.live.is_some() || self.live_note.is_some() {
+                (self.live, self.live_note) = (None, None);
+                cx.notify();
+            }
+            return;
+        };
+        let rate = signal.info().sample_rate_hz();
+        let samples = (window.0.max(0.0) * rate) as u64..((window.0 + window.1).max(0.0) * rate).ceil() as u64;
+        let channels = self.view.drawn_channels().to_vec();
+        let key = crate::data::live::LiveKey::new(&doc, &channels, samples.clone(), signal);
+        if self.live.as_ref().is_some_and(|(k, _)| *k == key) || self.live_pending.as_ref() == Some(&key) {
+            return;
+        }
+        self.live_pending = Some(key.clone());
+        let signal = signal.clone();
+        let task = gpui_kit::AppContext::background_spawn(cx, async move { crate::data::live::detect(&signal, &channels, samples, &node) });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |vm, cx| {
+                if vm.live_pending.as_ref() != Some(&key) {
+                    return;
+                }
+                vm.live_pending = None;
+                match result {
+                    Ok(events) => {
+                        vm.live = Some((key, Arc::new(events)));
+                        vm.live_note = None;
+                    }
+                    Err(e) => {
+                        vm.live = None;
+                        vm.live_note = Some(e.to_string().trim_start_matches("invalid configuration: ").to_string());
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// The workspace showing this view (Explore's views by default; a plugin's strip its own):
@@ -162,8 +216,52 @@ impl TraceVm {
         &self.store
     }
 
+    /// The sources this view reads: its own recording's when it shows one beside the open one.
     fn sources(&self, cx: &App) -> Option<Arc<SourceSet>> {
-        self.store.read(cx).sources().cloned()
+        let s = self.store.read(cx);
+        match self.foreign(cx) {
+            Some(path) => s.sources_of(&path).cloned(),
+            None => s.sources().cloned(),
+        }
+    }
+
+    /// The recording this view reads when it is not the open one.
+    pub fn foreign(&self, cx: &App) -> Option<std::path::PathBuf> {
+        let path = self.view.recording.as_ref()?;
+        let open = self.store.read(cx).recording.as_ref().and_then(|r| r.path.clone());
+        (open.as_ref() != Some(path)).then(|| path.clone())
+    }
+
+    /// The timeline in this view's recording's time (shifted by the placements for a view of
+    /// another recording).
+    fn timeline(&self, cx: &App) -> crate::domain::timeline::TimelineState {
+        let s = self.store.read(cx);
+        let mut tl = s.timeline.clone();
+        if let Some(path) = self.foreign(cx) {
+            let offset = s.time_offset_of(&path);
+            tl.window_start_sec += offset;
+            tl.current_time_sec += offset;
+        }
+        tl
+    }
+
+    /// Points this view at `source` of the loaded recording `path` (beside the open one): its own
+    /// channel selection (all channels), titled with the file. False when it isn't loaded.
+    pub fn pin_recording(&mut self, path: &std::path::Path, source: &str, cx: &mut Context<Self>) -> bool {
+        let Some(sources) = self.store.read(cx).sources_of(path).cloned() else { return false };
+        let e = sources.entry(source);
+        self.view.recording = Some(path.to_path_buf());
+        self.view.set_source(&e.id, &e.name, &e.unit, e.channels);
+        if self.view.selection.is_empty() || self.view.selection.iter().any(|&c| c >= e.channels) {
+            self.view.set_selection(0..e.channels, e.channels);
+        }
+        self.view.pinned_selection = true;
+        self.view.doc_view.clear();
+        let file = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        self.view.source_name = format!("{file} · {}", e.name);
+        cx.emit(TraceEvent::Changed);
+        self.request_render(cx);
+        true
     }
 
     // ------------------------------------------------------------------------
@@ -198,20 +296,29 @@ impl TraceVm {
         }
         let Some(sources) = self.sources(cx) else { return };
         self.view.needs_render = false;
-        // The pyramid builds in the background, nearest what this view shows first
-        let (source_id, focus) = (self.view.source.clone(), self.store.read(cx).timeline.window_start_sec);
-        self.store.update(cx, |s, cx| s.focus_pyramid(&source_id, focus, cx));
+        let foreign = self.foreign(cx).is_some();
+        let timeline = self.timeline(cx);
+        // The pyramid builds in the background, nearest what this view shows first (a view of
+        // another recording asks its signal directly)
+        let (source_id, focus) = (self.view.source.clone(), timeline.window_start_sec);
+        if foreign {
+            let ds = sources.get(&self.view.source);
+            ds.signal().focus((focus.max(0.0) * ds.sample_rate) as u64);
+        } else {
+            self.store.update(cx, |s, cx| s.focus_pyramid(&source_id, focus, cx));
+        }
         let store = self.store.read(cx);
         let dataset = sources.get(&self.view.source);
         let on_default = sources.index_of(&self.view.source) == sources.index_of("");
         let events = match &store.recording {
-            Some(r) if on_default => r.events.clone(),
+            Some(r) if on_default && !foreign => r.events.clone(),
             _ => Default::default(),
         };
-        // This view's session view: its processed preview, else the recording as stored
-        let shown = self.shown_view(store);
+        // This view's session view: its processed preview, else the recording as stored (a view
+        // of another recording: as stored)
+        let shown = if foreign { None } else { self.shown_view(store) };
         let signal = shown.and_then(|v| store.preview_of(&v.id)).unwrap_or_else(|| dataset.signal().clone());
-        let mut req = self.view.render_request(&store.timeline, signal, events, store.palette());
+        let mut req = self.view.render_request(&timeline, signal, events, store.palette());
         let window = req.window_start_sec..req.window_start_sec + req.window_sec;
         match req.mode {
             TimeViewKind::Traces if self.view.spikes => {
@@ -222,6 +329,8 @@ impl TraceVm {
             }
             _ => {}
         }
+        let live_signal = (!foreign).then(|| req.signal.clone());
+        let live_window = (req.window_start_sec, req.window_sec);
         let samples_per_px = req.window_sec * dataset.sample_rate / req.width.max(1) as f64;
         let (start, window) = (req.window_start_sec, req.window_sec);
         let tx = self.frames.clone();
@@ -236,6 +345,9 @@ impl TraceVm {
             let _ = tx.try_send(Delivered { shown, scale: Some(scale), complete, elapsed: t0.elapsed(), samples_per_px });
         });
         cx.global::<Services>().pool.request(JobKey::new(self.view.id, RENDER_SLOT), work);
+        if let Some(signal) = live_signal {
+            self.update_live(&signal, live_window, cx);
+        }
     }
 
     fn on_frame(&mut self, d: Delivered, cx: &mut Context<Self>) {
@@ -305,12 +417,49 @@ impl TraceVm {
         }
     }
 
+    /// Events as ticks on (`events`), or off.
+    pub fn set_events(&mut self, events: bool, cx: &mut Context<Self>) {
+        if self.view.events != events {
+            self.view.events = events;
+            cx.emit(TraceEvent::Changed);
+            cx.notify();
+        }
+    }
+
+    /// The ticks alone (the signal hidden), or over the traces.
+    pub fn set_events_only(&mut self, only: bool, cx: &mut Context<Self>) {
+        if self.view.events_only != only {
+            self.view.events_only = only;
+            if only {
+                self.view.events = true;
+            }
+            cx.emit(TraceEvent::Changed);
+            self.request_render(cx);
+        }
+    }
+
     pub fn set_color_by(&mut self, color_by: crate::screens::explore::trace::renderer::ColorBy, cx: &mut Context<Self>) {
         if self.view.color_by != color_by {
             self.view.color_by = color_by;
             cx.emit(TraceEvent::Changed);
             self.request_render(cx);
         }
+    }
+
+    /// Draws session view `id` (a view of this view's source): the chain picked in the Pipeline
+    /// or by an agent. The one it drew before is released (it leaves the session if it holds no
+    /// work).
+    pub fn show_doc_view(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.view.doc_view == id {
+            return;
+        }
+        let old = std::mem::replace(&mut self.view.doc_view, id.to_string());
+        if !old.is_empty() {
+            cx.emit(TraceEvent::Released(old));
+        }
+        self.shown = None;
+        cx.emit(TraceEvent::Changed);
+        self.request_render(cx);
     }
 
     /// Shows another source of the open file (Explore's views: with that source's session view
@@ -410,7 +559,7 @@ impl TraceVm {
         if !pinned {
             let s = self.store.read(cx);
             let channels = s.selection(&self.view.source).to_vec();
-            let total = s.sources().map_or(0, |ss| ss.entry(&self.view.source).channels);
+            let total = self.sources(cx).map_or(0, |ss| ss.entry(&self.view.source).channels);
             self.view.set_selection(channels, total);
         }
         cx.emit(TraceEvent::Changed);
@@ -418,7 +567,7 @@ impl TraceVm {
     }
 
     fn total_channels(&self, cx: &App) -> usize {
-        self.store.read(cx).sources().map_or(0, |s| s.entry(&self.view.source).channels)
+        self.sources(cx).map_or(0, |s| s.entry(&self.view.source).channels)
     }
 
     pub fn set_selection(&mut self, channels: impl IntoIterator<Item = usize>, cx: &mut Context<Self>) {
@@ -456,6 +605,29 @@ impl TraceVm {
         Ok(())
     }
 
+    /// Double-click on a channel: show it alone, or go back when one is already shown alone.
+    pub fn toggle_solo(&mut self, channel: usize, cx: &mut Context<Self>) {
+        if !self.view.unsolo() {
+            self.view.solo(channel);
+        }
+        if !self.view.pinned_selection {
+            // Back from solo on a view that follows the shared selection: catch up with it
+            let s = self.store.read(cx);
+            let channels = s.selection(&self.view.source).to_vec();
+            let total = self.sources(cx).map_or(0, |ss| ss.entry(&self.view.source).channels);
+            self.view.set_selection(channels, total);
+        }
+        cx.emit(TraceEvent::Changed);
+        self.request_render(cx);
+    }
+
+    /// Esc: back from a channel shown alone (nothing otherwise).
+    pub fn leave_solo(&mut self, cx: &mut Context<Self>) {
+        if let Some(ch) = self.view.solo.as_ref().map(|s| s.channel) {
+            self.toggle_solo(ch, cx);
+        }
+    }
+
     /// Scrolls so `channel` is on screen; false when this view does not show it.
     pub fn reveal(&mut self, channel: usize, cx: &mut Context<Self>) -> bool {
         let found = self.view.reveal(channel);
@@ -479,7 +651,8 @@ impl TraceVm {
         let dataset = sources.get(&self.view.source);
         let (w, h) = (self.view.canvas_width as f32, self.view.canvas_height as f32);
         self.view.hover_seq += 1;
-        let target = self.view.hover_target(fx * w, fy * h, &dataset, &self.store.read(cx).timeline);
+        let timeline = self.timeline(cx);
+        let target = self.view.hover_target(fx * w, fy * h, &dataset, &timeline);
         match target {
             HoverTarget::Text(text) => {
                 self.hover = text;

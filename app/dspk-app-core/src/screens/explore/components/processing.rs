@@ -23,7 +23,7 @@ use gpui_kit::{
 };
 use serde_json::Value;
 
-use crate::ui::param_editor::{Commit, ParamEditor};
+use crate::ui::param_editor::{Commit, EditNode as _, ParamEditor};
 
 use crate::data::store::{AppEvent, Store};
 use crate::domain::command::SessionCommand;
@@ -273,7 +273,7 @@ impl ProcessingPanel {
                 let (store, view, op) = (self.store.clone(), view.id.clone(), op.id.clone());
                 Rc::new(move |node, cx| store.update(cx, |s, cx| s.execute(SessionCommand::SetOp { view: view.clone(), op: op.clone(), node }, cx)).map(|_| ()).map_err(|e| e.to_string()))
             };
-            self.params.update(cx, |p, cx| p.set_target(&format!("{}/{}", view.id, op.id), &op.node, commit, window, cx));
+            self.params.update(cx, |p, cx| p.set_node(&format!("{}/{}", view.id, op.id), &op.node, commit, window, cx));
             Section::new("Parameters")
                 .child(self.params.clone())
                 .child(div().text_xs().text_color(muted).child(format!("Applies to the {in_view} channels of this view. Enter applies a value.")))

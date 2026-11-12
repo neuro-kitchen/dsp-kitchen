@@ -35,6 +35,9 @@ target
 # Added by cargo
 
 /target
+# Local overrides, not shared, such as
+# [patch.crates-io] kitchen-ui = { path = "../kitchen/crates/kitchen-ui" }
+.cargo/config.toml
 
 
 # Python

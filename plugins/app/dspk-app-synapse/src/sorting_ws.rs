@@ -37,6 +37,7 @@ use crate::sorting::{compute_isi_histogram, write_start_sec, Snippets, SortingDa
 use crate::strip::{view_signal, BottomStrip};
 use crate::templates::TemplateGrid;
 use dspk_app_core::ui::panel_edge::{follow_panel_drag, panel_edge, rail, toggle_item, PanelResize, Side, RAIL_W};
+use dspk_app_core::ui::theme::{PANE_GAP, RADIUS_LG};
 use crate::{plots, plugin_data, runs_of, sorting_of, state, SynapseEvent, ID};
 
 /// Widths of the side columns (logical px), card size (logical and rendered px).
@@ -474,7 +475,7 @@ impl SortingWorkspace {
         let done = move |s: &mut Store, path: PathBuf, cx: &mut Context<Store>| {
             if let Some(t) = start {
                 if let Err(e) = write_start_sec(&path, t) {
-                    s.set_status(format!("{}: {e}", path.display()), cx);
+                    s.set_status(format!("{}: {e}", dspk_app_core::domain::paths::short_path(&path)), cx);
                 }
             }
             let Some(v) = s.doc.view(&id).cloned() else { return };
@@ -560,7 +561,6 @@ impl SortingWorkspace {
                             cx.notify();
                         });
                     })
-                    .full_width()
                 };
                 let about = d.sorters.get(self.sorter).map(|s| s.about.clone()).unwrap_or_default();
                 let recipes: Vec<String> = self.store.read(cx).doc.recipes.values().filter(|r| r.is_sorter()).map(|r| r.name.clone()).collect();
@@ -573,7 +573,7 @@ impl SortingWorkspace {
                             recipes.join(", ")
                         )))
                     })
-                    .child(div().text_xs().text_color(muted).truncate().child(format!("dspk-cli-sorter {} · {}", d.version, d.program.display())))
+                    .child(div().text_xs().text_color(muted).truncate().child(format!("dspk-cli-sorter {} · {}", d.version, dspk_app_core::domain::paths::short_path(&d.program))))
             }
         };
         let probe = state(cx).map_or(0, |s| s.read(cx).probe);
@@ -586,8 +586,8 @@ impl SortingWorkspace {
             }
         });
         let part = Section::new("Part of the recording")
-            .child(row("Start (s)", div().w_full().child(Input::new(&self.start).small()), cx))
-            .child(row("Duration (s)", div().w_full().child(Input::new(&self.duration).small()), cx))
+            .child(row("Start (s)", div().w_full().child(Input::new(&self.start).small())))
+            .child(row("Duration (s)", div().w_full().child(Input::new(&self.duration).small())))
             .child({
                 let me = me.clone();
                 Button::new("sorting-visible-window").ghost().xsmall().label("Use the visible window").on_click(move |_, window, cx| {
@@ -595,7 +595,7 @@ impl SortingWorkspace {
                 })
             })
             .child(div().text_xs().text_color(muted).child("Sort a minute first to try settings; an empty duration sorts to the end."))
-            .child(row("Probe", probe_pick, cx));
+            .child(row("Probe", probe_pick));
         // Each parameter: its name over a full-width input (its default as the placeholder), its
         // help under it; nothing wider than the panel
         let params = v_flex().gap_3().children(self.inputs.iter().map(|(p, input)| {
@@ -735,7 +735,7 @@ impl SortingWorkspace {
                         .child(div().text_xs().text_color(muted).child(info.quality_label.clone())),
                 )
                 .child(img(image.clone()).w(px(CARD_W)).h(px(CARD_IMG_H)))
-                .child(h_flex().h(px(22.)).px_2().text_xs().text_color(muted).child(format!("spikes {} · {:.2} Hz · SNR {:.1}", info.num_spikes, info.firing_rate_hz, info.snr)))
+                .child(h_flex().h(px(22.)).px_2().text_xs().text_color(muted).child(format!("spikes {} · {:.2} Hz · SNR {}", info.num_spikes, info.firing_rate_hz, if info.snr.is_finite() { format!("{:.1}", info.snr) } else { "—".into() })))
         });
         let title = match channel {
             Some(c) => format!("Channel {c} · {n_units} unit{}{}", if n_units == 1 { "" } else { "s" }, if n_units > MAX_CARDS { format!(" (largest {MAX_CARDS} shown)") } else { String::new() }),
@@ -861,12 +861,18 @@ impl Render for SortingWorkspace {
                 .into_any_element(),
         };
         let _ = muted;
-        let left_rail = rail(vec![toggle_item(&self.store, "sorting.left", Icon::new(gpui_kit::assets::IconName::SlidersHorizontal), "Sorter, part of the recording, runs", cx)], true, cx);
-        let right_rail = rail(vec![toggle_item(&self.store, "sorting.right", Icon::new(gpui_kit::assets::IconName::Settings2), "The sorter's parameters", cx)], false, cx);
+        let left_rail = rail(vec![toggle_item(&self.store, "sorting.left", Icon::new(gpui_kit::assets::IconName::SlidersHorizontal), "Sorter, part of the recording, runs", cx)]);
+        let right_rail = rail(vec![toggle_item(&self.store, "sorting.right", Icon::new(gpui_kit::assets::IconName::Settings2), "The sorter's parameters", cx)]);
+        // The rails, panels, the centre and the strip are cards on the chrome, PANE_GAP apart
+        // (kitchen-ui); a side panel starts after the padding, its rail and a gap
+        let side_offset = PANE_GAP + RAIL_W + PANE_GAP;
+        let card = || div().rounded(px(RADIUS_LG)).overflow_hidden().bg(bg);
         v_flex()
             .id("sorting-workspace")
             .size_full()
-            .bg(bg)
+            .p(px(PANE_GAP))
+            .gap(px(PANE_GAP))
+            .bg(dspk_app_core::ui::theme::color::chrome())
             .on_drag_move(cx.listener(|this, e: &DragMoveEvent<PanelResize>, _, cx| {
                 follow_panel_drag(&this.store, e, cx);
                 cx.notify();
@@ -876,14 +882,11 @@ impl Render for SortingWorkspace {
                 h_flex()
                     .flex_1()
                     .min_h_0()
+                    .gap(px(PANE_GAP))
                     .child(left_rail)
-                    .when(left_open, |d| {
-                        d.child(div().relative().w(px(left_w)).flex_none().h_full().border_r_1().border_color(border).child(controls).child(panel_edge("sorting.left", Side::Left, RAIL_W)))
-                    })
-                    .child(v_flex().flex_1().min_w_0().h_full().child(tabs).child(centre))
-                    .when(right_open, |d| {
-                        d.child(div().relative().w(px(right_w)).flex_none().h_full().border_l_1().border_color(border).child(parameters).child(panel_edge("sorting.right", Side::Right, RAIL_W)))
-                    })
+                    .when(left_open, |d| d.child(card().relative().w(px(left_w)).flex_none().h_full().child(controls).child(panel_edge("sorting.left", Side::Left, side_offset))))
+                    .child(card().flex().flex_col().flex_1().min_w_0().h_full().child(tabs).child(centre))
+                    .when(right_open, |d| d.child(card().relative().w(px(right_w)).flex_none().h_full().child(parameters).child(panel_edge("sorting.right", Side::Right, side_offset))))
                     .child(right_rail),
             )
             .child(self.strip.clone())

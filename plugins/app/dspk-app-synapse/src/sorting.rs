@@ -97,7 +97,7 @@ pub struct SortingData {
 
 impl SortingData {
     pub fn load(path: &Path) -> Result<Self> {
-        let store = SortingZarr::read(path).with_context(|| format!("Failed to read {}", path.display()))?;
+        let store = SortingZarr::read(path).with_context(|| format!("Failed to read {}", dspk_app_core::domain::paths::short_path(&path)))?;
         let mut data = Self::from_store(path, store);
         // A sorting of a part of the recording: its times count from the part's start
         let offset = start_sec(path).map_or(0, |s| (s * data.sample_rate).round().max(0.0) as u64);

@@ -66,7 +66,7 @@ pub fn section(store: &Entity<Store>, view: &ViewDoc, _window: &mut Window, cx: 
                 .child(div().text_xs().text_color(muted).child("Click a unit to show or hide it (windows ≤ 30 s)."));
         }
         (Some(path), None) => {
-            section = section.child(div().text_xs().text_color(muted).child(format!("Loading {}…", path.display()))).child(detach(store, view));
+            section = section.child(div().text_xs().text_color(muted).child(format!("Loading {}…", dspk_app_core::domain::paths::short_path(&path)))).child(detach(store, view));
         }
         (None, _) => {
             section = section.child(div().text_xs().text_color(muted).child("No sorting linked to this view."));
@@ -103,8 +103,8 @@ pub fn section(store: &Entity<Store>, view: &ViewDoc, _window: &mut Window, cx: 
         .child(section)
         .child(
             Section::new("Sort")
-                .child(dspk_app_core::ui::widgets::row("Sorter", sorter_pick, cx))
-                .child(dspk_app_core::ui::widgets::row("Probe", probe_pick, cx))
+                .child(dspk_app_core::ui::widgets::row("Sorter", sorter_pick))
+                .child(dspk_app_core::ui::widgets::row("Probe", probe_pick))
                 .child(run)
                 .child(div().text_xs().text_color(muted).child(input_note)),
         )

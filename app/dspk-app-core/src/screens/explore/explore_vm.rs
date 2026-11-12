@@ -2,7 +2,7 @@
 //! settings panel edits), and where a new one goes. The dock decides where they sit; this decides
 //! what they are.
 
-use gpui_kit::{AppContext as _, Context, Entity, EventEmitter, Subscription};
+use gpui_kit::{App, AppContext as _, Context, Entity, EventEmitter, Subscription};
 
 use crate::screens::explore::trace::renderer::TimeViewKind;
 use crate::screens::explore::trace::view::ViewId;
@@ -27,6 +27,8 @@ pub struct ExploreVm {
     pub focused: Option<Entity<TraceVm>>,
     next_id: ViewId,
     subs: Vec<(ViewId, Subscription)>,
+    /// Views asked for recordings still loading beside the open one: (recording, kind).
+    pending: Vec<(std::path::PathBuf, TimeViewKind)>,
     _store: Subscription,
 }
 
@@ -34,12 +36,19 @@ impl EventEmitter<ExploreEvent> for ExploreVm {}
 
 impl ExploreVm {
     pub fn new(store: Entity<Store>, cx: &mut Context<Self>) -> Self {
-        let sub = cx.subscribe(&store, |vm, _, event, cx| {
-            if *event == AppEvent::RecordingChanged {
-                vm.reset(cx);
+        let sub = cx.subscribe(&store, |vm, _, event, cx| match event {
+            AppEvent::RecordingChanged => vm.reset(cx),
+            AppEvent::Document(crate::domain::command::Changed::Views) => vm.follow_active_view(cx),
+            AppEvent::RecordingLoaded(path) => {
+                let (now, later): (Vec<_>, Vec<_>) = std::mem::take(&mut vm.pending).into_iter().partition(|(p, _)| p == path);
+                vm.pending = later;
+                for (path, kind) in now {
+                    vm.add_beside(kind, &path, cx);
+                }
             }
+            _ => {}
         });
-        let mut vm = Self { store, views: Vec::new(), focused: None, next_id: 1, subs: Vec::new(), _store: sub };
+        let mut vm = Self { store, views: Vec::new(), focused: None, next_id: 1, subs: Vec::new(), pending: Vec::new(), _store: sub };
         if vm.store.read(cx).recording.is_some() {
             vm.reset(cx);
         }
@@ -106,9 +115,19 @@ impl ExploreVm {
         } else {
             saved
                 .iter()
-                .map(|s| {
-                    let src = if known(&s.source) { &s.source } else { &default_source };
-                    self.make(s.kind, src, Some(s), cx)
+                .filter_map(|s| match &s.recording {
+                    // A view of another recording: kept while that recording is loaded
+                    Some(path) if self.store.read(cx).sources_of(path).is_some() => {
+                        let vm = self.make(s.kind, &default_source, Some(s), cx);
+                        let source = s.source.clone();
+                        let path = path.clone();
+                        vm.update(cx, |vm, cx| vm.pin_recording(&path, &source, cx)).then_some(vm)
+                    }
+                    Some(_) => None,
+                    None => {
+                        let src = if known(&s.source) { &s.source } else { &default_source };
+                        Some(self.make(s.kind, src, Some(s), cx))
+                    }
                 })
                 .collect()
         };
@@ -125,6 +144,32 @@ impl ExploreVm {
         Some(self.add_on(kind, &source, cx))
     }
 
+    /// A view of `kind` of the recording at `path` beside the open recording's views (the open
+    /// one stays active; time aligned by the placements). Loads `path` first when needed; with
+    /// no recording open, opens it instead.
+    pub fn show_beside(&mut self, kind: TimeViewKind, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        let open = self.store.read(cx).recording.as_ref().and_then(|r| r.path.clone());
+        if open.is_none() || open.as_ref() == Some(&path) {
+            self.store.update(cx, |s, cx| s.open(path, cx));
+            return;
+        }
+        self.pending.push((path.clone(), kind));
+        self.store.update(cx, |s, cx| s.load_beside(path, cx));
+    }
+
+    /// Adds the view of the loaded recording `path` (its default source).
+    fn add_beside(&mut self, kind: TimeViewKind, path: &std::path::Path, cx: &mut Context<Self>) {
+        let Some(active) = self.store.read(cx).sources().map(|s| s.default_entry().id.clone()) else { return };
+        let Some(source) = self.store.read(cx).sources_of(path).map(|s| s.default_entry().id.clone()) else { return };
+        let vm = self.make(kind, &active, None, cx);
+        if !vm.update(cx, |vm, cx| vm.pin_recording(path, &source, cx)) {
+            return;
+        }
+        self.persist_views(cx);
+        cx.emit(ExploreEvent::Added { vm: vm.clone(), below: true });
+        self.focus(vm, cx);
+    }
+
     /// A new view of `kind` on `source`, beside the focused one.
     pub fn add_on(&mut self, kind: TimeViewKind, source: &str, cx: &mut Context<Self>) -> Entity<TraceVm> {
         let vm = self.make(kind, source, None, cx);
@@ -132,6 +177,38 @@ impl ExploreVm {
         cx.emit(ExploreEvent::Added { vm: vm.clone(), below: kind == TimeViewKind::Heatmap });
         self.focus(vm.clone(), cx);
         vm
+    }
+
+    /// The active session view (picked in the Pipeline, made there, or chosen by an agent) is
+    /// drawn here when no view of Explore draws it yet and it reads the open recording: by the
+    /// focused view when it shows that source, else by the first view that does. Explore and the
+    /// Pipeline then show the same chain (before, Explore kept the view it opened with, and a
+    /// chain built in the Pipeline showed only after the app was started again).
+    fn follow_active_view(&mut self, cx: &mut Context<Self>) {
+        let store = self.store.read(cx);
+        let Some(active) = store.doc.active() else { return };
+        if self.views.iter().any(|v| v.read(cx).view.doc_view == active.id) {
+            return;
+        }
+        let open = store.recording.as_ref().and_then(|r| r.path.clone());
+        if open.as_deref() != Some(active.recording.path.as_path()) {
+            return;
+        }
+        let (id, source) = (active.id.clone(), store.view_source(active));
+        let reads = |v: &Entity<TraceVm>, cx: &App| v.read(cx).view.source == source && !v.read(cx).view.doc_view.is_empty();
+        // Every view of that source drawing it unprocessed follows (traces and heatmap together);
+        // a view drawing another chain keeps it, except the focused one
+        let raw = |v: &Entity<TraceVm>, cx: &App| store.doc.view(&v.read(cx).view.doc_view).is_none_or(|d| d.ops.is_empty());
+        let mut targets: Vec<Entity<TraceVm>> = self.views.iter().filter(|v| reads(v, cx) && raw(v, cx)).cloned().collect();
+        if let Some(f) = self.focused.clone().filter(|v| reads(v, cx) && !targets.contains(v)) {
+            targets.push(f);
+        }
+        if targets.is_empty() {
+            targets.extend(self.views.iter().find(|v| reads(v, cx)).cloned());
+        }
+        for vm in targets {
+            vm.update(cx, |vm, cx| vm.show_doc_view(&id, cx));
+        }
     }
 
     /// `vm`'s session view becomes the active one (what Processing edits).

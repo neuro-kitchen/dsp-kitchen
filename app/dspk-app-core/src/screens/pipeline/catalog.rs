@@ -21,6 +21,8 @@ pub enum Template {
     /// A channel map, every channel of the input in order to start (edited in the inspector).
     Remap,
     View,
+    /// A view whose events' windows are stacked (Epochs layout).
+    EpochsView,
     Write,
 }
 
@@ -103,6 +105,15 @@ pub fn catalog() -> Vec<Category> {
             ],
         },
         Category {
+            name: "Events",
+            icon: IconName::ChartNoAxesColumn,
+            items: vec![op(
+                "Crossings",
+                "Events where each channel goes past a level and back (onsets, offsets, peaks); then Write saves them as an event set",
+                json!({"op": "crossings", "level": 50.0, "release": 25.0, "refractory_ms": 50.0}),
+            )],
+        },
+        Category {
             name: "Rate",
             icon: IconName::ChartNoAxesColumn,
             items: vec![op("Resample", "up / down (polyphase FIR); the last op before Write", json!({"op": "resample", "up": 1, "down": 2}))],
@@ -111,8 +122,9 @@ pub fn catalog() -> Vec<Category> {
             name: "Output",
             icon: IconName::Eye,
             items: vec![
-                Item { label: "View", hint: "A stream shown in Explore", template: Template::View },
-                Item { label: "Write", hint: "The chain written to a processed file (float32 Zarr)", template: Template::Write },
+                Item { label: "View", hint: "A stream shown in Explore (traces, with ticks after Crossings)", template: Template::View },
+                Item { label: "Epochs view", hint: "Each event's window stacked per channel, mean ± SD (after Crossings)", template: Template::EpochsView },
+                Item { label: "Write", hint: "The chain written to a processed file (float32 Zarr); after Crossings, its events as an event set", template: Template::Write },
             ],
         },
     ]
@@ -139,6 +151,7 @@ pub fn type_name(node: &Node) -> &'static str {
         Node::Log10 {} => "Log₁₀",
         Node::Laplacian { .. } => "Laplacian",
         Node::Whiten { .. } => "Whiten",
+        Node::Crossings { .. } => "Crossings",
         Node::Resample { .. } => "Resample",
         Node::Remap { .. } => "Remap",
         Node::Read { .. } => "Read",
@@ -198,6 +211,7 @@ pub fn flow_call(node: &Node) -> String {
         Node::Sos { sections, .. } => format!(".sos(sections = {})", sections.len()),
         Node::Fir { taps, .. } => format!(".fir(taps = {})", taps.len()),
         Node::GaussianSmooth { sigma_samples, .. } => format!(".gaussianSmooth(sigma = {sigma_samples})"),
+        Node::Crossings { level, .. } => format!(".crossings(level = {level})"),
         Node::Median { width, .. } => format!(".median(width = {width})"),
         Node::TeagerKaiser { .. } => ".teagerKaiser()".into(),
         Node::Rectify {} => ".map { abs(it) }".into(),
@@ -225,6 +239,7 @@ pub fn describe(kind: &NodeKind) -> (String, String, IconName) {
             (name, format!("flowOf(recording) · {channels}"), IconName::AudioWaveform)
         }
         NodeKind::Op { node, .. } => (type_name(node).to_string(), op_summary(node), IconName::SlidersHorizontal),
+        NodeKind::View { name, display, .. } if display.layout == crate::domain::session::ViewLayout::Epochs => (name.clone(), ".collect(epochs) · stacked in Explore".into(), IconName::Activity),
         NodeKind::View { name, .. } => (name.clone(), ".collect(view) · shown in Explore".into(), IconName::Eye),
         NodeKind::Write {} => ("Write".into(), ".collect(write) · processed file".into(), IconName::ArrowDown),
         NodeKind::Recipe { recipe, overrides, .. } => {

@@ -36,6 +36,10 @@ const DOCUMENT_POLL: Duration = Duration::from_millis(500);
 pub enum AppEvent {
     /// A recording was opened (or closed): views start over.
     RecordingChanged,
+    /// A recording was loaded beside the open one (its views can be added).
+    RecordingLoaded(PathBuf),
+    /// Show the Epochs view of session view `id` in Explore.
+    ShowEpochs(String),
     /// The visible time window moved (views redraw).
     WindowMoved,
     /// The playhead, play state, loop or speed changed (overlays and transport only).
@@ -76,6 +80,9 @@ pub struct RunningJob {
     pub fraction: Option<f32>,
     pub line: String,
     pub cancel: Cancel,
+    /// Its entry in the frame's job list (kitchen-shell): the status bar shows it with a cancel
+    /// button; it ends when this does.
+    pub shell_job: Option<kitchen_shell::jobs::JobHandle>,
 }
 
 /// What a graph node's last job is doing (the Pipeline canvas shows it on the node).
@@ -176,6 +183,8 @@ pub struct Store {
     pub picked_channel: Option<usize>,
     pub picked_op: Option<String>,
     pub job: Option<RunningJob>,
+    /// The compute device processing runs on (named once at start, off the UI thread).
+    pub device: Option<crate::data::device::DeviceInfo>,
     /// The last job that failed: its label and why (cleared when the next job starts).
     pub last_failed: Option<(String, String)>,
     /// Graph nodes the running job works on, and every node's last run.
@@ -188,6 +197,8 @@ pub struct Store {
     future: Vec<SessionDoc>,
     /// The active view and channel subset last applied to the selection.
     applied_view: Option<(String, Option<Vec<usize>>)>,
+    /// Event tables read so far, by path (read on first use; dropped when the set is set again).
+    event_tables: HashMap<PathBuf, Arc<Vec<crate::data::events::Event>>>,
 }
 
 impl EventEmitter<AppEvent> for Store {}
@@ -221,6 +232,7 @@ impl Store {
             picked_channel: None,
             picked_op: None,
             job: None,
+            device: None,
             last_failed: None,
             job_nodes: Vec::new(),
             node_status: HashMap::new(),
@@ -228,6 +240,7 @@ impl Store {
             history: Vec::new(),
             future: Vec::new(),
             applied_view: None,
+            event_tables: HashMap::new(),
         }
     }
 
@@ -300,6 +313,16 @@ impl Store {
                     self.changed(&change, cx);
                     cx.emit(AppEvent::Document(change));
                 }
+                // A chain built in the Pipeline becomes the one shown, while the shown one holds
+                // no work yet (the view a recording opens with): Explore then draws it at once
+                // (a view whose chain changed, or a new view at the end of one)
+                let edited = self.doc.views.iter().find(|v| {
+                    !v.ops.is_empty() && self.doc.active_view.as_deref() != Some(v.id.as_str()) && before.view(&v.id).is_none_or(|b| b.ops != v.ops)
+                });
+                let idle = self.doc.active().is_none_or(|a| a.ops.is_empty());
+                if let Some(id) = edited.filter(|_| idle).map(|v| v.id.clone()) {
+                    let _ = self.execute(SessionCommand::SelectView { view: id }, cx);
+                }
             }
             Err(e) => self.set_status(e.to_string(), cx),
         }
@@ -340,29 +363,122 @@ impl Store {
             if now == of(before, &r) || !r.exists() {
                 continue;
             }
-            let file = crate::data::epochs::epochs_path(&r);
-            if let Err(e) = crate::data::epochs::write(&file, &now) {
-                self.set_status(format!("Epochs not saved to {}: {e}", file.display()), cx);
+            if let Err(e) = crate::data::epochs::save(&r, &now) {
+                self.set_status(format!("Epochs of {} not saved: {e}", crate::domain::paths::short_path(&r)), cx);
             }
+        }
+    }
+
+    /// The events of `set`, once its table is read ([`Self::add_event_set`], or on opening the
+    /// recording).
+    pub fn events_of(&self, set: &crate::domain::epoch::EventSetDoc) -> Option<Arc<Vec<crate::data::events::Event>>> {
+        self.event_tables.get(&set.table).cloned()
+    }
+
+    /// Reads `set`'s table (again) and adds the set to the session, or updates it.
+    pub fn add_event_set(&mut self, set: crate::domain::epoch::EventSetDoc, cx: &mut Context<Self>) {
+        match crate::data::events::read(&set.table) {
+            Ok(events) => {
+                self.event_tables.insert(set.table.clone(), Arc::new(events));
+            }
+            Err(e) => self.set_status(format!("Events {}: {e}", set.name), cx),
+        }
+        let _ = self.execute(SessionCommand::SetEventSet { set }, cx);
+    }
+
+    /// Every event of set `id` that has an offset becomes an epoch of type `response`, named after
+    /// the set (one change: one undo step).
+    pub fn epochs_from_events(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some(set) = self.doc.event_sets.iter().find(|s| s.id == id).cloned() else { return };
+        let Some(events) = self.events_of(&set) else {
+            self.set_status(format!("Events {}: not read", set.name), cx);
+            return;
+        };
+        let epochs: Vec<crate::domain::epoch::EpochDoc> = events
+            .iter()
+            .filter_map(|e| Some((e.onset_s, e.offset_s?)))
+            .filter(|(a, b)| b > a)
+            .enumerate()
+            .map(|(i, (a, b))| crate::domain::epoch::EpochDoc { id: String::new(), recording: set.recording.clone(), name: format!("{} {}", set.name, i + 1), kind: "response".into(), start_sec: a, end_sec: b, notes: String::new() })
+            .collect();
+        let n = epochs.len();
+        if self.execute(SessionCommand::SetEpochs { epochs }, cx).is_ok() {
+            self.set_status(format!("{n} epochs from {}", set.name), cx);
+        }
+    }
+
+    /// Moves the window to the first event of set `id` after the window's centre (wrapping to the
+    /// first), and returns its onset.
+    pub fn next_event(&mut self, id: &str, cx: &mut Context<Self>) -> Option<f64> {
+        let set = self.doc.event_sets.iter().find(|s| s.id == id)?.clone();
+        let events = self.events_of(&set)?;
+        let (a, w) = (self.timeline.window_start_sec, self.timeline.visible_window_sec);
+        let mid = a + w / 2.0;
+        let e = events.iter().find(|e| e.onset_s > mid + 1e-9).or_else(|| events.first())?;
+        let t = e.onset_s;
+        self.set_window(t - w / 2.0, t + w / 2.0, cx);
+        Some(t)
+    }
+
+    /// Reads the tables of the session's event sets not read yet (a session opened from a file).
+    pub fn read_event_tables(&mut self) {
+        for set in &self.doc.event_sets {
+            if !self.event_tables.contains_key(&set.table) {
+                if let Ok(events) = crate::data::events::read(&set.table) {
+                    self.event_tables.insert(set.table.clone(), Arc::new(events));
+                }
+            }
+        }
+    }
+
+    /// The event sets in `path`'s derived store that the session does not list yet.
+    fn load_event_sets(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let Ok(dir) = std::fs::read_dir(crate::data::derived::events_dir(path)) else { return };
+        let mut tables: Vec<PathBuf> = dir.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.join("zarr.json").exists()).collect();
+        tables.sort();
+        for table in tables {
+            if self.doc.event_sets.iter().any(|s| s.table == table) {
+                continue;
+            }
+            let name = table.file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned());
+            self.add_event_set(crate::domain::epoch::EventSetDoc::new(path.to_path_buf(), name, table), cx);
         }
     }
 
     /// The epochs saved next to `path` that the session does not have yet.
     fn load_epochs(&mut self, path: &Path, cx: &mut Context<Self>) {
-        let file = crate::data::epochs::epochs_path(path);
-        match crate::data::epochs::read(&file, path) {
-            Ok(found) => {
-                for mut e in found {
-                    if self.doc.epochs.iter().any(|d| d.recording == e.recording && d.start_sec == e.start_sec && d.end_sec == e.end_sec) {
-                        continue;
-                    }
-                    if self.doc.epochs.iter().any(|d| d.id == e.id) {
-                        e.id.clear();
-                    }
-                    let _ = self.execute(SessionCommand::SetEpoch { epoch: e }, cx);
-                }
+        let mut found = match crate::data::epochs::load(path) {
+            Ok(found) => found,
+            Err(e) => {
+                self.set_status(format!("Epochs of {}: {e}", crate::domain::paths::short_path(&path)), cx);
+                Vec::new()
             }
-            Err(e) => self.set_status(format!("{}: {e}", file.display()), cx),
+        };
+        // Epochs the file holds itself (e.g. NWB intervals), from the recording's start
+        let start = self.sources().map_or(0.0, |s| s.get(&s.default_entry().id.clone()).start_time_sec);
+        found.extend(crate::plugin::plugins().iter().flat_map(|p| p.recording_epochs(path, start)));
+        let same = |a: &crate::domain::epoch::EpochDoc, b: &crate::domain::epoch::EpochDoc| a.recording == b.recording && (a.start_sec - b.start_sec).abs() < 1e-9 && (a.end_sec - b.end_sec).abs() < 1e-9;
+        let mut new: Vec<crate::domain::epoch::EpochDoc> = Vec::new();
+        for mut e in found {
+            if self.doc.epochs.iter().chain(&new).any(|d| same(d, &e)) {
+                continue;
+            }
+            if self.doc.epochs.iter().chain(&new).any(|d| d.id == e.id) {
+                e.id.clear();
+            }
+            new.push(e);
+        }
+        // Ids for the ones without, unique among the new ones too
+        let mut next = 1;
+        for e in new.iter_mut().filter(|e| e.id.is_empty()) {
+            while self.doc.epochs.iter().any(|d| d.id == format!("e{next}")) {
+                next += 1;
+            }
+            e.id = format!("e{next}");
+            next += 1;
+        }
+        if !new.is_empty() {
+            let _ = self.execute(SessionCommand::SetEpochs { epochs: new }, cx);
         }
     }
 
@@ -785,9 +901,27 @@ impl Store {
         let cancel = start(Box::new(move |m| {
             let _ = tx.try_send(m);
         }));
-        self.job = Some(RunningJob { label: label.clone(), fraction: None, line: String::new(), cancel });
+        let shell_job = kitchen_shell::jobs::start("job", &label, false).ok();
+        self.job = Some(RunningJob { label: label.clone(), fraction: None, line: String::new(), cancel, shell_job });
         self.set_status(format!("{label}…"), cx);
         cx.emit(AppEvent::JobChanged);
+        // The frame's cancel button cancels the job (checked every 250 ms while it runs)
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(std::time::Duration::from_millis(250)).await;
+                let running = this.update(cx, |s, cx| {
+                    let Some(j) = &s.job else { return false };
+                    if j.shell_job.as_ref().is_some_and(|h| h.cancelled()) && !j.cancel.cancelled() {
+                        s.cancel_job(cx);
+                    }
+                    true
+                });
+                if !matches!(running, Ok(true)) {
+                    break;
+                }
+            }
+        })
+        .detach();
         let mut done = Some(done);
         cx.spawn(async move |this, cx| {
             while let Ok(m) = rx.recv().await {
@@ -798,6 +932,9 @@ impl Store {
                             if let Some(j) = &mut s.job {
                                 j.line = line.clone();
                                 j.fraction = fraction.or(j.fraction);
+                                if let Some(h) = &j.shell_job {
+                                    h.set(&format!("{label}: {line}"), j.fraction);
+                                }
                             }
                             for id in s.job_nodes.clone() {
                                 if let Some(NodeRun::Running { line: l, fraction: f, .. }) = s.node_status.get_mut(&id) {
@@ -871,6 +1008,12 @@ impl Store {
         let mut outputs = Vec::new();
         for w in &writes {
             let Some((recording, ops)) = self.doc.graph.chain(w, &self.doc.recipes) else { continue };
+            let v = ViewDoc { id: w.clone(), name: w.clone(), recording: recording.clone(), ops: ops.clone(), display: Default::default(), plugins: Default::default() };
+            if jobs::gives_events(&v) {
+                // Events are found on their own (a branched run writes signals)
+                self.set_status(format!("{w} gives events: run it on its own (double-click it)"), cx);
+                continue;
+            }
             outputs.push(jobs::processed_path(&recording.path, w));
             chains.push(ViewDoc { id: w.clone(), name: w.clone(), recording, ops, display: Default::default(), plugins: Default::default() });
         }
@@ -897,6 +1040,22 @@ impl Store {
             self.open(v.recording.path.clone(), cx);
         }
         self.set_workspace(Workspace::Explore, cx);
+        if v.display.layout == crate::domain::session::ViewLayout::Epochs {
+            cx.emit(AppEvent::ShowEpochs(id.to_string()));
+        }
+    }
+
+    /// The event set a Write of `view`'s chain saved (the same recording and ops), if any.
+    pub fn saved_events_of(&self, view: &ViewDoc) -> Option<&crate::domain::epoch::EventSetDoc> {
+        let g = &self.doc.graph;
+        g.nodes.iter().filter(|n| matches!(n.kind, crate::domain::graph::NodeKind::Write {})).find_map(|w| {
+            let (recording, ops) = g.chain(&w.id, &self.doc.recipes)?;
+            if recording.path != view.recording.path || ops != view.ops {
+                return None;
+            }
+            let table = crate::data::derived::events_group(&recording.path, &w.id);
+            self.doc.event_sets.iter().find(|s| s.table == table)
+        })
     }
 
     /// Writes the active view (its recording through its enabled ops) to
@@ -911,13 +1070,45 @@ impl Store {
             self.set_status(format!("{}: no enabled ops to write", v.name), cx);
             return;
         }
+        if jobs::gives_events(&v) {
+            return self.write_events(v, cx);
+        }
         let output = jobs::processed_path(&v.recording.path, &v.id);
         let nodes = self.chain_nodes(&v.id);
         self.start_job_on(
             nodes,
             format!("Write {}", v.name),
             move |send| jobs::write_view(&v, output, move |m| send(m)),
-            |s, path, cx| s.set_status(format!("Written: {}", path.display()), cx),
+            |s, path, cx| s.set_status(format!("Written: {}", crate::domain::paths::short_path(&path)), cx),
+            cx,
+        );
+    }
+
+    /// Finds the events of `v` (a chain ending with Crossings) into the recording's derived store,
+    /// `events/<write id>`, and adds them to the session as an event set (ticks on its traces).
+    fn write_events(&mut self, v: ViewDoc, cx: &mut Context<Self>) {
+        let recording = v.recording.path.clone();
+        if let Err(e) = crate::data::derived::ensure(&recording, &["/events"]) {
+            self.set_status(format!("Events of {}: {e}", crate::domain::paths::short_path(&recording)), cx);
+            return;
+        }
+        let output = crate::data::derived::events_group(&recording, &v.id);
+        let nodes = self.chain_nodes(&v.id);
+        let name = v.name.clone();
+        self.start_job_on(
+            nodes,
+            format!("Events {}", v.name),
+            move |send| jobs::write_events(&v, output, move |m| send(m)),
+            move |s, path, cx| {
+                // The set keeps its look when it is found again
+                let set = match s.doc.event_sets.iter().find(|e| e.table == path) {
+                    Some(e) => e.clone(),
+                    None => crate::domain::epoch::EventSetDoc::new(recording.clone(), name.clone(), path.clone()),
+                };
+                s.add_event_set(set, cx);
+                let n = s.doc.event_sets.iter().find(|e| e.table == path).and_then(|e| s.events_of(e)).map_or(0, |e| e.len());
+                s.set_status(format!("{n} events: {}", crate::domain::paths::short_path(&path)), cx);
+            },
             cx,
         );
     }
@@ -929,6 +1120,11 @@ impl Store {
     /// Plot colours: dark with the dark theme, or when the user keeps plots dark.
     pub fn palette(&self) -> Palette {
         Palette::of(self.dark || self.session.dark_plots)
+    }
+
+    /// Whether the app is drawn dark now (the user's choice or the system's).
+    pub fn is_dark(&self) -> bool {
+        self.dark
     }
 
     /// The theme the app is drawn with now.
@@ -943,6 +1139,14 @@ impl Store {
     /// The user's theme choice (`None`: follow the system), saved.
     pub fn set_theme_choice(&mut self, dark: Option<bool>, cx: &mut Context<Self>) {
         self.session.dark = dark;
+        self.save_session();
+        cx.notify();
+    }
+
+    /// The accent the user picked (`None`: lime), saved. The caller applies the look
+    /// (`DspApp::apply_theme`).
+    pub fn set_accent(&mut self, accent: Option<kitchen_ui::Rgb>, cx: &mut Context<Self>) {
+        self.session.accent = accent;
         self.save_session();
         cx.notify();
     }
@@ -1016,6 +1220,14 @@ impl Store {
         }
     }
 
+    /// Remembers whether Explore shows the Pipeline docked.
+    pub fn set_pipeline_dock(&mut self, on: bool) {
+        if self.session.explore.pipeline_dock != on {
+            self.session.explore.pipeline_dock = on;
+            self.save_session();
+        }
+    }
+
     pub fn set_explore_docks(&mut self, left: bool, right: bool, bottom: bool) {
         let ex = &mut self.session.explore;
         if (ex.left_open, ex.right_open, ex.bottom_open) != (left, right, bottom) {
@@ -1085,6 +1297,13 @@ impl Store {
         }
     }
 
+    /// Records the compute device found at start (the status bar and Settings › Compute show it).
+    pub fn set_device(&mut self, device: crate::data::device::DeviceInfo, cx: &mut Context<Self>) {
+        self.device = Some(device);
+        cx.emit(AppEvent::Status);
+        cx.notify();
+    }
+
     pub fn set_status(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
         self.status = text.into();
         cx.emit(AppEvent::Status);
@@ -1130,12 +1349,58 @@ impl Store {
                         store.install(Recording::new(sources, Some(path.clone())), cx);
                         store.ensure_view(&path, &source, cx);
                         store.load_epochs(&path, cx);
+                        store.load_event_sets(&path, cx);
+                        store.read_event_tables();
                     }
                     Err(e) => store.set_status(format!("Could not open {name}: {e:#}"), cx),
                 }
             });
         })
         .detach();
+    }
+
+    /// Loads the recording at `path` beside the open one (it stays the active one), for views of
+    /// both; [`AppEvent::RecordingLoaded`] when it is ready (at once when already loaded).
+    pub fn load_beside(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if self.recordings().any(|r| r.path.as_ref() == Some(&path)) {
+            cx.emit(AppEvent::RecordingLoaded(path));
+            return;
+        }
+        let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+        self.set_status(format!("Loading {name}…"), cx);
+        let task = cx.background_spawn({
+            let path = path.clone();
+            async move { SourceSet::open(&path) }
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |store, cx| match result {
+                Ok(sources) => {
+                    store.loaded.retain(|r| r.path.as_ref() != Some(&path));
+                    store.loaded.push(Recording::new(sources, Some(path.clone())));
+                    store.set_status(format!("Loaded {name} beside the open recording"), cx);
+                    cx.emit(AppEvent::RecordingLoaded(path));
+                }
+                Err(e) => store.set_status(format!("Could not load {name}: {e:#}"), cx),
+            });
+        })
+        .detach();
+    }
+
+    /// The sources of the loaded recording at `path` (the open one, or one loaded beside it).
+    pub fn sources_of(&self, path: &Path) -> Option<&Arc<SourceSet>> {
+        self.recordings().find(|r| r.path.as_deref() == Some(path)).map(|r| &r.sources)
+    }
+
+    /// Seconds to add to the open recording's time to get `path`'s: the difference of their
+    /// placements on the session's time (0 when either is not placed).
+    pub fn time_offset_of(&self, path: &Path) -> f64 {
+        let open = self.recording.as_ref().and_then(|r| r.path.clone());
+        let at = |p: &Path| self.doc.placements.iter().find(|pl| pl.path == p).map(|pl| pl.start_sec);
+        match (open.as_deref().and_then(at), at(path)) {
+            (Some(a), Some(b)) => a - b,
+            _ => 0.0,
+        }
     }
 
     /// Opens the recording at `path` on a server (a `dspk://` path: drawn from the server's

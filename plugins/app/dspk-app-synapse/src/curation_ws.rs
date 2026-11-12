@@ -23,6 +23,7 @@ use dspk_app_core::ui::widgets::{icon_button, EmptyState};
 use gpui_kit::base::dock::{DockArea, DockLayout, Panel as BasePanel, PanelEvent};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dock::{panel_handle, DockSkin, Panel};
+use dspk_app_core::ui::theme::{PANE_GAP, RADIUS_LG};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -780,7 +781,7 @@ impl CurationWorkspace {
 impl Render for CurationWorkspace {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme();
-        let (muted, border, bg) = (t.muted_foreground, t.border, t.background);
+        let (muted, bg) = (t.muted_foreground, t.background);
         let Some(sorting) = self.sorting(cx) else {
             return div()
                 .size_full()
@@ -883,8 +884,6 @@ impl Render for CurationWorkspace {
             .flex_none()
             .px_2()
             .gap_2()
-            .border_b_1()
-            .border_color(border)
             .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).flex_none().child(SharedString::from(sorting.summary())))
             .child(edit)
             .child(legend)
@@ -908,7 +907,7 @@ impl Render for CurationWorkspace {
                 }
             })
             .collect();
-        let rail = dspk_app_core::ui::panel_edge::rail(rail_items, true, cx);
+        let rail = dspk_app_core::ui::panel_edge::rail(rail_items);
         v_flex()
             .id("curation-workspace")
             .track_focus(&self.focus)
@@ -918,10 +917,14 @@ impl Render for CurationWorkspace {
                 this.strip.update(cx, |_, cx| cx.notify());
             }))
             .on_mouse_down(gpui_kit::MouseButton::Left, cx.listener(|this, _, window, cx| window.focus(&this.focus, cx)))
+            // The toolbar, the rail, the views and the strip are cards on the chrome, PANE_GAP
+            // apart (kitchen-ui)
             .size_full()
-            .bg(bg)
-            .child(toolbar)
-            .child(h_flex().flex_1().min_h_0().child(rail).child(div().flex_1().min_w_0().h_full().child(self.dock.clone())))
+            .p(px(PANE_GAP))
+            .gap(px(PANE_GAP))
+            .bg(dspk_app_core::ui::theme::color::chrome())
+            .child(div().flex_none().rounded(px(RADIUS_LG)).overflow_hidden().bg(bg).child(toolbar))
+            .child(h_flex().flex_1().min_h_0().gap(px(PANE_GAP)).child(rail).child(div().flex_1().min_w_0().h_full().rounded(px(RADIUS_LG)).overflow_hidden().bg(bg).child(self.dock.clone())))
             .child(self.strip.clone())
             .when(self.show_keys, |d| d.child(keys_help(cx)))
             .into_any_element()
@@ -1103,8 +1106,16 @@ impl CurationPanel {
     }
 }
 
+/// On the panel colour, as lumen's panels (the dock behind is not shown).
 impl Render for CurationPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let body = self.body(window, cx);
+        div().size_full().bg(dspk_app_core::ui::theme::color::panel()).child(body)
+    }
+}
+
+impl CurationPanel {
+    fn body(&mut self, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(ws) = self.ws.upgrade() else { return div().into_any_element() };
         let muted = cx.theme().muted_foreground;
         if self.kind == ViewKind::Table {

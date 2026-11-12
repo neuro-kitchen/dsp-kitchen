@@ -1,6 +1,7 @@
 pub mod bipartite;
 pub mod cbss;
 pub mod density_peaks;
+pub mod emeans;
 pub mod gmm;
 pub mod hdbscan;
 pub mod kde_merge;
@@ -21,6 +22,7 @@ pub use hdbscan::{HdbscanOptions, DEFAULT_MIN_CLUSTER_SIZE, cluster_hdbscan, exe
 pub use points::DevicePoints;
 pub use subsample::{subsample_peaks, SubsampleOptions};
 pub use kde_merge::{KdeMergeOptions, KdeMergeResult, cluster_kde_merge, DEFAULT_DIP_THRESHOLD, DEFAULT_KDE_MIN_CLUSTER_SIZE};
+pub use emeans::{BatchLaw, EMeansInit, EMeansOptions, EMeansRecipe, EMeansResult, cluster_emeans, emeans_recipe, execute_emeans, execute_emeans_with_progress};
 pub use kmeans::{KMeansOptions, KMeansResult, execute_cluster_sums, cluster_kmeans, execute_kmeans, execute_kmeans_with_progress};
 pub use matching_pursuit::{MatchingPursuitMatcher, match_spikes_matching_pursuit};
 pub use similarity::{

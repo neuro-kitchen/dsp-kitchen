@@ -49,10 +49,12 @@ fn muted(c: Pixel, chroma: f32) -> Pixel {
 impl Palette {
     pub const DARK: Palette = Palette {
         dark: true,
-        background: Pixel::rgb(9, 13, 19),
-        grid: Pixel::rgb(22, 27, 34),
-        baseline: Pixel::rgb(33, 38, 45),
-        text: Pixel::rgb(139, 148, 158),
+        // lumen's neutrals: the image area (#161616), its rulers and gaps (#222222), its panels
+        // (#2a2a2a), muted text; no blue tint
+        background: Pixel::rgb(22, 22, 22),
+        grid: Pixel::rgb(34, 34, 34),
+        baseline: Pixel::rgb(42, 42, 42),
+        text: Pixel::rgb(140, 140, 140),
         marker: Pixel::rgb(250, 204, 21),
         playhead: Pixel::rgb(244, 63, 94),
         channels: [
@@ -65,9 +67,9 @@ impl Palette {
             Pixel::rgb(249, 115, 22),
             Pixel::rgb(45, 212, 191),
         ],
-        // navy → violet → orange → yellow
+        // the background → violet → orange → yellow
         heat: [
-            (0.00, Pixel::rgb(9, 13, 19)),
+            (0.00, Pixel::rgb(22, 22, 22)),
             (0.25, Pixel::rgb(49, 36, 110)),
             (0.50, Pixel::rgb(150, 45, 120)),
             (0.75, Pixel::rgb(240, 110, 50)),
@@ -77,10 +79,11 @@ impl Palette {
 
     pub const LIGHT: Palette = Palette {
         dark: false,
+        // Plain greys, as lumen's light theme
         background: Pixel::rgb(255, 255, 255),
-        grid: Pixel::rgb(234, 238, 242),
-        baseline: Pixel::rgb(208, 215, 222),
-        text: Pixel::rgb(87, 96, 106),
+        grid: Pixel::rgb(236, 236, 236),
+        baseline: Pixel::rgb(214, 214, 214),
+        text: Pixel::rgb(96, 96, 96),
         marker: Pixel::rgb(191, 135, 0),
         playhead: Pixel::rgb(207, 34, 46),
         channels: [

@@ -13,7 +13,7 @@ categories = ["science", "gui", "visualization"]
 [features]
 # Our builds compile wgpu, cuda and cpu in; hip compiles but is untested (no AMD GPU)
 default = ["wgpu", "cuda", "cpu"]
-wgpu = ["dspk-core/wgpu", "dspk-ops/wgpu", "dspk-pipeline/wgpu"]
+wgpu = ["dspk-core/wgpu", "dspk-ops/wgpu", "dspk-pipeline/wgpu", "dep:wgpu"]
 cpu = ["dspk-core/cpu", "dspk-ops/cpu", "dspk-pipeline/cpu"]
 cuda = ["dspk-core/cuda", "dspk-ops/cuda", "dspk-pipeline/cuda"]
 hip = ["dspk-core/hip", "dspk-ops/hip", "dspk-pipeline/hip"]
@@ -40,12 +40,18 @@ anyhow.workspace = true
 tracing.workspace = true
 image.workspace = true
 bytemuck.workspace = true
-# Pinned exactly: gpui-kit pins a weekly GPUI snapshot (gpui-pre); update deliberately.
-gpui-kit = "=0.9.0"
+# GPUI (pinned in the workspace) and the shared UI of the neuro-kitchen apps
+gpui-kit.workspace = true
+kitchen-ui.workspace = true
+# The shared frame: command registry, menus, search, status bar, Settings, jobs
+kitchen-shell.workspace = true
+sysinfo.workspace = true
+# The wgpu adapters, named in the status bar and Settings › Compute (the same wgpu CubeCL runs on)
+wgpu = { workspace = true, optional = true }
 async-channel = "2.5.0"
 
 [dev-dependencies]
 # Headless UI tests (`#[gpui_kit::test]`, `gpui_kit::test::TestWindowExt`)
-gpui-kit = { version = "=0.9.0", features = ["test-support"] }
+gpui-kit = { workspace = true, features = ["test-support"] }
 # Test fixtures only: real recordings (SpikeGLX) and spike detection
 dspk-synapse.workspace = true

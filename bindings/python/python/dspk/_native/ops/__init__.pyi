@@ -5,6 +5,7 @@ import builtins
 import numpy
 import numpy.typing
 import typing
+from . import crossings
 from . import filter
 from . import layout
 from . import linalg
@@ -16,6 +17,7 @@ __all__ = [
     "LOG10_FLOOR",
     "Pipeline",
     "Stage",
+    "crossings",
     "filter",
     "layout",
     "linalg",
