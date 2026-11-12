@@ -8,7 +8,16 @@ version number.
 
 ### Changed
 
-- **App: kitchen-shell's frame, as lumen's.** The title bar (the DSP App menu, Help, the
+- **App: lumen's surfaces.** Every pane is one flat panel (the panel colour at the root of each
+  panel: Inspector, Channels, Timeline, Processing, the plugin panels, Epochs, the docked Pipeline,
+  Curation's views), so the dock's darker fill no longer shows through; sections are a title and
+  their rows, without a box or a lighter fill (Inspector, Processing, Pipeline, Sorting). Wells stay
+  only under drawn data (traces, heatmaps, plots).
+- **App: the compute device in the status bar** (as lumen's): the runtime chosen in Settings, else
+  wgpu, with the adapter wgpu opens (the discrete GPU first: "GPU · Vulkan · NVIDIA GeForce RTX
+  2070 …"), and "working" while a job runs. Settings › Compute names it and every adapter wgpu found.
+- App: named **dsp-kitchen** in its menu, window title and About (was "DSP App").
+- **App: kitchen-shell's frame, as lumen's.** The title bar (the dsp-kitchen menu, Help, the
   workspaces, the recording, where the app runs, the panel toggles, the theme), the workspace's
   menu row, the status bar (status line, every job with its cancel button, the frame's numbers,
   CPU and memory), Settings, the search and the window frame (rounded while it floats, resized
