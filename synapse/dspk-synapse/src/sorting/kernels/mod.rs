@@ -1,4 +1,5 @@
 pub mod bipartite;
+pub mod emeans;
 pub mod gmm;
 pub mod hdbscan;
 pub mod matching_pursuit;

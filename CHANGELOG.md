@@ -6,6 +6,21 @@ version number.
 
 ## Unreleased
 
+### Added
+
+- **e-means** (`dspk_synapse::sorting::emeans`): mini-batch k-means whose centres follow an
+  exponential moving average of the batches' counts and sums, the step annealed on a cosine, the
+  batch size and step from fitted scaling laws, dead clusters revived by splitting (Bessa et al.,
+  arXiv:2611.09501; constants and details as the authors' faiss reference). The whole run stays on
+  the device: the epoch's shuffle is a keyed permutation computed per point, the batch
+  assignments and sums, the EMA update and the closing means are kernels; per batch only scalar
+  arguments cross. Same result type as k-means. Against k-means (k-means++, 10 restarts) on wgpu:
+  6× faster at n 50k / k 6, 31× at n 200k / k 64, 191× at n 500k / k 256, inertia within 0.21 %.
+  With few, well-separated clusters, random starts can merge two (the reference does the same),
+  so small `k` should start from k-means++.
+- **Kilosort4 / EMUsort: `--template-clustering emeans`** learns the universal templates with
+  e-means (k-means++ start) instead of k-means, to compare (default: kmeans, unchanged).
+
 ### Changed
 
 - The kitchen crates (git, tag v0.0.3) carry their version too, so cargo-deny no longer reads them

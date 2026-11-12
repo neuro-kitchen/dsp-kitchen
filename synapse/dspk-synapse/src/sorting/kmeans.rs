@@ -132,7 +132,7 @@ fn closest_after(client: &Client, points: &DevicePoints, closest: &Handle, candi
 
 /// Greedy k-means++ (sklearn): each new centre is the best of `2 + ln k` candidates drawn by
 /// squared distance. `unreached` holds `n` values of `f32::MAX`.
-fn kmeans_plus_plus(client: &Client, points: &DevicePoints, k: usize, unreached: &Handle, rng: &mut Rng) -> Vec<f32> {
+pub(crate) fn kmeans_plus_plus(client: &Client, points: &DevicePoints, k: usize, unreached: &Handle, rng: &mut Rng) -> Vec<f32> {
     let n = points.n;
     let trials = 2 + (k as f64).ln() as usize;
     let first = (rng.next_u64() as usize) % n;

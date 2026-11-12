@@ -14,7 +14,7 @@ use cubecl::prelude::*;
 use dspk_ops::linalg::{symmetric_eigen, EigenOptions, SecondMomentAccumulator};
 use dspk_core::{DspError, DspResult};
 use dspk_io::container::npy::read_npz;
-use dspk_synapse::sorting::{execute_hdbscan_with_progress, cluster_hdbscan_progress_total, execute_kmeans_with_progress, DevicePoints, HdbscanOptions, KMeansOptions};
+use dspk_synapse::sorting::{execute_emeans_with_progress, execute_hdbscan_with_progress, cluster_hdbscan_progress_total, execute_kmeans_with_progress, DevicePoints, EMeansInit, EMeansOptions, HdbscanOptions, KMeansOptions};
 
 /// Half-window of the local-maximum test of clip detection: ±4 channel indices × ±5 samples
 /// (upstream `loc_range = [4, 5]` over `[channels, samples]`, in Kilosort4 and EMUsort's fork).
@@ -129,11 +129,42 @@ pub enum ClipScaling {
 pub struct LearnOptions {
     pub n_pcs: usize,
     pub n_templates: usize,
+    /// How the universal templates are clustered from the clips.
+    pub clustering: TemplateClustering,
     pub clip_scaling: ClipScaling,
     /// EMUsort: HDBSCAN `min_cluster_size` for outlier removal before k-means (`None`: Kilosort4).
     pub outlier_min_cluster_size: Option<usize>,
     /// Seed of the k-means initialisations.
     pub seed: u64,
+}
+
+/// How the universal templates (`wTEMP`) are found among the clips.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TemplateClustering {
+    /// Lloyd's k-means, k-means++ seeded, 10 restarts (Kilosort4's `KMeans(n_init = 10)`).
+    #[default]
+    KMeans,
+    /// e-means (mini-batch k-means with EMA centres and fitted step and batch laws), seeded by
+    /// k-means++: with as few clusters as the universal templates, random starts can merge two.
+    EMeans,
+}
+
+impl TemplateClustering {
+    /// `kmeans` or `emeans`.
+    pub fn parse(name: &str) -> Result<Self, String> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "kmeans" | "k-means" => Ok(Self::KMeans),
+            "emeans" | "e-means" => Ok(Self::EMeans),
+            other => Err(format!("unknown template clustering {other:?}: kmeans or emeans")),
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::KMeans => "kmeans",
+            Self::EMeans => "emeans",
+        }
+    }
 }
 
 /// Fewest clips HDBSCAN outlier removal is run on (EMUsort: `max(20, min_cluster_size)`).
@@ -203,9 +234,18 @@ pub fn learn_universal_templates_with_progress(
 
     // wTEMP: k-means centres, rows L2-normalized
     let offset = 1 + hdbscan_steps;
-    let options = KMeansOptions { n_init: KMEANS_N_INIT, seed: opts.seed, ..Default::default() };
-    let km = execute_kmeans_with_progress(client, &kept, opts.n_templates, &options, &mut |done, _| progress(offset + done, total));
-    let mut wtemp = km.centers;
+    let mut wtemp = match opts.clustering {
+        TemplateClustering::KMeans => {
+            let options = KMeansOptions { n_init: KMEANS_N_INIT, seed: opts.seed, ..Default::default() };
+            execute_kmeans_with_progress(client, &kept, opts.n_templates, &options, &mut |done, _| progress(offset + done, total)).centers
+        }
+        TemplateClustering::EMeans => {
+            let options = EMeansOptions { init: EMeansInit::PlusPlus, seed: opts.seed, ..Default::default() };
+            // Its epochs fill the steps the k-means restarts would
+            let steps = KMEANS_N_INIT as u64;
+            execute_emeans_with_progress(client, &kept, opts.n_templates, &options, &mut |done, of| progress(offset + done * steps / of.max(1), total)).kmeans.centers
+        }
+    };
     for row in wtemp.chunks_exact_mut(nt) {
         let norm = row.iter().map(|v| v * v).sum::<f32>().sqrt();
         if norm > 0.0 {
