@@ -16,9 +16,9 @@ dependencies = ["numpy>=2.2"]
 
 [project.optional-dependencies]
 # Pinned to this release; .github/workflows/release.yml checks them against the workspace version
-synapse = ["dspk-synapse==0.0.9"]
-app = ["dspk-app==0.0.9"]
-all = ["dspk-synapse==0.0.9", "dspk-app==0.0.9"]
+synapse = ["dspk-synapse==0.0.10"]
+app = ["dspk-app==0.0.10"]
+all = ["dspk-synapse==0.0.10", "dspk-app==0.0.10"]
 
 [project.scripts]
 dspk = "dspk._cli:main"

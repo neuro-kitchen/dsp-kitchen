@@ -32,9 +32,9 @@ ROCm toolkit is needed to install. HIP is included but untested: we have no AMD 
 
 ```toml
 [dependencies]
-dspk = "0.0.9"                     # wgpu, CUDA and CPU
+dspk = "0.0.10"                     # wgpu, CUDA and CPU
 # A lighter build, wgpu only:
-# dspk = { version = "0.0.9", default-features = false, features = ["wgpu", "zarr"] }
+# dspk = { version = "0.0.10", default-features = false, features = ["wgpu", "zarr"] }
 ```
 
 CUDA is loaded when the program runs, and so is HIP (a `hip` feature, Linux only), so building with them needs no toolkit installed. The

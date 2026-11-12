@@ -6,6 +6,8 @@ version number.
 
 ## Unreleased
 
+## 0.0.10 — 2026-11-12
+
 ### Performance
 
 - **Kilosort4 / EMUsort: 34 % faster on the Kilosort4 sample** (CUDA, RTX 2070, warm: 13.4 s →
