@@ -89,6 +89,8 @@ pub struct EmusortConfig {
     pub duplicate_spike_ms: f64,
     /// Pin the result-changing tuned choices; see [`Kilosort4Config::reproducible`].
     pub reproducible: bool,
+    /// See [`Kilosort4Config::template_clustering`].
+    pub template_clustering: crate::TemplateClustering,
     /// Estimate and remove per-channel delays (`remove_chan_delays`).
     pub remove_channel_delays: bool,
     /// HDBSCAN outlier removal before k-means of the universal templates (`remove_spike_outliers`).
@@ -129,6 +131,7 @@ impl Default for EmusortConfig {
             global_merge: ks.global_merge,
             duplicate_spike_ms: ks.duplicate_spike_ms,
             reproducible: ks.reproducible,
+            template_clustering: ks.template_clustering,
             remove_channel_delays: true,
             remove_spike_outliers: true,
             hdbscan_min_cluster_size: HDBSCAN_MIN_CLUSTER_SIZE,
@@ -167,6 +170,7 @@ impl EmusortConfig {
             global_merge: self.global_merge,
             duplicate_spike_ms: self.duplicate_spike_ms,
             reproducible: self.reproducible,
+            template_clustering: self.template_clustering,
         }
     }
 
@@ -200,6 +204,7 @@ impl EmusortConfig {
             global_merge,
             duplicate_spike_ms,
             reproducible,
+            template_clustering,
         } = ks;
         Self {
             nt,
@@ -228,6 +233,7 @@ impl EmusortConfig {
             global_merge,
             duplicate_spike_ms,
             reproducible,
+            template_clustering,
             remove_channel_delays,
             remove_spike_outliers,
             hdbscan_min_cluster_size,

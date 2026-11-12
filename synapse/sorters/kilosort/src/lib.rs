@@ -38,7 +38,7 @@ pub use runner::{
     RunPlan,
 };
 pub use templates::{
-    extract_clips, learn_universal_templates, learn_universal_templates_with_progress, ClipOptions, ClipScaling, LearnOptions, UniversalTemplates,
+    extract_clips, learn_universal_templates, learn_universal_templates_with_progress, ClipOptions, ClipScaling, LearnOptions, TemplateClustering, UniversalTemplates,
 };
 
 use dspk_synapse::NeuralBand;
@@ -126,6 +126,8 @@ pub struct Kilosort4Config {
     /// ([`dspk_core::compute::pin_tuned_choices`]). Off, the tuner may pick differently between runs
     /// (last-bit differences that can move a spike across a threshold).
     pub reproducible: bool,
+    /// How the universal templates are clustered: Kilosort4's k-means, or e-means to compare.
+    pub template_clustering: TemplateClustering,
 }
 
 impl Default for Kilosort4Config {
@@ -157,6 +159,7 @@ impl Default for Kilosort4Config {
             global_merge: GlobalMergeOptions::default(),
             duplicate_spike_ms: 0.25,
             reproducible: true,
+            template_clustering: TemplateClustering::KMeans,
         }
     }
 }
@@ -187,6 +190,7 @@ impl Kilosort4Config {
             n_pcs: self.n_pcs,
             n_templates: self.n_templates,
             clip_scaling: ClipScaling::PerClip,
+            clustering: self.template_clustering,
             outlier_min_cluster_size: None,
             seed: 0,
         }

@@ -100,6 +100,9 @@ macro_rules! kilosort4_settings {
             /// Same input on the same device gives the same spikes
             #[arg(long, default_value_t = $defaults.reproducible, action = clap::ArgAction::Set)]
             reproducible: bool,
+            /// How the universal templates are clustered: kmeans (Kilosort4's) or emeans
+            #[arg(long, default_value_t = $defaults.template_clustering.name().to_string(), value_parser = ["kmeans", "emeans"])]
+            template_clustering: String,
         }
 
         impl $name {
@@ -128,6 +131,7 @@ macro_rules! kilosort4_settings {
                 c.global_merge.min_similarity = self.merge_similarity;
                 c.duplicate_spike_ms = self.duplicate_spike_ms;
                 c.reproducible = self.reproducible;
+                c.template_clustering = dspk_sorter_kilosort::TemplateClustering::parse(&self.template_clustering).expect("checked by clap");
             }
         }
     };
