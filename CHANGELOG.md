@@ -23,6 +23,9 @@ version number.
 
 ### Changed
 
+- kitchen-ui and kitchen-shell 0.0.3 come from crates.io (the same code as the v0.0.3 tag), so
+  `dspk-app-core` can be published again.
+
 - The kitchen crates (git, tag v0.0.3) carry their version too, so cargo-deny no longer reads them
   as wildcard dependencies of `dspk-app-core`.
 

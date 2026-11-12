@@ -102,16 +102,16 @@ rustls-pki-types = "1.16.0"
 # GPUI through gpui-kit. Pinned exactly: gpui-kit pins a weekly GPUI snapshot (gpui-pre); update
 # deliberately, together with kitchen-ui (the two must share one gpui-kit: one `Theme` global)
 gpui-kit = "=0.9.1"
-# The neuro-kitchen apps' shared crates (github.com/neuro-kitchen/kitchen), from one tag:
+# The neuro-kitchen apps' shared crates (github.com/neuro-kitchen/kitchen), from crates.io:
 # kitchen-ui (tokens, widgets, the parameter editor, icon bundling) and kitchen-shell (the frame,
-# the command registry, menus, search, jobs). kitchen-shell depends on kitchen-ui by path inside
-# that repository, so a kitchen-ui from crates.io beside it would be a second copy (a second
-# `Theme` global). Working on kitchen too: a git-ignored `.cargo/config.toml` with
-# [patch."https://github.com/neuro-kitchen/kitchen"]
+# the command registry, menus, search, jobs). Both from the same source, so there is one kitchen-ui
+# (one `Theme` global); from crates.io, so the app crates can be published. Working on kitchen too:
+# a git-ignored `.cargo/config.toml` with
+# [patch.crates-io]
 # kitchen-ui = { path = "../kitchen/crates/kitchen-ui" }
 # kitchen-shell = { path = "../kitchen/crates/kitchen-shell" }
-kitchen-ui = { git = "https://github.com/neuro-kitchen/kitchen", tag = "v0.0.3", version = "0.0.3" }
-kitchen-shell = { git = "https://github.com/neuro-kitchen/kitchen", tag = "v0.0.3", version = "0.0.3" }
+kitchen-ui = "0.0.3"
+kitchen-shell = "0.0.3"
 # The wgpu adapters the app names (the version CubeCL uses: one wgpu in the build)
 wgpu = "30.0.1"
 # The status bar's CPU and memory meters
