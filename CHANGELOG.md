@@ -6,6 +6,20 @@ version number.
 
 ## Unreleased
 
+### Performance
+
+- **Kilosort4 / EMUsort: 34 % faster on the Kilosort4 sample** (CUDA, RTX 2070, warm: 13.4 s →
+  8.9 s; EMUsort on 600 s of HD-EMG: 36.2 s → 33.3 s), with the same units (93 % of the good units
+  match the earlier run at ≥ 0.9; agreement with upstream's saved results unchanged).
+  - The k-means++ seeding of the graph clustering scores its trials with one unit per point:
+    coalesced reads, every point read once for all trials, the sums reduced per cube (before: one
+    unit per trial and block of 16 points, reads 16 apart, each point read once per trial). Seeding
+    200 seeds of 1 416 points × 102 features: 76 → 11 ms; the two clustering stages 3.1 → 1.1 s and
+    2.3 → 0.7 s.
+  - The global merges compute every pair's similarity once and, after a merge, only the merged
+    unit's row and column; before, the pool's whole matrix was recomputed for every unit and every
+    merge and only one row used (1.6 → 0.6 s).
+
 ### Fixed
 
 - **Explore shows the chain built in the Pipeline at once.** Explore's views kept the session view
