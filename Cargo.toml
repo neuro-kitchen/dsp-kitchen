@@ -110,8 +110,8 @@ gpui-kit = "=0.9.1"
 # [patch."https://github.com/neuro-kitchen/kitchen"]
 # kitchen-ui = { path = "../kitchen/crates/kitchen-ui" }
 # kitchen-shell = { path = "../kitchen/crates/kitchen-shell" }
-kitchen-ui = { git = "https://github.com/neuro-kitchen/kitchen", tag = "v0.0.3" }
-kitchen-shell = { git = "https://github.com/neuro-kitchen/kitchen", tag = "v0.0.3" }
+kitchen-ui = { git = "https://github.com/neuro-kitchen/kitchen", tag = "v0.0.3", version = "0.0.3" }
+kitchen-shell = { git = "https://github.com/neuro-kitchen/kitchen", tag = "v0.0.3", version = "0.0.3" }
 # The wgpu adapters the app names (the version CubeCL uses: one wgpu in the build)
 wgpu = "30.0.1"
 # The status bar's CPU and memory meters
