@@ -43,6 +43,18 @@ version number.
   whitened value at or above it are zeroed; upstream compares raw units, here σ, so one value fits
   every recording), and for every sorter `--bad-channels` (left out of the data and the probe) and
   `--keep-good-only` (as SpikeInterface's).
+- Kilosort4 learns its universal templates again on the drift-corrected windows, as upstream's
+  second detection: on the Kilosort4 sample, agreement of the good units with upstream's saved
+  results rises from a median 0.810 to 0.867.
+- Drift checked on a second recording (IBL Neuropixels, 100 s): the per-batch drift matches
+  upstream Kilosort 4.1.7's (40 of 50 batches identical, at most 0.5 µm apart, r = 0.90), sorted
+  in 27 s against upstream's 165 s on the same GPU.
+
+### Fixed
+
+- Kilosort4's template centres take their contacts from their own shank (a centre near the edge
+  of closely spaced shanks mixed them; upstream fixed the same in v4.0.22). A shank with fewer
+  contacts than `nearest_chans` is filled from the nearest of the others.
 
 - **e-means** (`dspk_synapse::sorting::emeans`): mini-batch k-means whose centres follow an
   exponential moving average of the batches' counts and sums, the step annealed on a cosine, the
