@@ -41,8 +41,6 @@ version number.
   toml 1.2.1 (the newest of each).
 - App: paths show only their last two parts (`…/folder/file`) in messages, errors, file details,
   recent lists and Settings.
-- `.gitignore`: analysis outputs (`*.lumen.zarr`, `*.pik.zarr`, `*.objects.json.gz`) and model
-  weights (`*.safetensors`, `*.onnx`, `*.h5`, `*.ckpt`, `*.pt`, `*.pth`) stay out of git.
 
 ### Added
 
