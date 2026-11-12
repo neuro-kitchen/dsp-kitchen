@@ -28,7 +28,8 @@ version number.
   With few, well-separated clusters, random starts can merge two (the reference does the same),
   so small `k` should start from k-means++.
 - **Kilosort4 / EMUsort: `--template-clustering emeans`** learns the universal templates with
-  e-means (k-means++ start) instead of k-means, to compare (default: kmeans, unchanged).
+  e-means (k-means++ start) instead of k-means. **e-means is the default** (in the app too);
+  `--template-clustering kmeans` gives Kilosort4's k-means with 10 restarts.
 
 ### Changed
 
