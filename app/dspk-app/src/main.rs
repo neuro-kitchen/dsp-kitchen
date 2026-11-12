@@ -111,7 +111,6 @@ fn main() -> Result<()> {
         gpui_kit::init(cx);
         actions::bind_keys(cx);
         di::install(cx);
-        cx.on_action(|_: &actions::Quit, cx| cx.quit());
         // One main window: closing it ends the app (Linux / Windows convention)
         cx.on_window_closed(|cx, _| cx.quit()).detach();
 

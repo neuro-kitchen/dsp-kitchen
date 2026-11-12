@@ -80,6 +80,9 @@ pub struct RunningJob {
     pub fraction: Option<f32>,
     pub line: String,
     pub cancel: Cancel,
+    /// Its entry in the frame's job list (kitchen-shell): the status bar shows it with a cancel
+    /// button; it ends when this does.
+    pub shell_job: Option<kitchen_shell::jobs::JobHandle>,
 }
 
 /// What a graph node's last job is doing (the Pipeline canvas shows it on the node).
@@ -885,9 +888,27 @@ impl Store {
         let cancel = start(Box::new(move |m| {
             let _ = tx.try_send(m);
         }));
-        self.job = Some(RunningJob { label: label.clone(), fraction: None, line: String::new(), cancel });
+        let shell_job = kitchen_shell::jobs::start("job", &label, false).ok();
+        self.job = Some(RunningJob { label: label.clone(), fraction: None, line: String::new(), cancel, shell_job });
         self.set_status(format!("{label}…"), cx);
         cx.emit(AppEvent::JobChanged);
+        // The frame's cancel button cancels the job (checked every 250 ms while it runs)
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(std::time::Duration::from_millis(250)).await;
+                let running = this.update(cx, |s, cx| {
+                    let Some(j) = &s.job else { return false };
+                    if j.shell_job.as_ref().is_some_and(|h| h.cancelled()) && !j.cancel.cancelled() {
+                        s.cancel_job(cx);
+                    }
+                    true
+                });
+                if !matches!(running, Ok(true)) {
+                    break;
+                }
+            }
+        })
+        .detach();
         let mut done = Some(done);
         cx.spawn(async move |this, cx| {
             while let Ok(m) = rx.recv().await {
@@ -898,6 +919,9 @@ impl Store {
                             if let Some(j) = &mut s.job {
                                 j.line = line.clone();
                                 j.fraction = fraction.or(j.fraction);
+                                if let Some(h) = &j.shell_job {
+                                    h.set(&format!("{label}: {line}"), j.fraction);
+                                }
                             }
                             for id in s.job_nodes.clone() {
                                 if let Some(NodeRun::Running { line: l, fraction: f, .. }) = s.node_status.get_mut(&id) {
