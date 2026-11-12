@@ -100,7 +100,7 @@ macro_rules! kilosort4_settings {
             /// Same input on the same device gives the same spikes
             #[arg(long, default_value_t = $defaults.reproducible, action = clap::ArgAction::Set)]
             reproducible: bool,
-            /// How the universal templates are clustered: kmeans (Kilosort4's) or emeans
+            /// How the universal templates are clustered: emeans (the default: mini-batch, much faster on large runs) or kmeans (Kilosort4's, 10 restarts)
             #[arg(long, default_value_t = $defaults.template_clustering.name().to_string(), value_parser = ["kmeans", "emeans"])]
             template_clustering: String,
         }
