@@ -6,6 +6,15 @@ version number.
 
 ## Unreleased
 
+### Fixed
+
+- **Explore shows the chain built in the Pipeline at once.** Explore's views kept the session view
+  they opened with, so a chain built on the canvas (or picked there with Show, or by an agent) was
+  drawn only after the app started again. The active view now shows in Explore: every view of its
+  recording that drew it unprocessed follows (traces and heatmap together), and the focused one;
+  the empty view the recording opened with leaves the session. A chain edited in the Pipeline
+  becomes the active one while the active one holds no work.
+
 ### Added
 
 - **e-means** (`dspk_synapse::sorting::emeans`): mini-batch k-means whose centres follow an
