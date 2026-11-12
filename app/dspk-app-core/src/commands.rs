@@ -239,7 +239,7 @@ pub fn register(registry: &Registry, c: &Ctx) {
     // Help, where the app runs
     list.extend([
         CommandSpec::new("help.keys", "Keyboard & mouse", IconName::Keyboard, move |w, cx| help(w, cx)).group("Help").hint("Every key and gesture").key("f1").read_only(),
-        CommandSpec::new("help.about", "About DSP App", IconName::Info, move |w, cx| about(w, cx)).group("Help").hint("Version, runtimes").read_only(),
+        CommandSpec::new("help.about", "About dsp-kitchen", IconName::Info, move |w, cx| about(w, cx)).group("Help").hint("Version, runtimes").read_only(),
         CommandSpec::new("remote.this", "This computer", IconName::Monitor, |_, _| {}).group("App").hint("dsp-kitchen runs on this computer").checked(|_| true).read_only(),
         CommandSpec::new("remote.connect", "Connect to a dsp-kitchen server…", IconName::Server, |_, _| {})
             .group("App")

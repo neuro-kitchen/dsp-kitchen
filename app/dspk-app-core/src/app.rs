@@ -135,7 +135,7 @@ impl Render for HelpSheet {
     }
 }
 
-/// About DSP App.
+/// About dsp-kitchen.
 pub struct AboutSheet {
     close: Rc<dyn Fn(&mut Window, &mut App)>,
 }
@@ -174,7 +174,7 @@ impl Render for AboutSheet {
                             .child(
                                 v_flex()
                                     .gap_1()
-                                    .child(h_flex().gap_2().items_center().child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("DSP App")).child(div().text_xs().text_color(muted).child(format!("v{}", env!("CARGO_PKG_VERSION")))))
+                                    .child(h_flex().gap_2().items_center().child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("dsp-kitchen")).child(div().text_xs().text_color(muted).child(format!("v{}", env!("CARGO_PKG_VERSION")))))
                                     .child(div().text_xs().text_color(muted).child("by neuro-kitchen")),
                             ),
                     )
@@ -383,7 +383,7 @@ impl DspApp {
             })
             .collect();
         let readings = cx.new(|cx| StatusReadings { store: store.clone(), _subs: vec![cx.subscribe(&store, |_, _, _: &AppEvent, cx| cx.notify()), cx.observe(&store, |_, _, cx| cx.notify())] });
-        let mut spec = ShellSpec::new("DSP App", registry.clone(), workspaces);
+        let mut spec = ShellSpec::new("dsp-kitchen", registry.clone(), workspaces);
         spec.app_menu = commands::app_menu(cx);
         spec.help_menu = vec![MenuItem::command("help.keys"), MenuItem::command("help.about")];
         spec.settings = sections;
