@@ -278,14 +278,3 @@ benchmarks/*/*/results/*
 
 # Python API reference build (Zensical); docs/build.sh copies it into target/site/
 docs/api/python/site/
-
-# Analysis outputs and model weights (never in git)
-*.lumen.zarr/
-*.pik.zarr/
-*.objects.json.gz
-*.safetensors
-*.onnx
-*.h5
-*.ckpt
-*.pt
-*.pth
