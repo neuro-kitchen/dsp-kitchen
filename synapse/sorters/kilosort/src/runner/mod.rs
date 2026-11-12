@@ -442,52 +442,8 @@ pub fn run_plan(
     }
 
     // 2. Universal templates
-    let templates = if ks.templates_from_data {
-        let clip_opts = ks.clip_options();
-        let stride = learning_stride(ks.nskip);
-        let (mut learning, mut rest) = (Vec::new(), Vec::new());
-        for (i, window) in schedule.windows().iter().enumerate() {
-            if i % stride == 0 { &mut learning } else { &mut rest }.push(window.clone());
-        }
-        let mut clips = Vec::new();
-        // Clips are found on the host: the only full-window download, on learning windows only
-        let collect = |prepared: &Handle, window: &HaloWindow, clips: &mut Vec<f32>| {
-            // The prepared buffer is sized for the longest window: read only this window's part
-            let x = buffer::download_prefix::<f32>(client, prepared.clone(), channels * window.read_len());
-            extract_clips(&x, channels, window.read_len(), &clip_opts, clips);
-            clips.len() / ks.nt
-        };
-        let mut scanned = 0u64;
-        let planned = learning.len() as u64;
-        // The total the last report used: the stage is closed explicitly only if it stopped short
-        let mut reported_total = planned;
-        stages.report(STAGE_CLIPS, 0, planned);
-        device.for_each_while(&learning, |window, prepared| {
-            let more = collect(prepared, window, &mut clips) < MAX_CLIPS;
-            scanned += 1;
-            stages.report(STAGE_CLIPS, scanned, planned);
-            Ok(more)
-        })?;
-        // Too few clips at this stride: scan the other windows until there are enough
-        let needed = plan.learn.n_templates.max(plan.learn.n_pcs);
-        if clips.len() / ks.nt < needed {
-            let extended = planned + rest.len() as u64;
-            reported_total = extended;
-            device.for_each_while(&rest, |window, prepared| {
-                let more = collect(prepared, window, &mut clips) < needed;
-                scanned += 1;
-                stages.report(STAGE_CLIPS, scanned, extended);
-                Ok(more)
-            })?;
-        }
-        // Stopped early (enough clips): end the stage at what was scanned
-        if scanned < reported_total {
-            stages.report(STAGE_CLIPS, scanned, scanned);
-        }
-        learn_universal_templates_with_progress(client, &clips, ks.nt, &plan.learn, &mut |done, total| stages.report(STAGE_TEMPLATES, done, total))?
-    } else {
-        predefined_templates(plan)?
-    };
+    let mut templates =
+        if ks.templates_from_data { learn_from_windows(client, &mut device, schedule, channels, plan, &stages, true)? } else { predefined_templates(plan)? };
     if templates.nt != ks.nt {
         return Err(DspError::InvalidConfig(format!("universal templates have nt = {}, the config nt = {}", templates.nt, ks.nt)));
     }
@@ -517,6 +473,12 @@ pub fn run_plan(
         let channel_y: Vec<f32> = positions.iter().map(|p| p[1]).collect();
         let model = crate::drift::estimate_drift(&drift_spikes, schedule.len(), &channel_y, ks.th_universal, &ks.drift);
         device.push_aligner(Box::new(crate::drift::DriftCorrector::new(client, model.clone(), &positions, ks.drift.sig_interp_um, max_window)));
+        // As upstream's second detection: the universal templates learned again, from the
+        // drift-corrected windows
+        if ks.templates_from_data {
+            templates = learn_from_windows(client, &mut device, schedule, channels, plan, &stages, false)?;
+            detector = UniversalDetector::new(client, channels, max_window, &centres, &templates, ks.th_universal, ks.nt0min())?;
+        }
         Some(model)
     } else {
         None
@@ -622,6 +584,68 @@ pub fn run_plan(
     })
 }
 
+
+/// Universal templates learned from the clips of `device`'s windows: every `nskip`-th window, more
+/// if too few clips (`report`: progress as the clips and templates stages; off when learning again
+/// on drift-corrected windows).
+fn learn_from_windows(
+    client: &Client,
+    device: &mut DeviceWindows<'_>,
+    schedule: &ChunkSchedule,
+    channels: usize,
+    plan: &RunPlan,
+    stages: &Stages<'_>,
+    report: bool,
+) -> DspResult<UniversalTemplates> {
+    let ks = &plan.config;
+    let say = |name: &str, done: u64, total: u64| {
+        if report {
+            stages.report(name, done, total);
+        }
+    };
+    let clip_opts = ks.clip_options();
+    let stride = learning_stride(ks.nskip);
+    let (mut learning, mut rest) = (Vec::new(), Vec::new());
+    for (i, window) in schedule.windows().iter().enumerate() {
+        if i % stride == 0 { &mut learning } else { &mut rest }.push(window.clone());
+    }
+    let mut clips = Vec::new();
+    // Clips are found on the host: the only full-window download, on learning windows only
+    let collect = |prepared: &Handle, window: &HaloWindow, clips: &mut Vec<f32>| {
+        // The prepared buffer is sized for the longest window: read only this window's part
+        let x = buffer::download_prefix::<f32>(client, prepared.clone(), channels * window.read_len());
+        extract_clips(&x, channels, window.read_len(), &clip_opts, clips);
+        clips.len() / ks.nt
+    };
+    let mut scanned = 0u64;
+    let planned = learning.len() as u64;
+    // The total the last report used: the stage is closed explicitly only if it stopped short
+    let mut reported_total = planned;
+    say(STAGE_CLIPS, 0, planned);
+    device.for_each_while(&learning, |window, prepared| {
+        let more = collect(prepared, window, &mut clips) < MAX_CLIPS;
+        scanned += 1;
+        say(STAGE_CLIPS, scanned, planned);
+        Ok(more)
+    })?;
+    // Too few clips at this stride: scan the other windows until there are enough
+    let needed = plan.learn.n_templates.max(plan.learn.n_pcs);
+    if clips.len() / ks.nt < needed {
+        let extended = planned + rest.len() as u64;
+        reported_total = extended;
+        device.for_each_while(&rest, |window, prepared| {
+            let more = collect(prepared, window, &mut clips) < needed;
+            scanned += 1;
+            say(STAGE_CLIPS, scanned, extended);
+            Ok(more)
+        })?;
+    }
+    // Stopped early (enough clips): end the stage at what was scanned
+    if scanned < reported_total {
+        say(STAGE_CLIPS, scanned, scanned);
+    }
+    learn_universal_templates_with_progress(client, &clips, ks.nt, &plan.learn, &mut |done, total| say(STAGE_TEMPLATES, done, total))
+}
 
 /// The filter chain of `ks`: its three switches, in this order: common average reference,
 /// band-pass (a high-pass when there is no upper edge), notch. Invalid settings (an edge at or above Nyquist) are reported when the chain is
