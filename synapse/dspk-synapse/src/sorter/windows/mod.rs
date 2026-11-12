@@ -6,11 +6,25 @@ use cubecl::server::Handle;
 use dspk_core::{DspResult, HaloWindow, RecordingSource, SampleFormat, WindowLoader};
 use dspk_ops::pipeline::PipelineWorkspace;
 
-/// A step applied to every preprocessed window on the device before a sorter sees it (EMUsort's
-/// per-channel delay alignment, in `dspk-sorter-kilosort`).
+/// A step applied to every preprocessed window on the device before a sorter sees it (in
+/// `dspk-sorter-kilosort`: EMUsort's per-channel delay alignment, Kilosort4's drift correction).
 pub trait WindowAligner {
-    /// The aligned `[channels, samples]` window for `window` (`samples` per channel).
-    fn align(&mut self, window: &Handle, samples: usize) -> Handle;
+    /// The aligned `[channels, samples]` window for the device window `window` (`samples` per
+    /// channel), which is `at` of the schedule.
+    fn align(&mut self, window: &Handle, at: &HaloWindow, samples: usize) -> Handle;
+}
+
+/// Several steps, applied in order.
+pub struct AlignerChain<'a>(pub Vec<Box<dyn WindowAligner + 'a>>);
+
+impl WindowAligner for AlignerChain<'_> {
+    fn align(&mut self, window: &Handle, at: &HaloWindow, samples: usize) -> Handle {
+        let mut handle = window.clone();
+        for step in &mut self.0 {
+            handle = step.align(&handle, at, samples);
+        }
+        handle
+    }
 }
 
 /// Windows of a recording on their way to the device: read on a background thread into a buffer
@@ -40,6 +54,15 @@ impl<'a> DeviceWindows<'a> {
         Self { loader: WindowLoader::new(source), stored, workspace, aligner }
     }
 
+    /// Adds `step` after the current per-window steps, for the passes still to come (a correction
+    /// estimated from an earlier pass: drift).
+    pub fn push_aligner(&mut self, step: Box<dyn WindowAligner + 'a>) {
+        self.aligner = Some(match self.aligner.take() {
+            Some(first) => Box::new(AlignerChain(vec![first, step])),
+            None => step,
+        });
+    }
+
     /// Calls `f(window, prepared)` for every window of `windows` in order (`prepared`: the
     /// `[channels, window.read_len()]` preprocessed window on the device, valid until the next
     /// call), until `f` returns `false`.
@@ -47,7 +70,7 @@ impl<'a> DeviceWindows<'a> {
         let Self { loader, stored, workspace, aligner } = self;
         let mut finish = |window: &HaloWindow, handle: Handle| {
             let handle = match aligner.as_mut() {
-                Some(aligner) => aligner.align(&handle, window.read_len()),
+                Some(aligner) => aligner.align(&handle, window, window.read_len()),
                 None => handle,
             };
             f(window, &handle)
