@@ -183,6 +183,8 @@ pub struct Store {
     pub picked_channel: Option<usize>,
     pub picked_op: Option<String>,
     pub job: Option<RunningJob>,
+    /// The compute device processing runs on (named once at start, off the UI thread).
+    pub device: Option<crate::data::device::DeviceInfo>,
     /// The last job that failed: its label and why (cleared when the next job starts).
     pub last_failed: Option<(String, String)>,
     /// Graph nodes the running job works on, and every node's last run.
@@ -230,6 +232,7 @@ impl Store {
             picked_channel: None,
             picked_op: None,
             job: None,
+            device: None,
             last_failed: None,
             job_nodes: Vec::new(),
             node_status: HashMap::new(),
@@ -1282,6 +1285,13 @@ impl Store {
             rec.events = events;
             cx.emit(AppEvent::WindowMoved);
         }
+    }
+
+    /// Records the compute device found at start (the status bar and Settings › Compute show it).
+    pub fn set_device(&mut self, device: crate::data::device::DeviceInfo, cx: &mut Context<Self>) {
+        self.device = Some(device);
+        cx.emit(AppEvent::Status);
+        cx.notify();
     }
 
     pub fn set_status(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {

@@ -42,8 +42,32 @@ impl Render for StatusReadings {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let s = self.store.read(cx);
         let opening = s.opening.clone().map(|n| div().text_color(color::text_muted()).child(format!("Opening {n}…")));
-        h_flex().gap(px(theme::LG)).items_center().text_xs().children(opening).child(div().text_color(color::text_muted()).child(s.render_info.clone()))
+        // The compute device (as lumen's): what it is, and whether a job is running on it
+        let device = match (&s.device, &s.job) {
+            (None, _) => "Finding the GPU…".to_string(),
+            (Some(d), Some(_)) => format!("{} · working", d.label),
+            (Some(d), None) => d.label.clone(),
+        };
+        h_flex()
+            .gap(px(theme::LG))
+            .items_center()
+            .text_xs()
+            .children(opening)
+            .child(div().text_color(color::text_muted()).child(s.render_info.clone()))
+            .child(meter(IconName::Gpu, device, "Where processing runs: the compute device (Settings › Compute)"))
     }
+}
+
+/// A status bar reading: an icon and its value, muted (as lumen's).
+fn meter(icon: IconName, text: String, tip: &'static str) -> impl IntoElement {
+    h_flex()
+        .id(tip)
+        .gap(px(theme::XS))
+        .items_center()
+        .text_color(color::text_muted())
+        .child(gpui_kit::component::Icon::new(icon).small())
+        .child(text)
+        .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(tip).build(w, cx))
 }
 
 /// A view shown over the frame in a card; a click outside it, or its own close, runs `close`.
@@ -283,6 +307,13 @@ impl DspApp {
         let choice = store.read(cx).session.dark;
         Self::apply_theme(&store, choice, window, cx);
         store.update(cx, |s, cx| s.suggest_tuning_once(cx));
+        // Name the compute device once, off the UI thread (wgpu lists its adapters)
+        let found = store.clone();
+        cx.spawn(async move |_, cx| {
+            let device = cx.background_spawn(async { crate::data::device::DeviceInfo::discover() }).await;
+            let _ = found.update(cx, |s, cx| s.set_device(device, cx));
+        })
+        .detach();
         let pipeline = cx.new(|cx| crate::screens::pipeline::PipelineView::new(store.clone(), window, cx));
         let explore = cx.new(|cx| ExploreView::new(store.clone(), pipeline.clone(), window, cx));
         let analytics = cx.new(|cx| crate::screens::analytics::AnalyticsWorkspace::new(store.clone(), window, cx));
