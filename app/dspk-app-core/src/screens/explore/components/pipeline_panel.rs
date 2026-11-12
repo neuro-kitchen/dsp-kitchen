@@ -23,7 +23,7 @@ impl PipelinePanel {
 
 impl Render for PipelinePanel {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().track_focus(&self.focus).child(self.pipeline.clone())
+        div().size_full().bg(crate::ui::theme::color::panel()).track_focus(&self.focus).child(self.pipeline.clone())
     }
 }
 

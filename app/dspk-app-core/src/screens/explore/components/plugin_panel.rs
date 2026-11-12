@@ -42,7 +42,7 @@ impl Render for PluginPanel {
             (Some(view), Some(p)) => p.view_section(&self.store, &view, window, cx).unwrap_or_else(|| div().into_any_element()),
             _ => div().p_4().text_sm().text_color(muted).child("Open a recording first.").into_any_element(),
         };
-        v_flex().size_full().child(header).child(div().id("plugin-panel-body").flex_1().min_h_0().overflow_y_scroll().p_3().child(body))
+        v_flex().size_full().bg(crate::ui::theme::color::panel()).child(header).child(div().id("plugin-panel-body").flex_1().min_h_0().overflow_y_scroll().p_3().child(body))
     }
 }
 

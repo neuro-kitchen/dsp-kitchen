@@ -1106,8 +1106,16 @@ impl CurationPanel {
     }
 }
 
+/// On the panel colour, as lumen's panels (the dock behind is not shown).
 impl Render for CurationPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let body = self.body(window, cx);
+        div().size_full().bg(dspk_app_core::ui::theme::color::panel()).child(body)
+    }
+}
+
+impl CurationPanel {
+    fn body(&mut self, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(ws) = self.ws.upgrade() else { return div().into_any_element() };
         let muted = cx.theme().muted_foreground;
         if self.kind == ViewKind::Table {
