@@ -159,7 +159,7 @@ impl Default for Kilosort4Config {
             global_merge: GlobalMergeOptions::default(),
             duplicate_spike_ms: 0.25,
             reproducible: true,
-            template_clustering: TemplateClustering::KMeans,
+            template_clustering: TemplateClustering::EMeans,
         }
     }
 }

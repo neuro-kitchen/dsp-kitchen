@@ -142,10 +142,11 @@ pub struct LearnOptions {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TemplateClustering {
     /// Lloyd's k-means, k-means++ seeded, 10 restarts (Kilosort4's `KMeans(n_init = 10)`).
-    #[default]
     KMeans,
     /// e-means (mini-batch k-means with EMA centres and fitted step and batch laws), seeded by
     /// k-means++: with as few clusters as the universal templates, random starts can merge two.
+    /// The default: 6–190× faster than k-means' 10 restarts, inertia within 0.21%.
+    #[default]
     EMeans,
 }
 
