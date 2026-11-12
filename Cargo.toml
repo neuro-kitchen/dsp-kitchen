@@ -102,10 +102,16 @@ rustls-pki-types = "1.16.0"
 # GPUI through gpui-kit. Pinned exactly: gpui-kit pins a weekly GPUI snapshot (gpui-pre); update
 # deliberately, together with kitchen-ui (the two must share one gpui-kit: one `Theme` global)
 gpui-kit = "=0.9.1"
-# The neuro-kitchen apps' shared UI: design tokens, themes and accent, widgets, the parameter
-# editor, icon bundling. Working on kitchen too: a git-ignored `.cargo/config.toml` with
-# [patch.crates-io] kitchen-ui = { path = "../kitchen/crates/kitchen-ui" }
-kitchen-ui = "0.0.2"
+# The neuro-kitchen apps' shared crates (github.com/neuro-kitchen/kitchen), from one tag:
+# kitchen-ui (tokens, widgets, the parameter editor, icon bundling) and kitchen-shell (the frame,
+# the command registry, menus, search, jobs). kitchen-shell depends on kitchen-ui by path inside
+# that repository, so a kitchen-ui from crates.io beside it would be a second copy (a second
+# `Theme` global). Working on kitchen too: a git-ignored `.cargo/config.toml` with
+# [patch."https://github.com/neuro-kitchen/kitchen"]
+# kitchen-ui = { path = "../kitchen/crates/kitchen-ui" }
+# kitchen-shell = { path = "../kitchen/crates/kitchen-shell" }
+kitchen-ui = { git = "https://github.com/neuro-kitchen/kitchen", tag = "v0.0.3" }
+kitchen-shell = { git = "https://github.com/neuro-kitchen/kitchen", tag = "v0.0.3" }
 # The status bar's CPU and memory meters
 sysinfo = { version = "0.40.1", default-features = false, features = ["system"] }
 slint = "1.18.1"

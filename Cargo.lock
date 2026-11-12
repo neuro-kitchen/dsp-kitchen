@@ -3298,6 +3298,7 @@ dependencies = [
  "dspk-view",
  "gpui-kit",
  "image",
+ "kitchen-shell",
  "kitchen-ui",
  "schemars",
  "serde",
@@ -6604,10 +6605,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
+name = "kitchen-shell"
+version = "0.0.3"
+source = "git+https://github.com/neuro-kitchen/kitchen?tag=v0.0.3#e6115a332db2284518e40e3770ac4b0816d73298"
+dependencies = [
+ "gpui-kit",
+ "kitchen-ui",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sysinfo 0.40.1",
+]
+
+[[package]]
 name = "kitchen-ui"
-version = "0.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68cd991faa2af752d5dceaeafad73b01b9fb41d352bf8f323358f6dbbaf5002a"
+version = "0.0.3"
+source = "git+https://github.com/neuro-kitchen/kitchen?tag=v0.0.3#e6115a332db2284518e40e3770ac4b0816d73298"
 dependencies = [
  "gpui-kit",
  "serde",
