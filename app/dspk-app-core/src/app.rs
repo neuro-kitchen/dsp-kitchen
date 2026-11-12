@@ -1382,6 +1382,134 @@ mod tests {
         ops_on_a_second_source(cx, path, "emg", 30.0, 60.0);
     }
 
+    /// An op added on the Pipeline canvas (a node after the recording, wired into the view, as the
+    /// canvas does) shows in Explore's view at once, back on Explore, without reopening anything.
+    #[gpui_kit::test]
+    fn pipeline_edits_show_in_explore(cx: &mut TestAppContext) {
+        use crate::domain::command::SessionCommand;
+        use crate::domain::graph::NodeKind;
+        test_formats();
+        let dir = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/dspk-app-core-tests"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("canvas.twosource");
+        std::fs::write(&path, b"").unwrap();
+        let (window, store, app) = open(cx);
+        cx.update(|cx| store.update(cx, |s, cx| s.open(path.clone(), cx)));
+        wait_long(cx, window, |cx| cx.update(|cx| store.read(cx).recording.is_some()));
+        let vm = views(cx, &app).into_iter().next().expect("an Explore view");
+        wait_long(cx, window, |cx| cx.update(|cx| !vm.read(cx).view.doc_view.is_empty()));
+        let view = cx.update(|cx| vm.read(cx).view.doc_view.clone());
+        eprintln!("explore draws {view}; active {:?}; views {:?}", cx.update(|cx| store.read(cx).doc.active_view.clone()), cx.update(|cx| store.read(cx).doc.views.iter().map(|v| v.id.clone()).collect::<Vec<_>>()));
+        cx.update(|cx| store.update(cx, |s, cx| s.set_workspace(crate::navigation::route::Workspace::Pipeline, cx)));
+        cx.run_until_parked();
+        // The canvas: a node after the view's recording, then wired into the view
+        let source = cx.update(|cx| store.read(cx).doc.graph.input(&view).map(str::to_string)).expect("the view's input");
+        let node: dspk_pipeline::Node = serde_json::from_value(serde_json::json!({"op": "scale", "alpha": 3.0, "beta": 0.0})).unwrap();
+        cx.update(|cx| store.update(cx, |s, cx| s.execute(SessionCommand::AddNode { kind: NodeKind::Op { enabled: true, node }, x: 0.0, y: 0.0, id: Some("triple".into()), after: Some(source.clone()) }, cx))).unwrap();
+        cx.update(|cx| store.update(cx, |s, cx| s.execute(SessionCommand::Connect { from: "triple".into(), to: view.clone() }, cx))).unwrap();
+        cx.run_until_parked();
+        let ops = cx.update(|cx| store.read(cx).doc.view(&view).map(|v| v.ops.len()));
+        assert_eq!(ops, Some(1), "the view's chain has the op");
+        assert!(cx.update(|cx| store.read(cx).preview_of(&view).is_some()), "a preview of the edited view; status: {}", cx.update(|cx| store.read(cx).status.clone()));
+        // Back on Explore: the view draws the preview
+        cx.update(|cx| vm.update(cx, |vm, _| vm.shown = None));
+        cx.update(|cx| store.update(cx, |s, cx| s.set_workspace(crate::navigation::route::Workspace::Explore, cx)));
+        wait_long(cx, window, |cx| cx.update(|cx| vm.read(cx).shown.is_some()));
+        let drawn = cx.update(|cx| vm.read(cx).shown_view(store.read(cx)).map(|v| v.id.clone()));
+        assert_eq!(drawn.as_deref(), Some(view.as_str()), "Explore draws the edited view");
+    }
+
+    /// A chain built in the Pipeline from scratch (the recording added again, an op, a new view)
+    /// is what Explore draws at once: the view the recording opened with, empty, leaves.
+    #[gpui_kit::test]
+    fn a_chain_built_in_the_pipeline_shows_in_explore(cx: &mut TestAppContext) {
+        use crate::domain::command::{view_kind, SessionCommand};
+        use crate::domain::graph::NodeKind;
+        test_formats();
+        let dir = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/dspk-app-core-tests"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("built.twosource");
+        std::fs::write(&path, b"").unwrap();
+        let (window, store, app) = open(cx);
+        cx.update(|cx| store.update(cx, |s, cx| s.open(path.clone(), cx)));
+        wait_long(cx, window, |cx| cx.update(|cx| store.read(cx).recording.is_some()));
+        let vm = views(cx, &app).into_iter().next().expect("an Explore view");
+        wait_long(cx, window, |cx| cx.update(|cx| !vm.read(cx).view.doc_view.is_empty()));
+        let first = cx.update(|cx| vm.read(cx).view.doc_view.clone());
+        let recording = cx.update(|cx| store.read(cx).doc.view(&first).unwrap().recording.clone());
+        cx.update(|cx| store.update(cx, |s, cx| s.set_workspace(crate::navigation::route::Workspace::Pipeline, cx)));
+        // As the canvas: the open recording, a node after it, a view after that
+        let node: dspk_pipeline::Node = serde_json::from_value(serde_json::json!({"op": "scale", "alpha": 3.0, "beta": 0.0})).unwrap();
+        cx.update(|cx| {
+            store.update(cx, |s, cx| {
+                s.execute(SessionCommand::AddNode { kind: NodeKind::Source { recording }, x: 0.0, y: 300.0, id: Some("mine".into()), after: None }, cx).unwrap();
+                s.execute(SessionCommand::AddNode { kind: NodeKind::Op { enabled: true, node }, x: 260.0, y: 300.0, id: Some("triple".into()), after: Some("mine".into()) }, cx).unwrap();
+                s.execute(SessionCommand::AddNode { kind: view_kind("Mine".into()), x: 520.0, y: 300.0, id: Some("shown".into()), after: Some("triple".into()) }, cx).unwrap();
+            })
+        });
+        cx.run_until_parked();
+        cx.update(|cx| store.update(cx, |s, cx| s.set_workspace(crate::navigation::route::Workspace::Explore, cx)));
+        wait_long(cx, window, |cx| cx.update(|cx| vm.read(cx).view.doc_view == "shown"));
+        cx.run_until_parked();
+        let s = cx.update(|cx| (store.read(cx).doc.active_view.clone(), store.read(cx).doc.view(&first).is_some(), store.read(cx).preview_of("shown").is_some()));
+        assert_eq!(s, (Some("shown".into()), false, true), "the new chain is active and previewed; the empty view left");
+    }
+
+    /// As the app starts on the Kilosort4 sample with a session document whose chain is already
+    /// there: an op added on the canvas, then one edited, each shows in Explore's view.
+    #[gpui_kit::test]
+    #[ignore = "needs .datasets/kilosort4/ZFM-02370_mini.imec0.ap.short.bin"]
+    fn pipeline_edits_on_the_kilosort_sample(cx: &mut TestAppContext) {
+        use crate::domain::command::SessionCommand;
+        use crate::domain::graph::NodeKind;
+        let root = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
+        let path = std::fs::canonicalize(root.join(".datasets/kilosort4/ZFM-02370_mini.imec0.ap.short.bin")).unwrap();
+        let dir = root.join("target/dspk-app-core-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let doc = dir.join("start-session.json");
+        let chain = serde_json::json!({"dspk_session": crate::domain::session::SESSION_VERSION, "graph": {"nodes": [
+            {"id": "s3", "kind": {"type": "source", "recording": {"path": path, "source": "main"}}},
+            {"id": "iir", "kind": {"type": "op", "node": {"op": "iir", "band": "highpass", "cutoff": [300.0]}}},
+            {"id": "v1", "kind": {"type": "view", "name": "ZFM"}}],
+            "edges": [{"from": "s3", "to": "iir"}, {"from": "iir", "to": "v1"}]}, "active_view": "v1"});
+        std::fs::write(&doc, chain.to_string()).unwrap();
+        let (window, store, app) = open(cx);
+        cx.update(|cx| store.update(cx, |s, cx| s.attach_document(doc.clone(), cx)));
+        cx.update(|cx| store.update(cx, |s, cx| s.open(path.clone(), cx)));
+        wait_long(cx, window, |cx| cx.update(|cx| store.read(cx).recording.is_some()));
+        let vm = views(cx, &app).into_iter().next().expect("an Explore view");
+        wait_long(cx, window, |cx| cx.update(|cx| !vm.read(cx).view.doc_view.is_empty()));
+        let view = cx.update(|cx| vm.read(cx).view.doc_view.clone());
+        let state = |cx: &mut TestAppContext| cx.update(|cx| {
+            let s = store.read(cx);
+            format!("explore draws {view}; active {:?}; views {:?}; preview {}; status {}", s.doc.active_view, s.doc.views.iter().map(|v| (v.id.clone(), v.ops.len())).collect::<Vec<_>>(), s.preview_of(&view).is_some(), s.status)
+        });
+        eprintln!("start: {}", state(cx));
+        assert_eq!(view, "v1", "Explore draws the document's view of the file");
+        let first = cx.update(|cx| store.read(cx).preview_of(&view)).expect("a preview of the chain at start");
+        let read = |p: &std::sync::Arc<dyn dspk_view::SignalBackend>| {
+            let mut x = vec![0.0f32; 2 * 3000];
+            p.read(&[0, 1], 30_000..33_000, &mut x).unwrap();
+            x
+        };
+        let a = read(&first);
+        cx.update(|cx| store.update(cx, |s, cx| s.set_workspace(crate::navigation::route::Workspace::Pipeline, cx)));
+        cx.run_until_parked();
+        let node: dspk_pipeline::Node = serde_json::from_value(serde_json::json!({"op": "scale", "alpha": 3.0, "beta": 0.0})).unwrap();
+        cx.update(|cx| store.update(cx, |s, cx| s.execute(SessionCommand::AddNode { kind: NodeKind::Op { enabled: true, node }, x: 0.0, y: 0.0, id: Some("triple".into()), after: Some("iir".into()) }, cx))).unwrap();
+        cx.update(|cx| store.update(cx, |s, cx| s.execute(SessionCommand::Connect { from: "triple".into(), to: view.clone() }, cx))).unwrap();
+        cx.run_until_parked();
+        eprintln!("after the canvas edit: {}", state(cx));
+        let p = cx.update(|cx| store.read(cx).preview_of(&view)).expect("a preview after the edit");
+        let b = read(&p);
+        assert!(a.iter().zip(&b).all(|(x, y)| (3.0 * x - y).abs() <= 1e-3 * x.abs().max(1.0)), "the preview is the chain with the new op");
+        cx.update(|cx| vm.update(cx, |vm, _| vm.shown = None));
+        cx.update(|cx| store.update(cx, |s, cx| s.set_workspace(crate::navigation::route::Workspace::Explore, cx)));
+        wait_long(cx, window, |cx| cx.update(|cx| vm.read(cx).shown.is_some()));
+        let on_disk = std::fs::read_to_string(&doc).unwrap();
+        assert!(on_disk.contains("triple"), "the edit is saved in the document");
+    }
+
     /// The file of the bug report (local only): its EMG source, the report's 4 min 35 s window.
     #[gpui_kit::test]
     #[ignore = "needs .datasets/nwb/15-25-33_meps.nwb.zarr"]
