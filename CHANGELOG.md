@@ -8,6 +8,10 @@ version number.
 
 ### Changed
 
+- **App: lumen's greys in the plots.** The dark plots' background, grid, baselines and labels are
+  lumen's neutrals (#161616 like lumen's image area, #222222, #2a2a2a, muted grey) instead of a
+  blue-black; the heatmap starts from the same background; the light plots' greys lose their
+  blue tint. Channel colours, markers and the playhead are unchanged.
 - **App: lumen's surfaces.** Every pane is one flat panel (the panel colour at the root of each
   panel: Inspector, Channels, Timeline, Processing, the plugin panels, Epochs, the docked Pipeline,
   Curation's views), so the dock's darker fill no longer shows through; sections are a title and
