@@ -31,6 +31,31 @@ version number.
 
 ### Added
 
+- **Kilosort4's drift correction** (`dspk_sorter_kilosort::drift`), on by default as upstream
+  (rigid, `--nblocks 1`; `0` turns it off, more corrects blocks along the shank): the universal-
+  template spikes of every window give per-batch fingerprints (depth × log amplitude), aligned to
+  each other and smoothed; the later passes are corrected on the device by kriging interpolation
+  after whitening, one shift per channel crossing per window. On the Kilosort4 sample it matches
+  upstream's `dshift` (within ±0.5 µm, the same in 19 of 23 batches); it costs one more detection
+  pass (3.4 s there), as upstream. Off for EMUsort, as its configs. The drift is printed and saved
+  with the sorting (`SortingOutput::drift`).
+- Kilosort4's other missing settings: `--invert-sign`, `--artifact-threshold` (windows holding a
+  whitened value at or above it are zeroed; upstream compares raw units, here σ, so one value fits
+  every recording), and for every sorter `--bad-channels` (left out of the data and the probe) and
+  `--keep-good-only` (as SpikeInterface's).
+- Kilosort4 learns its universal templates again on the drift-corrected windows, as upstream's
+  second detection: on the Kilosort4 sample, agreement of the good units with upstream's saved
+  results rises from a median 0.810 to 0.867.
+- Drift checked on a second recording (IBL Neuropixels, 100 s): the per-batch drift matches
+  upstream Kilosort 4.1.7's (40 of 50 batches identical, at most 0.5 µm apart, r = 0.90), sorted
+  in 27 s against upstream's 165 s on the same GPU.
+
+### Fixed
+
+- Kilosort4's template centres take their contacts from their own shank (a centre near the edge
+  of closely spaced shanks mixed them; upstream fixed the same in v4.0.22). A shank with fewer
+  contacts than `nearest_chans` is filled from the nearest of the others.
+
 - **e-means** (`dspk_synapse::sorting::emeans`): mini-batch k-means whose centres follow an
   exponential moving average of the batches' counts and sums, the step annealed on a cosine, the
   batch size and step from fitted scaling laws, dead clusters revived by splitting (Bessa et al.,

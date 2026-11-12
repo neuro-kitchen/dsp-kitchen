@@ -143,9 +143,19 @@ impl TemplateCentres {
         let mut positions = Vec::new();
         let mut near: Vec<Vec<(usize, f32)>> = Vec::new();
         for g in grid {
-            let mut d: Vec<(usize, f32)> = sites.iter().map(|s| (s.0, (s.1 - g[0]).powi(2) + (s.2 - g[1]).powi(2))).collect();
+            let dist = |s: &(usize, f32, f32, usize)| (s.1 - g[0]).powi(2) + (s.2 - g[1]).powi(2);
+            // A centre belongs to its nearest contact's shank and takes its contacts there only, so
+            // positions never mix shanks (upstream fixed the same in v4.0.22)
+            let shank = sites.iter().min_by(|a, b| dist(a).total_cmp(&dist(b))).map(|s| s.3).unwrap_or(0);
+            let mut d: Vec<(usize, f32)> = sites.iter().filter(|s| s.3 == shank).map(|s| (s.0, dist(s))).collect();
             d.sort_by(|a, b| a.1.total_cmp(&b.1));
             d.truncate(n_chans);
+            if d.len() < n_chans {
+                // A shank with fewer contacts than `nearest_chans`: the nearest of the others fill in
+                let mut rest: Vec<(usize, f32)> = sites.iter().filter(|s| s.3 != shank).map(|s| (s.0, dist(s))).collect();
+                rest.sort_by(|a, b| a.1.total_cmp(&b.1));
+                d.extend(rest.into_iter().take(n_chans - d.len()));
+            }
             if d[0].1 <= max_d2 {
                 positions.push(g);
                 near.push(d);

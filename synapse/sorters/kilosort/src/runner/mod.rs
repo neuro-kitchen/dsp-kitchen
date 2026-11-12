@@ -1,7 +1,7 @@
 //! Kilosort4-family runner (Kilosort4, and EMUsort through [`RunPlan::emusort`]): out-of-core
 //! halo-window streaming over a recording, every window processed on the device.
 //!
-//! Three passes, as upstream (Kilosort4 v4.0.18 / EMUsort `a06bb60`):
+//! Its passes, as upstream (Kilosort4 v4.0.18 / EMUsort `a06bb60`; drift correction as Kilosort4 v4.1):
 //! 1. **Fit** (every `nskip`-th window, the last window excluded): high-pass Butterworth + optional
 //!    common average reference; on the device, the whitening second moment (`X Xᵀ / n` per window,
 //!    equal weight) and, for EMUsort, the channel-delay cross-correlation. Each downloads once, at
@@ -9,8 +9,11 @@
 //! 2. **Universal templates** (every `nskip`-th window, the last included; more windows if too few
 //!    clips): preprocessing and delay removal on the device, clips on the host, then `wPCA` /
 //!    `wTEMP`. Or predefined templates ([`RunPlan::templates`], the hub).
-//! 3. **Detection** over every window: preprocessing, delay removal and universal-template
-//!    detection on the device; only spikes come back.
+//! 3. **Drift** (Kilosort4, `nblocks ≥ 1`): universal-template detection over every window, the
+//!    spikes' depths and amplitudes give each batch's shift (`crate::drift`); the later passes are
+//!    corrected on the device after whitening.
+//! 4. **Detection** over every window: preprocessing, delay removal, drift correction and
+//!    universal-template detection on the device; only spikes come back.
 //!
 //! Spike samples are in the delay-aligned frame (the reference channel's time), as upstream.
 
@@ -53,6 +56,7 @@ pub const WHITENING_EPSILON: f32 = 1e-6;
 pub const STAGE_FIT: &str = "Fitting preprocessing";
 pub const STAGE_CLIPS: &str = "Finding clips";
 pub const STAGE_TEMPLATES: &str = "Learning templates";
+pub const STAGE_DRIFT: &str = "Computing drift";
 pub const STAGE_DETECTION: &str = "Detecting spikes";
 pub const STAGE_CLUSTERING: &str = "Clustering spikes";
 pub const STAGE_MATCHING: &str = "Matching templates";
@@ -138,6 +142,7 @@ pub struct FitSettings {
     pub whitening_range: usize,
     pub max_channel_delay: Option<usize>,
     pub reproducible: bool,
+    pub invert_sign: bool,
 }
 
 impl FitSettings {
@@ -160,6 +165,7 @@ impl FitSettings {
             whitening_range: ks.whitening_range,
             max_channel_delay: plan.max_channel_delay,
             reproducible: ks.reproducible,
+            invert_sign: ks.invert_sign,
         }
     }
 }
@@ -200,6 +206,8 @@ pub struct Kilosort4Result {
     pub duplicates: usize,
     /// The auto-correlogram test that labels units *good* (refractory) or *mua*.
     pub label_refractory: RefractoryOptions,
+    /// The drift the run corrected ([`Kilosort4Config::drift`]); `None` when it was off.
+    pub drift: Option<crate::drift::DriftModel>,
     /// `(x, y)` µm of every template centre (`UniversalSpike::centre` indexes it).
     pub centre_positions: Vec<[f32; 2]>,
     /// Recording channel nearest to every template centre.
@@ -244,7 +252,9 @@ impl Kilosort4Result {
     /// One unit per cluster, in [`SortingOutput`] form ([`Self::sorter_result`],
     /// [`SorterResult::to_sorting_output`]: primary channel, *good* / *mua* labels, composite score).
     pub fn to_sorting_output(&self, probe: Option<SensorLayout>) -> SortingOutput {
-        self.sorter_result().to_sorting_output(probe)
+        let mut out = self.sorter_result().to_sorting_output(probe);
+        out.drift = self.drift.as_ref().map(|m| m.estimate(self.total_samples, self.sample_rate_hz));
+        out
     }
 
     /// Unit `u`'s waveform: its mean features `[channels, n_pcs]` times `wPCA` (`[n_pcs, nt]`), on
@@ -397,6 +407,9 @@ pub fn run_plan(
     if ks.templates_from_data {
         names.extend([(STAGE_CLIPS, WINDOWS), (STAGE_TEMPLATES, STEPS)]);
     }
+    if ks.drift.enabled() {
+        names.push((STAGE_DRIFT, WINDOWS));
+    }
     names.push((STAGE_DETECTION, WINDOWS));
     names.push((STAGE_CLUSTERING, SECTIONS));
     names.push((STAGE_MATCHING, WINDOWS));
@@ -423,63 +436,57 @@ pub fn run_plan(
     let aligner = fitted.channel_delays.as_ref().map(|d| ChannelAligner::new(client, d.delays.clone(), max_window));
     // Preprocessed (and delay-aligned) windows, on the device
     let mut device = DeviceWindows::new(source, workspace, aligner.map(|a| Box::new(a) as Box<dyn WindowAligner>));
+    // Artifact windows zeroed (after the delays, before the drift correction)
+    if let Some(threshold) = ks.artifact_threshold {
+        device.push_aligner(Box::new(crate::artifacts::ArtifactBlanker::new(client, channels, max_window, threshold)));
+    }
 
     // 2. Universal templates
-    let templates = if ks.templates_from_data {
-        let clip_opts = ks.clip_options();
-        let stride = learning_stride(ks.nskip);
-        let (mut learning, mut rest) = (Vec::new(), Vec::new());
-        for (i, window) in schedule.windows().iter().enumerate() {
-            if i % stride == 0 { &mut learning } else { &mut rest }.push(window.clone());
-        }
-        let mut clips = Vec::new();
-        // Clips are found on the host: the only full-window download, on learning windows only
-        let collect = |prepared: &Handle, window: &HaloWindow, clips: &mut Vec<f32>| {
-            // The prepared buffer is sized for the longest window: read only this window's part
-            let x = buffer::download_prefix::<f32>(client, prepared.clone(), channels * window.read_len());
-            extract_clips(&x, channels, window.read_len(), &clip_opts, clips);
-            clips.len() / ks.nt
-        };
-        let mut scanned = 0u64;
-        let planned = learning.len() as u64;
-        // The total the last report used: the stage is closed explicitly only if it stopped short
-        let mut reported_total = planned;
-        stages.report(STAGE_CLIPS, 0, planned);
-        device.for_each_while(&learning, |window, prepared| {
-            let more = collect(prepared, window, &mut clips) < MAX_CLIPS;
-            scanned += 1;
-            stages.report(STAGE_CLIPS, scanned, planned);
-            Ok(more)
-        })?;
-        // Too few clips at this stride: scan the other windows until there are enough
-        let needed = plan.learn.n_templates.max(plan.learn.n_pcs);
-        if clips.len() / ks.nt < needed {
-            let extended = planned + rest.len() as u64;
-            reported_total = extended;
-            device.for_each_while(&rest, |window, prepared| {
-                let more = collect(prepared, window, &mut clips) < needed;
-                scanned += 1;
-                stages.report(STAGE_CLIPS, scanned, extended);
-                Ok(more)
-            })?;
-        }
-        // Stopped early (enough clips): end the stage at what was scanned
-        if scanned < reported_total {
-            stages.report(STAGE_CLIPS, scanned, scanned);
-        }
-        learn_universal_templates_with_progress(client, &clips, ks.nt, &plan.learn, &mut |done, total| stages.report(STAGE_TEMPLATES, done, total))?
-    } else {
-        predefined_templates(plan)?
-    };
+    let mut templates =
+        if ks.templates_from_data { learn_from_windows(client, &mut device, schedule, channels, plan, &stages, true)? } else { predefined_templates(plan)? };
     if templates.nt != ks.nt {
         return Err(DspError::InvalidConfig(format!("universal templates have nt = {}, the config nt = {}", templates.nt, ks.nt)));
     }
 
-    // 3. Detection: only spikes leave the device
     let centres = TemplateCentres::new(probe, &ks.centres)?;
     let mut detector = UniversalDetector::new(client, channels, max_window, &centres, &templates, ks.th_universal, ks.nt0min())?;
+    let windows = schedule.len() as u64;
+
+    // 2b. Drift: universal-template spikes of every window, their depths and amplitudes, give each
+    //     batch's shift (on the host: the spikes come back anyway); later passes are corrected on
+    //     the device (`crate::drift`). Upstream detects twice as well.
+    let drift = if ks.drift.enabled() {
+        let mut drift_spikes = Vec::new();
+        let mut seen = 0u64;
+        stages.report(STAGE_DRIFT, 0, windows);
+        device.for_each_while(schedule.windows(), |window, prepared| {
+            for spike in detector.detect(prepared, window.read_len())? {
+                if window.remap_event(spike.sample).is_some() {
+                    drift_spikes.push(crate::drift::DriftSpike { batch: window.index, y_um: spike.y_um, amplitude: spike.amplitude });
+                }
+            }
+            seen += 1;
+            stages.report(STAGE_DRIFT, seen, windows);
+            Ok(true)
+        })?;
+        let positions: Vec<[f32; 2]> = probe.sites().iter().map(|s| [s.position.x_um, s.position.y_um]).collect();
+        let channel_y: Vec<f32> = positions.iter().map(|p| p[1]).collect();
+        let model = crate::drift::estimate_drift(&drift_spikes, schedule.len(), &channel_y, ks.th_universal, &ks.drift);
+        device.push_aligner(Box::new(crate::drift::DriftCorrector::new(client, model.clone(), &positions, ks.drift.sig_interp_um, max_window)));
+        // As upstream's second detection: the universal templates learned again, from the
+        // drift-corrected windows
+        if ks.templates_from_data {
+            templates = learn_from_windows(client, &mut device, schedule, channels, plan, &stages, false)?;
+            detector = UniversalDetector::new(client, channels, max_window, &centres, &templates, ks.th_universal, ks.nt0min())?;
+        }
+        Some(model)
+    } else {
+        None
+    };
+
+    // 3. Detection: only spikes leave the device
     let mut spikes = Vec::new();
-    let (mut detected, windows) = (0u64, schedule.len() as u64);
+    let mut detected = 0u64;
     stages.report(STAGE_DETECTION, 0, windows);
     device.for_each_while(schedule.windows(), |window, prepared| {
         for mut spike in detector.detect(prepared, window.read_len())? {
@@ -567,6 +574,7 @@ pub fn run_plan(
         detected: detected_spikes,
         first_clusters,
         learned,
+        drift,
         centre_channels: (0..centres.n_centres()).map(|k| centres.ic[k] as usize).collect(),
         centre_positions: centres.positions,
         sample_rate_hz: fs,
@@ -577,11 +585,77 @@ pub fn run_plan(
 }
 
 
+/// Universal templates learned from the clips of `device`'s windows: every `nskip`-th window, more
+/// if too few clips (`report`: progress as the clips and templates stages; off when learning again
+/// on drift-corrected windows).
+fn learn_from_windows(
+    client: &Client,
+    device: &mut DeviceWindows<'_>,
+    schedule: &ChunkSchedule,
+    channels: usize,
+    plan: &RunPlan,
+    stages: &Stages<'_>,
+    report: bool,
+) -> DspResult<UniversalTemplates> {
+    let ks = &plan.config;
+    let say = |name: &str, done: u64, total: u64| {
+        if report {
+            stages.report(name, done, total);
+        }
+    };
+    let clip_opts = ks.clip_options();
+    let stride = learning_stride(ks.nskip);
+    let (mut learning, mut rest) = (Vec::new(), Vec::new());
+    for (i, window) in schedule.windows().iter().enumerate() {
+        if i % stride == 0 { &mut learning } else { &mut rest }.push(window.clone());
+    }
+    let mut clips = Vec::new();
+    // Clips are found on the host: the only full-window download, on learning windows only
+    let collect = |prepared: &Handle, window: &HaloWindow, clips: &mut Vec<f32>| {
+        // The prepared buffer is sized for the longest window: read only this window's part
+        let x = buffer::download_prefix::<f32>(client, prepared.clone(), channels * window.read_len());
+        extract_clips(&x, channels, window.read_len(), &clip_opts, clips);
+        clips.len() / ks.nt
+    };
+    let mut scanned = 0u64;
+    let planned = learning.len() as u64;
+    // The total the last report used: the stage is closed explicitly only if it stopped short
+    let mut reported_total = planned;
+    say(STAGE_CLIPS, 0, planned);
+    device.for_each_while(&learning, |window, prepared| {
+        let more = collect(prepared, window, &mut clips) < MAX_CLIPS;
+        scanned += 1;
+        say(STAGE_CLIPS, scanned, planned);
+        Ok(more)
+    })?;
+    // Too few clips at this stride: scan the other windows until there are enough
+    let needed = plan.learn.n_templates.max(plan.learn.n_pcs);
+    if clips.len() / ks.nt < needed {
+        let extended = planned + rest.len() as u64;
+        reported_total = extended;
+        device.for_each_while(&rest, |window, prepared| {
+            let more = collect(prepared, window, &mut clips) < needed;
+            scanned += 1;
+            say(STAGE_CLIPS, scanned, extended);
+            Ok(more)
+        })?;
+    }
+    // Stopped early (enough clips): end the stage at what was scanned
+    if scanned < reported_total {
+        say(STAGE_CLIPS, scanned, scanned);
+    }
+    learn_universal_templates_with_progress(client, &clips, ks.nt, &plan.learn, &mut |done, total| say(STAGE_TEMPLATES, done, total))
+}
+
 /// The filter chain of `ks`: its three switches, in this order: common average reference,
 /// band-pass (a high-pass when there is no upper edge), notch. Invalid settings (an edge at or above Nyquist) are reported when the chain is
 /// designed for the recording's rate, not dropped.
 pub fn filter_stages(ks: &Kilosort4Config) -> Vec<PipelineStage> {
     let mut stages = Vec::new();
+    // `invert_sign`: before anything else, as upstream
+    if ks.invert_sign {
+        stages.push(PipelineStage::Scale { alpha: -1.0, beta: 0.0 });
+    }
     if ks.do_car {
         stages.push(PipelineStage::CommonAverageReference);
     }

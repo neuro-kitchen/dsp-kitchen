@@ -43,6 +43,10 @@ pub struct RecordingArgs {
     /// Length of the part to process (s); default: to the end
     #[arg(long)]
     pub duration_sec: Option<f64>,
+    /// Channels to leave out (as Kilosort4's `bad_channels`), comma-separated, numbered after the
+    /// probe and the channel map (0-based); their sites leave the probe too
+    #[arg(long, value_delimiter = ',')]
+    pub bad_channels: Vec<usize>,
 }
 
 /// An opened recording (the part asked for) and its probe.
@@ -110,10 +114,34 @@ impl RecordingArgs {
     /// `opened` through `--channel-map`, when given: the source reads the mapped channels and the
     /// probe's sites follow them.
     fn with_channel_map(&self, opened: Opened) -> anyhow::Result<Opened> {
-        let Some(file) = &self.channel_map else { return Ok(opened) };
-        let map = dspk_io::read_channel_map(file)?;
-        let probe = opened.probe.remap(&map).with_context(|| format!("{}: the probe", file.display()))?;
-        let source: Arc<dyn RecordingSource> = Arc::new(RemappedSource::new(opened.source, &map).with_context(|| format!("{}: the recording", file.display()))?);
+        let opened = match &self.channel_map {
+            None => opened,
+            Some(file) => {
+                let map = dspk_io::read_channel_map(file)?;
+                let probe = opened.probe.remap(&map).with_context(|| format!("{}: the probe", file.display()))?;
+                let source: Arc<dyn RecordingSource> = Arc::new(RemappedSource::new(opened.source, &map).with_context(|| format!("{}: the recording", file.display()))?);
+                Opened { source, probe }
+            }
+        };
+        self.without_bad_channels(opened)
+    }
+
+    /// `opened` without `--bad-channels`: the source reads the others, the probe keeps their sites.
+    fn without_bad_channels(&self, opened: Opened) -> anyhow::Result<Opened> {
+        if self.bad_channels.is_empty() {
+            return Ok(opened);
+        }
+        let channels = opened.source.info().channel_count();
+        if let Some(&c) = self.bad_channels.iter().find(|&&c| c >= channels) {
+            bail!("--bad-channels {c}: the recording has {channels} channels (0-based)");
+        }
+        let kept: Vec<usize> = (0..channels).filter(|c| !self.bad_channels.contains(c)).collect();
+        if kept.is_empty() {
+            bail!("--bad-channels leaves no channel");
+        }
+        let map = dspk_core::recording::ChannelMap::from_order(&kept);
+        let probe = opened.probe.remap(&map).context("--bad-channels: the probe")?;
+        let source: Arc<dyn RecordingSource> = Arc::new(RemappedSource::new(opened.source, &map).context("--bad-channels: the recording")?);
         Ok(Opened { source, probe })
     }
 }
@@ -152,11 +180,19 @@ pub struct OutputArgs {
     /// Output format; default: from the name (`.nwb.zarr` → nwb, other `.zarr` → zarr, else phy)
     #[arg(long, value_enum)]
     pub format: Option<Format>,
+    /// Write only the units labelled good (as SpikeInterface's `keep_good_only`)
+    #[arg(long)]
+    pub keep_good_only: bool,
 }
 
 impl OutputArgs {
     /// Writes `sorting` and prints a one-line summary.
     pub fn save(&self, sorting: &SortingOutput) -> anyhow::Result<()> {
+        if self.keep_good_only {
+            let mut good = sorting.clone();
+            good.units.retain(|u| u.quality_label == dspk_synapse::core::UnitQualityLabel::SingleUnit);
+            return save(&good, &self.output, self.format);
+        }
         save(sorting, &self.output, self.format)
     }
 }
@@ -186,7 +222,7 @@ mod tests {
     }
 
     fn args(recording: PathBuf, probe_file: Option<PathBuf>, channel_map: Option<PathBuf>, probe: Option<Preset>) -> RecordingArgs {
-        RecordingArgs { recording, source: None, probe, probe_file, channel_map, pitch_um: DEFAULT_HDEMG_PITCH_UM, start_sec: 0.0, duration_sec: None }
+        RecordingArgs { recording, source: None, probe, probe_file, channel_map, pitch_um: DEFAULT_HDEMG_PITCH_UM, start_sec: 0.0, duration_sec: None, bad_channels: Vec::new() }
     }
 
     fn first_values(opened: &Opened) -> Vec<f32> {
@@ -194,6 +230,27 @@ mod tests {
         let mut out = vec![0.0; n];
         opened.source.read(&(0..n).collect::<Vec<_>>(), 0..1, &mut out).unwrap();
         out
+    }
+
+    /// `--bad-channels` leaves those channels out of the data and their sites out of the probe;
+    /// numbers past the recording's channels are refused.
+    #[test]
+    fn bad_channels_leave_the_data_and_the_probe() {
+        let dir = std::env::temp_dir().join(format!("dspk-cli-bad-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rec = recording(&dir);
+        let mut a = args(rec.clone(), None, None, Some(Preset::Tetrode));
+        a.bad_channels = vec![1, 3];
+        let opened = a.open().unwrap();
+        assert_eq!(first_values(&opened), vec![0.0, 2000.0]);
+        let tetrode = Preset::Tetrode.layout(0.0);
+        let kept: Vec<_> = opened.probe.sites().iter().map(|s| s.position).collect();
+        assert_eq!(kept, vec![tetrode.get_site(0).unwrap().position, tetrode.get_site(2).unwrap().position]);
+        a.bad_channels = vec![4];
+        assert!(a.open().is_err(), "channel 4 of 4");
+        a.bad_channels = vec![0, 1, 2, 3];
+        assert!(a.open().is_err(), "no channel left");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

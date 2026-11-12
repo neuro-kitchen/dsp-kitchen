@@ -91,6 +91,13 @@ pub struct EmusortConfig {
     pub reproducible: bool,
     /// See [`Kilosort4Config::template_clustering`].
     pub template_clustering: crate::TemplateClustering,
+    /// See [`Kilosort4Config::drift`]. Off by default: EMUsort's configs set `nblocks: 0` (muscle
+    /// arrays do not drift along a shank).
+    pub drift: crate::DriftOptions,
+    /// See [`Kilosort4Config::invert_sign`].
+    pub invert_sign: bool,
+    /// See [`Kilosort4Config::artifact_threshold`].
+    pub artifact_threshold: Option<f32>,
     /// Estimate and remove per-channel delays (`remove_chan_delays`).
     pub remove_channel_delays: bool,
     /// HDBSCAN outlier removal before k-means of the universal templates (`remove_spike_outliers`).
@@ -132,6 +139,9 @@ impl Default for EmusortConfig {
             duplicate_spike_ms: ks.duplicate_spike_ms,
             reproducible: ks.reproducible,
             template_clustering: ks.template_clustering,
+            drift: crate::DriftOptions::off(),
+            invert_sign: ks.invert_sign,
+            artifact_threshold: ks.artifact_threshold,
             remove_channel_delays: true,
             remove_spike_outliers: true,
             hdbscan_min_cluster_size: HDBSCAN_MIN_CLUSTER_SIZE,
@@ -171,6 +181,9 @@ impl EmusortConfig {
             duplicate_spike_ms: self.duplicate_spike_ms,
             reproducible: self.reproducible,
             template_clustering: self.template_clustering,
+            drift: self.drift,
+            invert_sign: self.invert_sign,
+            artifact_threshold: self.artifact_threshold,
         }
     }
 
@@ -205,6 +218,9 @@ impl EmusortConfig {
             duplicate_spike_ms,
             reproducible,
             template_clustering,
+            drift,
+            invert_sign,
+            artifact_threshold,
         } = ks;
         Self {
             nt,
@@ -234,6 +250,9 @@ impl EmusortConfig {
             duplicate_spike_ms,
             reproducible,
             template_clustering,
+            drift,
+            invert_sign,
+            artifact_threshold,
             remove_channel_delays,
             remove_spike_outliers,
             hdbscan_min_cluster_size,
