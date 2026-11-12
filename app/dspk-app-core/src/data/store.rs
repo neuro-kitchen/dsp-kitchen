@@ -313,6 +313,16 @@ impl Store {
                     self.changed(&change, cx);
                     cx.emit(AppEvent::Document(change));
                 }
+                // A chain built in the Pipeline becomes the one shown, while the shown one holds
+                // no work yet (the view a recording opens with): Explore then draws it at once
+                // (a view whose chain changed, or a new view at the end of one)
+                let edited = self.doc.views.iter().find(|v| {
+                    !v.ops.is_empty() && self.doc.active_view.as_deref() != Some(v.id.as_str()) && before.view(&v.id).is_none_or(|b| b.ops != v.ops)
+                });
+                let idle = self.doc.active().is_none_or(|a| a.ops.is_empty());
+                if let Some(id) = edited.filter(|_| idle).map(|v| v.id.clone()) {
+                    let _ = self.execute(SessionCommand::SelectView { view: id }, cx);
+                }
             }
             Err(e) => self.set_status(e.to_string(), cx),
         }
