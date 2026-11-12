@@ -67,8 +67,8 @@ impl InspectorPanel {
         let (store, store2, p, src) = (self.store.clone(), self.store.clone(), path.clone(), source.to_string());
         vec![
             div().text_sm().font_weight(FontWeight::SEMIBOLD).truncate().child(file_label(path)).into_any_element(),
-            Section::new("Source")
-                .child(div().text_xs().text_color(muted).truncate().child(path.display().to_string()))
+            Section::new("Source").boxed()
+                .child(div().text_xs().text_color(muted).truncate().child(crate::domain::paths::short_path(&path)))
                 .children(entry.as_ref().map(|e| div().text_sm().child(e.name.clone())))
                 .children(entry.as_ref().map(|e| source_facts(e, muted)))
                 .when_none(&entry, |d| d.child(div().text_xs().text_color(muted).child("Not loaded: open it to see its sources.")))

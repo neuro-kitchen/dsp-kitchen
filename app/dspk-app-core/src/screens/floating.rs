@@ -145,11 +145,11 @@ impl FloatingLayer {
         v_flex()
             .gap_2()
             .child(div().text_xs().text_color(muted).truncate().child(file_label(&epoch.recording)))
-            .child(row("Name", div().w_full().child(Input::new(&self.name).small()), cx))
-            .child(row("Type", kinds, cx))
-            .child(row("Start (s)", div().w_full().child(Input::new(&self.start).small()), cx))
-            .child(row("End (s)", div().w_full().child(Input::new(&self.end).small()), cx))
-            .child(row("Notes", div().w_full().child(Input::new(&self.notes).small()), cx))
+            .child(row("Name", div().w_full().child(Input::new(&self.name).small())))
+            .child(row("Type", kinds))
+            .child(row("Start (s)", div().w_full().child(Input::new(&self.start).small())))
+            .child(row("End (s)", div().w_full().child(Input::new(&self.end).small())))
+            .child(row("Notes", div().w_full().child(Input::new(&self.notes).small())))
             .children(self.error.clone().map(|e| div().text_xs().text_color(cx.theme().danger).child(e)))
             .child(div().text_xs().text_color(muted).child("Saved in the session and in the recording's .dspk.zarr store (epochs group)."))
             .child(
@@ -210,7 +210,7 @@ impl FloatingLayer {
         }
         let size = std::fs::metadata(path).map(|m| m.len()).ok();
         let fact = |k: &'static str, v: String| h_flex().gap_2().child(div().w(px(110.)).text_xs().text_color(muted).child(k)).child(div().flex_1().min_w_0().text_xs().child(v));
-        let mut body = v_flex().gap_1().child(fact("File", path.display().to_string()));
+        let mut body = v_flex().gap_1().child(fact("File", crate::domain::paths::short_path(&path)));
         if let Some(b) = size {
             body = body.child(fact("Size", format!("{:.1} MB", b as f64 / 1e6)));
         }

@@ -146,9 +146,9 @@ impl RecipeDoc {
     }
 
     pub fn load(path: &Path) -> Result<Self, RecipeError> {
-        let text = std::fs::read_to_string(path).map_err(|e| RecipeError::Io(format!("{}: {e}", path.display())))?;
+        let text = std::fs::read_to_string(path).map_err(|e| RecipeError::Io(format!("{}: {e}", crate::domain::paths::short_path(&path))))?;
         Self::from_json(&text).map_err(|e| match e {
-            RecipeError::Parse(_, m) => RecipeError::Parse(path.display().to_string(), m),
+            RecipeError::Parse(_, m) => RecipeError::Parse(crate::domain::paths::short_path(&path), m),
             other => other,
         })
     }

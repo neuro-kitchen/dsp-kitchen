@@ -24,7 +24,7 @@ pub fn save(recording: &Path, epochs: &[EpochDoc]) -> DspResult<PathBuf> {
     let dir = crate::data::derived::ensure(recording, &[])?;
     let group = dir.join("epochs");
     if group.exists() {
-        std::fs::remove_dir_all(&group).map_err(|e| DspError::Io(format!("{}: {e}", group.display())))?;
+        std::fs::remove_dir_all(&group).map_err(|e| DspError::Io(format!("{}: {e}", crate::domain::paths::short_path(&group))))?;
     }
     let store = open_rw_store(&dir)?;
     let list = |f: fn(&EpochDoc) -> String| Value::Array(epochs.iter().map(|e| json!(f(e))).collect());

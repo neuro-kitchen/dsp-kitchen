@@ -107,7 +107,7 @@ fn main() -> Result<()> {
         .or_else(|| session.reopen_last.then(|| session.recent.first().cloned().filter(|p| p.exists())).flatten());
     let (channels, rate) = (args.channels, args.sample_rate);
 
-    gpui_kit::application().with_assets(assets::AppAssets).run(move |cx: &mut App| {
+    gpui_kit::application().with_assets(assets::app_assets()).run(move |cx: &mut App| {
         gpui_kit::init(cx);
         actions::bind_keys(cx);
         di::install(cx);
@@ -131,6 +131,10 @@ fn main() -> Result<()> {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(1400.), px(880.)), cx))),
             window_min_size: Some(size(px(760.), px(520.))),
             app_id: Some("org.neuro-kitchen.dspk-app".into()),
+            // The app draws its own frame on Linux (rounded corners and a shadow while it floats,
+            // no shadow margin around it): the window behind the corners is transparent
+            window_background: gpui_kit::WindowBackgroundAppearance::Transparent,
+            window_decorations: Some(gpui_kit::WindowDecorations::Client),
             ..TitleBar::window_options()
         };
         let s = store.clone();

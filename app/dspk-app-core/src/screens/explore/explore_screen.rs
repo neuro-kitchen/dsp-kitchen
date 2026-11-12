@@ -24,7 +24,8 @@ use crate::screens::explore::trace::renderer::TimeViewKind;
 use crate::screens::explore::trace::view::ViewId;
 use crate::screens::explore::{ExploreEvent, ExploreVm, TraceVm};
 use crate::ui::panel_edge::{follow_panel_drag, panel_edge, PanelResize, Side};
-use crate::ui::widgets::HEADER_HEIGHT;
+use crate::ui::theme::{self, color};
+use crate::ui::widgets::{pane, HEADER_HEIGHT};
 
 use super::components::inspector::InspectorPanel;
 use super::components::panels::{ChannelsPanel, DockToggle, TimelinePanel};
@@ -668,20 +669,12 @@ fn rail_button(id: impl Into<SharedString>, icon: Icon, tip: SharedString, selec
 
 impl Render for ExploreView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let t = cx.theme();
-        let (border, bar) = (t.border, t.sidebar);
         let me = cx.weak_entity();
+        // The rails and panels are cards on the chrome, PANE_GAP apart (kitchen-ui)
+        let rail_card = || v_flex().w(px(RAIL_W)).flex_none().h_full().py_2().gap_1().items_center().rounded(px(theme::RADIUS_LG)).bg(color::panel());
         let left_rail = {
             let me = me.clone();
-            v_flex()
-                .w(px(RAIL_W))
-                .h_full()
-                .py_2()
-                .gap_1()
-                .items_center()
-                .bg(bar)
-                .border_r_1()
-                .border_color(border)
+            rail_card()
                 .child(rail_button("rail-channels", Icon::new(gpui_kit::assets::IconName::Rows3), "Channels".into(), self.left_open && !self.left_timeline, {
                     let me = me.clone();
                     move |w, cx| {
@@ -698,7 +691,7 @@ impl Render for ExploreView {
         for (i, (title, icon, _)) in self.plugin_panels.iter().enumerate() {
             items.push((format!("rail-plugin-{i}"), icon(), title.clone(), RightPanel::Plugin(i)));
         }
-        let right_rail = v_flex().w(px(RAIL_W)).h_full().py_2().gap_1().items_center().bg(bar).border_l_1().border_color(border).children(items.into_iter().map(|(id, icon, tip, which)| {
+        let right_rail = rail_card().children(items.into_iter().map(|(id, icon, tip, which)| {
             let me = me.clone();
             rail_button(id, icon, tip, self.right == Some(which), move |_, cx| {
                 let _ = me.update(cx, |e, cx| e.show_right(which, cx));
@@ -709,12 +702,18 @@ impl Render for ExploreView {
             let s = self.store.read(cx);
             (s.panel_width("explore.left", LEFT_W), s.panel_width("explore.right", RIGHT_W))
         };
+        // The row of cards has no padding of its own: a side panel starts after its rail and a gap
+        let side_offset = RAIL_W + theme::PANE_GAP;
         v_flex()
             .size_full()
+            .p(px(theme::PANE_GAP))
+            .gap(px(theme::PANE_GAP))
+            .bg(color::chrome())
             .child(
                 h_flex()
                     .flex_1()
                     .min_h_0()
+                    .gap(px(theme::PANE_GAP))
                     .on_drag_move(cx.listener(|this, e: &DragMoveEvent<PanelResize>, _, cx| {
                         follow_panel_drag(&this.store, e, cx);
                         cx.notify();
@@ -722,22 +721,22 @@ impl Render for ExploreView {
                     .child(left_rail)
                     .when(self.left_open, |d| {
                         d.child(
-                            div()
+                            pane()
                                 .relative()
                                 .w(px(left_w))
                                 .flex_none()
                                 .h_full()
-                                .border_r_1()
-                                .border_color(border)
                                 .map(|d| if self.left_timeline { d.child(self.timeline_tab.clone()) } else { d.child(self.channels.clone()) })
-                                .child(panel_edge("explore.left", Side::Left, RAIL_W)),
+                                .child(panel_edge("explore.left", Side::Left, side_offset)),
                         )
                     })
                     .child({
                         let empty = self.vm.read(cx).views.is_empty();
                         let dialog = self.add_dialog.then(|| self.add_dialog(cx));
-                        v_flex()
+                        pane()
                             .relative()
+                            .flex()
+                            .flex_col()
                             .flex_1()
                             .min_w_0()
                             .h_full()
@@ -747,28 +746,18 @@ impl Render for ExploreView {
                     })
                     .when_some(right_panel, |d, p| {
                         d.child(
-                            div()
+                            pane()
                                 .relative()
                                 .w(px(right_w))
                                 .flex_none()
                                 .h_full()
-                                .border_l_1()
-                                .border_color(border)
                                 .child(p)
-                                .child(panel_edge("explore.right", Side::Right, RAIL_W)),
+                                .child(panel_edge("explore.right", Side::Right, side_offset)),
                         )
                     })
                     .child(right_rail),
             )
             // Fixed at the bottom: open, or minimised to its header; nothing else goes here
-            .child(
-                div()
-                    .flex_none()
-                    .h(px(if self.timeline_open { TIMELINE_H } else { HEADER_HEIGHT }))
-                    .overflow_hidden()
-                    .border_t_1()
-                    .border_color(border)
-                    .child(self.timeline.clone()),
-            )
+            .child(pane().flex_none().h(px(if self.timeline_open { TIMELINE_H } else { HEADER_HEIGHT })).child(self.timeline.clone()))
     }
 }

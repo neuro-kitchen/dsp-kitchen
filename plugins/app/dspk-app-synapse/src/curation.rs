@@ -51,9 +51,9 @@ impl Curation {
         if !path.is_file() {
             return Ok(Self::default());
         }
-        let text = std::fs::read_to_string(&path).with_context(|| format!("Failed to read {}", path.display()))?;
-        let file: CurationFile = serde_json::from_str(&text).with_context(|| format!("{}", path.display()))?;
-        anyhow::ensure!(file.dspk_curation == CURATION_VERSION, "{}: curation version {} (this app reads {CURATION_VERSION})", path.display(), file.dspk_curation);
+        let text = std::fs::read_to_string(&path).with_context(|| format!("Failed to read {}", dspk_app_core::domain::paths::short_path(&path)))?;
+        let file: CurationFile = serde_json::from_str(&text).with_context(|| format!("{}", dspk_app_core::domain::paths::short_path(&path)))?;
+        anyhow::ensure!(file.dspk_curation == CURATION_VERSION, "{}: curation version {} (this app reads {CURATION_VERSION})", dspk_app_core::domain::paths::short_path(&path), file.dspk_curation);
         Ok(Self { saved: file.ops.len(), ops: file.ops, undone: Vec::new() })
     }
 
@@ -62,7 +62,7 @@ impl Curation {
         let path = store.join(CURATION_FILE);
         let file = CurationFile { dspk_curation: CURATION_VERSION, ops: self.ops.clone() };
         let tmp = store.join(format!("{CURATION_FILE}.tmp"));
-        std::fs::write(&tmp, serde_json::to_string_pretty(&file)?).with_context(|| format!("Failed to write {}", tmp.display()))?;
+        std::fs::write(&tmp, serde_json::to_string_pretty(&file)?).with_context(|| format!("Failed to write {}", dspk_app_core::domain::paths::short_path(&tmp)))?;
         std::fs::rename(&tmp, &path)?;
         self.saved = self.ops.len();
         Ok(path)

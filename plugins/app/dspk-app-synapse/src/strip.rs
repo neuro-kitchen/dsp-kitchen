@@ -16,6 +16,7 @@ use dspk_app_core::screens::explore::trace::renderer::TimeViewKind;
 use dspk_app_core::screens::explore::trace::trace_panel::{color, TracePanel};
 use dspk_app_core::screens::explore::TraceVm;
 use dspk_app_core::ui::panel_edge::{panel_edge, Side};
+use dspk_app_core::ui::theme::{PANE_GAP, RADIUS_LG};
 use dspk_app_core::ui::widgets::icon_button;
 use dspk_view::SignalBackend;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -251,7 +252,8 @@ impl Render for BottomStrip {
                 |s, cx| s.toggle_open(cx),
             ));
         if !self.open {
-            return v_flex().id("bottom-strip").w_full().h(px(HEADER_H)).flex_none().bg(bg).border_t_1().border_color(border).child(header);
+            // A card on the workspace's chrome (kitchen-ui panes)
+            return v_flex().id("bottom-strip").w_full().h(px(HEADER_H)).flex_none().rounded(px(RADIUS_LG)).overflow_hidden().bg(bg).child(header);
         }
         let height = self.store.read(cx).panel_width("strip.height", STRIP_H);
         v_flex()
@@ -260,12 +262,13 @@ impl Render for BottomStrip {
             .w_full()
             .h(px(height))
             .flex_none()
+            .rounded(px(RADIUS_LG))
+            .overflow_hidden()
             .bg(bg)
-            .border_t_1()
-            .border_color(border)
             .child(header)
             .child(div().flex_1().min_h_0().child(self.panel.clone()))
             .child(self.overview(cx))
-            .child(panel_edge("strip.height", Side::Bottom, 0.0))
+            // The workspace's padding is under the strip
+            .child(panel_edge("strip.height", Side::Bottom, PANE_GAP))
     }
 }
