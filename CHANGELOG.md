@@ -31,6 +31,19 @@ version number.
 
 ### Added
 
+- **Kilosort4's drift correction** (`dspk_sorter_kilosort::drift`), on by default as upstream
+  (rigid, `--nblocks 1`; `0` turns it off, more corrects blocks along the shank): the universal-
+  template spikes of every window give per-batch fingerprints (depth × log amplitude), aligned to
+  each other and smoothed; the later passes are corrected on the device by kriging interpolation
+  after whitening, one shift per channel crossing per window. On the Kilosort4 sample it matches
+  upstream's `dshift` (within ±0.5 µm, the same in 19 of 23 batches); it costs one more detection
+  pass (3.4 s there), as upstream. Off for EMUsort, as its configs. The drift is printed and saved
+  with the sorting (`SortingOutput::drift`).
+- Kilosort4's other missing settings: `--invert-sign`, `--artifact-threshold` (windows holding a
+  whitened value at or above it are zeroed; upstream compares raw units, here σ, so one value fits
+  every recording), and for every sorter `--bad-channels` (left out of the data and the probe) and
+  `--keep-good-only` (as SpikeInterface's).
+
 - **e-means** (`dspk_synapse::sorting::emeans`): mini-batch k-means whose centres follow an
   exponential moving average of the batches' counts and sums, the step annealed on a cosine, the
   batch size and step from fitted scaling laws, dead clusters revived by splitting (Bessa et al.,

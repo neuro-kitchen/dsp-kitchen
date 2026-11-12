@@ -222,7 +222,7 @@ mod tests {
     }
 
     fn args(recording: PathBuf, probe_file: Option<PathBuf>, channel_map: Option<PathBuf>, probe: Option<Preset>) -> RecordingArgs {
-        RecordingArgs { recording, source: None, probe, probe_file, channel_map, pitch_um: DEFAULT_HDEMG_PITCH_UM, start_sec: 0.0, duration_sec: None }
+        RecordingArgs { recording, source: None, probe, probe_file, channel_map, pitch_um: DEFAULT_HDEMG_PITCH_UM, start_sec: 0.0, duration_sec: None, bad_channels: Vec::new() }
     }
 
     fn first_values(opened: &Opened) -> Vec<f32> {
@@ -230,6 +230,27 @@ mod tests {
         let mut out = vec![0.0; n];
         opened.source.read(&(0..n).collect::<Vec<_>>(), 0..1, &mut out).unwrap();
         out
+    }
+
+    /// `--bad-channels` leaves those channels out of the data and their sites out of the probe;
+    /// numbers past the recording's channels are refused.
+    #[test]
+    fn bad_channels_leave_the_data_and_the_probe() {
+        let dir = std::env::temp_dir().join(format!("dspk-cli-bad-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let rec = recording(&dir);
+        let mut a = args(rec.clone(), None, None, Some(Preset::Tetrode));
+        a.bad_channels = vec![1, 3];
+        let opened = a.open().unwrap();
+        assert_eq!(first_values(&opened), vec![0.0, 2000.0]);
+        let tetrode = Preset::Tetrode.layout(0.0);
+        let kept: Vec<_> = opened.probe.sites().iter().map(|s| s.position).collect();
+        assert_eq!(kept, vec![tetrode.get_site(0).unwrap().position, tetrode.get_site(2).unwrap().position]);
+        a.bad_channels = vec![4];
+        assert!(a.open().is_err(), "channel 4 of 4");
+        a.bad_channels = vec![0, 1, 2, 3];
+        assert!(a.open().is_err(), "no channel left");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
