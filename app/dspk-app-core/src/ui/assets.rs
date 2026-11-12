@@ -4,7 +4,7 @@
 
 gpui_kit::assets::icon_assets!(
     pub ExtraIcons,
-    [AudioWaveform, SlidersHorizontal, Workflow, Microscope, SkipBack, SkipForward, StepBack, StepForward, Repeat, Rows3, Flame, LayoutGrid, Table, Activity, ChartScatter, GitCommitVertical, ZoomIn, ZoomOut, Unlink, Trash, Merge, Tag, Save, Undo2, Redo2, Cpu, ChartGantt, Package, Layers, MousePointer2, Hand, Scissors, ChartColumn, ChartLine, ChartNoAxesColumn, ChartSpline, Grid2x2, MapPin, Settings2, AppWindow, Columns2, Rows2, ListOrdered, Clock, X, Server, Monitor, MemoryStick, Download, Gauge, Grip, Keyboard, Power, Scan, SquareDashed, SunMoon, Palette]
+    [AudioWaveform, SlidersHorizontal, Workflow, Microscope, SkipBack, SkipForward, StepBack, StepForward, Repeat, Rows3, Flame, LayoutGrid, Table, Activity, ChartScatter, GitCommitVertical, ZoomIn, ZoomOut, Unlink, Trash, Merge, Tag, Save, Undo2, Redo2, Cpu, ChartGantt, Package, Layers, MousePointer2, Hand, Scissors, ChartColumn, ChartLine, ChartNoAxesColumn, ChartSpline, Grid2x2, MapPin, Settings2, AppWindow, Columns2, Rows2, ListOrdered, Clock, X, Server, Monitor, MemoryStick, Download, Gauge, Grip, Keyboard, Power, Scan, SquareDashed, SunMoon, Palette, Gpu]
 );
 
 /// The neuro-kitchen logo (256 px PNG), for `img(BRAND_LOGO)`: the about dialog.

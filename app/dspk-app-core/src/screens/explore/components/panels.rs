@@ -75,7 +75,8 @@ macro_rules! side_panel {
                     None => header,
                 };
                 let body = self.body(window, cx);
-                v_flex().size_full().child(header).child(div().flex_1().min_h_0().child(body))
+                // The panel colour at the root, as lumen's panels: the dock behind is not shown
+                v_flex().size_full().bg($crate::ui::theme::color::panel()).child(header).child(div().flex_1().min_h_0().child(body))
             }
         }
 
@@ -600,13 +601,13 @@ impl SettingsPanel {
         let facts = sources.as_ref().map(|ss| source_facts(ss.entry(&v.source), muted));
         let mut out = vec![
             div().text_sm().font_weight(gpui_kit::FontWeight::SEMIBOLD).truncate().child(v.title.clone()).into_any_element(),
-            Section::new("Source").boxed().children(source).children(facts).child(row("Range", div().text_sm().child(v.range_label()))).into_any_element(),
-            Section::new("Layer").boxed().child(kind).when(traces, |d| d.child(row("Colour", color_by)).child(events).child(events_only)).into_any_element(),
+            Section::new("Source").children(source).children(facts).child(row("Range", div().text_sm().child(v.range_label()))).into_any_element(),
+            Section::new("Layer").child(kind).when(traces, |d| d.child(row("Colour", color_by)).child(events).child(events_only)).into_any_element(),
         ];
         if traces {
-            out.push(Section::new("Traces").boxed().child(row("On screen", lanes_row)).child(row("Gain", gain_row)).into_any_element());
+            out.push(Section::new("Traces").child(row("On screen", lanes_row)).child(row("Gain", gain_row)).into_any_element());
         }
-        out.push(Section::new("Scaling").boxed().child(auto).child(dc).into_any_element());
+        out.push(Section::new("Scaling").child(auto).child(dc).into_any_element());
         out
     }
 }

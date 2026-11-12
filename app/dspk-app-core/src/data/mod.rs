@@ -4,6 +4,7 @@
 //! only.
 
 pub mod derived;
+pub mod device;
 pub mod epochs;
 pub mod events;
 pub mod jobs;

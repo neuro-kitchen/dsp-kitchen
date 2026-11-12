@@ -544,8 +544,8 @@ impl SortingWorkspace {
         let running = self.store.read(cx).job.as_ref().map(|j| (j.label.clone(), j.fraction, j.line.clone()));
         let me = cx.entity().downgrade();
         let sorter_section = match &self.described {
-            None => Section::new("Sorter").boxed().child(div().text_xs().text_color(muted).child("Asking dspk-cli-sorter what it runs…")),
-            Some(Err(e)) => Section::new("Sorter").boxed().child(div().text_xs().text_color(danger).child(e.clone())).child({
+            None => Section::new("Sorter").child(div().text_xs().text_color(muted).child("Asking dspk-cli-sorter what it runs…")),
+            Some(Err(e)) => Section::new("Sorter").child(div().text_xs().text_color(danger).child(e.clone())).child({
                 let me = me.clone();
                 Button::new("sorters-retry").outline().small().label("Look again").on_click(move |_, _, cx| {
                     let _ = me.update(cx, |w, cx| w.describe(cx));
@@ -564,7 +564,7 @@ impl SortingWorkspace {
                 };
                 let about = d.sorters.get(self.sorter).map(|s| s.about.clone()).unwrap_or_default();
                 let recipes: Vec<String> = self.store.read(cx).doc.recipes.values().filter(|r| r.is_sorter()).map(|r| r.name.clone()).collect();
-                Section::new("Sorter").boxed()
+                Section::new("Sorter")
                     .child(pick)
                     .child(div().text_xs().text_color(muted).child(about))
                     .when(!recipes.is_empty(), |d| {
@@ -585,7 +585,7 @@ impl SortingWorkspace {
                 });
             }
         });
-        let part = Section::new("Part of the recording").boxed()
+        let part = Section::new("Part of the recording")
             .child(row("Start (s)", div().w_full().child(Input::new(&self.start).small())))
             .child(row("Duration (s)", div().w_full().child(Input::new(&self.duration).small())))
             .child({

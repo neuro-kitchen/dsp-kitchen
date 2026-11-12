@@ -610,7 +610,7 @@ impl Inspector {
         if selected.len() > 1 {
             let (canvas, canvas2) = (self.canvas.downgrade(), self.canvas.downgrade());
             let all_ops = selected.iter().all(|id| matches!(g.node(id).map(|n| &n.kind), Some(NodeKind::Op { .. })));
-            return Section::new(format!("{} nodes selected", selected.len())).boxed()
+            return Section::new(format!("{} nodes selected", selected.len()))
                 .child(div().text_xs().text_color(muted).child("Drag one of them to move them together; Ctrl+D duplicates them with their edges."))
                 .child(
                     Button::new("inspector-make-recipe")
@@ -630,7 +630,7 @@ impl Inspector {
                 .into_any_element();
         }
         let Some(node) = selected.iter().next().and_then(|id| g.node(id)).cloned() else {
-            return Section::new("Nothing selected").boxed()
+            return Section::new("Nothing selected")
                 .child(div().text_xs().text_color(muted).child("Click a node to see it here; its path through the graph lights up."))
                 .child(div().text_xs().text_color(muted).child("A view node is a stream in Explore: connect a chain to it, then double-click it to show it."))
                 .child(div().text_xs().text_color(muted).child("A node has one input; outputs fan out, so one recording can feed several branches."))
@@ -682,7 +682,7 @@ impl Inspector {
                     })
                     .children(s.recordings().find(|r| r.path.as_ref() == Some(&recording.path)).map(|r| {
                         let e = r.sources.entry(recording.source.as_deref().unwrap_or(&r.sources.default_entry().id)).clone();
-                        Section::new("Metadata").boxed().child(crate::screens::explore::components::panels::source_facts(&e, muted))
+                        Section::new("Metadata").child(crate::screens::explore::components::panels::source_facts(&e, muted))
                     }))
                     .child(row(
                         "Channels",
@@ -760,7 +760,7 @@ impl Inspector {
                 v_flex()
                     .gap_2()
                     .child(enabled_box)
-                    .child(Section::new("Channels").boxed().child(table))
+                    .child(Section::new("Channels").child(table))
                     .child(div().text_xs().text_color(muted).child("Explore shows the new order. First in the chain it folds into the read and may drop channels; between processing steps it reorders on the device and keeps them all; last, it may drop again."))
                     .into_any_element()
             }
@@ -795,7 +795,7 @@ impl Inspector {
                         let v = *v;
                         let _ = this.update(cx, |i, cx| i.exec(SessionCommand::EnableNode { id: id2.clone(), enabled: v }, cx));
                     }))
-                    .child(Section::new("Parameters").boxed().child(self.params.clone()))
+                    .child(Section::new("Parameters").child(self.params.clone()))
                     .child(div().text_xs().text_color(muted).child(if views.is_empty() {
                         "Feeds no view yet: connect it to one to see it in Explore.".to_string()
                     } else {
@@ -913,7 +913,7 @@ impl Inspector {
             self.recipe_params[k].update(cx, |p, cx| p.set_node(&key, &op.node, commit, window, cx));
             let own = overrides.keys().filter(|o| o.starts_with(&format!("{}.", op.id))).count();
             let title = format!("{} · {}{}", op.id, type_name(&op.node), if own > 0 && !self.edit_recipe { format!(" · {own} own") } else { String::new() });
-            sections.push(Section::new(title).boxed().child(self.recipe_params[k].clone()));
+            sections.push(Section::new(title).child(self.recipe_params[k].clone()));
         }
         let me = cx.entity().downgrade();
         let mode = |label: &'static str, recipe_mode: bool, on: bool| {

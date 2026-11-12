@@ -399,6 +399,17 @@ impl SettingsScreen {
                 Self::setting("Dark plots", "Traces, heatmaps and charts on a dark background, whatever the theme.", "Off", plots, cx),
             ],
             Section::Compute => vec![
+                Self::setting(
+                    "Device",
+                    &match &self.store.read(cx).device {
+                        Some(d) if !d.adapters.is_empty() => format!("Processing runs on {}. Adapters wgpu found: {}.", d.label, d.adapters.join("; ")),
+                        Some(d) => format!("Processing runs on {}.", d.label),
+                        None => "Looking for the GPU…".to_string(),
+                    },
+                    "",
+                    div(),
+                    cx,
+                ),
                 Self::setting("Runtime", &format!("Where processing and sorting run. Takes effect at the next start (now: {now}); DSPK_RUNTIME in the environment overrides it."), "Automatic (first compiled in)", runtime_menu, cx),
                 Self::setting("Tune this device", "Measures the fastest kernel settings once and keeps them, so first runs and previews are fast: File → Tune this device.", "", div(), cx),
             ],

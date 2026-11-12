@@ -284,6 +284,7 @@ impl Render for EpochsPanel {
         });
         v_flex()
             .size_full()
+            .bg(crate::ui::theme::color::panel())
             .track_focus(&self.focus)
             .child(header)
             .child(
