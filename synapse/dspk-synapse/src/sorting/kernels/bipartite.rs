@@ -5,7 +5,7 @@
 //! Counters are global `Atomic<u32>` reached by reference (`Atomic::fetch_add(&c[i], 1)`).
 
 use cubecl::prelude::*;
-use dspk_core::compute::element_position;
+use dspk_core::compute::{element_position, row_position};
 use dspk_ops::core::DspFloat;
 
 /// Label of a node outside every cluster (a right node no left node of a kept cluster reaches).
@@ -242,9 +242,12 @@ pub fn cluster_edges_kernel(nb: &[u32], left: &[u32], right: &[u32], edges: &mut
     }
 }
 
-/// k-means++ trials scored at once: `partial[t · blocks + b] = Σ_{i ∈ block b} min(closest[i],
-/// ‖x_i − x_{cand[t]}‖²)`, the potential if trial `t` became a seed, per block of `block` points
-/// (the host adds the blocks in `f64`). One unit per `(t, b)`.
+/// k-means++ trials scored at once: `partial[t · cubes + c] = Σ_{i ∈ cube c} min(closest[i],
+/// ‖x_i − x_{cand[t]}‖²)`, the potential if trial `t` became a seed, per cube of `units` points
+/// (`pick_seed_kernel` adds the cubes). One unit per **point**: a warp reads consecutive points of
+/// each feature row (coalesced) and every point is read once for all trials; each unit keeps its
+/// `trials` sums in its own shared-memory slots, then the cube adds them by halving. (Before, one
+/// unit walked a block of 16 points per trial: reads 16 apart and each point read once per trial.)
 #[cube(launch)]
 #[allow(clippy::too_many_arguments)]
 pub fn trial_potentials_kernel<F: Float>(
@@ -254,30 +257,55 @@ pub fn trial_potentials_kernel<F: Float>(
     partial: &mut [F],
     n: u32,
     d: u32,
-    trials: u32,
-    block: u32,
-    blocks: u32,
+    cubes: u32,
+    #[comptime] trials: u32,
+    #[comptime] units: u32,
 ) {
-    let unit = element_position() as u32;
-    if unit < trials * blocks {
-        let t = unit / blocks;
-        let b = unit - t * blocks;
-        let c = cand[t as usize];
-        let end = u32::min((b + 1u32) * block, n);
-        let mut acc = F::new(0.0f32);
-        let mut i = b * block;
-        while i < end {
-            let mut dist = F::new(0.0f32);
-            let mut f = 0u32;
-            while f < d {
-                let diff = x[(f * n + i) as usize] - x[(f * n + c) as usize];
-                dist += diff * diff;
-                f += 1u32;
+    let cube = row_position();
+    let i = cube * units + UNIT_POS_X;
+    let mut sums = Shared::<[F]>::new_slice(comptime!((trials * units) as usize));
+    #[unroll]
+    for t in 0..trials {
+        sums[(t * units + UNIT_POS_X) as usize] = F::new(0.0f32);
+    }
+    if i < n {
+        let mut f = 0u32;
+        while f < d {
+            let xi = x[(f * n + i) as usize];
+            #[unroll]
+            for t in 0..trials {
+                let diff = xi - x[(f * n + cand[t as usize]) as usize];
+                sums[(t * units + UNIT_POS_X) as usize] += diff * diff;
             }
-            acc += F::min(dist, closest[i as usize]);
-            i += 1u32;
+            f += 1u32;
         }
-        partial[unit as usize] = acc;
+        let c = closest[i as usize];
+        #[unroll]
+        for t in 0..trials {
+            let slot = (t * units + UNIT_POS_X) as usize;
+            sums[slot] = F::min(sums[slot], c);
+        }
+    }
+    sync_cube();
+    // From the runtime's cube size (= `units`): a halving counter started from a comptime value is
+    // comptime itself and its writes fail to compile (knowledge/cubecl/03-writing-kernels, traps)
+    let mut stride = CUBE_DIM_X / 2u32;
+    while stride > 0u32 {
+        if UNIT_POS_X < stride {
+            #[unroll]
+            for t in 0..trials {
+                let slot = (t * units + UNIT_POS_X) as usize;
+                sums[slot] = sums[slot] + sums[slot + stride as usize];
+            }
+        }
+        sync_cube();
+        stride /= 2u32;
+    }
+    if UNIT_POS_X == 0u32 && cube < cubes {
+        #[unroll]
+        for t in 0..trials {
+            partial[(t * cubes + cube) as usize] = sums[(t * units) as usize];
+        }
     }
 }
 
