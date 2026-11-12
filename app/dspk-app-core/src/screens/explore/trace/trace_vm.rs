@@ -446,6 +446,22 @@ impl TraceVm {
         }
     }
 
+    /// Draws session view `id` (a view of this view's source): the chain picked in the Pipeline
+    /// or by an agent. The one it drew before is released (it leaves the session if it holds no
+    /// work).
+    pub fn show_doc_view(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.view.doc_view == id {
+            return;
+        }
+        let old = std::mem::replace(&mut self.view.doc_view, id.to_string());
+        if !old.is_empty() {
+            cx.emit(TraceEvent::Released(old));
+        }
+        self.shown = None;
+        cx.emit(TraceEvent::Changed);
+        self.request_render(cx);
+    }
+
     /// Shows another source of the open file (Explore's views: with that source's session view
     /// and its processing).
     pub fn set_source(&mut self, source: &str, cx: &mut Context<Self>) {
