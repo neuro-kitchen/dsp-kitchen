@@ -8,6 +8,9 @@ version number.
 
 ### Changed
 
+- The kitchen crates (git, tag v0.0.3) carry their version too, so cargo-deny no longer reads them
+  as wildcard dependencies of `dspk-app-core`.
+
 - **App: lumen's greys in the plots.** The dark plots' background, grid, baselines and labels are
   lumen's neutrals (#161616 like lumen's image area, #222222, #2a2a2a, muted grey) instead of a
   blue-black; the heatmap starts from the same background; the light plots' greys lose their
