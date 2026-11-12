@@ -1,7 +1,8 @@
-//! Settings (Ctrl+,), laid out as lumen's: sections on the left, their settings on the right. Each
-//! setting says what it does and what its default is, with its control at the right; changes
-//! apply at once. Sections: Appearance (theme, dark plots), Compute (runtime), Start (what opens,
-//! recent lists), Servers (add, edit, remove, test), Results (where fetched results go), About.
+//! dsp-kitchen's sections of Settings (Ctrl+,): the frame (kitchen-shell) draws Settings, its own
+//! Appearance first (theme, accent, text size), then these. Each setting says what it does and
+//! what its default is, with its control at the right; changes apply at once. Sections: Display
+//! (a theme that follows the system, dark plots), Compute (runtime), Start (what opens, recent
+//! lists), Servers (add, edit, remove, test), Results (where fetched results go), About.
 
 use std::path::PathBuf;
 
@@ -12,13 +13,13 @@ use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Disableable as _, Si
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     div, px, AnyElement, App, AppContext as _, Context, Entity, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window,
+    Styled as _, Subscription, Task, Window,
 };
 
 use crate::data::preferences::Session;
 use crate::data::remote::{self, ServerProfile, DEFAULT_SERVER_NAME};
 use crate::data::store::Store;
-use crate::ui::widgets::{row, AccentChanged, AccentPicker, MenuSelect};
+use crate::ui::widgets::{row, MenuSelect};
 
 /// Compute runtimes offered (the first: whatever is compiled in first).
 const RUNTIMES: [(&str, Option<&str>); 4] = [("Automatic (first compiled in)", None), ("wgpu (Vulkan, Metal, DX12)", Some("wgpu")), ("CUDA", Some("cuda")), ("CPU", Some("cpu"))];
@@ -26,8 +27,8 @@ const THEMES: [(&str, Option<bool>); 3] = [("Follow the system", None), ("Dark",
 
 /// A section of the settings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Section {
-    Appearance,
+pub enum Section {
+    Display,
     Compute,
     Start,
     Servers,
@@ -36,11 +37,11 @@ enum Section {
 }
 
 impl Section {
-    const ALL: [Section; 6] = [Section::Appearance, Section::Compute, Section::Start, Section::Servers, Section::Results, Section::About];
+    pub const ALL: [Section; 6] = [Section::Display, Section::Compute, Section::Start, Section::Servers, Section::Results, Section::About];
 
-    fn title(self) -> &'static str {
+    pub fn title(self) -> &'static str {
         match self {
-            Section::Appearance => "Appearance",
+            Section::Display => "Display",
             Section::Compute => "Compute",
             Section::Start => "Start",
             Section::Servers => "Servers",
@@ -49,10 +50,10 @@ impl Section {
         }
     }
 
-    fn icon(self) -> gpui_kit::assets::IconName {
+    pub fn icon(self) -> gpui_kit::assets::IconName {
         use gpui_kit::assets::IconName as I;
         match self {
-            Section::Appearance => I::Palette,
+            Section::Display => I::Monitor,
             Section::Compute => I::Cpu,
             Section::Start => I::Play,
             Section::Servers => I::Server,
@@ -81,9 +82,6 @@ pub struct SettingsScreen {
     /// The last test or save: ok, and what to say.
     message: Option<(bool, String)>,
     testing: bool,
-    section: Section,
-    /// The accent picker (made on the first draw: it needs the window).
-    accent: Option<Entity<AccentPicker>>,
     _subs: Vec<Subscription>,
     _tasks: Vec<Task<()>>,
 }
@@ -98,7 +96,7 @@ impl SettingsScreen {
         let default_results = crate::domain::paths::short_path(&Session::default_results_dir());
         let current = store.read(cx).session.results_dir.clone().map(|p| p.display().to_string()).unwrap_or_default();
         let results = cx.new(|cx| InputState::new(window, cx).placeholder(default_results).default_value(current));
-        Self { store, name, address, server_name, identity, results, form: Form::Closed, message: None, testing: false, section: Section::Appearance, accent: None, _subs: Vec::new(), _tasks: Vec::new() }
+        Self { store, name, address, server_name, identity, results, form: Form::Closed, message: None, testing: false, _subs: Vec::new(), _tasks: Vec::new() }
     }
 
     fn text(input: &Entity<InputState>, cx: &App) -> String {
@@ -240,27 +238,16 @@ impl SettingsScreen {
     }
 }
 
+/// Alone (its tests), Settings shows its Servers section.
 impl Render for SettingsScreen {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // The accent: lime, a suggested colour or any colour (kitchen-ui keeps it readable)
-        let accent_now = self.store.read(cx).session.accent;
-        let picker = match &self.accent {
-            Some(p) => p.clone(),
-            None => {
-                let p = cx.new(|cx| AccentPicker::new(accent_now, window, cx));
-                self._subs.push(cx.subscribe_in(&p, window, |this, _, e: &AccentChanged, window, cx| {
-                    let accent = e.0;
-                    this.store.update(cx, |s, cx| s.set_accent(accent, cx));
-                    let dark = this.store.read(cx).session.dark;
-                    crate::app::DspApp::apply_theme(&this.store, dark, window, cx);
-                }));
-                self.accent = Some(p.clone());
-                p
-            }
-        };
-        if picker.read(cx).current() != accent_now {
-            picker.update(cx, |p, cx| p.set_current(accent_now, cx));
-        }
+        v_flex().id("settings").size_full().p_4().child(self.body(Section::Servers, window, cx))
+    }
+}
+
+impl SettingsScreen {
+    /// The settings of `section`.
+    pub fn body(&mut self, section: Section, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.theme();
         let (muted, danger, ok, border) = (t.muted_foreground, t.danger, t.success, t.border);
         let me = cx.entity().downgrade();
@@ -406,16 +393,9 @@ impl Render for SettingsScreen {
             .on_click(move |_, _, cx| s5.update(cx, |s, cx| s.forget_recent(None, cx)));
 
         let now_results = format!("Now {}; each server's results in a folder of its own.", crate::domain::paths::short_path(&results_dir));
-        let body: Vec<AnyElement> = match self.section {
-            Section::Appearance => vec![
-                Self::setting("Theme", "Dark or light, or as the system is set.", "Follow the system", theme_menu, cx),
-                Self::setting(
-                    "Accent",
-                    "The colour of selections, primary buttons and the status bar's place: dsp-kitchen's lime, a suggested colour or any colour (kept readable in both themes).",
-                    "Lime",
-                    div().max_w(px(380.)).child(picker),
-                    cx,
-                ),
+        let body: Vec<AnyElement> = match section {
+            Section::Display => vec![
+                Self::setting("Theme", "Dark or light, or as the system is set (follows it while running). Appearance has the accent and the text size.", "Follow the system", theme_menu, cx),
                 Self::setting("Dark plots", "Traces, heatmaps and charts on a dark background, whatever the theme.", "Off", plots, cx),
             ],
             Section::Compute => vec![
@@ -441,55 +421,7 @@ impl Render for SettingsScreen {
                 Self::setting("Settings file", &crate::data::preferences::Session::path().map(|p| crate::domain::paths::short_path(&p)).unwrap_or_else(|| "not saved (no config folder)".into()), "per user", div(), cx),
             ],
         };
-        // Rows of their own (a button centres its label): icon and name, left-aligned, as lumen's
-        let (on_bg, hover_bg, muted_fg, accent_fg) = { let t = cx.theme(); (t.accent, t.secondary, t.muted_foreground, t.primary) };
-        let nav = v_flex().flex_none().w(px(180.)).h_full().p_2().gap(px(2.)).border_r_1().border_color(border).children(Section::ALL.into_iter().map(|sec| {
-            let on = sec == self.section;
-            h_flex()
-                .id(SharedString::from(format!("settings-section-{}", sec.title().to_lowercase())))
-                .h(px(30.))
-                .px_2()
-                .gap_2()
-                .rounded_md()
-                .cursor_pointer()
-                .when(on, |d| d.bg(on_bg))
-                .when(!on, |d| d.hover(|d| d.bg(hover_bg)))
-                .child(gpui_kit::component::Icon::new(sec.icon()).small().text_color(if on { accent_fg } else { muted_fg }))
-                .child(div().text_sm().child(sec.title()))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.section = sec;
-                    cx.notify();
-                }))
-        }));
-        v_flex()
-            .id("settings")
-            .w(px(780.))
-            .h(px(540.))
-            .child(
-                h_flex()
-                    .flex_none()
-                    .h(px(40.))
-                    .px_4()
-                    .border_b_1()
-                    .border_color(border)
-                    .child(div().text_base().font_weight(FontWeight::SEMIBOLD).child("Settings"))
-                    .child(div().flex_1())
-                    .child(div().text_xs().text_color(muted).child("Changes apply at once · Esc closes")),
-            )
-            .child(
-                h_flex().flex_1().min_h_0().child(nav).child(
-                    v_flex()
-                        .id("settings-body")
-                        .flex_1()
-                        .min_w_0()
-                        .h_full()
-                        .overflow_y_scroll()
-                        .px_5()
-                        .py_2()
-                        .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).py_2().child(self.section.title()))
-                        .children(body),
-                ),
-            )
+        v_flex().id(SharedString::from(format!("settings-{}", section.title().to_lowercase()))).w_full().children(body).into_any_element()
     }
 }
 

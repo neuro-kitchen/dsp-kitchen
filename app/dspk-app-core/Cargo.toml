@@ -43,6 +43,8 @@ bytemuck.workspace = true
 # GPUI (pinned in the workspace) and the shared UI of the neuro-kitchen apps
 gpui-kit.workspace = true
 kitchen-ui.workspace = true
+# The shared frame: command registry, menus, search, status bar, Settings, jobs
+kitchen-shell.workspace = true
 sysinfo.workspace = true
 async-channel = "2.5.0"
 

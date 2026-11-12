@@ -8,6 +8,26 @@ version number.
 
 ### Changed
 
+- **App: kitchen-shell's frame, as lumen's.** The title bar (the DSP App menu, Help, the
+  workspaces, the recording, where the app runs, the panel toggles, the theme), the workspace's
+  menu row, the status bar (status line, every job with its cancel button, the frame's numbers,
+  CPU and memory), Settings, the search and the window frame (rounded while it floats, resized
+  from its edge) are kitchen-shell's (kitchen v0.0.3), shared with lumen.
+- **App: every action is a command** of one registry (`commands.rs` and the Pipeline's own):
+  id, title, icon, what it does, group, key, when it can run and why not, and the JSON Schema of
+  its arguments. The menus, the keys, the search (Ctrl+K; F3 for the operations) and, next, an
+  agent's tools come from that one list; an entry that cannot run is greyed with the reason.
+  Recent files and recipes are menu entries made when the menu opens.
+- App: the Pipeline's menus (File, Edit, a menu per kind of operation, View) sit in the frame's
+  menu row; docked in Explore, its own bar draws the same menus.
+- App: Settings has the frame's Appearance (theme, accent, text size) first, then Display (a
+  theme that follows the system, dark plots), Compute, Start, Servers, Results and About.
+  Keyboard & mouse (F1), About and Open from server show over the frame.
+- App: a job is listed in the frame's status bar too; its cancel button stops it.
+- The search palette of our own is gone (the frame's search replaces it).
+- Dependencies: kitchen-ui and kitchen-shell from kitchen's v0.0.3 tag (one revision for both:
+  kitchen-shell uses kitchen-ui by path); cargo-deny allows that git repository.
+
 - **App: the shared neuro-kitchen look** (kitchen-ui, as lumen): plain grey neutrals, lime accent,
   15 px text; the workspaces' rails, panels, views and strips are rounded cards on the chrome, with
   no lines between them; the window has no outline or shadow margin around it. Widgets (dropdowns,
