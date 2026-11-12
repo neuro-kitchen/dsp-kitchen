@@ -31,6 +31,7 @@ use crate::ui::panel_edge::{follow_panel_drag, panel_edge, rail, toggle_item, Pa
 use crate::ui::param_editor::{Commit, EditNode as _, ParamEditor};
 use crate::ui::theme::{self, color};
 use crate::ui::widgets::{pane, row, Section};
+use kitchen_shell::{CommandSpec, MenuItem, MenuSpec, Registry};
 
 use super::canvas::{CanvasEvent, DragGhost, GraphCanvas, RecipeDrag};
 use super::catalog::{catalog, describe, presets, type_name, Template};
@@ -57,6 +58,8 @@ pub struct PipelineView {
     /// Built-in and library recipes (read when the Recipes tab opens), and unreadable files.
     library: Vec<(RecipeDoc, &'static str)>,
     library_errors: Vec<String>,
+    /// The app's commands, for the bar drawn when the Pipeline is docked in Explore.
+    registry: Option<Registry>,
     _subs: Vec<Subscription>,
 }
 
@@ -72,7 +75,7 @@ impl PipelineView {
             }),
             cx.subscribe(&canvas, |_, _, _: &CanvasEvent, cx| cx.notify()),
         ];
-        let mut this = Self { store, canvas, inspector, left: LeftTab::Layers, collapsed: HashSet::new(), library: Vec::new(), library_errors: Vec::new(), _subs: subs };
+        let mut this = Self { store, canvas, inspector, left: LeftTab::Layers, collapsed: HashSet::new(), library: Vec::new(), library_errors: Vec::new(), registry: None, _subs: subs };
         this.read_library();
         this
     }
@@ -318,96 +321,111 @@ impl PipelineView {
         let _ = canvas.update(cx, f);
     }
 
-    /// The menu bar: File, Edit, one menu per kind of operation, View.
-    fn menu_bar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let t = cx.theme();
-        let canvas = self.canvas.downgrade();
-        let selected = !self.canvas.read(cx).selected.is_empty();
-        let (grid_on, map_on) = (self.canvas.read(cx).show_grid, self.canvas.read(cx).show_minimap);
-        let writable = self.canvas.read(cx).single().and_then(|id| self.store.read(cx).doc.graph.node(id)).is_some_and(|n| matches!(n.kind, NodeKind::Write {} | NodeKind::View { .. }));
-        let menu = |id: SharedString, title: &'static str, build: Rc<dyn Fn(PopupMenu) -> PopupMenu>| {
-            Button::new(id).ghost().small().label(title).dropdown_menu(move |m: PopupMenu, _, _| build(m))
+    /// The Pipeline's commands (kitchen-shell): its sources and writes, editing the graph, the
+    /// canvas' view. Its operations are the `process.op.*` commands (the app's).
+    pub fn commands(this: WeakEntity<Self>, store: Entity<Store>) -> Vec<CommandSpec> {
+        let canvas_of = |this: &WeakEntity<Self>, cx: &App| this.upgrade().map(|p| p.read(cx).canvas.clone());
+        let canvas_do = |f: fn(&mut GraphCanvas, &mut Window, &mut Context<GraphCanvas>)| {
+            let this = this.clone();
+            move |window: &mut Window, cx: &mut App| {
+                if let Some(c) = canvas_of(&this, cx) {
+                    c.update(cx, |c, cx| f(c, window, cx));
+                }
+            }
         };
-        let item_canvas = canvas.clone();
-        let item = move |label: &'static str, enabled: bool, f: fn(&mut GraphCanvas, &mut Window, &mut Context<GraphCanvas>)| {
-            let canvas = item_canvas.clone();
-            PopupMenuItem::new(label).disabled(!enabled).on_click(move |_, window, cx| {
-                let _ = canvas.update(cx, |c, cx| f(c, window, cx));
+        let selected = || {
+            let this = this.clone();
+            move |cx: &App| match canvas_of(&this, cx) {
+                Some(c) if !c.read(cx).selected.is_empty() => Ok(()),
+                _ => Err("Select nodes first".to_string()),
+            }
+        };
+        let flag = |f: fn(&GraphCanvas) -> bool| {
+            let this = this.clone();
+            move |cx: &App| canvas_of(&this, cx).is_some_and(|c| f(c.read(cx)))
+        };
+        let (w1, w2) = (this.clone(), store.clone());
+        vec![
+            CommandSpec::new("pipeline.add_open_recording", "Add the open recording", IconName::AudioWaveform, canvas_do(|c, w, cx| c.add(&Template::OpenRecording, None, w, cx))).group("Pipeline").hint("The recording open in Explore, as a source node"),
+            CommandSpec::new("pipeline.add_recording_file", "Add a recording from file…", IconName::FolderOpen, canvas_do(|c, w, cx| c.add(&Template::RecordingFile, None, w, cx))).group("Pipeline").hint("SpikeGLX, raw .bin + .meta, NWB Zarr, as a source node"),
+            CommandSpec::new("pipeline.write", "Write the selected chain", IconName::Download, move |_, cx| {
+                if let Some(c) = canvas_of(&w1, cx)
+                    && let Some(id) = c.read(cx).single().cloned()
+                {
+                    w2.update(cx, |s, cx| s.write_node(&id, cx));
+                }
             })
-        };
-        let file = {
-            let item = item.clone();
-            Rc::new(move |m: PopupMenu| {
-                m.item(item("Add the open recording", true, |c, w, cx| c.add(&Template::OpenRecording, None, w, cx)))
-                    .item(item("Add a recording from file…", true, |c, w, cx| c.add(&Template::RecordingFile, None, w, cx)))
-                    .separator()
-                    .item(item("Write the selected chain", writable, |c, _, cx| {
-                        if let Some(id) = c.single().cloned() {
-                            let store = c.store_entity();
-                            store.update(cx, |s, cx| s.write_node(&id, cx));
-                        }
-                    }))
-            }) as Rc<dyn Fn(PopupMenu) -> PopupMenu>
-        };
-        let edit = {
-            let item = item.clone();
-            Rc::new(move |m: PopupMenu| {
-                m.item(item("Duplicate  (Ctrl+D)", selected, |c, _, cx| c.duplicate_selected(cx)))
-                    .item(item("Delete  (Del)", selected, |c, _, cx| c.delete_selected(cx)))
-                    .item(item("Disconnect input", selected, |c, _, cx| c.disconnect_selected(cx)))
-                    .separator()
-                    .item(item("Select all  (Ctrl+A)", true, |c, _, cx| c.select_all(cx)))
-            }) as Rc<dyn Fn(PopupMenu) -> PopupMenu>
-        };
-        let view = {
-            let item = item.clone();
-            Rc::new(move |m: PopupMenu| {
-                m.item(item("Zoom in  (Ctrl +)", true, |c, _, cx| c.zoom_by(1.25, None, cx)))
-                    .item(item("Zoom out  (Ctrl −)", true, |c, _, cx| c.zoom_by(0.8, None, cx)))
-                    .item(item("Actual size  (Ctrl+0)", true, |c, _, cx| c.zoom_to(1.0, cx)))
-                    .item(item("Fit the graph  (F)", true, |c, _, cx| c.fit(cx)))
-                    .separator()
-                    .item(item("Dot grid", true, |c, _, cx| {
-                        c.show_grid = !c.show_grid;
-                        cx.notify();
-                    }).checked(grid_on))
-                    .item(item("Minimap", true, |c, _, cx| {
-                        c.show_minimap = !c.show_minimap;
-                        cx.notify();
-                    }).checked(map_on))
-            }) as Rc<dyn Fn(PopupMenu) -> PopupMenu>
-        };
-        // On the chrome, above the cards (no line under it)
-        let mut bar = h_flex()
+            .group("Pipeline")
+            .hint("Runs the chain of the selected write or view node and writes it (Zarr)")
+            .enabled({
+                let (this, store) = (this.clone(), store.clone());
+                move |cx| {
+                    let writable = canvas_of(&this, cx).and_then(|c| c.read(cx).single().cloned()).and_then(|id| store.read(cx).doc.graph.node(&id).map(|n| matches!(n.kind, NodeKind::Write {} | NodeKind::View { .. }))).unwrap_or(false);
+                    if writable { Ok(()) } else { Err("Select one write or view node".into()) }
+                }
+            }),
+            CommandSpec::new("pipeline.duplicate", "Duplicate", IconName::Copy, canvas_do(|c, _, cx| c.duplicate_selected(cx))).group("Pipeline").hint("The selected nodes (Ctrl+D on the canvas)").enabled(selected()),
+            CommandSpec::new("pipeline.delete", "Delete", IconName::Trash, canvas_do(|c, _, cx| c.delete_selected(cx))).group("Pipeline").hint("The selected nodes (Del on the canvas)").enabled(selected()),
+            CommandSpec::new("pipeline.disconnect", "Disconnect input", IconName::Unlink, canvas_do(|c, _, cx| c.disconnect_selected(cx))).group("Pipeline").hint("The selected nodes' inputs").enabled(selected()),
+            CommandSpec::new("pipeline.select_all", "Select all", IconName::SquareDashed, canvas_do(|c, _, cx| c.select_all(cx))).group("Pipeline").hint("Every node (Ctrl+A on the canvas)"),
+            CommandSpec::new("pipeline.make_recipe", "Make recipe", IconName::Package, canvas_do(|c, _, cx| c.make_recipe(cx))).group("Pipeline").hint("The selected chain of ops becomes a recipe: one reusable node").enabled(selected()),
+            CommandSpec::new("pipeline.zoom_in", "Zoom in", IconName::ZoomIn, canvas_do(|c, _, cx| c.zoom_by(1.25, None, cx))).group("Pipeline").hint("Ctrl + on the canvas").read_only(),
+            CommandSpec::new("pipeline.zoom_out", "Zoom out", IconName::ZoomOut, canvas_do(|c, _, cx| c.zoom_by(0.8, None, cx))).group("Pipeline").hint("Ctrl − on the canvas").read_only(),
+            CommandSpec::new("pipeline.actual", "Actual size", IconName::Scan, canvas_do(|c, _, cx| c.zoom_to(1.0, cx))).group("Pipeline").hint("100 % (Ctrl+0 on the canvas)").read_only(),
+            CommandSpec::new("pipeline.fit", "Fit the graph", IconName::Maximize, canvas_do(|c, _, cx| c.fit(cx))).group("Pipeline").hint("Every node in view (F on the canvas)").read_only(),
+            CommandSpec::new("pipeline.grid", "Dot grid", IconName::Grip, canvas_do(|c, _, cx| {
+                c.show_grid = !c.show_grid;
+                cx.notify();
+            }))
+            .group("Pipeline")
+            .hint("Dots behind the nodes")
+            .checked(flag(|c| c.show_grid))
+            .read_only(),
+            CommandSpec::new("pipeline.minimap", "Minimap", IconName::Map, canvas_do(|c, _, cx| {
+                c.show_minimap = !c.show_minimap;
+                cx.notify();
+            }))
+            .group("Pipeline")
+            .hint("The whole graph in a corner")
+            .checked(flag(|c| c.show_minimap))
+            .read_only(),
+        ]
+    }
+
+    /// The Pipeline's menus: File, Edit, one menu per kind of operation (Sources are in File),
+    /// View.
+    pub fn menu_specs() -> Vec<MenuSpec> {
+        let c = |id: &str| MenuItem::command(id.to_string());
+        let mut menus = vec![
+            MenuSpec::new("File", vec![c("pipeline.add_open_recording"), c("pipeline.add_recording_file"), MenuItem::Separator, c("pipeline.write")]),
+            MenuSpec::new("Edit", vec![c("pipeline.duplicate"), c("pipeline.delete"), c("pipeline.disconnect"), MenuItem::Separator, c("pipeline.select_all"), c("pipeline.make_recipe"), MenuItem::Separator, c("edit.undo"), c("edit.redo")]),
+        ];
+        for cat in catalog().into_iter().filter(|c| c.name != "Sources") {
+            menus.push(MenuSpec::new(cat.name, cat.items.iter().map(|i| MenuItem::command(crate::commands::op_id(i.label))).collect()));
+        }
+        menus.push(MenuSpec::new("View", vec![c("pipeline.zoom_in"), c("pipeline.zoom_out"), c("pipeline.actual"), c("pipeline.fit"), MenuItem::Separator, c("pipeline.grid"), c("pipeline.minimap")]));
+        menus
+    }
+
+    /// Hands the Pipeline the app's commands (its own bar, docked in Explore, draws them).
+    pub fn set_registry(&mut self, registry: Registry) {
+        self.registry = Some(registry);
+    }
+
+    /// The menu bar, while the Pipeline is docked in Explore (in its own workspace the same menus
+    /// sit in the frame's menu row).
+    fn menu_bar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let muted = cx.theme().muted_foreground;
+        let buttons = self.registry.as_ref().map(|r| Self::menu_specs().iter().enumerate().map(|(i, m)| r.menu_button(format!("pipeline-menu-{i}"), m)).collect::<Vec<_>>()).unwrap_or_default();
+        h_flex()
             .h(px(34.))
             .flex_none()
             .px_2()
             .gap_0p5()
-            .child(menu("pipeline-menu-file".into(), "File", file))
-            .child(menu("pipeline-menu-edit".into(), "Edit", edit));
-        // One menu per kind of operation (Sources are in File)
-        for c in catalog().into_iter().filter(|c| c.name != "Sources") {
-            let canvas = canvas.clone();
-            let items = c.items.clone();
-            let build: Rc<dyn Fn(PopupMenu) -> PopupMenu> = Rc::new(move |m: PopupMenu| {
-                let mut m = m;
-                for it in &items {
-                    let (canvas, template) = (canvas.clone(), it.template.clone());
-                    m = m.item(PopupMenuItem::new(it.label).on_click(move |_, window, cx| {
-                        Self::canvas_do(&canvas, cx, |c, cx| c.add(&template, None, window, cx));
-                    }));
-                }
-                m
-            });
-            // Each menu its own id, from its name (a shared id shares the popup)
-            let id = SharedString::from(format!("pipeline-menu-{}", c.name.to_lowercase()));
-            bar = bar.child(menu(id, c.name, build));
-        }
-        bar.child(menu("pipeline-menu-view".into(), "View", view))
+            .children(buttons)
             .child(div().flex_1())
-            .child(div().text_xs().text_color(t.muted_foreground).child("Wheel: pan · Ctrl+wheel: zoom · Space+drag: move · drag an output onto a node: connect"))
+            .child(div().text_xs().text_color(muted).child("Wheel: pan · Ctrl+wheel: zoom · Space+drag: move · drag an output onto a node: connect"))
     }
-
 }
 
 impl Render for PipelineView {
@@ -448,7 +466,7 @@ impl Render for PipelineView {
             .id("pipeline-workspace")
             .size_full()
             .bg(color::chrome())
-            .child(self.menu_bar(cx))
+            .children((self.store.read(cx).workspace != crate::navigation::route::Workspace::Pipeline).then(|| self.menu_bar(cx)))
             .child(
                 h_flex()
                     .flex_1()
