@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use dspk_view::SignalBackend;
 
 pub use dspk_synapse::curation::sorting::*;
+pub use dspk_synapse::curation::waveforms::*;
 
 /// The windows of `signal`, read the first time and kept (the two most recent signals: the
 /// preview is a new signal after each edit of the ops).

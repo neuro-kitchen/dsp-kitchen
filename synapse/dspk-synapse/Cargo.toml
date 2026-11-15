@@ -11,7 +11,10 @@ keywords = ["electrophysiology", "spike-sorting", "neuroscience", "gpu", "dspk"]
 categories = ["science"]
 
 [features]
-default = ["wgpu", "cuda", "cpu"]
+default = ["wgpu", "cuda", "cpu", "table"]
+# Tables as Polars data frames (the unit table of a sorting): programs that never show a table
+# (the sorters) leave it out
+table = ["dep:dspk-table"]
 wgpu = ["dspk-ops/wgpu"]
 cpu = ["dspk-ops/cpu"]
 cuda = ["dspk-ops/cuda"]
@@ -20,6 +23,7 @@ hip = ["dspk-ops/hip"]
 [dependencies]
 dspk-core = { workspace = true, features = ["compute"] }
 dspk-ops.workspace = true
+dspk-table = { workspace = true, optional = true }
 dspk-io = { workspace = true, features = ["zarr"] }
 cubecl.workspace = true
 flate2.workspace = true
