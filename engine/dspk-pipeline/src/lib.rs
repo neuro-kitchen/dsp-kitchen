@@ -22,6 +22,7 @@
 
 mod fit;
 mod prepare;
+pub mod preview;
 mod run;
 mod spec;
 
