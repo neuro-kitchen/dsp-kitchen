@@ -13,10 +13,10 @@ use dspk_pipeline::Node;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::graph::{GraphNode, NodeKind, COLUMN};
-use super::epoch::{EpochDoc, EventSetDoc, Placement};
-use super::recipe::RecipeDoc;
-use super::session::{op_name, DisplayDoc, RecordingRef, SessionDoc};
+use crate::graph::{GraphNode, NodeKind, COLUMN};
+use crate::epoch::{EpochDoc, EventSetDoc, Placement};
+use crate::recipe::RecipeDoc;
+use crate::session::{op_name, DisplayDoc, RecordingRef, SessionDoc};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "command", rename_all = "snake_case", deny_unknown_fields)]
@@ -173,7 +173,7 @@ fn apply_graph(doc: &mut SessionDoc, cmd: SessionCommand) -> Result<Changed, Com
     match cmd {
         C::OpenView { recording, name } => {
             check_channels(&recording.channels)?;
-            let name = name.unwrap_or_else(|| crate::domain::session::view_name(&recording));
+            let name = name.unwrap_or_else(|| crate::session::view_name(&recording));
             let y = doc.graph.next_row();
             let s = source_id(doc);
             let v = doc.new_view_id();
@@ -335,7 +335,7 @@ fn apply_graph(doc: &mut SessionDoc, cmd: SessionCommand) -> Result<Changed, Com
                     NodeKind::Op { node, .. } => doc.new_op_id(node),
                     NodeKind::View { .. } => doc.new_view_id(),
                     NodeKind::Write {} => doc.graph.numbered_id("w", |id| doc.view(id).is_some()),
-                    NodeKind::Recipe { recipe, .. } => doc.graph.fresh_id(&super::recipe::file_stem(recipe).replace('-', "_")),
+                    NodeKind::Recipe { recipe, .. } => doc.graph.fresh_id(&crate::recipe::file_stem(recipe).replace('-', "_")),
                 },
             };
             match &kind {
@@ -411,10 +411,10 @@ fn apply_graph(doc: &mut SessionDoc, cmd: SessionCommand) -> Result<Changed, Com
                 return Err(CommandError::Invalid(format!("recipe name {name:?} is empty or taken")));
             }
             let order = chain_order(doc, &nodes)?;
-            let ops: Vec<super::session::OpDoc> = order
+            let ops: Vec<crate::session::OpDoc> = order
                 .iter()
                 .map(|id| match &doc.graph.node(id).expect("checked").kind {
-                    NodeKind::Op { enabled, node } => super::session::OpDoc { id: id.clone(), enabled: *enabled, node: node.clone() },
+                    NodeKind::Op { enabled, node } => crate::session::OpDoc { id: id.clone(), enabled: *enabled, node: node.clone() },
                     _ => unreachable!("checked: ops only"),
                 })
                 .collect();
@@ -422,10 +422,10 @@ fn apply_graph(doc: &mut SessionDoc, cmd: SessionCommand) -> Result<Changed, Com
             let input = doc.graph.input(&head).map(str::to_string);
             let outputs: Vec<String> = doc.graph.outputs(&tail).into_iter().map(str::to_string).collect();
             let (x, y) = node(doc, &head).map(|n| (n.x, n.y))?;
-            let id = doc.graph.fresh_id(&super::recipe::file_stem(&name).replace('-', "_"));
+            let id = doc.graph.fresh_id(&crate::recipe::file_stem(&name).replace('-', "_"));
             let mut labels = labels;
             if labels.is_empty() {
-                let mut fams: Vec<String> = ops.iter().map(|o| super::session::op_family(&o.node).to_string()).collect();
+                let mut fams: Vec<String> = ops.iter().map(|o| crate::session::op_family(&o.node).to_string()).collect();
                 fams.dedup();
                 labels = fams;
             }
@@ -682,8 +682,8 @@ fn chain_op<'a>(doc: &'a mut SessionDoc, view: &str, op: &str) -> Result<&'a mut
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::session::Show;
-    use crate::domain::graph::NodeKind;
+    use crate::session::Show;
+    use crate::graph::NodeKind;
     use dspk_pipeline::{Band, Design, Mode, Start};
 
     fn bandpass(lo: f64, hi: f64) -> Node {
@@ -721,7 +721,7 @@ mod tests {
         apply(&mut d, SessionCommand::OpenView { recording: emg.clone(), name: None }).unwrap();
         assert_eq!(d.active().unwrap().name, "EMG");
         let main = RecordingRef { path: "/data/rec.zarr".into(), source: Some(dspk_io::sources::MAIN.into()), channels: None };
-        assert_eq!(crate::domain::session::view_name(&main), "rec.zarr");
+        assert_eq!(crate::session::view_name(&main), "rec.zarr");
         let view = d.active_view.clone().unwrap();
         apply(&mut d, SessionCommand::RenameView { view, name: "meps.nwb.zarr · /acquisition/EMG".into() }).unwrap();
         let loaded = SessionDoc::from_json(&serde_json::to_string(&d).unwrap()).unwrap();
@@ -749,7 +749,7 @@ mod tests {
         apply(&mut d, SessionCommand::CopyView { view: "v1".into(), channels: Some(vec![4, 5]), name: None }).unwrap();
         let copy = d.active().unwrap();
         assert_eq!((copy.id.as_str(), copy.recording.channels.as_deref()), ("v2", Some(&[4, 5][..])));
-        let nodes = |ops: &[crate::domain::session::OpDoc]| ops.iter().map(|o| (o.enabled, o.node.clone())).collect::<Vec<_>>();
+        let nodes = |ops: &[crate::session::OpDoc]| ops.iter().map(|o| (o.enabled, o.node.clone())).collect::<Vec<_>>();
         assert_eq!(nodes(&copy.ops), nodes(&d.views[0].ops), "the copy starts with the same chain");
         assert_ne!(copy.ops[0].id, d.views[0].ops[0].id, "its own ops: edits to it leave the original alone");
         // A copy of a subset stays inside it

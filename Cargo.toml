@@ -8,6 +8,8 @@ members = [
     "crates/dspk-ops",
     # Pipeline engine
     "engine/dspk-pipeline",
+    # The session document (what the app, an agent or a headless run edits)
+    "engine/dspk-session",
     # Electrophysiology
     "synapse/dspk-synapse",
     "synapse/dspk-synapse-ml",
@@ -61,6 +63,7 @@ dspk-stream = { path = "serve/dspk-stream", version = "0.0.10", default-features
 dspk-view = { path = "serve/dspk-view", version = "0.0.10", default-features = false }
 dspk-io = { path = "crates/dspk-io", version = "0.0.10", default-features = false }
 dspk-pipeline = { path = "engine/dspk-pipeline", version = "0.0.10", default-features = false }
+dspk-session = { path = "engine/dspk-session", version = "0.0.10", default-features = false }
 dspk-app-core = { path = "app/dspk-app-core", version = "0.0.10", default-features = false }
 dspk-app-synapse = { path = "plugins/app/dspk-app-synapse", version = "0.0.10", default-features = false }
 dspk-py-core = { path = "bindings/python/dspk-py-core", default-features = false }

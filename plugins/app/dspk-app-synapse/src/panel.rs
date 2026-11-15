@@ -6,8 +6,8 @@ use std::path::PathBuf;
 
 use dspk_app_core::data::jobs::processed_path;
 use dspk_app_core::data::store::Store;
-use dspk_app_core::domain::command::SessionCommand;
-use dspk_app_core::domain::session::ViewDoc;
+use dspk_session::command::SessionCommand;
+use dspk_session::session::ViewDoc;
 use dspk_app_core::screens::explore::trace::trace_panel::color;
 use dspk_app_core::ui::widgets::{MenuSelect, Section};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -66,7 +66,7 @@ pub fn section(store: &Entity<Store>, view: &ViewDoc, _window: &mut Window, cx: 
                 .child(div().text_xs().text_color(muted).child("Click a unit to show or hide it (windows ≤ 30 s)."));
         }
         (Some(path), None) => {
-            section = section.child(div().text_xs().text_color(muted).child(format!("Loading {}…", dspk_app_core::domain::paths::short_path(&path)))).child(detach(store, view));
+            section = section.child(div().text_xs().text_color(muted).child(format!("Loading {}…", dspk_session::paths::short_path(&path)))).child(detach(store, view));
         }
         (None, _) => {
             section = section.child(div().text_xs().text_color(muted).child("No sorting linked to this view."));

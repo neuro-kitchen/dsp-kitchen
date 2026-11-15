@@ -26,6 +26,7 @@ synapse = ["dep:dspk-app-synapse"]
 
 [dependencies]
 dspk-app-core.workspace = true
+dspk-session.workspace = true
 dspk-app-synapse = { workspace = true, optional = true }
 clap.workspace = true
 anyhow.workspace = true

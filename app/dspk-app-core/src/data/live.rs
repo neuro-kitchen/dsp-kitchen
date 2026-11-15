@@ -13,7 +13,7 @@ use dspk_pipeline::Node;
 use dspk_view::SignalBackend;
 
 use crate::data::events::Event;
-use crate::domain::session::ViewDoc;
+use dspk_session::session::ViewDoc;
 
 /// Most values read for one live detection (channels × samples): a wider window says to zoom in.
 pub const MAX_LIVE_VALUES: usize = 16_000_000;

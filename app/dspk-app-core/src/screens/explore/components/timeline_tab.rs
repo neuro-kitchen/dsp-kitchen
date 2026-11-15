@@ -21,8 +21,8 @@ use gpui_kit::{
 };
 
 use crate::data::store::{duration, file_label, AppEvent, Floating, Store};
-use crate::domain::command::SessionCommand;
-use crate::domain::epoch::{kind_hue, EpochDoc, EventSetDoc};
+use dspk_session::command::SessionCommand;
+use dspk_session::epoch::{kind_hue, EpochDoc, EventSetDoc};
 use crate::ui::widgets::icon_button;
 use crate::screens::explore::ExploreVm;
 use crate::ui::widgets::PanelHeader;

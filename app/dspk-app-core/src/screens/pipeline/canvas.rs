@@ -30,8 +30,8 @@ use gpui_kit::{
 };
 
 use crate::data::store::{AppEvent, NodeRun, Store};
-use crate::domain::command::{NodeMove, SessionCommand};
-use crate::domain::graph::{GraphDoc, NodeKind, COLUMN};
+use dspk_session::command::{NodeMove, SessionCommand};
+use dspk_session::graph::{GraphDoc, NodeKind, COLUMN};
 use crate::ui::widgets::icon_button;
 
 use super::catalog::{describe, type_name, Template};
@@ -294,13 +294,13 @@ impl GraphCanvas {
             }
             Template::View => {
                 let n = self.graph(cx).nodes.iter().filter(|n| matches!(n.kind, NodeKind::View { .. })).count() + 1;
-                crate::domain::command::view_kind(format!("View {n}"))
+                dspk_session::command::view_kind(format!("View {n}"))
             }
             Template::EpochsView => {
-                let n = self.graph(cx).nodes.iter().filter(|n| matches!(&n.kind, NodeKind::View { display, .. } if display.layout == crate::domain::session::ViewLayout::Epochs)).count() + 1;
-                let mut kind = crate::domain::command::view_kind(format!("Epochs {n}"));
+                let n = self.graph(cx).nodes.iter().filter(|n| matches!(&n.kind, NodeKind::View { display, .. } if display.layout == dspk_session::session::ViewLayout::Epochs)).count() + 1;
+                let mut kind = dspk_session::command::view_kind(format!("Epochs {n}"));
                 if let NodeKind::View { display, .. } = &mut kind {
-                    display.layout = crate::domain::session::ViewLayout::Epochs;
+                    display.layout = dspk_session::session::ViewLayout::Epochs;
                 }
                 kind
             }
@@ -312,7 +312,7 @@ impl GraphCanvas {
                     return;
                 };
                 let source = s.sources().map(|ss| ss.default_entry().id.clone());
-                NodeKind::Source { recording: crate::domain::session::RecordingRef { path, source, channels: None } }
+                NodeKind::Source { recording: dspk_session::session::RecordingRef { path, source, channels: None } }
             }
             Template::RecordingFile => {
                 self.prompt_recording(x, y, window, cx);
@@ -336,7 +336,7 @@ impl GraphCanvas {
             if let Some(paths) = picked.await {
                 if let Some(path) = paths.into_iter().next() {
                     let _ = this.update(cx, |c, cx| {
-                        let kind = NodeKind::Source { recording: crate::domain::session::RecordingRef { path, source: None, channels: None } };
+                        let kind = NodeKind::Source { recording: dspk_session::session::RecordingRef { path, source: None, channels: None } };
                         c.add_kind(kind, x, y, None, cx);
                     });
                 }
@@ -393,7 +393,7 @@ impl GraphCanvas {
     }
 
     /// Adds a use of recipe `name` (from the library when the session does not have it yet).
-    pub fn add_recipe(&mut self, recipe: crate::domain::recipe::RecipeDoc, at: Option<(f32, f32)>, cx: &mut Context<Self>) {
+    pub fn add_recipe(&mut self, recipe: dspk_session::recipe::RecipeDoc, at: Option<(f32, f32)>, cx: &mut Context<Self>) {
         let name = recipe.name.clone();
         if !self.store.read(cx).doc.recipes.contains_key(&name) && !self.exec(SessionCommand::AddRecipe { recipe }, cx) {
             return;
@@ -1243,7 +1243,7 @@ impl Render for GraphCanvas {
 /// A recipe dragged from the library.
 #[derive(Debug, Clone)]
 pub struct RecipeDrag {
-    pub recipe: crate::domain::recipe::RecipeDoc,
+    pub recipe: dspk_session::recipe::RecipeDoc,
 }
 
 /// What a dragged tree item looks like under the pointer.

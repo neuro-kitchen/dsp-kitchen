@@ -13,7 +13,7 @@ use dspk_core::{DspError, DspResult};
 use dspk_io::container::zarr::{has_array, open_rw_store, read_array, read_node_attributes, read_node_json, write_array_f64, write_array_u64, write_group};
 use serde_json::{json, Map, Value};
 
-use crate::domain::epoch::EpochDoc;
+use dspk_session::epoch::EpochDoc;
 
 /// Format version written in the root attributes.
 pub const EPOCHS_VERSION: u32 = 1;
@@ -24,7 +24,7 @@ pub fn save(recording: &Path, epochs: &[EpochDoc]) -> DspResult<PathBuf> {
     let dir = crate::data::derived::ensure(recording, &[])?;
     let group = dir.join("epochs");
     if group.exists() {
-        std::fs::remove_dir_all(&group).map_err(|e| DspError::Io(format!("{}: {e}", crate::domain::paths::short_path(&group))))?;
+        std::fs::remove_dir_all(&group).map_err(|e| DspError::Io(format!("{}: {e}", dspk_session::paths::short_path(&group))))?;
     }
     let store = open_rw_store(&dir)?;
     let list = |f: fn(&EpochDoc) -> String| Value::Array(epochs.iter().map(|e| json!(f(e))).collect());

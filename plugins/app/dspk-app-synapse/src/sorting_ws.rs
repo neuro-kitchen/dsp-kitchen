@@ -19,7 +19,7 @@ use std::sync::Arc;
 use dspk_app_core::data::jobs::processed_path;
 use dspk_app_core::data::remote;
 use dspk_app_core::data::store::{file_label, AppEvent, Store};
-use dspk_app_core::domain::command::SessionCommand;
+use dspk_session::command::SessionCommand;
 use dspk_app_core::navigation::route::Workspace;
 use dspk_app_core::screens::explore::trace::trace_panel::color;
 use dspk_app_core::ui::widgets::{row, EmptyState, MenuSelect, Section};
@@ -475,7 +475,7 @@ impl SortingWorkspace {
         let done = move |s: &mut Store, path: PathBuf, cx: &mut Context<Store>| {
             if let Some(t) = start {
                 if let Err(e) = write_start_sec(&path, t) {
-                    s.set_status(format!("{}: {e}", dspk_app_core::domain::paths::short_path(&path)), cx);
+                    s.set_status(format!("{}: {e}", dspk_session::paths::short_path(&path)), cx);
                 }
             }
             let Some(v) = s.doc.view(&id).cloned() else { return };
@@ -573,7 +573,7 @@ impl SortingWorkspace {
                             recipes.join(", ")
                         )))
                     })
-                    .child(div().text_xs().text_color(muted).truncate().child(format!("dspk-cli-sorter {} · {}", d.version, dspk_app_core::domain::paths::short_path(&d.program))))
+                    .child(div().text_xs().text_color(muted).truncate().child(format!("dspk-cli-sorter {} · {}", d.version, dspk_session::paths::short_path(&d.program))))
             }
         };
         let probe = state(cx).map_or(0, |s| s.read(cx).probe);

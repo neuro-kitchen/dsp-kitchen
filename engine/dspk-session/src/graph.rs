@@ -14,8 +14,8 @@ use dspk_pipeline::Node;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::recipe::RecipeDoc;
-use super::session::{op_name, DisplayDoc, OpDoc, RecordingRef, ViewDoc};
+use crate::recipe::RecipeDoc;
+use crate::session::{op_name, DisplayDoc, OpDoc, RecordingRef, ViewDoc};
 
 /// The session's recipe definitions, by name.
 pub type Recipes = BTreeMap<String, RecipeDoc>;

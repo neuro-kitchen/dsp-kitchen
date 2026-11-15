@@ -6,7 +6,7 @@ use dspk_pipeline::{Band, Mode, Node};
 use gpui_kit::assets::IconName;
 use serde_json::{json, Value};
 
-use crate::domain::graph::NodeKind;
+use dspk_session::graph::NodeKind;
 use crate::screens::explore::components::processing::op_summary;
 
 /// What an item adds.
@@ -234,12 +234,12 @@ pub fn flow_call(node: &Node) -> String {
 pub fn describe(kind: &NodeKind) -> (String, String, IconName) {
     match kind {
         NodeKind::Source { recording } => {
-            let name = crate::domain::session::view_name(recording);
+            let name = dspk_session::session::view_name(recording);
             let channels = recording.channels.as_ref().map_or_else(|| "all channels".to_string(), |c| format!("{} channels", c.len()));
             (name, format!("flowOf(recording) · {channels}"), IconName::AudioWaveform)
         }
         NodeKind::Op { node, .. } => (type_name(node).to_string(), op_summary(node), IconName::SlidersHorizontal),
-        NodeKind::View { name, display, .. } if display.layout == crate::domain::session::ViewLayout::Epochs => (name.clone(), ".collect(epochs) · stacked in Explore".into(), IconName::Activity),
+        NodeKind::View { name, display, .. } if display.layout == dspk_session::session::ViewLayout::Epochs => (name.clone(), ".collect(epochs) · stacked in Explore".into(), IconName::Activity),
         NodeKind::View { name, .. } => (name.clone(), ".collect(view) · shown in Explore".into(), IconName::Eye),
         NodeKind::Write {} => ("Write".into(), ".collect(write) · processed file".into(), IconName::ArrowDown),
         NodeKind::Recipe { recipe, overrides, .. } => {

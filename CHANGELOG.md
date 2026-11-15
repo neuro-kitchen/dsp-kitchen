@@ -6,6 +6,14 @@ version number.
 
 ## Unreleased
 
+### Changed
+
+- **New crate `dspk-session`** (`engine/dspk-session`): the session document, its commands and
+  their pure `apply`, the graph (sources → operations → views → writes), recipes, the timeline and
+  epochs. It was the `domain` module of `dspk-app-core`; nothing in it depended on the UI. The app
+  imports it, and the command line, Python or an agent can now use the same document.
+  `dspk_app_core::domain` is gone: use `dspk_session`.
+
 ### Fixed
 
 - `dspk-app --version` and the Python package's `dspk --version` print the version (both refused the

@@ -26,7 +26,7 @@ use dspk_io::SourceEntry;
 use gpui_kit::{AnyElement, AnyView, App, Entity, Window};
 
 use crate::data::store::Store;
-use crate::domain::session::ViewDoc;
+use dspk_session::session::ViewDoc;
 use crate::navigation::route::Workspace;
 use crate::ui::plot::canvas::Pixel;
 
@@ -159,7 +159,7 @@ pub trait AppPlugin: Send + Sync + 'static {
 
     /// Epochs the recording file at `path` holds itself (electrophysiology: NWB's `/intervals`
     /// tables), in seconds from the recording's start, which is `start_sec` of the session.
-    fn recording_epochs(&self, _path: &Path, _start_sec: f64) -> Vec<crate::domain::epoch::EpochDoc> {
+    fn recording_epochs(&self, _path: &Path, _start_sec: f64) -> Vec<dspk_session::epoch::EpochDoc> {
         Vec::new()
     }
 

@@ -8,7 +8,7 @@
 //! plugins keep for it (e.g. electrophysiology: the linked sorting). The graph is the truth: the
 //! views are rewritten from it after every command (they stay in the file for agents to read).
 //!
-//! The document only changes through [`crate::domain::command::SessionCommand`]s; the app
+//! The document only changes through [`crate::command::SessionCommand`]s; the app
 //! re-renders from it and saves it after each change.
 
 use std::collections::BTreeMap;
@@ -16,8 +16,8 @@ use std::path::{Path, PathBuf};
 
 use dspk_pipeline::{Node, OutputFormat, PipelineSpec, SPEC_VERSION};
 
-use super::epoch::{EpochDoc, EventSetDoc, Placement};
-use super::graph::{GraphDoc, Recipes};
+use crate::epoch::{EpochDoc, EventSetDoc, Placement};
+use crate::graph::{GraphDoc, Recipes};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -233,7 +233,7 @@ impl SessionDoc {
         let renames: Vec<(String, String)> = self.views.iter().filter(|v| v.name == legacy_view_name(&v.recording)).map(|v| (v.id.clone(), view_name(&v.recording))).collect();
         if !renames.is_empty() {
             for (id, name) in renames {
-                if let Some(super::graph::NodeKind::View { name: old, .. }) = self.graph.nodes.iter_mut().find(|n| n.id == id).map(|n| &mut n.kind) {
+                if let Some(crate::graph::NodeKind::View { name: old, .. }) = self.graph.nodes.iter_mut().find(|n| n.id == id).map(|n| &mut n.kind) {
                     *old = name;
                 }
             }
@@ -257,7 +257,7 @@ impl SessionDoc {
 
     /// Reads a document (JSON).
     pub fn load(path: &Path) -> Result<Self, SessionError> {
-        let text = std::fs::read_to_string(path).map_err(|e| SessionError::Io(format!("{}: {e}", crate::domain::paths::short_path(&path))))?;
+        let text = std::fs::read_to_string(path).map_err(|e| SessionError::Io(format!("{}: {e}", crate::paths::short_path(&path))))?;
         Self::from_json(&text)
     }
 
