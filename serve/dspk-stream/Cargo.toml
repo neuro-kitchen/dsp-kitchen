@@ -16,13 +16,18 @@ dspk-core.workspace = true
 dspk-view = { workspace = true, default-features = false }
 prost.workspace = true
 quinn.workspace = true
-rcgen.workspace = true
+# `x509-parser`: a client's public key read back when it pairs (it makes its own key pair)
+rcgen = { workspace = true, features = ["x509-parser"] }
 rustls.workspace = true
 rustls-pki-types = { workspace = true, features = ["std"] }
 # The client registry of a server's authority (clients.json), certificate fingerprints
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+# Pairing with a short code (SPAKE2, then MACs under the shared key)
+spake2.workspace = true
+hmac.workspace = true
+getrandom.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true

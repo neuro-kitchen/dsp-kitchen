@@ -53,6 +53,19 @@ enum Action {
     },
     /// The clients enrolled, active and revoked
     List,
+    /// Make a one-time pairing code: on the other computer, `dspk pair <host:port> <code>` gets
+    /// its certificate with no file to hand over (the running server sees the code at once)
+    Pair {
+        /// The paired computer may also configure, start and stop jobs, and write
+        #[arg(long)]
+        control: bool,
+    },
+    /// The live pairing codes (without their secrets); --cancel stops one, or all of them
+    Codes {
+        /// Cancel the code with this id (its first two digits), or `all`
+        #[arg(long)]
+        cancel: Option<String>,
+    },
 }
 
 pub fn run(args: &ClientsArgs) -> anyhow::Result<()> {
@@ -84,6 +97,25 @@ pub fn run(args: &ClientsArgs) -> anyhow::Result<()> {
         Action::Revoke { name } => {
             let record = authority.revoke(name)?;
             println!("Revoked {name} (certificate {}): refused from its next connection on", &record.fingerprint[..16]);
+        }
+        Action::Pair { control } => {
+            let permission = if *control { Permission::Control } else { Permission::Read };
+            let code = authority.new_pairing_code(permission)?;
+            println!("Pairing code: {}   ({permission}; once, {} minutes, {} tries)", code.display(), dspk_stream::transport::pairing::CODE_MINUTES, dspk_stream::transport::pairing::CODE_TRIES);
+            println!("On the other computer: dspk pair <host:port> {}", code.display());
+        }
+        Action::Codes { cancel } => {
+            if let Some(which) = cancel {
+                let n = authority.cancel_pairing_codes((which != "all").then_some(which.as_str()))?;
+                println!("Cancelled {n} pairing code(s)");
+            }
+            let codes = authority.pairing_codes()?;
+            if codes.is_empty() {
+                println!("No live pairing codes (`dspk clients pair`)");
+            }
+            for c in codes {
+                println!("{}-····-····  {:<8} {} tries left", c.id, c.permission, c.tries_left);
+            }
         }
         Action::List => {
             let clients = authority.clients()?;

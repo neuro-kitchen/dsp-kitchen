@@ -66,6 +66,10 @@ pub struct Server {
     endpoint: quinn::Endpoint,
     max_connections: usize,
     authority: Option<Arc<Authority>>,
+    /// Pairing is answered (the names the server's certificate carries); see [`Self::with_pairing`].
+    pairing: Option<Arc<Vec<String>>>,
+    /// With pairing: whether a computer without a certificate may also open a session.
+    anonymous: bool,
 }
 
 /// Closing code for a client whose certificate is not enrolled or is revoked.
@@ -74,7 +78,7 @@ pub const REFUSED_CLIENT: u32 = 1;
 impl Server {
     /// Listens on `addr` (UDP), at most [`DEFAULT_MAX_CONNECTIONS`] clients at once.
     pub fn bind(addr: SocketAddr, config: quinn::ServerConfig) -> StreamResult<Self> {
-        Ok(Self { endpoint: quinn::Endpoint::server(config, addr)?, max_connections: DEFAULT_MAX_CONNECTIONS, authority: None })
+        Ok(Self { endpoint: quinn::Endpoint::server(config, addr)?, max_connections: DEFAULT_MAX_CONNECTIONS, authority: None, pairing: None, anonymous: false })
     }
 
     /// Checks every client's certificate against `authority`'s registry after the handshake (use
@@ -82,6 +86,17 @@ impl Server {
     /// revoked, or the connection is closed.
     pub fn with_authority(mut self, authority: Arc<Authority>) -> Self {
         self.authority = Some(authority);
+        self
+    }
+
+    /// Answers computers that pair with a code (`transport::pairing`; needs an authority and a
+    /// configuration from [`super::tls::server_config_with_pairing`]). `names`: the names this
+    /// server's certificate carries, told to the computer so it knows how to connect.
+    /// `anonymous`: whether a computer without a certificate may also open a session (read
+    /// only); otherwise it can only pair.
+    pub fn with_pairing(mut self, names: Vec<String>, anonymous: bool) -> Self {
+        self.pairing = Some(Arc::new(names));
+        self.anonymous = anonymous;
         self
     }
 
@@ -122,6 +137,21 @@ impl Server {
                     continue;
                 }
             };
+            // A computer pairing with a code: answered here, never handed to a session
+            if super::pairing::is_pairing(&connection) {
+                match (&self.authority, &self.pairing) {
+                    (Some(authority), Some(names)) => {
+                        let (authority, names) = (authority.clone(), names.clone());
+                        tokio::spawn(async move {
+                            if let Err(e) = super::pairing::serve_pairing(&authority, &names, &connection).await {
+                                tracing::warn!("pairing with {} failed: {e}", connection.remote_address());
+                            }
+                        });
+                    }
+                    _ => connection.close(quinn::VarInt::from_u32(REFUSED_CLIENT), b"this server does not pair"),
+                }
+                continue;
+            }
             match self.peer(&connection) {
                 Some(peer) => return Some((connection, peer)),
                 None => {
@@ -139,6 +169,9 @@ impl Server {
         let certificates = connection.peer_identity().and_then(|id| id.downcast::<Vec<rustls::pki_types::CertificateDer<'static>>>().ok());
         match certificates.as_deref().and_then(|c| c.first()) {
             Some(certificate) => authority.authorize(certificate),
+            // With pairing the TLS layer lets certificate-less computers in: only to pair,
+            // unless anonymous sessions are allowed
+            None if self.pairing.is_some() && !self.anonymous => None,
             None => Some(Peer::anonymous()),
         }
     }
