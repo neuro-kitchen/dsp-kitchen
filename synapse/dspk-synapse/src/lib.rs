@@ -16,6 +16,7 @@
 //! | Positions and drift | [`spatial`] | [`PeakLocalizer`] implementations |
 //! | Cluster into units | [`sorting`] | k-means, GMM, HDBSCAN, bipartite modularity |
 //! | Quality and comparison | [`metrics`] | ISI violations, presence, amplitude cutoff; sorter agreement |
+//! | Curate a sorting | [`curation`] | [`curation::SortingData`], [`curation::Curation`], [`curation::apply`] |
 //! | Results on disk | [`storage`] | [`SortingOutput`] (Phy, Zarr, NWB) |
 //! | Recordings, probes, sorting files | [`io`] | [`io::open`], [`io::probe`] |
 //!
@@ -55,6 +56,7 @@
 //! ```
 
 pub mod core;
+pub mod curation;
 pub mod detection;
 pub mod extraction;
 pub mod features;
