@@ -25,6 +25,8 @@ version number.
   chain of operations run on the device window by window with its settling halo, the processed
   block cached. It was inside the app; the app keeps the part that belongs to a view (what to draw
   raw, folding samples into columns).
+- **What is saved next to a recording is `dspk-session`'s** (`dspk_session::derived`): the
+  `<recording>.dspk.zarr` store, its epochs and its event sets were read and written by the app.
 - **New crate `dspk-table`** (`crates/dspk-table`): tables as Polars data frames for every crate.
   It is the one crate that depends on Polars (re-exported as `dspk_table::polars` and
   `dspk_table::prelude`), with Parquet in and out and the sorted, filtered row order the views ask

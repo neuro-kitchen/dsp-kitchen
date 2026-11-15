@@ -1,5 +1,5 @@
 //! A recording's epochs, saved after every change of them and read when the recording opens: the
-//! `epochs` group of `<recording>.dspk.zarr` ([`crate::data::derived`]): arrays `start_s` and
+//! `epochs` group of `<recording>.dspk.zarr` ([`super`]): arrays `start_s` and
 //! `end_s` (seconds from the recording's start, `float64`); ids, names, types and notes as
 //! attributes in the same order (`dspk_epochs`: format version).
 //!
@@ -13,7 +13,7 @@ use dspk_core::{DspError, DspResult};
 use dspk_io::container::zarr::{has_array, open_rw_store, read_array, read_node_attributes, read_node_json, write_array_f64, write_array_u64, write_group};
 use serde_json::{json, Map, Value};
 
-use dspk_session::epoch::EpochDoc;
+use crate::epoch::EpochDoc;
 
 /// Format version written in the root attributes.
 pub const EPOCHS_VERSION: u32 = 1;
@@ -21,10 +21,10 @@ pub const EPOCHS_VERSION: u32 = 1;
 /// Saves `recording`'s epochs (all of them) as the `epochs` group of its derived store, replacing
 /// what is there. Returns the store.
 pub fn save(recording: &Path, epochs: &[EpochDoc]) -> DspResult<PathBuf> {
-    let dir = crate::data::derived::ensure(recording, &[])?;
+    let dir = super::ensure(recording, &[])?;
     let group = dir.join("epochs");
     if group.exists() {
-        std::fs::remove_dir_all(&group).map_err(|e| DspError::Io(format!("{}: {e}", dspk_session::paths::short_path(&group))))?;
+        std::fs::remove_dir_all(&group).map_err(|e| DspError::Io(format!("{}: {e}", crate::paths::short_path(&group))))?;
     }
     let store = open_rw_store(&dir)?;
     let list = |f: fn(&EpochDoc) -> String| Value::Array(epochs.iter().map(|e| json!(f(e))).collect());
@@ -44,7 +44,7 @@ pub fn save(recording: &Path, epochs: &[EpochDoc]) -> DspResult<PathBuf> {
 /// `recording`'s saved epochs: the derived store's `epochs` group, else the older
 /// `.epochs.zarr`; none when neither exists.
 pub fn load(recording: &Path) -> DspResult<Vec<EpochDoc>> {
-    let dir = crate::data::derived::derived_store(recording);
+    let dir = super::derived_store(recording);
     if !has_array(&dir, "/epochs/start_s") {
         return read_zarr(&legacy_path(recording), recording);
     }
@@ -69,7 +69,7 @@ pub fn load(recording: &Path) -> DspResult<Vec<EpochDoc>> {
 
 /// `rec.bin` → `rec.epochs.zarr` next to it (where earlier versions saved epochs).
 pub fn legacy_path(recording: &Path) -> PathBuf {
-    recording.with_file_name(format!("{}.epochs.zarr", crate::data::derived::stem(recording)))
+    recording.with_file_name(format!("{}.epochs.zarr", super::stem(recording)))
 }
 
 /// Writes `epochs` as the older Zarr store at `path` (replacing what is there); tests and

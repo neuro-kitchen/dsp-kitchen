@@ -8,9 +8,11 @@
 //! - [`recipe`]: named chains of operations kept in files.
 //! - [`timeline`]: the timeline the views share.
 //! - [`epoch`]: epochs, event sets and placements as the session names them.
+//! - [`derived`]: what is saved next to a recording (`<recording>.dspk.zarr`): epochs, event sets.
 //! - [`paths`]: short forms of paths for messages.
 
 pub mod command;
+pub mod derived;
 pub mod epoch;
 pub mod graph;
 pub mod paths;
