@@ -1,5 +1,6 @@
 //! Physical probe geometry: contact positions, shanks, nominal presets, and nearest-site queries.
 
+pub mod groups;
 pub mod neighbors;
 pub mod presets;
 pub mod site;
@@ -7,6 +8,7 @@ pub mod sensor;
 mod source;
 pub mod wiring;
 
+pub use groups::ShankGroup;
 pub use site::{Position3D, SensorSite};
 pub use sensor::SensorLayout;
 pub use neighbors::{find_k_nearest_neighbors, precompute_knn_table};

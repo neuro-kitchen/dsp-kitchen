@@ -3595,6 +3595,7 @@ dependencies = [
  "dspk-core",
  "dspk-io",
  "dspk-ops",
+ "dspk-table",
  "flate2",
  "memmap2",
  "rayon",
