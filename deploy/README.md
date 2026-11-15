@@ -11,9 +11,47 @@ everything it sends is encrypted with TLS.
 | `.containerignore` | Keeps build output, data and the Python environment out of the build context |
 | `dspk-serve.container` | A Podman Quadlet: the server as a systemd service |
 
+## Prebuilt image
+
+From v0.0.11 every release publishes the image, so nothing has to be built:
+
+```bash
+podman pull ghcr.io/neuro-kitchen/dspk:latest          # or a version: ghcr.io/neuro-kitchen/dspk:0.0.11
+podman run --rm ghcr.io/neuro-kitchen/dspk doctor       # which runtimes work here
+```
+
+It is the `gpu` target below: the `dspk` command line, the server and every sorter
+(`dspk-cli-sorter`, GPL-3.0), with wgpu on any vendor's GPU and the CPU runtime. Pass the GPU in
+as for the other targets ([GPU](#gpu)):
+
+```bash
+# NVIDIA (the host's driver through the NVIDIA Container Toolkit)
+podman run --rm --device nvidia.com/gpu=all --security-opt=label=disable ghcr.io/neuro-kitchen/dspk doctor
+# AMD, Intel
+podman run --rm --device /dev/dri --group-add keep-groups --security-opt=label=disable ghcr.io/neuro-kitchen/dspk doctor
+```
+
+**CUDA.** The image holds no NVIDIA software. CUDA is compiled into `dspk`, and works once NVRTC
+(CUDA's run-time compiler, which the driver does not bring) is in the image. Either build the
+`nvidia` target yourself, or add NVRTC on top of the published image:
+
+```dockerfile
+FROM ghcr.io/neuro-kitchen/dspk:latest
+USER root
+ADD https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/cuda-keyring_1.1-1_all.deb /tmp/cuda-keyring.deb
+RUN dpkg -i /tmp/cuda-keyring.deb && rm /tmp/cuda-keyring.deb \
+    && apt-get update && apt-get install -y --no-install-recommends cuda-nvrtc-13-0 \
+    && rm -rf /var/lib/apt/lists/* \
+    && echo /usr/local/cuda-13.0/targets/x86_64-linux/lib > /etc/ld.so.conf.d/cuda-nvrtc.conf && ldconfig
+USER dspk
+```
+
+Then `-e DSPK_RUNTIME=cuda` (or `--runtime cuda`) chooses it. NVRTC is NVIDIA's, under the CUDA
+EULA; installing it is your choice, which is why the published image leaves it out.
+
 ## Build
 
-One `Containerfile`, three targets. They hold the same `dspk` and `dspk-cli-sorter` (CUDA, wgpu
+One `Containerfile`, four targets. They hold the same `dspk` and `dspk-cli-sorter` (CUDA, wgpu
 and CPU compiled in) and differ only in the system libraries each GPU needs:
 
 | Target | For | Adds | Run with |
@@ -21,6 +59,7 @@ and CPU compiled in) and differ only in the system libraries each GPU needs:
 | `cpu` (default) | no GPU | nothing (`DSPK_RUNTIME=cpu`) | — |
 | `nvidia` | NVIDIA: CUDA and Vulkan | NVRTC 13.0 and the Vulkan loader; the driver comes from the host | `--device nvidia.com/gpu=all` |
 | `mesa` | AMD, Intel: Vulkan (wgpu) | the Vulkan loader and Mesa's Vulkan drivers | `--device /dev/dri` |
+| `gpu` | any GPU through wgpu, or the CPU (the published image) | the Vulkan loader, Mesa's drivers, and what NVIDIA's Vulkan driver needs; no NVIDIA software | `--device nvidia.com/gpu=all` or `--device /dev/dri` |
 
 From the repository root (the build needs the whole workspace):
 
