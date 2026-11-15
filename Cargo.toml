@@ -6,6 +6,8 @@ members = [
     "crates/dspk-core",
     "crates/dspk-io",
     "crates/dspk-ops",
+    # Tables (Polars data frames) for every crate
+    "crates/dspk-table",
     # Pipeline engine
     "engine/dspk-pipeline",
     # The session document (what the app, an agent or a headless run edits)
@@ -62,6 +64,7 @@ dspk-hub = { path = "hub/dspk-hub", version = "0.0.10", default-features = false
 dspk-stream = { path = "serve/dspk-stream", version = "0.0.10", default-features = false }
 dspk-view = { path = "serve/dspk-view", version = "0.0.10", default-features = false }
 dspk-io = { path = "crates/dspk-io", version = "0.0.10", default-features = false }
+dspk-table = { path = "crates/dspk-table", version = "0.0.10" }
 dspk-pipeline = { path = "engine/dspk-pipeline", version = "0.0.10", default-features = false }
 dspk-session = { path = "engine/dspk-session", version = "0.0.10", default-features = false }
 dspk-app-core = { path = "app/dspk-app-core", version = "0.0.10", default-features = false }
@@ -141,6 +144,8 @@ toml = "1.2.1"
 glob = "0.3.4"
 schemars = "1.2.3"
 thiserror = "2.0.21"
+# Tables: only dspk-table depends on Polars; the other crates use its re-export
+polars = { version = "0.55.2", default-features = false, features = ["parquet", "dtype-slim"] }
 anyhow = "1.0.104"
 num-traits = "0.2.19"
 num-complex = "0.4.6"

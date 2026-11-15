@@ -1,7 +1,7 @@
 //! The unit table as a Polars data frame: one row per unit, its metrics as columns; sorting and
 //! filtering are frame operations, the views read the resulting unit order.
 
-use polars::prelude::*;
+use dspk_table::prelude::*;
 
 use crate::sorting::SortingData;
 
