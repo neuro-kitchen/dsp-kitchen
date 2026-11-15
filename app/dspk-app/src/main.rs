@@ -23,7 +23,7 @@ use screens::explore::trace::view::TimeView;
 use ui::assets;
 
 #[derive(Parser, Debug)]
-#[command(name = "dspk-app")]
+#[command(name = "dspk-app", version)]
 #[command(about = "DSP App: electrophysiology workbench (GPUI): docked time views on one timeline")]
 struct Args {
     /// Recording to open: SpikeGLX .bin/.cbin, raw .bin with a JSON .meta, or a Zarr store
