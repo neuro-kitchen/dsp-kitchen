@@ -1,5 +1,5 @@
 //! Event sets of a recording: the groups `events/<name>` of `<recording>.dspk.zarr`
-//! ([`crate::data::derived`]), in the layout a `crossings` pipeline writes to a `.zarr` path
+//! ([`super`]), in the layout a `crossings` pipeline writes to a `.zarr` path
 //! (`dspk_pipeline::write_events_zarr`: arrays `channel`, `onset_sample`, `offset_sample`,
 //! `peak_sample`, `peak_value`; the sample rate and channel names as attributes). The app reads
 //! the events in seconds, to draw them and align to them.
@@ -31,8 +31,8 @@ pub fn read(dir: &Path) -> DspResult<Vec<Event>> {
 /// Writes `events` (e.g. a selection of a set) as event set `name` of `recording`, at
 /// `sample_rate` with channel names `names`. Returns the group.
 pub fn write(recording: &Path, name: &str, events: &[Event], names: &[String], sample_rate: f64) -> DspResult<std::path::PathBuf> {
-    crate::data::derived::ensure(recording, &["/events"])?;
-    let group = crate::data::derived::events_group(recording, name);
+    super::ensure(recording, &["/events"])?;
+    let group = super::events_group(recording, name);
     let to_sample = |s: f64| (s * sample_rate).round().max(0.0) as u64;
     let rows: Vec<dspk_ops::crossings::CrossingEvent> = events
         .iter()

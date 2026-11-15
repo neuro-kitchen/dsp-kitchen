@@ -12,15 +12,18 @@ categories.workspace = true
 
 [features]
 default = ["wgpu", "cuda", "cpu"]
-wgpu = ["dspk-pipeline/wgpu"]
-cpu = ["dspk-pipeline/cpu"]
-cuda = ["dspk-pipeline/cuda"]
-hip = ["dspk-pipeline/hip"]
+wgpu = ["dspk-pipeline/wgpu", "dspk-ops/wgpu"]
+cpu = ["dspk-pipeline/cpu", "dspk-ops/cpu"]
+cuda = ["dspk-pipeline/cuda", "dspk-ops/cuda"]
+hip = ["dspk-pipeline/hip", "dspk-ops/hip"]
 
 [dependencies]
 # A view's processing is a chain of dspk-pipeline nodes; the graph compiles to pipeline specs
 dspk-pipeline.workspace = true
-dspk-io.workspace = true
+dspk-core.workspace = true
+# The event rows a `crossings` chain writes (the layout of an event set)
+dspk-ops.workspace = true
+dspk-io = { workspace = true, features = ["zarr"] }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

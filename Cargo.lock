@@ -3522,7 +3522,9 @@ dependencies = [
 name = "dspk-session"
 version = "0.0.10"
 dependencies = [
+ "dspk-core",
  "dspk-io",
+ "dspk-ops",
  "dspk-pipeline",
  "schemars",
  "serde",

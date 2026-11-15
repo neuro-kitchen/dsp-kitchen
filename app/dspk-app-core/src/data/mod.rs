@@ -3,10 +3,7 @@
 //! `services`), and the servers it works with (`remote`). Screens reach it through view models
 //! only.
 
-pub mod derived;
 pub mod device;
-pub mod epochs;
-pub mod events;
 pub mod jobs;
 pub mod live;
 pub mod preferences;
@@ -15,3 +12,7 @@ pub mod remote;
 pub mod services;
 pub mod store;
 pub mod work_pool;
+
+// The files saved next to a recording are the session crate's
+pub use dspk_session::derived;
+pub use dspk_session::derived::{epochs, events};
