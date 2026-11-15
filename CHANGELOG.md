@@ -6,6 +6,12 @@ version number.
 
 ## Unreleased
 
+### Fixed
+
+- `dspk-app --version` and the Python package's `dspk --version` print the version (both refused the
+  flag).
+
+
 ## 0.0.10 — 2026-11-12
 
 ### Performance

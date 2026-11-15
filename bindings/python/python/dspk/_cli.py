@@ -89,6 +89,7 @@ def main(argv: list[str] | None = None) -> None:
     if words and not words[0].startswith("-") and words[0] not in _COMMANDS:
         sys.exit(f"`dspk {words[0]}` is in the full command line: cargo install --path app/dspk-cli, from a clone of dsp-kitchen")
     parser = argparse.ArgumentParser(prog="dspk", description=__doc__.split("\n")[0])
+    parser.add_argument("--version", action="version", version=f"dspk {dspk.__version__}")
     commands = parser.add_subparsers(dest="command", required=True)
     sorters = commands.add_parser("sorters", help=f"the {_PROGRAM} program (GPL-3.0)").add_subparsers(dest="action", required=True)
     install = sorters.add_parser("install", help="download and verify it for this version and platform")
