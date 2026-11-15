@@ -337,6 +337,92 @@ impl ClientPairingKey {
     }
 }
 
+// ---- over QUIC ---------------------------------------------------------------------------------
+
+/// Largest pairing message (a certificate and a CA in PEM are a few kilobytes).
+const MAX_PAIR_MESSAGE_BYTES: usize = 64 << 10;
+/// How long a pairing connection may take in all.
+const PAIR_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Whether `connection` was opened to pair ([`crate::protocol::PAIR_ALPN`]).
+pub(crate) fn is_pairing(connection: &quinn::Connection) -> bool {
+    connection
+        .handshake_data()
+        .and_then(|d| d.downcast::<quinn::crypto::rustls::HandshakeData>().ok())
+        .and_then(|d| d.protocol)
+        .is_some_and(|p| p == crate::protocol::PAIR_ALPN)
+}
+
+async fn send_json(stream: &mut quinn::SendStream, message: &impl Serialize) -> StreamResult<()> {
+    let body = serde_json::to_vec(message).map_err(|e| StreamError::Protocol(e.to_string()))?;
+    let mut buf = Vec::with_capacity(4 + body.len());
+    buf.extend_from_slice(&(body.len() as u32).to_be_bytes());
+    buf.extend_from_slice(&body);
+    stream.write_all(&buf).await?;
+    Ok(())
+}
+
+async fn receive_json<M: for<'de> Deserialize<'de>>(stream: &mut quinn::RecvStream) -> StreamResult<M> {
+    let mut prefix = [0u8; 4];
+    stream.read_exact(&mut prefix).await?;
+    let len = u32::from_be_bytes(prefix) as usize;
+    if len > MAX_PAIR_MESSAGE_BYTES {
+        return Err(StreamError::TooLarge { len, max: MAX_PAIR_MESSAGE_BYTES });
+    }
+    let mut body = vec![0u8; len];
+    stream.read_exact(&mut body).await?;
+    serde_json::from_slice(&body).map_err(|e| StreamError::Protocol(e.to_string()))
+}
+
+/// The server's side of a pairing connection: one stream, [`PairHello`] → [`PairReply`] →
+/// [`PairKey`] → [`PairReply`].
+pub(crate) async fn serve_pairing(authority: &Authority, names: &[String], connection: &quinn::Connection) -> StreamResult<()> {
+    let exchange = async {
+        let (mut send, mut recv) = connection.accept_bi().await?;
+        let hello: PairHello = receive_json(&mut recv).await?;
+        let pairing = match authority.pairing_start(&hello) {
+            Ok((pairing, reply)) => {
+                send_json(&mut send, &reply).await?;
+                pairing
+            }
+            Err(refusal) => {
+                send_json(&mut send, &refusal).await?;
+                let _ = send.finish();
+                return Ok(());
+            }
+        };
+        let key: PairKey = receive_json(&mut recv).await?;
+        send_json(&mut send, &authority.pairing_finish(pairing, &key, names)).await?;
+        let _ = send.finish();
+        // The computer closes once it has read the answer
+        connection.closed().await;
+        Ok(())
+    };
+    match tokio::time::timeout(PAIR_TIMEOUT, exchange).await {
+        Ok(result) => result,
+        Err(_) => {
+            connection.close(quinn::VarInt::from_u32(0), b"pairing took too long");
+            Err(StreamError::Protocol("pairing took too long".into()))
+        }
+    }
+}
+
+/// The computer's side: pairs with the server at `addr` using `code`, as `name`. Its private key
+/// is made here and never sent.
+pub async fn pair(addr: std::net::SocketAddr, code: &str, name: &str) -> StreamResult<Paired> {
+    let (client, hello) = ClientPairing::start(code, name)?;
+    let mut endpoint = quinn::Endpoint::client((if addr.is_ipv6() { "[::]:0" } else { "0.0.0.0:0" }).parse().expect("an address"))?;
+    endpoint.set_default_client_config(super::tls::pairing_client_config()?);
+    let connection = endpoint.connect(addr, "dspk-pairing")?.await?;
+    let (mut send, mut recv) = connection.open_bi().await?;
+    send_json(&mut send, &hello).await?;
+    let (client, key) = client.key(receive_json(&mut recv).await?)?;
+    send_json(&mut send, &key).await?;
+    let reply: PairReply = receive_json(&mut recv).await?;
+    connection.close(quinn::VarInt::from_u32(0), b"paired");
+    client.finish(reply)
+}
+
 /// Writes a pairing code to `path`, readable by its owner only (for a script that pairs: it
 /// reads the file and removes it; the code never goes through a pipe or a log).
 pub fn save_code(path: &Path, code: &PairingCode) -> StreamResult<()> {

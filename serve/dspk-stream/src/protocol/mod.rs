@@ -17,6 +17,9 @@ pub const PROTOCOL_VERSION: u32 = 2;
 /// TLS application protocol (ALPN): names the protocol and its version, so QUIC refuses peers
 /// speaking another one before any message is exchanged.
 pub const ALPN: &[u8] = b"dspk-stream/2";
+/// The application protocol of a pairing connection (`transport::pairing`): one stream, JSON
+/// messages with the same length prefix, open to computers without a certificate.
+pub const PAIR_ALPN: &[u8] = b"dspk-pair/1";
 
 /// Bytes of the big-endian length before every message.
 pub const LENGTH_PREFIX_BYTES: usize = 4;
