@@ -331,3 +331,122 @@ where
     writer.abort();
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use dspk_core::MemoryRecording;
+    use dspk_view::View;
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    use super::*;
+    use crate::protocol::convert::{envelope_from_frame, request_from_view};
+    use crate::transport::pairing::ClientPairing;
+    use crate::transport::server::{OpenRecording, ServeOptions};
+
+    type Socket = WebSocketStream<tokio_rustls::client::TlsStream<tokio::net::TcpStream>>;
+
+    /// A page's WebSocket to the server at `addr`, trusting the authority's CA.
+    async fn connect(addr: SocketAddr, authority: &Authority) -> Socket {
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(rustls::pki_types::CertificateDer::from(authority.ca_certificate().to_vec())).unwrap();
+        let config = rustls::ClientConfig::builder().with_root_certificates(roots).with_no_client_auth();
+        let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
+        let tls = tokio_rustls::TlsConnector::from(Arc::new(config)).connect(name, tcp).await.unwrap();
+        tokio_tungstenite::client_async("wss://localhost/ws", tls).await.unwrap().0
+    }
+
+    async fn text<M: for<'de> Deserialize<'de>>(socket: &mut Socket) -> Option<M> {
+        match socket.next().await? {
+            Ok(Message::Text(t)) => serde_json::from_str(t.as_str()).ok(),
+            _ => None,
+        }
+    }
+
+    async fn say(socket: &mut Socket, message: &impl Serialize) {
+        socket.send(Message::text(serde_json::to_string(message).unwrap())).await.unwrap();
+    }
+
+    /// A page pairs with a code and gets a token; with the token it comes back and reads a view,
+    /// answered under the id it chose; a wrong token and a revoked one are not let in.
+    #[tokio::test]
+    async fn a_page_pairs_then_reads_views_with_its_token() {
+        let dir = std::env::temp_dir().join(format!("dspk-stream-web-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let authority = Arc::new(Authority::open_or_create(&dir).unwrap());
+        let (channels, samples) = (4usize, 2_000usize);
+        let data: Vec<f32> = (0..channels * samples).map(|i| (i % 97) as f32).collect();
+        let source = Arc::new(MemoryRecording::new("rec", data.clone(), channels, 1000.0).unwrap());
+        let device = Arc::new(Device { name: "dspk".into(), version: "test".into(), files: None, recording: Some(Arc::new(OpenRecording::new(source, None))), jobs: None, runtime: String::new(), options: ServeOptions::default() });
+        let names = vec!["localhost".to_string()];
+        let server = WebServer::bind("127.0.0.1:0".parse().unwrap(), authority.clone(), device, names.clone(), None).await.unwrap();
+        let addr = server.local_addr().unwrap();
+        tokio::spawn(server.run());
+
+        // Pairing: the code is typed once, the page keeps a token
+        let code = authority.new_pairing_code(Permission::Read).unwrap();
+        let mut socket = connect(addr, &authority).await;
+        let (client, hello) = ClientPairing::start(&code.display(), "browser").unwrap();
+        say(&mut socket, &WebHello::Pair { pair: hello }).await;
+        let (client, proof) = client.token(text(&mut socket).await.unwrap()).unwrap();
+        say(&mut socket, &proof).await;
+        let paired = client.finish(text(&mut socket).await.unwrap()).unwrap();
+        let welcome: WebWelcome = text(&mut socket).await.unwrap();
+        assert_eq!((welcome.peer_name.as_str(), welcome.permission, paired.names.clone()), ("browser", Permission::Read, names));
+        drop(socket);
+
+        // Later: the token, then a view under the page's own id
+        let mut socket = connect(addr, &authority).await;
+        say(&mut socket, &WebHello::Token { token: paired.token.clone() }).await;
+        let _: WebWelcome = text(&mut socket).await.unwrap();
+        let view = View { channels: vec![1, 3], start: 100, end: 110, width: 64 };
+        let request = wire::Request { kind: Some(wire::request::Kind::View(request_from_view(&view).unwrap())) };
+        let mut frame = 7u32.to_be_bytes().to_vec();
+        request.encode(&mut frame).unwrap();
+        socket.send(Message::binary(frame)).await.unwrap();
+        let answer = loop {
+            match socket.next().await.unwrap().unwrap() {
+                Message::Binary(b) => break b,
+                _ => continue,
+            }
+        };
+        assert_eq!(&answer[..4], &7u32.to_be_bytes(), "the answer carries the request's id");
+        let response = wire::Response::decode(&answer[4..]).unwrap();
+        let Some(wire::response::Kind::Envelope(envelope)) = response.kind else { panic!("a view answers with an envelope") };
+        let dspk_view::Envelope::Samples(got) = envelope_from_frame(envelope).unwrap() else { panic!("ten samples fit the width: raw samples") };
+        let expected: Vec<f32> = [1usize, 3].iter().flat_map(|c| data[c * samples + 100..c * samples + 110].to_vec()).collect();
+        assert_eq!(got, expected);
+        drop(socket);
+
+        // Not let in: a wrong token, then the revoked one
+        let mut socket = connect(addr, &authority).await;
+        say(&mut socket, &WebHello::Token { token: "nope".into() }).await;
+        assert!(text::<WebWelcome>(&mut socket).await.is_none());
+        authority.revoke("browser").unwrap();
+        let mut socket = connect(addr, &authority).await;
+        say(&mut socket, &WebHello::Token { token: paired.token }).await;
+        assert!(text::<WebWelcome>(&mut socket).await.is_none(), "revoked");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn files_are_served_only_from_inside_the_web_folder() {
+        let dir = std::env::temp_dir().join(format!("dspk-stream-webfiles-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("web/pkg")).unwrap();
+        std::fs::write(dir.join("web/index.html"), "<html>").unwrap();
+        std::fs::write(dir.join("web/pkg/app.wasm"), [0u8, 97, 115, 109]).unwrap();
+        std::fs::write(dir.join("secret.txt"), "no").unwrap();
+        let root = dir.join("web");
+        let status = |p: &str| file(&root, p).status();
+        assert_eq!(status("/"), StatusCode::OK, "the folder's index");
+        assert_eq!(file(&root, "/pkg/app.wasm").headers()["content-type"], "application/wasm");
+        for outside in ["/../secret.txt", "/pkg/../../secret.txt", "/.hidden", "/absent.js"] {
+            assert_eq!(status(outside), StatusCode::NOT_FOUND, "{outside}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

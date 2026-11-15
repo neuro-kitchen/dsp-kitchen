@@ -10,6 +10,7 @@ pub mod pairing;
 mod remote_signal;
 mod server;
 pub mod tls;
+pub mod web;
 
 pub use auth::{Authority, ClientIdentity, ClientRecord, Enrollment, Peer, Permission};
 

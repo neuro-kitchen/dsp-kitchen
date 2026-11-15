@@ -246,7 +246,7 @@ pub struct Device {
 }
 
 /// The recording a session has open (the initial one, or the last one it opened).
-type Current = Arc<Mutex<Option<Arc<OpenRecording>>>>;
+pub(crate) type Current = Arc<Mutex<Option<Arc<OpenRecording>>>>;
 
 fn current_recording(current: &Current) -> Option<Arc<OpenRecording>> {
     current.lock().unwrap_or_else(|e| e.into_inner()).clone()
@@ -340,7 +340,7 @@ async fn answer_requests(connection: quinn::Connection, device: Arc<Device>, cur
 }
 
 /// The answer to one request.
-async fn answer(request: wire::Request, device: &Device, current: &Current, peer: &Peer) -> StreamResult<wire::response::Kind> {
+pub(crate) async fn answer(request: wire::Request, device: &Device, current: &Current, peer: &Peer) -> StreamResult<wire::response::Kind> {
     use wire::request::Kind as Req;
     use wire::response::Kind as Resp;
     match request.kind.ok_or_else(|| StreamError::protocol("empty request"))? {
