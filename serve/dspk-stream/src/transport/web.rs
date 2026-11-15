@@ -1,0 +1,333 @@
+//! The server for browsers: HTTPS on a TCP port, serving the web app's files and a WebSocket
+//! (`/ws`) that carries the same requests and responses as a QUIC session.
+//!
+//! A browser cannot open QUIC connections of its own, nor present a certificate it made, so:
+//!
+//! - **Transport.** One WebSocket per page. Requests are binary frames, a 4-byte big-endian id
+//!   chosen by the page followed by the protobuf [`wire::Request`]; each answer is the same id
+//!   followed by the [`wire::Response`]. Requests are answered by the code that answers a QUIC
+//!   session's request streams. The live signal and file downloads are not offered here yet.
+//! - **Who it is.** The first frame is text (JSON, [`WebHello`]): a token the page kept from an
+//!   earlier visit, or a pairing with a one-time code ([`super::pairing`]), which ends in a
+//!   token instead of a certificate. A token is a client in the authority's registry like any
+//!   other (its SHA-256 where a certificate's fingerprint is), so listing and revoking are the
+//!   same. The server answers with [`WebWelcome`] (text), then takes requests.
+//! - **Files.** Everything else is served from the web folder (`index.html`, the `.wasm` and
+//!   `.js` of the app), read only, without following paths out of it.
+
+use std::net::SocketAddr;
+use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+use futures_util::{SinkExt, StreamExt};
+use http_body_util::Full;
+use hyper::body::{Bytes, Incoming};
+use hyper::{Request, Response, StatusCode};
+use hyper_util::rt::TokioIo;
+use prost::Message as _;
+use serde::{Deserialize, Serialize};
+use tokio_tungstenite::tungstenite::protocol::Role;
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::WebSocketStream;
+
+use super::auth::{Authority, Peer, Permission};
+use super::pairing::{PairHello, PairReply, PairToken};
+use super::server::{answer, Current, Device};
+use crate::error::{StreamError, StreamResult};
+use crate::protocol::wire;
+
+/// The path of the WebSocket.
+pub const WS_PATH: &str = "/ws";
+/// Largest frame a page may send (a request is small).
+pub const MAX_WEB_FRAME_BYTES: usize = 1 << 20;
+/// How long a page has to say who it is.
+const HELLO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The page's first frame.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "hello", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WebHello {
+    /// A token from an earlier pairing.
+    Token { token: String },
+    /// Pairing with a one-time code: the first message of [`super::pairing`]'s exchange. The
+    /// server answers [`PairReply::Spake`], the page sends a [`PairToken`], the server answers
+    /// [`PairReply::Token`].
+    Pair { pair: PairHello },
+}
+
+/// The server's answer once it knows who the page is.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebWelcome {
+    pub server_name: String,
+    pub server_version: String,
+    pub peer_name: String,
+    pub permission: Permission,
+    pub has_files: bool,
+}
+
+/// What the browser endpoint serves.
+pub struct WebServer {
+    listener: tokio::net::TcpListener,
+    tls: tokio_rustls::TlsAcceptor,
+    state: Arc<State>,
+}
+
+struct State {
+    authority: Arc<Authority>,
+    device: Arc<Device>,
+    /// The folder of the web app's files; `None`: only the WebSocket is served.
+    web_root: Option<PathBuf>,
+    names: Vec<String>,
+}
+
+impl WebServer {
+    /// Listens on `addr` (TCP) with a certificate the authority issues for `names`.
+    pub async fn bind(addr: SocketAddr, authority: Arc<Authority>, device: Arc<Device>, names: Vec<String>, web_root: Option<PathBuf>) -> StreamResult<Self> {
+        let (chain, key) = authority.server_certificate(&names)?;
+        let mut crypto = rustls::ServerConfig::builder().with_no_client_auth().with_single_cert(chain, key).map_err(|e| StreamError::Tls(e.to_string()))?;
+        crypto.alpn_protocols = vec![b"http/1.1".to_vec()];
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        Ok(Self { listener, tls: tokio_rustls::TlsAcceptor::from(Arc::new(crypto)), state: Arc::new(State { authority, device, web_root, names }) })
+    }
+
+    pub fn local_addr(&self) -> StreamResult<SocketAddr> {
+        Ok(self.listener.local_addr()?)
+    }
+
+    /// Serves pages until the task is dropped.
+    pub async fn run(self) {
+        loop {
+            let (tcp, remote) = match self.listener.accept().await {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!("web: accept failed: {e}");
+                    continue;
+                }
+            };
+            let (tls, state) = (self.tls.clone(), self.state.clone());
+            tokio::spawn(async move {
+                let stream = match tls.accept(tcp).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::debug!("web: TLS handshake with {remote} failed: {e}");
+                        return;
+                    }
+                };
+                let service = hyper::service::service_fn(move |request| handle(request, state.clone()));
+                if let Err(e) = hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(stream), service).with_upgrades().await {
+                    tracing::debug!("web: connection with {remote} ended: {e}");
+                }
+            });
+        }
+    }
+}
+
+type Reply = Response<Full<Bytes>>;
+
+fn reply(status: StatusCode, content_type: &str, body: impl Into<Bytes>) -> Reply {
+    Response::builder()
+        .status(status)
+        .header("content-type", content_type)
+        // The page computes in threads and shared memory only when it is isolated like this
+        .header("cross-origin-opener-policy", "same-origin")
+        .header("cross-origin-embedder-policy", "require-corp")
+        .header("x-content-type-options", "nosniff")
+        .body(Full::new(body.into()))
+        .expect("a response")
+}
+
+async fn handle(mut request: Request<Incoming>, state: Arc<State>) -> Result<Reply, std::convert::Infallible> {
+    if request.uri().path() == WS_PATH {
+        return Ok(upgrade(&mut request, state));
+    }
+    if request.method() != hyper::Method::GET {
+        return Ok(reply(StatusCode::METHOD_NOT_ALLOWED, "text/plain", "GET only"));
+    }
+    let Some(root) = state.web_root.clone() else {
+        return Ok(reply(StatusCode::NOT_FOUND, "text/plain", "this server has no web app (dspk serve --web <folder>)"));
+    };
+    let path = request.uri().path().to_string();
+    Ok(tokio::task::spawn_blocking(move || file(&root, &path)).await.unwrap_or_else(|_| reply(StatusCode::INTERNAL_SERVER_ERROR, "text/plain", "failed")))
+}
+
+/// The file at `path` under `root`: only plain components, never out of the folder.
+fn file(root: &Path, path: &str) -> Reply {
+    let relative = path.trim_start_matches('/');
+    let relative = if relative.is_empty() { "index.html" } else { relative };
+    let plain = Path::new(relative).components().all(|c| matches!(c, Component::Normal(n) if !n.to_string_lossy().starts_with('.')));
+    if !plain {
+        return reply(StatusCode::NOT_FOUND, "text/plain", "not found");
+    }
+    let full = root.join(relative);
+    // A link out of the folder is refused: the resolved path must still be under it
+    let inside = match (full.canonicalize(), root.canonicalize()) {
+        (Ok(f), Ok(r)) => f.starts_with(r) && f.is_file(),
+        _ => false,
+    };
+    if !inside {
+        return reply(StatusCode::NOT_FOUND, "text/plain", "not found");
+    }
+    let content_type = match full.extension().and_then(|e| e.to_str()) {
+        Some("html") => "text/html; charset=utf-8",
+        Some("js") => "text/javascript; charset=utf-8",
+        Some("wasm") => "application/wasm",
+        Some("css") => "text/css; charset=utf-8",
+        Some("json") => "application/json",
+        Some("png") => "image/png",
+        Some("svg") => "image/svg+xml",
+        Some("ttf") => "font/ttf",
+        _ => "application/octet-stream",
+    };
+    match std::fs::read(&full) {
+        Ok(bytes) => reply(StatusCode::OK, content_type, bytes),
+        Err(_) => reply(StatusCode::NOT_FOUND, "text/plain", "not found"),
+    }
+}
+
+/// Answers the WebSocket handshake and hands the connection to [`session`].
+fn upgrade(request: &mut Request<Incoming>, state: Arc<State>) -> Reply {
+    let header = |name: &str| request.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_ascii_lowercase);
+    let wants = header("upgrade").is_some_and(|v| v == "websocket");
+    let Some(key) = request.headers().get("sec-websocket-key").cloned().filter(|_| wants) else {
+        return reply(StatusCode::BAD_REQUEST, "text/plain", "a WebSocket is expected here");
+    };
+    let accept = tokio_tungstenite::tungstenite::handshake::derive_accept_key(key.as_bytes());
+    let upgraded = hyper::upgrade::on(request);
+    tokio::spawn(async move {
+        match upgraded.await {
+            Ok(io) => {
+                let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default().max_message_size(Some(MAX_WEB_FRAME_BYTES)).max_frame_size(Some(MAX_WEB_FRAME_BYTES));
+                let socket = WebSocketStream::from_raw_socket(TokioIo::new(io), Role::Server, Some(config)).await;
+                if let Err(e) = session(socket, state).await {
+                    tracing::debug!("web: session ended: {e}");
+                }
+            }
+            Err(e) => tracing::debug!("web: upgrade failed: {e}"),
+        }
+    });
+    Response::builder()
+        .status(StatusCode::SWITCHING_PROTOCOLS)
+        .header("upgrade", "websocket")
+        .header("connection", "Upgrade")
+        .header("sec-websocket-accept", accept)
+        .body(Full::new(Bytes::new()))
+        .expect("a response")
+}
+
+fn web_error(e: impl std::fmt::Display) -> StreamError {
+    StreamError::Protocol(e.to_string())
+}
+
+async fn send_text<S>(socket: &mut WebSocketStream<S>, message: &impl Serialize) -> StreamResult<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let text = serde_json::to_string(message).map_err(web_error)?;
+    socket.send(Message::text(text)).await.map_err(web_error)
+}
+
+async fn next_text<S, M: for<'de> Deserialize<'de>>(socket: &mut WebSocketStream<S>) -> StreamResult<M>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    loop {
+        match socket.next().await {
+            Some(Ok(Message::Text(text))) => return serde_json::from_str(text.as_str()).map_err(web_error),
+            Some(Ok(Message::Ping(_) | Message::Pong(_))) => continue,
+            Some(Ok(_)) => return Err(StreamError::protocol("a text frame was expected")),
+            Some(Err(e)) => return Err(web_error(e)),
+            None => return Err(StreamError::protocol("the page left")),
+        }
+    }
+}
+
+/// Who the page is: by its token, or by pairing now (it then gets a token).
+async fn identify<S>(socket: &mut WebSocketStream<S>, state: &State) -> StreamResult<Option<Peer>>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    match next_text::<_, WebHello>(socket).await? {
+        WebHello::Token { token } => Ok(state.authority.authorize_token(&token)),
+        WebHello::Pair { pair } => {
+            let pairing = match state.authority.pairing_start(&pair) {
+                Ok((pairing, reply)) => {
+                    send_text(socket, &reply).await?;
+                    pairing
+                }
+                Err(refusal) => {
+                    send_text(socket, &refusal).await?;
+                    return Ok(None);
+                }
+            };
+            let proof: PairToken = next_text(socket).await?;
+            let reply = state.authority.pairing_finish_token(pairing, &proof, &state.names);
+            let peer = match &reply {
+                PairReply::Token { token, .. } => state.authority.authorize_token(token),
+                _ => None,
+            };
+            send_text(socket, &reply).await?;
+            Ok(peer)
+        }
+    }
+}
+
+/// One page: who it is, then its requests, each answered with its id.
+async fn session<S>(mut socket: WebSocketStream<S>, state: Arc<State>) -> StreamResult<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let peer = match tokio::time::timeout(HELLO_TIMEOUT, identify(&mut socket, &state)).await {
+        Ok(Ok(Some(peer))) => peer,
+        Ok(Ok(None)) => {
+            let _ = socket.close(None).await;
+            return Err(StreamError::protocol("not let in"));
+        }
+        Ok(Err(e)) => return Err(e),
+        Err(_) => return Err(StreamError::protocol("the page did not say who it is")),
+    };
+    let device = state.device.clone();
+    send_text(&mut socket, &WebWelcome { server_name: device.name.clone(), server_version: device.version.clone(), peer_name: peer.name.clone(), permission: peer.permission, has_files: device.files.is_some() }).await?;
+    tracing::info!("web: {} connected ({})", peer.name, peer.permission);
+
+    let current: Current = Arc::new(Mutex::new(device.recording.clone()));
+    let peer = Arc::new(peer);
+    let (mut sink, mut stream) = socket.split();
+    // Answers are computed concurrently and written by one task, in the order they finish
+    let (answers, mut ready) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+    let writer = tokio::spawn(async move {
+        while let Some(frame) = ready.recv().await {
+            if sink.send(Message::binary(frame)).await.is_err() {
+                break;
+            }
+        }
+    });
+    while let Some(frame) = stream.next().await {
+        let bytes = match frame.map_err(web_error)? {
+            Message::Binary(bytes) => bytes,
+            Message::Close(_) => break,
+            _ => continue,
+        };
+        if bytes.len() < 4 {
+            break;
+        }
+        let id: [u8; 4] = bytes[..4].try_into().expect("four bytes");
+        let request = wire::Request::decode(&bytes[4..]);
+        let (device, current, peer, answers) = (device.clone(), current.clone(), peer.clone(), answers.clone());
+        tokio::spawn(async move {
+            let kind = match request {
+                // Files are downloaded by the desktop clients; a page reads views
+                Ok(wire::Request { kind: Some(wire::request::Kind::Fetch(_)) }) => wire::response::Kind::Error("downloads are not offered to browsers".into()),
+                Ok(request) => answer(request, &device, &current, &peer).await.unwrap_or_else(|e| wire::response::Kind::Error(e.reason())),
+                Err(e) => wire::response::Kind::Error(format!("not a request: {e}")),
+            };
+            let response = wire::Response { kind: Some(kind) };
+            let mut frame = Vec::with_capacity(4 + response.encoded_len());
+            frame.extend_from_slice(&id);
+            response.encode(&mut frame).expect("the buffer grows");
+            let _ = answers.send(frame).await;
+        });
+    }
+    drop(answers);
+    writer.abort();
+    Ok(())
+}
