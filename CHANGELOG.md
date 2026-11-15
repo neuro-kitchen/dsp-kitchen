@@ -8,6 +8,11 @@ version number.
 
 ### Added
 
+- **`dspk serve --web <folder>`: an endpoint for browsers** (`dspk_stream::transport::web`):
+  HTTPS on `--web-bind` (default 127.0.0.1:50052) serving the web app's folder and a WebSocket
+  that carries the same requests as a QUIC session (views, files, opening a recording, jobs).
+  A page signs in with a pairing code and keeps a token, which is a client in the same registry
+  (`dspk clients list`, `revoke`). The live signal and downloads are not offered to browsers yet.
 - **Pairing with a short code, in `dspk-stream`** (`transport::pairing`, as lucem): the server
   makes a one-time code such as `42-8317-2956` (10 minutes, 3 tries); both sides prove they know
   it without sending it (SPAKE2), the computer makes its own key pair and the server issues its

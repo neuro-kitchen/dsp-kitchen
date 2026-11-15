@@ -311,6 +311,34 @@ impl Authority {
         registry.clients.into_iter().find(|c| c.fingerprint == fp && c.active()).map(|c| Peer { name: c.name, permission: c.permission })
     }
 
+    /// Enrolls `name` with a token instead of a certificate (a browser cannot hold a client
+    /// certificate it made): the registry keeps the token's SHA-256 where a certificate's
+    /// fingerprint is, so listing and revoking are the same. Returns the record and the token,
+    /// which is shown once and never stored.
+    pub fn enroll_token(&self, name: &str, permission: Permission) -> StreamResult<(ClientRecord, String)> {
+        check_name(name)?;
+        let mut registry = self.registry()?;
+        if registry.clients.iter().any(|c| c.name == name && c.active()) {
+            return Err(StreamError::Tls(format!("{name} is already paired: revoke it on the server first, or pair under another name")));
+        }
+        let mut bytes = [0u8; 32];
+        getrandom::fill(&mut bytes).map_err(|e| StreamError::Tls(format!("no randomness: {e}")))?;
+        let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        let year = this_year();
+        let record = ClientRecord { name: name.into(), permission, fingerprint: fingerprint(token.as_bytes()), issued_unix: now_unix(), expires_year: year + CLIENT_YEARS + 1, revoked_unix: None };
+        registry.clients.push(record.clone());
+        self.save(&registry)?;
+        Ok((record, token))
+    }
+
+    /// Who presents `token`: its enrolled record, if not revoked and not past its year.
+    pub fn authorize_token(&self, token: &str) -> Option<Peer> {
+        let fp = fingerprint(token.as_bytes());
+        let registry = self.registry().map_err(|e| tracing::warn!("reading the client registry: {e}")).ok()?;
+        let year = this_year();
+        registry.clients.into_iter().find(|c| c.fingerprint == fp && c.active() && c.expires_year >= year).map(|c| Peer { name: c.name, permission: c.permission })
+    }
+
     fn registry(&self) -> StreamResult<Registry> {
         match std::fs::read(self.dir.join(CLIENTS_FILE)) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| StreamError::Tls(format!("{CLIENTS_FILE}: {e}"))),

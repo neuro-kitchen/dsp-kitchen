@@ -19,6 +19,8 @@ use dspk_view::{Pyramid, PyramidBuilder, MEMORY_BASE};
 use crate::progress::TerminalProgress;
 
 const DEFAULT_BIND: &str = "127.0.0.1:50051";
+/// Default of --web-bind: this computer only, as --bind.
+const DEFAULT_WEB_BIND: &str = "127.0.0.1:50052";
 const LOCALHOST: &str = "localhost";
 /// Synthetic source when no recording is given: a Neuropixels-sized probe for an hour at 30 kHz.
 const SYNTHETIC_CHANNELS: usize = 384;
@@ -87,6 +89,14 @@ pub struct ServeArgs {
     /// The computer paired with --pair may also configure, start and stop jobs
     #[arg(long, requires = "pair")]
     pair_control: bool,
+    /// Also serve browsers: the folder of the web app (its index.html, .js and .wasm), over HTTPS
+    /// on --web-bind with a WebSocket for the same requests. A page signs in with a pairing
+    /// code (`--pair`, `dspk clients pair`) and keeps a token
+    #[arg(long)]
+    web: Option<PathBuf>,
+    /// TCP address of the web endpoint
+    #[arg(long, default_value = DEFAULT_WEB_BIND, requires = "web")]
+    web_bind: SocketAddr,
     /// Clients connected at once; more are refused until one leaves
     #[arg(long, default_value_t = dspk_stream::DEFAULT_MAX_CONNECTIONS)]
     max_clients: usize,
@@ -227,7 +237,7 @@ pub async fn run(args: &ServeArgs) -> anyhow::Result<()> {
         println!("Pairing code: {}   ({permission}; once, {} minutes)", code.display(), dspk_stream::transport::pairing::CODE_MINUTES);
         println!("On the other computer: dspk pair <this host>:{} {}", args.bind.port(), code.display());
     }
-    let server = Server::bind(args.bind, tls.config)?.with_max_connections(args.max_clients).with_authority(authority).with_pairing(self_signed_names(args), args.allow_anonymous);
+    let server = Server::bind(args.bind, tls.config)?.with_max_connections(args.max_clients).with_authority(authority.clone()).with_pairing(self_signed_names(args), args.allow_anonymous);
     let options = ServeOptions {
         frame_sec: args.frame_sec,
         pacing: if args.unpaced { Pacing::Unpaced } else { Pacing::RealTime },
@@ -265,6 +275,12 @@ pub async fn run(args: &ServeArgs) -> anyhow::Result<()> {
         options,
     });
     println!("Listening on {} (Ctrl+C to stop)", server.local_addr()?);
+    if let Some(folder) = &args.web {
+        anyhow::ensure!(folder.join("index.html").is_file(), "{}: no index.html there (the web app's folder)", folder.display());
+        let web = dspk_stream::transport::web::WebServer::bind(args.web_bind, authority.clone(), device.clone(), self_signed_names(args), Some(folder.clone())).await?;
+        println!("Web app: https://{} (browsers: a pairing code, then a token; the certificate is this server's own, so a browser asks to trust it the first time)", web.local_addr()?);
+        tokio::spawn(web.run());
+    }
 
     tokio::select! {
         _ = shutdown() => {

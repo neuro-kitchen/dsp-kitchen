@@ -28,6 +28,13 @@ sha2.workspace = true
 spake2.workspace = true
 hmac.workspace = true
 getrandom.workspace = true
+# The endpoint for browsers (`transport::web`): HTTPS, the web app's files, a WebSocket
+hyper = { version = "1.12.0", features = ["http1", "server"] }
+hyper-util = { version = "0.1.21", features = ["tokio"] }
+http-body-util = "0.1.5"
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring"] }
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
+futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
