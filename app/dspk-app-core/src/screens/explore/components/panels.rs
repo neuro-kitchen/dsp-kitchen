@@ -652,7 +652,7 @@ enum TrackDrag {
 #[derive(Debug, Clone)]
 enum TrackHit {
     Marked(f64, f64),
-    Epoch(crate::domain::epoch::EpochDoc),
+    Epoch(dspk_session::epoch::EpochDoc),
     Nothing,
 }
 
@@ -980,7 +980,7 @@ impl TimelinePanel {
                         m.item(PopupMenuItem::new("Save as epoch…").on_click(move |_, _, cx| {
                             store.update(cx, |s, cx| {
                                 if let Some(path) = s.recording.as_ref().and_then(|r| r.path.clone()) {
-                                    let epoch = crate::domain::epoch::EpochDoc { id: String::new(), recording: path, name: String::new(), kind: "stimulus".into(), start_sec: a, end_sec: b, notes: String::new() };
+                                    let epoch = dspk_session::epoch::EpochDoc { id: String::new(), recording: path, name: String::new(), kind: "stimulus".into(), start_sec: a, end_sec: b, notes: String::new() };
                                     s.open_floating(crate::data::store::Floating::Epoch(epoch), cx);
                                 }
                             });
@@ -1001,7 +1001,7 @@ impl TimelinePanel {
                         m.label(e.name.clone())
                             .item(PopupMenuItem::new("Edit…").on_click(move |_, _, cx| store.update(cx, |s, cx| s.open_floating(crate::data::store::Floating::Epoch(e.clone()), cx))))
                             .item(PopupMenuItem::new("Delete").on_click(move |_, _, cx| {
-                                let _ = store2.update(cx, |s, cx| s.execute(crate::domain::command::SessionCommand::RemoveEpoch { id: e2.id.clone() }, cx));
+                                let _ = store2.update(cx, |s, cx| s.execute(dspk_session::command::SessionCommand::RemoveEpoch { id: e2.id.clone() }, cx));
                             }))
                     }
                     TrackHit::Nothing => {

@@ -234,7 +234,7 @@ impl TraceVm {
 
     /// The timeline in this view's recording's time (shifted by the placements for a view of
     /// another recording).
-    fn timeline(&self, cx: &App) -> crate::domain::timeline::TimelineState {
+    fn timeline(&self, cx: &App) -> dspk_session::timeline::TimelineState {
         let s = self.store.read(cx);
         let mut tl = s.timeline.clone();
         if let Some(path) = self.foreign(cx) {
@@ -503,7 +503,7 @@ impl TraceVm {
 
     /// The session view this view draws: its own (Explore), else the active one when it reads this
     /// view's source (the strips).
-    pub fn shown_view<'a>(&self, store: &'a Store) -> Option<&'a crate::domain::session::ViewDoc> {
+    pub fn shown_view<'a>(&self, store: &'a Store) -> Option<&'a dspk_session::session::ViewDoc> {
         if !self.view.doc_view.is_empty() {
             return store.doc.view(&self.view.doc_view);
         }

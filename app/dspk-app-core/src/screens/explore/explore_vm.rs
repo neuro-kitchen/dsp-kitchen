@@ -38,7 +38,7 @@ impl ExploreVm {
     pub fn new(store: Entity<Store>, cx: &mut Context<Self>) -> Self {
         let sub = cx.subscribe(&store, |vm, _, event, cx| match event {
             AppEvent::RecordingChanged => vm.reset(cx),
-            AppEvent::Document(crate::domain::command::Changed::Views) => vm.follow_active_view(cx),
+            AppEvent::Document(dspk_session::command::Changed::Views) => vm.follow_active_view(cx),
             AppEvent::RecordingLoaded(path) => {
                 let (now, later): (Vec<_>, Vec<_>) = std::mem::take(&mut vm.pending).into_iter().partition(|(p, _)| p == path);
                 vm.pending = later;
@@ -216,7 +216,7 @@ impl ExploreVm {
         let doc_view = vm.read(cx).view.doc_view.clone();
         if !doc_view.is_empty() && self.store.read(cx).doc.active_view.as_deref() != Some(doc_view.as_str()) {
             self.store.update(cx, |s, cx| {
-                let _ = s.execute(crate::domain::command::SessionCommand::SelectView { view: doc_view }, cx);
+                let _ = s.execute(dspk_session::command::SessionCommand::SelectView { view: doc_view }, cx);
             });
         }
     }

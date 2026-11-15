@@ -217,7 +217,7 @@ pub fn register(registry: &Registry, c: &Ctx) {
     let (r1, rp) = (s.clone(), c.pipeline.clone());
     list.push(
         CommandSpec::with_args::<RecipeArgs>("process.recipe", "Add a recipe", IconName::Workflow, move |a, _, cx| {
-            let recipe = crate::domain::recipe::builtin().into_iter().chain(r1.read(cx).doc.recipes.values().cloned()).find(|r| r.name == a.name).ok_or_else(|| format!("no recipe {:?}", a.name))?;
+            let recipe = dspk_session::recipe::builtin().into_iter().chain(r1.read(cx).doc.recipes.values().cloned()).find(|r| r.name == a.name).ok_or_else(|| format!("no recipe {:?}", a.name))?;
             r1.update(cx, |s, cx| s.set_workspace(Workspace::Pipeline, cx));
             let _ = rp.update(cx, |p, cx| p.add_recipe(recipe, cx));
             Ok(Value::Null)
@@ -265,7 +265,7 @@ fn providers(registry: &Registry, s: &Entity<Store>) {
     });
     let store = s.clone();
     registry.provide("process.recipes", move |cx| {
-        let recipes: Vec<String> = crate::domain::recipe::builtin().into_iter().chain(store.read(cx).doc.recipes.values().cloned()).map(|r| r.name).collect();
+        let recipes: Vec<String> = dspk_session::recipe::builtin().into_iter().chain(store.read(cx).doc.recipes.values().cloned()).map(|r| r.name).collect();
         if recipes.is_empty() {
             return vec![];
         }

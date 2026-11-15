@@ -13,10 +13,10 @@ categories = ["science", "gui", "visualization"]
 [features]
 # Our builds compile wgpu, cuda and cpu in; hip compiles but is untested (no AMD GPU)
 default = ["wgpu", "cuda", "cpu"]
-wgpu = ["dspk-core/wgpu", "dspk-ops/wgpu", "dspk-pipeline/wgpu", "dep:wgpu"]
-cpu = ["dspk-core/cpu", "dspk-ops/cpu", "dspk-pipeline/cpu"]
-cuda = ["dspk-core/cuda", "dspk-ops/cuda", "dspk-pipeline/cuda"]
-hip = ["dspk-core/hip", "dspk-ops/hip", "dspk-pipeline/hip"]
+wgpu = ["dspk-core/wgpu", "dspk-ops/wgpu", "dspk-pipeline/wgpu", "dspk-session/wgpu", "dep:wgpu"]
+cpu = ["dspk-core/cpu", "dspk-ops/cpu", "dspk-pipeline/cpu", "dspk-session/cpu"]
+cuda = ["dspk-core/cuda", "dspk-ops/cuda", "dspk-pipeline/cuda", "dspk-session/cuda"]
+hip = ["dspk-core/hip", "dspk-ops/hip", "dspk-pipeline/hip", "dspk-session/hip"]
 
 [dependencies]
 dspk-core = { workspace = true, features = ["compute"] }
@@ -27,6 +27,8 @@ dspk-io = { workspace = true, features = ["zarr"] }
 dspk-view = { workspace = true, default-features = false }
 # Views' op chains are dspk-pipeline nodes; writing a view runs its pipeline
 dspk-pipeline.workspace = true
+# The session document, its commands and graph
+dspk-session.workspace = true
 # Servers (`dspk serve`): remote recordings (RemoteSignal), jobs, fetching results
 dspk-stream.workspace = true
 tokio.workspace = true

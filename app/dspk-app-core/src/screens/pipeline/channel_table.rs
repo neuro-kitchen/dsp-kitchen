@@ -15,7 +15,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{div, px, AnyElement, App, Entity, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, SharedString, Styled as _};
 
 use crate::data::store::Store;
-use crate::domain::command::SessionCommand;
+use dspk_session::command::SessionCommand;
 use crate::ui::widgets::icon_button;
 
 /// A map being edited: the input (0-based) and the name of each output, in output order.
@@ -151,7 +151,7 @@ pub fn editor(store: &Entity<Store>, id: &str, rows: Rows, channels: Option<usiz
                 let Some(path) = paths.into_iter().next() else { return };
                 let _ = cx.update(|cx| match dspk_io::read_channel_map(&path).map_err(|e| e.to_string()).and_then(|m| Rows::of(&m)) {
                     Ok(rows) => set(rows, cx),
-                    Err(e) => store.update(cx, |s, cx| s.set_status(format!("{}: {e}", crate::domain::paths::short_path(&path)), cx)),
+                    Err(e) => store.update(cx, |s, cx| s.set_status(format!("{}: {e}", dspk_session::paths::short_path(&path)), cx)),
                 });
             })
             .detach();
@@ -168,8 +168,8 @@ pub fn editor(store: &Entity<Store>, id: &str, rows: Rows, channels: Option<usiz
                 let result = std::fs::write(&path, map_text(&map, &path));
                 let _ = cx.update(|cx| {
                     let text = match result {
-                        Ok(()) => format!("Channel map written to {}", crate::domain::paths::short_path(&path)),
-                        Err(e) => format!("{}: {e}", crate::domain::paths::short_path(&path)),
+                        Ok(()) => format!("Channel map written to {}", dspk_session::paths::short_path(&path)),
+                        Err(e) => format!("{}: {e}", dspk_session::paths::short_path(&path)),
                     };
                     store.update(cx, |s, cx| s.set_status(text, cx));
                 });

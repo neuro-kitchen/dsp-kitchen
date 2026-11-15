@@ -3275,6 +3275,7 @@ dependencies = [
  "clap",
  "dspk-app-core",
  "dspk-app-synapse",
+ "dspk-session",
  "gpui-kit",
  "image",
  "tracing",
@@ -3293,6 +3294,7 @@ dependencies = [
  "dspk-io",
  "dspk-ops",
  "dspk-pipeline",
+ "dspk-session",
  "dspk-stream",
  "dspk-synapse",
  "dspk-view",
@@ -3320,6 +3322,7 @@ dependencies = [
  "dspk-core",
  "dspk-io",
  "dspk-pipeline",
+ "dspk-session",
  "dspk-synapse",
  "dspk-view",
  "gpui-kit",
@@ -3513,6 +3516,18 @@ dependencies = [
  "pyo3",
  "pyo3-stub-gen",
  "serde_json",
+]
+
+[[package]]
+name = "dspk-session"
+version = "0.0.10"
+dependencies = [
+ "dspk-io",
+ "dspk-pipeline",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

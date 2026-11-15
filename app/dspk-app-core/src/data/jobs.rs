@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use dspk_pipeline::{OutputFormat, PipelineSpec};
 
-use crate::domain::session::ViewDoc;
+use dspk_session::session::ViewDoc;
 
 /// A message from a running job.
 #[derive(Debug, Clone)]

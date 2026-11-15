@@ -3,7 +3,7 @@
 //! Sorting · Pipeline · Curation) of docked views on one timeline. `--snapshot` uses the data
 //! layer and the trace renderer alone.
 
-use dspk_app_core::{app, data, di, domain, navigation, plugin, screens, ui};
+use dspk_app_core::{app, data, di, navigation, plugin, screens, ui};
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -16,7 +16,7 @@ use gpui_kit::{px, size, App, AppContext as _, Bounds, TitlebarOptions, WindowBo
 use data::preferences::Session;
 use data::recording::{Dataset, SourceSet, SpikeEventStore};
 use data::store::Store;
-use domain::timeline::TimelineState;
+use dspk_session::timeline::TimelineState;
 use navigation::actions;
 use screens::explore::trace::renderer::{TimeViewKind, WaveformRenderer};
 use screens::explore::trace::view::TimeView;

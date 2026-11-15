@@ -227,7 +227,7 @@ impl WorkspaceBody {
                     .child(div().text_xs().text_color(muted).child("Recent"))
                     .children(recent.into_iter().take(6).enumerate().map(|(i, p)| {
                         let label = file_label(&p);
-                        let dir = p.parent().map(|d| crate::domain::paths::short_path(&d)).unwrap_or_default();
+                        let dir = p.parent().map(|d| dspk_session::paths::short_path(&d)).unwrap_or_default();
                         let (open, forget) = (store.clone(), store.clone());
                         let forget_path = p.clone();
                         h_flex()
@@ -828,10 +828,10 @@ mod tests {
         cx.run_until_parked();
         let source = cx.update(|cx| store.read(cx).sources().unwrap().default_entry().id.clone());
         let view = cx.update(|cx| store.update(cx, |s, cx| s.view_for_source(&source, cx))).expect("a view of the source");
-        cx.update(|cx| store.update(cx, |s, cx| s.execute(crate::domain::command::SessionCommand::SelectView { view: view.clone() }, cx)).unwrap());
+        cx.update(|cx| store.update(cx, |s, cx| s.execute(dspk_session::command::SessionCommand::SelectView { view: view.clone() }, cx)).unwrap());
         cx.run_until_parked();
         let node = crate::screens::pipeline::channel_table::Rows { base: 0, inputs: vec![3, 1, 2], names: vec![None; 3] }.node();
-        cx.update(|cx| store.update(cx, |s, cx| s.execute(crate::domain::command::SessionCommand::AddOp { view, node, index: Some(0), id: None }, cx)).unwrap());
+        cx.update(|cx| store.update(cx, |s, cx| s.execute(dspk_session::command::SessionCommand::AddOp { view, node, index: Some(0), id: None }, cx)).unwrap());
         cx.run_until_parked();
         cx.update(|cx| assert_eq!(store.read(cx).selection(&source), &[3, 1, 2]));
     }
@@ -841,7 +841,7 @@ mod tests {
     /// drop); between steps, dropping is refused.
     #[gpui_kit::test]
     fn explore_follows_remaps_anywhere(cx: &mut TestAppContext) {
-        use crate::domain::command::SessionCommand;
+        use dspk_session::command::SessionCommand;
         use crate::screens::pipeline::channel_table::Rows;
         let (window, store, _app) = open(cx);
         cx.update(|cx| {
@@ -888,7 +888,7 @@ mod tests {
     /// fit in the background; an edit after it reuses the fit.
     #[gpui_kit::test]
     fn whitening_previews_fitted(cx: &mut TestAppContext) {
-        use crate::domain::command::SessionCommand;
+        use dspk_session::command::SessionCommand;
         let (window, store, _app) = open(cx);
         cx.update(|cx| {
             let ds = Dataset::generate_synthetic(6, 10_000.0, 4.0);
@@ -991,8 +991,8 @@ mod tests {
 
     #[gpui_kit::test]
     fn pipeline_canvas_shows_and_edits_the_graph(cx: &mut TestAppContext) {
-        use crate::domain::command::SessionCommand;
-        use crate::domain::session::RecordingRef;
+        use dspk_session::command::SessionCommand;
+        use dspk_session::session::RecordingRef;
         let (window, store, app) = open(cx);
         cx.update(|cx| {
             store.update(cx, |s, cx| {
@@ -1026,12 +1026,12 @@ mod tests {
         // A recipe (a group of ops) is one card with its tab
         cx.update(|cx| {
             let pipeline = app.read(cx).pipeline.clone();
-            let recipe = crate::domain::recipe::builtin().into_iter().next().expect("a built-in recipe");
+            let recipe = dspk_session::recipe::builtin().into_iter().next().expect("a built-in recipe");
             pipeline.update(cx, |p, cx| p.add_recipe(recipe, cx));
         });
         cx.run_until_parked();
         let recipe_node = cx.update(|cx| {
-            store.read(cx).doc.graph.nodes.iter().find(|n| matches!(n.kind, crate::domain::graph::NodeKind::Recipe { .. })).map(|n| n.id.clone())
+            store.read(cx).doc.graph.nodes.iter().find(|n| matches!(n.kind, dspk_session::graph::NodeKind::Recipe { .. })).map(|n| n.id.clone())
         });
         let recipe_node = recipe_node.expect("the recipe went into the graph as one node");
         cx.update_window(window, |_, window, cx| {
@@ -1271,7 +1271,7 @@ mod tests {
     /// the session (Pipeline) unless it holds work: a view with ops stays.
     #[gpui_kit::test]
     fn closed_views_leave_no_trace_unless_they_hold_work(cx: &mut TestAppContext) {
-        use crate::domain::command::SessionCommand;
+        use dspk_session::command::SessionCommand;
         test_formats();
         let dir = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/dspk-app-core-tests"));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1330,7 +1330,7 @@ mod tests {
     /// the report's ops one by one: after each, the view's preview exists, a window of `window_s`
     /// seconds reads processed (not raw) within `limit_s`, and the view draws.
     fn ops_on_a_second_source(cx: &mut TestAppContext, path: std::path::PathBuf, source: &str, window_s: f64, limit_s: f64) {
-        use crate::domain::command::SessionCommand;
+        use dspk_session::command::SessionCommand;
         test_formats();
         let (window, store, app) = open(cx);
         cx.update(|cx| store.update(cx, |s, cx| s.open(path.clone(), cx)));
@@ -1386,8 +1386,8 @@ mod tests {
     /// canvas does) shows in Explore's view at once, back on Explore, without reopening anything.
     #[gpui_kit::test]
     fn pipeline_edits_show_in_explore(cx: &mut TestAppContext) {
-        use crate::domain::command::SessionCommand;
-        use crate::domain::graph::NodeKind;
+        use dspk_session::command::SessionCommand;
+        use dspk_session::graph::NodeKind;
         test_formats();
         let dir = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/dspk-app-core-tests"));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1423,8 +1423,8 @@ mod tests {
     /// is what Explore draws at once: the view the recording opened with, empty, leaves.
     #[gpui_kit::test]
     fn a_chain_built_in_the_pipeline_shows_in_explore(cx: &mut TestAppContext) {
-        use crate::domain::command::{view_kind, SessionCommand};
-        use crate::domain::graph::NodeKind;
+        use dspk_session::command::{view_kind, SessionCommand};
+        use dspk_session::graph::NodeKind;
         test_formats();
         let dir = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/dspk-app-core-tests"));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1460,14 +1460,14 @@ mod tests {
     #[gpui_kit::test]
     #[ignore = "needs .datasets/kilosort4/ZFM-02370_mini.imec0.ap.short.bin"]
     fn pipeline_edits_on_the_kilosort_sample(cx: &mut TestAppContext) {
-        use crate::domain::command::SessionCommand;
-        use crate::domain::graph::NodeKind;
+        use dspk_session::command::SessionCommand;
+        use dspk_session::graph::NodeKind;
         let root = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
         let path = std::fs::canonicalize(root.join(".datasets/kilosort4/ZFM-02370_mini.imec0.ap.short.bin")).unwrap();
         let dir = root.join("target/dspk-app-core-tests");
         std::fs::create_dir_all(&dir).unwrap();
         let doc = dir.join("start-session.json");
-        let chain = serde_json::json!({"dspk_session": crate::domain::session::SESSION_VERSION, "graph": {"nodes": [
+        let chain = serde_json::json!({"dspk_session": dspk_session::session::SESSION_VERSION, "graph": {"nodes": [
             {"id": "s3", "kind": {"type": "source", "recording": {"path": path, "source": "main"}}},
             {"id": "iir", "kind": {"type": "op", "node": {"op": "iir", "band": "highpass", "cutoff": [300.0]}}},
             {"id": "v1", "kind": {"type": "view", "name": "ZFM"}}],

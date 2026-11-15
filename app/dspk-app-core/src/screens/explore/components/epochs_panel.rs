@@ -21,8 +21,8 @@ use gpui_kit::{
 
 use crate::data::events::Event;
 use crate::data::store::{AppEvent, Store};
-use crate::domain::command::SessionCommand;
-use crate::domain::session::EpochsFrom;
+use dspk_session::command::SessionCommand;
+use dspk_session::session::EpochsFrom;
 use crate::screens::analytics::aligned::{self, aligned_average, AlignTo, ChannelAverage};
 use crate::screens::analytics::WINDOWS_MS;
 use crate::screens::explore::components::timeline_tab::tick_color;
@@ -95,7 +95,7 @@ impl EpochsPanel {
     }
 
     /// Changes the view's display settings (saved in the session).
-    fn set_display(&self, f: impl FnOnce(&mut crate::domain::session::DisplayDoc), cx: &mut App) {
+    fn set_display(&self, f: impl FnOnce(&mut dspk_session::session::DisplayDoc), cx: &mut App) {
         let Some(mut display) = self.store.read(cx).doc.view(&self.view).map(|v| v.display.clone()) else { return };
         f(&mut display);
         let cmd = SessionCommand::SetDisplay { view: self.view.clone(), display };

@@ -1,0 +1,19 @@
+//! The dspk session document: what is open and how it is processed and shown, as plain
+//! serializable data with no UI and no device.
+//!
+//! - [`session`]: the document (recordings, views, their processing and display).
+//! - [`command`]: every change as a command, applied by a pure function; the app, an agent and a
+//!   headless run send the same commands.
+//! - [`graph`]: sources → operations → views → writes; views are compiled from it.
+//! - [`recipe`]: named chains of operations kept in files.
+//! - [`timeline`]: the timeline the views share.
+//! - [`epoch`]: epochs, event sets and placements as the session names them.
+//! - [`paths`]: short forms of paths for messages.
+
+pub mod command;
+pub mod epoch;
+pub mod graph;
+pub mod paths;
+pub mod recipe;
+pub mod session;
+pub mod timeline;

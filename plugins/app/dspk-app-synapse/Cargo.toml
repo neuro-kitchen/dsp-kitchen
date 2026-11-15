@@ -25,6 +25,7 @@ dspk-io = { workspace = true, features = ["zarr"] }
 dspk-synapse.workspace = true
 dspk-view = { workspace = true, default-features = false }
 dspk-pipeline.workspace = true
+dspk-session.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
