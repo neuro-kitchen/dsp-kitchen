@@ -183,6 +183,21 @@ jobs:
         with:
           name: sorters-${{ matrix.target }}
           path: out
+      # The container image (job `image`) takes its two programs from this run: the sorter built
+      # above and the `dspk` command line, built here on the same dependencies (Ubuntu 22.04's
+      # glibc 2.35 runs on the image's Debian 12)
+      - name: Build dspk for the container image
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          cargo build --release --locked -p dspk-cli --no-default-features --features wgpu,cuda,cpu,hub
+          mkdir -p image
+          cp target/release/dspk target/release/dspk-cli-sorter image/
+          image/dspk --version
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        with:
+          name: image-binaries
+          path: image
 
   publish-crates:
     name: Publish to crates.io
@@ -327,3 +342,53 @@ jobs:
           gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1 ||
             gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --verify-tag --notes-file release-notes.md
           gh release upload "$GITHUB_REF_NAME" out/* --repo "$GITHUB_REPOSITORY" --clobber
+
+  # The container image on GitHub's registry: ghcr.io/neuro-kitchen/dspk:<version> and :latest.
+  # Target `gpu` of deploy/Containerfile (the dspk command line, the server and every sorter; wgpu
+  # on any vendor's GPU, or the CPU; no NVIDIA software inside), from the programs this run built,
+  # so nothing is compiled twice. Pushed last, after the release exists. The package inherits
+  # nothing from the repository: make it public once in the organization's package settings.
+  image:
+    name: Container image (ghcr.io)
+    needs: [sorters, github-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # push to ghcr.io/neuro-kitchen/dspk
+    env:
+      IMAGE: ghcr.io/neuro-kitchen/dspk
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: image-binaries
+          path: deploy/prebuilt
+      - name: Build
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          # Artifacts lose their mode bits
+          chmod 0755 deploy/prebuilt/dspk deploy/prebuilt/dspk-cli-sorter
+          podman build -f deploy/Containerfile --ignorefile deploy/.containerignore \
+            --build-arg BINARIES=prebuilt --target gpu \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.version=${version}" \
+            --label "org.opencontainers.image.description=dspk: GPU signal processing and spike sorting (command line, server, sorters)" \
+            --label "org.opencontainers.image.licenses=GPL-3.0-only AND (MIT OR Apache-2.0)" \
+            -t "${IMAGE}:${version}" -t "${IMAGE}:latest" .
+      # The image must run before it is published: the version it reports is the tag's, and the
+      # sorter program starts. No GPU on the runner: the CPU runtime answers.
+      - name: Check the image
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          podman run --rm "${IMAGE}:${version}" --version | tee /dev/stderr | grep -qF "${version}"
+          podman run --rm --entrypoint dspk-cli-sorter "${IMAGE}:${version}" --version
+          podman run --rm -e DSPK_RUNTIME=cpu "${IMAGE}:${version}" doctor
+      - name: Push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "${GITHUB_TOKEN}" | podman login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+          podman push "${IMAGE}:${version}"
+          podman push "${IMAGE}:latest"
