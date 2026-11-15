@@ -196,7 +196,18 @@ pub enum PairReply {
     /// The certificate issued, the CA, the server's names (to connect by) and the permission,
     /// with a MAC proving the server knows the code.
     Paired { certificate_pem: String, ca_pem: String, names: Vec<String>, permission: Permission, mac: Vec<u8> },
+    /// For a browser (see [`PairToken`]): a token instead of a certificate, with a MAC proving
+    /// the server knows the code.
+    Token { token: String, names: Vec<String>, permission: Permission, mac: Vec<u8> },
     Error { reason: String },
+}
+
+/// A browser's second message: it asks for a token (it cannot hold a certificate), with a MAC
+/// proving it knows the code.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PairToken {
+    pub mac: Vec<u8>,
 }
 
 /// The computer's public key (SubjectPublicKeyInfo, DER) and its MAC.
@@ -271,6 +282,36 @@ impl Authority {
     }
 }
 
+impl Authority {
+    /// The server's second step for a browser: checks it knows the code, enrolls it with a
+    /// token ([`Authority::enroll_token`]), spends the code.
+    pub fn pairing_finish_token(&self, pairing: ServerPairing, proof: &PairToken, names: &[String]) -> PairReply {
+        let ServerPairing { key: shared, name, code } = pairing;
+        if !mac_ok(&shared, &[b"client-token", name.as_bytes()], &proof.mac) {
+            tracing::warn!("pairing as {name:?} failed: wrong code ({} tries left)", code.tries_left);
+            return error("wrong code");
+        }
+        let (record, token) = match self.enroll_token(&name, code.permission) {
+            Ok(r) => r,
+            Err(e) => return error(e.to_string()),
+        };
+        if let Err(e) = self.spend(&code.id) {
+            return error(e.to_string());
+        }
+        let tag = mac(&shared, &[b"server-token", token.as_bytes(), names.join(",").as_bytes()]);
+        tracing::info!("paired {} ({}, a browser)", record.name, record.permission);
+        PairReply::Token { token, names: names.to_vec(), permission: code.permission, mac: tag }
+    }
+}
+
+/// What a browser keeps after pairing.
+#[derive(Debug, Clone)]
+pub struct PairedToken {
+    pub token: String,
+    pub names: Vec<String>,
+    pub permission: Permission,
+}
+
 /// What a computer keeps after pairing.
 #[derive(Debug, Clone)]
 pub struct Paired {
@@ -308,7 +349,7 @@ impl ClientPairing {
         let spake = match reply {
             PairReply::Spake { spake } => spake,
             PairReply::Error { reason } => return Err(StreamError::Server(reason)),
-            PairReply::Paired { .. } => return Err(StreamError::Server("the server answered out of turn".into())),
+            PairReply::Paired { .. } | PairReply::Token { .. } => return Err(StreamError::Server("the server answered out of turn".into())),
         };
         let shared = self.state.finish(&spake).map_err(|_| StreamError::Server("pairing failed".into()))?;
         let key_pair = rcgen::KeyPair::generate().map_err(|e| StreamError::Tls(e.to_string()))?;
@@ -332,7 +373,44 @@ impl ClientPairingKey {
                 Ok(Paired { ca_fingerprint: identity.ca_fingerprint(), identity_pem, names, permission })
             }
             PairReply::Error { reason } => Err(StreamError::Server(reason)),
-            PairReply::Spake { .. } => Err(StreamError::Server("the server answered out of turn".into())),
+            PairReply::Spake { .. } | PairReply::Token { .. } => Err(StreamError::Server("the server answered out of turn".into())),
+        }
+    }
+}
+
+/// A browser's side after the server's SPAKE2 message: waits for its token.
+pub struct ClientPairingToken {
+    shared: Vec<u8>,
+}
+
+impl ClientPairing {
+    /// With the server's first answer, for a browser: the request for a token to send.
+    pub fn token(self, reply: PairReply) -> StreamResult<(ClientPairingToken, PairToken)> {
+        let PairReply::Spake { spake } = reply else {
+            return Err(StreamError::Server(match reply {
+                PairReply::Error { reason } => reason,
+                _ => "the server answered out of turn".into(),
+            }));
+        };
+        let shared = self.state.finish(&spake).map_err(|_| StreamError::Server("pairing failed".into()))?;
+        let tag = mac(&shared, &[b"client-token", self.name.as_bytes()]);
+        Ok((ClientPairingToken { shared }, PairToken { mac: tag }))
+    }
+}
+
+impl ClientPairingToken {
+    /// With the server's last answer: the token to keep, once the server has proved it knows
+    /// the code.
+    pub fn finish(self, reply: PairReply) -> StreamResult<PairedToken> {
+        match reply {
+            PairReply::Token { token, names, permission, mac: tag } => {
+                if !mac_ok(&self.shared, &[b"server-token", token.as_bytes(), names.join(",").as_bytes()], &tag) {
+                    return Err(StreamError::Server("the server could not prove it knows the code: not paired".into()));
+                }
+                Ok(PairedToken { token, names, permission })
+            }
+            PairReply::Error { reason } => Err(StreamError::Server(reason)),
+            _ => Err(StreamError::Server("the server answered out of turn".into())),
         }
     }
 }
@@ -499,6 +577,28 @@ mod tests {
         assert_eq!(paired.ca_fingerprint, identity.ca_fingerprint());
         let clients = authority.clients().unwrap();
         assert_eq!(clients.iter().map(|c| (c.name.as_str(), c.permission)).collect::<Vec<_>>(), [("laptop", Permission::Control)]);
+        assert!(authority.pairing_codes().unwrap().is_empty(), "the code is spent");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_browser_pairs_to_a_token_that_is_authorized_until_revoked() {
+        let (authority, dir) = authority("token");
+        let code = authority.new_pairing_code(Permission::Read).unwrap();
+        let names = vec!["localhost".to_string()];
+        let (client, hello) = ClientPairing::start(&code.display(), "browser").unwrap();
+        let (server, reply) = authority.pairing_start(&hello).unwrap();
+        let (client, proof) = client.token(reply).unwrap();
+        let paired = client.finish(authority.pairing_finish_token(server, &proof, &names)).unwrap();
+        assert_eq!((paired.names.clone(), paired.permission), (names, Permission::Read));
+        let peer = authority.authorize_token(&paired.token).unwrap();
+        assert_eq!((peer.name.as_str(), peer.permission), ("browser", Permission::Read));
+        assert!(authority.authorize_token("not a token").is_none());
+        // The registry holds its hash, never the token
+        let registry = std::fs::read_to_string(dir.join(super::super::auth::CLIENTS_FILE)).unwrap();
+        assert!(!registry.contains(&paired.token));
+        authority.revoke("browser").unwrap();
+        assert!(authority.authorize_token(&paired.token).is_none(), "revoked");
         assert!(authority.pairing_codes().unwrap().is_empty(), "the code is spent");
         std::fs::remove_dir_all(&dir).ok();
     }
