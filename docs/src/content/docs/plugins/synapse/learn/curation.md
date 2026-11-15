@@ -37,8 +37,10 @@ has its settings under ⋯.
 | Undo / redo | Ctrl+Z / Ctrl+Shift+Z |
 | Save | Ctrl+S |
 
-Edits are saved as a log, `curation.json`, inside the `.sorting.zarr`, applied on read. The sorter's
-arrays are never rewritten.
+Edits are saved as a log, `dspk-curation.json`, inside the `.sorting.zarr`, applied on read. The
+sorter's arrays are never rewritten. Before v0.0.11 the log was `curation.json`: it is still read,
+and renamed at the next save. A `curation.json` written by phy or SpikeInterface (merge proposals)
+is not touched.
 
 ## From Python
 
