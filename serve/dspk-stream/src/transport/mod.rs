@@ -6,6 +6,7 @@ pub mod auth;
 mod client;
 pub mod files;
 pub mod jobs;
+pub mod pairing;
 mod remote_signal;
 mod server;
 pub mod tls;
