@@ -3,6 +3,7 @@
 
 pub mod clients;
 pub mod jobs;
+pub mod pair;
 pub mod receive;
 pub mod remote;
 pub mod serve;

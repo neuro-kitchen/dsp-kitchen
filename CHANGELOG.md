@@ -11,8 +11,12 @@ version number.
 - **Pairing with a short code, in `dspk-stream`** (`transport::pairing`, as lucem): the server
   makes a one-time code such as `42-8317-2956` (10 minutes, 3 tries); both sides prove they know
   it without sending it (SPAKE2), the computer makes its own key pair and the server issues its
-  certificate. The exchange is steps over plain messages, with no transport in it. Not wired into
-  `dspk serve` or the command line yet.
+  certificate. The exchange is steps over plain messages, with no transport in it.
+- **`dspk pair <host:port> <code>`**: a computer gets its identity file from a server with a
+  code, no file to hand over. On the server: `dspk serve --pair` shows a code at start
+  (`--pair-control` to let that computer run jobs), `dspk clients pair` makes one for a running
+  server, `dspk clients codes` lists the live ones without their secrets (`--cancel <id|all>`).
+  A computer without a certificate can connect only to pair, unless `--allow-anonymous`.
 
 ### Changed
 

@@ -12,7 +12,8 @@ use clap::Args;
 use dspk_core::{ProgressEvent, ProgressSink, RecordingSource};
 use dspk_synapse::io::{SyntheticParams, SyntheticRecording};
 use dspk_stream::files::DataRoot;
-use dspk_stream::{serve_session, server_config_with_clients, Authority, Device, OpenRecording, Pacing, RecordingOpener, ServeOptions, Server, ServerIdentity, StreamError, StreamResult};
+use dspk_stream::transport::server_config_with_pairing;
+use dspk_stream::{serve_session, Authority, Device, OpenRecording, Pacing, RecordingOpener, ServeOptions, Server, ServerIdentity, StreamError, StreamResult};
 use dspk_view::{Pyramid, PyramidBuilder, MEMORY_BASE};
 
 use crate::progress::TerminalProgress;
@@ -78,6 +79,14 @@ pub struct ServeArgs {
     /// then read the recording: trusted networks only
     #[arg(long)]
     allow_anonymous: bool,
+    /// Show a one-time pairing code at start: a computer runs `dspk pair <host:port> <code>` and
+    /// gets its certificate, with no file to hand over (10 minutes, 3 tries; more codes:
+    /// `dspk clients pair`)
+    #[arg(long)]
+    pair: bool,
+    /// The computer paired with --pair may also configure, start and stop jobs
+    #[arg(long, requires = "pair")]
+    pair_control: bool,
     /// Clients connected at once; more are refused until one leaves
     #[arg(long, default_value_t = dspk_stream::DEFAULT_MAX_CONNECTIONS)]
     max_clients: usize,
@@ -198,7 +207,9 @@ pub async fn run(args: &ServeArgs) -> anyhow::Result<()> {
     };
     let dir = super::clients::auth_dir(args.auth_dir.as_deref());
     let authority = Arc::new(Authority::open_or_create(&dir).with_context(|| format!("opening the authority in {}", dir.display()))?);
-    let tls = server_config_with_clients(&authority, &identity, args.allow_anonymous)?;
+    // Computers without a certificate may connect to pair with a code, and for nothing else
+    // unless --allow-anonymous
+    let tls = server_config_with_pairing(&authority, &identity, args.allow_anonymous)?;
     if let Some(out) = &args.certificate_out {
         std::fs::write(out, &tls.certificate).with_context(|| format!("writing {}", out.display()))?;
         println!("Certificate clients trust written to {} (`dspk receive --certificate {}`)", out.display(), out.display());
@@ -207,10 +218,16 @@ pub async fn run(args: &ServeArgs) -> anyhow::Result<()> {
     println!("Clients: certificates enrolled in {} ({enrolled} active; `dspk clients enroll <name>`)", dir.display());
     if args.allow_anonymous {
         println!("Warning: --allow-anonymous: anyone who reaches this port can read the recording");
-    } else if enrolled == 0 {
-        println!("No client is enrolled yet: nobody can connect until one is");
+    } else if enrolled == 0 && !args.pair {
+        println!("No client is enrolled yet: nobody can connect until one is (`dspk clients pair` makes a pairing code)");
     }
-    let server = Server::bind(args.bind, tls.config)?.with_max_connections(args.max_clients).with_authority(authority);
+    if args.pair {
+        let permission = if args.pair_control { dspk_stream::Permission::Control } else { dspk_stream::Permission::Read };
+        let code = authority.new_pairing_code(permission)?;
+        println!("Pairing code: {}   ({permission}; once, {} minutes)", code.display(), dspk_stream::transport::pairing::CODE_MINUTES);
+        println!("On the other computer: dspk pair <this host>:{} {}", args.bind.port(), code.display());
+    }
+    let server = Server::bind(args.bind, tls.config)?.with_max_connections(args.max_clients).with_authority(authority).with_pairing(self_signed_names(args), args.allow_anonymous);
     let options = ServeOptions {
         frame_sec: args.frame_sec,
         pacing: if args.unpaced { Pacing::Unpaced } else { Pacing::RealTime },
