@@ -232,7 +232,7 @@ impl SynapseState {
         }
     }
 
-    /// Writes `path`'s curation log into the store (`curation.json`).
+    /// Writes `path`'s curation log into the store (`dspk-curation.json`).
     pub fn save_curation(&mut self, path: &PathBuf, cx: &mut Context<Self>) {
         let Some(log) = self.curations.get_mut(path) else { return };
         let status = match log.save(path) {

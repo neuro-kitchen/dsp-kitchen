@@ -873,7 +873,7 @@ impl Render for CurationWorkspace {
                     .map(|b| if dirty { b.primary() } else { b.ghost() })
                     .icon(Icon::new(gpui_kit::assets::IconName::Save))
                     .label(if dirty { format!("Save ({edits})") } else { "Saved".to_string() })
-                    .tooltip("Write the curation log into the .sorting.zarr (curation.json; Ctrl+S)")
+                    .tooltip("Write the curation log into the .sorting.zarr (dspk-curation.json; Ctrl+S)")
                     .disabled(!dirty)
                     .on_click(move |_, _, cx| {
                         let _ = me.update(cx, |w, cx| w.save(cx));

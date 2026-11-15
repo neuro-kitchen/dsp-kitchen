@@ -13,6 +13,14 @@ version number.
   epochs. It was the `domain` module of `dspk-app-core`; nothing in it depended on the UI. The app
   imports it, and the command line, Python or an agent can now use the same document.
   `dspk_app_core::domain` is gone: use `dspk_session`.
+- **The curation log is `dspk-curation.json`** (it was `curation.json`, inside the `.sorting.zarr`):
+  phy and SpikeInterface keep merge proposals in a `curation.json` of another format. A log under
+  the earlier name is still read and is renamed at the next save; a `curation.json` that is not
+  dspk's is left alone.
+- **Curation is in `dspk-synapse`** (`dspk_synapse::curation`): the sorting as the views use it
+  (spikes indexed by time, extents, waveforms from windows of the recording, PCA, amplitudes,
+  comparison of two sortings), the log of edits and applying it, and similar units. It was in the
+  app's plugin, so only the app could use it.
 - **New crate `dspk-table`** (`crates/dspk-table`): tables as Polars data frames for every crate.
   It is the one crate that depends on Polars (re-exported as `dspk_table::polars` and
   `dspk_table::prelude`), with Parquet in and out and the sorted, filtered row order the views ask

@@ -1,7 +1,7 @@
 //! Curation of a sorting, Phy style: units labelled good / mua / noise (or back to unsorted) and
 //! merged. Every edit is an entry of a log, so undo / redo are moves along it and nothing of the
 //! sorter's output is rewritten: the log is saved inside the `.sorting.zarr` folder as
-//! `curation.json` (readers that do not know it see the sorter's result), and applied to the
+//! `dspk-curation.json` (readers that do not know it see the sorter's result), and applied to the
 //! loaded sorting on read.
 
 use std::collections::HashSet;
@@ -15,8 +15,12 @@ pub mod sorting;
 pub use sorting::SortingData;
 
 /// The log's file inside the store.
-pub const CURATION_FILE: &str = "curation.json";
-/// Format version of `curation.json`.
+pub const CURATION_FILE: &str = "dspk-curation.json";
+/// The log's name before v0.0.11. Phy and SpikeInterface keep merge proposals in a file of that
+/// name, in another format, so the log moved: one found there is still read when it is ours (it
+/// has the `dspk_curation` key) and renamed at the next save; anyone else's is left alone.
+pub const LEGACY_CURATION_FILE: &str = "curation.json";
+/// Format version of the log.
 pub const CURATION_VERSION: u32 = 1;
 /// Phy's labels, in menu order.
 pub const LABELS: [&str; 4] = ["good", "mua", "noise", "unsorted"];
@@ -50,10 +54,14 @@ impl Curation {
     /// The log saved in `store` (none: an empty one).
     pub fn load(store: &Path) -> DspResult<Self> {
         let path = store.join(CURATION_FILE);
-        if !path.is_file() {
-            return Ok(Self::default());
-        }
-        let text = std::fs::read_to_string(&path).map_err(|e| DspError::Io(format!("{}: {e}", path.display())))?;
+        let text = if path.is_file() {
+            std::fs::read_to_string(&path).map_err(|e| DspError::Io(format!("{}: {e}", path.display())))?
+        } else {
+            match legacy_log(store) {
+                Some(text) => text,
+                None => return Ok(Self::default()),
+            }
+        };
         let file: CurationFile = serde_json::from_str(&text).map_err(|e| DspError::UnsupportedFormat(format!("{}: {e}", path.display())))?;
         if file.dspk_curation != CURATION_VERSION {
             return Err(DspError::UnsupportedFormat(format!("{}: curation version {} (this version reads {CURATION_VERSION})", path.display(), file.dspk_curation)));
@@ -61,15 +69,21 @@ impl Curation {
         Ok(Self { saved: file.ops.len(), ops: file.ops, undone: Vec::new() })
     }
 
-    /// Writes the log into `store` (through a temporary file).
+    /// Writes the log into `store` (through a temporary file). A log under the earlier name
+    /// ([`LEGACY_CURATION_FILE`]) is removed once the new file is in place, so a store holds one.
     pub fn save(&mut self, store: &Path) -> DspResult<PathBuf> {
         let path = store.join(CURATION_FILE);
         let file = CurationFile { dspk_curation: CURATION_VERSION, ops: self.ops.clone() };
         let tmp = store.join(format!("{CURATION_FILE}.tmp"));
         let io = |p: &Path, e: std::io::Error| DspError::Io(format!("{}: {e}", p.display()));
         let text = serde_json::to_string_pretty(&file).map_err(|e| DspError::Io(format!("{}: {e}", path.display())))?;
+        let ours_before = legacy_log(store).is_some();
         std::fs::write(&tmp, text).map_err(|e| io(&tmp, e))?;
         std::fs::rename(&tmp, &path).map_err(|e| io(&path, e))?;
+        if ours_before {
+            let old = store.join(LEGACY_CURATION_FILE);
+            std::fs::remove_file(&old).map_err(|e| io(&old, e))?;
+        }
         self.saved = self.ops.len();
         Ok(path)
     }
@@ -106,6 +120,14 @@ impl Curation {
             None => false,
         }
     }
+}
+
+/// The text of `store`'s [`LEGACY_CURATION_FILE`] when that file is a dspk log (a JSON object with
+/// the `dspk_curation` key); `None` when it is absent, unreadable or someone else's.
+fn legacy_log(store: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(store.join(LEGACY_CURATION_FILE)).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    value.get("dspk_curation").is_some().then_some(text)
 }
 
 /// A unit id no unit of `sorting` has.
@@ -257,6 +279,56 @@ mod tests {
         assert!(!log.dirty());
         let back = Curation::load(&dir).unwrap();
         assert_eq!(back.ops, log.ops);
+        assert!(dir.join("dspk-curation.json").is_file());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A store of a test, empty.
+    fn store(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("dspk_curation_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn test_a_log_under_the_earlier_name_is_read_and_renamed_at_the_next_save() {
+        let dir = store("legacy");
+        let ops = vec![CurationOp::Label { units: vec![3], label: "mua".into() }];
+        let old = serde_json::to_string(&CurationFile { dspk_curation: CURATION_VERSION, ops: ops.clone() }).unwrap();
+        std::fs::write(dir.join(LEGACY_CURATION_FILE), old).unwrap();
+        let mut log = Curation::load(&dir).unwrap();
+        assert_eq!(log.ops, ops);
+        assert!(dir.join(LEGACY_CURATION_FILE).is_file(), "reading changes nothing");
+        log.push(CurationOp::Label { units: vec![4], label: "good".into() });
+        log.save(&dir).unwrap();
+        assert!(dir.join(CURATION_FILE).is_file() && !dir.join(LEGACY_CURATION_FILE).exists(), "one log, under the new name");
+        assert_eq!(Curation::load(&dir).unwrap().ops.len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_another_programs_curation_json_is_left_alone() {
+        let dir = store("foreign");
+        // The shape of a SpikeInterface / phy proposals file: not ours (no `dspk_curation`)
+        let theirs = r#"{"format_version": "2", "unit_ids": [1, 2], "merges": [{"unit_ids": [1, 2]}]}"#;
+        std::fs::write(dir.join(LEGACY_CURATION_FILE), theirs).unwrap();
+        let mut log = Curation::load(&dir).unwrap();
+        assert!(log.ops.is_empty(), "nothing of ours to read");
+        log.push(CurationOp::Label { units: vec![1], label: "good".into() });
+        log.save(&dir).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join(LEGACY_CURATION_FILE)).unwrap(), theirs, "untouched");
+        assert_eq!(Curation::load(&dir).unwrap().ops.len(), 1, "ours is read from its own file");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_the_new_name_wins_over_a_log_under_the_earlier_one() {
+        let dir = store("both");
+        let file = |label: &str| serde_json::to_string(&CurationFile { dspk_curation: CURATION_VERSION, ops: vec![CurationOp::Label { units: vec![1], label: label.into() }] }).unwrap();
+        std::fs::write(dir.join(LEGACY_CURATION_FILE), file("noise")).unwrap();
+        std::fs::write(dir.join(CURATION_FILE), file("good")).unwrap();
+        assert_eq!(Curation::load(&dir).unwrap().ops, vec![CurationOp::Label { units: vec![1], label: "good".into() }]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
