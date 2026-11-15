@@ -19,6 +19,9 @@
 //! without it every process re-tuned (about a minute on a GPU, several with the CPU runtime) and
 //! recompiled every kernel.
 
+// In a browser the exit-time shutdown below is never registered (see `opened`)
+#![cfg_attr(target_family = "wasm", allow(dead_code))]
+
 use std::ffi::c_int;
 #[cfg(target_os = "linux")]
 use std::ffi::c_void;
@@ -45,6 +48,14 @@ pub const CACHE_DIR_ENV: &str = "DSPK_CACHE_DIR";
 /// `DSPK_CACHE_DIR`) instead of the `target/` of whichever Cargo project the process runs in.
 /// A `cubecl.toml` or CubeCL's own environment variables still apply. Called by
 /// [`ComputeTarget::device`] and [`open_device`]; harmless to call again.
+///
+/// In a browser (`target_family = "wasm"`) there is no file system, no environment and no cache
+/// directory: CubeCL keeps its defaults and this does nothing.
+#[cfg(target_family = "wasm")]
+pub fn configure_runtime() {}
+
+/// See the browser note above: this is the version for every other target.
+#[cfg(not(target_family = "wasm"))]
 pub fn configure_runtime() {
     use cubecl::config::cache::CacheConfig;
     use cubecl::config::{CubeClRuntimeConfig, RuntimeConfig};
@@ -168,6 +179,8 @@ fn opened(device: &Device) {
     }
     devices.push(device.clone());
     drop(devices);
+    // A browser tab has no process exit to hook: the page going away releases the device
+    #[cfg(not(target_family = "wasm"))]
     // SAFETY: registers a plain `extern "C"` function; failure (no slot left) only means the
     // device is not shut down at exit, as before
     unsafe {
