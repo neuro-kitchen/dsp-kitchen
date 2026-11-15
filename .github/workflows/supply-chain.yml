@@ -1,12 +1,16 @@
 # Supply-chain checks with cargo-deny (deny.toml): no dependency with a known vulnerability
-# (RustSec), none yanked, only allowed licences, crates.io as the only source. Runs on every pull
-# request and push to main, and weekly: new advisories appear without any change here.
+# (RustSec), none yanked, only allowed licences, crates.io as the only source. Runs on pull
+# requests that change the dependencies or the rules, and weekly: new advisories appear without
+# any change here. The v* tag runs it again inside release.yml.
 name: supply-chain
 
 on:
-  push:
-    branches: [main]
   pull_request:
+    paths:
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - "deny.toml"
+      - ".github/workflows/supply-chain.yml"
   schedule:
     # Mondays 06:00 UTC
     - cron: "0 6 * * 1"

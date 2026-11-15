@@ -1,4 +1,4 @@
-# Checks every push and pull request. GitHub runners have no GPU, so tests run on the CubeCL CPU
+# Checks pull requests. GitHub runners have no GPU, so tests run on the CubeCL CPU
 # runtime only (DSPK_TEST_RUNTIMES=cpu; CUDA and wgpu are compiled in but not exercised). The full
 # suite on wgpu and CUDA runs locally on a GPU machine before a release.
 #
@@ -6,13 +6,21 @@
 # documentation alone (Markdown, CITATION.cff, assets/, playground/, benchmarks/) runs nothing;
 # the docs site (docs/) and the Python sources its API reference is generated from run the docs
 # build. When the changes cannot be listed (a new branch, a force push), everything runs.
+#
+# How much runs depends on where the pull request goes, so one change is not built over and over:
+# - into a versions/* branch (day-to-day work): the light run, `cargo check` of the workspace and
+#   the docs build; no tests, no Python build;
+# - into main (the release pull request), or started by hand (Actions > ci > Run workflow): the
+#   full run;
+# - draft pull requests: nothing, until they are marked ready.
+# A push to main runs nothing here: the release pull request already ran the full checks, and the
+# v* tag runs them once more inside release.yml before anything is published.
 name: ci
 
 on:
-  # Pull requests cover the versions/* branches; pushes to main check what was merged
-  push:
-    branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -28,8 +36,11 @@ env:
 jobs:
   changes:
     name: What changed
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     outputs:
+      # The full run: the release pull request (into main) or a run started by hand
+      full: ${{ github.event_name == 'workflow_dispatch' || github.base_ref == 'main' }}
       rust: ${{ steps.classify.outputs.rust }}
       python: ${{ steps.classify.outputs.python }}
       docs: ${{ steps.classify.outputs.docs }}
@@ -39,8 +50,8 @@ jobs:
           fetch-depth: 0
       - id: classify
         env:
-          # Pull request: its base; push: the commit before it
-          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          # Pull request: its base; a run started by hand has none (everything runs)
+          BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           if [ -n "$BASE" ] && [ "$BASE" != "0000000000000000000000000000000000000000" ] && git cat-file -e "$BASE^{commit}" 2>/dev/null; then
@@ -75,7 +86,7 @@ jobs:
           echo "docs=$docs" >> "$GITHUB_OUTPUT"
 
   rust:
-    name: Rust (check, CPU-runtime tests)
+    name: Rust (check; CPU-runtime tests in the full run)
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
@@ -98,22 +109,27 @@ jobs:
       - name: Check the workspace
         run: cargo check --workspace --all-targets
       - name: Unit tests of the host-side crates
+        if: needs.changes.outputs.full == 'true'
         run: >
           cargo test -p dspk-core -p dspk-io -p dspk-hub -p dspk-view -p dspk-stream
           --lib
       - name: Neural-recording and sorting formats (dspk-synapse io)
+        if: needs.changes.outputs.full == 'true'
         run: "cargo test -p dspk-synapse --lib io::"
       - name: Every dspk-ops operation against host references
+        if: needs.changes.outputs.full == 'true'
         run: cargo test -p dspk-ops --test kernel_runtimes --test filter_runtimes
       - name: Device buffer writes
+        if: needs.changes.outputs.full == 'true'
         run: cargo test -p dspk-ops --lib core::buffer
       - name: Pipeline engine (specs; stream and window runs against the whole recording)
+        if: needs.changes.outputs.full == 'true'
         run: cargo test -p dspk-pipeline --test run
 
   python:
     name: Python (build, tests vs scipy, stubs)
     needs: changes
-    if: needs.changes.outputs.python == 'true'
+    if: needs.changes.outputs.python == 'true' && needs.changes.outputs.full == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
