@@ -13,6 +13,10 @@ version number.
   epochs. It was the `domain` module of `dspk-app-core`; nothing in it depended on the UI. The app
   imports it, and the command line, Python or an agent can now use the same document.
   `dspk_app_core::domain` is gone: use `dspk_session`.
+- **New crate `dspk-table`** (`crates/dspk-table`): tables as Polars data frames for every crate.
+  It is the one crate that depends on Polars (re-exported as `dspk_table::polars` and
+  `dspk_table::prelude`), with Parquet in and out and the sorted, filtered row order the views ask
+  for. `dspk-pipeline` writes its events tables through it; `events_frame` returns the same frame.
 
 ### Fixed
 

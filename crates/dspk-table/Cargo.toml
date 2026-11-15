@@ -1,0 +1,15 @@
+[package]
+name = "dspk-table"
+description = "Tables for dspk as Polars data frames: one Polars for every crate, Parquet in and out, and the sort and filter the views ask for; domain crates build their own tables (events, units, …) on it"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+polars.workspace = true
+thiserror.workspace = true

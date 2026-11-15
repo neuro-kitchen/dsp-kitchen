@@ -3324,10 +3324,10 @@ dependencies = [
  "dspk-pipeline",
  "dspk-session",
  "dspk-synapse",
+ "dspk-table",
  "dspk-view",
  "gpui-kit",
  "image",
- "polars",
  "serde",
  "serde_json",
  "tracing",
@@ -3465,8 +3465,8 @@ dependencies = [
  "dspk-core",
  "dspk-io",
  "dspk-ops",
+ "dspk-table",
  "glob",
- "polars",
  "rayon",
  "schemars",
  "serde",
@@ -3623,6 +3623,14 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
+]
+
+[[package]]
+name = "dspk-table"
+version = "0.0.10"
+dependencies = [
+ "polars",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

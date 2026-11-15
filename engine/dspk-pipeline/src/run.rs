@@ -806,8 +806,8 @@ fn execute_events(
 /// `channel` (u32), `channel_name`, `onset_sample` / `offset_sample` / `peak_sample` (u64; offset
 /// null when the range ended inside the event), `peak_value` (f32), `onset_s` / `offset_s` /
 /// `duration_s` (f64).
-pub fn events_frame(events: &[dspk_ops::crossings::CrossingEvent], names: &[String], sample_rate: f64) -> polars::prelude::PolarsResult<polars::prelude::DataFrame> {
-    use polars::prelude::*;
+pub fn events_frame(events: &[dspk_ops::crossings::CrossingEvent], names: &[String], sample_rate: f64) -> dspk_table::prelude::PolarsResult<dspk_table::prelude::DataFrame> {
+    use dspk_table::prelude::*;
     let secs = |s: u64| s as f64 / sample_rate;
     df!(
         "channel" => events.iter().map(|e| e.channel as u32).collect::<Vec<u32>>(),
@@ -840,8 +840,7 @@ pub fn write_events(path: &Path, events: &[dspk_ops::crossings::CrossingEvent], 
         return Ok(csv.len() as u64);
     }
     let mut df = events_frame(events, names, sample_rate).map_err(|e| PipelineError::Io(format!("events table: {e}")))?;
-    let file = File::create(path).map_err(io)?;
-    polars::prelude::ParquetWriter::new(file).finish(&mut df).map_err(|e| PipelineError::Io(format!("{}: {e}", path.display())))
+    dspk_table::write_parquet(path, &mut df).map_err(|e| PipelineError::Io(e.to_string()))
 }
 
 /// Writes the events as a Zarr group rooted at directory `dir` (replacing it), the layout of

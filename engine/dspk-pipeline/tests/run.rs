@@ -836,8 +836,7 @@ fn crossings_in_windows_equal_the_whole_recording() {
         let mut spec = spec;
         spec.set_output(dir.join("events.parquet")).unwrap();
         run(&spec, &dir).unwrap();
-        use polars::prelude::{ParquetReader, SerReader};
-        let table = ParquetReader::new(std::fs::File::open(dir.join("events.parquet")).unwrap()).finish().unwrap();
+        let table = dspk_table::read_parquet(&dir.join("events.parquet")).unwrap();
         let expected = dspk_pipeline::events_frame(&events, &names, FS).unwrap();
         assert!(table.equals_missing(&expected), "{}: {table} vs {expected}", target.name());
 
