@@ -21,6 +21,10 @@ version number.
   (spikes indexed by time, extents, waveforms from windows of the recording, PCA, amplitudes,
   comparison of two sortings), the log of edits and applying it, and similar units. It was in the
   app's plugin, so only the app could use it.
+- **The live preview's device code is in `dspk-pipeline`** (`dspk_pipeline::preview::Preview`): a
+  chain of operations run on the device window by window with its settling halo, the processed
+  block cached. It was inside the app; the app keeps the part that belongs to a view (what to draw
+  raw, folding samples into columns).
 - **New crate `dspk-table`** (`crates/dspk-table`): tables as Polars data frames for every crate.
   It is the one crate that depends on Polars (re-exported as `dspk_table::polars` and
   `dspk_table::prelude`), with Parquet in and out and the sorted, filtered row order the views ask
