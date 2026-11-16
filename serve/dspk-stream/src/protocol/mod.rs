@@ -3,6 +3,7 @@
 //!
 //! See the `.proto` file for the session layout (control, signal and view streams).
 
+#[cfg(not(target_family = "wasm"))]
 pub mod codec;
 pub mod convert;
 
@@ -28,5 +29,6 @@ pub const LENGTH_PREFIX_BYTES: usize = 4;
 /// allocating.
 pub const DEFAULT_MAX_MESSAGE_BYTES: usize = 64 << 20;
 
+#[cfg(not(target_family = "wasm"))]
 pub use codec::{read_message, write_message};
 pub use convert::{decode_signal, envelope_from_frame, frame_from_envelope, header_from_info, info_from_header, request_from_view, view_from_request};

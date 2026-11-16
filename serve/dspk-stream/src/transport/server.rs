@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dspk_core::{RecordingInfo, RecordingSource, SampleFormat};
-use dspk_view::{Envelope, Pyramid};
+use dspk_view::{Envelope, Pyramid, SignalBackend};
 use tokio::task::JoinHandle;
 use tokio::time::{interval, MissedTickBehavior};
 
@@ -207,12 +207,54 @@ pub struct OpenRecording {
     pyramid: Option<Arc<Pyramid>>,
     info: RecordingInfo,
     stored: bool,
+    processor: Option<Arc<dyn ViewProcessor>>,
+    /// The processed signals clients asked views of, latest last (a few: each holds device memory).
+    processed: Mutex<Vec<(wire::Processing, Arc<dyn SignalBackend>)>>,
+}
+
+/// Processed signals kept per open recording.
+const PROCESSED_KEPT: usize = 4;
+
+/// Runs a view's ops on the server for clients that cannot compute (pages). The ops and the
+/// device are the caller's (dspk-stream knows neither): the command line runs dspk-pipeline.
+pub trait ViewProcessor: Send + Sync {
+    /// The signal of `source` with `ops` (pipeline nodes in JSON, in order) applied over
+    /// `channels` (none = all). May take seconds (a whitening is fitted): called off the runtime.
+    fn processed(&self, source: Arc<dyn RecordingSource>, pyramid: Option<Arc<Pyramid>>, channels: &[usize], ops: &[String]) -> StreamResult<Arc<dyn SignalBackend>>;
 }
 
 impl OpenRecording {
     pub fn new(source: Arc<dyn RecordingSource>, pyramid: Option<Arc<Pyramid>>) -> Self {
         let (info, stored) = streamed_info(source.as_ref());
-        Self { source, pyramid, info, stored }
+        Self { source, pyramid, info, stored, processor: None, processed: Mutex::default() }
+    }
+
+    /// Views with processing are answered through `processor` (without one they are refused).
+    pub fn with_processor(mut self, processor: Arc<dyn ViewProcessor>) -> Self {
+        self.processor = Some(processor);
+        self
+    }
+
+    /// The signal `processing` describes: kept from an earlier view, or made now (blocking; one
+    /// at a time per recording, so two views of one chain make it once).
+    fn processed(&self, processing: &wire::Processing) -> StreamResult<Arc<dyn SignalBackend>> {
+        let processor = self.processor.as_ref().ok_or_else(|| StreamError::protocol("this server does not process views"))?;
+        let mut kept = self.processed.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(at) = kept.iter().position(|(p, _)| p == processing) {
+            let entry = kept.remove(at);
+            kept.push(entry.clone());
+            return Ok(entry.1);
+        }
+        let channels: Vec<usize> = processing.channels.iter().map(|&c| c as usize).collect();
+        if channels.iter().any(|&c| c >= self.info.channel_count()) {
+            return Err(StreamError::protocol("processing asks for a channel the recording does not have"));
+        }
+        let signal = processor.processed(self.source.clone(), self.pyramid.clone(), &channels, &processing.ops)?;
+        if kept.len() >= PROCESSED_KEPT {
+            kept.remove(0);
+        }
+        kept.push((processing.clone(), signal.clone()));
+        Ok(signal)
     }
 
     /// What the signal stream carries (the header sent to clients).
@@ -346,8 +388,18 @@ pub(crate) async fn answer(request: wire::Request, device: &Device, current: &Cu
     match request.kind.ok_or_else(|| StreamError::protocol("empty request"))? {
         Req::View(view) => {
             let recording = current_recording(current).ok_or_else(|| StreamError::protocol("no recording is open"))?;
+            let processing = view.processing.clone().filter(|p| !p.ops.is_empty());
             let view = checked_view(&view, recording.info())?;
-            let envelope = tokio::task::spawn_blocking(move || -> StreamResult<Envelope> { Ok(view.read(recording.source.as_ref(), recording.pyramid.as_deref())?) })
+            let envelope = tokio::task::spawn_blocking(move || -> StreamResult<Envelope> {
+                match processing {
+                    Some(processing) => {
+                        let mut out = Envelope::Samples(Vec::new());
+                        recording.processed(&processing)?.view(&view, &mut out)?;
+                        Ok(out)
+                    }
+                    None => Ok(view.read(recording.source.as_ref(), recording.pyramid.as_deref())?),
+                }
+            })
                 .await
                 .map_err(StreamError::protocol)?;
             Ok(Resp::Envelope(frame_from_envelope(envelope)))

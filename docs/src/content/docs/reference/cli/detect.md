@@ -36,6 +36,8 @@ dspk detect [OPTIONS] --output <OUTPUT> <RECORDING>
   Start of the part to process (s)
 - **`--duration-sec <DURATION_SEC>`**  
   Length of the part to process (s); default: to the end
+- **`--bad-channels <BAD_CHANNELS>`**  
+  Channels to leave out (as Kilosort4's `bad_channels`), comma-separated, numbered after the probe and the channel map (0-based); their sites leave the probe too
 - **`-o, --output <OUTPUT>`**  
   Output folder or store
 - **`--format <FORMAT>`**  
@@ -43,6 +45,8 @@ dspk detect [OPTIONS] --output <OUTPUT> <RECORDING>
   - `phy`: Phy / Kilosort folder (`.npy` arrays, `.tsv` tables)
   - `zarr`: dspk `.sorting.zarr` store
   - `nwb`: NWB `/units` table in a `.nwb.zarr` store
+- **`--keep-good-only`**  
+  Write only the units labelled good (as SpikeInterface's `keep_good_only`)
 - **`--car <CAR>`**: default `true`, one of `true`, `false`  
   Common average reference before filtering
 - **`--band-low-hz <BAND_LOW_HZ>`**: default `300`  

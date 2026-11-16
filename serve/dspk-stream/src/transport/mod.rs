@@ -17,7 +17,7 @@ pub use auth::{Authority, ClientIdentity, ClientRecord, Enrollment, Peer, Permis
 pub use client::{Session, SignalReceiver};
 pub use remote_signal::{RemoteSignal, RemoteSource};
 pub use server::{
-    checked_view, serve_recording, serve_session, Device, OpenRecording, Pacing, RecordingOpener, ServeOptions, Server, REFUSED_CLIENT, DEFAULT_FRAME_SEC, DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_REQUEST_BYTES, DEFAULT_QUEUE_FRAMES,
+    checked_view, serve_recording, serve_session, Device, OpenRecording, Pacing, RecordingOpener, ViewProcessor, ServeOptions, Server, REFUSED_CLIENT, DEFAULT_FRAME_SEC, DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_REQUEST_BYTES, DEFAULT_QUEUE_FRAMES,
     MAX_VIEW_COLUMNS, MAX_VIEW_VALUES,
 };
 pub use tls::{client_config, client_config_with, server_config, server_config_with_clients, server_config_with_pairing, ServerIdentity, ServerTls, ServerTrust};
@@ -118,12 +118,12 @@ mod tests {
         let info = recording().info().clone();
         let mut big = info.clone();
         big.samples = u64::MAX / 2;
-        let request = wire::ViewRequest { channels: vec![0, 1, 2, 3], start: 0, end: big.samples, width: MAX_VIEW_COLUMNS };
+        let request = wire::ViewRequest { channels: vec![0, 1, 2, 3], start: 0, end: big.samples, width: MAX_VIEW_COLUMNS, processing: None };
         assert!(checked_view(&request, &big).is_ok(), "4 channels × 65536 columns is within the limit");
         let mut many = info;
         many.channels = (0..1024).map(|_| many.channels[0].clone()).collect();
         many.samples = u64::MAX / 2;
-        let request = wire::ViewRequest { channels: (0..1024).collect(), start: 0, end: many.samples, width: MAX_VIEW_COLUMNS };
+        let request = wire::ViewRequest { channels: (0..1024).collect(), start: 0, end: many.samples, width: MAX_VIEW_COLUMNS, processing: None };
         assert!(checked_view(&request, &many).is_err(), "1024 × 65536 values is over the limit");
     }
 

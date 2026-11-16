@@ -176,3 +176,66 @@ impl Preview {
         Ok(rows.iter().enumerate().filter(|(_, r)| r.is_none()).map(|(k, _)| k).collect())
     }
 }
+
+/// How a view's op chain is previewed, as the pipeline runs it.
+pub struct ViewPlan {
+    /// Source channels read, in order.
+    pub group: Vec<usize>,
+    /// Device steps and their keys (for sharing computed prefixes).
+    pub steps: Vec<(String, PipelineStage)>,
+    /// Source channels shown, in order.
+    pub shown: Vec<usize>,
+    /// Whitening steps (by index in `steps`, identities until fitted) and how to fit them.
+    pub fits: Vec<(usize, crate::WhitenFit)>,
+}
+
+/// The plan of `ops` (a view's enabled ops, in order) over `group` (the channels the view
+/// starts with): `group`, the channels read (through the remaps that open the chain: they fold
+/// into the read and may drop); `steps`, the processing on the device with each step's key (a
+/// remap between processing steps reorders there and keeps every channel); `shown`, the channels
+/// it ends with (through the remaps after the last processing step: they may drop). Resampling
+/// is not previewed. `base_dir`: where a remap's channel-map file is looked for.
+pub fn view_plan(ops: &[&crate::Node], mut group: Vec<usize>, base_dir: &std::path::Path) -> Result<ViewPlan, String> {
+    let is_remap = |n: &crate::Node| matches!(n, crate::Node::Remap { .. });
+    let map_of = |n: &crate::Node| n.channel_map(Some(base_dir)).map_err(|e| e.to_string()).map(|m| m.expect("a remap has a map"));
+    let lead = ops.iter().take_while(|n| is_remap(n)).count();
+    for n in &ops[..lead] {
+        let order = map_of(n)?.resolve(group.len()).map_err(|e| e.to_string())?;
+        group = order.into_iter().map(|i| group[i]).collect();
+    }
+    let last_processing = ops.iter().rposition(|n| !is_remap(n));
+    let mut steps = Vec::new();
+    let mut fits = Vec::new();
+    let mut current = group.clone();
+    for (i, n) in ops.iter().enumerate().skip(lead) {
+        let key = serde_json::to_string(n).unwrap_or_default();
+        if is_remap(n) {
+            let order = map_of(n)?.resolve(current.len()).map_err(|e| e.to_string())?;
+            if last_processing.is_some_and(|last| i > last) {
+                // After the last processing step: the channels shown (may drop)
+                current = order.into_iter().map(|j| current[j]).collect();
+                continue;
+            }
+            let mut seen = order.clone();
+            seen.sort_unstable();
+            if seen != (0..current.len()).collect::<Vec<_>>() {
+                return Err(format!("a remap between processing steps keeps every channel ({}; it reorders them): drop channels in a remap first or last", current.len()));
+            }
+            current = order.iter().map(|&j| current[j]).collect();
+            steps.push((key, PipelineStage::ReorderChannels { order }));
+        } else if let Some(fit) = n.whiten_fit() {
+            n.stage().map_err(|e| e.to_string())?;
+            fits.push((steps.len(), fit));
+            steps.push((key, PipelineStage::SpatialWhitening(crate::unfitted_whitening(current.len()))));
+        } else if let Some(stage) = n.stage().map_err(|e| e.to_string())? {
+            // A grid's operator is made for its electrodes
+            if let PipelineStage::SurfaceLaplacian(lap) = &stage
+                && lap.num_channels != current.len()
+            {
+                return Err(format!("the Laplacian's grid has {} electrodes; the view has {} channels", lap.num_channels, current.len()));
+            }
+            steps.push((key, stage));
+        }
+    }
+    Ok(ViewPlan { group, steps, shown: current, fits })
+}
