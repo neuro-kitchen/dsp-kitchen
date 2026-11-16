@@ -19,6 +19,9 @@ version number.
   copied whole; a view's ops run on WebGPU (views only without it, said in the status line;
   whitening not yet). A service worker of the page (`isolate-sw.js`) makes it cross-origin
   isolated where the host sends no headers, so the page draws on threads there too.
+  **Zarr recordings** (`.zarr` folders: zstd, Blosc-LZ4, gzip, sharded) open in the viewer too,
+  read by chunk (`dspk_io::ZarrRecording::from_store` over `dspk_io::ByteSourceStore`; dspk-io's
+  new `zarr-read` feature needs no file system; zarrs' C codecs compiled for wasm32 by clang).
   **Open folder…** hands the engine every file of a folder (its recordings listed by the same
   browser as a server's; one recording opens directly); **Open files…** picks them by hand. The
   page learns whether `dspk serve` sent it from `./dspk-serve.json` (the build ships
@@ -90,6 +93,15 @@ version number.
   A computer without a certificate can connect only to pair, unless `--allow-anonymous`.
 
 ### Fixed
+
+- **The viewer no longer freezes on a large recording:** its overview is built in pieces between
+  requests (as `dspk serve` builds it), not all at open; the page shows "Opening …" meanwhile.
+- **The viewer offers only what it can open:** a `.zarr` is a recording when it holds dspk's
+  `/traces` array (NWB, `.sorting.zarr`, `.epochs.zarr` are listed, not offered; NWB says it opens
+  in the desktop app or the container for now). A page on its own titles its list "Open a
+  recording" and offers no Fetch. In Chrome and Edge the folder is picked with the File System
+  Access API (a "view files" permission, not Chrome's "upload" prompt of the file input, which
+  other browsers keep).
 
 - **On a page, "Open recording…" (Ctrl+O) and "Open folder…" no longer fail with "File dialog
   failed"**: they open the server's recordings, or (a page on its own) pick files for the engine.

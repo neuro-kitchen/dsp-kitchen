@@ -102,7 +102,7 @@ pub fn pick_page_files(store: &Entity<Store>, folder: bool, browser: Rc<dyn Fn(&
                 let _ = store.update(cx, |s, cx| s.open_remote(crate::platform::remote::page_profile(), recordings[0].clone(), cx));
             }
             Ok(recordings) if recordings.is_empty() => {
-                let _ = store.update(cx, |s, cx| s.set_status("No recording among the files picked (a .bin with its .meta)", cx));
+                let _ = store.update(cx, |s, cx| s.set_status("No recording among the files picked (a .zarr folder, or a .bin with its .meta)", cx));
             }
             Ok(_) => {
                 let _ = cx.update(|window, cx| browser(window, cx));

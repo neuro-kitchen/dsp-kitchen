@@ -17,7 +17,9 @@ crate-type = ["cdylib", "rlib"]
 dspk-core = { workspace = true, features = ["wgpu"] }
 dspk-ops = { workspace = true, features = ["wgpu"] }
 dspk-pipeline = { workspace = true, features = ["wgpu", "view"] }
-dspk-io.workspace = true
+# Raw files and Zarr recordings read from the files picked (no file system in a browser)
+dspk-io = { workspace = true, features = ["zarr-read"] }
+zarrs.workspace = true
 dspk-view.workspace = true
 dspk-stream.workspace = true
 prost.workspace = true

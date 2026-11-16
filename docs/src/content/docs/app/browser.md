@@ -11,18 +11,25 @@ the page, and processing runs on your own graphics card.
 
 ## Open a recording
 
-**Open files…** and pick a `.bin` with its `.meta` (both files at once). The `.meta` is dspk's
-JSON layout, as `dspk convert` writes it:
+**Open folder…** and pick the folder that holds your recordings (or a `.zarr` folder itself).
+The viewer reads:
+
+- **Zarr recordings** (`.zarr`, as `dspk convert` and `dspk run` write them: zstd, Blosc-LZ4,
+  gzip or uncompressed, sharded or not). Only the chunks a view needs are read.
+- **Raw recordings**: a `.bin` with its `.meta`, dspk's JSON layout:
 
 ```json
 { "channels": 32, "sample_rate_hz": 30000.0, "format": "int16", "order": "time_major",
   "gain": 0.195, "unit": "microvolt" }
 ```
 
-The file is read in pieces, so a recording larger than the browser's memory opens too; its
-overview is built once when it opens. SpikeGLX recordings (`.ap.bin` with SpikeGLX's `.meta`)
-open in the [desktop app](/dsp-kitchen/app/) or [the container](/dsp-kitchen/deploy/image/#the-app-in-your-browser)
-for now.
+One recording in the folder opens at once; with several, the viewer lists them. **Open files…**
+picks a `.bin` and its `.meta` by hand. Files are read in pieces, so a recording larger than the
+browser's memory opens too; its overview is built once when it opens.
+
+Not in the viewer yet: SpikeGLX (`.ap.bin` with SpikeGLX's `.meta`), NWB, sortings, Curation and
+Analytics. They need the electrophysiology formats (dspk-synapse) built for the browser. Use the
+[desktop app](/dsp-kitchen/app/) or [the container](/dsp-kitchen/deploy/image/#the-app-in-your-browser).
 
 ## What your browser needs
 
