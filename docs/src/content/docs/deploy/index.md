@@ -11,7 +11,8 @@ server issued them: the command line, the app and Python all work the same way.
 
 Follow these in order the first time:
 
-1. [Build the image](/dsp-kitchen/deploy/build/): one `Containerfile`, a target per kind of GPU.
+1. Get the image: [pull the published one](/dsp-kitchen/deploy/image/), or
+   [build it](/dsp-kitchen/deploy/build/) (one `Containerfile`, a target per kind of GPU; needed for CUDA).
 2. [Run the server](/dsp-kitchen/deploy/run/): your folder of recordings at `/data`.
 3. [Enroll clients](/dsp-kitchen/deploy/clients/): who may connect, and who may run jobs.
 4. [Work from a client](/dsp-kitchen/deploy/remote/): list files, read, sort, fetch.
@@ -19,6 +20,8 @@ Follow these in order the first time:
 Then, as needed:
 
 - [Pass the GPU in](/dsp-kitchen/deploy/gpu/), including SELinux on Fedora and RHEL.
+- [The endpoint for browsers](/dsp-kitchen/deploy/browsers/): `--web`, signing in, and reaching it
+  without a browser warning.
 - [Run it as a service](/dsp-kitchen/deploy/service/) that starts at boot.
 - [Security](/dsp-kitchen/deploy/security/): what protects the server, and what doesn't yet.
 - [Smoke test](/dsp-kitchen/deploy/smoke-test/): check an image end to end.

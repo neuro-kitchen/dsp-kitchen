@@ -1,4 +1,5 @@
-//! Headerless (or fixed-header) binary recordings, memory-mapped.
+//! Headerless (or fixed-header) binary recordings: memory-mapped from a file, or read through a
+//! [`ByteSource`] (a browser's `File` read in a worker, where nothing can be mapped).
 //!
 //! The layout comes from [`RawParams`], usually read from a JSON sidecar next to the data
 //! file (`rec.bin` → `rec.meta`):
@@ -87,10 +88,27 @@ impl RawParams {
     }
 }
 
-/// Memory-mapped raw binary recording.
+/// Bytes read at an offset: what [`RawRecording`] reads when it cannot map a file.
+pub trait ByteSource: Send + Sync {
+    /// Bytes in all.
+    fn len(&self) -> u64;
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    /// Fills `out` with the bytes from `offset`.
+    fn read_at(&self, offset: u64, out: &mut [u8]) -> std::io::Result<()>;
+}
+
+/// Where a recording's bytes are.
+enum Bytes {
+    Map(Mmap),
+    Source(std::sync::Arc<dyn ByteSource>),
+}
+
+/// A raw binary recording: memory-mapped, or read through a [`ByteSource`].
 pub struct RawRecording {
     info: RecordingInfo,
-    map: Mmap,
+    bytes: Bytes,
     header: usize,
 }
 
@@ -108,31 +126,39 @@ impl RawRecording {
     }
 
     pub fn open_with(path: &Path, params: &RawParams) -> DspResult<Self> {
-        if params.channels == 0 {
-            return Err(DspError::InvalidConfig("channel count must be at least 1".into()));
-        }
         let file = File::open(path).map_err(|e| DspError::Io(format!("{}: {e}", path.display())))?;
         // SAFETY: the map is read-only; like every mmap reader we assume no other process
         // truncates the recording while it is open.
         let map = unsafe { Mmap::map(&file)? };
+        let name = path.file_name().map_or_else(|| "recording".into(), |n| n.to_string_lossy().into_owned());
+        Self::with_bytes(name, Bytes::Map(map), params)
+    }
 
+    /// `name`'s bytes read through `source` (laid out as `params` says).
+    pub fn from_source(name: impl Into<String>, source: std::sync::Arc<dyn ByteSource>, params: &RawParams) -> DspResult<Self> {
+        Self::with_bytes(name.into(), Bytes::Source(source), params)
+    }
+
+    fn with_bytes(name: String, bytes: Bytes, params: &RawParams) -> DspResult<Self> {
+        if params.channels == 0 {
+            return Err(DspError::InvalidConfig("channel count must be at least 1".into()));
+        }
+        let len = match &bytes {
+            Bytes::Map(map) => map.len() as u64,
+            Bytes::Source(source) => source.len(),
+        };
         let frame = (params.channels * params.format.bytes()) as u64;
-        let available = (map.len() as u64).saturating_sub(params.header_bytes) / frame;
+        let available = len.saturating_sub(params.header_bytes) / frame;
         let samples = params.samples.unwrap_or(available);
         if samples > available {
-            return Err(DspError::InvalidConfig(format!(
-                "{} holds {available} samples per channel but {samples} were declared",
-                path.display()
-            )));
+            return Err(DspError::InvalidConfig(format!("{name} holds {available} samples per channel but {samples} were declared")));
         }
-
-        let name = path.file_name().map_or_else(|| "recording".into(), |n| n.to_string_lossy().into_owned());
         let info = RecordingInfo::new(name, params.channels, samples, SampleRate::new(params.sample_rate_hz)?, params.format, params.order);
         let mut info = info.with_gain(params.gain, params.unit.clone());
         for c in &mut info.channels {
             c.offset = params.offset;
         }
-        Ok(Self { info, map, header: params.header_bytes as usize })
+        Ok(Self { info, bytes, header: params.header_bytes as usize })
     }
 
     /// Replaces the descriptor (format readers set names, per-channel gains, probe layout).
@@ -141,16 +167,29 @@ impl RawRecording {
         self
     }
 
-    fn data(&self) -> &[u8] {
-        &self.map[self.header..]
+    /// Calls `f` with the stored bytes `range` (after the header): the mapped bytes themselves,
+    /// or a copy read through the byte source.
+    fn with_bytes_at<R>(&self, range: Range<usize>, f: impl FnOnce(&[u8]) -> R) -> DspResult<R> {
+        let (start, end) = (self.header + range.start, self.header + range.end);
+        match &self.bytes {
+            Bytes::Map(map) => Ok(f(&map[start..end])),
+            Bytes::Source(source) => {
+                let mut buf = vec![0u8; end - start];
+                source.read_at(start as u64, &mut buf).map_err(|e| DspError::Io(format!("{}: {e}", self.info.name)))?;
+                Ok(f(&buf))
+            }
+        }
     }
 
     /// The stored samples exactly as mapped (after the header): `info().format` values in
-    /// `info().order`, before gain / offset. Lives as long as the recording.
-    pub fn stored_bytes(&self) -> &[u8] {
+    /// `info().order`, before gain / offset; `None` when the recording is not mapped.
+    pub fn stored_bytes(&self) -> Option<&[u8]> {
         let info = &self.info;
         let len = info.channels.len() * info.samples as usize * info.format.bytes();
-        &self.data()[..len]
+        match &self.bytes {
+            Bytes::Map(map) => Some(&map[self.header..self.header + len]),
+            Bytes::Source(_) => None,
+        }
     }
 }
 
@@ -165,18 +204,17 @@ impl RecordingSource for RawRecording {
             return Ok(());
         }
         let (bps, nch, start) = (self.info.format.bytes(), self.info.channels.len(), samples.start as usize);
-        let data = self.data();
         match self.info.order {
             MemoryOrder::ChannelMajor => {
                 let total = self.info.samples as usize;
                 for (dst, &ch) in out.chunks_exact_mut(n * bps).zip(channels) {
                     let base = (ch * total + start) * bps;
-                    dst.copy_from_slice(&data[base..base + n * bps]);
+                    self.with_bytes_at(base..base + n * bps, |b| dst.copy_from_slice(b))?;
                 }
             }
             MemoryOrder::TimeMajor => {
                 let frame = nch * bps;
-                select_stored(&data[start * frame..(start + n) * frame], true, nch, n, channels, bps, out);
+                self.with_bytes_at(start * frame..(start + n) * frame, |b| select_stored(b, true, nch, n, channels, bps, out))?;
             }
         }
         Ok(())
@@ -193,7 +231,7 @@ impl RecordingSource for RawRecording {
         let n = check_read(&self.info, &all, &samples, out.len())?;
         let (fmt, frame) = (self.info.format, nch * self.info.format.bytes());
         let start = samples.start as usize;
-        fmt.decode(&self.data()[start * frame..(start + n) * frame], out, 1.0, 0.0);
+        self.with_bytes_at(start * frame..(start + n) * frame, |b| fmt.decode(b, out, 1.0, 0.0))?;
         scale_frames(&self.info, out);
         Ok(MemoryOrder::TimeMajor)
     }
@@ -206,7 +244,6 @@ impl RecordingSource for RawRecording {
         let (fmt, bps) = (self.info.format, self.info.format.bytes());
         let nch = self.info.channels.len();
         let start = samples.start as usize;
-        let data = self.data();
 
         match self.info.order {
             MemoryOrder::ChannelMajor => {
@@ -214,7 +251,7 @@ impl RecordingSource for RawRecording {
                 for (dst, &ch) in out.chunks_exact_mut(n).zip(channels) {
                     let c = &self.info.channels[ch];
                     let base = (ch * total + start) * bps;
-                    fmt.decode(&data[base..base + n * bps], dst, c.gain, c.offset);
+                    self.with_bytes_at(base..base + n * bps, |b| fmt.decode(b, dst, c.gain, c.offset))?;
                 }
             }
             MemoryOrder::TimeMajor => {
@@ -223,7 +260,7 @@ impl RecordingSource for RawRecording {
                     .iter()
                     .map(|&ch| (ch, self.info.channels[ch].gain, self.info.channels[ch].offset))
                     .collect();
-                decode_frames(fmt, &data[start * frame..(start + n) * frame], frame, &selected, n, out);
+                self.with_bytes_at(start * frame..(start + n) * frame, |b| decode_frames(fmt, b, frame, &selected, n, out))?;
             }
         }
         Ok(())
@@ -451,6 +488,48 @@ mod tests {
             };
             assert_eq!(copied, expected, "{order:?}");
             assert_eq!(RawParams::from_sidecar(&out).unwrap().gain, 0.195);
+        }
+    }
+
+    /// Bytes in memory read at an offset (as a browser `File` is read in a worker).
+    struct InMemory(Vec<u8>);
+    impl ByteSource for InMemory {
+        fn len(&self) -> u64 {
+            self.0.len() as u64
+        }
+        fn read_at(&self, offset: u64, out: &mut [u8]) -> std::io::Result<()> {
+            let at = offset as usize;
+            let bytes = self.0.get(at..at + out.len()).ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?;
+            out.copy_from_slice(bytes);
+            Ok(())
+        }
+    }
+
+    /// A recording read through a byte source reads, stored and scaled, as the mapped file does,
+    /// in both orders and with a header.
+    #[test]
+    fn a_byte_source_reads_as_the_mapped_file() {
+        for (i, order) in [MemoryOrder::ChannelMajor, MemoryOrder::TimeMajor].into_iter().enumerate() {
+            let path = temp(&format!("bytes{i}"));
+            write_raw(&source(), &path, SampleFormat::I16, order, 0.5, 64, |_, _| {}).unwrap();
+            let mut params = RawParams::from_sidecar(&path).unwrap();
+            let mut bytes = vec![7u8; 16];
+            bytes.extend(fs::read(&path).unwrap());
+            params.header_bytes = 16;
+            let from_source = RawRecording::from_source("rec.bin", std::sync::Arc::new(InMemory(bytes)), &params).unwrap();
+            params.header_bytes = 0;
+            let mapped = RawRecording::open_with(&path, &params).unwrap();
+            assert_eq!(from_source.info().samples, mapped.info().samples);
+            let (mut a, mut b) = (vec![0.0f32; 2 * 37], vec![0.0f32; 2 * 37]);
+            from_source.read(&[2, 0], 400..437, &mut a).unwrap();
+            mapped.read(&[2, 0], 400..437, &mut b).unwrap();
+            assert_eq!(a, b, "{order:?}");
+            let (mut a, mut b) = (vec![0u8; 3 * 9 * 2], vec![0u8; 3 * 9 * 2]);
+            from_source.read_stored(&[1, 0, 2], 990..999, &mut a).unwrap();
+            mapped.read_stored(&[1, 0, 2], 990..999, &mut b).unwrap();
+            assert_eq!(a, b, "{order:?} stored");
+            assert!(from_source.stored_bytes().is_none() && mapped.stored_bytes().is_some());
+            fs::remove_dir_all(path.parent().unwrap()).unwrap();
         }
     }
 

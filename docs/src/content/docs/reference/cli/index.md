@@ -33,6 +33,7 @@ dspk [OPTIONS] <COMMAND>
 | [`serve`](/dsp-kitchen/reference/cli/serve/) | Serve a recording over QUIC (signal and views) |
 | [`receive`](/dsp-kitchen/reference/cli/receive/) | Receive a served recording: throughput, latency, optional save |
 | [`clients`](/dsp-kitchen/reference/cli/clients/) | Who may connect to `serve`: enroll, revoke, list clients (certificates from the server's own authority) |
+| [`pair`](/dsp-kitchen/reference/cli/pair/) | Pair this computer with a `serve` server using a one-time code: it gets its certificate, no file to hand over |
 | [`remote`](/dsp-kitchen/reference/cli/remote/) | Work with a `serve` server: info, files, sort on it, status, logs, stop |
 | [`hub`](/dsp-kitchen/reference/cli/hub/) | Published model and sorter artifacts: list, info, pull, verify, remove, clean |
 

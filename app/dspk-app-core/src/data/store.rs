@@ -7,7 +7,8 @@ use dspk_ops::PipelineStage;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 use gpui_kit::{AppContext as _, Context, EventEmitter, Task};
 
@@ -16,11 +17,11 @@ use crate::data::jobs::{self, Cancel, JobMessage};
 use crate::data::recording::processed::{PreviewSource, ProcessedSignal};
 use crate::data::recording::{Dataset, SourceSet, SpikeEventStore};
 use crate::ui::theme::palette::Palette;
-use crate::domain::timeline::TimelineState;
+use dspk_session::timeline::TimelineState;
 use crate::screens::explore::trace::view::parse_channel_ranges;
 use crate::data::preferences::Session;
-use crate::domain::command::{apply, Changed, CommandError, SessionCommand};
-use crate::domain::session::{RecordingRef, SessionDoc, Show, ViewDoc};
+use dspk_session::command::{apply, Changed, CommandError, SessionCommand};
+use dspk_session::session::{RecordingRef, SessionDoc, Show, ViewDoc};
 use crate::navigation::route::Workspace;
 
 /// Previews kept by chain.
@@ -49,6 +50,8 @@ pub enum AppEvent {
     WorkspaceChanged,
     /// Plot colours changed (theme or "dark plots"): views redraw.
     PaletteChanged,
+    /// `settings.toml` was edited outside the app: the look is applied again.
+    SettingsChanged,
     /// More of a source's min/max pyramid is built (views of it that drew empty columns redraw).
     PyramidProgress(String),
     /// The status line or the recent list changed.
@@ -71,7 +74,7 @@ pub enum Floating {
     /// What is known about a recording's source.
     Metadata { path: PathBuf, source: String },
     /// An epoch to save (new or edited).
-    Epoch(crate::domain::epoch::EpochDoc),
+    Epoch(dspk_session::epoch::EpochDoc),
 }
 
 /// Work running for the UI (one at a time): what it is, how far, how to stop it.
@@ -126,17 +129,7 @@ impl Recording {
     }
 }
 
-/// How a view is previewed ([`Store::view_plan`]).
-pub struct ViewPlan {
-    /// Source channels read, in order.
-    pub group: Vec<usize>,
-    /// Device steps and their keys (for sharing computed prefixes).
-    pub steps: Vec<(String, PipelineStage)>,
-    /// Source channels shown, in order.
-    pub shown: Vec<usize>,
-    /// Whitening steps (by index in `steps`, identities until fitted) and how to fit them.
-    pub fits: Vec<(usize, dspk_pipeline::WhitenFit)>,
-}
+pub use dspk_pipeline::preview::ViewPlan;
 
 pub struct Store {
     /// The active recording (what Explore draws and Processing edits).
@@ -169,8 +162,15 @@ pub struct Store {
     doc_text: String,
     /// Watches `doc_path` for edits made outside the app.
     _doc_watch: Option<Task<()>>,
+    /// `settings.toml` and the text last written to or read from it.
+    settings_path: Option<PathBuf>,
+    settings_text: String,
+    _settings_watch: Option<Task<()>>,
     /// Live preview of each view's op chain (views of the open recording with enabled ops).
     previews: HashMap<String, Arc<ProcessedSignal>>,
+    /// The same, computed by the recording's server when this app cannot compute (a page
+    /// without WebGPU): `remote::processed`.
+    remote_previews: HashMap<String, Arc<dyn SignalBackend>>,
     /// Previews by chain (source, channels, enabled ops), most recent last: views with the same
     /// chain share one, and a branch reads the preview of the ops it shares with another.
     preview_cache: Vec<(Vec<String>, Arc<ProcessedSignal>)>,
@@ -225,7 +225,11 @@ impl Store {
             doc_path: None,
             doc_text: String::new(),
             _doc_watch: None,
+            settings_path: None,
+            settings_text: String::new(),
+            _settings_watch: None,
             previews: HashMap::new(),
+            remote_previews: HashMap::new(),
             preview_cache: Vec::new(),
             whiten_cache: HashMap::new(),
             whiten_fitting: Default::default(),
@@ -364,19 +368,19 @@ impl Store {
                 continue;
             }
             if let Err(e) = crate::data::epochs::save(&r, &now) {
-                self.set_status(format!("Epochs of {} not saved: {e}", crate::domain::paths::short_path(&r)), cx);
+                self.set_status(format!("Epochs of {} not saved: {e}", dspk_session::paths::short_path(&r)), cx);
             }
         }
     }
 
     /// The events of `set`, once its table is read ([`Self::add_event_set`], or on opening the
     /// recording).
-    pub fn events_of(&self, set: &crate::domain::epoch::EventSetDoc) -> Option<Arc<Vec<crate::data::events::Event>>> {
+    pub fn events_of(&self, set: &dspk_session::epoch::EventSetDoc) -> Option<Arc<Vec<crate::data::events::Event>>> {
         self.event_tables.get(&set.table).cloned()
     }
 
     /// Reads `set`'s table (again) and adds the set to the session, or updates it.
-    pub fn add_event_set(&mut self, set: crate::domain::epoch::EventSetDoc, cx: &mut Context<Self>) {
+    pub fn add_event_set(&mut self, set: dspk_session::epoch::EventSetDoc, cx: &mut Context<Self>) {
         match crate::data::events::read(&set.table) {
             Ok(events) => {
                 self.event_tables.insert(set.table.clone(), Arc::new(events));
@@ -394,12 +398,12 @@ impl Store {
             self.set_status(format!("Events {}: not read", set.name), cx);
             return;
         };
-        let epochs: Vec<crate::domain::epoch::EpochDoc> = events
+        let epochs: Vec<dspk_session::epoch::EpochDoc> = events
             .iter()
             .filter_map(|e| Some((e.onset_s, e.offset_s?)))
             .filter(|(a, b)| b > a)
             .enumerate()
-            .map(|(i, (a, b))| crate::domain::epoch::EpochDoc { id: String::new(), recording: set.recording.clone(), name: format!("{} {}", set.name, i + 1), kind: "response".into(), start_sec: a, end_sec: b, notes: String::new() })
+            .map(|(i, (a, b))| dspk_session::epoch::EpochDoc { id: String::new(), recording: set.recording.clone(), name: format!("{} {}", set.name, i + 1), kind: "response".into(), start_sec: a, end_sec: b, notes: String::new() })
             .collect();
         let n = epochs.len();
         if self.execute(SessionCommand::SetEpochs { epochs }, cx).is_ok() {
@@ -441,7 +445,7 @@ impl Store {
                 continue;
             }
             let name = table.file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned());
-            self.add_event_set(crate::domain::epoch::EventSetDoc::new(path.to_path_buf(), name, table), cx);
+            self.add_event_set(dspk_session::epoch::EventSetDoc::new(path.to_path_buf(), name, table), cx);
         }
     }
 
@@ -450,15 +454,15 @@ impl Store {
         let mut found = match crate::data::epochs::load(path) {
             Ok(found) => found,
             Err(e) => {
-                self.set_status(format!("Epochs of {}: {e}", crate::domain::paths::short_path(&path)), cx);
+                self.set_status(format!("Epochs of {}: {e}", dspk_session::paths::short_path(&path)), cx);
                 Vec::new()
             }
         };
         // Epochs the file holds itself (e.g. NWB intervals), from the recording's start
         let start = self.sources().map_or(0.0, |s| s.get(&s.default_entry().id.clone()).start_time_sec);
         found.extend(crate::plugin::plugins().iter().flat_map(|p| p.recording_epochs(path, start)));
-        let same = |a: &crate::domain::epoch::EpochDoc, b: &crate::domain::epoch::EpochDoc| a.recording == b.recording && (a.start_sec - b.start_sec).abs() < 1e-9 && (a.end_sec - b.end_sec).abs() < 1e-9;
-        let mut new: Vec<crate::domain::epoch::EpochDoc> = Vec::new();
+        let same = |a: &dspk_session::epoch::EpochDoc, b: &dspk_session::epoch::EpochDoc| a.recording == b.recording && (a.start_sec - b.start_sec).abs() < 1e-9 && (a.end_sec - b.end_sec).abs() < 1e-9;
+        let mut new: Vec<dspk_session::epoch::EpochDoc> = Vec::new();
         for mut e in found {
             if self.doc.epochs.iter().chain(&new).any(|d| same(d, &e)) {
                 continue;
@@ -559,7 +563,7 @@ impl Store {
         if v.display.show != Show::Processed || !self.on_open_recording(v, source) {
             return None;
         }
-        self.previews.get(&v.id).map(|p| p.clone() as Arc<dyn SignalBackend>)
+        self.previews.get(&v.id).map(|p| p.clone() as Arc<dyn SignalBackend>).or_else(|| self.remote_previews.get(&v.id).cloned())
     }
 
     /// The session view showing `source` of the open recording with all its channels (made when
@@ -585,8 +589,8 @@ impl Store {
     /// all channels, its default name, no plugin data. Views with work stay (the Pipeline shows them).
     pub fn close_view_if_untouched(&mut self, id: &str, cx: &mut Context<Self>) {
         let Some(v) = self.doc.view(id) else { return };
-        let direct = self.doc.graph.input(id).and_then(|i| self.doc.graph.node(i)).is_some_and(|n| matches!(n.kind, crate::domain::graph::NodeKind::Source { .. }));
-        let untouched = direct && v.ops.is_empty() && v.recording.channels.is_none() && v.name == crate::domain::session::view_name(&v.recording) && v.plugins.is_empty();
+        let direct = self.doc.graph.input(id).and_then(|i| self.doc.graph.node(i)).is_some_and(|n| matches!(n.kind, dspk_session::graph::NodeKind::Source { .. }));
+        let untouched = direct && v.ops.is_empty() && v.recording.channels.is_none() && v.name == dspk_session::session::view_name(&v.recording) && v.plugins.is_empty();
         if untouched {
             let _ = self.execute(SessionCommand::CloseView { view: id.to_string() }, cx);
         }
@@ -599,7 +603,7 @@ impl Store {
         if v.display.show != Show::Processed {
             return None;
         }
-        self.previews.get(view).map(|p| p.clone() as Arc<dyn SignalBackend>)
+        self.previews.get(view).map(|p| p.clone() as Arc<dyn SignalBackend>).or_else(|| self.remote_previews.get(view).cloned())
     }
 
     /// Whether the visible window of `samples` samples is previewed processed (else raw).
@@ -608,12 +612,14 @@ impl Store {
         if v.display.show != Show::Processed || !self.on_open_recording(v, source) {
             return None;
         }
-        self.previews.get(&v.id).map(|p| p.covers(samples))
+        // The server decides what it processes: a page's preview counts as covering
+        self.previews.get(&v.id).map(|p| p.covers(samples)).or_else(|| self.remote_previews.contains_key(&v.id).then_some(true))
     }
 
     /// Rebuilds the preview of view `id` from its enabled ops (none: no preview).
     fn rebuild_preview(&mut self, id: &str, cx: &mut Context<Self>) {
         self.previews.remove(id);
+        self.remote_previews.remove(id);
         let Some(v) = self.doc.view(id).cloned() else { return };
         let source = self.view_source(&v);
         if !self.on_open_recording(&v, &source) {
@@ -630,6 +636,19 @@ impl Store {
             }
         };
         if plan.steps.is_empty() {
+            return;
+        }
+        // No compute here (a page without WebGPU): the server runs the steps of a recording it
+        // holds (the ops go with each view). Any other recording is drawn as stored, and the
+        // status says so (an empty plot would not)
+        if let Err(e) = dspk_core::ComputeTarget::from_env() {
+            let ops: Vec<String> = v.ops.iter().filter(|o| o.enabled).filter_map(|o| serde_json::to_string(&o.node).ok()).collect();
+            match crate::data::remote::processed(ds.signal(), v.recording.channels.clone().unwrap_or_default(), ops) {
+                Some(p) => {
+                    self.remote_previews.insert(id.to_string(), p);
+                }
+                None => self.set_status(format!("{}: shown as stored; its processing is not applied in this page ({e})", v.name), cx),
+            }
             return;
         }
         let group = plan.group;
@@ -699,51 +718,10 @@ impl Store {
     /// with (through the remaps after the last processing step: they may drop). Resampling is not
     /// previewed.
     pub fn view_plan(&self, v: &ViewDoc, total: usize) -> Result<ViewPlan, String> {
-        let mut group: Vec<usize> = v.recording.channels.clone().unwrap_or_else(|| (0..total).collect());
+        let group: Vec<usize> = v.recording.channels.clone().unwrap_or_else(|| (0..total).collect());
         let base_dir = self.doc_path.as_ref().and_then(|p| p.parent().map(Path::to_path_buf)).unwrap_or_default();
         let ops: Vec<&dspk_pipeline::Node> = v.ops.iter().filter(|o| o.enabled).map(|o| &o.node).collect();
-        let is_remap = |n: &dspk_pipeline::Node| matches!(n, dspk_pipeline::Node::Remap { .. });
-        let map_of = |n: &dspk_pipeline::Node| n.channel_map(Some(&base_dir)).map_err(|e| e.to_string()).map(|m| m.expect("a remap has a map"));
-        let lead = ops.iter().take_while(|n| is_remap(n)).count();
-        for n in &ops[..lead] {
-            let order = map_of(n)?.resolve(group.len()).map_err(|e| e.to_string())?;
-            group = order.into_iter().map(|i| group[i]).collect();
-        }
-        let last_processing = ops.iter().rposition(|n| !is_remap(n));
-        let mut steps = Vec::new();
-        let mut fits = Vec::new();
-        let mut current = group.clone();
-        for (i, n) in ops.iter().enumerate().skip(lead) {
-            let key = serde_json::to_string(n).unwrap_or_default();
-            if is_remap(n) {
-                let order = map_of(n)?.resolve(current.len()).map_err(|e| e.to_string())?;
-                if last_processing.is_some_and(|last| i > last) {
-                    // After the last processing step: the channels shown (may drop)
-                    current = order.into_iter().map(|j| current[j]).collect();
-                    continue;
-                }
-                let mut seen = order.clone();
-                seen.sort_unstable();
-                if seen != (0..current.len()).collect::<Vec<_>>() {
-                    return Err(format!("a remap between processing steps keeps every channel ({}; it reorders them): drop channels in a remap first or last", current.len()));
-                }
-                current = order.iter().map(|&j| current[j]).collect();
-                steps.push((key, PipelineStage::ReorderChannels { order }));
-            } else if let Some(fit) = n.whiten_fit() {
-                n.stage().map_err(|e| e.to_string())?;
-                fits.push((steps.len(), fit));
-                steps.push((key, PipelineStage::SpatialWhitening(dspk_pipeline::unfitted_whitening(current.len()))));
-            } else if let Some(stage) = n.stage().map_err(|e| e.to_string())? {
-                // A grid's operator is made for its electrodes
-                if let PipelineStage::SurfaceLaplacian(lap) = &stage
-                    && lap.num_channels != current.len()
-                {
-                    return Err(format!("the Laplacian's grid has {} electrodes; the view has {} channels", lap.num_channels, current.len()));
-                }
-                steps.push((key, stage));
-            }
-        }
-        Ok(ViewPlan { group, steps, shown: current, fits })
+        dspk_pipeline::preview::view_plan(&ops, group, &base_dir)
     }
 
     /// The channels view `v` shows, in order (see [`Self::view_plan`]).
@@ -786,8 +764,9 @@ impl Store {
             Changed::Views => {
                 let ids: Vec<String> = self.doc.views.iter().map(|v| v.id.clone()).collect();
                 self.previews.retain(|id, _| ids.contains(id));
+                self.remote_previews.retain(|id, _| ids.contains(id));
                 if let Some(id) = self.doc.active_view.clone() {
-                    if !self.previews.contains_key(&id) {
+                    if !self.previews.contains_key(&id) && !self.remote_previews.contains_key(&id) {
                         self.rebuild_preview(&id, cx);
                     }
                 }
@@ -897,7 +876,7 @@ impl Store {
         }
         let label = label.into();
         self.last_failed = None;
-        let (tx, rx) = async_channel::unbounded::<JobMessage>();
+        let (tx, mut rx) = crate::data::channel::unbounded::<JobMessage>();
         let cancel = start(Box::new(move |m| {
             let _ = tx.try_send(m);
         }));
@@ -992,7 +971,7 @@ impl Store {
     /// The write nodes fed by source node `id` (with their chains).
     pub fn writes_of(&self, id: &str) -> Vec<String> {
         let g = &self.doc.graph;
-        g.descendants(id).into_iter().filter(|d| matches!(g.node(d).map(|n| &n.kind), Some(crate::domain::graph::NodeKind::Write {}))).collect()
+        g.descendants(id).into_iter().filter(|d| matches!(g.node(d).map(|n| &n.kind), Some(dspk_session::graph::NodeKind::Write {}))).collect()
     }
 
     /// Writes every output of source node `id` in one read of its recording.
@@ -1040,15 +1019,15 @@ impl Store {
             self.open(v.recording.path.clone(), cx);
         }
         self.set_workspace(Workspace::Explore, cx);
-        if v.display.layout == crate::domain::session::ViewLayout::Epochs {
+        if v.display.layout == dspk_session::session::ViewLayout::Epochs {
             cx.emit(AppEvent::ShowEpochs(id.to_string()));
         }
     }
 
     /// The event set a Write of `view`'s chain saved (the same recording and ops), if any.
-    pub fn saved_events_of(&self, view: &ViewDoc) -> Option<&crate::domain::epoch::EventSetDoc> {
+    pub fn saved_events_of(&self, view: &ViewDoc) -> Option<&dspk_session::epoch::EventSetDoc> {
         let g = &self.doc.graph;
-        g.nodes.iter().filter(|n| matches!(n.kind, crate::domain::graph::NodeKind::Write {})).find_map(|w| {
+        g.nodes.iter().filter(|n| matches!(n.kind, dspk_session::graph::NodeKind::Write {})).find_map(|w| {
             let (recording, ops) = g.chain(&w.id, &self.doc.recipes)?;
             if recording.path != view.recording.path || ops != view.ops {
                 return None;
@@ -1079,7 +1058,7 @@ impl Store {
             nodes,
             format!("Write {}", v.name),
             move |send| jobs::write_view(&v, output, move |m| send(m)),
-            |s, path, cx| s.set_status(format!("Written: {}", crate::domain::paths::short_path(&path)), cx),
+            |s, path, cx| s.set_status(format!("Written: {}", dspk_session::paths::short_path(&path)), cx),
             cx,
         );
     }
@@ -1089,7 +1068,7 @@ impl Store {
     fn write_events(&mut self, v: ViewDoc, cx: &mut Context<Self>) {
         let recording = v.recording.path.clone();
         if let Err(e) = crate::data::derived::ensure(&recording, &["/events"]) {
-            self.set_status(format!("Events of {}: {e}", crate::domain::paths::short_path(&recording)), cx);
+            self.set_status(format!("Events of {}: {e}", dspk_session::paths::short_path(&recording)), cx);
             return;
         }
         let output = crate::data::derived::events_group(&recording, &v.id);
@@ -1103,11 +1082,11 @@ impl Store {
                 // The set keeps its look when it is found again
                 let set = match s.doc.event_sets.iter().find(|e| e.table == path) {
                     Some(e) => e.clone(),
-                    None => crate::domain::epoch::EventSetDoc::new(recording.clone(), name.clone(), path.clone()),
+                    None => dspk_session::epoch::EventSetDoc::new(recording.clone(), name.clone(), path.clone()),
                 };
                 s.add_event_set(set, cx);
                 let n = s.doc.event_sets.iter().find(|e| e.table == path).and_then(|e| s.events_of(e)).map_or(0, |e| e.len());
-                s.set_status(format!("{n} events: {}", crate::domain::paths::short_path(&path)), cx);
+                s.set_status(format!("{n} events: {}", dspk_session::paths::short_path(&path)), cx);
             },
             cx,
         );
@@ -1213,7 +1192,63 @@ impl Store {
         }
     }
 
+    /// Keeps the preferences in `path` (`settings.toml`): written now when the file is missing
+    /// (with what an older `workbench.json` held), written at every change made in the app, and
+    /// applied when the file is edited outside.
+    pub fn attach_settings(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.settings_text = std::fs::read_to_string(&path).unwrap_or_default();
+        self.settings_path = Some(path.clone());
+        self.save_settings();
+        self._settings_watch = Some(cx.spawn(async move |this, cx| loop {
+            cx.background_executor().timer(DOCUMENT_POLL).await;
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            if this.update(cx, |s, cx| s.settings_file_changed(text, cx)).is_err() {
+                break;
+            }
+        }));
+    }
+
+    /// Applies an edit of `settings.toml` made outside the app.
+    fn settings_file_changed(&mut self, text: String, cx: &mut Context<Self>) {
+        if text.is_empty() || text == self.settings_text {
+            return;
+        }
+        self.settings_text = text;
+        match crate::data::settings::Settings::parse(&self.settings_text) {
+            Ok((settings, notices)) => {
+                let before = self.palette();
+                settings.apply_to(&mut self.session);
+                if self.palette() != before {
+                    cx.emit(AppEvent::PaletteChanged);
+                }
+                cx.emit(AppEvent::SettingsChanged);
+                self.set_status(notices.into_iter().next().unwrap_or_else(|| "Settings applied from settings.toml".into()), cx);
+                cx.notify();
+            }
+            Err(e) => self.set_status(format!("Settings not applied: {e}"), cx),
+        }
+    }
+
+    /// Whether the preferences are kept in a file (not with `--no-session`, nor in tests).
+    pub fn has_settings_file(&self) -> bool {
+        self.settings_path.is_some()
+    }
+
+    fn save_settings(&mut self) {
+        let Some(path) = &self.settings_path else { return };
+        let text = crate::data::settings::Settings::from_session(&self.session).write_into(&self.settings_text);
+        if text == self.settings_text && path.exists() {
+            return;
+        }
+        let written = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(path, &text));
+        match written {
+            Ok(()) => self.settings_text = text,
+            Err(e) => tracing::warn!("could not save {}: {e}", path.display()),
+        }
+    }
+
     fn save_session(&mut self) {
+        self.save_settings();
         self.session.workspace = self.workspace;
         if let Err(e) = self.session.save(self.session_path.as_deref()) {
             tracing::warn!("could not save the session: {e}");
@@ -1425,6 +1460,7 @@ impl Store {
         self.selection = recording.sources.entries().iter().map(|e| (e.id.clone(), (0..e.channels).collect())).collect();
         self.pyramids.clear();
         self.previews.clear();
+        self.remote_previews.clear();
         self.preview_cache.clear();
         self.whiten_cache.clear();
         self.applied_view = None;
@@ -1476,6 +1512,7 @@ impl Store {
             self.selection.clear();
             self.pyramids.clear();
             self.previews.clear();
+            self.remote_previews.clear();
             self.preview_cache.clear();
         self.whiten_cache.clear();
             self.applied_view = None;
@@ -1507,7 +1544,7 @@ impl Store {
         }
         if !self.pyramids.contains_key(source) {
             self.pyramids.insert(source.to_string(), (progress.done, progress.total));
-            let (tx, rx) = async_channel::unbounded::<Progress>();
+            let (tx, mut rx) = crate::data::channel::unbounded::<Progress>();
             let id = source.to_string();
             cx.spawn(async move |this, cx| {
                 while let Ok(p) = rx.recv().await {

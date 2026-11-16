@@ -19,6 +19,9 @@
 //! without it every process re-tuned (about a minute on a GPU, several with the CPU runtime) and
 //! recompiled every kernel.
 
+// In a browser the exit-time shutdown below is never registered (see `opened`)
+#![cfg_attr(target_family = "wasm", allow(dead_code))]
+
 use std::ffi::c_int;
 #[cfg(target_os = "linux")]
 use std::ffi::c_void;
@@ -45,6 +48,14 @@ pub const CACHE_DIR_ENV: &str = "DSPK_CACHE_DIR";
 /// `DSPK_CACHE_DIR`) instead of the `target/` of whichever Cargo project the process runs in.
 /// A `cubecl.toml` or CubeCL's own environment variables still apply. Called by
 /// [`ComputeTarget::device`] and [`open_device`]; harmless to call again.
+///
+/// In a browser (`target_family = "wasm"`) there is no file system, no environment and no cache
+/// directory: CubeCL keeps its defaults and this does nothing.
+#[cfg(target_family = "wasm")]
+pub fn configure_runtime() {}
+
+/// See the browser note above: this is the version for every other target.
+#[cfg(not(target_family = "wasm"))]
 pub fn configure_runtime() {
     use cubecl::config::cache::CacheConfig;
     use cubecl::config::{CubeClRuntimeConfig, RuntimeConfig};
@@ -60,6 +71,19 @@ pub fn configure_runtime() {
         // `false` when a configuration was already set (e.g. by the embedding application): keep it
         let _ = CubeClRuntimeConfig::try_set(config);
     });
+}
+
+/// Opens the browser's GPU for the wgpu runtime. A browser hands its GPU out only
+/// asynchronously, so a page or a worker awaits this once before the first client
+/// ([`ComputeTarget::client`] then opens the device it set up); on other targets the device opens
+/// on first use and this is not needed.
+#[cfg(all(target_family = "wasm", feature = "wgpu"))]
+pub async fn open_browser_gpu() -> Result<(), String> {
+    configure_runtime();
+    cubecl::wgpu::try_init_setup_async::<cubecl::wgpu::AutoGraphicsApi>(&cubecl::wgpu::WgpuDevice::default(), Default::default())
+        .await
+        .map(|_| ())
+        .map_err(|e| format!("this browser gave no GPU for computing: {e:?}"))
 }
 
 /// Work to run on whichever runtime a [`ComputeTarget`] selects.
@@ -168,6 +192,8 @@ fn opened(device: &Device) {
     }
     devices.push(device.clone());
     drop(devices);
+    // A browser tab has no process exit to hook: the page going away releases the device
+    #[cfg(not(target_family = "wasm"))]
     // SAFETY: registers a plain `extern "C"` function; failure (no slot left) only means the
     // device is not shut down at exit, as before
     unsafe {
@@ -277,7 +303,7 @@ mod tests {
     /// A teardown that never returns (a driver deadlock) still ends the process, with its status.
     #[test]
     fn a_stuck_teardown_ends_the_process_with_its_status() {
-        let start = std::time::Instant::now();
+        let start = web_time::Instant::now();
         assert_eq!(in_child("limit").status.code(), Some(3));
         assert!(start.elapsed() < Duration::from_secs(60), "took {:?}", start.elapsed());
     }

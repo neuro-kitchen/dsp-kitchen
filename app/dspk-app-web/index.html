@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>dsp-kitchen</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%235b8def'/%3E%3Cpath d='M4 17h5l3-9 4 17 3-11 2 3h7' fill='none' stroke='white' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+    <style>
+      :root { color-scheme: dark light; --bg: #1e1e1e; --fg: #e6e6e6; --muted: #a0a0a0; --accent: #5b8def; }
+      @media (prefers-color-scheme: light) { :root { --bg: #fafafa; --fg: #1e1e1e; --muted: #5a5a5a; } }
+      html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); overflow: hidden; font: 15px/1.5 system-ui, sans-serif; }
+      #note { position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; }
+      #note > div { max-width: 560px; }
+      #note h1 { font-size: 20px; margin: 0 0 8px; }
+      #note p, #note li { color: var(--muted); }
+      #note code { color: var(--fg); }
+      #note a { color: var(--accent); }
+    </style>
+  </head>
+  <body>
+    <div id="note"><div><p>Checking this browser…</p></div></div>
+    <script type="module">
+      // The loader: before the app (several MB) is downloaded, find what this browser offers and
+      // pick how the app runs. Nothing here guesses from the browser's name except the one case
+      // measured below.
+      //
+      // - Drawing: WebGPU where it is presented fast, else WebGL2; never in software (the page
+      //   would crawl whatever the app does): then the page says how to turn the GPU on.
+      // - Threads: the page must be cross-origin isolated (`dspk serve --web` serves it so; on
+      //   GitHub Pages a service worker of this page adds the headers, after one reload).
+      // - Computing: on a server (`dspk serve`), or in the engine worker the app starts when no
+      //   server served it (WebGPU; views only without it).
+      // - `?gpu=webgl` / `?gpu=webgpu` force the drawing backend (for measuring only).
+      // A folder picked with the File System Access API (Chrome, Edge): the browser asks "Let site
+      // view files?", which is what happens (the files stay on the computer; the page reads them).
+      // Resolves to [{path: "<folder>/<path inside>", file}], or null when the user cancels.
+      // Browsers without it (Firefox, Safari) use the page's file input instead.
+      if (window.showDirectoryPicker) {
+        window.dspkPickFolder = async () => {
+          let root;
+          try {
+            root = await window.showDirectoryPicker({ mode: "read" });
+          } catch {
+            return null;
+          }
+          const out = [];
+          const walk = async (dir, prefix) => {
+            for await (const [name, handle] of dir.entries()) {
+              if (handle.kind === "file") out.push({ path: `${prefix}/${name}`, file: await handle.getFile() });
+              else await walk(handle, `${prefix}/${name}`);
+            }
+          };
+          await walk(root, root.name);
+          return out;
+        };
+      }
+      const note = document.getElementById("note");
+      const say = (html) => (note.firstElementChild.innerHTML = html);
+      const params = new URLSearchParams(location.search);
+
+      /** Hardware WebGL2: refused when the browser would draw in software. */
+      function webgl() {
+        const gl = document.createElement("canvas").getContext("webgl2", { failIfMajorPerformanceCaveat: true });
+        if (!gl) return null;
+        const ext = gl.getExtension("WEBGL_debug_renderer_info");
+        const renderer = String(ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
+        gl.getExtension("WEBGL_lose_context")?.loseContext();
+        return /swiftshader|llvmpipe|softpipe|software|basic render/i.test(renderer) ? null : renderer;
+      }
+
+      /** A hardware WebGPU adapter, or null. */
+      async function webgpu() {
+        if (!navigator.gpu) return null;
+        try {
+          const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
+          if (!adapter || adapter.isFallbackAdapter || adapter.info?.isFallbackAdapter) return null;
+          return `${adapter.info?.vendor ?? ""} ${adapter.info?.architecture ?? ""}`.trim() || "WebGPU";
+        } catch {
+          return null;
+        }
+      }
+
+      // Threads need the page cross-origin isolated. `dspk serve` sends the headers; a host that
+      // cannot (GitHub Pages) gets them from a service worker of this page, after one reload
+      if (!window.crossOriginIsolated && "serviceWorker" in navigator && location.protocol !== "file:") {
+        const tried = sessionStorage.getItem("dspk-isolate");
+        if (!tried) {
+          sessionStorage.setItem("dspk-isolate", "1");
+          await navigator.serviceWorker.register("./isolate-sw.js");
+          await navigator.serviceWorker.ready;
+          location.reload();
+          await new Promise(() => {});
+        }
+      }
+
+      const [gl, gpu] = [webgl(), await webgpu()];
+      // Chrome on Linux presents a WebGPU canvas slowly (its WebGPU and compositor do not share
+      // textures there: chrome://gpu says "WebGPU interop: Disabled"; measured 2026-11-15), so it
+      // draws with WebGL2 even when it has WebGPU
+      const linuxChrome = /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent) && /Chrome\//.test(navigator.userAgent);
+      let drawing = params.get("gpu") ?? (gpu && !linuxChrome ? "webgpu" : gl ? "webgl" : gpu ? "webgpu" : null);
+      const threads = window.crossOriginIsolated === true;
+      // Served by `dspk serve` (it answers this), or alone (a plain file server, GitHub Pages)
+      const server = await fetch("./dspk-serve.json", { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : {}))
+        .then((j) => j.server != null)
+        .catch(() => false);
+
+      if (!threads) {
+        say(`<h1>This browser cannot run dsp-kitchen here</h1>
+          <p>The app draws on several threads, which a browser allows only to a page that is
+          cross-origin isolated, and this one is not (a service worker could not make it so).</p>
+          <p>Open it from <code>dspk serve --web</code>, or in a recent Chrome, Edge or Firefox.</p>`);
+      } else if (!drawing && !params.has("software")) {
+        say(`<h1>This browser draws without the graphics card</h1>
+          <p>dsp-kitchen draws every frame on the GPU; in software it would be too slow to use.</p>
+          <ul>
+            <li>Chrome / Edge: Settings → System → <em>Use graphics acceleration when available</em>, then restart; <code>chrome://gpu</code> should say “Hardware accelerated”.</li>
+            <li>Firefox: Settings → Performance → <em>Use recommended performance settings</em>; <code>about:support</code> → Graphics.</li>
+          </ul>
+          <p><a href="?software">Start anyway (slow)</a></p>`);
+      } else {
+        drawing ??= "webgl";
+        // What the app reads at start (`dspk_app_web::backend`)
+        window.dspkWeb = { drawing, server, renderer: drawing === "webgpu" ? gpu : gl };
+        say(`<p>Loading dsp-kitchen (${drawing === "webgpu" ? "WebGPU" : "WebGL2"})…</p>`);
+        try {
+          const app = await import("./mt/dspk_app_web.js");
+          await app.default();
+          note.remove();
+        } catch (e) {
+          say(`<h1>dsp-kitchen did not start</h1><p><code>${String(e).replace(/</g, "&lt;")}</code></p>`);
+        }
+      }
+    </script>
+  </body>
+</html>

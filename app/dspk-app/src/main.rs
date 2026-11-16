@@ -3,7 +3,7 @@
 //! Sorting · Pipeline · Curation) of docked views on one timeline. `--snapshot` uses the data
 //! layer and the trace renderer alone.
 
-use dspk_app_core::{app, data, di, domain, navigation, plugin, screens, ui};
+use dspk_app_core::{app, data, di, navigation, plugin, screens, ui};
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -16,14 +16,14 @@ use gpui_kit::{px, size, App, AppContext as _, Bounds, TitlebarOptions, WindowBo
 use data::preferences::Session;
 use data::recording::{Dataset, SourceSet, SpikeEventStore};
 use data::store::Store;
-use domain::timeline::TimelineState;
+use dspk_session::timeline::TimelineState;
 use navigation::actions;
 use screens::explore::trace::renderer::{TimeViewKind, WaveformRenderer};
 use screens::explore::trace::view::TimeView;
 use ui::assets;
 
 #[derive(Parser, Debug)]
-#[command(name = "dspk-app")]
+#[command(name = "dspk-app", version)]
 #[command(about = "DSP App: electrophysiology workbench (GPUI): docked time views on one timeline")]
 struct Args {
     /// Recording to open: SpikeGLX .bin/.cbin, raw .bin with a JSON .meta, or a Zarr store
@@ -89,7 +89,16 @@ fn main() -> Result<()> {
     }
 
     let session_path = if args.no_session { None } else { Session::path() };
-    let session = Session::load(session_path.as_deref());
+    let mut session = Session::load(session_path.as_deref());
+    // settings.toml and keybindings.toml, the two files the user edits
+    let settings_path = if args.no_session { None } else { Session::settings_path() };
+    let keys_path = if args.no_session { None } else { Session::keybindings_path() };
+    for notice in settings_path.as_deref().map(|p| data::settings::Settings::load_into(&mut session, p)).unwrap_or_default() {
+        eprintln!("{notice}");
+    }
+    if let Some(path) = &keys_path {
+        data::settings::load_keybindings(path);
+    }
     // The compute runtime chosen in Settings, unless the environment names one
     if let Some(runtime) = session.runtime.as_deref().filter(|r| !r.is_empty())
         && std::env::var_os("DSPK_RUNTIME").is_none()
@@ -119,6 +128,9 @@ fn main() -> Result<()> {
             let mut store = Store::new(session, session_path);
             if let Some(path) = document {
                 store.attach_document(path, cx);
+            }
+            if let Some(path) = settings_path {
+                store.attach_settings(path, cx);
             }
             store
         });

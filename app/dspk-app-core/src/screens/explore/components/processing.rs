@@ -26,8 +26,8 @@ use serde_json::Value;
 use crate::ui::param_editor::{Commit, EditNode as _, ParamEditor};
 
 use crate::data::store::{AppEvent, Store};
-use crate::domain::command::SessionCommand;
-use crate::domain::session::{op_name, DisplayDoc, Show};
+use dspk_session::command::SessionCommand;
+use dspk_session::session::{op_name, DisplayDoc, Show};
 use crate::screens::explore::ExploreVm;
 use crate::ui::widgets::{icon_button, PanelHeader, Section};
 

@@ -46,24 +46,7 @@ const CA_NAME: &str = "dspk serve authority";
 const SERVER_NAME: &str = "dspk serve";
 const SECS_PER_YEAR: u64 = 31_556_952;
 
-/// What a client may do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Permission {
-    /// Recordings and views.
-    Read,
-    /// Also configure, start and stop jobs, and write.
-    Control,
-}
-
-impl std::fmt::Display for Permission {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Read => "read",
-            Self::Control => "control",
-        })
-    }
-}
+pub use crate::pair::Permission;
 
 /// The client on the other end of a connection.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,6 +127,11 @@ impl ClientIdentity {
     pub fn from_file(path: &Path) -> StreamResult<Self> {
         let bytes = std::fs::read(path)?;
         Self::from_pem(&bytes)
+    }
+
+    /// SHA-256 of the first CA certificate (hex): the server it was paired with.
+    pub fn ca_fingerprint(&self) -> String {
+        self.authorities.first().map(|c| fingerprint(c)).unwrap_or_default()
     }
 
     pub fn from_pem(bytes: &[u8]) -> StreamResult<Self> {
@@ -253,6 +241,35 @@ impl Authority {
         Ok(Enrollment { record, pem })
     }
 
+    /// Enrolls `name` for a key the client made itself (pairing): only its public key
+    /// (SubjectPublicKeyInfo, DER) reaches the server. Returns the record and the certificate
+    /// (PEM).
+    pub fn enroll_public_key(&self, name: &str, permission: Permission, public_key: &[u8]) -> StreamResult<(ClientRecord, String)> {
+        check_name(name)?;
+        let mut registry = self.registry()?;
+        if registry.clients.iter().any(|c| c.name == name && c.active()) {
+            return Err(StreamError::Tls(format!("{name} is already paired: revoke it on the server first, or pair under another name")));
+        }
+        let key = rcgen::SubjectPublicKeyInfo::from_der(public_key).map_err(tls)?;
+        let mut params = CertificateParams::new(Vec::<String>::new()).map_err(tls)?;
+        params.distinguished_name = common_name(name);
+        params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
+        params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+        let year = this_year();
+        let expires_year = year + CLIENT_YEARS + 1;
+        (params.not_before, params.not_after) = (date_time_ymd(year - 1, 1, 1), date_time_ymd(expires_year, 1, 1));
+        let cert = params.signed_by(&key, &self.issuer()).map_err(tls)?;
+        let record = ClientRecord { name: name.into(), permission, fingerprint: fingerprint(cert.der()), issued_unix: now_unix(), expires_year, revoked_unix: None };
+        registry.clients.push(record.clone());
+        self.save(&registry)?;
+        Ok((record, cert.pem()))
+    }
+
+    /// The CA certificate (PEM).
+    pub fn ca_pem(&self) -> &str {
+        &self.ca_pem
+    }
+
     /// Revokes `name`'s certificate: refused from its next connection on.
     pub fn revoke(&self, name: &str) -> StreamResult<ClientRecord> {
         let mut registry = self.registry()?;
@@ -277,6 +294,34 @@ impl Authority {
         registry.clients.into_iter().find(|c| c.fingerprint == fp && c.active()).map(|c| Peer { name: c.name, permission: c.permission })
     }
 
+    /// Enrolls `name` with a token instead of a certificate (a browser cannot hold a client
+    /// certificate it made): the registry keeps the token's SHA-256 where a certificate's
+    /// fingerprint is, so listing and revoking are the same. Returns the record and the token,
+    /// which is shown once and never stored.
+    pub fn enroll_token(&self, name: &str, permission: Permission) -> StreamResult<(ClientRecord, String)> {
+        check_name(name)?;
+        let mut registry = self.registry()?;
+        if registry.clients.iter().any(|c| c.name == name && c.active()) {
+            return Err(StreamError::Tls(format!("{name} is already paired: revoke it on the server first, or pair under another name")));
+        }
+        let mut bytes = [0u8; 32];
+        getrandom::fill(&mut bytes).map_err(|e| StreamError::Tls(format!("no randomness: {e}")))?;
+        let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        let year = this_year();
+        let record = ClientRecord { name: name.into(), permission, fingerprint: fingerprint(token.as_bytes()), issued_unix: now_unix(), expires_year: year + CLIENT_YEARS + 1, revoked_unix: None };
+        registry.clients.push(record.clone());
+        self.save(&registry)?;
+        Ok((record, token))
+    }
+
+    /// Who presents `token`: its enrolled record, if not revoked and not past its year.
+    pub fn authorize_token(&self, token: &str) -> Option<Peer> {
+        let fp = fingerprint(token.as_bytes());
+        let registry = self.registry().map_err(|e| tracing::warn!("reading the client registry: {e}")).ok()?;
+        let year = this_year();
+        registry.clients.into_iter().find(|c| c.fingerprint == fp && c.active() && c.expires_year >= year).map(|c| Peer { name: c.name, permission: c.permission })
+    }
+
     fn registry(&self) -> StreamResult<Registry> {
         match std::fs::read(self.dir.join(CLIENTS_FILE)) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| StreamError::Tls(format!("{CLIENTS_FILE}: {e}"))),
@@ -296,6 +341,15 @@ impl Authority {
     }
 }
 
+/// Writes `bytes` (mode 0600) whole and renames it into place, so a reader never sees half a file.
+pub(crate) fn replace_private(path: &Path, bytes: &[u8]) -> StreamResult<()> {
+    let tmp = path.with_extension("tmp");
+    let _ = std::fs::remove_file(&tmp);
+    write_private(&tmp, bytes, true)?;
+    std::fs::rename(&tmp, path)?;
+    Ok(())
+}
+
 /// The CA's parameters. Issuing rebuilds them from here, so they must not depend on anything
 /// but constants (the issued certificates name this issuer).
 fn ca_params() -> CertificateParams {
@@ -313,7 +367,7 @@ fn common_name(name: &str) -> DistinguishedName {
 }
 
 /// Letters, digits, `.`, `_`, `-`; 1 to [`MAX_NAME_CHARS`] characters (names become file names).
-fn check_name(name: &str) -> StreamResult<()> {
+pub(crate) fn check_name(name: &str) -> StreamResult<()> {
     let ok = !name.is_empty() && name.len() <= MAX_NAME_CHARS && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')) && !name.starts_with('.');
     if ok { Ok(()) } else { Err(StreamError::Tls(format!("client name {name:?}: use 1–{MAX_NAME_CHARS} letters, digits, '.', '_' or '-', not starting with '.'"))) }
 }
@@ -323,7 +377,7 @@ pub fn fingerprint(der: &[u8]) -> String {
     Sha256::digest(der).iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn now_unix() -> u64 {
+pub(crate) fn now_unix() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
@@ -339,7 +393,7 @@ fn tls(e: impl std::fmt::Display) -> StreamError {
 
 /// Writes `bytes` to a new file readable only by its owner (0600 on Unix); `create_new` refuses
 /// an existing file.
-fn write_private(path: &Path, bytes: &[u8], create_new: bool) -> StreamResult<()> {
+pub(crate) fn write_private(path: &Path, bytes: &[u8], create_new: bool) -> StreamResult<()> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true);
     if create_new {

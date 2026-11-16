@@ -9,6 +9,7 @@
 use std::ops::Range;
 
 use dspk_core::MemoryOrder;
+#[cfg(not(target_family = "wasm"))]
 use rayon::prelude::*;
 
 /// The empty accumulator: folding any sample into it gives that sample.
@@ -140,7 +141,13 @@ pub fn fold_block(block: &Block, range: Range<usize>, columns: Columns, acc: &mu
     let first = block.first + range.start as u64;
     match block.order {
         MemoryOrder::ChannelMajor => {
+            // In a browser: in turn (rayon cannot start threads there, see `crate::read`)
+            #[cfg(not(target_family = "wasm"))]
             acc.par_chunks_mut(count).zip(block.data.par_chunks(block.samples)).take(block.channels).for_each(|(acc, row)| {
+                fold_row(&row[range.clone()], first, columns, acc);
+            });
+            #[cfg(target_family = "wasm")]
+            acc.chunks_mut(count).zip(block.data.chunks(block.samples)).take(block.channels).for_each(|(acc, row)| {
                 fold_row(&row[range.clone()], first, columns, acc);
             });
         }
@@ -172,9 +179,15 @@ fn fold_frames(frames: &[f32], channels: usize, first: u64, columns: Columns, ac
     let n = frames.len() / channels;
     let end = first + n as u64;
     let (x0, x1) = (columns.column_of(first), columns.column_of(end - 1) + 1);
+    #[cfg(not(target_family = "wasm"))]
     let tasks = rayon::current_num_threads().min(x1 - x0).max(1);
-    let parts: Vec<(usize, Vec<f32>, Vec<f32>)> = (0..tasks)
-        .into_par_iter()
+    #[cfg(target_family = "wasm")]
+    let tasks = 1usize;
+    #[cfg(not(target_family = "wasm"))]
+    let range = (0..tasks).into_par_iter();
+    #[cfg(target_family = "wasm")]
+    let range = 0..tasks;
+    let parts: Vec<(usize, Vec<f32>, Vec<f32>)> = range
         .map(|k| {
             let (xa, xb) = (x0 + k * (x1 - x0) / tasks, x0 + (k + 1) * (x1 - x0) / tasks);
             let s0 = if xa == x0 { first } else { columns.start(xa) };

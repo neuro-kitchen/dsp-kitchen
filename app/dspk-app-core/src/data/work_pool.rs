@@ -10,7 +10,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::thread;
+
+use crate::platform::lock;
 
 /// What a job is for: the view (or other owner) and which of its kinds of work. A newer job with
 /// the same key replaces an older one.
@@ -71,26 +72,33 @@ impl WorkPool {
     /// Spawns `threads` threads (at least one).
     pub fn new(threads: usize) -> Self {
         let shared = Arc::new(Shared { queue: Mutex::new(Queue::default()), ready: Condvar::new() });
-        for i in 0..threads.max(1) {
+        // Without threads (a page's single-thread build) jobs run where they are requested
+        let threads = if crate::platform::THREADS { threads.max(1) } else { 0 };
+        for i in 0..threads {
             let shared = shared.clone();
-            thread::Builder::new().name(format!("dspk-app-work-{i}")).spawn(move || work(&shared)).expect("failed to spawn a work thread");
+            crate::platform::spawn(&format!("dspk-app-work-{i}"), move || work(&shared)).expect("failed to spawn a work thread");
         }
         Self { shared, latest: Mutex::default() }
     }
 
     /// Threads for this machine: half the cores, 2 to 4.
     pub fn default_threads() -> usize {
-        thread::available_parallelism().map_or(2, |n| (n.get() / 2).clamp(2, 4))
+        std::thread::available_parallelism().map_or(2, |n| (n.get() / 2).clamp(2, 4))
     }
 
     /// Queues `work` under `key`, replacing a waiting job of that key and cancelling the one in
     /// progress.
     pub fn request(&self, key: JobKey, work: Work) {
         let cancel = Arc::new(AtomicBool::new(false));
-        if let Some(previous) = self.latest.lock().expect("work pool lock").insert(key, cancel.clone()) {
+        if let Some(previous) = lock(&self.latest).insert(key, cancel.clone()) {
             previous.store(true, Ordering::Relaxed);
         }
-        let mut q = self.shared.queue.lock().expect("work pool lock");
+        // No threads: run now, where it was asked for (short jobs: a frame, a readout)
+        if !crate::platform::THREADS {
+            work(&cancel);
+            return;
+        }
+        let mut q = lock(&self.shared.queue);
         if q.waiting.insert(key, Queued { work, cancel }).is_none() {
             q.order.push_back(key);
         }
@@ -100,14 +108,14 @@ impl WorkPool {
 
     /// Cancels and forgets every job of `owner` (a view that closed).
     pub fn forget(&self, owner: u64) {
-        self.latest.lock().expect("work pool lock").retain(|k, flag| {
+        lock(&self.latest).retain(|k, flag| {
             let mine = k.owner == owner;
             if mine {
                 flag.store(true, Ordering::Relaxed);
             }
             !mine
         });
-        let mut q = self.shared.queue.lock().expect("work pool lock");
+        let mut q = lock(&self.shared.queue);
         q.waiting.retain(|k, _| k.owner != owner);
         q.order.retain(|k| k.owner != owner);
     }
@@ -115,7 +123,7 @@ impl WorkPool {
 
 impl Drop for WorkPool {
     fn drop(&mut self) {
-        self.shared.queue.lock().expect("work pool lock").closed = true;
+        lock(&self.shared.queue).closed = true;
         self.shared.ready.notify_all();
     }
 }
@@ -153,6 +161,7 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use std::sync::mpsc;
+    use std::thread;
     use std::time::Duration;
 
     /// A job of `key` that reports `(key, value)`.

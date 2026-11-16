@@ -6,8 +6,12 @@ members = [
     "crates/dspk-core",
     "crates/dspk-io",
     "crates/dspk-ops",
+    # Tables (Polars data frames) for every crate
+    "crates/dspk-table",
     # Pipeline engine
     "engine/dspk-pipeline",
+    # The session document (what the app, an agent or a headless run edits)
+    "engine/dspk-session",
     # Electrophysiology
     "synapse/dspk-synapse",
     "synapse/dspk-synapse-ml",
@@ -24,6 +28,10 @@ members = [
     "app/dspk-cli",
     "app/dspk-app-core",
     "app/dspk-app",
+    # The app in a browser tab (WebAssembly; empty on other targets)
+    "app/dspk-app-web",
+    # The engine in a browser worker (WebAssembly; empty on other targets)
+    "engine/dspk-engine-web",
     # Plugins: cli/ programs the command line runs (the sorters: GPL-3.0, never linked);
     # app/ domain plugins of the app (electrophysiology)
     "plugins/cli/dspk-cli-sorter",
@@ -39,7 +47,7 @@ members = [
 
 
 [workspace.package]
-version = "0.0.10"
+version = "0.0.11"
 edition = "2024"
 authors = ["jesusdpa1 <17010046+jesusdpa1@users.noreply.github.com>"]
 license = "MIT OR Apache-2.0"
@@ -49,20 +57,22 @@ keywords = ["dsp", "gpu", "signal-processing", "cubecl", "electrophysiology"]
 categories = ["science", "algorithms", "concurrency"]
 
 [workspace.dependencies]
-dspk-core = { path = "crates/dspk-core", version = "0.0.10", default-features = false }
-dspk-ops = { path = "crates/dspk-ops", version = "0.0.10", default-features = false }
-dspk-synapse = { path = "synapse/dspk-synapse", version = "0.0.10", default-features = false }
-dspk-synapse-ml = { path = "synapse/dspk-synapse-ml", version = "0.0.10", default-features = false }
-dspk-sorter-kilosort = { path = "synapse/sorters/kilosort", version = "0.0.10", default-features = false }
-dspk-sorter-ms5 = { path = "synapse/sorters/ms5", version = "0.0.10", default-features = false }
-dspk-sorter-si = { path = "synapse/sorters/si", version = "0.0.10", default-features = false }
-dspk-hub = { path = "hub/dspk-hub", version = "0.0.10", default-features = false }
-dspk-stream = { path = "serve/dspk-stream", version = "0.0.10", default-features = false }
-dspk-view = { path = "serve/dspk-view", version = "0.0.10", default-features = false }
-dspk-io = { path = "crates/dspk-io", version = "0.0.10", default-features = false }
-dspk-pipeline = { path = "engine/dspk-pipeline", version = "0.0.10", default-features = false }
-dspk-app-core = { path = "app/dspk-app-core", version = "0.0.10", default-features = false }
-dspk-app-synapse = { path = "plugins/app/dspk-app-synapse", version = "0.0.10", default-features = false }
+dspk-core = { path = "crates/dspk-core", version = "0.0.11", default-features = false }
+dspk-ops = { path = "crates/dspk-ops", version = "0.0.11", default-features = false }
+dspk-synapse = { path = "synapse/dspk-synapse", version = "0.0.11", default-features = false }
+dspk-synapse-ml = { path = "synapse/dspk-synapse-ml", version = "0.0.11", default-features = false }
+dspk-sorter-kilosort = { path = "synapse/sorters/kilosort", version = "0.0.11", default-features = false }
+dspk-sorter-ms5 = { path = "synapse/sorters/ms5", version = "0.0.11", default-features = false }
+dspk-sorter-si = { path = "synapse/sorters/si", version = "0.0.11", default-features = false }
+dspk-hub = { path = "hub/dspk-hub", version = "0.0.11", default-features = false }
+dspk-stream = { path = "serve/dspk-stream", version = "0.0.11", default-features = false }
+dspk-view = { path = "serve/dspk-view", version = "0.0.11", default-features = false }
+dspk-io = { path = "crates/dspk-io", version = "0.0.11", default-features = false }
+dspk-table = { path = "crates/dspk-table", version = "0.0.11" }
+dspk-pipeline = { path = "engine/dspk-pipeline", version = "0.0.11", default-features = false }
+dspk-session = { path = "engine/dspk-session", version = "0.0.11", default-features = false }
+dspk-app-core = { path = "app/dspk-app-core", version = "0.0.11", default-features = false }
+dspk-app-synapse = { path = "plugins/app/dspk-app-synapse", version = "0.0.11", default-features = false }
 dspk-py-core = { path = "bindings/python/dspk-py-core", default-features = false }
 dspk-py-synapse = { path = "bindings/python/dspk-py-synapse", default-features = false }
 
@@ -88,11 +98,13 @@ anstyle = "1.0.14"
 shared_memory = "0.12.4"
 memmap2 = "0.9.12"
 flate2 = "1.1.11"
-zarrs = { version = "0.23.14", default-features = false, features = ["filesystem", "blosc", "crc32c", "gzip", "sharding", "zstd"] }
+# Without its filesystem store: a browser reads Zarr through stores of its own (dspk-io
+# `zarr-read`); crates that read and write folders on disk add `filesystem`
+zarrs = { version = "0.23.14", default-features = false, features = ["blosc", "crc32c", "gzip", "sharding", "zstd"] }
 quinn = "0.11.12"
 tonic = "0.14.9"
-prost = "0.14.5"
-prost-build = "0.14.5"
+prost = "0.14.6"
+prost-build = "0.14.6"
 protox = "0.10.0"
 rcgen = "0.14.10"
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std"] }
@@ -101,7 +113,7 @@ rustls-pki-types = "1.16.0"
 # UI & Graphics
 # GPUI through gpui-kit. Pinned exactly: gpui-kit pins a weekly GPUI snapshot (gpui-pre); update
 # deliberately, together with kitchen-ui (the two must share one gpui-kit: one `Theme` global)
-gpui-kit = "=0.9.1"
+gpui-kit = "=0.10.0"
 # The neuro-kitchen apps' shared crates (github.com/neuro-kitchen/kitchen), from crates.io:
 # kitchen-ui (tokens, widgets, the parameter editor, icon bundling) and kitchen-shell (the frame,
 # the command registry, menus, search, jobs). Both from the same source, so there is one kitchen-ui
@@ -110,14 +122,13 @@ gpui-kit = "=0.9.1"
 # [patch.crates-io]
 # kitchen-ui = { path = "../kitchen/crates/kitchen-ui" }
 # kitchen-shell = { path = "../kitchen/crates/kitchen-shell" }
-kitchen-ui = "0.0.3"
-kitchen-shell = "0.0.3"
-# The wgpu adapters the app names (the version CubeCL uses: one wgpu in the build)
+kitchen-ui = "0.0.5"
+kitchen-shell = "0.0.5"
+# The wgpu adapters the app names (the version CubeCL and GPUI use: one wgpu in the build; GPUI
+# pins it exactly)
 wgpu = "30.0.1"
 # The status bar's CPU and memory meters
-sysinfo = { version = "0.40.1", default-features = false, features = ["system"] }
-slint = "1.18.1"
-slint-build = "1.18.1"
+sysinfo = { version = "0.40.3", default-features = false, features = ["system"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 rfd = "0.18.0"
 
@@ -136,10 +147,16 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 # Pipeline specs: TOML input, JSON Schema of the spec types
 toml = "1.2.1"
+# settings.toml and keybindings.toml of the app: edits that keep the user's comments
+toml_edit = "0.25.19"
 # Pipeline specs: input globs
 glob = "0.3.4"
 schemars = "1.2.3"
 thiserror = "2.0.21"
+# The clock, also in a browser (std's has none there); std's own on every other target
+web-time = "1.1.0"
+# Tables: only dspk-table depends on Polars; the other crates use its re-export
+polars = { version = "0.55.2", default-features = false, features = ["parquet", "dtype-slim"] }
 anyhow = "1.0.104"
 num-traits = "0.2.19"
 num-complex = "0.4.6"
@@ -147,6 +164,9 @@ num-rational = { version = "0.4.2", features = ["serde"] }
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
 sha2 = "0.11.1"
+spake2 = "0.4.0"
+hmac = "0.13.0"
+getrandom = "0.4.3"
 hex = "0.4.3"
 dirs = "7.0.0"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider", "blocking", "json"] }

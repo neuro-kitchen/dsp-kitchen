@@ -148,6 +148,25 @@ pub fn download_range<E: CubeElement>(client: &Client, handle: Handle, start: us
     out
 }
 
+/// [`download`] without blocking: a browser hands back device memory only asynchronously (a
+/// WebGPU map), and a page or a worker may not wait for it. The same bytes on every runtime.
+pub async fn download_async<E: CubeElement>(client: &Client, handle: Handle) -> Result<Vec<E>, String> {
+    let mut bytes = client.read_async(vec![handle]).await.map_err(|e| format!("reading the device's result: {e:?}"))?;
+    Ok(E::from_bytes(&bytes.remove(0)).to_vec())
+}
+
+/// [`download_prefix`] without blocking (see [`download_async`]).
+pub async fn download_prefix_async<E: CubeElement>(client: &Client, handle: Handle, len: usize) -> Result<Vec<E>, String> {
+    let used = handle.size_in_used();
+    let want = (len * size_of::<E>()) as u64;
+    if want > used {
+        return Err(format!("{len} elements exceed the buffer's {used} bytes"));
+    }
+    let mut out = download_async::<E>(client, handle.offset_end(used - want)).await?;
+    out.truncate(len);
+    Ok(out)
+}
+
 /// `handle` without its last `unused` elements of `E` (a view of a buffer larger than the data).
 pub fn truncate<E: CubeElement>(handle: Handle, unused: usize) -> Handle {
     handle.offset_end((unused * size_of::<E>()) as u64)

@@ -80,16 +80,30 @@ pub fn pyramid_path(path: &Path, source_id: &str) -> PathBuf {
 }
 
 pub(crate) struct Storage {
-    map: ManuallyDrop<MmapRaw>,
+    /// The mapping; `None` for memory taken from the heap ([`Self::heap`]).
+    map: Option<ManuallyDrop<MmapRaw>>,
+    /// Zeroed heap memory and its length, where there are no anonymous mappings (a browser).
+    heap: Option<(*mut u8, usize)>,
     /// The file, for file-backed storage.
     path: Option<PathBuf>,
 }
 
 impl Storage {
     /// `bytes` of zeroed anonymous memory.
+    #[cfg(not(target_family = "wasm"))]
     pub fn memory(bytes: usize) -> DspResult<Self> {
         let map = MmapMut::map_anon(bytes.max(1))?;
-        Ok(Self { map: ManuallyDrop::new(MmapRaw::from(map)), path: None })
+        Ok(Self { map: Some(ManuallyDrop::new(MmapRaw::from(map))), heap: None, path: None })
+    }
+
+    /// `bytes` of zeroed memory from the heap: a browser has no anonymous mappings (all of it is
+    /// committed at once, unlike a mapping).
+    #[cfg(target_family = "wasm")]
+    pub fn memory(bytes: usize) -> DspResult<Self> {
+        let _ = MmapMut::map_anon;
+        let boxed = vec![0u8; bytes.max(1)].into_boxed_slice();
+        let len = boxed.len();
+        Ok(Self { map: None, heap: Some((Box::into_raw(boxed).cast::<u8>(), len)), path: None })
     }
 
     /// The complete file at `path` built from `identity` with level-0 bucket `base` and `bytes`
@@ -108,7 +122,7 @@ impl Storage {
         if header[..COMPLETE_AT] != expected[..COMPLETE_AT] || !complete || header[COMPLETE_AT + 4..] != expected[COMPLETE_AT + 4..] {
             return Ok(None);
         }
-        Ok(Some(Self { map: ManuallyDrop::new(map), path: Some(path.to_path_buf()) }))
+        Ok(Some(Self { map: Some(ManuallyDrop::new(map)), heap: None, path: Some(path.to_path_buf()) }))
     }
 
     /// A new, empty file at `path` (replacing any other), `bytes` long, headed by `identity`.
@@ -126,7 +140,7 @@ impl Storage {
         let header = identity.header(base);
         // SAFETY: the mapping is `bytes ≥ HEADER_BYTES` long and nothing else uses it yet.
         unsafe { std::ptr::copy_nonoverlapping(header.as_ptr(), map.as_mut_ptr(), HEADER_BYTES) };
-        Ok(Self { map: ManuallyDrop::new(map), path: Some(path.to_path_buf()) })
+        Ok(Self { map: Some(ManuallyDrop::new(map)), heap: None, path: Some(path.to_path_buf()) })
     }
 
     pub fn path(&self) -> Option<&Path> {
@@ -134,28 +148,41 @@ impl Storage {
     }
 
     pub fn ptr(&self) -> *mut u8 {
-        self.map.as_mut_ptr()
+        match (&self.map, self.heap) {
+            (Some(map), _) => map.as_mut_ptr(),
+            (None, Some((ptr, _))) => ptr,
+            (None, None) => unreachable!("storage is a mapping or heap memory"),
+        }
     }
 
     /// Flushes a complete file and only then sets its complete flag (nothing for memory).
     pub fn mark_complete(&self) -> DspResult<()> {
-        if self.path.is_none() {
-            return Ok(());
-        }
-        self.map.flush()?;
+        let Some(map) = self.map.as_ref().filter(|_| self.path.is_some()) else { return Ok(()) };
+        map.flush()?;
         // SAFETY: the flag lies in the header, which only this call writes after creation.
-        unsafe { self.map.as_mut_ptr().add(COMPLETE_AT).cast::<[u8; 4]>().write_unaligned(1u32.to_le_bytes()) };
-        self.map.flush_range(0, HEADER_BYTES)?;
+        unsafe { map.as_mut_ptr().add(COMPLETE_AT).cast::<[u8; 4]>().write_unaligned(1u32.to_le_bytes()) };
+        map.flush_range(0, HEADER_BYTES)?;
         Ok(())
     }
 }
 
 impl Drop for Storage {
     fn drop(&mut self) {
-        // SAFETY: not used after this point.
-        unsafe { ManuallyDrop::drop(&mut self.map) };
+        if let Some(map) = self.map.as_mut() {
+            // SAFETY: not used after this point.
+            unsafe { ManuallyDrop::drop(map) };
+        }
+        if let Some((ptr, len)) = self.heap.take() {
+            // SAFETY: made by `Box::into_raw` of a `[u8]` of this length in `memory`, freed once.
+            drop(unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)) });
+        }
     }
 }
+
+// SAFETY: the heap memory is owned by the storage and used exactly as the mapping is (callers
+// write disjoint ranges); `MmapRaw` itself is Send and Sync.
+unsafe impl Send for Storage {}
+unsafe impl Sync for Storage {}
 
 #[cfg(test)]
 mod tests {

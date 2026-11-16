@@ -278,3 +278,7 @@ benchmarks/*/*/results/*
 
 # Python API reference build (Zensical); docs/build.sh copies it into target/site/
 docs/api/python/site/
+/deploy/prebuilt/
+
+# Build output of other profiles and targets (target-native/, …)
+/target-*/

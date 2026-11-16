@@ -6,8 +6,8 @@ use std::path::PathBuf;
 
 use dspk_app_core::data::jobs::processed_path;
 use dspk_app_core::data::store::Store;
-use dspk_app_core::domain::command::SessionCommand;
-use dspk_app_core::domain::session::ViewDoc;
+use dspk_session::command::SessionCommand;
+use dspk_session::session::ViewDoc;
 use dspk_app_core::screens::explore::trace::trace_panel::color;
 use dspk_app_core::ui::widgets::{MenuSelect, Section};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -66,7 +66,7 @@ pub fn section(store: &Entity<Store>, view: &ViewDoc, _window: &mut Window, cx: 
                 .child(div().text_xs().text_color(muted).child("Click a unit to show or hide it (windows ≤ 30 s)."));
         }
         (Some(path), None) => {
-            section = section.child(div().text_xs().text_color(muted).child(format!("Loading {}…", dspk_app_core::domain::paths::short_path(&path)))).child(detach(store, view));
+            section = section.child(div().text_xs().text_color(muted).child(format!("Loading {}…", dspk_session::paths::short_path(&path)))).child(detach(store, view));
         }
         (None, _) => {
             section = section.child(div().text_xs().text_color(muted).child("No sorting linked to this view."));
@@ -119,15 +119,32 @@ fn detach(store: &Entity<Store>, view: &ViewDoc) -> impl IntoElement {
     })
 }
 
-/// Picks a `.sorting.zarr` folder and links it to the view.
+/// Picks a `.sorting.zarr` folder, or a Phy / Kilosort folder (imported), and links it to the view.
 fn attach(store: &Entity<Store>, view: &ViewDoc) -> impl IntoElement {
     let (store, id) = (store.clone(), view.id.clone());
-    Button::new("attach-sorting").outline().xsmall().icon(IconName::FolderOpen).label("Attach .sorting.zarr…").on_click(move |_, _, cx| {
-        let rx = cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Attach sorting".into()) });
+    Button::new("attach-sorting").outline().xsmall().icon(IconName::FolderOpen).label("Attach sorting…").disabled(!dspk_app_core::platform::LOCAL_FILES).tooltip(if dspk_app_core::platform::LOCAL_FILES { "A .sorting.zarr, or a Phy / Kilosort folder (imported as a .sorting.zarr next to it)" } else { "Not in the browser yet: the desktop app does it" }).on_click(move |_, _, cx| {
+        let rx = cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Attach sorting (.sorting.zarr or Phy folder)".into()) });
         let (store, id) = (store.clone(), id.clone());
         cx.spawn(async move |cx| {
             if let Ok(Ok(Some(paths))) = rx.await {
                 if let Some(path) = paths.into_iter().next() {
+                    // A Phy / Kilosort folder is imported as a .sorting.zarr next to it, once
+                    let path = if dspk_synapse::io::phy::PhyFolder::is_phy_folder(&path) {
+                        let folder = path.clone();
+                        match cx.background_executor().spawn(async move { dspk_synapse::curation::phy::import_phy(&folder) }).await {
+                            Ok(imported) => {
+                                let note = format!("Phy folder imported as {}", dspk_session::paths::short_path(&imported));
+                                let _ = store.update(cx, |s, cx| s.set_status(note, cx));
+                                imported
+                            }
+                            Err(e) => {
+                                let _ = store.update(cx, |s, cx| s.set_status(format!("Phy folder not imported: {e:#}"), cx));
+                                return;
+                            }
+                        }
+                    } else {
+                        path
+                    };
                     let _ = store.update(cx, |s, cx| link(s, &id, path, cx));
                 }
             }

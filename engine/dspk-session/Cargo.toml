@@ -1,0 +1,35 @@
+[package]
+name = "dspk-session"
+description = "The dspk session document: recordings, views with their processing, the graph of sources, operations, views and writes, recipes, timeline and epochs; changed only through commands applied by a pure function"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["wgpu", "cuda", "cpu"]
+wgpu = ["dspk-pipeline/wgpu", "dspk-ops/wgpu"]
+cpu = ["dspk-pipeline/cpu", "dspk-ops/cpu"]
+cuda = ["dspk-pipeline/cuda", "dspk-ops/cuda"]
+hip = ["dspk-pipeline/hip", "dspk-ops/hip"]
+
+[dependencies]
+# A view's processing is a chain of dspk-pipeline nodes; the graph compiles to pipeline specs
+dspk-pipeline.workspace = true
+dspk-core.workspace = true
+# The event rows a `crossings` chain writes (the layout of an event set)
+dspk-ops.workspace = true
+dspk-io.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+# Zarr stores are files on disk: not in a browser (`target_family = "wasm"`), where there is no
+# file system
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+dspk-io = { workspace = true, features = ["zarr"] }

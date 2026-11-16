@@ -34,6 +34,10 @@ pub fn open_actions(cx: &App) -> &'static [(&'static str, Pick)] {
 /// Paths chosen for an action that has only one entry point: on Linux it first asks whether to
 /// look for a file or a folder. `None` when cancelled or when the dialog fails.
 pub fn ask_and_pick(title: &'static str, multiple: bool, window: &mut Window, cx: &mut App) -> Task<Option<Vec<PathBuf>>> {
+    // A page has no system file dialog (its files come through its server or its engine)
+    if !crate::platform::LOCAL_FILES {
+        return Task::ready(None);
+    }
     let answer = (!cx.can_select_mixed_files_and_dirs())
         .then(|| window.prompt(PromptLevel::Info, title, Some("Files: .bin, .cbin. Folders: .zarr, .nwb.zarr."), &["File", "Folder", "Cancel"], cx));
     cx.spawn(async move |cx| {

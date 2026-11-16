@@ -257,7 +257,7 @@ impl TracePanel {
                         }
                     }
                 }
-                let cmd = crate::domain::command::SessionCommand::SetOp { view: r.view, op: r.op, node };
+                let cmd = dspk_session::command::SessionCommand::SetOp { view: r.view, op: r.op, node };
                 let _ = self.vm.read(cx).store().clone().update(cx, |s, cx| s.execute(cmd, cx));
             }
             cx.notify();
@@ -757,7 +757,7 @@ impl Panel for TracePanel {
                     store.update(cx, |s, cx| {
                         let sel = s.selection(&source).to_vec();
                         let channels = (!sel.is_empty()).then_some(sel);
-                        let _ = s.execute(crate::domain::command::SessionCommand::CopyView { view, channels, name: None }, cx);
+                        let _ = s.execute(dspk_session::command::SessionCommand::CopyView { view, channels, name: None }, cx);
                     });
                     // This panel now shows (and the Inspector edits) the copy
                     if let Some(copy) = store.read(cx).doc.active_view.clone() {

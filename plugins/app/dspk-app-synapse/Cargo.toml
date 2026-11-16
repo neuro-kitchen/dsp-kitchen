@@ -22,9 +22,11 @@ dspk-app-core.workspace = true
 dspk-core.workspace = true
 dspk-io = { workspace = true, features = ["zarr"] }
 # Formats with probes, synthetic recordings, sortings (MIT OR Apache-2.0; never the GPL sorters)
-dspk-synapse.workspace = true
+# `table`: the unit table of the Curation workspace
+dspk-synapse = { workspace = true, features = ["table"] }
 dspk-view = { workspace = true, default-features = false }
 dspk-pipeline.workspace = true
+dspk-session.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
@@ -33,7 +35,7 @@ image.workspace = true
 gpui-kit.workspace = true
 async-channel = "2.5.0"
 # Unit analytics (the Sorting view's table: sort, filter) as data frames
-polars = { version = "0.55.2", default-features = false, features = ["dtype-slim"] }
+dspk-table.workspace = true
 
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }

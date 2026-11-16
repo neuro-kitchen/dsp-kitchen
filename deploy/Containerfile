@@ -9,16 +9,26 @@
 #   nvidia  NVRTC (CUDA's run-time compiler) + the Vulkan loader; the driver comes from the host
 #           through the NVIDIA Container Toolkit:  podman run --device nvidia.com/gpu=all …
 #   mesa    the Vulkan loader + Mesa's Vulkan drivers (AMD, Intel):  podman run --device /dev/dri …
+#   gpu     the published image (ghcr.io/neuro-kitchen/dspk): wgpu on any vendor's GPU (Mesa's
+#           drivers, and NVIDIA's through the Container Toolkit), or the CPU. No NVIDIA software
+#           inside; CUDA works once NVRTC is added (deploy/README.md)
+#
+# The programs are compiled here (`build`, the default), or taken as already built from
+# deploy/prebuilt/ with --build-arg BINARIES=prebuilt: the release workflow does that with the
+# binaries of the same run, so the image holds exactly what the release publishes.
 #
 # Build from the repository root (the build context is the whole workspace):
 #   podman build -f deploy/Containerfile --ignorefile deploy/.containerignore --target nvidia -t dspk-serve:nvidia .
-# Run (a synthetic 384-channel recording; your own: see deploy/README.md):
-#   podman run --rm -p 50051:50051/udp --device nvidia.com/gpu=all dspk-serve:nvidia
+# The web app must be built first (it goes into every target): app/dspk-app-web/build.sh mt
+# Run (recordings under ./data; the web app at http://localhost:50052, the pairing code in the log):
+#   podman run --rm -p 50051:50051/udp -p 127.0.0.1:50052:50052 -v ./data:/data:Z --device nvidia.com/gpu=all dspk-serve:nvidia
 
 # Rust toolchain of the build (edition 2024 needs >= 1.85; CI uses the latest stable)
 ARG RUST_VERSION=1.99
 # Debian release of every stage: glibc >= 2.34 for the CPU runtime's prebuilt LLVM (bookworm: 2.36)
 ARG DEBIAN=bookworm
+# Where the programs come from: `build` (compiled in this file) or `prebuilt` (deploy/prebuilt/)
+ARG BINARIES=build
 # Base images pinned by digest (multi-architecture index), so a re-tagged or tampered image cannot
 # enter a build; the tags above only document what the digests are. To update: the new tag's
 # digest from the registry (e.g. `podman manifest inspect`), then build and test again.
@@ -41,12 +51,23 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && install -D -m 0755 target/release/dspk-cli-sorter /out/dspk-cli-sorter
 
 # What every target shares: the programs, a non-root user, /data
+# Programs built outside this file (glibc <= the base image's: Ubuntu 22.04 builds run on bookworm)
+FROM scratch AS prebuilt
+COPY deploy/prebuilt/dspk deploy/prebuilt/dspk-cli-sorter /out/
+
+FROM ${BINARIES} AS binaries
+
 FROM docker.io/library/debian:${DEBIAN}-slim@${DEBIAN_DIGEST} AS base
 # ca-certificates: verified downloads from the hub over HTTPS
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=build /out/dspk /out/dspk-cli-sorter /usr/local/bin/
+COPY --from=binaries --chmod=0755 /out/dspk /out/dspk-cli-sorter /usr/local/bin/
+# The web app (the threaded browser build and its loader), built before the image with
+# `app/dspk-app-web/build.sh mt` (nightly Rust; the release workflow does it): the page is served
+# by `dspk serve --web`, and computes on this server
+COPY app/dspk-app-web/dist/index.html /usr/share/dspk/web/index.html
+COPY app/dspk-app-web/dist/mt /usr/share/dspk/web/mt
 # Not root (uid 10001); /data holds the recordings, their pyramids (written next to them, so the
 # volume is writable), sortings and the certificate the server writes for clients
 RUN useradd --create-home --uid 10001 dspk && install -d -o dspk -g dspk /data
@@ -59,6 +80,11 @@ ENV XDG_CACHE_HOME=/home/dspk/.cache XDG_RUNTIME_DIR=/tmp
 RUN install -d -o dspk -g dspk /home/dspk/.cache
 VOLUME /home/dspk/.cache
 EXPOSE 50051/udp
+# The web app: plain HTTP (the container's address is not loopback, so --web-plain-http).
+# Publish it only to this computer, `-p 127.0.0.1:50052:50052`, and open http://localhost:50052
+# (a browser counts localhost as secure: no warning, threads work); for other computers put a
+# proxy with a certificate in front (Caddy, `tailscale serve`)
+EXPOSE 50052/tcp
 # `dspk serve` stops cleanly on SIGTERM (podman stop, systemd) and Ctrl+C
 ENTRYPOINT ["dspk"]
 # The server's authority (its CA and the enrolled clients) is kept with the data, so it survives
@@ -69,7 +95,9 @@ ENV DSPK_SERVE_AUTH_DIR=/data/.dspk-auth
 ENV DSPK_SERVE_DATA=/data
 # Listen on every interface of the container; only enrolled clients get in. Add --name <host> for
 # the names clients use, or bring your own certificate (--certificate, --private-key).
-CMD ["serve", "--bind", "0.0.0.0:50051"]
+# The web app on 50052; --pair prints a one-time pairing code at start (`podman logs`), which a
+# browser or a computer uses once (`dspk clients pair` makes more)
+CMD ["serve", "--bind", "0.0.0.0:50051", "--pair", "--web", "/usr/share/dspk/web", "--web-bind", "0.0.0.0:50052", "--web-plain-http"]
 
 # NVIDIA: CUDA and Vulkan. The host's driver (libcuda, the Vulkan ICD) is passed in by the NVIDIA
 # Container Toolkit (CDI); the image brings what the driver does not: NVRTC, which CubeCL uses to
@@ -106,6 +134,23 @@ USER root
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers \
     && rm -rf /var/lib/apt/lists/*
+USER dspk
+
+# Any GPU through wgpu (Vulkan), without NVIDIA software in the image: Mesa's drivers for AMD and
+# Intel (--device /dev/dri); for NVIDIA the Container Toolkit passes the driver in
+# (--device nvidia.com/gpu=all) and the image adds only what the driver's Vulkan library needs
+# (libX11 / libXext) and a driver file naming libEGL_nvidia, which works without a display. The
+# file is added to the loader's search (VK_ADD_DRIVER_FILES), so Mesa's drivers stay listed.
+FROM base AS gpu
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libvulkan1 mesa-vulkan-drivers libx11-6 libxext6 \
+    && rm -rf /var/lib/apt/lists/* \
+    && install -d /usr/share/dspk/vulkan \
+    && printf '{"file_format_version": "1.0.1", "ICD": {"library_path": "libEGL_nvidia.so.0", "api_version": "1.3.0"}}\n' \
+       > /usr/share/dspk/vulkan/nvidia_egl.json
+ENV VK_ADD_DRIVER_FILES=/usr/share/dspk/vulkan/nvidia_egl.json
+ENV NVIDIA_VISIBLE_DEVICES=all NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics
 USER dspk
 
 # No GPU: the CPU runtime only (the GPU runtimes report "not usable"; DSPK_RUNTIME=cpu picks it)

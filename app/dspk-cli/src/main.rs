@@ -62,6 +62,9 @@ enum Command {
     /// Who may connect to `serve`: enroll, revoke, list clients (certificates from the server's
     /// own authority)
     Clients(commands::net::clients::ClientsArgs),
+    /// Pair this computer with a `serve` server using a one-time code: it gets its certificate,
+    /// no file to hand over
+    Pair(commands::net::pair::PairArgs),
     /// Work with a `serve` server: info, files, sort on it, status, logs, stop
     Remote(commands::net::remote::RemoteArgs),
     /// Published model and sorter artifacts: list, info, pull, verify, remove, clean
@@ -120,6 +123,7 @@ async fn dispatch(cli: &Cli) -> anyhow::Result<()> {
         Command::Serve(args) => commands::net::serve::run(args).await,
         Command::Receive(args) => commands::net::receive::run(args).await,
         Command::Clients(args) => commands::net::clients::run(args),
+        Command::Pair(args) => commands::net::pair::run(args).await,
         Command::Remote(args) => commands::net::remote::run(args).await,
         #[cfg(feature = "hub")]
         Command::Hub(args) => commands::hub::run(args),

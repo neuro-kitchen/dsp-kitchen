@@ -7,7 +7,8 @@
 //! the image they replace is released one frame later (it may still be on screen).
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 use gpui_kit::{App, Context, Entity, EventEmitter, RenderImage, Subscription, Task};
 
@@ -60,7 +61,7 @@ pub struct TraceVm {
     /// The frame on screen has columns the pyramid had not built yet.
     incomplete: bool,
     pub hover: String,
-    frames: async_channel::Sender<Delivered>,
+    frames: crate::data::channel::Sender<Delivered>,
     hover_reply: HoverReply,
     _tasks: Vec<Task<()>>,
     _store: Subscription,
@@ -80,8 +81,8 @@ impl TraceVm {
     pub fn new(store: Entity<Store>, id: ViewId, kind: TimeViewKind, source: &str, cx: &mut Context<Self>) -> Self {
         let mut view = TimeView::new(id, kind, Vec::new());
         Self::attach(&mut view, &store, source, cx);
-        let (frames, frames_rx) = async_channel::unbounded::<Delivered>();
-        let (hover_tx, hover_rx) = async_channel::unbounded::<(u64, String)>();
+        let (frames, mut frames_rx) = crate::data::channel::unbounded::<Delivered>();
+        let (hover_tx, mut hover_rx) = crate::data::channel::unbounded::<(u64, String)>();
         let hover_reply: HoverReply = Arc::new(move |seq, text| {
             let _ = hover_tx.try_send((seq, text));
         });
@@ -234,7 +235,7 @@ impl TraceVm {
 
     /// The timeline in this view's recording's time (shifted by the placements for a view of
     /// another recording).
-    fn timeline(&self, cx: &App) -> crate::domain::timeline::TimelineState {
+    fn timeline(&self, cx: &App) -> dspk_session::timeline::TimelineState {
         let s = self.store.read(cx);
         let mut tl = s.timeline.clone();
         if let Some(path) = self.foreign(cx) {
@@ -503,7 +504,7 @@ impl TraceVm {
 
     /// The session view this view draws: its own (Explore), else the active one when it reads this
     /// view's source (the strips).
-    pub fn shown_view<'a>(&self, store: &'a Store) -> Option<&'a crate::domain::session::ViewDoc> {
+    pub fn shown_view<'a>(&self, store: &'a Store) -> Option<&'a dspk_session::session::ViewDoc> {
         if !self.view.doc_view.is_empty() {
             return store.doc.view(&self.view.doc_view);
         }

@@ -14,7 +14,7 @@ use dspk_core::SignalUnit;
 
 use super::renderer::{nominal_amplitude, px_per_unit, scale_bar_value, ColorBy, RenderRequest, TimeViewKind};
 use crate::ui::theme::palette::Palette;
-use crate::domain::timeline::TimelineState;
+use dspk_session::timeline::TimelineState;
 
 /// Identifies a view for as long as the app runs (also its render key).
 pub type ViewId = u64;

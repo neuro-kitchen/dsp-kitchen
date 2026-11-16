@@ -15,19 +15,51 @@ dspk-core.workspace = true
 # Host envelopes only: a server answers views from its recording and pyramid
 dspk-view = { workspace = true, default-features = false }
 prost.workspace = true
-quinn.workspace = true
-rcgen.workspace = true
-rustls.workspace = true
-rustls-pki-types = { workspace = true, features = ["std"] }
 # The client registry of a server's authority (clients.json), certificate fingerprints
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
 tracing.workspace = true
+# Pairing with a short code (SPAKE2, then MACs under the shared key): the server, a computer,
+# and a page in a browser (`pair`)
+spake2.workspace = true
+hmac.workspace = true
+
+# The transports (QUIC, the endpoint for browsers, pairing): not in a browser, where only the
+# messages are used
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+quinn.workspace = true
+# `x509-parser`: a client's public key read back when it pairs (it makes its own key pair)
+rcgen = { workspace = true, features = ["x509-parser"] }
+rustls.workspace = true
+rustls-pki-types = { workspace = true, features = ["std"] }
+# Pairing codes are drawn from the system's randomness
+getrandom.workspace = true
+# The endpoint for browsers (`transport::web`): HTTPS, the web app's files, a WebSocket
+hyper = { version = "1.12.0", features = ["http1", "server"] }
+hyper-util = { version = "0.1.21", features = ["tokio"] }
+http-body-util = "0.1.5"
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring"] }
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
+futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
+tokio.workspace = true
 
 [build-dependencies]
 # protox compiles the .proto in pure Rust, so building needs no `protoc`
 prost-build.workspace = true
 protox.workspace = true
+
+# In a browser SPAKE2's randomness (rand_core 0.6 → getrandom 0.2) comes from the page's
+# `crypto.getRandomValues`
+[target.'cfg(target_family = "wasm")'.dependencies]
+getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
+# The page's connection to its server (`web_client`): a WebSocket, answers handed to whoever
+# waits without a lock on the page's thread, web workers when the build has threads
+web-sys = { version = "0.3", features = ["WebSocket", "BinaryType", "MessageEvent", "Worker", "WorkerOptions", "WorkerType", "ErrorEvent"] }
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+futures-channel = "0.3"
+futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
+wasm_thread = { version = "0.3.3", features = ["es_modules"] }

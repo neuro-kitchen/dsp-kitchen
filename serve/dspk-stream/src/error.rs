@@ -9,12 +9,16 @@ pub enum StreamError {
     Io(#[from] std::io::Error),
     #[error("TLS: {0}")]
     Tls(String),
+    #[cfg(not(target_family = "wasm"))]
     #[error("connect: {0}")]
     Connect(#[from] quinn::ConnectError),
+    #[cfg(not(target_family = "wasm"))]
     #[error("connection: {0}")]
     Connection(#[from] quinn::ConnectionError),
+    #[cfg(not(target_family = "wasm"))]
     #[error("read: {0}")]
     Read(#[from] quinn::ReadExactError),
+    #[cfg(not(target_family = "wasm"))]
     #[error("write: {0}")]
     Write(#[from] quinn::WriteError),
     #[error("message of {len} bytes exceeds the {max}-byte limit")]
@@ -39,7 +43,7 @@ impl StreamError {
     }
 
     /// What to tell a client about this error (the reason, without the kind's prefix).
-    pub(crate) fn reason(&self) -> String {
+    pub fn reason(&self) -> String {
         match self {
             Self::Protocol(m) | Self::Server(m) | Self::Tls(m) => m.clone(),
             other => other.to_string(),
@@ -47,6 +51,7 @@ impl StreamError {
     }
 
     /// The peer closed the connection (a client leaving), not a failure.
+    #[cfg(not(target_family = "wasm"))]
     pub fn is_closed_by_peer(&self) -> bool {
         use quinn::{ConnectionError, ReadError, ReadExactError};
         matches!(

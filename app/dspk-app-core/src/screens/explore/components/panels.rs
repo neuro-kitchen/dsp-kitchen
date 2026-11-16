@@ -652,7 +652,7 @@ enum TrackDrag {
 #[derive(Debug, Clone)]
 enum TrackHit {
     Marked(f64, f64),
-    Epoch(crate::domain::epoch::EpochDoc),
+    Epoch(dspk_session::epoch::EpochDoc),
     Nothing,
 }
 
@@ -873,8 +873,21 @@ impl TimelinePanel {
         // Activity of the whole recording behind the window box (columns of ~2 px)
         let columns = (self.track.get().size.width.as_f32() / 2.0).round().max(1.0) as usize;
         if self.activity.as_ref().is_none_or(|(w, _)| *w != columns) {
-            let values = s_sources_default(&self.store, cx).map(|ds| crate::data::recording::dataset::activity(&ds, columns)).unwrap_or_default();
-            self.activity = Some((columns, Rc::new(values)));
+            // Computed off this thread (a recording on a server answers over the network, and a
+            // page's drawing thread may not wait at all); the strip appears when it arrives
+            self.activity = Some((columns, Rc::new(Vec::new())));
+            if let Some(ds) = s_sources_default(&self.store, cx) {
+                cx.spawn(async move |this, cx| {
+                    let values = cx.background_spawn(async move { crate::data::recording::dataset::activity(&ds, columns) }).await;
+                    let _ = this.update(cx, |panel, cx| {
+                        if panel.activity.as_ref().is_some_and(|(w, _)| *w == columns) {
+                            panel.activity = Some((columns, Rc::new(values)));
+                            cx.notify();
+                        }
+                    });
+                })
+                .detach();
+            }
         }
         let activity = self.activity.as_ref().map(|(_, v)| v.clone()).unwrap_or_default();
         let palette = self.store.read(cx).palette();
@@ -980,7 +993,7 @@ impl TimelinePanel {
                         m.item(PopupMenuItem::new("Save as epoch…").on_click(move |_, _, cx| {
                             store.update(cx, |s, cx| {
                                 if let Some(path) = s.recording.as_ref().and_then(|r| r.path.clone()) {
-                                    let epoch = crate::domain::epoch::EpochDoc { id: String::new(), recording: path, name: String::new(), kind: "stimulus".into(), start_sec: a, end_sec: b, notes: String::new() };
+                                    let epoch = dspk_session::epoch::EpochDoc { id: String::new(), recording: path, name: String::new(), kind: "stimulus".into(), start_sec: a, end_sec: b, notes: String::new() };
                                     s.open_floating(crate::data::store::Floating::Epoch(epoch), cx);
                                 }
                             });
@@ -1001,7 +1014,7 @@ impl TimelinePanel {
                         m.label(e.name.clone())
                             .item(PopupMenuItem::new("Edit…").on_click(move |_, _, cx| store.update(cx, |s, cx| s.open_floating(crate::data::store::Floating::Epoch(e.clone()), cx))))
                             .item(PopupMenuItem::new("Delete").on_click(move |_, _, cx| {
-                                let _ = store2.update(cx, |s, cx| s.execute(crate::domain::command::SessionCommand::RemoveEpoch { id: e2.id.clone() }, cx));
+                                let _ = store2.update(cx, |s, cx| s.execute(dspk_session::command::SessionCommand::RemoveEpoch { id: e2.id.clone() }, cx));
                             }))
                     }
                     TrackHit::Nothing => {

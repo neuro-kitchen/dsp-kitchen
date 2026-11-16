@@ -90,7 +90,7 @@ impl ServerBrowser {
             let result = handle.await;
             let _ = this.update(cx, |b, cx| {
                 b.message = Some(match result {
-                    Ok(Ok(local)) => (true, format!("Fetched {path} → {}", crate::domain::paths::short_path(&local))),
+                    Ok(Ok(local)) => (true, format!("Fetched {path} → {}", dspk_session::paths::short_path(&local))),
                     Ok(Err(e)) => (false, format!("{e:#}")),
                     Err(e) => (false, e.to_string()),
                 });
@@ -103,6 +103,8 @@ impl ServerBrowser {
 
 impl Render for ServerBrowser {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A page on its own: the files it picked, read by its engine (no server, nothing to fetch)
+        let alone = crate::platform::remote::runs_alone();
         let t = cx.theme();
         let (muted, danger, ok, border) = (t.muted_foreground, t.danger, t.success, t.border);
         let me = cx.entity().downgrade();
@@ -154,7 +156,7 @@ impl Render for ServerBrowser {
                             b.load(p, cx)
                         });
                     }));
-                } else {
+                } else if !alone {
                     let (m, n) = (me.clone(), name.clone());
                     actions = actions.child(Button::new(SharedString::from(format!("browser-fetch-{i}"))).outline().xsmall().label("Fetch").on_click(move |_, _, cx| {
                         let _ = m.update(cx, |b, cx| b.fetch(&n, cx));
@@ -188,8 +190,11 @@ impl Render for ServerBrowser {
             .max_h(gpui_kit::relative(0.85))
             .overflow_y_scroll()
             .gap_2()
-            .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Open from server"))
-            .child(if servers.is_empty() {
+            .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(if alone { "Open a recording" } else { "Open from server" }))
+            .child(if alone {
+                // A page on its own: the folder picked, read in this browser (no server to choose)
+                div().into_any_element()
+            } else if servers.is_empty() {
                 div().text_sm().text_color(muted).child("No servers yet: add one in Settings (Ctrl+,).").into_any_element()
             } else {
                 row("Server", picker).into_any_element()
@@ -206,6 +211,10 @@ impl Render for ServerBrowser {
             )
             .child(entries)
             .children(self.message.clone().map(|(good, text)| div().text_xs().text_color(if good { ok } else { danger }).child(text)))
-            .child(div().text_xs().text_color(muted).child("Open reads a recording on the server (views come from its pyramid); Fetch copies into the results folder (Settings)."))
+            .child(div().text_xs().text_color(muted).child(if alone {
+                "The folder you picked, read in this browser: nothing is copied or sent anywhere."
+            } else {
+                "Open reads a recording on the server (views come from its pyramid); Fetch copies into the results folder (Settings)."
+            }))
     }
 }

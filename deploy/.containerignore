@@ -1,4 +1,16 @@
-# Build context of deploy/Containerfile (the repository root): sources only
+# Build context of deploy/Containerfile (the repository root): sources only.
+# Local-only folders and files must never reach an image: data, environments, secrets, notes.
+.env
+.env.*
+.envrc
+.claude/
+.refactoring/
+.docs-old/
+.worktrees/
+.cargo/config.toml
+.pytest_cache/
+docs/node_modules/
+docs/dist/
 target/
 .datasets/
 .git/

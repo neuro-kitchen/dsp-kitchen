@@ -36,7 +36,7 @@ pub(crate) fn read_channel_blocks(
             let block = Block { data: current, order: MemoryOrder::ChannelMajor, channels: rows, samples: (range.end - range.start) as usize, first: range.start };
             match ranges.get(i + 1) {
                 Some(r) => {
-                    let (read_next, ()) = rayon::join(|| read(r, next), || fold(&block));
+                    let (read_next, ()) = join(|| read(r, next), || fold(&block));
                     read_next?;
                 }
                 None => fold(&block),
@@ -73,7 +73,7 @@ pub(crate) fn read_pipelined(
         let block = Block { data, order: *order, channels, samples: (range.end - range.start) as usize, first: range.start };
         let next = match ranges.next() {
             Some(r) if !stop() => {
-                let (next, ()) = rayon::join(|| read(r), || fold(&block));
+                let (next, ()) = join(|| read(r), || fold(&block));
                 next?
             }
             Some(_) => {
@@ -87,4 +87,18 @@ pub(crate) fn read_pipelined(
         };
         current = next;
     }
+}
+
+/// Runs `a` and `b`, on two threads of the rayon pool where there is one. In a browser rayon has
+/// no way to start threads: left alone it adopts the first thread that calls it as its only
+/// worker, and every other thread then waits on that one for ever; there the two run in turn
+/// (a view's work already runs on a worker of its own).
+#[cfg(not(target_family = "wasm"))]
+fn join<A: Send, B: Send>(a: impl FnOnce() -> A + Send, b: impl FnOnce() -> B + Send) -> (A, B) {
+    rayon::join(a, b)
+}
+
+#[cfg(target_family = "wasm")]
+fn join<A, B>(a: impl FnOnce() -> A, b: impl FnOnce() -> B) -> (A, B) {
+    (a(), b())
 }

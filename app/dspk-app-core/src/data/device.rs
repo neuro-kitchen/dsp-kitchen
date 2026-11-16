@@ -17,6 +17,10 @@ pub struct DeviceInfo {
 impl DeviceInfo {
     /// The device of the runtime chosen now (takes a moment with wgpu: call it off the UI thread).
     pub fn discover() -> DeviceInfo {
+        // A page computes nothing itself: its line says where its processing happens
+        if let Some(label) = crate::platform::remote::processing_label() {
+            return DeviceInfo { label, adapters: Vec::new() };
+        }
         match ComputeTarget::from_env() {
             Ok(ComputeTarget::Wgpu) => wgpu_device(),
             Ok(ComputeTarget::Cuda) => DeviceInfo { label: "GPU · CUDA".into(), adapters: Vec::new() },
@@ -27,32 +31,11 @@ impl DeviceInfo {
     }
 }
 
+/// wgpu's device on this target (`crate::platform`): a computer lists its adapters; a browser
+/// hands out its GPU only when work first asks for it.
 #[cfg(feature = "wgpu")]
 fn wgpu_device() -> DeviceInfo {
-    use wgpu::DeviceType as T;
-    let found = tokio::runtime::Builder::new_current_thread().build().map(|rt| rt.block_on(wgpu::Instance::default().enumerate_adapters(wgpu::Backends::all())));
-    let infos: Vec<wgpu::AdapterInfo> = found.map(|list| list.iter().map(|a| a.get_info()).collect()).unwrap_or_default();
-    let rank = |t: T| match t {
-        T::DiscreteGpu => 0,
-        T::IntegratedGpu => 1,
-        T::VirtualGpu => 2,
-        T::Other => 3,
-        T::Cpu => 4,
-    };
-    let kind = |t: T| match t {
-        T::DiscreteGpu => "discrete",
-        T::IntegratedGpu => "integrated",
-        T::VirtualGpu => "virtual",
-        T::Other => "other",
-        T::Cpu => "software",
-    };
-    let adapters = infos.iter().map(|i| format!("{} ({}, {:?})", i.name, kind(i.device_type), i.backend)).collect();
-    let label = match infos.iter().min_by_key(|i| rank(i.device_type)) {
-        Some(i) if i.device_type == T::Cpu => format!("GPU · {:?} · {} (software)", i.backend, i.name),
-        Some(i) => format!("GPU · {:?} · {}", i.backend, i.name),
-        None => "GPU · Vulkan / Metal (no adapter found)".to_string(),
-    };
-    DeviceInfo { label, adapters }
+    crate::platform::wgpu_device()
 }
 
 #[cfg(not(feature = "wgpu"))]

@@ -714,7 +714,7 @@ mod tests {
             }
             r.render(&req); // warm-up
             let n = 20;
-            let t0 = std::time::Instant::now();
+            let t0 = web_time::Instant::now();
             for _ in 0..n {
                 std::hint::black_box(r.render(&req));
             }

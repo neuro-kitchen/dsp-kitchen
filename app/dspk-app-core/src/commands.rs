@@ -79,6 +79,41 @@ pub fn prompt_open(store: &Entity<Store>, pick: Pick, cx: &mut App) {
     .detach();
 }
 
+/// What "Open recording…" / "Open folder…" do here: the system's file dialog on a computer; on
+/// a page served by `dspk serve`, the server's recordings; on a page on its own, the files the
+/// user picks, read by the page's engine.
+fn open_command(store: &Entity<Store>, pick: Pick, browser: &Rc<dyn Fn(&mut Window, &mut App)>, window: &mut Window, cx: &mut App) {
+    if crate::platform::LOCAL_FILES {
+        prompt_open(store, pick, cx);
+    } else if crate::platform::remote::runs_alone() {
+        pick_page_files(store, pick == Pick::Folder, browser.clone(), window, cx);
+    } else {
+        browser(window, cx);
+    }
+}
+
+/// A page on its own: asks for a folder (or files: a `.bin` and its `.meta`), hands them to the
+/// page's engine, then opens the one recording among them, or lists them when there are several.
+pub fn pick_page_files(store: &Entity<Store>, folder: bool, browser: Rc<dyn Fn(&mut Window, &mut App)>, window: &mut Window, cx: &mut App) {
+    let store = store.clone();
+    window
+        .spawn(cx, async move |cx| match crate::platform::remote::pick_files(folder).await {
+            Ok(recordings) if recordings.len() == 1 => {
+                let _ = store.update(cx, |s, cx| s.open_remote(crate::platform::remote::page_profile(), recordings[0].clone(), cx));
+            }
+            Ok(recordings) if recordings.is_empty() => {
+                let _ = store.update(cx, |s, cx| s.set_status("No recording among the files picked (a .zarr folder, or a .bin with its .meta)", cx));
+            }
+            Ok(_) => {
+                let _ = cx.update(|window, cx| browser(window, cx));
+            }
+            Err(e) => {
+                let _ = store.update(cx, |s, cx| s.set_status(format!("Files not opened: {e:#}"), cx));
+            }
+        })
+        .detach();
+}
+
 /// Opens the synthetic recording.
 pub fn open_synthetic(store: &Entity<Store>, cx: &mut App) {
     let (ch, rate, dur) = SYNTHETIC;
@@ -133,11 +168,12 @@ pub fn register(registry: &Registry, c: &Ctx) {
     };
     let (o1, o2, o3, o4, o5) = (s.clone(), s.clone(), s.clone(), s.clone(), s.clone());
     let (help, about, browser) = (c.toggle_help.clone(), c.toggle_about.clone(), c.open_browser.clone());
+    let (b1, b2) = (browser.clone(), browser.clone());
     let recent = s.clone();
     let mut list = vec![
         // File
-        CommandSpec::new("file.open", "Open recording…", IconName::FolderOpen, move |_, cx| prompt_open(&o1, Pick::File, cx)).group("File").hint("A recording from this computer: .bin, .cbin, .zarr, .nwb.zarr").key("secondary-o"),
-        CommandSpec::new("file.open_folder", "Open folder…", IconName::FolderOpen, move |_, cx| prompt_open(&o2, Pick::Folder, cx)).group("File").hint("A recording stored as a folder (Zarr)").key("secondary-shift-o"),
+        CommandSpec::new("file.open", "Open recording…", IconName::FolderOpen, move |w, cx| open_command(&o1, Pick::File, &b1, w, cx)).group("File").hint("A recording from this computer: .bin, .cbin, .zarr, .nwb.zarr").key("secondary-o"),
+        CommandSpec::new("file.open_folder", "Open folder…", IconName::FolderOpen, move |w, cx| open_command(&o2, Pick::Folder, &b2, w, cx)).group("File").hint("A recording stored as a folder (Zarr)").key("secondary-shift-o"),
         CommandSpec::with_args::<PathArgs>("file.open_path", "Open a file", IconName::FolderOpen, move |a, _, cx| {
             o3.update(cx, |s, cx| s.open(a.path.into(), cx));
             Ok(Value::Null)
@@ -217,7 +253,7 @@ pub fn register(registry: &Registry, c: &Ctx) {
     let (r1, rp) = (s.clone(), c.pipeline.clone());
     list.push(
         CommandSpec::with_args::<RecipeArgs>("process.recipe", "Add a recipe", IconName::Workflow, move |a, _, cx| {
-            let recipe = crate::domain::recipe::builtin().into_iter().chain(r1.read(cx).doc.recipes.values().cloned()).find(|r| r.name == a.name).ok_or_else(|| format!("no recipe {:?}", a.name))?;
+            let recipe = dspk_session::recipe::builtin().into_iter().chain(r1.read(cx).doc.recipes.values().cloned()).find(|r| r.name == a.name).ok_or_else(|| format!("no recipe {:?}", a.name))?;
             r1.update(cx, |s, cx| s.set_workspace(Workspace::Pipeline, cx));
             let _ = rp.update(cx, |p, cx| p.add_recipe(recipe, cx));
             Ok(Value::Null)
@@ -265,7 +301,7 @@ fn providers(registry: &Registry, s: &Entity<Store>) {
     });
     let store = s.clone();
     registry.provide("process.recipes", move |cx| {
-        let recipes: Vec<String> = crate::domain::recipe::builtin().into_iter().chain(store.read(cx).doc.recipes.values().cloned()).map(|r| r.name).collect();
+        let recipes: Vec<String> = dspk_session::recipe::builtin().into_iter().chain(store.read(cx).doc.recipes.values().cloned()).map(|r| r.name).collect();
         if recipes.is_empty() {
             return vec![];
         }

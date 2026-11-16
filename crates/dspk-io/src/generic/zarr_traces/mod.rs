@@ -8,24 +8,39 @@
 //! read too.
 
 use std::ops::Range;
+#[cfg(feature = "zarr")]
 use std::path::Path;
+use std::sync::Arc;
 
 use dspk_core::recording::{check_read, check_read_stored};
 use dspk_core::{DspError, DspResult, MemoryOrder, RecordingInfo, RecordingSource, SampleFormat, SampleRate, SignalUnit};
-use serde_json::{json, Value};
-use zarrs::array::{Array, ArrayBuilder, ArrayBytes, data_type};
+use serde_json::Value;
+#[cfg(feature = "zarr")]
+use serde_json::json;
+use zarrs::array::{Array, ArrayBytes};
+#[cfg(feature = "zarr")]
+use zarrs::array::{ArrayBuilder, data_type};
+use zarrs::storage::ReadableStorageTraits;
 
 use crate::container::binary::codec::{native_to_le, scale_frames, select_stored};
+#[cfg(feature = "zarr")]
 use crate::container::zarr::open_store;
+#[cfg(feature = "zarr")]
 use zarrs::storage::ReadableWritableListableStorage;
-use zarrs::group::{Group, GroupBuilder};
+use zarrs::group::Group;
+#[cfg(feature = "zarr")]
+use zarrs::group::GroupBuilder;
 
+pub use super::zarr_options::{ZarrCompression, ZarrOptions, DEFAULT_CHUNK_SAMPLES, DEFAULT_PARALLEL_WRITES, DEFAULT_ZARR_COMPRESSION};
+
+mod byte_store;
+pub use byte_store::ByteSourceStore;
+#[cfg(feature = "zarr")]
 mod format;
+#[cfg(feature = "zarr")]
 pub use format::ZarrTraces;
 
 const ARRAY_PATH: &str = "/traces";
-/// Default chunk length: ~0.17 s at 30 kHz.
-pub const DEFAULT_CHUNK_SAMPLES: usize = 5000;
 
 fn err(what: &str) -> impl Fn(String) -> DspError + '_ {
     move |e| DspError::Io(format!("zarr {what}: {e}"))
@@ -34,21 +49,44 @@ fn err(what: &str) -> impl Fn(String) -> DspError + '_ {
 /// Chunked Zarr v3 recording.
 pub struct ZarrRecording {
     info: RecordingInfo,
-    array: Array<dyn zarrs::storage::ReadableWritableListableStorageTraits>,
+    /// `Send + Sync` stated: zarrs requires them of a store only on a computer, and every
+    /// recording must have them.
+    array: Array<dyn ReadableStorageTraits + Send + Sync>,
     /// Samples per chunk along time (the first chunk's).
     chunk_samples: Option<u64>,
 }
 
+// SAFETY: a browser build without threads (no shared memory, no atomics: a browser's engine
+// worker) has one thread, so nothing of the recording is ever touched from another. zarrs relaxes
+// `Send` / `Sync` on wasm, so its `Array` does not have them there; on every other target it does
+// and these impls are not compiled. A threaded browser build does not get them: it would not
+// compile rather than share a recording unsafely.
+#[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
+unsafe impl Send for ZarrRecording {}
+#[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
+unsafe impl Sync for ZarrRecording {}
+
 impl ZarrRecording {
+    /// The recording in the Zarr folder `path` on disk.
+    #[cfg(feature = "zarr")]
     pub fn open(path: &Path) -> DspResult<Self> {
-        let store = open_store(path)?;
+        let store = zarrs::filesystem::FilesystemStore::new(path).map_err(|e| err("open store")(format!("{}: {e}", path.display())))?;
+        let name = path.file_name().map_or_else(|| "recording.zarr".into(), |n| n.to_string_lossy().into_owned());
+        Self::from_store(name, Arc::new(store))
+    }
+
+    /// The recording `name` in `store` (a folder on disk, a browser's files, memory): read by
+    /// chunk, through the store, without a file system.
+    pub fn from_store(name: impl Into<String>, store: Arc<dyn ReadableStorageTraits + Send + Sync>) -> DspResult<Self> {
+        let name = name.into();
         let array = Array::open(store.clone(), ARRAY_PATH).map_err(|e| err("open /traces")(e.to_string()))?;
-        let root = Group::open(store, "/").map_err(|e| err("open root group")(e.to_string()))?;
+        let root = Group::open(store.clone(), "/").map_err(|e| err("open root group")(e.to_string()))?;
 
         // Data type and dimension names straight from the array metadata document
-        let meta: Value = std::fs::read_to_string(path.join("traces").join("zarr.json"))
+        let meta: Value = zarrs::storage::StoreKey::new("traces/zarr.json")
             .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
+            .and_then(|key| store.get(&key).ok().flatten())
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or(Value::Null);
         let format = match meta["data_type"].as_str() {
             None => SampleFormat::F32,
@@ -71,7 +109,7 @@ impl ZarrRecording {
             .get("sample_rate_hz")
             .or_else(|| attrs.get("sampling_frequency"))
             .and_then(Value::as_f64)
-            .ok_or_else(|| DspError::InvalidConfig(format!("{} has no sample_rate_hz attribute", path.display())))?;
+            .ok_or_else(|| DspError::InvalidConfig(format!("{name} has no sample_rate_hz attribute")))?;
         // `gain` + `unit` attributes; a legacy `gain_uv` declares µV; neither: values as stored
         let array_attrs = array.attributes();
         let unit_attr = array_attrs.get("unit").and_then(|u| serde_json::from_value::<SignalUnit>(u.clone()).ok());
@@ -81,7 +119,6 @@ impl ZarrRecording {
             (None, None) => (1.0, unit_attr.unwrap_or_default()),
         };
 
-        let name = path.file_name().map_or_else(|| "recording.zarr".into(), |n| n.to_string_lossy().into_owned());
         let mut info = RecordingInfo::new(name, channels, samples, SampleRate::new(rate)?, format, order).with_gain(gain, unit);
         if let Some(names) = attrs.get(CHANNEL_NAMES_ATTR).and_then(Value::as_array).filter(|n| n.len() == channels) {
             for (ch, n) in info.channels.iter_mut().zip(names) {
@@ -209,46 +246,11 @@ impl RecordingSource for ZarrRecording {
     }
 }
 
-/// How Zarr chunks are compressed (a bytes-to-bytes codec of the array).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ZarrCompression {
-    /// Uncompressed.
-    None,
-    /// The Zarr v3 `zstd` codec at `level` (zstd's levels; higher is smaller and slower).
-    Zstd { level: i32 },
-    /// The Zarr v3 `blosc` codec: LZ4 at `level` (0–9) after a byte shuffle of the float32
-    /// samples (faster than zstd, usually a little larger).
-    BloscLz4 { level: u8 },
-}
-
-/// The compression of [`ZarrOptions::default`]: zstd level 3, the codec Zarr's own tools default
-/// to, fast enough to keep up with the device when chunks are compressed in parallel.
-pub const DEFAULT_ZARR_COMPRESSION: ZarrCompression = ZarrCompression::Zstd { level: 3 };
-
 /// Root attribute holding the channels' names (a list, one per channel).
 pub const CHANNEL_NAMES_ATTR: &str = "channel_names";
 
-/// Layout of a written Zarr recording.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ZarrOptions {
-    /// Samples per chunk along time (chunks span every channel). Several chunks per block of
-    /// [`ZarrWriter::push`] are compressed and stored in parallel.
-    pub chunk_samples: usize,
-    pub compression: ZarrCompression,
-    /// Compress and store the completed chunks of each block on several threads (default
-    /// [`DEFAULT_PARALLEL_WRITES`]); `false`: one after the other on the calling thread.
-    pub parallel: bool,
-}
 
-/// Default of [`ZarrOptions::parallel`]: chunks are compressed and stored in parallel.
-pub const DEFAULT_PARALLEL_WRITES: bool = true;
-
-impl Default for ZarrOptions {
-    fn default() -> Self {
-        Self { chunk_samples: DEFAULT_CHUNK_SAMPLES, compression: DEFAULT_ZARR_COMPRESSION, parallel: DEFAULT_PARALLEL_WRITES }
-    }
-}
-
+#[cfg(feature = "zarr")]
 /// Streams `source` into a new Zarr v3 store (`float32`, in the source's unit: the first
 /// channel's), laid out as `options` says.
 pub fn write_zarr(source: &dyn RecordingSource, path: &Path, options: &ZarrOptions, mut progress: impl FnMut(u64, u64)) -> DspResult<()> {
@@ -275,6 +277,7 @@ pub fn write_zarr(source: &dyn RecordingSource, path: &Path, options: &ZarrOptio
     writer.finish()
 }
 
+#[cfg(feature = "zarr")]
 /// Writes a new Zarr recording in the layout [`write_zarr`] gives (`float32`
 /// `[channels, samples]`, chunked `[channels, chunk_samples]`, compressed per [`ZarrOptions`])
 /// from blocks of columns arriving in order, e.g. the windows of a pipeline run: [`Self::push`]
@@ -297,6 +300,7 @@ pub struct ZarrWriter {
     ready: Vec<(u64, Vec<f32>)>,
 }
 
+#[cfg(feature = "zarr")]
 impl ZarrWriter {
     /// Creates the store at `path` for `channels × samples` values at `sample_rate_hz` in `unit`.
     pub fn create(path: &Path, channels: usize, samples: u64, sample_rate_hz: f64, unit: &SignalUnit, options: &ZarrOptions) -> DspResult<Self> {
@@ -420,6 +424,7 @@ impl ZarrWriter {
     }
 }
 
+#[cfg(feature = "zarr")]
 /// The bytes-to-bytes codecs of `compression`.
 fn compression_codecs(compression: ZarrCompression) -> DspResult<Vec<std::sync::Arc<dyn zarrs::array::BytesToBytesCodecTraits>>> {
     use zarrs::array::codec::{BloscCodec, BloscCompressionLevel, BloscCompressor, BloscShuffleMode, ZstdCodec};
@@ -435,7 +440,7 @@ fn compression_codecs(compression: ZarrCompression) -> DspResult<Vec<std::sync::
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "zarr"))]
 mod tests {
     use super::*;
     use dspk_core::MemoryRecording;

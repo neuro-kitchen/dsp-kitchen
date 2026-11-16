@@ -16,7 +16,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use super::session::OpDoc;
+use crate::session::OpDoc;
 
 /// The recipe file version this app reads and writes (`dspk_recipe` field).
 pub const RECIPE_VERSION: u32 = 1;
@@ -146,9 +146,9 @@ impl RecipeDoc {
     }
 
     pub fn load(path: &Path) -> Result<Self, RecipeError> {
-        let text = std::fs::read_to_string(path).map_err(|e| RecipeError::Io(format!("{}: {e}", crate::domain::paths::short_path(&path))))?;
+        let text = std::fs::read_to_string(path).map_err(|e| RecipeError::Io(format!("{}: {e}", crate::paths::short_path(&path))))?;
         Self::from_json(&text).map_err(|e| match e {
-            RecipeError::Parse(_, m) => RecipeError::Parse(crate::domain::paths::short_path(&path), m),
+            RecipeError::Parse(_, m) => RecipeError::Parse(crate::paths::short_path(&path), m),
             other => other,
         })
     }

@@ -39,3 +39,27 @@ sidebar:
 | Alt+G / Alt+M / Alt+N | Label the selected units good / mua / noise |
 | G | Merge the selected units |
 | Ctrl+S | Save |
+
+## Change the keys
+
+`keybindings.toml`, in the app's folder beside [`settings.toml`](/dsp-kitchen/app/settings/#the-settings-file),
+gives each command a key or a list of keys. The app writes it with every default the first time it
+starts, and reads it at each start.
+
+```toml
+[plot]                       # the time views
+play_pause = "space"
+zoom_in = ["+", "="]
+
+[commands]                   # every command of the menus and the search, by its id
+file.open = "ctrl-o"
+
+[curation]
+merge = "g"
+next_unit = ["down", "j"]
+label_good = "alt-g"
+```
+
+Keys are written as `ctrl-shift-o`, `alt-g`, `space`, `left`, `f3`. `""` removes a binding;
+deleting a line gives the default back. A command or a key the app does not know keeps the default
+and is named in the status line, as is one key given to two commands of a section.

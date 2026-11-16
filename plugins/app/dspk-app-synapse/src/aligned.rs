@@ -171,7 +171,7 @@ pub fn section(cache: &Cache, store: &Entity<Store>, events_s: &[f64], pre_ms: f
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sorting::tests::sorting_of_units;
+    use dspk_synapse::curation::sorting::testing::sorting_of_units;
 
     #[test]
     fn cards_of_units_with_spikes_near_the_events() {

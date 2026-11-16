@@ -26,6 +26,7 @@ impl SourceSet {
     /// `dspk://` path is a recording on a server: one source, drawn from the server's pyramid and
     /// read there.
     pub fn open(path: &Path) -> Result<Self> {
+        // A recording on a server: the desktop app's own connection, or the page's
         if crate::data::remote::parse_uri(path).is_some() {
             let signal = crate::data::remote::open_uri(path)?;
             let source: Arc<dyn dspk_core::RecordingSource> = signal.source();
@@ -33,7 +34,7 @@ impl SourceSet {
             set.path = Some(path.to_path_buf());
             return Ok(set);
         }
-        let entries = crate::plugin::sources(path).with_context(|| format!("Failed to open {}", crate::domain::paths::short_path(&path)))?;
+        let entries = crate::plugin::sources(path).with_context(|| format!("Failed to open {}", dspk_session::paths::short_path(&path)))?;
         let default_id = dspk_io::default_source(&entries).map(|e| e.id.clone()).unwrap_or_default();
         let default = entries.iter().position(|e| e.id == default_id).unwrap_or(0);
         let set = Self { path: Some(path.to_path_buf()), opened: Mutex::new(vec![None; entries.len()]), entries, default };

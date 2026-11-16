@@ -12,12 +12,15 @@ use clap::Args;
 use dspk_core::{ProgressEvent, ProgressSink, RecordingSource};
 use dspk_synapse::io::{SyntheticParams, SyntheticRecording};
 use dspk_stream::files::DataRoot;
-use dspk_stream::{serve_session, server_config_with_clients, Authority, Device, OpenRecording, Pacing, RecordingOpener, ServeOptions, Server, ServerIdentity, StreamError, StreamResult};
+use dspk_stream::transport::server_config_with_pairing;
+use dspk_stream::{serve_session, Authority, Device, OpenRecording, Pacing, RecordingOpener, ServeOptions, Server, ServerIdentity, StreamError, StreamResult};
 use dspk_view::{Pyramid, PyramidBuilder, MEMORY_BASE};
 
 use crate::progress::TerminalProgress;
 
 const DEFAULT_BIND: &str = "127.0.0.1:50051";
+/// Default of --web-bind: this computer only, as --bind.
+const DEFAULT_WEB_BIND: &str = "127.0.0.1:50052";
 const LOCALHOST: &str = "localhost";
 /// Synthetic source when no recording is given: a Neuropixels-sized probe for an hour at 30 kHz.
 const SYNTHETIC_CHANNELS: usize = 384;
@@ -78,6 +81,29 @@ pub struct ServeArgs {
     /// then read the recording: trusted networks only
     #[arg(long)]
     allow_anonymous: bool,
+    /// Show a one-time pairing code at start: a computer runs `dspk pair <host:port> <code>` and
+    /// gets its certificate, with no file to hand over (10 minutes, 3 tries; more codes:
+    /// `dspk clients pair`)
+    #[arg(long)]
+    pair: bool,
+    /// The computer paired with --pair may also configure, start and stop jobs
+    #[arg(long, requires = "pair")]
+    pair_control: bool,
+    /// Also serve browsers: the folder of the web app (its index.html, .js and .wasm) on
+    /// --web-bind, with a WebSocket for the same requests. Plain HTTP when that address is
+    /// loopback (a browser counts it as secure), HTTPS otherwise: with --certificate, else with
+    /// the server's own certificate, which a browser warns about. A page signs in with a pairing
+    /// code (`--pair`, `dspk clients pair`) and keeps a token
+    #[arg(long)]
+    web: Option<PathBuf>,
+    /// TCP address of the web endpoint
+    #[arg(long, default_value = DEFAULT_WEB_BIND, requires = "web")]
+    web_bind: SocketAddr,
+    /// Plain HTTP on --web-bind even when it is not loopback: for a container whose port is
+    /// published only to this computer (`-p 127.0.0.1:50052:50052`), or behind a proxy that holds
+    /// the certificate. Anyone who reaches the port sees the pairing code and the page's token
+    #[arg(long, requires = "web", env = "DSPK_SERVE_WEB_PLAIN_HTTP")]
+    web_plain_http: bool,
     /// Clients connected at once; more are refused until one leaves
     #[arg(long, default_value_t = dspk_stream::DEFAULT_MAX_CONNECTIONS)]
     max_clients: usize,
@@ -142,13 +168,35 @@ impl RecordingOpener for FileOpener {
         if !pyramid.is_complete() {
             PyramidBuilder::default().run(source.clone(), pyramid.clone(), 0, Arc::new(AtomicBool::new(false)), Arc::new(|_| {}));
         }
-        Ok(OpenRecording::new(source, Some(pyramid)))
+        Ok(OpenRecording::new(source, Some(pyramid)).with_processor(Processor::of(path)))
+    }
+}
+
+/// Runs a view's ops for clients that cannot compute (pages), with the preview code of the
+/// desktop app (dspk-pipeline), on this server's runtime. Files the ops name (a remap's channel
+/// map) are read from the recording's folder.
+struct Processor(dspk_pipeline::processed::ProcessedChains);
+
+impl Processor {
+    fn of(recording: &Path) -> Arc<Self> {
+        Arc::new(Self(dspk_pipeline::processed::ProcessedChains::new(recording.parent().map(Path::to_path_buf).unwrap_or_default())))
+    }
+}
+
+impl dspk_stream::ViewProcessor for Processor {
+    fn processed(&self, source: Arc<dyn RecordingSource>, pyramid: Option<Arc<Pyramid>>, channels: &[usize], ops: &[String]) -> StreamResult<Arc<dyn dspk_view::SignalBackend>> {
+        let raw: Arc<dyn dspk_view::SignalBackend> = Arc::new(dspk_view::StoredSignal::new(source.clone(), pyramid));
+        Ok(self.0.make(raw, source, channels, ops).map_err(StreamError::Protocol)?)
+    }
+
+    fn warm<'a>(&'a self, channels: &'a [usize], ops: &'a [String], view: &'a dspk_view::View) -> dspk_stream::engine::WarmFuture<'a> {
+        Box::pin(async move { self.0.warm(channels, ops, view).await.map_err(|e| StreamError::Protocol(e.to_string())) })
     }
 }
 
 /// The recording every client starts with: says what it is and builds its pyramid in the
 /// background (with a progress bar) when the file next to it is missing or incomplete.
-fn start_recording(source: Arc<dyn RecordingSource>, pyramid: Pyramid) -> OpenRecording {
+fn start_recording(path: &Path, source: Arc<dyn RecordingSource>, pyramid: Pyramid) -> OpenRecording {
     let pyramid = Arc::new(pyramid);
     let info = source.info();
     println!("Serving {}: {} channels × {} samples at {} Hz ({:?})", info.name, info.channel_count(), info.samples, info.sample_rate_hz(), info.format);
@@ -165,7 +213,7 @@ fn start_recording(source: Arc<dyn RecordingSource>, pyramid: Pyramid) -> OpenRe
         }
     }
 
-    OpenRecording::new(source, Some(pyramid))
+    OpenRecording::new(source, Some(pyramid)).with_processor(Processor::of(path))
 }
 
 pub async fn run(args: &ServeArgs) -> anyhow::Result<()> {
@@ -188,7 +236,7 @@ pub async fn run(args: &ServeArgs) -> anyhow::Result<()> {
         None => None,
     };
     let recording = match initial {
-        Some((source, pyramid)) => Some(Arc::new(start_recording(source, pyramid))),
+        Some((source, pyramid)) => Some(Arc::new(start_recording(args.recording.as_deref().unwrap_or(Path::new("")), source, pyramid))),
         None => None,
     };
 
@@ -198,7 +246,9 @@ pub async fn run(args: &ServeArgs) -> anyhow::Result<()> {
     };
     let dir = super::clients::auth_dir(args.auth_dir.as_deref());
     let authority = Arc::new(Authority::open_or_create(&dir).with_context(|| format!("opening the authority in {}", dir.display()))?);
-    let tls = server_config_with_clients(&authority, &identity, args.allow_anonymous)?;
+    // Computers without a certificate may connect to pair with a code, and for nothing else
+    // unless --allow-anonymous
+    let tls = server_config_with_pairing(&authority, &identity, args.allow_anonymous)?;
     if let Some(out) = &args.certificate_out {
         std::fs::write(out, &tls.certificate).with_context(|| format!("writing {}", out.display()))?;
         println!("Certificate clients trust written to {} (`dspk receive --certificate {}`)", out.display(), out.display());
@@ -207,10 +257,16 @@ pub async fn run(args: &ServeArgs) -> anyhow::Result<()> {
     println!("Clients: certificates enrolled in {} ({enrolled} active; `dspk clients enroll <name>`)", dir.display());
     if args.allow_anonymous {
         println!("Warning: --allow-anonymous: anyone who reaches this port can read the recording");
-    } else if enrolled == 0 {
-        println!("No client is enrolled yet: nobody can connect until one is");
+    } else if enrolled == 0 && !args.pair {
+        println!("No client is enrolled yet: nobody can connect until one is (`dspk clients pair` makes a pairing code)");
     }
-    let server = Server::bind(args.bind, tls.config)?.with_max_connections(args.max_clients).with_authority(authority);
+    if args.pair {
+        let permission = if args.pair_control { dspk_stream::Permission::Control } else { dspk_stream::Permission::Read };
+        let code = authority.new_pairing_code(permission)?;
+        println!("Pairing code: {}   ({permission}; once, {} minutes)", code.display(), dspk_stream::transport::pairing::CODE_MINUTES);
+        println!("On the other computer: dspk pair <this host>:{} {}", args.bind.port(), code.display());
+    }
+    let server = Server::bind(args.bind, tls.config)?.with_max_connections(args.max_clients).with_authority(authority.clone()).with_pairing(self_signed_names(args), args.allow_anonymous);
     let options = ServeOptions {
         frame_sec: args.frame_sec,
         pacing: if args.unpaced { Pacing::Unpaced } else { Pacing::RealTime },
@@ -248,6 +304,23 @@ pub async fn run(args: &ServeArgs) -> anyhow::Result<()> {
         options,
     });
     println!("Listening on {} (Ctrl+C to stop)", server.local_addr()?);
+    if let Some(folder) = &args.web {
+        anyhow::ensure!(folder.join("index.html").is_file(), "{}: no index.html there (the web app's folder)", folder.display());
+        use dspk_stream::transport::web::WebTls;
+        // A real certificate when one is given; on this computer alone, plain HTTP (a browser
+        // counts loopback as secure, and a proxy with a real certificate can stand in front);
+        // else the server's own authority, which a browser warns about
+        let (tls, note) = match &identity {
+            ServerIdentity::Files { .. } => (WebTls::Files(identity.clone()), "the certificate given with --certificate"),
+            _ if args.web_bind.ip().is_loopback() => (WebTls::Plain, "this computer only; for other computers put `tailscale serve` or a reverse proxy in front, or give --certificate"),
+            _ if args.web_plain_http => (WebTls::PlainOffLoopback, "PLAIN HTTP off loopback (--web-plain-http): publish this port only to 127.0.0.1, or behind a proxy that holds a certificate"),
+            _ => (WebTls::Authority, "the certificate is this server's own, so a browser warns until its authority is trusted; give --certificate for a real one"),
+        };
+        let web = dspk_stream::transport::web::WebServer::bind(args.web_bind, authority.clone(), device.clone(), self_signed_names(args), Some(folder.clone()), tls).await?;
+        let scheme = if web.is_tls() { "https" } else { "http" };
+        println!("Web app: {scheme}://{} (browsers: a pairing code, then a token; {note})", web.local_addr()?);
+        tokio::spawn(web.run());
+    }
 
     tokio::select! {
         _ = shutdown() => {

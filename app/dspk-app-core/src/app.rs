@@ -196,6 +196,8 @@ pub struct WorkspaceBody {
     pipeline: Entity<crate::screens::pipeline::PipelineView>,
     analytics: Entity<crate::screens::analytics::AnalyticsWorkspace>,
     plugin_view: Option<AnyView>,
+    /// Opens "Open from server" (the start screen of a page offers only that).
+    open_browser: Rc<dyn Fn(&mut Window, &mut App)>,
     _subs: Vec<Subscription>,
 }
 
@@ -204,7 +206,33 @@ impl WorkspaceBody {
         let recent = self.store.read(cx).session.recent.clone();
         let muted = cx.theme().muted_foreground;
         let store = self.store.clone();
-        let mut screen = EmptyState::new(IconName::AudioWaveform, "Open a recording", ".bin · .cbin · .zarr · .nwb.zarr").child(
+        // A recording on its way: say so in place of the start screen (a large one takes a moment)
+        if let Some(name) = self.store.read(cx).opening.clone() {
+            let opening = EmptyState::new(IconName::AudioWaveform, format!("Opening {name}…"), "Its first views appear in a moment; the overview fills in as you look");
+            return div().id("start-screen").test_support().size_full().child(opening).into_any_element();
+        }
+        // Files on this computer, or (a page served by `dspk serve`) the recordings of its server
+        let mut screen = if crate::platform::remote::runs_alone() {
+            // A page on its own: the files the user picks, read and processed in this browser
+            EmptyState::new(IconName::AudioWaveform, "Open a recording", "A folder with your recordings (.zarr, or a .bin and its .meta), read in this browser").child(
+                h_flex()
+                    .gap_2()
+                    .child({
+                        let (store, browser) = (store.clone(), self.open_browser.clone());
+                        Button::new("start-pick-folder").primary().icon(IconName::FolderOpen).label("Open folder…").on_click(move |_, w, cx| commands::pick_page_files(&store, true, browser.clone(), w, cx))
+                    })
+                    .child({
+                        let (store, browser) = (store.clone(), self.open_browser.clone());
+                        Button::new("start-pick-files").outline().icon(IconName::File).label("Open .bin + .meta…").tooltip("Pick a .bin and its .meta (Ctrl+click both), without their folder").on_click(move |_, w, cx| commands::pick_page_files(&store, false, browser.clone(), w, cx))
+                    }),
+            )
+        } else if !crate::platform::LOCAL_FILES {
+            EmptyState::new(IconName::AudioWaveform, "Open a recording", "The recordings of this page's server").child({
+                let open = self.open_browser.clone();
+                Button::new("start-open-server").primary().icon(IconName::Server).label("Open from server…").on_click(move |_, w, cx| open(w, cx))
+            })
+        } else {
+            EmptyState::new(IconName::AudioWaveform, "Open a recording", ".bin · .cbin · .zarr · .nwb.zarr").child(
             h_flex()
                 .gap_2()
                 .children(open_actions(cx).iter().enumerate().map(|(i, &(label, pick))| {
@@ -217,7 +245,8 @@ impl WorkspaceBody {
                     let store = store.clone();
                     Button::new("start-synthetic").ghost().label("Synthetic recording").on_click(move |_, _, cx| commands::open_synthetic(&store, cx))
                 }),
-        );
+            )
+        };
         if !recent.is_empty() {
             screen = screen.child(
                 v_flex()
@@ -227,7 +256,7 @@ impl WorkspaceBody {
                     .child(div().text_xs().text_color(muted).child("Recent"))
                     .children(recent.into_iter().take(6).enumerate().map(|(i, p)| {
                         let label = file_label(&p);
-                        let dir = p.parent().map(|d| crate::domain::paths::short_path(&d)).unwrap_or_default();
+                        let dir = p.parent().map(|d| dspk_session::paths::short_path(&d)).unwrap_or_default();
                         let (open, forget) = (store.clone(), store.clone());
                         let forget_path = p.clone();
                         h_flex()
@@ -356,12 +385,13 @@ impl DspApp {
             },
         };
         commands::register(&registry, &ctx);
+        let open_browser = ctx.open_browser.clone();
         registry.extend(crate::screens::pipeline::PipelineView::commands(pipeline.downgrade(), store.clone()));
         pipeline.update(cx, |p, _| p.set_registry(registry.clone()));
 
         let body = |w: Workspace, cx: &mut Context<Self>| {
-            let (store, explore, pipeline, analytics) = (store.clone(), explore.clone(), pipeline.clone(), analytics.clone());
-            cx.new(|cx| WorkspaceBody { store: store.clone(), workspace: w, explore, pipeline, analytics, plugin_view: None, _subs: vec![cx.subscribe(&store, |_, _, _: &AppEvent, cx| cx.notify())] })
+            let (store, explore, pipeline, analytics, open_browser) = (store.clone(), explore.clone(), pipeline.clone(), analytics.clone(), open_browser.clone());
+            cx.new(|cx| WorkspaceBody { store: store.clone(), workspace: w, explore, pipeline, analytics, plugin_view: None, open_browser, _subs: vec![cx.subscribe(&store, |_, _, _: &AppEvent, cx| cx.notify())] })
         };
         let workspaces: Vec<WorkspaceSpec> = Workspace::ALL
             .into_iter()
@@ -388,14 +418,41 @@ impl DspApp {
         spec.help_menu = vec![MenuItem::command("help.keys"), MenuItem::command("help.about")];
         spec.settings = sections;
         spec.layout_toggles = vec!["view.channels".into(), "view.inspector".into()];
-        spec.remote = Some(RemoteSpec { label: "This computer".into(), icon: IconName::Server, menu: vec![MenuItem::command("remote.this"), MenuItem::Separator, MenuItem::command("remote.connect")] });
+        spec.remote = Some(RemoteSpec { label: crate::platform::host_label().into(), icon: IconName::Server, menu: vec![MenuItem::command("remote.this"), MenuItem::Separator, MenuItem::command("remote.connect")] });
         spec.status_items = Some(Rc::new(move |_, _| readings.clone().into_any_element()));
         let shell = cx.new(|cx| Shell::new(spec, window, cx));
         let _ = shell_cell.set(shell.downgrade());
 
-        // Keys: every command's (the time views bind their own)
+        // Keys: every command's (the time views bind their own), as `keybindings.toml` says in
+        // `[commands]`; the file is written with every default when it is missing
+        let commands = registry.all();
+        let defaults: Vec<(String, Vec<String>)> = commands.iter().map(|c| (c.id.to_string(), c.key.iter().map(|k| k.to_string()).collect())).collect();
+        let borrowed: Vec<(&str, Vec<&str>)> = defaults.iter().map(|(id, keys)| (id.as_str(), keys.iter().map(String::as_str).collect())).collect();
+        let slices: Vec<(&str, &[&str])> = borrowed.iter().map(|(id, keys)| (*id, keys.as_slice())).collect();
+        let probe = |key: &str| gpui_kit::KeyBinding::load(key, Box::new(gpui_kit::NoAction), None, false, None, cx).is_ok();
+        for ((id, keys), mut command) in crate::data::settings::resolve("commands", &slices, probe).into_iter().zip(commands) {
+            // A command has one key: the first the file gives it
+            let key = keys.first().map(|k| gpui_kit::SharedString::from(k.clone()));
+            if command.id.as_ref() == id && command.key != key {
+                command.key = key;
+                registry.add(command);
+            }
+        }
         for bad in registry.bind_keys(None, cx) {
             eprintln!("key binding: {bad}");
+        }
+        if store.read(cx).has_settings_file()
+            && let Some(path) = crate::data::preferences::Session::keybindings_path()
+            && let Err(e) = crate::data::settings::write_default_keybindings(&path)
+        {
+            tracing::warn!("could not write {}: {e}", path.display());
+        }
+        let notices = crate::data::settings::take_notices();
+        for notice in &notices {
+            eprintln!("{notice}");
+        }
+        if let Some(first) = notices.into_iter().next() {
+            store.update(cx, |s, cx| s.set_status(first, cx));
         }
 
         // The frame and the store follow each other: workspace, status line, recording, look
@@ -419,6 +476,13 @@ impl DspApp {
                 if matches!(e, AppEvent::RecordingChanged | AppEvent::WorkspaceChanged | AppEvent::Status | AppEvent::JobChanged) {
                     this.sync_shell(cx);
                     cx.notify();
+                }
+            }),
+            // settings.toml edited outside the app: its look
+            cx.subscribe_in(&store, window, |this, _, e: &AppEvent, window, cx| {
+                if matches!(e, AppEvent::SettingsChanged) {
+                    let choice = this.store.read(cx).session.dark;
+                    Self::apply_theme(&this.store, choice, window, cx);
                 }
             }),
             // Follow the system's light / dark until the user picks one
@@ -828,10 +892,10 @@ mod tests {
         cx.run_until_parked();
         let source = cx.update(|cx| store.read(cx).sources().unwrap().default_entry().id.clone());
         let view = cx.update(|cx| store.update(cx, |s, cx| s.view_for_source(&source, cx))).expect("a view of the source");
-        cx.update(|cx| store.update(cx, |s, cx| s.execute(crate::domain::command::SessionCommand::SelectView { view: view.clone() }, cx)).unwrap());
+        cx.update(|cx| store.update(cx, |s, cx| s.execute(dspk_session::command::SessionCommand::SelectView { view: view.clone() }, cx)).unwrap());
         cx.run_until_parked();
         let node = crate::screens::pipeline::channel_table::Rows { base: 0, inputs: vec![3, 1, 2], names: vec![None; 3] }.node();
-        cx.update(|cx| store.update(cx, |s, cx| s.execute(crate::domain::command::SessionCommand::AddOp { view, node, index: Some(0), id: None }, cx)).unwrap());
+        cx.update(|cx| store.update(cx, |s, cx| s.execute(dspk_session::command::SessionCommand::AddOp { view, node, index: Some(0), id: None }, cx)).unwrap());
         cx.run_until_parked();
         cx.update(|cx| assert_eq!(store.read(cx).selection(&source), &[3, 1, 2]));
     }
@@ -841,7 +905,7 @@ mod tests {
     /// drop); between steps, dropping is refused.
     #[gpui_kit::test]
     fn explore_follows_remaps_anywhere(cx: &mut TestAppContext) {
-        use crate::domain::command::SessionCommand;
+        use dspk_session::command::SessionCommand;
         use crate::screens::pipeline::channel_table::Rows;
         let (window, store, _app) = open(cx);
         cx.update(|cx| {
@@ -888,7 +952,7 @@ mod tests {
     /// fit in the background; an edit after it reuses the fit.
     #[gpui_kit::test]
     fn whitening_previews_fitted(cx: &mut TestAppContext) {
-        use crate::domain::command::SessionCommand;
+        use dspk_session::command::SessionCommand;
         let (window, store, _app) = open(cx);
         cx.update(|cx| {
             let ds = Dataset::generate_synthetic(6, 10_000.0, 4.0);
@@ -991,8 +1055,8 @@ mod tests {
 
     #[gpui_kit::test]
     fn pipeline_canvas_shows_and_edits_the_graph(cx: &mut TestAppContext) {
-        use crate::domain::command::SessionCommand;
-        use crate::domain::session::RecordingRef;
+        use dspk_session::command::SessionCommand;
+        use dspk_session::session::RecordingRef;
         let (window, store, app) = open(cx);
         cx.update(|cx| {
             store.update(cx, |s, cx| {
@@ -1026,12 +1090,12 @@ mod tests {
         // A recipe (a group of ops) is one card with its tab
         cx.update(|cx| {
             let pipeline = app.read(cx).pipeline.clone();
-            let recipe = crate::domain::recipe::builtin().into_iter().next().expect("a built-in recipe");
+            let recipe = dspk_session::recipe::builtin().into_iter().next().expect("a built-in recipe");
             pipeline.update(cx, |p, cx| p.add_recipe(recipe, cx));
         });
         cx.run_until_parked();
         let recipe_node = cx.update(|cx| {
-            store.read(cx).doc.graph.nodes.iter().find(|n| matches!(n.kind, crate::domain::graph::NodeKind::Recipe { .. })).map(|n| n.id.clone())
+            store.read(cx).doc.graph.nodes.iter().find(|n| matches!(n.kind, dspk_session::graph::NodeKind::Recipe { .. })).map(|n| n.id.clone())
         });
         let recipe_node = recipe_node.expect("the recipe went into the graph as one node");
         cx.update_window(window, |_, window, cx| {
@@ -1271,7 +1335,7 @@ mod tests {
     /// the session (Pipeline) unless it holds work: a view with ops stays.
     #[gpui_kit::test]
     fn closed_views_leave_no_trace_unless_they_hold_work(cx: &mut TestAppContext) {
-        use crate::domain::command::SessionCommand;
+        use dspk_session::command::SessionCommand;
         test_formats();
         let dir = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/dspk-app-core-tests"));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1330,7 +1394,7 @@ mod tests {
     /// the report's ops one by one: after each, the view's preview exists, a window of `window_s`
     /// seconds reads processed (not raw) within `limit_s`, and the view draws.
     fn ops_on_a_second_source(cx: &mut TestAppContext, path: std::path::PathBuf, source: &str, window_s: f64, limit_s: f64) {
-        use crate::domain::command::SessionCommand;
+        use dspk_session::command::SessionCommand;
         test_formats();
         let (window, store, app) = open(cx);
         cx.update(|cx| store.update(cx, |s, cx| s.open(path.clone(), cx)));
@@ -1357,7 +1421,7 @@ mod tests {
             let n = ((window_s * rate) as u64).min(preview.info().samples);
             let v = dspk_view::View { channels: vec![0, 1], start: 0, end: n, width: 2000 };
             let (mut a, mut b) = (dspk_view::Envelope::Samples(Vec::new()), dspk_view::Envelope::Samples(Vec::new()));
-            let t0 = std::time::Instant::now();
+            let t0 = web_time::Instant::now();
             preview.view(&v, &mut a).unwrap();
             let took = t0.elapsed().as_secs_f64();
             eprintln!("{name}: {window_s} s window in {:.0} ms", took * 1e3);
@@ -1386,8 +1450,8 @@ mod tests {
     /// canvas does) shows in Explore's view at once, back on Explore, without reopening anything.
     #[gpui_kit::test]
     fn pipeline_edits_show_in_explore(cx: &mut TestAppContext) {
-        use crate::domain::command::SessionCommand;
-        use crate::domain::graph::NodeKind;
+        use dspk_session::command::SessionCommand;
+        use dspk_session::graph::NodeKind;
         test_formats();
         let dir = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/dspk-app-core-tests"));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1423,8 +1487,8 @@ mod tests {
     /// is what Explore draws at once: the view the recording opened with, empty, leaves.
     #[gpui_kit::test]
     fn a_chain_built_in_the_pipeline_shows_in_explore(cx: &mut TestAppContext) {
-        use crate::domain::command::{view_kind, SessionCommand};
-        use crate::domain::graph::NodeKind;
+        use dspk_session::command::{view_kind, SessionCommand};
+        use dspk_session::graph::NodeKind;
         test_formats();
         let dir = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/dspk-app-core-tests"));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1460,14 +1524,14 @@ mod tests {
     #[gpui_kit::test]
     #[ignore = "needs .datasets/kilosort4/ZFM-02370_mini.imec0.ap.short.bin"]
     fn pipeline_edits_on_the_kilosort_sample(cx: &mut TestAppContext) {
-        use crate::domain::command::SessionCommand;
-        use crate::domain::graph::NodeKind;
+        use dspk_session::command::SessionCommand;
+        use dspk_session::graph::NodeKind;
         let root = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."));
         let path = std::fs::canonicalize(root.join(".datasets/kilosort4/ZFM-02370_mini.imec0.ap.short.bin")).unwrap();
         let dir = root.join("target/dspk-app-core-tests");
         std::fs::create_dir_all(&dir).unwrap();
         let doc = dir.join("start-session.json");
-        let chain = serde_json::json!({"dspk_session": crate::domain::session::SESSION_VERSION, "graph": {"nodes": [
+        let chain = serde_json::json!({"dspk_session": dspk_session::session::SESSION_VERSION, "graph": {"nodes": [
             {"id": "s3", "kind": {"type": "source", "recording": {"path": path, "source": "main"}}},
             {"id": "iir", "kind": {"type": "op", "node": {"op": "iir", "band": "highpass", "cutoff": [300.0]}}},
             {"id": "v1", "kind": {"type": "view", "name": "ZFM"}}],

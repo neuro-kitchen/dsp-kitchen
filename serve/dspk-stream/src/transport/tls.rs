@@ -10,7 +10,7 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 
 use super::auth::{Authority, ClientIdentity};
 use crate::error::{StreamError, StreamResult};
-use crate::protocol::ALPN;
+use crate::protocol::{ALPN, PAIR_ALPN};
 
 /// Requests (view streams) a client may have open at once; one more for its control stream.
 pub const MAX_CONCURRENT_REQUESTS: u32 = 8;
@@ -98,6 +98,17 @@ pub fn server_config(identity: &ServerIdentity) -> StreamResult<ServerTls> {
 /// ([`ServerIdentity::SelfSigned`]) a certificate the authority issues for its names; clients
 /// then trust the authority (the returned `certificate` is its CA).
 pub fn server_config_with_clients(authority: &Authority, identity: &ServerIdentity, anonymous: bool) -> StreamResult<ServerTls> {
+    server_config_for(authority, identity, anonymous, false)
+}
+
+/// As [`server_config_with_clients`], and computers without a certificate may also connect to
+/// pair with a code ([`crate::protocol::PAIR_ALPN`]; use with [`super::Server::with_pairing`],
+/// which lets them do nothing else unless `anonymous`).
+pub fn server_config_with_pairing(authority: &Authority, identity: &ServerIdentity, anonymous: bool) -> StreamResult<ServerTls> {
+    server_config_for(authority, identity, anonymous, true)
+}
+
+fn server_config_for(authority: &Authority, identity: &ServerIdentity, anonymous: bool, pairing: bool) -> StreamResult<ServerTls> {
     let (chain, key, certificate) = match identity {
         ServerIdentity::Files { .. } => {
             let (chain, key) = identity_chain(identity)?;
@@ -112,16 +123,20 @@ pub fn server_config_with_clients(authority: &Authority, identity: &ServerIdenti
     let mut roots = rustls::RootCertStore::empty();
     roots.add(CertificateDer::from(authority.ca_certificate().to_vec())).map_err(tls_error)?;
     let mut verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots));
-    if anonymous {
+    if anonymous || pairing {
         verifier = verifier.allow_unauthenticated();
     }
     let verifier = verifier.build().map_err(tls_error)?;
     let crypto = rustls::ServerConfig::builder().with_client_cert_verifier(verifier).with_single_cert(chain, key).map_err(tls_error)?;
-    finish_server(crypto, certificate)
+    finish_server_for(crypto, certificate, if pairing { &[ALPN, PAIR_ALPN] } else { &[ALPN] })
 }
 
-fn finish_server(mut crypto: rustls::ServerConfig, certificate: Vec<u8>) -> StreamResult<ServerTls> {
-    crypto.alpn_protocols = vec![ALPN.to_vec()];
+fn finish_server(crypto: rustls::ServerConfig, certificate: Vec<u8>) -> StreamResult<ServerTls> {
+    finish_server_for(crypto, certificate, &[ALPN])
+}
+
+fn finish_server_for(mut crypto: rustls::ServerConfig, certificate: Vec<u8>, protocols: &[&[u8]]) -> StreamResult<ServerTls> {
+    crypto.alpn_protocols = protocols.iter().map(|p| p.to_vec()).collect();
     let quic = quinn::crypto::rustls::QuicServerConfig::try_from(crypto).map_err(tls_error)?;
     let mut config = quinn::ServerConfig::with_crypto(Arc::new(quic));
     config.transport_config(Arc::new(server_transport()));
@@ -129,7 +144,7 @@ fn finish_server(mut crypto: rustls::ServerConfig, certificate: Vec<u8>) -> Stre
 }
 
 /// The certificate chain and key `identity` names (a new self-signed one, or PEM files).
-fn identity_chain(identity: &ServerIdentity) -> StreamResult<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
+pub(crate) fn identity_chain(identity: &ServerIdentity) -> StreamResult<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
     Ok(match identity {
         ServerIdentity::SelfSigned { names } => {
             let generated = rcgen::generate_simple_self_signed(names.clone()).map_err(tls_error)?;
@@ -154,6 +169,16 @@ pub fn client_config(trust: &ServerTrust) -> StreamResult<quinn::ClientConfig> {
 /// The QUIC client configuration for `trust`, presenting `identity` (from `dspk clients enroll`)
 /// when given.
 pub fn client_config_with(trust: &ServerTrust, identity: Option<&ClientIdentity>) -> StreamResult<quinn::ClientConfig> {
+    client_config_for(trust, identity, ALPN)
+}
+
+/// The configuration of a pairing connection: encrypted, the server not yet trusted (SPAKE2
+/// with the code then decides who is who), no client certificate.
+pub(crate) fn pairing_client_config() -> StreamResult<quinn::ClientConfig> {
+    client_config_for(&ServerTrust::DangerAcceptAnyCertificate, None, PAIR_ALPN)
+}
+
+fn client_config_for(trust: &ServerTrust, identity: Option<&ClientIdentity>, protocol: &[u8]) -> StreamResult<quinn::ClientConfig> {
     let builder = match trust {
         ServerTrust::Certificates(certificates) => {
             let mut roots = rustls::RootCertStore::empty();
@@ -170,7 +195,7 @@ pub fn client_config_with(trust: &ServerTrust, identity: Option<&ClientIdentity>
             .map_err(tls_error)?,
         None => builder.with_no_client_auth(),
     };
-    crypto.alpn_protocols = vec![ALPN.to_vec()];
+    crypto.alpn_protocols = vec![protocol.to_vec()];
     let quic = quinn::crypto::rustls::QuicClientConfig::try_from(crypto).map_err(tls_error)?;
     let mut config = quinn::ClientConfig::new(Arc::new(quic));
     config.transport_config(Arc::new(client_transport()));

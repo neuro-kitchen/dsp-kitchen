@@ -1,5 +1,6 @@
 //! Domain-independent recording formats.
 
 pub mod raw;
-#[cfg(feature = "zarr")]
+pub mod zarr_options;
+#[cfg(feature = "zarr-read")]
 pub mod zarr_traces;

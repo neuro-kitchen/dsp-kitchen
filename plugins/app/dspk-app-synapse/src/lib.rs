@@ -34,7 +34,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use dspk_app_core::data::store::{AppEvent, Store};
-use dspk_app_core::domain::session::ViewDoc;
+use dspk_session::session::ViewDoc;
 use dspk_app_core::navigation::route::Workspace;
 use dspk_app_core::plugin::{AppPlugin, Layers, OverlayMark, OverlayUnit, Raster, RasterRow, SourceOpener, TraceOverlay};
 use dspk_core::RecordingSource;
@@ -232,11 +232,11 @@ impl SynapseState {
         }
     }
 
-    /// Writes `path`'s curation log into the store (`curation.json`).
+    /// Writes `path`'s curation log into the store (`dspk-curation.json`).
     pub fn save_curation(&mut self, path: &PathBuf, cx: &mut Context<Self>) {
         let Some(log) = self.curations.get_mut(path) else { return };
         let status = match log.save(path) {
-            Ok(file) => format!("Curation saved: {} ({} edits)", dspk_app_core::domain::paths::short_path(&file), log.ops.len()),
+            Ok(file) => format!("Curation saved: {} ({} edits)", dspk_session::paths::short_path(&file), log.ops.len()),
             Err(e) => format!("Curation not saved: {e:#}"),
         };
         self.store.update(cx, |s, cx| s.set_status(status, cx));
@@ -334,6 +334,8 @@ impl AppPlugin for SynapsePlugin {
     fn install(&self, store: &Entity<Store>, cx: &mut App) {
         let state = cx.new(|cx| SynapseState::new(store.clone(), cx));
         cx.set_global(Synapse(state));
+        // Curation's keys join keybindings.toml (its defaults are written with the app's)
+        let _ = crate::curation_ws::curation_keys();
         // The device and its PCA kernels get ready while the user opens a recording, so the
         // first unit clicked in Curation does not wait for them (seconds, cold)
         cx.background_spawn(async {
@@ -445,7 +447,7 @@ impl AppPlugin for SynapsePlugin {
         }
     }
 
-    fn recording_epochs(&self, path: &std::path::Path, start_sec: f64) -> Vec<dspk_app_core::domain::epoch::EpochDoc> {
+    fn recording_epochs(&self, path: &std::path::Path, start_sec: f64) -> Vec<dspk_session::epoch::EpochDoc> {
         if !dspk_synapse::io::nwb::is_nwb_zarr(path) {
             return Vec::new();
         }
@@ -459,7 +461,7 @@ impl AppPlugin for SynapsePlugin {
             .map(|i| {
                 // `epochs` → epoch, `trials` → trial: the type; named after the table and row
                 let kind = i.table.strip_suffix('s').unwrap_or(&i.table).to_string();
-                dspk_app_core::domain::epoch::EpochDoc {
+                dspk_session::epoch::EpochDoc {
                     id: String::new(),
                     recording: path.to_path_buf(),
                     name: format!("{kind} {}", i.row + 1),

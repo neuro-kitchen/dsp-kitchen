@@ -4,7 +4,187 @@ All notable changes, newest first. Versions follow [Semantic Versioning](https:/
 0.0.x any release may change the API. The crates, the Python package and `dspk-sorters` share one
 version number.
 
-## Unreleased
+## 0.0.11 — 2026-11-16
+
+### Added
+
+- **Two new crates on crates.io:** `dspk-session` (the session document and the derived store
+  next to a recording) and `dspk-table` (one Polars for every crate).
+
+- **The app in the browser, on its own** (GitHub Pages, `/dsp-kitchen/viewer/`): with no server
+  behind the page, the app starts its engine in a worker of its own (`dspk-engine-web`: a
+  single-thread module that owns the browser's WebGPU) and talks to it with the same requests as
+  `dspk serve` (`dspk_stream::worker_client`, a third `Link`). *Open files…* hands it a `.bin` and
+  its `.meta` (dspk's JSON layout; SpikeGLX next), read in pieces in the worker, so nothing is
+  copied whole; a view's ops run on WebGPU (views only without it, said in the status line;
+  whitening not yet). A service worker of the page (`isolate-sw.js`) makes it cross-origin
+  isolated where the host sends no headers, so the page draws on threads there too.
+  **Zarr recordings** (`.zarr` folders: zstd, Blosc-LZ4, gzip, sharded) open in the viewer too,
+  read by chunk (`dspk_io::ZarrRecording::from_store` over `dspk_io::ByteSourceStore`; dspk-io's
+  new `zarr-read` feature needs no file system; zarrs' C codecs compiled for wasm32 by clang).
+  **Open folder…** hands the engine every file of a folder (its recordings listed by the same
+  browser as a server's; one recording opens directly); **Open files…** picks them by hand. The
+  page learns whether `dspk serve` sent it from `./dspk-serve.json` (the build ships
+  `{"server": null}`), so a page on its own never asks for a pairing code.
+- **Reading the device back without blocking:** `dspk_ops::core::buffer::{download_async,
+  download_prefix_async}`, `Preview::warm_async` and `ProcessedSignal::warm_view_async`
+  (dspk-pipeline): a browser hands back a WebGPU result only asynchronously. In a browser the
+  device is opened with `dspk_core::compute::open_browser_gpu`.
+- **`dspk_stream::engine`:** what a server does with a recording (`OpenRecording`, the view
+  checks, `answer_view`), without a network or an async runtime, so `dspk serve` and the
+  browser's engine answer a view with one code path.
+- **`dspk_io::ByteSource`:** a raw recording read through bytes at an offset
+  (`RawRecording::from_source`), where a file cannot be mapped.
+
+- **The app in the browser, from the image:** `ghcr.io/neuro-kitchen/dspk` serves the web app
+  (`-p 127.0.0.1:50052:50052`, then `http://localhost:50052`); the page draws, the server
+  computes. Built by `app/dspk-app-web/build.sh` (nightly Rust, pinned) into `dist/`: one page
+  whose loader checks the browser before downloading the app (hardware drawing, WebGPU or WebGL2,
+  threads) and refuses to start in software drawing, saying how to turn the GPU on; no `?threads`
+  switch any more. `dspk serve --web-plain-http` serves plain HTTP off loopback (a container's
+  port published to the host's loopback, or behind a proxy).
+- **`dspk serve --web` sends Brotli-compressed files** (`<file>.br`) to browsers that accept them,
+  with ETags (a reload downloads nothing unchanged).
+
+- **A notebook for Google Colab** (`playground/11_colab/dspk_neuropixels.ipynb`): installs `dspk`
+  from PyPI, downloads Kilosort4's test recording, cleans it on the GPU, sorts it with dspk's
+  Kilosort4 and plots the units. Nothing to install on your own computer.
+- **`settings.toml` and `keybindings.toml`** in the app's folder (`~/.config/dspk-app/`): two
+  files to edit by hand. `settings.toml` holds the look, what opens at start, the compute runtime
+  and where fetched results go; the Settings screen writes the same file and keeps its comments,
+  and an edit made outside is applied while the app runs (the runtime at the next start).
+  `keybindings.toml` gives a key, or a list of keys, to each command, in sections: `[plot]` (the
+  time views), `[commands]` (every command of the menus and the search, by its id) and
+  `[curation]`; `""` removes a binding; it is read when the app starts. Both are written with
+  every default the first time, and a line that is not understood keeps its default and is named
+  in the status line. `workbench.json` keeps what the app itself remembers (recent files, layout).
+- **Phy folders in Curation.** *Attach sorting…* takes a Phy / Kilosort folder: it is imported
+  once as `<folder>.sorting.zarr` next to it, which stays the working format. *To Phy* in Curation
+  writes the curated sorting back as phy's own save does (`spike_clusters.npy`,
+  `cluster_group.tsv`, `cluster_info.tsv`, originals kept as `.bak`), into the folder it came
+  from or one you pick, so the folder stays valid in phy. In the library:
+  `dspk_synapse::curation::phy::{import_phy, export_phy}`; on the command line:
+  `dspk convert <x.sorting.zarr> <phy folder> --curated`.
+- **`dspk serve --web <folder>`: an endpoint for browsers** (`dspk_stream::transport::web`):
+  `--web-bind` (default 127.0.0.1:50052) serves the web app's folder and a WebSocket that carries
+  the same requests as a QUIC session (views, files, opening a recording, jobs). A page signs in
+  with a pairing code and keeps a token, which is a client in the same registry (`dspk clients
+  list`, `revoke`). The live signal and downloads are not offered to browsers yet. The web app
+  itself is not published yet.
+  - **No browser warning on your own computer:** on a loopback address the endpoint is plain
+    HTTP, which browsers count as secure (reach a cluster the same way through
+    `ssh -L 50052:127.0.0.1:50052`). On other addresses it is HTTPS: `--certificate` and
+    `--private-key` now apply to it, else the server's own certificate (a browser warns). Plain
+    HTTP is never served off loopback. See the new docs page *The endpoint for browsers*.
+- **Views processed on the server, for clients that cannot compute** (a page): a view request
+  may carry the view's processing steps (`ViewRequest.processing`: its channels and its enabled
+  ops as pipeline nodes); the server runs them on its device with the code of the app's preview
+  and answers the processed view, keeping the last four chains of each open recording. In
+  `dspk-stream` this is the trait `ViewProcessor` (set with `OpenRecording::with_processor`); the
+  command line implements it with `dspk-pipeline`. A request without it is answered as before.
+- **Pairing with a short code, in `dspk-stream`** (`transport::pairing`, as lucem): the server
+  makes a one-time code such as `42-8317-2956` (10 minutes, 3 tries); both sides prove they know
+  it without sending it (SPAKE2), the computer makes its own key pair and the server issues its
+  certificate. The exchange is steps over plain messages, with no transport in it.
+- **`dspk pair <host:port> <code>`**: a computer gets its identity file from a server with a
+  code, no file to hand over. On the server: `dspk serve --pair` shows a code at start
+  (`--pair-control` to let that computer run jobs), `dspk clients pair` makes one for a running
+  server, `dspk clients codes` lists the live ones without their secrets (`--cancel <id|all>`).
+  A computer without a certificate can connect only to pair, unless `--allow-anonymous`.
+
+### Fixed
+
+- **The viewer no longer freezes on a large recording:** its overview is built in pieces between
+  requests (as `dspk serve` builds it), not all at open; the page shows "Opening …" meanwhile.
+- **The viewer offers only what it can open:** a `.zarr` is a recording when it holds dspk's
+  `/traces` array (NWB, `.sorting.zarr`, `.epochs.zarr` are listed, not offered; NWB says it opens
+  in the desktop app or the container for now). A page on its own titles its list "Open a
+  recording" and offers no Fetch. In Chrome and Edge the folder is picked with the File System
+  Access API (a "view files" permission, not Chrome's "upload" prompt of the file input, which
+  other browsers keep).
+
+- **On a page, "Open recording…" (Ctrl+O) and "Open folder…" no longer fail with "File dialog
+  failed"**: they open the server's recordings, or (a page on its own) pick files for the engine.
+  Buttons that need the system's file dialog (channel-map import / export, Attach sorting, To
+  Phy, Settings' browse) are disabled there with a tooltip saying why.
+- A refused view (outside the recording, too large) is refused as a request again, not as the
+  envelope's error (regression of the engine move, caught by the tests).
+
+- **A view processed on the server held up the recording's other views** while its chain was
+  made (a whitening fitted: seconds): each chain is now made in a slot of its own, once, outside
+  the lock; a chain that failed is tried again rather than kept.
+- **A remap's channel-map file named in a view processed on the server** is read from the
+  recording's folder (it was read from nowhere, so only inline maps worked).
+
+### Changed
+
+- **One way to make a processed block, everywhere:** `Preview::warm_async` (dspk-pipeline) makes
+  every preview block, reading the device back asynchronously; the desktop's synchronous reads
+  wait on it (CubeCL's `block_on`; in a browser an error rather than a hang), `dspk serve` warms
+  a processed view asynchronously before answering it (`ViewProcessor::warm`,
+  `dspk_stream::engine::warm_view`), the browser's engine awaits it. Sources without stored
+  reads (float64) go through the same path as float32 scaled on the host. The chains a client
+  asked for are kept by `dspk_pipeline::processed::ProcessedChains`, shared by the server's and
+  the engine's processors. Preview tests pass on wgpu, CUDA and CPU.
+- **A page's status bar says where its processing happens** ("on the server … (wgpu)", "on
+  this browser's GPU", or "views only: why") instead of "no compute device"; the server tells
+  the page its runtime (`WebWelcome.runtime`).
+
+- **One app for the desktop and the browser.** What differs by target is in one place,
+  `dspk_app_core::platform` (threads, locks on the UI thread, the title bar's label, local files,
+  servers), as Kotlin Multiplatform's `expect` / `actual`; the rest of the app has no `cfg` of its
+  own. `dspk-app-web` is an entry point only.
+- **One remote client for every connection** (`dspk_stream::remote`): `RemoteSignal` and
+  `RemoteSource` read through a `Link`, a QUIC session on a computer (`SessionLink`) or the page's
+  WebSocket in a browser (`dspk_stream::web_client`, which also holds the page's side of pairing).
+  `RemoteSignal::processed` asks the server for a view's processing (for a client that does not
+  compute). `MAX_VIEW_VALUES` / `MAX_VIEW_COLUMNS` moved to `dspk_stream::protocol`.
+- **Code moved out of the app and the command line** into the libraries: `dspk_view::StoredSignal`
+  (a recording with a pyramid built elsewhere; was the server's own copy),
+  `ProcessedSignal::of_json_ops` (dspk-pipeline), `dspk_synapse::curation::split::{inside,
+  spikes_in_polygon}` (the lasso) and `dspk_synapse::curation::phy::export_target` (where *To Phy*
+  writes).
+
+- **The preview of a view's processing lives in `dspk-pipeline`** (feature `view`):
+  `dspk_pipeline::processed::{ProcessedSignal, PreviewSource}` and
+  `dspk_pipeline::preview::{view_plan, ViewPlan}` moved out of the app, so the server and the app
+  run one code path. `ProcessedSignal::of_ops` builds one from a view's ops, fitting whitenings.
+- **`dspk_stream::pair`** holds the pairing messages and a client's side of the exchange
+  (`transport::pairing` keeps the server's side and re-exports them).
+
+- **New crate `dspk-session`** (`engine/dspk-session`): the session document, its commands and
+  their pure `apply`, the graph (sources → operations → views → writes), recipes, the timeline and
+  epochs. It was the `domain` module of `dspk-app-core`; nothing in it depended on the UI. The app
+  imports it, and the command line, Python or an agent can now use the same document.
+  `dspk_app_core::domain` is gone: use `dspk_session`.
+- **The curation log is `dspk-curation.json`** (it was `curation.json`, inside the `.sorting.zarr`):
+  phy and SpikeInterface keep merge proposals in a `curation.json` of another format. A log under
+  the earlier name is still read and is renamed at the next save; a `curation.json` that is not
+  dspk's is left alone.
+- **Curation is in `dspk-synapse`** (`dspk_synapse::curation`): the sorting as the views use it
+  (spikes indexed by time, extents, waveforms from windows of the recording, PCA, amplitudes,
+  comparison of two sortings), the log of edits and applying it, and similar units. It was in the
+  app's plugin, so only the app could use it.
+- **The live preview's device code is in `dspk-pipeline`** (`dspk_pipeline::preview::Preview`): a
+  chain of operations run on the device window by window with its settling halo, the processed
+  block cached. It was inside the app; the app keeps the part that belongs to a view (what to draw
+  raw, folding samples into columns).
+- **What is saved next to a recording is `dspk-session`'s** (`dspk_session::derived`): the
+  `<recording>.dspk.zarr` store, its epochs and its event sets were read and written by the app.
+- **New crate `dspk-table`** (`crates/dspk-table`): tables as Polars data frames for every crate.
+  It is the one crate that depends on Polars (re-exported as `dspk_table::polars` and
+  `dspk_table::prelude`), with Parquet in and out and the sorted, filtered row order the views ask
+  for. `dspk-pipeline` writes its events tables through it; `events_frame` returns the same frame.
+
+### Fixed
+
+- **"Building overview" no longer stays on screen for a recording on a server** whose overview
+  was already complete: the client told its listeners only from its polling, which starts after
+  an incomplete answer.
+
+- `dspk-app --version` and the Python package's `dspk --version` print the version (both refused the
+  flag).
+
 
 ## 0.0.10 — 2026-11-12
 

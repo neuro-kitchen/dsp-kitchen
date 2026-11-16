@@ -1,17 +1,20 @@
-//! What the app derives from a recording lives in one Zarr store next to it,
+//! What a session derives from a recording lives in one Zarr store next to it,
 //! `<recording>.dspk.zarr`, organized in groups as dspk's other Zarr outputs (`.nwb.zarr`,
 //! `.sorting.zarr`), instead of many files beside the data:
 //!
 //! ```text
 //! rec.bin
 //! rec.dspk.zarr/               root attributes: dspk_derived (version), recording
-//!   epochs/                    start_s, end_s; ids, names, kinds, notes as attributes (data::epochs)
+//!   epochs/                    start_s, end_s; ids, names, kinds, notes as attributes ([`epochs`])
 //!   events/<name>/             an event set: channel, onset_sample, offset_sample, peak_sample,
-//!                              peak_value; sample rate and channel names as attributes (data::events)
+//!                              peak_value; sample rate and channel names as attributes ([`events`])
 //! ```
 //!
 //! Sortings stay in their own stores (`.sorting.zarr`, Phy folders, NWB), as those formats lay out.
 //! Python reads every group with `zarr.open`.
+
+pub mod epochs;
+pub mod events;
 
 use std::path::{Path, PathBuf};
 

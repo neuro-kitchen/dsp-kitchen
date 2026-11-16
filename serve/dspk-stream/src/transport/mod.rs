@@ -6,19 +6,22 @@ pub mod auth;
 mod client;
 pub mod files;
 pub mod jobs;
+pub mod pairing;
 mod remote_signal;
 mod server;
 pub mod tls;
+pub mod web;
 
 pub use auth::{Authority, ClientIdentity, ClientRecord, Enrollment, Peer, Permission};
 
 pub use client::{Session, SignalReceiver};
-pub use remote_signal::{RemoteSignal, RemoteSource};
+pub use crate::remote::{RemoteSignal, RemoteSource};
+pub use remote_signal::SessionLink;
 pub use server::{
-    checked_view, serve_recording, serve_session, Device, OpenRecording, Pacing, RecordingOpener, ServeOptions, Server, REFUSED_CLIENT, DEFAULT_FRAME_SEC, DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_REQUEST_BYTES, DEFAULT_QUEUE_FRAMES,
+    checked_view, serve_recording, serve_session, Device, OpenRecording, Pacing, RecordingOpener, ViewProcessor, ServeOptions, Server, REFUSED_CLIENT, DEFAULT_FRAME_SEC, DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_REQUEST_BYTES, DEFAULT_QUEUE_FRAMES,
     MAX_VIEW_COLUMNS, MAX_VIEW_VALUES,
 };
-pub use tls::{client_config, client_config_with, server_config, server_config_with_clients, ServerIdentity, ServerTls, ServerTrust};
+pub use tls::{client_config, client_config_with, server_config, server_config_with_clients, server_config_with_pairing, ServerIdentity, ServerTls, ServerTrust};
 
 #[cfg(test)]
 mod tests {
@@ -116,12 +119,12 @@ mod tests {
         let info = recording().info().clone();
         let mut big = info.clone();
         big.samples = u64::MAX / 2;
-        let request = wire::ViewRequest { channels: vec![0, 1, 2, 3], start: 0, end: big.samples, width: MAX_VIEW_COLUMNS };
+        let request = wire::ViewRequest { channels: vec![0, 1, 2, 3], start: 0, end: big.samples, width: MAX_VIEW_COLUMNS, processing: None };
         assert!(checked_view(&request, &big).is_ok(), "4 channels × 65536 columns is within the limit");
         let mut many = info;
         many.channels = (0..1024).map(|_| many.channels[0].clone()).collect();
         many.samples = u64::MAX / 2;
-        let request = wire::ViewRequest { channels: (0..1024).collect(), start: 0, end: many.samples, width: MAX_VIEW_COLUMNS };
+        let request = wire::ViewRequest { channels: (0..1024).collect(), start: 0, end: many.samples, width: MAX_VIEW_COLUMNS, processing: None };
         assert!(checked_view(&request, &many).is_err(), "1024 × 65536 values is over the limit");
     }
 
@@ -165,6 +168,46 @@ mod tests {
         let open = start_with_clients(authority.clone(), true);
         let session = Session::connect(open, LOCALHOST, client_config(&trust).unwrap()).await.unwrap();
         session.close().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A computer pairs with a code over QUIC, then connects with the certificate it got; before
+    /// pairing it may do nothing else, a wrong code and a used code are refused.
+    #[tokio::test]
+    async fn a_computer_pairs_with_a_code_then_connects() {
+        use super::pairing::pair;
+        let dir = std::env::temp_dir().join(format!("dspk-stream-pair-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let authority = Arc::new(Authority::open_or_create(&dir).unwrap());
+        let names = vec![LOCALHOST.to_string()];
+        let tls = super::tls::server_config_with_pairing(&authority, &ServerIdentity::SelfSigned { names: names.clone() }, false).unwrap();
+        let server = Server::bind("127.0.0.1:0".parse().unwrap(), tls.config).unwrap().with_authority(authority.clone()).with_pairing(names.clone(), false);
+        let addr = server.local_addr().unwrap();
+        let source: Arc<dyn RecordingSource> = recording();
+        tokio::spawn(async move {
+            while let Some((connection, _peer)) = server.accept().await {
+                tokio::spawn(serve_recording(connection, source.clone(), None, ServeOptions::default()));
+            }
+        });
+
+        // Without a certificate: no session (pairing only)
+        let anyone = client_config_with(&ServerTrust::DangerAcceptAnyCertificate, None).unwrap();
+        assert!(Session::connect(addr, LOCALHOST, anyone).await.is_err(), "not paired yet");
+
+        let code = authority.new_pairing_code(Permission::Read).unwrap();
+        let wrong = format!("{}-0000-0000", code.id);
+        assert!(pair(addr, &wrong, "mallory").await.is_err(), "a wrong code");
+        let paired = pair(addr, &code.display(), "laptop").await.unwrap();
+        assert_eq!((paired.names.clone(), paired.permission), (names, Permission::Read));
+        assert!(pair(addr, &code.display(), "again").await.is_err(), "a code works once");
+
+        // The identity it got opens a session, trusting the server's CA it was given
+        let identity = ClientIdentity::from_pem(paired.identity_pem.as_bytes()).unwrap();
+        let session = Session::connect(addr, LOCALHOST, client_config_with(&ServerTrust::from_identity(&identity), Some(&identity)).unwrap()).await.unwrap();
+        assert_eq!(session.recording().unwrap().channel_count(), 4);
+        session.close().await;
+        authority.revoke("laptop").unwrap();
+        assert!(Session::connect(addr, LOCALHOST, client_config_with(&ServerTrust::from_identity(&identity), Some(&identity)).unwrap()).await.is_err(), "revoked");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -276,6 +276,17 @@ message ViewRequest {
   uint64 start = 2;
   uint64 end = 3;
   uint32 width = 4;
+  // Answer with the signal processed on the server (a client that cannot compute: a page).
+  // Absent: the recording as stored.
+  Processing processing = 5;
+}
+
+// A view's processing: its enabled ops in order, over the channels it reads.
+message Processing {
+  // The channels the view reads, in order (none = every channel of the recording).
+  repeated uint32 channels = 1;
+  // Each op as the session writes it: a pipeline node in JSON ({"op": "iir", …}).
+  repeated string ops = 2;
 }
 
 // [min, max] per column, row per requested channel: min_max[2 · (row · width + column)] is the

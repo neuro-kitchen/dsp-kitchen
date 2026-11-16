@@ -1,12 +1,11 @@
 //! The server side: accepts clients and serves a recording to each (header, signal, views).
 
 use std::net::SocketAddr;
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use dspk_core::{RecordingInfo, RecordingSource, SampleFormat};
-use dspk_view::{Envelope, Pyramid};
+use dspk_core::RecordingSource;
+use dspk_view::Pyramid;
 use tokio::task::JoinHandle;
 use tokio::time::{interval, MissedTickBehavior};
 
@@ -14,8 +13,7 @@ use super::auth::{Authority, Peer, Permission};
 use super::files::{kind_of, DataRoot};
 use super::jobs::Jobs;
 use crate::error::{StreamError, StreamResult};
-use crate::protocol::{frame_from_envelope, header_from_info, read_message, view_from_request, wire, write_message, PROTOCOL_VERSION};
-use dspk_view::View;
+use crate::protocol::{frame_from_envelope, header_from_info, read_message, wire, write_message, PROTOCOL_VERSION};
 
 /// Seconds of signal per frame by default.
 pub const DEFAULT_FRAME_SEC: f64 = 0.02;
@@ -26,11 +24,8 @@ pub const DEFAULT_QUEUE_FRAMES: usize = 8;
 pub const DEFAULT_MAX_REQUEST_BYTES: usize = 64 << 10;
 /// Clients connected at once by default; more are refused until one leaves.
 pub const DEFAULT_MAX_CONNECTIONS: usize = 32;
-/// Largest view answered: values (channels × columns, or × samples) in one envelope, so a request
-/// cannot make the server allocate without bound (32 MiB of f32, under a client's message limit).
-pub const MAX_VIEW_VALUES: u64 = 8 << 20;
-/// Most columns a view may ask for (a screen is a few thousand pixels wide).
-pub const MAX_VIEW_COLUMNS: u32 = 1 << 16;
+pub use crate::protocol::{MAX_VIEW_COLUMNS, MAX_VIEW_VALUES};
+pub use crate::engine::{checked_view, OpenRecording, RecordingOpener, ViewProcessor};
 
 /// When frames are sent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +61,10 @@ pub struct Server {
     endpoint: quinn::Endpoint,
     max_connections: usize,
     authority: Option<Arc<Authority>>,
+    /// Pairing is answered (the names the server's certificate carries); see [`Self::with_pairing`].
+    pairing: Option<Arc<Vec<String>>>,
+    /// With pairing: whether a computer without a certificate may also open a session.
+    anonymous: bool,
 }
 
 /// Closing code for a client whose certificate is not enrolled or is revoked.
@@ -74,7 +73,7 @@ pub const REFUSED_CLIENT: u32 = 1;
 impl Server {
     /// Listens on `addr` (UDP), at most [`DEFAULT_MAX_CONNECTIONS`] clients at once.
     pub fn bind(addr: SocketAddr, config: quinn::ServerConfig) -> StreamResult<Self> {
-        Ok(Self { endpoint: quinn::Endpoint::server(config, addr)?, max_connections: DEFAULT_MAX_CONNECTIONS, authority: None })
+        Ok(Self { endpoint: quinn::Endpoint::server(config, addr)?, max_connections: DEFAULT_MAX_CONNECTIONS, authority: None, pairing: None, anonymous: false })
     }
 
     /// Checks every client's certificate against `authority`'s registry after the handshake (use
@@ -82,6 +81,17 @@ impl Server {
     /// revoked, or the connection is closed.
     pub fn with_authority(mut self, authority: Arc<Authority>) -> Self {
         self.authority = Some(authority);
+        self
+    }
+
+    /// Answers computers that pair with a code (`transport::pairing`; needs an authority and a
+    /// configuration from [`super::tls::server_config_with_pairing`]). `names`: the names this
+    /// server's certificate carries, told to the computer so it knows how to connect.
+    /// `anonymous`: whether a computer without a certificate may also open a session (read
+    /// only); otherwise it can only pair.
+    pub fn with_pairing(mut self, names: Vec<String>, anonymous: bool) -> Self {
+        self.pairing = Some(Arc::new(names));
+        self.anonymous = anonymous;
         self
     }
 
@@ -122,6 +132,21 @@ impl Server {
                     continue;
                 }
             };
+            // A computer pairing with a code: answered here, never handed to a session
+            if super::pairing::is_pairing(&connection) {
+                match (&self.authority, &self.pairing) {
+                    (Some(authority), Some(names)) => {
+                        let (authority, names) = (authority.clone(), names.clone());
+                        tokio::spawn(async move {
+                            if let Err(e) = super::pairing::serve_pairing(&authority, &names, &connection).await {
+                                tracing::warn!("pairing with {} failed: {e}", connection.remote_address());
+                            }
+                        });
+                    }
+                    _ => connection.close(quinn::VarInt::from_u32(REFUSED_CLIENT), b"this server does not pair"),
+                }
+                continue;
+            }
             match self.peer(&connection) {
                 Some(peer) => return Some((connection, peer)),
                 None => {
@@ -139,6 +164,9 @@ impl Server {
         let certificates = connection.peer_identity().and_then(|id| id.downcast::<Vec<rustls::pki_types::CertificateDer<'static>>>().ok());
         match certificates.as_deref().and_then(|c| c.first()) {
             Some(certificate) => authority.authorize(certificate),
+            // With pairing the TLS layer lets certificate-less computers in: only to pair,
+            // unless anonymous sessions are allowed
+            None if self.pairing.is_some() && !self.anonymous => None,
             None => Some(Peer::anonymous()),
         }
     }
@@ -149,51 +177,6 @@ impl Server {
     }
 }
 
-/// What the signal stream carries: stored words when the source can read them, else scaled
-/// `f32` (and the header then says `f32`, gain 1, offset 0).
-fn streamed_info(source: &dyn RecordingSource) -> (RecordingInfo, bool) {
-    let info = source.info().clone();
-    let all: Vec<usize> = (0..info.channel_count()).collect();
-    // One sample of every channel tells whether stored reads are supported
-    let mut probe = vec![0u8; all.len() * info.format.bytes()];
-    let stored = info.samples == 0 || source.read_stored(&all, 0..1, &mut probe).is_ok();
-    if stored {
-        return (info, true);
-    }
-    let mut scaled = info;
-    scaled.format = SampleFormat::F32;
-    for c in &mut scaled.channels {
-        (c.gain, c.offset) = (1.0, 0.0);
-    }
-    (scaled, false)
-}
-
-/// A recording a session serves: its source, pyramid (views), and what the signal carries.
-pub struct OpenRecording {
-    source: Arc<dyn RecordingSource>,
-    pyramid: Option<Arc<Pyramid>>,
-    info: RecordingInfo,
-    stored: bool,
-}
-
-impl OpenRecording {
-    pub fn new(source: Arc<dyn RecordingSource>, pyramid: Option<Arc<Pyramid>>) -> Self {
-        let (info, stored) = streamed_info(source.as_ref());
-        Self { source, pyramid, info, stored }
-    }
-
-    /// What the signal stream carries (the header sent to clients).
-    pub fn info(&self) -> &RecordingInfo {
-        &self.info
-    }
-}
-
-/// Opens the recordings clients ask for, by path under the data root. The formats are the
-/// caller's (dspk-stream knows none): the command line opens through dspk-synapse.
-pub trait RecordingOpener: Send + Sync {
-    /// Opens `path` (`source`: one of the file's sources, `None` = its default).
-    fn open(&self, path: &Path, source: Option<&str>) -> StreamResult<OpenRecording>;
-}
 
 /// What a server offers every client.
 #[derive(Clone)]
@@ -213,7 +196,7 @@ pub struct Device {
 }
 
 /// The recording a session has open (the initial one, or the last one it opened).
-type Current = Arc<Mutex<Option<Arc<OpenRecording>>>>;
+pub(crate) type Current = Arc<Mutex<Option<Arc<OpenRecording>>>>;
 
 fn current_recording(current: &Current) -> Option<Arc<OpenRecording>> {
     current.lock().unwrap_or_else(|e| e.into_inner()).clone()
@@ -307,16 +290,29 @@ async fn answer_requests(connection: quinn::Connection, device: Arc<Device>, cur
 }
 
 /// The answer to one request.
-async fn answer(request: wire::Request, device: &Device, current: &Current, peer: &Peer) -> StreamResult<wire::response::Kind> {
+pub(crate) async fn answer(request: wire::Request, device: &Device, current: &Current, peer: &Peer) -> StreamResult<wire::response::Kind> {
     use wire::request::Kind as Req;
     use wire::response::Kind as Resp;
     match request.kind.ok_or_else(|| StreamError::protocol("empty request"))? {
         Req::View(view) => {
             let recording = current_recording(current).ok_or_else(|| StreamError::protocol("no recording is open"))?;
-            let view = checked_view(&view, recording.info())?;
-            let envelope = tokio::task::spawn_blocking(move || -> StreamResult<Envelope> { Ok(view.read(recording.source.as_ref(), recording.pyramid.as_deref())?) })
-                .await
-                .map_err(StreamError::protocol)?;
+            // A view the server does not answer is refused as a request; a read that fails is
+            // the envelope's error
+            crate::engine::checked_view(&view, recording.info())?;
+            // A processed view: its chain made in a blocking task (a whitening's fit takes
+            // seconds), its block made ready without holding a thread while the device works,
+            // then answered from it (as a browser's engine does)
+            if let Some(processing) = view.processing.clone().filter(|p| !p.ops.is_empty()) {
+                let made = recording.clone();
+                let warmed = match tokio::task::spawn_blocking(move || made.processed(&processing).map(|_| ())).await.map_err(StreamError::protocol)? {
+                    Ok(()) => crate::engine::warm_view(&recording, &view).await,
+                    Err(e) => Err(e),
+                };
+                if let Err(e) = warmed {
+                    return Ok(Resp::Envelope(frame_from_envelope(Err(e))));
+                }
+            }
+            let envelope = tokio::task::spawn_blocking(move || crate::engine::answer_view(&recording, &view)).await.map_err(StreamError::protocol)?;
             Ok(Resp::Envelope(frame_from_envelope(envelope)))
         }
         Req::ListFiles(list) => {
@@ -392,33 +388,12 @@ fn jobs_of(device: &Device) -> StreamResult<Arc<Jobs>> {
     device.jobs.clone().ok_or_else(|| StreamError::Server("this server runs no jobs".into()))
 }
 
-/// The view a client asks for, refused when it is outside the recording or larger than the
-/// server answers: channels in range and each once, at most [`MAX_VIEW_COLUMNS`] columns and
-/// [`MAX_VIEW_VALUES`] values (channels × the columns, or the samples when fewer).
-pub fn checked_view(request: &wire::ViewRequest, info: &RecordingInfo) -> StreamResult<View> {
-    let view = view_from_request(request);
-    view.validate(info.channel_count(), info.samples).map_err(|e| StreamError::protocol(e.to_string()))?;
-    let mut seen = vec![false; info.channel_count()];
-    for &c in &view.channels {
-        if std::mem::replace(&mut seen[c], true) {
-            return Err(StreamError::protocol(format!("channel {c} asked for twice")));
-        }
-    }
-    if request.width > MAX_VIEW_COLUMNS {
-        return Err(StreamError::protocol(format!("{} columns asked for: at most {MAX_VIEW_COLUMNS}", request.width)));
-    }
-    let values = view.channels.len() as u64 * (view.end - view.start).min(u64::from(request.width));
-    if values > MAX_VIEW_VALUES {
-        return Err(StreamError::protocol(format!("a view of {values} values: at most {MAX_VIEW_VALUES} (fewer channels or columns)")));
-    }
-    Ok(view)
-}
 
 /// Streams frames from `first_sample` on a new unidirectional stream. A reader thread fills a
 /// bounded queue, so the recording is read ahead of the network but never held whole; the thread
 /// ends by itself once the queue is dropped.
 async fn stream_signal(connection: quinn::Connection, recording: Arc<OpenRecording>, first_sample: u64, options: ServeOptions) -> StreamResult<()> {
-    let (source, info, stored) = (recording.source.clone(), recording.info.clone(), recording.stored);
+    let (source, info, stored) = (recording.source.clone(), recording.info().clone(), recording.stored);
     let total = info.samples;
     let frame = ((options.frame_sec * info.sample_rate_hz()).round() as u64).max(1);
     let channels: Vec<usize> = (0..info.channel_count()).collect();
