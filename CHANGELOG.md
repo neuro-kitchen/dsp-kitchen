@@ -8,6 +8,9 @@ version number.
 
 ### Added
 
+- **A notebook for Google Colab** (`playground/11_colab/dspk_neuropixels.ipynb`): installs `dspk`
+  from PyPI, downloads Kilosort4's test recording, cleans it on the GPU, sorts it with dspk's
+  Kilosort4 and plots the units. Nothing to install on your own computer.
 - **`dspk serve --web <folder>`: an endpoint for browsers** (`dspk_stream::transport::web`):
   HTTPS on `--web-bind` (default 127.0.0.1:50052) serving the web app's folder and a WebSocket
   that carries the same requests as a QUIC session (views, files, opening a recording, jobs).

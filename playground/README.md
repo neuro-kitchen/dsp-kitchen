@@ -40,6 +40,7 @@ dspk itself).
 | **08_detection** | `01_threshold_and_scoring` · `02_features_and_clusters` · `03_templates_and_matching` | finding spikes and scoring the finds; snippets, principal components and clusters; templates and matching pursuit |
 | **09_sorting** | `00_fetch_kilosort_data` · `01_detect_and_locate` · `02_sorting_quality` | a real Neuropixels recording: every spike located, the drift map; a sorting judged against a reference and unit by unit |
 | **10_remote** | README | a GPU server and a laptop: `dspk serve`, `dspk clients`, `dspk remote`, and `dspk.remote` in Python |
+| **11_colab** | `dspk_neuropixels.ipynb` | nothing to install: in Google Colab, from `pip install` to the units of a Neuropixels recording sorted with Kilosort4 |
 
 Measurements against other tools (time, agreement) are in [`benchmarks/`](../benchmarks/README.md),
 not here: the playground teaches, the benchmarks measure.
