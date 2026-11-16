@@ -32,3 +32,29 @@ Explore (read on the server), or fetch a file or folder, such as a sorting, into
 
 A remote recording behaves like a local one. A sort started on it runs on the server, and its
 progress shows like the app's other jobs.
+
+## The settings file
+
+The Settings screen writes `settings.toml` in the app's folder (`~/.config/dspk-app/` on Linux,
+`%APPDATA%\dspk-app\` on Windows). You can edit it by hand: the app applies the change while it
+runs, except the compute runtime, which takes effect at the next start. Comments you add are kept.
+
+```toml
+[appearance]
+theme = "system"        # "system" | "dark" | "light"
+accent = "app"          # "app" or a colour as "#rrggbb"
+dark_plots = false      # keep plots dark in the light theme
+
+[start]
+reopen_last = false     # open the last recording when the app starts
+
+[compute]
+runtime = "automatic"   # "automatic" | "wgpu" | "cuda" | "cpu"
+
+[remote]
+results_dir = ""        # where results fetched from servers go; "" is ~/dspk/remote
+```
+
+Delete a line to go back to its default. A line the app does not understand keeps its default and
+is named in the status line. Keys are in [`keybindings.toml`](/dsp-kitchen/app/keyboard/#change-the-keys),
+beside it.

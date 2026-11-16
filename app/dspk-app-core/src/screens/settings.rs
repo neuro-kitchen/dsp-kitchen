@@ -429,7 +429,8 @@ impl SettingsScreen {
             ],
             Section::About => vec![
                 Self::setting("dspk-app", "Multichannel signal processing on any GPU: explore, process, sort and analyse recordings.", env!("CARGO_PKG_VERSION"), div(), cx),
-                Self::setting("Settings file", &crate::data::preferences::Session::path().map(|p| dspk_session::paths::short_path(&p)).unwrap_or_else(|| "not saved (no config folder)".into()), "per user", div(), cx),
+                Self::setting("Settings file", &crate::data::preferences::Session::settings_path().map(|p| dspk_session::paths::short_path(&p)).map(|p| format!("{p} (edits made by hand apply while the app runs)")).unwrap_or_else(|| "not saved (no config folder)".into()), "per user", div(), cx),
+                Self::setting("Key bindings file", &crate::data::preferences::Session::keybindings_path().map(|p| dspk_session::paths::short_path(&p)).map(|p| format!("{p} (read when the app starts)")).unwrap_or_else(|| "not saved (no config folder)".into()), "per user", div(), cx),
             ],
         };
         v_flex().id(SharedString::from(format!("settings-{}", section.title().to_lowercase()))).w_full().children(body).into_any_element()

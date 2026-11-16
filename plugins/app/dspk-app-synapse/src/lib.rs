@@ -334,6 +334,8 @@ impl AppPlugin for SynapsePlugin {
     fn install(&self, store: &Entity<Store>, cx: &mut App) {
         let state = cx.new(|cx| SynapseState::new(store.clone(), cx));
         cx.set_global(Synapse(state));
+        // Curation's keys join keybindings.toml (its defaults are written with the app's)
+        let _ = crate::curation_ws::curation_keys();
         // The device and its PCA kernels get ready while the user opens a recording, so the
         // first unit clicked in Curation does not wait for them (seconds, cold)
         cx.background_spawn(async {

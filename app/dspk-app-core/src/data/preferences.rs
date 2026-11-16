@@ -1,8 +1,10 @@
 //! What the app remembers between runs: recent recordings (newest first), the workspace shown.
 //!
-//! Its own file, `$XDG_CONFIG_HOME/dspk-app/workbench.json`, so the Slint app (which keeps
-//! `session.json` in the same folder) and this one never overwrite each other. On a first run the
-//! recent list is taken from the Slint app's file.
+//! Its own file, `$XDG_CONFIG_HOME/dspk-app/workbench.json`, written by the app only. What the
+//! user chooses (look, start, runtime, results folder) is in `settings.toml` beside it
+//! ([`crate::data::settings`]): those fields are still read from an older `workbench.json`, and
+//! no longer written to it. On a first run the recent list is taken from the earlier Slint app's
+//! `session.json`.
 
 use std::path::{Path, PathBuf};
 
@@ -122,17 +124,17 @@ pub struct Session {
     #[serde(default)]
     pub workspace: Workspace,
     /// `Some(true)`: dark, `Some(false)`: light, `None`: follow the system.
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub dark: Option<bool>,
     /// "Tune this device" was suggested (once, at the first launch).
     #[serde(default)]
     pub tune_suggested: bool,
     /// The accent the user picked (`None`: dsp-kitchen's lime). Saved as `"#rrggbb"`; a number
     /// (`0xRRGGBB`) or a colour that does not parse still reads.
-    #[serde(default, deserialize_with = "accent_or_old", skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "accent_or_old", skip_serializing)]
     pub accent: Option<kitchen_ui::Rgb>,
     /// Keep plots dark in the light theme.
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub dark_plots: bool,
     #[serde(default)]
     pub explore: ExploreSession,
@@ -146,14 +148,14 @@ pub struct Session {
     #[serde(default)]
     pub servers: Vec<crate::data::remote::ServerProfile>,
     /// Where results fetched from servers go (`None`: [`Session::default_results_dir`]).
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub results_dir: Option<PathBuf>,
     /// The compute runtime (`wgpu`, `cuda`, `cpu`; `None`: the first that is compiled in). Takes
     /// effect at the next start.
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub runtime: Option<String>,
     /// Open the last recording when the app starts (default off: the start screen).
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub reopen_last: bool,
 }
 
@@ -200,6 +202,16 @@ impl Session {
 
     pub fn path() -> Option<PathBuf> {
         Some(Self::config_dir()?.join("dspk-app").join("workbench.json"))
+    }
+
+    /// The preferences the user edits: `settings.toml` ([`crate::data::settings`]).
+    pub fn settings_path() -> Option<PathBuf> {
+        Some(Self::config_dir()?.join("dspk-app").join("settings.toml"))
+    }
+
+    /// The keys the user edits: `keybindings.toml` ([`crate::data::settings`]).
+    pub fn keybindings_path() -> Option<PathBuf> {
+        Some(Self::config_dir()?.join("dspk-app").join("keybindings.toml"))
     }
 
     /// The session document of the open work (views, op chains, linked sortings), next to the
@@ -312,10 +324,10 @@ mod tests {
         assert_eq!(read("null"), None);
         let old: Session = serde_json::from_str(r#"{"version": 1}"#).unwrap();
         assert_eq!(old.accent, None, "a session from before accents");
-        let s = Session { accent: Some(kitchen_ui::Rgb(0x2b7f86)), ..Session::new() };
+        // Written to settings.toml now, not here
+        let s = Session { accent: Some(kitchen_ui::Rgb(0x2b7f86)), dark: Some(true), ..Session::new() };
         let text = serde_json::to_string(&s).unwrap();
-        assert!(text.contains("\"accent\":\"#2b7f86\""), "{text}");
-        assert_eq!(serde_json::from_str::<Session>(&text).unwrap(), s);
+        assert!(!text.contains("accent") && !text.contains("\"dark\""), "{text}");
     }
 
     #[test]
