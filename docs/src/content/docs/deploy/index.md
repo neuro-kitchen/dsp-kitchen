@@ -11,7 +11,8 @@ server issued them: the command line, the app and Python all work the same way.
 
 Follow these in order the first time:
 
-1. [Build the image](/dsp-kitchen/deploy/build/): one `Containerfile`, a target per kind of GPU.
+1. Get the image: [pull the published one](/dsp-kitchen/deploy/image/), or
+   [build it](/dsp-kitchen/deploy/build/) (one `Containerfile`, a target per kind of GPU; needed for CUDA).
 2. [Run the server](/dsp-kitchen/deploy/run/): your folder of recordings at `/data`.
 3. [Enroll clients](/dsp-kitchen/deploy/clients/): who may connect, and who may run jobs.
 4. [Work from a client](/dsp-kitchen/deploy/remote/): list files, read, sort, fetch.

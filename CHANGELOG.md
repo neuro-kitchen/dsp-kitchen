@@ -8,6 +8,9 @@ version number.
 
 ### Added
 
+- **A notebook for Google Colab** (`playground/11_colab/dspk_neuropixels.ipynb`): installs `dspk`
+  from PyPI, downloads Kilosort4's test recording, cleans it on the GPU, sorts it with dspk's
+  Kilosort4 and plots the units. Nothing to install on your own computer.
 - **`settings.toml` and `keybindings.toml`** in the app's folder (`~/.config/dspk-app/`): two
   files to edit by hand. `settings.toml` holds the look, what opens at start, the compute runtime
   and where fetched results go; the Settings screen writes the same file and keeps its comments,
