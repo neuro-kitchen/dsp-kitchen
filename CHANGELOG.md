@@ -56,6 +56,8 @@ version number.
 
 ### Changed
 
+- **Dependencies updated:** gpui-kit 0.10 (GPUI snapshot 0.3.12) with kitchen 0.0.5 (was 0.0.3),
+  prost 0.14.6, sysinfo 0.40.3 and the lock file. wgpu stays 30.0.1: GPUI pins it exactly.
 - **The preview of a view's processing lives in `dspk-pipeline`** (feature `view`):
   `dspk_pipeline::processed::{ProcessedSignal, PreviewSource}` and
   `dspk_pipeline::preview::{view_plan, ViewPlan}` moved out of the app, so the server and the app
