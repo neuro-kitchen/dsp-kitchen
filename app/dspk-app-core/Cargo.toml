@@ -68,6 +68,8 @@ wasm_thread = { version = "0.3.3", features = ["es_modules"] }
 web-sys = { version = "0.3", features = ["Window", "Location", "Storage", "Document", "Element", "HtmlElement", "HtmlInputElement", "File", "FileList"] }
 js-sys = "0.3"
 wasm-bindgen = "0.2"
+# The loader's folder picker answers with a promise
+wasm-bindgen-futures = "0.4"
 
 [dev-dependencies]
 # Headless UI tests (`#[gpui_kit::test]`, `gpui_kit::test::TestWindowExt`)

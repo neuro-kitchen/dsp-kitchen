@@ -2,5 +2,5 @@
 
 pub mod raw;
 pub mod zarr_options;
-#[cfg(feature = "zarr")]
+#[cfg(feature = "zarr-read")]
 pub mod zarr_traces;

@@ -12,7 +12,10 @@ description = "Recording file formats for dspk: raw binary and Zarr traces, form
 
 [features]
 default = ["zarr"]
-zarr = ["dep:zarrs", "dep:rayon"]
+# Zarr recordings read from any store (a browser's files, memory): no file system needed
+zarr-read = ["dep:zarrs"]
+# Zarr folders on disk, read and written (chunks compressed and stored in parallel)
+zarr = ["zarr-read", "zarrs/filesystem", "dep:rayon"]
 # Shared test assertions (`test_support`) for crates that implement more formats.
 test-support = []
 

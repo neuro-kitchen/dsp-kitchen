@@ -3355,6 +3355,7 @@ dependencies = [
  "toml_edit 0.25.19+spec-1.1.0",
  "tracing",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wasm_thread",
  "web-sys",
  "web-time",
@@ -3492,6 +3493,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "zarrs",
 ]
 
 [[package]]

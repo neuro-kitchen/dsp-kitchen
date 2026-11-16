@@ -86,13 +86,74 @@ pub async fn start_engine() -> anyhow::Result<String> {
 /// the next one.
 pub async fn pick_files(folder: bool) -> anyhow::Result<Vec<String>> {
     let Some(PageLink::Engine(engine)) = LINK.get() else { anyhow::bail!("picking files needs the page's engine") };
+    let js = |e: wasm_bindgen::JsValue| anyhow::anyhow!("{e:?}");
+    // Each picked file with its path "<folder picked>/<path inside>" (or its name alone)
+    let picked: Vec<(String, web_sys::File)> = match folder.then(folder_picker).flatten() {
+        // The loader's folder picker (File System Access API: "Let site view files?")
+        Some(pick) => {
+            let promise: js_sys::Promise = wasm_bindgen::JsCast::dyn_into(pick.call0(&wasm_bindgen::JsValue::NULL).map_err(js)?).map_err(|_| anyhow::anyhow!("the folder picker gave no promise"))?;
+            let entries = wasm_bindgen_futures::JsFuture::from(promise).await.map_err(js)?;
+            if entries.is_null() {
+                return Ok(Vec::new());
+            }
+            js_sys::Array::from(&entries)
+                .iter()
+                .filter_map(|e| {
+                    let path = js_sys::Reflect::get(&e, &"path".into()).ok()?.as_string()?;
+                    let file = wasm_bindgen::JsCast::dyn_into::<web_sys::File>(js_sys::Reflect::get(&e, &"file".into()).ok()?).ok()?;
+                    Some((path, file))
+                })
+                .collect()
+        }
+        None => input_files(folder).await?,
+    };
+    let (files, mut paths) = (js_sys::Array::new(), Vec::new());
+    for (relative, file) in picked {
+        // "<folder>/<path>": the folder's own name is left out, unless the folder picked is a
+        // Zarr recording itself (then it is the recording's name)
+        let path = match relative.split_once('/') {
+            Some((top, _)) if top.to_ascii_lowercase().ends_with(".zarr") => relative.clone(),
+            Some((_, inside)) if !inside.is_empty() => inside.to_string(),
+            _ => file.name(),
+        };
+        let entry = js_sys::Object::new();
+        js_sys::Reflect::set(&entry, &"path".into(), &path.clone().into()).map_err(js)?;
+        js_sys::Reflect::set(&entry, &"file".into(), &file).map_err(js)?;
+        files.push(&entry);
+        paths.push(path);
+    }
+    engine.set_files(files)?;
+    let mut recordings: Vec<String> = paths.iter().filter(|p| p.to_ascii_lowercase().ends_with(".bin") && paths.contains(&p[..p.len() - 4].to_string().add_meta())).cloned().collect();
+    // dspk Zarr recordings: a `.zarr` folder with a `/traces` array (an NWB folder is not one)
+    for p in &paths {
+        if let Some(folder) = p.strip_suffix("/traces/zarr.json").filter(|f| f.to_ascii_lowercase().ends_with(".zarr")) {
+            recordings.push(folder.to_string());
+        }
+    }
+    recordings.sort();
+    recordings.dedup();
+    Ok(recordings)
+}
+
+/// The loader's folder picker (`window.dspkPickFolder`), where the browser has the File System
+/// Access API.
+fn folder_picker() -> Option<js_sys::Function> {
+    let window = web_sys::window()?;
+    let pick: wasm_bindgen::JsValue = js_sys::Reflect::get(&window, &"dspkPickFolder".into()).ok()?;
+    wasm_bindgen::JsCast::dyn_into::<js_sys::Function>(pick).ok()
+}
+
+/// Files picked with the page's file input (every browser): a folder (`webkitdirectory`, the
+/// browser says "upload", though nothing leaves the computer) or files. Each with its path
+/// "<folder>/<path inside>" for a folder, else its name. A dialog closed without a choice fires no
+/// event: the page waits for the next one.
+async fn input_files(folder: bool) -> anyhow::Result<Vec<(String, web_sys::File)>> {
     let document = web_sys::window().and_then(|w| w.document()).ok_or_else(|| anyhow::anyhow!("no document"))?;
     let js = |e: wasm_bindgen::JsValue| anyhow::anyhow!("{e:?}");
     let input: web_sys::HtmlInputElement = wasm_bindgen::JsCast::dyn_into(document.create_element("input").map_err(js)?).map_err(|_| anyhow::anyhow!("not an input"))?;
     input.set_type("file");
     input.set_multiple(true);
     if folder {
-        // Every browser's folder picker (the files come with their paths inside the folder)
         input.set_attribute("webkitdirectory", "").map_err(js)?;
     } else {
         input.set_accept(".bin,.meta");
@@ -109,25 +170,13 @@ pub async fn pick_files(folder: bool) -> anyhow::Result<Vec<String>> {
     let _ = rx.await;
     drop(changed);
     let Some(list) = input.files() else { return Ok(Vec::new()) };
-    let (files, mut paths) = (js_sys::Array::new(), Vec::new());
-    for i in 0..list.length() {
-        let Some(file) = list.get(i) else { continue };
-        // "<folder>/<path>": the folder's own name is left out
-        let relative = js_sys::Reflect::get(&file, &"webkitRelativePath".into()).ok().and_then(|v| v.as_string()).unwrap_or_default();
-        let path = match relative.split_once('/') {
-            Some((_, inside)) if !inside.is_empty() => inside.to_string(),
-            _ => file.name(),
-        };
-        let entry = js_sys::Object::new();
-        js_sys::Reflect::set(&entry, &"path".into(), &path.clone().into()).map_err(js)?;
-        js_sys::Reflect::set(&entry, &"file".into(), &file).map_err(js)?;
-        files.push(&entry);
-        paths.push(path);
-    }
-    engine.set_files(files)?;
-    let mut recordings: Vec<String> = paths.iter().filter(|p| p.to_ascii_lowercase().ends_with(".bin") && paths.contains(&p[..p.len() - 4].to_string().add_meta())).cloned().collect();
-    recordings.sort();
-    Ok(recordings)
+    Ok((0..list.length())
+        .filter_map(|i| list.get(i))
+        .map(|file| {
+            let relative = js_sys::Reflect::get(&file, &"webkitRelativePath".into()).ok().and_then(|v| v.as_string()).filter(|r| !r.is_empty()).unwrap_or_else(|| file.name());
+            (relative, file)
+        })
+        .collect())
 }
 
 trait AddMeta {

@@ -206,10 +206,15 @@ impl WorkspaceBody {
         let recent = self.store.read(cx).session.recent.clone();
         let muted = cx.theme().muted_foreground;
         let store = self.store.clone();
+        // A recording on its way: say so in place of the start screen (a large one takes a moment)
+        if let Some(name) = self.store.read(cx).opening.clone() {
+            let opening = EmptyState::new(IconName::AudioWaveform, format!("Opening {name}…"), "Its first views appear in a moment; the overview fills in as you look");
+            return div().id("start-screen").test_support().size_full().child(opening).into_any_element();
+        }
         // Files on this computer, or (a page served by `dspk serve`) the recordings of its server
         let mut screen = if crate::platform::remote::runs_alone() {
             // A page on its own: the files the user picks, read and processed in this browser
-            EmptyState::new(IconName::AudioWaveform, "Open a recording", "A folder with your recordings (a .bin and its .meta), read in this browser").child(
+            EmptyState::new(IconName::AudioWaveform, "Open a recording", "A folder with your recordings (.zarr, or a .bin and its .meta), read in this browser").child(
                 h_flex()
                     .gap_2()
                     .child({
@@ -218,7 +223,7 @@ impl WorkspaceBody {
                     })
                     .child({
                         let (store, browser) = (store.clone(), self.open_browser.clone());
-                        Button::new("start-pick-files").outline().icon(IconName::File).label("Open files…").on_click(move |_, w, cx| commands::pick_page_files(&store, false, browser.clone(), w, cx))
+                        Button::new("start-pick-files").outline().icon(IconName::File).label("Open .bin + .meta…").tooltip("Pick a .bin and its .meta (Ctrl+click both), without their folder").on_click(move |_, w, cx| commands::pick_page_files(&store, false, browser.clone(), w, cx))
                     }),
             )
         } else if !crate::platform::LOCAL_FILES {

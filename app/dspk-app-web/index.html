@@ -31,6 +31,29 @@
       // - Computing: on a server (`dspk serve`), or in the engine worker the app starts when no
       //   server served it (WebGPU; views only without it).
       // - `?gpu=webgl` / `?gpu=webgpu` force the drawing backend (for measuring only).
+      // A folder picked with the File System Access API (Chrome, Edge): the browser asks "Let site
+      // view files?", which is what happens (the files stay on the computer; the page reads them).
+      // Resolves to [{path: "<folder>/<path inside>", file}], or null when the user cancels.
+      // Browsers without it (Firefox, Safari) use the page's file input instead.
+      if (window.showDirectoryPicker) {
+        window.dspkPickFolder = async () => {
+          let root;
+          try {
+            root = await window.showDirectoryPicker({ mode: "read" });
+          } catch {
+            return null;
+          }
+          const out = [];
+          const walk = async (dir, prefix) => {
+            for await (const [name, handle] of dir.entries()) {
+              if (handle.kind === "file") out.push({ path: `${prefix}/${name}`, file: await handle.getFile() });
+              else await walk(handle, `${prefix}/${name}`);
+            }
+          };
+          await walk(root, root.name);
+          return out;
+        };
+      }
       const note = document.getElementById("note");
       const say = (html) => (note.firstElementChild.innerHTML = html);
       const params = new URLSearchParams(location.search);
