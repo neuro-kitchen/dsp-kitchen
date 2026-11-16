@@ -4,9 +4,12 @@ All notable changes, newest first. Versions follow [Semantic Versioning](https:/
 0.0.x any release may change the API. The crates, the Python package and `dspk-sorters` share one
 version number.
 
-## Unreleased
+## 0.0.11 — 2026-11-16
 
 ### Added
+
+- **Two new crates on crates.io:** `dspk-session` (the session document and the derived store
+  next to a recording) and `dspk-table` (one Polars for every crate).
 
 - **The app in the browser, on its own** (GitHub Pages, `/dsp-kitchen/viewer/`): with no server
   behind the page, the app starts its engine in a worker of its own (`dspk-engine-web`: a
