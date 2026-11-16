@@ -250,6 +250,30 @@ jobs:
               left=$((left + 1))
             fi
           done
+          # A crate that needs a new crate (directly or through another) cannot be packaged until
+          # that one is on crates.io: skipped too; "Re-run failed jobs" publishes it afterwards
+          if [ "${#new[@]}" -gt 0 ]; then
+            meta=$(cargo metadata --no-deps --format-version 1)
+            blocked=" ${new[*]} "
+            grew=1
+            while [ "$grew" -eq 1 ]; do
+              grew=0
+              for crate in $(echo "$meta" | jq -r '.packages[] | select(.publish != []) | .name'); do
+                # skipped already: new (blocked from the start) or published at this version
+                if printf '%s\n' "${skip[@]}" | grep -qx "$crate"; then continue; fi
+                for dep in $(echo "$meta" | jq -r --arg c "$crate" '.packages[] | select(.name == $c) | .dependencies[] | select(.kind != "dev") | .name'); do
+                  case "$blocked" in *" $dep "*)
+                    echo "::warning::$crate waits for $dep (not on crates.io yet): re-run this job after publishing the new crates by hand"
+                    skip+=(--exclude "$crate")
+                    left=$((left - 1))
+                    blocked="$blocked$crate "
+                    grew=1
+                    break ;;
+                  esac
+                done
+              done
+            done
+          fi
           if [ "$left" -eq 0 ]; then
             echo "every crate is already published at $version (new, to publish by hand: ${new[*]:-none})"
             exit 0
