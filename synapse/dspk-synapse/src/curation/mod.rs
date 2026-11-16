@@ -11,6 +11,7 @@ use dspk_core::{DspError, DspResult};
 use serde::{Deserialize, Serialize};
 
 pub mod amplitudes;
+pub mod phy;
 pub mod similarity;
 pub mod sorting;
 /// The unit table (feature `table`, on by default).

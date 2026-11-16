@@ -33,28 +33,59 @@ actions!(
     ]
 );
 
-/// Binds the time views' keys.
+/// The time views' commands and their default keys: the `[plot]` section of `keybindings.toml`.
+pub const PLOT_KEYS: &[(&str, &[&str])] = &[
+    ("play_pause", &["space"]),
+    ("pan_back", &["left"]),
+    ("pan_forward", &["right"]),
+    ("page_back", &["shift-left"]),
+    ("page_forward", &["shift-right"]),
+    ("zoom_in", &["+", "="]),
+    ("zoom_out", &["-"]),
+    ("jump_start", &["home"]),
+    ("jump_end", &["end"]),
+    ("channel_up", &["up"]),
+    ("channel_down", &["down"]),
+    ("channel_page_up", &["pageup"]),
+    ("channel_page_down", &["pagedown"]),
+    ("gain_up", &["]"]),
+    ("gain_down", &["["]),
+    ("leave_solo", &["escape"]),
+    ("toggle_loop", &["l"]),
+];
+
+fn plot_action(name: &str) -> Box<dyn gpui_kit::Action> {
+    match name {
+        "play_pause" => Box::new(PlayPause),
+        "pan_back" => Box::new(PanBack),
+        "pan_forward" => Box::new(PanForward),
+        "page_back" => Box::new(PageBack),
+        "page_forward" => Box::new(PageForward),
+        "zoom_in" => Box::new(ZoomIn),
+        "zoom_out" => Box::new(ZoomOut),
+        "jump_start" => Box::new(JumpStart),
+        "jump_end" => Box::new(JumpEnd),
+        "channel_up" => Box::new(ChannelUp),
+        "channel_down" => Box::new(ChannelDown),
+        "channel_page_up" => Box::new(ChannelPageUp),
+        "channel_page_down" => Box::new(ChannelPageDown),
+        "gain_up" => Box::new(GainUp),
+        "gain_down" => Box::new(GainDown),
+        "leave_solo" => Box::new(LeaveSolo),
+        _ => Box::new(ToggleLoop),
+    }
+}
+
+/// Binds the time views' keys: the defaults, or what `keybindings.toml` says in `[plot]`.
 pub fn bind_keys(cx: &mut App) {
-    cx.bind_keys([
-        KeyBinding::new("space", PlayPause, Some(PLOT)),
-        KeyBinding::new("left", PanBack, Some(PLOT)),
-        KeyBinding::new("right", PanForward, Some(PLOT)),
-        KeyBinding::new("shift-left", PageBack, Some(PLOT)),
-        KeyBinding::new("shift-right", PageForward, Some(PLOT)),
-        KeyBinding::new("+", ZoomIn, Some(PLOT)),
-        KeyBinding::new("=", ZoomIn, Some(PLOT)),
-        KeyBinding::new("-", ZoomOut, Some(PLOT)),
-        KeyBinding::new("home", JumpStart, Some(PLOT)),
-        KeyBinding::new("end", JumpEnd, Some(PLOT)),
-        KeyBinding::new("up", ChannelUp, Some(PLOT)),
-        KeyBinding::new("down", ChannelDown, Some(PLOT)),
-        KeyBinding::new("pageup", ChannelPageUp, Some(PLOT)),
-        KeyBinding::new("pagedown", ChannelPageDown, Some(PLOT)),
-        KeyBinding::new("]", GainUp, Some(PLOT)),
-        KeyBinding::new("[", GainDown, Some(PLOT)),
-        KeyBinding::new("escape", LeaveSolo, Some(PLOT)),
-        KeyBinding::new("l", ToggleLoop, Some(PLOT)),
-    ]);
+    let context = gpui_kit::KeyBindingContextPredicate::parse(PLOT).ok().map(std::rc::Rc::new);
+    let load = |key: &str, name: &str, cx: &App| KeyBinding::load(key, plot_action(name), context.clone(), false, None, cx);
+    let resolved = crate::data::settings::resolve("plot", PLOT_KEYS, |key| load(key, "play_pause", cx).is_ok());
+    let mut bindings = Vec::new();
+    for (name, keys) in &resolved {
+        bindings.extend(keys.iter().filter_map(|key| load(key, name, cx).ok()));
+    }
+    cx.bind_keys(bindings);
 }
 
 /// Every binding as (keys, what it does), for the Keyboard & Mouse dialog.

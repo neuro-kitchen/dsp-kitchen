@@ -42,6 +42,25 @@ sorter's arrays are never rewritten. Before v0.0.11 the log was `curation.json`:
 and renamed at the next save. A `curation.json` written by phy or SpikeInterface (merge proposals)
 is not touched.
 
+### Coming from phy
+
+The working format is the `.sorting.zarr`; a Phy / Kilosort folder goes in and out of it.
+
+- **In:** *Attach sorting…* (Explore → Sorting) also takes a Phy folder. It is imported once as
+  `<folder>.sorting.zarr` next to it; attaching the folder again opens the same store, with your edits.
+- **Out:** *To Phy* in Curation writes the curated sorting as phy's own save does:
+  `spike_clusters.npy`, `cluster_group.tsv` and `cluster_info.tsv`, the originals kept as `.bak`.
+  A sorting that came from a Phy folder goes back into it, so the folder still opens in phy; any
+  other sorting goes to a folder you pick.
+
+```bash
+dspk convert kilosort4/ rec.sorting.zarr                 # Phy folder → .sorting.zarr
+dspk convert rec.sorting.zarr kilosort4/ --curated       # the curation, back into the folder
+```
+
+The keys are phy's by default, and can be changed in
+[`keybindings.toml`](/dsp-kitchen/app/keyboard/#change-the-keys).
+
 ## From Python
 
 [`dspk.synapse.metrics`](/dsp-kitchen/plugins/synapse/reference/python/metrics/) has the analyses.

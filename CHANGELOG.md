@@ -8,6 +8,22 @@ version number.
 
 ### Added
 
+- **`settings.toml` and `keybindings.toml`** in the app's folder (`~/.config/dspk-app/`): two
+  files to edit by hand. `settings.toml` holds the look, what opens at start, the compute runtime
+  and where fetched results go; the Settings screen writes the same file and keeps its comments,
+  and an edit made outside is applied while the app runs (the runtime at the next start).
+  `keybindings.toml` gives a key, or a list of keys, to each command, in sections: `[plot]` (the
+  time views), `[commands]` (every command of the menus and the search, by its id) and
+  `[curation]`; `""` removes a binding; it is read when the app starts. Both are written with
+  every default the first time, and a line that is not understood keeps its default and is named
+  in the status line. `workbench.json` keeps what the app itself remembers (recent files, layout).
+- **Phy folders in Curation.** *Attach sorting…* takes a Phy / Kilosort folder: it is imported
+  once as `<folder>.sorting.zarr` next to it, which stays the working format. *To Phy* in Curation
+  writes the curated sorting back as phy's own save does (`spike_clusters.npy`,
+  `cluster_group.tsv`, `cluster_info.tsv`, originals kept as `.bak`), into the folder it came
+  from or one you pick, so the folder stays valid in phy. In the library:
+  `dspk_synapse::curation::phy::{import_phy, export_phy}`; on the command line:
+  `dspk convert <x.sorting.zarr> <phy folder> --curated`.
 - **`dspk serve --web <folder>`: an endpoint for browsers** (`dspk_stream::transport::web`):
   HTTPS on `--web-bind` (default 127.0.0.1:50052) serving the web app's folder and a WebSocket
   that carries the same requests as a QUIC session (views, files, opening a recording, jobs).

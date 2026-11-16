@@ -393,9 +393,36 @@ impl DspApp {
         let shell = cx.new(|cx| Shell::new(spec, window, cx));
         let _ = shell_cell.set(shell.downgrade());
 
-        // Keys: every command's (the time views bind their own)
+        // Keys: every command's (the time views bind their own), as `keybindings.toml` says in
+        // `[commands]`; the file is written with every default when it is missing
+        let commands = registry.all();
+        let defaults: Vec<(String, Vec<String>)> = commands.iter().map(|c| (c.id.to_string(), c.key.iter().map(|k| k.to_string()).collect())).collect();
+        let borrowed: Vec<(&str, Vec<&str>)> = defaults.iter().map(|(id, keys)| (id.as_str(), keys.iter().map(String::as_str).collect())).collect();
+        let slices: Vec<(&str, &[&str])> = borrowed.iter().map(|(id, keys)| (*id, keys.as_slice())).collect();
+        let probe = |key: &str| gpui_kit::KeyBinding::load(key, Box::new(gpui_kit::NoAction), None, false, None, cx).is_ok();
+        for ((id, keys), mut command) in crate::data::settings::resolve("commands", &slices, probe).into_iter().zip(commands) {
+            // A command has one key: the first the file gives it
+            let key = keys.first().map(|k| gpui_kit::SharedString::from(k.clone()));
+            if command.id.as_ref() == id && command.key != key {
+                command.key = key;
+                registry.add(command);
+            }
+        }
         for bad in registry.bind_keys(None, cx) {
             eprintln!("key binding: {bad}");
+        }
+        if store.read(cx).has_settings_file()
+            && let Some(path) = crate::data::preferences::Session::keybindings_path()
+            && let Err(e) = crate::data::settings::write_default_keybindings(&path)
+        {
+            tracing::warn!("could not write {}: {e}", path.display());
+        }
+        let notices = crate::data::settings::take_notices();
+        for notice in &notices {
+            eprintln!("{notice}");
+        }
+        if let Some(first) = notices.into_iter().next() {
+            store.update(cx, |s, cx| s.set_status(first, cx));
         }
 
         // The frame and the store follow each other: workspace, status line, recording, look
@@ -419,6 +446,13 @@ impl DspApp {
                 if matches!(e, AppEvent::RecordingChanged | AppEvent::WorkspaceChanged | AppEvent::Status | AppEvent::JobChanged) {
                     this.sync_shell(cx);
                     cx.notify();
+                }
+            }),
+            // settings.toml edited outside the app: its look
+            cx.subscribe_in(&store, window, |this, _, e: &AppEvent, window, cx| {
+                if matches!(e, AppEvent::SettingsChanged) {
+                    let choice = this.store.read(cx).session.dark;
+                    Self::apply_theme(&this.store, choice, window, cx);
                 }
             }),
             // Follow the system's light / dark until the user picks one

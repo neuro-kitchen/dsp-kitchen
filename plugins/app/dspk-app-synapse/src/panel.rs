@@ -119,15 +119,32 @@ fn detach(store: &Entity<Store>, view: &ViewDoc) -> impl IntoElement {
     })
 }
 
-/// Picks a `.sorting.zarr` folder and links it to the view.
+/// Picks a `.sorting.zarr` folder, or a Phy / Kilosort folder (imported), and links it to the view.
 fn attach(store: &Entity<Store>, view: &ViewDoc) -> impl IntoElement {
     let (store, id) = (store.clone(), view.id.clone());
-    Button::new("attach-sorting").outline().xsmall().icon(IconName::FolderOpen).label("Attach .sorting.zarr…").on_click(move |_, _, cx| {
-        let rx = cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Attach sorting".into()) });
+    Button::new("attach-sorting").outline().xsmall().icon(IconName::FolderOpen).label("Attach sorting…").tooltip("A .sorting.zarr, or a Phy / Kilosort folder (imported as a .sorting.zarr next to it)").on_click(move |_, _, cx| {
+        let rx = cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Attach sorting (.sorting.zarr or Phy folder)".into()) });
         let (store, id) = (store.clone(), id.clone());
         cx.spawn(async move |cx| {
             if let Ok(Ok(Some(paths))) = rx.await {
                 if let Some(path) = paths.into_iter().next() {
+                    // A Phy / Kilosort folder is imported as a .sorting.zarr next to it, once
+                    let path = if dspk_synapse::io::phy::PhyFolder::is_phy_folder(&path) {
+                        let folder = path.clone();
+                        match cx.background_executor().spawn(async move { dspk_synapse::curation::phy::import_phy(&folder) }).await {
+                            Ok(imported) => {
+                                let note = format!("Phy folder imported as {}", dspk_session::paths::short_path(&imported));
+                                let _ = store.update(cx, |s, cx| s.set_status(note, cx));
+                                imported
+                            }
+                            Err(e) => {
+                                let _ = store.update(cx, |s, cx| s.set_status(format!("Phy folder not imported: {e:#}"), cx));
+                                return;
+                            }
+                        }
+                    } else {
+                        path
+                    };
                     let _ = store.update(cx, |s, cx| link(s, &id, path, cx));
                 }
             }

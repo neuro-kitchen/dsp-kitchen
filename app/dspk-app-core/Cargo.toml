@@ -35,6 +35,8 @@ tokio.workspace = true
 dirs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# settings.toml, keybindings.toml
+toml_edit.workspace = true
 # The session document (JSON) and its JSON Schema for agents
 schemars.workspace = true
 thiserror.workspace = true
