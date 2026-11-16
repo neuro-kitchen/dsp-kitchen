@@ -21,6 +21,12 @@
 #   app/dspk-app-web/build.sh mt         the app only (the container's: its server computes)
 set -euo pipefail
 
+# zarrs' zstd and Blosc codecs are C, compiled for wasm32 by clang (no C library is needed at run
+# time: the module imports nothing but wasm-bindgen's glue)
+export CC_wasm32_unknown_unknown="${CC_wasm32_unknown_unknown:-clang}"
+export AR_wasm32_unknown_unknown="${AR_wasm32_unknown_unknown:-llvm-ar}"
+command -v "$CC_wasm32_unknown_unknown" > /dev/null || { echo "clang not found (zarrs' C codecs for wasm32)"; exit 1; }
+
 # Pinned so a build can be repeated; update deliberately (and in CI with it)
 TOOLCHAIN="${DSPK_WEB_TOOLCHAIN:-nightly-2026-11-14}"
 WHICH="${1:-all}"

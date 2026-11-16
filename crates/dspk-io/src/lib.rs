@@ -26,7 +26,9 @@ pub use generic::raw::{write_raw, ByteSource, RawParams, RawRecording};
 pub use generic::zarr_options::{ZarrCompression, ZarrOptions, DEFAULT_PARALLEL_WRITES, DEFAULT_ZARR_COMPRESSION};
 #[cfg(not(feature = "zarr"))]
 pub use generic::zarr_options::ZarrWriter;
+#[cfg(feature = "zarr-read")]
+pub use generic::zarr_traces::{ByteSourceStore, ZarrRecording};
 #[cfg(feature = "zarr")]
-pub use generic::zarr_traces::{write_zarr, ZarrRecording, ZarrWriter};
+pub use generic::zarr_traces::{write_zarr, ZarrWriter};
 pub use channel_map::{channel_map_toml, parse_channel_map, read_channel_map};
 pub use registry::formats;

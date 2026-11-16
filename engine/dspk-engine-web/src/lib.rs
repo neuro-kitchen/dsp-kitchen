@@ -17,7 +17,7 @@
 use std::sync::Arc;
 
 use dspk_core::RecordingSource;
-use dspk_io::{ByteSource, RawParams, RawRecording};
+use dspk_io::{ByteSource, ByteSourceStore, RawParams, RawRecording, ZarrRecording};
 use dspk_pipeline::processed::ProcessedChains;
 use dspk_stream::engine::{answer_view, OpenRecording, ViewProcessor, WarmFuture};
 use dspk_stream::protocol::{convert, wire};
@@ -87,6 +87,8 @@ struct Inner {
     processor: Arc<Processor>,
     /// Why ops cannot run here, when they cannot (no WebGPU for computing).
     no_compute: Option<String>,
+    /// Bumped at each open: an overview still being built for an earlier recording stops.
+    generation: u64,
 }
 
 /// The engine, as the worker script holds it (`engine-worker.js`). Requests are answered one at
@@ -107,8 +109,10 @@ impl Engine {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Engine {
         console_error_panic_hook_set();
-        let inner = Inner { files: Vec::new(), current: None, processor: Arc::default(), no_compute: Some("WebGPU not opened yet".into()) };
-        Engine { inner: std::rc::Rc::new(std::cell::RefCell::new(inner)) }
+        let inner = Inner { files: Vec::new(), current: None, processor: Arc::default(), no_compute: Some("WebGPU not opened yet".into()), generation: 0 };
+        let inner = std::rc::Rc::new(std::cell::RefCell::new(inner));
+        ENGINE.with(|e| *e.borrow_mut() = Some(inner.clone()));
+        Engine { inner }
     }
 
     /// Opens the browser's GPU for computing. Resolves to "" when ops can run, else why not
@@ -159,9 +163,16 @@ impl Inner {
         match request.kind.ok_or_else(|| StreamError::Server("empty request".into()))? {
             Req::ListFiles(list) => Ok(Resp::Files(inner.borrow().list(&list.dir))),
             Req::Open(open) => {
-                let recording = Arc::new(inner.borrow().open(&open.path)?);
+                let (recording, source, pyramid) = inner.borrow().open(&open.path)?;
+                let recording = Arc::new(recording);
                 let header = convert::header_from_info(recording.info());
-                inner.borrow_mut().current = Some(recording);
+                let generation = {
+                    let mut me = inner.borrow_mut();
+                    me.current = Some(recording);
+                    me.generation += 1;
+                    me.generation
+                };
+                build_overview(inner_rc(inner), generation, source, pyramid);
                 Ok(Resp::Header(header))
             }
             Req::View(view) => {
@@ -191,7 +202,13 @@ impl Inner {
             match rest.split_once('/') {
                 Some((sub, _)) => {
                     if !entries.iter().any(|e| e.directory && e.name == sub) {
-                        entries.push(wire::FileEntry { name: sub.to_string(), kind: wire::FileKind::Directory as i32, size: 0, modified_unix: 0, directory: true });
+                        // A Zarr recording is a folder (as `dspk serve` lists it)
+                        // A dspk Zarr recording has a `/traces` array; another Zarr folder (NWB) is
+                        // listed but not offered as a recording here
+                        let zarr = sub.to_ascii_lowercase().ends_with(".zarr");
+                        let recording = zarr && self.file(&format!("{prefix}{sub}/traces/zarr.json")).is_some();
+                        let kind = if recording { wire::FileKind::Recording } else if zarr { wire::FileKind::Other } else { wire::FileKind::Directory };
+                        entries.push(wire::FileEntry { name: sub.to_string(), kind: kind as i32, size: 0, modified_unix: 0, directory: true });
                     }
                 }
                 None => {
@@ -212,7 +229,39 @@ impl Inner {
 
     /// Opens a picked `.bin` with its `.meta` sidecar (dspk's JSON layout), and builds its
     /// overview here (the whole file is read once, in pieces).
-    fn open(&self, name: &str) -> StreamResult<OpenRecording> {
+    /// Opens `name` at once; its overview (the zoomed-out min / max levels) starts empty and is
+    /// built in pieces between requests ([`build_overview`]), as `dspk serve` builds it in the
+    /// background: views of parts not built yet say so and are asked again.
+    fn open(&self, name: &str) -> StreamResult<(OpenRecording, Arc<dyn RecordingSource>, Arc<Pyramid>)> {
+        let fail = |e: String| StreamError::Server(e);
+        let source = if name.trim_end_matches('/').to_ascii_lowercase().ends_with(".zarr") { self.open_zarr(name)? } else { self.open_raw(name)? };
+        let pyramid = Arc::new(Pyramid::in_memory(source.as_ref(), MEMORY_BASE).map_err(|e| fail(e.to_string()))?);
+        let recording = OpenRecording::new(source.clone(), Some(pyramid.clone())).with_processor(self.processor.clone());
+        Ok((recording, source, pyramid))
+    }
+
+    /// A Zarr recording: the picked files under the folder `name`, read by chunk through a
+    /// read-only store over them (only the byte ranges zarrs asks for are read).
+    fn open_zarr(&self, name: &str) -> StreamResult<Arc<dyn RecordingSource>> {
+        let prefix = format!("{}/", name.trim_end_matches('/'));
+        // dspk's layout (a `/traces` array); NWB keeps its signal elsewhere and is read by the
+        // electrophysiology formats, not built for the browser yet
+        if self.file(&format!("{prefix}traces/zarr.json")).is_none() {
+            let what = if name.to_ascii_lowercase().contains(".nwb.") { "an NWB recording: NWB opens in the desktop app or the container for now" } else { "not a dspk Zarr recording (no /traces array)" };
+            return Err(StreamError::Server(format!("{name} is {what}")));
+        }
+        let files: Vec<(String, Arc<dyn ByteSource>)> =
+            self.files.iter().filter_map(|(path, file)| path.strip_prefix(&prefix).map(|key| (key.to_string(), Arc::new(FileBytes(file.clone())) as Arc<dyn ByteSource>))).collect();
+        if files.is_empty() {
+            return Err(StreamError::Server(format!("{name} was not among the folders picked")));
+        }
+        let store: Arc<dyn zarrs::storage::ReadableStorageTraits + Send + Sync> = Arc::new(ByteSourceStore::new(files));
+        let recording = ZarrRecording::from_store(name.trim_end_matches('/'), store).map_err(|e| StreamError::Server(format!("{name}: {e}")))?;
+        Ok(Arc::new(recording))
+    }
+
+    /// A `.bin` with its `.meta` (dspk's JSON layout).
+    fn open_raw(&self, name: &str) -> StreamResult<Arc<dyn RecordingSource>> {
         let fail = |e: String| StreamError::Server(e);
         let data = self.file(name).ok_or_else(|| fail(format!("{name} was not among the files picked")))?;
         let meta_name = format!("{}.meta", name.strip_suffix(".bin").unwrap_or(name));
@@ -225,11 +274,58 @@ impl Inner {
                 fail(format!("{meta_name} is not dspk's JSON layout ({e})"))
             }
         })?;
-        let source: Arc<dyn RecordingSource> = Arc::new(RawRecording::from_source(name, Arc::new(FileBytes(data.clone())), &params).map_err(|e| fail(e.to_string()))?);
-        let pyramid = Pyramid::in_memory(source.as_ref(), MEMORY_BASE).map_err(|e| fail(e.to_string()))?;
-        pyramid.fill(source.as_ref(), 0, source.info().samples, RAW_BLOCK_VALUES, || false).map_err(|e| fail(e.to_string()))?;
-        Ok(OpenRecording::new(source, Some(Arc::new(pyramid))).with_processor(self.processor.clone()))
+        Ok(Arc::new(RawRecording::from_source(name, Arc::new(FileBytes(data.clone())), &params).map_err(|e| fail(e.to_string()))?))
     }
+}
+
+/// The engine's state, shared with the tasks it starts (the overview being built).
+type Shared = std::rc::Rc<std::cell::RefCell<Inner>>;
+
+thread_local! {
+    /// The engine of this worker (one per worker), for the tasks it starts.
+    static ENGINE: std::cell::RefCell<Option<Shared>> = const { std::cell::RefCell::new(None) };
+}
+
+fn inner_rc(_inner: &std::cell::RefCell<Inner>) -> Option<Shared> {
+    ENGINE.with(|e| e.borrow().clone())
+}
+
+/// Values read per piece of the overview (every channel): small enough to answer requests between
+/// pieces, large enough to read efficiently.
+const OVERVIEW_PIECE_VALUES: u64 = 8 << 20;
+
+/// Builds the overview of the recording opened as `generation`, a piece at a time, letting the
+/// worker answer the page's requests between pieces; stops when another recording is opened.
+fn build_overview(engine: Option<Shared>, generation: u64, source: Arc<dyn RecordingSource>, pyramid: Arc<Pyramid>) {
+    let Some(engine) = engine else { return };
+    wasm_bindgen_futures::spawn_local(async move {
+        let (total, channels) = (source.info().samples, source.info().channel_count().max(1) as u64);
+        let step = (OVERVIEW_PIECE_VALUES / channels).max(1);
+        let mut start = 0;
+        while start < total {
+            if engine.borrow().generation != generation {
+                return;
+            }
+            let end = (start + step).min(total);
+            if let Err(e) = pyramid.fill(source.as_ref(), start, end, RAW_BLOCK_VALUES, || false) {
+                web_sys_console_error(&format!("overview of {}: {e}", source.info().name));
+                return;
+            }
+            start = end;
+            yield_to_messages().await;
+        }
+    });
+}
+
+/// Lets the worker take the page's next message before going on (a zero-delay timer).
+async fn yield_to_messages() {
+    let promise = js_sys::Promise::new(&mut |resolve, _| {
+        let global = js_sys::global();
+        if let Ok(set_timeout) = js_sys::Reflect::get(&global, &"setTimeout".into()).and_then(|f| f.dyn_into::<js_sys::Function>()) {
+            let _ = set_timeout.call2(&global, &resolve, &JsValue::from(0));
+        }
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
 }
 
 fn console_error_panic_hook_set() {

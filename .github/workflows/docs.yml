@@ -38,13 +38,13 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Tools (nightly, wasm-bindgen of Cargo.lock's version, binaryen, brotli)
+      - name: Tools (nightly, wasm-bindgen of Cargo.lock's version, binaryen, brotli, clang for zarrs' C codecs)
         run: |
           toolchain=$(sed -n 's/^TOOLCHAIN="${DSPK_WEB_TOOLCHAIN:-\(nightly-[0-9-]*\)}"$/\1/p' app/dspk-app-web/build.sh)
           rustup toolchain install "$toolchain" --profile minimal --component rust-src --target wasm32-unknown-unknown
           bindgen=$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print; exit }' Cargo.lock)
           cargo install wasm-bindgen-cli --version "$bindgen" --locked
-          sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends binaryen brotli
+          sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends binaryen brotli clang llvm
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: web-app
