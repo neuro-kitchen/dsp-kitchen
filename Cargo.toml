@@ -97,8 +97,8 @@ flate2 = "1.1.11"
 zarrs = { version = "0.23.14", default-features = false, features = ["filesystem", "blosc", "crc32c", "gzip", "sharding", "zstd"] }
 quinn = "0.11.12"
 tonic = "0.14.9"
-prost = "0.14.5"
-prost-build = "0.14.5"
+prost = "0.14.6"
+prost-build = "0.14.6"
 protox = "0.10.0"
 rcgen = "0.14.10"
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std"] }
@@ -107,7 +107,7 @@ rustls-pki-types = "1.16.0"
 # UI & Graphics
 # GPUI through gpui-kit. Pinned exactly: gpui-kit pins a weekly GPUI snapshot (gpui-pre); update
 # deliberately, together with kitchen-ui (the two must share one gpui-kit: one `Theme` global)
-gpui-kit = "=0.9.1"
+gpui-kit = "=0.10.0"
 # The neuro-kitchen apps' shared crates (github.com/neuro-kitchen/kitchen), from crates.io:
 # kitchen-ui (tokens, widgets, the parameter editor, icon bundling) and kitchen-shell (the frame,
 # the command registry, menus, search, jobs). Both from the same source, so there is one kitchen-ui
@@ -116,12 +116,13 @@ gpui-kit = "=0.9.1"
 # [patch.crates-io]
 # kitchen-ui = { path = "../kitchen/crates/kitchen-ui" }
 # kitchen-shell = { path = "../kitchen/crates/kitchen-shell" }
-kitchen-ui = "0.0.3"
-kitchen-shell = "0.0.3"
-# The wgpu adapters the app names (the version CubeCL uses: one wgpu in the build)
+kitchen-ui = "0.0.5"
+kitchen-shell = "0.0.5"
+# The wgpu adapters the app names (the version CubeCL and GPUI use: one wgpu in the build; GPUI
+# pins it exactly)
 wgpu = "30.0.1"
 # The status bar's CPU and memory meters
-sysinfo = { version = "0.40.1", default-features = false, features = ["system"] }
+sysinfo = { version = "0.40.3", default-features = false, features = ["system"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 rfd = "0.18.0"
 
