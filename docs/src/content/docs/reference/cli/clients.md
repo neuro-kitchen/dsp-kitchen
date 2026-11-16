@@ -71,3 +71,33 @@ dspk clients list [OPTIONS]
 
 - **`--auth-dir <AUTH_DIR>`**: env `DSPK_SERVE_AUTH_DIR`  
   The server's authority folder (default: &lt;data dir>/serve, e.g. ~/.local/share/dspk/serve)
+
+## `dspk clients pair`
+
+Make a one-time pairing code: on the other computer, `dspk pair <host:port> <code>` gets its certificate with no file to hand over (the running server sees the code at once)
+
+```text
+dspk clients pair [OPTIONS]
+```
+
+**Options**
+
+- **`--auth-dir <AUTH_DIR>`**: env `DSPK_SERVE_AUTH_DIR`  
+  The server's authority folder (default: &lt;data dir>/serve, e.g. ~/.local/share/dspk/serve)
+- **`--control`**  
+  The paired computer may also configure, start and stop jobs, and write
+
+## `dspk clients codes`
+
+The live pairing codes (without their secrets); --cancel stops one, or all of them
+
+```text
+dspk clients codes [OPTIONS]
+```
+
+**Options**
+
+- **`--auth-dir <AUTH_DIR>`**: env `DSPK_SERVE_AUTH_DIR`  
+  The server's authority folder (default: &lt;data dir>/serve, e.g. ~/.local/share/dspk/serve)
+- **`--cancel <CANCEL>`**  
+  Cancel the code with this id (its first two digits), or `all`

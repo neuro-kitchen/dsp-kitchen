@@ -20,6 +20,8 @@ Follow these in order the first time:
 Then, as needed:
 
 - [Pass the GPU in](/dsp-kitchen/deploy/gpu/), including SELinux on Fedora and RHEL.
+- [The endpoint for browsers](/dsp-kitchen/deploy/browsers/): `--web`, signing in, and reaching it
+  without a browser warning.
 - [Run it as a service](/dsp-kitchen/deploy/service/) that starts at boot.
 - [Security](/dsp-kitchen/deploy/security/): what protects the server, and what doesn't yet.
 - [Smoke test](/dsp-kitchen/deploy/smoke-test/): check an image end to end.

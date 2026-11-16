@@ -29,3 +29,5 @@ dspk convert [OPTIONS] <INPUT> <OUTPUT>
   - `phy`: Phy / Kilosort folder (`.npy` arrays, `.tsv` tables)
   - `zarr`: dspk `.sorting.zarr` store
   - `nwb`: NWB `/units` table in a `.nwb.zarr` store
+- **`--curated`**  
+  Apply the curation saved in the input `.sorting.zarr` (labels, merges, splits) and write a Phy folder as phy's own save does: the output is a Phy folder of the same sorting (only its cluster files are replaced, originals kept as `.bak`) or a new folder

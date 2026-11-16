@@ -155,7 +155,16 @@ impl SignalBackend for RemoteSignal {
                 self.complete.store(false, Ordering::Relaxed);
                 self.poll_until_complete();
             }
-            Envelope::Columns { complete: true, .. } => self.complete.store(true, Ordering::Relaxed),
+            // The first complete answer ends "Building overview" for whoever follows it (the
+            // polling above only runs after an incomplete one)
+            Envelope::Columns { complete: true, .. } => {
+                if !self.complete.swap(true, Ordering::Relaxed) {
+                    let total = self.info.samples;
+                    for listener in self.listeners.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+                        listener(Progress { filled: 0..0, done: total, total });
+                    }
+                }
+            }
             Envelope::Samples(_) => {}
         }
         *out = envelope;

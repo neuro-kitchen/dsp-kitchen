@@ -28,10 +28,22 @@ version number.
   `dspk_synapse::curation::phy::{import_phy, export_phy}`; on the command line:
   `dspk convert <x.sorting.zarr> <phy folder> --curated`.
 - **`dspk serve --web <folder>`: an endpoint for browsers** (`dspk_stream::transport::web`):
-  HTTPS on `--web-bind` (default 127.0.0.1:50052) serving the web app's folder and a WebSocket
-  that carries the same requests as a QUIC session (views, files, opening a recording, jobs).
-  A page signs in with a pairing code and keeps a token, which is a client in the same registry
-  (`dspk clients list`, `revoke`). The live signal and downloads are not offered to browsers yet.
+  `--web-bind` (default 127.0.0.1:50052) serves the web app's folder and a WebSocket that carries
+  the same requests as a QUIC session (views, files, opening a recording, jobs). A page signs in
+  with a pairing code and keeps a token, which is a client in the same registry (`dspk clients
+  list`, `revoke`). The live signal and downloads are not offered to browsers yet. The web app
+  itself is not published yet.
+  - **No browser warning on your own computer:** on a loopback address the endpoint is plain
+    HTTP, which browsers count as secure (reach a cluster the same way through
+    `ssh -L 50052:127.0.0.1:50052`). On other addresses it is HTTPS: `--certificate` and
+    `--private-key` now apply to it, else the server's own certificate (a browser warns). Plain
+    HTTP is never served off loopback. See the new docs page *The endpoint for browsers*.
+- **Views processed on the server, for clients that cannot compute** (a page): a view request
+  may carry the view's processing steps (`ViewRequest.processing`: its channels and its enabled
+  ops as pipeline nodes); the server runs them on its device with the code of the app's preview
+  and answers the processed view, keeping the last four chains of each open recording. In
+  `dspk-stream` this is the trait `ViewProcessor` (set with `OpenRecording::with_processor`); the
+  command line implements it with `dspk-pipeline`. A request without it is answered as before.
 - **Pairing with a short code, in `dspk-stream`** (`transport::pairing`, as lucem): the server
   makes a one-time code such as `42-8317-2956` (10 minutes, 3 tries); both sides prove they know
   it without sending it (SPAKE2), the computer makes its own key pair and the server issues its
@@ -43,6 +55,13 @@ version number.
   A computer without a certificate can connect only to pair, unless `--allow-anonymous`.
 
 ### Changed
+
+- **The preview of a view's processing lives in `dspk-pipeline`** (feature `view`):
+  `dspk_pipeline::processed::{ProcessedSignal, PreviewSource}` and
+  `dspk_pipeline::preview::{view_plan, ViewPlan}` moved out of the app, so the server and the app
+  run one code path. `ProcessedSignal::of_ops` builds one from a view's ops, fitting whitenings.
+- **`dspk_stream::pair`** holds the pairing messages and a client's side of the exchange
+  (`transport::pairing` keeps the server's side and re-exports them).
 
 - **New crate `dspk-session`** (`engine/dspk-session`): the session document, its commands and
   their pure `apply`, the graph (sources → operations → views → writes), recipes, the timeline and
@@ -69,6 +88,10 @@ version number.
   for. `dspk-pipeline` writes its events tables through it; `events_frame` returns the same frame.
 
 ### Fixed
+
+- **"Building overview" no longer stays on screen for a recording on a server** whose overview
+  was already complete: the client told its listeners only from its polling, which starts after
+  an incomplete answer.
 
 - `dspk-app --version` and the Python package's `dspk --version` print the version (both refused the
   flag).

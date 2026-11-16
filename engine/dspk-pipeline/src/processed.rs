@@ -8,12 +8,12 @@ use std::sync::Arc;
 
 use dspk_core::{DspResult, RecordingInfo, RecordingSource, SampleFormat};
 use dspk_ops::PipelineStage;
-use dspk_pipeline::preview::Preview;
+use crate::preview::Preview;
 use dspk_view::envelope::fold::finish;
 use dspk_view::envelope::{fold_row, Columns, EMPTY};
 use dspk_view::{Envelope, OnProgress, Progress, SignalBackend, View};
 
-pub use dspk_pipeline::preview::PREVIEW_MAX_VALUES;
+pub use crate::preview::PREVIEW_MAX_VALUES;
 
 /// A view's signal with its op chain applied: [`Preview`] (dspk-pipeline) for the channels the
 /// chain processes, the raw signal for the others and for windows too large to preview.
@@ -51,6 +51,21 @@ impl ProcessedSignal {
 }
 
 impl ProcessedSignal {
+    /// The processed signal of a view from its op chain (`ops`, the enabled ones in order) over
+    /// `channels` (the view's subset, or every channel), as [`crate::preview::view_plan`] lays
+    /// it out. Whitenings are fitted here, on the signal of the steps before them: this reads
+    /// the recording and takes seconds (call it off the drawing thread).
+    pub fn of_ops(raw: Arc<dyn SignalBackend>, source: Arc<dyn RecordingSource>, ops: &[&crate::Node], channels: Vec<usize>, base_dir: &std::path::Path) -> Result<Self, String> {
+        let plan = crate::preview::view_plan(ops, channels, base_dir)?;
+        let mut stages: Vec<PipelineStage> = plan.steps.into_iter().map(|(_, stage)| stage).collect();
+        for (at, fit) in plan.fits {
+            let target = dspk_core::ComputeTarget::from_env().map_err(|e| e.to_string())?;
+            let fitted = crate::fit_whitening(target, source.as_ref(), &plan.group, &stages[..at], &fit).map_err(|e| e.to_string())?;
+            stages[at] = PipelineStage::SpatialWhitening(fitted);
+        }
+        Self::new(raw, source, plan.group, stages).map_err(|e| e.to_string())
+    }
+
     /// `channels` over `samples`, processed whatever the size (a branch reading this preview
     /// as its input: its halo makes the request larger than a view's).
     pub fn read_processed(&self, channels: &[usize], samples: Range<u64>, out: &mut [f32]) -> DspResult<()> {

@@ -26,7 +26,7 @@ dspk-io = { workspace = true, features = ["zarr"] }
 # Envelopes, pyramids and the signal backend; host only (the app draws on the CPU)
 dspk-view = { workspace = true, default-features = false }
 # Views' op chains are dspk-pipeline nodes; writing a view runs its pipeline
-dspk-pipeline.workspace = true
+dspk-pipeline = { workspace = true, features = ["view"] }
 # The session document, its commands and graph
 dspk-session.workspace = true
 # Servers (`dspk serve`): remote recordings (RemoteSignal), jobs, fetching results

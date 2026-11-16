@@ -16,6 +16,9 @@ wgpu = ["dspk-core/wgpu", "dspk-ops/wgpu"]
 cpu = ["dspk-core/cpu", "dspk-ops/cpu"]
 cuda = ["dspk-core/cuda", "dspk-ops/cuda"]
 hip = ["dspk-core/hip", "dspk-ops/hip"]
+# A view's processed signal behind dspk-view's `SignalBackend` (the app, and `dspk serve` for
+# clients that cannot compute)
+view = ["dep:dspk-view"]
 
 [dependencies]
 dspk-core = { workspace = true, features = ["compute", "schema"] }
@@ -23,6 +26,7 @@ dspk-io = { workspace = true, features = ["zarr"] }
 # Raw output frames built in parallel
 rayon.workspace = true
 dspk-ops.workspace = true
+dspk-view = { workspace = true, default-features = false, optional = true }
 glob.workspace = true
 cubecl.workspace = true
 schemars.workspace = true

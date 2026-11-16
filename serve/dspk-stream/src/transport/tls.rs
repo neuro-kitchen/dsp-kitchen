@@ -144,7 +144,7 @@ fn finish_server_for(mut crypto: rustls::ServerConfig, certificate: Vec<u8>, pro
 }
 
 /// The certificate chain and key `identity` names (a new self-signed one, or PEM files).
-fn identity_chain(identity: &ServerIdentity) -> StreamResult<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
+pub(crate) fn identity_chain(identity: &ServerIdentity) -> StreamResult<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
     Ok(match identity {
         ServerIdentity::SelfSigned { names } => {
             let generated = rcgen::generate_simple_self_signed(names.clone()).map_err(tls_error)?;

@@ -46,24 +46,7 @@ const CA_NAME: &str = "dspk serve authority";
 const SERVER_NAME: &str = "dspk serve";
 const SECS_PER_YEAR: u64 = 31_556_952;
 
-/// What a client may do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Permission {
-    /// Recordings and views.
-    Read,
-    /// Also configure, start and stop jobs, and write.
-    Control,
-}
-
-impl std::fmt::Display for Permission {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Read => "read",
-            Self::Control => "control",
-        })
-    }
-}
+pub use crate::pair::Permission;
 
 /// The client on the other end of a connection.
 #[derive(Debug, Clone, PartialEq, Eq)]

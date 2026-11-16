@@ -30,46 +30,37 @@ use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
-use super::auth::{Authority, Peer, Permission};
-use super::pairing::{PairHello, PairReply, PairToken};
+use super::auth::{Authority, Peer};
+use super::pairing::{PairReply, PairToken};
 use super::server::{answer, Current, Device};
 use crate::error::{StreamError, StreamResult};
 use crate::protocol::wire;
 
-/// The path of the WebSocket.
-pub const WS_PATH: &str = "/ws";
+pub use crate::pair::{WebHello, WebWelcome, WS_PATH};
 /// Largest frame a page may send (a request is small).
 pub const MAX_WEB_FRAME_BYTES: usize = 1 << 20;
 /// How long a page has to say who it is.
 const HELLO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// The page's first frame.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "hello", rename_all = "snake_case", deny_unknown_fields)]
-pub enum WebHello {
-    /// A token from an earlier pairing.
-    Token { token: String },
-    /// Pairing with a one-time code: the first message of [`super::pairing`]'s exchange. The
-    /// server answers [`PairReply::Spake`], the page sends a [`PairToken`], the server answers
-    /// [`PairReply::Token`].
-    Pair { pair: PairHello },
-}
-
-/// The server's answer once it knows who the page is.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WebWelcome {
-    pub server_name: String,
-    pub server_version: String,
-    pub peer_name: String,
-    pub permission: Permission,
-    pub has_files: bool,
-}
-
 /// What the browser endpoint serves.
 pub struct WebServer {
     listener: tokio::net::TcpListener,
-    tls: tokio_rustls::TlsAcceptor,
+    /// `None`: plain HTTP (see [`WebTls::Plain`]).
+    tls: Option<tokio_rustls::TlsAcceptor>,
     state: Arc<State>,
+}
+
+/// How the browser endpoint is secured.
+pub enum WebTls {
+    /// Plain HTTP, for a loopback address only: a browser treats `http://127.0.0.1` and
+    /// `http://localhost` as secure (no warning, threads allowed), nothing leaves the computer,
+    /// and a proxy that holds a real certificate (`tailscale serve`, Caddy) can stand in front.
+    Plain,
+    /// A certificate the server's own authority issues for its names: encrypted, but a browser
+    /// warns until that authority is trusted in it.
+    Authority,
+    /// A certificate chain and key from files (a public authority's: no warning).
+    Files(super::tls::ServerIdentity),
 }
 
 struct State {
@@ -81,13 +72,30 @@ struct State {
 }
 
 impl WebServer {
-    /// Listens on `addr` (TCP) with a certificate the authority issues for `names`.
-    pub async fn bind(addr: SocketAddr, authority: Arc<Authority>, device: Arc<Device>, names: Vec<String>, web_root: Option<PathBuf>) -> StreamResult<Self> {
-        let (chain, key) = authority.server_certificate(&names)?;
-        let mut crypto = rustls::ServerConfig::builder().with_no_client_auth().with_single_cert(chain, key).map_err(|e| StreamError::Tls(e.to_string()))?;
-        crypto.alpn_protocols = vec![b"http/1.1".to_vec()];
+    /// Listens on `addr` (TCP), secured as `tls` says (`names`: the server's, for its authority's
+    /// certificate and for the tokens of the pages it pairs).
+    pub async fn bind(addr: SocketAddr, authority: Arc<Authority>, device: Arc<Device>, names: Vec<String>, web_root: Option<PathBuf>, tls: WebTls) -> StreamResult<Self> {
+        let identity = match &tls {
+            WebTls::Plain if !addr.ip().is_loopback() => return Err(StreamError::Tls(format!("plain HTTP is only served on a loopback address, not on {addr}"))),
+            WebTls::Plain => None,
+            WebTls::Authority => Some(authority.server_certificate(&names)?),
+            WebTls::Files(identity) => Some(super::tls::identity_chain(identity)?),
+        };
+        let tls = match identity {
+            Some((chain, key)) => {
+                let mut crypto = rustls::ServerConfig::builder().with_no_client_auth().with_single_cert(chain, key).map_err(|e| StreamError::Tls(e.to_string()))?;
+                crypto.alpn_protocols = vec![b"http/1.1".to_vec()];
+                Some(tokio_rustls::TlsAcceptor::from(Arc::new(crypto)))
+            }
+            None => None,
+        };
         let listener = tokio::net::TcpListener::bind(addr).await?;
-        Ok(Self { listener, tls: tokio_rustls::TlsAcceptor::from(Arc::new(crypto)), state: Arc::new(State { authority, device, web_root, names }) })
+        Ok(Self { listener, tls, state: Arc::new(State { authority, device, web_root, names }) })
+    }
+
+    /// Whether pages are served over HTTPS (else plain HTTP on loopback).
+    pub fn is_tls(&self) -> bool {
+        self.tls.is_some()
     }
 
     pub fn local_addr(&self) -> StreamResult<SocketAddr> {
@@ -106,15 +114,19 @@ impl WebServer {
             };
             let (tls, state) = (self.tls.clone(), self.state.clone());
             tokio::spawn(async move {
-                let stream = match tls.accept(tcp).await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        tracing::debug!("web: TLS handshake with {remote} failed: {e}");
-                        return;
-                    }
-                };
                 let service = hyper::service::service_fn(move |request| handle(request, state.clone()));
-                if let Err(e) = hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(stream), service).with_upgrades().await {
+                let http = hyper::server::conn::http1::Builder::new();
+                let served = match tls {
+                    Some(tls) => match tls.accept(tcp).await {
+                        Ok(stream) => http.serve_connection(TokioIo::new(stream), service).with_upgrades().await,
+                        Err(e) => {
+                            tracing::debug!("web: TLS handshake with {remote} failed: {e}");
+                            return;
+                        }
+                    },
+                    None => http.serve_connection(TokioIo::new(tcp), service).with_upgrades().await,
+                };
+                if let Err(e) = served {
                     tracing::debug!("web: connection with {remote} ended: {e}");
                 }
             });
@@ -342,6 +354,7 @@ mod tests {
     use tokio_tungstenite::tungstenite::Message;
 
     use super::*;
+    use crate::pair::Permission;
     use crate::protocol::convert::{envelope_from_frame, request_from_view};
     use crate::transport::pairing::ClientPairing;
     use crate::transport::server::{OpenRecording, ServeOptions};
@@ -382,7 +395,7 @@ mod tests {
         let source = Arc::new(MemoryRecording::new("rec", data.clone(), channels, 1000.0).unwrap());
         let device = Arc::new(Device { name: "dspk".into(), version: "test".into(), files: None, recording: Some(Arc::new(OpenRecording::new(source, None))), jobs: None, runtime: String::new(), options: ServeOptions::default() });
         let names = vec!["localhost".to_string()];
-        let server = WebServer::bind("127.0.0.1:0".parse().unwrap(), authority.clone(), device, names.clone(), None).await.unwrap();
+        let server = WebServer::bind("127.0.0.1:0".parse().unwrap(), authority.clone(), device, names.clone(), None, WebTls::Authority).await.unwrap();
         let addr = server.local_addr().unwrap();
         tokio::spawn(server.run());
 

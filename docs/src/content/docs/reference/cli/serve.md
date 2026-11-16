@@ -50,6 +50,14 @@ dspk serve [OPTIONS] [RECORDING]
   The compute runtime jobs (sorts) run on: wgpu, cuda, cpu (default: $DSPK_RUNTIME, else the first compiled in, as `dspk doctor` shows)
 - **`--allow-anonymous`**  
   Also let in clients without a certificate, read only. Anyone who reaches the port can then read the recording: trusted networks only
+- **`--pair`**  
+  Show a one-time pairing code at start: a computer runs `dspk pair <host:port> <code>` and gets its certificate, with no file to hand over (10 minutes, 3 tries; more codes: `dspk clients pair`)
+- **`--pair-control`**  
+  The computer paired with --pair may also configure, start and stop jobs
+- **`--web <WEB>`**  
+  Also serve browsers: the folder of the web app (its index.html, .js and .wasm) on --web-bind, with a WebSocket for the same requests. Plain HTTP when that address is loopback (a browser counts it as secure), HTTPS otherwise: with --certificate, else with the server's own certificate, which a browser warns about. A page signs in with a pairing code (`--pair`, `dspk clients pair`) and keeps a token
+- **`--web-bind <WEB_BIND>`**: default `127.0.0.1:50052`  
+  TCP address of the web endpoint
 - **`--max-clients <MAX_CLIENTS>`**: default `32`  
   Clients connected at once; more are refused until one leaves
 - **`--name <NAMES>`**  

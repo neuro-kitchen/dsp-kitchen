@@ -23,6 +23,8 @@
 mod fit;
 mod prepare;
 pub mod preview;
+#[cfg(feature = "view")]
+pub mod processed;
 mod run;
 mod spec;
 
