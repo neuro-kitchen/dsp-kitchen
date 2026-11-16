@@ -8,7 +8,7 @@ version number.
 
 ### Added
 
-- **The app in the browser, on its own** (GitHub Pages, `/dsp-kitchen/web/`): with no server
+- **The app in the browser, on its own** (GitHub Pages, `/dsp-kitchen/viewer/`): with no server
   behind the page, the app starts its engine in a worker of its own (`dspk-engine-web`: a
   single-thread module that owns the browser's WebGPU) and talks to it with the same requests as
   `dspk serve` (`dspk_stream::worker_client`, a third `Link`). *Open files…* hands it a `.bin` and

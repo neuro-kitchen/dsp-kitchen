@@ -1,11 +1,11 @@
 ---
 title: In your browser
-description: "The app at /dsp-kitchen/web/: open a recording from your disk, nothing to install."
+description: "The viewer at /dsp-kitchen/viewer/: open a recording from your disk, nothing to install."
 sidebar:
   order: 1
 ---
 
-**[Open the app in your browser](/dsp-kitchen/web/)**: the same app as the desktop's, built for
+**[Open the viewer](/dsp-kitchen/viewer/)**: the same app as the desktop's, built for
 the browser. Nothing is installed and nothing leaves your computer: the files you open are read in
 the page, and processing runs on your own graphics card.
 

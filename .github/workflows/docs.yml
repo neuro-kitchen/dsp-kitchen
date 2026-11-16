@@ -1,5 +1,5 @@
 # Builds the documentation site (docs/, Starlight) and deploys it to GitHub Pages:
-# https://neuro-kitchen.github.io/dsp-kitchen/, with the app for the browser at /dsp-kitchen/web/
+# https://neuro-kitchen.github.io/dsp-kitchen/, with the viewer (the app in a browser) at /dsp-kitchen/viewer/
 # (app/dspk-app-web/build.sh: the app and its engine worker; nightly Rust, pinned in build.sh).
 # Runs on pushes to main that change the site or the web app, or by hand. The `github-pages`
 # environment only accepts main. CI (ci.yml) checks the same build on pull requests, and that the
@@ -73,13 +73,13 @@ jobs:
       - name: Build
         working-directory: docs
         run: bun run build
-      # The app at /dsp-kitchen/web/ (Pages serves no Brotli files: the plain ones are enough)
+      # The viewer at /dsp-kitchen/viewer/ (Pages serves no Brotli files: the plain ones are enough)
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: web-app
-          path: docs/dist/web
+          path: docs/dist/viewer
       - name: Leave out the compressed copies
-        run: find docs/dist/web -name '*.br' -delete
+        run: find docs/dist/viewer -name '*.br' -delete
       - name: Upload the site
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
