@@ -145,3 +145,24 @@ pub fn remote_sort(profile: ServerProfile, job: wire::Configure, results: PathBu
     cancel
 }
 
+
+/// Where a page's processing happens; the desktop names its own device instead.
+pub fn processing_label() -> Option<String> {
+    None
+}
+
+/// A page that runs alone opens the files the user picks through its engine; the desktop has
+/// its file dialog.
+pub fn runs_alone() -> bool {
+    false
+}
+
+/// See [`runs_alone`]: never asked on the desktop.
+pub async fn pick_files(_folder: bool) -> anyhow::Result<Vec<String>> {
+    anyhow::bail!("the desktop app opens files with its file dialog")
+}
+
+/// The server a page talks to; the desktop has none of its own.
+pub fn page_profile() -> ServerProfile {
+    ServerProfile { name: "this computer".into(), address: String::new(), server_name: crate::data::remote::DEFAULT_SERVER_NAME.into(), identity: PathBuf::new() }
+}

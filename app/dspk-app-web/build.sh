@@ -2,11 +2,13 @@
 # Builds the web app into app/dspk-app-web/dist/ (served as it is: `dspk serve --web <dist>`):
 #
 #   index.html  the page: a loader that checks the browser (hardware drawing, WebGPU, threads)
-#               before anything large is downloaded, then starts one of the builds below
-#   mt/         the threaded build: drawing on web workers; a client of `dspk serve`, which
-#               computes. Needs the page served cross-origin isolated (`dspk serve --web` is)
-#   st/         the single-thread build: everything on the page's thread, ops on the browser's
-#               WebGPU (pages not isolated: a plain file server, GitHub Pages)
+#               before anything large is downloaded, then starts the app
+#   mt/         the app, threaded: drawing on web workers. Needs the page cross-origin isolated
+#               (`dspk serve --web` sends the headers; elsewhere isolate-sw.js adds them)
+#   engine/     the engine (dspk-engine-web) for a page that runs alone (GitHub Pages): a
+#               single-thread module in a worker of its own, which owns WebGPU, reads the files
+#               the user picked and runs a view's ops; a page `dspk serve` served does not use it
+#   isolate-sw.js  the service worker that isolates the page where the host cannot
 #
 # Each .wasm and .js is also written Brotli-compressed (.br), which `dspk serve` sends to
 # browsers that accept it (the .wasm is ~25 MB, ~7 MB compressed).
@@ -15,8 +17,8 @@
 # platform needs nightly, and threads need -Z build-std), wasm-bindgen-cli of the version in
 # Cargo.lock, wasm-opt (binaryen) and brotli.
 #
-#   app/dspk-app-web/build.sh            both builds
-#   app/dspk-app-web/build.sh mt         the threaded build only (the container's)
+#   app/dspk-app-web/build.sh            the app and the engine (GitHub Pages)
+#   app/dspk-app-web/build.sh mt         the app only (the container's: its server computes)
 set -euo pipefail
 
 # Pinned so a build can be repeated; update deliberately (and in CI with it)
@@ -39,37 +41,45 @@ wasm_opt=$(command -v wasm-opt || ls -t ~/.cache/.wasm-pack/wasm-opt-*/bin/wasm-
 command -v brotli > /dev/null || { echo "brotli not found"; exit 1; }
 rustup run "$TOOLCHAIN" rustc --version > /dev/null 2>&1 || rustup toolchain install "$TOOLCHAIN" --profile minimal --component rust-src --target wasm32-unknown-unknown
 
-# $1: mt or st; the rest: what the build needs on top of `cargo build`
+# $1: the folder under dist/; $2: the crate's library name; the rest: the cargo command
 build() {
-    local kind=$1 dir="$dist/$1" wasm
-    shift
+    local kind=$1 lib=$2 dir="$dist/$1" wasm
+    shift 2
     echo "== $kind"
     (cd "$root" && "$@")
-    wasm="$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/dspk_app_web.wasm"
+    wasm="$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/$lib.wasm"
     rm -rf "$dir"
     "$bindgen" "$wasm" --out-dir "$dir" --target web
     "$wasm_opt" -O2 --enable-threads --enable-bulk-memory --enable-mutable-globals --enable-simd --enable-nontrapping-float-to-int --enable-sign-ext \
-        "$dir/dspk_app_web_bg.wasm" -o "$dir/dspk_app_web_bg.wasm"
-    find "$dir" -name '*.wasm' -o -name '*.js' | while read -r f; do brotli -f -q 11 "$f" -o "$f.br"; done
-    du -h "$dir/dspk_app_web_bg.wasm" "$dir/dspk_app_web_bg.wasm.br" | sed 's/^/   /'
+        "$dir/${lib}_bg.wasm" -o "$dir/${lib}_bg.wasm"
+    du -h "$dir/${lib}_bg.wasm" | sed 's/^/   /'
+}
+
+compress() {
+    find "$dist" \( -name '*.wasm' -o -name '*.js' \) | while read -r f; do brotli -f -q 11 "$f" -o "$f.br"; done
 }
 
 mkdir -p "$dist"
-cp "$here/index.html" "$dist/index.html"
+cp "$here/index.html" "$here/isolate-sw.js" "$dist/"
+# A page on its own says so; `dspk serve` answers this address with its name instead
+echo '{"server": null}' > "$dist/dspk-serve.json"
 
 if [ "$WHICH" = all ] || [ "$WHICH" = mt ]; then
     # Shared memory and atomics, and a standard library built with them (-Z build-std); the
     # exports wasm-bindgen's thread support needs. No compute feature: wgpu cannot cross threads
     export CARGO_TARGET_DIR="$target/web-mt"
     RUSTFLAGS='-C target-feature=+atomics,+bulk-memory,+mutable-globals,+simd128' \
-    build mt rustup run "$TOOLCHAIN" cargo rustc -p dspk-app-web --lib --no-default-features --target wasm32-unknown-unknown --release \
+    build mt dspk_app_web rustup run "$TOOLCHAIN" cargo rustc -p dspk-app-web --lib --no-default-features --target wasm32-unknown-unknown --release \
         -Z build-std=std,panic_abort -- \
         -C link-arg=--shared-memory -C link-arg=--import-memory -C link-arg=--max-memory=4294967296 \
         -C link-arg=--export=__wasm_init_tls -C link-arg=--export=__tls_size -C link-arg=--export=__tls_align -C link-arg=--export=__tls_base
 fi
-if [ "$WHICH" = all ] || [ "$WHICH" = st ]; then
-    export CARGO_TARGET_DIR="$target/web-st"
+if [ "$WHICH" = all ] || [ "$WHICH" = engine ]; then
+    # Single thread (a WebGPU device belongs to one thread), wgpu only
+    export CARGO_TARGET_DIR="$target/web-engine"
     RUSTFLAGS='-C target-feature=+simd128' \
-    build st rustup run "$TOOLCHAIN" cargo build -p dspk-app-web --lib --target wasm32-unknown-unknown --release
+    build engine dspk_engine_web rustup run "$TOOLCHAIN" cargo build -p dspk-engine-web --lib --target wasm32-unknown-unknown --release
+    cp "$root/engine/dspk-engine-web/engine-worker.js" "$dist/engine/"
 fi
+compress
 echo "Built into $dist (serve it: dspk serve --web $dist)"

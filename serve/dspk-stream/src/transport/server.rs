@@ -1,12 +1,11 @@
 //! The server side: accepts clients and serves a recording to each (header, signal, views).
 
 use std::net::SocketAddr;
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use dspk_core::{RecordingInfo, RecordingSource, SampleFormat};
-use dspk_view::{Envelope, Pyramid, SignalBackend};
+use dspk_core::RecordingSource;
+use dspk_view::Pyramid;
 use tokio::task::JoinHandle;
 use tokio::time::{interval, MissedTickBehavior};
 
@@ -14,8 +13,7 @@ use super::auth::{Authority, Peer, Permission};
 use super::files::{kind_of, DataRoot};
 use super::jobs::Jobs;
 use crate::error::{StreamError, StreamResult};
-use crate::protocol::{frame_from_envelope, header_from_info, read_message, view_from_request, wire, write_message, PROTOCOL_VERSION};
-use dspk_view::View;
+use crate::protocol::{frame_from_envelope, header_from_info, read_message, wire, write_message, PROTOCOL_VERSION};
 
 /// Seconds of signal per frame by default.
 pub const DEFAULT_FRAME_SEC: f64 = 0.02;
@@ -27,6 +25,7 @@ pub const DEFAULT_MAX_REQUEST_BYTES: usize = 64 << 10;
 /// Clients connected at once by default; more are refused until one leaves.
 pub const DEFAULT_MAX_CONNECTIONS: usize = 32;
 pub use crate::protocol::{MAX_VIEW_COLUMNS, MAX_VIEW_VALUES};
+pub use crate::engine::{checked_view, OpenRecording, RecordingOpener, ViewProcessor};
 
 /// When frames are sent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -178,115 +177,6 @@ impl Server {
     }
 }
 
-/// What the signal stream carries: stored words when the source can read them, else scaled
-/// `f32` (and the header then says `f32`, gain 1, offset 0).
-fn streamed_info(source: &dyn RecordingSource) -> (RecordingInfo, bool) {
-    let info = source.info().clone();
-    let all: Vec<usize> = (0..info.channel_count()).collect();
-    // One sample of every channel tells whether stored reads are supported
-    let mut probe = vec![0u8; all.len() * info.format.bytes()];
-    let stored = info.samples == 0 || source.read_stored(&all, 0..1, &mut probe).is_ok();
-    if stored {
-        return (info, true);
-    }
-    let mut scaled = info;
-    scaled.format = SampleFormat::F32;
-    for c in &mut scaled.channels {
-        (c.gain, c.offset) = (1.0, 0.0);
-    }
-    (scaled, false)
-}
-
-/// A recording a session serves: its source, pyramid (views), and what the signal carries.
-pub struct OpenRecording {
-    source: Arc<dyn RecordingSource>,
-    pyramid: Option<Arc<Pyramid>>,
-    info: RecordingInfo,
-    stored: bool,
-    processor: Option<Arc<dyn ViewProcessor>>,
-    /// The processed signals clients asked views of, latest last (a few: each holds device memory).
-    processed: Mutex<Vec<(wire::Processing, Arc<ChainSlot>)>>,
-}
-
-/// One chain's processed signal: made once, by the first view that asks; later views of the
-/// chain wait for it there, views of other chains do not.
-type ChainSlot = std::sync::OnceLock<Result<Arc<dyn SignalBackend>, String>>;
-
-/// Processed signals kept per open recording.
-const PROCESSED_KEPT: usize = 4;
-
-/// Runs a view's ops on the server for clients that cannot compute (pages). The ops and the
-/// device are the caller's (dspk-stream knows neither): the command line runs dspk-pipeline.
-pub trait ViewProcessor: Send + Sync {
-    /// The signal of `source` with `ops` (pipeline nodes in JSON, in order) applied over
-    /// `channels` (none = all). May take seconds (a whitening is fitted): called off the runtime.
-    fn processed(&self, source: Arc<dyn RecordingSource>, pyramid: Option<Arc<Pyramid>>, channels: &[usize], ops: &[String]) -> StreamResult<Arc<dyn SignalBackend>>;
-}
-
-impl OpenRecording {
-    pub fn new(source: Arc<dyn RecordingSource>, pyramid: Option<Arc<Pyramid>>) -> Self {
-        let (info, stored) = streamed_info(source.as_ref());
-        Self { source, pyramid, info, stored, processor: None, processed: Mutex::default() }
-    }
-
-    /// Views with processing are answered through `processor` (without one they are refused).
-    pub fn with_processor(mut self, processor: Arc<dyn ViewProcessor>) -> Self {
-        self.processor = Some(processor);
-        self
-    }
-
-    /// The signal `processing` describes: kept from an earlier view, or made now (blocking). The
-    /// list is locked only to find or add the chain's slot; the chain is made outside the lock,
-    /// so a chain being made (a whitening fitted: seconds) holds up only views of that chain.
-    fn processed(&self, processing: &wire::Processing) -> StreamResult<Arc<dyn SignalBackend>> {
-        let processor = self.processor.as_ref().ok_or_else(|| StreamError::protocol("this server does not process views"))?;
-        let channels: Vec<usize> = processing.channels.iter().map(|&c| c as usize).collect();
-        if channels.iter().any(|&c| c >= self.info.channel_count()) {
-            return Err(StreamError::protocol("processing asks for a channel the recording does not have"));
-        }
-        let slot = {
-            let mut kept = self.processed.lock().unwrap_or_else(|e| e.into_inner());
-            match kept.iter().position(|(p, _)| p == processing) {
-                Some(at) => {
-                    // Most recently used last
-                    let entry = kept.remove(at);
-                    let slot = entry.1.clone();
-                    kept.push(entry);
-                    slot
-                }
-                None => {
-                    if kept.len() >= PROCESSED_KEPT {
-                        kept.remove(0);
-                    }
-                    let slot = Arc::new(ChainSlot::new());
-                    kept.push((processing.clone(), slot.clone()));
-                    slot
-                }
-            }
-        };
-        let made = slot.get_or_init(|| processor.processed(self.source.clone(), self.pyramid.clone(), &channels, &processing.ops).map_err(|e| e.reason()));
-        match made {
-            Ok(signal) => Ok(signal.clone()),
-            Err(e) => {
-                // Not kept: the next view of this chain tries again
-                self.processed.lock().unwrap_or_else(|e| e.into_inner()).retain(|(_, s)| !Arc::ptr_eq(s, &slot));
-                Err(StreamError::Server(e.clone()))
-            }
-        }
-    }
-
-    /// What the signal stream carries (the header sent to clients).
-    pub fn info(&self) -> &RecordingInfo {
-        &self.info
-    }
-}
-
-/// Opens the recordings clients ask for, by path under the data root. The formats are the
-/// caller's (dspk-stream knows none): the command line opens through dspk-synapse.
-pub trait RecordingOpener: Send + Sync {
-    /// Opens `path` (`source`: one of the file's sources, `None` = its default).
-    fn open(&self, path: &Path, source: Option<&str>) -> StreamResult<OpenRecording>;
-}
 
 /// What a server offers every client.
 #[derive(Clone)]
@@ -406,20 +296,23 @@ pub(crate) async fn answer(request: wire::Request, device: &Device, current: &Cu
     match request.kind.ok_or_else(|| StreamError::protocol("empty request"))? {
         Req::View(view) => {
             let recording = current_recording(current).ok_or_else(|| StreamError::protocol("no recording is open"))?;
-            let processing = view.processing.clone().filter(|p| !p.ops.is_empty());
-            let view = checked_view(&view, recording.info())?;
-            let envelope = tokio::task::spawn_blocking(move || -> StreamResult<Envelope> {
-                match processing {
-                    Some(processing) => {
-                        let mut out = Envelope::Samples(Vec::new());
-                        recording.processed(&processing)?.view(&view, &mut out)?;
-                        Ok(out)
-                    }
-                    None => Ok(view.read(recording.source.as_ref(), recording.pyramid.as_deref())?),
+            // A view the server does not answer is refused as a request; a read that fails is
+            // the envelope's error
+            crate::engine::checked_view(&view, recording.info())?;
+            // A processed view: its chain made in a blocking task (a whitening's fit takes
+            // seconds), its block made ready without holding a thread while the device works,
+            // then answered from it (as a browser's engine does)
+            if let Some(processing) = view.processing.clone().filter(|p| !p.ops.is_empty()) {
+                let made = recording.clone();
+                let warmed = match tokio::task::spawn_blocking(move || made.processed(&processing).map(|_| ())).await.map_err(StreamError::protocol)? {
+                    Ok(()) => crate::engine::warm_view(&recording, &view).await,
+                    Err(e) => Err(e),
+                };
+                if let Err(e) = warmed {
+                    return Ok(Resp::Envelope(frame_from_envelope(Err(e))));
                 }
-            })
-                .await
-                .map_err(StreamError::protocol)?;
+            }
+            let envelope = tokio::task::spawn_blocking(move || crate::engine::answer_view(&recording, &view)).await.map_err(StreamError::protocol)?;
             Ok(Resp::Envelope(frame_from_envelope(envelope)))
         }
         Req::ListFiles(list) => {
@@ -495,33 +388,12 @@ fn jobs_of(device: &Device) -> StreamResult<Arc<Jobs>> {
     device.jobs.clone().ok_or_else(|| StreamError::Server("this server runs no jobs".into()))
 }
 
-/// The view a client asks for, refused when it is outside the recording or larger than the
-/// server answers: channels in range and each once, at most [`MAX_VIEW_COLUMNS`] columns and
-/// [`MAX_VIEW_VALUES`] values (channels × the columns, or the samples when fewer).
-pub fn checked_view(request: &wire::ViewRequest, info: &RecordingInfo) -> StreamResult<View> {
-    let view = view_from_request(request);
-    view.validate(info.channel_count(), info.samples).map_err(|e| StreamError::protocol(e.to_string()))?;
-    let mut seen = vec![false; info.channel_count()];
-    for &c in &view.channels {
-        if std::mem::replace(&mut seen[c], true) {
-            return Err(StreamError::protocol(format!("channel {c} asked for twice")));
-        }
-    }
-    if request.width > MAX_VIEW_COLUMNS {
-        return Err(StreamError::protocol(format!("{} columns asked for: at most {MAX_VIEW_COLUMNS}", request.width)));
-    }
-    let values = view.channels.len() as u64 * (view.end - view.start).min(u64::from(request.width));
-    if values > MAX_VIEW_VALUES {
-        return Err(StreamError::protocol(format!("a view of {values} values: at most {MAX_VIEW_VALUES} (fewer channels or columns)")));
-    }
-    Ok(view)
-}
 
 /// Streams frames from `first_sample` on a new unidirectional stream. A reader thread fills a
 /// bounded queue, so the recording is read ahead of the network but never held whole; the thread
 /// ends by itself once the queue is dropped.
 async fn stream_signal(connection: quinn::Connection, recording: Arc<OpenRecording>, first_sample: u64, options: ServeOptions) -> StreamResult<()> {
-    let (source, info, stored) = (recording.source.clone(), recording.info.clone(), recording.stored);
+    let (source, info, stored) = (recording.source.clone(), recording.info().clone(), recording.stored);
     let total = info.samples;
     let frame = ((options.frame_sec * info.sample_rate_hz()).round() as u64).max(1);
     let channels: Vec<usize> = (0..info.channel_count()).collect();
@@ -577,65 +449,4 @@ async fn stream_signal(connection: quinn::Connection, recording: Arc<OpenRecordi
         StreamResult::Ok(())
     }
     .await
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::time::{Duration, Instant};
-
-    /// Makes chains as their first op says: "slow" takes a while, "bad" fails; counts each make.
-    #[derive(Default)]
-    struct Maker {
-        made: Mutex<Vec<String>>,
-        slow_started: AtomicUsize,
-    }
-
-    impl ViewProcessor for Maker {
-        fn processed(&self, source: Arc<dyn RecordingSource>, pyramid: Option<Arc<Pyramid>>, _channels: &[usize], ops: &[String]) -> StreamResult<Arc<dyn SignalBackend>> {
-            let op = ops.first().cloned().unwrap_or_default();
-            self.made.lock().unwrap().push(op.clone());
-            match op.as_str() {
-                "slow" => {
-                    self.slow_started.fetch_add(1, Ordering::SeqCst);
-                    std::thread::sleep(Duration::from_millis(1500));
-                }
-                "bad" => return Err(StreamError::protocol("an op that is not a pipeline node")),
-                _ => {}
-            }
-            Ok(Arc::new(dspk_view::StoredSignal::new(source, pyramid)))
-        }
-    }
-
-    fn chain(op: &str) -> wire::Processing {
-        wire::Processing { channels: vec![], ops: vec![op.into()] }
-    }
-
-    /// A chain being made holds up only views of that chain: another chain is answered at once,
-    /// the same chain is made once, and a chain that failed is tried again rather than kept.
-    #[test]
-    fn a_slow_chain_holds_up_only_its_own_views() {
-        let recording = Arc::new(dspk_core::MemoryRecording::new("r", vec![0.0; 4 * 100], 4, 1000.0).unwrap());
-        let maker = Arc::new(Maker::default());
-        let open = Arc::new(OpenRecording::new(recording, None).with_processor(maker.clone()));
-
-        let o = open.clone();
-        let first = std::thread::spawn(move || o.processed(&chain("slow")).is_ok());
-        while maker.slow_started.load(Ordering::SeqCst) == 0 {
-            std::thread::yield_now();
-        }
-        let t0 = Instant::now();
-        assert!(open.processed(&chain("fast")).is_ok());
-        assert!(t0.elapsed() < Duration::from_millis(500), "another chain waited for the slow one: {:?}", t0.elapsed());
-        // The same chain waits for the make under way instead of making it again
-        assert!(open.processed(&chain("slow")).is_ok());
-        assert!(first.join().unwrap());
-        assert_eq!(maker.made.lock().unwrap().iter().filter(|op| *op == "slow").count(), 1, "made once");
-
-        assert!(matches!(open.processed(&chain("bad")), Err(StreamError::Server(_))));
-        assert!(open.processed(&chain("bad")).is_err());
-        assert_eq!(maker.made.lock().unwrap().iter().filter(|op| *op == "bad").count(), 2, "a failed chain is tried again");
-        assert_eq!(open.processed.lock().unwrap().len(), 2, "failed chains are not kept");
-    }
 }

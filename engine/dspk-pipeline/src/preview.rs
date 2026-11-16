@@ -50,6 +50,8 @@ pub struct Preview {
     halo: (usize, usize),
     stored: bool,
     state: Mutex<State>,
+    /// Held while a block is made for a reader that waits ([`Self::read`]).
+    making: Mutex<()>,
 }
 
 impl Preview {
@@ -58,7 +60,11 @@ impl Preview {
         let info = source.info();
         let pipeline = Pipeline::with_stages(stages);
         let halo = pipeline.settling(info.sample_rate_hz())?;
-        let stored = info.format != SampleFormat::F64;
+        // Stored values go to the device as they are (int16 stays int16, scaled there) when the
+        // source can give them: asked once, on one sample. Float64 (wgpu has none) and sources
+        // without stored reads are scaled on the host and sent as float32
+        let mut probe = vec![0u8; group.len().min(1) * info.format.bytes()];
+        let stored = info.format != SampleFormat::F64 && (info.samples == 0 || source.read_stored(&group[..group.len().min(1)], 0..1, &mut probe).is_ok());
         let mut out_channels = group.clone();
         for stage in pipeline.stages() {
             if let PipelineStage::ReorderChannels { order } = stage {
@@ -68,7 +74,7 @@ impl Preview {
                 out_channels = order.iter().map(|&i| out_channels[i]).collect();
             }
         }
-        Ok(Self { source, group, out_channels, pipeline, halo, stored, state: Mutex::new(State { workspace: None, block: None }) })
+        Ok(Self { source, group, out_channels, pipeline, halo, stored, state: Mutex::new(State { workspace: None, block: None }), making: Mutex::new(()) })
     }
 
     /// The recording being previewed.
@@ -90,68 +96,102 @@ impl Preview {
         self.group.len() * (samples as usize + self.halo.0 + self.halo.1)
     }
 
-    /// The processed block holding `range` (computed now when the cached one does not). `slack`:
-    /// with half a window more on each side, so small pans reuse it (a view's reads); a branch
-    /// reading this preview asks for exactly what it needs (its own block has the slack).
-    fn with_block<R>(&self, range: Range<u64>, slack: bool, f: impl FnOnce(&Block) -> R) -> DspResult<R> {
-        let mut state = self.state.lock().unwrap();
-        if let Some(b) = state.block.as_ref().filter(|b| b.range.start <= range.start && range.end <= b.range.end) {
-            return Ok(f(b));
-        }
+    /// The block to compute for `range`: the samples kept (`want`, with half a window of margin
+    /// each side when `slack` and it fits the budget, so small pans reuse it) and the samples
+    /// read (`want` and the chain's settling halo).
+    fn plan(&self, range: Range<u64>, slack: bool) -> (Range<u64>, Range<u64>) {
         let total = self.source.info().samples;
-        // Half a window of margin each side while it fits the budget: small pans reuse the block
         let len = range.end - range.start;
         let margin = if slack && self.block_values(2 * len) <= PREVIEW_MAX_VALUES { len / 2 } else { 0 };
         let want = range.start.saturating_sub(margin)..(range.end + margin).min(total);
         let read = want.start.saturating_sub(self.halo.0 as u64)..(want.end + self.halo.1 as u64).min(total);
-        let n = (read.end - read.start) as usize;
-        let nch = self.group.len();
+        (want, read)
+    }
 
-        let (ws, capacity) = match state.workspace.take() {
-            Some((ws, cap)) if cap >= n => (ws, cap),
-            _ => {
-                let client = ComputeTarget::from_env().and_then(ComputeTarget::client).map_err(|e| DspError::ComputeError(e.to_string()))?;
-                let rate = self.source.info().sample_rate_hz();
-                let mut ws = PipelineWorkspace::<f32>::new(client, self.pipeline.clone(), nch, n, rate)?;
-                if self.stored {
-                    let info = self.source.info();
-                    let gains: Vec<f32> = self.group.iter().map(|&c| info.channels[c].gain).collect();
-                    let offsets: Vec<f32> = self.group.iter().map(|&c| info.channels[c].offset).collect();
-                    ws.set_stored_scaling(&gains, &offsets);
-                }
-                (ws, n)
-            }
-        };
-        let mut ws = ws;
-        // Fixed launch choices: a preview never stops to benchmark kernels for a window size it
-        // has not seen (zooming meets a new size at every step), and its numbers do not depend
-        // on what a tuner picked
-        let _pinned = dspk_core::compute::pin_tuned_choices();
-        let format = self.source.info().format;
-        let mut bytes = if self.stored { vec![0u8; nch * n * format.bytes()] } else { Vec::new() };
-        // Sources that cannot give stored values (no native stored read) are scaled on the host
-        let stored = self.stored && self.source.read_stored(&self.group, read.clone(), &mut bytes).is_ok();
-        let processed = if stored {
-            let handle = ws.process_owned_stored_chunk_in_vram(bytes, format, n)?;
-            buffer::download_prefix::<f32>(ws.client(), handle, nch * n)
-        } else {
-            let mut values = vec![0.0f32; nch * n];
-            self.source.read(&self.group, read.clone(), &mut values)?;
-            let mut out = vec![0.0f32; nch * n];
-            ws.process_chunk(&values, n, &mut out);
-            out
-        };
-        state.workspace = Some((ws, capacity));
-        // Keep the interior (`want`), channel-major
+    /// The workspace kept from an earlier block when it holds `n` samples, else a new one.
+    fn workspace(&self, state: &mut State, n: usize) -> DspResult<(PipelineWorkspace<f32>, usize)> {
+        if let Some((ws, cap)) = state.workspace.take().filter(|(_, cap)| *cap >= n) {
+            return Ok((ws, cap));
+        }
+        let client = ComputeTarget::from_env().and_then(ComputeTarget::client).map_err(|e| DspError::ComputeError(e.to_string()))?;
+        let rate = self.source.info().sample_rate_hz();
+        let mut ws = PipelineWorkspace::<f32>::new(client, self.pipeline.clone(), self.group.len(), n, rate)?;
+        // Stored values are scaled on the device; values already scaled on the host pass through
+        let info = self.source.info();
+        let (gains, offsets): (Vec<f32>, Vec<f32>) =
+            if self.stored { self.group.iter().map(|&c| (info.channels[c].gain, info.channels[c].offset)).unzip() } else { (vec![1.0; self.group.len()], vec![0.0; self.group.len()]) };
+        ws.set_stored_scaling(&gains, &offsets);
+        Ok((ws, n))
+    }
+
+    /// The interior `want` of `processed` (the rows over `read`), channel-major.
+    fn keep(&self, want: Range<u64>, read: &Range<u64>, processed: &[f32]) -> Block {
+        let n = (read.end - read.start) as usize;
         let (a, m) = ((want.start - read.start) as usize, (want.end - want.start) as usize);
-        let mut data = Vec::with_capacity(nch * m);
-        for r in 0..nch {
+        let mut data = Vec::with_capacity(self.group.len() * m);
+        for r in 0..self.group.len() {
             data.extend_from_slice(&processed[r * n + a..r * n + a + m]);
         }
-        let block = Block { range: want, data };
-        let out = f(&block);
-        state.block = Some(block);
-        Ok(out)
+        Block { range: want, data }
+    }
+
+    /// The processed block holding `range` (made now when the cached one does not hold it, by
+    /// [`Self::warm_async`], waited for here). `slack`: with half a window more on each side, so
+    /// small pans reuse it (a view's reads); a branch reading this preview asks for exactly what
+    /// it needs (its own block has the slack). In a browser nothing may wait for the device:
+    /// there a block that was not made ready first is an error.
+    fn with_block<R>(&self, range: Range<u64>, slack: bool, f: impl FnOnce(&Block) -> R) -> DspResult<R> {
+        let holds = |b: &Block| b.range.start <= range.start && range.end <= b.range.end;
+        // One block made at a time per preview (two threads asking for one window make it once)
+        let _making = self.making.lock().unwrap();
+        if let Some(b) = self.state.lock().unwrap().block.as_ref().filter(|b| holds(b)) {
+            return Ok(f(b));
+        }
+        cubecl::future::reader::try_read_sync(self.warm_async(range.clone(), slack))
+            .ok_or_else(|| DspError::ComputeError("the processed block was not made ready before it was read (a browser cannot wait for the device)".into()))??;
+        let state = self.state.lock().unwrap();
+        let b = state.block.as_ref().filter(|b| holds(b)).ok_or_else(|| DspError::ComputeError("the processed block was replaced while it was read".into()))?;
+        Ok(f(b))
+    }
+
+    /// Makes the block holding `range` ready, reading the device's answer back without blocking
+    /// (a browser hands it back only asynchronously). The one place a block is made: the desktop
+    /// and a server wait for it ([`Self::read`]), a browser's engine awaits it before reading.
+    pub async fn warm_async(&self, range: Range<u64>, slack: bool) -> DspResult<()> {
+        let (want, read, mut ws, capacity) = {
+            let mut state = self.state.lock().unwrap();
+            if state.block.as_ref().is_some_and(|b| b.range.start <= range.start && range.end <= b.range.end) {
+                return Ok(());
+            }
+            let (want, read) = self.plan(range, slack);
+            let (ws, capacity) = self.workspace(&mut state, (read.end - read.start) as usize)?;
+            (want, read, ws, capacity)
+        };
+        let (n, nch) = ((read.end - read.start) as usize, self.group.len());
+        // Stored values as they are, else float32 scaled on the host (scaling 1, 0 on the device)
+        let (bytes, format) = if self.stored {
+            let format = self.source.info().format;
+            let mut bytes = vec![0u8; nch * n * format.bytes()];
+            self.source.read_stored(&self.group, read.clone(), &mut bytes).map(|_| (bytes, format))
+        } else {
+            let mut values = vec![0.0f32; nch * n];
+            self.source.read(&self.group, read.clone(), &mut values).map(|_| (values.iter().flat_map(|v| v.to_le_bytes()).collect(), SampleFormat::F32))
+        }?;
+        let launched = {
+            // Fixed launch choices: a preview never stops to benchmark kernels for a window size
+            // it has not seen (zooming meets a new size at every step), and its numbers do not
+            // depend on what a tuner picked
+            let _pinned = dspk_core::compute::pin_tuned_choices();
+            ws.process_owned_stored_chunk_in_vram(bytes, format, n).map_err(DspError::from)
+        };
+        let processed = match launched {
+            Ok(handle) => buffer::download_prefix_async::<f32>(ws.client(), handle, nch * n).await.map_err(DspError::ComputeError),
+            Err(e) => Err(e),
+        };
+        let mut state = self.state.lock().unwrap();
+        state.workspace = Some((ws, capacity));
+        state.block = Some(self.keep(want, &read, &processed?));
+        Ok(())
     }
 
     /// The processed rows of `channels` over `samples`, channel-major into `out` (row `k` of

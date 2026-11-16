@@ -37,6 +37,10 @@ use crate::error::{StreamError, StreamResult};
 use crate::protocol::wire;
 
 pub use crate::pair::{WebHello, WebWelcome, WS_PATH};
+/// What a page's loader asks to learn whether `dspk serve` served it (relative to the page). The
+/// web app's build ships this file with `{"server": null}` (a page on its own, e.g. GitHub
+/// Pages); `dspk serve` answers it with its name instead, so neither answers "not found".
+pub const SERVE_PATH: &str = "/dspk-serve.json";
 /// Largest frame a page may send (a request is small).
 pub const MAX_WEB_FRAME_BYTES: usize = 1 << 20;
 /// How long a page has to say who it is.
@@ -155,6 +159,11 @@ fn reply(status: StatusCode, content_type: &str, body: impl Into<Bytes>) -> Repl
 async fn handle(mut request: Request<Incoming>, state: Arc<State>) -> Result<Reply, std::convert::Infallible> {
     if request.uri().path() == WS_PATH {
         return Ok(upgrade(&mut request, state));
+    }
+    // The page's loader asks this first: answered, the page is a client of this server; not
+    // found (a plain file server, GitHub Pages), it runs alone with its own engine
+    if request.uri().path().ends_with(SERVE_PATH) {
+        return Ok(reply(StatusCode::OK, "application/json", format!("{{\"server\":{:?}}}", state.device.name)));
     }
     if request.method() != hyper::Method::GET {
         return Ok(reply(StatusCode::METHOD_NOT_ALLOWED, "text/plain", "GET only"));
@@ -325,7 +334,7 @@ where
         Err(_) => return Err(StreamError::protocol("the page did not say who it is")),
     };
     let device = state.device.clone();
-    send_text(&mut socket, &WebWelcome { server_name: device.name.clone(), server_version: device.version.clone(), peer_name: peer.name.clone(), permission: peer.permission, has_files: device.files.is_some() }).await?;
+    send_text(&mut socket, &WebWelcome { server_name: device.name.clone(), server_version: device.version.clone(), peer_name: peer.name.clone(), permission: peer.permission, has_files: device.files.is_some(), runtime: device.runtime.clone() }).await?;
     tracing::info!("web: {} connected ({})", peer.name, peer.permission);
 
     let current: Current = Arc::new(Mutex::new(device.recording.clone()));

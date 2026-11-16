@@ -207,7 +207,21 @@ impl WorkspaceBody {
         let muted = cx.theme().muted_foreground;
         let store = self.store.clone();
         // Files on this computer, or (a page served by `dspk serve`) the recordings of its server
-        let mut screen = if !crate::platform::LOCAL_FILES {
+        let mut screen = if crate::platform::remote::runs_alone() {
+            // A page on its own: the files the user picks, read and processed in this browser
+            EmptyState::new(IconName::AudioWaveform, "Open a recording", "A folder with your recordings (a .bin and its .meta), read in this browser").child(
+                h_flex()
+                    .gap_2()
+                    .child({
+                        let (store, browser) = (store.clone(), self.open_browser.clone());
+                        Button::new("start-pick-folder").primary().icon(IconName::FolderOpen).label("Open folder…").on_click(move |_, w, cx| commands::pick_page_files(&store, true, browser.clone(), w, cx))
+                    })
+                    .child({
+                        let (store, browser) = (store.clone(), self.open_browser.clone());
+                        Button::new("start-pick-files").outline().icon(IconName::File).label("Open files…").on_click(move |_, w, cx| commands::pick_page_files(&store, false, browser.clone(), w, cx))
+                    }),
+            )
+        } else if !crate::platform::LOCAL_FILES {
             EmptyState::new(IconName::AudioWaveform, "Open a recording", "The recordings of this page's server").child({
                 let open = self.open_browser.clone();
                 Button::new("start-open-server").primary().icon(IconName::Server).label("Open from server…").on_click(move |_, w, cx| open(w, cx))

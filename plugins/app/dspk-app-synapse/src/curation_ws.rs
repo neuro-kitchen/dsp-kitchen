@@ -906,7 +906,7 @@ impl Render for CurationWorkspace {
             })
             .child({
                 let me = me.clone();
-                Button::new("curation-export-phy").ghost().xsmall().label("To Phy").tooltip("Write the curated sorting as phy reads it (spike_clusters.npy, cluster_group.tsv, cluster_info.tsv): into the Phy folder it came from, or one you pick").on_click(move |_, _, cx| {
+                Button::new("curation-export-phy").ghost().xsmall().label("To Phy").disabled(!dspk_app_core::platform::LOCAL_FILES).tooltip(if dspk_app_core::platform::LOCAL_FILES { "Write the curated sorting as phy reads it (spike_clusters.npy, cluster_group.tsv, cluster_info.tsv): into the Phy folder it came from, or one you pick" } else { "Not in the browser yet: the desktop app does it" }).on_click(move |_, _, cx| {
                     let _ = me.update(cx, |w, cx| w.export_phy(cx));
                 })
             });

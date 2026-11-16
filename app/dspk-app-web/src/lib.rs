@@ -109,6 +109,7 @@ pub fn start() {
                 Ok(Some(welcome)) => {
                     let _ = s.update(cx, |s, cx| {
                         s.set_servers(vec![dspk_app_core::platform::remote::page_profile()], cx);
+                        s.set_device(dspk_app_core::data::device::DeviceInfo::discover(), cx);
                         s.set_status(format!("Connected to {} as {} ({}). File → Open from server… lists its recordings", welcome.server_name, welcome.peer_name, welcome.permission), cx);
                         // A link to a recording: `…/index.html?open=<path under the data root>`
                         if let Some(path) = link_parameter("open") {
@@ -117,9 +118,23 @@ pub fn start() {
                     });
                 }
                 Ok(None) => {
-                    let _ = s.update(cx, |s, cx| match demo() {
-                        Ok(dataset) => s.install(Recording::new(SourceSet::single(dataset), None), cx),
-                        Err(e) => s.set_status(format!("The demo recording could not be made: {e}"), cx),
+                    // No server: the page runs alone, with its engine in a worker of its own
+                    let started = dspk_app_core::platform::remote::start_engine().await;
+                    let _ = s.update(cx, |s, cx| {
+                        s.set_servers(vec![dspk_app_core::platform::remote::page_profile()], cx);
+                        s.set_device(dspk_app_core::data::device::DeviceInfo::discover(), cx);
+                        let status = match started {
+                            Ok(why) if why.is_empty() => "Runs in this browser: Open files… (a .bin and its .meta); processing on this browser's GPU".to_string(),
+                            Ok(why) => format!("Runs in this browser: Open files… (a .bin and its .meta). Views only: {why}"),
+                            Err(e) => format!("The engine did not start ({e:#}): a made-up recording instead"),
+                        };
+                        if !dspk_app_core::platform::remote::runs_alone() {
+                            match demo() {
+                                Ok(dataset) => s.install(Recording::new(SourceSet::single(dataset), None), cx),
+                                Err(e) => s.set_status(format!("The demo recording could not be made: {e}"), cx),
+                            }
+                        }
+                        s.set_status(status, cx);
                     });
                 }
                 Err(e) => {

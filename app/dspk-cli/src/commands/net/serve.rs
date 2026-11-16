@@ -175,21 +175,22 @@ impl RecordingOpener for FileOpener {
 /// Runs a view's ops for clients that cannot compute (pages), with the preview code of the
 /// desktop app (dspk-pipeline), on this server's runtime. Files the ops name (a remap's channel
 /// map) are read from the recording's folder.
-struct Processor {
-    base_dir: PathBuf,
-}
+struct Processor(dspk_pipeline::processed::ProcessedChains);
 
 impl Processor {
     fn of(recording: &Path) -> Arc<Self> {
-        Arc::new(Self { base_dir: recording.parent().map(Path::to_path_buf).unwrap_or_default() })
+        Arc::new(Self(dspk_pipeline::processed::ProcessedChains::new(recording.parent().map(Path::to_path_buf).unwrap_or_default())))
     }
 }
 
 impl dspk_stream::ViewProcessor for Processor {
     fn processed(&self, source: Arc<dyn RecordingSource>, pyramid: Option<Arc<Pyramid>>, channels: &[usize], ops: &[String]) -> StreamResult<Arc<dyn dspk_view::SignalBackend>> {
         let raw: Arc<dyn dspk_view::SignalBackend> = Arc::new(dspk_view::StoredSignal::new(source.clone(), pyramid));
-        let processed = dspk_pipeline::processed::ProcessedSignal::of_json_ops(raw, source, ops, channels, &self.base_dir).map_err(StreamError::Protocol)?;
-        Ok(Arc::new(processed))
+        Ok(self.0.make(raw, source, channels, ops).map_err(StreamError::Protocol)?)
+    }
+
+    fn warm<'a>(&'a self, channels: &'a [usize], ops: &'a [String], view: &'a dspk_view::View) -> dspk_stream::engine::WarmFuture<'a> {
+        Box::pin(async move { self.0.warm(channels, ops, view).await.map_err(|e| StreamError::Protocol(e.to_string())) })
     }
 }
 

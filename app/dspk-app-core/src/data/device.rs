@@ -17,6 +17,10 @@ pub struct DeviceInfo {
 impl DeviceInfo {
     /// The device of the runtime chosen now (takes a moment with wgpu: call it off the UI thread).
     pub fn discover() -> DeviceInfo {
+        // A page computes nothing itself: its line says where its processing happens
+        if let Some(label) = crate::platform::remote::processing_label() {
+            return DeviceInfo { label, adapters: Vec::new() };
+        }
         match ComputeTarget::from_env() {
             Ok(ComputeTarget::Wgpu) => wgpu_device(),
             Ok(ComputeTarget::Cuda) => DeviceInfo { label: "GPU · CUDA".into(), adapters: Vec::new() },

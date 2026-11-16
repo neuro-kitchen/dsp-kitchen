@@ -122,7 +122,7 @@ fn detach(store: &Entity<Store>, view: &ViewDoc) -> impl IntoElement {
 /// Picks a `.sorting.zarr` folder, or a Phy / Kilosort folder (imported), and links it to the view.
 fn attach(store: &Entity<Store>, view: &ViewDoc) -> impl IntoElement {
     let (store, id) = (store.clone(), view.id.clone());
-    Button::new("attach-sorting").outline().xsmall().icon(IconName::FolderOpen).label("Attach sorting…").tooltip("A .sorting.zarr, or a Phy / Kilosort folder (imported as a .sorting.zarr next to it)").on_click(move |_, _, cx| {
+    Button::new("attach-sorting").outline().xsmall().icon(IconName::FolderOpen).label("Attach sorting…").disabled(!dspk_app_core::platform::LOCAL_FILES).tooltip(if dspk_app_core::platform::LOCAL_FILES { "A .sorting.zarr, or a Phy / Kilosort folder (imported as a .sorting.zarr next to it)" } else { "Not in the browser yet: the desktop app does it" }).on_click(move |_, _, cx| {
         let rx = cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Attach sorting (.sorting.zarr or Phy folder)".into()) });
         let (store, id) = (store.clone(), id.clone());
         cx.spawn(async move |cx| {

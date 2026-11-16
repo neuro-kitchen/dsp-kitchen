@@ -30,6 +30,8 @@ members = [
     "app/dspk-app",
     # The app in a browser tab (WebAssembly; empty on other targets)
     "app/dspk-app-web",
+    # The engine in a browser worker (WebAssembly; empty on other targets)
+    "engine/dspk-engine-web",
     # Plugins: cli/ programs the command line runs (the sorters: GPL-3.0, never linked);
     # app/ domain plugins of the app (electrophysiology)
     "plugins/cli/dspk-cli-sorter",
