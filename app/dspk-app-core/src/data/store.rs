@@ -49,6 +49,8 @@ pub enum AppEvent {
     WorkspaceChanged,
     /// Plot colours changed (theme or "dark plots"): views redraw.
     PaletteChanged,
+    /// `settings.toml` was edited outside the app: the look is applied again.
+    SettingsChanged,
     /// More of a source's min/max pyramid is built (views of it that drew empty columns redraw).
     PyramidProgress(String),
     /// The status line or the recent list changed.
@@ -169,6 +171,10 @@ pub struct Store {
     doc_text: String,
     /// Watches `doc_path` for edits made outside the app.
     _doc_watch: Option<Task<()>>,
+    /// `settings.toml` and the text last written to or read from it.
+    settings_path: Option<PathBuf>,
+    settings_text: String,
+    _settings_watch: Option<Task<()>>,
     /// Live preview of each view's op chain (views of the open recording with enabled ops).
     previews: HashMap<String, Arc<ProcessedSignal>>,
     /// Previews by chain (source, channels, enabled ops), most recent last: views with the same
@@ -225,6 +231,9 @@ impl Store {
             doc_path: None,
             doc_text: String::new(),
             _doc_watch: None,
+            settings_path: None,
+            settings_text: String::new(),
+            _settings_watch: None,
             previews: HashMap::new(),
             preview_cache: Vec::new(),
             whiten_cache: HashMap::new(),
@@ -1213,7 +1222,63 @@ impl Store {
         }
     }
 
+    /// Keeps the preferences in `path` (`settings.toml`): written now when the file is missing
+    /// (with what an older `workbench.json` held), written at every change made in the app, and
+    /// applied when the file is edited outside.
+    pub fn attach_settings(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.settings_text = std::fs::read_to_string(&path).unwrap_or_default();
+        self.settings_path = Some(path.clone());
+        self.save_settings();
+        self._settings_watch = Some(cx.spawn(async move |this, cx| loop {
+            cx.background_executor().timer(DOCUMENT_POLL).await;
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            if this.update(cx, |s, cx| s.settings_file_changed(text, cx)).is_err() {
+                break;
+            }
+        }));
+    }
+
+    /// Applies an edit of `settings.toml` made outside the app.
+    fn settings_file_changed(&mut self, text: String, cx: &mut Context<Self>) {
+        if text.is_empty() || text == self.settings_text {
+            return;
+        }
+        self.settings_text = text;
+        match crate::data::settings::Settings::parse(&self.settings_text) {
+            Ok((settings, notices)) => {
+                let before = self.palette();
+                settings.apply_to(&mut self.session);
+                if self.palette() != before {
+                    cx.emit(AppEvent::PaletteChanged);
+                }
+                cx.emit(AppEvent::SettingsChanged);
+                self.set_status(notices.into_iter().next().unwrap_or_else(|| "Settings applied from settings.toml".into()), cx);
+                cx.notify();
+            }
+            Err(e) => self.set_status(format!("Settings not applied: {e}"), cx),
+        }
+    }
+
+    /// Whether the preferences are kept in a file (not with `--no-session`, nor in tests).
+    pub fn has_settings_file(&self) -> bool {
+        self.settings_path.is_some()
+    }
+
+    fn save_settings(&mut self) {
+        let Some(path) = &self.settings_path else { return };
+        let text = crate::data::settings::Settings::from_session(&self.session).write_into(&self.settings_text);
+        if text == self.settings_text && path.exists() {
+            return;
+        }
+        let written = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(path, &text));
+        match written {
+            Ok(()) => self.settings_text = text,
+            Err(e) => tracing::warn!("could not save {}: {e}", path.display()),
+        }
+    }
+
     fn save_session(&mut self) {
+        self.save_settings();
         self.session.workspace = self.workspace;
         if let Err(e) = self.session.save(self.session_path.as_deref()) {
             tracing::warn!("could not save the session: {e}");

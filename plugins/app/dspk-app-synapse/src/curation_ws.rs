@@ -419,31 +419,68 @@ impl CurationWorkspace {
         st.update(cx, |s, cx| s.save_curation(&path, cx));
     }
 
+    /// Writes the curated sorting as phy reads it: into the Phy folder it was imported from, else
+    /// into a folder the user picks (a Phy folder of the same sorting, or a new
+    /// `<sorting>.phy` inside the folder picked).
+    fn export_phy(&mut self, cx: &mut Context<Self>) {
+        let (Some(path), Some(st)) = (self.sorting_path(cx), state(cx)) else { return };
+        let Some(curated) = st.read(cx).sorting(&path) else { return };
+        let store = self.store.clone();
+        let origin = dspk_synapse::curation::phy::phy_origin(&path);
+        let picked = origin.is_none().then(|| cx.prompt_for_paths(gpui_kit::PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Export to Phy folder".into()) }));
+        cx.spawn(async move |_, cx| {
+            let dir = match (origin, picked) {
+                (Some(dir), _) => dir,
+                (None, Some(rx)) => match rx.await {
+                    Ok(Ok(Some(paths))) => match paths.into_iter().next() {
+                        Some(dir) if dspk_synapse::io::phy::PhyFolder::is_phy_folder(&dir) => dir,
+                        Some(dir) => {
+                            let name = path.file_name().map(|n| n.to_string_lossy().trim_end_matches(".sorting.zarr").to_string()).unwrap_or_else(|| "sorting".into());
+                            dir.join(format!("{name}.phy"))
+                        }
+                        None => return,
+                    },
+                    _ => return,
+                },
+                (None, None) => return,
+            };
+            let (store_path, target) = (path.clone(), dir.clone());
+            let result = cx.background_executor().spawn(async move { dspk_synapse::curation::phy::export_phy(&store_path, &curated, &target) }).await;
+            let status = match result {
+                Ok(n) => format!("Exported to Phy: {} ({n} clusters)", dspk_session::paths::short_path(&dir)),
+                Err(e) => format!("Not exported to Phy: {e:#}"),
+            };
+            let _ = store.update(cx, |s, cx| s.set_status(status, cx));
+        })
+        .detach();
+    }
+
     fn on_key(&mut self, e: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let k = &e.keystroke;
-        let (cmd, alt, shift) = (k.modifiers.control || k.modifiers.platform, k.modifiers.alt, k.modifiers.shift);
-        match k.key.as_str() {
-            "g" if alt => self.label_selected("good", cx),
-            "m" if alt => self.label_selected("mua", cx),
-            "n" if alt => self.label_selected("noise", cx),
-            "u" if alt => self.label_selected("unsorted", cx),
-            "down" | "j" if !cmd => self.step_unit(1, cx),
-            "up" | "k" if !cmd => self.step_unit(-1, cx),
-            "space" if shift => self.step_similar(-1, cx),
-            "space" => self.step_similar(1, cx),
-            "?" | "h" if !cmd => {
+        if k.key == "escape" && self.show_keys {
+            self.show_keys = false;
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
+        let Some(command) = curation_command(k.modifiers.control || k.modifiers.platform, k.modifiers.alt, k.modifiers.shift, &k.key) else { return };
+        match command {
+            "label_good" => self.label_selected("good", cx),
+            "label_mua" => self.label_selected("mua", cx),
+            "label_noise" => self.label_selected("noise", cx),
+            "label_unsorted" => self.label_selected("unsorted", cx),
+            "next_unit" => self.step_unit(1, cx),
+            "previous_unit" => self.step_unit(-1, cx),
+            "next_similar" => self.step_similar(1, cx),
+            "previous_similar" => self.step_similar(-1, cx),
+            "show_keys" => {
                 self.show_keys = !self.show_keys;
                 cx.notify();
             }
-            "escape" if self.show_keys => {
-                self.show_keys = false;
-                cx.notify();
-            }
-            "g" if !cmd => self.merge_selected(cx),
-            "z" if cmd && shift => self.undo(true, cx),
-            "z" if cmd => self.undo(false, cx),
-            "y" if cmd => self.undo(true, cx),
-            "s" if cmd => self.save(cx),
+            "merge" => self.merge_selected(cx),
+            "undo" => self.undo(false, cx),
+            "redo" => self.undo(true, cx),
+            "save" => self.save(cx),
             _ => return,
         }
         cx.stop_propagation();
@@ -878,6 +915,12 @@ impl Render for CurationWorkspace {
                     .on_click(move |_, _, cx| {
                         let _ = me.update(cx, |w, cx| w.save(cx));
                     })
+            })
+            .child({
+                let me = me.clone();
+                Button::new("curation-export-phy").ghost().xsmall().label("To Phy").tooltip("Write the curated sorting as phy reads it (spike_clusters.npy, cluster_group.tsv, cluster_info.tsv): into the Phy folder it came from, or one you pick").on_click(move |_, _, cx| {
+                    let _ = me.update(cx, |w, cx| w.export_phy(cx));
+                })
             });
         let toolbar = h_flex()
             .h(px(40.))
@@ -932,6 +975,45 @@ impl Render for CurationWorkspace {
 }
 
 /// Phy's keys, as this workspace binds them.
+/// Curation's commands and their default keys (phy's): the `[curation]` section of
+/// `keybindings.toml`.
+pub const CURATION_KEYS: &[(&str, &[&str])] = &[
+    ("label_good", &["alt-g"]),
+    ("label_mua", &["alt-m"]),
+    ("label_noise", &["alt-n"]),
+    ("label_unsorted", &["alt-u"]),
+    ("next_unit", &["down", "j"]),
+    ("previous_unit", &["up", "k"]),
+    ("next_similar", &["space"]),
+    ("previous_similar", &["shift-space"]),
+    ("merge", &["g"]),
+    ("undo", &["ctrl-z"]),
+    ("redo", &["ctrl-shift-z", "ctrl-y"]),
+    ("save", &["ctrl-s"]),
+    ("show_keys", &["?", "h"]),
+];
+
+/// The keys in use (the defaults, or the file's), read once: (control, alt, shift, key, command).
+pub fn curation_keys() -> &'static [(bool, bool, bool, String, &'static str)] {
+    static KEYS: std::sync::OnceLock<Vec<(bool, bool, bool, String, &'static str)>> = std::sync::OnceLock::new();
+    KEYS.get_or_init(|| {
+        use dspk_app_core::data::settings::{parse_key, resolve};
+        let mut out = Vec::new();
+        for (name, keys) in resolve("curation", CURATION_KEYS, |key| parse_key(key).is_some()) {
+            let Some(command) = CURATION_KEYS.iter().map(|(n, _)| *n).find(|n| *n == name) else { continue };
+            out.extend(keys.iter().filter_map(|key| parse_key(key)).map(|(cmd, alt, shift, key)| (cmd, alt, shift, key, command)));
+        }
+        out
+    })
+}
+
+/// The command bound to a key press. Shift is not compared for a key that is a symbol (`?` is
+/// typed with Shift on most keyboards).
+fn curation_command(cmd: bool, alt: bool, shift: bool, key: &str) -> Option<&'static str> {
+    let symbol = key.chars().count() == 1 && !key.chars().all(char::is_alphanumeric);
+    curation_keys().iter().find(|(c, a, s, k, _)| *c == cmd && *a == alt && (symbol || *s == shift) && k == &key.to_lowercase()).map(|b| b.4)
+}
+
 const KEYS: [(&str, &str); 12] = [
     ("Click / Ctrl+click", "Select a unit / add it"),
     ("↓ ↑  (J K)", "Next / previous unit of the table"),

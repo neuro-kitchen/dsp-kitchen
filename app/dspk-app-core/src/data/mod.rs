@@ -10,6 +10,7 @@ pub mod preferences;
 pub mod recording;
 pub mod remote;
 pub mod services;
+pub mod settings;
 pub mod store;
 pub mod work_pool;
 
