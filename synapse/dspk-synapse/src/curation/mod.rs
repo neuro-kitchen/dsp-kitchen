@@ -14,6 +14,7 @@ pub mod amplitudes;
 pub mod phy;
 pub mod similarity;
 pub mod sorting;
+pub mod split;
 /// The unit table (feature `table`, on by default).
 #[cfg(feature = "table")]
 pub mod table;

@@ -7,7 +7,6 @@
 
 use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
-use std::thread;
 
 use crate::data::recording::Dataset;
 
@@ -36,35 +35,46 @@ fn read(req: &HoverRequest) -> Option<f32> {
 }
 
 pub struct HoverReader {
-    tx: Sender<HoverRequest>,
+    /// To the reader thread; `None` without threads (readouts are read where they are asked).
+    tx: Option<Sender<HoverRequest>>,
+}
+
+/// The readout `req` asks for, as the view shows it.
+fn readout(req: &HoverRequest) -> String {
+    match read(req) {
+        Some(v) => format!("{}{} {}", req.prefix, fmt_amount(v), req.unit),
+        None => format!("{}read failed", req.prefix),
+    }
 }
 
 impl HoverReader {
-    /// Spawns the reader thread.
+    /// Spawns the reader thread (none on a target without threads).
     pub fn spawn() -> Self {
+        if !crate::platform::THREADS {
+            return Self { tx: None };
+        }
         let (tx, rx) = mpsc::channel::<HoverRequest>();
-        thread::Builder::new()
-            .name("dspk-app-hover".into())
-            .spawn(move || {
-                // Exits when the sender (owned by the UI) is dropped
-                while let Ok(mut req) = rx.recv() {
-                    while let Ok(newer) = rx.try_recv() {
-                        req = newer;
-                    }
-                    let text = match read(&req) {
-                        Some(v) => format!("{}{} {}", req.prefix, fmt_amount(v), req.unit),
-                        None => format!("{}read failed", req.prefix),
-                    };
-                    (req.reply)(req.seq, text);
+        crate::platform::spawn("dspk-app-hover", move || {
+            // Exits when the sender (owned by the UI) is dropped
+            while let Ok(mut req) = rx.recv() {
+                while let Ok(newer) = rx.try_recv() {
+                    req = newer;
                 }
-            })
-            .expect("failed to spawn hover thread");
-        Self { tx }
+                (req.reply)(req.seq, readout(&req));
+            }
+        })
+        .expect("failed to spawn hover thread");
+        Self { tx: Some(tx) }
     }
 
     pub fn request(&self, req: HoverRequest) {
-        // A send error means the reader died; readouts stop updating
-        let _ = self.tx.send(req);
+        match &self.tx {
+            // A send error means the reader died; readouts stop updating
+            Some(tx) => {
+                let _ = tx.send(req);
+            }
+            None => (req.reply)(req.seq, readout(&req)),
+        }
     }
 }
 

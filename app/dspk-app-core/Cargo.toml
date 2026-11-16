@@ -19,10 +19,11 @@ cuda = ["dspk-core/cuda", "dspk-ops/cuda", "dspk-pipeline/cuda", "dspk-session/c
 hip = ["dspk-core/hip", "dspk-ops/hip", "dspk-pipeline/hip", "dspk-session/hip"]
 
 [dependencies]
+web-time.workspace = true
 dspk-core = { workspace = true, features = ["compute"] }
 dspk-ops.workspace = true
 # Generic formats (raw + .meta, Zarr); domain formats come from plugins
-dspk-io = { workspace = true, features = ["zarr"] }
+dspk-io.workspace = true
 # Envelopes, pyramids and the signal backend; host only (the app draws on the CPU)
 dspk-view = { workspace = true, default-features = false }
 # Views' op chains are dspk-pipeline nodes; writing a view runs its pipeline
@@ -31,7 +32,6 @@ dspk-pipeline = { workspace = true, features = ["view"] }
 dspk-session.workspace = true
 # Servers (`dspk serve`): remote recordings (RemoteSignal), jobs, fetching results
 dspk-stream.workspace = true
-tokio.workspace = true
 dirs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -52,7 +52,21 @@ kitchen-shell.workspace = true
 sysinfo.workspace = true
 # The wgpu adapters, named in the status bar and Settings › Compute (the same wgpu CubeCL runs on)
 wgpu = { workspace = true, optional = true }
-async-channel = "2.5.0"
+# Worker threads to the UI thread without a lock (`data::channel`)
+futures-channel = "0.3"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+
+# Files on disk, the network runtime: not in a browser
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+dspk-io = { workspace = true, features = ["zarr"] }
+tokio.workspace = true
+
+# A browser tab (`platform::web`): web workers when the build has threads; the page's address
+# and storage (its server's name, the token kept between visits)
+[target.'cfg(target_family = "wasm")'.dependencies]
+wasm_thread = { version = "0.3.3", features = ["es_modules"] }
+web-sys = { version = "0.3", features = ["Window", "Location", "Storage"] }
+js-sys = "0.3"
 
 [dev-dependencies]
 # Headless UI tests (`#[gpui_kit::test]`, `gpui_kit::test::TestWindowExt`)

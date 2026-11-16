@@ -99,6 +99,11 @@ pub struct ServeArgs {
     /// TCP address of the web endpoint
     #[arg(long, default_value = DEFAULT_WEB_BIND, requires = "web")]
     web_bind: SocketAddr,
+    /// Plain HTTP on --web-bind even when it is not loopback: for a container whose port is
+    /// published only to this computer (`-p 127.0.0.1:50052:50052`), or behind a proxy that holds
+    /// the certificate. Anyone who reaches the port sees the pairing code and the page's token
+    #[arg(long, requires = "web", env = "DSPK_SERVE_WEB_PLAIN_HTTP")]
+    web_plain_http: bool,
     /// Clients connected at once; more are refused until one leaves
     #[arg(long, default_value_t = dspk_stream::DEFAULT_MAX_CONNECTIONS)]
     max_clients: usize,
@@ -163,63 +168,34 @@ impl RecordingOpener for FileOpener {
         if !pyramid.is_complete() {
             PyramidBuilder::default().run(source.clone(), pyramid.clone(), 0, Arc::new(AtomicBool::new(false)), Arc::new(|_| {}));
         }
-        Ok(OpenRecording::new(source, Some(pyramid)).with_processor(Arc::new(Processor)))
+        Ok(OpenRecording::new(source, Some(pyramid)).with_processor(Processor::of(path)))
     }
-}
-
-/// A served recording behind dspk-view's `SignalBackend`: what a processed signal falls back to
-/// (channels outside the chain, windows too long to process) and reads its samples from.
-struct ServedSignal {
-    source: Arc<dyn RecordingSource>,
-    pyramid: Option<Arc<Pyramid>>,
-}
-
-impl dspk_view::SignalBackend for ServedSignal {
-    fn info(&self) -> &dspk_core::RecordingInfo {
-        self.source.info()
-    }
-
-    fn view(&self, view: &dspk_view::View, out: &mut dspk_view::Envelope) -> dspk_core::DspResult<()> {
-        view.read_into(self.source.as_ref(), self.pyramid.as_deref(), out)
-    }
-
-    fn read(&self, channels: &[usize], samples: std::ops::Range<u64>, out: &mut [f32]) -> dspk_core::DspResult<()> {
-        self.source.read(channels, samples, out)
-    }
-
-    fn focus(&self, _sample: u64) {}
-
-    fn prepare(&self, _start: u64, _end: u64) -> dspk_core::DspResult<()> {
-        Ok(())
-    }
-
-    fn progress(&self) -> dspk_view::Progress {
-        let total = self.source.info().samples;
-        dspk_view::Progress { filled: 0..0, done: total, total }
-    }
-
-    fn watch(&self, _on_progress: dspk_view::OnProgress) {}
 }
 
 /// Runs a view's ops for clients that cannot compute (pages), with the preview code of the
-/// desktop app (dspk-pipeline), on this server's runtime.
-struct Processor;
+/// desktop app (dspk-pipeline), on this server's runtime. Files the ops name (a remap's channel
+/// map) are read from the recording's folder.
+struct Processor {
+    base_dir: PathBuf,
+}
+
+impl Processor {
+    fn of(recording: &Path) -> Arc<Self> {
+        Arc::new(Self { base_dir: recording.parent().map(Path::to_path_buf).unwrap_or_default() })
+    }
+}
 
 impl dspk_stream::ViewProcessor for Processor {
     fn processed(&self, source: Arc<dyn RecordingSource>, pyramid: Option<Arc<Pyramid>>, channels: &[usize], ops: &[String]) -> StreamResult<Arc<dyn dspk_view::SignalBackend>> {
-        let refuse = |e: String| StreamError::Protocol(e);
-        let nodes: Vec<dspk_pipeline::Node> = ops.iter().map(|op| serde_json::from_str(op).map_err(|e| refuse(format!("an op that is not a pipeline node: {e}")))).collect::<Result<_, _>>()?;
-        let channels: Vec<usize> = if channels.is_empty() { (0..source.info().channel_count()).collect() } else { channels.to_vec() };
-        let raw: Arc<dyn dspk_view::SignalBackend> = Arc::new(ServedSignal { source: source.clone(), pyramid });
-        // No folder of its own: a remap's channel-map file is the client's, so only inline maps
-        let processed = dspk_pipeline::processed::ProcessedSignal::of_ops(raw, source, &nodes.iter().collect::<Vec<_>>(), channels, Path::new("")).map_err(refuse)?;
+        let raw: Arc<dyn dspk_view::SignalBackend> = Arc::new(dspk_view::StoredSignal::new(source.clone(), pyramid));
+        let processed = dspk_pipeline::processed::ProcessedSignal::of_json_ops(raw, source, ops, channels, &self.base_dir).map_err(StreamError::Protocol)?;
         Ok(Arc::new(processed))
     }
 }
 
 /// The recording every client starts with: says what it is and builds its pyramid in the
 /// background (with a progress bar) when the file next to it is missing or incomplete.
-fn start_recording(source: Arc<dyn RecordingSource>, pyramid: Pyramid) -> OpenRecording {
+fn start_recording(path: &Path, source: Arc<dyn RecordingSource>, pyramid: Pyramid) -> OpenRecording {
     let pyramid = Arc::new(pyramid);
     let info = source.info();
     println!("Serving {}: {} channels × {} samples at {} Hz ({:?})", info.name, info.channel_count(), info.samples, info.sample_rate_hz(), info.format);
@@ -236,7 +212,7 @@ fn start_recording(source: Arc<dyn RecordingSource>, pyramid: Pyramid) -> OpenRe
         }
     }
 
-    OpenRecording::new(source, Some(pyramid)).with_processor(Arc::new(Processor))
+    OpenRecording::new(source, Some(pyramid)).with_processor(Processor::of(path))
 }
 
 pub async fn run(args: &ServeArgs) -> anyhow::Result<()> {
@@ -259,7 +235,7 @@ pub async fn run(args: &ServeArgs) -> anyhow::Result<()> {
         None => None,
     };
     let recording = match initial {
-        Some((source, pyramid)) => Some(Arc::new(start_recording(source, pyramid))),
+        Some((source, pyramid)) => Some(Arc::new(start_recording(args.recording.as_deref().unwrap_or(Path::new("")), source, pyramid))),
         None => None,
     };
 
@@ -336,6 +312,7 @@ pub async fn run(args: &ServeArgs) -> anyhow::Result<()> {
         let (tls, note) = match &identity {
             ServerIdentity::Files { .. } => (WebTls::Files(identity.clone()), "the certificate given with --certificate"),
             _ if args.web_bind.ip().is_loopback() => (WebTls::Plain, "this computer only; for other computers put `tailscale serve` or a reverse proxy in front, or give --certificate"),
+            _ if args.web_plain_http => (WebTls::PlainOffLoopback, "PLAIN HTTP off loopback (--web-plain-http): publish this port only to 127.0.0.1, or behind a proxy that holds a certificate"),
             _ => (WebTls::Authority, "the certificate is this server's own, so a browser warns until its authority is trusted; give --certificate for a real one"),
         };
         let web = dspk_stream::transport::web::WebServer::bind(args.web_bind, authority.clone(), device.clone(), self_signed_names(args), Some(folder.clone()), tls).await?;

@@ -1,0 +1,30 @@
+[package]
+name = "dspk-app-web"
+description = "dspk-app in a browser tab: the entry point of the app core built for WebAssembly (build.sh makes the page)"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[features]
+default = ["compute"]
+# Processing in the tab, on the browser's WebGPU (CubeCL's wgpu runtime). It cannot be combined
+# with threads: with shared memory, wgpu's types may not cross threads and cubecl-wgpu does not
+# build. The threaded build (a client of `dspk serve`, which computes) leaves it out.
+compute = ["dspk-app-core/wgpu"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# Everything is for the browser; on other targets the crate is empty (so the workspace builds)
+[target.'cfg(target_family = "wasm")'.dependencies]
+dspk-app-core.workspace = true
+dspk-core.workspace = true
+gpui-kit.workspace = true
+wasm-bindgen = "0.2"
+# The page's address (a link may name a recording to open)
+web-sys = { version = "0.3", features = ["Window", "Location", "Navigator"] }
+js-sys = "0.3"
+log = "0.4"

@@ -26,11 +26,7 @@ pub const DEFAULT_QUEUE_FRAMES: usize = 8;
 pub const DEFAULT_MAX_REQUEST_BYTES: usize = 64 << 10;
 /// Clients connected at once by default; more are refused until one leaves.
 pub const DEFAULT_MAX_CONNECTIONS: usize = 32;
-/// Largest view answered: values (channels × columns, or × samples) in one envelope, so a request
-/// cannot make the server allocate without bound (32 MiB of f32, under a client's message limit).
-pub const MAX_VIEW_VALUES: u64 = 8 << 20;
-/// Most columns a view may ask for (a screen is a few thousand pixels wide).
-pub const MAX_VIEW_COLUMNS: u32 = 1 << 16;
+pub use crate::protocol::{MAX_VIEW_COLUMNS, MAX_VIEW_VALUES};
 
 /// When frames are sent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,8 +205,12 @@ pub struct OpenRecording {
     stored: bool,
     processor: Option<Arc<dyn ViewProcessor>>,
     /// The processed signals clients asked views of, latest last (a few: each holds device memory).
-    processed: Mutex<Vec<(wire::Processing, Arc<dyn SignalBackend>)>>,
+    processed: Mutex<Vec<(wire::Processing, Arc<ChainSlot>)>>,
 }
+
+/// One chain's processed signal: made once, by the first view that asks; later views of the
+/// chain wait for it there, views of other chains do not.
+type ChainSlot = std::sync::OnceLock<Result<Arc<dyn SignalBackend>, String>>;
 
 /// Processed signals kept per open recording.
 const PROCESSED_KEPT: usize = 4;
@@ -235,26 +235,44 @@ impl OpenRecording {
         self
     }
 
-    /// The signal `processing` describes: kept from an earlier view, or made now (blocking; one
-    /// at a time per recording, so two views of one chain make it once).
+    /// The signal `processing` describes: kept from an earlier view, or made now (blocking). The
+    /// list is locked only to find or add the chain's slot; the chain is made outside the lock,
+    /// so a chain being made (a whitening fitted: seconds) holds up only views of that chain.
     fn processed(&self, processing: &wire::Processing) -> StreamResult<Arc<dyn SignalBackend>> {
         let processor = self.processor.as_ref().ok_or_else(|| StreamError::protocol("this server does not process views"))?;
-        let mut kept = self.processed.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(at) = kept.iter().position(|(p, _)| p == processing) {
-            let entry = kept.remove(at);
-            kept.push(entry.clone());
-            return Ok(entry.1);
-        }
         let channels: Vec<usize> = processing.channels.iter().map(|&c| c as usize).collect();
         if channels.iter().any(|&c| c >= self.info.channel_count()) {
             return Err(StreamError::protocol("processing asks for a channel the recording does not have"));
         }
-        let signal = processor.processed(self.source.clone(), self.pyramid.clone(), &channels, &processing.ops)?;
-        if kept.len() >= PROCESSED_KEPT {
-            kept.remove(0);
+        let slot = {
+            let mut kept = self.processed.lock().unwrap_or_else(|e| e.into_inner());
+            match kept.iter().position(|(p, _)| p == processing) {
+                Some(at) => {
+                    // Most recently used last
+                    let entry = kept.remove(at);
+                    let slot = entry.1.clone();
+                    kept.push(entry);
+                    slot
+                }
+                None => {
+                    if kept.len() >= PROCESSED_KEPT {
+                        kept.remove(0);
+                    }
+                    let slot = Arc::new(ChainSlot::new());
+                    kept.push((processing.clone(), slot.clone()));
+                    slot
+                }
+            }
+        };
+        let made = slot.get_or_init(|| processor.processed(self.source.clone(), self.pyramid.clone(), &channels, &processing.ops).map_err(|e| e.reason()));
+        match made {
+            Ok(signal) => Ok(signal.clone()),
+            Err(e) => {
+                // Not kept: the next view of this chain tries again
+                self.processed.lock().unwrap_or_else(|e| e.into_inner()).retain(|(_, s)| !Arc::ptr_eq(s, &slot));
+                Err(StreamError::Server(e.clone()))
+            }
         }
-        kept.push((processing.clone(), signal.clone()));
-        Ok(signal)
     }
 
     /// What the signal stream carries (the header sent to clients).
@@ -559,4 +577,65 @@ async fn stream_signal(connection: quinn::Connection, recording: Arc<OpenRecordi
         StreamResult::Ok(())
     }
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
+    /// Makes chains as their first op says: "slow" takes a while, "bad" fails; counts each make.
+    #[derive(Default)]
+    struct Maker {
+        made: Mutex<Vec<String>>,
+        slow_started: AtomicUsize,
+    }
+
+    impl ViewProcessor for Maker {
+        fn processed(&self, source: Arc<dyn RecordingSource>, pyramid: Option<Arc<Pyramid>>, _channels: &[usize], ops: &[String]) -> StreamResult<Arc<dyn SignalBackend>> {
+            let op = ops.first().cloned().unwrap_or_default();
+            self.made.lock().unwrap().push(op.clone());
+            match op.as_str() {
+                "slow" => {
+                    self.slow_started.fetch_add(1, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(1500));
+                }
+                "bad" => return Err(StreamError::protocol("an op that is not a pipeline node")),
+                _ => {}
+            }
+            Ok(Arc::new(dspk_view::StoredSignal::new(source, pyramid)))
+        }
+    }
+
+    fn chain(op: &str) -> wire::Processing {
+        wire::Processing { channels: vec![], ops: vec![op.into()] }
+    }
+
+    /// A chain being made holds up only views of that chain: another chain is answered at once,
+    /// the same chain is made once, and a chain that failed is tried again rather than kept.
+    #[test]
+    fn a_slow_chain_holds_up_only_its_own_views() {
+        let recording = Arc::new(dspk_core::MemoryRecording::new("r", vec![0.0; 4 * 100], 4, 1000.0).unwrap());
+        let maker = Arc::new(Maker::default());
+        let open = Arc::new(OpenRecording::new(recording, None).with_processor(maker.clone()));
+
+        let o = open.clone();
+        let first = std::thread::spawn(move || o.processed(&chain("slow")).is_ok());
+        while maker.slow_started.load(Ordering::SeqCst) == 0 {
+            std::thread::yield_now();
+        }
+        let t0 = Instant::now();
+        assert!(open.processed(&chain("fast")).is_ok());
+        assert!(t0.elapsed() < Duration::from_millis(500), "another chain waited for the slow one: {:?}", t0.elapsed());
+        // The same chain waits for the make under way instead of making it again
+        assert!(open.processed(&chain("slow")).is_ok());
+        assert!(first.join().unwrap());
+        assert_eq!(maker.made.lock().unwrap().iter().filter(|op| *op == "slow").count(), 1, "made once");
+
+        assert!(matches!(open.processed(&chain("bad")), Err(StreamError::Server(_))));
+        assert!(open.processed(&chain("bad")).is_err());
+        assert_eq!(maker.made.lock().unwrap().iter().filter(|op| *op == "bad").count(), 2, "a failed chain is tried again");
+        assert_eq!(open.processed.lock().unwrap().len(), 2, "failed chains are not kept");
+    }
 }

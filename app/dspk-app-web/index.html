@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>dsp-kitchen</title>
+    <style>
+      :root { color-scheme: dark light; --bg: #1e1e1e; --fg: #e6e6e6; --muted: #a0a0a0; --accent: #5b8def; }
+      @media (prefers-color-scheme: light) { :root { --bg: #fafafa; --fg: #1e1e1e; --muted: #5a5a5a; } }
+      html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); overflow: hidden; font: 15px/1.5 system-ui, sans-serif; }
+      #note { position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; }
+      #note > div { max-width: 560px; }
+      #note h1 { font-size: 20px; margin: 0 0 8px; }
+      #note p, #note li { color: var(--muted); }
+      #note code { color: var(--fg); }
+      #note a { color: var(--accent); }
+    </style>
+  </head>
+  <body>
+    <div id="note"><div><p>Checking this browser…</p></div></div>
+    <script type="module">
+      // The loader: before the app (several MB) is downloaded, find what this browser offers and
+      // pick how the app runs. Nothing here guesses from the browser's name except the one case
+      // measured below.
+      //
+      // - Drawing: WebGPU where it is presented fast, else WebGL2; never in software (the page
+      //   would crawl whatever the app does): then the page says how to turn the GPU on.
+      // - Threads: the threaded build when the page is cross-origin isolated (`dspk serve --web`
+      //   serves it so), else the single-thread build.
+      // - `?gpu=webgl` / `?gpu=webgpu` force the drawing backend (for measuring only).
+      const note = document.getElementById("note");
+      const say = (html) => (note.firstElementChild.innerHTML = html);
+      const params = new URLSearchParams(location.search);
+
+      /** Hardware WebGL2: refused when the browser would draw in software. */
+      function webgl() {
+        const gl = document.createElement("canvas").getContext("webgl2", { failIfMajorPerformanceCaveat: true });
+        if (!gl) return null;
+        const ext = gl.getExtension("WEBGL_debug_renderer_info");
+        const renderer = String(ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
+        gl.getExtension("WEBGL_lose_context")?.loseContext();
+        return /swiftshader|llvmpipe|softpipe|software|basic render/i.test(renderer) ? null : renderer;
+      }
+
+      /** A hardware WebGPU adapter, or null. */
+      async function webgpu() {
+        if (!navigator.gpu) return null;
+        try {
+          const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
+          if (!adapter || adapter.isFallbackAdapter || adapter.info?.isFallbackAdapter) return null;
+          return `${adapter.info?.vendor ?? ""} ${adapter.info?.architecture ?? ""}`.trim() || "WebGPU";
+        } catch {
+          return null;
+        }
+      }
+
+      const [gl, gpu] = [webgl(), await webgpu()];
+      // Chrome on Linux presents a WebGPU canvas slowly (its WebGPU and compositor do not share
+      // textures there: chrome://gpu says "WebGPU interop: Disabled"; measured 2026-11-15), so it
+      // draws with WebGL2 even when it has WebGPU
+      const linuxChrome = /Linux/.test(navigator.userAgent) && !/Android/.test(navigator.userAgent) && /Chrome\//.test(navigator.userAgent);
+      let drawing = params.get("gpu") ?? (gpu && !linuxChrome ? "webgpu" : gl ? "webgl" : gpu ? "webgpu" : null);
+      const threads = window.crossOriginIsolated === true;
+
+      if (!drawing && !params.has("software")) {
+        say(`<h1>This browser draws without the graphics card</h1>
+          <p>dsp-kitchen draws every frame on the GPU; in software it would be too slow to use.</p>
+          <ul>
+            <li>Chrome / Edge: Settings → System → <em>Use graphics acceleration when available</em>, then restart; <code>chrome://gpu</code> should say “Hardware accelerated”.</li>
+            <li>Firefox: Settings → Performance → <em>Use recommended performance settings</em>; <code>about:support</code> → Graphics.</li>
+          </ul>
+          <p><a href="?software">Start anyway (slow)</a></p>`);
+      } else {
+        drawing ??= "webgl";
+        // What the app reads at start (`dspk_app_web::backend`), and shows in its status line
+        window.dspkWeb = { drawing, threads, compute: !threads && !!gpu, renderer: drawing === "webgpu" ? gpu : gl };
+        say(`<p>Loading dsp-kitchen (${threads ? "threads" : "single thread"}, ${drawing === "webgpu" ? "WebGPU" : "WebGL2"})…</p>`);
+        try {
+          const app = await import(threads ? "./mt/dspk_app_web.js" : "./st/dspk_app_web.js");
+          await app.default();
+          note.remove();
+        } catch (e) {
+          say(`<h1>dsp-kitchen did not start</h1><p><code>${String(e).replace(/</g, "&lt;")}</code></p>`);
+        }
+      }
+    </script>
+  </body>
+</html>

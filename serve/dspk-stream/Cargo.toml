@@ -54,3 +54,12 @@ protox.workspace = true
 # `crypto.getRandomValues`
 [target.'cfg(target_family = "wasm")'.dependencies]
 getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
+# The page's connection to its server (`web_client`): a WebSocket, answers handed to whoever
+# waits without a lock on the page's thread, web workers when the build has threads
+web-sys = { version = "0.3", features = ["WebSocket", "BinaryType", "MessageEvent"] }
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+futures-channel = "0.3"
+futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
+wasm_thread = { version = "0.3.3", features = ["es_modules"] }

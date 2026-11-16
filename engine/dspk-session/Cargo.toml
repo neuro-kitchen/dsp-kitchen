@@ -23,8 +23,13 @@ dspk-pipeline.workspace = true
 dspk-core.workspace = true
 # The event rows a `crossings` chain writes (the layout of an event set)
 dspk-ops.workspace = true
-dspk-io = { workspace = true, features = ["zarr"] }
+dspk-io.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+
+# Zarr stores are files on disk: not in a browser (`target_family = "wasm"`), where there is no
+# file system
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+dspk-io = { workspace = true, features = ["zarr"] }

@@ -12,6 +12,12 @@
 //! - [`paths`]: short forms of paths for messages.
 
 pub mod command;
+// The store next to a recording is a Zarr store on disk: not in a browser
+#[cfg(not(target_family = "wasm"))]
+pub mod derived;
+/// In a browser there are no files next to a recording: the same names, nothing stored.
+#[cfg(target_family = "wasm")]
+#[path = "derived_web.rs"]
 pub mod derived;
 pub mod epoch;
 pub mod graph;

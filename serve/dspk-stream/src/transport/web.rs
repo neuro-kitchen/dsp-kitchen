@@ -56,6 +56,10 @@ pub enum WebTls {
     /// `http://localhost` as secure (no warning, threads allowed), nothing leaves the computer,
     /// and a proxy that holds a real certificate (`tailscale serve`, Caddy) can stand in front.
     Plain,
+    /// Plain HTTP on any address, asked for explicitly: a container whose port is published
+    /// only to the host's loopback (inside it the address is not loopback), or behind a proxy
+    /// that holds the certificate. Whoever reaches the port sees pairing codes and tokens.
+    PlainOffLoopback,
     /// A certificate the server's own authority issues for its names: encrypted, but a browser
     /// warns until that authority is trusted in it.
     Authority,
@@ -77,7 +81,7 @@ impl WebServer {
     pub async fn bind(addr: SocketAddr, authority: Arc<Authority>, device: Arc<Device>, names: Vec<String>, web_root: Option<PathBuf>, tls: WebTls) -> StreamResult<Self> {
         let identity = match &tls {
             WebTls::Plain if !addr.ip().is_loopback() => return Err(StreamError::Tls(format!("plain HTTP is only served on a loopback address, not on {addr}"))),
-            WebTls::Plain => None,
+            WebTls::Plain | WebTls::PlainOffLoopback => None,
             WebTls::Authority => Some(authority.server_certificate(&names)?),
             WebTls::Files(identity) => Some(super::tls::identity_chain(identity)?),
         };
@@ -159,11 +163,16 @@ async fn handle(mut request: Request<Incoming>, state: Arc<State>) -> Result<Rep
         return Ok(reply(StatusCode::NOT_FOUND, "text/plain", "this server has no web app (dspk serve --web <folder>)"));
     };
     let path = request.uri().path().to_string();
-    Ok(tokio::task::spawn_blocking(move || file(&root, &path)).await.unwrap_or_else(|_| reply(StatusCode::INTERNAL_SERVER_ERROR, "text/plain", "failed")))
+    let header = |name: &str| request.headers().get(name).and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
+    let (accepts_brotli, cached) = (header("accept-encoding").split(',').any(|e| e.trim().starts_with("br")), header("if-none-match"));
+    Ok(tokio::task::spawn_blocking(move || file(&root, &path, accepts_brotli, &cached)).await.unwrap_or_else(|_| reply(StatusCode::INTERNAL_SERVER_ERROR, "text/plain", "failed")))
 }
 
-/// The file at `path` under `root`: only plain components, never out of the folder.
-fn file(root: &Path, path: &str) -> Reply {
+/// The file at `path` under `root`: only plain components, never out of the folder. A
+/// Brotli-compressed copy next to it (`<file>.br`, as the web app's build writes) is sent instead
+/// when the browser accepts it (the app's .wasm: ~25 MB, ~7 MB compressed). Every file carries
+/// an ETag (its size and time), so a browser that has it asks again and gets "not modified".
+fn file(root: &Path, path: &str, accepts_brotli: bool, cached: &str) -> Reply {
     let relative = path.trim_start_matches('/');
     let relative = if relative.is_empty() { "index.html" } else { relative };
     let plain = Path::new(relative).components().all(|c| matches!(c, Component::Normal(n) if !n.to_string_lossy().starts_with('.')));
@@ -190,10 +199,28 @@ fn file(root: &Path, path: &str) -> Reply {
         Some("ttf") => "font/ttf",
         _ => "application/octet-stream",
     };
-    match std::fs::read(&full) {
-        Ok(bytes) => reply(StatusCode::OK, content_type, bytes),
-        Err(_) => reply(StatusCode::NOT_FOUND, "text/plain", "not found"),
+    let compressed = accepts_brotli.then(|| full.with_file_name(format!("{}.br", full.file_name().unwrap_or_default().to_string_lossy()))).filter(|p| p.is_file());
+    let sent = compressed.as_deref().unwrap_or(&full);
+    let tag = std::fs::metadata(sent).ok().map(|m| {
+        let time = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
+        format!("\"{:x}-{time:x}{}\"", m.len(), if compressed.is_some() { "-br" } else { "" })
+    });
+    let mut response = match (&tag, std::fs::read(sent)) {
+        (Some(tag), _) if !cached.is_empty() && cached.split(',').any(|t| t.trim() == tag) => reply(StatusCode::NOT_MODIFIED, content_type, Bytes::new()),
+        (_, Ok(bytes)) => reply(StatusCode::OK, content_type, bytes),
+        (_, Err(_)) => return reply(StatusCode::NOT_FOUND, "text/plain", "not found"),
+    };
+    let headers = response.headers_mut();
+    if let Some(tag) = tag.and_then(|t| hyper::header::HeaderValue::from_str(&t).ok()) {
+        headers.insert(hyper::header::ETAG, tag);
     }
+    // Kept, but checked with the server on every load (the ETag makes that cheap)
+    headers.insert(hyper::header::CACHE_CONTROL, hyper::header::HeaderValue::from_static("no-cache"));
+    headers.insert(hyper::header::VARY, hyper::header::HeaderValue::from_static("accept-encoding"));
+    if compressed.is_some() {
+        headers.insert(hyper::header::CONTENT_ENCODING, hyper::header::HeaderValue::from_static("br"));
+    }
+    response
 }
 
 /// Answers the WebSocket handshake and hands the connection to [`session`].
@@ -454,9 +481,9 @@ mod tests {
         std::fs::write(dir.join("web/pkg/app.wasm"), [0u8, 97, 115, 109]).unwrap();
         std::fs::write(dir.join("secret.txt"), "no").unwrap();
         let root = dir.join("web");
-        let status = |p: &str| file(&root, p).status();
+        let status = |p: &str| file(&root, p, false, "").status();
         assert_eq!(status("/"), StatusCode::OK, "the folder's index");
-        assert_eq!(file(&root, "/pkg/app.wasm").headers()["content-type"], "application/wasm");
+        assert_eq!(file(&root, "/pkg/app.wasm", false, "").headers()["content-type"], "application/wasm");
         for outside in ["/../secret.txt", "/pkg/../../secret.txt", "/.hidden", "/absent.js"] {
             assert_eq!(status(outside), StatusCode::NOT_FOUND, "{outside}");
         }

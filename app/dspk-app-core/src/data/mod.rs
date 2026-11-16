@@ -3,6 +3,7 @@
 //! `services`), and the servers it works with (`remote`). Screens reach it through view models
 //! only.
 
+pub mod channel;
 pub mod device;
 pub mod jobs;
 pub mod live;

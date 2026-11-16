@@ -6,7 +6,7 @@
 //! real run neither stops to benchmark nor to compile. A size off the grid still tunes when it is
 //! first met.
 
-use std::time::Instant;
+use web_time::Instant;
 
 use cubecl::prelude::*;
 

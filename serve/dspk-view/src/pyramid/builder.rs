@@ -51,7 +51,13 @@ impl PyramidBuilder {
             return;
         }
         let focus = self.focus.clone();
-        let spawned = std::thread::Builder::new().name("minmax-pyramid".into()).spawn(move || fill(source.as_ref(), &pyramid, &focus, &cancel, &*on_progress));
+        // In a browser built with threads the builder is a web worker (`wasm_thread`); without
+        // them the standard library reports it cannot start one, and the warning below says so
+        #[cfg(all(target_family = "wasm", target_feature = "atomics"))]
+        use wasm_thread as thread;
+        #[cfg(not(all(target_family = "wasm", target_feature = "atomics")))]
+        use std::thread;
+        let spawned = thread::Builder::new().name("minmax-pyramid".into()).spawn(move || fill(source.as_ref(), &pyramid, &focus, &cancel, &*on_progress));
         if let Err(e) = spawned {
             tracing::warn!("could not start building the min/max pyramid: {e}");
         }

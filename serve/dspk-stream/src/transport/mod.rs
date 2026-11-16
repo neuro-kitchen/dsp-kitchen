@@ -15,7 +15,8 @@ pub mod web;
 pub use auth::{Authority, ClientIdentity, ClientRecord, Enrollment, Peer, Permission};
 
 pub use client::{Session, SignalReceiver};
-pub use remote_signal::{RemoteSignal, RemoteSource};
+pub use crate::remote::{RemoteSignal, RemoteSource};
+pub use remote_signal::SessionLink;
 pub use server::{
     checked_view, serve_recording, serve_session, Device, OpenRecording, Pacing, RecordingOpener, ViewProcessor, ServeOptions, Server, REFUSED_CLIENT, DEFAULT_FRAME_SEC, DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_REQUEST_BYTES, DEFAULT_QUEUE_FRAMES,
     MAX_VIEW_COLUMNS, MAX_VIEW_VALUES,

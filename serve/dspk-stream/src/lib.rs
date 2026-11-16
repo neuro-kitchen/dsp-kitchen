@@ -11,10 +11,15 @@
 pub mod error;
 pub mod pair;
 pub mod protocol;
+pub mod remote;
+/// A browser page's connection to its server (a WebSocket), as a [`Link`].
+#[cfg(target_family = "wasm")]
+pub mod web_client;
 #[cfg(not(target_family = "wasm"))]
 pub mod transport;
 
 pub use error::{StreamError, StreamResult};
+pub use remote::{Link, RemoteSignal, RemoteSource};
 /// Files under a server's data root (safe paths, listings).
 #[cfg(not(target_family = "wasm"))]
 pub use transport::files;
@@ -24,6 +29,6 @@ pub use transport::jobs;
 #[cfg(not(target_family = "wasm"))]
 pub use transport::{
     checked_view, client_config, client_config_with, serve_recording, serve_session, server_config, Device, OpenRecording, RecordingOpener, ViewProcessor, server_config_with_clients, Authority, ClientIdentity, ClientRecord,
-    Enrollment, Pacing, Peer, Permission, RemoteSignal, RemoteSource, ServeOptions, Server, ServerIdentity, ServerTls, ServerTrust, Session, SignalReceiver, DEFAULT_MAX_CONNECTIONS,
+    Enrollment, Pacing, Peer, Permission, ServeOptions, Server, ServerIdentity, ServerTls, ServerTrust, Session, SignalReceiver, DEFAULT_MAX_CONNECTIONS,
     DEFAULT_MAX_REQUEST_BYTES, MAX_VIEW_COLUMNS, MAX_VIEW_VALUES, REFUSED_CLIENT,
 };

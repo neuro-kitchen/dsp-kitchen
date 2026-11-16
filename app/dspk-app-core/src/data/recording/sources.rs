@@ -26,6 +26,7 @@ impl SourceSet {
     /// `dspk://` path is a recording on a server: one source, drawn from the server's pyramid and
     /// read there.
     pub fn open(path: &Path) -> Result<Self> {
+        // A recording on a server: the desktop app's own connection, or the page's
         if crate::data::remote::parse_uri(path).is_some() {
             let signal = crate::data::remote::open_uri(path)?;
             let source: Arc<dyn dspk_core::RecordingSource> = signal.source();

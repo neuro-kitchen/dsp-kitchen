@@ -1,0 +1,6 @@
+dist/
+pkg/
+pkg-release/
+pkg-threads/
+pkg-threads-opt/
+assets/icons/

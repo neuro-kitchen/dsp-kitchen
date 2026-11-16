@@ -43,6 +43,7 @@ impl StreamError {
     }
 
     /// What to tell a client about this error (the reason, without the kind's prefix).
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     pub(crate) fn reason(&self) -> String {
         match self {
             Self::Protocol(m) | Self::Server(m) | Self::Tls(m) => m.clone(),

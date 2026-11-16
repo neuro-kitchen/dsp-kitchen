@@ -28,6 +28,8 @@ members = [
     "app/dspk-cli",
     "app/dspk-app-core",
     "app/dspk-app",
+    # The app in a browser tab (WebAssembly; empty on other targets)
+    "app/dspk-app-web",
     # Plugins: cli/ programs the command line runs (the sorters: GPL-3.0, never linked);
     # app/ domain plugins of the app (electrophysiology)
     "plugins/cli/dspk-cli-sorter",
@@ -147,6 +149,8 @@ toml_edit = "0.25.19"
 glob = "0.3.4"
 schemars = "1.2.3"
 thiserror = "2.0.21"
+# The clock, also in a browser (std's has none there); std's own on every other target
+web-time = "1.1.0"
 # Tables: only dspk-table depends on Polars; the other crates use its re-export
 polars = { version = "0.55.2", default-features = false, features = ["parquet", "dtype-slim"] }
 anyhow = "1.0.104"

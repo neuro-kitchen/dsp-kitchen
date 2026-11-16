@@ -3329,7 +3329,6 @@ name = "dspk-app-core"
 version = "0.0.11"
 dependencies = [
  "anyhow",
- "async-channel",
  "bytemuck",
  "dirs 7.0.0",
  "dspk-core",
@@ -3340,8 +3339,11 @@ dependencies = [
  "dspk-stream",
  "dspk-synapse",
  "dspk-view",
+ "futures-channel",
+ "futures-util",
  "gpui-kit",
  "image",
+ "js-sys",
  "kitchen-shell",
  "kitchen-ui",
  "schemars",
@@ -3352,6 +3354,9 @@ dependencies = [
  "tokio",
  "toml_edit 0.25.19+spec-1.1.0",
  "tracing",
+ "wasm_thread",
+ "web-sys",
+ "web-time",
  "wgpu",
 ]
 
@@ -3374,6 +3379,19 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
+]
+
+[[package]]
+name = "dspk-app-web"
+version = "0.0.11"
+dependencies = [
+ "dspk-app-core",
+ "dspk-core",
+ "gpui-kit",
+ "js-sys",
+ "log",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]
@@ -3454,6 +3472,7 @@ dependencies = [
  "serde",
  "thiserror 2.0.21",
  "tracing",
+ "web-time",
 ]
 
 [[package]]
@@ -3498,6 +3517,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tracing",
+ "web-time",
 ]
 
 [[package]]
@@ -3517,6 +3537,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "toml 1.2.1+spec-1.1.0",
+ "web-time",
 ]
 
 [[package]]
@@ -3618,6 +3639,7 @@ version = "0.0.11"
 dependencies = [
  "dspk-core",
  "dspk-view",
+ "futures-channel",
  "futures-util",
  "getrandom 0.2.17",
  "getrandom 0.4.3",
@@ -3625,6 +3647,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "js-sys",
  "prost",
  "prost-build",
  "protox",
@@ -3641,6 +3664,10 @@ dependencies = [
  "tokio-rustls",
  "tokio-tungstenite",
  "tracing",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm_thread",
+ "web-sys",
 ]
 
 [[package]]
@@ -3699,6 +3726,7 @@ dependencies = [
  "memmap2",
  "rayon",
  "tracing",
+ "wasm_thread",
 ]
 
 [[package]]
