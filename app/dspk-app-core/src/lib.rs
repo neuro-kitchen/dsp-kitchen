@@ -13,6 +13,7 @@ pub mod commands;
 pub mod data;
 pub mod di;
 pub mod navigation;
+pub mod platform;
 pub mod plugin;
 pub mod screens;
 pub mod ui;

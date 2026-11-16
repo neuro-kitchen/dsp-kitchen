@@ -196,6 +196,8 @@ pub struct WorkspaceBody {
     pipeline: Entity<crate::screens::pipeline::PipelineView>,
     analytics: Entity<crate::screens::analytics::AnalyticsWorkspace>,
     plugin_view: Option<AnyView>,
+    /// Opens "Open from server" (the start screen of a page offers only that).
+    open_browser: Rc<dyn Fn(&mut Window, &mut App)>,
     _subs: Vec<Subscription>,
 }
 
@@ -204,7 +206,14 @@ impl WorkspaceBody {
         let recent = self.store.read(cx).session.recent.clone();
         let muted = cx.theme().muted_foreground;
         let store = self.store.clone();
-        let mut screen = EmptyState::new(IconName::AudioWaveform, "Open a recording", ".bin · .cbin · .zarr · .nwb.zarr").child(
+        // Files on this computer, or (a page served by `dspk serve`) the recordings of its server
+        let mut screen = if !crate::platform::LOCAL_FILES {
+            EmptyState::new(IconName::AudioWaveform, "Open a recording", "The recordings of this page's server").child({
+                let open = self.open_browser.clone();
+                Button::new("start-open-server").primary().icon(IconName::Server).label("Open from server…").on_click(move |_, w, cx| open(w, cx))
+            })
+        } else {
+            EmptyState::new(IconName::AudioWaveform, "Open a recording", ".bin · .cbin · .zarr · .nwb.zarr").child(
             h_flex()
                 .gap_2()
                 .children(open_actions(cx).iter().enumerate().map(|(i, &(label, pick))| {
@@ -217,7 +226,8 @@ impl WorkspaceBody {
                     let store = store.clone();
                     Button::new("start-synthetic").ghost().label("Synthetic recording").on_click(move |_, _, cx| commands::open_synthetic(&store, cx))
                 }),
-        );
+            )
+        };
         if !recent.is_empty() {
             screen = screen.child(
                 v_flex()
@@ -356,12 +366,13 @@ impl DspApp {
             },
         };
         commands::register(&registry, &ctx);
+        let open_browser = ctx.open_browser.clone();
         registry.extend(crate::screens::pipeline::PipelineView::commands(pipeline.downgrade(), store.clone()));
         pipeline.update(cx, |p, _| p.set_registry(registry.clone()));
 
         let body = |w: Workspace, cx: &mut Context<Self>| {
-            let (store, explore, pipeline, analytics) = (store.clone(), explore.clone(), pipeline.clone(), analytics.clone());
-            cx.new(|cx| WorkspaceBody { store: store.clone(), workspace: w, explore, pipeline, analytics, plugin_view: None, _subs: vec![cx.subscribe(&store, |_, _, _: &AppEvent, cx| cx.notify())] })
+            let (store, explore, pipeline, analytics, open_browser) = (store.clone(), explore.clone(), pipeline.clone(), analytics.clone(), open_browser.clone());
+            cx.new(|cx| WorkspaceBody { store: store.clone(), workspace: w, explore, pipeline, analytics, plugin_view: None, open_browser, _subs: vec![cx.subscribe(&store, |_, _, _: &AppEvent, cx| cx.notify())] })
         };
         let workspaces: Vec<WorkspaceSpec> = Workspace::ALL
             .into_iter()
@@ -388,7 +399,7 @@ impl DspApp {
         spec.help_menu = vec![MenuItem::command("help.keys"), MenuItem::command("help.about")];
         spec.settings = sections;
         spec.layout_toggles = vec!["view.channels".into(), "view.inspector".into()];
-        spec.remote = Some(RemoteSpec { label: "This computer".into(), icon: IconName::Server, menu: vec![MenuItem::command("remote.this"), MenuItem::Separator, MenuItem::command("remote.connect")] });
+        spec.remote = Some(RemoteSpec { label: crate::platform::host_label().into(), icon: IconName::Server, menu: vec![MenuItem::command("remote.this"), MenuItem::Separator, MenuItem::command("remote.connect")] });
         spec.status_items = Some(Rc::new(move |_, _| readings.clone().into_any_element()));
         let shell = cx.new(|cx| Shell::new(spec, window, cx));
         let _ = shell_cell.set(shell.downgrade());
@@ -1391,7 +1402,7 @@ mod tests {
             let n = ((window_s * rate) as u64).min(preview.info().samples);
             let v = dspk_view::View { channels: vec![0, 1], start: 0, end: n, width: 2000 };
             let (mut a, mut b) = (dspk_view::Envelope::Samples(Vec::new()), dspk_view::Envelope::Samples(Vec::new()));
-            let t0 = std::time::Instant::now();
+            let t0 = web_time::Instant::now();
             preview.view(&v, &mut a).unwrap();
             let took = t0.elapsed().as_secs_f64();
             eprintln!("{name}: {window_s} s window in {:.0} ms", took * 1e3);

@@ -7,7 +7,8 @@ use dspk_ops::PipelineStage;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 use gpui_kit::{AppContext as _, Context, EventEmitter, Task};
 
@@ -167,6 +168,9 @@ pub struct Store {
     _settings_watch: Option<Task<()>>,
     /// Live preview of each view's op chain (views of the open recording with enabled ops).
     previews: HashMap<String, Arc<ProcessedSignal>>,
+    /// The same, computed by the recording's server when this app cannot compute (a page
+    /// without WebGPU): `remote::processed`.
+    remote_previews: HashMap<String, Arc<dyn SignalBackend>>,
     /// Previews by chain (source, channels, enabled ops), most recent last: views with the same
     /// chain share one, and a branch reads the preview of the ops it shares with another.
     preview_cache: Vec<(Vec<String>, Arc<ProcessedSignal>)>,
@@ -225,6 +229,7 @@ impl Store {
             settings_text: String::new(),
             _settings_watch: None,
             previews: HashMap::new(),
+            remote_previews: HashMap::new(),
             preview_cache: Vec::new(),
             whiten_cache: HashMap::new(),
             whiten_fitting: Default::default(),
@@ -558,7 +563,7 @@ impl Store {
         if v.display.show != Show::Processed || !self.on_open_recording(v, source) {
             return None;
         }
-        self.previews.get(&v.id).map(|p| p.clone() as Arc<dyn SignalBackend>)
+        self.previews.get(&v.id).map(|p| p.clone() as Arc<dyn SignalBackend>).or_else(|| self.remote_previews.get(&v.id).cloned())
     }
 
     /// The session view showing `source` of the open recording with all its channels (made when
@@ -598,7 +603,7 @@ impl Store {
         if v.display.show != Show::Processed {
             return None;
         }
-        self.previews.get(view).map(|p| p.clone() as Arc<dyn SignalBackend>)
+        self.previews.get(view).map(|p| p.clone() as Arc<dyn SignalBackend>).or_else(|| self.remote_previews.get(view).cloned())
     }
 
     /// Whether the visible window of `samples` samples is previewed processed (else raw).
@@ -607,12 +612,14 @@ impl Store {
         if v.display.show != Show::Processed || !self.on_open_recording(v, source) {
             return None;
         }
-        self.previews.get(&v.id).map(|p| p.covers(samples))
+        // The server decides what it processes: a page's preview counts as covering
+        self.previews.get(&v.id).map(|p| p.covers(samples)).or_else(|| self.remote_previews.contains_key(&v.id).then_some(true))
     }
 
     /// Rebuilds the preview of view `id` from its enabled ops (none: no preview).
     fn rebuild_preview(&mut self, id: &str, cx: &mut Context<Self>) {
         self.previews.remove(id);
+        self.remote_previews.remove(id);
         let Some(v) = self.doc.view(id).cloned() else { return };
         let source = self.view_source(&v);
         if !self.on_open_recording(&v, &source) {
@@ -629,6 +636,19 @@ impl Store {
             }
         };
         if plan.steps.is_empty() {
+            return;
+        }
+        // No compute here (a page without WebGPU): the server runs the steps of a recording it
+        // holds (the ops go with each view). Any other recording is drawn as stored, and the
+        // status says so (an empty plot would not)
+        if let Err(e) = dspk_core::ComputeTarget::from_env() {
+            let ops: Vec<String> = v.ops.iter().filter(|o| o.enabled).filter_map(|o| serde_json::to_string(&o.node).ok()).collect();
+            match crate::data::remote::processed(ds.signal(), v.recording.channels.clone().unwrap_or_default(), ops) {
+                Some(p) => {
+                    self.remote_previews.insert(id.to_string(), p);
+                }
+                None => self.set_status(format!("{}: shown as stored; its processing is not applied in this page ({e})", v.name), cx),
+            }
             return;
         }
         let group = plan.group;
@@ -744,8 +764,9 @@ impl Store {
             Changed::Views => {
                 let ids: Vec<String> = self.doc.views.iter().map(|v| v.id.clone()).collect();
                 self.previews.retain(|id, _| ids.contains(id));
+                self.remote_previews.retain(|id, _| ids.contains(id));
                 if let Some(id) = self.doc.active_view.clone() {
-                    if !self.previews.contains_key(&id) {
+                    if !self.previews.contains_key(&id) && !self.remote_previews.contains_key(&id) {
                         self.rebuild_preview(&id, cx);
                     }
                 }
@@ -855,7 +876,7 @@ impl Store {
         }
         let label = label.into();
         self.last_failed = None;
-        let (tx, rx) = async_channel::unbounded::<JobMessage>();
+        let (tx, mut rx) = crate::data::channel::unbounded::<JobMessage>();
         let cancel = start(Box::new(move |m| {
             let _ = tx.try_send(m);
         }));
@@ -1439,6 +1460,7 @@ impl Store {
         self.selection = recording.sources.entries().iter().map(|e| (e.id.clone(), (0..e.channels).collect())).collect();
         self.pyramids.clear();
         self.previews.clear();
+        self.remote_previews.clear();
         self.preview_cache.clear();
         self.whiten_cache.clear();
         self.applied_view = None;
@@ -1490,6 +1512,7 @@ impl Store {
             self.selection.clear();
             self.pyramids.clear();
             self.previews.clear();
+            self.remote_previews.clear();
             self.preview_cache.clear();
         self.whiten_cache.clear();
             self.applied_view = None;
@@ -1521,7 +1544,7 @@ impl Store {
         }
         if !self.pyramids.contains_key(source) {
             self.pyramids.insert(source.to_string(), (progress.done, progress.total));
-            let (tx, rx) = async_channel::unbounded::<Progress>();
+            let (tx, mut rx) = crate::data::channel::unbounded::<Progress>();
             let id = source.to_string();
             cx.spawn(async move |this, cx| {
                 while let Ok(p) = rx.recv().await {

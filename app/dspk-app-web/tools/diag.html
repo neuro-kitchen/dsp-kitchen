@@ -1,0 +1,59 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>dsp-kitchen: browser check</title>
+    <style>body { font: 15px/1.5 monospace; margin: 24px; white-space: pre-wrap; }</style>
+  </head>
+  <body>
+    <div id="out">Measuring for 3 seconds…</div>
+    <script type="module">
+      // What this browser gives the app: the things that decide whether it can run smoothly
+      const lines = [];
+      const add = (k, v) => lines.push(`${k}: ${v}`);
+      add("browser", navigator.userAgent);
+      add("secure context", window.isSecureContext);
+      add("cross-origin isolated (threads)", window.crossOriginIsolated);
+      add("cores", navigator.hardwareConcurrency);
+      add("device pixel ratio", window.devicePixelRatio);
+      add("window", `${innerWidth} x ${innerHeight}`);
+      const canvas = document.createElement("canvas");
+      const gl = canvas.getContext("webgl2");
+      if (gl) {
+        const ext = gl.getExtension("WEBGL_debug_renderer_info");
+        add("WebGL2 renderer", ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
+        add("WebGL2 vendor", ext ? gl.getParameter(ext.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR));
+        add("WebGL2 max texture", gl.getParameter(gl.MAX_TEXTURE_SIZE));
+      } else {
+        add("WebGL2", "NOT AVAILABLE");
+      }
+      if (navigator.gpu) {
+        try {
+          const a = await navigator.gpu.requestAdapter();
+          add("WebGPU adapter", a ? `${a.info?.vendor ?? "?"} ${a.info?.architecture ?? ""} ${a.info?.description ?? ""}` : "none");
+        } catch (e) {
+          add("WebGPU adapter", `error: ${e}`);
+        }
+      } else {
+        add("WebGPU", "not offered by this browser");
+      }
+      add("stored token", localStorage.getItem("dspk-token") ? "yes" : "no");
+      // Frame pacing of an empty page: what the display and the compositor allow at best
+      const times = [];
+      const start = performance.now();
+      await new Promise((done) => {
+        const tick = (t) => {
+          times.push(t);
+          if (t - start < 3000) requestAnimationFrame(tick);
+          else done();
+        };
+        requestAnimationFrame(tick);
+      });
+      const gaps = times.slice(1).map((t, i) => t - times[i]).sort((a, b) => a - b);
+      const at = (q) => gaps[Math.min(gaps.length - 1, Math.floor(q * gaps.length))].toFixed(1);
+      add("empty page frames per second", ((gaps.length / (times.at(-1) - times[0])) * 1000).toFixed(1));
+      add("frame gap ms (median / 95% / max)", `${at(0.5)} / ${at(0.95)} / ${gaps.at(-1).toFixed(1)}`);
+      document.getElementById("out").textContent = lines.join("\n");
+    </script>
+  </body>
+</html>

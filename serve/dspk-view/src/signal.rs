@@ -182,3 +182,44 @@ mod tests {
         assert!(matches!(out, Envelope::Columns { complete: true, .. }));
     }
 }
+
+/// A recording read as it is, with a pyramid someone else builds (or none): what a server holds
+/// for a recording it serves, and what a processed signal falls back to for channels outside its
+/// chain and windows too long to process. It steers no builder and reports itself complete.
+pub struct StoredSignal {
+    source: Arc<dyn RecordingSource>,
+    pyramid: Option<Arc<Pyramid>>,
+}
+
+impl StoredSignal {
+    pub fn new(source: Arc<dyn RecordingSource>, pyramid: Option<Arc<Pyramid>>) -> Self {
+        Self { source, pyramid }
+    }
+}
+
+impl SignalBackend for StoredSignal {
+    fn info(&self) -> &RecordingInfo {
+        self.source.info()
+    }
+
+    fn view(&self, view: &View, out: &mut Envelope) -> DspResult<()> {
+        view.read_into(self.source.as_ref(), self.pyramid.as_deref(), out)
+    }
+
+    fn read(&self, channels: &[usize], samples: Range<u64>, out: &mut [f32]) -> DspResult<()> {
+        self.source.read(channels, samples, out)
+    }
+
+    fn focus(&self, _sample: u64) {}
+
+    fn prepare(&self, _start: u64, _end: u64) -> DspResult<()> {
+        Ok(())
+    }
+
+    fn progress(&self) -> Progress {
+        let total = self.source.info().samples;
+        Progress { filled: 0..0, done: total, total }
+    }
+
+    fn watch(&self, _on_progress: OnProgress) {}
+}

@@ -66,6 +66,15 @@ impl ProcessedSignal {
         Self::new(raw, source, plan.group, stages).map_err(|e| e.to_string())
     }
 
+    /// [`Self::of_ops`] for ops sent as JSON (pipeline nodes, in order) over `channels` (none =
+    /// all): a view's processing as a client that does not compute asks a server for it.
+    /// `base_dir` is where files the ops name (a remap's channel map) are read from.
+    pub fn of_json_ops(raw: Arc<dyn SignalBackend>, source: Arc<dyn RecordingSource>, ops: &[String], channels: &[usize], base_dir: &std::path::Path) -> Result<Self, String> {
+        let nodes: Vec<crate::Node> = ops.iter().map(|op| serde_json::from_str(op).map_err(|e| format!("an op that is not a pipeline node: {e}"))).collect::<Result<_, _>>()?;
+        let channels: Vec<usize> = if channels.is_empty() { (0..source.info().channel_count()).collect() } else { channels.to_vec() };
+        Self::of_ops(raw, source, &nodes.iter().collect::<Vec<_>>(), channels, base_dir)
+    }
+
     /// `channels` over `samples`, processed whatever the size (a branch reading this preview
     /// as its input: its halo makes the request larger than a view's).
     pub fn read_processed(&self, channels: &[usize], samples: Range<u64>, out: &mut [f32]) -> DspResult<()> {

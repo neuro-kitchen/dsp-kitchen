@@ -20,12 +20,12 @@ use crate::container::zarr::open_store;
 use zarrs::storage::ReadableWritableListableStorage;
 use zarrs::group::{Group, GroupBuilder};
 
+pub use super::zarr_options::{ZarrCompression, ZarrOptions, DEFAULT_CHUNK_SAMPLES, DEFAULT_PARALLEL_WRITES, DEFAULT_ZARR_COMPRESSION};
+
 mod format;
 pub use format::ZarrTraces;
 
 const ARRAY_PATH: &str = "/traces";
-/// Default chunk length: ~0.17 s at 30 kHz.
-pub const DEFAULT_CHUNK_SAMPLES: usize = 5000;
 
 fn err(what: &str) -> impl Fn(String) -> DspError + '_ {
     move |e| DspError::Io(format!("zarr {what}: {e}"))
@@ -209,45 +209,9 @@ impl RecordingSource for ZarrRecording {
     }
 }
 
-/// How Zarr chunks are compressed (a bytes-to-bytes codec of the array).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ZarrCompression {
-    /// Uncompressed.
-    None,
-    /// The Zarr v3 `zstd` codec at `level` (zstd's levels; higher is smaller and slower).
-    Zstd { level: i32 },
-    /// The Zarr v3 `blosc` codec: LZ4 at `level` (0–9) after a byte shuffle of the float32
-    /// samples (faster than zstd, usually a little larger).
-    BloscLz4 { level: u8 },
-}
-
-/// The compression of [`ZarrOptions::default`]: zstd level 3, the codec Zarr's own tools default
-/// to, fast enough to keep up with the device when chunks are compressed in parallel.
-pub const DEFAULT_ZARR_COMPRESSION: ZarrCompression = ZarrCompression::Zstd { level: 3 };
-
 /// Root attribute holding the channels' names (a list, one per channel).
 pub const CHANNEL_NAMES_ATTR: &str = "channel_names";
 
-/// Layout of a written Zarr recording.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ZarrOptions {
-    /// Samples per chunk along time (chunks span every channel). Several chunks per block of
-    /// [`ZarrWriter::push`] are compressed and stored in parallel.
-    pub chunk_samples: usize,
-    pub compression: ZarrCompression,
-    /// Compress and store the completed chunks of each block on several threads (default
-    /// [`DEFAULT_PARALLEL_WRITES`]); `false`: one after the other on the calling thread.
-    pub parallel: bool,
-}
-
-/// Default of [`ZarrOptions::parallel`]: chunks are compressed and stored in parallel.
-pub const DEFAULT_PARALLEL_WRITES: bool = true;
-
-impl Default for ZarrOptions {
-    fn default() -> Self {
-        Self { chunk_samples: DEFAULT_CHUNK_SAMPLES, compression: DEFAULT_ZARR_COMPRESSION, parallel: DEFAULT_PARALLEL_WRITES }
-    }
-}
 
 /// Streams `source` into a new Zarr v3 store (`float32`, in the source's unit: the first
 /// channel's), laid out as `options` says.

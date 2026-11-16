@@ -19,8 +19,9 @@
 #
 # Build from the repository root (the build context is the whole workspace):
 #   podman build -f deploy/Containerfile --ignorefile deploy/.containerignore --target nvidia -t dspk-serve:nvidia .
-# Run (a synthetic 384-channel recording; your own: see deploy/README.md):
-#   podman run --rm -p 50051:50051/udp --device nvidia.com/gpu=all dspk-serve:nvidia
+# The web app must be built first (it goes into every target): app/dspk-app-web/build.sh mt
+# Run (recordings under ./data; the web app at http://localhost:50052, the pairing code in the log):
+#   podman run --rm -p 50051:50051/udp -p 127.0.0.1:50052:50052 -v ./data:/data:Z --device nvidia.com/gpu=all dspk-serve:nvidia
 
 # Rust toolchain of the build (edition 2024 needs >= 1.85; CI uses the latest stable)
 ARG RUST_VERSION=1.99
@@ -62,6 +63,11 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=binaries --chmod=0755 /out/dspk /out/dspk-cli-sorter /usr/local/bin/
+# The web app (the threaded browser build and its loader), built before the image with
+# `app/dspk-app-web/build.sh mt` (nightly Rust; the release workflow does it): the page is served
+# by `dspk serve --web`, and computes on this server
+COPY app/dspk-app-web/dist/index.html /usr/share/dspk/web/index.html
+COPY app/dspk-app-web/dist/mt /usr/share/dspk/web/mt
 # Not root (uid 10001); /data holds the recordings, their pyramids (written next to them, so the
 # volume is writable), sortings and the certificate the server writes for clients
 RUN useradd --create-home --uid 10001 dspk && install -d -o dspk -g dspk /data
@@ -74,6 +80,11 @@ ENV XDG_CACHE_HOME=/home/dspk/.cache XDG_RUNTIME_DIR=/tmp
 RUN install -d -o dspk -g dspk /home/dspk/.cache
 VOLUME /home/dspk/.cache
 EXPOSE 50051/udp
+# The web app: plain HTTP (the container's address is not loopback, so --web-plain-http).
+# Publish it only to this computer, `-p 127.0.0.1:50052:50052`, and open http://localhost:50052
+# (a browser counts localhost as secure: no warning, threads work); for other computers put a
+# proxy with a certificate in front (Caddy, `tailscale serve`)
+EXPOSE 50052/tcp
 # `dspk serve` stops cleanly on SIGTERM (podman stop, systemd) and Ctrl+C
 ENTRYPOINT ["dspk"]
 # The server's authority (its CA and the enrolled clients) is kept with the data, so it survives
@@ -84,7 +95,9 @@ ENV DSPK_SERVE_AUTH_DIR=/data/.dspk-auth
 ENV DSPK_SERVE_DATA=/data
 # Listen on every interface of the container; only enrolled clients get in. Add --name <host> for
 # the names clients use, or bring your own certificate (--certificate, --private-key).
-CMD ["serve", "--bind", "0.0.0.0:50051"]
+# The web app on 50052; --pair prints a one-time pairing code at start (`podman logs`), which a
+# browser or a computer uses once (`dspk clients pair` makes more)
+CMD ["serve", "--bind", "0.0.0.0:50051", "--pair", "--web", "/usr/share/dspk/web", "--web-bind", "0.0.0.0:50052", "--web-plain-http"]
 
 # NVIDIA: CUDA and Vulkan. The host's driver (libcuda, the Vulkan ICD) is passed in by the NVIDIA
 # Container Toolkit (CDI); the image brings what the driver does not: NVRTC, which CubeCL uses to

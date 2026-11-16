@@ -290,7 +290,7 @@ mod tests {
     /// A teardown that never returns (a driver deadlock) still ends the process, with its status.
     #[test]
     fn a_stuck_teardown_ends_the_process_with_its_status() {
-        let start = std::time::Instant::now();
+        let start = web_time::Instant::now();
         assert_eq!(in_child("limit").status.code(), Some(3));
         assert!(start.elapsed() < Duration::from_secs(60), "took {:?}", start.elapsed());
     }

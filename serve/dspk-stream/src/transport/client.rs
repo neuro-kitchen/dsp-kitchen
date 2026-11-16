@@ -69,7 +69,7 @@ impl Session {
 
     /// Sends `kind` on a stream of its own (never behind signal data) and reads the answer; a
     /// refusal or failure on the server is an error here.
-    async fn request(&self, kind: wire::request::Kind) -> StreamResult<wire::response::Kind> {
+    pub(crate) async fn request(&self, kind: wire::request::Kind) -> StreamResult<wire::response::Kind> {
         let (mut send, mut recv) = self.connection.open_bi().await?;
         write_message(&mut send, &wire::Request { kind: Some(kind) }).await?;
         send.finish().map_err(StreamError::protocol)?;

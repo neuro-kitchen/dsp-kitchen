@@ -48,6 +48,21 @@ pub fn import_phy(folder: &Path) -> DspResult<PathBuf> {
     Ok(store)
 }
 
+/// Where a curated sorting `store` is exported for phy: the Phy folder it was imported from;
+/// else the folder `picked`, when it is a Phy folder (of the same sorting); else a new
+/// `<sorting>.phy` inside `picked`. `None` when it came from no Phy folder and nothing was picked.
+pub fn export_target(store: &Path, picked: Option<&Path>) -> Option<PathBuf> {
+    if let Some(origin) = phy_origin(store) {
+        return Some(origin);
+    }
+    let picked = picked?;
+    if PhyFolder::is_phy_folder(picked) {
+        return Some(picked.to_path_buf());
+    }
+    let name = store.file_name().map(|n| n.to_string_lossy().trim_end_matches(".sorting.zarr").to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| "sorting".into());
+    Some(picked.join(format!("{name}.phy")))
+}
+
 /// Writes `curated` (the sorting of the store `store`, with its curation applied) into the Phy
 /// folder `dir`. A folder that is not a Phy folder yet first gets the whole sorting as the sorter
 /// left it; then the curation is written over it: the cluster of every spike, the labels and the

@@ -21,8 +21,9 @@ hip = ["dspk-core/hip", "dspk-ops/hip"]
 view = ["dep:dspk-view"]
 
 [dependencies]
+web-time.workspace = true
 dspk-core = { workspace = true, features = ["compute", "schema"] }
-dspk-io = { workspace = true, features = ["zarr"] }
+dspk-io.workspace = true
 # Raw output frames built in parallel
 rayon.workspace = true
 dspk-ops.workspace = true
@@ -35,4 +36,10 @@ serde_json.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 # Event tables (`format = "events"`) as Parquet, the table format of dspk's analytics
+
+# Zarr stores are files on disk: not in a browser (`target_family = "wasm"`), where there is no
+# file system
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+dspk-io = { workspace = true, features = ["zarr"] }
+# Event tables as Parquet (Polars does not build for the browser)
 dspk-table.workspace = true

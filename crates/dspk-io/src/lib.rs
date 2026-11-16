@@ -23,7 +23,10 @@ pub use crate::core::{
     default_source, detect, open, open_source, sources, CachedRecording, Format, MergeInput, MergedRecording, SourceEntry, SourceKind,
 };
 pub use generic::raw::{write_raw, RawParams, RawRecording};
+pub use generic::zarr_options::{ZarrCompression, ZarrOptions, DEFAULT_PARALLEL_WRITES, DEFAULT_ZARR_COMPRESSION};
+#[cfg(not(feature = "zarr"))]
+pub use generic::zarr_options::ZarrWriter;
 #[cfg(feature = "zarr")]
-pub use generic::zarr_traces::{write_zarr, ZarrCompression, ZarrOptions, ZarrRecording, ZarrWriter, DEFAULT_PARALLEL_WRITES, DEFAULT_ZARR_COMPRESSION};
+pub use generic::zarr_traces::{write_zarr, ZarrRecording, ZarrWriter};
 pub use channel_map::{channel_map_toml, parse_channel_map, read_channel_map};
 pub use registry::formats;

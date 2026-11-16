@@ -18,6 +18,7 @@ cuda = ["dspk-core/cuda"]
 hip = ["dspk-core/hip"]
 
 [dependencies]
+web-time.workspace = true
 dspk-core = { workspace = true, features = ["compute"] }
 cubecl.workspace = true
 cubek-matmul.workspace = true

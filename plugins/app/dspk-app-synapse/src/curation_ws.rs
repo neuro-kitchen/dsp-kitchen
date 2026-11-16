@@ -364,12 +364,7 @@ impl CurationWorkspace {
         if polygon.len() < 3 || sorting.amplitudes.is_empty() {
             return;
         }
-        let spikes: Vec<u64> = sorting.by_unit[lead]
-            .iter()
-            .map(|&k| k as usize)
-            .filter(|&k| inside(((sorting.times[k] as f64 / sorting.sample_rate) as f32, sorting.amplitudes[k]), polygon))
-            .map(|k| sorting.times[k])
-            .collect();
+        let spikes = dspk_synapse::curation::split::spikes_in_polygon(&sorting, lead, polygon);
         let n = spikes.len();
         if n == 0 || n == sorting.by_unit[lead].len() {
             self.store.update(cx, |s, cx| s.set_status(if n == 0 { "The lasso holds none of the unit's spikes" } else { "The lasso holds every spike of the unit: nothing to split" }, cx));
@@ -429,21 +424,14 @@ impl CurationWorkspace {
         let origin = dspk_synapse::curation::phy::phy_origin(&path);
         let picked = origin.is_none().then(|| cx.prompt_for_paths(gpui_kit::PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Export to Phy folder".into()) }));
         cx.spawn(async move |_, cx| {
-            let dir = match (origin, picked) {
-                (Some(dir), _) => dir,
-                (None, Some(rx)) => match rx.await {
-                    Ok(Ok(Some(paths))) => match paths.into_iter().next() {
-                        Some(dir) if dspk_synapse::io::phy::PhyFolder::is_phy_folder(&dir) => dir,
-                        Some(dir) => {
-                            let name = path.file_name().map(|n| n.to_string_lossy().trim_end_matches(".sorting.zarr").to_string()).unwrap_or_else(|| "sorting".into());
-                            dir.join(format!("{name}.phy"))
-                        }
-                        None => return,
-                    },
+            let picked = match picked {
+                Some(rx) => match rx.await {
+                    Ok(Ok(Some(paths))) => paths.into_iter().next(),
                     _ => return,
                 },
-                (None, None) => return,
+                None => None,
             };
+            let Some(dir) = dspk_synapse::curation::phy::export_target(&path, picked.as_deref()) else { return };
             let (store_path, target) = (path.clone(), dir.clone());
             let result = cx.background_executor().spawn(async move { dspk_synapse::curation::phy::export_phy(&store_path, &curated, &target) }).await;
             let status = match result {
@@ -1045,20 +1033,6 @@ fn keys_help(cx: &App) -> impl IntoElement + use<> {
         .shadow_lg()
         .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Curation keys (Phy)"))
         .children(KEYS.iter().map(|(k, what)| h_flex().gap_3().child(div().w(px(170.)).text_xs().font_weight(FontWeight::SEMIBOLD).child(*k)).child(div().text_xs().text_color(t.muted_foreground).child(*what))))
-}
-
-/// Whether `p` lies inside `polygon` (ray casting).
-fn inside(p: (f32, f32), polygon: &[(f32, f32)]) -> bool {
-    let mut on = false;
-    let mut j = polygon.len() - 1;
-    for i in 0..polygon.len() {
-        let ((xi, yi), (xj, yj)) = (polygon[i], polygon[j]);
-        if (yi > p.1) != (yj > p.1) && p.0 < (xj - xi) * (p.1 - yi) / (yj - yi) + xi {
-            on = !on;
-        }
-        j = i;
-    }
-    on
 }
 
 /// One view of the Curation workspace as a dock panel.

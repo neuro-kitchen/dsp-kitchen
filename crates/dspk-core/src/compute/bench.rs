@@ -3,7 +3,8 @@
 //! Kernel launches are asynchronous; a timing is only meaningful once the client's queue has
 //! drained. [`time_device`] syncs before starting the clock and after the timed closure.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 use cubecl::prelude::*;
 

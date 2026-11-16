@@ -222,7 +222,7 @@ mod tests {
                 let _ = tx.send(());
             }
         }));
-        let t0 = std::time::Instant::now();
+        let t0 = web_time::Instant::now();
         ds.signal().focus(0);
         rx.recv().unwrap();
         let mb = ds.total_samples as f64 * ds.total_channels as f64 * 2.0 / 1e6;

@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use dspk_stream::protocol::wire;
-use dspk_stream::{client_config_with, ClientIdentity, RemoteSource, ServerTrust};
+use dspk_stream::{client_config_with, ClientIdentity, ServerTrust};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -219,8 +219,9 @@ impl Session {
             })
         });
         let session = session.map_err(failed)?;
-        let source = RemoteSource::new(Arc::new(session), runtime().handle().clone()).map_err(failed)?;
-        Ok(Recording::from_source(Arc::new(source)))
+        // The recording the session opened, read through it (sample reads in pieces)
+        let source = dspk_stream::RemoteSignal::new(Arc::new(session), runtime().handle().clone()).map_err(failed)?.source();
+        Ok(Recording::from_source(source))
     }
 
     /// Starts a sort on the server. Needs a client enrolled with `--control`.

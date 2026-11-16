@@ -1117,7 +1117,7 @@ impl Render for GraphCanvas {
                 let mut order: Vec<&((f32, f32), (f32, f32), bool, bool, bool)> = edges.iter().collect();
                 order.sort_by_key(|e| e.2);
                 // Data flowing into running nodes: dots moving along their edges
-                let phase = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| (d.as_millis() % 1000) as f32 / 1000.0);
+                let phase = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map_or(0.0, |d| (d.as_millis() % 1000) as f32 / 1000.0);
                 let mut flowing = false;
                 for (a, b, _, _, flow) in order.iter().copied() {
                     if !*flow {

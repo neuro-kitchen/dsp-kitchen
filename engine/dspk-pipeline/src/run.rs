@@ -12,7 +12,8 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{sync_channel, Receiver};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 use cubecl::prelude::Client;
 use cubecl::server::Handle;
@@ -806,6 +807,7 @@ fn execute_events(
 /// `channel` (u32), `channel_name`, `onset_sample` / `offset_sample` / `peak_sample` (u64; offset
 /// null when the range ended inside the event), `peak_value` (f32), `onset_s` / `offset_s` /
 /// `duration_s` (f64).
+#[cfg(not(target_family = "wasm"))]
 pub fn events_frame(events: &[dspk_ops::crossings::CrossingEvent], names: &[String], sample_rate: f64) -> dspk_table::prelude::PolarsResult<dspk_table::prelude::DataFrame> {
     use dspk_table::prelude::*;
     let secs = |s: u64| s as f64 / sample_rate;
@@ -830,6 +832,7 @@ pub const EVENTS_VERSION: u32 = 1;
 /// written (Zarr: the values).
 pub fn write_events(path: &Path, events: &[dspk_ops::crossings::CrossingEvent], names: &[String], sample_rate: f64) -> Result<u64, PipelineError> {
     let io = |e: std::io::Error| PipelineError::Io(format!("{}: {e}", path.display()));
+    #[cfg(not(target_family = "wasm"))]
     if path.ancestors().any(|a| a.extension().is_some_and(|e| e.eq_ignore_ascii_case("zarr"))) {
         write_events_zarr(path, events, names, sample_rate)?;
         return Ok((events.len() * 32) as u64);
@@ -839,8 +842,14 @@ pub fn write_events(path: &Path, events: &[dspk_ops::crossings::CrossingEvent], 
         std::fs::write(path, &csv).map_err(io)?;
         return Ok(csv.len() as u64);
     }
-    let mut df = events_frame(events, names, sample_rate).map_err(|e| PipelineError::Io(format!("events table: {e}")))?;
-    dspk_table::write_parquet(path, &mut df).map_err(|e| PipelineError::Io(e.to_string()))
+    // Parquet (Polars) and Zarr stores need a file system and threads: not in a browser
+    #[cfg(target_family = "wasm")]
+    return Err(PipelineError::Io(format!("{}: only CSV event tables can be written in a browser", path.display())));
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let mut df = events_frame(events, names, sample_rate).map_err(|e| PipelineError::Io(format!("events table: {e}")))?;
+        dspk_table::write_parquet(path, &mut df).map_err(|e| PipelineError::Io(e.to_string()))
+    }
 }
 
 /// Writes the events as a Zarr group rooted at directory `dir` (replacing it), the layout of
@@ -849,6 +858,7 @@ pub fn write_events(path: &Path, events: &[dspk_ops::crossings::CrossingEvent], 
 /// entry per event along `events`; attributes `dspk_events` (version), `sample_rate_hz` and
 /// `channel_names`. A group inside another store (e.g. `rec.dspk.zarr/events/<name>`) is written
 /// the same way.
+#[cfg(not(target_family = "wasm"))]
 pub fn write_events_zarr(dir: &Path, events: &[dspk_ops::crossings::CrossingEvent], names: &[String], sample_rate: f64) -> Result<(), PipelineError> {
     use dspk_io::container::zarr::{open_rw_store, write_array_f32, write_array_i32, write_array_i64, write_array_u64, write_group};
     use serde_json::{json, Map};
@@ -873,6 +883,7 @@ pub fn write_events_zarr(dir: &Path, events: &[dspk_ops::crossings::CrossingEven
 
 /// The events of a Zarr group written by [`write_events_zarr`], with its sample rate and channel
 /// names.
+#[cfg(not(target_family = "wasm"))]
 pub fn read_events_zarr(dir: &Path) -> Result<(Vec<dspk_ops::crossings::CrossingEvent>, f64, Vec<String>), PipelineError> {
     use dspk_io::container::zarr::{read_array, read_node_attributes};
     let attrs = read_node_attributes(dir, "/").unwrap_or_default();

@@ -873,8 +873,21 @@ impl TimelinePanel {
         // Activity of the whole recording behind the window box (columns of ~2 px)
         let columns = (self.track.get().size.width.as_f32() / 2.0).round().max(1.0) as usize;
         if self.activity.as_ref().is_none_or(|(w, _)| *w != columns) {
-            let values = s_sources_default(&self.store, cx).map(|ds| crate::data::recording::dataset::activity(&ds, columns)).unwrap_or_default();
-            self.activity = Some((columns, Rc::new(values)));
+            // Computed off this thread (a recording on a server answers over the network, and a
+            // page's drawing thread may not wait at all); the strip appears when it arrives
+            self.activity = Some((columns, Rc::new(Vec::new())));
+            if let Some(ds) = s_sources_default(&self.store, cx) {
+                cx.spawn(async move |this, cx| {
+                    let values = cx.background_spawn(async move { crate::data::recording::dataset::activity(&ds, columns) }).await;
+                    let _ = this.update(cx, |panel, cx| {
+                        if panel.activity.as_ref().is_some_and(|(w, _)| *w == columns) {
+                            panel.activity = Some((columns, Rc::new(values)));
+                            cx.notify();
+                        }
+                    });
+                })
+                .detach();
+            }
         }
         let activity = self.activity.as_ref().map(|(_, v)| v.clone()).unwrap_or_default();
         let palette = self.store.read(cx).palette();

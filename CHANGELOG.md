@@ -8,6 +8,16 @@ version number.
 
 ### Added
 
+- **The app in the browser, from the image:** `ghcr.io/neuro-kitchen/dspk` serves the web app
+  (`-p 127.0.0.1:50052:50052`, then `http://localhost:50052`); the page draws, the server
+  computes. Built by `app/dspk-app-web/build.sh` (nightly Rust, pinned) into `dist/`: one page
+  whose loader checks the browser before downloading the app (hardware drawing, WebGPU or WebGL2,
+  threads) and refuses to start in software drawing, saying how to turn the GPU on; no `?threads`
+  switch any more. `dspk serve --web-plain-http` serves plain HTTP off loopback (a container's
+  port published to the host's loopback, or behind a proxy).
+- **`dspk serve --web` sends Brotli-compressed files** (`<file>.br`) to browsers that accept them,
+  with ETags (a reload downloads nothing unchanged).
+
 - **A notebook for Google Colab** (`playground/11_colab/dspk_neuropixels.ipynb`): installs `dspk`
   from PyPI, downloads Kilosort4's test recording, cleans it on the GPU, sorts it with dspk's
   Kilosort4 and plots the units. Nothing to install on your own computer.
@@ -54,10 +64,31 @@ version number.
   server, `dspk clients codes` lists the live ones without their secrets (`--cancel <id|all>`).
   A computer without a certificate can connect only to pair, unless `--allow-anonymous`.
 
+### Fixed
+
+- **A view processed on the server held up the recording's other views** while its chain was
+  made (a whitening fitted: seconds): each chain is now made in a slot of its own, once, outside
+  the lock; a chain that failed is tried again rather than kept.
+- **A remap's channel-map file named in a view processed on the server** is read from the
+  recording's folder (it was read from nowhere, so only inline maps worked).
+
 ### Changed
 
-- **Dependencies updated:** gpui-kit 0.10 (GPUI snapshot 0.3.12) with kitchen 0.0.5 (was 0.0.3),
-  prost 0.14.6, sysinfo 0.40.3 and the lock file. wgpu stays 30.0.1: GPUI pins it exactly.
+- **One app for the desktop and the browser.** What differs by target is in one place,
+  `dspk_app_core::platform` (threads, locks on the UI thread, the title bar's label, local files,
+  servers), as Kotlin Multiplatform's `expect` / `actual`; the rest of the app has no `cfg` of its
+  own. `dspk-app-web` is an entry point only.
+- **One remote client for every connection** (`dspk_stream::remote`): `RemoteSignal` and
+  `RemoteSource` read through a `Link`, a QUIC session on a computer (`SessionLink`) or the page's
+  WebSocket in a browser (`dspk_stream::web_client`, which also holds the page's side of pairing).
+  `RemoteSignal::processed` asks the server for a view's processing (for a client that does not
+  compute). `MAX_VIEW_VALUES` / `MAX_VIEW_COLUMNS` moved to `dspk_stream::protocol`.
+- **Code moved out of the app and the command line** into the libraries: `dspk_view::StoredSignal`
+  (a recording with a pyramid built elsewhere; was the server's own copy),
+  `ProcessedSignal::of_json_ops` (dspk-pipeline), `dspk_synapse::curation::split::{inside,
+  spikes_in_polygon}` (the lasso) and `dspk_synapse::curation::phy::export_target` (where *To Phy*
+  writes).
+
 - **The preview of a view's processing lives in `dspk-pipeline`** (feature `view`):
   `dspk_pipeline::processed::{ProcessedSignal, PreviewSource}` and
   `dspk_pipeline::preview::{view_plan, ViewPlan}` moved out of the app, so the server and the app

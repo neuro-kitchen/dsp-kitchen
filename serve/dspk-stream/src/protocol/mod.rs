@@ -22,6 +22,12 @@ pub const ALPN: &[u8] = b"dspk-stream/2";
 /// messages with the same length prefix, open to computers without a certificate.
 pub const PAIR_ALPN: &[u8] = b"dspk-pair/1";
 
+/// Largest view answered: values (channels × columns, or × samples) in one envelope, so a request
+/// cannot make the server allocate without bound (32 MiB of f32, under a client's message limit).
+pub const MAX_VIEW_VALUES: u64 = 8 << 20;
+/// Most columns a view may ask for (a screen is a few thousand pixels wide).
+pub const MAX_VIEW_COLUMNS: u32 = 1 << 16;
+
 /// Bytes of the big-endian length before every message.
 pub const LENGTH_PREFIX_BYTES: usize = 4;
 
