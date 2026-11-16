@@ -143,7 +143,7 @@ pub fn editor(store: &Entity<Store>, id: &str, rows: Rows, channels: Option<usiz
     let import = {
         let set = set.clone();
         let store = store.clone();
-        Button::new("remap-import").outline().xsmall().icon(IconName::FolderOpen).label("Import…").tooltip("A map file (TOML or JSON: [remap] base, pairs)").on_click(move |_, _, cx| {
+        Button::new("remap-import").outline().xsmall().icon(IconName::FolderOpen).label("Import…").disabled(!crate::platform::LOCAL_FILES).tooltip(if crate::platform::LOCAL_FILES { "A map file (TOML or JSON: [remap] base, pairs)" } else { "Not in the browser yet: the desktop app does it" }).on_click(move |_, _, cx| {
             let rx = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false, prompt: Some("Import a channel map".into()) });
             let (set, store) = (set.clone(), store.clone());
             cx.spawn(async move |cx| {
@@ -159,7 +159,7 @@ pub fn editor(store: &Entity<Store>, id: &str, rows: Rows, channels: Option<usiz
     };
     let export = {
         let (map, store) = (rows.map(), store.clone());
-        Button::new("remap-export").outline().xsmall().icon(IconName::ArrowDown).label("Export…").tooltip("Save the map (.toml, or .json)").on_click(move |_, _, cx| {
+        Button::new("remap-export").outline().xsmall().icon(IconName::ArrowDown).label("Export…").disabled(!crate::platform::LOCAL_FILES).tooltip(if crate::platform::LOCAL_FILES { "Save the map (.toml, or .json)" } else { "Not in the browser yet: the desktop app does it" }).on_click(move |_, _, cx| {
             let dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             let rx = cx.prompt_for_new_path(&dir, Some("channel-map.toml"));
             let (map, store) = (map.clone(), store.clone());

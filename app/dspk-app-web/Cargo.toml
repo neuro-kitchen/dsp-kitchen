@@ -8,13 +8,6 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
-[features]
-default = ["compute"]
-# Processing in the tab, on the browser's WebGPU (CubeCL's wgpu runtime). It cannot be combined
-# with threads: with shared memory, wgpu's types may not cross threads and cubecl-wgpu does not
-# build. The threaded build (a client of `dspk serve`, which computes) leaves it out.
-compute = ["dspk-app-core/wgpu"]
-
 [lib]
 crate-type = ["cdylib", "rlib"]
 

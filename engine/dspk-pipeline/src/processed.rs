@@ -39,6 +39,16 @@ impl ProcessedSignal {
         self.preview.covers(samples)
     }
 
+    /// Makes `view` ready without blocking on the device (a browser's engine worker, which may
+    /// not wait for WebGPU): afterwards [`SignalBackend::view`] of it is served from the block
+    /// this computed. Views drawn raw (zoomed out past the preview) need nothing.
+    pub async fn warm_view_async(&self, view: &View) -> DspResult<()> {
+        if !self.covers(view.samples()) {
+            return Ok(());
+        }
+        self.preview.warm_async(view.start..view.end, true).await
+    }
+
     /// `channels` over `samples` (channel-major into `out`): processed rows for the group's
     /// channels, raw for the others.
     fn fill(&self, channels: &[usize], samples: Range<u64>, slack: bool, out: &mut [f32]) -> DspResult<()> {
@@ -58,6 +68,10 @@ impl ProcessedSignal {
     pub fn of_ops(raw: Arc<dyn SignalBackend>, source: Arc<dyn RecordingSource>, ops: &[&crate::Node], channels: Vec<usize>, base_dir: &std::path::Path) -> Result<Self, String> {
         let plan = crate::preview::view_plan(ops, channels, base_dir)?;
         let mut stages: Vec<PipelineStage> = plan.steps.into_iter().map(|(_, stage)| stage).collect();
+        // A whitening's fit reads the device back as it goes, which a browser cannot wait for
+        if cfg!(target_family = "wasm") && !plan.fits.is_empty() {
+            return Err("whitening is fitted on a server or in the desktop app, not in a browser yet".into());
+        }
         for (at, fit) in plan.fits {
             let target = dspk_core::ComputeTarget::from_env().map_err(|e| e.to_string())?;
             let fitted = crate::fit_whitening(target, source.as_ref(), &plan.group, &stages[..at], &fit).map_err(|e| e.to_string())?;
@@ -79,6 +93,47 @@ impl ProcessedSignal {
     /// as its input: its halo makes the request larger than a view's).
     pub fn read_processed(&self, channels: &[usize], samples: Range<u64>, out: &mut [f32]) -> DspResult<()> {
         self.fill(channels, samples, false, out)
+    }
+}
+
+/// Processed signals kept per recording.
+const CHAINS_KEPT: usize = 8;
+
+/// The processed signals a client's views asked for, by chain (channels and ops), so a view can
+/// be made ready asynchronously ([`ProcessedSignal::warm_view_async`]) before it is answered: what
+/// `dspk serve` and a browser's engine hold for a recording they serve. Files the ops name (a
+/// remap's channel map) are read from `base_dir`.
+pub struct ProcessedChains {
+    base_dir: std::path::PathBuf,
+    made: std::sync::Mutex<Vec<((Vec<usize>, Vec<String>), Arc<ProcessedSignal>)>>,
+}
+
+impl ProcessedChains {
+    pub fn new(base_dir: impl Into<std::path::PathBuf>) -> Self {
+        Self { base_dir: base_dir.into(), made: Default::default() }
+    }
+
+    /// The signal of `ops` over `channels` (none = all) of `source` (`raw` answers what is not
+    /// processed). Made now (whitenings are fitted: seconds) and kept, most recent last.
+    pub fn make(&self, raw: Arc<dyn SignalBackend>, source: Arc<dyn RecordingSource>, channels: &[usize], ops: &[String]) -> Result<Arc<ProcessedSignal>, String> {
+        let signal = Arc::new(ProcessedSignal::of_json_ops(raw, source, ops, channels, &self.base_dir)?);
+        let mut made = self.made.lock().unwrap_or_else(|e| e.into_inner());
+        made.retain(|(key, _)| key.0 != channels || key.1 != ops);
+        if made.len() >= CHAINS_KEPT {
+            made.remove(0);
+        }
+        made.push(((channels.to_vec(), ops.to_vec()), signal.clone()));
+        Ok(signal)
+    }
+
+    /// Makes `view` of the chain of `ops` over `channels` ready without blocking on the device;
+    /// nothing to do for a chain not made here.
+    pub async fn warm(&self, channels: &[usize], ops: &[String], view: &View) -> DspResult<()> {
+        let signal = self.made.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(key, _)| key.0 == channels && key.1 == ops).map(|(_, s)| s.clone());
+        match signal {
+            Some(signal) => signal.warm_view_async(view).await,
+            None => Ok(()),
+        }
     }
 }
 
@@ -172,6 +227,36 @@ mod tests {
     fn recording(channels: usize, samples: usize) -> Arc<dyn RecordingSource> {
         let data: Vec<f32> = (0..channels * samples).map(|i| ((i % samples) as f32 * 0.37).sin() + (i / samples) as f32).collect();
         Arc::new(MemoryRecording::new("test", data, channels, 1000.0).unwrap())
+    }
+
+    /// A source that gives only scaled values (no stored reads, as float64 recordings and some
+    /// formats): previewed through float32 scaled on the host.
+    struct ScaledOnly(Arc<dyn RecordingSource>);
+    impl RecordingSource for ScaledOnly {
+        fn info(&self) -> &dspk_core::RecordingInfo {
+            self.0.info()
+        }
+        fn read(&self, channels: &[usize], samples: Range<u64>, out: &mut [f32]) -> DspResult<()> {
+            self.0.read(channels, samples, out)
+        }
+        fn read_stored(&self, _channels: &[usize], _samples: Range<u64>, _out: &mut [u8]) -> DspResult<()> {
+            Err(dspk_core::DspError::UnsupportedFormat("stored reads".into()))
+        }
+    }
+
+    #[test]
+    fn a_source_without_stored_reads_previews_as_one_with_them() {
+        let source = recording(2, 6000);
+        let scaled: Arc<dyn RecordingSource> = Arc::new(ScaledOnly(source.clone()));
+        let stages = vec![PipelineStage::bandpass(20.0, 200.0), PipelineStage::Scale { alpha: 2.0, beta: 0.5 }];
+        let stored = ProcessedSignal::new(Arc::new(LocalSignal::open(source.clone(), None).unwrap()), source, vec![0, 1], stages.clone()).unwrap();
+        let host = ProcessedSignal::new(Arc::new(LocalSignal::open(scaled.clone(), None).unwrap()), scaled, vec![0, 1], stages).unwrap();
+        let (mut a, mut b) = (vec![0.0f32; 2 * 400], vec![0.0f32; 2 * 400]);
+        stored.read(&[0, 1], 2000..2400, &mut a).unwrap();
+        host.read(&[0, 1], 2000..2400, &mut b).unwrap();
+        for i in 0..800 {
+            assert!((a[i] - b[i]).abs() < 1e-4 * a[i].abs().max(1.0), "{i}: {} vs {}", a[i], b[i]);
+        }
     }
 
     #[test]

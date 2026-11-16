@@ -8,6 +8,7 @@
 //! Local recording I/O lives in `dspk-io`; envelopes and pyramids in `dspk-view` (a server answers
 //! views with them).
 
+pub mod engine;
 pub mod error;
 pub mod pair;
 pub mod protocol;
@@ -15,6 +16,9 @@ pub mod remote;
 /// A browser page's connection to its server (a WebSocket), as a [`Link`].
 #[cfg(target_family = "wasm")]
 pub mod web_client;
+/// A page's connection to its engine worker (`dspk-engine-web`), as a [`Link`].
+#[cfg(target_family = "wasm")]
+pub mod worker_client;
 #[cfg(not(target_family = "wasm"))]
 pub mod transport;
 

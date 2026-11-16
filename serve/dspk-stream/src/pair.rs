@@ -55,6 +55,10 @@ pub struct WebWelcome {
     pub peer_name: String,
     pub permission: Permission,
     pub has_files: bool,
+    /// The compute runtime the server processes on ("" = none or unknown; absent from older
+    /// servers).
+    #[serde(default)]
+    pub runtime: String,
 }
 
 /// `42-8317-2956` (spaces and dashes optional) as its id and secret.

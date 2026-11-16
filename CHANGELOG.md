@@ -8,6 +8,28 @@ version number.
 
 ### Added
 
+- **The app in the browser, on its own** (GitHub Pages, `/dsp-kitchen/viewer/`): with no server
+  behind the page, the app starts its engine in a worker of its own (`dspk-engine-web`: a
+  single-thread module that owns the browser's WebGPU) and talks to it with the same requests as
+  `dspk serve` (`dspk_stream::worker_client`, a third `Link`). *Open files…* hands it a `.bin` and
+  its `.meta` (dspk's JSON layout; SpikeGLX next), read in pieces in the worker, so nothing is
+  copied whole; a view's ops run on WebGPU (views only without it, said in the status line;
+  whitening not yet). A service worker of the page (`isolate-sw.js`) makes it cross-origin
+  isolated where the host sends no headers, so the page draws on threads there too.
+  **Open folder…** hands the engine every file of a folder (its recordings listed by the same
+  browser as a server's; one recording opens directly); **Open files…** picks them by hand. The
+  page learns whether `dspk serve` sent it from `./dspk-serve.json` (the build ships
+  `{"server": null}`), so a page on its own never asks for a pairing code.
+- **Reading the device back without blocking:** `dspk_ops::core::buffer::{download_async,
+  download_prefix_async}`, `Preview::warm_async` and `ProcessedSignal::warm_view_async`
+  (dspk-pipeline): a browser hands back a WebGPU result only asynchronously. In a browser the
+  device is opened with `dspk_core::compute::open_browser_gpu`.
+- **`dspk_stream::engine`:** what a server does with a recording (`OpenRecording`, the view
+  checks, `answer_view`), without a network or an async runtime, so `dspk serve` and the
+  browser's engine answer a view with one code path.
+- **`dspk_io::ByteSource`:** a raw recording read through bytes at an offset
+  (`RawRecording::from_source`), where a file cannot be mapped.
+
 - **The app in the browser, from the image:** `ghcr.io/neuro-kitchen/dspk` serves the web app
   (`-p 127.0.0.1:50052:50052`, then `http://localhost:50052`); the page draws, the server
   computes. Built by `app/dspk-app-web/build.sh` (nightly Rust, pinned) into `dist/`: one page
@@ -66,6 +88,13 @@ version number.
 
 ### Fixed
 
+- **On a page, "Open recording…" (Ctrl+O) and "Open folder…" no longer fail with "File dialog
+  failed"**: they open the server's recordings, or (a page on its own) pick files for the engine.
+  Buttons that need the system's file dialog (channel-map import / export, Attach sorting, To
+  Phy, Settings' browse) are disabled there with a tooltip saying why.
+- A refused view (outside the recording, too large) is refused as a request again, not as the
+  envelope's error (regression of the engine move, caught by the tests).
+
 - **A view processed on the server held up the recording's other views** while its chain was
   made (a whitening fitted: seconds): each chain is now made in a slot of its own, once, outside
   the lock; a chain that failed is tried again rather than kept.
@@ -73,6 +102,18 @@ version number.
   recording's folder (it was read from nowhere, so only inline maps worked).
 
 ### Changed
+
+- **One way to make a processed block, everywhere:** `Preview::warm_async` (dspk-pipeline) makes
+  every preview block, reading the device back asynchronously; the desktop's synchronous reads
+  wait on it (CubeCL's `block_on`; in a browser an error rather than a hang), `dspk serve` warms
+  a processed view asynchronously before answering it (`ViewProcessor::warm`,
+  `dspk_stream::engine::warm_view`), the browser's engine awaits it. Sources without stored
+  reads (float64) go through the same path as float32 scaled on the host. The chains a client
+  asked for are kept by `dspk_pipeline::processed::ProcessedChains`, shared by the server's and
+  the engine's processors. Preview tests pass on wgpu, CUDA and CPU.
+- **A page's status bar says where its processing happens** ("on the server … (wgpu)", "on
+  this browser's GPU", or "views only: why") instead of "no compute device"; the server tells
+  the page its runtime (`WebWelcome.runtime`).
 
 - **One app for the desktop and the browser.** What differs by target is in one place,
   `dspk_app_core::platform` (threads, locks on the UI thread, the title bar's label, local files,

@@ -6,8 +6,8 @@ a browser (threads, locks on the page's thread, files, servers) is `dspk_app_cor
 ## Build
 
 ```bash
-app/dspk-app-web/build.sh        # both builds into app/dspk-app-web/dist/
-app/dspk-app-web/build.sh mt     # the threaded build only (what the container serves)
+app/dspk-app-web/build.sh        # the app and the engine into app/dspk-app-web/dist/ (GitHub Pages)
+app/dspk-app-web/build.sh mt     # the app only (what the container serves: its server computes)
 ```
 
 Needs the nightly pinned in `build.sh` (with `rust-src` and `wasm32-unknown-unknown`; the script
@@ -19,14 +19,16 @@ feature (`stdarch_wasm_atomic_wait`), and threads need `-Z build-std`.
 
 | | What | When the loader picks it |
 |---|---|---|
-| `index.html` | the loader: checks hardware drawing, WebGPU / WebGL2 and threads before downloading the app | always |
-| `mt/` | threaded build: drawing on web workers; a client of `dspk serve`, which computes | the page is cross-origin isolated (`dspk serve --web`) |
-| `st/` | single-thread build: ops on the browser's WebGPU | the page is not isolated (a plain file server) |
+| `index.html` | the loader: checks hardware drawing, WebGPU / WebGL2 and threads before downloading the app |
+| `isolate-sw.js` | a service worker that makes the page cross-origin isolated where the host sends no headers (GitHub Pages) |
+| `mt/` | the app, threaded: drawing on web workers |
+| `engine/` | the engine (`dspk-engine-web`) and `engine-worker.js`: for a page no server served |
 
-Threads and computing in the tab cannot be combined in one module: a WebGPU device belongs to the
-thread that made it, and CubeCL's wgpu runtime does not build with shared memory. The next step
-is an engine in a worker of its own (a second, single-thread module that owns WebGPU), talked to
-with the same requests as `dspk serve`.
+Two modules, because threads and computing cannot share one: a WebGPU device belongs to the
+thread that made it, and CubeCL's wgpu runtime does not build with shared memory. So the app
+(threaded) draws, and the engine (single thread, in a worker of its own) owns WebGPU. They talk
+with the same requests as `dspk serve`: served by a server, the page talks to it instead and the
+engine is not started.
 
 ## Serve
 

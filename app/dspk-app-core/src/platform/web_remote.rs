@@ -1,13 +1,16 @@
-//! Servers in a browser tab: one, the server that served the page, reached through the page's
-//! WebSocket (`dspk_stream::web_client`); a profile only names it. The page keeps its token in
-//! the browser's storage and asks for a pairing code when it has none. Downloads and jobs are
-//! not offered to a page yet.
+//! Servers in a browser tab: one, named by a profile only. A page `dspk serve` served talks to
+//! that server through its WebSocket (`dspk_stream::web_client`), keeping its token in the
+//! browser's storage and asking for a pairing code when it has none. A page that runs alone
+//! (GitHub Pages) starts the engine in a worker of its own (`dspk_stream::worker_client`) and
+//! talks to it the same way: the files the user picks are its "server's" files. Downloads and
+//! jobs are not offered to a page yet.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use dspk_stream::pair::{WebWelcome, WS_PATH};
 use dspk_stream::web_client::{self, Hello, WebLink};
+use dspk_stream::worker_client::{self, WorkerLink};
 use dspk_stream::{Link, RemoteSignal};
 
 use crate::data::jobs::{Cancel, JobMessage};
@@ -19,14 +22,136 @@ pub const PAGE_SERVER: &str = "server";
 const TOKEN_KEY: &str = "dspk-token";
 const NOT_YET: &str = "not offered to a page yet (the desktop app does it)";
 
-static LINK: OnceLock<Arc<WebLink>> = OnceLock::new();
+/// Where the engine worker's script is, next to the page.
+const ENGINE_SCRIPT: &str = "./engine/engine-worker.js";
 
-fn link() -> anyhow::Result<Arc<WebLink>> {
-    LINK.get().cloned().ok_or_else(|| anyhow::anyhow!("the page is not connected to its server"))
+/// What the page works with: the server that served it, or its own engine worker.
+enum PageLink {
+    Server(Arc<WebLink>),
+    Engine(Arc<WorkerLink>),
+}
+
+static LINK: OnceLock<PageLink> = OnceLock::new();
+
+fn link() -> anyhow::Result<Arc<dyn Link>> {
+    match LINK.get() {
+        Some(PageLink::Server(l)) => Ok(l.clone()),
+        Some(PageLink::Engine(l)) => Ok(l.clone()),
+        None => Err(anyhow::anyhow!("the page is not connected to a server or its engine")),
+    }
+}
+
+async fn request(kind: wire::request::Kind) -> anyhow::Result<wire::response::Kind> {
+    Ok(match LINK.get() {
+        Some(PageLink::Server(l)) => l.request_async(kind).await?,
+        Some(PageLink::Engine(l)) => l.request_async(kind).await?,
+        None => anyhow::bail!("the page is not connected to a server or its engine"),
+    })
+}
+
+/// Where this page's processing happens, for the device line (a page computes nothing itself).
+pub fn processing_label() -> Option<String> {
+    Some(match LINK.get() {
+        Some(PageLink::Server(l)) => {
+            let w = l.welcome();
+            let runtime = if w.runtime.is_empty() { String::new() } else { format!(" ({})", w.runtime) };
+            format!("Processing on the server {}{runtime}", w.server_name)
+        }
+        Some(PageLink::Engine(l)) if l.compute_unavailable().is_empty() => "Processing on this browser's GPU (WebGPU)".into(),
+        Some(PageLink::Engine(l)) => format!("Views only: {}", l.compute_unavailable()),
+        None => "Not connected: no processing yet".into(),
+    })
+}
+
+/// Whether the page runs alone, with its engine worker (no server).
+pub fn runs_alone() -> bool {
+    matches!(LINK.get(), Some(PageLink::Engine(_)))
+}
+
+/// Starts the engine worker for a page no server served. Returns why ops cannot run here ("" when
+/// they can: the browser gave the engine WebGPU).
+pub async fn start_engine() -> anyhow::Result<String> {
+    if let Some(PageLink::Engine(l)) = LINK.get() {
+        return Ok(l.compute_unavailable().to_string());
+    }
+    let engine = worker_client::start(ENGINE_SCRIPT).await?;
+    let why = engine.compute_unavailable().to_string();
+    let _ = LINK.set(PageLink::Engine(engine));
+    Ok(why)
+}
+
+/// Asks the user for a folder (`folder`) or files, hands every file to the engine worker with
+/// its path inside the folder, and returns the recordings among them (each `.bin` whose `.meta`
+/// came too), by path. A dialog closed without a choice fires no event: the page simply waits for
+/// the next one.
+pub async fn pick_files(folder: bool) -> anyhow::Result<Vec<String>> {
+    let Some(PageLink::Engine(engine)) = LINK.get() else { anyhow::bail!("picking files needs the page's engine") };
+    let document = web_sys::window().and_then(|w| w.document()).ok_or_else(|| anyhow::anyhow!("no document"))?;
+    let js = |e: wasm_bindgen::JsValue| anyhow::anyhow!("{e:?}");
+    let input: web_sys::HtmlInputElement = wasm_bindgen::JsCast::dyn_into(document.create_element("input").map_err(js)?).map_err(|_| anyhow::anyhow!("not an input"))?;
+    input.set_type("file");
+    input.set_multiple(true);
+    if folder {
+        // Every browser's folder picker (the files come with their paths inside the folder)
+        input.set_attribute("webkitdirectory", "").map_err(js)?;
+    } else {
+        input.set_accept(".bin,.meta");
+    }
+    let (tx, rx) = futures_channel::oneshot::channel::<()>();
+    let tx = std::cell::RefCell::new(Some(tx));
+    let changed = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(move || {
+        if let Some(tx) = tx.borrow_mut().take() {
+            let _ = tx.send(());
+        }
+    });
+    input.set_onchange(Some(wasm_bindgen::JsCast::unchecked_ref(changed.as_ref())));
+    input.click();
+    let _ = rx.await;
+    drop(changed);
+    let Some(list) = input.files() else { return Ok(Vec::new()) };
+    let (files, mut paths) = (js_sys::Array::new(), Vec::new());
+    for i in 0..list.length() {
+        let Some(file) = list.get(i) else { continue };
+        // "<folder>/<path>": the folder's own name is left out
+        let relative = js_sys::Reflect::get(&file, &"webkitRelativePath".into()).ok().and_then(|v| v.as_string()).unwrap_or_default();
+        let path = match relative.split_once('/') {
+            Some((_, inside)) if !inside.is_empty() => inside.to_string(),
+            _ => file.name(),
+        };
+        let entry = js_sys::Object::new();
+        js_sys::Reflect::set(&entry, &"path".into(), &path.clone().into()).map_err(js)?;
+        js_sys::Reflect::set(&entry, &"file".into(), &file).map_err(js)?;
+        files.push(&entry);
+        paths.push(path);
+    }
+    engine.set_files(files)?;
+    let mut recordings: Vec<String> = paths.iter().filter(|p| p.to_ascii_lowercase().ends_with(".bin") && paths.contains(&p[..p.len() - 4].to_string().add_meta())).cloned().collect();
+    recordings.sort();
+    Ok(recordings)
+}
+
+trait AddMeta {
+    fn add_meta(self) -> String;
+}
+
+impl AddMeta for String {
+    fn add_meta(mut self) -> String {
+        self.push_str(".meta");
+        self
+    }
 }
 
 fn storage() -> Option<web_sys::Storage> {
     web_sys::window()?.local_storage().ok()?
+}
+
+/// What the loader found: `true` unless it asked and the host said it is not `dspk serve`.
+fn served_by_dspk() -> bool {
+    let flag = web_sys::window()
+        .and_then(|w| js_sys::Reflect::get(&w, &"dspkWeb".into()).ok())
+        .and_then(|web| js_sys::Reflect::get(&web, &"server".into()).ok())
+        .and_then(|s| s.as_bool());
+    flag != Some(false)
 }
 
 /// `ws://` or `wss://` to the page's own host; `None` when the page was not served over HTTP(S).
@@ -44,8 +169,15 @@ fn socket_url() -> Option<String> {
 /// is open): with the token kept from an earlier visit, else with a pairing code the user types.
 /// A page no `dspk serve` served (a plain file server, GitHub Pages) has no server: `Ok(None)`.
 pub async fn connect_page() -> anyhow::Result<Option<WebWelcome>> {
-    if let Some(l) = LINK.get() {
-        return Ok(Some(l.welcome().clone()));
+    match LINK.get() {
+        Some(PageLink::Server(l)) => return Ok(Some(l.welcome().clone())),
+        Some(PageLink::Engine(_)) => return Ok(None),
+        None => {}
+    }
+    // The loader asked the host whether `dspk serve` sent the page (`window.dspkWeb.server`); a
+    // plain file server or GitHub Pages did not: no socket, no pairing code
+    if !served_by_dspk() {
+        return Ok(None);
     }
     let Some(url) = socket_url() else { return Ok(None) };
     let kept = storage().and_then(|s| s.get_item(TOKEN_KEY).ok().flatten()).filter(|t| !t.is_empty());
@@ -61,7 +193,7 @@ pub async fn connect_page() -> anyhow::Result<Option<WebWelcome>> {
     }
     // Nothing answers the socket: a plain file server, not an error
     let probe = web_client::connect(&url, Hello::Token(String::new())).await;
-    if matches!(&probe, Err(e) if e.to_string().starts_with(web_client::UNREACHED)) {
+    if matches!(&probe, Err(dspk_stream::StreamError::Protocol(m)) if m.starts_with(web_client::UNREACHED)) {
         return Ok(None);
     }
     let prompt = "Pairing code (shown by `dspk serve --pair`, or `dspk clients pair`)";
@@ -80,13 +212,14 @@ pub async fn connect_page() -> anyhow::Result<Option<WebWelcome>> {
 
 fn keep(link: Arc<WebLink>) -> WebWelcome {
     let welcome = link.welcome().clone();
-    let _ = LINK.set(link);
+    let _ = LINK.set(PageLink::Server(link));
     welcome
 }
 
-/// The page's server as a profile, so the screens that list servers show it.
+/// The page's server (or its engine) as a profile, so the screens that list servers show it.
 pub fn page_profile() -> ServerProfile {
-    ServerProfile { name: PAGE_SERVER.into(), address: "this page's server".into(), server_name: DEFAULT_SERVER_NAME.into(), identity: PathBuf::new() }
+    let address = if runs_alone() { "this browser" } else { "this page's server" };
+    ServerProfile { name: PAGE_SERVER.into(), address: address.into(), server_name: DEFAULT_SERVER_NAME.into(), identity: PathBuf::new() }
 }
 
 /// Where the functions below run in a browser: on the page's own executor, when awaited.
@@ -116,19 +249,25 @@ pub fn runtime() -> &'static PageRuntime {
 /// has one connection, so one recording of the server is open at a time.
 pub fn open_uri(path: &Path) -> anyhow::Result<Arc<RemoteSignal>> {
     let (_, remote) = parse_uri(path).ok_or_else(|| anyhow::anyhow!("{} is not a dspk:// path", path.display()))?;
-    let link: Arc<dyn Link> = link()?;
-    let signal = Arc::new(RemoteSignal::open(link, &remote)?);
+    // The engine's own words for a page on its own (it is not a server)
+    let signal = Arc::new(RemoteSignal::open(link()?, &remote).map_err(|e| if runs_alone() { anyhow::anyhow!("this browser's engine: {}", e.reason()) } else { anyhow::Error::from(e) })?);
     remember(&signal);
     Ok(signal)
 }
 
 pub async fn test(_profile: ServerProfile) -> anyhow::Result<wire::ServerInfo> {
-    let w = link()?.welcome().clone();
-    Ok(wire::ServerInfo { server_name: w.server_name, server_version: w.server_version, peer_name: w.peer_name, has_files: w.has_files, ..Default::default() })
+    match LINK.get() {
+        Some(PageLink::Server(l)) => {
+            let w = l.welcome().clone();
+            Ok(wire::ServerInfo { server_name: w.server_name, server_version: w.server_version, peer_name: w.peer_name, has_files: w.has_files, ..Default::default() })
+        }
+        Some(PageLink::Engine(_)) => Ok(wire::ServerInfo { server_name: "this browser".into(), has_files: true, ..Default::default() }),
+        None => anyhow::bail!("the page is not connected to a server or its engine"),
+    }
 }
 
 pub async fn list(_profile: ServerProfile, dir: String) -> anyhow::Result<wire::FileList> {
-    match link()?.request_async(wire::request::Kind::ListFiles(wire::ListFiles { dir })).await? {
+    match request(wire::request::Kind::ListFiles(wire::ListFiles { dir })).await? {
         wire::response::Kind::Files(list) => Ok(list),
         _ => anyhow::bail!("the server answered something else than a file list"),
     }

@@ -73,6 +73,19 @@ pub fn configure_runtime() {
     });
 }
 
+/// Opens the browser's GPU for the wgpu runtime. A browser hands its GPU out only
+/// asynchronously, so a page or a worker awaits this once before the first client
+/// ([`ComputeTarget::client`] then opens the device it set up); on other targets the device opens
+/// on first use and this is not needed.
+#[cfg(all(target_family = "wasm", feature = "wgpu"))]
+pub async fn open_browser_gpu() -> Result<(), String> {
+    configure_runtime();
+    cubecl::wgpu::try_init_setup_async::<cubecl::wgpu::AutoGraphicsApi>(&cubecl::wgpu::WgpuDevice::default(), Default::default())
+        .await
+        .map(|_| ())
+        .map_err(|e| format!("this browser gave no GPU for computing: {e:?}"))
+}
+
 /// Work to run on whichever runtime a [`ComputeTarget`] selects.
 pub trait ComputeTask {
     type Output;

@@ -197,6 +197,10 @@ impl SettingsScreen {
 
     /// A file or folder picked for `input`.
     fn browse(&mut self, input: Entity<InputState>, folder: bool, prompt: &str, window: &mut Window, cx: &mut Context<Self>) {
+        // A page has no file system of its own to pick from
+        if !crate::platform::LOCAL_FILES {
+            return;
+        }
         let rx = cx.prompt_for_paths(PathPromptOptions { files: !folder, directories: folder, multiple: false, prompt: Some(prompt.to_string().into()) });
         self._tasks.push(cx.spawn_in(window, async move |_, cx| {
             if let Ok(Ok(Some(paths))) = rx.await
