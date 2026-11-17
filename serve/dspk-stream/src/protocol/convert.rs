@@ -19,6 +19,7 @@ fn format_to_wire(format: SampleFormat) -> wire::SampleFormat {
         SampleFormat::U16 => wire::SampleFormat::U16,
         SampleFormat::I24 => wire::SampleFormat::I24,
         SampleFormat::I32 => wire::SampleFormat::I32,
+        SampleFormat::F16 => wire::SampleFormat::F16,
         SampleFormat::F32 => wire::SampleFormat::F32,
         SampleFormat::F64 => wire::SampleFormat::F64,
     }
@@ -32,6 +33,7 @@ fn format_from_wire(format: i32) -> StreamResult<SampleFormat> {
         Ok(wire::SampleFormat::U16) => SampleFormat::U16,
         Ok(wire::SampleFormat::I24) => SampleFormat::I24,
         Ok(wire::SampleFormat::I32) => SampleFormat::I32,
+        Ok(wire::SampleFormat::F16) => SampleFormat::F16,
         Ok(wire::SampleFormat::F32) => SampleFormat::F32,
         Ok(wire::SampleFormat::F64) => SampleFormat::F64,
         _ => return Err(StreamError::protocol(format!("unknown sample format {format}"))),

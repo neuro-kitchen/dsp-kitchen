@@ -64,7 +64,7 @@ impl Preview {
         // source can give them: asked once, on one sample. Float64 (wgpu has none) and sources
         // without stored reads are scaled on the host and sent as float32
         let mut probe = vec![0u8; group.len().min(1) * info.format.bytes()];
-        let stored = info.format != SampleFormat::F64 && (info.samples == 0 || source.read_stored(&group[..group.len().min(1)], 0..1, &mut probe).is_ok());
+        let stored = !matches!(info.format, SampleFormat::F16 | SampleFormat::F64) && (info.samples == 0 || source.read_stored(&group[..group.len().min(1)], 0..1, &mut probe).is_ok());
         let mut out_channels = group.clone();
         for stage in pipeline.stages() {
             if let PipelineStage::ReorderChannels { order } = stage {

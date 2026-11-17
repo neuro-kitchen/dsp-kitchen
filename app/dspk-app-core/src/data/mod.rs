@@ -6,6 +6,9 @@
 pub mod channel;
 pub mod device;
 pub mod history;
+/// A dspk device (live source, taps, director): connect, follow, direct, live views.
+#[cfg(feature = "device")]
+pub mod instrument;
 pub mod jobs;
 pub mod live;
 pub mod preferences;

@@ -12,6 +12,7 @@
 //! | `view` (feature `view`) | `dspk-view` | min/max envelopes and pyramids |
 //! | `stream` (feature `stream`) | `dspk-stream` | QUIC + TLS sessions for continuous signals |
 //! | `synapse` (feature `synapse`) | `dspk-synapse` | electrophysiology: formats, probes, detection, clustering, metrics |
+//! | `device` (feature `device`) | `dspk-device` | real time: live sources, causal chains, taps, recording, the live protocol |
 //! | `hub` (feature `hub`) | `dspk-hub` | verified downloads of published artifacts |
 //!
 //! The spike sorters are separate crates, each under its upstream's licence: `dspk-sorter-kilosort`
@@ -35,3 +36,5 @@ pub use dspk_view as view;
 pub use dspk_synapse as synapse;
 #[cfg(feature = "hub")]
 pub use dspk_hub as hub;
+#[cfg(feature = "device")]
+pub use dspk_device as device;

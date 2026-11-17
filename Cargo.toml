@@ -24,6 +24,8 @@ members = [
     # Serving
     "serve/dspk-view",
     "serve/dspk-stream",
+    # A device: live sources, a causal chain, taps, recording (the real-time work)
+    "serve/dspk-device",
     # Front ends
     "app/dspk-cli",
     "app/dspk-app-core",
@@ -67,6 +69,7 @@ dspk-sorter-si = { path = "synapse/sorters/si", version = "0.0.11", default-feat
 dspk-hub = { path = "hub/dspk-hub", version = "0.0.11", default-features = false }
 dspk-stream = { path = "serve/dspk-stream", version = "0.0.11", default-features = false }
 dspk-view = { path = "serve/dspk-view", version = "0.0.11", default-features = false }
+dspk-device = { path = "serve/dspk-device", version = "0.0.11", default-features = false }
 dspk-io = { path = "crates/dspk-io", version = "0.0.11", default-features = false }
 dspk-table = { path = "crates/dspk-table", version = "0.0.11" }
 dspk-pipeline = { path = "engine/dspk-pipeline", version = "0.0.11", default-features = false }
@@ -87,6 +90,8 @@ burn-tensor = "0.22.1"
 onnx-ir = "0.22.0"
 safetensors = "0.8.0"
 bytemuck = { version = "1.25.2", features = ["derive"] }
+# float16 samples in Zarr stores (zarrs' own half-precision type)
+half = "2.7.1"
 
 # CLI & Configuration
 clap = { version = "4.6.7", features = ["derive", "cargo", "env"] }

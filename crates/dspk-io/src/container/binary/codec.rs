@@ -12,6 +12,7 @@ macro_rules! with_format {
             SampleFormat::U16 => $f::<2>($($arg,)* |b| u16::from_le_bytes(b) as f32),
             SampleFormat::I24 => $f::<3>($($arg,)* |b: [u8; 3]| (i32::from_le_bytes([0, b[0], b[1], b[2]]) >> 8) as f32),
             SampleFormat::I32 => $f::<4>($($arg,)* |b| i32::from_le_bytes(b) as f32),
+            SampleFormat::F16 => $f::<2>($($arg,)* |b| dspk_core::recording::f16_to_f32(u16::from_le_bytes(b))),
             SampleFormat::F32 => $f::<4>($($arg,)* f32::from_le_bytes),
             SampleFormat::F64 => $f::<8>($($arg,)* |b| f64::from_le_bytes(b) as f32),
         }
@@ -116,6 +117,7 @@ pub fn encode(format: SampleFormat, value_uv: f32, gain: f32, offset: f32, dst: 
         SampleFormat::U16 => dst.extend_from_slice(&(stored.round() as u16).to_le_bytes()),
         SampleFormat::I24 => dst.extend_from_slice(&(stored.round() as i32).clamp(-(1 << 23), (1 << 23) - 1).to_le_bytes()[..3]),
         SampleFormat::I32 => dst.extend_from_slice(&(stored.round() as i32).to_le_bytes()),
+        SampleFormat::F16 => dst.extend_from_slice(&dspk_core::recording::f32_to_f16(stored).to_le_bytes()),
         SampleFormat::F32 => dst.extend_from_slice(&stored.to_le_bytes()),
         SampleFormat::F64 => dst.extend_from_slice(&(stored as f64).to_le_bytes()),
     }

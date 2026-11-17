@@ -205,6 +205,7 @@ impl NwbZarrRecording {
             // NWB (HDF5 / Zarr) has no 24-bit type
             SampleFormat::I24 => return Err(err("24-bit samples")),
             SampleFormat::I32 => get!(i32).into_iter().map(|v| v as f32).collect(),
+            SampleFormat::F16 => return Err(err("float16 samples (convert the recording to float32 or an integer type)")),
             SampleFormat::F64 => get!(f64).into_iter().map(|v| v as f32).collect(),
         })
     }

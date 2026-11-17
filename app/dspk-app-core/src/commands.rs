@@ -41,6 +41,8 @@ pub struct Ctx {
     pub toggle_about: Rc<dyn Fn(&mut Window, &mut App)>,
     /// Opens "Open from server" over the frame.
     pub open_browser: Rc<dyn Fn(&mut Window, &mut App)>,
+    /// Opens Devices over the frame (feature `device`).
+    pub open_devices: Rc<dyn Fn(&mut Window, &mut App)>,
 }
 
 impl Ctx {
@@ -207,6 +209,12 @@ pub fn register(registry: &Registry, c: &Ctx) {
         CommandSpec::new("edit.undo", "Undo", IconName::Undo2, st(|s, cx| s.undo(false, cx))).group("Edit").hint("Undo the last change of the session").key("secondary-z"),
         CommandSpec::new("edit.redo", "Redo", IconName::Redo2, st(|s, cx| s.undo(true, cx))).group("Edit").hint("Redo what was undone").key("secondary-shift-z"),
     ];
+    // Real time: dspk devices (feature `device`)
+    #[cfg(feature = "device")]
+    {
+        let devices = c.open_devices.clone();
+        list.push(CommandSpec::new("file.devices", "Devices…", IconName::Server, move |w, cx| devices(w, cx)).group("File").hint("Connect to a dspk device: its state, control, recording, a tap live"));
+    }
     // View: the views of Explore and its docks
     let explore = c.explore.clone();
     let add = |kind: TimeViewKind| {

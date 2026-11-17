@@ -3301,6 +3301,7 @@ name = "dspk"
 version = "0.0.11"
 dependencies = [
  "dspk-core",
+ "dspk-device",
  "dspk-hub",
  "dspk-io",
  "dspk-ops",
@@ -3432,6 +3433,7 @@ dependencies = [
  "cubecl",
  "dirs 7.0.0",
  "dspk-core",
+ "dspk-device",
  "dspk-hub",
  "dspk-io",
  "dspk-ops",
@@ -3480,6 +3482,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "dspk-device"
+version = "0.0.11"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dspk-core",
+ "dspk-io",
+ "dspk-ops",
+ "dspk-pipeline",
+ "dspk-stream",
+ "dspk-view",
+ "futures-util",
+ "prost",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "toml 1.2.1+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "dspk-engine-web"
 version = "0.0.11"
 dependencies = [
@@ -3518,6 +3543,7 @@ version = "0.0.11"
 dependencies = [
  "dspk-core",
  "flate2",
+ "half",
  "memmap2",
  "rayon",
  "serde",
@@ -15810,3 +15836,11 @@ dependencies = [
  "syn 3.0.10",
  "winnow 1.0.5",
 ]
+
+[[patch.unused]]
+name = "kitchen-shell"
+version = "0.0.6"
+
+[[patch.unused]]
+name = "kitchen-ui"
+version = "0.0.6"

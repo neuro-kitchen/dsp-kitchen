@@ -43,8 +43,11 @@ pub use crate::pair::{WebHello, WebWelcome, WS_PATH};
 pub const SERVE_PATH: &str = "/dspk-serve.json";
 /// Largest frame a page may send (a request is small).
 pub const MAX_WEB_FRAME_BYTES: usize = 1 << 20;
+/// Where a page reaches a device's live protocol (`dspk-device` serving pages).
+#[cfg(feature = "live")]
+pub const LIVE_WS_PATH: &str = "/live";
 /// How long a page has to say who it is.
-const HELLO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+pub(super) const HELLO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// What the browser endpoint serves.
 pub struct WebServer {
@@ -71,12 +74,15 @@ pub enum WebTls {
     Files(super::tls::ServerIdentity),
 }
 
-struct State {
-    authority: Arc<Authority>,
+pub(super) struct State {
+    pub(super) authority: Arc<Authority>,
     device: Arc<Device>,
     /// The folder of the web app's files; `None`: only the WebSocket is served.
     web_root: Option<PathBuf>,
     names: Vec<String>,
+    /// A device whose live protocol pages reach at [`LIVE_WS_PATH`] (`dspk-device`).
+    #[cfg(feature = "live")]
+    pub(super) live: Option<Arc<dyn crate::live::Device>>,
 }
 
 impl WebServer {
@@ -98,7 +104,25 @@ impl WebServer {
             None => None,
         };
         let listener = tokio::net::TcpListener::bind(addr).await?;
-        Ok(Self { listener, tls, state: Arc::new(State { authority, device, web_root, names }) })
+        Ok(Self {
+            listener,
+            tls,
+            state: Arc::new(State {
+                authority,
+                device,
+                web_root,
+                names,
+                #[cfg(feature = "live")]
+                live: None,
+            }),
+        })
+    }
+
+    /// Pages also reach `device`'s live protocol, at [`LIVE_WS_PATH`] (same pairing and tokens).
+    #[cfg(feature = "live")]
+    pub fn with_live(mut self, device: Arc<dyn crate::live::Device>) -> Self {
+        Arc::get_mut(&mut self.state).expect("the server is not running yet").live = Some(device);
+        self
     }
 
     /// Whether pages are served over HTTPS (else plain HTTP on loopback).
@@ -158,7 +182,14 @@ fn reply(status: StatusCode, content_type: &str, body: impl Into<Bytes>) -> Repl
 
 async fn handle(mut request: Request<Incoming>, state: Arc<State>) -> Result<Reply, std::convert::Infallible> {
     if request.uri().path() == WS_PATH {
-        return Ok(upgrade(&mut request, state));
+        return Ok(upgrade(&mut request, state, false));
+    }
+    #[cfg(feature = "live")]
+    if request.uri().path() == LIVE_WS_PATH {
+        if state.live.is_none() {
+            return Ok(reply(StatusCode::NOT_FOUND, "text/plain", "this server is not a device"));
+        }
+        return Ok(upgrade(&mut request, state, true));
     }
     // The page's loader asks this first: answered, the page is a client of this server; not
     // found (a plain file server, GitHub Pages), it runs alone with its own engine
@@ -233,7 +264,7 @@ fn file(root: &Path, path: &str, accepts_brotli: bool, cached: &str) -> Reply {
 }
 
 /// Answers the WebSocket handshake and hands the connection to [`session`].
-fn upgrade(request: &mut Request<Incoming>, state: Arc<State>) -> Reply {
+fn upgrade(request: &mut Request<Incoming>, state: Arc<State>, live: bool) -> Reply {
     let header = |name: &str| request.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_ascii_lowercase);
     let wants = header("upgrade").is_some_and(|v| v == "websocket");
     let Some(key) = request.headers().get("sec-websocket-key").cloned().filter(|_| wants) else {
@@ -246,7 +277,14 @@ fn upgrade(request: &mut Request<Incoming>, state: Arc<State>) -> Reply {
             Ok(io) => {
                 let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default().max_message_size(Some(MAX_WEB_FRAME_BYTES)).max_frame_size(Some(MAX_WEB_FRAME_BYTES));
                 let socket = WebSocketStream::from_raw_socket(TokioIo::new(io), Role::Server, Some(config)).await;
-                if let Err(e) = session(socket, state).await {
+                #[cfg(feature = "live")]
+                let ended = if live { super::web_live::live_session(socket, state).await } else { session(socket, state).await };
+                #[cfg(not(feature = "live"))]
+                let ended = {
+                    let _ = live;
+                    session(socket, state).await
+                };
+                if let Err(e) = ended {
                     tracing::debug!("web: session ended: {e}");
                 }
             }
@@ -262,11 +300,11 @@ fn upgrade(request: &mut Request<Incoming>, state: Arc<State>) -> Reply {
         .expect("a response")
 }
 
-fn web_error(e: impl std::fmt::Display) -> StreamError {
+pub(super) fn web_error(e: impl std::fmt::Display) -> StreamError {
     StreamError::Protocol(e.to_string())
 }
 
-async fn send_text<S>(socket: &mut WebSocketStream<S>, message: &impl Serialize) -> StreamResult<()>
+pub(super) async fn send_text<S>(socket: &mut WebSocketStream<S>, message: &impl Serialize) -> StreamResult<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
@@ -290,7 +328,7 @@ where
 }
 
 /// Who the page is: by its token, or by pairing now (it then gets a token).
-async fn identify<S>(socket: &mut WebSocketStream<S>, state: &State) -> StreamResult<Option<Peer>>
+pub(super) async fn identify<S>(socket: &mut WebSocketStream<S>, state: &State) -> StreamResult<Option<Peer>>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {

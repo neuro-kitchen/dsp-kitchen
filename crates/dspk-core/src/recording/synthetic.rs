@@ -6,8 +6,8 @@
 
 use std::ops::Range;
 
-use dspk_core::recording::check_read;
-use dspk_core::{DspResult, MemoryOrder, RecordingInfo, RecordingSource, SampleFormat, SampleRate};
+use crate::recording::check_read;
+use crate::{DspResult, MemoryOrder, RecordingInfo, RecordingSource, SampleFormat, SampleRate};
 
 /// Shape of a procedural recording.
 #[derive(Debug, Clone, PartialEq)]
@@ -25,6 +25,14 @@ pub struct SyntheticParams {
     pub drift_channels: f32,
     pub drift_period_sec: f64,
     pub seed: u64,
+    /// Every unit's mean firing rate (Hz); `None`: each unit draws its own, 2 – 20 Hz.
+    pub spike_rate_hz: Option<f32>,
+    /// Every unit's peak amplitude (µV); `None`: each unit draws its own, 60 – 200 µV.
+    pub spike_amplitude_uv: Option<f32>,
+    /// A sine added to every channel, in phase (Hz; 0 = none): a known tone for checking filters.
+    pub sine_hz: f64,
+    /// The sine's amplitude.
+    pub sine_uv: f32,
 }
 
 impl Default for SyntheticParams {
@@ -39,6 +47,10 @@ impl Default for SyntheticParams {
             drift_channels: 2.0,
             drift_period_sec: 600.0,
             seed: 0x5eed,
+            spike_rate_hz: None,
+            spike_amplitude_uv: None,
+            sine_hz: 0.0,
+            sine_uv: 0.0,
         }
     }
 }
@@ -127,10 +139,10 @@ impl SyntheticRecording {
         let units = (0..params.units)
             .map(|u| {
                 let h = splitmix(params.seed ^ (u as u64 + 1).wrapping_mul(UNIT_SALT));
-                let rate_hz = MIN_RATE_HZ + unit_frac(h) * RATE_SPAN_HZ;
+                let rate_hz = params.spike_rate_hz.unwrap_or(MIN_RATE_HZ + unit_frac(h) * RATE_SPAN_HZ).max(f32::MIN_POSITIVE);
                 Unit {
                     center: (u as f32 + 0.5) * params.channels as f32 / params.units as f32,
-                    amplitude_uv: MIN_AMPLITUDE_UV + unit_frac(h >> 16) * AMPLITUDE_SPAN_UV,
+                    amplitude_uv: params.spike_amplitude_uv.unwrap_or(MIN_AMPLITUDE_UV + unit_frac(h >> 16) * AMPLITUDE_SPAN_UV),
                     slot: ((sr / (2.0 * rate_hz as f64)) as u64).max((pre + post) as u64 * MIN_SLOT_WAVEFORMS),
                     fire_prob: FIRE_PROBABILITY,
                 }
@@ -198,6 +210,7 @@ impl RecordingSource for SyntheticRecording {
         }
         let p = &self.params;
         let omega = std::f64::consts::TAU * LINE_FREQUENCY_HZ / p.sample_rate_hz;
+        let sine_omega = std::f64::consts::TAU * p.sine_hz / p.sample_rate_hz;
 
         // Background: noise + hum
         for (dst, &ch) in out.chunks_exact_mut(n).zip(channels) {
@@ -206,7 +219,8 @@ impl RecordingSource for SyntheticRecording {
             for (i, o) in dst.iter_mut().enumerate() {
                 let s = samples.start + i as u64;
                 let hum = p.line_noise_uv * (omega * s as f64 + phase).sin() as f32;
-                *o = hum + p.noise_uv * gaussian(splitmix(ch_seed ^ s));
+                let sine = if p.sine_uv == 0.0 { 0.0 } else { p.sine_uv * (sine_omega * s as f64).sin() as f32 };
+                *o = hum + sine + p.noise_uv * gaussian(splitmix(ch_seed ^ s));
             }
         }
 

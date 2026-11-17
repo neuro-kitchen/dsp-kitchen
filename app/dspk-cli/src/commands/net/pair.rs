@@ -40,6 +40,7 @@ pub async fn run(args: &PairArgs) -> anyhow::Result<()> {
     println!("The server's authority: {} (SHA-256)", paired.ca_fingerprint);
     println!("The server's names: {} (connect by one of them)", paired.names.join(", "));
     println!("Identity written to {} (certificate, private key, the server's authority; mode 0600)", out.display());
-    println!("Next: dspk receive --identity {} {}", out.display(), args.server);
+    println!("Next: dspk receive --identity {} {}  (a dspk serve server)", out.display(), args.server);
+    println!("  or: dspk device status --identity {} {}  (a device)", out.display(), args.server);
     Ok(())
 }

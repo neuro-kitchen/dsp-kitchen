@@ -1,0 +1,508 @@
+// dspk live protocol (devices), version 1.
+//
+// DRAFT (2026-11-17, second round), for review: implemented by nothing yet. Design:
+// `.tasks/next/40_realtime-protocol.md`.
+//
+// A device acquires from its sources, runs one chain (a dspk-pipeline spec, live ops only), and
+// publishes taps: named outputs of the chain's nodes. While it records, the raw data of every
+// source is stored; a preview runs the same chain and taps without storing anything. Clients are
+// viewers, or the one director, who configures, starts and stops. A lost connection never stops
+// a device.
+//
+// This protocol covers the device and the recording in progress. Finished recordings are files in
+// the device's data folder, served by the session protocol (dspk_stream.proto: ListFiles, Open,
+// views, Fetch) on the same device.
+//
+// These messages are what every transport carries; the transport only moves them. Over QUIC
+// (ALPN "dspk-live/1", TLS with the client certificates of pairing, as dspk-stream; a device
+// without a certificate is never connected to), framed as dspk_stream.proto (4-byte big-endian
+// length, then the protobuf encoding):
+//   control  bidirectional, opened by the client: DeviceHello → DeviceWelcome, then DeviceEvent
+//            messages from the device for as long as the connection lives.
+//   request  bidirectional, one per request, opened by the client: LiveRequest → LiveResponse.
+//   tap      unidirectional, opened by the device after Subscribe or SubscribeView, one per
+//            subscription: TapOpened, then TapFrame (Subscribe) or LiveViewFrame (SubscribeView)
+//            until it is cancelled, the run ends or the connection does.
+// Another transport (gRPC + ZeroMQ, …) maps the same three roles onto its own channels.
+
+syntax = "proto3";
+
+package dspk_live.v1;
+
+import "dspk_stream.proto";
+
+// What the device is doing (Synapse's states).
+enum DeviceState {
+  DEVICE_STATE_UNSPECIFIED = 0;
+  // Starting up, or checking a chain being configured.
+  DEVICE_STATE_INITIALIZING = 1;
+  // Ready: a chain can be configured, a run started.
+  DEVICE_STATE_STOPPED = 2;
+  // Acquiring, processing, publishing taps (and recording, unless it is a preview).
+  DEVICE_STATE_RUNNING = 3;
+  // The device failed to start (DeviceStatus.message says why) and needs a restart. Nothing else
+  // leads here: a chain failing during a run ends the run (back to STOPPED, with the reason); a
+  // source that stops sending is a source's status (SourceStatus), and its gap is recorded.
+  DEVICE_STATE_ERROR = 4;
+}
+
+// ── Connecting ──────────────────────────────────────────────────────────────────────────────
+
+// client → device, first message on the control stream.
+message DeviceHello {
+  uint32 protocol_version = 1;
+  // The client's dspk version: a device refuses one it cannot serve, naming both versions.
+  string client_version = 2;
+}
+
+// device → client, the answer to DeviceHello.
+message DeviceWelcome {
+  uint32 protocol_version = 1;
+  DeviceInfo device = 2;
+  // Who this client is to the device (its name from pairing), and what it may do.
+  string client_name = 3;
+  dspk_stream.v1.Permission permission = 4;
+}
+
+// What a device is: sent once on connecting; DeviceStatus follows every change.
+message DeviceInfo {
+  // Stable across restarts and addresses (made once, kept in the device's folder).
+  string id = 1;
+  string name = 2;
+  // The dspk version it runs.
+  string version = 3;
+  // The compute runtime its chain runs on (wgpu, cuda, cpu, …).
+  string runtime = 4;
+  repeated SourceInfo sources = 5;
+  DeviceStatus status = 6;
+}
+
+// One source of the device (device.toml): a pipeline spec's input names it.
+message SourceInfo {
+  string name = 1;
+  // generator, sensor (the minimal sensor format), replay (a file paced at its rate), …
+  string kind = 2;
+  repeated dspk_stream.v1.Channel channels = 3;
+  dspk_stream.v1.Ratio sample_rate_hz = 4;
+  // int16, int32, float32 (and float16 once SAMPLE_FORMAT_F16 is added to dspk_stream.proto).
+  dspk_stream.v1.SampleFormat format = 5;
+}
+
+// How a source is doing, measured by the device.
+message SourceStatus {
+  string name = 1;
+  // Data arrived recently (a sensor unplugged or silent: false; the run goes on, the gap is recorded).
+  bool connected = 2;
+  // The rate measured over the last seconds, against SourceInfo.sample_rate_hz.
+  double measured_rate_hz = 3;
+  // Packets refused for a wrong checksum (minimal sensor format).
+  uint64 checksum_errors = 4;
+  // Samples lost since the run started.
+  uint64 lost_samples = 5;
+  // When the last data arrived (Unix ns).
+  uint64 last_data_unix_ns = 6;
+}
+
+// How the device keeps up.
+message DeviceHealth {
+  // Time from a block's arrival to its taps being sent (µs).
+  uint32 block_latency_median_us = 1;
+  uint32 block_latency_max_us = 2;
+  // How full the ring buffer is (0 – 1): near 1, the recorder is not keeping up.
+  float ring_use = 3;
+  // Frames dropped for slow clients since the run started (all clients, all taps).
+  uint64 frames_dropped = 4;
+}
+
+// The device's state: the answer to most requests, and pushed on every change.
+message DeviceStatus {
+  DeviceState state = 1;
+  // The last failure or result, in words ("" = none).
+  string message = 2;
+  // The client holding control ("" = none).
+  string director = 3;
+  // While the director is disconnected, its role is kept for it until then (Unix ns; 0 = not).
+  uint64 director_kept_until_unix_ns = 4;
+  // The configured chain (absent = none).
+  ChainInfo chain = 5;
+  // The run in progress, or the last one (absent = none yet).
+  LiveRun run = 6;
+  repeated SourceStatus sources = 7;
+  DeviceHealth health = 8;
+}
+
+// A configured chain.
+message ChainInfo {
+  // The dspk-pipeline spec as configured (JSON).
+  string spec_json = 1;
+  // Samples per block the chain processes (from the spec's block length).
+  uint32 block_samples = 2;
+  // Total delay of the chain's bounded-delay ops, in samples of its input.
+  uint64 delay_samples = 3;
+  repeated TapInfo taps = 4;
+}
+
+// One run: everything between a Start and its Stop.
+message LiveRun {
+  // Stored (a recording) or not (a preview).
+  bool recording = 1;
+  // A recording's folder under the device's data folder: `<start time>[_<label>]/`, holding
+  // `raw.zarr` and `session-live.jsonl` ("" for a preview).
+  string path = 2;
+  string label = 3;
+  string notes = 4;
+  uint64 started_unix_ns = 5;
+  // The first source's clock at sample 0 (ns, its own epoch): ties the source's clock to
+  // started_unix_ns. Later offsets are recorded with the data.
+  uint64 started_source_time_ns = 6;
+  // Samples per channel acquired so far: the head.
+  uint64 head_sample = 7;
+  // Samples the sources lost (gaps in the run itself).
+  uint64 lost_samples = 8;
+  bool running = 9;
+}
+
+// ── Taps ────────────────────────────────────────────────────────────────────────────────────
+
+enum TapKind {
+  TAP_KIND_UNSPECIFIED = 0;
+  // Blocks of a signal: channels × samples.
+  TAP_KIND_SAMPLES = 1;
+  // Events: a sample index and a channel each, with a waveform when the tap has one.
+  TAP_KIND_EVENTS = 2;
+  // Counts per channel per bin.
+  TAP_KIND_BINNED = 3;
+  // Anything else a node publishes: an n-dimensional array.
+  TAP_KIND_TENSOR = 4;
+}
+
+enum TapDirection {
+  TAP_DIRECTION_UNSPECIFIED = 0;
+  // Out of the device (every tap in version 1).
+  TAP_DIRECTION_OUT = 1;
+  // Into the device (reserved: stimulation, commands from another program).
+  TAP_DIRECTION_IN = 2;
+}
+
+// A tap and its layout, sent once: frames never repeat it.
+message TapInfo {
+  // Unique on the device: the `tap` name of a node in the spec, or a source's name for its raw data.
+  string name = 1;
+  // Where to reach it, for transports that give each tap an address of its own
+  // (zmq+tcp://host:port, …). Empty over QUIC: every tap comes on the client's connection.
+  string endpoint = 2;
+  TapKind kind = 3;
+  TapDirection direction = 4;
+  // The pipeline node it comes from ("" = a source's raw data).
+  string node = 5;
+  repeated dspk_stream.v1.Channel channels = 6;
+  // SAMPLES: the sample rate; BINNED: bins per second; EVENTS: the rate their sample indices count in.
+  dspk_stream.v1.Ratio rate_hz = 7;
+  // Of the values in TapFrame.data (SAMPLES, EVENTS' waveforms, TENSOR); BINNED counts are u32.
+  dspk_stream.v1.SampleFormat format = 8;
+  // EVENTS: samples per waveform (0 = no waveforms).
+  uint32 waveform_samples = 9;
+  // TENSOR: the shape of one frame's array.
+  repeated uint32 tensor_shape = 10;
+}
+
+// device → client, first message on a tap stream.
+message TapOpened {
+  // The number frames on this stream use for it.
+  uint32 tap = 1;
+  TapInfo info = 2;
+  // SubscribeView only: the plot it is for.
+  uint64 plot_key = 3;
+}
+
+// device → client on a tap stream (Subscribe): one block. Values are raw little-endian bytes,
+// never protobuf numbers, so decoding is a copy.
+message TapFrame {
+  uint32 tap = 1;
+  // Frame counter of this subscription: a gap means frames were dropped for it (a slow client
+  // never slows the device); what was dropped can be read again with ReadRange.
+  uint64 sequence = 2;
+  // The block's place in the run, in samples of the tap's rate (the key of everything).
+  uint64 first_sample = 3;
+  // SAMPLES: samples per channel; BINNED: bins; EVENTS: events; TENSOR: 1.
+  uint32 count = 4;
+  // The source's clock at first_sample (ns, the source's own epoch; LiveRun ties it to Unix time).
+  uint64 source_time_ns = 5;
+  // Device clock when sent (Unix ns), for latency.
+  uint64 sent_unix_ns = 6;
+  // Samples the source lost just before first_sample (0 = none).
+  uint64 lost_before = 7;
+  // SAMPLES: channel-major, channels × count values of `format` (only the subscribed channels).
+  // BINNED: channel-major, channels × count u32.
+  // EVENTS: per event a u64 sample index and a u32 channel index, then waveform_samples values of
+  //         `format` if the tap has waveforms.
+  // TENSOR: the array of tensor_shape, row-major, of `format`.
+  bytes data = 8;
+}
+
+// device → client on a tap stream (SubscribeView): the newest columns of a live view.
+message LiveViewFrame {
+  uint32 tap = 1;
+  uint64 sequence = 2;
+  // The samples these columns cover: [first_sample, first_sample + samples).
+  uint64 first_sample = 3;
+  uint64 samples = 4;
+  uint64 sent_unix_ns = 5;
+  // [min, max] per column, a row per subscribed channel (as views of files).
+  dspk_stream.v1.Columns columns = 6;
+}
+
+// ── Requests ────────────────────────────────────────────────────────────────────────────────
+
+// Why a request was refused or failed: a code to act on, words to show.
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  // Only the director may do this (the app offers to request control).
+  ERROR_CODE_NOT_DIRECTOR = 1;
+  // The client's permission does not allow it (read only).
+  ERROR_CODE_NO_PERMISSION = 2;
+  // Not in this state (configure while running, start with no chain, …).
+  ERROR_CODE_WRONG_STATE = 3;
+  // The request itself is wrong (unknown tap, a range outside the run, a malformed spec).
+  ERROR_CODE_INVALID = 4;
+  // What it names does not exist (tap, node, parameter, client).
+  ERROR_CODE_NOT_FOUND = 5;
+  // The device failed doing it.
+  ERROR_CODE_INTERNAL = 6;
+  // A newer view for the same plot arrived first: this one is dropped (nothing to show).
+  ERROR_CODE_SUPERSEDED = 7;
+}
+
+message Error {
+  ErrorCode code = 1;
+  string message = 2;
+}
+
+// Configure the chain (director, device stopped). Checked as a whole: refused ops are listed and
+// nothing changes; the device returns to stopped either way. With dry_run, only checked (any
+// client, any state): the app greys out ops while the chain is edited.
+message ConfigureChain {
+  // A dspk-pipeline spec (JSON); its input names one of the device's sources.
+  string spec_json = 1;
+  bool dry_run = 2;
+}
+
+// Why one node of a spec was refused.
+message Refusal {
+  string node = 1;
+  string op = 2;
+  // e.g. "zero-phase filter: needs future samples; not allowed on a live source".
+  string reason = 3;
+}
+
+message ConfigureResult {
+  // Empty = accepted (configured, or would be with dry_run).
+  repeated Refusal refusals = 1;
+  // The chain as it would run: block length, delay, taps.
+  ChainInfo chain = 2;
+  DeviceStatus status = 3;
+}
+
+// Start a run (director, a chain configured).
+message Start {
+  // Store it (a new folder: raw data, session log, the taps the chain writes); false: a preview,
+  // nothing stored.
+  bool record = 1;
+  // Recordings: added to the folder's name (`<start time>_<label>`) and kept in the session log.
+  string label = 2;
+  string notes = 3;
+}
+// Stop the run (director). The chain stays configured.
+message Stop {}
+
+// Change one parameter of a running chain (director), e.g. a detection threshold. Only parameters
+// the op declares changeable while running; others are refused.
+message SetParameter {
+  string node = 1;
+  string parameter = 2;
+  // The new value, as JSON (the spec's own form for that parameter).
+  string value_json = 3;
+}
+
+// A marker in the run (any client): "sensor moved", "stimulus on". Kept in the session log and in
+// the recording's events.
+message Mark {
+  // Sample index of the run (0 = the head when the device receives it).
+  uint64 sample = 1;
+  string label = 2;
+}
+
+// Ask for control. With no director (or its kept role expired) it is granted at once; otherwise
+// the director is asked (DeviceEvent.control_requested) and hands over, or not.
+message RequestControl {}
+// The director gives control to another connected client.
+message HandOverControl {
+  string to = 1;
+}
+// The director gives up control.
+message ReleaseControl {}
+
+message ListTaps {}
+message TapList {
+  repeated TapInfo taps = 1;
+}
+
+// Every value of a tap from the head on (programs that need each sample). What a client missed
+// (before subscribing, after a reconnection, frames dropped) is read with ReadRange or views,
+// never replayed on the tap.
+message Subscribe {
+  string tap = 1;
+  // Channel indices (empty = all).
+  repeated uint32 channels = 2;
+}
+
+// A live view of a tap from the head on, at screen resolution: [min, max] columns, so a viewer
+// takes what it draws, not every sample. Several per client (one per plot).
+message SubscribeView {
+  string tap = 1;
+  // Chosen by the client: names the plot in TapOpened and in Unsubscribe.
+  uint64 plot_key = 2;
+  // Channel indices (empty = all).
+  repeated uint32 channels = 3;
+  // Columns per second of signal (the plot's width over its time span).
+  double columns_per_second = 4;
+  // Viewer ops on the way, computed on the device (live ops only while running), as views of
+  // files carry them.
+  dspk_stream.v1.Processing processing = 5;
+}
+
+// Stop subscriptions: by tap (Subscribe) and by plot (SubscribeView).
+message Unsubscribe {
+  repeated string taps = 1;
+  repeated uint64 plot_keys = 2;
+}
+
+// Read a stretch of a tap of the run, from the ring or the disk; answered with one TapFrame
+// (sequence 0). Raw taps are kept while recording; others only when the chain writes them; a
+// preview keeps only what the ring holds.
+message ReadRange {
+  string tap = 1;
+  uint64 first_sample = 2;
+  uint32 count = 3;
+  // Channel indices (empty = all).
+  repeated uint32 channels = 4;
+}
+
+// A view of a stretch of a tap of the run (scrolling back), answered with an EnvelopeFrame. A
+// newer view for the same plot_key replaces one not answered yet.
+message TapView {
+  string tap = 1;
+  uint64 plot_key = 2;
+  dspk_stream.v1.ViewRequest view = 3;
+}
+
+// Clock offset between the client and the device: four timestamps (as NTP). The client sends
+// ClockPing; the device answers ClockPong.
+// offset = ((device_received - client_sent) + (device_sent - client_received)) / 2.
+message ClockPing {
+  uint64 client_sent_ns = 1;
+  // The client's best estimate so far (device minus client clock, and its round trip; 0 and 0
+  // before the first exchange): the device keeps it with the run, about once a second.
+  int64 last_offset_ns = 2;
+  uint64 last_round_trip_ns = 3;
+}
+message ClockPong {
+  uint64 client_sent_ns = 1;
+  uint64 device_received_unix_ns = 2;
+  uint64 device_sent_unix_ns = 3;
+}
+
+// A one-time pairing code for another computer (director only): a viewer, or a director to be.
+message NewPairingCode {
+  // The control permission (may direct); false: watch only.
+  bool control = 1;
+}
+message PairingCode {
+  // e.g. "42-8317-2956": `dspk pair <device> <code>` on the other computer.
+  string code = 1;
+  uint64 expires_unix = 2;
+}
+
+message GetStatus {}
+message GetLog {
+  // The last entries (0 = all the device keeps).
+  uint32 entries = 1;
+  // At this level and above.
+  LogLevel min_level = 2;
+}
+
+// client → device, the only message on a request stream.
+message LiveRequest {
+  oneof kind {
+    GetStatus status = 1;
+    ConfigureChain configure = 2;
+    Start start = 3;
+    Stop stop = 4;
+    SetParameter set_parameter = 5;
+    RequestControl request_control = 6;
+    HandOverControl hand_over = 7;
+    ReleaseControl release_control = 8;
+    ListTaps list_taps = 9;
+    Subscribe subscribe = 10;
+    SubscribeView subscribe_view = 11;
+    Unsubscribe unsubscribe = 12;
+    ReadRange read_range = 13;
+    TapView view = 14;
+    ClockPing clock = 15;
+    GetLog log = 16;
+    Mark mark = 17;
+    NewPairingCode pairing_code = 18;
+  }
+}
+
+// device → client, the answer on a request stream.
+message LiveResponse {
+  oneof kind {
+    DeviceStatus status = 1;
+    ConfigureResult configured = 2;
+    TapList taps = 3;
+    TapFrame frame = 4;
+    dspk_stream.v1.EnvelopeFrame envelope = 5;
+    ClockPong clock = 6;
+    LogEntries log = 7;
+    Error error = 8;
+    PairingCode pairing_code = 9;
+  }
+}
+
+// ── Events (device → client on the control stream) ──────────────────────────────────────────
+
+enum LogLevel {
+  LOG_LEVEL_UNSPECIFIED = 0;
+  LOG_LEVEL_DEBUG = 1;
+  LOG_LEVEL_INFO = 2;
+  LOG_LEVEL_WARN = 3;
+  LOG_LEVEL_ERROR = 4;
+}
+
+message LogEntry {
+  uint64 unix_ns = 1;
+  LogLevel level = 2;
+  // What wrote it: device, source:<name>, chain:<node>, recorder, …
+  string source = 3;
+  string message = 4;
+}
+
+message LogEntries {
+  repeated LogEntry entries = 1;
+}
+
+// A client asked the director for control.
+message ControlRequested {
+  string by = 1;
+}
+
+message DeviceEvent {
+  oneof kind {
+    DeviceStatus status = 1;
+    ControlRequested control_requested = 2;
+    LogEntry log = 3;
+    // A marker was added (by any client).
+    Mark mark = 4;
+  }
+}

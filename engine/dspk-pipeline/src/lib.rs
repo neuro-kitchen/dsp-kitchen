@@ -22,6 +22,8 @@
 
 mod fit;
 mod prepare;
+#[cfg(all(feature = "live", not(target_family = "wasm")))]
+pub mod live;
 pub mod preview;
 #[cfg(feature = "view")]
 pub mod processed;
