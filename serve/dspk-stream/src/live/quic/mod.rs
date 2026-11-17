@@ -10,3 +10,13 @@ mod server;
 
 pub use client::{DeviceClient, TapReceiver, ViewReceiver};
 pub use server::serve_device;
+
+/// Whether `connection` speaks the live protocol (a device serves the session protocol too, for
+/// its finished recordings: [`crate::transport::serve_session`]).
+pub fn is_live(connection: &quinn::Connection) -> bool {
+    connection
+        .handshake_data()
+        .and_then(|d| d.downcast::<quinn::crypto::rustls::HandshakeData>().ok())
+        .and_then(|d| d.protocol)
+        .is_some_and(|p| p == super::ALPN)
+}

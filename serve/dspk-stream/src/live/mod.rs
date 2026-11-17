@@ -129,6 +129,12 @@ pub trait Device: Send + Sync + 'static {
     fn read_range(&self, caller: &Caller, request: wire::ReadRange) -> LiveResult<wire::TapFrame>;
     fn view(&self, caller: &Caller, request: wire::TapView) -> LiveResult<crate::protocol::wire::EnvelopeFrame>;
     fn log(&self, request: wire::GetLog) -> wire::LogEntries;
+
+    /// A one-time pairing code for another computer (director only).
+    fn new_pairing_code(&self, caller: &Caller, control: bool) -> LiveResult<wire::PairingCode>;
+
+    /// A client's clock estimate (its clock against the device's), sent with its pings.
+    fn clock_reported(&self, _caller: &Caller, _offset_ns: i64, _round_trip_ns: u64) {}
 }
 
 /// The device's clock (Unix ns).
@@ -181,9 +187,13 @@ pub fn dispatch(device: &dyn Device, caller: &Caller, request: wire::LiveRequest
         Some(Rq::View(v)) => device.view(caller, v).map(Rs::Envelope),
         Some(Rq::Clock(ping)) => {
             let received = unix_now_ns();
+            if ping.last_round_trip_ns > 0 {
+                device.clock_reported(caller, ping.last_offset_ns, ping.last_round_trip_ns);
+            }
             Ok(Rs::Clock(wire::ClockPong { client_sent_ns: ping.client_sent_ns, device_received_unix_ns: received, device_sent_unix_ns: unix_now_ns() }))
         }
         Some(Rq::Log(l)) => Ok(Rs::Log(device.log(l))),
+        Some(Rq::PairingCode(p)) => device.new_pairing_code(caller, p.control).map(Rs::PairingCode),
     };
     let kind = match answer {
         Ok(kind) => kind,

@@ -4,12 +4,17 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use tokio::sync::{broadcast, Mutex};
 
-use super::super::{unix_now_ns, wire, ClockSample, LiveError, PROTOCOL_VERSION};
+use std::sync::Arc;
+use std::time::Duration;
+
+use super::super::{unix_now_ns, wire, ClockEstimate, ClockSample, LiveError, PROTOCOL_VERSION};
 use crate::error::{StreamError, StreamResult};
 use crate::protocol::{read_message, write_message, DEFAULT_MAX_MESSAGE_BYTES};
 
 /// Device events buffered per client before the oldest are dropped.
 const EVENT_QUEUE: usize = 256;
+/// How often the clocks are compared (each exchange also reports the last estimate to the device).
+const CLOCK_EVERY: Duration = Duration::from_secs(1);
 
 /// A connection to one device.
 pub struct DeviceClient {
@@ -20,7 +25,22 @@ pub struct DeviceClient {
     events: broadcast::Sender<wire::DeviceEvent>,
     /// One subscription at a time, so the next stream the device opens is the one asked for.
     subscribing: Mutex<()>,
+    clock: Arc<std::sync::Mutex<ClockEstimate>>,
     max_message_bytes: usize,
+}
+
+/// One clock exchange on `connection`, reporting `estimate`'s best so far, and its result added to it.
+async fn exchange(connection: &quinn::Connection, estimate: &std::sync::Mutex<ClockEstimate>, max: usize) -> StreamResult<ClockSample> {
+    let best = estimate.lock().unwrap_or_else(|e| e.into_inner()).best();
+    let ping = wire::ClockPing { client_sent_ns: unix_now_ns(), last_offset_ns: best.map_or(0, |b| b.offset_ns), last_round_trip_ns: best.map_or(0, |b| b.round_trip_ns) };
+    let (mut send, mut recv) = connection.open_bi().await?;
+    write_message(&mut send, &wire::LiveRequest { kind: Some(wire::live_request::Kind::Clock(ping)) }).await?;
+    send.finish().map_err(StreamError::protocol)?;
+    let response: wire::LiveResponse = read_message(&mut recv, max).await?.ok_or_else(|| StreamError::protocol("no answer"))?;
+    let Some(wire::live_response::Kind::Clock(p)) = response.kind else { return Err(StreamError::protocol("expected a clock answer")) };
+    let sample = ClockSample::from_exchange(p.client_sent_ns, p.device_received_unix_ns, p.device_sent_unix_ns, unix_now_ns());
+    estimate.lock().unwrap_or_else(|e| e.into_inner()).add(sample);
+    Ok(sample)
 }
 
 impl DeviceClient {
@@ -46,7 +66,18 @@ impl DeviceClient {
                 let _ = sender.send(event);
             }
         });
-        Ok(Self { _endpoint: endpoint, connection, welcome, events, subscribing: Mutex::new(()), max_message_bytes: DEFAULT_MAX_MESSAGE_BYTES })
+        // The clocks, compared every second while connected
+        let clock = Arc::new(std::sync::Mutex::new(ClockEstimate::default()));
+        let (c, est) = (connection.clone(), clock.clone());
+        tokio::spawn(async move {
+            while c.close_reason().is_none() {
+                if exchange(&c, &est, DEFAULT_MAX_MESSAGE_BYTES).await.is_err() && c.close_reason().is_some() {
+                    break;
+                }
+                tokio::time::sleep(CLOCK_EVERY).await;
+            }
+        });
+        Ok(Self { _endpoint: endpoint, connection, welcome, events, subscribing: Mutex::new(()), clock, max_message_bytes: DEFAULT_MAX_MESSAGE_BYTES })
     }
 
     /// The device, and who this client is to it.
@@ -66,6 +97,13 @@ impl DeviceClient {
 
     pub fn close(&self) {
         self.connection.close(quinn::VarInt::from_u32(0), b"bye");
+    }
+
+    /// Closes the connection and waits until the device has been told (a short-lived client: the
+    /// device sees it leave at once instead of after the idle timeout).
+    pub async fn finish(self) {
+        self.connection.close(quinn::VarInt::from_u32(0), b"bye");
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), self._endpoint.wait_idle()).await;
     }
 
     /// Sends one request on a stream of its own and reads the answer; a refusal is an error
@@ -166,12 +204,21 @@ impl DeviceClient {
         }
     }
 
-    /// One clock exchange: the device's clock minus this computer's, and the round trip.
+    /// One clock exchange now: the device's clock minus this computer's, and the round trip.
     pub async fn clock(&self) -> StreamResult<ClockSample> {
-        let sent = unix_now_ns();
-        match self.request(wire::live_request::Kind::Clock(wire::ClockPing { client_sent_ns: sent })).await? {
-            wire::live_response::Kind::Clock(p) => Ok(ClockSample::from_exchange(p.client_sent_ns, p.device_received_unix_ns, p.device_sent_unix_ns, unix_now_ns())),
-            _ => Err(StreamError::protocol("expected a clock answer")),
+        exchange(&self.connection, &self.clock, self.max_message_bytes).await
+    }
+
+    /// The best clock estimate so far (`None` before the first exchange, a second after connecting).
+    pub fn clock_estimate(&self) -> Option<ClockSample> {
+        self.clock.lock().unwrap_or_else(|e| e.into_inner()).best()
+    }
+
+    /// A one-time pairing code for another computer (director only); `control`: it may direct.
+    pub async fn pairing_code(&self, control: bool) -> StreamResult<wire::PairingCode> {
+        match self.request(wire::live_request::Kind::PairingCode(wire::NewPairingCode { control })).await? {
+            wire::live_response::Kind::PairingCode(c) => Ok(c),
+            _ => Err(StreamError::protocol("expected a pairing code")),
         }
     }
 
