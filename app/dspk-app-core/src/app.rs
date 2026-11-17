@@ -1581,4 +1581,67 @@ mod tests {
         let path = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../.datasets/nwb/15-25-33_meps.nwb.zarr"));
         ops_on_a_second_source(cx, path, "/acquisition/EMG", 275.0, 15.0);
     }
+
+    /// Every button of the canvas' own bar does what it says (zoom, fit, dot grid, minimap).
+    #[gpui_kit::test]
+    fn pipeline_canvas_controls_respond(cx: &mut TestAppContext) {
+        use dspk_session::command::SessionCommand;
+        use dspk_session::session::RecordingRef;
+        let (window, store, app) = open(cx);
+        cx.update(|cx| {
+            store.update(cx, |s, cx| {
+                let recording = RecordingRef { path: "/data/rec.bin".into(), source: None, channels: None };
+                s.execute(SessionCommand::OpenView { recording, name: None }, cx).unwrap();
+                s.set_workspace(Workspace::Pipeline, cx);
+            })
+        });
+        cx.run_until_parked();
+        let canvas = cx.update(|cx| app.read(cx).pipeline.read(cx).canvas());
+        let state = |cx: &mut TestAppContext| cx.update(|cx| {
+            let c = canvas.read(cx);
+            (c.zoom(), c.show_grid, c.show_minimap)
+        });
+        let click = |cx: &mut TestAppContext, id: &'static str| {
+            cx.update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window.click(id, cx);
+                window.render_frame(cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+        };
+        // The floating tool bar covers none of the canvas' own buttons (it did: their clicks
+        // went to it), wherever it is placed
+        let pipeline = cx.update(|cx| app.read(cx).pipeline.clone());
+        use crate::screens::pipeline::ToolbarDock;
+        for dock in [ToolbarDock::Top, ToolbarDock::Bottom, ToolbarDock::Left, ToolbarDock::Right] {
+            cx.update(|cx| pipeline.update(cx, |p, cx| p.set_dock(dock, cx)));
+            cx.update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                let pill = window.find("pipeline-toolbar-pill").bounds();
+                for id in ["canvas-zoom-out", "canvas-zoom-in", "canvas-fit", "canvas-grid", "canvas-minimap"] {
+                    assert!(!pill.intersects(&window.find(id).bounds()), "{dock:?}: the tool bar covers {id}");
+                }
+            })
+            .unwrap();
+        }
+        let (zoom, grid, minimap) = state(cx);
+        click(cx, "canvas-zoom-in");
+        assert!(state(cx).0 > zoom, "zoom in");
+        click(cx, "canvas-zoom-out");
+        click(cx, "canvas-zoom-out");
+        assert!(state(cx).0 < zoom, "zoom out");
+        click(cx, "canvas-grid");
+        assert_eq!(state(cx).1, !grid, "the dot grid toggles");
+        click(cx, "canvas-minimap");
+        assert_eq!(state(cx).2, !minimap, "the minimap toggles off");
+        click(cx, "canvas-minimap");
+        assert_eq!(state(cx).2, minimap, "and on again");
+        // While the view moves the tool bar steps aside, and comes back once it is still
+        cx.update(|cx| canvas.update(cx, |c, cx| c.zoom_by(1.1, None, cx)));
+        assert!(cx.update(|cx| canvas.read(cx).moving()), "moving after a zoom");
+        cx.executor().advance_clock(Duration::from_millis(1_000));
+        cx.run_until_parked();
+        assert!(!cx.update(|cx| canvas.read(cx).moving()), "still a second after: settled");
+    }
 }

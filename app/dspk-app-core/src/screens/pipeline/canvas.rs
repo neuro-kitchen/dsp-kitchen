@@ -54,6 +54,9 @@ const DRAG_SLOP: f32 = 3.;
 /// Minimap size (screen px).
 const MAP_W: f32 = 200.;
 const MAP_H: f32 = 128.;
+/// How long the canvas must stay still (no pan, wheel or zoom) before it counts as settled and
+/// the floating tool bar shows again (ms).
+const SETTLE_MS: u64 = 600;
 
 /// An item dragged from the operations tree.
 #[derive(Debug, Clone)]
@@ -75,6 +78,8 @@ enum Drag {
 
 pub enum CanvasEvent {
     SelectionChanged,
+    /// The view started or stopped moving (pan, wheel, zoom): see [`GraphCanvas::moving`].
+    Moving,
 }
 
 pub struct GraphCanvas {
@@ -100,6 +105,10 @@ pub struct GraphCanvas {
     hover: Option<String>,
     /// Recipe nodes whose ops are listed under them.
     expanded: BTreeSet<String>,
+    /// The view is moving (pan, wheel, zoom), until [`SETTLE_MS`] after the last motion.
+    moving: bool,
+    /// Ends `moving` once the view stays still; replaced (cancelled) by each motion.
+    settle: Option<gpui_kit::Task<()>>,
     _subs: Vec<Subscription>,
 }
 
@@ -134,6 +143,8 @@ impl GraphCanvas {
             fit_pending: true,
             hover: None,
             expanded: BTreeSet::new(),
+            moving: false,
+            settle: None,
             _subs: subs,
         }
     }
@@ -210,7 +221,35 @@ impl GraphCanvas {
     // View
     // ------------------------------------------------------------------------
 
+    /// Whether the view is moving (pan, wheel, zoom): floating controls step aside meanwhile.
+    pub fn moving(&self) -> bool {
+        self.moving
+    }
+
+    /// The view moved: `moving` until it stays still for [`SETTLE_MS`].
+    fn note_motion(&mut self, cx: &mut Context<Self>) {
+        if !self.moving {
+            self.moving = true;
+            cx.emit(CanvasEvent::Moving);
+        }
+        self.settle = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(std::time::Duration::from_millis(SETTLE_MS)).await;
+            let _ = this.update(cx, |c, cx| {
+                // A pan still held (the pointer resting) keeps it moving: look again later
+                if matches!(c.drag, Some(Drag::Pan { .. })) {
+                    c.note_motion(cx);
+                    return;
+                }
+                c.moving = false;
+                c.settle = None;
+                cx.emit(CanvasEvent::Moving);
+                cx.notify();
+            });
+        }));
+    }
+
     pub fn zoom_by(&mut self, factor: f32, anchor: Option<(f32, f32)>, cx: &mut Context<Self>) {
+        self.note_motion(cx);
         let b = self.bounds.get().size;
         let anchor = anchor.unwrap_or((b.width.as_f32() / 2.0, b.height.as_f32() / 2.0));
         let w = self.world(anchor);
@@ -493,6 +532,7 @@ impl GraphCanvas {
         match &mut self.drag {
             Some(Drag::Pan { mouse, pan }) => {
                 self.pan = (pan.0 + local.0 - mouse.0, pan.1 + local.1 - mouse.1);
+                self.note_motion(cx);
             }
             Some(Drag::Nodes { mouse, origins, moved }) => {
                 let (dx, dy) = (local.0 - mouse.0, local.1 - mouse.1);
@@ -560,6 +600,7 @@ impl GraphCanvas {
         } else {
             self.pan = (self.pan.0 + dx, self.pan.1 + dy);
         }
+        self.note_motion(cx);
         cx.stop_propagation();
         cx.notify();
     }
@@ -850,12 +891,19 @@ impl GraphCanvas {
             .child(bar)
     }
 
+    /// The zoom (tests).
+    #[cfg(test)]
+    pub(crate) fn zoom(&self) -> f32 {
+        self.zoom
+    }
+
     fn controls(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = cx.theme();
         let me = cx.entity().downgrade();
         let b = |name: &'static str, icon: IconName, tip: &'static str, f: fn(&mut GraphCanvas, &mut Context<GraphCanvas>)| {
             let me = me.clone();
-            icon_button(SharedString::from(format!("canvas-{name}")), Icon::new(icon), tip).small().on_click(move |_, _, cx| {
+            // The default size: a 24 px target at least (WCAG 2.2 AA), for a finger too
+            icon_button(SharedString::from(format!("canvas-{name}")), Icon::new(icon), tip).with_size(gpui_kit::component::Size::Medium).on_click(move |_, _, cx| {
                 let _ = me.update(cx, |c, cx| f(c, cx));
             })
         };
@@ -876,7 +924,7 @@ impl GraphCanvas {
             .child(b("zoom-in", IconName::ZoomIn, "Zoom in (Ctrl +)", |c, cx| c.zoom_by(1.25, None, cx)))
             .child(b("fit", IconName::Maximize, "Fit the graph (F)", |c, cx| c.fit(cx)))
             // Toggles show whether they are on
-            .child(b("grid", IconName::LayoutGrid, "Dot grid", |c, cx| {
+            .child(b("grid", IconName::Grip, "Dot grid", |c, cx| {
                 c.show_grid = !c.show_grid;
                 cx.notify();
             }).selected(self.show_grid))
@@ -911,7 +959,7 @@ impl GraphCanvas {
         let mb = map_bounds.clone();
         Some(
             div()
-                .id("canvas-minimap")
+                .id("canvas-minimap-view")
                 .absolute()
                 .right_3()
                 .bottom_3()
