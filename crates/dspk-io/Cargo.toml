@@ -13,7 +13,7 @@ description = "Recording file formats for dspk: raw binary and Zarr traces, form
 [features]
 default = ["zarr"]
 # Zarr recordings read from any store (a browser's files, memory): no file system needed
-zarr-read = ["dep:zarrs"]
+zarr-read = ["dep:zarrs", "dep:half"]
 # Zarr folders on disk, read and written (chunks compressed and stored in parallel). In a
 # browser page (no file system) the functions on folders compile and say so when called
 zarr = ["zarr-read", "dep:rayon"]
@@ -32,6 +32,7 @@ serde_json.workspace = true
 toml.workspace = true
 tracing.workspace = true
 zarrs = { workspace = true, optional = true }
+half = { workspace = true, optional = true }
 # Zarr chunks compressed and stored in parallel
 rayon = { workspace = true, optional = true }
 

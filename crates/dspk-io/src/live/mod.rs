@@ -163,8 +163,9 @@ pub fn encode_stored(values: &[f32], channels: &[ChannelInfo], samples: usize, f
             match format {
                 SampleFormat::I16 => out.extend_from_slice(&(s.round().clamp(i16::MIN as f32, i16::MAX as f32) as i16).to_le_bytes()),
                 SampleFormat::I32 => out.extend_from_slice(&(s.round().clamp(i32::MIN as f32, i32::MAX as f32) as i32).to_le_bytes()),
+                SampleFormat::F16 => out.extend_from_slice(&dspk_core::recording::f32_to_f16(s).to_le_bytes()),
                 SampleFormat::F32 => out.extend_from_slice(&s.to_le_bytes()),
-                other => return Err(DspError::UnsupportedFormat(format!("live sources store int16, int32 or float32, not {}", other.name()))),
+                other => return Err(DspError::UnsupportedFormat(format!("live sources store int16, int32, float16 or float32, not {}", other.name()))),
             }
         }
     }
@@ -183,7 +184,7 @@ mod tests {
 
     #[test]
     fn encode_then_decode_round_trips() {
-        for (format, gain) in [(SampleFormat::I16, 0.5f32), (SampleFormat::I32, 0.5), (SampleFormat::F32, 1.0)] {
+        for (format, gain) in [(SampleFormat::I16, 0.5f32), (SampleFormat::I32, 0.5), (SampleFormat::F16, 1.0), (SampleFormat::F32, 1.0)] {
             // Integer formats round-trip values on their grid (multiples of the gain)
             let l = layout(format, gain);
             let values = vec![1.0, -2.0, 3.5, 100.0, 0.0, -0.5];

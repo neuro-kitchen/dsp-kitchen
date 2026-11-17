@@ -173,6 +173,7 @@ impl ZarrRecording {
             // Zarr has no 24-bit type: an array never says so
             SampleFormat::I24 => return Err(DspError::UnsupportedFormat("24-bit samples in a Zarr array".into())),
             SampleFormat::I32 => get!(i32),
+            SampleFormat::F16 => self.array.retrieve_array_subset::<Vec<half::f16>>(&subset).map_err(read)?.into_iter().map(f32::from).collect(),
             SampleFormat::F64 => get!(f64),
         };
         Ok(values)

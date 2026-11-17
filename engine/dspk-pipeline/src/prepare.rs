@@ -400,14 +400,15 @@ fn select_range(start: Option<u64>, stop: Option<u64>, total: u64) -> Result<std
     Ok(start..stop)
 }
 
-/// Stored upload works for integer storage; float32 gains nothing; float64 has no device unpacking.
+/// Stored upload works for integer storage; float32 gains nothing; float16 and float64 have no
+/// device unpacking.
 fn resolve_upload(requested: Upload, format: SampleFormat) -> Result<bool, PipelineError> {
-    let integer = !matches!(format, SampleFormat::F32 | SampleFormat::F64);
+    let integer = !matches!(format, SampleFormat::F16 | SampleFormat::F32 | SampleFormat::F64);
     match requested {
         Upload::Auto => Ok(integer),
         Upload::Scaled => Ok(false),
-        Upload::Stored if format == SampleFormat::F64 => {
-            Err(PipelineError::Invalid("execution.upload = \"stored\": float64 recordings cannot be scaled on the device".into()))
+        Upload::Stored if matches!(format, SampleFormat::F16 | SampleFormat::F64) => {
+            Err(PipelineError::Invalid(format!("execution.upload = \"stored\": {} recordings cannot be scaled on the device", format.name())))
         }
         Upload::Stored => Ok(true),
     }
