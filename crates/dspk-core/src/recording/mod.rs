@@ -8,13 +8,15 @@ pub mod info;
 pub mod memory;
 pub mod remap;
 pub mod slice;
+pub mod synthetic;
 pub mod source;
 pub mod unit;
 
-pub use format::SampleFormat;
+pub use format::{f16_to_f32, f32_to_f16, SampleFormat};
 pub use info::{ChannelInfo, RecordingInfo};
 pub use memory::MemoryRecording;
 pub use remap::{ChannelMap, ChannelMapFile, ChannelPair, RemappedSource, DEFAULT_CHANNEL_BASE};
 pub use slice::SlicedRecording;
+pub use synthetic::{SyntheticParams, SyntheticRecording};
 pub use source::{check_read, check_read_stored, RecordingSource};
 pub use unit::{SignalUnit, MICROVOLTS_PER_VOLT};

@@ -93,12 +93,36 @@ impl Snippets {
         Some(rows.into_iter().map(|r| [r.first().copied().unwrap_or(0.0), r.get(1).copied().unwrap_or(0.0)]).collect())
     }
 
+    /// Each snippet projected on two templates, `a` and `b` (two units' mean waveforms on this
+    /// channel): Phy's template-feature view. Spikes of two units that are one show one cloud.
+    /// A template of another length than the snippets, or all zeros, projects to 0.
+    pub fn template_features(&self, a: &[f32], b: &[f32]) -> Vec<[f32; 2]> {
+        let project = |row: &[f32], t: &[f32]| {
+            let norm = t.iter().map(|v| v * v).sum::<f32>().sqrt();
+            if t.len() != row.len() || norm <= f32::EPSILON {
+                return 0.0;
+            }
+            row.iter().zip(t).map(|(r, t)| r * t).sum::<f32>() / norm
+        };
+        self.rows.iter().map(|(_, _, row)| [project(row, a), project(row, b)]).collect()
+    }
+
     /// The host fallback (a few thousand rows of tens of samples; power iteration).
     pub fn pca2_host(&self) -> Vec<[f32; 2]> {
+        match self.pca_basis() {
+            Some(basis) => self.rows.iter().map(|(_, _, r)| basis.project(r)).collect(),
+            None => vec![[0.0, 0.0]; self.rows.len()],
+        }
+    }
+
+    /// The snippets' mean and first two principal components (host, power iteration): a basis
+    /// other spikes are projected on alike (a lasso drawn on the features selects every spike of
+    /// the unit by it, not only the ones drawn). `None` for fewer than three snippets.
+    pub fn pca_basis(&self) -> Option<PcaBasis> {
         let d = (self.before + self.after) as usize;
         let n = self.rows.len();
         if n < 3 || d == 0 {
-            return vec![[0.0, 0.0]; n];
+            return None;
         }
         let mut mean = vec![0.0f64; d];
         for (_, _, r) in &self.rows {
@@ -122,14 +146,27 @@ impl Snippets {
         }
         let pc1 = power_iteration(&cov, d, None);
         let pc2 = power_iteration(&cov, d, Some(&pc1));
-        self.rows
-            .iter()
-            .map(|(_, _, r)| {
-                let x = r.iter().zip(&mean).map(|(&v, m)| v as f64 - m);
-                let (a, b) = x.zip(pc1.iter().zip(&pc2)).fold((0.0, 0.0), |(a, b), (v, (p, q))| (a + v * p, b + v * q));
-                [a as f32, b as f32]
-            })
-            .collect()
+        Some(PcaBasis { mean, pc1, pc2 })
+    }
+}
+
+/// Snippets' mean and first two principal components: what [`Snippets::pca_basis`] found.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PcaBasis {
+    pub mean: Vec<f64>,
+    pub pc1: Vec<f64>,
+    pub pc2: Vec<f64>,
+}
+
+impl PcaBasis {
+    /// A snippet's (PC1, PC2); 0 for a snippet of another length.
+    pub fn project(&self, row: &[f32]) -> [f32; 2] {
+        if row.len() != self.mean.len() {
+            return [0.0, 0.0];
+        }
+        let x = row.iter().zip(&self.mean).map(|(&v, m)| v as f64 - m);
+        let (a, b) = x.zip(self.pc1.iter().zip(&self.pc2)).fold((0.0, 0.0), |(a, b), (v, (p, q))| (a + v * p, b + v * q));
+        [a as f32, b as f32]
     }
 }
 
@@ -227,5 +264,18 @@ mod tests {
         let pcs = snippets.pca2_host();
         assert!(pcs[..10].iter().all(|p| p[0].signum() == pcs[0][0].signum()));
         assert!(pcs[10..].iter().all(|p| p[0].signum() == -pcs[0][0].signum()));
+    }
+
+    /// Snippets shaped like template `a` lie along x, like `b` along y.
+    #[test]
+    fn snippets_project_on_the_templates_they_look_like() {
+        let (a, b) = (vec![0.0, -2.0, 1.0], vec![1.0, 0.0, 0.0]);
+        let rows = vec![(Some(0), 0, vec![0.0, -4.0, 2.0]), (Some(1), 1, vec![3.0, 0.0, 0.0])];
+        let f = Snippets { channel: 0, before: 1, after: 2, rows }.template_features(&a, &b);
+        assert!(f[0][0] > 4.0 && f[0][1].abs() < 1e-6, "{f:?}");
+        assert!(f[1][0].abs() < 1e-6 && (f[1][1] - 3.0).abs() < 1e-6, "{f:?}");
+        // A template of another length projects to 0
+        let g = Snippets { channel: 0, before: 1, after: 2, rows: vec![(None, 0, vec![1.0, 1.0, 1.0])] }.template_features(&[1.0], &b);
+        assert_eq!(g[0][0], 0.0);
     }
 }

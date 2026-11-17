@@ -11,7 +11,10 @@ keywords = ["electrophysiology", "neuroscience", "gui", "signal-processing", "sp
 categories = ["science", "gui", "visualization"]
 
 [features]
-default = ["wgpu", "cuda", "cpu"]
+default = ["wgpu", "cuda", "cpu", "table"]
+# The unit table as a Polars frame (desktop, server); a browser page builds without it (Polars
+# does not build for wasm32-unknown-unknown) and sorts the same rows itself
+table = ["dspk-synapse/table", "dep:dspk-table"]
 wgpu = ["dspk-app-core/wgpu", "dspk-synapse/wgpu"]
 cpu = ["dspk-app-core/cpu", "dspk-synapse/cpu"]
 cuda = ["dspk-app-core/cuda", "dspk-synapse/cuda"]
@@ -23,10 +26,12 @@ dspk-core.workspace = true
 dspk-io = { workspace = true, features = ["zarr"] }
 # Formats with probes, synthetic recordings, sortings (MIT OR Apache-2.0; never the GPL sorters)
 # `table`: the unit table of the Curation workspace
-dspk-synapse = { workspace = true, features = ["table"] }
+dspk-synapse.workspace = true
 dspk-view = { workspace = true, default-features = false }
 dspk-pipeline.workspace = true
 dspk-session.workspace = true
+kitchen-shell.workspace = true
+kitchen-ui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
@@ -35,7 +40,11 @@ image.workspace = true
 gpui-kit.workspace = true
 async-channel = "2.5.0"
 # Unit analytics (the Sorting view's table: sort, filter) as data frames
-dspk-table.workspace = true
+dspk-table = { workspace = true, optional = true }
+
+# Installing and finding the sorters program (downloads: not in a browser)
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+dspk-hub.workspace = true
 
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }

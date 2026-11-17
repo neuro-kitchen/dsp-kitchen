@@ -15,8 +15,8 @@ repository-code: "https://github.com/neuro-kitchen/dsp-kitchen"
 license:
   - MIT
   - Apache-2.0
-version: 0.0.10
-date-released: "2026-11-12"
+version: 0.0.12
+date-released: "2026-11-17"
 keywords:
   - signal processing
   - GPU

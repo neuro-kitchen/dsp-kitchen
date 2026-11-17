@@ -64,6 +64,13 @@ pub fn runs_of(view: &ViewDoc) -> Vec<PathBuf> {
     view.plugins.get(ID).and_then(|d| d.get("runs")).and_then(|r| r.as_array()).map(|a| a.iter().filter_map(|p| p.as_str().map(PathBuf::from)).collect()).unwrap_or_default()
 }
 
+/// A curation saved, for Analytics ▸ This session: a short mark of its own (an instant would
+/// last on the timeline until the next activity of its lane).
+fn saved_activity(file: String) {
+    let t = kitchen_shell::activity::now();
+    kitchen_shell::activity::record(kitchen_ui::timeline::Activity { start: t, end: t + 2.0, lane: "You".into(), kind: "Curation".into(), title: "Curation saved".into(), assets: vec![file.into()], ..Default::default() });
+}
+
 /// `view`'s plugin data with `sorting` linked (`None`: unlinked) and `run` added to its runs.
 pub fn plugin_data(view: &ViewDoc, sorting: Option<&std::path::Path>, run: Option<&std::path::Path>) -> serde_json::Value {
     let mut runs = runs_of(view);
@@ -97,6 +104,9 @@ pub struct SynapseState {
     /// Index into [`sort::SORTERS`] and [`sort::PROBES`].
     pub sorter: usize,
     pub probe: usize,
+    /// Sortings on the server a page is served by (paths under its data root): the server
+    /// computes their signal views and saves their curation.
+    pub served: HashSet<PathBuf>,
     _store: Subscription,
 }
 
@@ -135,6 +145,7 @@ impl SynapseState {
             focus: HashMap::new(),
             sorter: 0,
             probe: 0,
+            served: HashSet::new(),
             _store: sub,
         };
         this.load_active(cx);
@@ -164,6 +175,11 @@ impl SynapseState {
         if self.sortings.contains_key(&path) || !self.loading.insert(path.clone()) {
             return;
         }
+        // A page served by a server: the sorting is the server's
+        if dspk_app_core::platform::remote::served() {
+            self.load_served(path, cx);
+            return;
+        }
         let task = cx.background_spawn({
             let path = path.clone();
             async move { SortingData::load(&path).map(|d| (d, Curation::load(&path))) }
@@ -173,28 +189,83 @@ impl SynapseState {
             let _ = this.update(cx, |s, cx| {
                 s.loading.remove(&path);
                 match result {
-                    Ok((data, log)) => {
-                        let summary = data.summary();
-                        s.sortings.insert(path.clone(), Arc::new(data));
-                        match log {
-                            Ok(log) => {
-                                s.curations.insert(path.clone(), log);
-                            }
-                            Err(e) => s.store.update(cx, |st, cx| st.set_status(format!("Curation not applied: {e:#}"), cx)),
-                        }
-                        s.recurate(&path);
-                        s.store.update(cx, |st, cx| {
-                            st.set_status(format!("Sorting loaded: {summary}"), cx);
-                            st.redraw(cx);
-                        });
-                        cx.emit(SynapseEvent::SortingLoaded(path));
-                    }
+                    Ok((data, log)) => s.loaded(path, data, log, cx),
                     Err(e) => s.store.update(cx, |st, cx| st.set_status(format!("{e:#}"), cx)),
                 }
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    /// A page served by a server: reads the sorting at `path` (under the server's data root) in
+    /// pieces, with its curation log; the server computes its signal views and saves its log.
+    fn load_served(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        use dspk_synapse::curation::service::{FilesCall, ReadCall, SortingFiles, PLUGIN, READ_MAX};
+        let remote = path.to_string_lossy().replace('\\', "/");
+        self.store.update(cx, |s, cx| s.set_status(format!("Reading {remote} from the server…"), cx));
+        cx.spawn(async move |this, cx| {
+            let call = |method: &'static str, body: Vec<u8>| dspk_app_core::platform::remote::plugin_call(PLUGIN, method, body);
+            let read = async {
+                let listed: SortingFiles = serde_json::from_slice(&call("files", serde_json::to_vec(&FilesCall { path: remote.clone() })?).await?)?;
+                let mut files = Vec::with_capacity(listed.files.len());
+                for (file, size) in listed.files {
+                    let mut bytes = Vec::with_capacity(size as usize);
+                    while (bytes.len() as u64) < size {
+                        let piece = call("read", serde_json::to_vec(&ReadCall { path: remote.clone(), file: file.clone(), offset: bytes.len() as u64, len: READ_MAX })?).await?;
+                        if piece.is_empty() {
+                            break;
+                        }
+                        bytes.extend_from_slice(&piece);
+                    }
+                    files.push((file, bytes));
+                }
+                // Its curation log, saved on the server inside the store
+                let log = files
+                    .iter()
+                    .find(|(f, _)| f == dspk_synapse::curation::CURATION_FILE)
+                    .and_then(|(_, b)| serde_json::from_slice::<dspk_synapse::curation::CurationFile>(b).ok())
+                    .map(Curation::from_file)
+                    .unwrap_or_default();
+                anyhow::Ok((files, log))
+            };
+            let read = read.await;
+            let name = remote.rsplit('/').next().unwrap_or(&remote).to_string();
+            let loaded = match read {
+                Ok((files, log)) => cx.background_executor().spawn(async move { SortingData::load_files(&name, files).map(|d| (d, log)) }).await.map_err(|e| anyhow::anyhow!("{e}")),
+                Err(e) => Err(e),
+            };
+            let _ = this.update(cx, |s, cx| {
+                s.loading.remove(&path);
+                match loaded {
+                    Ok((data, log)) => {
+                        s.served.insert(path.clone());
+                        s.loaded(path, data, Ok(log), cx);
+                    }
+                    Err(e) => s.store.update(cx, |st, cx| st.set_status(format!("{remote}: {e:#}"), cx)),
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// A sorting read (from disk, or a browser page's files) under `path`, with its curation log.
+    pub fn loaded(&mut self, path: PathBuf, data: SortingData, log: dspk_core::DspResult<Curation>, cx: &mut Context<Self>) {
+        let summary = data.summary();
+        self.sortings.insert(path.clone(), Arc::new(data));
+        match log {
+            Ok(log) => {
+                self.curations.insert(path.clone(), log);
+            }
+            Err(e) => self.store.update(cx, |st, cx| st.set_status(format!("Curation not applied: {e:#}"), cx)),
+        }
+        self.recurate(&path);
+        self.store.update(cx, |st, cx| {
+            st.set_status(format!("Sorting loaded: {summary}"), cx);
+            st.redraw(cx);
+        });
+        cx.emit(SynapseEvent::SortingLoaded(path));
+        cx.notify();
     }
 
     /// The curated sorting of `path` from its log.
@@ -216,7 +287,12 @@ impl SynapseState {
 
     /// Adds a curation edit to `path`'s log.
     pub fn curate(&mut self, path: &PathBuf, op: CurationOp, cx: &mut Context<Self>) {
-        self.curations.entry(path.clone()).or_default().push(op);
+        // Where the edit is made: the desktop app, or a page (its server names the client)
+        let via = if cfg!(target_family = "wasm") { "page" } else { "desktop" };
+        let mut meta = dspk_synapse::curation::EditMeta::now(via);
+        // By the person working; a guest is named by the page's server (its client), or "guest"
+        meta.by = kitchen_shell::people::current().map(|p| p.name).or_else(|| (!self.served.contains(path)).then(|| kitchen_shell::people::GUEST.to_string()));
+        self.curations.entry(path.clone()).or_default().push_with(op, meta);
         self.curated_changed(path, cx);
     }
 
@@ -234,9 +310,59 @@ impl SynapseState {
 
     /// Writes `path`'s curation log into the store (`dspk-curation.json`).
     pub fn save_curation(&mut self, path: &PathBuf, cx: &mut Context<Self>) {
+        // A sorting on the page's server: saved there
+        if self.served.contains(path) {
+            let Some(log) = self.curations.get(path) else { return };
+            let meta = log.file().ops.into_iter().map(|e| e.meta).collect();
+            let undone = log.undone.clone();
+            let call = dspk_synapse::curation::service::SaveCall { path: path.to_string_lossy().into_owned(), ops: log.ops.clone(), meta, undone };
+            let (body, path) = (serde_json::to_vec(&call).unwrap_or_default(), path.clone());
+            cx.spawn(async move |this, cx| {
+                let saved = dspk_app_core::platform::remote::plugin_call(dspk_synapse::curation::service::PLUGIN, "save", body).await;
+                let _ = this.update(cx, |s, cx| {
+                    let status = match saved {
+                        Ok(_) => {
+                            let n = s.curations.get_mut(&path).map(|log| {
+                                log.saved = log.ops.len();
+                                log.ops.len()
+                            });
+                            saved_activity(format!("{} (on the server)", path.display()));
+                            format!("Curation saved on the server: {} ({} edits)", path.display(), n.unwrap_or(0))
+                        }
+                        Err(e) => format!("Curation not saved: {e:#}"),
+                    };
+                    s.store.update(cx, |st, cx| st.set_status(status, cx));
+                    cx.emit(SynapseEvent::Curated(path.clone()));
+                    cx.notify();
+                });
+            })
+            .detach();
+            return;
+        }
+        // A page on its own (the files it picked, read into memory): the log as a download, to
+        // put into the .sorting.zarr folder (where the desktop and `dspk` read it)
+        if dspk_app_core::platform::remote::runs_alone() {
+            let Some(log) = self.curations.get_mut(path) else { return };
+            let file = log.file();
+            let bytes = serde_json::to_vec_pretty(&file).unwrap_or_default();
+            let status = match dspk_app_core::platform::remote::download(dspk_synapse::curation::CURATION_FILE, &bytes, "application/json") {
+                Ok(()) => {
+                    log.saved = log.ops.len();
+                    format!("Curation downloaded ({} edits): put {} into {}", log.ops.len(), dspk_synapse::curation::CURATION_FILE, path.display())
+                }
+                Err(e) => format!("Curation not downloaded: {e:#}"),
+            };
+            self.store.update(cx, |s, cx| s.set_status(status, cx));
+            cx.emit(SynapseEvent::Curated(path.clone()));
+            cx.notify();
+            return;
+        }
         let Some(log) = self.curations.get_mut(path) else { return };
         let status = match log.save(path) {
-            Ok(file) => format!("Curation saved: {} ({} edits)", dspk_session::paths::short_path(&file), log.ops.len()),
+            Ok(file) => {
+                saved_activity(file.display().to_string());
+                format!("Curation saved: {} ({} edits)", dspk_session::paths::short_path(&file), log.ops.len())
+            }
             Err(e) => format!("Curation not saved: {e:#}"),
         };
         self.store.update(cx, |s, cx| s.set_status(status, cx));
@@ -323,6 +449,10 @@ impl AppPlugin for SynapsePlugin {
 
     fn opener(&self) -> Option<&dyn SourceOpener> {
         Some(&self.opener)
+    }
+
+    fn makes_synthetic(&self) -> bool {
+        true
     }
 
     fn synthetic(&self, channels: usize, sample_rate: f64, duration_sec: f64) -> Option<anyhow::Result<Arc<dyn RecordingSource>>> {
@@ -484,5 +614,33 @@ impl AppPlugin for SynapsePlugin {
 
     fn view_section(&self, store: &Entity<Store>, view: &ViewDoc, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
         Some(panel::section(store, view, window, cx))
+    }
+
+    fn timeline_section(&self, store: &Entity<Store>, _window: &mut Window, cx: &mut App) -> Option<(&'static str, AnyElement)> {
+        Some(("SORTINGS", panel::timeline_section(store, cx)))
+    }
+
+    fn timeline_add(&self) -> Vec<(&'static str, dspk_app_core::plugin::TimelineAdd)> {
+        vec![(
+            "Sorting…",
+            std::rc::Rc::new(|store: &Entity<Store>, window: &mut Window, cx: &mut App| {
+                match store.read(cx).active_view().map(|v| v.id.clone()) {
+                    // A page served by a server: its sortings are the server's (Curate on one)
+                    Some(_) if dspk_app_core::platform::remote::served() => {
+                        store.update(cx, |s, cx| s.set_status("Pick a sorting on the server: Curate", cx));
+                        dspk_app_core::commands::run_command("file.open_server", window, cx);
+                    }
+                    Some(view) => panel::pick_and_attach(store, view, cx),
+                    None => store.update(cx, |s, cx| s.set_status("Open a recording first: a sorting belongs to one", cx)),
+                }
+            }),
+        )]
+    }
+
+    fn server_entry(&self, kind: dspk_app_core::data::remote::wire::FileKind) -> Option<(&'static str, dspk_app_core::plugin::ServerEntryAction)> {
+        (kind == dspk_app_core::data::remote::wire::FileKind::Sorting).then(|| {
+            let action: dspk_app_core::plugin::ServerEntryAction = std::rc::Rc::new(|store: &Entity<Store>, path: String, _: &mut Window, cx: &mut App| panel::open_server_sorting(store, path, cx));
+            ("Curate", action)
+        })
     }
 }

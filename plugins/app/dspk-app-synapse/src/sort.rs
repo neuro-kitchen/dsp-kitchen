@@ -36,22 +36,28 @@ fn program_file_name() -> String {
 }
 
 /// The `dspk-cli-sorter` to run: `$DSPK_CLI_SORTER_BIN`, else next to this program (a source
-/// build puts both in one folder), else the one `dspk sorters install` installed for this
-/// version (`$DSPK_DATA_DIR`, else the user data folder: `~/.local/share/dspk` on Linux).
+/// build puts both in one folder), else the one installed for this version (dspk-hub: what
+/// `dspk sorters install` and this app's Install button install). Not in a browser.
 pub fn locate() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os(SORTER_BIN_ENV).filter(|p| !p.is_empty()) {
-        return Some(PathBuf::from(p));
+    #[cfg(not(target_family = "wasm"))]
+    {
+        // `beside` is this program itself: the sorter is looked for in its folder
+        let exe = std::env::current_exe().ok();
+        dspk_hub::sorters::locate(env!("CARGO_PKG_VERSION"), exe.as_deref())
     }
-    let name = program_file_name();
-    if let Some(p) = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.join(&name))).filter(|p| p.is_file()) {
-        return Some(p);
+    #[cfg(target_family = "wasm")]
+    None
+}
+
+/// Downloads this version's `dspk-cli-sorter` for this computer from the GitHub release, checked
+/// against the release's manifest (SHA-256 and size), into the user data folder; its path.
+pub fn install() -> Result<PathBuf, String> {
+    #[cfg(not(target_family = "wasm"))]
+    {
+        dspk_hub::sorters::install(env!("CARGO_PKG_VERSION")).map_err(|e| format!("{e:#}"))
     }
-    let data = std::env::var_os("DSPK_DATA_DIR")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("XDG_DATA_HOME").map(|d| PathBuf::from(d).join("dspk")))
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share/dspk")))?;
-    let p = data.join("sorters").join(env!("CARGO_PKG_VERSION")).join(&name);
-    p.is_file().then_some(p)
+    #[cfg(target_family = "wasm")]
+    Err("sorters run in the desktop app or on a server".into())
 }
 
 /// What to sort.
@@ -75,7 +81,7 @@ pub struct SortRequest {
 /// Runs `dspk-cli-sorter <sorter> <recording> -o <output>`, reporting its progress lines.
 pub fn sort(req: &SortRequest, send: impl Fn(JobMessage) + Send + Sync + 'static) -> Cancel {
     let Some(program) = locate() else {
-        send(JobMessage::Failed(format!("{} not found: install it with `dspk sorters install`, or set {SORTER_BIN_ENV}", program_file_name())));
+        send(JobMessage::Failed(format!("{} not found: Install sorters below (or `dspk sorters install`), or set {SORTER_BIN_ENV}", program_file_name())));
         return Cancel::default();
     };
     let mut cmd = Command::new(program);
@@ -128,7 +134,7 @@ pub struct Described {
 
 /// Runs `dspk-cli-sorter describe` (blocking: call it off the UI thread).
 pub fn describe() -> Result<Described, String> {
-    let program = locate().ok_or_else(|| format!("{} not found: install it with `dspk sorters install`, or set {SORTER_BIN_ENV}", program_file_name()))?;
+    let program = locate().ok_or_else(|| format!("{} not found: Install sorters below (or `dspk sorters install`), or set {SORTER_BIN_ENV}", program_file_name()))?;
     let out = Command::new(&program).arg("describe").output().map_err(|e| format!("{}: {e}", dspk_session::paths::short_path(&program)))?;
     if !out.status.success() {
         return Err(format!("{} describe: {}", dspk_session::paths::short_path(&program), String::from_utf8_lossy(&out.stderr).trim()));
@@ -194,6 +200,48 @@ fn trim(v: f64) -> String {
     t.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
+/// `run` (as [`run_path`] names it) with the time it starts in its name, UTC to the minute:
+/// `rec.kilosort4.0-20s.20261117-2032.sorting.zarr`, so runs of the same part never collide and
+/// say when they were made.
+pub fn stamped(run: &Path, unix_secs: u64) -> PathBuf {
+    let t = dspk_core::time::wall::rfc3339_utc(unix_secs); // 2026-11-17T20:32:03Z
+    let stamp = format!("{}{}{}-{}{}", &t[0..4], &t[5..7], &t[8..10], &t[11..13], &t[14..16]);
+    let name = run.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+    let stem = name.strip_suffix(".sorting.zarr").unwrap_or(&name);
+    run.with_file_name(format!("{stem}.{stamp}.sorting.zarr"))
+}
+
+/// Whether `other` is a run of the same sorter over the same part as `run` (unstamped, as
+/// [`run_path`] names it), by name: `other` is `run`, or `run` with a stamp, or with a `-2`…
+/// (the folder is not compared: a server's runs are named by their path on it)
+pub fn same_run(run: &Path, other: &Path) -> bool {
+    let name = |p: &Path| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let (base, other) = (name(run), name(other));
+    let Some(stem) = base.strip_suffix(".sorting.zarr") else { return false };
+    let Some(rest) = other.strip_suffix(".sorting.zarr").and_then(|o| o.strip_prefix(stem)) else { return false };
+    rest.is_empty() || stamp_of(rest).is_some() || rest.strip_prefix('-').is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// `.20261117-2032` → its date and time as people read it (`17 Nov 2026, 20:32 UTC`).
+fn stamp_of(rest: &str) -> Option<String> {
+    let s = rest.strip_prefix('.')?;
+    let (date, time) = s.split_once('-')?;
+    if date.len() != 8 || time.len() != 4 || !date.chars().chain(time.chars()).all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let month = MONTHS.get(date[4..6].parse::<usize>().ok()?.checked_sub(1)?)?;
+    Some(format!("{} {month} {}, {}:{} UTC", date[6..8].trim_start_matches('0'), &date[0..4], &time[0..2], &time[2..4]))
+}
+
+/// When run `other` (of the same part as `run`) was made, from the stamp in its name.
+pub fn run_time(run: &Path, other: &Path) -> Option<String> {
+    let name = |p: &Path| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let stem = name(run).strip_suffix(".sorting.zarr")?.to_string();
+    let other = name(other);
+    stamp_of(other.strip_suffix(".sorting.zarr")?.strip_prefix(&stem)?)
+}
+
 /// `rec.bin` → `rec.<sorter>.sorting.zarr` next to it.
 pub fn sorting_path(recording: &Path, sorter: &str) -> PathBuf {
     let name = recording.file_name().map_or_else(|| "recording".into(), |n| n.to_string_lossy().into_owned());
@@ -222,5 +270,20 @@ mod tests {
     fn test_sorting_path() {
         assert_eq!(sorting_path(Path::new("/d/rec.bin"), "kilosort4"), PathBuf::from("/d/rec.kilosort4.sorting.zarr"));
         assert_eq!(sorting_path(Path::new("/d/rec.v2.processed.zarr"), "mountainsort5"), PathBuf::from("/d/rec.v2.processed.mountainsort5.sorting.zarr"));
+    }
+
+    /// A run's name carries when it started; runs of the same part are recognised, stamped or
+    /// not, and say when they were made.
+    #[test]
+    fn runs_are_stamped_and_recognised() {
+        let run = run_path(Path::new("/d/rec.bin"), "kilosort4", None, Some(20.0));
+        assert_eq!(run, PathBuf::from("/d/rec.kilosort4.0-20s.sorting.zarr"));
+        let stamped = stamped(&run, 1_794_947_555); // 2026-11-17T20:32:35Z
+        assert_eq!(stamped, PathBuf::from("/d/rec.kilosort4.0-20s.20261117-2032.sorting.zarr"));
+        assert!(same_run(&run, &stamped) && same_run(&run, &run) && same_run(&run, Path::new("/d/rec.kilosort4.0-20s-2.sorting.zarr")));
+        assert!(!same_run(&run, Path::new("/d/rec.kilosort4.0-200s.sorting.zarr")), "another part");
+        assert!(!same_run(&run, Path::new("/d/rec.mountainsort5.0-20s.sorting.zarr")));
+        assert_eq!(run_time(&run, &stamped).as_deref(), Some("17 Nov 2026, 20:32 UTC"));
+        assert_eq!(run_time(&run, &run), None);
     }
 }

@@ -17,6 +17,8 @@ wgpu = ["dspk-core/wgpu", "dspk-ops/wgpu", "dspk-pipeline/wgpu", "dspk-session/w
 cpu = ["dspk-core/cpu", "dspk-ops/cpu", "dspk-pipeline/cpu", "dspk-session/cpu"]
 cuda = ["dspk-core/cuda", "dspk-ops/cuda", "dspk-pipeline/cuda", "dspk-session/cuda"]
 hip = ["dspk-core/hip", "dspk-ops/hip", "dspk-pipeline/hip", "dspk-session/hip"]
+# Real time: connect to a dspk device, follow it, direct it, live views (`data::instrument`)
+device = ["dspk-stream/live", "dspk-pipeline/live"]
 
 [dependencies]
 web-time.workspace = true
@@ -65,7 +67,7 @@ tokio.workspace = true
 # and storage (its server's name, the token kept between visits)
 [target.'cfg(target_family = "wasm")'.dependencies]
 wasm_thread = { version = "0.3.3", features = ["es_modules"] }
-web-sys = { version = "0.3", features = ["Window", "Location", "Storage", "Document", "Element", "HtmlElement", "HtmlInputElement", "File", "FileList"] }
+web-sys = { version = "0.3", features = ["Window", "Location", "Storage", "Document", "Element", "HtmlElement", "HtmlInputElement", "Blob", "BlobPropertyBag", "File", "FileList", "HtmlAnchorElement", "Url"] }
 js-sys = "0.3"
 wasm-bindgen = "0.2"
 # The loader's folder picker answers with a promise

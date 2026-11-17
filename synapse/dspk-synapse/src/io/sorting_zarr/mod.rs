@@ -18,8 +18,8 @@ use serde_json::{Map, Value};
 
 use dspk_io::container::npy::NpyArray;
 use dspk_io::container::zarr::{
-    has_array, open_rw_store, read_array, read_node_json, read_optional_array, write_array_f32, write_array_i32,
-    write_array_u64, write_group,
+    has_array, open_rw_store, read_array, read_array_in, read_node_json, read_node_json_in, read_optional_array, read_optional_array_in,
+    write_array_f32, write_array_i32, write_array_u64, write_group,
 };
 use crate::io::probe::SensorLayout;
 
@@ -125,6 +125,28 @@ impl SortingZarr {
         })
     }
 
+    /// Reads the store `name` from `store` (the files of a `.sorting.zarr` a browser page picked,
+    /// held in memory): as [`Self::read`], without a file system (and without legacy `.npy`).
+    pub fn read_store(store: &std::sync::Arc<dyn zarrs::storage::ReadableStorageTraits>, name: &str) -> DspResult<Self> {
+        let label = Path::new(name);
+        let root = read_node_json_in(store, "/").ok_or_else(|| DspError::UnsupportedFormat(format!("Missing zarr.json in {name}")))?;
+        let manifest = root.get("attributes").filter(|v| v.get("dsp_format").is_some()).unwrap_or(&root);
+        let manifest: SortingZarrManifest = serde_json::from_value(manifest.clone()).map_err(|e| DspError::UnsupportedFormat(format!("{name}: {e}")))?;
+        let optional = |p: &str| read_optional_array_in::<f32>(store, label, p);
+        let templates_mean = optional("/templates/mean").filter(|a| a.shape.len() == 3);
+        let same_shape = |p: &str| optional(p).map(|a| a.data).filter(|v| templates_mean.as_ref().is_some_and(|m| m.data.len() == v.len()));
+        Ok(Self {
+            manifest,
+            spike_times: read_array_in::<u64>(store, label, "/spikes/times")?.data,
+            spike_clusters: read_array_in::<i32>(store, label, "/spikes/clusters")?.data,
+            amplitudes: optional("/spikes/amplitudes").map(|a| a.data).unwrap_or_default(),
+            locations: optional("/spikes/locations").filter(|a| a.shape.get(1) == Some(&3)).map(|a| a.data.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect()).unwrap_or_default(),
+            templates_std: same_shape("/templates/std"),
+            templates_se: same_shape("/templates/se"),
+            templates_mean,
+        })
+    }
+
     /// Writes the store into `dir` (created if needed).
     pub fn write(&self, dir: &Path) -> DspResult<()> {
         let store = open_rw_store(dir)?;
@@ -200,6 +222,9 @@ mod tests {
         store.write(&dir).unwrap();
         assert!(SortingZarr::is_sorting_zarr(&dir));
         assert_eq!(SortingZarr::read(&dir).unwrap(), store);
+        // Through a store (as a browser page reads the files it picked): the same
+        let through: std::sync::Arc<dyn zarrs::storage::ReadableStorageTraits> = dspk_io::container::zarr::open_store(&dir).unwrap();
+        assert_eq!(SortingZarr::read_store(&through, "x.sorting.zarr").unwrap(), store);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

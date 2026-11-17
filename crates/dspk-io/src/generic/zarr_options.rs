@@ -1,6 +1,6 @@
 //! How a Zarr recording is laid out and compressed: plain values, there in every build (pipeline
-//! specs name them), also where Zarr stores themselves are not built (feature `zarr` off, e.g. in
-//! a browser).
+//! specs name them), also where Zarr stores themselves are not written (feature `zarr` off, or a
+//! browser page: no file system).
 
 /// Default chunk length: ~0.17 s at 30 kHz.
 pub const DEFAULT_CHUNK_SAMPLES: usize = 5000;
@@ -42,12 +42,12 @@ impl Default for ZarrOptions {
     }
 }
 
-/// Where Zarr stores are not built: a writer that cannot be made, so code that writes one
+/// Where Zarr stores are not written (feature `zarr` off, a browser page): a writer that cannot be made, so code that writes one
 /// compiles and reports it instead.
-#[cfg(not(feature = "zarr"))]
+#[cfg(any(not(feature = "zarr"), target_family = "wasm"))]
 pub struct ZarrWriter(());
 
-#[cfg(not(feature = "zarr"))]
+#[cfg(any(not(feature = "zarr"), target_family = "wasm"))]
 impl ZarrWriter {
     pub fn create(path: &std::path::Path, _channels: usize, _samples: u64, _sample_rate_hz: f64, _unit: &dspk_core::SignalUnit, _options: &ZarrOptions) -> dspk_core::DspResult<Self> {
         Err(dspk_core::DspError::UnsupportedFormat(format!("{}: Zarr stores cannot be written in this build", path.display())))

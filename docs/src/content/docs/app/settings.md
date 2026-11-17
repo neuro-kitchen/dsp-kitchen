@@ -33,6 +33,19 @@ Explore (read on the server), or fetch a file or folder, such as a sorting, into
 A remote recording behaves like a local one. A sort started on it runs on the server, and its
 progress shows like the app's other jobs.
 
+## People
+
+The person button at the right of the title bar says who works: a name, or **Guest**. Pick
+someone from its menu, or **People…** to add one (a name, and optionally a lab and an
+[ORCID iD](https://orcid.org)) or forget one. Names are kept in `people.json` in the app's folder;
+there are no passwords.
+
+The name is written on what you save: a curation's edits, and a recording's
+[session metadata](/dsp-kitchen/app/explore/#session-and-subject) can list you as an
+experimenter. A guest's edits say `guest`, with no name. The app records nothing about what you do:
+**Analytics → This session** lists what this session made (sorts, pipeline runs, files saved),
+and it is gone when the app closes.
+
 ## The settings file
 
 The Settings screen writes `settings.toml` in the app's folder (`~/.config/dspk-app/` on Linux,

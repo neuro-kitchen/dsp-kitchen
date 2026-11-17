@@ -8,7 +8,7 @@ use std::rc::Rc;
 use gpui_kit::component::{h_flex, v_flex, IconName};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{div, px, AnyElement, App, Div, ElementId, FontWeight, IntoElement, ParentElement, RenderOnce, SharedString, Styled as _, Window};
-pub use kitchen_ui::widgets::{icon_button, row, scrub_label, slider, stepper, swatch, AccentChanged, AccentPicker, EmptyState, MenuSelect, OnSlide, OnStep, Section, SCRUB_PX};
+pub use kitchen_ui::widgets::{icon_button, row, scrub_field, scrub_label, slider, stepper, swatch, AccentChanged, AccentPicker, EmptyState, MenuSelect, OnSlide, OnStep, Section, SCRUB_PX};
 
 use super::theme::{self, color};
 

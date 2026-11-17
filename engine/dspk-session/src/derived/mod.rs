@@ -4,7 +4,8 @@
 //!
 //! ```text
 //! rec.bin
-//! rec.dspk.zarr/               root attributes: dspk_derived (version), recording
+//! rec.dspk.zarr/               root attributes: dspk_derived (version), recording, nwb_session
+//!                              (the session's metadata as filled in: [`session_meta`])
 //!   epochs/                    start_s, end_s; ids, names, kinds, notes as attributes ([`epochs`])
 //!   events/<name>/             an event set: channel, onset_sample, offset_sample, peak_sample,
 //!                              peak_value; sample rate and channel names as attributes ([`events`])
@@ -15,6 +16,7 @@
 
 pub mod epochs;
 pub mod events;
+pub mod session_meta;
 
 use std::path::{Path, PathBuf};
 

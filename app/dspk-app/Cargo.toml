@@ -22,7 +22,9 @@ cpu = ["dspk-app-core/cpu", "dspk-app-synapse?/cpu"]
 cuda = ["dspk-app-core/cuda", "dspk-app-synapse?/cuda"]
 hip = ["dspk-app-core/hip", "dspk-app-synapse?/hip"]
 # Electrophysiology: probes and shanks, SpikeGLX / NWB, sortings, the Sorting workspace
-synapse = ["dep:dspk-app-synapse"]
+synapse = ["dep:dspk-app-synapse", "dspk-app-synapse/table"]
+# Real time: work with dspk devices (live sources, taps, recordings on the device)
+device = ["dspk-app-core/device"]
 
 [dependencies]
 dspk-app-core.workspace = true

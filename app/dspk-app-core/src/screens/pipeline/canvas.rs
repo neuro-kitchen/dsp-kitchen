@@ -32,13 +32,55 @@ use gpui_kit::{
 use crate::data::store::{AppEvent, NodeRun, Store};
 use dspk_session::command::{NodeMove, SessionCommand};
 use dspk_session::graph::{GraphDoc, NodeKind, COLUMN};
-use crate::ui::widgets::icon_button;
+use crate::ui::widgets::{icon_button, scrub_field};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
+use gpui_kit::{AnyElement, AppContext as _, Focusable as _, StatefulInteractiveElement as _, WeakEntity};
+use serde_json::{json, Value};
 
 use super::catalog::{describe, type_name, Template};
+use super::node_params::{op_links, param_rows, stepped, with_value, ParamRow, ParamValue};
 
-/// A node's size in canvas units.
+/// A node's size in canvas units: its width, and the height of its head (title and one line;
+/// all of a node without parameters). Edges meet the head's middle.
 pub const NODE_W: f32 = 216.;
 pub const NODE_H: f32 = 64.;
+/// A row of an operation's parameters under its head (canvas units).
+const PARAM_ROW: f32 = 28.;
+/// Rows a card shows; the rest are counted ("+2 more") and edited in the inspector.
+const PARAM_ROWS_MAX: usize = 4;
+/// Space under the last row (canvas units).
+const PARAM_PAD: f32 = 8.;
+/// From this zoom the rows are controls (dragged, typed, picked); a control keeps its size, so
+/// it needs the row at about this scale.
+const PARAM_CONTROLS_ZOOM: f32 = 0.85;
+/// From this zoom the rows are shown (as text below [`PARAM_CONTROLS_ZOOM`]).
+const PARAM_TEXT_ZOOM: f32 = 0.5;
+
+/// A node's height in canvas units: its head, and the rows of an operation's parameters.
+pub fn card_h(kind: &NodeKind) -> f32 {
+    match kind {
+        NodeKind::Op { node, .. } => match param_rows(node).len() {
+            0 => NODE_H,
+            n => NODE_H + (n.min(PARAM_ROWS_MAX) + usize::from(n > PARAM_ROWS_MAX)) as f32 * PARAM_ROW + PARAM_PAD,
+        },
+        _ => NODE_H,
+    }
+}
+
+/// A parameter being typed on a card.
+struct ParamEdit {
+    /// [`ParamRow::key`] of the row.
+    key: String,
+    node: String,
+    field: String,
+    index: Option<usize>,
+    integer: bool,
+    input: Entity<InputState>,
+    _sub: Subscription,
+}
 /// Height of a recipe's tab above its card (canvas units).
 const RECIPE_TAB: f32 = 18.;
 /// Handle radius (screen px) and how far from it a press still grabs it.
@@ -54,6 +96,9 @@ const DRAG_SLOP: f32 = 3.;
 /// Minimap size (screen px).
 const MAP_W: f32 = 200.;
 const MAP_H: f32 = 128.;
+/// How long the canvas must stay still (no pan, wheel or zoom) before it counts as settled and
+/// the floating tool bar shows again (ms).
+const SETTLE_MS: u64 = 600;
 
 /// An item dragged from the operations tree.
 #[derive(Debug, Clone)]
@@ -75,6 +120,8 @@ enum Drag {
 
 pub enum CanvasEvent {
     SelectionChanged,
+    /// The view started or stopped moving (pan, wheel, zoom): see [`GraphCanvas::moving`].
+    Moving,
 }
 
 pub struct GraphCanvas {
@@ -100,6 +147,12 @@ pub struct GraphCanvas {
     hover: Option<String>,
     /// Recipe nodes whose ops are listed under them.
     expanded: BTreeSet<String>,
+    /// The view is moving (pan, wheel, zoom), until [`SETTLE_MS`] after the last motion.
+    moving: bool,
+    /// Ends `moving` once the view stays still; replaced (cancelled) by each motion.
+    settle: Option<gpui_kit::Task<()>>,
+    /// A parameter being typed on a card (Enter or leaving applies it, Esc cancels).
+    editing: Option<ParamEdit>,
     _subs: Vec<Subscription>,
 }
 
@@ -134,6 +187,9 @@ impl GraphCanvas {
             fit_pending: true,
             hover: None,
             expanded: BTreeSet::new(),
+            moving: false,
+            settle: None,
+            editing: None,
             _subs: subs,
         }
     }
@@ -170,7 +226,7 @@ impl GraphCanvas {
     fn node_at(&self, p: (f32, f32), cx: &App) -> Option<String> {
         self.graph(cx).nodes.iter().rev().find_map(|n| {
             let (x, y) = self.pos(&n.id, n.x, n.y);
-            (p.0 >= x && p.0 <= x + NODE_W && p.1 >= y && p.1 <= y + NODE_H).then(|| n.id.clone())
+            (p.0 >= x && p.0 <= x + NODE_W && p.1 >= y && p.1 <= y + card_h(&n.kind)).then(|| n.id.clone())
         })
     }
 
@@ -195,6 +251,56 @@ impl GraphCanvas {
         self.store.update(cx, |s, cx| s.execute(cmd, cx)).is_ok()
     }
 
+    /// Sets a parameter of operation node `id` (`field`, element `index`); one step of `gesture`
+    /// (a drag: one undo step for all of it) or a change of its own. An invalid value is dropped.
+    fn set_param(&mut self, id: &str, field: &str, index: Option<usize>, value: Value, gesture: Option<String>, cx: &mut Context<Self>) {
+        let Some(NodeKind::Op { node, .. }) = self.graph(cx).node(id).map(|n| n.kind.clone()) else { return };
+        let Some(node) = with_value(&node, field, index, value) else { return };
+        let cmd = SessionCommand::SetNode { id: id.to_string(), node };
+        let _ = self.store.update(cx, |s, cx| match &gesture {
+            Some(g) => s.execute_gesture(g, cmd, cx),
+            None => s.execute(cmd, cx),
+        });
+    }
+
+    /// Steps a number of operation node `id` once in direction `dir`, from its value now (a fast
+    /// drag steps several times before the card is drawn again).
+    fn step_param(&mut self, id: &str, field: &str, index: Option<usize>, dir: f32, cx: &mut Context<Self>) {
+        let Some(NodeKind::Op { node, .. }) = self.graph(cx).node(id).map(|n| n.kind.clone()) else { return };
+        let Some(ParamValue::Number { value, integer }) = param_rows(&node).into_iter().find(|r| r.field == field && r.index == index).map(|r| r.value) else { return };
+        let next = stepped(value, integer, dir);
+        let next = if integer { json!(next as i64) } else { json!(next) };
+        self.set_param(id, field, index, next, Some(format!("drag {id} {field} {index:?}")), cx);
+    }
+
+    /// Types parameter `row` of node `id`: a text field in its place, focused.
+    fn begin_edit(&mut self, id: &str, row: &ParamRow, window: &mut Window, cx: &mut Context<Self>) {
+        let integer = matches!(row.value, ParamValue::Number { integer: true, .. });
+        let text = row.shown();
+        let input = cx.new(|cx| InputState::new(window, cx));
+        input.update(cx, |i, cx| i.set_value(text, window, cx));
+        let sub = cx.subscribe(&input, |c, _, e: &InputEvent, cx| {
+            if matches!(e, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                c.commit_edit(cx);
+            }
+        });
+        let focus = input.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+        self.editing = Some(ParamEdit { key: row.key(id), node: id.to_string(), field: row.field.clone(), index: row.index, integer, input, _sub: sub });
+        cx.notify();
+    }
+
+    /// Applies the number typed (a number not read, or not valid for the node, is dropped).
+    fn commit_edit(&mut self, cx: &mut Context<Self>) {
+        let Some(e) = self.editing.take() else { return };
+        let text = e.input.read(cx).value().to_string();
+        if let Ok(v) = text.trim().parse::<f64>() {
+            let value = if e.integer { json!(v.round() as i64) } else { json!(v) };
+            self.set_param(&e.node, &e.field, e.index, value, None, cx);
+        }
+        cx.notify();
+    }
+
     pub fn select(&mut self, ids: impl IntoIterator<Item = String>, cx: &mut Context<Self>) {
         self.selected = ids.into_iter().collect();
         cx.emit(CanvasEvent::SelectionChanged);
@@ -210,7 +316,35 @@ impl GraphCanvas {
     // View
     // ------------------------------------------------------------------------
 
+    /// Whether the view is moving (pan, wheel, zoom): floating controls step aside meanwhile.
+    pub fn moving(&self) -> bool {
+        self.moving
+    }
+
+    /// The view moved: `moving` until it stays still for [`SETTLE_MS`].
+    fn note_motion(&mut self, cx: &mut Context<Self>) {
+        if !self.moving {
+            self.moving = true;
+            cx.emit(CanvasEvent::Moving);
+        }
+        self.settle = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(std::time::Duration::from_millis(SETTLE_MS)).await;
+            let _ = this.update(cx, |c, cx| {
+                // A pan still held (the pointer resting) keeps it moving: look again later
+                if matches!(c.drag, Some(Drag::Pan { .. })) {
+                    c.note_motion(cx);
+                    return;
+                }
+                c.moving = false;
+                c.settle = None;
+                cx.emit(CanvasEvent::Moving);
+                cx.notify();
+            });
+        }));
+    }
+
     pub fn zoom_by(&mut self, factor: f32, anchor: Option<(f32, f32)>, cx: &mut Context<Self>) {
+        self.note_motion(cx);
         let b = self.bounds.get().size;
         let anchor = anchor.unwrap_or((b.width.as_f32() / 2.0, b.height.as_f32() / 2.0));
         let w = self.world(anchor);
@@ -493,6 +627,7 @@ impl GraphCanvas {
         match &mut self.drag {
             Some(Drag::Pan { mouse, pan }) => {
                 self.pan = (pan.0 + local.0 - mouse.0, pan.1 + local.1 - mouse.1);
+                self.note_motion(cx);
             }
             Some(Drag::Nodes { mouse, origins, moved }) => {
                 let (dx, dy) = (local.0 - mouse.0, local.1 - mouse.1);
@@ -536,7 +671,7 @@ impl GraphCanvas {
                         .graph(cx)
                         .nodes
                         .iter()
-                        .filter(|n| n.x < x1 && n.x + NODE_W > x0 && n.y < y1 && n.y + NODE_H > y0)
+                        .filter(|n| n.x < x1 && n.x + NODE_W > x0 && n.y < y1 && n.y + card_h(&n.kind) > y0)
                         .map(|n| n.id.clone())
                         .collect();
                     let mut s = if additive { self.selected.clone() } else { BTreeSet::new() };
@@ -560,11 +695,21 @@ impl GraphCanvas {
         } else {
             self.pan = (self.pan.0 + dx, self.pan.1 + dy);
         }
+        self.note_motion(cx);
         cx.stop_propagation();
         cx.notify();
     }
 
     fn on_key(&mut self, e: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        // Typing a parameter: the keys are the text field's (Backspace must not delete the node);
+        // Esc leaves it unchanged
+        if self.editing.is_some() {
+            if e.keystroke.key == "escape" {
+                self.editing = None;
+                cx.notify();
+            }
+            return;
+        }
         let k = &e.keystroke;
         let cmd = k.modifiers.control || k.modifiers.platform;
         match k.key.as_str() {
@@ -637,6 +782,7 @@ impl GraphCanvas {
         active: bool,
         run: Option<NodeRun>,
         group: Option<Vec<String>>,
+        me: WeakEntity<Self>,
         cx: &App,
     ) -> impl IntoElement + use<> {
         let t = cx.theme();
@@ -645,6 +791,69 @@ impl GraphCanvas {
         let (title, sub, icon) = describe(kind);
         let enabled = !matches!(kind, NodeKind::Op { enabled: false, .. });
         let accent = kind_color(kind);
+        // An operation's parameters under its head (as text when zoomed out, none further out),
+        // and its help: the docs, the code, the kernel
+        let op = match kind {
+            NodeKind::Op { node, .. } => Some(node.clone()),
+            _ => None,
+        };
+        let rows = op.as_ref().map(param_rows).unwrap_or_default();
+        let rows_shown = !rows.is_empty() && z >= PARAM_TEXT_ZOOM;
+        // With its parameters listed, the line under the title names the call, as other nodes do
+        let sub = match op.as_ref().filter(|_| rows_shown).and_then(|n| serde_json::to_value(n).ok()) {
+            Some(v) => format!(".{}()", v["op"].as_str().unwrap_or("op")),
+            None => sub,
+        };
+        let params = rows_shown.then(|| {
+            let more = rows.len().saturating_sub(PARAM_ROWS_MAX);
+            let controls = z >= PARAM_CONTROLS_ZOOM;
+            let (me2, id2) = (me.clone(), id.to_string());
+            v_flex()
+                .id(SharedString::from(format!("params-{id}")))
+                .test_support()
+                .w_full()
+                .pb(px(PARAM_PAD * z))
+                // The rows' controls take the pointer: no node drag or selection box from them
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .children(rows.iter().take(PARAM_ROWS_MAX).map(|r| self.param_row(id, r, controls, me.clone(), cx)))
+                .when(more > 0, |d| {
+                    d.child(
+                        div()
+                            .id(SharedString::from(format!("params-more-{id}")))
+                            .h(px(PARAM_ROW * z))
+                            .flex()
+                            .items_center()
+                            .text_size(px(11.0 * z))
+                            .text_color(muted)
+                            .cursor_pointer()
+                            .hover(|d| d.text_color(t.foreground))
+                            .child(format!("+{more} more in the inspector"))
+                            .on_click(move |_, _, cx| {
+                                let _ = me2.update(cx, |c, cx| c.select([id2.clone()], cx));
+                            }),
+                    )
+                })
+        });
+        let help = op.as_ref().filter(|_| z >= PARAM_TEXT_ZOOM).map(|node| {
+            let links = op_links(node);
+            div().flex_none().on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()).child(
+                Button::new(SharedString::from(format!("help-{id}")))
+                    .ghost()
+                    .xsmall()
+                    .icon(Icon::new(IconName::BookOpen))
+                    .tooltip("How it works: the docs, the code, the GPU kernel")
+                    .dropdown_menu(move |m: PopupMenu, _, _| {
+                        let (docs, source) = (links.docs.clone(), links.source.clone());
+                        let m = m
+                            .item(PopupMenuItem::new("Documentation").icon(Icon::new(IconName::BookOpen)).on_click(move |_, _, cx| cx.open_url(&docs)))
+                            .item(PopupMenuItem::new("Implementation").icon(Icon::new(IconName::FileCode)).on_click(move |_, _, cx| cx.open_url(&source)));
+                        match links.kernel.clone() {
+                            Some(kernel) => m.item(PopupMenuItem::new("GPU kernel").icon(Icon::new(IconName::FileCode)).on_click(move |_, _, cx| cx.open_url(&kernel))),
+                            None => m,
+                        }
+                    }),
+            )
+        });
         let handle = |left: bool| {
             let r = (HANDLE_R * z.max(0.6)).max(3.0);
             div()
@@ -699,7 +908,7 @@ impl GraphCanvas {
             .left(px(sx))
             .top(px(sy))
             .w(px(NODE_W * z))
-            .h(px(NODE_H * z))
+            .h(px(card_h(kind) * z))
             .rounded(px(12.0 * z))
             .when(selected, |d| d.border_2())
             .when(!selected, |d| d.border_1())
@@ -727,9 +936,8 @@ impl GraphCanvas {
                             .rounded_r(inner_radius)
                             .rounded_l(px(8.0 * z))
                             .px(px(10.0 * z))
-                            .gap(px(3.0 * z))
-                            .justify_center()
-                            .child(
+                            // The head: the height of every node, so edges meet its middle
+                            .child(v_flex().flex_none().h(px(NODE_H * z)).gap(px(3.0 * z)).justify_center().child(
                                 h_flex()
                                     .gap(px(6.0 * z))
                                     .min_w_0()
@@ -737,13 +945,15 @@ impl GraphCanvas {
                                     .child(div().flex_1().min_w_0().truncate().text_size(px(13.0 * z)).font_weight(FontWeight::SEMIBOLD).child(title))
                                     .when(active, |d| d.child(div().flex_none().px(px(5.0 * z)).rounded(px(4.0 * z)).bg(t.accent).text_size(px(10.0 * z)).child("shown")))
                                     .when(!enabled, |d| d.child(div().flex_none().text_size(px(10.0 * z)).text_color(t.muted_foreground).child("off")))
-                                    .children(badge),
+                                    .children(badge)
+                                    .children(help),
                             )
                             .when(z >= 0.45, |d| match (run_line, group_line) {
                                 (Some((line, color)), _) => d.child(div().truncate().text_size(px(10.5 * z)).text_color(color).child(line)),
                                 (None, Some(ops)) => d.child(div().truncate().text_size(px(11.0 * z)).text_color(t.muted_foreground).child(ops)),
                                 (None, None) => d.child(div().truncate().text_size(px(11.0 * z)).font_family("monospace").text_color(t.muted_foreground).child(sub)),
-                            }),
+                            }))
+                            .children(params),
                     ),
             )
             .when(kind.has_input(), |d| d.child(handle(true)))
@@ -770,7 +980,7 @@ impl GraphCanvas {
             .children(listed.map(|ops| {
                 v_flex()
                     .absolute()
-                    .top(px(NODE_H * z + 4.0))
+                    .top(px(card_h(kind) * z + 4.0))
                     .left_0()
                     .w(px(NODE_W * z))
                     .p(px(6.0 * z))
@@ -850,12 +1060,82 @@ impl GraphCanvas {
             .child(bar)
     }
 
+    /// One parameter row of node `id`: its label, and its value as a control (`controls`) or as
+    /// text. A number is dragged or clicked to type, a choice is a menu, a switch a checkbox.
+    fn param_row(&self, id: &str, row: &ParamRow, controls: bool, me: WeakEntity<Self>, cx: &App) -> AnyElement {
+        let t = cx.theme();
+        let z = self.zoom;
+        let key = row.key(id);
+        let label = div().flex_1().min_w_0().truncate().text_size(px(11.0 * z)).text_color(t.muted_foreground).child(row.label.clone());
+        let text = |s: String| div().flex_none().max_w(px(110.0 * z)).truncate().text_size(px(11.0 * z)).font_family("monospace").child(s).into_any_element();
+        let value: AnyElement = if !controls {
+            text(row.shown())
+        } else if let Some(edit) = self.editing.as_ref().filter(|e| e.key == key) {
+            div().flex_none().w(px(96.)).child(Input::new(&edit.input).xsmall()).into_any_element()
+        } else {
+            let (node, field, index) = (id.to_string(), row.field.clone(), row.index);
+            match &row.value {
+                ParamValue::Number { .. } => {
+                    let (m1, m2, r) = (me.clone(), me, row.clone());
+                    let (n1, f1, n2) = (node.clone(), field.clone(), node);
+                    scrub_field(
+                        format!("param-{key}"),
+                        row.shown(),
+                        move |dir, _, cx| {
+                            let _ = m1.update(cx, |c, cx| c.step_param(&n1, &f1, index, dir, cx));
+                        },
+                        move |window, cx| {
+                            let _ = m2.update(cx, |c, cx| c.begin_edit(&n2, &r, window, cx));
+                        },
+                    )
+                    .into_any_element()
+                }
+                ParamValue::Choice { value, options } => {
+                    let options = *options;
+                    let current = value.clone();
+                    Button::new(SharedString::from(format!("param-{key}")))
+                        .ghost()
+                        .xsmall()
+                        .label(crate::ui::param_editor::label_of(value))
+                        .dropdown_menu(move |m: PopupMenu, _, _| {
+                            let mut m = m;
+                            for o in options {
+                                let (me, node, field) = (me.clone(), node.clone(), field.clone());
+                                m = m.item(PopupMenuItem::new(crate::ui::param_editor::label_of(o)).checked(*o == current).on_click(move |_, _, cx| {
+                                    let _ = me.update(cx, |c, cx| c.set_param(&node, &field, index, json!(o), None, cx));
+                                }));
+                            }
+                            m
+                        })
+                        .into_any_element()
+                }
+                ParamValue::Flag(on) => Checkbox::new(SharedString::from(format!("param-{key}")))
+                    .checked(*on)
+                    .small()
+                    .on_click(move |v: &bool, _, cx| {
+                        let v = *v;
+                        let _ = me.update(cx, |c, cx| c.set_param(&node, &field, index, json!(v), None, cx));
+                    })
+                    .into_any_element(),
+                ParamValue::Text(s) => text(s.clone()),
+            }
+        };
+        h_flex().h(px(PARAM_ROW * z)).gap(px(6.0 * z)).items_center().child(label).child(value).into_any_element()
+    }
+
+    /// The zoom (tests).
+    #[cfg(test)]
+    pub(crate) fn zoom(&self) -> f32 {
+        self.zoom
+    }
+
     fn controls(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = cx.theme();
         let me = cx.entity().downgrade();
         let b = |name: &'static str, icon: IconName, tip: &'static str, f: fn(&mut GraphCanvas, &mut Context<GraphCanvas>)| {
             let me = me.clone();
-            icon_button(SharedString::from(format!("canvas-{name}")), Icon::new(icon), tip).small().on_click(move |_, _, cx| {
+            // The default size: a 24 px target at least (WCAG 2.2 AA), for a finger too
+            icon_button(SharedString::from(format!("canvas-{name}")), Icon::new(icon), tip).with_size(gpui_kit::component::Size::Medium).on_click(move |_, _, cx| {
                 let _ = me.update(cx, |c, cx| f(c, cx));
             })
         };
@@ -876,7 +1156,7 @@ impl GraphCanvas {
             .child(b("zoom-in", IconName::ZoomIn, "Zoom in (Ctrl +)", |c, cx| c.zoom_by(1.25, None, cx)))
             .child(b("fit", IconName::Maximize, "Fit the graph (F)", |c, cx| c.fit(cx)))
             // Toggles show whether they are on
-            .child(b("grid", IconName::LayoutGrid, "Dot grid", |c, cx| {
+            .child(b("grid", IconName::Grip, "Dot grid", |c, cx| {
                 c.show_grid = !c.show_grid;
                 cx.notify();
             }).selected(self.show_grid))
@@ -900,7 +1180,7 @@ impl GraphCanvas {
             .iter()
             .map(|n| {
                 let (x, y) = self.pos(&n.id, n.x, n.y);
-                (((x - ex0) * scale + 6.0, (y - ey0) * scale + 6.0, NODE_W * scale, NODE_H * scale), kind_color(&n.kind))
+                (((x - ex0) * scale + 6.0, (y - ey0) * scale + 6.0, NODE_W * scale, card_h(&n.kind) * scale), kind_color(&n.kind))
             })
             .collect();
         let view = ((vw0 - ex0) * scale + 6.0, (vh0 - ey0) * scale + 6.0, (vw1 - vw0) * scale, (vh1 - vh0) * scale);
@@ -911,7 +1191,7 @@ impl GraphCanvas {
         let mb = map_bounds.clone();
         Some(
             div()
-                .id("canvas-minimap")
+                .id("canvas-minimap-view")
                 .absolute()
                 .right_3()
                 .bottom_3()
@@ -968,8 +1248,8 @@ fn kind_color(kind: &NodeKind) -> Hsla {
 fn extent(g: &GraphDoc) -> Option<(f32, f32, f32, f32)> {
     let mut it = g.nodes.iter();
     let first = it.next()?;
-    let init = (first.x, first.y, first.x + NODE_W, first.y + NODE_H);
-    Some(it.fold(init, |(a, b, c, d), n| (a.min(n.x), b.min(n.y), c.max(n.x + NODE_W), d.max(n.y + NODE_H))))
+    let init = (first.x, first.y, first.x + NODE_W, first.y + card_h(&first.kind));
+    Some(it.fold(init, |(a, b, c, d), n| (a.min(n.x), b.min(n.y), c.max(n.x + NODE_W), d.max(n.y + card_h(&n.kind)))))
 }
 
 /// Radius of an edge's elbows (screen px, at most half the room there is).
@@ -1158,6 +1438,7 @@ impl Render for GraphCanvas {
         .absolute()
         .size_full();
 
+        let me = cx.entity().downgrade();
         let cards: Vec<_> = g
             .nodes
             .iter()
@@ -1170,7 +1451,7 @@ impl Render for GraphCanvas {
                     NodeKind::Recipe { recipe, .. } => Some(recipes.get(recipe).map(|r| r.ops.iter().map(|o| type_name(&o.node).to_string()).collect()).unwrap_or_default()),
                     _ => None,
                 };
-                self.node_card(&n.id, &n.kind, sp, self.selected.contains(&n.id), faded(&n.id), lit, shown, status.get(&n.id).cloned(), group, cx).into_any_element()
+                self.node_card(&n.id, &n.kind, sp, self.selected.contains(&n.id), faded(&n.id), lit, shown, status.get(&n.id).cloned(), group, me.clone(), cx).into_any_element()
             })
             .collect();
         let toolbar = self.single().cloned().and_then(|id| {

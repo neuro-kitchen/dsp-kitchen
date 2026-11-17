@@ -7,9 +7,9 @@ pub mod aligned;
 
 use std::sync::Arc;
 
-use gpui_kit::component::button::Button;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Sizable as _};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Selectable as _, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
@@ -59,7 +59,18 @@ pub struct AnalyticsWorkspace {
     error: Option<String>,
     /// Unit of the aligned signal's values (for the card text).
     unit: String,
+    /// What is shown: things aligned to events, or what this session made.
+    showing: Showing,
+    /// The timeline of what this session made (made when first shown).
+    history: Option<Entity<kitchen_ui::timeline::Timeline>>,
     _store: Subscription,
+}
+
+/// What Analytics shows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Showing {
+    Aligned,
+    History,
 }
 
 impl AnalyticsWorkspace {
@@ -69,7 +80,7 @@ impl AnalyticsWorkspace {
                 this.refresh(cx);
             }
         });
-        let mut this = Self { store, set: None, window: DEFAULT_WINDOW, align: AlignTo::OwnEvents, shown: None, computing: None, error: None, unit: String::new(), _store: sub };
+        let mut this = Self { store, set: None, window: DEFAULT_WINDOW, align: AlignTo::OwnEvents, shown: None, computing: None, error: None, unit: String::new(), showing: Showing::Aligned, history: None, _store: sub };
         this.refresh(cx);
         this
     }
@@ -235,17 +246,62 @@ impl AnalyticsWorkspace {
     }
 }
 
+impl AnalyticsWorkspace {
+    /// Aligned to events · History: what Analytics shows.
+    fn showing_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let choice = |id: &'static str, label: &'static str, tip: &'static str, which: Showing, cx: &mut Context<Self>| {
+            Button::new(id).small().ghost().label(label).tooltip(tip).selected(self.showing == which).on_click(cx.listener(move |this, _, _, cx| {
+                this.showing = which;
+                cx.notify();
+            }))
+        };
+        h_flex()
+            .gap_1()
+            .child(choice("analytics-aligned", "Aligned to events", "Signals and units averaged around an event set", Showing::Aligned, cx))
+            .child(choice("analytics-history", "This session", "What this session made: sorts, pipeline runs, files saved (kept until the app closes)", Showing::History, cx))
+            .into_any_element()
+    }
+
+    /// What this session made (jobs and files, not every command), made when first shown.
+    fn history_view(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let timeline = self.history.get_or_insert_with(|| kitchen_shell::activity::view_of("This session", kitchen_shell::activity::made, cx)).clone();
+        v_flex()
+            .id("analytics")
+            .test_support()
+            .size_full()
+            .p(px(theme::PANE_GAP))
+            .gap(px(theme::PANE_GAP))
+            .bg(color::chrome())
+            .child(pane().flex_none().p_2().child(self.showing_bar(cx)))
+            .child(div().flex_1().min_h_0().rounded(px(theme::RADIUS_LG)).bg(color::panel()).overflow_hidden().child(timeline))
+            .into_any_element()
+    }
+}
+
 impl Render for AnalyticsWorkspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.showing == Showing::History {
+            return self.history_view(cx);
+        }
+        let bar = self.showing_bar(cx);
         let store = self.store.clone();
         let s = self.store.read(cx);
         if s.recording.is_none() || s.doc.event_sets.is_empty() {
-            return div().id("analytics").test_support().size_full().child(EmptyState::new(
-                Workspace::Analytics.icon(),
-                "Nothing to align yet",
-                "Open a recording and find events on it: in Pipeline, a chain ending with Crossings and a Write saves an event set. \
-                 Its channels' average around the events, and each unit's raster and PETH, show here.",
-            ));
+            return v_flex()
+                .id("analytics")
+                .test_support()
+                .size_full()
+                .p(px(theme::PANE_GAP))
+                .gap(px(theme::PANE_GAP))
+                .bg(color::chrome())
+                .child(pane().flex_none().p_2().child(bar))
+                .child(div().flex_1().min_h_0().rounded(px(theme::RADIUS_LG)).bg(color::panel()).child(EmptyState::new(
+                    Workspace::Analytics.icon(),
+                    "Nothing to align yet",
+                    "Open a recording and find events on it: in Pipeline, a chain ending with Crossings and a Write saves an event set. \
+                     Its channels' average around the events, and each unit's raster and PETH, show here. This session lists what was made.",
+                )))
+                .into_any_element();
         }
         let (muted, border) = (cx.theme().muted_foreground, cx.theme().border);
         let controls = self.controls(cx);
@@ -293,7 +349,7 @@ impl Render for AnalyticsWorkspace {
             .p(px(theme::PANE_GAP))
             .gap(px(theme::PANE_GAP))
             .bg(color::chrome())
-            .child(pane().flex_none().child(controls))
+            .child(pane().flex_none().child(v_flex().child(div().p_2().child(bar)).child(controls)))
             .child(
                 v_flex()
                     .id("analytics-body")
@@ -309,5 +365,6 @@ impl Render for AnalyticsWorkspace {
                     .child(h_flex().flex_wrap().gap_3().children(cards.unwrap_or_default()))
                     .children(extra),
             )
+            .into_any_element()
     }
 }

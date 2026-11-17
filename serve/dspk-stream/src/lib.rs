@@ -4,13 +4,18 @@
 //! - [`protocol`]: the messages (generated from `proto/dspk_stream.proto`), their framing, and
 //!   conversions to and from dspk-core / dspk-view types.
 //! - [`transport`]: QUIC + TLS 1.3 endpoints, the server session and the client session.
+//! - [`live`]: devices (live sources, taps, a director): draft, messages only.
 //!
 //! Local recording I/O lives in `dspk-io`; envelopes and pyramids in `dspk-view` (a server answers
 //! views with them).
 
 pub mod engine;
 pub mod error;
+/// Devices (live sources, taps, a director): not in a browser page yet.
+#[cfg(all(feature = "live", not(target_family = "wasm")))]
+pub mod live;
 pub mod pair;
+pub mod plugin;
 pub mod protocol;
 pub mod remote;
 /// A browser page's connection to its server (a WebSocket), as a [`Link`].
@@ -23,7 +28,8 @@ pub mod worker_client;
 pub mod transport;
 
 pub use error::{StreamError, StreamResult};
-pub use remote::{Link, RemoteSignal, RemoteSource};
+pub use plugin::{PluginContext, ServerPlugin};
+pub use remote::{plugin_call, Link, RemoteSignal, RemoteSource};
 /// Files under a server's data root (safe paths, listings).
 #[cfg(not(target_family = "wasm"))]
 pub use transport::files;

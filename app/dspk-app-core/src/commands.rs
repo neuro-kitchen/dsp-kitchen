@@ -41,6 +41,8 @@ pub struct Ctx {
     pub toggle_about: Rc<dyn Fn(&mut Window, &mut App)>,
     /// Opens "Open from server" over the frame.
     pub open_browser: Rc<dyn Fn(&mut Window, &mut App)>,
+    /// Opens Devices over the frame (feature `device`).
+    pub open_devices: Rc<dyn Fn(&mut Window, &mut App)>,
 }
 
 impl Ctx {
@@ -98,11 +100,14 @@ pub fn pick_page_files(store: &Entity<Store>, folder: bool, browser: Rc<dyn Fn(&
     let store = store.clone();
     window
         .spawn(cx, async move |cx| match crate::platform::remote::pick_files(folder).await {
-            Ok(recordings) if recordings.len() == 1 => {
+            Ok((recordings, _)) if recordings.len() == 1 => {
                 let _ = store.update(cx, |s, cx| s.open_remote(crate::platform::remote::page_profile(), recordings[0].clone(), cx));
             }
-            Ok(recordings) if recordings.is_empty() => {
-                let _ = store.update(cx, |s, cx| s.set_status("No recording among the files picked (a .zarr folder, or a .bin with its .meta)", cx));
+            Ok((recordings, note)) if recordings.is_empty() => {
+                // A dialog closed without a choice: no note, nothing to say
+                if let Some(note) = note {
+                    let _ = store.update(cx, |s, cx| s.set_status(note, cx));
+                }
             }
             Ok(_) => {
                 let _ = cx.update(|window, cx| browser(window, cx));
@@ -112,6 +117,12 @@ pub fn pick_page_files(store: &Entity<Store>, folder: bool, browser: Rc<dyn Fn(&
             }
         })
         .detach();
+}
+
+/// Runs the app's command `id` (as its menu item would), from code that has no menu of its own
+/// (a plugin).
+pub fn run_command(id: &str, window: &mut Window, cx: &mut App) {
+    window.dispatch_action(Box::new(kitchen_shell::RunCommand { id: id.to_string().into() }), cx);
 }
 
 /// Opens the synthetic recording.
@@ -181,8 +192,13 @@ pub fn register(registry: &Registry, c: &Ctx) {
         .group("File")
         .hint("Open a recording by its path"),
         CommandSpec::new("file.open_server", "Open from server…", IconName::Server, move |w, cx| browser(w, cx)).group("File").hint("Browse the recordings a dspk server offers"),
-        CommandSpec::new("file.synthetic", "Synthetic recording", IconName::AudioWaveform, move |_, cx| open_synthetic(&o4, cx)).group("File").hint("32 channels, 5 minutes: to try things out"),
-        CommandSpec::new("file.tune", "Tune this device", IconName::Gauge, move |_, cx| tune_device(&o5, cx)).group("File").hint("Benchmark this GPU once, in the background"),
+        CommandSpec::new("file.synthetic", "Synthetic recording", IconName::AudioWaveform, move |_, cx| open_synthetic(&o4, cx)).group("File").hint("32 channels, 5 minutes: to try things out").enabled(|_| {
+            if crate::plugin::makes_synthetic() { Ok(()) } else { Err("Not in this build yet (it comes with the Synapse plugin)".into()) }
+        }),
+        CommandSpec::new("file.tune", "Tune this device", IconName::Gauge, move |_, cx| tune_device(&o5, cx)).group("File").hint("Benchmark this GPU once, in the background").enabled(|_| {
+            // A page computes in its engine worker or on its server, not where this menu is
+            if cfg!(target_family = "wasm") { Err("Not in a browser: the page computes in its engine or on its server".into()) } else { Ok(()) }
+        }),
         CommandSpec::new("file.clear_recent", "Clear recent", IconName::Trash, st(|s, cx| s.forget_recent(None, cx))).group("File").hint("Forget the recent lists (the files stay)").enabled(move |cx| {
             let s = &recent.read(cx).session;
             if s.recent.is_empty() && s.recent_sortings.is_empty() { Err("Nothing to clear".into()) } else { Ok(()) }
@@ -193,6 +209,12 @@ pub fn register(registry: &Registry, c: &Ctx) {
         CommandSpec::new("edit.undo", "Undo", IconName::Undo2, st(|s, cx| s.undo(false, cx))).group("Edit").hint("Undo the last change of the session").key("secondary-z"),
         CommandSpec::new("edit.redo", "Redo", IconName::Redo2, st(|s, cx| s.undo(true, cx))).group("Edit").hint("Redo what was undone").key("secondary-shift-z"),
     ];
+    // Real time: dspk devices (feature `device`)
+    #[cfg(feature = "device")]
+    {
+        let devices = c.open_devices.clone();
+        list.push(CommandSpec::new("file.devices", "Devices…", IconName::Server, move |w, cx| devices(w, cx)).group("File").hint("Connect to a dspk device: its state, control, recording, a tap live"));
+    }
     // View: the views of Explore and its docks
     let explore = c.explore.clone();
     let add = |kind: TimeViewKind| {
@@ -315,8 +337,11 @@ fn providers(registry: &Registry, s: &Entity<Store>) {
 /// The app menu (named after the app): recordings; Settings comes last (the frame's).
 pub fn app_menu(cx: &App) -> Vec<MenuItem> {
     let mut items: Vec<MenuItem> = crate::ui::recording_picker::open_actions(cx).iter().map(|(_, pick)| MenuItem::command(if *pick == Pick::File { "file.open" } else { "file.open_folder" })).collect();
+    items.push(MenuItem::command("file.open_server"));
+    // Real time: the devices (built with the `device` feature)
+    #[cfg(feature = "device")]
+    items.push(MenuItem::command("file.devices"));
     items.extend([
-        MenuItem::command("file.open_server"),
         MenuItem::command("file.synthetic"),
         MenuItem::command("file.tune"),
         MenuItem::provided("file.recent"),

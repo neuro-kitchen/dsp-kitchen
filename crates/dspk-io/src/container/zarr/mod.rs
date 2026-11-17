@@ -1,7 +1,10 @@
-//! Zarr v3 groups and arrays on the filesystem (`zarrs`), shared by every Zarr-based format.
+//! Zarr v3 groups and arrays (`zarrs`), shared by every Zarr-based format: in a folder on disk,
+//! or read from any store (`*_in`: the files a browser page picked, held in memory).
 //!
 //! Writes arrays with `_DTYPE` and `_ARRAY_DIMENSIONS` attributes (the hdmf-zarr convention), and
-//! [`read_array`] falls back to legacy `<node>.npy` files when reading older directories.
+//! [`read_array`] falls back to legacy `<node>.npy` files when reading older directories. In a
+//! browser page there is no file system: [`open_store`] (and what opens folders through it) says
+//! so.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -9,7 +12,6 @@ use std::sync::Arc;
 use dspk_core::{DspError, DspResult};
 use serde_json::{Map, Value, json};
 use zarrs::array::{Array, ArrayBuilder, DataType, data_type};
-use zarrs::filesystem::FilesystemStore;
 use zarrs::group::GroupBuilder;
 use zarrs::storage::{ReadableStorageTraits, ReadableWritableListableStorage};
 
@@ -20,9 +22,16 @@ fn zarr_err(path: &Path, context: &str, err: impl std::fmt::Display) -> DspError
 }
 
 /// Opens the Zarr v3 filesystem store at `dir`.
+#[cfg(not(target_family = "wasm"))]
 pub fn open_store(dir: &Path) -> DspResult<ReadableWritableListableStorage> {
-    let store = FilesystemStore::new(dir).map_err(|e| zarr_err(dir, "open store", e))?;
+    let store = zarrs::filesystem::FilesystemStore::new(dir).map_err(|e| zarr_err(dir, "open store", e))?;
     Ok(Arc::new(store))
+}
+
+/// A browser page has no file system: folders are read from the files it picked ([`read_array_in`]).
+#[cfg(target_family = "wasm")]
+pub fn open_store(dir: &Path) -> DspResult<ReadableWritableListableStorage> {
+    Err(zarr_err(dir, "open store", "a browser page has no file system"))
 }
 
 /// Opens a read-write Zarr v3 filesystem store at `dir`, creating directories if needed.
@@ -174,6 +183,12 @@ pub fn write_array_f32(
     build_and_store(store, dir, node_path, shape, data_type::float32(), zarrs::array::FillValue::from(0.0f32), "float32", dims, attrs, data)
 }
 
+/// Writes strings (`data_type` `string`, variable-length UTF-8): NWB's text fields. `shape` `[]`
+/// is a scalar (one value).
+pub fn write_array_str(store: &ReadableWritableListableStorage, dir: &Path, node_path: &str, data: &[&str], shape: &[usize], attrs: Map<String, Value>) -> DspResult<()> {
+    build_and_store(store, dir, node_path, shape, data_type::string(), zarrs::array::FillValue::from(""), "str", &[], attrs, data)
+}
+
 pub fn write_array_f64(
     store: &ReadableWritableListableStorage,
     dir: &Path,
@@ -191,15 +206,46 @@ pub fn read_array<T: NpyElement>(dir: &Path, node_path: &str) -> DspResult<NpyAr
     let rel = node_path.trim_start_matches('/');
     let zarr_meta_path = dir.join(rel).join("zarr.json");
     if zarr_meta_path.is_file() {
-        let meta = read_node_json(dir, node_path).ok_or_else(|| {
+        let store: Arc<dyn ReadableStorageTraits> = open_store(dir)?;
+        return read_array_in(&store, dir, node_path);
+    }
+
+    let npy_path = dir.join(format!("{rel}.npy"));
+    if npy_path.is_file() {
+        return read_npy::<T>(&npy_path);
+    }
+
+    Err(DspError::UnsupportedFormat(format!(
+        "{}: missing Zarr array or .npy file for '{node_path}'",
+        dir.display()
+    )))
+}
+
+/// The `zarr.json` document of `node_path` in `store`.
+pub fn read_node_json_in(store: &Arc<dyn ReadableStorageTraits>, node_path: &str) -> Option<Value> {
+    let rel = node_path.trim_matches('/');
+    let key = if rel.is_empty() { "zarr.json".to_string() } else { format!("{rel}/zarr.json") };
+    let bytes = store.get(&zarrs::storage::StoreKey::new(key).ok()?).ok()??;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// Whether `store` holds an array at `node_path`.
+pub fn has_array_in(store: &Arc<dyn ReadableStorageTraits>, node_path: &str) -> bool {
+    read_node_json_in(store, node_path).is_some_and(|m| m.get("node_type").and_then(Value::as_str) == Some("array"))
+}
+
+/// The array at `node_path` of `store` (named `label` in errors), converted to `T`.
+pub fn read_array_in<T: NpyElement>(store: &Arc<dyn ReadableStorageTraits>, label: &Path, node_path: &str) -> DspResult<NpyArray<T>> {
+    let dir = label;
+    {
+        let meta = read_node_json_in(store, node_path).ok_or_else(|| {
             DspError::UnsupportedFormat(format!("{}:{node_path}: invalid zarr.json", dir.display()))
         })?;
         let dtype_str = meta
             .get("data_type")
             .and_then(Value::as_str)
             .unwrap_or("float32");
-        let store: Arc<dyn ReadableStorageTraits> =
-            Arc::new(FilesystemStore::new(dir).map_err(|e| zarr_err(dir, node_path, e))?);
+        let store = store.clone();
         let z_path = if node_path.starts_with('/') {
             node_path.to_string()
         } else {
@@ -231,18 +277,13 @@ pub fn read_array<T: NpyElement>(dir: &Path, node_path: &str) -> DspResult<NpyAr
                 )));
             }
         };
-        return Ok(NpyArray { data, shape });
+        Ok(NpyArray { data, shape })
     }
+}
 
-    let npy_path = dir.join(format!("{rel}.npy"));
-    if npy_path.is_file() {
-        return read_npy::<T>(&npy_path);
-    }
-
-    Err(DspError::UnsupportedFormat(format!(
-        "{}: missing Zarr array or .npy file for '{node_path}'",
-        dir.display()
-    )))
+/// The array at `node_path` of `store` when it has one and it reads as `T`.
+pub fn read_optional_array_in<T: NpyElement>(store: &Arc<dyn ReadableStorageTraits>, label: &Path, node_path: &str) -> Option<NpyArray<T>> {
+    has_array_in(store, node_path).then(|| read_array_in::<T>(store, label, node_path).ok()).flatten()
 }
 
 /// Reads an optional array from `dir` at `node_path`.

@@ -93,6 +93,19 @@ at the same session time line up. A view of another recording shows it as stored
 spikes belong to the open recording) and keeps its own channel selection. It's saved with the
 layout and comes back while that recording is loaded.
 
+## Session and subject
+
+Right-click a recording in the Timeline tab → **Metadata**: at the end of its card, **Session and
+subject (NWB)** lists NWB's fields: the session's identifier, description and start time (the
+three NWB requires, marked *), the experimenters, lab, institution, experiment and keywords, and
+the subject (id, species, sex, age, genotype, strain). What the data says is shown as it is (an
+NWB file's own fields; a SpikeGLX recording's start time); the rest you type, and **Keep** saves it
+in the recording's `.dspk.zarr`, never in the recording itself. The app's
+[people](/dsp-kitchen/app/settings/#people) can be added as experimenters with a click.
+
+An NWB export carries them: `dspk convert rec.sorting.zarr rec.nwb.zarr --session rec.ap.bin`
+writes the fields the output lacks, and says which required ones are still missing.
+
 ## Several sources
 
 ![The Timeline panel with two recordings and a Baseline epoch](/dsp-kitchen/img/app/08_add-multiple-recordings.png)

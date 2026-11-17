@@ -123,6 +123,8 @@ fn main() -> Result<()> {
         // One main window: closing it ends the app (Linux / Windows convention)
         cx.on_window_closed(|cx, _| cx.quit()).detach();
 
+        // Who works: the people (what is saved names them)
+        dspk_app_core::data::history::install();
         let document = if args.no_session { None } else { Session::document_path() };
         let store = cx.new(|cx| {
             let mut store = Store::new(session, session_path);

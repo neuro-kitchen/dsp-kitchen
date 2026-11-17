@@ -2,8 +2,11 @@
 //! view model, screen and screen-local components.
 
 pub mod analytics;
+#[cfg(feature = "device")]
+pub mod devices;
 pub mod explore;
 pub mod floating;
 pub mod pipeline;
 pub mod server_browser;
+pub mod session_info;
 pub mod settings;

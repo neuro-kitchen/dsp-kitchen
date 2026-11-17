@@ -50,6 +50,8 @@ pub struct FloatingLayer {
     sources: HashMap<PathBuf, Result<Vec<SourceEntry>, String>>,
     place: Entity<InputState>,
     place_for: Option<PathBuf>,
+    /// The session and subject (NWB) of the recording whose card is open.
+    session: Entity<crate::screens::session_info::SessionInfoForm>,
     _work: Vec<Task<()>>,
     _subs: Vec<Subscription>,
 }
@@ -80,6 +82,7 @@ impl FloatingLayer {
             sources: HashMap::new(),
             place,
             place_for: None,
+            session: cx.new(|cx| crate::screens::session_info::SessionInfoForm::new(window, cx)),
             _work: Vec::new(),
             _subs: subs,
         }
@@ -178,6 +181,8 @@ impl FloatingLayer {
         let muted = cx.theme().muted_foreground;
         let s = self.store.read(cx);
         let open = s.recording.as_ref().is_some_and(|r| r.path.as_deref() == Some(path.as_path()));
+        // What its reader knows (SpikeGLX's start time…), for the session form
+        let reader: std::collections::BTreeMap<String, String> = s.sources().filter(|_| open).map(|ss| ss.get(source).signal().info().metadata.clone()).unwrap_or_default();
         let entries: Result<Vec<SourceEntry>, String> = if open {
             Ok(s.sources().map(|ss| ss.entries().to_vec()).unwrap_or_default())
         } else {
@@ -253,6 +258,10 @@ impl FloatingLayer {
                     }
                 })),
         )
+        .child({
+            self.session.update(cx, |f, cx| f.show(path, &reader, window, cx));
+            self.session.clone()
+        })
         .into_any_element()
     }
 }

@@ -33,6 +33,10 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+zarrs.workspace = true
+
+# Folders on disk (the NWB tests write them): everywhere but a browser page
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
 zarrs = { workspace = true, features = ["filesystem"] }
 
 [dev-dependencies]

@@ -49,6 +49,38 @@ async fn request(kind: wire::request::Kind) -> anyhow::Result<wire::response::Ki
     })
 }
 
+/// Hands the browser `bytes` to save as `name` (its download), from a page that has no disk.
+pub fn download(name: &str, bytes: &[u8], mime: &str) -> anyhow::Result<()> {
+    let js = |e: wasm_bindgen::JsValue| anyhow::anyhow!("{e:?}");
+    let document = web_sys::window().and_then(|w| w.document()).ok_or_else(|| anyhow::anyhow!("no document"))?;
+    let parts = js_sys::Array::of1(&js_sys::Uint8Array::from(bytes));
+    let options = web_sys::BlobPropertyBag::new();
+    options.set_type(mime);
+    let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &options).map_err(js)?;
+    let url = web_sys::Url::create_object_url_with_blob(&blob).map_err(js)?;
+    let a: web_sys::HtmlAnchorElement = wasm_bindgen::JsCast::dyn_into(document.create_element("a").map_err(js)?).map_err(|_| anyhow::anyhow!("not an anchor"))?;
+    a.set_href(&url);
+    a.set_download(name);
+    a.click();
+    let _ = web_sys::Url::revoke_object_url(&url);
+    Ok(())
+}
+
+/// Whether the page is served by `dspk serve`: its files are the server's, and the server computes.
+pub fn served() -> bool {
+    matches!(LINK.get(), Some(PageLink::Server(_)))
+}
+
+/// Calls `method` of the server's plugin `plugin` with `body`; its reply's bytes.
+pub async fn plugin_call(plugin: &str, method: &str, body: Vec<u8>) -> anyhow::Result<Vec<u8>> {
+    let call = wire::PluginCall { plugin: plugin.into(), method: method.into(), body };
+    match request(wire::request::Kind::Plugin(call)).await? {
+        wire::response::Kind::Plugin(reply) => Ok(reply.body),
+        wire::response::Kind::Error(e) => anyhow::bail!("{e}"),
+        _ => anyhow::bail!("unexpected answer to a plugin call"),
+    }
+}
+
 /// Where this page's processing happens, for the device line (a page computes nothing itself).
 pub fn processing_label() -> Option<String> {
     Some(match LINK.get() {
@@ -82,9 +114,9 @@ pub async fn start_engine() -> anyhow::Result<String> {
 
 /// Asks the user for a folder (`folder`) or files, hands every file to the engine worker with
 /// its path inside the folder, and returns the recordings among them (each `.bin` whose `.meta`
-/// came too), by path. A dialog closed without a choice fires no event: the page simply waits for
-/// the next one.
-pub async fn pick_files(folder: bool) -> anyhow::Result<Vec<String>> {
+/// came too), by path, and, when there is none, what was picked instead. A dialog closed without
+/// a choice fires no event: the page simply waits for the next one.
+pub async fn pick_files(folder: bool) -> anyhow::Result<(Vec<String>, Option<String>)> {
     let Some(PageLink::Engine(engine)) = LINK.get() else { anyhow::bail!("picking files needs the page's engine") };
     let js = |e: wasm_bindgen::JsValue| anyhow::anyhow!("{e:?}");
     // Each picked file with its path "<folder picked>/<path inside>" (or its name alone)
@@ -94,7 +126,7 @@ pub async fn pick_files(folder: bool) -> anyhow::Result<Vec<String>> {
             let promise: js_sys::Promise = wasm_bindgen::JsCast::dyn_into(pick.call0(&wasm_bindgen::JsValue::NULL).map_err(js)?).map_err(|_| anyhow::anyhow!("the folder picker gave no promise"))?;
             let entries = wasm_bindgen_futures::JsFuture::from(promise).await.map_err(js)?;
             if entries.is_null() {
-                return Ok(Vec::new());
+                return Ok((Vec::new(), None));
             }
             js_sys::Array::from(&entries)
                 .iter()
@@ -124,6 +156,8 @@ pub async fn pick_files(folder: bool) -> anyhow::Result<Vec<String>> {
     }
     engine.set_files(files)?;
     let mut recordings: Vec<String> = paths.iter().filter(|p| p.to_ascii_lowercase().ends_with(".bin") && paths.contains(&p[..p.len() - 4].to_string().add_meta())).cloned().collect();
+    // WAV files: their header says the layout
+    recordings.extend(paths.iter().filter(|p| p.to_ascii_lowercase().ends_with(".wav")).cloned());
     // dspk Zarr recordings: a `.zarr` folder with a `/traces` array (an NWB folder is not one)
     for p in &paths {
         if let Some(folder) = p.strip_suffix("/traces/zarr.json").filter(|f| f.to_ascii_lowercase().ends_with(".zarr")) {
@@ -132,7 +166,65 @@ pub async fn pick_files(folder: bool) -> anyhow::Result<Vec<String>> {
     }
     recordings.sort();
     recordings.dedup();
-    Ok(recordings)
+    let note = recordings.is_empty().then(|| not_a_recording(&paths));
+    Ok((recordings, note))
+}
+
+/// Asks for a folder and reads every file in it into memory (awaited, one by one): what a
+/// browser page does with a small folder it computes on (a `.sorting.zarr`). The folder's name,
+/// and each file by its path inside it; `None` when the dialog was closed.
+pub async fn pick_folder_bytes() -> anyhow::Result<Option<(String, Vec<(String, Vec<u8>)>)>> {
+    let js = |e: wasm_bindgen::JsValue| anyhow::anyhow!("{e:?}");
+    let picked: Vec<(String, web_sys::File)> = match folder_picker() {
+        Some(pick) => {
+            let promise: js_sys::Promise = wasm_bindgen::JsCast::dyn_into(pick.call0(&wasm_bindgen::JsValue::NULL).map_err(js)?).map_err(|_| anyhow::anyhow!("the folder picker gave no promise"))?;
+            let entries = wasm_bindgen_futures::JsFuture::from(promise).await.map_err(js)?;
+            if entries.is_null() {
+                return Ok(None);
+            }
+            js_sys::Array::from(&entries)
+                .iter()
+                .filter_map(|e| {
+                    let path = js_sys::Reflect::get(&e, &"path".into()).ok()?.as_string()?;
+                    let file = wasm_bindgen::JsCast::dyn_into::<web_sys::File>(js_sys::Reflect::get(&e, &"file".into()).ok()?).ok()?;
+                    Some((path, file))
+                })
+                .collect()
+        }
+        None => input_files(true).await?,
+    };
+    let Some(root) = picked.first().and_then(|(p, _)| p.split('/').next()).map(str::to_string) else { return Ok(None) };
+    let mut files = Vec::with_capacity(picked.len());
+    for (path, file) in picked {
+        let inside = path.split_once('/').map_or(path.clone(), |(_, rest)| rest.to_string());
+        let buffer = wasm_bindgen_futures::JsFuture::from(file.array_buffer()).await.map_err(js)?;
+        files.push((inside, js_sys::Uint8Array::new(&buffer).to_vec()));
+    }
+    Ok(Some((root, files)))
+}
+
+/// Why none of `paths` is a recording here: the folders dspk writes next to a recording (its
+/// derived store, epochs, a sorting), NWB, or nothing it reads.
+fn not_a_recording(paths: &[String]) -> String {
+    let folder = |suffix: &str| {
+        paths.iter().find_map(|p| {
+            let top = p.split('/').next().unwrap_or(p);
+            top.to_ascii_lowercase().ends_with(suffix).then(|| top.to_string())
+        })
+    };
+    if let Some(f) = folder(".dspk.zarr").or_else(|| folder(".epochs.zarr")) {
+        return format!("{f} holds a recording's epochs and events, not the recording: open the folder that holds the recording");
+    }
+    if let Some(f) = folder(".sorting.zarr") {
+        return format!("{f} is a sorting: sortings open in the desktop app or the container for now");
+    }
+    if let Some(f) = folder(".nwb.zarr").or_else(|| paths.iter().find(|p| p.to_ascii_lowercase().ends_with(".nwb")).cloned()) {
+        return format!("{f} is NWB: NWB opens in the desktop app or the container for now");
+    }
+    if paths.iter().any(|p| p.to_ascii_lowercase().ends_with(".bin")) {
+        return "A .bin needs its .meta (dspk's JSON layout) beside it".to_string();
+    }
+    format!("No recording among the {} files picked (a .zarr folder, a .wav, or a .bin with its .meta)", paths.len())
 }
 
 /// The loader's folder picker (`window.dspkPickFolder`), where the browser has the File System
@@ -156,7 +248,7 @@ async fn input_files(folder: bool) -> anyhow::Result<Vec<(String, web_sys::File)
     if folder {
         input.set_attribute("webkitdirectory", "").map_err(js)?;
     } else {
-        input.set_accept(".bin,.meta");
+        input.set_accept(".wav,.bin,.meta");
     }
     let (tx, rx) = futures_channel::oneshot::channel::<()>();
     let tx = std::cell::RefCell::new(Some(tx));
@@ -326,7 +418,60 @@ pub async fn fetch(_profile: ServerProfile, _path: String, _results: PathBuf) ->
     anyhow::bail!(NOT_YET)
 }
 
-pub fn remote_sort(_profile: ServerProfile, _job: wire::Configure, _results: PathBuf, send: impl Fn(JobMessage) + Send + Sync + 'static) -> Cancel {
-    send(JobMessage::Failed(NOT_YET.into()));
-    Cancel::default()
+/// A sort on the page's server: configured, started and followed (its status every second) as
+/// the desktop does; the result stays on the server (`Done` with its path under the data root,
+/// which the page reads from there: it has no disk to fetch it to).
+pub fn remote_sort(profile: ServerProfile, job: wire::Configure, _results: PathBuf, send: impl Fn(JobMessage) + Send + Sync + 'static) -> Cancel {
+    let cancel = Cancel::default();
+    let c = cancel.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        let status_of = |kind: wire::request::Kind| async move {
+            match request(kind).await? {
+                wire::response::Kind::Status(s) => anyhow::Ok(s),
+                _ => anyhow::bail!("the server answered something else than a job status"),
+            }
+        };
+        let outcome = async {
+            let configured = status_of(wire::request::Kind::Configure(job)).await?;
+            status_of(wire::request::Kind::Start(wire::Start {})).await?;
+            send(JobMessage::Progress(format!("{} on {}", configured.job, profile.name), None));
+            let mut stop_sent = false;
+            let status = loop {
+                sleep_ms(1000).await;
+                if c.cancelled() && !stop_sent {
+                    let _ = status_of(wire::request::Kind::Stop(wire::Stop {})).await;
+                    stop_sent = true;
+                }
+                let s = status_of(wire::request::Kind::Status(wire::GetStatus {})).await?;
+                if s.state != wire::DeviceState::Running as i32 {
+                    break s;
+                }
+                let fraction = (s.total > 0).then(|| s.done as f32 / s.total as f32);
+                let step = if s.steps > 0 { format!("[{}/{}] ", s.step, s.steps) } else { String::new() };
+                send(JobMessage::Progress(format!("{} on {}: {step}{} {}/{} {}", configured.job, profile.name, s.stage, s.done, s.total, s.unit), fraction));
+            };
+            if status.state == wire::DeviceState::Error as i32 {
+                anyhow::bail!("the sort failed on {}: {}", profile.name, status.message);
+            }
+            if c.cancelled() {
+                anyhow::bail!("stopped");
+            }
+            anyhow::Ok(PathBuf::from(status.output))
+        };
+        send(match outcome.await {
+            Ok(path) => JobMessage::Done(path),
+            Err(e) => JobMessage::Failed(format!("{e:#}")),
+        });
+    });
+    cancel
+}
+
+/// Waits `ms` milliseconds without blocking the page (a timer).
+async fn sleep_ms(ms: i32) {
+    let promise = js_sys::Promise::new(&mut |resolve, _| {
+        if let Some(w) = web_sys::window() {
+            let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
+        }
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
 }

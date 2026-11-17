@@ -40,8 +40,29 @@ pub struct OpenRecording {
     #[cfg_attr(target_family = "wasm", allow(dead_code))]
     pub(crate) stored: bool,
     processor: Option<Arc<dyn ViewProcessor>>,
-    /// The processed signals clients asked views of, latest last (a few: each holds device memory).
-    processed: Mutex<Vec<(wire::Processing, Arc<ChainSlot>)>>,
+    /// The processed signals clients asked views of, latest last (a few: each holds device memory),
+    /// and whether each runs on the CPU (made while a batch job held the GPU).
+    processed: Arc<Mutex<Vec<(wire::Processing, bool, Arc<ChainSlot>)>>>,
+}
+
+type Kept = Mutex<Vec<(wire::Processing, bool, Arc<ChainSlot>)>>;
+
+/// Every open recording's kept chains, so a batch job taking the GPU drops those on it.
+fn every_kept() -> &'static Mutex<Vec<std::sync::Weak<Kept>>> {
+    static ALL: std::sync::OnceLock<Mutex<Vec<std::sync::Weak<Kept>>>> = std::sync::OnceLock::new();
+    ALL.get_or_init(|| {
+        dspk_core::lease::on_release(release_processed);
+        Mutex::default()
+    })
+}
+
+/// Drops the processed chains kept on the GPU, in every open recording (a batch job takes the
+/// GPU): the next view makes its chain again.
+pub fn release_processed() {
+    let all = every_kept().lock().unwrap_or_else(|e| e.into_inner()).clone();
+    for kept in all.iter().filter_map(std::sync::Weak::upgrade) {
+        kept.lock().unwrap_or_else(|e| e.into_inner()).retain(|(_, cpu, _)| *cpu);
+    }
 }
 
 /// One chain's processed signal: made once, by the first view that asks; later views of the
@@ -78,7 +99,12 @@ pub type WarmFuture<'a> = std::pin::Pin<Box<dyn std::future::Future<Output = Str
 impl OpenRecording {
     pub fn new(source: Arc<dyn RecordingSource>, pyramid: Option<Arc<Pyramid>>) -> Self {
         let (info, stored) = streamed_info(source.as_ref());
-        Self { source, pyramid, info, stored, processor: None, processed: Mutex::default() }
+        let processed: Arc<Kept> = Arc::default();
+        let mut all = every_kept().lock().unwrap_or_else(|e| e.into_inner());
+        all.retain(|w| w.strong_count() > 0);
+        all.push(Arc::downgrade(&processed));
+        drop(all);
+        Self { source, pyramid, info, stored, processor: None, processed }
     }
 
     /// Views with processing are answered through `processor` (without one they are refused).
@@ -91,6 +117,11 @@ impl OpenRecording {
     /// list is locked only to find or add the chain's slot; the chain is made outside the lock,
     /// so a chain being made (a whitening fitted: seconds) holds up only views of that chain.
     pub fn processed(&self, processing: &wire::Processing) -> StreamResult<Arc<dyn SignalBackend>> {
+        self.processed_on(processing, false)
+    }
+
+    /// [`Self::processed`] on the CPU (`on_cpu`: a batch job holds the GPU) or the default device.
+    pub fn processed_on(&self, processing: &wire::Processing, on_cpu: bool) -> StreamResult<Arc<dyn SignalBackend>> {
         let processor = self.processor.as_ref().ok_or_else(|| StreamError::protocol("this server does not process views"))?;
         let channels: Vec<usize> = processing.channels.iter().map(|&c| c as usize).collect();
         if channels.iter().any(|&c| c >= self.info.channel_count()) {
@@ -98,11 +129,11 @@ impl OpenRecording {
         }
         let slot = {
             let mut kept = self.processed.lock().unwrap_or_else(|e| e.into_inner());
-            match kept.iter().position(|(p, _)| p == processing) {
+            match kept.iter().position(|(p, cpu, _)| p == processing && *cpu == on_cpu) {
                 Some(at) => {
                     // Most recently used last
                     let entry = kept.remove(at);
-                    let slot = entry.1.clone();
+                    let slot = entry.2.clone();
                     kept.push(entry);
                     slot
                 }
@@ -111,17 +142,18 @@ impl OpenRecording {
                         kept.remove(0);
                     }
                     let slot = Arc::new(ChainSlot::new());
-                    kept.push((processing.clone(), slot.clone()));
+                    kept.push((processing.clone(), on_cpu, slot.clone()));
                     slot
                 }
             }
         };
-        let made = slot.get_or_init(|| processor.processed(self.source.clone(), self.pyramid.clone(), &channels, &processing.ops).map_err(|e| e.reason()));
+        let make = || processor.processed(self.source.clone(), self.pyramid.clone(), &channels, &processing.ops).map_err(|e| e.reason());
+        let made = slot.get_or_init(|| if on_cpu { dspk_core::device::with_target(dspk_core::ComputeTarget::Cpu, make) } else { make() });
         match made {
             Ok(signal) => Ok(signal.clone()),
             Err(e) => {
                 // Not kept: the next view of this chain tries again
-                self.processed.lock().unwrap_or_else(|e| e.into_inner()).retain(|(_, s)| !Arc::ptr_eq(s, &slot));
+                self.processed.lock().unwrap_or_else(|e| e.into_inner()).retain(|(_, _, s)| !Arc::ptr_eq(s, &slot));
                 Err(StreamError::Server(e.clone()))
             }
         }
@@ -168,6 +200,10 @@ pub fn checked_view(request: &wire::ViewRequest, info: &RecordingInfo) -> Stream
 /// chains. Views without ops need nothing.
 pub async fn warm_view(recording: &OpenRecording, request: &wire::ViewRequest) -> StreamResult<()> {
     let Some(processing) = request.processing.as_ref().filter(|p| !p.ops.is_empty()) else { return Ok(()) };
+    // A batch job holds the GPU: the view is answered on the CPU, nothing to warm on the device
+    if dspk_core::lease::batch_running() {
+        return Ok(());
+    }
     let view = checked_view(request, recording.info())?;
     recording.processed(processing)?;
     let channels: Vec<usize> = processing.channels.iter().map(|&c| c as usize).collect();
@@ -183,9 +219,15 @@ pub fn answer_view(recording: &OpenRecording, request: &wire::ViewRequest) -> St
     let view = checked_view(request, recording.info())?;
     match request.processing.as_ref().filter(|p| !p.ops.is_empty()) {
         Some(processing) => {
-            let mut out = Envelope::Samples(Vec::new());
-            recording.processed(processing)?.view(&view, &mut out)?;
-            Ok(out)
+            // The GPU unless a batch job (a sort) holds it: then the CPU, the same chain
+            let gpu = dspk_core::lease::interactive();
+            let on_cpu = gpu.is_none();
+            let answer = || -> StreamResult<Envelope> {
+                let mut out = Envelope::Samples(Vec::new());
+                recording.processed_on(processing, on_cpu)?.view(&view, &mut out)?;
+                Ok(out)
+            };
+            if on_cpu { dspk_core::device::with_target(dspk_core::ComputeTarget::Cpu, answer) } else { answer() }
         }
         None => Ok(view.read(recording.source.as_ref(), recording.pyramid.as_deref())?),
     }

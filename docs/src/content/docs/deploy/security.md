@@ -20,7 +20,7 @@ sidebar:
 | Job parameters as an attack path | At most 64 parameters, each one line of at most 256 characters |
 | A browser reaching the web endpoint (`--web`) | It signs in with a one-time pairing code and gets a token: a client in the same registry, read only, revocable |
 | The web endpoint in the clear on a network | Plain HTTP is served on a loopback address only; elsewhere it is HTTPS (see [the endpoint for browsers](/dsp-kitchen/deploy/browsers/)) |
-| Not knowing who did what | Every control request, allowed or refused, goes to an audit log (JSON lines) |
+| Not knowing who did what | Every control request, allowed or refused, each job's end (finished, stopped or failed, its output, how long) and each file a plugin writes (a curation saved) go to an audit log: JSON lines, each with `at` (UTC) |
 
 ## In the container
 

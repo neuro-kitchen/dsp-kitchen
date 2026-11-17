@@ -188,6 +188,11 @@ impl Session {
         self.results_dir.clone().unwrap_or_else(Self::default_results_dir)
     }
 
+    /// The people who work in the app: `<config>/dspk-app/people.json`.
+    pub fn people_path() -> Option<PathBuf> {
+        Some(Self::config_dir()?.join("dspk-app").join("people.json"))
+    }
+
     /// The user's recipe library: `<config>/dspk-app/recipes/`.
     pub fn recipes_dir() -> Option<PathBuf> {
         Some(Self::config_dir()?.join("dspk-app").join("recipes"))

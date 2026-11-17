@@ -846,6 +846,15 @@ impl TimelinePanel {
                     .on_click(act(Store::toggle_loop)),
             )
             .child(speed)
+            .children(s.live.as_ref().map(|live| {
+                let following = live.follow;
+                Button::new("live-follow")
+                    .small()
+                    .map(|b| if following { b.primary() } else { b.outline() })
+                    .label(if following { "● Live" } else { "● Return to live" })
+                    .tooltip(if following { format!("Following {}: scroll back any time, the run goes on", live.label) } else { format!("Back to the newest data of {} and follow it", live.label) })
+                    .on_click(act(Store::follow_live))
+            }))
             .child({
                 let marking = self.marking;
                 Button::new("mark-epoch")

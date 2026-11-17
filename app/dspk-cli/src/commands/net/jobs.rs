@@ -57,6 +57,9 @@ impl JobRunner for SorterRunner {
         let (stdout, stderr) = (child.stdout.take().expect("piped"), child.stderr.take().expect("piped"));
         let (tx, rx) = mpsc::channel::<String>();
 
+        // The program's last lines on stderr: why it failed, when it does
+        let tail = std::sync::Mutex::new(std::collections::VecDeque::<String>::new());
+        let tail = &tail;
         std::thread::scope(|scope| {
             scope.spawn(move || {
                 for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -65,9 +68,14 @@ impl JobRunner for SorterRunner {
                     }
                 }
             });
-            scope.spawn(|| {
+            scope.spawn(move || {
                 for line in BufReader::new(stderr).lines().map_while(Result::ok) {
                     report.log(&line);
+                    let mut t = tail.lock().unwrap_or_else(|e| e.into_inner());
+                    if t.len() >= 40 {
+                        t.pop_front();
+                    }
+                    t.push_back(line);
                 }
             });
             let mut outcome: Option<Result<String, String>> = None;
@@ -92,9 +100,21 @@ impl JobRunner for SorterRunner {
             match outcome {
                 Some(o) => o,
                 None if status.success() => Ok("done".into()),
-                None => Err(format!("dspk-cli-sorter exited with {status}")),
+                None => Err(why_failed(&status.to_string(), &tail.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect::<Vec<_>>())),
             }
         })
+    }
+}
+
+/// Why `dspk-cli-sorter` ended without an answer, from its last lines on stderr: the GPU's memory
+/// said in words (another program holds it), else the panic's own line, else the exit status.
+fn why_failed(status: &str, stderr: &[String]) -> String {
+    if stderr.iter().any(|l| l.contains("Out of Memory") || l.contains("out of memory") || l.contains("OUT_OF_MEMORY")) {
+        return "the GPU ran out of memory: another program holds it (nvidia-smi lists who); sort when it is free, or with a shorter part".into();
+    }
+    match stderr.iter().rev().find(|l| l.contains("panicked at") || l.starts_with("Error") || l.starts_with("error")) {
+        Some(l) => format!("dspk-cli-sorter failed ({status}): {}", l.trim()),
+        None => format!("dspk-cli-sorter exited with {status}"),
     }
 }
 

@@ -115,6 +115,105 @@ pub struct ServeArgs {
 
 /// The names of the self-signed certificate: localhost, the --bind address unless it is a
 /// wildcard (0.0.0.0, ::), then each --name, without repeats.
+/// Curation of the sortings under the data root, as a server plugin: dspk-synapse computes, the
+/// stream carries (the one place that knows both).
+struct SynapsePlugin(dspk_synapse::curation::service::Service, std::sync::Mutex<Option<ProcessedKept>>);
+
+/// The processed signal a page's views were last computed from, as a recording (one object per
+/// chain, so the service's windows of it are read once).
+struct ProcessedKept {
+    signal: Arc<dyn dspk_view::SignalBackend>,
+    source: Arc<dyn RecordingSource>,
+}
+
+/// A server's processed signal read as a recording.
+struct ProcessedSource(Arc<dyn dspk_view::SignalBackend>);
+
+impl RecordingSource for ProcessedSource {
+    fn info(&self) -> &dspk_core::RecordingInfo {
+        self.0.info()
+    }
+
+    fn read(&self, channels: &[usize], samples: std::ops::Range<u64>, out: &mut [f32]) -> dspk_core::DspResult<()> {
+        self.0.read(channels, samples, out)
+    }
+}
+
+impl SynapsePlugin {
+    /// The recording a `views` call reads: the open one with the page's processing applied when
+    /// it sends some (and keeps every channel: a chain that remaps channels would renumber the
+    /// units' channels, so it is read as stored), else as stored.
+    fn views_source(&self, body: &[u8], context: &dspk_stream::PluginContext) -> StreamResult<Option<Arc<dyn RecordingSource>>> {
+        #[derive(serde::Deserialize)]
+        struct Processing {
+            #[serde(default)]
+            processing: Vec<String>,
+        }
+        let stored = context.recording.clone();
+        let ops = serde_json::from_slice::<Processing>(body).map(|p| p.processing).unwrap_or_default();
+        let (Some(make), Some(raw)) = (context.processed.as_ref(), stored.as_ref()) else { return Ok(stored) };
+        if ops.is_empty() {
+            return Ok(stored);
+        }
+        let signal = make(&ops)?;
+        if signal.info().channel_count() != raw.info().channel_count() {
+            return Ok(stored);
+        }
+        let mut kept = self.1.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(k) = kept.as_ref().filter(|k| Arc::ptr_eq(&k.signal, &signal)) {
+            return Ok(Some(k.source.clone()));
+        }
+        let source: Arc<dyn RecordingSource> = Arc::new(ProcessedSource(signal.clone()));
+        *kept = Some(ProcessedKept { signal, source: source.clone() });
+        Ok(Some(source))
+    }
+}
+
+impl dspk_stream::ServerPlugin for SynapsePlugin {
+    fn id(&self) -> &'static str {
+        dspk_synapse::curation::service::PLUGIN
+    }
+
+    /// A curation saved: the sorting and how many edits.
+    fn writes(&self, method: &str, body: &[u8]) -> Option<String> {
+        let call: dspk_synapse::curation::service::SaveCall = (method == "save").then(|| serde_json::from_slice(body).ok()).flatten()?;
+        Some(format!("{} ({} edits)", call.path, call.ops.len()))
+    }
+
+    fn call(&self, method: &str, body: &[u8], context: &dspk_stream::PluginContext) -> StreamResult<Vec<u8>> {
+        // The sorters this server runs, as its dspk-cli-sorter describes them (a page lists them)
+        if method == "sorters" {
+            let program = crate::sorters_program::locate(env!("CARGO_PKG_VERSION"), std::env::current_exe().ok().as_deref())
+                .ok_or_else(|| StreamError::Server("this server has no dspk-cli-sorter: `dspk sorters install` on it".into()))?;
+            let out = std::process::Command::new(&program).arg("describe").output().map_err(|e| StreamError::Server(format!("{}: {e}", program.display())))?;
+            if !out.status.success() {
+                return Err(StreamError::Server(format!("dspk-cli-sorter describe: {}", String::from_utf8_lossy(&out.stderr).trim())));
+            }
+            return Ok(out.stdout);
+        }
+        let resolve = |path: &str| -> dspk_core::DspResult<PathBuf> {
+            let resolve = context.resolve.as_ref().ok_or_else(|| dspk_core::DspError::InvalidConfig("this server serves no files".into()))?;
+            resolve(path).map_err(|e| dspk_core::DspError::InvalidConfig(e.to_string()))
+        };
+        let caller = dspk_synapse::curation::service::Caller { name: &context.peer, may_write: context.may_write };
+        // Views read the signal on the GPU once (then from memory): unless a sort holds the GPU, and
+        // then on the CPU
+        let gpu = dspk_core::lease::interactive();
+        let run = || -> StreamResult<Vec<u8>> {
+            let recording = if method == "views" { self.views_source(body, context)? } else { context.recording.clone() };
+            self.0.call(method, body, &resolve, recording.as_ref(), caller).map_err(|e| StreamError::Server(e.to_string()))
+        };
+        let answer = if gpu.is_none() { dspk_core::device::with_target(dspk_core::ComputeTarget::Cpu, run) } else { run() };
+        drop(gpu);
+        // What the read held on the GPU is not needed again (the windows are in memory): back to
+        // the driver, so another program (a sort) finds it free
+        if method == "views" {
+            dspk_core::compute::release_device_memory();
+        }
+        answer
+    }
+}
+
 fn self_signed_names(args: &ServeArgs) -> Vec<String> {
     let mut names = vec![LOCALHOST.to_string()];
     if !args.bind.ip().is_unspecified() {
@@ -179,7 +278,15 @@ struct Processor(dspk_pipeline::processed::ProcessedChains);
 
 impl Processor {
     fn of(recording: &Path) -> Arc<Self> {
-        Arc::new(Self(dspk_pipeline::processed::ProcessedChains::new(recording.parent().map(Path::to_path_buf).unwrap_or_default())))
+        let me = Arc::new(Self(dspk_pipeline::processed::ProcessedChains::new(recording.parent().map(Path::to_path_buf).unwrap_or_default())));
+        // A sort takes the GPU: the chains kept for views go (the next view makes its own)
+        let weak = Arc::downgrade(&me);
+        dspk_core::lease::on_release(move || {
+            if let Some(p) = weak.upgrade() {
+                p.0.clear();
+            }
+        });
+        me
     }
 }
 
@@ -302,6 +409,8 @@ pub async fn run(args: &ServeArgs) -> anyhow::Result<()> {
         jobs: jobs.clone(),
         runtime: if jobs.is_some() { runtime } else { String::new() },
         options,
+        // Curation of the sortings under the data root, computed here for the pages it serves
+        plugins: vec![Arc::new(SynapsePlugin(dspk_synapse::curation::service::Service::default(), Default::default()))],
     });
     println!("Listening on {} (Ctrl+C to stop)", server.local_addr()?);
     if let Some(folder) = &args.web {

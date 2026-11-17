@@ -97,6 +97,31 @@ pub enum NodeRun {
 }
 
 /// The open recording.
+/// A run in progress shown in Explore: whether the view follows its head, and where the window
+/// ended when the app last moved it (a different end: the user scrolled away).
+#[derive(Clone)]
+pub struct LiveFollow {
+    pub follow: bool,
+    last_end: f64,
+    /// The device and source, for the title and the status.
+    pub label: String,
+    /// Sends a view's ops to the device as its chain (`None`: the source cannot take one).
+    pub send: Option<LiveSend>,
+}
+
+/// Sends ops (pipeline nodes in JSON) to a device as its chain: what it says, or why it refused.
+/// Blocking: called off the UI thread.
+pub type LiveSend = Arc<dyn Fn(Vec<String>) -> Result<String, String> + Send + Sync>;
+
+/// The window a live view opens with (seconds).
+pub const LIVE_WINDOW_SEC: f64 = 2.0;
+/// How often a run in progress is asked how far it got.
+const LIVE_POLL: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Gives a longer snapshot of a run in progress when it has grown (`None`: no news); called off
+/// the UI thread.
+pub type LiveGrow = Arc<dyn Fn() -> Option<Dataset> + Send + Sync>;
+
 pub struct Recording {
     pub sources: Arc<SourceSet>,
     pub name: String,
@@ -139,6 +164,10 @@ pub struct Store {
     /// A recording's source the Inspector shows (picked under Recordings; a view's focus clears it).
     pub inspected: Option<(PathBuf, String)>,
     pub timeline: TimelineState,
+    /// The open recording is a device's run in progress: it grows, and the view follows its head
+    /// unless the user moved away ([`Store::open_live`]).
+    pub live: Option<LiveFollow>,
+    live_task: Option<gpui_kit::Task<()>>,
     /// Channels shown, per source id, in display order.
     selection: HashMap<String, Vec<usize>>,
     pub workspace: Workspace,
@@ -195,6 +224,9 @@ pub struct Store {
     /// Earlier documents (undo) and undone ones (redo).
     history: Vec<SessionDoc>,
     future: Vec<SessionDoc>,
+    /// The gesture the last command belonged to ([`Self::execute_gesture`]): its commands make
+    /// one undo step.
+    gesture: Option<String>,
     /// The active view and channel subset last applied to the selection.
     applied_view: Option<(String, Option<Vec<usize>>)>,
     /// Event tables read so far, by path (read on first use; dropped when the set is set again).
@@ -230,6 +262,8 @@ impl Store {
             _settings_watch: None,
             previews: HashMap::new(),
             remote_previews: HashMap::new(),
+            live: None,
+            live_task: None,
             preview_cache: Vec::new(),
             whiten_cache: HashMap::new(),
             whiten_fitting: Default::default(),
@@ -243,6 +277,7 @@ impl Store {
             floating: Vec::new(),
             history: Vec::new(),
             future: Vec::new(),
+            gesture: None,
             applied_view: None,
             event_tables: HashMap::new(),
         }
@@ -298,8 +333,23 @@ impl Store {
         }
     }
 
+    /// As [`Self::execute`], one of the commands of a continuous `gesture` (a number dragged):
+    /// the gesture's commands, while no other command comes between them, are one undo step.
+    pub fn execute_gesture(&mut self, gesture: &str, cmd: SessionCommand, cx: &mut Context<Self>) -> Result<Changed, CommandError> {
+        let continuing = self.gesture.as_deref() == Some(gesture);
+        let depth = self.history.len();
+        let result = self.execute(cmd, cx);
+        // The document before the gesture is already the undo step
+        if continuing && self.history.len() > depth {
+            self.history.truncate(depth);
+        }
+        self.gesture = Some(gesture.to_string());
+        result
+    }
+
     /// Runs a command on the session document, saves it and emits what changed.
     pub fn execute(&mut self, cmd: SessionCommand, cx: &mut Context<Self>) -> Result<Changed, CommandError> {
+        self.gesture = None;
         let before = self.doc.clone();
         let result = apply(&mut self.doc, cmd);
         match &result {
@@ -338,6 +388,8 @@ impl Store {
 
     /// Back to the document before the last change (`redo`: forward again).
     pub fn undo(&mut self, redo: bool, cx: &mut Context<Self>) {
+        // A drag after an undo is a new undo step
+        self.gesture = None;
         let next = if redo { self.future.pop() } else { self.history.pop() };
         let Some(doc) = next else {
             self.set_status(if redo { "Nothing to redo" } else { "Nothing to undo" }, cx);
@@ -928,6 +980,8 @@ impl Store {
                             s.job = None;
                             s.finish_job_nodes(None);
                             s.set_status(format!("{label}: done ({})", file_label(&path)), cx);
+                            // What the session made (Analytics ▸ This session)
+                            kitchen_shell::activity::produced(&label, vec![path.display().to_string()]);
                             if let Some(done) = done.take() {
                                 done(s, path, cx);
                             }
@@ -1453,8 +1507,77 @@ impl Store {
         }
     }
 
+    /// Opens a device's run in progress (`first`: what it holds now) and keeps it growing with
+    /// `grow` (a longer snapshot as the run goes on); the view follows the head until the user
+    /// scrolls away ([`Self::follow_live`] returns to it).
+    pub fn open_live(&mut self, label: String, first: Dataset, grow: LiveGrow, send: Option<LiveSend>, cx: &mut Context<Self>) {
+        let mut recording = Recording::new(SourceSet::single(first), None);
+        recording.name = label.clone();
+        self.install(recording, cx);
+        let end = self.timeline.total_duration_sec;
+        self.timeline.set_window_range((end - LIVE_WINDOW_SEC).max(0.0), end);
+        self.live = Some(LiveFollow { follow: true, last_end: self.timeline.window_start_sec + self.timeline.visible_window_sec, label, send });
+        self.live_task = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(LIVE_POLL).await;
+                let g = grow.clone();
+                let grown = cx.background_spawn(async move { g() }).await;
+                let alive = this.update(cx, |s, cx| {
+                    if s.live.is_none() {
+                        return false;
+                    }
+                    if let Some(ds) = grown {
+                        s.grow_live(ds, cx);
+                    }
+                    true
+                });
+                if !matches!(alive, Ok(true)) {
+                    break;
+                }
+            }
+        }));
+        self.set_status("Live: the view follows the newest data; scroll back any time, ● Live returns to it", cx);
+    }
+
+    /// The run grew: its longer snapshot replaces the source; the window follows the head unless
+    /// the user moved it.
+    fn grow_live(&mut self, dataset: Dataset, cx: &mut Context<Self>) {
+        let (Some(rec), Some(live)) = (self.recording.as_mut(), self.live.as_mut()) else { return };
+        let secs = if dataset.sample_rate > 0.0 { dataset.total_samples as f64 / dataset.sample_rate } else { 0.0 };
+        rec.sources = Arc::new(SourceSet::single(dataset));
+        let t = &mut self.timeline;
+        if (t.window_start_sec + t.visible_window_sec - live.last_end).abs() > 1e-6 {
+            live.follow = false;
+        }
+        t.total_duration_sec = secs.max(0.001);
+        if live.follow {
+            let w = t.visible_window_sec.min(secs.max(0.001));
+            t.set_window_range((secs - w).max(0.0), secs);
+            t.current_time_sec = secs;
+        }
+        live.last_end = t.window_start_sec + t.visible_window_sec;
+        cx.emit(AppEvent::WindowMoved);
+        cx.notify();
+    }
+
+    /// Back to the head of the run in progress, following it.
+    pub fn follow_live(&mut self, cx: &mut Context<Self>) {
+        let Some(live) = self.live.as_mut() else { return };
+        live.follow = true;
+        let t = &mut self.timeline;
+        let end = t.total_duration_sec;
+        let w = t.visible_window_sec;
+        t.set_window_range((end - w).max(0.0), end);
+        live.last_end = t.window_start_sec + t.visible_window_sec;
+        cx.emit(AppEvent::WindowMoved);
+        cx.notify();
+    }
+
     /// Installs a recording directly (tests, command line).
     pub fn install(&mut self, recording: Recording, cx: &mut Context<Self>) {
+        // Another recording: a run in progress shown before stops being followed
+        self.live = None;
+        self.live_task = None;
         self.stop_clock();
         self.timeline = TimelineState::new(recording.sources.extent_sec());
         self.selection = recording.sources.entries().iter().map(|e| (e.id.clone(), (0..e.channels).collect())).collect();

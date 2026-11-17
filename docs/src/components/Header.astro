@@ -1,7 +1,8 @@
 ---
 // Starlight's header with a row of topic tabs under it: the main topics, then "Plugins" and
 // "More" menus (grouping in src/data/nav.mjs). On narrow screens the tabs are one scrolling row
-// with every topic, since a menu inside a scrolling row would be clipped.
+// with every topic, since a menu inside a scrolling row would be clipped. After the main topics,
+// "Viewer" opens the app itself (built into /viewer/ by docs.yml), not a topic of the docs.
 import Default from '@astrojs/starlight/components/Header.astro';
 import { MAIN, MORE, PLUGINS } from '../data/nav.mjs';
 
@@ -12,6 +13,7 @@ const main = pick(MAIN);
 const plugins = pick(PLUGINS);
 const more = pick(MORE);
 const anyCurrent = (list: typeof topics) => list.some((t) => t.isCurrent);
+const viewer = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/viewer/`;
 ---
 
 <div class="bar"><Default {...Astro.props} /></div>
@@ -24,6 +26,7 @@ const anyCurrent = (list: typeof topics) => list.some((t) => t.isCurrent);
       </a>
     ))
   }
+  <a class="app" href={viewer} title="dsp-kitchen in your browser: open a recording from your disk">Viewer</a>
   {
     [
       { label: 'Plugins', list: plugins },
@@ -47,7 +50,15 @@ const anyCurrent = (list: typeof topics) => list.some((t) => t.isCurrent);
 
 <nav class="tabs narrow" aria-label="Topics">
   {
-    [...main, ...plugins, ...more].map((t) => (
+    main.map((t) => (
+      <a href={t.link} aria-current={t.isCurrent ? 'page' : undefined}>
+        {t.label}
+      </a>
+    ))
+  }
+  <a class="app" href={viewer}>Viewer</a>
+  {
+    [...plugins, ...more].map((t) => (
       <a href={t.link} aria-current={t.isCurrent ? 'page' : undefined}>
         {t.label}
       </a>
@@ -112,6 +123,22 @@ const anyCurrent = (list: typeof topics) => list.some((t) => t.isCurrent);
   .tabs .menu[data-current] > summary {
     color: var(--sl-color-white);
     border-block-end-color: var(--sl-color-accent);
+  }
+
+  /* The app, not a topic: the accent colour and a small play mark. */
+  .tabs a.app {
+    gap: 0.35rem;
+    color: var(--sl-color-text-accent);
+  }
+  .tabs a.app::before {
+    content: '';
+    width: 0;
+    height: 0;
+    border-block: 0.3rem solid transparent;
+    border-inline-start: 0.45rem solid currentColor;
+  }
+  .tabs a.app:hover {
+    color: var(--sl-color-white);
   }
 
   .menu {

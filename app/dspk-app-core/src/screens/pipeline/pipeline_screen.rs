@@ -48,6 +48,39 @@ enum LeftTab {
     Recipes,
 }
 
+/// Where the floating tool bar sits on the canvas: along the top or bottom edge (a row), or the
+/// left or right edge (a column of icons). The canvas' own bar and minimap keep the bottom
+/// Below this window width (px) the Pipeline's side panels float over the canvas.
+const PIPELINE_NARROW_W: f32 = 760.;
+
+/// corners, so the bottom place sits above them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ToolbarDock {
+    #[default]
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
+impl ToolbarDock {
+    const ALL: [ToolbarDock; 4] = [ToolbarDock::Top, ToolbarDock::Bottom, ToolbarDock::Left, ToolbarDock::Right];
+
+    fn label(self) -> &'static str {
+        match self {
+            ToolbarDock::Top => "Top",
+            ToolbarDock::Bottom => "Bottom",
+            ToolbarDock::Left => "Left",
+            ToolbarDock::Right => "Right",
+        }
+    }
+
+    /// Along the left or right edge: a column, icons only.
+    fn column(self) -> bool {
+        matches!(self, ToolbarDock::Left | ToolbarDock::Right)
+    }
+}
+
 pub struct PipelineView {
     store: Entity<Store>,
     canvas: Entity<GraphCanvas>,
@@ -60,6 +93,8 @@ pub struct PipelineView {
     library_errors: Vec<String>,
     /// The app's commands, for the bar drawn when the Pipeline is docked in Explore.
     registry: Option<Registry>,
+    /// Where the floating tool bar sits.
+    dock: ToolbarDock,
     _subs: Vec<Subscription>,
 }
 
@@ -75,7 +110,7 @@ impl PipelineView {
             }),
             cx.subscribe(&canvas, |_, _, _: &CanvasEvent, cx| cx.notify()),
         ];
-        let mut this = Self { store, canvas, inspector, left: LeftTab::Layers, collapsed: HashSet::new(), library: Vec::new(), library_errors: Vec::new(), registry: None, _subs: subs };
+        let mut this = Self { store, canvas, inspector, left: LeftTab::Layers, collapsed: HashSet::new(), library: Vec::new(), library_errors: Vec::new(), registry: None, dock: ToolbarDock::default(), _subs: subs };
         this.read_library();
         this
     }
@@ -243,20 +278,26 @@ impl PipelineView {
             .child(div().px_1().pt_2().text_xs().text_color(muted).truncate().child(format!("Library: {dir}")))
     }
 
-    /// The tool bar floating at the bottom of the canvas: select or move, add a recording, an
-    /// operation, an output, make a recipe.
+    /// The tool bar floating on the canvas: select or move, add a recording, an operation, an
+    /// output, make a recipe, fit; a grip to place it on another edge ([`ToolbarDock`]). It
+    /// steps aside (fades out, takes no pointer) while the view moves.
     fn toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = cx.theme();
         let c = self.canvas.read(cx);
-        let (hand, selected) = (c.hand, c.selected.len());
+        let (hand, selected, moving) = (c.hand, c.selected.len(), c.moving());
+        let dock = self.dock;
+        let column = dock.column();
         let canvas = self.canvas.downgrade();
         let tool = |id: &'static str, icon: IconName, tip: &'static str, on: bool, f: fn(&mut GraphCanvas, &mut Context<GraphCanvas>)| {
             let canvas = canvas.clone();
-            Button::new(id).ghost().small().icon(Icon::new(icon)).tooltip(tip).selected(on).on_click(move |_, _, cx| Self::canvas_do(&canvas, cx, f))
+            Button::new(id).ghost().icon(Icon::new(icon)).tooltip(tip).selected(on).on_click(move |_, _, cx| Self::canvas_do(&canvas, cx, f))
         };
+        // In a column the labels go to the tooltips
         let menu = |id: &'static str, icon: IconName, label: &'static str, families: Vec<&'static str>| {
             let canvas = canvas.clone();
-            Button::new(id).ghost().small().icon(Icon::new(icon)).label(label).dropdown_menu(move |m: PopupMenu, _, _| {
+            let button = Button::new(id).ghost().icon(Icon::new(icon));
+            let button = if column { button.tooltip(label) } else { button.label(label) };
+            button.dropdown_menu(move |m: PopupMenu, _, _| {
                 let mut m = m;
                 for c in catalog().into_iter().filter(|c| families.contains(&c.name)) {
                     m = m.label(c.name);
@@ -268,53 +309,87 @@ impl PipelineView {
                 m
             })
         };
-        // Only the pill takes the pointer: the strip it is centred in must not cover the canvas'
-        // own bar (zoom, fit, grid, minimap) at the bottom left and the minimap at the right
-        h_flex()
-            .id("pipeline-toolbar")
+        let sep = || if column { div().h(px(1.)).w(px(20.)).my_1().bg(t.border) } else { div().w(px(1.)).h(px(20.)).mx_1().bg(t.border) };
+        let recipe = {
+            let canvas = canvas.clone();
+            let button = Button::new("tool-recipe").ghost().icon(Icon::new(IconName::Package));
+            let button = if column { button } else { button.label("Make recipe") };
+            button
+                .tooltip("Make recipe: the selected chain of ops becomes one reusable node")
+                .disabled(selected == 0)
+                .on_click(move |_, _, cx| Self::canvas_do(&canvas, cx, |c, cx| c.make_recipe(cx)))
+        };
+        let me = cx.entity().downgrade();
+        let place = Button::new("tool-dock")
+            .ghost()
+            .small()
+            .icon(Icon::new(if column { IconName::GripHorizontal } else { IconName::GripVertical }))
+            .tooltip("Place the tool bar")
+            .dropdown_menu(move |m: PopupMenu, _, _| {
+                let mut m = m.label("Place the tool bar");
+                for d in ToolbarDock::ALL {
+                    let me = me.clone();
+                    m = m.item(PopupMenuItem::new(d.label()).checked(d == dock).on_click(move |_, _, cx| {
+                        let _ = me.update(cx, |p, cx| p.set_dock(d, cx));
+                    }));
+                }
+                m
+            });
+        let pill = div()
+            .id("pipeline-toolbar-pill")
             .test_support()
-            .absolute()
-            .bottom_4()
-            .left_0()
-            .right_0()
-            .justify_center()
-            .child(
-                h_flex()
-                    .id("pipeline-toolbar-pill")
-                    .occlude()
-                    .gap_0p5()
-                    .p_1()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(t.border)
-                    .bg(t.popover)
-                    .shadow_lg()
-                    .child(tool("tool-select", IconName::MousePointer2, "Select (V)", !hand, |c, cx| {
-                        c.hand = false;
-                        cx.notify();
-                    }))
-                    .child(tool("tool-hand", IconName::Hand, "Move the canvas (H, or hold Space)", hand, |c, cx| {
-                        c.hand = true;
-                        cx.notify();
-                    }))
-                    .child(div().w(px(1.)).h(px(20.)).mx_1().bg(t.border))
-                    .child(menu("tool-input", IconName::AudioWaveform, "Input", vec!["Sources"]))
-                    .child(menu("tool-op", IconName::SlidersHorizontal, "Operation", vec!["Filter", "Reference", "Smooth", "Transform", "Events"]))
-                    .child(menu("tool-output", IconName::Eye, "Output", vec!["Output"]))
-                    .child(div().w(px(1.)).h(px(20.)).mx_1().bg(t.border))
-                    .child({
-                        let canvas = canvas.clone();
-                        Button::new("tool-recipe")
-                            .ghost()
-                            .small()
-                            .icon(Icon::new(IconName::Package))
-                            .label("Make recipe")
-                            .tooltip("The selected chain of ops becomes a recipe: one reusable node")
-                            .disabled(selected == 0)
-                            .on_click(move |_, _, cx| Self::canvas_do(&canvas, cx, |c, cx| c.make_recipe(cx)))
-                    })
-                    .child(tool("tool-fit", IconName::Maximize, "Fit the graph (F)", false, |c, cx| c.fit(cx))),
-            )
+            .flex()
+            .when(column, |d| d.flex_col())
+            .when(!column, |d| d.flex_row())
+            .items_center()
+            .gap_0p5()
+            .p_1()
+            .rounded_lg()
+            .border_1()
+            .border_color(t.border)
+            .bg(t.popover)
+            .shadow_lg()
+            // While the view moves: out of sight and out of the pointer's way
+            .when(moving, |d| d.opacity(0.))
+            .when(!moving, |d| d.occlude())
+            .child(place)
+            .child(tool("tool-select", IconName::MousePointer2, "Select (V)", !hand, |c, cx| {
+                c.hand = false;
+                cx.notify();
+            }))
+            .child(tool("tool-hand", IconName::Hand, "Move the canvas (H, or hold Space)", hand, |c, cx| {
+                c.hand = true;
+                cx.notify();
+            }))
+            .child(sep())
+            .child(menu("tool-input", IconName::AudioWaveform, "Input", vec!["Sources"]))
+            .child(menu("tool-op", IconName::SlidersHorizontal, "Operation", vec!["Filter", "Reference", "Smooth", "Transform", "Events"]))
+            .child(menu("tool-output", IconName::Eye, "Output", vec!["Output"]))
+            .child(sep())
+            .child(recipe)
+            .child(tool("tool-fit", IconName::Maximize, "Fit the graph (F)", false, |c, cx| c.fit(cx)));
+        // Only the pill takes the pointer: the strip it is centred in covers no control. The
+        // bottom place clears the canvas' own bar (zoom, fit, grid, minimap) under it.
+        let strip = div().id("pipeline-toolbar").test_support().absolute().flex();
+        let strip = match dock {
+            ToolbarDock::Top => strip.top_3().left_0().right_0().justify_center(),
+            ToolbarDock::Bottom => strip.bottom(px(52.)).left_0().right_0().justify_center(),
+            ToolbarDock::Left => strip.left_3().top_0().bottom_0().items_center(),
+            ToolbarDock::Right => strip.right_3().top_0().bottom_0().items_center(),
+        };
+        strip.child(pill)
+    }
+
+    /// Places the floating tool bar.
+    pub fn set_dock(&mut self, dock: ToolbarDock, cx: &mut Context<Self>) {
+        self.dock = dock;
+        cx.notify();
+    }
+
+    /// The canvas (tests).
+    #[cfg(test)]
+    pub(crate) fn canvas(&self) -> Entity<GraphCanvas> {
+        self.canvas.clone()
     }
 
     fn canvas_do(canvas: &WeakEntity<GraphCanvas>, cx: &mut App, f: impl FnOnce(&mut GraphCanvas, &mut Context<GraphCanvas>)) {
@@ -429,7 +504,7 @@ impl PipelineView {
 }
 
 impl Render for PipelineView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let border = cx.theme().border;
         let (side_w, left_w, left_open, right_open) = {
             let s = self.store.read(cx);
@@ -462,6 +537,36 @@ impl Render for PipelineView {
         // The rails, panels and the canvas are cards on the chrome, PANE_GAP apart (kitchen-ui);
         // a side panel starts after its rail and a gap
         let side_offset = RAIL_W + theme::PANE_GAP;
+        // A narrow window (a phone held upright): the side panels float over the canvas, at most
+        // 85 % of the width, instead of squeezing it; their rails open and close them
+        let width = window.viewport_size().width.as_f32();
+        let narrow = width < PIPELINE_NARROW_W;
+        let fit = |w: f32| if narrow { w.min(width * 0.85) } else { w };
+        let left_panel = left_open.then(|| {
+            pane()
+                .relative()
+                .flex()
+                .flex_col()
+                .w(px(fit(left_w)))
+                .flex_none()
+                .h_full()
+                .child(h_flex().h(px(32.)).flex_none().px_3().border_b_1().border_color(border).child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(muted).child(title)))
+                .child(left_body)
+                .child(panel_edge("pipeline.left", Side::Left, theme::PANE_GAP + side_offset))
+        });
+        let right_panel = right_open.then(|| {
+            pane()
+                .relative()
+                .flex()
+                .flex_col()
+                .w(px(fit(side_w)))
+                .flex_none()
+                .h_full()
+                .child(div().flex_1().min_h_0().child(self.inspector.clone()))
+                .child(panel_edge("pipeline.right", Side::Right, theme::PANE_GAP + side_offset))
+        });
+        let (left_beside, left_over) = if narrow { (None, left_panel) } else { (left_panel, None) };
+        let (right_beside, right_over) = if narrow { (None, right_panel) } else { (right_panel, None) };
         v_flex()
             .id("pipeline-workspace")
             .size_full()
@@ -478,34 +583,19 @@ impl Render for PipelineView {
                         cx.notify();
                     }))
                     .child(left_rail)
-                    .when(left_open, |d| {
-                        d.child(
-                            pane()
-                                .relative()
-                                .flex()
-                                .flex_col()
-                                .w(px(left_w))
-                                .flex_none()
-                                .h_full()
-                                .child(h_flex().h(px(32.)).flex_none().px_3().border_b_1().border_color(border).child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(muted).child(title)))
-                                .child(left_body)
-                                .child(panel_edge("pipeline.left", Side::Left, theme::PANE_GAP + side_offset)),
-                        )
-                    })
-                    .child(pane().relative().flex_1().min_w_0().h_full().child(self.canvas.clone()).child(self.toolbar(cx)))
-                    .when(right_open, |d| {
-                        d.child(
-                            pane()
-                                .relative()
-                                .flex()
-                                .flex_col()
-                                .w(px(side_w))
-                                .flex_none()
-                                .h_full()
-                                .child(div().flex_1().min_h_0().child(self.inspector.clone()))
-                                .child(panel_edge("pipeline.right", Side::Right, theme::PANE_GAP + side_offset)),
-                        )
-                    })
+                    .children(left_beside)
+                    .child(
+                        pane()
+                            .relative()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .child(self.canvas.clone())
+                            .child(self.toolbar(cx))
+                            .children(left_over.map(|p| div().absolute().top_0().bottom_0().left_0().shadow_lg().child(p)))
+                            .children(right_over.map(|p| div().absolute().top_0().bottom_0().right_0().shadow_lg().child(p))),
+                    )
+                    .children(right_beside)
                     .child(right_rail),
             )
     }

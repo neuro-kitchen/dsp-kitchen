@@ -214,7 +214,7 @@ impl WorkspaceBody {
         // Files on this computer, or (a page served by `dspk serve`) the recordings of its server
         let mut screen = if crate::platform::remote::runs_alone() {
             // A page on its own: the files the user picks, read and processed in this browser
-            EmptyState::new(IconName::AudioWaveform, "Open a recording", "A folder with your recordings (.zarr, or a .bin and its .meta), read in this browser").child(
+            EmptyState::new(IconName::AudioWaveform, "Open a recording", "A folder with your recordings (.zarr, .wav, or a .bin and its .meta), read in this browser").child(
                 h_flex()
                     .gap_2()
                     .child({
@@ -223,7 +223,7 @@ impl WorkspaceBody {
                     })
                     .child({
                         let (store, browser) = (store.clone(), self.open_browser.clone());
-                        Button::new("start-pick-files").outline().icon(IconName::File).label("Open .bin + .meta…").tooltip("Pick a .bin and its .meta (Ctrl+click both), without their folder").on_click(move |_, w, cx| commands::pick_page_files(&store, false, browser.clone(), w, cx))
+                        Button::new("start-pick-files").outline().icon(IconName::File).label("Open files…").tooltip("Pick a .wav, or a .bin and its .meta (Ctrl+click both), without their folder").on_click(move |_, w, cx| commands::pick_page_files(&store, false, browser.clone(), w, cx))
                     }),
             )
         } else if !crate::platform::LOCAL_FILES {
@@ -241,10 +241,10 @@ impl WorkspaceBody {
                     let store = store.clone();
                     button.on_click(move |_, _, cx| commands::prompt_open(&store, pick, cx))
                 }))
-                .child({
+                .children(crate::plugin::makes_synthetic().then(|| {
                     let store = store.clone();
                     Button::new("start-synthetic").ghost().label("Synthetic recording").on_click(move |_, _, cx| commands::open_synthetic(&store, cx))
-                }),
+                })),
             )
         };
         if !recent.is_empty() {
@@ -366,6 +366,19 @@ impl DspApp {
             pipeline: pipeline.downgrade(),
             toggle_help: Rc::new(move |w, cx| overlay(&c1, Some(help.clone().into()), true, w, cx)),
             toggle_about: Rc::new(move |w, cx| overlay(&c2, Some(about.clone().into()), true, w, cx)),
+            open_devices: {
+                let (close, cell, store) = (close.clone(), shell_cell.clone(), store.clone());
+                Rc::new(move |w, cx| {
+                    #[cfg(feature = "device")]
+                    {
+                        let panel = cx.new(|cx| crate::screens::devices::DevicesPanel::new(store.clone(), cx));
+                        let modal = commands::modal(panel.into(), close.clone(), cx);
+                        overlay(&cell, Some(modal.into()), false, w, cx);
+                    }
+                    #[cfg(not(feature = "device"))]
+                    let _ = (&close, &cell, &store, w, cx);
+                })
+            },
             open_browser: {
                 let close = close.clone();
                 Rc::new(move |w, cx| {
@@ -420,6 +433,8 @@ impl DspApp {
         spec.layout_toggles = vec!["view.channels".into(), "view.inspector".into()];
         spec.remote = Some(RemoteSpec { label: crate::platform::host_label().into(), icon: IconName::Server, menu: vec![MenuItem::command("remote.this"), MenuItem::Separator, MenuItem::command("remote.connect")] });
         spec.status_items = Some(Rc::new(move |_, _| readings.clone().into_any_element()));
+        // Who works: a person's name (or a guest) on what is done and saved
+        spec.people = true;
         let shell = cx.new(|cx| Shell::new(spec, window, cx));
         let _ = shell_cell.set(shell.downgrade());
 
@@ -575,6 +590,11 @@ mod tests {
     use crate::navigation::route::Workspace;
 
     fn open(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Store>, Entity<DspApp>) {
+        open_at(cx, 1400., 900.)
+    }
+
+    /// The app in a `width` × `height` window.
+    fn open_at(cx: &mut TestAppContext, width: f32, height: f32) -> (AnyWindowHandle, Entity<Store>, Entity<DspApp>) {
         // Frames come back from real render threads: allow their wake-ups from the start
         cx.executor().allow_parking();
         cx.update(|cx| {
@@ -582,7 +602,7 @@ mod tests {
             crate::navigation::actions::bind_keys(cx);
             crate::data::services::Services::install(cx);
             let store = cx.new(|_| Store::new(Session::new(), None));
-            let bounds = Bounds { origin: Point::default(), size: size(px(1400.), px(900.)) };
+            let bounds = Bounds { origin: Point::default(), size: size(px(width), px(height)) };
             let options = WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), ..Default::default() };
             let s = store.clone();
             let (window, app) = gpui_kit::open_window(options, cx, move |window, cx| cx.new(|cx| DspApp::new(s, window, cx))).expect("open test window");
@@ -1580,5 +1600,168 @@ mod tests {
     fn ops_preview_on_the_report_file(cx: &mut TestAppContext) {
         let path = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../.datasets/nwb/15-25-33_meps.nwb.zarr"));
         ops_on_a_second_source(cx, path, "/acquisition/EMG", 275.0, 15.0);
+    }
+
+    /// Every button of the canvas' own bar does what it says (zoom, fit, dot grid, minimap).
+    #[gpui_kit::test]
+    fn pipeline_canvas_controls_respond(cx: &mut TestAppContext) {
+        use dspk_session::command::SessionCommand;
+        use dspk_session::session::RecordingRef;
+        let (window, store, app) = open(cx);
+        cx.update(|cx| {
+            store.update(cx, |s, cx| {
+                let recording = RecordingRef { path: "/data/rec.bin".into(), source: None, channels: None };
+                s.execute(SessionCommand::OpenView { recording, name: None }, cx).unwrap();
+                s.set_workspace(Workspace::Pipeline, cx);
+            })
+        });
+        cx.run_until_parked();
+        let canvas = cx.update(|cx| app.read(cx).pipeline.read(cx).canvas());
+        let state = |cx: &mut TestAppContext| cx.update(|cx| {
+            let c = canvas.read(cx);
+            (c.zoom(), c.show_grid, c.show_minimap)
+        });
+        let click = |cx: &mut TestAppContext, id: &'static str| {
+            cx.update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window.click(id, cx);
+                window.render_frame(cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+        };
+        // The floating tool bar covers none of the canvas' own buttons (it did: their clicks
+        // went to it), wherever it is placed
+        let pipeline = cx.update(|cx| app.read(cx).pipeline.clone());
+        use crate::screens::pipeline::ToolbarDock;
+        for dock in [ToolbarDock::Top, ToolbarDock::Bottom, ToolbarDock::Left, ToolbarDock::Right] {
+            cx.update(|cx| pipeline.update(cx, |p, cx| p.set_dock(dock, cx)));
+            cx.update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                let pill = window.find("pipeline-toolbar-pill").bounds();
+                for id in ["canvas-zoom-out", "canvas-zoom-in", "canvas-fit", "canvas-grid", "canvas-minimap"] {
+                    assert!(!pill.intersects(&window.find(id).bounds()), "{dock:?}: the tool bar covers {id}");
+                }
+            })
+            .unwrap();
+        }
+        let (zoom, grid, minimap) = state(cx);
+        click(cx, "canvas-zoom-in");
+        assert!(state(cx).0 > zoom, "zoom in");
+        click(cx, "canvas-zoom-out");
+        click(cx, "canvas-zoom-out");
+        assert!(state(cx).0 < zoom, "zoom out");
+        click(cx, "canvas-grid");
+        assert_eq!(state(cx).1, !grid, "the dot grid toggles");
+        click(cx, "canvas-minimap");
+        assert_eq!(state(cx).2, !minimap, "the minimap toggles off");
+        click(cx, "canvas-minimap");
+        assert_eq!(state(cx).2, minimap, "and on again");
+        // While the view moves the tool bar steps aside, and comes back once it is still
+        cx.update(|cx| canvas.update(cx, |c, cx| c.zoom_by(1.1, None, cx)));
+        assert!(cx.update(|cx| canvas.read(cx).moving()), "moving after a zoom");
+        cx.executor().advance_clock(Duration::from_millis(1_000));
+        cx.run_until_parked();
+        assert!(!cx.update(|cx| canvas.read(cx).moving()), "still a second after: settled");
+    }
+
+    /// An operation's card lists its parameters: a number dragged steps it (one undo step for the
+    /// drag), clicked it is typed; the card has its help.
+    #[gpui_kit::test]
+    fn a_node_card_edits_its_parameters(cx: &mut TestAppContext) {
+        use crate::screens::pipeline::node_params::{param_rows, ParamValue};
+        use dspk_session::command::SessionCommand;
+        use dspk_session::graph::NodeKind;
+        use dspk_session::session::RecordingRef;
+        let (window, store, app) = open(cx);
+        cx.update(|cx| {
+            store.update(cx, |s, cx| {
+                let recording = RecordingRef { path: "/data/rec.bin".into(), source: None, channels: None };
+                s.execute(SessionCommand::OpenView { recording, name: None }, cx).unwrap();
+                s.set_workspace(Workspace::Pipeline, cx);
+            })
+        });
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| {
+            let pipeline = app.read(cx).pipeline.clone();
+            let template = crate::screens::pipeline::catalog::catalog().into_iter().find(|c| c.name == "Filter").expect("a Filter family").items[0].template.clone();
+            pipeline.update(cx, |p, cx| p.add(&template, window, cx));
+        })
+        .unwrap();
+        cx.run_until_parked();
+        // The operation, and its first number
+        let op = |cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                store.read(cx).doc.graph.nodes.iter().find_map(|n| match &n.kind {
+                    NodeKind::Op { node, .. } => Some((n.id.clone(), node.clone())),
+                    _ => None,
+                })
+            })
+            .expect("an operation node")
+        };
+        let (id, node) = op(cx);
+        let row = param_rows(&node).into_iter().find(|r| matches!(r.value, ParamValue::Number { .. })).expect("a number");
+        let value = |cx: &mut TestAppContext| {
+            let (_, node) = op(cx);
+            match param_rows(&node).into_iter().find(|r| r.field == row.field && r.index == row.index).unwrap().value {
+                ParamValue::Number { value, .. } => value,
+                _ => unreachable!(),
+            }
+        };
+        let before = value(cx);
+        let field = format!("param-{}", row.key(&id));
+        let centre = cx
+            .update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                assert!(window.try_find(format!("help-{id}")).is_some(), "the card's help");
+                window.find(field.clone()).bounds().center()
+            })
+            .unwrap();
+        // Dragged to the right: up, one undo step back to where it was
+        cx.update_window(window, |_, window, cx| window.drag(centre, gpui_kit::point(centre.x + px(40.), centre.y), cx)).unwrap();
+        cx.run_until_parked();
+        assert!(value(cx) > before, "dragged up: {} → {}", before, value(cx));
+        cx.update(|cx| store.update(cx, |s, cx| s.undo(false, cx)));
+        assert_eq!(value(cx), before, "the drag is one undo step");
+        // Clicked: typed, Enter applies
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click(field.clone(), cx);
+            window.render_frame(cx);
+            window.press("ctrl-a", cx);
+            window.input("123", cx);
+            window.press("enter", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(value(cx), 123.0, "typed");
+    }
+
+    /// On a phone-wide window the Pipeline's side panels float over the canvas: it keeps most of
+    /// the width (beside them it would have almost none).
+    #[gpui_kit::test]
+    fn the_pipeline_canvas_keeps_the_width_of_a_narrow_window(cx: &mut TestAppContext) {
+        let (window, store, _) = open_at(cx, 390., 800.);
+        cx.update(|cx| store.update(cx, |s, cx| s.set_workspace(Workspace::Pipeline, cx)));
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let canvas = window.find("graph-canvas").bounds();
+            assert!(canvas.size.width.as_f32() > 250., "the canvas keeps the width: {:?}", canvas.size);
+        })
+        .unwrap();
+    }
+
+    /// Who works shows in the title bar (a guest until someone is picked), and Settings has People
+    /// after the app's own sections.
+    #[gpui_kit::test]
+    fn who_works_shows_in_the_title_bar(cx: &mut TestAppContext) {
+        let (window, _, _) = open(cx);
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.find("title-person").bounds().size.width.as_f32() > 0.0, "the person button is shown");
+        })
+        .unwrap();
     }
 }

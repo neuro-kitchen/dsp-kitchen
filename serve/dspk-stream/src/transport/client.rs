@@ -97,6 +97,15 @@ impl Session {
         }
     }
 
+    /// Calls `method` of the server's plugin `plugin` with `body`; its reply's bytes.
+    pub async fn plugin_call(&self, plugin: &str, method: &str, body: Vec<u8>) -> StreamResult<Vec<u8>> {
+        let call = wire::PluginCall { plugin: plugin.into(), method: method.into(), body };
+        match self.request(wire::request::Kind::Plugin(call)).await? {
+            wire::response::Kind::Plugin(reply) => Ok(reply.body),
+            _ => Err(StreamError::protocol("unexpected answer to a plugin call")),
+        }
+    }
+
     async fn status_request(&self, kind: wire::request::Kind) -> StreamResult<wire::Status> {
         match self.request(kind).await? {
             wire::response::Kind::Status(status) => Ok(status),

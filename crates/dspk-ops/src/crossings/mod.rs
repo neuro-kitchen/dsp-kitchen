@@ -261,6 +261,15 @@ impl CrossingTracker {
         }
     }
 
+    /// The events that ended so far, by onset then channel; each is returned once (a live chain
+    /// takes them block after block; [`Self::finish`] then returns only what came after, plus
+    /// the events still open).
+    pub fn take_events(&mut self) -> Vec<CrossingEvent> {
+        let mut events = std::mem::take(&mut self.events);
+        events.sort_by(|a, b| (a.onset, a.channel).cmp(&(b.onset, b.channel)).then(a.peak_value.total_cmp(&b.peak_value)));
+        events
+    }
+
     /// Ends the run: events still open get no offset. Returns every event, by onset then channel.
     pub fn finish(mut self) -> Vec<CrossingEvent> {
         for side in &self.sides {

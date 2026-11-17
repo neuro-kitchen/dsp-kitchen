@@ -97,10 +97,11 @@ impl<'a, 'py> FromPyObject<'a, 'py> for DeviceInput {
             return Ok(Self { channels, samples, values: Values::F32(view.iter().copied().collect()) });
         }
         stored!(i8, SampleFormat::I8);
+        stored!(u8, SampleFormat::U8);
         stored!(i16, SampleFormat::I16);
         stored!(u16, SampleFormat::U16);
         stored!(i32, SampleFormat::I32);
-        Err(PyValueError::new_err("data must be a 2-D float32, int8, int16, uint16 or int32 array (channels, samples)"))
+        Err(PyValueError::new_err("data must be a 2-D float32, int8, uint8, int16, uint16 or int32 array (channels, samples)"))
     }
 }
 

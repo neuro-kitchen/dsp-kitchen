@@ -8,36 +8,36 @@
 //! read too.
 
 use std::ops::Range;
-#[cfg(feature = "zarr")]
+#[cfg(all(feature = "zarr", not(target_family = "wasm")))]
 use std::path::Path;
 use std::sync::Arc;
 
 use dspk_core::recording::{check_read, check_read_stored};
 use dspk_core::{DspError, DspResult, MemoryOrder, RecordingInfo, RecordingSource, SampleFormat, SampleRate, SignalUnit};
 use serde_json::Value;
-#[cfg(feature = "zarr")]
+#[cfg(all(feature = "zarr", not(target_family = "wasm")))]
 use serde_json::json;
 use zarrs::array::{Array, ArrayBytes};
-#[cfg(feature = "zarr")]
+#[cfg(all(feature = "zarr", not(target_family = "wasm")))]
 use zarrs::array::{ArrayBuilder, data_type};
 use zarrs::storage::ReadableStorageTraits;
 
 use crate::container::binary::codec::{native_to_le, scale_frames, select_stored};
-#[cfg(feature = "zarr")]
+#[cfg(all(feature = "zarr", not(target_family = "wasm")))]
 use crate::container::zarr::open_store;
-#[cfg(feature = "zarr")]
+#[cfg(all(feature = "zarr", not(target_family = "wasm")))]
 use zarrs::storage::ReadableWritableListableStorage;
 use zarrs::group::Group;
-#[cfg(feature = "zarr")]
+#[cfg(all(feature = "zarr", not(target_family = "wasm")))]
 use zarrs::group::GroupBuilder;
 
 pub use super::zarr_options::{ZarrCompression, ZarrOptions, DEFAULT_CHUNK_SAMPLES, DEFAULT_PARALLEL_WRITES, DEFAULT_ZARR_COMPRESSION};
 
 mod byte_store;
 pub use byte_store::ByteSourceStore;
-#[cfg(feature = "zarr")]
+#[cfg(all(feature = "zarr", not(target_family = "wasm")))]
 mod format;
-#[cfg(feature = "zarr")]
+#[cfg(all(feature = "zarr", not(target_family = "wasm")))]
 pub use format::ZarrTraces;
 
 const ARRAY_PATH: &str = "/traces";
@@ -56,23 +56,25 @@ pub struct ZarrRecording {
     chunk_samples: Option<u64>,
 }
 
-// SAFETY: a browser build without threads (no shared memory, no atomics: a browser's engine
-// worker) has one thread, so nothing of the recording is ever touched from another. zarrs relaxes
-// `Send` / `Sync` on wasm, so its `Array` does not have them there; on every other target it does
-// and these impls are not compiled. A threaded browser build does not get them: it would not
-// compile rather than share a recording unsafely.
-#[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
+// SAFETY: on wasm zarrs stops *requiring* `Send` / `Sync` of its storage and data-type traits
+// (so JavaScript-backed stores can implement them), so its `Array` does not have the bounds
+// there; on every other target it does and these impls are not compiled. What a recording holds
+// is thread-safe all the same: its store is `Send + Sync` ([`ZarrRecording::from_store`]
+// requires it), and the array and its data types are the plain Rust values that are `Send +
+// Sync` on every other target. In a browser's engine worker there is one thread anyway; in a
+// page's threaded module (Curation reads sortings on worker threads) the store is in memory.
+#[cfg(target_family = "wasm")]
 unsafe impl Send for ZarrRecording {}
-#[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
+#[cfg(target_family = "wasm")]
 unsafe impl Sync for ZarrRecording {}
 
 impl ZarrRecording {
-    /// The recording in the Zarr folder `path` on disk.
-    #[cfg(feature = "zarr")]
+    /// The recording in the Zarr folder `path` on disk (not in a browser page: no file system).
+    #[cfg(all(feature = "zarr", not(target_family = "wasm")))]
     pub fn open(path: &Path) -> DspResult<Self> {
-        let store = zarrs::filesystem::FilesystemStore::new(path).map_err(|e| err("open store")(format!("{}: {e}", path.display())))?;
+        let store: Arc<dyn ReadableStorageTraits + Send + Sync> = crate::container::zarr::open_store(path)?;
         let name = path.file_name().map_or_else(|| "recording.zarr".into(), |n| n.to_string_lossy().into_owned());
-        Self::from_store(name, Arc::new(store))
+        Self::from_store(name, store)
     }
 
     /// The recording `name` in `store` (a folder on disk, a browser's files, memory): read by
@@ -165,9 +167,13 @@ impl ZarrRecording {
         let values: Vec<f32> = match self.info.format {
             SampleFormat::F32 => self.array.retrieve_array_subset::<Vec<f32>>(&subset).map_err(read)?,
             SampleFormat::I8 => get!(i8),
+            SampleFormat::U8 => get!(u8),
             SampleFormat::I16 => get!(i16),
             SampleFormat::U16 => get!(u16),
+            // Zarr has no 24-bit type: an array never says so
+            SampleFormat::I24 => return Err(DspError::UnsupportedFormat("24-bit samples in a Zarr array".into())),
             SampleFormat::I32 => get!(i32),
+            SampleFormat::F16 => self.array.retrieve_array_subset::<Vec<half::f16>>(&subset).map_err(read)?.into_iter().map(f32::from).collect(),
             SampleFormat::F64 => get!(f64),
         };
         Ok(values)
@@ -250,7 +256,7 @@ impl RecordingSource for ZarrRecording {
 pub const CHANNEL_NAMES_ATTR: &str = "channel_names";
 
 
-#[cfg(feature = "zarr")]
+#[cfg(all(feature = "zarr", not(target_family = "wasm")))]
 /// Streams `source` into a new Zarr v3 store (`float32`, in the source's unit: the first
 /// channel's), laid out as `options` says.
 pub fn write_zarr(source: &dyn RecordingSource, path: &Path, options: &ZarrOptions, mut progress: impl FnMut(u64, u64)) -> DspResult<()> {
@@ -277,7 +283,7 @@ pub fn write_zarr(source: &dyn RecordingSource, path: &Path, options: &ZarrOptio
     writer.finish()
 }
 
-#[cfg(feature = "zarr")]
+#[cfg(all(feature = "zarr", not(target_family = "wasm")))]
 /// Writes a new Zarr recording in the layout [`write_zarr`] gives (`float32`
 /// `[channels, samples]`, chunked `[channels, chunk_samples]`, compressed per [`ZarrOptions`])
 /// from blocks of columns arriving in order, e.g. the windows of a pipeline run: [`Self::push`]
@@ -300,7 +306,7 @@ pub struct ZarrWriter {
     ready: Vec<(u64, Vec<f32>)>,
 }
 
-#[cfg(feature = "zarr")]
+#[cfg(all(feature = "zarr", not(target_family = "wasm")))]
 impl ZarrWriter {
     /// Creates the store at `path` for `channels × samples` values at `sample_rate_hz` in `unit`.
     pub fn create(path: &Path, channels: usize, samples: u64, sample_rate_hz: f64, unit: &SignalUnit, options: &ZarrOptions) -> DspResult<Self> {
@@ -424,9 +430,9 @@ impl ZarrWriter {
     }
 }
 
-#[cfg(feature = "zarr")]
+#[cfg(all(feature = "zarr", not(target_family = "wasm")))]
 /// The bytes-to-bytes codecs of `compression`.
-fn compression_codecs(compression: ZarrCompression) -> DspResult<Vec<std::sync::Arc<dyn zarrs::array::BytesToBytesCodecTraits>>> {
+pub(crate) fn compression_codecs(compression: ZarrCompression) -> DspResult<Vec<std::sync::Arc<dyn zarrs::array::BytesToBytesCodecTraits>>> {
     use zarrs::array::codec::{BloscCodec, BloscCompressionLevel, BloscCompressor, BloscShuffleMode, ZstdCodec};
     Ok(match compression {
         ZarrCompression::None => Vec::new(),

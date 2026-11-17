@@ -33,7 +33,17 @@ what they found, channel by channel.
 
 The sorting is linked to the view and saved as a `.sorting.zarr`.
 
+No sorter yet? **Install sorters** in the Sorting workspace downloads `dspk-cli-sorter`, the
+program that runs them, next to the app.
+
 To sort on a server, open the recording from it
-([Settings and servers](/dsp-kitchen/app/settings/)). The run happens there.
+([Settings and servers](/dsp-kitchen/app/settings/)), or use the page the container serves. The
+run happens there, with the server's sorters.
+
+A run is named with the time it started (`rec.kilosort4.0-20s.20261117-2032.sorting.zarr`, UTC).
+Running the same sorter over the same part again asks first: **Run again** keeps the new run
+beside the earlier one (nothing is overwritten), **Open that run** shows the earlier one. On a
+server, a sort has the GPU to itself: views in progress finish, and the page's views are processed
+on the server's CPU until the sort ends.
 
 Judging and editing units is the [Curation](/dsp-kitchen/plugins/synapse/learn/curation/) workspace's.

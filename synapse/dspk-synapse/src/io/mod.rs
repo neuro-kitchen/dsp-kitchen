@@ -17,7 +17,8 @@ pub mod probe;
 mod sorting_format;
 pub mod sorting_zarr;
 pub mod spikeglx;
-pub mod synthetic;
+// Moved to dspk-core (2026-11-17); kept here so existing paths work
+pub use dspk_core::recording::synthetic;
 pub mod templates;
 
 pub use mtscomp::MtscompRecording;
@@ -30,10 +31,12 @@ pub use synthetic::{SyntheticParams, SyntheticRecording};
 static FORMATS: &[&dyn Format] = &[
     // NWB before generic Zarr: an NWB store is also a Zarr store
     &nwb::Nwb,
+    #[cfg(not(target_family = "wasm"))]
     &dspk_io::generic::zarr_traces::ZarrTraces,
     // SpikeGLX before mtscomp: a SpikeGLX `.cbin` is read with its `.meta`
     &spikeglx::SpikeGlx,
     &mtscomp::Mtscomp,
+    &dspk_io::generic::wav::Wav,
     &dspk_io::generic::raw::Raw,
 ];
 

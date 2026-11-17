@@ -33,3 +33,4 @@ thiserror.workspace = true
 # file system
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 dspk-io = { workspace = true, features = ["zarr"] }
+zarrs = { workspace = true, features = ["filesystem"] }

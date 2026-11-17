@@ -226,7 +226,7 @@ impl StreamingDetector {
         debug_assert!(right_halo as usize >= spacing.distance());
 
         // Integer recordings upload their stored values and are scaled on the device
-        let stored = matches!(info.format, SampleFormat::I8 | SampleFormat::I16 | SampleFormat::U16 | SampleFormat::I32)
+        let stored = matches!(info.format, SampleFormat::I8 | SampleFormat::U8 | SampleFormat::I16 | SampleFormat::U16 | SampleFormat::I24 | SampleFormat::I32)
             && total_samples > 0
             && source.read_stored(&[0], 0..1, &mut vec![0u8; info.format.bytes()]).is_ok();
         if stored {

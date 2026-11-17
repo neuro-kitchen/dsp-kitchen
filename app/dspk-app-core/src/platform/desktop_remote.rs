@@ -158,8 +158,28 @@ pub fn runs_alone() -> bool {
 }
 
 /// See [`runs_alone`]: never asked on the desktop.
-pub async fn pick_files(_folder: bool) -> anyhow::Result<Vec<String>> {
+pub async fn pick_files(_folder: bool) -> anyhow::Result<(Vec<String>, Option<String>)> {
     anyhow::bail!("the desktop app opens files with its file dialog")
+}
+
+/// A page's download; the desktop writes files itself.
+pub fn download(_name: &str, _bytes: &[u8], _mime: &str) -> anyhow::Result<()> {
+    anyhow::bail!("the desktop app saves files itself")
+}
+
+/// The desktop is no page: never served.
+pub fn served() -> bool {
+    false
+}
+
+/// A page's call to its server's plugin; the desktop computes itself.
+pub async fn plugin_call(_plugin: &str, _method: &str, _body: Vec<u8>) -> anyhow::Result<Vec<u8>> {
+    anyhow::bail!("the desktop app computes itself")
+}
+
+/// See [`runs_alone`]: the desktop opens folders by their path.
+pub async fn pick_folder_bytes() -> anyhow::Result<Option<(String, Vec<(String, Vec<u8>)>)>> {
+    anyhow::bail!("the desktop app opens folders by their path")
 }
 
 /// The server a page talks to; the desktop has none of its own.

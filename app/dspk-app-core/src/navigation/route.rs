@@ -18,7 +18,7 @@ pub enum Workspace {
 }
 
 impl Workspace {
-    pub const ALL: [Workspace; 5] = [Workspace::Explore, Workspace::Sorting, Workspace::Pipeline, Workspace::Curation, Workspace::Analytics];
+    pub const ALL: [Workspace; 5] = [Workspace::Explore, Workspace::Pipeline, Workspace::Sorting, Workspace::Curation, Workspace::Analytics];
 
     pub fn title(self) -> &'static str {
         match self {

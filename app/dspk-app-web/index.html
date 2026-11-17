@@ -43,14 +43,19 @@
           } catch {
             return null;
           }
+          // Every file, but not hidden folders (.git, .venv…) nor deeper than recordings sit
+          // (a Zarr's chunks are a few levels down), and at most MAX files: a large folder
+          // (a home, a project) would take minutes to list
           const out = [];
-          const walk = async (dir, prefix) => {
+          const MAX = 50000, DEPTH = 8;
+          const walk = async (dir, prefix, depth) => {
             for await (const [name, handle] of dir.entries()) {
+              if (out.length >= MAX) return;
               if (handle.kind === "file") out.push({ path: `${prefix}/${name}`, file: await handle.getFile() });
-              else await walk(handle, `${prefix}/${name}`);
+              else if (!name.startsWith(".") && depth < DEPTH) await walk(handle, `${prefix}/${name}`, depth + 1);
             }
           };
-          await walk(root, root.name);
+          await walk(root, root.name, 0);
           return out;
         };
       }

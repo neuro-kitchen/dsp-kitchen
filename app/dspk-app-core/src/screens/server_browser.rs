@@ -162,6 +162,16 @@ impl Render for ServerBrowser {
                         let _ = m.update(cx, |b, cx| b.fetch(&n, cx));
                     }));
                 }
+                // What plugins do with this kind of entry (a sorting: Curate)
+                for (k, (label, action)) in crate::plugin::server_entry_actions(kind).into_iter().enumerate() {
+                    let (m, n) = (me.clone(), name.clone());
+                    actions = actions.child(Button::new(SharedString::from(format!("browser-plugin-{i}-{k}"))).primary().xsmall().label(label).on_click(move |_, window, cx| {
+                        let Some(browser) = m.upgrade() else { return };
+                        let (store, path) = { let b = browser.read(cx); (b.store.clone(), b.path_of(&n)) };
+                        action(&store, path, window, cx);
+                        browser.update(cx, |_, cx| cx.emit(BrowserEvent::Opened));
+                    }));
+                }
                 entries = entries.child(
                     h_flex()
                         .id(SharedString::from(format!("browser-entry-{i}")))

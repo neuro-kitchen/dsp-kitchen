@@ -4,5 +4,6 @@
 
 pub mod commands;
 pub mod progress;
-pub mod sorters_program;
+/// The sorters program (`dspk_hub::sorters`), under the name the CLI has always used.
+pub use dspk_hub::sorters as sorters_program;
 pub mod style;

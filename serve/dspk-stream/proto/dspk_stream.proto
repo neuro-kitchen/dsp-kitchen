@@ -33,6 +33,11 @@ enum SampleFormat {
   SAMPLE_FORMAT_I32 = 4;
   SAMPLE_FORMAT_F32 = 5;
   SAMPLE_FORMAT_F64 = 6;
+  // Added in 0.0.12 (8-bit unsigned, 24-bit WAV); an older peer reports them as unknown
+  SAMPLE_FORMAT_U8 = 7;
+  SAMPLE_FORMAT_I24 = 8;
+  // Added in 0.0.12 with the live protocol (half precision); an older peer reports it as unknown
+  SAMPLE_FORMAT_F16 = 9;
 }
 
 enum Unit {
@@ -238,6 +243,19 @@ message FileChunk {
   bytes data = 1;
 }
 
+// A call to one of the server's plugins (what it computes for a domain, e.g. Curation of a
+// sorting): its id, the method, and the body (JSON by convention). The server knows no plugin's
+// meaning; it hands the call over with its data root and open recording.
+message PluginCall {
+  string plugin = 1;
+  string method = 2;
+  bytes body = 3;
+}
+
+message PluginReply {
+  bytes body = 1;
+}
+
 // client → server, the only message on a request stream.
 message Request {
   oneof kind {
@@ -250,6 +268,7 @@ message Request {
     GetStatus status = 7;
     GetLogs logs = 8;
     Fetch fetch = 9;
+    PluginCall plugin = 10;
   }
 }
 
@@ -267,6 +286,7 @@ message Response {
     LogLines logs = 6;
     // The answer to Fetch; FileChunk messages follow.
     FileHeader file = 7;
+    PluginReply plugin = 8;
   }
 }
 

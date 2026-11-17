@@ -62,8 +62,11 @@ dspk run spec.toml --dry-run      # what would run: inputs, outputs, mode, windo
 dspk run spec.toml
 ```
 
-Next to each output goes `<output>.pipeline.json`: the spec with every default written out and the
-runtime that ran. So every result says how it was made.
+Next to each output goes `<output>.pipeline.json`: the spec with every default written out, which
+`dspk run` runs again as it is. Beside it, `<output>.run.json` records the run: when it started and
+ended, the dspk version, the runtime and mode, each input's size and modified time (so you can tell
+whether an input changed since), the channels and samples written, the bytes moved and the time
+of each stage. So every result says how it was made, and from what.
 
 ## Many inputs
 

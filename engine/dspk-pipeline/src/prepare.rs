@@ -98,6 +98,8 @@ pub(crate) struct Prepared {
     /// Chunking and compression of Zarr output; `parallel` also applies to raw output.
     pub(crate) zarr: dspk_io::ZarrOptions,
     pub(crate) input_label: String,
+    /// The recordings read (one, or a merge's), as opened.
+    pub(crate) input_paths: Vec<PathBuf>,
     /// Whitening stages still to fit, by their index in `stages` (identities until then).
     pub(crate) fits: Vec<(usize, crate::WhitenFit)>,
     /// A `crossings` node ending the chain: its events are the output (`format = "events"`).
@@ -230,6 +232,11 @@ pub(crate) fn prepare(
         }
     }
 
+    let input_paths: Vec<PathBuf> = match (input, inputs.as_deref()) {
+        (Some(path), None) => vec![base_dir.join(path)],
+        (None, Some([Input::Merge { merge }])) => merge.iter().map(|p| base_dir.join(&p.path)).collect(),
+        _ => Vec::new(),
+    };
     let (source, input_label): (Box<dyn RecordingSource>, String) = match (input, inputs.as_deref()) {
         (Some(path), None) => (open(&base_dir.join(path), source.as_deref())?, path.display().to_string()),
         (None, Some([Input::Merge { merge }])) => {
@@ -365,6 +372,7 @@ pub(crate) fn prepare(
         format: *format,
         zarr,
         input_label,
+        input_paths,
         fits,
         crossings,
     })
@@ -400,14 +408,15 @@ fn select_range(start: Option<u64>, stop: Option<u64>, total: u64) -> Result<std
     Ok(start..stop)
 }
 
-/// Stored upload works for integer storage; float32 gains nothing; float64 has no device unpacking.
+/// Stored upload works for integer storage; float32 gains nothing; float16 and float64 have no
+/// device unpacking.
 fn resolve_upload(requested: Upload, format: SampleFormat) -> Result<bool, PipelineError> {
-    let integer = !matches!(format, SampleFormat::F32 | SampleFormat::F64);
+    let integer = !matches!(format, SampleFormat::F16 | SampleFormat::F32 | SampleFormat::F64);
     match requested {
         Upload::Auto => Ok(integer),
         Upload::Scaled => Ok(false),
-        Upload::Stored if format == SampleFormat::F64 => {
-            Err(PipelineError::Invalid("execution.upload = \"stored\": float64 recordings cannot be scaled on the device".into()))
+        Upload::Stored if matches!(format, SampleFormat::F16 | SampleFormat::F64) => {
+            Err(PipelineError::Invalid(format!("execution.upload = \"stored\": {} recordings cannot be scaled on the device", format.name())))
         }
         Upload::Stored => Ok(true),
     }

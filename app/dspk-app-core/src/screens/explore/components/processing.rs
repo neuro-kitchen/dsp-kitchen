@@ -240,11 +240,21 @@ impl ProcessingPanel {
                     }
                 };
                 let mut menu = menu;
+                // A run in progress takes live ops only: the others are shown, greyed, with why
+                let live = store.read(cx).live.is_some();
                 for family in view_ops() {
                     let (store, id) = (store.clone(), id.clone());
                     menu = menu.submenu(family.name, window, cx, move |m, window, cx| {
                         let mut m = m;
                         for (label, value) in &family.ops {
+                            let value = &match live_variant(value, live) {
+                                Ok(v) => v,
+                                Err(why) => {
+                                    m = m.item(PopupMenuItem::new(format!("{label} · not on a live run")).disabled(true));
+                                    let _ = why;
+                                    continue;
+                                }
+                            };
                             let node: Node = serde_json::from_value(value.clone()).expect("catalog ops are valid");
                             let presets = crate::screens::pipeline::catalog::presets(&node);
                             let (store, id, value) = (store.clone(), id.clone(), value.clone());
@@ -307,6 +317,23 @@ impl ProcessingPanel {
                     .children(preview_note.map(|n| div().text_xs().text_color(muted).child(n)))
                     .child(tree)
                     .child(add)
+                    .children(self.store.read(cx).live.as_ref().and_then(|l| l.send.clone()).map(|send| {
+                        let (store, ops) = (self.store.clone(), view.ops.iter().filter(|o| o.enabled).filter_map(|o| serde_json::to_string(&o.node).ok()).collect::<Vec<_>>());
+                        Button::new("send-to-device")
+                            .outline()
+                            .small()
+                            .label("Send to the device as its chain")
+                            .tooltip("The device runs these ops itself (live ops only, while its run is stopped): its taps then carry the result, recorded with the raw data when asked")
+                            .on_click(move |_, _, cx| {
+                                let (send, ops, store) = (send.clone(), ops.clone(), store.clone());
+                                let task = cx.background_executor().spawn(async move { send(ops) });
+                                cx.spawn(async move |cx| {
+                                    let said = task.await;
+                                    let _ = store.update(cx, |s, cx| s.set_status(said.unwrap_or_else(|e| format!("The device refused the chain: {e}")), cx));
+                                })
+                                .detach();
+                            })
+                    }))
                     .into_any_element(),
         ];
         out.extend(params.map(IntoElement::into_any_element));
@@ -342,3 +369,31 @@ mod tests {
         assert!(!labels.contains(&"Resample"), "resampling is not previewed");
     }
 }
+
+/// `value` (an op of the catalog) as a run in progress takes it: a zero-phase filter offered as
+/// its forward (causal) form, an op that needs the future refused with why. Not live: as it is.
+fn live_variant(value: &Value, live: bool) -> Result<Value, String> {
+    if !live {
+        return Ok(value.clone());
+    }
+    #[cfg(feature = "device")]
+    {
+        let check = |v: &Value| dspk_pipeline::live::chain_of_ops(&[v.to_string()], 1, 10.0).map(|_| ()).map_err(|r| r.first().map(|r| r.reason.clone()).unwrap_or_default());
+        match check(value) {
+            Ok(()) => Ok(value.clone()),
+            Err(why) => {
+                let mut forward = value.clone();
+                if let Some(obj) = forward.as_object_mut().filter(|o| o.contains_key("mode") || matches!(o.get("op").and_then(|v| v.as_str()), Some("iir" | "notch" | "sos"))) {
+                    obj.insert("mode".into(), Value::String("forward".into()));
+                    if check(&forward).is_ok() {
+                        return Ok(forward);
+                    }
+                }
+                Err(why)
+            }
+        }
+    }
+    #[cfg(not(feature = "device"))]
+    Err("live runs need the app built with the device feature".into())
+}
+

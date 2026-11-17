@@ -1,6 +1,7 @@
 pub mod rate;
 pub mod rational;
 pub mod range;
+pub mod wall;
 
 pub use rate::SampleRate;
 pub use rational::RationalTime;

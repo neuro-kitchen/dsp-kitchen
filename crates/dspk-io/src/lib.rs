@@ -15,6 +15,9 @@ pub mod channel_map;
 pub mod container;
 pub mod core;
 pub mod generic;
+/// Live sources (recordings that grow while read): not in a browser page (threads, sockets, files).
+#[cfg(all(feature = "live", not(target_family = "wasm")))]
+pub mod live;
 pub mod registry;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
@@ -22,13 +25,14 @@ pub mod test_support;
 pub use crate::core::{
     default_source, detect, open, open_source, sources, CachedRecording, Format, MergeInput, MergedRecording, SourceEntry, SourceKind,
 };
-pub use generic::raw::{write_raw, ByteSource, RawParams, RawRecording};
+pub use generic::raw::{write_raw, ByteSource, MemoryBytes, RawParams, RawRecording};
+pub use generic::wav::{open_wav, wav_from_source, WavLayout};
 pub use generic::zarr_options::{ZarrCompression, ZarrOptions, DEFAULT_PARALLEL_WRITES, DEFAULT_ZARR_COMPRESSION};
-#[cfg(not(feature = "zarr"))]
+#[cfg(any(not(feature = "zarr"), target_family = "wasm"))]
 pub use generic::zarr_options::ZarrWriter;
 #[cfg(feature = "zarr-read")]
 pub use generic::zarr_traces::{ByteSourceStore, ZarrRecording};
-#[cfg(feature = "zarr")]
+#[cfg(all(feature = "zarr", not(target_family = "wasm")))]
 pub use generic::zarr_traces::{write_zarr, ZarrWriter};
 pub use channel_map::{channel_map_toml, parse_channel_map, read_channel_map};
 pub use registry::formats;

@@ -17,7 +17,6 @@ use zarrs::array::{Array, ArrayBytes};
 
 use dspk_io::container::binary::codec::{native_to_le, scale_frames, select_stored};
 use dspk_io::container::zarr::{read_all, read_node_json};
-use zarrs::filesystem::FilesystemStore;
 use zarrs::storage::ReadableStorageTraits;
 
 type Storage = dyn ReadableStorageTraits;
@@ -71,7 +70,7 @@ pub fn list_series(store: &Path) -> Vec<SeriesEntry> {
                 [t, c] => (t, c as usize),
                 _ => return None,
             };
-            let fs: Arc<Storage> = Arc::new(FilesystemStore::new(store).ok()?);
+            let fs: Arc<Storage> = dspk_io::container::zarr::open_store(store).ok()?;
             let start_time = read_all::<f64>(&fs, &format!("{path}/starting_time")).and_then(|v| v.first().copied()).unwrap_or(0.0);
             Some(SeriesEntry { path, neurodata_type: kind, channels, samples, rate, start_time, format, unit })
         })
@@ -87,6 +86,15 @@ pub struct NwbZarrRecording {
     /// Samples per chunk along time (the first chunk's).
     chunk_samples: Option<u64>,
 }
+
+// SAFETY: on wasm zarrs stops requiring `Send` / `Sync` of its traits, so `Array` lacks them
+// there (on other targets it has them and these are not compiled). A browser page has no file
+// system: the store is opened through `open_store`, which refuses there, so no NWB recording is
+// ever made in a browser; the impls only let the type compile with the rest of the reader.
+#[cfg(target_family = "wasm")]
+unsafe impl Send for NwbZarrRecording {}
+#[cfg(target_family = "wasm")]
+unsafe impl Sync for NwbZarrRecording {}
 
 impl NwbZarrRecording {
     /// Opens the largest `ElectricalSeries`, or the largest continuous series if there is none.
@@ -104,7 +112,7 @@ impl NwbZarrRecording {
 
     /// Opens the series at `series` (e.g. `/acquisition/HDEMG`).
     pub fn open_series(path: &Path, series: &str) -> DspResult<Self> {
-        let store: Arc<Storage> = Arc::new(FilesystemStore::new(path).map_err(err)?);
+        let store: Arc<Storage> = dspk_io::container::zarr::open_store(path)?;
         let data_path = format!("{series}/data");
         let data = Array::open(store.clone(), &data_path).map_err(|e| err(format!("{data_path}: {e}")))?;
         let meta = read_node_json(path, &data_path).ok_or_else(|| err(format!("{data_path}: no metadata")))?;
@@ -191,9 +199,13 @@ impl NwbZarrRecording {
         Ok(match self.info.format {
             SampleFormat::F32 => get!(f32),
             SampleFormat::I8 => get!(i8).into_iter().map(f32::from).collect(),
+            SampleFormat::U8 => get!(u8).into_iter().map(f32::from).collect(),
             SampleFormat::I16 => get!(i16).into_iter().map(f32::from).collect(),
             SampleFormat::U16 => get!(u16).into_iter().map(f32::from).collect(),
+            // NWB (HDF5 / Zarr) has no 24-bit type
+            SampleFormat::I24 => return Err(err("24-bit samples")),
             SampleFormat::I32 => get!(i32).into_iter().map(|v| v as f32).collect(),
+            SampleFormat::F16 => return Err(err("float16 samples (convert the recording to float32 or an integer type)")),
             SampleFormat::F64 => get!(f64).into_iter().map(|v| v as f32).collect(),
         })
     }
@@ -271,6 +283,7 @@ mod tests {
     use serde_json::json;
     use zarrs::array::{data_type, ArrayBuilder};
     use zarrs::group::GroupBuilder;
+    use zarrs::filesystem::FilesystemStore;
     use zarrs::storage::ReadableWritableListableStorage;
 
     /// A minimal NWB-Zarr store: one int16 ElectricalSeries [time, channel] with conversion,

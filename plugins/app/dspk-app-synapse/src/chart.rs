@@ -9,36 +9,15 @@ use dspk_app_core::ui::theme::palette::Palette;
 
 use crate::plots::polyline;
 
-#[derive(Debug, Clone)]
-pub enum Layer {
-    /// Polylines in data coordinates.
-    Lines { color: Pixel, alpha: f32, width: f32, lines: Vec<Vec<(f32, f32)>> },
-    Points { color: Pixel, alpha: f32, radius: f32, points: Vec<(f32, f32)> },
-    /// A histogram: bin `i` spans `start + i·width … start + (i+1)·width`.
-    Bars { color: Pixel, start: f32, width: f32, counts: Vec<f32> },
-    /// A vertical marker (zero lag, the refractory period).
-    Marker { x: f32 },
-}
+pub use dspk_synapse::curation::charts::{Chart, ChartGrid, Ink, Layer};
 
-/// One chart: its layers, axis names (with units), and the full extent of its data.
-#[derive(Debug, Clone)]
-pub struct Chart {
-    pub layers: Vec<Layer>,
-    pub x_label: String,
-    pub y_label: String,
-    pub x: (f32, f32),
-    pub y: (f32, f32),
-    /// The y range follows what is visible (histograms: from 0 to the tallest visible bar).
-    pub y_fit: bool,
-    /// A title drawn in the cell (grid cells: the pair of units, the channel).
-    pub title: String,
-}
-
-/// Charts in a grid (one cell: a single chart), sharing the x range.
-#[derive(Debug, Clone)]
-pub struct ChartGrid {
-    pub cells: Vec<Chart>,
-    pub cols: usize,
+/// The colour of `ink` in `palette`.
+pub fn color_of(palette: &Palette, ink: Ink) -> Pixel {
+    match ink {
+        Ink::Unit(u) => palette.unit(u),
+        Ink::Unsorted => palette.unsorted(),
+        Ink::Grid => palette.grid,
+    }
 }
 
 /// The visible range: x, and y (ignored by cells that fit y).
@@ -56,17 +35,15 @@ pub const MARGIN_RIGHT: f32 = 10.;
 /// Gap between the cells of a grid (logical px).
 pub const CELL_GAP: f32 = 6.;
 
-impl ChartGrid {
-    pub fn one(chart: Chart) -> Self {
-        Self { cells: vec![chart], cols: 1 }
-    }
+/// How a grid is viewed: its full range, and the y range of a cell for a visible range.
+pub trait GridView {
+    fn full(&self) -> Range2;
+    fn cell_y(&self, i: usize, view: &Range2) -> (f32, f32);
+}
 
-    pub fn rows(&self) -> usize {
-        self.cells.len().div_ceil(self.cols.max(1)).max(1)
-    }
-
+impl GridView for ChartGrid {
     /// Everything the data covers.
-    pub fn full(&self) -> Range2 {
+    fn full(&self) -> Range2 {
         let mut r = Range2 { x: (f32::INFINITY, f32::NEG_INFINITY), y: (f32::INFINITY, f32::NEG_INFINITY) };
         for c in &self.cells {
             r.x = (r.x.0.min(c.x.0), r.x.1.max(c.x.1));
@@ -82,7 +59,7 @@ impl ChartGrid {
     }
 
     /// The y range a cell shows in `view` (its own fit, or the view's).
-    pub fn cell_y(&self, i: usize, view: &Range2) -> (f32, f32) {
+    fn cell_y(&self, i: usize, view: &Range2) -> (f32, f32) {
         let c = &self.cells[i];
         if !c.y_fit {
             return view.y;
@@ -176,7 +153,8 @@ pub fn draw(grid: &ChartGrid, view: &Range2, w: u32, h: u32, palette: &Palette, 
         }
         for layer in &cell.layers {
             match layer {
-                Layer::Bars { color, start, width, counts } => {
+                Layer::Bars { ink, start, width, counts } => {
+                    let color = &color_of(palette, *ink);
                     for (k, &n) in counts.iter().enumerate() {
                         let (a, b) = (px(start + k as f32 * width), px(start + (k + 1) as f32 * width));
                         let (a, b) = (a.max(ox), b.min(ox + cw));
@@ -187,14 +165,16 @@ pub fn draw(grid: &ChartGrid, view: &Range2, w: u32, h: u32, palette: &Palette, 
                         canvas.rect(a, top, (b - 0.4 * scale).max(a + 0.5), oy + ch, *color, 0.9);
                     }
                 }
-                Layer::Lines { color, alpha, width, lines } => {
+                Layer::Lines { ink, alpha, width, lines } => {
+                    let color = &color_of(palette, *ink);
                     for line in lines {
                         let pts: Vec<(f32, f32)> = line.iter().map(|&(x, y)| (px(x), py(y).clamp(oy, oy + ch))).filter(|&(x, _)| x >= ox - cw && x <= ox + 2.0 * cw).collect();
                         let clipped: Vec<(f32, f32)> = pts.into_iter().map(|(x, y)| (x.clamp(ox, ox + cw), y)).collect();
                         polyline(&mut canvas, &clipped, *color, *alpha, width * scale);
                     }
                 }
-                Layer::Points { color, alpha, radius, points } => {
+                Layer::Points { ink, alpha, radius, points } => {
+                    let color = &color_of(palette, *ink);
                     let r = radius * scale;
                     for &(x, y) in points {
                         let (x, y) = (px(x), py(y));
@@ -232,7 +212,7 @@ mod tests {
 
     #[test]
     fn test_histograms_fit_the_visible_bars() {
-        let c = Chart { layers: vec![Layer::Bars { color: Palette::of(true).text, start: 0.0, width: 1.0, counts: vec![1.0, 10.0, 3.0] }], x_label: String::new(), y_label: String::new(), x: (0.0, 3.0), y: (0.0, 10.0), y_fit: true, title: String::new() };
+        let c = Chart { layers: vec![Layer::Bars { ink: Ink::Grid, start: 0.0, width: 1.0, counts: vec![1.0, 10.0, 3.0] }], x_label: String::new(), y_label: String::new(), x: (0.0, 3.0), y: (0.0, 10.0), y_fit: true, title: String::new() };
         let g = ChartGrid::one(c);
         let (lo, hi) = g.cell_y(0, &Range2 { x: (2.0, 3.0), y: (0.0, 1.0) });
         assert!(lo == 0.0 && (hi - 3.3).abs() < 1e-4, "only the visible bar (3) counts: {hi}");
