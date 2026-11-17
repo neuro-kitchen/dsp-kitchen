@@ -122,8 +122,8 @@ gpui-kit = "=0.10.0"
 # [patch.crates-io]
 # kitchen-ui = { path = "../kitchen/crates/kitchen-ui" }
 # kitchen-shell = { path = "../kitchen/crates/kitchen-shell" }
-kitchen-ui = "0.0.5"
-kitchen-shell = "0.0.5"
+kitchen-ui = "0.0.6"
+kitchen-shell = "0.0.6"
 # The wgpu adapters the app names (the version CubeCL and GPUI use: one wgpu in the build; GPUI
 # pins it exactly)
 wgpu = "30.0.1"
