@@ -1,0 +1,39 @@
+[package]
+name = "dspk-device"
+description = "A dspk device: live sources, a causal chain, taps, recording, one director and many viewers"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["wgpu", "cuda", "cpu"]
+# CubeCL runtimes the chain may run on (chosen at run time: `runtime` in device.toml)
+wgpu = ["dspk-core/wgpu", "dspk-pipeline/wgpu"]
+cpu = ["dspk-core/cpu", "dspk-pipeline/cpu"]
+cuda = ["dspk-core/cuda", "dspk-pipeline/cuda"]
+hip = ["dspk-core/hip", "dspk-pipeline/hip"]
+
+[dependencies]
+dspk-core = { workspace = true, features = ["compute"] }
+dspk-io = { workspace = true, features = ["zarr"] }
+dspk-pipeline.workspace = true
+dspk-ops.workspace = true
+dspk-stream.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+dirs.workspace = true
+
+[[bin]]
+name = "dspk-device"
+path = "src/main.rs"

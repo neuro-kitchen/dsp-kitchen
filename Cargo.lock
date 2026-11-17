@@ -3480,6 +3480,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "dspk-device"
+version = "0.0.11"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dirs 7.0.0",
+ "dspk-core",
+ "dspk-io",
+ "dspk-ops",
+ "dspk-pipeline",
+ "dspk-stream",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml 1.2.1+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "dspk-engine-web"
 version = "0.0.11"
 dependencies = [
@@ -15809,3 +15829,11 @@ dependencies = [
  "syn 3.0.10",
  "winnow 1.0.5",
 ]
+
+[[patch.unused]]
+name = "kitchen-shell"
+version = "0.0.6"
+
+[[patch.unused]]
+name = "kitchen-ui"
+version = "0.0.6"
