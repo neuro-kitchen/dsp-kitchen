@@ -55,6 +55,9 @@ async fn main() -> anyhow::Result<()> {
     serve(device, args.pair, |l| {
         println!("dspk-device listening on {} (QUIC)", l.addr);
         println!("authority fingerprint: {}", l.authority_fingerprint);
+        if let Some(web) = l.web_addr {
+            println!("pages: http://{web}/live (the live protocol over a WebSocket)");
+        }
         if let Some(code) = &l.pairing_code {
             println!("pairing code (director): {code}");
         }

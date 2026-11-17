@@ -61,6 +61,21 @@ pub struct DeviceConfig {
     #[serde(default)]
     pub recording: RecordingConfig,
     pub sources: Vec<SourceConfig>,
+    /// Pages (browsers) reach the device too: its live protocol over a WebSocket (`/live`), and
+    /// the web app's files when `root` is given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web: Option<WebConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebConfig {
+    /// TCP. Plain HTTP on loopback (a browser counts it as secure); any other address gets the
+    /// device's certificate (encrypted; a browser warns until its authority is trusted).
+    pub listen: SocketAddr,
+    /// The web app's built files (`app/dspk-app-web/build.sh`), if pages load it from here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -81,11 +96,41 @@ impl Default for RingConfig {
 pub struct RecordingConfig {
     /// Length of a Zarr chunk (s): what a crash can lose at most, and the disk's write rhythm.
     pub chunk_seconds: f64,
+    /// How chunks are compressed: `zstd` (default) or `none`.
+    #[serde(default)]
+    pub compression: Compression,
+    /// zstd's level (1 – 22; higher is smaller and slower).
+    #[serde(default = "default_zstd_level")]
+    pub level: i32,
 }
 
 impl Default for RecordingConfig {
     fn default() -> Self {
-        Self { chunk_seconds: 1.0 }
+        Self { chunk_seconds: 1.0, compression: Compression::default(), level: default_zstd_level() }
+    }
+}
+
+/// How a recording's chunks are compressed. (Blosc is left out: its byte shuffle assumes 4-byte
+/// samples in dspk-io today.)
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Compression {
+    #[default]
+    Zstd,
+    None,
+}
+
+fn default_zstd_level() -> i32 {
+    3
+}
+
+impl RecordingConfig {
+    /// The Zarr compression of this configuration.
+    pub fn zarr_compression(&self) -> dspk_io::ZarrCompression {
+        match self.compression {
+            Compression::Zstd => dspk_io::ZarrCompression::Zstd { level: self.level },
+            Compression::None => dspk_io::ZarrCompression::None,
+        }
     }
 }
 
@@ -195,14 +240,18 @@ impl DeviceConfig {
             ring: RingConfig::default(),
             recording: RecordingConfig::default(),
             sources: vec![SourceConfig::Generator { name: "gen".into(), params }],
+            web: None,
         }
     }
 
     pub fn check(&self) -> DspResult<()> {
-        match self.sources.len() {
-            0 => return Err(DspError::InvalidConfig("a device needs a source".into())),
-            1 => {}
-            n => return Err(DspError::InvalidConfig(format!("{n} sources: a device runs one source in this version"))),
+        if self.sources.is_empty() {
+            return Err(DspError::InvalidConfig("a device needs a source".into()));
+        }
+        let mut names: Vec<&str> = self.sources.iter().map(SourceConfig::name).collect();
+        names.sort_unstable();
+        if let Some(w) = names.windows(2).find(|w| w[0] == w[1]) {
+            return Err(DspError::InvalidConfig(format!("two sources are named {}: each source and its raw tap need a name of their own", w[0])));
         }
         if !(self.ring.seconds > 0.0) || !(self.recording.chunk_seconds > 0.0) {
             return Err(DspError::InvalidConfig("ring.seconds and recording.chunk_seconds must be positive".into()));
