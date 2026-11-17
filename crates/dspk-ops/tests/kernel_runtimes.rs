@@ -114,12 +114,15 @@ impl ComputeTask for Check {
         let offsets = [1.0f32, -3.0, 0.0];
         let (gains_h, offsets_h) = (client.create_from_slice(f32::as_bytes(&gains)), client.create_from_slice(f32::as_bytes(&offsets)));
         let ints: [i64; 7] = [0, 1, -1, 100, -100, i64::MIN, i64::MAX];
-        for format in [SampleFormat::I8, SampleFormat::I16, SampleFormat::U16, SampleFormat::I32, SampleFormat::F32] {
+        for format in [SampleFormat::I8, SampleFormat::U8, SampleFormat::I16, SampleFormat::U16, SampleFormat::I24, SampleFormat::I32, SampleFormat::F32] {
             let values: Vec<f64> = (0..ch * n)
                 .map(|i| {
                     let v = ints[i % n];
                     match format {
                         SampleFormat::I8 => v.clamp(i8::MIN as i64, i8::MAX as i64) as f64,
+                        SampleFormat::U8 => v.clamp(0, u8::MAX as i64) as f64,
+                        // 24-bit: three bytes, values straddling the words they are packed in
+                        SampleFormat::I24 => v.clamp(-(1 << 23), (1 << 23) - 1) as f64,
                         SampleFormat::I16 => v.clamp(i16::MIN as i64, i16::MAX as i64) as f64,
                         SampleFormat::U16 => v.clamp(0, u16::MAX as i64) as f64,
                         SampleFormat::I32 => v.clamp(i32::MIN as i64, i32::MAX as i64) as f64,
@@ -131,6 +134,8 @@ impl ComputeTask for Check {
                 .iter()
                 .flat_map(|&v| match format {
                     SampleFormat::I8 => (v as i8).to_le_bytes().to_vec(),
+                    SampleFormat::U8 => (v as u8).to_le_bytes().to_vec(),
+                    SampleFormat::I24 => (v as i32).to_le_bytes()[..3].to_vec(),
                     SampleFormat::I16 => (v as i16).to_le_bytes().to_vec(),
                     SampleFormat::U16 => (v as u16).to_le_bytes().to_vec(),
                     SampleFormat::I32 => (v as i32).to_le_bytes().to_vec(),

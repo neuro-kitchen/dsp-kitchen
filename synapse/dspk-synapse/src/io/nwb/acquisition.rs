@@ -191,8 +191,11 @@ impl NwbZarrRecording {
         Ok(match self.info.format {
             SampleFormat::F32 => get!(f32),
             SampleFormat::I8 => get!(i8).into_iter().map(f32::from).collect(),
+            SampleFormat::U8 => get!(u8).into_iter().map(f32::from).collect(),
             SampleFormat::I16 => get!(i16).into_iter().map(f32::from).collect(),
             SampleFormat::U16 => get!(u16).into_iter().map(f32::from).collect(),
+            // NWB (HDF5 / Zarr) has no 24-bit type
+            SampleFormat::I24 => return Err(err("24-bit samples")),
             SampleFormat::I32 => get!(i32).into_iter().map(|v| v as f32).collect(),
             SampleFormat::F64 => get!(f64).into_iter().map(|v| v as f32).collect(),
         })

@@ -14,8 +14,10 @@ const PAIR: usize = 2;
 fn format_to_wire(format: SampleFormat) -> wire::SampleFormat {
     match format {
         SampleFormat::I8 => wire::SampleFormat::I8,
+        SampleFormat::U8 => wire::SampleFormat::U8,
         SampleFormat::I16 => wire::SampleFormat::I16,
         SampleFormat::U16 => wire::SampleFormat::U16,
+        SampleFormat::I24 => wire::SampleFormat::I24,
         SampleFormat::I32 => wire::SampleFormat::I32,
         SampleFormat::F32 => wire::SampleFormat::F32,
         SampleFormat::F64 => wire::SampleFormat::F64,
@@ -25,8 +27,10 @@ fn format_to_wire(format: SampleFormat) -> wire::SampleFormat {
 fn format_from_wire(format: i32) -> StreamResult<SampleFormat> {
     Ok(match wire::SampleFormat::try_from(format) {
         Ok(wire::SampleFormat::I8) => SampleFormat::I8,
+        Ok(wire::SampleFormat::U8) => SampleFormat::U8,
         Ok(wire::SampleFormat::I16) => SampleFormat::I16,
         Ok(wire::SampleFormat::U16) => SampleFormat::U16,
+        Ok(wire::SampleFormat::I24) => SampleFormat::I24,
         Ok(wire::SampleFormat::I32) => SampleFormat::I32,
         Ok(wire::SampleFormat::F32) => SampleFormat::F32,
         Ok(wire::SampleFormat::F64) => SampleFormat::F64,

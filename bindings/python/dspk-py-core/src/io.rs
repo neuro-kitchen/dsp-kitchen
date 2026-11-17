@@ -320,12 +320,13 @@ fn stored_array(data: &Bound<'_, PyAny>) -> PyResult<(SampleFormat, usize, usize
         };
     }
     try_dtype!(i8, SampleFormat::I8);
+    try_dtype!(u8, SampleFormat::U8);
     try_dtype!(i16, SampleFormat::I16);
     try_dtype!(u16, SampleFormat::U16);
     try_dtype!(i32, SampleFormat::I32);
     try_dtype!(f32, SampleFormat::F32);
     try_dtype!(f64, SampleFormat::F64);
-    Err(PyValueError::new_err("data must be a 2-D int8, int16, uint16, int32, float32 or float64 array (channels, samples)"))
+    Err(PyValueError::new_err("data must be a 2-D int8, uint8, int16, uint16, int32, float32 or float64 array (channels, samples)"))
 }
 
 impl ArrayRecording {
