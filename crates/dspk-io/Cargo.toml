@@ -14,8 +14,9 @@ description = "Recording file formats for dspk: raw binary and Zarr traces, form
 default = ["zarr"]
 # Zarr recordings read from any store (a browser's files, memory): no file system needed
 zarr-read = ["dep:zarrs"]
-# Zarr folders on disk, read and written (chunks compressed and stored in parallel)
-zarr = ["zarr-read", "zarrs/filesystem", "dep:rayon"]
+# Zarr folders on disk, read and written (chunks compressed and stored in parallel). In a
+# browser page (no file system) the functions on folders compile and say so when called
+zarr = ["zarr-read", "dep:rayon"]
 # Shared test assertions (`test_support`) for crates that implement more formats.
 test-support = []
 
@@ -30,3 +31,7 @@ tracing.workspace = true
 zarrs = { workspace = true, optional = true }
 # Zarr chunks compressed and stored in parallel
 rayon = { workspace = true, optional = true }
+
+# Folders on disk: everywhere but a browser page
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+zarrs = { workspace = true, optional = true, features = ["filesystem"] }

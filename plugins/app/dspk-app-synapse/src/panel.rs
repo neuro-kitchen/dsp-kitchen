@@ -122,8 +122,13 @@ fn detach(store: &Entity<Store>, view: &ViewDoc) -> impl IntoElement {
 /// Picks a `.sorting.zarr` folder, or a Phy / Kilosort folder (imported as a `.sorting.zarr`
 /// next to it, once), links it to view `view` and opens it in Curation.
 pub fn pick_and_attach(store: &Entity<Store>, view: String, cx: &mut App) {
+    // A browser page: the folder's files are read into memory, the sorting computed on here
+    if dspk_app_core::platform::remote::runs_alone() {
+        pick_into_page(store, view, cx);
+        return;
+    }
     if !dspk_app_core::platform::LOCAL_FILES {
-        store.update(cx, |s, cx| s.set_status("Sortings open in the desktop app or the container for now", cx));
+        store.update(cx, |s, cx| s.set_status("Sortings open in the desktop app for now", cx));
         return;
     }
     let rx = cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Open a sorting (.sorting.zarr or Phy folder)".into()) });
@@ -152,6 +157,45 @@ pub fn pick_and_attach(store: &Entity<Store>, view: String, cx: &mut App) {
             link(s, &view, path, cx);
             s.set_workspace(dspk_app_core::navigation::route::Workspace::Curation, cx);
         });
+    })
+    .detach();
+}
+
+/// A browser page: picks a `.sorting.zarr` folder, reads its files into memory, loads the sorting
+/// from them (on a worker thread) and links it to `view` under the folder's name; Curation opens.
+fn pick_into_page(store: &Entity<Store>, view: String, cx: &mut App) {
+    let Some(state) = state(cx) else { return };
+    let store = store.clone();
+    cx.spawn(async move |cx| {
+        let picked = dspk_app_core::platform::remote::pick_folder_bytes().await;
+        let (name, files) = match picked {
+            Ok(Some(folder)) => folder,
+            Ok(None) => return,
+            Err(e) => {
+                let _ = store.update(cx, |s, cx| s.set_status(format!("Sorting not read: {e:#}"), cx));
+                return;
+            }
+        };
+        if !name.to_ascii_lowercase().ends_with(".sorting.zarr") {
+            let _ = store.update(cx, |s, cx| s.set_status(format!("{name} is not a .sorting.zarr: pick the sorting's folder (Phy folders: import them in the desktop app)"), cx));
+            return;
+        }
+        let _ = store.update(cx, |s, cx| s.set_status(format!("Reading {name}…"), cx));
+        let task_name = name.clone();
+        let loaded = cx.background_executor().spawn(async move { dspk_synapse::curation::sorting::SortingData::load_files(&task_name, files) }).await;
+        let path = PathBuf::from(&name);
+        match loaded {
+            Ok(data) => {
+                let _ = state.update(cx, |st, cx| st.loaded(path.clone(), data, Ok(Default::default()), cx));
+                let _ = store.update(cx, |s, cx| {
+                    link(s, &view, path, cx);
+                    s.set_workspace(dspk_app_core::navigation::route::Workspace::Curation, cx);
+                });
+            }
+            Err(e) => {
+                let _ = store.update(cx, |s, cx| s.set_status(format!("{name}: {e:#}"), cx));
+            }
+        }
     })
     .detach();
 }

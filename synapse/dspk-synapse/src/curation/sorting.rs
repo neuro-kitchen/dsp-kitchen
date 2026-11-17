@@ -99,6 +99,20 @@ impl SortingData {
         Ok(data)
     }
 
+    /// The sorting `name` read from `store` (a browser page's picked files, in memory): as
+    /// [`Self::load`], without its notes beside it on disk (a sorting of the whole recording).
+    pub fn load_store(store: &Arc<dyn zarrs::storage::ReadableStorageTraits>, name: &str) -> DspResult<Self> {
+        Ok(Self::from_store(Path::new(name), SortingZarr::read_store(store, name)?))
+    }
+
+    /// The sorting `name` from its files, read whole into memory (`files`: path inside the
+    /// `.sorting.zarr` folder, bytes): what a browser page picked.
+    pub fn load_files(name: &str, files: Vec<(String, Vec<u8>)>) -> DspResult<Self> {
+        let sources = files.into_iter().map(|(path, bytes)| (path, Arc::new(dspk_io::MemoryBytes(bytes)) as Arc<dyn dspk_io::ByteSource>));
+        let store: Arc<dyn zarrs::storage::ReadableStorageTraits> = Arc::new(dspk_io::ByteSourceStore::new(sources));
+        Self::load_store(&store, name)
+    }
+
     /// Units not merged away, by index.
     pub fn alive(&self) -> impl Iterator<Item = usize> + '_ {
         (0..self.units.len()).filter(|&u| self.units[u].merged_into.is_none())

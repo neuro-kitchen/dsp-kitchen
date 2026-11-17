@@ -99,6 +99,22 @@ pub trait ByteSource: Send + Sync {
     fn read_at(&self, offset: u64, out: &mut [u8]) -> std::io::Result<()>;
 }
 
+/// Bytes held in memory, as a [`ByteSource`] (files a browser page read whole).
+pub struct MemoryBytes(pub Vec<u8>);
+
+impl ByteSource for MemoryBytes {
+    fn len(&self) -> u64 {
+        self.0.len() as u64
+    }
+
+    fn read_at(&self, offset: u64, out: &mut [u8]) -> std::io::Result<()> {
+        let at = usize::try_from(offset).map_err(|_| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?;
+        let bytes = self.0.get(at..at + out.len()).ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?;
+        out.copy_from_slice(bytes);
+        Ok(())
+    }
+}
+
 /// Where a recording's bytes are.
 enum Bytes {
     Map(Mmap),

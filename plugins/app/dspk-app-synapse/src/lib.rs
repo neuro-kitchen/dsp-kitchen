@@ -173,28 +173,32 @@ impl SynapseState {
             let _ = this.update(cx, |s, cx| {
                 s.loading.remove(&path);
                 match result {
-                    Ok((data, log)) => {
-                        let summary = data.summary();
-                        s.sortings.insert(path.clone(), Arc::new(data));
-                        match log {
-                            Ok(log) => {
-                                s.curations.insert(path.clone(), log);
-                            }
-                            Err(e) => s.store.update(cx, |st, cx| st.set_status(format!("Curation not applied: {e:#}"), cx)),
-                        }
-                        s.recurate(&path);
-                        s.store.update(cx, |st, cx| {
-                            st.set_status(format!("Sorting loaded: {summary}"), cx);
-                            st.redraw(cx);
-                        });
-                        cx.emit(SynapseEvent::SortingLoaded(path));
-                    }
+                    Ok((data, log)) => s.loaded(path, data, log, cx),
                     Err(e) => s.store.update(cx, |st, cx| st.set_status(format!("{e:#}"), cx)),
                 }
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    /// A sorting read (from disk, or a browser page's files) under `path`, with its curation log.
+    pub fn loaded(&mut self, path: PathBuf, data: SortingData, log: dspk_core::DspResult<Curation>, cx: &mut Context<Self>) {
+        let summary = data.summary();
+        self.sortings.insert(path.clone(), Arc::new(data));
+        match log {
+            Ok(log) => {
+                self.curations.insert(path.clone(), log);
+            }
+            Err(e) => self.store.update(cx, |st, cx| st.set_status(format!("Curation not applied: {e:#}"), cx)),
+        }
+        self.recurate(&path);
+        self.store.update(cx, |st, cx| {
+            st.set_status(format!("Sorting loaded: {summary}"), cx);
+            st.redraw(cx);
+        });
+        cx.emit(SynapseEvent::SortingLoaded(path));
+        cx.notify();
     }
 
     /// The curated sorting of `path` from its log.

@@ -138,6 +138,39 @@ pub async fn pick_files(folder: bool) -> anyhow::Result<(Vec<String>, Option<Str
     Ok((recordings, note))
 }
 
+/// Asks for a folder and reads every file in it into memory (awaited, one by one): what a
+/// browser page does with a small folder it computes on (a `.sorting.zarr`). The folder's name,
+/// and each file by its path inside it; `None` when the dialog was closed.
+pub async fn pick_folder_bytes() -> anyhow::Result<Option<(String, Vec<(String, Vec<u8>)>)>> {
+    let js = |e: wasm_bindgen::JsValue| anyhow::anyhow!("{e:?}");
+    let picked: Vec<(String, web_sys::File)> = match folder_picker() {
+        Some(pick) => {
+            let promise: js_sys::Promise = wasm_bindgen::JsCast::dyn_into(pick.call0(&wasm_bindgen::JsValue::NULL).map_err(js)?).map_err(|_| anyhow::anyhow!("the folder picker gave no promise"))?;
+            let entries = wasm_bindgen_futures::JsFuture::from(promise).await.map_err(js)?;
+            if entries.is_null() {
+                return Ok(None);
+            }
+            js_sys::Array::from(&entries)
+                .iter()
+                .filter_map(|e| {
+                    let path = js_sys::Reflect::get(&e, &"path".into()).ok()?.as_string()?;
+                    let file = wasm_bindgen::JsCast::dyn_into::<web_sys::File>(js_sys::Reflect::get(&e, &"file".into()).ok()?).ok()?;
+                    Some((path, file))
+                })
+                .collect()
+        }
+        None => input_files(true).await?,
+    };
+    let Some(root) = picked.first().and_then(|(p, _)| p.split('/').next()).map(str::to_string) else { return Ok(None) };
+    let mut files = Vec::with_capacity(picked.len());
+    for (path, file) in picked {
+        let inside = path.split_once('/').map_or(path.clone(), |(_, rest)| rest.to_string());
+        let buffer = wasm_bindgen_futures::JsFuture::from(file.array_buffer()).await.map_err(js)?;
+        files.push((inside, js_sys::Uint8Array::new(&buffer).to_vec()));
+    }
+    Ok(Some((root, files)))
+}
+
 /// Why none of `paths` is a recording here: the folders dspk writes next to a recording (its
 /// derived store, epochs, a sorting), NWB, or nothing it reads.
 fn not_a_recording(paths: &[String]) -> String {

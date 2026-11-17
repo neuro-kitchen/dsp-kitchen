@@ -30,6 +30,7 @@ pub use synthetic::{SyntheticParams, SyntheticRecording};
 static FORMATS: &[&dyn Format] = &[
     // NWB before generic Zarr: an NWB store is also a Zarr store
     &nwb::Nwb,
+    #[cfg(not(target_family = "wasm"))]
     &dspk_io::generic::zarr_traces::ZarrTraces,
     // SpikeGLX before mtscomp: a SpikeGLX `.cbin` is read with its `.meta`
     &spikeglx::SpikeGlx,

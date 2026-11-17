@@ -14,6 +14,8 @@ crate-type = ["cdylib", "rlib"]
 # Everything is for the browser; on other targets the crate is empty (so the workspace builds)
 [target.'cfg(target_family = "wasm")'.dependencies]
 dspk-app-core.workspace = true
+# Electrophysiology (sortings, Curation), as in the desktop app; its computing on the CPU here
+dspk-app-synapse = { workspace = true, default-features = false }
 dspk-core.workspace = true
 gpui-kit.workspace = true
 wasm-bindgen = "0.2"

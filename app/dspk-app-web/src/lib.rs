@@ -83,6 +83,8 @@ pub fn start() {
         unsafe { __wasm_call_ctors() };
     }
     gpui_kit::platform::web_init();
+    // The plugins of the desktop app, registered before anything opens a file
+    dspk_app_core::plugin::register(vec![std::sync::Arc::new(dspk_app_synapse::SynapsePlugin::new()) as std::sync::Arc<dyn dspk_app_core::plugin::AppPlugin>]);
     // With threads in the build (shared memory, and a page served cross-origin isolated), GPUI's
     // background work and the app's render pool run on web workers; else everything runs here
     let threads = dspk_app_core::platform::THREADS;
@@ -96,6 +98,9 @@ pub fn start() {
         actions::bind_keys(cx);
         di::install(cx);
         let store = cx.new(|_| Store::new(Session::default(), None));
+        for p in dspk_app_core::plugin::plugins() {
+            p.install(&store, cx);
+        }
         let options = WindowOptions { titlebar: Some(TitlebarOptions { title: Some("dsp-kitchen".into()), ..TitleBar::title_bar_options() }), ..Default::default() };
         let s = store.clone();
         gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| app::DspApp::new(s, window, cx))).expect("the browser window");

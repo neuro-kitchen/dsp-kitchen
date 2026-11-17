@@ -15,8 +15,7 @@ pub mod phy;
 pub mod similarity;
 pub mod sorting;
 pub mod split;
-/// The unit table (feature `table`, on by default).
-#[cfg(feature = "table")]
+/// The unit table (a Polars frame with feature `table`, on by default; plain rows without it).
 pub mod table;
 pub mod unit_stats;
 pub mod waveforms;

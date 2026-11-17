@@ -162,6 +162,11 @@ pub async fn pick_files(_folder: bool) -> anyhow::Result<(Vec<String>, Option<St
     anyhow::bail!("the desktop app opens files with its file dialog")
 }
 
+/// See [`runs_alone`]: the desktop opens folders by their path.
+pub async fn pick_folder_bytes() -> anyhow::Result<Option<(String, Vec<(String, Vec<u8>)>)>> {
+    anyhow::bail!("the desktop app opens folders by their path")
+}
+
 /// The server a page talks to; the desktop has none of its own.
 pub fn page_profile() -> ServerProfile {
     ServerProfile { name: "this computer".into(), address: String::new(), server_name: crate::data::remote::DEFAULT_SERVER_NAME.into(), identity: PathBuf::new() }

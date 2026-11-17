@@ -7,7 +7,8 @@
 use crate::core::Format;
 
 static FORMATS: &[&dyn Format] = &[
-    #[cfg(feature = "zarr")]
+    // Folders on disk: not in a browser page
+    #[cfg(all(feature = "zarr", not(target_family = "wasm")))]
     &crate::generic::zarr_traces::ZarrTraces,
     &crate::generic::wav::Wav,
     &crate::generic::raw::Raw,

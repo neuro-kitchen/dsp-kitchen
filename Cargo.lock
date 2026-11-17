@@ -3388,6 +3388,7 @@ name = "dspk-app-web"
 version = "0.0.11"
 dependencies = [
  "dspk-app-core",
+ "dspk-app-synapse",
  "dspk-core",
  "gpui-kit",
  "js-sys",
