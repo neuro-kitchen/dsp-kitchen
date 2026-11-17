@@ -109,10 +109,20 @@ impl Snippets {
 
     /// The host fallback (a few thousand rows of tens of samples; power iteration).
     pub fn pca2_host(&self) -> Vec<[f32; 2]> {
+        match self.pca_basis() {
+            Some(basis) => self.rows.iter().map(|(_, _, r)| basis.project(r)).collect(),
+            None => vec![[0.0, 0.0]; self.rows.len()],
+        }
+    }
+
+    /// The snippets' mean and first two principal components (host, power iteration): a basis
+    /// other spikes are projected on alike (a lasso drawn on the features selects every spike of
+    /// the unit by it, not only the ones drawn). `None` for fewer than three snippets.
+    pub fn pca_basis(&self) -> Option<PcaBasis> {
         let d = (self.before + self.after) as usize;
         let n = self.rows.len();
         if n < 3 || d == 0 {
-            return vec![[0.0, 0.0]; n];
+            return None;
         }
         let mut mean = vec![0.0f64; d];
         for (_, _, r) in &self.rows {
@@ -136,14 +146,27 @@ impl Snippets {
         }
         let pc1 = power_iteration(&cov, d, None);
         let pc2 = power_iteration(&cov, d, Some(&pc1));
-        self.rows
-            .iter()
-            .map(|(_, _, r)| {
-                let x = r.iter().zip(&mean).map(|(&v, m)| v as f64 - m);
-                let (a, b) = x.zip(pc1.iter().zip(&pc2)).fold((0.0, 0.0), |(a, b), (v, (p, q))| (a + v * p, b + v * q));
-                [a as f32, b as f32]
-            })
-            .collect()
+        Some(PcaBasis { mean, pc1, pc2 })
+    }
+}
+
+/// Snippets' mean and first two principal components: what [`Snippets::pca_basis`] found.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PcaBasis {
+    pub mean: Vec<f64>,
+    pub pc1: Vec<f64>,
+    pub pc2: Vec<f64>,
+}
+
+impl PcaBasis {
+    /// A snippet's (PC1, PC2); 0 for a snippet of another length.
+    pub fn project(&self, row: &[f32]) -> [f32; 2] {
+        if row.len() != self.mean.len() {
+            return [0.0, 0.0];
+        }
+        let x = row.iter().zip(&self.mean).map(|(&v, m)| v as f64 - m);
+        let (a, b) = x.zip(self.pc1.iter().zip(&self.pc2)).fold((0.0, 0.0), |(a, b), (v, (p, q))| (a + v * p, b + v * q));
+        [a as f32, b as f32]
     }
 }
 

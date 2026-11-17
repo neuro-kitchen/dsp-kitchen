@@ -121,6 +121,19 @@ pub struct ViewsRequest {
 pub struct Views {
     pub charts: Vec<(ViewKind, ChartGrid)>,
     pub scatter: Vec<(f32, f32, usize)>,
+    /// The basis the features view was drawn with: a lasso on it selects by the same projection.
+    #[serde(default)]
+    pub features: Option<FeatureBasis>,
+}
+
+/// How the features view projects a spike: its channel (the signal's numbering), the snippet's
+/// samples around the spike, and the PCA basis.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FeatureBasis {
+    pub channel: usize,
+    pub before: u64,
+    pub after: u64,
+    pub basis: super::waveforms::PcaBasis,
 }
 
 /// The ink of a snippet row's unit (`None`: unsorted).
@@ -334,9 +347,13 @@ pub fn from_signal(sorting: &SortingData, windows: &Windows, request: &ViewsRequ
     let by_group = |points: &[(f32, f32)]| -> Vec<(Ink, Vec<(f32, f32)>)> {
         groups.iter().map(|g| (ink_of(*g), snippets.rows.iter().zip(points).filter(|((u, _, _), _)| u == g).map(|(_, p)| *p).collect())).collect()
     };
-    let pcs: Vec<(f32, f32)> = snippets.pca2().into_iter().map(|p| (p[0], p[1])).collect();
-    if let Some(c) = Chart::scatter(by_group(&pcs), 1.6, "PC1".into(), "PC2".into(), String::new()) {
-        out.charts.push((ViewKind::Features, ChartGrid::one(c)));
+    // The host basis, kept: what is drawn is what a lasso on it selects
+    if let Some(basis) = snippets.pca_basis() {
+        let pcs: Vec<(f32, f32)> = snippets.rows.iter().map(|(_, _, r)| basis.project(r)).map(|p| (p[0], p[1])).collect();
+        if let Some(c) = Chart::scatter(by_group(&pcs), 1.6, "PC1".into(), "PC2".into(), String::new()) {
+            out.charts.push((ViewKind::Features, ChartGrid::one(c)));
+        }
+        out.features = Some(FeatureBasis { channel: request.channel, before: snippets.before, after: snippets.after, basis });
     }
     // Phy's feature view: on each best channel PC1 × PC2, between two channels their PC1s (the
     // same spikes are cut on every channel, in the same order)

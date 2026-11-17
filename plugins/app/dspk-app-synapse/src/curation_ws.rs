@@ -89,7 +89,7 @@ impl ViewKindUi for ViewKind {
         match self {
             Self::Table => "Units",
             Self::Waveforms => "Waveforms",
-            Self::Features => "Features (PC1 · PC2)",
+            Self::Features => "Features (PC1 · PC2; lasso: split)",
             Self::Acg => "Autocorrelogram",
             Self::Isi => "ISI",
             Self::Amplitude => "Amplitude over time (lasso: split)",
@@ -121,6 +121,8 @@ struct Plots {
     note: String,
     /// The unit scatter's points (amplitude, depth) and their units: a click picks the nearest.
     scatter: Vec<(f32, f32, usize)>,
+    /// How the features view projected its spikes (a lasso on it selects by the same).
+    features: Option<dspk_synapse::curation::views::FeatureBasis>,
 }
 
 pub struct CurationWorkspace {
@@ -356,6 +358,51 @@ impl CurationWorkspace {
         if let Some(&(_, _, unit)) = self.plots.scatter.iter().min_by(|a, b| d(a).total_cmp(&d(b))).filter(|p| d(p) < 0.05f32.powi(2)) {
             self.pick_unit(unit, add, cx);
         }
+    }
+
+    /// Splits off the lead unit's spikes inside `polygon` on the features view (PC1, PC2): every
+    /// spike of the unit is read and projected as the view projected its own (in the background:
+    /// a few dozen reads of the signal), then the split is a curation edit as the amplitude
+    /// lasso's.
+    fn split_features(&mut self, polygon: &[(f32, f32)], cx: &mut Context<Self>) {
+        let (Some(path), Some(sorting), Some(&lead), Some(features)) = (self.sorting_path(cx), self.sorting(cx), self.selected.first(), self.plots.features.clone()) else { return };
+        if polygon.len() < 3 {
+            return;
+        }
+        let Some((signal, dataset, _)) = view_signal(self.store.read(cx)) else { return };
+        let (polygon, total) = (polygon.to_vec(), dataset.total_samples as u64);
+        self.store.update(cx, |s, cx| s.set_status("Splitting: reading the unit's spikes…", cx));
+        let work = cx.background_spawn({
+            let sorting = sorting.clone();
+            async move {
+                dspk_synapse::curation::split::spikes_in_feature_polygon(&sorting, lead, features.before, features.after, &features.basis, &polygon, total, |range, out| {
+                    signal.read(&[features.channel], range, out)
+                })
+            }
+        });
+        self._work = Some(cx.spawn(async move |this, cx| {
+            let found = work.await;
+            let _ = this.update(cx, |w, cx| {
+                let spikes = match found {
+                    Ok(s) => s,
+                    Err(e) => {
+                        w.store.update(cx, |s, cx| s.set_status(format!("Not split: {e}"), cx));
+                        return;
+                    }
+                };
+                let n = spikes.len();
+                if n == 0 || n == sorting.by_unit[lead].len() {
+                    w.store.update(cx, |s, cx| s.set_status(if n == 0 { "The lasso holds none of the unit's spikes" } else { "The lasso holds every spike of the unit: nothing to split" }, cx));
+                    return;
+                }
+                let (unit, into, new_index) = (sorting.units[lead].info.unit_id, next_unit_id(&sorting), sorting.units.len());
+                let Some(st) = state(cx) else { return };
+                st.update(cx, |s, cx| s.curate(&path, CurationOp::Split { unit, spikes, into }, cx));
+                w.store.update(cx, |s, cx| s.set_status(format!("Unit {unit}: {n} spikes split off as unit {into} (every spike of the unit, by its features)"), cx));
+                w.selected = vec![lead, new_index];
+                w.compute(cx);
+            });
+        }));
     }
 
     /// Labels the selected units.
@@ -622,6 +669,9 @@ impl CurationWorkspace {
             let views = slow.await;
             let _ = this.update(cx, |w, cx| {
                 if w.generation.load(Ordering::SeqCst) == generation {
+                    if views.features.is_some() {
+                        w.plots.features = views.features;
+                    }
                     w.plots.charts.extend(views.charts.into_iter().map(|(k, g)| (k, Arc::new(g))));
                     w.computing = false;
                     w.notify_panels(cx);
@@ -1116,7 +1166,7 @@ impl CurationPanel {
         let r = self.range(&chart);
         let single = chart.cells.len() == 1;
         let y = if single { chart.cell_y(0, &r) } else { r.y };
-        let lasso_mode = self.kind == ViewKind::Amplitude;
+        let lasso_mode = matches!(self.kind, ViewKind::Amplitude | ViewKind::Features);
         // Ticks as text around the plot area
         let xt: Vec<(f32, String)> =
             crate::chart::ticks(r.x, 6).into_iter().map(|v| ((v - r.x.0) / (r.x.1 - r.x.0), crate::chart::tick_label(v))).filter(|(f, _)| (0.0..=1.0).contains(f)).collect();
@@ -1205,9 +1255,9 @@ impl CurationPanel {
                         let data: Vec<(f32, f32)> = polygon.iter().map(|&(fx, fy)| (r.x.0 + fx * (r.x.1 - r.x.0), r.y.1 - fy * (r.y.1 - r.y.0))).collect();
                         // After this handler: the split re-computes and notifies every panel,
                         // this one included, which cannot be updated while it is handling the event
-                        let ws = this.ws.clone();
+                        let (ws, kind) = (this.ws.clone(), this.kind);
                         cx.defer(move |cx| {
-                            let _ = ws.update(cx, |w, cx| w.split_lasso(&data, cx));
+                            let _ = ws.update(cx, |w, cx| if kind == ViewKind::Features { w.split_features(&data, cx) } else { w.split_lasso(&data, cx) });
                         });
                     }
                 }
