@@ -420,6 +420,8 @@ impl DspApp {
         spec.layout_toggles = vec!["view.channels".into(), "view.inspector".into()];
         spec.remote = Some(RemoteSpec { label: crate::platform::host_label().into(), icon: IconName::Server, menu: vec![MenuItem::command("remote.this"), MenuItem::Separator, MenuItem::command("remote.connect")] });
         spec.status_items = Some(Rc::new(move |_, _| readings.clone().into_any_element()));
+        // Who works: a person's name (or a guest) on what is done and saved
+        spec.people = true;
         let shell = cx.new(|cx| Shell::new(spec, window, cx));
         let _ = shell_cell.set(shell.downgrade());
 
@@ -1733,6 +1735,19 @@ mod tests {
             window.render_frame(cx);
             let canvas = window.find("graph-canvas").bounds();
             assert!(canvas.size.width.as_f32() > 250., "the canvas keeps the width: {:?}", canvas.size);
+        })
+        .unwrap();
+    }
+
+    /// Who works shows in the title bar (a guest until someone is picked), and Settings has People
+    /// after the app's own sections.
+    #[gpui_kit::test]
+    fn who_works_shows_in_the_title_bar(cx: &mut TestAppContext) {
+        let (window, _, _) = open(cx);
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.find("title-person").bounds().size.width.as_f32() > 0.0, "the person button is shown");
         })
         .unwrap();
     }

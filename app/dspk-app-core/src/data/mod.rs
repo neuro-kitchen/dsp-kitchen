@@ -5,6 +5,7 @@
 
 pub mod channel;
 pub mod device;
+pub mod history;
 pub mod jobs;
 pub mod live;
 pub mod preferences;

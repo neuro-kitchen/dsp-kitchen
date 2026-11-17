@@ -282,7 +282,10 @@ impl SynapseState {
     pub fn curate(&mut self, path: &PathBuf, op: CurationOp, cx: &mut Context<Self>) {
         // Where the edit is made: the desktop app, or a page (its server names the client)
         let via = if cfg!(target_family = "wasm") { "page" } else { "desktop" };
-        self.curations.entry(path.clone()).or_default().push_with(op, dspk_synapse::curation::EditMeta::now(via));
+        let mut meta = dspk_synapse::curation::EditMeta::now(via);
+        // By the person working; a guest is named by the page's server (its client), or "guest"
+        meta.by = kitchen_shell::people::current().map(|p| p.name).or_else(|| (!self.served.contains(path)).then(|| kitchen_shell::people::GUEST.to_string()));
+        self.curations.entry(path.clone()).or_default().push_with(op, meta);
         self.curated_changed(path, cx);
     }
 
@@ -316,6 +319,7 @@ impl SynapseState {
                                 log.saved = log.ops.len();
                                 log.ops.len()
                             });
+                            kitchen_shell::activity::produced("Curation saved", vec![format!("{} (on the server)", path.display())]);
                             format!("Curation saved on the server: {} ({} edits)", path.display(), n.unwrap_or(0))
                         }
                         Err(e) => format!("Curation not saved: {e:#}"),
@@ -348,7 +352,10 @@ impl SynapseState {
         }
         let Some(log) = self.curations.get_mut(path) else { return };
         let status = match log.save(path) {
-            Ok(file) => format!("Curation saved: {} ({} edits)", dspk_session::paths::short_path(&file), log.ops.len()),
+            Ok(file) => {
+                kitchen_shell::activity::produced("Curation saved", vec![file.display().to_string()]);
+                format!("Curation saved: {} ({} edits)", dspk_session::paths::short_path(&file), log.ops.len())
+            }
             Err(e) => format!("Curation not saved: {e:#}"),
         };
         self.store.update(cx, |s, cx| s.set_status(status, cx));

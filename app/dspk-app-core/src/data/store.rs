@@ -949,6 +949,8 @@ impl Store {
                             s.job = None;
                             s.finish_job_nodes(None);
                             s.set_status(format!("{label}: done ({})", file_label(&path)), cx);
+                            // What the session made (Analytics ▸ This session)
+                            kitchen_shell::activity::produced(&label, vec![path.display().to_string()]);
                             if let Some(done) = done.take() {
                                 done(s, path, cx);
                             }
