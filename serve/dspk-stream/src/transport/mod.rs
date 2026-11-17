@@ -21,7 +21,7 @@ pub use server::{
     checked_view, serve_recording, serve_session, Device, OpenRecording, Pacing, RecordingOpener, ViewProcessor, ServeOptions, Server, REFUSED_CLIENT, DEFAULT_FRAME_SEC, DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_REQUEST_BYTES, DEFAULT_QUEUE_FRAMES,
     MAX_VIEW_COLUMNS, MAX_VIEW_VALUES,
 };
-pub use tls::{client_config, client_config_with, server_config, server_config_with_clients, server_config_with_pairing, ServerIdentity, ServerTls, ServerTrust};
+pub use tls::{client_config, client_config_with, live_client_config, server_config, server_config_live, server_config_with_clients, server_config_with_pairing, ServerIdentity, ServerTls, ServerTrust};
 
 #[cfg(test)]
 mod tests {
