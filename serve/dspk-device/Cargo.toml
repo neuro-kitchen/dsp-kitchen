@@ -24,6 +24,7 @@ dspk-io = { workspace = true, features = ["zarr", "live"] }
 dspk-pipeline = { workspace = true, features = ["live"] }
 dspk-ops.workspace = true
 dspk-stream = { workspace = true, features = ["live"] }
+dspk-view = { workspace = true, default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
@@ -36,3 +37,9 @@ anyhow.workspace = true
 [[bin]]
 name = "dspk-device"
 path = "src/main.rs"
+
+[dev-dependencies]
+# A page's WebSocket to the device in the tests (as dspk-stream's own tests do)
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
+futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
+prost.workspace = true

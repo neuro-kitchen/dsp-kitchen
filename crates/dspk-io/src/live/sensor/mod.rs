@@ -46,6 +46,7 @@ pub fn sample_type_code(format: SampleFormat) -> Option<u8> {
     match format {
         SampleFormat::I16 => Some(1),
         SampleFormat::I32 => Some(2),
+        SampleFormat::F16 => Some(3),
         SampleFormat::F32 => Some(4),
         _ => None,
     }
@@ -55,7 +56,7 @@ fn format_of_code(code: u8) -> Option<SampleFormat> {
     match code {
         1 => Some(SampleFormat::I16),
         2 => Some(SampleFormat::I32),
-        // 3 (float16) is part of the format; dspk stores it once float16 lands in dspk-core
+        3 => Some(SampleFormat::F16),
         4 => Some(SampleFormat::F32),
         _ => None,
     }
@@ -97,7 +98,7 @@ impl PacketHeader {
 /// Writes one packet (what a sensor does; tests and the `dspk device` tools use it too).
 /// `time_major` holds `channels × samples` values of `format` in time-major order.
 pub fn encode_packet(format: SampleFormat, channels: u16, sequence: u32, samples: u16, source_time_us: Option<u64>, time_major: &[u8]) -> DspResult<Vec<u8>> {
-    let code = sample_type_code(format).ok_or_else(|| DspError::UnsupportedFormat(format!("sensor packets carry int16, int32 or float32, not {}", format.name())))?;
+    let code = sample_type_code(format).ok_or_else(|| DspError::UnsupportedFormat(format!("sensor packets carry int16, int32, float16 or float32, not {}", format.name())))?;
     let expected = channels as usize * samples as usize * format.bytes();
     if time_major.len() != expected {
         return Err(DspError::ShapeMismatch { expected: vec![expected], actual: vec![time_major.len()] });

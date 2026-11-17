@@ -59,8 +59,8 @@ impl LiveZarrWriter {
     /// Creates `path` for `layout`'s data, chunked and compressed as `options` says.
     pub fn create(path: &Path, layout: &LiveLayout, options: &ZarrOptions) -> DspResult<Self> {
         let channels = layout.channel_count() as u64;
-        if !matches!(layout.format, SampleFormat::I16 | SampleFormat::I32 | SampleFormat::F32) {
-            return Err(DspError::UnsupportedFormat(format!("live recordings store int16, int32 or float32, not {}", layout.format.name())));
+        if !matches!(layout.format, SampleFormat::I16 | SampleFormat::I32 | SampleFormat::F16 | SampleFormat::F32) {
+            return Err(DspError::UnsupportedFormat(format!("live recordings store int16, int32, float16 or float32, not {}", layout.format.name())));
         }
         if path.exists() {
             return Err(DspError::Io(format!("{} exists already: a recording is never overwritten", path.display())));
@@ -84,6 +84,7 @@ impl LiveZarrWriter {
         let mut builder = match layout.format {
             SampleFormat::I16 => ArrayBuilder::new(vec![channels, 0], vec![channels, chunk], data_type::int16(), 0i16),
             SampleFormat::I32 => ArrayBuilder::new(vec![channels, 0], vec![channels, chunk], data_type::int32(), 0i32),
+            SampleFormat::F16 => ArrayBuilder::new(vec![channels, 0], vec![channels, chunk], data_type::float16(), half::f16::ZERO),
             _ => ArrayBuilder::new(vec![channels, 0], vec![channels, chunk], data_type::float32(), 0.0f32),
         };
         builder.dimension_names(["channels", "samples"].into());
@@ -196,6 +197,7 @@ impl LiveZarrWriter {
         match self.layout.format {
             SampleFormat::I16 => self.traces.store_array_subset(&subset, decode::<2, i16>(&values, i16::from_le_bytes)),
             SampleFormat::I32 => self.traces.store_array_subset(&subset, decode::<4, i32>(&values, i32::from_le_bytes)),
+            SampleFormat::F16 => self.traces.store_array_subset(&subset, decode::<2, half::f16>(&values, |b| half::f16::from_bits(u16::from_le_bytes(b)))),
             _ => self.traces.store_array_subset(&subset, decode::<4, f32>(&values, f32::from_le_bytes)),
         }
         .map_err(|e| write(e.to_string()))?;
@@ -290,6 +292,33 @@ mod tests {
             }
         }
         assert!(out[28..35].iter().all(|&v| v == 0.0), "the gap is zeros");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod float16_tests {
+    use super::*;
+    use crate::live::{Generator, GeneratorParams, LiveSource};
+    use crate::ZarrRecording;
+    use dspk_core::RecordingSource;
+
+    #[test]
+    fn float16_recordings_store_and_read_back() {
+        let dir = std::env::temp_dir().join(format!("dspk_live_zarr_f16_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let params = GeneratorParams { channels: 2, sample_rate_hz: 1000.0, format: SampleFormat::F16, ..Default::default() };
+        let generator = Generator::new("gen", &params).unwrap();
+        let block = generator.block_at(0, 50).unwrap();
+        let path = dir.join(RAW_ZARR);
+        let mut writer = LiveZarrWriter::create(&path, generator.layout(), &ZarrOptions { chunk_samples: 20, ..Default::default() }).unwrap();
+        writer.push(&block).unwrap();
+        assert_eq!(writer.finish().unwrap(), 50);
+        let rec = ZarrRecording::open(&path).unwrap();
+        assert_eq!(rec.info().format, SampleFormat::F16);
+        let mut stored = vec![0u8; 2 * 50 * 2];
+        rec.read_stored(&[0, 1], 0..50, &mut stored).unwrap();
+        assert_eq!(stored, block.data, "bit for bit");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

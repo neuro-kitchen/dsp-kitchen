@@ -12,7 +12,7 @@ pub mod synthetic;
 pub mod source;
 pub mod unit;
 
-pub use format::SampleFormat;
+pub use format::{f16_to_f32, f32_to_f16, SampleFormat};
 pub use info::{ChannelInfo, RecordingInfo};
 pub use memory::MemoryRecording;
 pub use remap::{ChannelMap, ChannelMapFile, ChannelPair, RemappedSource, DEFAULT_CHANNEL_BASE};

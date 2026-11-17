@@ -18,7 +18,7 @@ const GENERATOR_SPAN_SEC: f64 = 365.0 * 24.0 * 3600.0;
 pub struct GeneratorParams {
     pub channels: usize,
     pub sample_rate_hz: f64,
-    /// The stored type of its blocks: `int16`, `int32` or `float32`.
+    /// The stored type of its blocks: `int16`, `int32`, `float16` or `float32`.
     pub format: SampleFormat,
     /// µV per stored step for integer formats (ignored for float32).
     pub gain_uv: f32,
@@ -71,8 +71,8 @@ pub struct Generator {
 
 impl Generator {
     pub fn new(name: impl Into<String>, params: &GeneratorParams) -> DspResult<Self> {
-        if !matches!(params.format, SampleFormat::I16 | SampleFormat::I32 | SampleFormat::F32) {
-            return Err(DspError::InvalidConfig(format!("generator format {}: int16, int32 or float32", params.format.name())));
+        if !matches!(params.format, SampleFormat::I16 | SampleFormat::I32 | SampleFormat::F16 | SampleFormat::F32) {
+            return Err(DspError::InvalidConfig(format!("generator format {}: int16, int32, float16 or float32", params.format.name())));
         }
         if params.channels == 0 || params.block_ms <= 0.0 {
             return Err(DspError::InvalidConfig("a generator needs channels and a positive block length".into()));
@@ -92,7 +92,7 @@ impl Generator {
             sine_uv: params.sine_uv,
             ..Default::default()
         })?;
-        let gain = if params.format == SampleFormat::F32 { 1.0 } else { params.gain_uv };
+        let gain = if matches!(params.format, SampleFormat::F16 | SampleFormat::F32) { 1.0 } else { params.gain_uv };
         let channels = (0..params.channels).map(|i| ChannelInfo { name: format!("ch{i}"), gain, offset: 0.0, unit: SignalUnit::Microvolt }).collect();
         let sample_rate = signal.info().sample_rate;
         let layout = LiveLayout { name: name.into(), channels, sample_rate, format: params.format };

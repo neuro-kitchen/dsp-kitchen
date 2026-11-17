@@ -11,6 +11,9 @@ mod remote_signal;
 mod server;
 pub mod tls;
 pub mod web;
+/// The live protocol over a page's WebSocket (a device serving pages).
+#[cfg(feature = "live")]
+mod web_live;
 
 pub use auth::{Authority, ClientIdentity, ClientRecord, Enrollment, Peer, Permission};
 

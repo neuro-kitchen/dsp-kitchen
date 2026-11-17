@@ -25,8 +25,17 @@ pub enum TapData<'a> {
     Events(&'a [(u64, u32)]),
 }
 
+/// Viewer ops on a live view, run on the tap's values before the columns are made (on the device:
+/// live ops only).
+pub trait ViewProcessor: Send {
+    /// The processed values (channel-major) of a block of the tap (every channel, channel-major),
+    /// their first sample, count and channels; `None` while nothing came out yet (a delay).
+    fn process(&mut self, values: &[f32], channels: usize, samples: usize, first_sample: u64) -> Option<(u64, usize, usize, Vec<f32>)>;
+}
+
 struct ViewState {
     plot_key: u64,
+    processor: Option<Box<dyn ViewProcessor>>,
     samples_per_column: f64,
     /// The column being filled and its min / max per subscribed channel.
     column: Option<u64>,
@@ -87,23 +96,28 @@ impl TapHub {
         Ok(Subscription { info, plot_key: 0, frames })
     }
 
-    pub fn subscribe_view(&self, request: &wire::SubscribeView) -> LiveResult<Subscription> {
+    /// A live view of a tap; with `processor`, of the tap through the viewer's ops (its output
+    /// channels are `rows`).
+    pub fn subscribe_view(&self, request: &wire::SubscribeView, processor: Option<(Box<dyn ViewProcessor>, usize)>) -> LiveResult<Subscription> {
         let info = self.tap(&request.tap).ok_or_else(|| LiveError::not_found(format!("no tap {}", request.tap)))?;
         if info.kind != wire::TapKind::Samples as i32 {
             return Err(LiveError::invalid(format!("tap {} carries events: subscribe to it, views are of signals", info.name)));
         }
-        if request.processing.as_ref().is_some_and(|p| !p.ops.is_empty()) {
-            return Err(LiveError::invalid("viewer ops on a live view are planned; put them in the device's chain for now"));
-        }
         if !(request.columns_per_second > 0.0 && request.columns_per_second <= MAX_COLUMNS_PER_SECOND) {
             return Err(LiveError::invalid(format!("columns_per_second {}: between 0 and {MAX_COLUMNS_PER_SECOND}", request.columns_per_second)));
         }
-        let channels = Self::check_channels(&info, &request.channels)?;
+        let mut channels = Self::check_channels(&info, &request.channels)?;
         let rate = info.rate_hz.as_ref().map_or(0.0, |r| r.numerator as f64 / r.denominator.max(1) as f64);
         let samples_per_column = (rate / request.columns_per_second).max(1.0);
-        let rows = if channels.is_empty() { info.channels.len() } else { channels.len() };
+        let mut rows = if channels.is_empty() { info.channels.len() } else { channels.len() };
+        // A processor reads the channels itself and gives its own rows
+        let processor = processor.map(|(p, out_rows)| {
+            rows = out_rows;
+            channels.clear();
+            p
+        });
         let (sender, frames) = mpsc::channel(SUBSCRIPTION_QUEUE);
-        let view = ViewState { plot_key: request.plot_key, samples_per_column, column: None, min: vec![f32::INFINITY; rows], max: vec![f32::NEG_INFINITY; rows] };
+        let view = ViewState { plot_key: request.plot_key, processor, samples_per_column, column: None, min: vec![f32::INFINITY; rows], max: vec![f32::NEG_INFINITY; rows] };
         let mut subs = self.subscribers.lock().unwrap_or_else(|e| e.into_inner());
         // A plot subscribes again (zoomed): the new one replaces the old
         subs.retain(|s| s.view.as_ref().is_none_or(|v| v.plot_key != request.plot_key));
@@ -140,7 +154,16 @@ impl TapHub {
                 }
                 Some(view) => {
                     let all = values.get_or_insert_with(|| scaled(&data, channels, samples));
-                    view_columns(view, all, channels, samples, first_sample, &sub.channels).map(|(first, covered, columns)| {
+                    let processed = match view.processor.as_mut() {
+                        Some(p) => p.process(all, channels, samples, first_sample),
+                        None => None,
+                    };
+                    let (vals, ch, n, first): (&[f32], usize, usize, u64) = match &processed {
+                        Some((first, n, ch, v)) => (v.as_slice(), *ch, *n, *first),
+                        None if view.processor.is_some() => return true,
+                        None => (all.as_slice(), channels, samples, first_sample),
+                    };
+                    view_columns(view, vals, ch, n, first, &sub.channels).map(|(first, covered, columns)| {
                         Pushed::View(wire::LiveViewFrame { tap: 0, sequence: sub.sequence, first_sample: first, samples: covered, sent_unix_ns: now, columns: Some(columns) })
                     })
                 }
@@ -273,7 +296,7 @@ mod tests {
         let hub = TapHub::default();
         hub.set_taps(vec![info("x", 2)]);
         let mut raw = hub.subscribe(&wire::Subscribe { tap: "x".into(), channels: vec![1] }).unwrap();
-        let mut view = hub.subscribe_view(&wire::SubscribeView { tap: "x".into(), plot_key: 7, channels: vec![], columns_per_second: 100.0, processing: None }).unwrap();
+        let mut view = hub.subscribe_view(&wire::SubscribeView { tap: "x".into(), plot_key: 7, channels: vec![], columns_per_second: 100.0, processing: None }, None).unwrap();
         // 10 samples per column; two blocks of 15
         for k in 0..2u64 {
             let values: Vec<f32> = (0..2).flat_map(|c| (0..15).map(move |t| (c * 100 + k as usize * 15 + t) as f32)).collect();

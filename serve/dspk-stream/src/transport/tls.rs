@@ -116,7 +116,8 @@ fn server_config_for(authority: &Authority, identity: &ServerIdentity, anonymous
 /// authority issued; computers without one may only pair. No certificate, no session.
 #[cfg(feature = "live")]
 pub fn server_config_live(authority: &Authority, identity: &ServerIdentity) -> StreamResult<ServerTls> {
-    server_config_protocols(authority, identity, true, &[crate::live::ALPN, PAIR_ALPN])
+    // The session protocol too: a device serves its finished recordings as `dspk serve` does
+    server_config_protocols(authority, identity, true, &[crate::live::ALPN, ALPN, PAIR_ALPN])
 }
 
 #[cfg(feature = "live")]

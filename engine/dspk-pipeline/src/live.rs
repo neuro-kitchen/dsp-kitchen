@@ -7,9 +7,11 @@
 //! | [`Timing`] | Ops | Live |
 //! |---|---|---|
 //! | `Causal` | scale, baseline, clamp, rectify, square, sqrt, log10, CAR, CMR, Laplacian, remap, forward IIR / notch / SOS, crossings | yes |
-//! | `History(n)` | causal FIR (n − 1 past samples) | not yet: carried history across blocks |
-//! | `Delay(n)` | centred FIR, median, Teager–Kaiser, Gaussian smoothing, resampling | not yet: a reported delay |
+//! | `History(n)` | causal FIR (n − 1 past samples) | yes: the samples before each block are carried |
+//! | `Delay(n)` | centred FIR, median, Teager–Kaiser, Gaussian smoothing | yes: carried history, output `n` samples late (reported) |
 //! | `Offline` | zero-phase filters, whitening (fitted on the recording) | never while recording |
+//!
+//! Resampling a live source is refused for now (its output rate differs from the input's).
 //!
 //! **The spec on a device** is a pipeline spec with two additions, taken out before the rest is
 //! parsed as usual (so files and devices share one format):
@@ -115,6 +117,8 @@ pub struct LiveTap {
     pub record: bool,
     /// Channel count of its output.
     pub channels: usize,
+    /// Samples its frames lag the source (the look-ahead of the stencils before it).
+    pub delay_samples: u64,
 }
 
 /// One device step of a chain, in order.
@@ -275,12 +279,15 @@ pub fn check_live(text: &str, channels: usize) -> Result<LiveChain, Vec<Refusal>
     let mut leading = true;
     let mut current = input_channels.len();
     let mut last_processing: Option<String> = None;
+    let mut delay = 0u64;
     for id in order.iter().skip(1) {
         let node = &spec.nodes[id];
         let op = op_name(node);
         let refuse = |reason: String| Refusal { node: id.clone(), op: op.clone(), reason };
         let (t, why) = timing(node);
-        if t != Timing::Causal {
+        // Ops with a bounded history or look-ahead run with the samples carried between blocks
+        // (their delay is reported); the ones that need the whole recording, and resampling, do not
+        if t == Timing::Offline || matches!(node, Node::Resample { .. }) {
             refusals.push(refuse(why.to_string()));
             continue;
         }
@@ -296,7 +303,7 @@ pub fn check_live(text: &str, channels: usize) -> Result<LiveChain, Vec<Refusal>
                         Some(tap) => tap.record = true,
                         None => {
                             let (name, _) = tap_decls.remove(prev).unwrap_or_else(|| (prev.clone(), true));
-                            taps.push(LiveTap { name, node: prev.clone(), kind: kind_of(&crossings, prev), record: true, channels: current });
+                            taps.push(LiveTap { name, node: prev.clone(), kind: kind_of(&crossings, prev), record: true, channels: current, delay_samples: delay });
                         }
                     }
                 } else {
@@ -340,6 +347,9 @@ pub fn check_live(text: &str, channels: usize) -> Result<LiveChain, Vec<Refusal>
                             refusals.push(refuse(format!("the Laplacian's grid has {} electrodes; the chain has {current} channels here", lap.num_channels)));
                             continue;
                         }
+                        if let Some((_, after)) = stencil_halo(&stage) {
+                            delay += after as u64;
+                        }
                         steps.push(LiveStep { node: id.clone(), op: op.clone(), stage: Some(stage) });
                     }
                     Ok(None) => steps.push(LiveStep { node: id.clone(), op: op.clone(), stage: None }),
@@ -349,7 +359,7 @@ pub fn check_live(text: &str, channels: usize) -> Result<LiveChain, Vec<Refusal>
         }
         last_processing = Some(id.clone());
         if let Some((name, record)) = tap_decls.remove(id) {
-            taps.push(LiveTap { name, node: id.clone(), kind: kind_of(&crossings, id), record, channels: current });
+            taps.push(LiveTap { name, node: id.clone(), kind: kind_of(&crossings, id), record, channels: current, delay_samples: delay });
         }
     }
     // A tap on the read itself is the source's raw data, which every device publishes
@@ -372,7 +382,7 @@ pub fn check_live(text: &str, channels: usize) -> Result<LiveChain, Vec<Refusal>
         return Err(refusals);
     }
     let spec_json = canonical_json(&spec, &taps, &settings);
-    Ok(LiveChain { spec, spec_json, source: source_name, block_ms, input_channels, steps, crossings, taps, delay_samples: 0 })
+    Ok(LiveChain { spec, spec_json, source: source_name, block_ms, input_channels, steps, crossings, taps, delay_samples: delay })
 }
 
 fn kind_of(crossings: &Option<(String, CrossingParams)>, node: &str) -> LiveTapKind {
@@ -407,25 +417,55 @@ pub enum TapOutput {
     Events { tap: usize, events: Vec<CrossingEvent> },
 }
 
-/// Stages up to a tap, run on the device as one stateful workspace.
-struct Segment {
-    workspace: Option<PipelineWorkspace<f32>>,
-    /// The sample tap at its end (index into the chain's taps).
-    tap: Option<usize>,
+/// A stage that reads samples around each one (FIR, median, Teager–Kaiser, Gaussian smoothing):
+/// how many before and after. `None` for the others (pointwise, spatial, forward filters, which
+/// carry their own state).
+fn stencil_halo(stage: &PipelineStage) -> Option<(usize, usize)> {
+    match stage {
+        PipelineStage::Fir { .. } | PipelineStage::Median { .. } | PipelineStage::TeagerKaiser { .. } | PipelineStage::GaussianSmooth { .. } => {
+            stage.settling(1.0).ok().filter(|&(b, a)| b + a > 0)
+        }
+        _ => None,
+    }
 }
 
-/// Runs a [`LiveChain`] block after block: the filters carry their state, each tap's output is
-/// read back once per block, the rest stays on the device.
+enum SegmentKind {
+    /// Stages that carry their own state or need none, on the device as one stateful workspace.
+    Stateful(Option<PipelineWorkspace<f32>>),
+    /// One stage that reads `before` samples before and `after` after each one: run on the carried
+    /// input (`history`, channel-major `channels × (before + after)`) followed by the block; its
+    /// output is `after` samples late.
+    Stencil { workspace: PipelineWorkspace<f32>, before: usize, after: usize, history: Vec<f32> },
+}
+
+/// Stages up to a tap.
+struct Segment {
+    kind: SegmentKind,
+    /// The sample tap at its end (index into the chain's taps).
+    tap: Option<usize>,
+    /// The node of its last stage (a tap on that node attaches here).
+    node: String,
+    /// Samples its output lags the chain's input, counting the stencils before it.
+    delay: u64,
+}
+
+/// Runs a [`LiveChain`] block after block: the filters carry their state, stencils carry the
+/// samples they need from earlier blocks (their output comes later by their look-ahead, which
+/// each tap's frames account for), each tap's output is read back once per block, the rest stays
+/// on the device.
 pub struct LiveRunner {
     chain: LiveChain,
     client: cubecl::prelude::Client,
     segments: Vec<Segment>,
-    tracker: Option<(usize, CrossingTracker)>,
+    tracker: Option<(usize, CrossingTracker, CrossingOptions)>,
+    /// Samples the crossings' input lags the chain's input.
+    tracker_delay: u64,
     /// Source channels' gain and offset (stored → unit).
     gains: Vec<f32>,
     offsets: Vec<f32>,
     format: dspk_core::SampleFormat,
     source_channels: usize,
+    block: usize,
 }
 
 impl LiveRunner {
@@ -435,47 +475,95 @@ impl LiveRunner {
         let client = target.client().map_err(|e| DspError::ComputeError(e.to_string()))?;
         let channels = chain.input_channels.len();
         let block = ((chain.block_ms / 1000.0 * sample_rate).round() as usize).max(1);
-        let mut segments = Vec::new();
-        let mut stages = Vec::new();
-        let close = |stages: &mut Vec<PipelineStage>, tap: Option<usize>, segments: &mut Vec<Segment>| -> DspResult<()> {
+        let config = |e: dspk_ops::OpsError| DspError::InvalidConfig(e.to_string());
+        let mut segments: Vec<Segment> = Vec::new();
+        let mut stages: Vec<PipelineStage> = Vec::new();
+        let mut delay = 0u64;
+        let mut last_node = String::new();
+        let close = |stages: &mut Vec<PipelineStage>, tap: Option<usize>, node: &str, delay: u64, segments: &mut Vec<Segment>| -> DspResult<()> {
             let workspace = if stages.is_empty() {
                 None
             } else {
                 let pipeline = Pipeline::with_stages(std::mem::take(stages));
-                Some(PipelineWorkspace::new_stateful(client.clone(), pipeline, channels, block, sample_rate).map_err(|e| DspError::InvalidConfig(e.to_string()))?)
+                Some(PipelineWorkspace::new_stateful(client.clone(), pipeline, channels, block, sample_rate).map_err(config)?)
             };
-            segments.push(Segment { workspace, tap });
+            segments.push(Segment { kind: SegmentKind::Stateful(workspace), tap, node: node.to_string(), delay });
             Ok(())
         };
         for step in &chain.steps {
             if let Some(stage) = &step.stage {
-                stages.push(stage.clone());
+                if let Some((before, after)) = stencil_halo(stage) {
+                    if !stages.is_empty() {
+                        close(&mut stages, None, &last_node, delay, &mut segments)?;
+                    }
+                    let pipeline = Pipeline::with_stages(vec![stage.clone()]);
+                    let workspace = PipelineWorkspace::new(client.clone(), pipeline, channels, block + before + after, sample_rate).map_err(config)?;
+                    delay += after as u64;
+                    let history = vec![0.0; channels * (before + after)];
+                    segments.push(Segment { kind: SegmentKind::Stencil { workspace, before, after, history }, tap: None, node: step.node.clone(), delay });
+                } else {
+                    stages.push(stage.clone());
+                }
             }
-            let tap = chain.taps.iter().position(|t| t.node == step.node && t.kind == LiveTapKind::Samples);
-            if tap.is_some() {
-                close(&mut stages, tap, &mut segments)?;
+            last_node = step.node.clone();
+            if let Some(tap) = chain.taps.iter().position(|t| t.node == step.node && t.kind == LiveTapKind::Samples) {
+                match segments.last_mut() {
+                    // The stencil just made is this node: its output is the tap
+                    Some(seg) if stages.is_empty() && seg.node == step.node && seg.tap.is_none() => seg.tap = Some(tap),
+                    _ => close(&mut stages, Some(tap), &step.node, delay, &mut segments)?,
+                }
             }
         }
-        if !stages.is_empty() || chain.crossings.is_some() {
-            close(&mut stages, None, &mut segments)?;
+        if !stages.is_empty() {
+            close(&mut stages, None, &last_node, delay, &mut segments)?;
         }
         let tracker = match &chain.crossings {
             Some((node, params)) => {
                 let tap = chain.taps.iter().position(|t| &t.node == node).unwrap_or(usize::MAX);
-                Some((tap, CrossingTracker::new(channels, &params.options(sample_rate)).map_err(|e| DspError::InvalidConfig(e.to_string()))?))
+                let options = params.options(sample_rate);
+                Some((tap, CrossingTracker::new(channels, &options).map_err(config)?, options))
             }
             None => None,
         };
         let source_channels = gains.len();
-        Ok(Self { chain, client, segments, tracker, gains, offsets, format, source_channels })
+        Ok(Self { chain, client, segments, tracker, tracker_delay: delay, gains, offsets, format, source_channels, block })
     }
 
     pub fn chain(&self) -> &LiveChain {
         &self.chain
     }
 
+    /// Samples the chain's last output lags its input (the stencils' look-ahead).
+    pub fn delay(&self) -> u64 {
+        self.tracker_delay
+    }
+
+    /// Runs one block of zeros through the chain and forgets it: kernels are compiled and tuned,
+    /// buffers allocated, before the first real block (which would otherwise wait for them).
+    pub fn warm(&mut self) -> DspResult<()> {
+        let zeros = vec![0u8; self.source_channels * self.block * self.format.bytes()];
+        self.process(&zeros, self.block, 0)?;
+        self.reset()
+    }
+
+    /// Forgets every carried state: the next block starts as the first one.
+    pub fn reset(&mut self) -> DspResult<()> {
+        for seg in &mut self.segments {
+            match &mut seg.kind {
+                SegmentKind::Stateful(Some(ws)) => ws.reset(),
+                SegmentKind::Stateful(None) => {}
+                SegmentKind::Stencil { history, .. } => history.iter_mut().for_each(|v| *v = 0.0),
+            }
+        }
+        if let Some((_, tracker, options)) = self.tracker.as_mut() {
+            *tracker = CrossingTracker::new(self.chain.input_channels.len(), options).map_err(|e| DspError::InvalidConfig(e.to_string()))?;
+        }
+        Ok(())
+    }
+
     /// Runs one block of the source (stored values, channel-major, every source channel) whose
-    /// first sample is `first_sample`, and returns each tap's output.
+    /// first sample is `first_sample`, and returns each tap's output. A tap after stencils starts
+    /// its frames that many samples late (samples before the run's start are left out).
     pub fn process(&mut self, stored: &[u8], samples: usize, first_sample: u64) -> DspResult<Vec<TapOutput>> {
         let bytes = self.format.bytes();
         if stored.len() != self.source_channels * samples * bytes {
@@ -492,14 +580,45 @@ impl LiveRunner {
         let mut outputs = Vec::new();
         let mut host = Some(values);
         let mut handle = None;
+        let client = self.client.clone();
+        let to_host = |handle: &mut Option<cubecl::server::Handle>, host: &mut Option<Vec<f32>>| -> Vec<f32> {
+            match (handle.take(), host.take()) {
+                (Some(h), _) => buffer::download_prefix::<f32>(&client, h, n * samples),
+                (None, Some(v)) => v,
+                (None, None) => unreachable!("a block always has an input"),
+            }
+        };
         for seg in &mut self.segments {
-            if let Some(ws) = seg.workspace.as_mut() {
-                let out = match (handle.take(), host.take()) {
-                    (Some(h), _) => ws.process_handle(&h, samples),
-                    (None, Some(v)) => ws.process_owned_chunk_in_vram(v, samples),
-                    (None, None) => unreachable!("a block always has an input"),
-                };
-                handle = Some(out);
+            match &mut seg.kind {
+                SegmentKind::Stateful(Some(ws)) => {
+                    let out = match (handle.take(), host.take()) {
+                        (Some(h), _) => ws.process_handle(&h, samples),
+                        (None, Some(v)) => ws.process_owned_chunk_in_vram(v, samples),
+                        (None, None) => unreachable!("a block always has an input"),
+                    };
+                    handle = Some(out);
+                }
+                SegmentKind::Stateful(None) => {}
+                SegmentKind::Stencil { workspace, before, after, history } => {
+                    let input = to_host(&mut handle, &mut host);
+                    let h = *before + *after;
+                    let len = h + samples;
+                    let mut buf = vec![0.0f32; n * len];
+                    for c in 0..n {
+                        buf[c * len..c * len + h].copy_from_slice(&history[c * h..(c + 1) * h]);
+                        buf[c * len + h..(c + 1) * len].copy_from_slice(&input[c * samples..(c + 1) * samples]);
+                    }
+                    let mut out = vec![0.0f32; n * len];
+                    workspace.process_chunk(&buf, len, &mut out);
+                    // Output for the input `after` samples earlier: columns `before .. before + samples`
+                    let mut result = vec![0.0f32; n * samples];
+                    for c in 0..n {
+                        result[c * samples..(c + 1) * samples].copy_from_slice(&out[c * len + *before..c * len + *before + samples]);
+                        // The last `h` input samples are the next block's history
+                        history[c * h..(c + 1) * h].copy_from_slice(&buf[(c + 1) * len - h..(c + 1) * len]);
+                    }
+                    host = Some(result);
+                }
             }
             if let Some(tap) = seg.tap {
                 let values = match (&handle, &host) {
@@ -507,16 +626,16 @@ impl LiveRunner {
                     (None, Some(v)) => v.clone(),
                     (None, None) => unreachable!(),
                 };
-                outputs.push(TapOutput::Samples { tap, first_sample, samples, channels: n, values });
+                if let Some((first, samples, values)) = trim_delayed(values, n, samples, first_sample, seg.delay) {
+                    outputs.push(TapOutput::Samples { tap, first_sample: first, samples, channels: n, values });
+                }
             }
         }
-        if let Some((tap, tracker)) = self.tracker.as_mut() {
-            let values = match (handle, host) {
-                (Some(h), _) => buffer::download_prefix::<f32>(&self.client, h, n * samples),
-                (None, Some(v)) => v,
-                (None, None) => unreachable!(),
-            };
-            tracker.push_host_window(&values, samples, 0..samples, first_sample);
+        if let Some((tap, tracker, _)) = self.tracker.as_mut() {
+            let values = to_host(&mut handle, &mut host);
+            if let Some((first, kept, values)) = trim_delayed(values, n, samples, first_sample, self.tracker_delay) {
+                tracker.push_host_window(&values, kept, 0..kept, first);
+            }
             let events = tracker.take_events();
             if *tap != usize::MAX {
                 outputs.push(TapOutput::Events { tap: *tap, events });
@@ -524,6 +643,65 @@ impl LiveRunner {
         }
         Ok(outputs)
     }
+}
+
+/// A block's output `delay` samples late: its first sample, and the samples from the run's start
+/// on (`None` when all of it is before the start).
+fn trim_delayed(values: Vec<f32>, channels: usize, samples: usize, first_sample: u64, delay: u64) -> Option<(u64, usize, Vec<f32>)> {
+    let cut = delay.saturating_sub(first_sample).min(samples as u64) as usize;
+    let kept = samples - cut;
+    if kept == 0 {
+        return None;
+    }
+    let first = (first_sample + cut as u64) - delay;
+    if cut == 0 {
+        return Some((first, kept, values));
+    }
+    let mut out = Vec::with_capacity(channels * kept);
+    for c in 0..channels {
+        out.extend_from_slice(&values[c * samples + cut..(c + 1) * samples]);
+    }
+    Some((first, kept, out))
+}
+
+/// A chain from a viewer's ops (pipeline nodes as JSON, in order, as a view's processing carries
+/// them) over `channels` channels: checked as a device's chain is (live ops only), its output the
+/// tap `view`.
+pub fn chain_of_ops(ops: &[String], channels: usize, block_ms: f64) -> Result<LiveChain, Vec<Refusal>> {
+    let mut nodes = serde_json::Map::new();
+    nodes.insert("in".into(), serde_json::json!({"op": "read"}));
+    let mut edges = Vec::new();
+    let mut last = "in".to_string();
+    for (i, op) in ops.iter().enumerate() {
+        let mut node: Value = serde_json::from_str(op).map_err(|e| vec![Refusal::whole(format!("op {i}: not a pipeline node: {e}"))])?;
+        let id = format!("op{i}");
+        if i + 1 == ops.len()
+            && let Some(obj) = node.as_object_mut()
+        {
+            obj.insert("tap".into(), Value::String("view".into()));
+        }
+        nodes.insert(id.clone(), node);
+        edges.push(serde_json::json!([last, id]));
+        last = id;
+    }
+    let spec = serde_json::json!({"dspk_pipeline": crate::SPEC_VERSION, "nodes": nodes, "edges": edges, "live": {"block_ms": block_ms}});
+    check_live(&spec.to_string(), channels)
+}
+
+/// `spec_json` with one parameter of one node set to `value_json` (a parameter changed while
+/// running). The op itself and its tap cannot be changed this way.
+pub fn with_parameter(spec_json: &str, node: &str, parameter: &str, value_json: &str) -> Result<String, String> {
+    if matches!(parameter, "op" | "tap") {
+        return Err(format!("{node}.{parameter}: the op and its tap are the chain's shape: configure a new chain"));
+    }
+    let mut spec: Value = serde_json::from_str(spec_json).map_err(|e| e.to_string())?;
+    let value: Value = serde_json::from_str(value_json).map_err(|e| format!("{node}.{parameter}: the value is not JSON: {e}"))?;
+    let target = spec.get_mut("nodes").and_then(|n| n.get_mut(node)).and_then(Value::as_object_mut).ok_or_else(|| format!("no node {node}"))?;
+    if !target.contains_key(parameter) && target.get("op").and_then(Value::as_str) == Some("read") {
+        return Err(format!("{node}: the read's settings are the source's"));
+    }
+    target.insert(parameter.into(), value);
+    Ok(spec.to_string())
 }
 
 #[cfg(test)]
@@ -562,7 +740,8 @@ mod tests {
         );
         let refusals = check_live(&text, 4).unwrap_err();
         let nodes: Vec<&str> = refusals.iter().map(|r| r.node.as_str()).collect();
-        assert_eq!(nodes, vec!["bp", "med", "w"]);
+        // The median runs live (carried history, a delay); the zero-phase filter and the fit do not
+        assert_eq!(nodes, vec!["bp", "w"]);
         assert!(refusals[0].reason.contains("mode = \"forward\""));
     }
 
@@ -627,5 +806,88 @@ mod tests {
                 assert!((a - b).abs() <= 1e-3 * a.abs().max(1.0), "{target:?}: {a} vs {b}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod stencil_tests {
+    use super::*;
+
+    fn spec(nodes: &str, edges: &str) -> String {
+        format!(r#"{{"dspk_pipeline": 1, "nodes": {{{nodes}}}, "edges": [{edges}], "live": {{"block_ms": 5}}}}"#)
+    }
+
+    /// Runs `chain` over `signal` (`channels × total`, f32 stored, gain 1) in blocks of `block`,
+    /// and returns the tap's output and the sample its first value belongs to.
+    fn run(chain: &LiveChain, target: ComputeTarget, signal: &[f32], channels: usize, total: usize, block: usize) -> (u64, Vec<Vec<f32>>) {
+        let mut runner = LiveRunner::new(chain.clone(), target, 1000.0, dspk_core::SampleFormat::F32, vec![1.0; channels], vec![0.0; channels]).unwrap();
+        let mut rows = vec![Vec::new(); channels];
+        let mut first = None;
+        let mut s0 = 0;
+        while s0 < total {
+            let n = block.min(total - s0);
+            let chunk: Vec<u8> = (0..channels).flat_map(|c| signal[c * total + s0..c * total + s0 + n].iter().flat_map(|v| v.to_le_bytes())).collect();
+            for out in runner.process(&chunk, n, s0 as u64).unwrap() {
+                if let TapOutput::Samples { first_sample, samples, values, .. } = out {
+                    first.get_or_insert(first_sample);
+                    for c in 0..channels {
+                        rows[c].extend_from_slice(&values[c * samples..(c + 1) * samples]);
+                    }
+                }
+            }
+            s0 += n;
+        }
+        (first.unwrap_or(0), rows)
+    }
+
+    /// FIR and median, with history carried and output delayed, give the same values in blocks of
+    /// any size as in one block, on every runtime.
+    #[test]
+    fn history_and_delay_ops_are_exact_in_blocks() {
+        let text = spec(
+            r#""in": {"op": "read"}, "fir": {"op": "fir", "taps": [0.25, 0.5, 0.25]}, "med": {"op": "median", "width": 5, "tap": "out"}"#,
+            r#"["in", "fir"], ["fir", "med"]"#,
+        );
+        let chain = check_live(&text, 2).unwrap();
+        assert_eq!(chain.delay_samples, 2, "the median looks 2 ahead; the causal FIR none");
+        let (channels, total) = (2usize, 400usize);
+        let signal: Vec<f32> = (0..channels * total).map(|i| ((i as f32 * 0.37).sin() * 50.0).round()).collect();
+        for target in ComputeTarget::for_tests() {
+            let (first_whole, whole) = run(&chain, target, &signal, channels, total, total);
+            let (first_blocks, blocks) = run(&chain, target, &signal, channels, total, 7);
+            assert_eq!((first_whole, first_blocks), (0, 0));
+            assert_eq!(whole, blocks, "{target:?}");
+            assert_eq!(whole[0].len(), total - 2, "the last 2 samples wait for the next block");
+        }
+    }
+
+    /// A delayed op's frames are labelled with the samples they belong to: a centred identity FIR
+    /// gives back the input, sample for sample.
+    #[test]
+    fn delayed_frames_line_up_with_the_input() {
+        let text = spec(r#""in": {"op": "read"}, "id": {"op": "fir", "taps": [0, 1, 0], "centered": true, "tap": "x"}"#, r#"["in", "id"]"#);
+        let chain = check_live(&text, 1).unwrap();
+        let signal: Vec<f32> = (0..50).map(|i| i as f32).collect();
+        for target in ComputeTarget::for_tests() {
+            let (first, rows) = run(&chain, target, &signal, 1, 50, 6);
+            assert_eq!(first, 0);
+            assert_eq!(rows[0], signal[..49].to_vec(), "{target:?}");
+        }
+    }
+
+    #[test]
+    fn viewer_ops_and_parameters() {
+        let ops = vec![r#"{"op": "iir", "band": "highpass", "cutoff": [5], "mode": "forward"}"#.to_string(), r#"{"op": "rectify"}"#.to_string()];
+        let chain = chain_of_ops(&ops, 3, 10.0).unwrap();
+        assert_eq!(chain.taps.len(), 1);
+        assert_eq!(chain.taps[0].name, "view");
+        let zero_phase = vec![r#"{"op": "iir", "band": "highpass", "cutoff": [5]}"#.to_string()];
+        assert!(chain_of_ops(&zero_phase, 3, 10.0).is_err(), "only live ops on a live view");
+
+        let changed = with_parameter(&chain.spec_json, "op1", "nonexistent", "1").unwrap();
+        assert!(check_live(&changed, 3).is_err(), "unknown fields are refused by the spec");
+        let changed = with_parameter(&chain.spec_json, "op0", "cutoff", "[20]").unwrap();
+        assert!(check_live(&changed, 3).is_ok());
+        assert!(with_parameter(&chain.spec_json, "op0", "op", "\"car\"").is_err());
     }
 }

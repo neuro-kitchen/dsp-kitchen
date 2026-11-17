@@ -13,6 +13,9 @@ max_mb = 256
 
 [recording]
 chunk_seconds = 1.0
+# zstd (default, with its level) or none
+compression = "zstd"
+level = 3
 
 [[sources]]
 name = "gen"

@@ -89,6 +89,7 @@ pub fn execute_unpack_stored<F: DspFloat>(
         SampleFormat::I24 => (3, SIGNED),
         SampleFormat::I32 => (4, SIGNED),
         SampleFormat::F32 => (4, FLOAT),
+        SampleFormat::F16 => return Err(DspError::UnsupportedFormat("float16 samples on the device (they are scaled on the host)".into()).into()),
         SampleFormat::F64 => return Err(DspError::UnsupportedFormat("float64 samples on the device".into()).into()),
     };
     let total = channels * samples;

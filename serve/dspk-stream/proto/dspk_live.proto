@@ -269,6 +269,8 @@ enum ErrorCode {
   ERROR_CODE_NOT_FOUND = 5;
   // The device failed doing it.
   ERROR_CODE_INTERNAL = 6;
+  // A newer view for the same plot arrived first: this one is dropped (nothing to show).
+  ERROR_CODE_SUPERSEDED = 7;
 }
 
 message Error {
@@ -399,11 +401,26 @@ message TapView {
 // offset = ((device_received - client_sent) + (device_sent - client_received)) / 2.
 message ClockPing {
   uint64 client_sent_ns = 1;
+  // The client's best estimate so far (device minus client clock, and its round trip; 0 and 0
+  // before the first exchange): the device keeps it with the run, about once a second.
+  int64 last_offset_ns = 2;
+  uint64 last_round_trip_ns = 3;
 }
 message ClockPong {
   uint64 client_sent_ns = 1;
   uint64 device_received_unix_ns = 2;
   uint64 device_sent_unix_ns = 3;
+}
+
+// A one-time pairing code for another computer (director only): a viewer, or a director to be.
+message NewPairingCode {
+  // The control permission (may direct); false: watch only.
+  bool control = 1;
+}
+message PairingCode {
+  // e.g. "42-8317-2956": `dspk pair <device> <code>` on the other computer.
+  string code = 1;
+  uint64 expires_unix = 2;
 }
 
 message GetStatus {}
@@ -434,6 +451,7 @@ message LiveRequest {
     ClockPing clock = 15;
     GetLog log = 16;
     Mark mark = 17;
+    NewPairingCode pairing_code = 18;
   }
 }
 
@@ -448,6 +466,7 @@ message LiveResponse {
     ClockPong clock = 6;
     LogEntries log = 7;
     Error error = 8;
+    PairingCode pairing_code = 9;
   }
 }
 
