@@ -17,7 +17,8 @@ pub mod probe;
 mod sorting_format;
 pub mod sorting_zarr;
 pub mod spikeglx;
-pub mod synthetic;
+// Moved to dspk-core (2026-11-17); kept here so existing paths work
+pub use dspk_core::recording::synthetic;
 pub mod templates;
 
 pub use mtscomp::MtscompRecording;
