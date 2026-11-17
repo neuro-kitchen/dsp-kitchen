@@ -50,18 +50,89 @@ pub enum CurationOp {
     Split { unit: usize, spikes: Vec<u64>, into: usize },
 }
 
+/// When, where and by whom an edit was made: each optional (a log written before they were kept
+/// has none, and reads as before).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EditMeta {
+    /// UTC, RFC 3339 (`2026-11-17T10:52:03Z`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
+    /// Where: `desktop`, `page` (the Pages viewer), `server` (for a page it serves).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
+    /// Who, when known (the server's name for the client that sent it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
+}
+
+impl EditMeta {
+    /// An edit made `unix_secs` after 1970 (UTC), `via` there.
+    pub fn at(unix_secs: u64, via: &str) -> Self {
+        Self { at: Some(rfc3339_utc(unix_secs)), via: Some(via.into()), by: None }
+    }
+
+    /// An edit made now, `via` there.
+    pub fn now(via: &str) -> Self {
+        Self::at(unix_now(), via)
+    }
+}
+
+/// Seconds since 1970 (UTC), also in a browser.
+pub fn unix_now() -> u64 {
+    web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// One edit of the log as written: the edit and its [`EditMeta`], side by side
+/// (`{"op": "merge", "units": [5, 6], "into": 8, "at": "…", "via": "desktop"}`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LoggedEdit {
+    #[serde(flatten)]
+    pub op: CurationOp,
+    #[serde(flatten)]
+    pub meta: EditMeta,
+}
+
+/// The log as written (`dspk-curation.json`). A log written before the edits' [`EditMeta`], the
+/// save time and the undone edits were kept reads the same (they are optional).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct CurationFile {
     pub dspk_curation: u32,
-    pub ops: Vec<CurationOp>,
+    /// When it was written (UTC, RFC 3339).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saved_at: Option<String>,
+    /// What wrote it (`dspk-synapse 0.0.12`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub written_by: Option<String>,
+    /// The edits applied, in order.
+    pub ops: Vec<LoggedEdit>,
+    /// Edits undone and not replaced (redo brings them back, also after a restart), last first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub undone: Vec<LoggedEdit>,
 }
 
-/// A sorting's log: the edits applied, the ones undone (redo), and how many were saved.
+/// A sorting's log: the edits applied (and when, where, by whom: `meta`, one per edit), the ones
+/// undone (redo), and how many were saved.
 #[derive(Debug, Clone, Default)]
 pub struct Curation {
     pub ops: Vec<CurationOp>,
-    pub undone: Vec<CurationOp>,
+    pub meta: Vec<EditMeta>,
+    pub undone: Vec<(CurationOp, EditMeta)>,
     pub saved: usize,
+}
+
+/// `unix_secs` as UTC RFC 3339 (no time library: days to the civil date, Howard Hinnant's method).
+pub fn rfc3339_utc(unix_secs: u64) -> String {
+    let (days, rem) = ((unix_secs / 86_400) as i64, unix_secs % 86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", rem / 3600, rem % 3600 / 60, rem % 60)
 }
 
 impl Curation {
@@ -80,14 +151,39 @@ impl Curation {
         if file.dspk_curation != CURATION_VERSION {
             return Err(DspError::UnsupportedFormat(format!("{}: curation version {} (this version reads {CURATION_VERSION})", path.display(), file.dspk_curation)));
         }
-        Ok(Self { saved: file.ops.len(), ops: file.ops, undone: Vec::new() })
+        Ok(Self::from_file(file))
+    }
+
+    /// The log a file holds, saved as it is.
+    pub fn from_file(file: CurationFile) -> Self {
+        let (ops, meta): (Vec<_>, Vec<_>) = file.ops.into_iter().map(|e| (e.op, e.meta)).unzip();
+        let undone = file.undone.into_iter().rev().map(|e| (e.op, e.meta)).collect();
+        Self { saved: ops.len(), ops, meta, undone }
+    }
+
+    /// The log as written: each edit with its time, place and author, stamped `saved_at` now.
+    pub fn file(&self) -> CurationFile {
+        let logged = |(op, meta): (&CurationOp, &EditMeta)| LoggedEdit { op: op.clone(), meta: meta.clone() };
+        CurationFile {
+            dspk_curation: CURATION_VERSION,
+            saved_at: Some(rfc3339_utc(unix_now())),
+            written_by: Some(concat!("dspk-synapse ", env!("CARGO_PKG_VERSION")).into()),
+            ops: self.ops.iter().zip(self.metas()).map(logged).collect(),
+            undone: self.undone.iter().rev().map(|(op, meta)| logged((op, meta))).collect(),
+        }
+    }
+
+    /// One [`EditMeta`] per edit (an edit pushed without one: empty).
+    fn metas(&self) -> impl Iterator<Item = &EditMeta> {
+        static NONE: EditMeta = EditMeta { at: None, via: None, by: None };
+        (0..self.ops.len()).map(|i| self.meta.get(i).unwrap_or(&NONE))
     }
 
     /// Writes the log into `store` (through a temporary file). A log under the earlier name
     /// ([`LEGACY_CURATION_FILE`]) is removed once the new file is in place, so a store holds one.
     pub fn save(&mut self, store: &Path) -> DspResult<PathBuf> {
         let path = store.join(CURATION_FILE);
-        let file = CurationFile { dspk_curation: CURATION_VERSION, ops: self.ops.clone() };
+        let file = self.file();
         let tmp = store.join(format!("{CURATION_FILE}.tmp"));
         let io = |p: &Path, e: std::io::Error| DspError::Io(format!("{}: {e}", p.display()));
         let text = serde_json::to_string_pretty(&file).map_err(|e| DspError::Io(format!("{}: {e}", path.display())))?;
@@ -106,19 +202,29 @@ impl Curation {
         self.saved != self.ops.len()
     }
 
+    /// Adds `op`, made now (no place).
     pub fn push(&mut self, op: CurationOp) {
+        self.push_with(op, EditMeta { at: Some(rfc3339_utc(unix_now())), ..Default::default() });
+    }
+
+    /// Adds `op`, made when, where and by whom `meta` says.
+    pub fn push_with(&mut self, op: CurationOp, meta: EditMeta) {
         // Undone past the saved state and edited: that state can no longer be reached
         if self.saved > self.ops.len() {
             self.saved = usize::MAX;
         }
+        self.meta.resize(self.ops.len(), EditMeta::default());
         self.ops.push(op);
+        self.meta.push(meta);
         self.undone.clear();
     }
 
     pub fn undo(&mut self) -> bool {
+        self.meta.resize(self.ops.len(), EditMeta::default());
         match self.ops.pop() {
             Some(op) => {
-                self.undone.push(op);
+                let meta = self.meta.pop().unwrap_or_default();
+                self.undone.push((op, meta));
                 true
             }
             None => false,
@@ -127,8 +233,10 @@ impl Curation {
 
     pub fn redo(&mut self) -> bool {
         match self.undone.pop() {
-            Some(op) => {
+            Some((op, meta)) => {
+                self.meta.resize(self.ops.len(), EditMeta::default());
                 self.ops.push(op);
+                self.meta.push(meta);
                 true
             }
             None => false,
@@ -271,7 +379,7 @@ mod tests {
     fn test_a_log_under_the_earlier_name_is_read_and_renamed_at_the_next_save() {
         let dir = store("legacy");
         let ops = vec![CurationOp::Label { units: vec![3], label: "mua".into() }];
-        let old = serde_json::to_string(&CurationFile { dspk_curation: CURATION_VERSION, ops: ops.clone() }).unwrap();
+        let old = serde_json::json!({"dspk_curation": CURATION_VERSION, "ops": ops}).to_string();
         std::fs::write(dir.join(LEGACY_CURATION_FILE), old).unwrap();
         let mut log = Curation::load(&dir).unwrap();
         assert_eq!(log.ops, ops);
@@ -301,10 +409,34 @@ mod tests {
     #[test]
     fn test_the_new_name_wins_over_a_log_under_the_earlier_one() {
         let dir = store("both");
-        let file = |label: &str| serde_json::to_string(&CurationFile { dspk_curation: CURATION_VERSION, ops: vec![CurationOp::Label { units: vec![1], label: label.into() }] }).unwrap();
+        let file = |label: &str| serde_json::json!({"dspk_curation": CURATION_VERSION, "ops": [CurationOp::Label { units: vec![1], label: label.into() }]}).to_string();
         std::fs::write(dir.join(LEGACY_CURATION_FILE), file("noise")).unwrap();
         std::fs::write(dir.join(CURATION_FILE), file("good")).unwrap();
         assert_eq!(Curation::load(&dir).unwrap().ops, vec![CurationOp::Label { units: vec![1], label: "good".into() }]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Each edit is written with when, where and by whom it was made, the save's time and what
+    /// wrote it, and the edits undone (redo after a restart); a log without them still reads.
+    #[test]
+    fn test_edits_keep_when_where_and_who_and_the_undone_ones() {
+        assert_eq!(rfc3339_utc(0), "1970-01-01T00:00:00Z");
+        assert_eq!(rfc3339_utc(1_763_377_923), "2025-11-17T11:12:03Z");
+        assert_eq!(rfc3339_utc(951_782_400), "2000-02-29T00:00:00Z");
+        let dir = store("meta");
+        let mut log = Curation::default();
+        let by = EditMeta { by: Some("browser-de22bc".into()), ..EditMeta::at(1_763_377_923, "page") };
+        log.push_with(CurationOp::Merge { units: vec![5, 6], into: 9 }, by.clone());
+        log.push_with(CurationOp::Label { units: vec![9], label: "good".into() }, EditMeta::at(1_763_377_930, "desktop"));
+        log.undo();
+        log.save(&dir).unwrap();
+        let text = std::fs::read_to_string(dir.join(CURATION_FILE)).unwrap();
+        assert!(text.contains(r#""at": "2025-11-17T11:12:03Z""#) && text.contains(r#""by": "browser-de22bc""#) && text.contains("saved_at") && text.contains("written_by"), "{text}");
+        let mut back = Curation::load(&dir).unwrap();
+        assert_eq!((back.ops.len(), back.meta[0].clone()), (1, by));
+        assert!(back.redo(), "the undone edit is kept");
+        assert_eq!(back.meta[1].via.as_deref(), Some("desktop"));
+        assert_eq!(back.ops, vec![CurationOp::Merge { units: vec![5, 6], into: 9 }, CurationOp::Label { units: vec![9], label: "good".into() }]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

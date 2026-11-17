@@ -139,7 +139,8 @@ impl dspk_stream::ServerPlugin for SynapsePlugin {
             let resolve = context.resolve.as_ref().ok_or_else(|| dspk_core::DspError::InvalidConfig("this server serves no files".into()))?;
             resolve(path).map_err(|e| dspk_core::DspError::InvalidConfig(e.to_string()))
         };
-        self.0.call(method, body, &resolve, context.recording.as_ref()).map_err(|e| StreamError::Server(e.to_string()))
+        let caller = dspk_synapse::curation::service::Caller { name: &context.peer, may_write: context.may_write };
+        self.0.call(method, body, &resolve, context.recording.as_ref(), caller).map_err(|e| StreamError::Server(e.to_string()))
     }
 }
 

@@ -31,6 +31,7 @@ memmap2.workspace = true
 rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+web-time.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zarrs.workspace = true

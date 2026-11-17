@@ -63,6 +63,20 @@ pub struct ViewsCall {
 pub struct SaveCall {
     pub path: String,
     pub ops: Vec<CurationOp>,
+    /// When and where each edit was made (one per edit); the server adds who (the client's name).
+    #[serde(default)]
+    pub meta: Vec<super::EditMeta>,
+    /// Edits undone and not replaced, as [`Curation::undone`] (the last undone last).
+    #[serde(default)]
+    pub undone: Vec<(CurationOp, super::EditMeta)>,
+}
+
+/// Who calls: the client's name as the server knows it, and whether it may write (paired with
+/// control); saving is refused to a client that may only read.
+#[derive(Debug, Clone, Copy)]
+pub struct Caller<'a> {
+    pub name: &'a str,
+    pub may_write: bool,
 }
 
 /// The server's side: sortings read once, and the open recording's windows read once.
@@ -80,7 +94,7 @@ fn bad(e: impl std::fmt::Display) -> DspError {
 impl Service {
     /// Answers `method` with `body`; `resolve` checks a path under the data root, `recording` is
     /// the one the client has open (as stored).
-    pub fn call(&self, method: &str, body: &[u8], resolve: &dyn Fn(&str) -> DspResult<PathBuf>, recording: Option<&Arc<dyn RecordingSource>>) -> DspResult<Vec<u8>> {
+    pub fn call(&self, method: &str, body: &[u8], resolve: &dyn Fn(&str) -> DspResult<PathBuf>, recording: Option<&Arc<dyn RecordingSource>>, caller: Caller) -> DspResult<Vec<u8>> {
         let json = |v: &dyn erased::Json| v.to_json();
         match method {
             "files" => {
@@ -100,9 +114,20 @@ impl Service {
                 json(&from_signal(&sorting, &windows, &call.request, || false))
             }
             "save" => {
+                if !caller.may_write {
+                    return Err(bad(format!("{} may only read (paired without --control): the curation is not saved on the server", caller.name)));
+                }
                 let call: SaveCall = serde_json::from_slice(body).map_err(bad)?;
                 let path = resolve(&call.path)?;
-                let mut log = Curation { ops: call.ops, ..Default::default() };
+                // Who made each edit: the client that sends them, unless the edit says
+                let by = |mut m: super::EditMeta| {
+                    m.by.get_or_insert_with(|| caller.name.to_string());
+                    m
+                };
+                let mut meta: Vec<_> = call.meta.into_iter().map(by).collect();
+                meta.resize(call.ops.len(), by(super::EditMeta::default()));
+                let undone = call.undone.into_iter().map(|(op, m)| (op, by(m))).collect();
+                let mut log = Curation { ops: call.ops, meta, undone, saved: 0 };
                 log.save(&path)?;
                 Ok(Vec::new())
             }
@@ -206,10 +231,17 @@ mod tests {
         assert!(read_piece(&dir, "../outside", 0, 10).is_err());
         let service = Service::default();
         let resolve = |p: &str| -> DspResult<PathBuf> { Ok(dir.join(p)) };
-        let listed: SortingFiles = serde_json::from_slice(&service.call("files", br#"{"path": ""}"#, &resolve, None).unwrap()).unwrap();
+        let listed: SortingFiles = serde_json::from_slice(&service.call("files", br#"{"path": ""}"#, &resolve, None, Caller { name: "test", may_write: true }).unwrap()).unwrap();
         assert_eq!(listed.files.len(), 2);
-        assert!(service.call("views", br#"{"path": "", "ops": [], "request": {}}"#, &resolve, None).is_err(), "a malformed call is refused");
-        assert!(service.call("nothing", b"{}", &resolve, None).is_err());
+        assert!(service.call("views", br#"{"path": "", "ops": [], "request": {}}"#, &resolve, None, Caller { name: "test", may_write: true }).is_err(), "a malformed call is refused");
+        assert!(service.call("nothing", b"{}", &resolve, None, Caller { name: "test", may_write: true }).is_err());
+        // Saving: refused to a client that may only read; else each edit says who sent it
+        let save = br#"{"path": "", "ops": [{"op": "label", "units": [1], "label": "good"}], "meta": [{"at": "2026-11-17T10:00:00Z", "via": "page"}]}"#;
+        let refused = service.call("save", save, &resolve, None, Caller { name: "alice", may_write: false }).unwrap_err();
+        assert!(refused.to_string().contains("alice may only read"), "{refused}");
+        service.call("save", save, &resolve, None, Caller { name: "lab", may_write: true }).unwrap();
+        let saved = super::super::Curation::load(&dir).unwrap();
+        assert_eq!((saved.meta[0].by.as_deref(), saved.meta[0].via.as_deref()), (Some("lab"), Some("page")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

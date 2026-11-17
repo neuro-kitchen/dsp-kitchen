@@ -17,6 +17,10 @@ pub struct PluginContext {
     pub resolve: Option<Box<dyn Fn(&str) -> StreamResult<PathBuf> + Send + Sync>>,
     /// The recording the client has open, as stored.
     pub recording: Option<Arc<dyn RecordingSource>>,
+    /// The client's name, as paired (what a plugin records as who did something).
+    pub peer: String,
+    /// The client was paired with control: it may change files (a plugin refuses writes else).
+    pub may_write: bool,
 }
 
 /// One plugin of a server.

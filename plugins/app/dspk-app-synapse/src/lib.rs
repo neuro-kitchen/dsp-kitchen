@@ -218,7 +218,7 @@ impl SynapseState {
                     .iter()
                     .find(|(f, _)| f == dspk_synapse::curation::CURATION_FILE)
                     .and_then(|(_, b)| serde_json::from_slice::<dspk_synapse::curation::CurationFile>(b).ok())
-                    .map(|f| Curation { saved: f.ops.len(), ops: f.ops, undone: Vec::new() })
+                    .map(Curation::from_file)
                     .unwrap_or_default();
                 anyhow::Ok((files, log))
             };
@@ -280,7 +280,9 @@ impl SynapseState {
 
     /// Adds a curation edit to `path`'s log.
     pub fn curate(&mut self, path: &PathBuf, op: CurationOp, cx: &mut Context<Self>) {
-        self.curations.entry(path.clone()).or_default().push(op);
+        // Where the edit is made: the desktop app, or a page (its server names the client)
+        let via = if cfg!(target_family = "wasm") { "page" } else { "desktop" };
+        self.curations.entry(path.clone()).or_default().push_with(op, dspk_synapse::curation::EditMeta::now(via));
         self.curated_changed(path, cx);
     }
 
@@ -300,8 +302,10 @@ impl SynapseState {
     pub fn save_curation(&mut self, path: &PathBuf, cx: &mut Context<Self>) {
         // A sorting on the page's server: saved there
         if self.served.contains(path) {
-            let Some(ops) = self.curations.get(path).map(|l| l.ops.clone()) else { return };
-            let call = dspk_synapse::curation::service::SaveCall { path: path.to_string_lossy().into_owned(), ops };
+            let Some(log) = self.curations.get(path) else { return };
+            let meta = log.file().ops.into_iter().map(|e| e.meta).collect();
+            let undone = log.undone.clone();
+            let call = dspk_synapse::curation::service::SaveCall { path: path.to_string_lossy().into_owned(), ops: log.ops.clone(), meta, undone };
             let (body, path) = (serde_json::to_vec(&call).unwrap_or_default(), path.clone());
             cx.spawn(async move |this, cx| {
                 let saved = dspk_app_core::platform::remote::plugin_call(dspk_synapse::curation::service::PLUGIN, "save", body).await;
@@ -328,7 +332,7 @@ impl SynapseState {
         // put into the .sorting.zarr folder (where the desktop and `dspk` read it)
         if dspk_app_core::platform::remote::runs_alone() {
             let Some(log) = self.curations.get_mut(path) else { return };
-            let file = dspk_synapse::curation::CurationFile { dspk_curation: dspk_synapse::curation::CURATION_VERSION, ops: log.ops.clone() };
+            let file = log.file();
             let bytes = serde_json::to_vec_pretty(&file).unwrap_or_default();
             let status = match dspk_app_core::platform::remote::download(dspk_synapse::curation::CURATION_FILE, &bytes, "application/json") {
                 Ok(()) => {
