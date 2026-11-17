@@ -134,6 +134,17 @@ pub trait AppPlugin: Send + Sync + 'static {
         None
     }
 
+    /// A section of Explore's Timeline panel, under its own (title in capitals, as theirs): what
+    /// the plugin adds to the session's time (a sorting, for electrophysiology).
+    fn timeline_section(&self, _store: &Entity<Store>, _window: &mut Window, _cx: &mut App) -> Option<(&'static str, AnyElement)> {
+        None
+    }
+
+    /// Entries of the Timeline panel's `+` menu, after the app's own ("Sorting…").
+    fn timeline_add(&self) -> Vec<(&'static str, TimelineAdd)> {
+        Vec::new()
+    }
+
     /// Whether [`Self::synthetic`] makes recordings (the File menu offers one only then).
     fn makes_synthetic(&self) -> bool {
         false
@@ -245,6 +256,19 @@ pub fn open(path: &Path, id: Option<&str>) -> DspResult<Box<dyn RecordingSource>
 /// The channel layout of source `id` of `path`, from the opener that reads it.
 pub fn layout(path: &Path, id: &str) -> Option<ChannelLayout> {
     opener_of(path)?.layout(path, id)
+}
+
+/// What a plugin's entry of the Timeline panel's `+` menu does.
+pub type TimelineAdd = std::rc::Rc<dyn Fn(&Entity<Store>, &mut Window, &mut App)>;
+
+/// Every plugin's section of the Timeline panel.
+pub fn timeline_sections(store: &Entity<Store>, window: &mut Window, cx: &mut App) -> Vec<(&'static str, AnyElement)> {
+    plugins().iter().filter_map(|p| p.timeline_section(store, window, cx)).collect()
+}
+
+/// Every plugin's entries of the Timeline panel's `+` menu.
+pub fn timeline_adds() -> Vec<(&'static str, TimelineAdd)> {
+    plugins().iter().flat_map(|p| p.timeline_add()).collect()
 }
 
 /// Whether a plugin makes synthetic recordings (none in a browser build without dspk-synapse).

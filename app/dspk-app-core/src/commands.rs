@@ -98,11 +98,14 @@ pub fn pick_page_files(store: &Entity<Store>, folder: bool, browser: Rc<dyn Fn(&
     let store = store.clone();
     window
         .spawn(cx, async move |cx| match crate::platform::remote::pick_files(folder).await {
-            Ok(recordings) if recordings.len() == 1 => {
+            Ok((recordings, _)) if recordings.len() == 1 => {
                 let _ = store.update(cx, |s, cx| s.open_remote(crate::platform::remote::page_profile(), recordings[0].clone(), cx));
             }
-            Ok(recordings) if recordings.is_empty() => {
-                let _ = store.update(cx, |s, cx| s.set_status("No recording among the files picked (a .zarr folder, a .wav, or a .bin with its .meta)", cx));
+            Ok((recordings, note)) if recordings.is_empty() => {
+                // A dialog closed without a choice: no note, nothing to say
+                if let Some(note) = note {
+                    let _ = store.update(cx, |s, cx| s.set_status(note, cx));
+                }
             }
             Ok(_) => {
                 let _ = cx.update(|window, cx| browser(window, cx));

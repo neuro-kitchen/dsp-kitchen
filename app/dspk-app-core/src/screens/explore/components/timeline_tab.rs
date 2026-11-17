@@ -78,11 +78,17 @@ impl TimelineTab {
                 .ghost()
                 .xsmall()
                 .icon(IconName::Plus)
-                .tooltip("Add a recording or an epoch")
+                .tooltip("Add a recording, an epoch, or what a plugin adds (a sorting)")
                 .dropdown_menu(move |m: PopupMenu, _, _| {
                     let (a, b) = (store.clone(), store2.clone());
-                    m.item(PopupMenuItem::new("Recording…").on_click(move |_, window, cx| add_recording(&a, window, cx)))
-                        .item(PopupMenuItem::new("Epoch (the visible window)").on_click(move |_, _, cx| new_epoch(&b, cx)))
+                    let mut m = m
+                        .item(PopupMenuItem::new("Recording…").on_click(move |_, window, cx| add_recording(&a, window, cx)))
+                        .item(PopupMenuItem::new("Epoch (the visible window)").on_click(move |_, _, cx| new_epoch(&b, cx)));
+                    for (label, add) in crate::plugin::timeline_adds() {
+                        let store = store.clone();
+                        m = m.item(PopupMenuItem::new(label).on_click(move |_, window, cx| add(&store, window, cx)));
+                    }
+                    m
                 })
                 .into_any_element(),
         )
@@ -119,7 +125,8 @@ impl TimelineTab {
         tracks
     }
 
-    fn body(&mut self, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let plugin_sections = crate::plugin::timeline_sections(&self.store, window, cx);
         let t = cx.theme();
         let (muted, border, bar, accent) = (t.muted_foreground, t.border, t.primary, t.accent);
         let tracks = self.tracks(cx);
@@ -295,6 +302,8 @@ impl TimelineTab {
             .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(muted).child("EVENTS"))
             .when(sets.is_empty(), |d| d.child(div().px_1().text_xs().text_color(muted).child("None yet: a Crossings op with an Events output adds a set.")))
             .child(v_flex().gap_0p5().children(event_rows))
+            // The plugins' sections (a sorting)
+            .children(plugin_sections.into_iter().map(|(title, body)| v_flex().gap_1().child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(muted).child(title)).child(body)))
             .into_any_element()
     }
 }

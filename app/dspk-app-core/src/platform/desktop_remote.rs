@@ -158,7 +158,7 @@ pub fn runs_alone() -> bool {
 }
 
 /// See [`runs_alone`]: never asked on the desktop.
-pub async fn pick_files(_folder: bool) -> anyhow::Result<Vec<String>> {
+pub async fn pick_files(_folder: bool) -> anyhow::Result<(Vec<String>, Option<String>)> {
     anyhow::bail!("the desktop app opens files with its file dialog")
 }
 

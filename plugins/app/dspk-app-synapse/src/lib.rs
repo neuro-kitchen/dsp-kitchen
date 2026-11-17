@@ -489,4 +489,20 @@ impl AppPlugin for SynapsePlugin {
     fn view_section(&self, store: &Entity<Store>, view: &ViewDoc, window: &mut Window, cx: &mut App) -> Option<AnyElement> {
         Some(panel::section(store, view, window, cx))
     }
+
+    fn timeline_section(&self, store: &Entity<Store>, _window: &mut Window, cx: &mut App) -> Option<(&'static str, AnyElement)> {
+        Some(("SORTINGS", panel::timeline_section(store, cx)))
+    }
+
+    fn timeline_add(&self) -> Vec<(&'static str, dspk_app_core::plugin::TimelineAdd)> {
+        vec![(
+            "Sorting…",
+            std::rc::Rc::new(|store: &Entity<Store>, _: &mut Window, cx: &mut App| {
+                match store.read(cx).active_view().map(|v| v.id.clone()) {
+                    Some(view) => panel::pick_and_attach(store, view, cx),
+                    None => store.update(cx, |s, cx| s.set_status("Open a recording first: a sorting belongs to one", cx)),
+                }
+            }),
+        )]
+    }
 }

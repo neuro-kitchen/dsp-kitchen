@@ -82,9 +82,9 @@ pub async fn start_engine() -> anyhow::Result<String> {
 
 /// Asks the user for a folder (`folder`) or files, hands every file to the engine worker with
 /// its path inside the folder, and returns the recordings among them (each `.bin` whose `.meta`
-/// came too), by path. A dialog closed without a choice fires no event: the page simply waits for
-/// the next one.
-pub async fn pick_files(folder: bool) -> anyhow::Result<Vec<String>> {
+/// came too), by path, and, when there is none, what was picked instead. A dialog closed without
+/// a choice fires no event: the page simply waits for the next one.
+pub async fn pick_files(folder: bool) -> anyhow::Result<(Vec<String>, Option<String>)> {
     let Some(PageLink::Engine(engine)) = LINK.get() else { anyhow::bail!("picking files needs the page's engine") };
     let js = |e: wasm_bindgen::JsValue| anyhow::anyhow!("{e:?}");
     // Each picked file with its path "<folder picked>/<path inside>" (or its name alone)
@@ -94,7 +94,7 @@ pub async fn pick_files(folder: bool) -> anyhow::Result<Vec<String>> {
             let promise: js_sys::Promise = wasm_bindgen::JsCast::dyn_into(pick.call0(&wasm_bindgen::JsValue::NULL).map_err(js)?).map_err(|_| anyhow::anyhow!("the folder picker gave no promise"))?;
             let entries = wasm_bindgen_futures::JsFuture::from(promise).await.map_err(js)?;
             if entries.is_null() {
-                return Ok(Vec::new());
+                return Ok((Vec::new(), None));
             }
             js_sys::Array::from(&entries)
                 .iter()
@@ -134,7 +134,32 @@ pub async fn pick_files(folder: bool) -> anyhow::Result<Vec<String>> {
     }
     recordings.sort();
     recordings.dedup();
-    Ok(recordings)
+    let note = recordings.is_empty().then(|| not_a_recording(&paths));
+    Ok((recordings, note))
+}
+
+/// Why none of `paths` is a recording here: the folders dspk writes next to a recording (its
+/// derived store, epochs, a sorting), NWB, or nothing it reads.
+fn not_a_recording(paths: &[String]) -> String {
+    let folder = |suffix: &str| {
+        paths.iter().find_map(|p| {
+            let top = p.split('/').next().unwrap_or(p);
+            top.to_ascii_lowercase().ends_with(suffix).then(|| top.to_string())
+        })
+    };
+    if let Some(f) = folder(".dspk.zarr").or_else(|| folder(".epochs.zarr")) {
+        return format!("{f} holds a recording's epochs and events, not the recording: open the folder that holds the recording");
+    }
+    if let Some(f) = folder(".sorting.zarr") {
+        return format!("{f} is a sorting: sortings open in the desktop app or the container for now");
+    }
+    if let Some(f) = folder(".nwb.zarr").or_else(|| paths.iter().find(|p| p.to_ascii_lowercase().ends_with(".nwb")).cloned()) {
+        return format!("{f} is NWB: NWB opens in the desktop app or the container for now");
+    }
+    if paths.iter().any(|p| p.to_ascii_lowercase().ends_with(".bin")) {
+        return "A .bin needs its .meta (dspk's JSON layout) beside it".to_string();
+    }
+    format!("No recording among the {} files picked (a .zarr folder, a .wav, or a .bin with its .meta)", paths.len())
 }
 
 /// The loader's folder picker (`window.dspkPickFolder`), where the browser has the File System

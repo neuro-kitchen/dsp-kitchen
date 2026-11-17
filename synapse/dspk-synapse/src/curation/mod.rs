@@ -18,10 +18,12 @@ pub mod split;
 /// The unit table (feature `table`, on by default).
 #[cfg(feature = "table")]
 pub mod table;
+pub mod unit_stats;
 pub mod waveforms;
 
 pub use similarity::{similar, SIMILARITY_LAG};
 pub use sorting::SortingData;
+pub use unit_stats::UnitPoint;
 pub use waveforms::{Snippets, Windows};
 
 /// The log's file inside the store.

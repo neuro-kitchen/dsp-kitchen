@@ -72,7 +72,7 @@ pub fn section(store: &Entity<Store>, view: &ViewDoc, _window: &mut Window, cx: 
             section = section.child(div().text_xs().text_color(muted).child("No sorting linked to this view."));
         }
     }
-    section = section.child(attach(store, view));
+    section = section.child(div().text_xs().text_color(muted).child("Add or change it in the Timeline panel: + → Sorting…"));
 
     // Sort
     let (sorter, probe) = (state.read(cx).sorter, state.read(cx).probe);
@@ -119,38 +119,67 @@ fn detach(store: &Entity<Store>, view: &ViewDoc) -> impl IntoElement {
     })
 }
 
-/// Picks a `.sorting.zarr` folder, or a Phy / Kilosort folder (imported), and links it to the view.
-fn attach(store: &Entity<Store>, view: &ViewDoc) -> impl IntoElement {
-    let (store, id) = (store.clone(), view.id.clone());
-    Button::new("attach-sorting").outline().xsmall().icon(IconName::FolderOpen).label("Attach sorting…").disabled(!dspk_app_core::platform::LOCAL_FILES).tooltip(if dspk_app_core::platform::LOCAL_FILES { "A .sorting.zarr, or a Phy / Kilosort folder (imported as a .sorting.zarr next to it)" } else { "Not in the browser yet: the desktop app does it" }).on_click(move |_, _, cx| {
-        let rx = cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Attach sorting (.sorting.zarr or Phy folder)".into()) });
-        let (store, id) = (store.clone(), id.clone());
-        cx.spawn(async move |cx| {
-            if let Ok(Ok(Some(paths))) = rx.await {
-                if let Some(path) = paths.into_iter().next() {
-                    // A Phy / Kilosort folder is imported as a .sorting.zarr next to it, once
-                    let path = if dspk_synapse::io::phy::PhyFolder::is_phy_folder(&path) {
-                        let folder = path.clone();
-                        match cx.background_executor().spawn(async move { dspk_synapse::curation::phy::import_phy(&folder) }).await {
-                            Ok(imported) => {
-                                let note = format!("Phy folder imported as {}", dspk_session::paths::short_path(&imported));
-                                let _ = store.update(cx, |s, cx| s.set_status(note, cx));
-                                imported
-                            }
-                            Err(e) => {
-                                let _ = store.update(cx, |s, cx| s.set_status(format!("Phy folder not imported: {e:#}"), cx));
-                                return;
-                            }
-                        }
-                    } else {
-                        path
-                    };
-                    let _ = store.update(cx, |s, cx| link(s, &id, path, cx));
+/// Picks a `.sorting.zarr` folder, or a Phy / Kilosort folder (imported as a `.sorting.zarr`
+/// next to it, once), links it to view `view` and opens it in Curation.
+pub fn pick_and_attach(store: &Entity<Store>, view: String, cx: &mut App) {
+    if !dspk_app_core::platform::LOCAL_FILES {
+        store.update(cx, |s, cx| s.set_status("Sortings open in the desktop app or the container for now", cx));
+        return;
+    }
+    let rx = cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Open a sorting (.sorting.zarr or Phy folder)".into()) });
+    let store = store.clone();
+    cx.spawn(async move |cx| {
+        let Ok(Ok(Some(paths))) = rx.await else { return };
+        let Some(path) = paths.into_iter().next() else { return };
+        let path = if dspk_synapse::io::phy::PhyFolder::is_phy_folder(&path) {
+            let folder = path.clone();
+            match cx.background_executor().spawn(async move { dspk_synapse::curation::phy::import_phy(&folder) }).await {
+                Ok(imported) => {
+                    let note = format!("Phy folder imported as {}", dspk_session::paths::short_path(&imported));
+                    let _ = store.update(cx, |s, cx| s.set_status(note, cx));
+                    imported
+                }
+                Err(e) => {
+                    let _ = store.update(cx, |s, cx| s.set_status(format!("Phy folder not imported: {e:#}"), cx));
+                    return;
                 }
             }
-        })
-        .detach();
+        } else {
+            path
+        };
+        // A sorting is curated: Curation shows it
+        let _ = store.update(cx, |s, cx| {
+            link(s, &view, path, cx);
+            s.set_workspace(dspk_app_core::navigation::route::Workspace::Curation, cx);
+        });
     })
+    .detach();
+}
+
+/// The Timeline panel's Sortings section: the active view's sorting (open it in Curation, or
+/// detach it), or how to add one.
+pub fn timeline_section(store: &Entity<Store>, cx: &mut App) -> AnyElement {
+    let muted = cx.theme().muted_foreground;
+    let Some(view) = store.read(cx).active_view().cloned() else {
+        return div().px_1().text_xs().text_color(muted).child("Open a recording first").into_any_element();
+    };
+    let Some(path) = sorting_of(&view) else {
+        return div().px_1().text_xs().text_color(muted).child("None yet: + → Sorting…").into_any_element();
+    };
+    let name = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+    let store2 = store.clone();
+    h_flex()
+        .id("timeline-sorting")
+        .gap_1()
+        .px_1()
+        .items_center()
+        .child(gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Microscope).xsmall().text_color(muted))
+        .child(div().flex_1().min_w_0().truncate().text_sm().child(name))
+        .child(Button::new("timeline-curate").ghost().xsmall().label("Curate").tooltip("Open it in Curation").on_click(move |_, _, cx| {
+            store2.update(cx, |s, cx| s.set_workspace(dspk_app_core::navigation::route::Workspace::Curation, cx));
+        }))
+        .child(detach(store, &view))
+        .into_any_element()
 }
 
 /// Links `path` to view `view` (its runs kept).
