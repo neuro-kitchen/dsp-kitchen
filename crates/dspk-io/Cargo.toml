@@ -17,6 +17,9 @@ zarr-read = ["dep:zarrs"]
 # Zarr folders on disk, read and written (chunks compressed and stored in parallel). In a
 # browser page (no file system) the functions on folders compile and say so when called
 zarr = ["zarr-read", "dep:rayon"]
+# Live sources (`live`): recordings that grow while they are read, the ring buffer, the growing
+# Zarr recording, the session log, the minimal sensor format (dspk-device; `dspk[device]`)
+live = []
 # Shared test assertions (`test_support`) for crates that implement more formats.
 test-support = []
 

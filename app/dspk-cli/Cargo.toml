@@ -15,12 +15,15 @@ path = "src/main.rs"
 # Our builds compile wgpu, cuda and cpu in; hip compiles but is untested (no AMD GPU)
 default = ["wgpu", "cuda", "cpu", "hub"]
 # CubeCL runtimes (chosen at run time with --runtime among those compiled in)
-wgpu = ["dspk-core/wgpu", "dspk-ops/wgpu", "dspk-pipeline/wgpu", "dspk-synapse/wgpu"]
-cpu = ["dspk-core/cpu", "dspk-ops/cpu", "dspk-pipeline/cpu", "dspk-synapse/cpu"]
-cuda = ["dspk-core/cuda", "dspk-ops/cuda", "dspk-pipeline/cuda", "dspk-synapse/cuda"]
-hip = ["dspk-core/hip", "dspk-ops/hip", "dspk-pipeline/hip", "dspk-synapse/hip"]
+wgpu = ["dspk-core/wgpu", "dspk-ops/wgpu", "dspk-pipeline/wgpu", "dspk-synapse/wgpu", "dspk-device?/wgpu"]
+cpu = ["dspk-core/cpu", "dspk-ops/cpu", "dspk-pipeline/cpu", "dspk-synapse/cpu", "dspk-device?/cpu"]
+cuda = ["dspk-core/cuda", "dspk-ops/cuda", "dspk-pipeline/cuda", "dspk-synapse/cuda", "dspk-device?/cuda"]
+hip = ["dspk-core/hip", "dspk-ops/hip", "dspk-pipeline/hip", "dspk-synapse/hip", "dspk-device?/hip"]
 # `hub` command: the artifact catalog, verified downloads (network access)
 hub = []
+# `device`: run a dspk device, or direct one (real time; dspk-device). Opt in:
+# `cargo install dspk-cli --features device`
+device = ["dep:dspk-device", "dspk-io/live", "dspk-stream/live"]
 
 [dependencies]
 dspk-core = { workspace = true, features = ["compute"] }
@@ -34,6 +37,7 @@ dspk-hub = { workspace = true, features = ["synapse"] }
 dirs.workspace = true
 dspk-pipeline = { workspace = true, features = ["view"] }
 dspk-stream.workspace = true
+dspk-device = { workspace = true, optional = true }
 dspk-view = { workspace = true, default-features = false }
 cubecl.workspace = true
 clap.workspace = true

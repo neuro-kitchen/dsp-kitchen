@@ -13,10 +13,10 @@ categories.workspace = true
 [features]
 default = ["wgpu", "cuda", "cpu", "zarr"]
 # CubeCL runtimes compiled in; the device is chosen at run time (`dspk::core::ComputeTarget`)
-wgpu = ["dspk-core/wgpu", "dspk-ops/wgpu", "dspk-view?/wgpu", "dspk-synapse?/wgpu"]
-cpu = ["dspk-core/cpu", "dspk-ops/cpu", "dspk-view?/cpu", "dspk-synapse?/cpu"]
-cuda = ["dspk-core/cuda", "dspk-ops/cuda", "dspk-view?/cuda", "dspk-synapse?/cuda"]
-hip = ["dspk-core/hip", "dspk-ops/hip", "dspk-view?/hip", "dspk-synapse?/hip"]
+wgpu = ["dspk-core/wgpu", "dspk-ops/wgpu", "dspk-view?/wgpu", "dspk-synapse?/wgpu", "dspk-device?/wgpu"]
+cpu = ["dspk-core/cpu", "dspk-ops/cpu", "dspk-view?/cpu", "dspk-synapse?/cpu", "dspk-device?/cpu"]
+cuda = ["dspk-core/cuda", "dspk-ops/cuda", "dspk-view?/cuda", "dspk-synapse?/cuda", "dspk-device?/cuda"]
+hip = ["dspk-core/hip", "dspk-ops/hip", "dspk-view?/hip", "dspk-synapse?/hip", "dspk-device?/hip"]
 # Zarr recordings in `dspk::io`
 zarr = ["dspk-io/zarr"]
 # Envelopes and pyramids for viewing (`dspk::view`)
@@ -26,6 +26,9 @@ stream = ["view", "dep:dspk-stream"]
 # Electrophysiology (`dspk::synapse`): recording and sorting formats, probes, detection,
 # clustering, quality metrics. The sorters are separate crates (`dspk-sorter-*`, own licences)
 synapse = ["dep:dspk-synapse", "dspk-hub?/synapse"]
+# Real time (`dspk::device`): live sources, causal chains, taps, recording, the live protocol;
+# what a device runs and what directs one (dspk-device)
+device = ["stream", "dep:dspk-device", "dspk-io/live", "dspk-stream?/live"]
 # Verified downloads of published artifacts (`dspk::hub`; network access)
 hub = ["dep:dspk-hub"]
 
@@ -37,3 +40,4 @@ dspk-view = { workspace = true, optional = true }
 dspk-stream = { workspace = true, optional = true }
 dspk-synapse = { workspace = true, optional = true }
 dspk-hub = { workspace = true, optional = true }
+dspk-device = { workspace = true, optional = true }

@@ -19,6 +19,8 @@ hip = ["dspk-core/hip", "dspk-ops/hip"]
 # A view's processed signal behind dspk-view's `SignalBackend` (the app, and `dspk serve` for
 # clients that cannot compute)
 view = ["dep:dspk-view"]
+# Pipelines on a live source (`live`): the live rule and the block runner (dspk-device)
+live = ["dspk-io/live"]
 
 [dependencies]
 web-time.workspace = true

@@ -55,6 +55,9 @@ enum Command {
     Generate(commands::generate::GenerateArgs),
     /// Time processing on the selected runtime
     Benchmark(commands::benchmark::BenchmarkArgs),
+    /// Run a device (live source, causal chain, taps, recording) or direct one as a client
+    #[cfg(feature = "device")]
+    Device(commands::device::DeviceArgs),
     /// Serve a recording over QUIC (signal and views)
     Serve(commands::net::serve::ServeArgs),
     /// Receive a served recording: throughput, latency, optional save
@@ -120,6 +123,8 @@ async fn dispatch(cli: &Cli) -> anyhow::Result<()> {
         Command::Convert(args) => commands::convert::run(args),
         Command::Generate(args) => commands::generate::run(args),
         Command::Benchmark(args) => commands::benchmark::run(cli.target()?, args),
+        #[cfg(feature = "device")]
+        Command::Device(args) => commands::device::run(args).await,
         Command::Serve(args) => commands::net::serve::run(args).await,
         Command::Receive(args) => commands::net::receive::run(args).await,
         Command::Clients(args) => commands::net::clients::run(args),

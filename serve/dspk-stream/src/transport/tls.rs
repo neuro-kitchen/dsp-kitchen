@@ -109,6 +109,24 @@ pub fn server_config_with_pairing(authority: &Authority, identity: &ServerIdenti
 }
 
 fn server_config_for(authority: &Authority, identity: &ServerIdentity, anonymous: bool, pairing: bool) -> StreamResult<ServerTls> {
+    server_config_protocols(authority, identity, anonymous || pairing, if pairing { &[ALPN, PAIR_ALPN] } else { &[ALPN] })
+}
+
+/// A device's QUIC configuration (`crate::live`): clients present a certificate the device's
+/// authority issued; computers without one may only pair. No certificate, no session.
+#[cfg(feature = "live")]
+pub fn server_config_live(authority: &Authority, identity: &ServerIdentity) -> StreamResult<ServerTls> {
+    server_config_protocols(authority, identity, true, &[crate::live::ALPN, PAIR_ALPN])
+}
+
+#[cfg(feature = "live")]
+/// The QUIC client configuration of a device connection (`crate::live`), trusting `trust` (the
+/// device's authority, pinned at pairing) and presenting `identity`.
+pub fn live_client_config(trust: &ServerTrust, identity: Option<&ClientIdentity>) -> StreamResult<quinn::ClientConfig> {
+    client_config_for(trust, identity, crate::live::ALPN)
+}
+
+fn server_config_protocols(authority: &Authority, identity: &ServerIdentity, unauthenticated: bool, protocols: &[&[u8]]) -> StreamResult<ServerTls> {
     let (chain, key, certificate) = match identity {
         ServerIdentity::Files { .. } => {
             let (chain, key) = identity_chain(identity)?;
@@ -123,12 +141,12 @@ fn server_config_for(authority: &Authority, identity: &ServerIdentity, anonymous
     let mut roots = rustls::RootCertStore::empty();
     roots.add(CertificateDer::from(authority.ca_certificate().to_vec())).map_err(tls_error)?;
     let mut verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots));
-    if anonymous || pairing {
+    if unauthenticated {
         verifier = verifier.allow_unauthenticated();
     }
     let verifier = verifier.build().map_err(tls_error)?;
     let crypto = rustls::ServerConfig::builder().with_client_cert_verifier(verifier).with_single_cert(chain, key).map_err(tls_error)?;
-    finish_server_for(crypto, certificate, if pairing { &[ALPN, PAIR_ALPN] } else { &[ALPN] })
+    finish_server_for(crypto, certificate, protocols)
 }
 
 fn finish_server(crypto: rustls::ServerConfig, certificate: Vec<u8>) -> StreamResult<ServerTls> {

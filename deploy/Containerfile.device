@@ -1,0 +1,46 @@
+# A dspk device: one live source (the generator, the minimal sensor format, a replayed file), a
+# causal chain, taps, recordings, over QUIC + TLS (UDP 50060). Test 1 of the real-time work: a
+# generator in a container, watched from the app or `dspk device watch` on this computer.
+#
+# The device's own program, `dspk-device` (smaller than the whole `dspk`: no sorters, no hub).
+# The CPU runtime by default (a few channels need no GPU); the same GPU targets as
+# deploy/Containerfile can be added when a chain needs one.
+#
+# Build from the repository root:
+#   podman build -f deploy/Containerfile.device --ignorefile deploy/.containerignore -t dspk-device .
+# Run (the generator of deploy/device.toml; recordings, logs and the device's authority in ./device-data):
+#   podman run --rm --read-only --tmpfs /tmp -p 127.0.0.1:50060:50060/udp -v ./device-data:/data:Z dspk-device
+# then pair once with the code in `podman logs` (dspk pair 127.0.0.1:50060 <code> --out me.pem).
+# Publish the port on 127.0.0.1 unless clients on other computers need it: only paired clients
+# (certificates from the device's authority) get a session, but nothing else needs to reach it.
+
+ARG RUST_VERSION=1.99
+ARG DEBIAN=bookworm
+ARG RUST_DIGEST=sha256:e6f2cff35d0f309acf8433b4f05878ed77092602c5065cc81801177da0bb3a9c
+ARG DEBIAN_DIGEST=sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc
+
+FROM docker.io/library/rust:${RUST_VERSION}-${DEBIAN}@${RUST_DIGEST} AS build
+ARG FEATURES=cpu
+WORKDIR /src
+COPY . .
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    --mount=type=cache,target=/root/.local/share/tracel \
+    cargo build --release --locked -p dspk-device --no-default-features --features "${FEATURES}" \
+    && install -D -m 0755 target/release/dspk-device /out/dspk-device
+
+FROM docker.io/library/debian:${DEBIAN}-slim@${DEBIAN_DIGEST}
+COPY --from=build --chmod=0755 /out/dspk-device /usr/local/bin/
+COPY deploy/device.toml /etc/dspk/device.toml
+# Not root; /data holds recordings, session logs, the device's id and authority
+RUN useradd --create-home --uid 10001 dspk && install -d -o dspk -g dspk /data
+ENV XDG_CACHE_HOME=/home/dspk/.cache XDG_RUNTIME_DIR=/tmp DSPK_RUNTIME=cpu
+RUN install -d -o dspk -g dspk /home/dspk/.cache
+VOLUME /data
+VOLUME /home/dspk/.cache
+WORKDIR /data
+USER dspk
+EXPOSE 50060/udp
+ENTRYPOINT ["dspk-device"]
+# --pair prints a one-time pairing code for a director at start (`podman logs`)
+CMD ["--config", "/etc/dspk/device.toml", "--pair"]

@@ -22,6 +22,8 @@ pub use server::{
     MAX_VIEW_COLUMNS, MAX_VIEW_VALUES,
 };
 pub use tls::{client_config, client_config_with, server_config, server_config_with_clients, server_config_with_pairing, ServerIdentity, ServerTls, ServerTrust};
+#[cfg(feature = "live")]
+pub use tls::{live_client_config, server_config_live};
 
 #[cfg(test)]
 mod tests {
