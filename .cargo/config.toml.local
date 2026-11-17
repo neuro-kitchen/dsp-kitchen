@@ -1,4 +1,0 @@
-# Local, git-ignored: kitchen 0.0.5 from the checkout until it is on crates.io
-[patch.crates-io]
-kitchen-ui = { path = "../kitchen/crates/kitchen-ui" }
-kitchen-shell = { path = "../kitchen/crates/kitchen-shell" }
