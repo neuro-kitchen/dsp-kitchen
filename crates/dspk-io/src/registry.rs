@@ -9,6 +9,7 @@ use crate::core::Format;
 static FORMATS: &[&dyn Format] = &[
     #[cfg(feature = "zarr")]
     &crate::generic::zarr_traces::ZarrTraces,
+    &crate::generic::wav::Wav,
     &crate::generic::raw::Raw,
 ];
 

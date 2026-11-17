@@ -12,7 +12,7 @@ use crate::error::{StreamError, StreamResult};
 use crate::protocol::wire;
 
 /// File extensions of recordings dspk opens (raw, SpikeGLX, NWB, mtscomp).
-pub const RECORDING_EXTENSIONS: [&str; 6] = ["bin", "cbin", "dat", "raw", "nwb", "h5"];
+pub const RECORDING_EXTENSIONS: [&str; 7] = ["bin", "cbin", "dat", "raw", "nwb", "h5", "wav"];
 /// File names never served, even under the root: client identities and private keys (someone may
 /// have left one there; a reader must never fetch another client's key).
 pub const NEVER_SERVED_SUFFIXES: [&str; 3] = [".dspk-identity.pem", ".key", ".key.pem"];

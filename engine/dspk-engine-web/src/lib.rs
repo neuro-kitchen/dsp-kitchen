@@ -213,7 +213,8 @@ impl Inner {
                 }
                 None => {
                     // A `.bin` is a recording when its layout file came with it
-                    let recording = rest.to_ascii_lowercase().ends_with(".bin") && self.file(&format!("{}.meta", &path[..path.len() - 4])).is_some();
+                    let lower = rest.to_ascii_lowercase();
+                    let recording = (lower.ends_with(".bin") && self.file(&format!("{}.meta", &path[..path.len() - 4])).is_some()) || dspk_io::generic::wav::is_wav_name(&lower);
                     let kind = if recording { wire::FileKind::Recording } else { wire::FileKind::Other };
                     entries.push(wire::FileEntry { name: rest.to_string(), kind: kind as i32, size: file.size() as u64, modified_unix: (file.last_modified() / 1000.0) as u64, directory: false });
                 }
@@ -234,7 +235,14 @@ impl Inner {
     /// background: views of parts not built yet say so and are asked again.
     fn open(&self, name: &str) -> StreamResult<(OpenRecording, Arc<dyn RecordingSource>, Arc<Pyramid>)> {
         let fail = |e: String| StreamError::Server(e);
-        let source = if name.trim_end_matches('/').to_ascii_lowercase().ends_with(".zarr") { self.open_zarr(name)? } else { self.open_raw(name)? };
+        let lower = name.trim_end_matches('/').to_ascii_lowercase();
+        let source = if lower.ends_with(".zarr") {
+            self.open_zarr(name)?
+        } else if dspk_io::generic::wav::is_wav_name(&lower) {
+            self.open_wav(name)?
+        } else {
+            self.open_raw(name)?
+        };
         let pyramid = Arc::new(Pyramid::in_memory(source.as_ref(), MEMORY_BASE).map_err(|e| fail(e.to_string()))?);
         let recording = OpenRecording::new(source.clone(), Some(pyramid.clone())).with_processor(self.processor.clone());
         Ok((recording, source, pyramid))
@@ -261,6 +269,13 @@ impl Inner {
     }
 
     /// A `.bin` with its `.meta` (dspk's JSON layout).
+    /// A WAV file: its header says the layout.
+    fn open_wav(&self, name: &str) -> StreamResult<Arc<dyn RecordingSource>> {
+        let fail = |e: String| StreamError::Server(e);
+        let data = self.file(name).ok_or_else(|| fail(format!("{name} was not among the files picked")))?;
+        Ok(Arc::new(dspk_io::wav_from_source(name, Arc::new(FileBytes(data.clone()))).map_err(|e| fail(e.to_string()))?))
+    }
+
     fn open_raw(&self, name: &str) -> StreamResult<Arc<dyn RecordingSource>> {
         let fail = |e: String| StreamError::Server(e);
         let data = self.file(name).ok_or_else(|| fail(format!("{name} was not among the files picked")))?;

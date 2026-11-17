@@ -229,7 +229,7 @@ impl Jobs {
         }
         let output_rel = if r.output.is_empty() {
             let name = recording.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            let stem = name.split('.').take_while(|p| !["bin", "cbin", "dat", "raw", "nwb", "h5", "zarr"].contains(p)).collect::<Vec<_>>().join(".");
+            let stem = name.split('.').take_while(|p| !["bin", "cbin", "dat", "raw", "nwb", "h5", "zarr", "wav"].contains(p)).collect::<Vec<_>>().join(".");
             let parent = self.root.relative(recording.parent().unwrap_or(self.root.path()));
             let file = format!("{}.{}{SORTING_SUFFIX}", if stem.is_empty() { "recording" } else { &stem }, r.sorter);
             if parent.is_empty() { file } else { format!("{parent}/{file}") }

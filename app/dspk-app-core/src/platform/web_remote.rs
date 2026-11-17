@@ -124,6 +124,8 @@ pub async fn pick_files(folder: bool) -> anyhow::Result<Vec<String>> {
     }
     engine.set_files(files)?;
     let mut recordings: Vec<String> = paths.iter().filter(|p| p.to_ascii_lowercase().ends_with(".bin") && paths.contains(&p[..p.len() - 4].to_string().add_meta())).cloned().collect();
+    // WAV files: their header says the layout
+    recordings.extend(paths.iter().filter(|p| p.to_ascii_lowercase().ends_with(".wav")).cloned());
     // dspk Zarr recordings: a `.zarr` folder with a `/traces` array (an NWB folder is not one)
     for p in &paths {
         if let Some(folder) = p.strip_suffix("/traces/zarr.json").filter(|f| f.to_ascii_lowercase().ends_with(".zarr")) {
@@ -156,7 +158,7 @@ async fn input_files(folder: bool) -> anyhow::Result<Vec<(String, web_sys::File)
     if folder {
         input.set_attribute("webkitdirectory", "").map_err(js)?;
     } else {
-        input.set_accept(".bin,.meta");
+        input.set_accept(".wav,.bin,.meta");
     }
     let (tx, rx) = futures_channel::oneshot::channel::<()>();
     let tx = std::cell::RefCell::new(Some(tx));

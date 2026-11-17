@@ -34,6 +34,7 @@ static FORMATS: &[&dyn Format] = &[
     // SpikeGLX before mtscomp: a SpikeGLX `.cbin` is read with its `.meta`
     &spikeglx::SpikeGlx,
     &mtscomp::Mtscomp,
+    &dspk_io::generic::wav::Wav,
     &dspk_io::generic::raw::Raw,
 ];
 
