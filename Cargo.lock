@@ -3432,6 +3432,7 @@ dependencies = [
  "cubecl",
  "dirs 7.0.0",
  "dspk-core",
+ "dspk-device",
  "dspk-hub",
  "dspk-io",
  "dspk-ops",
