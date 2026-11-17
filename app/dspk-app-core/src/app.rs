@@ -366,6 +366,19 @@ impl DspApp {
             pipeline: pipeline.downgrade(),
             toggle_help: Rc::new(move |w, cx| overlay(&c1, Some(help.clone().into()), true, w, cx)),
             toggle_about: Rc::new(move |w, cx| overlay(&c2, Some(about.clone().into()), true, w, cx)),
+            open_devices: {
+                let (close, cell, store) = (close.clone(), shell_cell.clone(), store.clone());
+                Rc::new(move |w, cx| {
+                    #[cfg(feature = "device")]
+                    {
+                        let panel = cx.new(|cx| crate::screens::devices::DevicesPanel::new(store.clone(), cx));
+                        let modal = commands::modal(panel.into(), close.clone(), cx);
+                        overlay(&cell, Some(modal.into()), false, w, cx);
+                    }
+                    #[cfg(not(feature = "device"))]
+                    let _ = (&close, &cell, &store, w, cx);
+                })
+            },
             open_browser: {
                 let close = close.clone();
                 Rc::new(move |w, cx| {
