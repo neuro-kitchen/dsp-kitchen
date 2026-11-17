@@ -96,6 +96,9 @@ pub struct SortingWorkspace {
     matches: Option<(PathBuf, PathBuf, Vec<(usize, usize, f32)>)>,
     _compare: Option<Task<()>>,
     _describe: Option<Task<()>>,
+    /// Installing the sorters program, and the task doing it.
+    installing: bool,
+    _install: Option<Task<()>>,
     _work: Option<Task<()>>,
     _subs: Vec<Subscription>,
 }
@@ -146,6 +149,8 @@ impl SortingWorkspace {
             matches: None,
             _compare: None,
             _describe: None,
+            installing: false,
+            _install: None,
             _work: None,
             _subs: subs,
         };
@@ -155,9 +160,38 @@ impl SortingWorkspace {
     }
 
     /// Asks the installed program what it can run (in the background).
+    /// Installs `dspk-cli-sorter` (in the background), then asks it what it runs.
+    fn install_sorters(&mut self, cx: &mut Context<Self>) {
+        self.installing = true;
+        self.store.update(cx, |s, cx| s.set_status("Installing the sorters (dspk-cli-sorter)…", cx));
+        let work = cx.background_spawn(async { sort::install() });
+        self._install = Some(cx.spawn(async move |this, cx| {
+            let installed = work.await;
+            let _ = this.update(cx, |w, cx| {
+                w.installing = false;
+                let status = match &installed {
+                    Ok(path) => format!("Sorters installed: {}", path.display()),
+                    Err(e) => format!("Sorters not installed: {e}"),
+                };
+                w.store.update(cx, |s, cx| s.set_status(status, cx));
+                w.describe(cx);
+            });
+        }));
+        cx.notify();
+    }
+
     fn describe(&mut self, cx: &mut Context<Self>) {
         self.described = None;
-        let work = cx.background_spawn(async { sort::describe() });
+        // A page served by a server: the sorters are the server's
+        let work: Task<Result<sort::Described, String>> = if dspk_app_core::platform::remote::served() {
+            cx.spawn(async move |_, _| {
+                let reply = dspk_app_core::platform::remote::plugin_call(dspk_synapse::curation::service::PLUGIN, "sorters", Vec::new()).await.map_err(|e| format!("{e:#}"))?;
+                let v: serde_json::Value = serde_json::from_slice(&reply).map_err(|e| format!("the server's sorters: {e}"))?;
+                sort::parse_describe(PathBuf::from("dspk-cli-sorter (on the server)"), &v)
+            })
+        } else {
+            cx.background_spawn(async { sort::describe() })
+        };
         self._describe = Some(cx.spawn(async move |this, cx| {
             let d = work.await;
             let _ = this.update(cx, |w, cx| {
@@ -545,12 +579,29 @@ impl SortingWorkspace {
         let me = cx.entity().downgrade();
         let sorter_section = match &self.described {
             None => Section::new("Sorter").child(div().text_xs().text_color(muted).child("Asking dspk-cli-sorter what it runs…")),
-            Some(Err(e)) => Section::new("Sorter").child(div().text_xs().text_color(danger).child(e.clone())).child({
-                let me = me.clone();
-                Button::new("sorters-retry").outline().small().label("Look again").on_click(move |_, _, cx| {
-                    let _ = me.update(cx, |w, cx| w.describe(cx));
+            Some(Err(e)) => Section::new("Sorter")
+                .child(div().text_xs().text_color(danger).child(e.clone()))
+                // The desktop installs the program itself (a page sorts on its server)
+                .when(dspk_app_core::platform::LOCAL_FILES, |d| {
+                    let me = me.clone();
+                    d.child(
+                        Button::new("sorters-install")
+                            .primary()
+                            .icon(gpui_kit::component::IconName::ArrowDown)
+                            .label(if self.installing { "Installing sorters…" } else { "Install sorters" })
+                            .tooltip("Download dspk-cli-sorter for this computer from this version's release (checked against its manifest)")
+                            .disabled(self.installing)
+                            .on_click(move |_, _, cx| {
+                                let _ = me.update(cx, |w, cx| w.install_sorters(cx));
+                            }),
+                    )
                 })
-            }),
+                .child({
+                    let me = me.clone();
+                    Button::new("sorters-retry").outline().label("Look again").on_click(move |_, _, cx| {
+                        let _ = me.update(cx, |w, cx| w.describe(cx));
+                    })
+                }),
             Some(Ok(d)) => {
                 let names: Vec<SharedString> = d.sorters.iter().map(|s| SharedString::from(s.name.clone())).collect();
                 let pick = {

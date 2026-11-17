@@ -17,6 +17,8 @@ pub mod cache;
 pub mod catalog;
 pub mod download;
 pub mod providers;
+/// The `dspk-cli-sorter` program: installed from the release, found (the CLI and the app run it).
+pub mod sorters;
 
 use std::path::PathBuf;
 

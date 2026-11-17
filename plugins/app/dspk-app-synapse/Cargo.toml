@@ -40,5 +40,9 @@ async-channel = "2.5.0"
 # Unit analytics (the Sorting view's table: sort, filter) as data frames
 dspk-table = { workspace = true, optional = true }
 
+# Installing and finding the sorters program (downloads: not in a browser)
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+dspk-hub.workspace = true
+
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }

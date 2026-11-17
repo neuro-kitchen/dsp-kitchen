@@ -168,6 +168,11 @@ impl SynapseState {
         if self.sortings.contains_key(&path) || !self.loading.insert(path.clone()) {
             return;
         }
+        // A page served by a server: the sorting is the server's
+        if dspk_app_core::platform::remote::served() {
+            self.load_served(path, cx);
+            return;
+        }
         let task = cx.background_spawn({
             let path = path.clone();
             async move { SortingData::load(&path).map(|d| (d, Curation::load(&path))) }
@@ -181,6 +186,57 @@ impl SynapseState {
                     Err(e) => s.store.update(cx, |st, cx| st.set_status(format!("{e:#}"), cx)),
                 }
                 cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// A page served by a server: reads the sorting at `path` (under the server's data root) in
+    /// pieces, with its curation log; the server computes its signal views and saves its log.
+    fn load_served(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        use dspk_synapse::curation::service::{FilesCall, ReadCall, SortingFiles, PLUGIN, READ_MAX};
+        let remote = path.to_string_lossy().replace('\\', "/");
+        self.store.update(cx, |s, cx| s.set_status(format!("Reading {remote} from the server…"), cx));
+        cx.spawn(async move |this, cx| {
+            let call = |method: &'static str, body: Vec<u8>| dspk_app_core::platform::remote::plugin_call(PLUGIN, method, body);
+            let read = async {
+                let listed: SortingFiles = serde_json::from_slice(&call("files", serde_json::to_vec(&FilesCall { path: remote.clone() })?).await?)?;
+                let mut files = Vec::with_capacity(listed.files.len());
+                for (file, size) in listed.files {
+                    let mut bytes = Vec::with_capacity(size as usize);
+                    while (bytes.len() as u64) < size {
+                        let piece = call("read", serde_json::to_vec(&ReadCall { path: remote.clone(), file: file.clone(), offset: bytes.len() as u64, len: READ_MAX })?).await?;
+                        if piece.is_empty() {
+                            break;
+                        }
+                        bytes.extend_from_slice(&piece);
+                    }
+                    files.push((file, bytes));
+                }
+                // Its curation log, saved on the server inside the store
+                let log = files
+                    .iter()
+                    .find(|(f, _)| f == dspk_synapse::curation::CURATION_FILE)
+                    .and_then(|(_, b)| serde_json::from_slice::<dspk_synapse::curation::CurationFile>(b).ok())
+                    .map(|f| Curation { saved: f.ops.len(), ops: f.ops, undone: Vec::new() })
+                    .unwrap_or_default();
+                anyhow::Ok((files, log))
+            };
+            let read = read.await;
+            let name = remote.rsplit('/').next().unwrap_or(&remote).to_string();
+            let loaded = match read {
+                Ok((files, log)) => cx.background_executor().spawn(async move { SortingData::load_files(&name, files).map(|d| (d, log)) }).await.map_err(|e| anyhow::anyhow!("{e}")),
+                Err(e) => Err(e),
+            };
+            let _ = this.update(cx, |s, cx| {
+                s.loading.remove(&path);
+                match loaded {
+                    Ok((data, log)) => {
+                        s.served.insert(path.clone());
+                        s.loaded(path, data, Ok(log), cx);
+                    }
+                    Err(e) => s.store.update(cx, |st, cx| st.set_status(format!("{remote}: {e:#}"), cx)),
+                }
             });
         })
         .detach();

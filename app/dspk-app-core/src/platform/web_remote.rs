@@ -401,7 +401,60 @@ pub async fn fetch(_profile: ServerProfile, _path: String, _results: PathBuf) ->
     anyhow::bail!(NOT_YET)
 }
 
-pub fn remote_sort(_profile: ServerProfile, _job: wire::Configure, _results: PathBuf, send: impl Fn(JobMessage) + Send + Sync + 'static) -> Cancel {
-    send(JobMessage::Failed(NOT_YET.into()));
-    Cancel::default()
+/// A sort on the page's server: configured, started and followed (its status every second) as
+/// the desktop does; the result stays on the server (`Done` with its path under the data root,
+/// which the page reads from there: it has no disk to fetch it to).
+pub fn remote_sort(profile: ServerProfile, job: wire::Configure, _results: PathBuf, send: impl Fn(JobMessage) + Send + Sync + 'static) -> Cancel {
+    let cancel = Cancel::default();
+    let c = cancel.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        let status_of = |kind: wire::request::Kind| async move {
+            match request(kind).await? {
+                wire::response::Kind::Status(s) => anyhow::Ok(s),
+                _ => anyhow::bail!("the server answered something else than a job status"),
+            }
+        };
+        let outcome = async {
+            let configured = status_of(wire::request::Kind::Configure(job)).await?;
+            status_of(wire::request::Kind::Start(wire::Start {})).await?;
+            send(JobMessage::Progress(format!("{} on {}", configured.job, profile.name), None));
+            let mut stop_sent = false;
+            let status = loop {
+                sleep_ms(1000).await;
+                if c.cancelled() && !stop_sent {
+                    let _ = status_of(wire::request::Kind::Stop(wire::Stop {})).await;
+                    stop_sent = true;
+                }
+                let s = status_of(wire::request::Kind::Status(wire::GetStatus {})).await?;
+                if s.state != wire::DeviceState::Running as i32 {
+                    break s;
+                }
+                let fraction = (s.total > 0).then(|| s.done as f32 / s.total as f32);
+                let step = if s.steps > 0 { format!("[{}/{}] ", s.step, s.steps) } else { String::new() };
+                send(JobMessage::Progress(format!("{} on {}: {step}{} {}/{} {}", configured.job, profile.name, s.stage, s.done, s.total, s.unit), fraction));
+            };
+            if status.state == wire::DeviceState::Error as i32 {
+                anyhow::bail!("the sort failed on {}: {}", profile.name, status.message);
+            }
+            if c.cancelled() {
+                anyhow::bail!("stopped");
+            }
+            anyhow::Ok(PathBuf::from(status.output))
+        };
+        send(match outcome.await {
+            Ok(path) => JobMessage::Done(path),
+            Err(e) => JobMessage::Failed(format!("{e:#}")),
+        });
+    });
+    cancel
+}
+
+/// Waits `ms` milliseconds without blocking the page (a timer).
+async fn sleep_ms(ms: i32) {
+    let promise = js_sys::Promise::new(&mut |resolve, _| {
+        if let Some(w) = web_sys::window() {
+            let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
+        }
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
 }

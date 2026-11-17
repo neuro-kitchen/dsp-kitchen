@@ -36,22 +36,27 @@ fn program_file_name() -> String {
 }
 
 /// The `dspk-cli-sorter` to run: `$DSPK_CLI_SORTER_BIN`, else next to this program (a source
-/// build puts both in one folder), else the one `dspk sorters install` installed for this
-/// version (`$DSPK_DATA_DIR`, else the user data folder: `~/.local/share/dspk` on Linux).
+/// build puts both in one folder), else the one installed for this version (dspk-hub: what
+/// `dspk sorters install` and this app's Install button install). Not in a browser.
 pub fn locate() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os(SORTER_BIN_ENV).filter(|p| !p.is_empty()) {
-        return Some(PathBuf::from(p));
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(std::path::Path::to_path_buf));
+        dspk_hub::sorters::locate(env!("CARGO_PKG_VERSION"), beside.as_deref())
     }
-    let name = program_file_name();
-    if let Some(p) = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.join(&name))).filter(|p| p.is_file()) {
-        return Some(p);
+    #[cfg(target_family = "wasm")]
+    None
+}
+
+/// Downloads this version's `dspk-cli-sorter` for this computer from the GitHub release, checked
+/// against the release's manifest (SHA-256 and size), into the user data folder; its path.
+pub fn install() -> Result<PathBuf, String> {
+    #[cfg(not(target_family = "wasm"))]
+    {
+        dspk_hub::sorters::install(env!("CARGO_PKG_VERSION")).map_err(|e| format!("{e:#}"))
     }
-    let data = std::env::var_os("DSPK_DATA_DIR")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("XDG_DATA_HOME").map(|d| PathBuf::from(d).join("dspk")))
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share/dspk")))?;
-    let p = data.join("sorters").join(env!("CARGO_PKG_VERSION")).join(&name);
-    p.is_file().then_some(p)
+    #[cfg(target_family = "wasm")]
+    Err("sorters run in the desktop app or on a server".into())
 }
 
 /// What to sort.
@@ -75,7 +80,7 @@ pub struct SortRequest {
 /// Runs `dspk-cli-sorter <sorter> <recording> -o <output>`, reporting its progress lines.
 pub fn sort(req: &SortRequest, send: impl Fn(JobMessage) + Send + Sync + 'static) -> Cancel {
     let Some(program) = locate() else {
-        send(JobMessage::Failed(format!("{} not found: install it with `dspk sorters install`, or set {SORTER_BIN_ENV}", program_file_name())));
+        send(JobMessage::Failed(format!("{} not found: Install sorters below (or `dspk sorters install`), or set {SORTER_BIN_ENV}", program_file_name())));
         return Cancel::default();
     };
     let mut cmd = Command::new(program);
@@ -128,7 +133,7 @@ pub struct Described {
 
 /// Runs `dspk-cli-sorter describe` (blocking: call it off the UI thread).
 pub fn describe() -> Result<Described, String> {
-    let program = locate().ok_or_else(|| format!("{} not found: install it with `dspk sorters install`, or set {SORTER_BIN_ENV}", program_file_name()))?;
+    let program = locate().ok_or_else(|| format!("{} not found: Install sorters below (or `dspk sorters install`), or set {SORTER_BIN_ENV}", program_file_name()))?;
     let out = Command::new(&program).arg("describe").output().map_err(|e| format!("{}: {e}", dspk_session::paths::short_path(&program)))?;
     if !out.status.success() {
         return Err(format!("{} describe: {}", dspk_session::paths::short_path(&program), String::from_utf8_lossy(&out.stderr).trim()));
