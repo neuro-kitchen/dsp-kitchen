@@ -32,17 +32,17 @@ use gpui_kit::{
     KeyDownEvent, ParentElement as _, Render, RenderImage, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, Window,
 };
 
-use crate::chart::{Chart, ChartGrid, Layer, Range2};
+use crate::chart::{ChartGrid, GridView as _, Range2};
 use crate::curation::{next_unit_id, similar, CurationOp, LABELS};
 use crate::plots;
-use crate::sorting::{Snippets, SortingData};
+use crate::sorting::SortingData;
 use crate::strip::{view_signal, BottomStrip};
 use crate::table::{UnitTable, COLUMNS};
 use crate::templates::TemplateGrid;
 use crate::{sorting_of, state, SynapseEvent};
 
-/// Spikes per selected unit drawn and projected (and as many unsorted ones).
-pub const SPIKES_PER_UNIT: usize = 300;
+pub use dspk_synapse::curation::views::{PlotSettings, ViewKind, FEATURE_GRID_CHANNELS, SPIKES_PER_UNIT};
+use dspk_synapse::curation::views::{ViewsRequest, Views};
 /// Plot sizes (physical pixels; shown scaled to their panels).
 #[cfg(test)]
 const PLOT_W: u32 = 720;
@@ -50,55 +50,20 @@ const PLOT_W: u32 = 720;
 const PLOT_H: u32 = 420;
 /// Units listed by the similarity view.
 const SIMILAR_MAX: usize = 20;
-/// Selected units in the correlogram grid (auto on the diagonal, cross elsewhere).
-const CCG_MAX_UNITS: usize = 4;
-/// Autocorrelogram ±50 ms in 1 ms bins; ISI 0–50 ms in 0.5 ms bins; refractory period marked.
-const ACG_HALF_MS: f64 = 50.0;
-const ACG_BIN_MS: f64 = 1.0;
-const ISI_MAX_MS: f64 = 50.0;
-const ISI_BIN_MS: f64 = 0.5;
-const REFRACTORY_MS: f64 = 1.5;
-/// Spikes per unit in the amplitude-over-time plot.
-const AMPLITUDE_POINTS: usize = 5000;
-/// Firing rate: bin length (s).
-const RATE_BIN_S: f64 = 10.0;
-/// Amplitude histogram: bins.
-const AMPLITUDE_BINS: usize = 60;
-/// Feature grid: the lead unit's best channels shown (its extent's first, largest first).
-const FEATURE_GRID_CHANNELS: usize = 3;
 /// Table row height and the table's width in layouts (logical px).
 const ROW_H: f32 = 24.;
 const TABLE_W: f32 = 560.;
 
-/// A view of the workspace.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ViewKind {
-    Table,
-    Waveforms,
-    Features,
-    Acg,
-    Isi,
-    Amplitude,
-    Template,
-    Similarity,
-    Correlograms,
-    Templates,
-    Probe,
-    /// Phy's feature view: PCs on the lead unit's best channels, pairwise.
-    FeatureGrid,
-    /// Phy's template-feature view: spikes projected on two units' templates.
-    TemplateFeatures,
-    /// Spikes per second over the recording.
-    FiringRate,
-    /// The lead unit's spike amplitudes as a histogram (cut off by the threshold?).
-    AmplitudeHist,
-    /// Every unit by depth and amplitude (Phy's cluster scatter); a click selects.
-    UnitScatter,
+/// How a view is shown: its icon on the Curation side bar and its title (the views and what
+/// they compute are dspk-synapse's).
+pub trait ViewKindUi {
+    fn icon(self) -> gpui_kit::assets::IconName;
+    fn title(self) -> &'static str;
 }
 
-impl ViewKind {
+impl ViewKindUi for ViewKind {
     /// Its icon on the Curation side bar.
-    pub fn icon(self) -> gpui_kit::assets::IconName {
+    fn icon(self) -> gpui_kit::assets::IconName {
         use gpui_kit::assets::IconName as I;
         match self {
             Self::Table => I::Table,
@@ -120,26 +85,7 @@ impl ViewKind {
         }
     }
 
-    pub const ALL: [ViewKind; 16] = [
-        Self::Table,
-        Self::Waveforms,
-        Self::Features,
-        Self::FeatureGrid,
-        Self::TemplateFeatures,
-        Self::Acg,
-        Self::Isi,
-        Self::Amplitude,
-        Self::AmplitudeHist,
-        Self::FiringRate,
-        Self::Template,
-        Self::Similarity,
-        Self::Correlograms,
-        Self::Templates,
-        Self::UnitScatter,
-        Self::Probe,
-    ];
-
-    pub fn title(self) -> &'static str {
+    fn title(self) -> &'static str {
         match self {
             Self::Table => "Units",
             Self::Waveforms => "Waveforms",
@@ -175,25 +121,6 @@ struct Plots {
     note: String,
     /// The unit scatter's points (amplitude, depth) and their units: a click picks the nearest.
     scatter: Vec<(f32, f32, usize)>,
-}
-
-/// What the plots show, set in each view's ⋯ menu.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PlotSettings {
-    /// Correlograms: ± window and bin (ms).
-    pub ccg_half_ms: f64,
-    pub ccg_bin_ms: f64,
-    /// ISI: range and bin (ms).
-    pub isi_max_ms: f64,
-    pub isi_bin_ms: f64,
-    /// Waveforms and features: spikes per unit.
-    pub spikes: usize,
-}
-
-impl Default for PlotSettings {
-    fn default() -> Self {
-        Self { ccg_half_ms: ACG_HALF_MS, ccg_bin_ms: ACG_BIN_MS, isi_max_ms: ISI_MAX_MS, isi_bin_ms: ISI_BIN_MS, spikes: SPIKES_PER_UNIT }
-    }
 }
 
 pub struct CurationWorkspace {
@@ -618,11 +545,8 @@ impl CurationWorkspace {
         // The last plots stay until the new ones replace them (no blank "Computing…" panels)
         let Some((signal, dataset, source)) = view_signal(self.store.read(cx)) else { return };
         let to_view = self.channel_map(&sorting, cx);
-        let palette = self.store.read(cx).palette();
         let Some(channel) = to_view(sorting.units[lead].info.primary_channel) else { return };
         let units = self.selected.clone();
-        let lead_colour = palette.unit(lead);
-        let template_rows = sorting.units[lead].template.clone();
         let duration = (dataset.total_samples as f64 / dataset.sample_rate) as f32;
         // The strip follows the selection: the lead unit's channels
         let strip_channels: Vec<usize> = sorting.units[lead].extent.channels.iter().filter_map(|&c| to_view(c)).collect();
@@ -638,307 +562,44 @@ impl CurationWorkspace {
         let stale = move || current.load(Ordering::SeqCst) != generation;
         self.computing = true;
         self.notify_panels(cx);
-        let ids: Vec<usize> = units.iter().map(|&u| sorting.units[u].info.unit_id).collect();
+        // What to compute: the same request whichever computes it (here, or a page's server)
+        let request = ViewsRequest {
+            units: units.clone(),
+            wanted,
+            settings: set,
+            duration_s: duration,
+            channel,
+            grid_channels: sorting.units[lead].extent.channels.iter().filter_map(|&c| to_view(c)).take(FEATURE_GRID_CHANNELS).collect(),
+        };
         // Fast: everything from the spike times alone (shown at once)
         let fast = cx.background_spawn({
-            let (sorting, units, palette, stale, wanted, ids) = (sorting.clone(), units.clone(), palette, stale.clone(), wanted.clone(), ids.clone());
-            async move {
-                let mut charts: HashMap<ViewKind, Arc<ChartGrid>> = HashMap::new();
-                let mut scatter: Vec<(f32, f32, usize)> = Vec::new();
-                if stale() {
-                    return (charts, scatter);
-                }
-                let times = sorting.unit_times(lead);
-                let acg = crate::sorting::autocorrelogram(&times, sorting.sample_rate, set.ccg_half_ms, set.ccg_bin_ms);
-                let isi = crate::sorting::compute_isi_histogram(&times, sorting.sample_rate, set.isi_max_ms, set.isi_bin_ms);
-                let (half, bin) = (set.ccg_half_ms as f32, set.ccg_bin_ms as f32);
-                let bars = |counts: &[u32], color, start: f32, width: f32| Layer::Bars { color, start, width, counts: counts.iter().map(|&c| c as f32).collect() };
-                charts.insert(
-                    ViewKind::Acg,
-                    Arc::new(ChartGrid::one(Chart {
-                        layers: vec![bars(&acg, lead_colour, -half - bin / 2.0, bin), Layer::Marker { x: 0.0 }],
-                        x_label: "lag (ms)".into(),
-                        y_label: "spike pairs".into(),
-                        x: (-half - bin / 2.0, half + bin / 2.0),
-                        y: (0.0, 1.0),
-                        y_fit: true,
-                        title: String::new(),
-                    })),
-                );
-                charts.insert(
-                    ViewKind::Isi,
-                    Arc::new(ChartGrid::one(Chart {
-                        layers: vec![bars(&isi, lead_colour, 0.0, set.isi_bin_ms as f32), Layer::Marker { x: REFRACTORY_MS as f32 }],
-                        x_label: "interval (ms)".into(),
-                        y_label: "intervals".into(),
-                        x: (0.0, set.isi_max_ms as f32),
-                        y: (0.0, 1.0),
-                        y_fit: true,
-                        title: String::new(),
-                    })),
-                );
-                // The lead unit's template, one cell per channel of its extent
-                let (before, rate) = (sorting.units[lead].extent.before as f32, sorting.sample_rate as f32);
-                let amp = template_rows.iter().flatten().fold(0.0f32, |m, v| m.max(v.abs())).max(1e-6) * 1.1;
-                let cells: Vec<Chart> = template_rows
-                    .iter()
-                    .zip(&sorting.units[lead].extent.channels)
-                    .map(|(row, ch)| Chart {
-                        layers: vec![Layer::Lines { color: lead_colour, alpha: 1.0, width: 1.6, lines: vec![row.iter().enumerate().map(|(i, &v)| ((i as f32 - before) / rate * 1e3, v)).collect()] }],
-                        x_label: "time (ms)".into(),
-                        y_label: "template".into(),
-                        x: (-before / rate * 1e3, (row.len() as f32 - before) / rate * 1e3),
-                        y: (-amp, amp),
-                        y_fit: false,
-                        title: format!("ch {ch}"),
-                    })
-                    .collect();
-                if !cells.is_empty() {
-                    let cols = (cells.len() as f32).sqrt().ceil() as usize;
-                    charts.insert(ViewKind::Template, Arc::new(ChartGrid { cells, cols }));
-                }
-                if wanted.contains(&ViewKind::Correlograms) {
-                    let shown: Vec<usize> = units.iter().copied().take(CCG_MAX_UNITS).collect();
-                    let trains: Vec<Vec<u64>> = shown.iter().map(|&u| sorting.unit_times(u)).collect();
-                    let mut cells = Vec::new();
-                    for (i, a) in trains.iter().enumerate() {
-                        for (j, b) in trains.iter().enumerate() {
-                            let counts = crate::sorting::crosscorrelogram(a, b, sorting.sample_rate, set.ccg_half_ms, set.ccg_bin_ms);
-                            let color = if i == j { palette.unit(shown[i]) } else { palette.unsorted() };
-                            cells.push(Chart {
-                                layers: vec![bars(&counts, color, -half - bin / 2.0, bin), Layer::Marker { x: 0.0 }],
-                                x_label: "lag (ms)".into(),
-                                y_label: String::new(),
-                                x: (-half - bin / 2.0, half + bin / 2.0),
-                                y: (0.0, 1.0),
-                                y_fit: true,
-                                title: format!("{} × {}", ids[i], ids[j]),
-                            });
-                        }
-                    }
-                    charts.insert(ViewKind::Correlograms, Arc::new(ChartGrid { cols: shown.len().max(1), cells }));
-                }
-                if stale() {
-                    return (charts, scatter);
-                }
-                let mut layers = Vec::new();
-                let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
-                for &u in &units {
-                    let pts = sorting.unit_amplitudes(u, AMPLITUDE_POINTS);
-                    for p in &pts {
-                        lo = lo.min(p.1);
-                        hi = hi.max(p.1);
-                    }
-                    layers.push(Layer::Points { color: palette.unit(u), alpha: 0.5, radius: 1.2, points: pts });
-                }
-                if lo.is_finite() {
-                    let pad = (hi - lo).max(1e-6) * 0.05;
-                    charts.insert(
-                        ViewKind::Amplitude,
-                        Arc::new(ChartGrid::one(Chart { layers, x_label: "time (s)".into(), y_label: "amplitude".into(), x: (0.0, duration), y: (lo.min(0.0) - pad, hi + pad), y_fit: false, title: String::new() })),
-                    );
-                }
-                if wanted.contains(&ViewKind::Probe) {
-                    let channels: Vec<(f32, f32)> = sorting.positions.iter().flatten().copied().collect();
-                    if !channels.is_empty() {
-                        let (x0, x1) = channels.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), p| (a.min(p.0), b.max(p.0)));
-                        let (y0, y1) = channels.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), p| (a.min(p.1), b.max(p.1)));
-                        let mut layers = vec![Layer::Points { color: palette.grid, alpha: 1.0, radius: 1.5, points: channels }];
-                        for u in sorting.alive() {
-                            if let Some(p) = sorting.unit_position(u) {
-                                let on = units.contains(&u);
-                                layers.push(Layer::Points { color: palette.unit(u), alpha: if on { 1.0 } else { 0.55 }, radius: if on { 6.0 } else { 3.0 }, points: vec![p] });
-                            }
-                        }
-                        let pad = ((x1 - x0).max(y1 - y0) * 0.04).max(10.0);
-                        charts.insert(
-                            ViewKind::Probe,
-                            Arc::new(ChartGrid::one(Chart { layers, x_label: "x (µm)".into(), y_label: "depth (µm)".into(), x: (x0 - pad, x1 + pad), y: (y0 - pad, y1 + pad), y_fit: false, title: String::new() })),
-                        );
-                    }
-                }
-                // Each selected unit's rate over the recording
-                if wanted.contains(&ViewKind::FiringRate) {
-                    let mut hi = 0.0f32;
-                    let layers: Vec<Layer> = units
-                        .iter()
-                        .map(|&u| {
-                            let rate = sorting.firing_rate(u, duration as f64, RATE_BIN_S);
-                            hi = rate.iter().fold(hi, |m, &v| m.max(v));
-                            let line = rate.iter().enumerate().map(|(i, &v)| (((i as f64 + 0.5) * RATE_BIN_S) as f32, v)).collect();
-                            Layer::Lines { color: palette.unit(u), alpha: 1.0, width: 1.6, lines: vec![line] }
-                        })
-                        .collect();
-                    charts.insert(
-                        ViewKind::FiringRate,
-                        Arc::new(ChartGrid::one(Chart { layers, x_label: "time (s)".into(), y_label: "spikes / s".into(), x: (0.0, duration), y: (0.0, hi.max(1.0) * 1.1), y_fit: false, title: String::new() })),
-                    );
-                }
-                // The lead unit's amplitudes: a cut-off left edge means spikes lost under the threshold
-                if wanted.contains(&ViewKind::AmplitudeHist) {
-                    if let Some((lo, width, counts)) = sorting.amplitude_histogram(lead, AMPLITUDE_BINS) {
-                        let hi = lo + width * counts.len() as f32;
-                        charts.insert(
-                            ViewKind::AmplitudeHist,
-                            Arc::new(ChartGrid::one(Chart { layers: vec![bars(&counts, lead_colour, lo, width)], x_label: "amplitude".into(), y_label: "spikes".into(), x: (lo, hi), y: (0.0, 1.0), y_fit: true, title: String::new() })),
-                        );
-                    }
-                }
-                // Every unit by amplitude and depth, sized by its spikes; the selected ones larger
-                if wanted.contains(&ViewKind::UnitScatter) {
-                    let points = sorting.unit_points(duration as f64);
-                    if !points.is_empty() {
-                        let layers = points
-                            .iter()
-                            .map(|p| {
-                                let on = units.contains(&p.unit);
-                                let radius = (1.5 + (p.spikes as f32).sqrt() / 12.0).min(7.0) + if on { 2.0 } else { 0.0 };
-                                Layer::Points { color: palette.unit(p.unit), alpha: if on { 1.0 } else { 0.6 }, radius, points: vec![(p.amplitude, p.depth)] }
-                            })
-                            .collect();
-                        let fold = |f: fn(&dspk_synapse::curation::UnitPoint) -> f32| points.iter().map(f).fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), v| (a.min(v), b.max(v)));
-                        let ((a0, a1), (d0, d1)) = (fold(|p| p.amplitude), fold(|p| p.depth));
-                        let (pa, pd) = (((a1 - a0) * 0.06).max(1e-3), ((d1 - d0) * 0.06).max(10.0));
-                        scatter = points.iter().map(|p| (p.amplitude, p.depth, p.unit)).collect();
-                        charts.insert(
-                            ViewKind::UnitScatter,
-                            Arc::new(ChartGrid::one(Chart { layers, x_label: "amplitude".into(), y_label: "depth (µm)".into(), x: (a0 - pa, a1 + pa), y: (d0 - pd, d1 + pd), y_fit: false, title: String::new() })),
-                        );
-                    }
-                }
-                (charts, scatter)
-            }
+            let (sorting, request, stale) = (sorting.clone(), request.clone(), stale.clone());
+            async move { dspk_synapse::curation::views::from_spikes(&sorting, &request, stale) }
         });
-        // The feature grid's channels (the lead unit's best, as the view numbers them) and the
-        // lead's channel as the sorting numbers it (templates' rows)
-        let grid_channels: Vec<usize> = sorting.units[lead].extent.channels.iter().filter_map(|&c| to_view(c)).take(FEATURE_GRID_CHANNELS).collect();
-        let sorting_channel = sorting.units[lead].info.primary_channel;
-        let pair_ids = ids.clone();
         // Slow: waveforms and features from the signal's windows (read once per signal)
         let slow = cx.background_spawn(async move {
-            let mut charts: HashMap<ViewKind, Arc<ChartGrid>> = HashMap::new();
-            let from_signal = [ViewKind::Waveforms, ViewKind::Features, ViewKind::FeatureGrid, ViewKind::TemplateFeatures];
-            if stale() || !from_signal.iter().any(|k| wanted.contains(k)) {
-                return charts;
+            if stale() || !dspk_synapse::curation::views::SIGNAL_VIEWS.iter().any(|k| request.wanted.contains(k)) {
+                return Views::default();
             }
             let windows = crate::sorting::windows_of(&signal);
-            if stale() {
-                return charts;
-            }
-            let snippets = Snippets::read(&sorting, &windows, &units, channel, set.spikes);
-            let colour = |u: Option<u32>| u.map_or(palette.unsorted(), |u| palette.unit(u as usize));
-            let (before, rate) = (snippets.before as f32, sorting.sample_rate as f32);
-            let ms = |i: usize| (i as f32 - before) / rate * 1e3;
-            let mut groups: Vec<Option<u32>> = snippets.rows.iter().map(|(u, _, _)| *u).collect();
-            groups.sort();
-            groups.dedup();
-            let mut layers = Vec::new();
-            let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
-            for g in &groups {
-                let rows: Vec<&Vec<f32>> = snippets.rows.iter().filter(|(u, _, _)| u == g).map(|(_, _, r)| r).collect();
-                for r in &rows {
-                    for &v in r.iter() {
-                        if v.is_finite() {
-                            lo = lo.min(v);
-                            hi = hi.max(v);
-                        }
-                    }
-                }
-                layers.push(Layer::Lines { color: colour(*g), alpha: 0.12, width: 1.0, lines: rows.iter().map(|r| r.iter().enumerate().map(|(i, &v)| (ms(i), v)).collect()).collect() });
-            }
-            for g in groups.iter().filter(|g| g.is_some()) {
-                let rows: Vec<&Vec<f32>> = snippets.rows.iter().filter(|(u, _, _)| u == g).map(|(_, _, r)| r).collect();
-                if let Some(n) = rows.first().map(|r| r.len()) {
-                    let mean: Vec<(f32, f32)> = (0..n).map(|i| (ms(i), rows.iter().map(|r| r[i]).sum::<f32>() / rows.len() as f32)).collect();
-                    layers.push(Layer::Lines { color: colour(*g), alpha: 1.0, width: 2.2, lines: vec![mean] });
-                }
-            }
-            if lo.is_finite() {
-                let n = (snippets.before + snippets.after) as usize;
-                let pad = (hi - lo).max(1e-6) * 0.05;
-                charts.insert(
-                    ViewKind::Waveforms,
-                    Arc::new(ChartGrid::one(Chart { layers, x_label: "time (ms)".into(), y_label: "µV".into(), x: (ms(0), ms(n.saturating_sub(1))), y: (lo - pad, hi + pad), y_fit: false, title: String::new() })),
-                );
-            }
-            let points = snippets.pca2();
-            let mut layers = Vec::new();
-            for g in &groups {
-                let pts: Vec<(f32, f32)> = snippets.rows.iter().zip(&points).filter(|((u, _, _), _)| u == g).map(|(_, p)| (p[0], p[1])).collect();
-                layers.push(Layer::Points { color: colour(*g), alpha: 0.6, radius: 1.6, points: pts });
-            }
-            let fold = |i: usize| points.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), p| (a.min(p[i]), b.max(p[i])));
-            let ((x0, x1), (y0, y1)) = (fold(0), fold(1));
-            if x0.is_finite() && y0.is_finite() {
-                let (px_, py_) = ((x1 - x0).max(1e-6) * 0.06, (y1 - y0).max(1e-6) * 0.06);
-                charts.insert(
-                    ViewKind::Features,
-                    Arc::new(ChartGrid::one(Chart { layers, x_label: "PC1".into(), y_label: "PC2".into(), x: (x0 - px_, x1 + px_), y: (y0 - py_, y1 + py_), y_fit: false, title: String::new() })),
-                );
-            }
-            // A chart of `points` (one per snippet row) coloured by unit, its range padded
-            let scatter_chart = |points: &[(f32, f32)], x_label: String, y_label: String, title: String| -> Option<Chart> {
-                let layers: Vec<Layer> = groups
-                    .iter()
-                    .map(|g| Layer::Points { color: colour(*g), alpha: 0.6, radius: 1.4, points: snippets.rows.iter().zip(points).filter(|((u, _, _), _)| u == g).map(|(_, p)| *p).collect() })
-                    .collect();
-                let fold = |f: fn(&(f32, f32)) -> f32| points.iter().map(f).fold((f32::INFINITY, f32::NEG_INFINITY), |(a, b), v| (a.min(v), b.max(v)));
-                let ((x0, x1), (y0, y1)) = (fold(|p| p.0), fold(|p| p.1));
-                (x0.is_finite() && y0.is_finite()).then(|| {
-                    let (px_, py_) = ((x1 - x0).max(1e-6) * 0.06, (y1 - y0).max(1e-6) * 0.06);
-                    Chart { layers, x_label, y_label, x: (x0 - px_, x1 + px_), y: (y0 - py_, y1 + py_), y_fit: false, title }
-                })
-            };
-            // Phy's feature view: on each best channel PC1 × PC2, between two channels their PC1s
-            // (the same spikes are cut on every channel, in the same order)
-            if wanted.contains(&ViewKind::FeatureGrid) && !stale() {
-                let reads: Vec<Snippets> = grid_channels.iter().map(|&c| Snippets::read(&sorting, &windows, &units, c, set.spikes)).collect();
-                let n = snippets.rows.len();
-                if n >= 3 && reads.iter().all(|r| r.rows.len() == n) {
-                    let pcs: Vec<Vec<[f32; 2]>> = reads.iter().map(Snippets::pca2).collect();
-                    let k = reads.len();
-                    let mut cells = Vec::new();
-                    for i in 0..k {
-                        for j in 0..k {
-                            let points: Vec<(f32, f32)> = (0..n).map(|r| if i == j { (pcs[i][r][0], pcs[i][r][1]) } else { (pcs[j][r][0], pcs[i][r][0]) }).collect();
-                            let (ci, cj) = (grid_channels[i], grid_channels[j]);
-                            let (xl, yl, title) = if i == j { ("PC1".to_string(), "PC2".to_string(), format!("ch {ci}")) } else { (format!("PC1 ch {cj}"), format!("PC1 ch {ci}"), format!("ch {cj} × ch {ci}")) };
-                            cells.extend(scatter_chart(&points, xl, yl, title));
-                        }
-                    }
-                    if cells.len() == k * k {
-                        charts.insert(ViewKind::FeatureGrid, Arc::new(ChartGrid { cells, cols: k }));
-                    }
-                }
-            }
-            // Phy's template-feature view: the spikes of the first two units on both templates
-            if wanted.contains(&ViewKind::TemplateFeatures) && units.len() >= 2 {
-                if let (Some(a), Some(b)) = (sorting.template_on(units[0], sorting_channel), sorting.template_on(units[1], sorting_channel)) {
-                    let points: Vec<(f32, f32)> = snippets.template_features(a, b).into_iter().map(|p| (p[0], p[1])).collect();
-                    let (ia, ib) = (pair_ids[0], pair_ids[1]);
-                    if let Some(c) = scatter_chart(&points, format!("on unit {ia}'s template"), format!("on unit {ib}'s template"), String::new()) {
-                        charts.insert(ViewKind::TemplateFeatures, Arc::new(ChartGrid::one(c)));
-                    }
-                }
-            }
-            charts
+            dspk_synapse::curation::views::from_signal(&sorting, &windows, &request, stale)
         });
         self.plots.note = note;
         self._work = Some(cx.spawn(async move |this, cx| {
-            let (charts, scatter) = fast.await;
+            let views = fast.await;
             let _ = this.update(cx, |w, cx| {
                 if w.generation.load(Ordering::SeqCst) == generation {
-                    w.plots.charts.extend(charts);
-                    if !scatter.is_empty() {
-                        w.plots.scatter = scatter;
+                    w.plots.charts.extend(views.charts.into_iter().map(|(k, g)| (k, Arc::new(g))));
+                    if !views.scatter.is_empty() {
+                        w.plots.scatter = views.scatter;
                     }
                     w.notify_panels(cx);
                 }
             });
-            let charts = slow.await;
+            let views = slow.await;
             let _ = this.update(cx, |w, cx| {
                 if w.generation.load(Ordering::SeqCst) == generation {
-                    w.plots.charts.extend(charts);
+                    w.plots.charts.extend(views.charts.into_iter().map(|(k, g)| (k, Arc::new(g))));
                     w.computing = false;
                     w.notify_panels(cx);
                 }
@@ -1745,9 +1406,11 @@ impl Panel for CurationPanel {
 mod bench {
     use std::time::Instant;
 
+    use dspk_synapse::curation::views::{ACG_BIN_MS, ACG_HALF_MS};
     use dspk_view::{LocalSignal, SignalBackend};
 
     use super::*;
+    use crate::sorting::Snippets;
 
     #[test]
     #[ignore = "needs .datasets/kilosort4"]

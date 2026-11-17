@@ -11,6 +11,7 @@ use dspk_core::{DspError, DspResult};
 use serde::{Deserialize, Serialize};
 
 pub mod amplitudes;
+pub mod charts;
 pub mod phy;
 pub mod similarity;
 pub mod sorting;
@@ -18,6 +19,7 @@ pub mod split;
 /// The unit table (a Polars frame with feature `table`, on by default; plain rows without it).
 pub mod table;
 pub mod unit_stats;
+pub mod views;
 pub mod waveforms;
 
 pub use similarity::{similar, SIMILARITY_LAG};
