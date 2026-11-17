@@ -5,21 +5,34 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "lowercase")]
 pub enum SampleFormat {
     I8,
+    /// Unsigned 8-bit (8-bit WAV: 128 is zero).
+    U8,
     I16,
     U16,
+    /// Signed 24-bit, three bytes per sample (24-bit WAV, many acquisition systems).
+    I24,
     I32,
     F32,
     F64,
 }
 
 impl SampleFormat {
-    pub const ALL: [SampleFormat; 6] =
-        [SampleFormat::I8, SampleFormat::I16, SampleFormat::U16, SampleFormat::I32, SampleFormat::F32, SampleFormat::F64];
+    pub const ALL: [SampleFormat; 8] = [
+        SampleFormat::I8,
+        SampleFormat::U8,
+        SampleFormat::I16,
+        SampleFormat::U16,
+        SampleFormat::I24,
+        SampleFormat::I32,
+        SampleFormat::F32,
+        SampleFormat::F64,
+    ];
 
     pub const fn bytes(self) -> usize {
         match self {
-            SampleFormat::I8 => 1,
+            SampleFormat::I8 | SampleFormat::U8 => 1,
             SampleFormat::I16 | SampleFormat::U16 => 2,
+            SampleFormat::I24 => 3,
             SampleFormat::I32 | SampleFormat::F32 => 4,
             SampleFormat::F64 => 8,
         }
@@ -29,8 +42,10 @@ impl SampleFormat {
     pub const fn name(self) -> &'static str {
         match self {
             SampleFormat::I8 => "int8",
+            SampleFormat::U8 => "uint8",
             SampleFormat::I16 => "int16",
             SampleFormat::U16 => "uint16",
+            SampleFormat::I24 => "int24",
             SampleFormat::I32 => "int32",
             SampleFormat::F32 => "float32",
             SampleFormat::F64 => "float64",
@@ -51,6 +66,9 @@ impl SampleFormat {
         }
         match self {
             SampleFormat::I8 => run::<1>(bytes, out, gain, offset, |b| i8::from_le_bytes(b) as f32),
+            SampleFormat::U8 => run::<1>(bytes, out, gain, offset, |b| b[0] as f32),
+            // Sign-extended from the third byte's top bit
+            SampleFormat::I24 => run::<3>(bytes, out, gain, offset, |b| (i32::from_le_bytes([0, b[0], b[1], b[2]]) >> 8) as f32),
             SampleFormat::I16 => run::<2>(bytes, out, gain, offset, |b| i16::from_le_bytes(b) as f32),
             SampleFormat::U16 => run::<2>(bytes, out, gain, offset, |b| u16::from_le_bytes(b) as f32),
             SampleFormat::I32 => run::<4>(bytes, out, gain, offset, |b| i32::from_le_bytes(b) as f32),
@@ -63,6 +81,8 @@ impl SampleFormat {
     pub fn parse(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().trim_end_matches("-le") {
             "i8" | "int8" | "<i1" | "|i1" => Some(SampleFormat::I8),
+            "u8" | "uint8" | "<u1" | "|u1" => Some(SampleFormat::U8),
+            "i24" | "int24" => Some(SampleFormat::I24),
             "i16" | "int16" | "<i2" => Some(SampleFormat::I16),
             "u16" | "uint16" | "<u2" => Some(SampleFormat::U16),
             "i32" | "int32" | "<i4" => Some(SampleFormat::I32),

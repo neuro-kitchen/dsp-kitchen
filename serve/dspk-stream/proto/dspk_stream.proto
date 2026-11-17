@@ -33,6 +33,9 @@ enum SampleFormat {
   SAMPLE_FORMAT_I32 = 4;
   SAMPLE_FORMAT_F32 = 5;
   SAMPLE_FORMAT_F64 = 6;
+  // Added in 0.0.12 (8-bit unsigned, 24-bit WAV); an older peer reports them as unknown
+  SAMPLE_FORMAT_U8 = 7;
+  SAMPLE_FORMAT_I24 = 8;
 }
 
 enum Unit {

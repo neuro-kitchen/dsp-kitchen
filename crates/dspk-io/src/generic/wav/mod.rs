@@ -2,10 +2,11 @@
 //! file is read as a raw recording laid out by its header ([`RawRecording`]): memory-mapped on
 //! disk, through a [`ByteSource`] in a browser.
 //!
-//! Read: PCM 16- and 32-bit integers, IEEE float 32 and 64 bits, also in a
-//! `WAVE_FORMAT_EXTENSIBLE` header; any channel count. Integers are scaled to ±1 full scale
-//! (16-bit 32767 → ~1.0), floats are kept, the unit dimensionless. Not read: 8-bit (unsigned)
-//! and 24-bit PCM, compressed WAV (µ-law, ADPCM…): the error says so. A `data` chunk declared
+//! Read: PCM 8-bit (unsigned), 16-, 24- and 32-bit integers, IEEE float 32 and 64 bits, also in
+//! a `WAVE_FORMAT_EXTENSIBLE` header; any channel count. Integers are scaled to ±1 full scale
+//! (16-bit 32767 → ~1.0; on the device, from the stored bytes), floats are kept, the unit
+//! dimensionless. Not read: other bit depths and compressed WAV (µ-law, ADPCM…): the error
+//! says so. A `data` chunk declared
 //! longer than the file (a recorder stopped early) is read up to the file's end.
 
 mod format;
@@ -37,10 +38,13 @@ impl WavLayout {
     /// How [`RawRecording`] reads these samples: interleaved after the header, integers scaled
     /// to ±1 full scale.
     pub fn raw_params(&self) -> RawParams {
-        let gain = match self.format {
-            SampleFormat::I16 => 1.0 / 32768.0,
-            SampleFormat::I32 => 1.0 / 2_147_483_648.0,
-            _ => 1.0,
+        // ±1 full scale; 8-bit WAV is unsigned around 128
+        let (gain, offset) = match self.format {
+            SampleFormat::U8 => (1.0 / 128.0, -1.0),
+            SampleFormat::I16 => (1.0 / 32768.0, 0.0),
+            SampleFormat::I24 => (1.0 / 8_388_608.0, 0.0),
+            SampleFormat::I32 => (1.0 / 2_147_483_648.0, 0.0),
+            _ => (1.0, 0.0),
         };
         RawParams {
             channels: self.channels,
@@ -48,7 +52,7 @@ impl WavLayout {
             format: self.format,
             order: MemoryOrder::TimeMajor,
             gain,
-            offset: 0.0,
+            offset,
             unit: SignalUnit::Dimensionless,
             header_bytes: self.data_offset,
             samples: Some(self.samples),
@@ -119,14 +123,14 @@ pub fn read_layout(len: u64, mut read_at: impl FnMut(u64, &mut [u8]) -> std::io:
 
 /// The sample format of WAV format tag `tag` at `bits` per sample.
 fn sample_format(tag: u16, bits: u16) -> DspResult<SampleFormat> {
-    let unsupported = |what: String| DspError::UnsupportedFormat(format!("{what} WAV is not read yet: convert it to 16- or 32-bit PCM, or 32-bit float"));
+    let unsupported = |what: String| DspError::UnsupportedFormat(format!("{what} WAV is not read yet: convert it to 8-, 16-, 24- or 32-bit PCM, or 32-bit float"));
     match (tag, bits) {
+        (1, 8) => Ok(SampleFormat::U8),
         (1, 16) => Ok(SampleFormat::I16),
+        (1, 24) => Ok(SampleFormat::I24),
         (1, 32) => Ok(SampleFormat::I32),
         (3, 32) => Ok(SampleFormat::F32),
         (3, 64) => Ok(SampleFormat::F64),
-        (1, 8) => Err(unsupported("8-bit".into())),
-        (1, 24) => Err(unsupported("24-bit".into())),
         (1 | 3, b) => Err(unsupported(format!("{b}-bit"))),
         (6, _) => Err(unsupported("A-law".into())),
         (7, _) => Err(unsupported("µ-law".into())),
@@ -259,10 +263,10 @@ mod tests {
     /// What is not read says so, and why.
     #[test]
     fn unsupported_wavs_say_what_to_convert_to() {
-        let path = write("pcm24.wav", &wav(1, 1, 48_000, 24, &[0; 6], false));
-        let Err(e) = open_wav(&path) else { panic!("a 24-bit WAV opened") };
+        let path = write("pcm12.wav", &wav(1, 1, 48_000, 12, &[0; 6], false));
+        let Err(e) = open_wav(&path) else { panic!("a 12-bit WAV opened") };
         let e = e.to_string();
-        assert!(e.contains("24-bit") && e.contains("convert"), "{e}");
+        assert!(e.contains("12-bit") && e.contains("convert"), "{e}");
         let _ = std::fs::remove_file(&path);
         let path = write("notwav.wav", b"RIFF\x04\x00\x00\x00AVI ");
         let Err(e) = open_wav(&path) else { panic!("an AVI opened as WAV") };
@@ -283,5 +287,26 @@ mod tests {
         })
         .unwrap();
         assert_eq!(layout.samples, 4);
+    }
+
+    /// 8-bit (unsigned around 128) and 24-bit (three bytes, signed) read scaled to ±1.
+    #[test]
+    fn eight_and_twenty_four_bit_wavs_read_scaled_to_full_scale() {
+        let path = write("pcm8.wav", &wav(1, 1, 8_000, 8, &[128, 255, 0, 192], false));
+        let rec = open_wav(&path).unwrap();
+        let mut out = vec![0f32; 4];
+        rec.read(&[0], 0..4, &mut out).unwrap();
+        assert_eq!(out, vec![0.0, 127.0 / 128.0, -1.0, 0.5]);
+        let _ = std::fs::remove_file(&path);
+        // 24-bit, two channels: (+half scale, −1) then (−full scale, 0)
+        let frames: [[i32; 2]; 2] = [[4_194_304, -1], [-8_388_608, 0]];
+        let data: Vec<u8> = frames.iter().flatten().flat_map(|v| v.to_le_bytes()[..3].to_vec()).collect();
+        let path = write("pcm24.wav", &wav(1, 2, 48_000, 24, &data, false));
+        let rec = open_wav(&path).unwrap();
+        assert_eq!((rec.info().channel_count(), rec.info().samples), (2, 2));
+        let mut out = vec![0f32; 4];
+        rec.read(&[0, 1], 0..2, &mut out).unwrap();
+        assert_eq!(out, vec![0.5, -1.0, -1.0 / 8_388_608.0, 0.0]);
+        let _ = std::fs::remove_file(&path);
     }
 }
