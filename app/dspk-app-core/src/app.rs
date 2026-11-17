@@ -214,7 +214,7 @@ impl WorkspaceBody {
         // Files on this computer, or (a page served by `dspk serve`) the recordings of its server
         let mut screen = if crate::platform::remote::runs_alone() {
             // A page on its own: the files the user picks, read and processed in this browser
-            EmptyState::new(IconName::AudioWaveform, "Open a recording", "A folder with your recordings (.zarr, or a .bin and its .meta), read in this browser").child(
+            EmptyState::new(IconName::AudioWaveform, "Open a recording", "A folder with your recordings (.zarr, .wav, or a .bin and its .meta), read in this browser").child(
                 h_flex()
                     .gap_2()
                     .child({
@@ -223,7 +223,7 @@ impl WorkspaceBody {
                     })
                     .child({
                         let (store, browser) = (store.clone(), self.open_browser.clone());
-                        Button::new("start-pick-files").outline().icon(IconName::File).label("Open .bin + .meta…").tooltip("Pick a .bin and its .meta (Ctrl+click both), without their folder").on_click(move |_, w, cx| commands::pick_page_files(&store, false, browser.clone(), w, cx))
+                        Button::new("start-pick-files").outline().icon(IconName::File).label("Open files…").tooltip("Pick a .wav, or a .bin and its .meta (Ctrl+click both), without their folder").on_click(move |_, w, cx| commands::pick_page_files(&store, false, browser.clone(), w, cx))
                     }),
             )
         } else if !crate::platform::LOCAL_FILES {
@@ -1643,5 +1643,77 @@ mod tests {
         cx.executor().advance_clock(Duration::from_millis(1_000));
         cx.run_until_parked();
         assert!(!cx.update(|cx| canvas.read(cx).moving()), "still a second after: settled");
+    }
+
+    /// An operation's card lists its parameters: a number dragged steps it (one undo step for the
+    /// drag), clicked it is typed; the card has its help.
+    #[gpui_kit::test]
+    fn a_node_card_edits_its_parameters(cx: &mut TestAppContext) {
+        use crate::screens::pipeline::node_params::{param_rows, ParamValue};
+        use dspk_session::command::SessionCommand;
+        use dspk_session::graph::NodeKind;
+        use dspk_session::session::RecordingRef;
+        let (window, store, app) = open(cx);
+        cx.update(|cx| {
+            store.update(cx, |s, cx| {
+                let recording = RecordingRef { path: "/data/rec.bin".into(), source: None, channels: None };
+                s.execute(SessionCommand::OpenView { recording, name: None }, cx).unwrap();
+                s.set_workspace(Workspace::Pipeline, cx);
+            })
+        });
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| {
+            let pipeline = app.read(cx).pipeline.clone();
+            let template = crate::screens::pipeline::catalog::catalog().into_iter().find(|c| c.name == "Filter").expect("a Filter family").items[0].template.clone();
+            pipeline.update(cx, |p, cx| p.add(&template, window, cx));
+        })
+        .unwrap();
+        cx.run_until_parked();
+        // The operation, and its first number
+        let op = |cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                store.read(cx).doc.graph.nodes.iter().find_map(|n| match &n.kind {
+                    NodeKind::Op { node, .. } => Some((n.id.clone(), node.clone())),
+                    _ => None,
+                })
+            })
+            .expect("an operation node")
+        };
+        let (id, node) = op(cx);
+        let row = param_rows(&node).into_iter().find(|r| matches!(r.value, ParamValue::Number { .. })).expect("a number");
+        let value = |cx: &mut TestAppContext| {
+            let (_, node) = op(cx);
+            match param_rows(&node).into_iter().find(|r| r.field == row.field && r.index == row.index).unwrap().value {
+                ParamValue::Number { value, .. } => value,
+                _ => unreachable!(),
+            }
+        };
+        let before = value(cx);
+        let field = format!("param-{}", row.key(&id));
+        let centre = cx
+            .update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                assert!(window.try_find(format!("help-{id}")).is_some(), "the card's help");
+                window.find(field.clone()).bounds().center()
+            })
+            .unwrap();
+        // Dragged to the right: up, one undo step back to where it was
+        cx.update_window(window, |_, window, cx| window.drag(centre, gpui_kit::point(centre.x + px(40.), centre.y), cx)).unwrap();
+        cx.run_until_parked();
+        assert!(value(cx) > before, "dragged up: {} → {}", before, value(cx));
+        cx.update(|cx| store.update(cx, |s, cx| s.undo(false, cx)));
+        assert_eq!(value(cx), before, "the drag is one undo step");
+        // Clicked: typed, Enter applies
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click(field.clone(), cx);
+            window.render_frame(cx);
+            window.press("ctrl-a", cx);
+            window.input("123", cx);
+            window.press("enter", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(value(cx), 123.0, "typed");
     }
 }

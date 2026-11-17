@@ -195,6 +195,9 @@ pub struct Store {
     /// Earlier documents (undo) and undone ones (redo).
     history: Vec<SessionDoc>,
     future: Vec<SessionDoc>,
+    /// The gesture the last command belonged to ([`Self::execute_gesture`]): its commands make
+    /// one undo step.
+    gesture: Option<String>,
     /// The active view and channel subset last applied to the selection.
     applied_view: Option<(String, Option<Vec<usize>>)>,
     /// Event tables read so far, by path (read on first use; dropped when the set is set again).
@@ -243,6 +246,7 @@ impl Store {
             floating: Vec::new(),
             history: Vec::new(),
             future: Vec::new(),
+            gesture: None,
             applied_view: None,
             event_tables: HashMap::new(),
         }
@@ -298,8 +302,23 @@ impl Store {
         }
     }
 
+    /// As [`Self::execute`], one of the commands of a continuous `gesture` (a number dragged):
+    /// the gesture's commands, while no other command comes between them, are one undo step.
+    pub fn execute_gesture(&mut self, gesture: &str, cmd: SessionCommand, cx: &mut Context<Self>) -> Result<Changed, CommandError> {
+        let continuing = self.gesture.as_deref() == Some(gesture);
+        let depth = self.history.len();
+        let result = self.execute(cmd, cx);
+        // The document before the gesture is already the undo step
+        if continuing && self.history.len() > depth {
+            self.history.truncate(depth);
+        }
+        self.gesture = Some(gesture.to_string());
+        result
+    }
+
     /// Runs a command on the session document, saves it and emits what changed.
     pub fn execute(&mut self, cmd: SessionCommand, cx: &mut Context<Self>) -> Result<Changed, CommandError> {
+        self.gesture = None;
         let before = self.doc.clone();
         let result = apply(&mut self.doc, cmd);
         match &result {
@@ -338,6 +357,8 @@ impl Store {
 
     /// Back to the document before the last change (`redo`: forward again).
     pub fn undo(&mut self, redo: bool, cx: &mut Context<Self>) {
+        // A drag after an undo is a new undo step
+        self.gesture = None;
         let next = if redo { self.future.pop() } else { self.history.pop() };
         let Some(doc) = next else {
             self.set_status(if redo { "Nothing to redo" } else { "Nothing to undo" }, cx);
