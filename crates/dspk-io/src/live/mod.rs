@@ -183,7 +183,8 @@ mod tests {
 
     #[test]
     fn encode_then_decode_round_trips() {
-        for (format, gain) in [(SampleFormat::I16, 0.5f32), (SampleFormat::I32, 1.0), (SampleFormat::F32, 1.0)] {
+        for (format, gain) in [(SampleFormat::I16, 0.5f32), (SampleFormat::I32, 0.5), (SampleFormat::F32, 1.0)] {
+            // Integer formats round-trip values on their grid (multiples of the gain)
             let l = layout(format, gain);
             let values = vec![1.0, -2.0, 3.5, 100.0, 0.0, -0.5];
             let data = encode_stored(&values, &l.channels, 3, format).unwrap();

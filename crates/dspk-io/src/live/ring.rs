@@ -55,15 +55,20 @@ impl LiveRing {
         &self.layout
     }
 
-    /// Adds the newest block, dropping the oldest ones beyond the capacity.
+    /// Adds the newest block, dropping the oldest ones the capacity does not need (it keeps at
+    /// least `capacity` samples once it has them).
     pub fn push(&self, block: Arc<LiveBlock>) {
         let mut blocks = self.blocks.lock().unwrap_or_else(|e| e.into_inner());
         blocks.push_back(block);
+        // Drop the oldest only while what stays still holds the capacity: never fewer samples than asked
         let mut held: u64 = blocks.iter().map(|b| b.samples as u64).sum();
-        while held > self.capacity && blocks.len() > 1 {
-            if let Some(old) = blocks.pop_front() {
-                held -= old.samples as u64;
+        while let Some(oldest) = blocks.front() {
+            let left = held - oldest.samples as u64;
+            if left < self.capacity {
+                break;
             }
+            held = left;
+            blocks.pop_front();
         }
     }
 
