@@ -1,0 +1,29 @@
+# The device of deploy/Containerfile.device: a generator (test 1 of the real-time work).
+# Every key: serve/dspk-device/src/config.rs.
+name = "generator"
+data = "/data"
+# Every interface of the container (only paired clients get a session); publish the port on
+# 127.0.0.1 on the host unless other computers need it
+listen = "0.0.0.0:50060"
+names = ["localhost"]
+
+[ring]
+seconds = 30
+max_mb = 256
+
+[recording]
+chunk_seconds = 1.0
+
+[[sources]]
+name = "gen"
+kind = "generator"
+channels = 32
+sample_rate_hz = 30000
+format = "i16"
+gain_uv = 0.195
+seed = 1
+noise_uv = 10.0
+units = 4
+sine_hz = 10.0
+sine_uv = 20.0
+block_ms = 1.0
