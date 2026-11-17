@@ -124,8 +124,8 @@ pub fn start() {
                         s.set_servers(vec![dspk_app_core::platform::remote::page_profile()], cx);
                         s.set_device(dspk_app_core::data::device::DeviceInfo::discover(), cx);
                         let status = match started {
-                            Ok(why) if why.is_empty() => "Runs in this browser: Open files… (a .bin and its .meta); processing on this browser's GPU".to_string(),
-                            Ok(why) => format!("Runs in this browser: Open files… (a .bin and its .meta). Views only: {why}"),
+                            Ok(why) if why.is_empty() => "Runs in this browser: open a folder with your recordings; processing on this browser's GPU".to_string(),
+                            Ok(why) => format!("Runs in this browser: open a folder with your recordings. Views only: {why}"),
                             Err(e) => format!("The engine did not start ({e:#}): a made-up recording instead"),
                         };
                         if !dspk_app_core::platform::remote::runs_alone() {

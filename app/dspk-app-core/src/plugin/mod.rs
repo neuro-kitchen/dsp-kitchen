@@ -134,6 +134,11 @@ pub trait AppPlugin: Send + Sync + 'static {
         None
     }
 
+    /// Whether [`Self::synthetic`] makes recordings (the File menu offers one only then).
+    fn makes_synthetic(&self) -> bool {
+        false
+    }
+
     /// A recording computed on demand (`channels` × `duration_sec` at `sample_rate`).
     fn synthetic(&self, _channels: usize, _sample_rate: f64, _duration_sec: f64) -> Option<anyhow::Result<Arc<dyn RecordingSource>>> {
         None
@@ -240,6 +245,11 @@ pub fn open(path: &Path, id: Option<&str>) -> DspResult<Box<dyn RecordingSource>
 /// The channel layout of source `id` of `path`, from the opener that reads it.
 pub fn layout(path: &Path, id: &str) -> Option<ChannelLayout> {
     opener_of(path)?.layout(path, id)
+}
+
+/// Whether a plugin makes synthetic recordings (none in a browser build without dspk-synapse).
+pub fn makes_synthetic() -> bool {
+    plugins().iter().any(|p| p.makes_synthetic())
 }
 
 /// A synthetic recording from the first plugin that makes one.

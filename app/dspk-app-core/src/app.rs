@@ -241,10 +241,10 @@ impl WorkspaceBody {
                     let store = store.clone();
                     button.on_click(move |_, _, cx| commands::prompt_open(&store, pick, cx))
                 }))
-                .child({
+                .children(crate::plugin::makes_synthetic().then(|| {
                     let store = store.clone();
                     Button::new("start-synthetic").ghost().label("Synthetic recording").on_click(move |_, _, cx| commands::open_synthetic(&store, cx))
-                }),
+                })),
             )
         };
         if !recent.is_empty() {

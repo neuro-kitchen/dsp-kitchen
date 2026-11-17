@@ -181,8 +181,13 @@ pub fn register(registry: &Registry, c: &Ctx) {
         .group("File")
         .hint("Open a recording by its path"),
         CommandSpec::new("file.open_server", "Open from server…", IconName::Server, move |w, cx| browser(w, cx)).group("File").hint("Browse the recordings a dspk server offers"),
-        CommandSpec::new("file.synthetic", "Synthetic recording", IconName::AudioWaveform, move |_, cx| open_synthetic(&o4, cx)).group("File").hint("32 channels, 5 minutes: to try things out"),
-        CommandSpec::new("file.tune", "Tune this device", IconName::Gauge, move |_, cx| tune_device(&o5, cx)).group("File").hint("Benchmark this GPU once, in the background"),
+        CommandSpec::new("file.synthetic", "Synthetic recording", IconName::AudioWaveform, move |_, cx| open_synthetic(&o4, cx)).group("File").hint("32 channels, 5 minutes: to try things out").enabled(|_| {
+            if crate::plugin::makes_synthetic() { Ok(()) } else { Err("Not in this build yet (it comes with the Synapse plugin)".into()) }
+        }),
+        CommandSpec::new("file.tune", "Tune this device", IconName::Gauge, move |_, cx| tune_device(&o5, cx)).group("File").hint("Benchmark this GPU once, in the background").enabled(|_| {
+            // A page computes in its engine worker or on its server, not where this menu is
+            if cfg!(target_family = "wasm") { Err("Not in a browser: the page computes in its engine or on its server".into()) } else { Ok(()) }
+        }),
         CommandSpec::new("file.clear_recent", "Clear recent", IconName::Trash, st(|s, cx| s.forget_recent(None, cx))).group("File").hint("Forget the recent lists (the files stay)").enabled(move |cx| {
             let s = &recent.read(cx).session;
             if s.recent.is_empty() && s.recent_sortings.is_empty() { Err("Nothing to clear".into()) } else { Ok(()) }

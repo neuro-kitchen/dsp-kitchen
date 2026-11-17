@@ -83,7 +83,13 @@ pub async fn open_browser_gpu() -> Result<(), String> {
     cubecl::wgpu::try_init_setup_async::<cubecl::wgpu::AutoGraphicsApi>(&cubecl::wgpu::WgpuDevice::default(), Default::default())
         .await
         .map(|_| ())
-        .map_err(|e| format!("this browser gave no GPU for computing: {e:?}"))
+        .map_err(|e| match e {
+            // The browser has no WebGPU (or none for this page): say so plainly, the reason after
+            cubecl::wgpu::WgpuInitError::AdapterUnavailable { message, .. } | cubecl::wgpu::WgpuInitError::RequestDevice { message } => {
+                format!("this browser offers no WebGPU for computing ({message})")
+            }
+            other => format!("WebGPU could not start for computing ({other})"),
+        })
 }
 
 /// Work to run on whichever runtime a [`ComputeTarget`] selects.

@@ -325,6 +325,10 @@ impl AppPlugin for SynapsePlugin {
         Some(&self.opener)
     }
 
+    fn makes_synthetic(&self) -> bool {
+        true
+    }
+
     fn synthetic(&self, channels: usize, sample_rate: f64, duration_sec: f64) -> Option<anyhow::Result<Arc<dyn RecordingSource>>> {
         let units = (channels / SYNTHETIC_CHANNELS_PER_UNIT).clamp(1, SYNTHETIC_MAX_UNITS);
         let params = SyntheticParams { channels, sample_rate_hz: sample_rate, duration_sec, units, ..Default::default() };
