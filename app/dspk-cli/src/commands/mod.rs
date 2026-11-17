@@ -4,6 +4,8 @@ pub mod autotune;
 pub mod benchmark;
 pub mod convert;
 pub mod detect;
+#[cfg(feature = "device")]
+pub mod device;
 pub mod doctor;
 pub mod generate;
 #[cfg(feature = "hub")]
