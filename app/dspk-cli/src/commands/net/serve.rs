@@ -127,7 +127,7 @@ impl dspk_stream::ServerPlugin for SynapsePlugin {
     fn call(&self, method: &str, body: &[u8], context: &dspk_stream::PluginContext) -> StreamResult<Vec<u8>> {
         // The sorters this server runs, as its dspk-cli-sorter describes them (a page lists them)
         if method == "sorters" {
-            let program = crate::sorters_program::locate(env!("CARGO_PKG_VERSION"), std::env::current_exe().ok().as_deref().and_then(Path::parent))
+            let program = crate::sorters_program::locate(env!("CARGO_PKG_VERSION"), std::env::current_exe().ok().as_deref())
                 .ok_or_else(|| StreamError::Server("this server has no dspk-cli-sorter: `dspk sorters install` on it".into()))?;
             let out = std::process::Command::new(&program).arg("describe").output().map_err(|e| StreamError::Server(format!("{}: {e}", program.display())))?;
             if !out.status.success() {

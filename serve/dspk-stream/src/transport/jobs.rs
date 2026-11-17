@@ -196,7 +196,7 @@ impl Jobs {
     }
 
     fn require_control(peer: &Peer) -> StreamResult<()> {
-        if peer.can_control() { Ok(()) } else { Err(refuse(format!("{} may only read (enrolled without --control)", peer.name))) }
+        if peer.can_control() { Ok(()) } else { Err(refuse(format!("{} may only read (paired without --control): on the server, `dspk clients revoke {}` and `dspk clients pair --control`, then pair again", peer.name, peer.name))) }
     }
 
     /// Checks and sets the job (only while nothing runs); clears a previous error.
@@ -239,6 +239,9 @@ impl Jobs {
         if !output_rel.ends_with(SORTING_SUFFIX) {
             return Err(refuse(format!("the output must end with {SORTING_SUFFIX}")));
         }
+        // Every run is kept: a name taken already gets the first free one beside it
+        // (`<name>-2.sorting.zarr`, …), never overwriting
+        let output_rel = free_name(self.root.path(), &output_rel);
         let output = self.root.resolve_new(&output_rel)?;
         if r.params.len() > MAX_PARAMS {
             return Err(refuse(format!("{} parameters: at most {MAX_PARAMS}", r.params.len())));
@@ -361,6 +364,16 @@ impl Jobs {
     pub fn audit_path(&self) -> Option<&Path> {
         self.audit.as_deref()
     }
+}
+
+/// `rel` when nothing is at that path under `root`, else the first free `<stem>-N.sorting.zarr`.
+fn free_name(root: &std::path::Path, rel: &str) -> String {
+    let taken = |r: &str| root.join(r).symlink_metadata().is_ok();
+    if !taken(rel) {
+        return rel.to_string();
+    }
+    let stem = rel.strip_suffix(SORTING_SUFFIX).unwrap_or(rel);
+    (2..10_000).map(|n| format!("{stem}-{n}{SORTING_SUFFIX}")).find(|r| !taken(r)).unwrap_or_else(|| rel.to_string())
 }
 
 #[cfg(test)]
@@ -491,6 +504,9 @@ mod tests {
         assert!(root.join("m1/rec.ap.kilosort4.sorting.zarr").is_dir());
         assert_eq!(jobs.logs(0), ["starting", "writing m1/rec.ap.kilosort4.sorting.zarr"], "paths relative to the root");
         assert!(jobs.start(&ctl).is_err(), "the output exists now: never overwritten");
+        // The same job again: kept beside the first, under the next free name
+        let again = jobs.configure(&ctl, ok("kilosort4")).unwrap();
+        assert_eq!(again.output, "m1/rec.ap.kilosort4-2.sorting.zarr");
 
         // A job that runs until stopped
         let blocking = Arc::new(Jobs::new(Arc::new(FakeRunner { block: true }), DataRoot::new(&root).unwrap(), None));

@@ -41,8 +41,9 @@ fn program_file_name() -> String {
 pub fn locate() -> Option<PathBuf> {
     #[cfg(not(target_family = "wasm"))]
     {
-        let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(std::path::Path::to_path_buf));
-        dspk_hub::sorters::locate(env!("CARGO_PKG_VERSION"), beside.as_deref())
+        // `beside` is this program itself: the sorter is looked for in its folder
+        let exe = std::env::current_exe().ok();
+        dspk_hub::sorters::locate(env!("CARGO_PKG_VERSION"), exe.as_deref())
     }
     #[cfg(target_family = "wasm")]
     None
