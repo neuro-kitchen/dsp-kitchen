@@ -429,7 +429,7 @@ mod tests {
         let (channels, samples) = (4usize, 2_000usize);
         let data: Vec<f32> = (0..channels * samples).map(|i| (i % 97) as f32).collect();
         let source = Arc::new(MemoryRecording::new("rec", data.clone(), channels, 1000.0).unwrap());
-        let device = Arc::new(Device { name: "dspk".into(), version: "test".into(), files: None, recording: Some(Arc::new(OpenRecording::new(source, None))), jobs: None, runtime: String::new(), options: ServeOptions::default() });
+        let device = Arc::new(Device { name: "dspk".into(), version: "test".into(), files: None, recording: Some(Arc::new(OpenRecording::new(source, None))), jobs: None, runtime: String::new(), options: ServeOptions::default(), plugins: Vec::new() });
         let names = vec!["localhost".to_string()];
         let server = WebServer::bind("127.0.0.1:0".parse().unwrap(), authority.clone(), device, names.clone(), None, WebTls::Authority).await.unwrap();
         let addr = server.local_addr().unwrap();

@@ -115,6 +115,24 @@ pub struct ServeArgs {
 
 /// The names of the self-signed certificate: localhost, the --bind address unless it is a
 /// wildcard (0.0.0.0, ::), then each --name, without repeats.
+/// Curation of the sortings under the data root, as a server plugin: dspk-synapse computes, the
+/// stream carries (the one place that knows both).
+struct SynapsePlugin(dspk_synapse::curation::service::Service);
+
+impl dspk_stream::ServerPlugin for SynapsePlugin {
+    fn id(&self) -> &'static str {
+        dspk_synapse::curation::service::PLUGIN
+    }
+
+    fn call(&self, method: &str, body: &[u8], context: &dspk_stream::PluginContext) -> StreamResult<Vec<u8>> {
+        let resolve = |path: &str| -> dspk_core::DspResult<PathBuf> {
+            let resolve = context.resolve.as_ref().ok_or_else(|| dspk_core::DspError::InvalidConfig("this server serves no files".into()))?;
+            resolve(path).map_err(|e| dspk_core::DspError::InvalidConfig(e.to_string()))
+        };
+        self.0.call(method, body, &resolve, context.recording.as_ref()).map_err(|e| StreamError::Server(e.to_string()))
+    }
+}
+
 fn self_signed_names(args: &ServeArgs) -> Vec<String> {
     let mut names = vec![LOCALHOST.to_string()];
     if !args.bind.ip().is_unspecified() {
@@ -302,6 +320,8 @@ pub async fn run(args: &ServeArgs) -> anyhow::Result<()> {
         jobs: jobs.clone(),
         runtime: if jobs.is_some() { runtime } else { String::new() },
         options,
+        // Curation of the sortings under the data root, computed here for the pages it serves
+        plugins: vec![Arc::new(SynapsePlugin(dspk_synapse::curation::service::Service::default()))],
     });
     println!("Listening on {} (Ctrl+C to stop)", server.local_addr()?);
     if let Some(folder) = &args.web {

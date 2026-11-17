@@ -140,6 +140,12 @@ pub trait AppPlugin: Send + Sync + 'static {
         None
     }
 
+    /// An action on an entry of a server's file list (File → Open from server) of `kind`, besides
+    /// opening recordings: its button's label and what it does with the entry's path.
+    fn server_entry(&self, _kind: crate::data::remote::wire::FileKind) -> Option<(&'static str, ServerEntryAction)> {
+        None
+    }
+
     /// Entries of the Timeline panel's `+` menu, after the app's own ("Sorting…").
     fn timeline_add(&self) -> Vec<(&'static str, TimelineAdd)> {
         Vec::new()
@@ -256,6 +262,15 @@ pub fn open(path: &Path, id: Option<&str>) -> DspResult<Box<dyn RecordingSource>
 /// The channel layout of source `id` of `path`, from the opener that reads it.
 pub fn layout(path: &Path, id: &str) -> Option<ChannelLayout> {
     opener_of(path)?.layout(path, id)
+}
+
+/// What a plugin does with an entry of a server's file list: the store, the entry's path under the
+/// server's data root.
+pub type ServerEntryAction = std::rc::Rc<dyn Fn(&Entity<Store>, String, &mut Window, &mut App)>;
+
+/// Every plugin's action on a server entry of `kind`.
+pub fn server_entry_actions(kind: crate::data::remote::wire::FileKind) -> Vec<(&'static str, ServerEntryAction)> {
+    plugins().iter().filter_map(|p| p.server_entry(kind)).collect()
 }
 
 /// What a plugin's entry of the Timeline panel's `+` menu does.

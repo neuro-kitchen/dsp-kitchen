@@ -241,6 +241,19 @@ message FileChunk {
   bytes data = 1;
 }
 
+// A call to one of the server's plugins (what it computes for a domain, e.g. Curation of a
+// sorting): its id, the method, and the body (JSON by convention). The server knows no plugin's
+// meaning; it hands the call over with its data root and open recording.
+message PluginCall {
+  string plugin = 1;
+  string method = 2;
+  bytes body = 3;
+}
+
+message PluginReply {
+  bytes body = 1;
+}
+
 // client → server, the only message on a request stream.
 message Request {
   oneof kind {
@@ -253,6 +266,7 @@ message Request {
     GetStatus status = 7;
     GetLogs logs = 8;
     Fetch fetch = 9;
+    PluginCall plugin = 10;
   }
 }
 
@@ -270,6 +284,7 @@ message Response {
     LogLines logs = 6;
     // The answer to Fetch; FileChunk messages follow.
     FileHeader file = 7;
+    PluginReply plugin = 8;
   }
 }
 

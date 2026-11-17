@@ -32,6 +32,23 @@ mod tests {
     use dspk_view::{Envelope, Pyramid, View};
 
     use super::*;
+
+    /// A plugin of a test server: says what it was given.
+    struct EchoPlugin;
+
+    impl crate::plugin::ServerPlugin for EchoPlugin {
+        fn id(&self) -> &'static str {
+            "echo"
+        }
+
+        fn call(&self, method: &str, body: &[u8], context: &crate::plugin::PluginContext) -> crate::StreamResult<Vec<u8>> {
+            let path = String::from_utf8_lossy(body).into_owned();
+            let resolve = context.resolve.as_ref().ok_or_else(|| crate::StreamError::Server("no files".into()))?;
+            resolve(&path)?;
+            let channels = context.recording.as_ref().map_or(0, |r| r.info().channel_count());
+            Ok(format!("{method} {path}: under the root, recording of {channels} channels").into_bytes())
+        }
+    }
     use crate::error::StreamError;
     use crate::protocol::wire;
 
@@ -243,6 +260,7 @@ mod tests {
             jobs: None,
             runtime: String::new(),
             options: ServeOptions::default(),
+            plugins: vec![Arc::new(EchoPlugin)],
         });
         let tls = server_config(&ServerIdentity::SelfSigned { names: vec![LOCALHOST.into()] }).unwrap();
         let server = Server::bind("127.0.0.1:0".parse().unwrap(), tls.config).unwrap();
@@ -280,6 +298,12 @@ mod tests {
         assert!(session.fetch("mouse1/rec.ks4.sorting.zarr", &local).await.is_err(), "never overwritten");
         assert!(session.fetch_file("../data/notes.txt", &base.join("x")).await.is_err());
         assert!(session.fetch_file(".dspk-auth", &base.join("y")).await.is_err());
+
+        // Plugins: a call reaches the plugin with the data root (checked) and the open recording
+        let reply = session.plugin_call("echo", "describe", b"mouse1/rec.ap.bin".to_vec()).await.unwrap();
+        assert_eq!(String::from_utf8(reply).unwrap(), "describe mouse1/rec.ap.bin: under the root, recording of 4 channels");
+        assert!(session.plugin_call("echo", "describe", b"../outside".to_vec()).await.is_err(), "paths stay under the root");
+        assert!(session.plugin_call("nobody", "x", Vec::new()).await.is_err(), "no such plugin");
         session.close().await;
         let _ = std::fs::remove_dir_all(&base);
     }

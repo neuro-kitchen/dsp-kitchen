@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 pub mod amplitudes;
 pub mod charts;
 pub mod phy;
+pub mod service;
 pub mod similarity;
 pub mod sorting;
 pub mod split;

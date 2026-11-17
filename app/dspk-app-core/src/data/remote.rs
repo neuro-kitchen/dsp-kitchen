@@ -155,6 +155,7 @@ mod tests {
             jobs: None,
             runtime: String::new(),
             options: ServeOptions::default(),
+            plugins: Vec::new(),
         });
         let addr = runtime().block_on(async {
             let server = Server::bind("127.0.0.1:0".parse().unwrap(), tls.config).unwrap().with_authority(authority);
@@ -228,7 +229,7 @@ mod tests {
         let tls = server_config_with_clients(&authority, &ServerIdentity::SelfSigned { names: vec!["localhost".into()] }, false).unwrap();
         let data_root = DataRoot::new(&root).unwrap();
         let jobs = Arc::new(dspk_stream::jobs::Jobs::new(Arc::new(FakeSorter), data_root.clone(), None));
-        let device = Arc::new(Device { name: "t".into(), version: "0".into(), files: Some((data_root, Arc::new(TestOpener))), recording: None, jobs: Some(jobs), runtime: "cpu".into(), options: ServeOptions::default() });
+        let device = Arc::new(Device { name: "t".into(), version: "0".into(), files: Some((data_root, Arc::new(TestOpener))), recording: None, jobs: Some(jobs), runtime: "cpu".into(), options: ServeOptions::default(), plugins: Vec::new() });
         let addr = runtime().block_on(async {
             let server = Server::bind("127.0.0.1:0".parse().unwrap(), tls.config).unwrap().with_authority(authority);
             let addr = server.local_addr().unwrap();

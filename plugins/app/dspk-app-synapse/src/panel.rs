@@ -200,6 +200,72 @@ fn pick_into_page(store: &Entity<Store>, view: String, cx: &mut App) {
     .detach();
 }
 
+/// A page served by a server: reads the sorting at `path` (under the server's data root) in
+/// pieces, with its curation log, loads it here (the table, the spike-train views), links it to
+/// the active view and opens Curation; its signal views and its saving are the server's.
+pub fn open_server_sorting(store: &Entity<Store>, path: String, cx: &mut App) {
+    use dspk_synapse::curation::service::{FilesCall, ReadCall, SortingFiles, PLUGIN, READ_MAX};
+    let Some(state) = state(cx) else { return };
+    let Some(view) = store.read(cx).active_view().map(|v| v.id.clone()) else {
+        store.update(cx, |s, cx| s.set_status("Open a recording first: a sorting belongs to one", cx));
+        return;
+    };
+    let store = store.clone();
+    store.update(cx, |s, cx| s.set_status(format!("Reading {path} from the server…"), cx));
+    cx.spawn(async move |cx| {
+        let call = |method: &'static str, body: Vec<u8>| dspk_app_core::platform::remote::plugin_call(PLUGIN, method, body);
+        let read = async {
+            let listed: SortingFiles = serde_json::from_slice(&call("files", serde_json::to_vec(&FilesCall { path: path.clone() })?).await?)?;
+            let mut files = Vec::with_capacity(listed.files.len());
+            for (file, size) in listed.files {
+                let mut bytes = Vec::with_capacity(size as usize);
+                while (bytes.len() as u64) < size {
+                    let piece = call("read", serde_json::to_vec(&ReadCall { path: path.clone(), file: file.clone(), offset: bytes.len() as u64, len: READ_MAX })?).await?;
+                    if piece.is_empty() {
+                        break;
+                    }
+                    bytes.extend_from_slice(&piece);
+                }
+                files.push((file, bytes));
+            }
+            anyhow::Ok(files)
+        };
+        let files = match read.await {
+            Ok(files) => files,
+            Err(e) => {
+                let _ = store.update(cx, |s, cx| s.set_status(format!("{path}: {e:#}"), cx));
+                return;
+            }
+        };
+        // Its curation log, saved on the server inside the store
+        let log = files
+            .iter()
+            .find(|(f, _)| f == dspk_synapse::curation::CURATION_FILE)
+            .and_then(|(_, b)| serde_json::from_slice::<dspk_synapse::curation::CurationFile>(b).ok())
+            .map(|f| dspk_synapse::curation::Curation { saved: f.ops.len(), ops: f.ops, undone: Vec::new() })
+            .unwrap_or_default();
+        let name = path.rsplit('/').next().unwrap_or(&path).to_string();
+        let loaded = cx.background_executor().spawn(async move { dspk_synapse::curation::sorting::SortingData::load_files(&name, files) }).await;
+        let key = PathBuf::from(&path);
+        match loaded {
+            Ok(data) => {
+                let _ = state.update(cx, |st, cx| {
+                    st.served.insert(key.clone());
+                    st.loaded(key.clone(), data, Ok(log), cx);
+                });
+                let _ = store.update(cx, |s, cx| {
+                    link(s, &view, key, cx);
+                    s.set_workspace(dspk_app_core::navigation::route::Workspace::Curation, cx);
+                });
+            }
+            Err(e) => {
+                let _ = store.update(cx, |s, cx| s.set_status(format!("{path}: {e:#}"), cx));
+            }
+        }
+    })
+    .detach();
+}
+
 /// The Timeline panel's Sortings section: the active view's sorting (open it in Curation, or
 /// detach it), or how to add one.
 pub fn timeline_section(store: &Entity<Store>, cx: &mut App) -> AnyElement {

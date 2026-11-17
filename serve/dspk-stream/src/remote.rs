@@ -78,6 +78,15 @@ pub fn list_over(link: &dyn Link, dir: &str) -> StreamResult<wire::FileList> {
     }
 }
 
+/// Calls `method` of the server's plugin `plugin` with `body` (blocking); its reply's bytes.
+pub fn plugin_call(link: &dyn Link, plugin: &str, method: &str, body: Vec<u8>) -> StreamResult<Vec<u8>> {
+    let call = wire::PluginCall { plugin: plugin.into(), method: method.into(), body };
+    match link.request(wire::request::Kind::Plugin(call))? {
+        wire::response::Kind::Plugin(reply) => Ok(reply.body),
+        _ => Err(StreamError::protocol("unexpected answer to a plugin call")),
+    }
+}
+
 /// The recording a connection has open, as a [`RecordingSource`]: samples (scaled `f32`) read on
 /// the server as sample views, in pieces under its limits. For small reads (a window of
 /// waveforms, the value under the cursor); a whole recording belongs on the server.

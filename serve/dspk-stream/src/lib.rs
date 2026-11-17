@@ -11,6 +11,7 @@
 pub mod engine;
 pub mod error;
 pub mod pair;
+pub mod plugin;
 pub mod protocol;
 pub mod remote;
 /// A browser page's connection to its server (a WebSocket), as a [`Link`].
@@ -23,7 +24,8 @@ pub mod worker_client;
 pub mod transport;
 
 pub use error::{StreamError, StreamResult};
-pub use remote::{Link, RemoteSignal, RemoteSource};
+pub use plugin::{PluginContext, ServerPlugin};
+pub use remote::{plugin_call, Link, RemoteSignal, RemoteSource};
 /// Files under a server's data root (safe paths, listings).
 #[cfg(not(target_family = "wasm"))]
 pub use transport::files;

@@ -117,6 +117,12 @@ pub fn pick_page_files(store: &Entity<Store>, folder: bool, browser: Rc<dyn Fn(&
         .detach();
 }
 
+/// Runs the app's command `id` (as its menu item would), from code that has no menu of its own
+/// (a plugin).
+pub fn run_command(id: &str, window: &mut Window, cx: &mut App) {
+    window.dispatch_action(Box::new(kitchen_shell::RunCommand { id: id.to_string().into() }), cx);
+}
+
 /// Opens the synthetic recording.
 pub fn open_synthetic(store: &Entity<Store>, cx: &mut App) {
     let (ch, rate, dur) = SYNTHETIC;

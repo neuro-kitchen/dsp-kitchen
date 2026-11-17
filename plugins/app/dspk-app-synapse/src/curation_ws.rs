@@ -576,14 +576,37 @@ impl CurationWorkspace {
             let (sorting, request, stale) = (sorting.clone(), request.clone(), stale.clone());
             async move { dspk_synapse::curation::views::from_spikes(&sorting, &request, stale) }
         });
-        // Slow: waveforms and features from the signal's windows (read once per signal)
-        let slow = cx.background_spawn(async move {
-            if stale() || !dspk_synapse::curation::views::SIGNAL_VIEWS.iter().any(|k| request.wanted.contains(k)) {
-                return Views::default();
+        // Slow: waveforms and features from the signal's windows (read once per signal); for a
+        // sorting on the page's server, computed there on its recording (with this page's edits,
+        // so units are numbered alike) rather than its windows sent here
+        let reads_signal = dspk_synapse::curation::views::SIGNAL_VIEWS.iter().any(|k| request.wanted.contains(k));
+        let served = self.sorting_path(cx).filter(|p| state(cx).is_some_and(|st| st.read(cx).served.contains(p)));
+        let slow: Task<Views> = match served {
+            Some(path) => {
+                let ops = state(cx).and_then(|st| st.read(cx).curations.get(&path).map(|l| l.ops.clone())).unwrap_or_default();
+                let call = dspk_synapse::curation::service::ViewsCall { path: path.to_string_lossy().into_owned(), ops, request };
+                let body = serde_json::to_vec(&call).unwrap_or_default();
+                cx.spawn(async move |_, _| {
+                    if !reads_signal || stale() {
+                        return Views::default();
+                    }
+                    match dspk_app_core::platform::remote::plugin_call(dspk_synapse::curation::service::PLUGIN, "views", body).await {
+                        Ok(reply) => serde_json::from_slice(&reply).unwrap_or_default(),
+                        Err(e) => {
+                            tracing::warn!("curation views on the server: {e:#}");
+                            Views::default()
+                        }
+                    }
+                })
             }
-            let windows = crate::sorting::windows_of(&signal);
-            dspk_synapse::curation::views::from_signal(&sorting, &windows, &request, stale)
-        });
+            None => cx.background_spawn(async move {
+                if stale() || !reads_signal {
+                    return Views::default();
+                }
+                let windows = crate::sorting::windows_of(&signal);
+                dspk_synapse::curation::views::from_signal(&sorting, &windows, &request, stale)
+            }),
+        };
         self.plots.note = note;
         self._work = Some(cx.spawn(async move |this, cx| {
             let views = fast.await;

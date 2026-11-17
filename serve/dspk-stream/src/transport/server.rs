@@ -193,6 +193,8 @@ pub struct Device {
     /// The compute runtime its jobs run on, as clients are told ("" = none or unknown).
     pub runtime: String,
     pub options: ServeOptions,
+    /// Its plugins ([`crate::plugin`]): what it computes for domains (Curation of a sorting).
+    pub plugins: Vec<Arc<dyn crate::plugin::ServerPlugin>>,
 }
 
 /// The recording a session has open (the initial one, or the last one it opened).
@@ -204,7 +206,7 @@ fn current_recording(current: &Current) -> Option<Arc<OpenRecording>> {
 
 /// Serves `source` to one client (the protocol's single-recording form: no files, anonymous).
 pub async fn serve_recording(connection: quinn::Connection, source: Arc<dyn RecordingSource>, pyramid: Option<Arc<Pyramid>>, options: ServeOptions) -> StreamResult<()> {
-    let device = Device { name: "dspk".into(), version: String::new(), files: None, recording: Some(Arc::new(OpenRecording::new(source, pyramid))), jobs: None, runtime: String::new(), options };
+    let device = Device { name: "dspk".into(), version: String::new(), files: None, recording: Some(Arc::new(OpenRecording::new(source, pyramid))), jobs: None, runtime: String::new(), options, plugins: Vec::new() };
     serve_session(connection, Peer::anonymous(), Arc::new(device)).await
 }
 
@@ -346,6 +348,14 @@ pub(crate) async fn answer(request: wire::Request, device: &Device, current: &Cu
         Req::Status(_) => Ok(Resp::Status(jobs_of(device)?.status())),
         Req::Logs(logs) => Ok(Resp::Logs(wire::LogLines { lines: jobs_of(device)?.logs(logs.lines as usize) })),
         Req::Fetch(_) => Err(StreamError::protocol("fetch is answered by send_file")),
+        Req::Plugin(call) => {
+            let plugin = device.plugins.iter().find(|p| p.id() == call.plugin).cloned().ok_or_else(|| StreamError::Protocol(format!("this server has no plugin {:?}", call.plugin)))?;
+            let root = device.files.as_ref().map(|(root, _)| root.clone());
+            let recording = current_recording(current).map(|r| r.source.clone());
+            let context = crate::plugin::PluginContext { resolve: root.map(|r| Box::new(move |p: &str| r.resolve(p)) as Box<dyn Fn(&str) -> StreamResult<std::path::PathBuf> + Send + Sync>), recording };
+            let body = tokio::task::spawn_blocking(move || plugin.call(&call.method, &call.body, &context)).await.map_err(StreamError::protocol)??;
+            Ok(Resp::Plugin(wire::PluginReply { body }))
+        }
     }
 }
 

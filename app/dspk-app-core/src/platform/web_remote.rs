@@ -49,6 +49,21 @@ async fn request(kind: wire::request::Kind) -> anyhow::Result<wire::response::Ki
     })
 }
 
+/// Whether the page is served by `dspk serve`: its files are the server's, and the server computes.
+pub fn served() -> bool {
+    matches!(LINK.get(), Some(PageLink::Server(_)))
+}
+
+/// Calls `method` of the server's plugin `plugin` with `body`; its reply's bytes.
+pub async fn plugin_call(plugin: &str, method: &str, body: Vec<u8>) -> anyhow::Result<Vec<u8>> {
+    let call = wire::PluginCall { plugin: plugin.into(), method: method.into(), body };
+    match request(wire::request::Kind::Plugin(call)).await? {
+        wire::response::Kind::Plugin(reply) => Ok(reply.body),
+        wire::response::Kind::Error(e) => anyhow::bail!("{e}"),
+        _ => anyhow::bail!("unexpected answer to a plugin call"),
+    }
+}
+
 /// Where this page's processing happens, for the device line (a page computes nothing itself).
 pub fn processing_label() -> Option<String> {
     Some(match LINK.get() {
