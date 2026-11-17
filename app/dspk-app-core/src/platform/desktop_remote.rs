@@ -162,6 +162,11 @@ pub async fn pick_files(_folder: bool) -> anyhow::Result<(Vec<String>, Option<St
     anyhow::bail!("the desktop app opens files with its file dialog")
 }
 
+/// A page's download; the desktop writes files itself.
+pub fn download(_name: &str, _bytes: &[u8], _mime: &str) -> anyhow::Result<()> {
+    anyhow::bail!("the desktop app saves files itself")
+}
+
 /// The desktop is no page: never served.
 pub fn served() -> bool {
     false

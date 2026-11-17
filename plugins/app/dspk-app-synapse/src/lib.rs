@@ -324,6 +324,24 @@ impl SynapseState {
             .detach();
             return;
         }
+        // A page on its own (the files it picked, read into memory): the log as a download, to
+        // put into the .sorting.zarr folder (where the desktop and `dspk` read it)
+        if dspk_app_core::platform::remote::runs_alone() {
+            let Some(log) = self.curations.get_mut(path) else { return };
+            let file = dspk_synapse::curation::CurationFile { dspk_curation: dspk_synapse::curation::CURATION_VERSION, ops: log.ops.clone() };
+            let bytes = serde_json::to_vec_pretty(&file).unwrap_or_default();
+            let status = match dspk_app_core::platform::remote::download(dspk_synapse::curation::CURATION_FILE, &bytes, "application/json") {
+                Ok(()) => {
+                    log.saved = log.ops.len();
+                    format!("Curation downloaded ({} edits): put {} into {}", log.ops.len(), dspk_synapse::curation::CURATION_FILE, path.display())
+                }
+                Err(e) => format!("Curation not downloaded: {e:#}"),
+            };
+            self.store.update(cx, |s, cx| s.set_status(status, cx));
+            cx.emit(SynapseEvent::Curated(path.clone()));
+            cx.notify();
+            return;
+        }
         let Some(log) = self.curations.get_mut(path) else { return };
         let status = match log.save(path) {
             Ok(file) => format!("Curation saved: {} ({} edits)", dspk_session::paths::short_path(&file), log.ops.len()),

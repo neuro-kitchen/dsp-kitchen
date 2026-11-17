@@ -575,6 +575,11 @@ mod tests {
     use crate::navigation::route::Workspace;
 
     fn open(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Store>, Entity<DspApp>) {
+        open_at(cx, 1400., 900.)
+    }
+
+    /// The app in a `width` × `height` window.
+    fn open_at(cx: &mut TestAppContext, width: f32, height: f32) -> (AnyWindowHandle, Entity<Store>, Entity<DspApp>) {
         // Frames come back from real render threads: allow their wake-ups from the start
         cx.executor().allow_parking();
         cx.update(|cx| {
@@ -582,7 +587,7 @@ mod tests {
             crate::navigation::actions::bind_keys(cx);
             crate::data::services::Services::install(cx);
             let store = cx.new(|_| Store::new(Session::new(), None));
-            let bounds = Bounds { origin: Point::default(), size: size(px(1400.), px(900.)) };
+            let bounds = Bounds { origin: Point::default(), size: size(px(width), px(height)) };
             let options = WindowOptions { window_bounds: Some(WindowBounds::Windowed(bounds)), ..Default::default() };
             let s = store.clone();
             let (window, app) = gpui_kit::open_window(options, cx, move |window, cx| cx.new(|cx| DspApp::new(s, window, cx))).expect("open test window");
@@ -1715,5 +1720,20 @@ mod tests {
         .unwrap();
         cx.run_until_parked();
         assert_eq!(value(cx), 123.0, "typed");
+    }
+
+    /// On a phone-wide window the Pipeline's side panels float over the canvas: it keeps most of
+    /// the width (beside them it would have almost none).
+    #[gpui_kit::test]
+    fn the_pipeline_canvas_keeps_the_width_of_a_narrow_window(cx: &mut TestAppContext) {
+        let (window, store, _) = open_at(cx, 390., 800.);
+        cx.update(|cx| store.update(cx, |s, cx| s.set_workspace(Workspace::Pipeline, cx)));
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let canvas = window.find("graph-canvas").bounds();
+            assert!(canvas.size.width.as_f32() > 250., "the canvas keeps the width: {:?}", canvas.size);
+        })
+        .unwrap();
     }
 }

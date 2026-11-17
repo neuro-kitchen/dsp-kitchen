@@ -49,6 +49,23 @@ async fn request(kind: wire::request::Kind) -> anyhow::Result<wire::response::Ki
     })
 }
 
+/// Hands the browser `bytes` to save as `name` (its download), from a page that has no disk.
+pub fn download(name: &str, bytes: &[u8], mime: &str) -> anyhow::Result<()> {
+    let js = |e: wasm_bindgen::JsValue| anyhow::anyhow!("{e:?}");
+    let document = web_sys::window().and_then(|w| w.document()).ok_or_else(|| anyhow::anyhow!("no document"))?;
+    let parts = js_sys::Array::of1(&js_sys::Uint8Array::from(bytes));
+    let options = web_sys::BlobPropertyBag::new();
+    options.set_type(mime);
+    let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &options).map_err(js)?;
+    let url = web_sys::Url::create_object_url_with_blob(&blob).map_err(js)?;
+    let a: web_sys::HtmlAnchorElement = wasm_bindgen::JsCast::dyn_into(document.create_element("a").map_err(js)?).map_err(|_| anyhow::anyhow!("not an anchor"))?;
+    a.set_href(&url);
+    a.set_download(name);
+    a.click();
+    let _ = web_sys::Url::revoke_object_url(&url);
+    Ok(())
+}
+
 /// Whether the page is served by `dspk serve`: its files are the server's, and the server computes.
 pub fn served() -> bool {
     matches!(LINK.get(), Some(PageLink::Server(_)))

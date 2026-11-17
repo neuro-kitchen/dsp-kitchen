@@ -50,6 +50,9 @@ enum LeftTab {
 
 /// Where the floating tool bar sits on the canvas: along the top or bottom edge (a row), or the
 /// left or right edge (a column of icons). The canvas' own bar and minimap keep the bottom
+/// Below this window width (px) the Pipeline's side panels float over the canvas.
+const PIPELINE_NARROW_W: f32 = 760.;
+
 /// corners, so the bottom place sits above them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ToolbarDock {
@@ -501,7 +504,7 @@ impl PipelineView {
 }
 
 impl Render for PipelineView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let border = cx.theme().border;
         let (side_w, left_w, left_open, right_open) = {
             let s = self.store.read(cx);
@@ -534,6 +537,36 @@ impl Render for PipelineView {
         // The rails, panels and the canvas are cards on the chrome, PANE_GAP apart (kitchen-ui);
         // a side panel starts after its rail and a gap
         let side_offset = RAIL_W + theme::PANE_GAP;
+        // A narrow window (a phone held upright): the side panels float over the canvas, at most
+        // 85 % of the width, instead of squeezing it; their rails open and close them
+        let width = window.viewport_size().width.as_f32();
+        let narrow = width < PIPELINE_NARROW_W;
+        let fit = |w: f32| if narrow { w.min(width * 0.85) } else { w };
+        let left_panel = left_open.then(|| {
+            pane()
+                .relative()
+                .flex()
+                .flex_col()
+                .w(px(fit(left_w)))
+                .flex_none()
+                .h_full()
+                .child(h_flex().h(px(32.)).flex_none().px_3().border_b_1().border_color(border).child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(muted).child(title)))
+                .child(left_body)
+                .child(panel_edge("pipeline.left", Side::Left, theme::PANE_GAP + side_offset))
+        });
+        let right_panel = right_open.then(|| {
+            pane()
+                .relative()
+                .flex()
+                .flex_col()
+                .w(px(fit(side_w)))
+                .flex_none()
+                .h_full()
+                .child(div().flex_1().min_h_0().child(self.inspector.clone()))
+                .child(panel_edge("pipeline.right", Side::Right, theme::PANE_GAP + side_offset))
+        });
+        let (left_beside, left_over) = if narrow { (None, left_panel) } else { (left_panel, None) };
+        let (right_beside, right_over) = if narrow { (None, right_panel) } else { (right_panel, None) };
         v_flex()
             .id("pipeline-workspace")
             .size_full()
@@ -550,34 +583,19 @@ impl Render for PipelineView {
                         cx.notify();
                     }))
                     .child(left_rail)
-                    .when(left_open, |d| {
-                        d.child(
-                            pane()
-                                .relative()
-                                .flex()
-                                .flex_col()
-                                .w(px(left_w))
-                                .flex_none()
-                                .h_full()
-                                .child(h_flex().h(px(32.)).flex_none().px_3().border_b_1().border_color(border).child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(muted).child(title)))
-                                .child(left_body)
-                                .child(panel_edge("pipeline.left", Side::Left, theme::PANE_GAP + side_offset)),
-                        )
-                    })
-                    .child(pane().relative().flex_1().min_w_0().h_full().child(self.canvas.clone()).child(self.toolbar(cx)))
-                    .when(right_open, |d| {
-                        d.child(
-                            pane()
-                                .relative()
-                                .flex()
-                                .flex_col()
-                                .w(px(side_w))
-                                .flex_none()
-                                .h_full()
-                                .child(div().flex_1().min_h_0().child(self.inspector.clone()))
-                                .child(panel_edge("pipeline.right", Side::Right, theme::PANE_GAP + side_offset)),
-                        )
-                    })
+                    .children(left_beside)
+                    .child(
+                        pane()
+                            .relative()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .child(self.canvas.clone())
+                            .child(self.toolbar(cx))
+                            .children(left_over.map(|p| div().absolute().top_0().bottom_0().left_0().shadow_lg().child(p)))
+                            .children(right_over.map(|p| div().absolute().top_0().bottom_0().right_0().shadow_lg().child(p))),
+                    )
+                    .children(right_beside)
                     .child(right_rail),
             )
     }
