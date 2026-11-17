@@ -4,6 +4,100 @@ All notable changes, newest first. Versions follow [Semantic Versioning](https:/
 0.0.x any release may change the API. The crates, the Python package and `dspk-sorters` share one
 version number.
 
+## 0.0.12 — 2026-11-17
+
+### Added
+
+- **Curation in the browser.** The viewer (GitHub Pages) opens a `.sorting.zarr` (or a Phy
+  folder's files) over the open recording and curates it there: every view, label, merge and
+  split, computed on the page's CPU threads (`dspk-synapse` builds for wasm32; Polars stays out of
+  the browser, behind the new `table` feature). A page has no disk: **Save** downloads
+  `dspk-curation.json`, to put into the `.sorting.zarr`.
+- **The container's page sorts and curates on the server.** Servers take plugins
+  (`dspk_stream::ServerPlugin`, `PluginCall` / `PluginReply` in the protocol); `dspk serve`
+  registers Synapse's: the page's Sorting lists and runs the server's sorters, and Curation's
+  waveforms and features are computed on the server's recording, from the signal as the page's
+  view processes it, with the page's edits; the curation is saved on the server. A sort run again
+  is kept beside the first under the next free name (`…-2.sorting.zarr`).
+- **Phy's missing views** in Curation: feature grid, firing rate, unit scatter (click a unit),
+  amplitude histogram. The views' charts are made in `dspk-synapse` (`curation::charts`,
+  `curation::views`), so the app, the page and a server draw the same thing.
+- **Split and Unmerge in Curation:** a lasso on the features or amplitude view marks the lead
+  unit's spikes (every spike of the unit, read and projected as the view draws them, not only
+  those shown) and **Split** separates them; **Unmerge** takes a merged unit apart, its units back
+  with their spikes and labels (`CurationOp::Unmerge`: a log with one reads in 0.0.12 and later).
+- **Sorts are named with when they start** (`rec.kilosort4.0-20s.20261117-2032.sorting.zarr`),
+  and running the same sorter over the same part again asks first: run it again (kept beside it)
+  or open that run.
+- **One GPU, several uses** (`dspk_core::lease`): a sort on a server takes the GPU alone (views
+  in progress finish, what they keep is released, views are processed on the CPU until it ends);
+  no sort starts beside a live session; a sort that still runs out of GPU memory says so.
+  `dspk_core::compute::release_device_memory` hands unused pool memory back (`dspk serve` does
+  after Curation's read).
+- **The curation log says when, where and by whom:** each edit has `at` (UTC), `via` (`desktop`,
+  `page`) and `by`; the file has `saved_at` and `written_by`, and keeps the edits undone (redo
+  after a restart). Older logs read as before.
+- **People** (title bar, Settings → People): who works in the app, or a guest. Their name goes on
+  what they save (curation edits, a session's experimenters); a guest's on nothing. Nothing about
+  what a person does is recorded: **Analytics → This session** lists what the session made, in
+  memory, until the app closes. Needs kitchen 0.0.7.
+- **Session and subject metadata, in NWB's terms** (a recording's Metadata card): identifier,
+  description, start time, experimenters, lab, institution, experiment, keywords, and the
+  subject. Read from the data where it says (NWB-Zarr files, SpikeGLX's `fileCreateTime`); the
+  rest typed and kept in `<rec>.dspk.zarr` (`dspk_session::session_meta`). `dspk convert …
+  --session <recording>` writes them into an NWB output (`dspk_session::derived::session_meta::write_nwb_zarr`).
+- **A record of each pipeline run:** `<output>.run.json` beside the re-runnable
+  `.pipeline.json`: times, version, runtime and mode, each input's size and modified time, what
+  was written, bytes and stage times.
+- **The server's audit log** gains `at` on every line, each job's end (outcome, output, duration)
+  and each file a plugin writes (a curation saved).
+- **Install sorters from the app** (Sorting); the app finds `dspk-cli-sorter` as the command line
+  does (beside the program, then the data folder).
+- **WAV recordings** (`dspk_io`): 8-, 16-, 24- and 32-bit PCM and float, on the desktop, a server
+  and in the viewer (`SampleFormat::U8`, `I24`; and `F16` for float16 samples).
+- **Pipeline nodes take their parameters on the canvas** (dragged or typed), and every operation
+  has help: its documentation, or its implementation and kernel.
+- **Real time (opt-in, the `device` and `live` features):** `dspk-device` runs next to a sensor
+  (generator, file replay, TCP / UDP / Unix-socket sources), runs a chain of live ops block by
+  block (forward filters, CAR / CMR, FIR, median, Teager-Kaiser, Gaussian smoothing, crossings),
+  records `raw.zarr` with a session log, and serves taps and live views over QUIC (the
+  `dspk-live/1` protocol: control separate from data, one director, pairing codes, clock
+  reports). `dspk device …` directs one; the app's **File → Devices…** shows its state and a
+  tap. A plain build is unchanged.
+  - **Explore's live mode:** *Open in Explore* on a device's source or tap shows the run in
+    progress in Explore's plots, following its newest data; scrolling back leaves the head while
+    the run goes on, **● Live** returns to it. Views are asked of the device (its ring, its
+    recording, or its overview).
+  - **Overviews built as blocks arrive** (`dspk_io::live::overview`): a view zoomed out over a
+    long run is answered from min / max columns at once.
+  - **The app connects again by itself** after a lost connection; what it missed is read from the
+    device's ring or recording, so plots have no hole (tested: a client away mid-run reads every
+    sample back).
+  - On a run in progress, **Add op** offers live ops only (zero-phase filters as their forward
+    form; the others greyed), and **Send to the device as its chain** configures the device with
+    a view's ops, with the chain's delay or the device's refusals.
+  - `dspk_stream::live::TapTransport`: taps' endpoints by URI scheme, QUIC first, so another
+    transport can be added without changing frames or rules.
+  - A device holds the GPU's **Live lease** while its chain runs (no sort starts beside it), its
+    buffers allocated once at warm-up, apart from the pools.
+
+### Changed
+
+- **The viewer works on small screens:** menus no longer push the page wider than the phone; the
+  Pipeline's side panels float over the canvas below 760 px; its tool bar steps aside of the
+  canvas' buttons.
+- **Tabs:** Explore · Pipeline · Sorting · Curation · Analytics.
+- **kitchen 0.0.7** (`kitchen-ui`, `kitchen-shell`).
+- Synthetic recordings live in `dspk-core` (`dspk_synapse::io::synthetic` re-exports them);
+  `SyntheticParams` gained spike rate and amplitude and a sine.
+- The docs site's landing page has **Try it in your browser**, beside the header's **Viewer**.
+
+### Fixed
+
+- A client paired without `--control` could save a curation on a server: refused now, and the
+  refusal says how to pair with control.
+- A large WAV hung while opening; NWB files were offered as recordings to open.
+
 ## 0.0.11 — 2026-11-16
 
 ### Added

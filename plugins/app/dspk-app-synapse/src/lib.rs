@@ -64,6 +64,13 @@ pub fn runs_of(view: &ViewDoc) -> Vec<PathBuf> {
     view.plugins.get(ID).and_then(|d| d.get("runs")).and_then(|r| r.as_array()).map(|a| a.iter().filter_map(|p| p.as_str().map(PathBuf::from)).collect()).unwrap_or_default()
 }
 
+/// A curation saved, for Analytics ▸ This session: a short mark of its own (an instant would
+/// last on the timeline until the next activity of its lane).
+fn saved_activity(file: String) {
+    let t = kitchen_shell::activity::now();
+    kitchen_shell::activity::record(kitchen_ui::timeline::Activity { start: t, end: t + 2.0, lane: "You".into(), kind: "Curation".into(), title: "Curation saved".into(), assets: vec![file.into()], ..Default::default() });
+}
+
 /// `view`'s plugin data with `sorting` linked (`None`: unlinked) and `run` added to its runs.
 pub fn plugin_data(view: &ViewDoc, sorting: Option<&std::path::Path>, run: Option<&std::path::Path>) -> serde_json::Value {
     let mut runs = runs_of(view);
@@ -319,7 +326,7 @@ impl SynapseState {
                                 log.saved = log.ops.len();
                                 log.ops.len()
                             });
-                            kitchen_shell::activity::produced("Curation saved", vec![format!("{} (on the server)", path.display())]);
+                            saved_activity(format!("{} (on the server)", path.display()));
                             format!("Curation saved on the server: {} ({} edits)", path.display(), n.unwrap_or(0))
                         }
                         Err(e) => format!("Curation not saved: {e:#}"),
@@ -353,7 +360,7 @@ impl SynapseState {
         let Some(log) = self.curations.get_mut(path) else { return };
         let status = match log.save(path) {
             Ok(file) => {
-                kitchen_shell::activity::produced("Curation saved", vec![file.display().to_string()]);
+                saved_activity(file.display().to_string());
                 format!("Curation saved: {} ({} edits)", dspk_session::paths::short_path(&file), log.ops.len())
             }
             Err(e) => format!("Curation not saved: {e:#}"),

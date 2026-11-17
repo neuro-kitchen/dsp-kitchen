@@ -126,6 +126,11 @@ impl ProcessedChains {
         Ok(signal)
     }
 
+    /// Forgets the chains kept (a batch job takes the GPU: their device memory goes with them).
+    pub fn clear(&self) {
+        self.made.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    }
+
     /// Makes `view` of the chain of `ops` over `channels` ready without blocking on the device;
     /// nothing to do for a chain not made here.
     pub async fn warm(&self, channels: &[usize], ops: &[String], view: &View) -> DspResult<()> {

@@ -183,6 +183,12 @@ pub fn write_array_f32(
     build_and_store(store, dir, node_path, shape, data_type::float32(), zarrs::array::FillValue::from(0.0f32), "float32", dims, attrs, data)
 }
 
+/// Writes strings (`data_type` `string`, variable-length UTF-8): NWB's text fields. `shape` `[]`
+/// is a scalar (one value).
+pub fn write_array_str(store: &ReadableWritableListableStorage, dir: &Path, node_path: &str, data: &[&str], shape: &[usize], attrs: Map<String, Value>) -> DspResult<()> {
+    build_and_store(store, dir, node_path, shape, data_type::string(), zarrs::array::FillValue::from(""), "str", &[], attrs, data)
+}
+
 pub fn write_array_f64(
     store: &ReadableWritableListableStorage,
     dir: &Path,

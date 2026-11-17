@@ -18,6 +18,7 @@ pub mod buffer;
 #[cfg(feature = "compute")]
 pub mod compute;
 pub mod device;
+pub mod lease;
 pub mod progress;
 pub mod recording;
 pub mod window;

@@ -32,6 +32,14 @@ use crate::PipelineError;
 /// Appended to the output path for the canonical spec written next to it (provenance).
 pub const PROVENANCE_SUFFIX: &str = ".pipeline.json";
 
+/// Appended to the output path for the record of the run that wrote it (`<out>.run.json`): when it
+/// ran, what ran it, the inputs as they were (size, modified time: changed since?), what was
+/// written and how long it took. The spec beside it (`.pipeline.json`) stays the re-runnable part.
+pub const RUN_SUFFIX: &str = ".run.json";
+
+/// Version of the run record (`dspk_run`).
+pub const RUN_RECORD_VERSION: u32 = 1;
+
 /// Samples per parallel task when raw output frames are built.
 const ENCODE_SAMPLES_PER_TASK: usize = 4096;
 
@@ -133,18 +141,75 @@ pub fn run_with(
             prepared.push(prepare(&one, base_dir, &open)?);
             ones.push(one);
         }
-        return execute_fanout(&ones, prepared, |windows_done, windows, bytes| observe(&Progress { input: 0, inputs: 1, windows_done, windows, bytes }));
+        let started_at = dspk_core::time::wall::now_rfc3339();
+        let paths: Vec<Vec<PathBuf>> = prepared.iter().map(|p| p.input_paths.clone()).collect();
+        let reports = execute_fanout(&ones, prepared, |windows_done, windows, bytes| observe(&Progress { input: 0, inputs: 1, windows_done, windows, bytes }))?;
+        for (report, inputs) in reports.iter().zip(&paths) {
+            write_run_record(report, inputs, &started_at)?;
+        }
+        return Ok(reports);
     }
     let specs = spec.expand_inputs(base_dir)?;
     let inputs = specs.len();
     let mut reports = Vec::with_capacity(inputs);
     for (input, one) in specs.iter().enumerate() {
+        let started_at = dspk_core::time::wall::now_rfc3339();
         let prepared = prepare(one, base_dir, &open)?;
-        reports.push(execute(one, prepared, |windows_done, windows, bytes| {
+        let paths = prepared.input_paths.clone();
+        let report = execute(one, prepared, |windows_done, windows, bytes| {
             observe(&Progress { input, inputs, windows_done, windows, bytes })
-        })?);
+        })?;
+        write_run_record(&report, &paths, &started_at)?;
+        reports.push(report);
     }
     Ok(reports)
+}
+
+/// Writes `<output>.run.json` for `report` (see [`RUN_SUFFIX`]).
+fn write_run_record(report: &RunReport, inputs: &[PathBuf], started_at: &str) -> Result<(), PipelineError> {
+    use dspk_core::time::wall::{file_time_rfc3339, now_rfc3339};
+    let inputs: Vec<serde_json::Value> = inputs
+        .iter()
+        .map(|p| {
+            let meta = std::fs::metadata(p).ok();
+            serde_json::json!({
+                "path": p.display().to_string(),
+                "bytes": meta.as_ref().filter(|m| m.is_file()).map(|m| m.len()),
+                "modified": meta.and_then(|m| file_time_rfc3339(m.modified())),
+            })
+        })
+        .collect();
+    let file = |p: &Path| p.file_name().map(|n| n.to_string_lossy().into_owned());
+    let (b, t) = (&report.bytes, &report.timings);
+    let record = serde_json::json!({
+        "dspk_run": RUN_RECORD_VERSION,
+        "written_by": concat!("dspk-pipeline ", env!("CARGO_PKG_VERSION")),
+        "started_at": started_at,
+        "ended_at": now_rfc3339(),
+        "seconds": report.seconds,
+        "runtime": report.runtime,
+        "mode": format!("{:?}", report.mode),
+        "stored_upload": report.stored_upload,
+        "inputs": inputs,
+        "output": file(&report.output),
+        "spec": file(&report.provenance),
+        "channels": report.channels,
+        "samples": report.samples,
+        "sample_rate_hz": report.sample_rate_hz,
+        "windows": report.windows,
+        "bytes": { "read": b.read, "uploaded": b.uploaded, "downloaded": b.downloaded, "written": b.written },
+        "timings_s": { "read_wait": t.read_wait, "device": t.device, "write_wait": t.write_wait, "encode": t.encode, "disk": t.disk },
+    });
+    let path = run_record_path(&report.output);
+    let text = serde_json::to_string_pretty(&record).map_err(|e| PipelineError::Io(e.to_string()))?;
+    std::fs::write(&path, text).map_err(|e| PipelineError::Io(format!("{}: {e}", path.display())))
+}
+
+/// `<output>.run.json`.
+pub fn run_record_path(output: &Path) -> PathBuf {
+    let mut name = output.as_os_str().to_owned();
+    name.push(RUN_SUFFIX);
+    PathBuf::from(name)
 }
 
 /// Runs one prepared input on the device.

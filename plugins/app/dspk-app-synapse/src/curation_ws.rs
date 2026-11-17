@@ -89,10 +89,10 @@ impl ViewKindUi for ViewKind {
         match self {
             Self::Table => "Units",
             Self::Waveforms => "Waveforms",
-            Self::Features => "Features (PC1 · PC2; lasso: split)",
+            Self::Features => "Features (PC1 · PC2; lasso, then Split)",
             Self::Acg => "Autocorrelogram",
             Self::Isi => "ISI",
-            Self::Amplitude => "Amplitude over time (lasso: split)",
+            Self::Amplitude => "Amplitude over time (lasso, then Split)",
             Self::Template => "Template",
             Self::Similarity => "Similar units",
             Self::Correlograms => "Correlograms",
@@ -152,6 +152,9 @@ pub struct CurationWorkspace {
     generation: Arc<AtomicU64>,
     /// The keyboard help shows.
     show_keys: bool,
+    /// A lasso drawn and not applied yet: on which view, for which lead unit (index), and the
+    /// polygon in the chart's units. **Split** applies it.
+    pending_split: Option<(ViewKind, usize, Vec<(f32, f32)>)>,
     pub settings: PlotSettings,
     _work: Option<Task<()>>,
     _subs: Vec<Subscription>,
@@ -214,6 +217,7 @@ impl CurationWorkspace {
             computing: false,
             generation: Arc::new(AtomicU64::new(0)),
             show_keys: false,
+            pending_split: None,
             settings: PlotSettings::default(),
             _work: None,
             _subs: subs,
@@ -405,6 +409,50 @@ impl CurationWorkspace {
         }));
     }
 
+    /// Keeps a lasso drawn on `kind` for the lead unit, to split with **Split**.
+    fn hold_lasso(&mut self, kind: ViewKind, polygon: Vec<(f32, f32)>, cx: &mut Context<Self>) {
+        let Some(&lead) = self.selected.first() else { return };
+        self.pending_split = Some((kind, lead, polygon));
+        self.store.update(cx, |s, cx| s.set_status("Lasso drawn: Split separates the lead unit's spikes inside it (every spike of the unit, not only those shown)", cx));
+        self.notify_panels(cx);
+        cx.notify();
+    }
+
+    /// Splits off the lead unit's spikes inside the lasso drawn (see [`Self::hold_lasso`]).
+    fn split_pending(&mut self, cx: &mut Context<Self>) {
+        let Some((kind, lead, polygon)) = self.pending_split.take() else { return };
+        if self.selected.first() != Some(&lead) {
+            self.store.update(cx, |s, cx| s.set_status("The lasso was drawn for another unit: draw it again", cx));
+        } else if kind == ViewKind::Features {
+            self.split_features(&polygon, cx);
+        } else {
+            self.split_lasso(&polygon, cx);
+        }
+        self.notify_panels(cx);
+        cx.notify();
+    }
+
+    /// Takes the lead unit apart when it is a merge: the units merged into it come back, selected.
+    fn unmerge_lead(&mut self, cx: &mut Context<Self>) {
+        let (Some(path), Some(sorting), Some(&lead)) = (self.sorting_path(cx), self.sorting(cx), self.selected.first()) else { return };
+        let unit = sorting.units[lead].info.unit_id;
+        let Some(st) = state(cx) else { return };
+        let ops = st.read(cx).curations.get(&path).map(|l| l.ops.clone()).unwrap_or_default();
+        let Some(parts) = dspk_synapse::curation::merged_parts(&ops, unit) else { return };
+        st.update(cx, |s, cx| s.curate(&path, CurationOp::Unmerge { unit }, cx));
+        // The units it gives back keep their rows: select them
+        self.selected = parts.iter().filter_map(|id| sorting.units.iter().position(|u| u.info.unit_id == *id)).collect();
+        self.store.update(cx, |s, cx| s.set_status(format!("Unit {unit} taken apart: units {} are back", parts.iter().map(usize::to_string).collect::<Vec<_>>().join(", ")), cx));
+        self.compute(cx);
+    }
+
+    /// Whether the lead unit is a merge that can be taken apart.
+    fn lead_is_merge(&self, cx: &Context<Self>) -> bool {
+        let (Some(path), Some(sorting), Some(&lead)) = (self.sorting_path(cx), self.sorting(cx), self.selected.first()) else { return false };
+        let ops = state(cx).and_then(|st| st.read(cx).curations.get(&path).map(|l| l.ops.clone())).unwrap_or_default();
+        dspk_synapse::curation::merged_parts(&ops, sorting.units[lead].info.unit_id).is_some()
+    }
+
     /// Labels the selected units.
     fn label_selected(&mut self, label: &str, cx: &mut Context<Self>) {
         let (Some(path), Some(sorting)) = (self.sorting_path(cx), self.sorting(cx)) else { return };
@@ -527,7 +575,7 @@ impl CurationWorkspace {
         let relayout = self.relayout.clone();
         self.panels
             .entry(kind)
-            .or_insert_with(|| cx.new(|cx| CurationPanel { ws, relayout, kind, focus: cx.focus_handle(), lasso: Vec::new(), plot: Default::default(), view: None, image: None, drawn: None, pan: None, _draw: None }))
+            .or_insert_with(|| cx.new(|cx| CurationPanel { ws, relayout, kind, focus: cx.focus_handle(), lasso: Vec::new(), drawing: false, plot: Default::default(), view: None, image: None, drawn: None, pan: None, _draw: None }))
             .clone()
     }
 
@@ -631,7 +679,9 @@ impl CurationWorkspace {
         let slow: Task<Views> = match served {
             Some(path) => {
                 let ops = state(cx).and_then(|st| st.read(cx).curations.get(&path).map(|l| l.ops.clone())).unwrap_or_default();
-                let call = dspk_synapse::curation::service::ViewsCall { path: path.to_string_lossy().into_owned(), ops, request };
+                // The view's processing goes along: waveforms from the signal as it is shown
+                let processing: Vec<String> = self.store.read(cx).active_view().map(|v| v.ops.iter().filter(|o| o.enabled).filter_map(|o| serde_json::to_string(&o.node).ok()).collect()).unwrap_or_default();
+                let call = dspk_synapse::curation::service::ViewsCall { path: path.to_string_lossy().into_owned(), ops, request, processing };
                 let body = serde_json::to_vec(&call).unwrap_or_default();
                 cx.spawn(async move |_, _| {
                     if !reads_signal || stale() {
@@ -779,6 +829,32 @@ impl Render for CurationWorkspace {
                     let _ = me.update(cx, |w, cx| w.merge_selected(cx));
                 })
             })
+            .child({
+                let me = me.clone();
+                let ready = self.pending_split.as_ref().is_some_and(|(_, lead, _)| self.selected.first() == Some(lead));
+                Button::new("curation-split")
+                    .outline()
+                    .icon(Icon::new(gpui_kit::assets::IconName::Scissors))
+                    .label("Split")
+                    .tooltip(if ready { "Separate the lead unit's spikes inside the lasso into a new unit" } else { "Draw a lasso on Features or Amplitude first: Split separates the lead unit's spikes inside it" })
+                    .disabled(!ready)
+                    .on_click(move |_, _, cx| {
+                        let _ = me.update(cx, |w, cx| w.split_pending(cx));
+                    })
+            })
+            .child({
+                let me = me.clone();
+                let merged = self.lead_is_merge(cx);
+                Button::new("curation-unmerge")
+                    .outline()
+                    .icon(Icon::new(gpui_kit::assets::IconName::Split))
+                    .label("Unmerge")
+                    .tooltip(if merged { "Take the lead unit apart: the units merged into it come back, with their spikes and labels" } else { "Select a merged unit to take it apart" })
+                    .disabled(!merged)
+                    .on_click(move |_, _, cx| {
+                        let _ = me.update(cx, |w, cx| w.unmerge_lead(cx));
+                    })
+            })
             .child(act("curation-undo", gpui_kit::assets::IconName::Undo2, "Undo (Ctrl+Z)", can_undo, |w, cx| w.undo(false, cx)))
             .child(act("curation-redo", gpui_kit::assets::IconName::Redo2, "Redo (Ctrl+Shift+Z)", can_redo, |w, cx| w.undo(true, cx)))
             .child({
@@ -891,14 +967,15 @@ fn curation_command(cmd: bool, alt: bool, shift: bool, key: &str) -> Option<&'st
     curation_keys().iter().find(|(c, a, s, k, _)| *c == cmd && *a == alt && (symbol || *s == shift) && k == &key.to_lowercase()).map(|b| b.4)
 }
 
-const KEYS: [(&str, &str); 12] = [
+const KEYS: [(&str, &str); 13] = [
     ("Click / Ctrl+click", "Select a unit / add it"),
     ("↓ ↑  (J K)", "Next / previous unit of the table"),
     ("Space / Shift+Space", "Next / previous most similar unit beside the lead"),
     ("Alt+G  Alt+M  Alt+N", "Label good / mua / noise"),
     ("Alt+U", "Label unsorted"),
     ("G", "Merge the selected units"),
-    ("Lasso on Amplitude", "Split the lead unit's spikes inside it"),
+    ("Lasso on Features or Amplitude", "Marks the lead unit's spikes inside it; Split separates them"),
+    ("Unmerge", "Takes a merged unit apart"),
     ("Ctrl+Z / Ctrl+Shift+Z", "Undo / redo"),
     ("Ctrl+S", "Save the curation in the .sorting.zarr"),
     ("◀ ▶ in the strip", "The lead unit's previous / next spike"),
@@ -931,8 +1008,11 @@ pub struct CurationPanel {
     relayout: std::rc::Rc<std::cell::Cell<bool>>,
     kind: ViewKind,
     focus: FocusHandle,
-    /// The lasso being drawn on the amplitude plot (fractions of the plot area).
+    /// The lasso drawn on the plot (fractions of the plot area): while drawing, then while it
+    /// waits for **Split**.
     lasso: Vec<(f32, f32)>,
+    /// A lasso is being drawn (the button is down).
+    drawing: bool,
     plot: std::rc::Rc<std::cell::Cell<gpui_kit::Bounds<gpui_kit::Pixels>>>,
     /// The visible range (`None`: everything), the drawn image and what it was drawn for.
     view: Option<Range2>,
@@ -1180,6 +1260,11 @@ impl CurationPanel {
         let titles: Vec<(usize, String)> = chart.cells.iter().enumerate().filter(|(_, c)| !c.title.is_empty()).map(|(i, c)| (i, c.title.clone())).collect();
         let (cols, rows) = (chart.cols.max(1), chart.rows());
         let cell = self.plot.clone();
+        // The lasso stays drawn while it waits for Split on this view; otherwise it is gone
+        let held_here = ws.read(cx).pending_split.as_ref().is_some_and(|(k, _, _)| *k == self.kind);
+        if !self.drawing && !held_here {
+            self.lasso.clear();
+        }
         let lasso = self.lasso.clone();
         let chart2 = chart.clone();
         let me = cx.entity().downgrade();
@@ -1214,6 +1299,7 @@ impl CurationPanel {
                 let f = this.frac(e.position);
                 if lasso_mode && !e.modifiers.shift {
                     this.lasso = vec![f];
+                    this.drawing = true;
                 } else if let Some(c) = this.ws.upgrade().and_then(|w| w.read(cx).plots.charts.get(&this.kind).cloned()) {
                     this.pan = Some((f, this.range(&c)));
                 }
@@ -1247,7 +1333,11 @@ impl CurationPanel {
                     }
                 }
                 this.pan = None;
-                let polygon = std::mem::take(&mut this.lasso);
+                this.drawing = false;
+                let polygon = this.lasso.clone();
+                if polygon.len() < 3 {
+                    this.lasso.clear();
+                }
                 if polygon.len() >= 3 {
                     if let Some(c) = this.ws.upgrade().and_then(|w| w.read(cx).plots.charts.get(&this.kind).cloned()) {
                         // Plot fractions to the chart's units (time s, amplitude)
@@ -1255,9 +1345,10 @@ impl CurationPanel {
                         let data: Vec<(f32, f32)> = polygon.iter().map(|&(fx, fy)| (r.x.0 + fx * (r.x.1 - r.x.0), r.y.1 - fy * (r.y.1 - r.y.0))).collect();
                         // After this handler: the split re-computes and notifies every panel,
                         // this one included, which cannot be updated while it is handling the event
+                        // Kept, drawn, until Split applies it (or another lasso replaces it)
                         let (ws, kind) = (this.ws.clone(), this.kind);
                         cx.defer(move |cx| {
-                            let _ = ws.update(cx, |w, cx| if kind == ViewKind::Features { w.split_features(&data, cx) } else { w.split_lasso(&data, cx) });
+                            let _ = ws.update(cx, |w, cx| w.hold_lasso(kind, data, cx));
                         });
                     }
                 }
@@ -1321,7 +1412,7 @@ impl CurationPanel {
         let legend = h_flex().h(px(22.)).flex_none().px_2().gap_3().overflow_hidden().children(selected.iter().zip(&ids).take(6).map(|(&u, id)| {
             h_flex().gap_1().flex_none().child(div().size(px(8.)).rounded_full().bg(color(palette.unit(u)))).child(div().text_xs().text_color(fg).child(format!("Unit {id}")))
         }));
-        let hint = if lasso_mode { "Drag: lasso to split · Shift+drag: move · wheel: zoom · double-click: all" } else { "Wheel: zoom (Shift: x, Alt: y) · drag: move · double-click: all" };
+        let hint = if lasso_mode { "Drag: lasso, then Split · Shift+drag: move · wheel: zoom · double-click: all" } else { "Wheel: zoom (Shift: x, Alt: y) · drag: move · double-click: all" };
         v_flex()
             .size_full()
             .bg(color(palette.background))

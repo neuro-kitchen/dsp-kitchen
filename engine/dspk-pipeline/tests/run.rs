@@ -281,6 +281,11 @@ fn zarr_output_matches_raw_and_provenance_is_written() {
     assert!(report.seconds > 0.0);
     assert_eq!(report.provenance, dir.join(format!("out.zarr{PROVENANCE_SUFFIX}")));
     assert_eq!(PipelineSpec::load(&report.provenance).unwrap(), zarr);
+    // Beside it, the record of the run: when, what ran it, the input as it was
+    let record: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dspk_pipeline::run_record_path(&report.output)).unwrap()).unwrap();
+    assert_eq!(record["dspk_run"], dspk_pipeline::RUN_RECORD_VERSION);
+    assert!(record["started_at"].as_str().unwrap().ends_with('Z') && record["inputs"][0]["bytes"].as_u64().unwrap() > 0, "{record}");
+    assert_eq!(record["samples"].as_u64(), Some(report.samples));
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

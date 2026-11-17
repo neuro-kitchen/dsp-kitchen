@@ -14,10 +14,12 @@ mod clock;
 mod director;
 pub mod quic;
 mod state;
+pub mod transport;
 
 pub use clock::{ClockEstimate, ClockSample};
 pub use director::{ControlOutcome, Director, DIRECTOR_GRACE};
 pub use state::Lifecycle;
+pub use transport::{parse_endpoint, transport_for, Quic, TapTransport};
 
 /// Protocol version sent in `DeviceHello` and `DeviceWelcome`.
 pub const PROTOCOL_VERSION: u32 = 1;

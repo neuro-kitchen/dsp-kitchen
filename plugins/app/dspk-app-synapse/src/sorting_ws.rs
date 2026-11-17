@@ -70,6 +70,10 @@ pub struct SortingWorkspace {
     store: Entity<Store>,
     /// Why the last Run did not start, shown under the button (cleared by the next one).
     run_error: Option<String>,
+    /// The same sorter already sorted the same part: that run and when (asked before running
+    /// again); `rerun` set: the next Run goes ahead.
+    rerun_ask: Option<(PathBuf, Option<String>)>,
+    rerun: bool,
     strip: Entity<BottomStrip>,
     described: Option<Result<Described, String>>,
     /// Index into the described sorters.
@@ -145,6 +149,8 @@ impl SortingWorkspace {
             grid,
             focused: Vec::new(),
             run_error: None,
+            rerun_ask: None,
+            rerun: false,
             compare_with: None,
             matches: None,
             _compare: None,
@@ -504,6 +510,28 @@ impl SortingWorkspace {
             (None, None) => "the whole recording".to_string(),
             (s, d) => format!("{} s{}", s.unwrap_or(0.0), d.map(|d| format!(" + {d} s")).unwrap_or_else(|| " to the end".into())),
         };
+        // The same sorter over the same part already: ask before running it again (the new run is
+        // kept beside it, named with the time it starts)
+        let base = match remote::parse_uri(&view.recording.path) {
+            Some((_, remote_path)) => sort::run_path(std::path::Path::new(&remote_path), &sorter, start, duration),
+            None => sort::run_path(&view.recording.path, &sorter, start, duration),
+        };
+        if !std::mem::take(&mut self.rerun) {
+            let mut earlier: Vec<PathBuf> = runs_of(&view).into_iter().filter(|r| sort::same_run(&base, r)).collect();
+            #[cfg(not(target_family = "wasm"))]
+            if let Some(dir) = base.parent().filter(|d| d.is_dir()) {
+                let on_disk: Vec<PathBuf> = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| sort::same_run(&base, p) && !earlier.contains(p)).collect();
+                earlier.extend(on_disk);
+            }
+            if let Some(last) = earlier.into_iter().max_by_key(|p| sort::run_time(&base, p).is_some()) {
+                let when = sort::run_time(&base, &last);
+                self.rerun_ask = Some((last, when));
+                cx.notify();
+                return;
+            }
+        }
+        self.rerun_ask = None;
+        let started = dspk_synapse::curation::unix_now();
         let id = view.id.clone();
         // The result: its part's start recorded, then linked to the view (Explore, Curation follow)
         let done = move |s: &mut Store, path: PathBuf, cx: &mut Context<Store>| {
@@ -526,7 +554,7 @@ impl SortingWorkspace {
                 return status(self, format!("No server named {server:?} in Settings"), cx);
             };
             // Named after the part, as local runs are, so runs of different parts do not collide
-            let output = sort::run_path(std::path::Path::new(&remote_path), &sorter, start, duration).to_string_lossy().into_owned();
+            let output = sort::stamped(&sort::run_path(std::path::Path::new(&remote_path), &sorter, start, duration), started).to_string_lossy().into_owned();
             let job = remote::wire::Configure {
                 sorter: sorter.clone(),
                 recording: remote_path,
@@ -553,7 +581,7 @@ impl SortingWorkspace {
         } else {
             (view.recording.path.clone(), view.recording.source.clone())
         };
-        let output = sort::run_path(&recording, &sorter, start, duration);
+        let output = sort::stamped(&sort::run_path(&recording, &sorter, start, duration), started);
         let req = SortRequest { sorter: sorter.clone(), recording, source, probe: PROBES[probe].0.map(str::to_string), output, params, start_sec: start, duration_sec: duration };
         let node = view.id.clone();
         self.store.update(cx, |s, cx| s.start_job_on([node], format!("{sorter} on {} ({part})", view.name), move |send| sort::sort(&req, move |m| send(m)), done, cx));
@@ -668,6 +696,7 @@ impl SortingWorkspace {
                 .into_any_element(),
             None => {
                 let me = me.clone();
+                let me_ask = me.clone();
                 let ready = matches!(self.described, Some(Ok(_))) && self.store.read(cx).active_view().is_some();
                 // Why the last run did not start, or how the last job failed
                 let failed = self.run_error.clone().or_else(|| self.store.read(cx).last_failed.as_ref().map(|(label, e)| format!("{label}: {e}")));
@@ -676,7 +705,36 @@ impl SortingWorkspace {
                     .child(Button::new("sorting-run").primary().icon(Icon::new(IconName::Play)).label("Run").disabled(!ready).on_click(move |_, _, cx| {
                         let _ = me.update(cx, |w, cx| w.run(cx));
                     }))
-                    .children(failed.map(|e| div().id("sorting-run-error").text_xs().text_color(danger).line_clamp(4).child(e)))
+                    .children(failed.filter(|_| self.rerun_ask.is_none()).map(|e| div().id("sorting-run-error").text_xs().text_color(danger).line_clamp(4).child(e)))
+                    .children(self.rerun_ask.clone().map(|(earlier, when)| {
+                        let (me2, me3) = (me_ask.clone(), me_ask.clone());
+                        let sorter = self.described.as_ref().and_then(|d| d.as_ref().ok()).and_then(|d| d.sorters.get(self.sorter)).map(|s| s.name.clone()).unwrap_or_default();
+                        let text = format!(
+                            "{sorter} already sorted this part of the recording{}. Run it again? The new run is kept beside it.",
+                            when.map(|w| format!(" ({w})")).unwrap_or_default()
+                        );
+                        v_flex()
+                            .id("sorting-rerun-ask")
+                            .gap_1()
+                            .child(div().text_xs().child(text))
+                            .child(
+                                h_flex()
+                                    .gap_1()
+                                    .child(Button::new("sorting-rerun").small().outline().label("Run again").on_click(move |_, _, cx| {
+                                        let _ = me2.update(cx, |w, cx| {
+                                            w.rerun = true;
+                                            w.run(cx);
+                                        });
+                                    }))
+                                    .child(Button::new("sorting-open-earlier").small().ghost().label("Open that run").on_click(move |_, _, cx| {
+                                        let p = earlier.clone();
+                                        let _ = me3.update(cx, |w, cx| {
+                                            w.rerun_ask = None;
+                                            w.show_run(p, cx);
+                                        });
+                                    })),
+                            )
+                    }))
                     .into_any_element()
             }
         };

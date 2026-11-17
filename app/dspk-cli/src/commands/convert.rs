@@ -20,6 +20,10 @@ pub struct ConvertArgs {
     /// its cluster files are replaced, originals kept as `.bak`) or a new folder
     #[arg(long)]
     curated: bool,
+    /// The recording the sorting is of: an NWB output gets its session and subject (as the app
+    /// keeps them in the recording's .dspk.zarr, and as an NWB recording says them)
+    #[arg(long, value_name = "RECORDING")]
+    session: Option<PathBuf>,
 }
 
 pub fn run(args: &ConvertArgs) -> anyhow::Result<()> {
@@ -33,5 +37,15 @@ pub fn run(args: &ConvertArgs) -> anyhow::Result<()> {
     }
     let sorting = dspk_synapse::storage::load_sorting(&args.input)?;
     println!("Read {} ({}, {:.0} Hz)", args.input.display(), sorting.sorter_name, sorting.sample_rate_hz);
-    save(&sorting, &args.output, args.to)
+    save(&sorting, &args.output, args.to)?;
+    if let Some(recording) = &args.session {
+        let nwb = matches!(args.to, Some(Format::Nwb)) || (args.to.is_none() && args.output.to_string_lossy().trim_end_matches('/').ends_with(".nwb.zarr"));
+        anyhow::ensure!(nwb, "--session needs an NWB output (.nwb.zarr or --to nwb)");
+        use dspk_session::derived::session_meta::{from_nwb_zarr, read, write_nwb_zarr};
+        let meta = from_nwb_zarr(recording).over(&read(recording));
+        let n = write_nwb_zarr(&args.output, &meta)?;
+        let missing: Vec<&str> = meta.missing_required().iter().map(|f| f.label).collect();
+        println!("Session: {n} fields written{}", if missing.is_empty() { String::new() } else { format!(" (still missing, NWB requires them: {})", missing.join(", ")) });
+    }
+    Ok(())
 }

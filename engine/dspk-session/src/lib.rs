@@ -24,4 +24,5 @@ pub mod graph;
 pub mod paths;
 pub mod recipe;
 pub mod session;
+pub mod session_meta;
 pub mod timeline;

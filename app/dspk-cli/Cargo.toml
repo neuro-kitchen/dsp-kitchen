@@ -29,6 +29,7 @@ device = ["dep:dspk-device", "dspk-io/live", "dspk-stream/live"]
 dspk-core = { workspace = true, features = ["compute"] }
 dspk-ops.workspace = true
 dspk-io = { workspace = true, features = ["zarr"] }
+dspk-session.workspace = true
 dspk-synapse.workspace = true
 # Never the sorter crates: Kilosort4 / EMUsort are GPL-3.0; `sort` runs the separate dspk-cli-sorter
 # program instead (installed by `sorters_program`, downloads through dspk-hub)

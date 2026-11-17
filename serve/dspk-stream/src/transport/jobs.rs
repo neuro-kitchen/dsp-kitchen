@@ -9,8 +9,9 @@
 //! - parameter names are plain flag names, none of the ones the server sets itself, and values
 //!   are one line.
 //!
-//! Each control request (allowed or refused) is appended to an audit log (JSON lines, mode
-//! 0600). How a job runs is the caller's ([`JobRunner`]): the command line runs the separate
+//! Each control request (allowed or refused), each job's end (finished, stopped or failed, its
+//! output and duration) and each file a plugin writes (a curation saved) are appended to an audit
+//! log (JSON lines, mode 0600, each with `at`: UTC RFC 3339): what the server made, and for whom. How a job runs is the caller's ([`JobRunner`]): the command line runs the separate
 //! `dspk-cli-sorter` program.
 
 use std::collections::VecDeque;
@@ -72,6 +73,11 @@ pub trait JobReport: Send + Sync {
 pub trait JobRunner: Send + Sync {
     /// The sorters this server can run.
     fn sorters(&self) -> Vec<String>;
+    /// Whether its jobs run on the GPU: such a job takes the GPU alone while it runs
+    /// (`dspk_core::lease::batch`); a CPU-only runner leaves it to the views.
+    fn uses_gpu(&self) -> bool {
+        true
+    }
     /// Runs `job` to the end (blocking), reporting as it goes; stops early once `cancel` is set.
     /// `Ok`: a one-line summary of the result.
     fn run(&self, job: &JobSpec, report: &dyn JobReport, cancel: &AtomicBool) -> Result<String, String>;
@@ -178,11 +184,29 @@ impl Jobs {
 
     /// Appends one control request to the audit log (failures to write are logged, not fatal).
     fn audit(&self, peer: &Peer, action: &str, detail: &str, result: &Result<(), String>) {
-        let Some(path) = &self.audit else { return };
-        let line = serde_json::json!({
-            "unix": now_unix(), "client": peer.name, "permission": peer.permission.to_string(),
+        let unix = now_unix();
+        self.append_audit(serde_json::json!({
+            "at": dspk_core::time::wall::rfc3339_utc(unix), "unix": unix, "client": peer.name, "permission": peer.permission.to_string(),
             "action": action, "detail": detail, "ok": result.is_ok(), "error": result.as_ref().err(),
-        });
+        }));
+    }
+
+    /// Appends a file a plugin wrote for `peer` (`plugin.method`: what it wrote) to the audit log.
+    pub fn audit_plugin_write(&self, peer: &Peer, plugin: &str, method: &str, detail: &str, result: &Result<(), String>) {
+        self.audit(peer, &format!("{plugin}.{method}"), detail, result);
+    }
+
+    /// Appends a job's end: who started it, its output, how it ended, how long it ran.
+    fn audit_job_end(&self, started_by: &str, started_unix: u64, output: &str, outcome: &str, message: &str) {
+        let unix = now_unix();
+        self.append_audit(serde_json::json!({
+            "at": dspk_core::time::wall::rfc3339_utc(unix), "unix": unix, "client": started_by, "action": "job_end",
+            "detail": output, "outcome": outcome, "message": message, "seconds": unix.saturating_sub(started_unix), "ok": outcome == "finished",
+        }));
+    }
+
+    fn append_audit(&self, line: serde_json::Value) {
+        let Some(path) = &self.audit else { return };
         let mut options = std::fs::OpenOptions::new();
         options.create(true).append(true);
         #[cfg(unix)]
@@ -296,6 +320,10 @@ impl Jobs {
             if job.output.symlink_metadata().is_ok() {
                 return Err(refuse(format!("{} exists already: configure another output", self.root.relative(&job.output))));
             }
+            // A live session holds the GPU: no sort beside it (refused now, not after the queue)
+            if dspk_core::lease::live_running() {
+                return Err(refuse("the GPU is recording live: sort when the session ends, or on another computer or GPU"));
+            }
             s.state = wire::DeviceState::Running;
             s.progress = JobProgress::default();
             s.message = "running".into();
@@ -306,7 +334,18 @@ impl Jobs {
             let (cancel, jobs) = (s.cancel.clone(), self.clone());
             std::thread::spawn(move || {
                 let reporter = Reporter(jobs.clone());
-                let outcome = jobs.runner.run(&job, &reporter, &cancel);
+                // The GPU for the job alone: views in progress finish, what they keep is
+                // released; views go to the CPU until the job ends (the lease is dropped)
+                let gpu = if jobs.runner.uses_gpu() { Some(dspk_core::lease::batch()) } else { None };
+                let outcome = match &gpu {
+                    Some(Ok(_)) => {
+                        reporter.log("the GPU is the job's: views are processed on the CPU until it ends");
+                        jobs.runner.run(&job, &reporter, &cancel)
+                    }
+                    Some(Err(why)) => Err(why.clone()),
+                    None => jobs.runner.run(&job, &reporter, &cancel),
+                };
+                drop(gpu);
                 // A stopped or failed job leaves no partial output: it was new when the job started
                 // (checked), so it is this job's, and a rerun would be refused while it is there
                 if outcome.is_err() && job.output.symlink_metadata().is_ok() {
@@ -316,12 +355,18 @@ impl Jobs {
                         Err(e) => reporter.log(&format!("could not remove the partial output {}: {e}", job.output.display())),
                     }
                 }
-                let mut s = jobs.lock();
-                (s.state, s.message) = match outcome {
-                    Ok(summary) => (wire::DeviceState::Stopped, summary),
-                    Err(_) if cancel.load(Ordering::Relaxed) => (wire::DeviceState::Stopped, "stopped".into()),
-                    Err(why) => (wire::DeviceState::Error, why),
+                let ended = {
+                    let mut s = jobs.lock();
+                    let how;
+                    (s.state, s.message, how) = match outcome {
+                        Ok(summary) => (wire::DeviceState::Stopped, summary, "finished"),
+                        Err(_) if cancel.load(Ordering::Relaxed) => (wire::DeviceState::Stopped, "stopped".into(), "stopped"),
+                        Err(why) => (wire::DeviceState::Error, why, "failed"),
+                    };
+                    (s.started_by.clone(), s.started_unix, s.message.clone(), how)
                 };
+                let (by, since, message, how) = ended;
+                jobs.audit_job_end(&by, since, &jobs.root.relative(&job.output), how, &message);
             });
             Ok(())
         });
@@ -387,6 +432,10 @@ mod tests {
     }
 
     impl JobRunner for FakeRunner {
+        fn uses_gpu(&self) -> bool {
+            false
+        }
+
         fn sorters(&self) -> Vec<String> {
             vec!["kilosort4".into()]
         }
@@ -413,6 +462,10 @@ mod tests {
     }
 
     impl JobRunner for PartialRunner {
+        fn uses_gpu(&self) -> bool {
+            false
+        }
+
         fn sorters(&self) -> Vec<String> {
             vec!["kilosort4".into()]
         }
@@ -523,6 +576,8 @@ mod tests {
         let lines = std::fs::read_to_string(&audit).unwrap();
         assert!(lines.lines().count() >= 9, "every control request is audited:\n{lines}");
         assert!(lines.contains("\"client\":\"alice\"") && lines.contains("\"ok\":false"));
+        assert!(lines.lines().all(|l| l.contains("\"at\":\"")), "each line says when");
+        assert!(lines.contains("\"action\":\"job_end\"") && lines.contains("\"outcome\":\"finished\"") && lines.contains("m1/rec.ap.kilosort4.sorting.zarr"), "a job's end, its output:\n{lines}");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;

@@ -12,6 +12,7 @@
 //! What a run leaves behind besides its data is written by [`SessionLog`] (`session-live.jsonl`).
 
 mod generator;
+pub mod overview;
 mod paced;
 mod ring;
 pub mod sensor;

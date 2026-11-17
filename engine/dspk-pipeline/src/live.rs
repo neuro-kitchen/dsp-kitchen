@@ -546,6 +546,15 @@ impl LiveRunner {
         self.reset()
     }
 
+    /// [`Self::warm`] with every buffer it makes kept apart from the device's pools (CubeCL's
+    /// persistent allocations): a live chain's memory is reserved once, at the start of a run, so
+    /// a release of the pools (a server giving its GPU back) or their fragmentation never touches
+    /// it mid-session.
+    pub fn warm_persistent(&mut self) -> DspResult<()> {
+        let client = self.client.clone();
+        client.memory_persistent_allocation(self, |me| me.warm())
+    }
+
     /// Forgets every carried state: the next block starts as the first one.
     pub fn reset(&mut self) -> DspResult<()> {
         for seg in &mut self.segments {
@@ -668,12 +677,19 @@ fn trim_delayed(values: Vec<f32>, channels: usize, samples: usize, first_sample:
 /// them) over `channels` channels: checked as a device's chain is (live ops only), its output the
 /// tap `view`.
 pub fn chain_of_ops(ops: &[String], channels: usize, block_ms: f64) -> Result<LiveChain, Vec<Refusal>> {
+    let spec = spec_of_ops(ops, block_ms).map_err(|e| vec![Refusal::whole(e)])?;
+    check_live(&spec, channels)
+}
+
+/// A live spec (JSON) of `ops` (pipeline nodes in JSON, in order) after the source, the last one
+/// tapped as `view`: a view's processing sent to a device as its chain.
+pub fn spec_of_ops(ops: &[String], block_ms: f64) -> Result<String, String> {
     let mut nodes = serde_json::Map::new();
     nodes.insert("in".into(), serde_json::json!({"op": "read"}));
     let mut edges = Vec::new();
     let mut last = "in".to_string();
     for (i, op) in ops.iter().enumerate() {
-        let mut node: Value = serde_json::from_str(op).map_err(|e| vec![Refusal::whole(format!("op {i}: not a pipeline node: {e}"))])?;
+        let mut node: Value = serde_json::from_str(op).map_err(|e| format!("op {i}: not a pipeline node: {e}"))?;
         let id = format!("op{i}");
         if i + 1 == ops.len()
             && let Some(obj) = node.as_object_mut()
@@ -684,8 +700,7 @@ pub fn chain_of_ops(ops: &[String], channels: usize, block_ms: f64) -> Result<Li
         edges.push(serde_json::json!([last, id]));
         last = id;
     }
-    let spec = serde_json::json!({"dspk_pipeline": crate::SPEC_VERSION, "nodes": nodes, "edges": edges, "live": {"block_ms": block_ms}});
-    check_live(&spec.to_string(), channels)
+    Ok(serde_json::json!({"dspk_pipeline": crate::SPEC_VERSION, "nodes": nodes, "edges": edges, "live": {"block_ms": block_ms}}).to_string())
 }
 
 /// `spec_json` with one parameter of one node set to `value_json` (a parameter changed while

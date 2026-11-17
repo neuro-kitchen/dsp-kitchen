@@ -94,19 +94,69 @@ impl DevicesPanel {
         cx.notify();
     }
 
-    /// Redraws every [`REDRAW`] while connected: the status and the live strip follow the device.
+    /// Redraws every [`REDRAW`] while a device is chosen: the status and the live strip follow it.
+    /// A lost connection is made again in the background (the device runs on meanwhile).
     fn redraw_while_connected(&mut self, cx: &mut Context<Self>) {
         self._tasks.push(cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(REDRAW).await;
-                let connected = this.update(cx, |p, cx| {
+                let lost = this.update(cx, |p, cx| {
                     cx.notify();
-                    p.instrument.as_ref().is_some_and(|i| i.client().is_open())
+                    p.instrument.as_ref().map(|i| (!i.connected()).then(|| i.clone()))
                 });
-                if !matches!(connected, Ok(true)) {
-                    break;
+                match lost {
+                    Ok(Some(Some(i))) => {
+                        // `client()` connects again (one try a second at most)
+                        let _ = cx.background_executor().spawn(async move { i.client().is_open() }).await;
+                    }
+                    Ok(Some(None)) => {}
+                    _ => break,
                 }
             }
+        }));
+    }
+
+    /// Opens tap `tap` in Explore, following the run's newest data.
+    fn open_in_explore(&mut self, tap: String, cx: &mut Context<Self>) {
+        let Some(instrument) = self.instrument.clone() else { return };
+        // A view's ops sent as the device's chain (configured while its run is stopped)
+        let inst = instrument.clone();
+        let send: crate::data::store::LiveSend = Arc::new(move |ops: Vec<String>| {
+            let spec = dspk_pipeline::live::spec_of_ops(&ops, 10.0)?;
+            let r = inst.configure_full(&spec, false).map_err(|e| format!("{e:#}"))?;
+            if !r.refusals.is_empty() {
+                return Err(r.refusals.iter().map(|x| format!("{}: {}", x.node, x.reason)).collect::<Vec<_>>().join("; "));
+            }
+            let delay = r.chain.as_ref().map_or(0, |c| c.delay_samples);
+            Ok(format!("The device runs this view's ops as its chain (delay {delay} samples); its taps follow"))
+        });
+        let t = tap.clone();
+        let task = cx.background_executor().spawn(async move { crate::data::instrument::LiveTapSignal::open(instrument, &t) });
+        self._tasks.push(cx.spawn(async move |this, cx| {
+            let opened = task.await;
+            let _ = this.update(cx, |p, cx| match opened {
+                Ok(signal) => {
+                    let label = format!("{} · {tap}", p.instrument.as_ref().map(|i| i.profile.name.clone()).unwrap_or_default());
+                    let signal = Arc::new(signal);
+                    let first = crate::data::recording::dataset::Dataset::new(signal.clone(), None);
+                    // The run grows: a longer snapshot each time it moved
+                    let last = Arc::new(Mutex::new(signal));
+                    let grow: crate::data::store::LiveGrow = Arc::new(move || {
+                        let mut last = crate::platform::lock(&last);
+                        let longer = Arc::new(last.grown()?);
+                        *last = longer.clone();
+                        Some(crate::data::recording::dataset::Dataset::new(longer, None))
+                    });
+                    p.store.update(cx, |s, cx| {
+                        s.open_live(label, first, grow, Some(send.clone()), cx);
+                        s.set_workspace(crate::navigation::route::Workspace::Explore, cx);
+                    });
+                }
+                Err(e) => {
+                    p.message = Some((false, format!("Opening in Explore: {e:#}")));
+                    cx.notify();
+                }
+            });
         }));
     }
 
@@ -268,6 +318,21 @@ impl Render for DevicesPanel {
                 }));
             }
             body = body.child(tap_row);
+            // Each tap in Explore, its plots following the run (scroll back any time)
+            let mut explore_row = h_flex().gap_1().flex_wrap().child(div().text_xs().text_color(muted).child("Open in Explore:"));
+            let mut explorable: Vec<String> = instrument.welcome().device.as_ref().map(|d| d.sources.iter().map(|s| s.name.clone()).collect()).unwrap_or_default();
+            for tap in &taps {
+                if !explorable.contains(&tap.name) && tap.kind == wire::TapKind::Samples as i32 {
+                    explorable.push(tap.name.clone());
+                }
+            }
+            for (i, name) in explorable.into_iter().enumerate() {
+                let (m, n) = (me.clone(), name.clone());
+                explore_row = explore_row.child(Button::new(SharedString::from(format!("devices-explore-{i}"))).small().outline().label(name).disabled(!running).tooltip("Explore's plots on this tap, following the newest data").on_click(move |_, _, cx| {
+                    let _ = m.update(cx, |p, cx| p.open_in_explore(n.clone(), cx));
+                }));
+            }
+            body = body.child(explore_row);
 
             // The live strip: the newest columns of up to STRIP_CHANNELS channels
             if let Some(live) = &self.live {

@@ -16,8 +16,8 @@ The viewer reads:
 
 - **Zarr recordings** (`.zarr`, as `dspk convert` and `dspk run` write them: zstd, Blosc-LZ4,
   gzip or uncompressed, sharded or not). Only the chunks a view needs are read.
-- **WAV files** (`.wav`): 16- or 32-bit PCM, or 32- or 64-bit float, any number of channels.
-  Integers are shown scaled to ±1. A good first file to try: any recording saved as audio.
+- **WAV files** (`.wav`): 8-, 16-, 24- or 32-bit PCM, or 32- or 64-bit float, any number of
+  channels. Integers are shown scaled to ±1. A good first file to try: any recording saved as audio.
 - **Raw recordings**: a `.bin` with its `.meta`, dspk's JSON layout:
 
 ```json
@@ -29,9 +29,18 @@ One recording in the folder opens at once; with several, the viewer lists them. 
 picks a `.wav`, or a `.bin` and its `.meta`, by hand. Files are read in pieces, so a recording
 larger than the browser's memory opens too; its overview fills in while you look.
 
-Not in the viewer yet: SpikeGLX (`.ap.bin` with SpikeGLX's `.meta`), NWB, sortings, Curation and
-Analytics. They need the electrophysiology formats (dspk-synapse) built for the browser. Use the
-[desktop app](/dsp-kitchen/app/) or [the container](/dsp-kitchen/deploy/image/#the-app-in-your-browser).
+## Curate a sorting
+
+**Timeline → + → Sorting…** picks a `.sorting.zarr` folder (or a Phy folder's files) and opens it
+in [Curation](/dsp-kitchen/plugins/synapse/learn/curation/), over the recording that is open:
+every view, label, merge and split, computed in the page on your CPU's threads. A page has no disk
+to write to: **Save** downloads `dspk-curation.json`. Put it into the `.sorting.zarr` folder, where
+the desktop app and `dspk` read it.
+
+Not in the viewer yet: SpikeGLX (`.ap.bin` with SpikeGLX's `.meta`), NWB recordings, sorting a
+recording, and the analytics. Use the [desktop app](/dsp-kitchen/app/) or
+[the container](/dsp-kitchen/deploy/image/#the-app-in-your-browser), where the server sorts and
+curates.
 
 ## What your browser needs
 
@@ -51,5 +60,5 @@ whitening step is not available in the browser yet.
 | | Recordings | Processing |
 |---|---|---|
 | This page | files on your computer | your GPU, through the browser |
-| [The container](/dsp-kitchen/deploy/image/#the-app-in-your-browser) | the server's | the server's GPU |
+| [The container](/dsp-kitchen/deploy/image/#the-app-in-your-browser) | the server's | the server's GPU; it sorts, and computes Curation's waveforms and features (with the view's processing), and saves curations there |
 | The desktop app | files, servers | your GPU, every runtime |

@@ -64,6 +64,8 @@ struct SourceRun {
     status: Mutex<wire::SourceStatus>,
     /// Its raw data on disk (a recording), relative to the device's data folder.
     raw_path: Option<PathBuf>,
+    /// Min / max columns from the run's start: zoomed-out views of any length, at once.
+    overview: Mutex<dspk_io::live::overview::LiveOverview>,
 }
 
 /// What a run shares with the device while it runs (and after, for range reads).
@@ -84,6 +86,9 @@ struct RunShared {
 }
 
 struct Run {
+    /// The GPU held for the live chain (`None` on the CPU runtime): no sort starts beside it in
+    /// this process (`dspk_core::lease`).
+    _gpu: Option<dspk_core::lease::Lease>,
     stop: Arc<AtomicBool>,
     /// Who asked it to stop (for the log).
     stopped_by: Arc<Mutex<String>>,
@@ -382,8 +387,9 @@ impl LiveDevice {
             layout.channels.iter().map(|c| c.gain).collect(),
             layout.channels.iter().map(|c| c.offset).collect(),
         )?;
-        // Kernels compiled and buffers made now, not on the first real block
-        runner.warm()?;
+        // Kernels compiled and buffers made now, not on the first real block; the buffers kept
+        // apart from the pools (persistent), so nothing releases them during the session
+        runner.warm_persistent()?;
         Ok(runner)
     }
 
@@ -404,6 +410,15 @@ impl LiveDevice {
             }
         }
         let chain_source = self.chain_source(&chain);
+        // The GPU for the live chain while it runs (a GPU runtime): refused while a batch job
+        // (a sort) holds it in this process
+        let gpu = match self.target {
+            ComputeTarget::Cpu => None,
+            _ => match dspk_core::lease::live() {
+                Ok(l) => Some(l),
+                Err(e) => return Err(fail(&mut inner, e)),
+            },
+        };
         let runner = match self.runner_for(&chain) {
             Ok(r) => r,
             Err(e) => return Err(fail(&mut inner, e.to_string())),
@@ -476,6 +491,7 @@ impl LiveDevice {
                         ring: LiveRing::new(slot.layout.clone(), capacity),
                         status: Mutex::new(wire::SourceStatus { name: slot.layout.name.clone(), ..Default::default() }),
                         raw_path: folder.as_ref().map(|f| rel(&f.join(raw_store_name(n, &slot.layout.name)))),
+                        overview: Mutex::new(dspk_io::live::overview::LiveOverview::new(slot.layout.channel_count())),
                     }
                 })
                 .collect(),
@@ -499,7 +515,7 @@ impl LiveDevice {
                 .map_err(|e| LiveError::internal(e.to_string()))?;
             threads.push(thread);
         }
-        inner.run = Some(Run { stop, stopped_by, threads, shared });
+        inner.run = Some(Run { _gpu: gpu, stop, stopped_by, threads, shared });
         Ok(())
     }
 
@@ -698,6 +714,11 @@ impl LiveDevice {
         }
         let block = Arc::new(block.clone());
         shared.sources[index].ring.push(block.clone());
+        // Its min / max columns, for views zoomed out over the run
+        let all: Vec<usize> = (0..layout.channel_count()).collect();
+        if let Some(values) = shared.sources[index].ring.read(&all, block.first_sample..block.end_sample()) {
+            lock(&shared.sources[index].overview).push(block.first_sample, &values, block.samples);
+        }
         if let Some(rec) = recorder {
             rec.push(&block)?;
         }
@@ -1256,6 +1277,14 @@ impl Device for LiveDevice {
         }
         let ops: Vec<String> = view.processing.as_ref().map(|p| p.ops.clone()).unwrap_or_default();
         let rate = rate_of(&info);
+        // Zoomed out, unprocessed, a source: from its overview (built as blocks arrived)
+        if ops.is_empty()
+            && let Some(i) = self.source_index(&request.tap)
+            && let Some(shared) = self.current_shared()
+            && let Some(min_max) = lock(&shared.sources[i].overview).columns(&channels, view.start..view.end, view.width as usize)
+        {
+            return Ok(session::EnvelopeFrame { content: Some(session::envelope_frame::Content::Columns(dspk_stream::protocol::wire::Columns { min_max, complete: true })) });
+        }
         // With viewer ops: the chain runs from a little before the range, so its filters settle
         let warmup = if ops.is_empty() { 0 } else { ((VIEW_WARMUP_SECONDS * rate) as u64).min(view.start) };
         let read_from = view.start - warmup;

@@ -200,6 +200,48 @@ fn trim(v: f64) -> String {
     t.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
+/// `run` (as [`run_path`] names it) with the time it starts in its name, UTC to the minute:
+/// `rec.kilosort4.0-20s.20261117-2032.sorting.zarr`, so runs of the same part never collide and
+/// say when they were made.
+pub fn stamped(run: &Path, unix_secs: u64) -> PathBuf {
+    let t = dspk_core::time::wall::rfc3339_utc(unix_secs); // 2026-11-17T20:32:03Z
+    let stamp = format!("{}{}{}-{}{}", &t[0..4], &t[5..7], &t[8..10], &t[11..13], &t[14..16]);
+    let name = run.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+    let stem = name.strip_suffix(".sorting.zarr").unwrap_or(&name);
+    run.with_file_name(format!("{stem}.{stamp}.sorting.zarr"))
+}
+
+/// Whether `other` is a run of the same sorter over the same part as `run` (unstamped, as
+/// [`run_path`] names it), by name: `other` is `run`, or `run` with a stamp, or with a `-2`…
+/// (the folder is not compared: a server's runs are named by their path on it)
+pub fn same_run(run: &Path, other: &Path) -> bool {
+    let name = |p: &Path| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let (base, other) = (name(run), name(other));
+    let Some(stem) = base.strip_suffix(".sorting.zarr") else { return false };
+    let Some(rest) = other.strip_suffix(".sorting.zarr").and_then(|o| o.strip_prefix(stem)) else { return false };
+    rest.is_empty() || stamp_of(rest).is_some() || rest.strip_prefix('-').is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// `.20261117-2032` → its date and time as people read it (`17 Nov 2026, 20:32 UTC`).
+fn stamp_of(rest: &str) -> Option<String> {
+    let s = rest.strip_prefix('.')?;
+    let (date, time) = s.split_once('-')?;
+    if date.len() != 8 || time.len() != 4 || !date.chars().chain(time.chars()).all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let month = MONTHS.get(date[4..6].parse::<usize>().ok()?.checked_sub(1)?)?;
+    Some(format!("{} {month} {}, {}:{} UTC", date[6..8].trim_start_matches('0'), &date[0..4], &time[0..2], &time[2..4]))
+}
+
+/// When run `other` (of the same part as `run`) was made, from the stamp in its name.
+pub fn run_time(run: &Path, other: &Path) -> Option<String> {
+    let name = |p: &Path| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let stem = name(run).strip_suffix(".sorting.zarr")?.to_string();
+    let other = name(other);
+    stamp_of(other.strip_suffix(".sorting.zarr")?.strip_prefix(&stem)?)
+}
+
 /// `rec.bin` → `rec.<sorter>.sorting.zarr` next to it.
 pub fn sorting_path(recording: &Path, sorter: &str) -> PathBuf {
     let name = recording.file_name().map_or_else(|| "recording".into(), |n| n.to_string_lossy().into_owned());
@@ -228,5 +270,20 @@ mod tests {
     fn test_sorting_path() {
         assert_eq!(sorting_path(Path::new("/d/rec.bin"), "kilosort4"), PathBuf::from("/d/rec.kilosort4.sorting.zarr"));
         assert_eq!(sorting_path(Path::new("/d/rec.v2.processed.zarr"), "mountainsort5"), PathBuf::from("/d/rec.v2.processed.mountainsort5.sorting.zarr"));
+    }
+
+    /// A run's name carries when it started; runs of the same part are recognised, stamped or
+    /// not, and say when they were made.
+    #[test]
+    fn runs_are_stamped_and_recognised() {
+        let run = run_path(Path::new("/d/rec.bin"), "kilosort4", None, Some(20.0));
+        assert_eq!(run, PathBuf::from("/d/rec.kilosort4.0-20s.sorting.zarr"));
+        let stamped = stamped(&run, 1_794_947_555); // 2026-11-17T20:32:35Z
+        assert_eq!(stamped, PathBuf::from("/d/rec.kilosort4.0-20s.20261117-2032.sorting.zarr"));
+        assert!(same_run(&run, &stamped) && same_run(&run, &run) && same_run(&run, Path::new("/d/rec.kilosort4.0-20s-2.sorting.zarr")));
+        assert!(!same_run(&run, Path::new("/d/rec.kilosort4.0-200s.sorting.zarr")), "another part");
+        assert!(!same_run(&run, Path::new("/d/rec.mountainsort5.0-20s.sorting.zarr")));
+        assert_eq!(run_time(&run, &stamped).as_deref(), Some("17 Nov 2026, 20:32 UTC"));
+        assert_eq!(run_time(&run, &run), None);
     }
 }

@@ -219,6 +219,17 @@ pub fn open_device(device: Device) -> Client {
     client
 }
 
+/// Hands the memory CubeCL keeps in its pools and nothing uses back to the driver, on every
+/// device a client was made for. CubeCL keeps freed buffers for the next allocation (asking the
+/// driver is slow); a server that is done with a big read, or that gives the GPU to another
+/// program (a sort), calls this so the memory is free for others.
+pub fn release_device_memory() {
+    let devices = OPENED.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    for device in devices {
+        let _ = device.client().memory_cleanup();
+    }
+}
+
 /// Shuts down every device a client was made for: their runner threads stop (queued work runs
 /// first) and the devices are destroyed, so the GPU driver's threads end before the process does.
 /// Runs at exit by itself; call it earlier to release the GPUs. Clients still alive keep their

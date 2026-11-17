@@ -18,7 +18,7 @@ cpu = ["dspk-core/cpu", "dspk-ops/cpu", "dspk-pipeline/cpu", "dspk-session/cpu"]
 cuda = ["dspk-core/cuda", "dspk-ops/cuda", "dspk-pipeline/cuda", "dspk-session/cuda"]
 hip = ["dspk-core/hip", "dspk-ops/hip", "dspk-pipeline/hip", "dspk-session/hip"]
 # Real time: connect to a dspk device, follow it, direct it, live views (`data::instrument`)
-device = ["dspk-stream/live"]
+device = ["dspk-stream/live", "dspk-pipeline/live"]
 
 [dependencies]
 web-time.workspace = true

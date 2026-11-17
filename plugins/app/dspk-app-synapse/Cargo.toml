@@ -31,6 +31,7 @@ dspk-view = { workspace = true, default-features = false }
 dspk-pipeline.workspace = true
 dspk-session.workspace = true
 kitchen-shell.workspace = true
+kitchen-ui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true

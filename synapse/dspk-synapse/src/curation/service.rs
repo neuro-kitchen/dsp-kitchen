@@ -57,6 +57,11 @@ pub struct ViewsCall {
     /// The page's curation edits, saved or not.
     pub ops: Vec<CurationOp>,
     pub request: ViewsRequest,
+    /// The page's view processing (pipeline nodes in JSON, in order): waveforms and features
+    /// from the signal as the page shows it. Applied by the server before the call reaches the
+    /// service (which reads whatever recording it is given); empty: as stored.
+    #[serde(default)]
+    pub processing: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

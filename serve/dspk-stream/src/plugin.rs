@@ -21,6 +21,10 @@ pub struct PluginContext {
     pub peer: String,
     /// The client was paired with control: it may change files (a plugin refuses writes else).
     pub may_write: bool,
+    /// The open recording with `ops` (pipeline nodes in JSON, in order) run over every channel, as
+    /// the server processes a page's views (kept for the next call); `None`: none open, or this
+    /// server does not process.
+    pub processed: Option<Box<dyn Fn(&[String]) -> StreamResult<Arc<dyn dspk_view::SignalBackend>> + Send + Sync>>,
 }
 
 /// One plugin of a server.
@@ -30,4 +34,10 @@ pub trait ServerPlugin: Send + Sync {
 
     /// Answers `method` with `body`; run on a blocking thread (it may compute for seconds).
     fn call(&self, method: &str, body: &[u8], context: &PluginContext) -> StreamResult<Vec<u8>>;
+
+    /// What a call writes, for the server's audit log (`None`: it writes nothing): e.g. the file
+    /// saved. Called before [`Self::call`].
+    fn writes(&self, _method: &str, _body: &[u8]) -> Option<String> {
+        None
+    }
 }

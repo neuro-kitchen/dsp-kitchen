@@ -351,10 +351,20 @@ pub(crate) async fn answer(request: wire::Request, device: &Device, current: &Cu
         Req::Plugin(call) => {
             let plugin = device.plugins.iter().find(|p| p.id() == call.plugin).cloned().ok_or_else(|| StreamError::Protocol(format!("this server has no plugin {:?}", call.plugin)))?;
             let root = device.files.as_ref().map(|(root, _)| root.clone());
-            let recording = current_recording(current).map(|r| r.source.clone());
-            let context = crate::plugin::PluginContext { resolve: root.map(|r| Box::new(move |p: &str| r.resolve(p)) as Box<dyn Fn(&str) -> StreamResult<std::path::PathBuf> + Send + Sync>), recording, peer: peer.name.clone(), may_write: peer.permission == Permission::Control };
-            let body = tokio::task::spawn_blocking(move || plugin.call(&call.method, &call.body, &context)).await.map_err(StreamError::protocol)??;
-            Ok(Resp::Plugin(wire::PluginReply { body }))
+            let open = current_recording(current);
+            let recording = open.as_ref().map(|r| r.source.clone());
+            let processed = open.map(|r| {
+                Box::new(move |ops: &[String]| r.processed(&wire::Processing { channels: Vec::new(), ops: ops.to_vec() }))
+                    as Box<dyn Fn(&[String]) -> StreamResult<Arc<dyn dspk_view::SignalBackend>> + Send + Sync>
+            });
+            let context = crate::plugin::PluginContext { resolve: root.map(|r| Box::new(move |p: &str| r.resolve(p)) as Box<dyn Fn(&str) -> StreamResult<std::path::PathBuf> + Send + Sync>), recording, peer: peer.name.clone(), may_write: peer.permission == Permission::Control, processed };
+            // A call that writes a file is audited with the jobs (who, what, whether it worked)
+            let writes = plugin.writes(&call.method, &call.body).map(|what| (what, format!("{}", call.plugin), call.method.clone()));
+            let replied = tokio::task::spawn_blocking(move || plugin.call(&call.method, &call.body, &context)).await.map_err(StreamError::protocol)?;
+            if let (Some((what, plugin_id, method)), Some(jobs)) = (writes, &device.jobs) {
+                jobs.audit_plugin_write(peer, &plugin_id, &method, &what, &replied.as_ref().map(|_| ()).map_err(|e| e.to_string()));
+            }
+            Ok(Resp::Plugin(wire::PluginReply { body: replied? }))
         }
     }
 }

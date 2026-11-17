@@ -36,6 +36,26 @@ pub fn ensure(_recording: &Path, _groups: &[&str]) -> DspResult<PathBuf> {
     Err(no_files("derived data"))
 }
 
+/// The session metadata, in a browser: nothing kept, the file's own not read (saving says so).
+pub mod session_meta {
+    use super::*;
+    use crate::session_meta::SessionMetadata;
+
+    pub const ATTRIBUTE: &str = "nwb_session";
+
+    pub fn read(_recording: &Path) -> SessionMetadata {
+        SessionMetadata::default()
+    }
+
+    pub fn write(_recording: &Path, _meta: &SessionMetadata) -> DspResult<PathBuf> {
+        Err(no_files("the session's metadata"))
+    }
+
+    pub fn from_nwb_zarr(_dir: &Path) -> SessionMetadata {
+        SessionMetadata::default()
+    }
+}
+
 pub mod epochs {
     use super::*;
     use crate::epoch::EpochDoc;

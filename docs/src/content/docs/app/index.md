@@ -22,7 +22,7 @@ The tabs along the top are workspaces. They share one session and one timeline.
 | [Pipeline](/dsp-kitchen/app/pipeline/) | The processing graph: recordings, operations, views and writes on a canvas |
 | [Sorting](/dsp-kitchen/plugins/synapse/learn/sorting-in-the-app/) | Run the installed sorters and compare their units (Synapse plugin) |
 | [Curation](/dsp-kitchen/plugins/synapse/learn/curation/) | Judge a sorting: label, merge, split (Synapse plugin) |
-| Analytics | Charts across recordings and runs; still to be built |
+| Analytics | Signals and units aligned to events (averages, rasters, PETHs), and what this session made |
 
 ![The start screen, with Open file, Open folder and Synthetic recording](/dsp-kitchen/img/app/00_main-dark.png)
 

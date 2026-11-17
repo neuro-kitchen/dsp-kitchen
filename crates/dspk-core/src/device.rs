@@ -97,8 +97,12 @@ impl ComputeTarget {
         }
     }
 
-    /// `DSPK_RUNTIME` when set, else the first compiled-in runtime.
+    /// The runtime this thread was told to use ([`with_target`]), else `DSPK_RUNTIME` when set,
+    /// else the first compiled-in runtime.
     pub fn from_env() -> Result<Self, ComputeError> {
+        if let Some(t) = THREAD_TARGET.with(|t| t.get()) {
+            return t.checked();
+        }
         match std::env::var(RUNTIME_ENV) {
             Ok(name) if !name.trim().is_empty() => Self::parse(&name)?.checked(),
             _ => Self::available().first().copied().ok_or(ComputeError::NoneAvailable),
@@ -136,4 +140,23 @@ mod tests {
             assert!(matches!(target.checked(), Err(ComputeError::Unavailable(..))));
         }
     }
+}
+
+thread_local! {
+    /// The runtime [`with_target`] set for this thread.
+    static THREAD_TARGET: std::cell::Cell<Option<ComputeTarget>> = const { std::cell::Cell::new(None) };
+}
+
+/// Runs `f` with [`ComputeTarget::from_env`] answering `target` on this thread: e.g. a server's
+/// view processed on the CPU while a sort holds the GPU ([`crate::lease`]).
+pub fn with_target<T>(target: ComputeTarget, f: impl FnOnce() -> T) -> T {
+    let before = THREAD_TARGET.with(|t| t.replace(Some(target)));
+    struct Restore(Option<ComputeTarget>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            THREAD_TARGET.with(|t| t.set(self.0));
+        }
+    }
+    let _restore = Restore(before);
+    f()
 }

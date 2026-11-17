@@ -48,6 +48,23 @@ pub enum CurationOp {
     Merge { units: Vec<usize>, into: usize },
     /// The spikes of `unit` at sample times `spikes` become a new unit, id `into`.
     Split { unit: usize, spikes: Vec<u64>, into: usize },
+    /// The merged unit `unit` is taken apart: the units merged into it come back, each with the
+    /// spikes it brought (and its label then); `unit` is gone. Its spikes split off since stay
+    /// where they went.
+    Unmerge { unit: usize },
+}
+
+/// The units merged into `unit` by `ops` (`None`: `unit` is not a merge, or was taken apart).
+pub fn merged_parts(ops: &[CurationOp], unit: usize) -> Option<Vec<usize>> {
+    let mut parts = None;
+    for op in ops {
+        match op {
+            CurationOp::Merge { units, into } if *into == unit => parts = Some(units.clone()),
+            CurationOp::Unmerge { unit: u } if *u == unit => parts = None,
+            _ => {}
+        }
+    }
+    parts
 }
 
 /// When, where and by whom an edit was made: each optional (a log written before they were kept
@@ -77,10 +94,7 @@ impl EditMeta {
     }
 }
 
-/// Seconds since 1970 (UTC), also in a browser.
-pub fn unix_now() -> u64 {
-    web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
-}
+pub use dspk_core::time::wall::{rfc3339_utc, unix_now};
 
 /// One edit of the log as written: the edit and its [`EditMeta`], side by side
 /// (`{"op": "merge", "units": [5, 6], "into": 8, "at": "…", "via": "desktop"}`).
@@ -120,20 +134,6 @@ pub struct Curation {
     pub saved: usize,
 }
 
-/// `unix_secs` as UTC RFC 3339 (no time library: days to the civil date, Howard Hinnant's method).
-pub fn rfc3339_utc(unix_secs: u64) -> String {
-    let (days, rem) = ((unix_secs / 86_400) as i64, unix_secs % 86_400);
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + i64::from(m <= 2);
-    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", rem / 3600, rem % 3600 / 60, rem % 60)
-}
 
 impl Curation {
     /// The log saved in `store` (none: an empty one).
@@ -261,6 +261,9 @@ pub fn next_unit_id(sorting: &SortingData) -> usize {
 /// colours stay put) and their spikes given to the new unit appended at the end.
 pub fn apply(base: &SortingData, ops: &[CurationOp]) -> SortingData {
     let mut s = base.clone();
+    // Per merged unit (its index): the units merged into it (indices); each spike's own unit is
+    // what it was before the merge, kept to take it apart
+    let mut merges: std::collections::HashMap<usize, (Vec<usize>, Vec<(usize, u32)>)> = Default::default();
     for op in ops {
         match op {
             CurationOp::Label { units, label } => {
@@ -286,11 +289,14 @@ pub fn apply(base: &SortingData, ops: &[CurationOp]) -> SortingData {
                 unit.info.num_spikes = idx.iter().map(|&u| s.units[u].info.num_spikes).sum();
                 unit.merged_into = None;
                 let set: HashSet<u32> = idx.iter().map(|&u| u as u32).collect();
-                for slot in s.unit_of.iter_mut() {
-                    if slot.is_some_and(|u| set.contains(&u)) {
+                let mut before = Vec::new();
+                for (k, slot) in s.unit_of.iter_mut().enumerate() {
+                    if let Some(u) = slot.filter(|u| set.contains(u)) {
+                        before.push((k, u));
                         *slot = Some(new as u32);
                     }
                 }
+                merges.insert(new, (idx.clone(), before));
                 for &u in &idx {
                     s.units[u].merged_into = Some(new);
                     s.units[u].info.num_spikes = 0;
@@ -319,6 +325,27 @@ pub fn apply(base: &SortingData, ops: &[CurationOp]) -> SortingData {
                 s.units[u].info.num_spikes -= moved.min(s.units[u].info.num_spikes);
                 s.units.push(part);
                 s.by_id.insert(*into as i32, new);
+            }
+            CurationOp::Unmerge { unit } => {
+                let Some(&m) = s.by_id.get(&(*unit as i32)) else { continue };
+                let Some((parts, before)) = merges.remove(&m) else { continue };
+                if s.units[m].merged_into.is_some() {
+                    continue;
+                }
+                // The spikes still in the merged unit go back to the unit each came from
+                for (k, u) in before {
+                    if s.unit_of[k] == Some(m as u32) {
+                        s.unit_of[k] = Some(u);
+                    }
+                }
+                for &u in &parts {
+                    s.units[u].merged_into = None;
+                    s.units[u].info.num_spikes = s.unit_of.iter().filter(|&&x| x == Some(u as u32)).count();
+                }
+                // The merged unit is gone (its row stays, empty, as a merged unit's does)
+                s.units[m].merged_into = Some(m);
+                s.units[m].info.num_spikes = 0;
+                s.by_id.remove(&(*unit as i32));
             }
         }
     }
@@ -420,9 +447,6 @@ mod tests {
     /// wrote it, and the edits undone (redo after a restart); a log without them still reads.
     #[test]
     fn test_edits_keep_when_where_and_who_and_the_undone_ones() {
-        assert_eq!(rfc3339_utc(0), "1970-01-01T00:00:00Z");
-        assert_eq!(rfc3339_utc(1_763_377_923), "2025-11-17T11:12:03Z");
-        assert_eq!(rfc3339_utc(951_782_400), "2000-02-29T00:00:00Z");
         let dir = store("meta");
         let mut log = Curation::default();
         let by = EditMeta { by: Some("browser-de22bc".into()), ..EditMeta::at(1_763_377_923, "page") };
@@ -438,5 +462,31 @@ mod tests {
         assert_eq!(back.meta[1].via.as_deref(), Some("desktop"));
         assert_eq!(back.ops, vec![CurationOp::Merge { units: vec![5, 6], into: 9 }, CurationOp::Label { units: vec![9], label: "good".into() }]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A merge taken apart gives back its units with the spikes and labels they had; spikes split
+    /// off the merged unit since stay in their new unit; it is told apart from other units.
+    #[test]
+    fn test_an_unmerge_gives_back_the_units_merged() {
+        let base = sorting::testing::sorting_of_units(&[(5, 0, 4), (6, 100, 4), (7, 200, 4)]);
+        let n_spikes = |s: &SortingData, id: usize| s.by_id.get(&(id as i32)).map(|&u| s.unit_of.iter().filter(|&&x| x == Some(u as u32)).count());
+        let into = next_unit_id(&base);
+        let mut ops = vec![CurationOp::Label { units: vec![5], label: "good".into() }, CurationOp::Merge { units: vec![5, 6], into }];
+        assert_eq!(merged_parts(&ops, into), Some(vec![5, 6]));
+        let merged = apply(&base, &ops);
+        assert_eq!(n_spikes(&merged, into), Some(8));
+        // One spike of the merged unit split off, then the merge taken apart
+        let moved = merged.unit_times(merged.by_id[&(into as i32)])[0];
+        ops.push(CurationOp::Split { unit: into, spikes: vec![moved], into: into + 1 });
+        ops.push(CurationOp::Unmerge { unit: into });
+        assert_eq!(merged_parts(&ops, into), None, "taken apart");
+        let back = apply(&base, &ops);
+        assert_eq!(n_spikes(&back, into), None, "the merged unit is gone");
+        assert_eq!(n_spikes(&back, 5).unwrap() + n_spikes(&back, 6).unwrap(), 7);
+        assert_eq!(n_spikes(&back, into + 1), Some(1), "the split-off spike stays where it went");
+        assert_eq!(back.units[back.by_id[&5]].info.quality_label, "good", "its label as it was");
+        assert!(back.units[back.by_id[&5]].merged_into.is_none() && back.units[back.by_id[&6]].merged_into.is_none());
+        let json = serde_json::to_string(&CurationOp::Unmerge { unit: 3 }).unwrap();
+        assert_eq!(json, r#"{"op":"unmerge","unit":3}"#);
     }
 }

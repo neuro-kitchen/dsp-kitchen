@@ -8,4 +8,5 @@ pub mod explore;
 pub mod floating;
 pub mod pipeline;
 pub mod server_browser;
+pub mod session_info;
 pub mod settings;

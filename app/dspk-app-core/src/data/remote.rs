@@ -202,6 +202,10 @@ mod tests {
     /// Writes a small sorting folder after reporting progress (stands in for dspk-cli-sorter).
     struct FakeSorter;
     impl dspk_stream::jobs::JobRunner for FakeSorter {
+        fn uses_gpu(&self) -> bool {
+            false
+        }
+
         fn sorters(&self) -> Vec<String> {
             vec!["kilosort4".into()]
         }
