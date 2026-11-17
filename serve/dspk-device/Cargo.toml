@@ -32,7 +32,6 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 clap.workspace = true
 anyhow.workspace = true
-dirs.workspace = true
 
 [[bin]]
 name = "dspk-device"
