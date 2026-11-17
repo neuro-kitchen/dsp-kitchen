@@ -337,8 +337,11 @@ fn providers(registry: &Registry, s: &Entity<Store>) {
 /// The app menu (named after the app): recordings; Settings comes last (the frame's).
 pub fn app_menu(cx: &App) -> Vec<MenuItem> {
     let mut items: Vec<MenuItem> = crate::ui::recording_picker::open_actions(cx).iter().map(|(_, pick)| MenuItem::command(if *pick == Pick::File { "file.open" } else { "file.open_folder" })).collect();
+    items.push(MenuItem::command("file.open_server"));
+    // Real time: the devices (built with the `device` feature)
+    #[cfg(feature = "device")]
+    items.push(MenuItem::command("file.devices"));
     items.extend([
-        MenuItem::command("file.open_server"),
         MenuItem::command("file.synthetic"),
         MenuItem::command("file.tune"),
         MenuItem::provided("file.recent"),
