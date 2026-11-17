@@ -114,10 +114,12 @@ fn server_config_for(authority: &Authority, identity: &ServerIdentity, anonymous
 
 /// A device's QUIC configuration (`crate::live`): clients present a certificate the device's
 /// authority issued; computers without one may only pair. No certificate, no session.
+#[cfg(feature = "live")]
 pub fn server_config_live(authority: &Authority, identity: &ServerIdentity) -> StreamResult<ServerTls> {
     server_config_protocols(authority, identity, true, &[crate::live::ALPN, PAIR_ALPN])
 }
 
+#[cfg(feature = "live")]
 /// The QUIC client configuration of a device connection (`crate::live`), trusting `trust` (the
 /// device's authority, pinned at pairing) and presenting `identity`.
 pub fn live_client_config(trust: &ServerTrust, identity: Option<&ClientIdentity>) -> StreamResult<quinn::ClientConfig> {

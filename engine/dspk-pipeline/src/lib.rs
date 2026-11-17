@@ -22,7 +22,7 @@
 
 mod fit;
 mod prepare;
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(feature = "live", not(target_family = "wasm")))]
 pub mod live;
 pub mod preview;
 #[cfg(feature = "view")]

@@ -10,6 +10,10 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+# The live protocol for devices (`live`): messages, the Device trait, the QUIC transport
+live = []
+
 [dependencies]
 dspk-core.workspace = true
 # Host envelopes only: a server answers views from its recording and pyramid

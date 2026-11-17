@@ -16,7 +16,7 @@ pub mod container;
 pub mod core;
 pub mod generic;
 /// Live sources (recordings that grow while read): not in a browser page (threads, sockets, files).
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(feature = "live", not(target_family = "wasm")))]
 pub mod live;
 pub mod registry;
 #[cfg(any(test, feature = "test-support"))]

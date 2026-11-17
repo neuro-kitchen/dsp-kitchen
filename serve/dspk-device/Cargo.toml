@@ -20,10 +20,10 @@ hip = ["dspk-core/hip", "dspk-pipeline/hip"]
 
 [dependencies]
 dspk-core = { workspace = true, features = ["compute"] }
-dspk-io = { workspace = true, features = ["zarr"] }
-dspk-pipeline.workspace = true
+dspk-io = { workspace = true, features = ["zarr", "live"] }
+dspk-pipeline = { workspace = true, features = ["live"] }
 dspk-ops.workspace = true
-dspk-stream.workspace = true
+dspk-stream = { workspace = true, features = ["live"] }
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true

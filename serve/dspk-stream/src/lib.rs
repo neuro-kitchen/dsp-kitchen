@@ -12,7 +12,7 @@
 pub mod engine;
 pub mod error;
 /// Devices (live sources, taps, a director): not in a browser page yet.
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(feature = "live", not(target_family = "wasm")))]
 pub mod live;
 pub mod pair;
 pub mod plugin;
