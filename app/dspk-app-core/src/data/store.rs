@@ -684,7 +684,7 @@ impl Store {
         self.remote_previews.contains_key(&v.id).then(|| {
             let channels = v.recording.channels.as_ref().map_or_else(|| self.sources().map_or(0, |s| s.entry(source).channels), Vec::len);
             let max = if crate::platform::remote::runs_alone() { dspk_view::PROCESSED_MAX_VALUES_BROWSER } else { dspk_view::PROCESSED_MAX_VALUES };
-            channels as u64 * samples <= max as u64
+            channels as u64 * samples <= (max * dspk_view::PROCESSED_MAX_TILES) as u64
         })
     }
 
