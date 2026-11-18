@@ -282,3 +282,6 @@ docs/api/python/site/
 
 # Build output of other profiles and targets (target-native/, …)
 /target-*/
+
+# A server authority (its CA key, enrolled clients, pairing codes): never in git
+.dspk-auth/

@@ -32,6 +32,7 @@ pub const UNREACHED: &str = "could not reach";
 const CLOSED: &str = "the connection to the server closed";
 
 /// How the page says who it is.
+#[derive(Clone)]
 pub enum Hello {
     /// A token from an earlier pairing.
     Token(String),
@@ -104,6 +105,14 @@ impl WebLink {
         let (tx, rx) = futures_channel::oneshot::channel();
         self.send(kind, Waiter::Task(tx))?;
         kind_of(rx.await.map_err(|_| StreamError::protocol(CLOSED))?)
+    }
+
+    /// Hands an answer to whoever waits for request `id`.
+    fn deliver(&self, id: u32, answer: Answer) {
+        let waiting = lock(&self.pending).remove(&id);
+        if let Some(waiting) = waiting {
+            waiting.deliver(answer);
+        }
     }
 
     /// Everyone waiting learns the connection is gone.
@@ -234,6 +243,105 @@ pub async fn connect(url: &str, hello: Hello) -> StreamResult<(Arc<WebLink>, Opt
                 break;
             }
         }
+    });
+    Ok((link, token))
+}
+
+// ---- WebTransport first (as lucem's): one QUIC stream per request, the WebSocket as fallback ----
+
+fn js_error(e: wasm_bindgen::JsValue) -> StreamError {
+    StreamError::protocol(format!("{e:?}"))
+}
+
+/// Calls `object.name(args…)` and awaits the promise it returns.
+async fn call(object: &wasm_bindgen::JsValue, name: &str, args: &[wasm_bindgen::JsValue]) -> StreamResult<wasm_bindgen::JsValue> {
+    let f: js_sys::Function = js_sys::Reflect::get(object, &name.into()).map_err(js_error)?.dyn_into().map_err(|_| StreamError::protocol(format!("{name} is not a function")))?;
+    let array = js_sys::Array::new();
+    for a in args {
+        array.push(a);
+    }
+    let promise: js_sys::Promise = f.apply(object, &array).map_err(js_error)?.dyn_into().map_err(|_| StreamError::protocol(format!("{name} gave no promise")))?;
+    wasm_bindgen_futures::JsFuture::from(promise).await.map_err(js_error)
+}
+
+fn console_log(text: &str) {
+    let console = web_sys::window().and_then(|w| js_sys::Reflect::get(&w, &"console".into()).ok());
+    if let Some(f) = console.as_ref().and_then(|c| js_sys::Reflect::get(c, &"log".into()).ok()).and_then(|f| f.dyn_into::<js_sys::Function>().ok()) {
+        let _ = f.call1(console.as_ref().unwrap_or(&wasm_bindgen::JsValue::NULL), &text.into());
+    }
+}
+
+/// Connects the best way the browser and the network allow: WebTransport when the server offers
+/// it (`info`, from `dspk-serve.json`) and the loader has its shim (`window.dspkTransport`), else
+/// the WebSocket at `ws_url`. Returns the connection, and the new token when the page paired.
+pub async fn connect_best(ws_url: &str, info: Option<&crate::pair::ServeInfo>, hello: Hello) -> StreamResult<(Arc<WebLink>, Option<String>)> {
+    let shim = web_sys::window().and_then(|w| js_sys::Reflect::get(&w, &"dspkTransport".into()).ok()).filter(|t| !t.is_undefined());
+    if let (Some(shim), Some(port)) = (shim, info.and_then(|i| i.webtransport_port)) {
+        let location = web_sys::window().map(|w| w.location());
+        let host = location.and_then(|l| l.hostname().ok()).unwrap_or_else(|| "127.0.0.1".into());
+        // `localhost` resolves to ::1 first, and QUIC does not fall back to IPv4 as TCP does
+        let host = if host.eq_ignore_ascii_case("localhost") { "127.0.0.1".to_string() } else { host };
+        let url = format!("https://{host}:{port}{}", crate::pair::WT_PATH);
+        let hash = js_sys::Uint8Array::from(info.map(|i| i.certificate_sha256.as_slice()).unwrap_or_default());
+        match call(&shim, "open", &[url.into(), hash.into()]).await {
+            Ok(session) => return over_webtransport(session, hello).await,
+            Err(e) => console_log(&format!("dspk: WebTransport did not connect ({e}); the WebSocket instead")),
+        }
+    }
+    connect(ws_url, hello).await
+}
+
+async fn over_webtransport(session: wasm_bindgen::JsValue, hello: Hello) -> StreamResult<(Arc<WebLink>, Option<String>)> {
+    let control = js_sys::Reflect::get(&session, &"control".into()).map_err(js_error)?;
+    let send = |text: String| {
+        let control = control.clone();
+        async move { call(&control, "send", &[text.into()]).await.map(|_| ()) }
+    };
+    let next = || {
+        let control = control.clone();
+        async move { call(&control, "next", &[]).await?.as_string().ok_or_else(|| StreamError::protocol("the server closed the connection")) }
+    };
+    let json = |e: serde_json::Error| StreamError::protocol(e.to_string());
+    let mut token = None;
+    match hello {
+        Hello::Token(t) => send(serde_json::to_string(&WebHello::Token { token: t }).map_err(json)?).await?,
+        Hello::Code { code, name } => {
+            let (pairing, hello) = ClientPairing::start(&code, &name)?;
+            send(serde_json::to_string(&WebHello::Pair { pair: hello }).map_err(json)?).await?;
+            let reply: PairReply = serde_json::from_str(&next().await?).map_err(json)?;
+            let (pairing, proof) = pairing.token(reply)?;
+            send(serde_json::to_string(&proof).map_err(json)?).await?;
+            let reply: PairReply = serde_json::from_str(&next().await?).map_err(json)?;
+            token = Some(pairing.finish(reply)?.token);
+        }
+    }
+    let welcome: WebWelcome = serde_json::from_str(&next().await.map_err(|_| StreamError::protocol("the server did not let the page in"))?).map_err(json)?;
+    let (out, mut frames) = futures_channel::mpsc::unbounded::<Vec<u8>>();
+    let link = Arc::new(WebLink { out, pending: Mutex::default(), next: AtomicU32::new(1), welcome });
+    // Each frame (4-byte id, then the request) on a stream of its own, answered in any order
+    let sender = link.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        while let Some(frame) = frames.next().await {
+            if frame.len() < 4 {
+                continue;
+            }
+            let (link, session) = (sender.clone(), session.clone());
+            wasm_bindgen_futures::spawn_local(async move {
+                let id = u32::from_be_bytes([frame[0], frame[1], frame[2], frame[3]]);
+                // A copy outside the page's shared memory (a stream refuses shared bytes)
+                let copy = js_sys::Uint8Array::new_with_length((frame.len() - 4) as u32);
+                copy.copy_from(&frame[4..]);
+                let answer = match call(&session, "request", &[copy.into()]).await {
+                    Ok(reply) => wire::Response::decode(js_sys::Uint8Array::new(&reply).to_vec().as_slice()).map_err(|e| format!("the server's answer could not be read: {e}")),
+                    Err(e) => {
+                        console_log(&format!("dspk: a WebTransport request failed: {e}"));
+                        Err(e.to_string())
+                    }
+                };
+                link.deliver(id, answer);
+            });
+        }
+        sender.closed();
     });
     Ok((link, token))
 }

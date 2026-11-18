@@ -46,6 +46,8 @@ hyper-util = { version = "0.1.21", features = ["tokio"] }
 http-body-util = "0.1.5"
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring"] }
 tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
+# Pages over WebTransport first (HTTP/3 over QUIC, on quinn), the WebSocket where UDP is blocked
+wtransport = "0.7.2"
 futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
 tokio.workspace = true
 
@@ -60,7 +62,7 @@ protox.workspace = true
 getrandom02 = { package = "getrandom", version = "0.2", features = ["js"] }
 # The page's connection to its server (`web_client`): a WebSocket, answers handed to whoever
 # waits without a lock on the page's thread, web workers when the build has threads
-web-sys = { version = "0.3", features = ["WebSocket", "BinaryType", "MessageEvent", "Worker", "WorkerOptions", "WorkerType", "ErrorEvent"] }
+web-sys = { version = "0.3", features = ["WebSocket", "BinaryType", "MessageEvent", "Worker", "WorkerOptions", "WorkerType", "ErrorEvent", "Window", "Location"] }
 js-sys = "0.3"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"

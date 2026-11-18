@@ -21,7 +21,7 @@
 #   podman build -f deploy/Containerfile --ignorefile deploy/.containerignore --target nvidia -t dspk-serve:nvidia .
 # The web app must be built first (it goes into every target): app/dspk-app-web/build.sh mt
 # Run (recordings under ./data; the web app at http://localhost:50052, the pairing code in the log):
-#   podman run --rm -p 50051:50051/udp -p 127.0.0.1:50052:50052 -v ./data:/data:Z --device nvidia.com/gpu=all dspk-serve:nvidia
+#   podman run --rm -p 50051:50051/udp -p 127.0.0.1:50052:50052/tcp -p 127.0.0.1:50052:50052/udp -v ./data:/data:Z --device nvidia.com/gpu=all dspk-serve:nvidia
 
 # Rust toolchain of the build (edition 2024 needs >= 1.85; CI uses the latest stable)
 ARG RUST_VERSION=1.99
@@ -85,6 +85,10 @@ EXPOSE 50051/udp
 # (a browser counts localhost as secure: no warning, threads work); for other computers put a
 # proxy with a certificate in front (Caddy, `tailscale serve`)
 EXPOSE 50052/tcp
+# The page's WebTransport on the same port number, over UDP (QUIC; its certificate is made at each
+# start, valid 14 days, its hash in /dspk-serve.json). Where UDP does not pass (an SSH tunnel, a
+# proxy), the page uses the WebSocket on 50052/tcp instead
+EXPOSE 50052/udp
 # `dspk serve` stops cleanly on SIGTERM (podman stop, systemd) and Ctrl+C
 ENTRYPOINT ["dspk"]
 # The server's authority (its CA and the enrolled clients) is kept with the data, so it survives
