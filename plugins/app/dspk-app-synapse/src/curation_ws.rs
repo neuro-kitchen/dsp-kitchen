@@ -231,6 +231,15 @@ impl CurationWorkspace {
         state(cx)?.read(cx).active_sorting(cx)
     }
 
+    /// Why the active sorting does not fit the open recording ([`SortingData::mismatch`]), if it
+    /// does not: views that read the recording at its spikes say this instead of drawing.
+    fn mismatch(&self, cx: &App) -> Option<String> {
+        let sorting = self.sorting(cx)?;
+        let sources = self.store.read(cx).sources()?.clone();
+        let e = sources.default_entry();
+        sorting.mismatch(e.channels, e.sample_rate.rate_hz())
+    }
+
     /// The table of the loaded sorting (built once per sorting), its order, a default selection.
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let Some(sorting) = self.sorting(cx) else {
@@ -1164,12 +1173,16 @@ impl CurationPanel {
         if self.kind == ViewKind::Templates {
             return div().size_full().p_1().child(ws.read(cx).templates.clone()).into_any_element();
         }
-        let (chart, computing, picked) = {
+        let (chart, computing, picked, mismatch) = {
             let w = ws.read(cx);
-            (w.plots.charts.get(&self.kind).cloned(), w.computing, w.selected.len())
+            (w.plots.charts.get(&self.kind).cloned(), w.computing, w.selected.len(), w.mismatch(cx))
         };
+        // Views read from the recording at the sorting's spikes: none from another recording
+        let reads_recording = matches!(self.kind, ViewKind::Waveforms | ViewKind::Features | ViewKind::FeatureGrid | ViewKind::TemplateFeatures);
+        let not_this_recording = mismatch.filter(|_| reads_recording).map(|why| format!("Needs the recording this sorting was made from: {why}"));
         // Why a view is empty, when it is not waiting for a selection
         let empty = match self.kind {
+            _ if not_this_recording.is_some() => not_this_recording.as_deref().unwrap_or_default(),
             _ if computing => "Computing…",
             _ if picked == 0 => "Select units in the table",
             ViewKind::TemplateFeatures if picked < 2 => "Select two units (Ctrl+click in the table)",
@@ -1184,9 +1197,11 @@ impl CurationPanel {
                 .flex()
                 .items_center()
                 .justify_center()
+                .px_4()
+                .text_center()
                 .text_sm()
                 .text_color(muted)
-                .child(empty)
+                .child(empty.to_string())
                 .into_any_element(),
         }
     }

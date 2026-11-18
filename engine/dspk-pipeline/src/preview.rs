@@ -24,9 +24,13 @@ use dspk_ops::core::buffer;
 use dspk_ops::pipeline::PipelineWorkspace;
 use dspk_ops::{Pipeline, PipelineStage};
 
-/// Most values (channels × samples, halo and margin included) one preview processes: 64 Mi
-/// float32 = 256 MiB on the device (384 channels: about 5.8 s at 30 kHz).
+/// Most values (channels × samples, halo and margin included) one preview processes:
+/// `dspk_view::PROCESSED_MAX_VALUES` on a computer, `PROCESSED_MAX_VALUES_BROWSER` in a page
+/// (the values are repeated here: dspk-view is optional for this crate).
+#[cfg(not(target_family = "wasm"))]
 pub const PREVIEW_MAX_VALUES: usize = 1 << 26;
+#[cfg(target_family = "wasm")]
+pub const PREVIEW_MAX_VALUES: usize = 1 << 24;
 
 /// One processed block of the view's channels, channel-major.
 struct Block {

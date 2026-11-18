@@ -260,8 +260,16 @@ impl SynapseState {
             Err(e) => self.store.update(cx, |st, cx| st.set_status(format!("Curation not applied: {e:#}"), cx)),
         }
         self.recurate(&path);
+        // A sorting of another recording loads (its spike trains still show), and says so
+        let mismatch = self.store.read(cx).sources().and_then(|s| {
+            let e = s.default_entry();
+            self.sortings.get(&path).and_then(|d| d.mismatch(e.channels, e.sample_rate.rate_hz()))
+        });
         self.store.update(cx, |st, cx| {
-            st.set_status(format!("Sorting loaded: {summary}"), cx);
+            match &mismatch {
+                Some(why) => st.set_status(format!("Sorting loaded: {summary}. Not from the open recording ({why}): waveforms and features need its own recording"), cx),
+                None => st.set_status(format!("Sorting loaded: {summary}"), cx),
+            }
             st.redraw(cx);
         });
         cx.emit(SynapseEvent::SortingLoaded(path));

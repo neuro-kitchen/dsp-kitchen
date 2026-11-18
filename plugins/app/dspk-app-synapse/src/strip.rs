@@ -226,7 +226,14 @@ impl Render for BottomStrip {
                 let _ = me.update(cx, |s, cx| f(s, cx));
             })
         };
+        // The units' channels, when none is in the open recording (a sorting of another one)
+        let recording_channels = self.store.read(cx).sources().map(|s| s.default_entry().channels);
+        let absent = recording_channels.filter(|&n| !self.channels.is_empty() && self.channels.iter().all(|&c| c >= n));
         let focus = match self.units.len() {
+            _ if absent.is_some() => {
+                let list: Vec<String> = self.channels.iter().take(4).map(|c| c.to_string()).collect();
+                format!("Channels {} are not in this recording ({} channels)", list.join(", "), absent.unwrap_or_default())
+            }
             0 => "Shown channels · every unit".to_string(),
             1 => format!("{} channels of the unit · its spikes coloured", self.channels.len().min(MAX_CHANNELS)),
             n => format!("{} channels · {n} units' spikes coloured", self.channels.len().min(MAX_CHANNELS)),

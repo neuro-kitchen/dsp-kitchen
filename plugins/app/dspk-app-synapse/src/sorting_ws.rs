@@ -517,6 +517,7 @@ impl SortingWorkspace {
             None => sort::run_path(&view.recording.path, &sorter, start, duration),
         };
         if !std::mem::take(&mut self.rerun) {
+            #[cfg_attr(target_family = "wasm", allow(unused_mut))]
             let mut earlier: Vec<PathBuf> = runs_of(&view).into_iter().filter(|r| sort::same_run(&base, r)).collect();
             #[cfg(not(target_family = "wasm"))]
             if let Some(dir) = base.parent().filter(|d| d.is_dir()) {

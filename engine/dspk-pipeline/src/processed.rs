@@ -218,6 +218,10 @@ impl SignalBackend for ProcessedSignal {
         self.raw.progress()
     }
 
+    fn built(&self, columns: usize) -> Vec<bool> {
+        self.raw.built(columns)
+    }
+
     fn watch(&self, on_progress: OnProgress) {
         self.raw.watch(on_progress);
     }

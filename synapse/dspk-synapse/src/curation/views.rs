@@ -210,7 +210,9 @@ pub fn from_spikes(sorting: &SortingData, request: &ViewsRequest, stale: impl Fn
         let mut cells = Vec::new();
         for (i, a) in trains.iter().enumerate() {
             for (j, b) in trains.iter().enumerate() {
-                let counts = crosscorrelogram(a, b, sorting.sample_rate, set.ccg_half_ms, set.ccg_bin_ms);
+                // A unit with itself is its autocorrelogram: a cross-correlogram of a train with
+                // itself counts every spike against itself at zero lag (a bar the size of the unit)
+                let counts = if i == j { autocorrelogram(a, sorting.sample_rate, set.ccg_half_ms, set.ccg_bin_ms) } else { crosscorrelogram(a, b, sorting.sample_rate, set.ccg_half_ms, set.ccg_bin_ms) };
                 let ink = if i == j { Ink::Unit(shown[i]) } else { Ink::Unsorted };
                 cells.push(Chart {
                     layers: vec![bars(&counts, ink, -half - bin / 2.0, bin), Layer::Marker { x: 0.0 }],
@@ -419,6 +421,12 @@ mod tests {
         let ccg = &views.charts.iter().find(|(k, _)| *k == ViewKind::Correlograms).unwrap().1;
         assert_eq!((ccg.cols, ccg.cells.len()), (2, 4), "two units: a 2 × 2 grid");
         assert!(matches!(ccg.cells[0].layers[0], Layer::Bars { ink: Ink::Unit(0), .. }));
+        // A unit with itself is its autocorrelogram: no count at zero lag (a spike is not its own
+        // neighbour), on both diagonal cells
+        for cell in [&ccg.cells[0], &ccg.cells[3]] {
+            let Layer::Bars { counts, .. } = &cell.layers[0] else { panic!("bars") };
+            assert_eq!(counts[counts.len() / 2], 0.0, "{}: zero lag", cell.title);
+        }
         assert_eq!(views.scatter.len(), 2);
         // Asked for no views of the optional kinds: only those always made
         let few = from_spikes(&s, &ViewsRequest { wanted: vec![], ..request.clone() }, || false);
