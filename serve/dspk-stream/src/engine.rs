@@ -40,6 +40,8 @@ pub struct OpenRecording {
     #[cfg_attr(target_family = "wasm", allow(dead_code))]
     pub(crate) stored: bool,
     processor: Option<Arc<dyn ViewProcessor>>,
+    /// Moves where the pyramid's builder works next (a view looked at a sample), while it builds.
+    refocus: Option<Arc<dyn Fn(u64) + Send + Sync>>,
     /// The processed signals clients asked views of, latest last (a few: each holds device memory),
     /// and whether each runs on the CPU (made while a batch job held the GPU).
     processed: Arc<Mutex<Vec<(wire::Processing, bool, Arc<ChainSlot>)>>>,
@@ -104,7 +106,24 @@ impl OpenRecording {
         all.retain(|w| w.strong_count() > 0);
         all.push(Arc::downgrade(&processed));
         drop(all);
-        Self { source, pyramid, info, stored, processor: None, processed }
+        Self { source, pyramid, info, stored, processor: None, refocus: None, processed }
+    }
+
+    /// Views move the pyramid's builder to where they look ([`Self::look_at`]): `refocus` gets the
+    /// sample at a view's centre.
+    pub fn with_refocus(mut self, refocus: Arc<dyn Fn(u64) + Send + Sync>) -> Self {
+        self.refocus = Some(refocus);
+        self
+    }
+
+    /// A view of samples `start..end` was asked: while the pyramid builds, it builds there next.
+    /// Views of most of the recording (a client asking how far the build is) move nothing.
+    pub fn look_at(&self, start: u64, end: u64) {
+        let total = self.info.samples;
+        let Some(refocus) = self.refocus.as_ref().filter(|_| self.pyramid.as_ref().is_some_and(|p| !p.is_complete())) else { return };
+        if end > start && (end - start) * 2 < total {
+            refocus(start + (end - start) / 2);
+        }
     }
 
     /// Views with processing are answered through `processor` (without one they are refused).
@@ -217,6 +236,7 @@ pub async fn warm_view(recording: &OpenRecording, request: &wire::ViewRequest) -
 /// when the request carries ops (blocking: a chain may take seconds to make).
 pub fn answer_view(recording: &OpenRecording, request: &wire::ViewRequest) -> StreamResult<Envelope> {
     let view = checked_view(request, recording.info())?;
+    recording.look_at(view.start, view.end);
     match request.processing.as_ref().filter(|p| !p.ops.is_empty()) {
         Some(processing) => {
             // The GPU unless a batch job (a sort) holds it: then the CPU, the same chain

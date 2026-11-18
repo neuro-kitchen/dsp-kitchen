@@ -800,13 +800,37 @@ impl TimelinePanel {
     }
 }
 
+/// The overview's state beside the time readout: a small bar and "Overview 19 % · 2 min left"
+/// while it builds (the bar and the words say it, not the colour alone), "Overview ready" for a
+/// few seconds after; hovering explains it.
+fn overview_status(s: &Store, cx: &App) -> Option<gpui_kit::AnyElement> {
+    let label = s.pyramid_label()?;
+    let t = cx.theme();
+    let (accent, track, muted) = (t.primary, t.border, t.muted_foreground);
+    let detail = s.pyramid_detail();
+    let bar = s.pyramid_status().map(|(fraction, _)| {
+        div().w(px(48.)).h(px(4.)).rounded_full().bg(track).overflow_hidden().child(div().h_full().w(relative(fraction as f32)).bg(accent))
+    });
+    let ready = bar.is_none();
+    let el = h_flex()
+        .id("building-overview")
+        .gap_1p5()
+        .items_center()
+        .children(bar)
+        .children(ready.then(|| Icon::new(IconName::Check).xsmall().text_color(muted)))
+        .child(div().text_xs().text_color(if ready { muted } else { t.foreground }).whitespace_nowrap().child(label));
+    Some(match detail {
+        Some(text) => el.tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(text.clone()).build(w, cx)).into_any_element(),
+        None => el.into_any_element(),
+    })
+}
+
 impl TimelinePanel {
     /// The time readout, also visible while the timeline is folded down to its header.
     fn header_extra(&self, cx: &App) -> Option<gpui_kit::AnyElement> {
         let s = self.store.read(cx);
         let muted = cx.theme().muted_foreground;
-        let summarizing = s.pyramid_label().map(|l| div().id("building-overview").text_xs().text_color(cx.theme().primary).child(l));
-        Some(h_flex().gap_3().child(div().text_xs().text_color(muted).child(s.timeline.format_time_readout())).children(summarizing).into_any_element())
+        Some(h_flex().gap_3().child(div().text_xs().text_color(muted).child(s.timeline.format_time_readout())).children(overview_status(s, cx)).into_any_element())
     }
 
     fn body(&mut self, _: &mut Window, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
@@ -899,6 +923,8 @@ impl TimelinePanel {
             }
         }
         let activity = self.activity.as_ref().map(|(_, v)| v.clone()).unwrap_or_default();
+        // While the overview builds: which parts are built, as a band along the track's foot
+        let built = self.store.read(cx).pyramid_built((columns / 2).max(1));
         let palette = self.store.read(cx).palette();
         let bar = color(palette.text).opacity(0.55);
 
@@ -942,6 +968,23 @@ impl TimelinePanel {
                 .absolute()
                 .size_full(),
             )
+            .children(built.map(|built| {
+                let (have, missing) = (accent.opacity(0.85), border);
+                canvas(
+                    |_, _, _| {},
+                    move |bounds, _, window, _| {
+                        let n = built.len().max(1);
+                        let (w, h) = (bounds.size.width / n as f32, px(3.));
+                        let y = bounds.origin.y + bounds.size.height - h;
+                        for (i, b) in built.iter().enumerate() {
+                            let origin = gpui_kit::point(bounds.origin.x + w * i as f32, y);
+                            window.paint_quad(gpui_kit::fill(Bounds { origin, size: gpui_kit::size(w, h) }, if *b { have } else { missing }));
+                        }
+                    },
+                )
+                .absolute()
+                .size_full()
+            }))
             .child(
                 div()
                     .id("overview-window")

@@ -362,6 +362,7 @@ impl TraceVm {
         }
         self.retired = self.shown.replace(d.shown).map(|s| s.image);
         let info = format!("Render {:.1} ms · {:.1} samples/px", d.elapsed.as_secs_f64() * 1e3, d.samples_per_px);
+        crate::platform::record_frame_timing(d.elapsed.as_secs_f64() * 1e3, d.samples_per_px, d.complete);
         self.store.update(cx, |s, cx| s.set_render_info(info, cx));
         cx.notify();
     }

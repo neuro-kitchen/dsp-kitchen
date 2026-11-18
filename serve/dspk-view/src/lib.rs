@@ -25,3 +25,13 @@ pub use envelope::envelope_on_device;
 pub use pyramid::{pyramid_path, OnProgress, Progress, Pyramid, PyramidBuilder, PyramidIdentity, FILE_BASE, MEMORY_BASE};
 pub use signal::{LocalSignal, SignalBackend, StoredSignal, FILE_PYRAMID_MIN_BYTES};
 pub use view::{Envelope, View, RAW_BLOCK_VALUES};
+
+/// Most values (channels × samples, the chain's halo and margin included) a view's op chain is
+/// processed over at once on a computer's GPU (`dspk serve`, the desktop app): 64 Mi float32 =
+/// 256 MiB on the device (384 channels: about 5.8 s at 30 kHz). Wider windows are drawn raw.
+pub const PROCESSED_MAX_VALUES: usize = 1 << 26;
+
+/// The same in a browser (a page's engine on WebGPU): 16 Mi float32 = 64 MiB per buffer. A
+/// browser's WebGPU binds at most 128 MiB per storage buffer by default and loses the device past
+/// what it can hold, which stops every later drawing; 32 channels: about 21 s at 24.4 kHz.
+pub const PROCESSED_MAX_VALUES_BROWSER: usize = 1 << 24;

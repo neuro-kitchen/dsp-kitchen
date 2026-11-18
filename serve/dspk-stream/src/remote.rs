@@ -20,7 +20,7 @@ use crate::protocol::{convert, wire, MAX_VIEW_COLUMNS, MAX_VIEW_VALUES};
 /// How often an incomplete remote pyramid is asked about again.
 const PYRAMID_POLL: Duration = Duration::from_secs(1);
 /// Columns of the small view that asks whether the server's pyramid is complete.
-const PROBE_COLUMNS: usize = 64;
+const PROBE_COLUMNS: usize = 256;
 
 /// A connection to a server, as the viewer's types need it.
 pub trait Link: Send + Sync {
@@ -146,6 +146,11 @@ pub struct RemoteSignal {
     processing: Option<wire::Processing>,
     /// Whether the server's pyramid answered complete views (until then views may hold NaN).
     complete: Arc<AtomicBool>,
+    /// Samples of the server's pyramid built so far, as the last probe saw (the overview builds
+    /// from the start: the probe's columns that hold values, as a share of the whole).
+    built: Arc<std::sync::atomic::AtomicU64>,
+    /// Which of the probe's columns held values (the server's overview, part by part).
+    built_map: Arc<Mutex<Vec<bool>>>,
     listeners: Arc<Mutex<Vec<OnProgress>>>,
     polling: Arc<AtomicBool>,
 }
@@ -154,7 +159,7 @@ impl RemoteSignal {
     /// The recording `link`'s server has open, described by `info`.
     pub fn over(link: Arc<dyn Link>, info: RecordingInfo) -> Self {
         let source = Arc::new(RemoteSource::new(link.clone(), info));
-        Self { link, source, processing: None, complete: Arc::default(), listeners: Arc::default(), polling: Arc::default() }
+        Self { link, source, processing: None, complete: Arc::default(), built: Arc::default(), built_map: Arc::default(), listeners: Arc::default(), polling: Arc::default() }
     }
 
     /// Opens `path` on `link`'s server (blocking) and returns it as a signal.
@@ -178,7 +183,7 @@ impl RemoteSignal {
     /// are read as stored.
     pub fn processed(&self, channels: Vec<usize>, ops: Vec<String>) -> Self {
         let processing = wire::Processing { channels: channels.into_iter().map(|c| c as u32).collect(), ops };
-        Self { link: self.link.clone(), source: self.source.clone(), processing: Some(processing), complete: self.complete.clone(), listeners: self.listeners.clone(), polling: self.polling.clone() }
+        Self { link: self.link.clone(), source: self.source.clone(), processing: Some(processing), complete: self.complete.clone(), built: self.built.clone(), built_map: self.built_map.clone(), listeners: self.listeners.clone(), polling: self.polling.clone() }
     }
 
     fn tell(listeners: &Mutex<Vec<OnProgress>>, done: u64, total: u64) {
@@ -193,7 +198,7 @@ impl RemoteSignal {
         if self.polling.swap(true, Ordering::Relaxed) {
             return;
         }
-        let (link, complete, listeners, polling) = (self.link.clone(), self.complete.clone(), self.listeners.clone(), self.polling.clone());
+        let (link, complete, built, built_map, listeners, polling) = (self.link.clone(), self.complete.clone(), self.built.clone(), self.built_map.clone(), self.listeners.clone(), self.polling.clone());
         let total = self.source.info.samples;
         let work = Box::new(move || {
             let probe = View { channels: vec![0], start: 0, end: total, width: PROBE_COLUMNS };
@@ -204,7 +209,15 @@ impl RemoteSignal {
                         complete.store(true, Ordering::Relaxed);
                         total
                     }
-                    Ok(_) => 0,
+                    // Columns not built yet hold NaN
+                    Ok(Envelope::Columns { values, .. }) => {
+                        let map: Vec<bool> = values.iter().map(|p| p[0].is_finite()).collect();
+                        let finite = map.iter().filter(|&&b| b).count() as u64;
+                        let done = (finite * total / map.len().max(1) as u64).min(total);
+                        built.store(done, Ordering::Relaxed);
+                        *lock(&built_map) = map;
+                        done
+                    }
                     // The connection is gone: stop asking
                     Err(_) => break,
                 };
@@ -258,10 +271,27 @@ impl SignalBackend for RemoteSignal {
 
     fn progress(&self) -> Progress {
         let total = self.source.info.samples;
-        Progress { filled: 0..0, done: if self.complete.load(Ordering::Relaxed) { total } else { 0 }, total }
+        Progress { filled: 0..0, done: if self.complete.load(Ordering::Relaxed) { total } else { self.built.load(Ordering::Relaxed) }, total }
     }
 
     fn watch(&self, on_progress: OnProgress) {
         lock(&self.listeners).push(on_progress);
+    }
+
+    fn built(&self, columns: usize) -> Vec<bool> {
+        if self.complete.load(Ordering::Relaxed) {
+            return vec![true; columns];
+        }
+        let map = lock(&self.built_map);
+        if map.is_empty() {
+            return vec![false; columns];
+        }
+        // Each column takes the probe columns it spans: built when all of them are
+        (0..columns)
+            .map(|x| {
+                let (a, b) = (x * map.len() / columns, ((x + 1) * map.len()).div_ceil(columns).max(x * map.len() / columns + 1));
+                map[a.min(map.len() - 1)..b.min(map.len())].iter().all(|&v| v)
+            })
+            .collect()
     }
 }

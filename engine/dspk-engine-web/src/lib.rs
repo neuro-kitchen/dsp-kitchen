@@ -14,6 +14,8 @@
 //!   (`ProcessedSignal::warm_view_async`), which is the only way a browser gives it.
 #![cfg(target_family = "wasm")]
 
+mod overview;
+
 use std::sync::Arc;
 
 use dspk_core::RecordingSource;
@@ -82,17 +84,33 @@ impl ViewProcessor for Processor {
 /// The engine of one page: the files it was given and the recording it opened.
 struct Inner {
     /// The files picked, by their path inside the folder picked (or their name).
-    files: Vec<(String, web_sys::File)>,
+    /// By path: a picked folder can hold tens of thousands of files (an NWB-Zarr: ~20,000).
+    files: std::collections::BTreeMap<String, web_sys::File>,
     current: Option<Arc<OpenRecording>>,
     processor: Arc<Processor>,
     /// Why ops cannot run here, when they cannot (no WebGPU for computing).
     no_compute: Option<String>,
     /// Bumped at each open: an overview still being built for an earlier recording stops.
     generation: u64,
+    /// The open recording's overview while it builds (and after, for keeping it).
+    overview: Option<overview::Overview>,
 }
 
 /// The engine, as the worker script holds it (`engine-worker.js`). Requests are answered one at
 /// a time: the script queues them.
+/// Runs the module's static constructors (the plugin registries of zarrs, CubeCL's IR): once,
+/// called by the worker right after loading. A module that exports `_initialize` is a "reactor"
+/// to the linker; without it the linker wraps every export to run them again on each call, which
+/// cost seconds per request (29 s of 31 while opening a 19,754-file NWB-Zarr, 2026-11-18).
+#[unsafe(no_mangle)]
+pub extern "C" fn _initialize() {
+    unsafe extern "C" {
+        fn __wasm_call_ctors();
+    }
+    // SAFETY: called once, before anything else in the module runs
+    unsafe { __wasm_call_ctors() }
+}
+
 #[wasm_bindgen]
 pub struct Engine {
     inner: std::rc::Rc<std::cell::RefCell<Inner>>,
@@ -109,7 +127,7 @@ impl Engine {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Engine {
         console_error_panic_hook_set();
-        let inner = Inner { files: Vec::new(), current: None, processor: Arc::default(), no_compute: Some("WebGPU not opened yet".into()), generation: 0 };
+        let inner = Inner { files: std::collections::BTreeMap::new(), current: None, processor: Arc::default(), no_compute: Some("WebGPU not opened yet".into()), generation: 0, overview: None };
         let inner = std::rc::Rc::new(std::cell::RefCell::new(inner));
         ENGINE.with(|e| *e.borrow_mut() = Some(inner.clone()));
         Engine { inner }
@@ -134,9 +152,93 @@ impl Engine {
             let path = js_sys::Reflect::get(&entry, &"path".into()).ok().and_then(|p| p.as_string());
             let file = js_sys::Reflect::get(&entry, &"file".into()).ok().and_then(|f| f.dyn_into::<web_sys::File>().ok());
             if let (Some(path), Some(file)) = (path, file) {
-                inner.files.retain(|(p, _)| *p != path);
-                inner.files.push((path, file));
+                inner.files.insert(path, file);
             }
+        }
+    }
+
+    /// The overview's state as JSON (`null` before a recording is opened): its generation (one
+    /// per open), pages built of all, whether it is complete and kept, its key, and whether the
+    /// page's helpers can build it ([`overview`]).
+    pub fn overview_state(&self) -> String {
+        self.inner.borrow().overview.as_ref().map_or_else(|| "null".to_string(), |o| o.state().to_string())
+    }
+
+    /// What the helpers need (JSON), or "" when they cannot build this overview.
+    pub fn overview_helper_meta(&self) -> String {
+        self.inner.borrow().overview.as_ref().and_then(|o| o.helper_meta()).map(|m| m.to_string()).unwrap_or_default()
+    }
+
+    /// The helpers build the overview from now on (`true`), or this worker again (`false`).
+    pub fn overview_use_helpers(&self, on: bool) {
+        if let Some(o) = self.inner.borrow_mut().overview.as_mut() {
+            o.helpers = on && o.plan.is_some();
+            o.decided = true;
+        }
+    }
+
+    /// The next unit for a helper, nearest the focus: `{generation, pages: [first, end],
+    /// samples: [start, end], chunks: [{t0, c0, file}]}` (`file` null for a chunk not stored:
+    /// all fill value), or null when every page is built or handed out.
+    pub fn overview_next(&self) -> JsValue {
+        let mut me = self.inner.borrow_mut();
+        let Some(unit) = me.overview.as_mut().and_then(|o| o.next_unit()) else { return JsValue::NULL };
+        let Some(o) = me.overview.as_ref() else { return JsValue::NULL };
+        let chunks = js_sys::Array::new();
+        for (t0, c0, path) in o.chunks_of(&unit.samples) {
+            let c = js_sys::Object::new();
+            let _ = js_sys::Reflect::set(&c, &"t0".into(), &(t0 as f64).into());
+            let _ = js_sys::Reflect::set(&c, &"c0".into(), &(c0 as f64).into());
+            let file = me.files.get(&path).map_or(JsValue::NULL, |f| f.clone().into());
+            let _ = js_sys::Reflect::set(&c, &"file".into(), &file);
+            chunks.push(&c);
+        }
+        let pair = |a: u64, b: u64| js_sys::Array::of2(&(a as f64).into(), &(b as f64).into());
+        let out = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(&out, &"generation".into(), &(o.generation as f64).into());
+        let _ = js_sys::Reflect::set(&out, &"pages".into(), &pair(unit.pages.start, unit.pages.end));
+        let _ = js_sys::Reflect::set(&out, &"samples".into(), &pair(unit.samples.start, unit.samples.end));
+        let _ = js_sys::Reflect::set(&out, &"chunks".into(), &chunks);
+        out.into()
+    }
+
+    /// A helper's buckets of pages `first..end` of overview `generation` (see
+    /// [`overview::Overview::put`]); resolves whether the overview is complete. A unit of an
+    /// earlier recording is dropped.
+    pub fn overview_put(&self, generation: u32, first: u32, end: u32, values: js_sys::Float32Array) -> Result<bool, JsValue> {
+        let mut me = self.inner.borrow_mut();
+        let Some(o) = me.overview.as_mut().filter(|o| o.generation == generation as u64) else { return Ok(false) };
+        o.put(first as u64..end as u64, &values.to_vec()).map_err(|e| JsValue::from_str(&e))
+    }
+
+    /// A helper could not build pages `first..end`: they are free again.
+    pub fn overview_failed(&self, generation: u32, first: u32, end: u32) {
+        if let Some(o) = self.inner.borrow_mut().overview.as_mut().filter(|o| o.generation == generation as u64) {
+            o.failed(first as u64..end as u64);
+        }
+    }
+
+    /// The complete overview as bytes, to keep (`undefined` until complete).
+    pub fn overview_bytes(&self) -> Option<js_sys::Uint8Array> {
+        let me = self.inner.borrow();
+        me.overview.as_ref().and_then(|o| o.pyramid.complete_bytes()).map(|b| js_sys::Uint8Array::from(b.as_slice()))
+    }
+
+    /// The overview kept from an earlier open of the same files: fills this one and marks it
+    /// kept. Returns false (nothing changed) when it does not fit or building started.
+    pub fn overview_restore(&self, bytes: js_sys::Uint8Array) -> bool {
+        let mut me = self.inner.borrow_mut();
+        let Some(o) = me.overview.as_mut() else { return false };
+        let restored = o.pyramid.restore(&bytes.to_vec());
+        o.kept |= restored;
+        o.decided |= restored;
+        restored
+    }
+
+    /// The worker script kept the complete overview.
+    pub fn overview_mark_kept(&self) {
+        if let Some(o) = self.inner.borrow_mut().overview.as_mut() {
+            o.kept = true;
         }
     }
 
@@ -170,12 +272,23 @@ impl Inner {
                     let mut me = inner.borrow_mut();
                     me.current = Some(recording);
                     me.generation += 1;
-                    me.generation
+                    let generation = me.generation;
+                    let (plan, key) = (me.helper_plan(&open.path, source.as_ref()), me.files_key(&open.path, source.as_ref()));
+                    me.overview = Some(overview::Overview::new(generation, source, pyramid, plan, key));
+                    generation
                 };
-                build_overview(inner_rc(inner), generation, source, pyramid);
+                build_overview(inner_rc(inner), generation);
                 Ok(Resp::Header(header))
             }
             Req::View(view) => {
+                // The overview builds where the page looks next (a view of most of the recording is
+                // the page asking how far it is: it moves nothing)
+                if let Some(o) = inner.borrow_mut().overview.as_mut() {
+                    let total = o.pyramid.samples();
+                    if view.end > view.start && (view.end - view.start) * 2 < total {
+                        o.focus = view.start + (view.end - view.start) / 2;
+                    }
+                }
                 let (recording, no_compute) = {
                     let me = inner.borrow();
                     (me.current.clone().ok_or_else(|| StreamError::Server("no recording is open".into()))?, me.no_compute.clone())
@@ -183,6 +296,9 @@ impl Inner {
                 if view.processing.as_ref().is_some_and(|p| !p.ops.is_empty()) {
                     if let Some(why) = no_compute {
                         return Err(StreamError::Server(format!("processing needs WebGPU: {why}")));
+                    }
+                    if let Some(why) = dspk_core::compute::browser_gpu_lost() {
+                        return Err(StreamError::Server(format!("the browser took its GPU back ({why}): reload the page to process again; the recording itself still shows")));
                     }
                     dspk_stream::engine::warm_view(&recording, &view).await?;
                 }
@@ -202,11 +318,10 @@ impl Inner {
             match rest.split_once('/') {
                 Some((sub, _)) => {
                     if !entries.iter().any(|e| e.directory && e.name == sub) {
-                        // A Zarr recording is a folder (as `dspk serve` lists it)
-                        // A dspk Zarr recording has a `/traces` array; another Zarr folder (NWB) is
-                        // listed but not offered as a recording here
+                        // A Zarr recording is a folder (as `dspk serve` lists it): dspk's (a
+                        // `/traces` array) or NWB's (an `/acquisition` group)
                         let zarr = sub.to_ascii_lowercase().ends_with(".zarr");
-                        let recording = zarr && self.file(&format!("{prefix}{sub}/traces/zarr.json")).is_some();
+                        let recording = zarr && (self.file(&format!("{prefix}{sub}/traces/zarr.json")).is_some() || self.is_nwb(&format!("{prefix}{sub}")));
                         let kind = if recording { wire::FileKind::Recording } else if zarr { wire::FileKind::Other } else { wire::FileKind::Directory };
                         entries.push(wire::FileEntry { name: sub.to_string(), kind: kind as i32, size: 0, modified_unix: 0, directory: true });
                     }
@@ -224,8 +339,55 @@ impl Inner {
         wire::FileList { dir: dir.to_string(), entries }
     }
 
+    /// How the page's helpers could build `name`'s overview themselves: an NWB-Zarr series stored
+    /// as plain or gzip bytes ([`overview::plan_for`]); `None` otherwise.
+    fn helper_plan(&self, name: &str, source: &dyn RecordingSource) -> Option<overview::Plan> {
+        let info = source.info();
+        let series = info.metadata.get("nwb_series")?;
+        let prefix = format!("{}{}/data/", name.trim_end_matches('/'), series);
+        let text = text_of(self.file(&format!("{prefix}zarr.json"))?).ok()?;
+        let first = info.channels.first()?;
+        // One scale for every channel (NWB has one per series)
+        if info.channels.iter().any(|c| c.gain != first.gain || c.offset != first.offset) {
+            return None;
+        }
+        overview::plan_for(&text, &prefix, first.gain as f64, first.offset as f64)
+    }
+
+    /// What identifies the files of recording `name` (a kept overview is used only for the same
+    /// files): its shape and rate, and the count, total size and newest date of its files.
+    fn files_key(&self, name: &str, source: &dyn RecordingSource) -> String {
+        let prefix = name.trim_end_matches('/');
+        let (mut count, mut bytes, mut newest) = (0u64, 0f64, 0f64);
+        for (path, file) in self.files.range(prefix.to_string()..) {
+            if !(path == prefix || path.starts_with(&format!("{prefix}/"))) {
+                break;
+            }
+            count += 1;
+            bytes += file.size();
+            newest = newest.max(file.last_modified());
+        }
+        let info = source.info();
+        format!("{prefix}|{}|{}|{}|{count}|{bytes}|{newest}|base {}", info.channel_count(), info.samples, info.sample_rate_hz(), MEMORY_BASE)
+    }
+
+    /// Whether the Zarr folder `name` is an NWB file (its root says `NWBFile`).
+    fn is_nwb(&self, name: &str) -> bool {
+        let root = format!("{}/zarr.json", name.trim_end_matches('/'));
+        self.file(&root).and_then(|f| text_of(f).ok()).is_some_and(|t| t.contains("\"NWBFile\""))
+    }
+
+    /// The nodes under `/acquisition` of the Zarr folder `name`, from the picked files' paths.
+    fn acquisition_of(&self, name: &str) -> Vec<String> {
+        let prefix = format!("{}/acquisition/", name.trim_end_matches('/'));
+        let mut out: Vec<String> = self.files.iter().filter_map(|(p, _)| p.strip_prefix(&prefix)?.split_once('/').map(|(node, _)| node.to_string())).collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
     fn file(&self, path: &str) -> Option<&web_sys::File> {
-        self.files.iter().find(|(p, _)| p == path).map(|(_, f)| f)
+        self.files.get(path)
     }
 
     /// Opens a picked `.bin` with its `.meta` sidecar (dspk's JSON layout), and builds its
@@ -252,11 +414,11 @@ impl Inner {
     /// read-only store over them (only the byte ranges zarrs asks for are read).
     fn open_zarr(&self, name: &str) -> StreamResult<Arc<dyn RecordingSource>> {
         let prefix = format!("{}/", name.trim_end_matches('/'));
-        // dspk's layout (a `/traces` array); NWB keeps its signal elsewhere and is read by the
-        // electrophysiology formats, not built for the browser yet
-        if self.file(&format!("{prefix}traces/zarr.json")).is_none() {
-            let what = if name.to_ascii_lowercase().contains(".nwb.") { "an NWB recording: NWB opens in the desktop app or the container for now" } else { "not a dspk Zarr recording (no /traces array)" };
-            return Err(StreamError::Server(format!("{name} is {what}")));
+        // dspk's layout (a `/traces` array), or NWB's (its largest continuous series in
+        // `/acquisition`, read by the electrophysiology formats' reader)
+        let nwb = self.file(&format!("{prefix}traces/zarr.json")).is_none();
+        if nwb && !self.is_nwb(name) {
+            return Err(StreamError::Server(format!("{name} is not a recording dspk reads (no /traces array, not NWB)")));
         }
         let files: Vec<(String, Arc<dyn ByteSource>)> =
             self.files.iter().filter_map(|(path, file)| path.strip_prefix(&prefix).map(|key| (key.to_string(), Arc::new(FileBytes(file.clone())) as Arc<dyn ByteSource>))).collect();
@@ -264,6 +426,10 @@ impl Inner {
             return Err(StreamError::Server(format!("{name} was not among the folders picked")));
         }
         let store: Arc<dyn zarrs::storage::ReadableStorageTraits + Send + Sync> = Arc::new(ByteSourceStore::new(files));
+        if nwb {
+            let recording = dspk_synapse::io::nwb::NwbZarrRecording::open_in(store, name.trim_end_matches('/'), &self.acquisition_of(name)).map_err(|e| StreamError::Server(format!("{name}: {e}")))?;
+            return Ok(Arc::new(recording));
+        }
         let recording = ZarrRecording::from_store(name.trim_end_matches('/'), store).map_err(|e| StreamError::Server(format!("{name}: {e}")))?;
         Ok(Arc::new(recording))
     }
@@ -305,39 +471,49 @@ fn inner_rc(_inner: &std::cell::RefCell<Inner>) -> Option<Shared> {
     ENGINE.with(|e| e.borrow().clone())
 }
 
-/// Values read per piece of the overview (every channel): small enough to answer requests between
-/// pieces, large enough to read efficiently.
-const OVERVIEW_PIECE_VALUES: u64 = 8 << 20;
+/// Pages this worker builds between requests when it builds the overview itself: a page spans
+/// parts of two chunks of a chunked source, so a few pages at a time decode each chunk about once.
+const PAGES_HERE: u64 = 2;
 
-/// Builds the overview of the recording opened as `generation`, a piece at a time, letting the
-/// worker answer the page's requests between pieces; stops when another recording is opened.
-fn build_overview(engine: Option<Shared>, generation: u64, source: Arc<dyn RecordingSource>, pyramid: Arc<Pyramid>) {
+/// Builds the overview of the recording opened as `generation`, nearest the focus first, a few
+/// pages at a time, letting the worker answer the page's requests between them; while the page's
+/// helpers build it ([`overview`]), only waits. Stops when it is complete or another recording
+/// is opened.
+fn build_overview(engine: Option<Shared>, generation: u64) {
     let Some(engine) = engine else { return };
     wasm_bindgen_futures::spawn_local(async move {
-        let (total, channels) = (source.info().samples, source.info().channel_count().max(1) as u64);
-        let step = (OVERVIEW_PIECE_VALUES / channels).max(1);
-        let mut start = 0;
-        while start < total {
-            if engine.borrow().generation != generation {
-                return;
-            }
-            let end = (start + step).min(total);
+        loop {
+            let job = {
+                let me = engine.borrow();
+                let Some(o) = me.overview.as_ref().filter(|o| o.generation == generation) else { return };
+                if o.pyramid.is_complete() {
+                    return;
+                }
+                let waiting = !o.decided && js_sys::Date::now() - o.opened_ms < overview::DECIDE_WITHIN_MS;
+                (!o.helpers && !waiting).then(|| o.next_run(PAGES_HERE).map(|run| (o.source.clone(), o.pyramid.clone(), run))).flatten()
+            };
+            let Some((source, pyramid, run)) = job else {
+                // The helpers build it, or every free page is with them: look again soon
+                wait_ms(200).await;
+                continue;
+            };
+            let ps = pyramid.page_samples();
+            let (start, end) = (run.start * ps, (run.end * ps).min(pyramid.samples()));
             if let Err(e) = pyramid.fill(source.as_ref(), start, end, RAW_BLOCK_VALUES, || false) {
                 web_sys_console_error(&format!("overview of {}: {e}", source.info().name));
                 return;
             }
-            start = end;
-            yield_to_messages().await;
+            wait_ms(0).await;
         }
     });
 }
 
-/// Lets the worker take the page's next message before going on (a zero-delay timer).
-async fn yield_to_messages() {
+/// Waits `ms` (0: lets the worker take the page's next message before going on).
+async fn wait_ms(ms: i32) {
     let promise = js_sys::Promise::new(&mut |resolve, _| {
         let global = js_sys::global();
         if let Ok(set_timeout) = js_sys::Reflect::get(&global, &"setTimeout".into()).and_then(|f| f.dyn_into::<js_sys::Function>()) {
-            let _ = set_timeout.call2(&global, &resolve, &JsValue::from(0));
+            let _ = set_timeout.call2(&global, &resolve, &JsValue::from(ms));
         }
     });
     let _ = wasm_bindgen_futures::JsFuture::from(promise).await;

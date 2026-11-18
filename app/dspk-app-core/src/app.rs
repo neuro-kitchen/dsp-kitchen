@@ -211,21 +211,40 @@ impl WorkspaceBody {
             let opening = EmptyState::new(IconName::AudioWaveform, format!("Opening {name}…"), "Its first views appear in a moment; the overview fills in as you look");
             return div().id("start-screen").test_support().size_full().child(opening).into_any_element();
         }
+        // A page that does not know yet whether a server sent it: nothing, rather than a server's
+        // Open dialog that a page running alone replaces a moment later
+        if !crate::platform::remote::connected() {
+            return div().id("start-screen").test_support().size_full().into_any_element();
+        }
         // Files on this computer, or (a page served by `dspk serve`) the recordings of its server
         let mut screen = if crate::platform::remote::runs_alone() {
-            // A page on its own: the files the user picks, read and processed in this browser
-            EmptyState::new(IconName::AudioWaveform, "Open a recording", "A folder with your recordings (.zarr, .wav, or a .bin and its .meta), read in this browser").child(
-                h_flex()
-                    .gap_2()
-                    .child({
-                        let (store, browser) = (store.clone(), self.open_browser.clone());
-                        Button::new("start-pick-folder").primary().icon(IconName::FolderOpen).label("Open folder…").on_click(move |_, w, cx| commands::pick_page_files(&store, true, browser.clone(), w, cx))
-                    })
-                    .child({
-                        let (store, browser) = (store.clone(), self.open_browser.clone());
-                        Button::new("start-pick-files").outline().icon(IconName::File).label("Open files…").tooltip("Pick a .wav, or a .bin and its .meta (Ctrl+click both), without their folder").on_click(move |_, w, cx| commands::pick_page_files(&store, false, browser.clone(), w, cx))
-                    }),
-            )
+            // A page on its own: a file (the file chooser, as for a PDF), a project (its place),
+            // or a recording dropped on the window; read and processed in this browser, never sent
+            let note = self.store.read(cx).open_note.clone();
+            EmptyState::new(IconName::AudioWaveform, "Open a recording", "Drop a recording here (.zarr, .nwb.zarr, .wav), or open it. It is read in this browser and never leaves this computer.")
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child({
+                            let (store, browser) = (store.clone(), self.open_browser.clone());
+                            Button::new("start-open-file")
+                                .primary()
+                                .icon(IconName::File)
+                                .label("Open file…")
+                                .tooltip("A .wav, or a .bin with its .meta (select both)")
+                                .on_click(move |_, w, cx| commands::pick_page_files(&store, false, browser.clone(), w, cx))
+                        })
+                        .child({
+                            let (store, browser) = (store.clone(), self.open_browser.clone());
+                            Button::new("start-open-project")
+                                .outline()
+                                .icon(IconName::FolderOpen)
+                                .label("Open project…")
+                                .tooltip("A project, or a .zarr / .nwb.zarr recording: your browser asks once to let this page read it")
+                                .on_click(move |_, w, cx| commands::pick_page_files(&store, true, browser.clone(), w, cx))
+                        }),
+                )
+                .children(note.map(|n| div().pt_2().max_w(px(520.)).text_sm().text_color(cx.theme().danger).child(n)))
         } else if !crate::platform::LOCAL_FILES {
             EmptyState::new(IconName::AudioWaveform, "Open a recording", "The recordings of this page's server").child({
                 let open = self.open_browser.clone();
@@ -397,6 +416,9 @@ impl DspApp {
                 })
             },
         };
+        // A page on its own: what is dropped on the window opens (no dialog, no browser prompt)
+        #[cfg(target_family = "wasm")]
+        commands::open_dropped(&store, ctx.open_browser.clone(), window, cx);
         commands::register(&registry, &ctx);
         let open_browser = ctx.open_browser.clone();
         registry.extend(crate::screens::pipeline::PipelineView::commands(pipeline.downgrade(), store.clone()));
@@ -1276,7 +1298,8 @@ mod tests {
         wait_until(cx, window, |cx| cx.update(|cx| store.read(cx).pyramids.get("main").is_some_and(|&(done, total)| done == total)));
         cx.update(|cx| {
             assert_eq!(store.read(cx).pyramids.len(), 1, "one pyramid for the source both views show");
-            assert!(store.read(cx).pyramid_label().is_none(), "nothing left to build");
+            assert!(store.read(cx).pyramid_status().is_none(), "nothing left to build");
+            assert!(store.read(cx).pyramid_label().is_none_or(|l| l.starts_with("Overview ready")), "at most the notice that it is ready");
             let ds = store.read(cx).sources().unwrap().get("main");
             let p = ds.signal().progress();
             assert_eq!(p.done, p.total);

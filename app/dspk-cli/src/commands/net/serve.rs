@@ -264,10 +264,11 @@ impl RecordingOpener for FileOpener {
     fn open(&self, path: &Path, source: Option<&str>) -> StreamResult<OpenRecording> {
         let (source, pyramid) = open_with_pyramid(path, source).map_err(|e| StreamError::Protocol(format!("{e:#}")))?;
         let pyramid = Arc::new(pyramid);
-        if !pyramid.is_complete() {
-            PyramidBuilder::default().run(source.clone(), pyramid.clone(), 0, Arc::new(AtomicBool::new(false)), Arc::new(|_| {}));
+        let recording = OpenRecording::new(source.clone(), Some(pyramid.clone())).with_processor(Processor::of(path));
+        if pyramid.is_complete() {
+            return Ok(recording);
         }
-        Ok(OpenRecording::new(source, Some(pyramid)).with_processor(Processor::of(path)))
+        Ok(recording.with_refocus(build_pyramid(source, pyramid, Arc::new(|_| {}))))
     }
 }
 
@@ -316,11 +317,22 @@ fn start_recording(path: &Path, source: Arc<dyn RecordingSource>, pyramid: Pyram
             let on_progress: dspk_view::OnProgress = Arc::new(move |p: dspk_view::Progress| {
                 bar.report(&ProgressEvent { stage: PYRAMID_STAGE, step: 1, steps: 1, done: p.done, total: p.total, unit: "samples" });
             });
-            PyramidBuilder::default().run(source.clone(), pyramid.clone(), 0, Arc::new(AtomicBool::new(false)), on_progress);
+            let refocus = build_pyramid(source.clone(), pyramid.clone(), on_progress);
+            return OpenRecording::new(source, Some(pyramid)).with_processor(Processor::of(path)).with_refocus(refocus);
         }
     }
 
     OpenRecording::new(source, Some(pyramid)).with_processor(Processor::of(path))
+}
+
+/// Starts building `pyramid` in the background from the start, and returns what moves its work
+/// to a sample clients look at (nearest it first, then outward).
+fn build_pyramid(source: Arc<dyn RecordingSource>, pyramid: Arc<Pyramid>, on_progress: dspk_view::OnProgress) -> Arc<dyn Fn(u64) + Send + Sync> {
+    let builder = Arc::new(PyramidBuilder::default());
+    let cancel = Arc::new(AtomicBool::new(false));
+    builder.run(source.clone(), pyramid.clone(), 0, cancel.clone(), on_progress.clone());
+    // `run` starts once; later calls only move the focus
+    Arc::new(move |sample| builder.run(source.clone(), pyramid.clone(), sample, cancel.clone(), on_progress.clone()))
 }
 
 pub async fn run(args: &ServeArgs) -> anyhow::Result<()> {
