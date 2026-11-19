@@ -3,7 +3,6 @@
 //! Changes go through its methods, which emit the [`AppEvent`] they caused (never a blanket
 //! `notify`); view models subscribe to the events they show.
 
-use dspk_ops::PipelineStage;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -14,7 +13,7 @@ use gpui_kit::{AppContext as _, Context, EventEmitter, Task};
 
 use dspk_view::{Progress, SignalBackend};
 use crate::data::jobs::{self, Cancel, JobMessage};
-use crate::data::recording::processed::{PreviewSource, ProcessedSignal};
+use crate::data::recording::processed::{Made, ProcessedChains, ProcessedSignal};
 use crate::data::recording::{Dataset, SourceSet, SpikeEventStore};
 use crate::ui::theme::palette::Palette;
 use dspk_session::timeline::TimelineState;
@@ -25,7 +24,6 @@ use dspk_session::session::{RecordingRef, SessionDoc, Show, ViewDoc};
 use crate::navigation::route::Workspace;
 
 /// Previews kept by chain.
-const PREVIEW_CACHE: usize = 6;
 /// Changes of the session that can be undone.
 const UNDO_DEPTH: usize = 200;
 /// Playback clock period.
@@ -154,7 +152,7 @@ impl Recording {
     }
 }
 
-pub use dspk_pipeline::preview::ViewPlan;
+pub use dspk_pipeline::view::ViewPlan;
 
 pub struct Store {
     /// The active recording (what Explore draws and Processing edits).
@@ -209,12 +207,10 @@ pub struct Store {
     /// The same, computed by the recording's server when this app cannot compute (a page
     /// without WebGPU): `remote::processed`.
     remote_previews: HashMap<String, Arc<dyn SignalBackend>>,
-    /// Previews by chain (source, channels, enabled ops), most recent last: views with the same
-    /// chain share one, and a branch reads the preview of the ops it shares with another.
-    preview_cache: Vec<(Vec<String>, Arc<ProcessedSignal>)>,
-    /// Whitenings fitted for previews, by the key of the chain up to them (fitting reads the
-    /// recording: once per chain, not per redraw).
-    whiten_cache: HashMap<String, dspk_ops::spatial::SpatialWhitening>,
+    /// The open recording's chains (dspk-pipeline's, as `dspk serve` and a page's engine keep
+    /// them): views with the same chain share one, a branch reads the chain it starts with, and
+    /// whitenings are fitted once per chain.
+    chains: Arc<ProcessedChains>,
     /// Whitening fits running in the background (their keys).
     whiten_fitting: std::collections::HashSet<String>,
     /// The channel the Processing panel is about, and the op selected in it.
@@ -276,8 +272,7 @@ impl Store {
             remote_previews: HashMap::new(),
             live: None,
             live_task: None,
-            preview_cache: Vec::new(),
-            whiten_cache: HashMap::new(),
+            chains: Arc::new(ProcessedChains::new("")),
             whiten_fitting: Default::default(),
             picked_channel: None,
             picked_op: None,
@@ -683,8 +678,9 @@ impl Store {
         // computer's); past it the view is drawn raw, and the panel says so
         self.remote_previews.contains_key(&v.id).then(|| {
             let channels = v.recording.channels.as_ref().map_or_else(|| self.sources().map_or(0, |s| s.entry(source).channels), Vec::len);
-            let max = if crate::platform::remote::runs_alone() { dspk_view::PROCESSED_MAX_VALUES_BROWSER } else { dspk_view::PROCESSED_MAX_VALUES };
-            channels as u64 * samples <= (max * dspk_view::PROCESSED_MAX_TILES) as u64
+            use dspk_pipeline::view::{PREVIEW_MAX_TILES, PREVIEW_MAX_VALUES_BROWSER, PREVIEW_MAX_VALUES_DEVICE};
+            let max = if crate::platform::remote::runs_alone() { PREVIEW_MAX_VALUES_BROWSER } else { PREVIEW_MAX_VALUES_DEVICE };
+            channels as u64 * samples <= (max * PREVIEW_MAX_TILES) as u64
         })
     }
 
@@ -723,31 +719,25 @@ impl Store {
             }
             return;
         }
-        let group = plan.group;
-        let mut stages: Vec<PipelineStage> = plan.steps.iter().map(|(_, st)| st.clone()).collect();
-        // The chain's key, step by step: [source and channels, step 1, step 2, …]
-        let mut key = vec![format!("{source}|{group:?}")];
-        key.extend(plan.steps.into_iter().map(|(k, _)| k));
-        // Whitenings fitted on the signal of the steps before them, as the pipeline does. A fit
-        // reads the recording: it runs in the background (the view draws the raw signal
-        // meanwhile) and the preview is built again when it is done
-        for (at, fit) in plan.fits {
-            let up_to = key[..at + 2].join("\n");
-            let Some(fitted) = self.whiten_cache.get(&up_to).cloned() else {
-                if self.whiten_fitting.insert(up_to.clone()) {
+        // Planned and kept by the recording's chains (shared prefixes, fitted whitenings)
+        match self.chains.signal(ds.signal().clone(), raw, &source, &plan) {
+            Ok(Made::Ready(p)) => {
+                self.previews.insert(id.to_string(), p);
+            }
+            // A whitening fit reads the recording: it runs in the background (the view draws the
+            // raw signal meanwhile) and the preview is built again when it is done
+            Ok(Made::NeedsFit(job)) => {
+                if self.whiten_fitting.insert(job.key.clone()) {
                     self.set_status(format!("{}: fitting the whitening…", v.name), cx);
-                    let (before, group, raw, view, name) = (stages[..at].to_vec(), group.clone(), raw.clone(), id.to_string(), v.name.clone());
-                    let task = cx.background_spawn(async move {
-                        let target = dspk_core::ComputeTarget::from_env().map_err(|e| e.to_string())?;
-                        dspk_pipeline::fit_whitening(target, raw.as_ref(), &group, &before, &fit).map_err(|e| e.to_string())
-                    });
+                    let (view, name, chains, key) = (id.to_string(), v.name.clone(), self.chains.clone(), job.key.clone());
+                    let task = cx.background_spawn(async move { job.run() });
                     cx.spawn(async move |this, cx| {
                         let result = task.await;
                         let _ = this.update(cx, |s, cx| {
-                            s.whiten_fitting.remove(&up_to);
+                            s.whiten_fitting.remove(&key);
                             match result {
                                 Ok(w) => {
-                                    s.whiten_cache.insert(up_to, w);
+                                    chains.put_fit(key, w);
                                     s.set_status(format!("{name}: whitening fitted"), cx);
                                     s.rebuild_preview(&view, cx);
                                     cx.emit(AppEvent::WindowMoved);
@@ -758,26 +748,6 @@ impl Store {
                     })
                     .detach();
                 }
-                return;
-            };
-            stages[at] = PipelineStage::SpatialWhitening(fitted);
-        }
-        // The longest computed prefix of this chain
-        let found = (2..=key.len()).rev().find_map(|k| self.preview_cache.iter().find(|(c, _)| c[..] == key[..k]).map(|(_, p)| (k, p.clone())));
-        let built = match found {
-            Some((k, p)) if k == key.len() => Ok(p),
-            // A branch reads the shared prefix's rows, in the order that prefix leaves them
-            Some((k, p)) => ProcessedSignal::new(ds.signal().clone(), Arc::new(PreviewSource::new(p.clone())), p.out_channels().to_vec(), stages[k - 1..].to_vec()).map(Arc::new),
-            None => ProcessedSignal::new(ds.signal().clone(), raw, group, stages).map(Arc::new),
-        };
-        match built {
-            Ok(p) => {
-                self.preview_cache.retain(|(c, _)| *c != key);
-                self.preview_cache.push((key, p.clone()));
-                if self.preview_cache.len() > PREVIEW_CACHE {
-                    self.preview_cache.remove(0);
-                }
-                self.previews.insert(id.to_string(), p);
             }
             Err(e) => self.set_status(format!("{}: {e}", v.name), cx),
         }
@@ -793,7 +763,7 @@ impl Store {
         let group: Vec<usize> = v.recording.channels.clone().unwrap_or_else(|| (0..total).collect());
         let base_dir = self.doc_path.as_ref().and_then(|p| p.parent().map(Path::to_path_buf)).unwrap_or_default();
         let ops: Vec<&dspk_pipeline::Node> = v.ops.iter().filter(|o| o.enabled).map(|o| &o.node).collect();
-        dspk_pipeline::preview::view_plan(&ops, group, &base_dir)
+        dspk_pipeline::view::view_plan(&ops, group, &base_dir)
     }
 
     /// The channels view `v` shows, in order (see [`Self::view_plan`]).
@@ -1606,8 +1576,7 @@ impl Store {
         self.pyramid_ready = None;
         self.previews.clear();
         self.remote_previews.clear();
-        self.preview_cache.clear();
-        self.whiten_cache.clear();
+        self.chains = Arc::new(ProcessedChains::new(""));
         self.applied_view = None;
         self.picked_channel = None;
         self.picked_op = None;
@@ -1660,8 +1629,7 @@ impl Store {
         self.pyramid_ready = None;
             self.previews.clear();
             self.remote_previews.clear();
-            self.preview_cache.clear();
-        self.whiten_cache.clear();
+            self.chains = Arc::new(ProcessedChains::new(""));
             self.applied_view = None;
             self.picked_channel = None;
             self.picked_op = None;

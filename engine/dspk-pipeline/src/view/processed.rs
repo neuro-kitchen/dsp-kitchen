@@ -1,17 +1,16 @@
 //! Live preview of a view's op chain as a [`SignalBackend`]: the views are answered with the
-//! recording processed on the device by `dspk_pipeline::preview` (window by window, cached), the
+//! recording processed on the device by [`Preview`](super::Preview) (window by window, cached), the
 //! raw signal for channels outside the view's group and for windows zoomed out past
-//! [`PREVIEW_MAX_VALUES`] ([`ProcessedSignal::covers`] tells the UI to say so).
+//! [`PREVIEW_MAX_VALUES`](super::PREVIEW_MAX_VALUES) ([`ProcessedSignal::covers`] tells the UI to say so).
 
 use std::ops::Range;
 use std::sync::Arc;
 
 use dspk_core::{DspResult, RecordingInfo, RecordingSource, SampleFormat};
 use dspk_ops::PipelineStage;
-use crate::preview::Preview;
+use super::preview::Preview;
 use dspk_view::{Envelope, OnProgress, Progress, SignalBackend, View};
 
-pub use crate::preview::PREVIEW_MAX_VALUES;
 
 /// A view's signal with its op chain applied: [`Preview`] (dspk-pipeline) for the channels the
 /// chain processes, the raw signal for the others and for windows too large to preview.
@@ -22,7 +21,7 @@ pub struct ProcessedSignal {
 
 impl ProcessedSignal {
     /// The preview of `stages` over `group` (the view's channels) of `source`; `raw` answers what
-    /// is not processed (outside the group, or zoomed out past [`PREVIEW_MAX_VALUES`]).
+    /// is not processed (outside the group, or zoomed out past [`PREVIEW_MAX_VALUES`](super::PREVIEW_MAX_VALUES)).
     pub fn new(raw: Arc<dyn SignalBackend>, source: Arc<dyn RecordingSource>, group: Vec<usize>, stages: Vec<PipelineStage>) -> DspResult<Self> {
         Ok(Self { raw, preview: Preview::new(source, group, stages)? })
     }
@@ -102,84 +101,10 @@ impl ProcessedSignal {
 }
 
 impl ProcessedSignal {
-    /// The processed signal of a view from its op chain (`ops`, the enabled ones in order) over
-    /// `channels` (the view's subset, or every channel), as [`crate::preview::view_plan`] lays
-    /// it out. Whitenings are fitted here, on the signal of the steps before them: this reads
-    /// the recording and takes seconds (call it off the drawing thread).
-    pub fn of_ops(raw: Arc<dyn SignalBackend>, source: Arc<dyn RecordingSource>, ops: &[&crate::Node], channels: Vec<usize>, base_dir: &std::path::Path) -> Result<Self, String> {
-        let plan = crate::preview::view_plan(ops, channels, base_dir)?;
-        let mut stages: Vec<PipelineStage> = plan.steps.into_iter().map(|(_, stage)| stage).collect();
-        // A whitening's fit reads the device back as it goes, which a browser cannot wait for
-        if cfg!(target_family = "wasm") && !plan.fits.is_empty() {
-            return Err("whitening is fitted on a server or in the desktop app, not in a browser yet".into());
-        }
-        for (at, fit) in plan.fits {
-            let target = dspk_core::ComputeTarget::from_env().map_err(|e| e.to_string())?;
-            let fitted = crate::fit_whitening(target, source.as_ref(), &plan.group, &stages[..at], &fit).map_err(|e| e.to_string())?;
-            stages[at] = PipelineStage::SpatialWhitening(fitted);
-        }
-        Self::new(raw, source, plan.group, stages).map_err(|e| e.to_string())
-    }
-
-    /// [`Self::of_ops`] for ops sent as JSON (pipeline nodes, in order) over `channels` (none =
-    /// all): a view's processing as a client that does not compute asks a server for it.
-    /// `base_dir` is where files the ops name (a remap's channel map) are read from.
-    pub fn of_json_ops(raw: Arc<dyn SignalBackend>, source: Arc<dyn RecordingSource>, ops: &[String], channels: &[usize], base_dir: &std::path::Path) -> Result<Self, String> {
-        let nodes: Vec<crate::Node> = ops.iter().map(|op| serde_json::from_str(op).map_err(|e| format!("an op that is not a pipeline node: {e}"))).collect::<Result<_, _>>()?;
-        let channels: Vec<usize> = if channels.is_empty() { (0..source.info().channel_count()).collect() } else { channels.to_vec() };
-        Self::of_ops(raw, source, &nodes.iter().collect::<Vec<_>>(), channels, base_dir)
-    }
-
     /// `channels` over `samples`, processed whatever the size (a branch reading this preview
     /// as its input: its halo makes the request larger than a view's).
     pub fn read_processed(&self, channels: &[usize], samples: Range<u64>, out: &mut [f32]) -> DspResult<()> {
         self.fill(channels, samples, false, out)
-    }
-}
-
-/// Processed signals kept per recording.
-const CHAINS_KEPT: usize = 8;
-
-/// The processed signals a client's views asked for, by chain (channels and ops), so a view can
-/// be made ready asynchronously ([`ProcessedSignal::warm_view_async`]) before it is answered: what
-/// `dspk serve` and a browser's engine hold for a recording they serve. Files the ops name (a
-/// remap's channel map) are read from `base_dir`.
-pub struct ProcessedChains {
-    base_dir: std::path::PathBuf,
-    made: std::sync::Mutex<Vec<((Vec<usize>, Vec<String>), Arc<ProcessedSignal>)>>,
-}
-
-impl ProcessedChains {
-    pub fn new(base_dir: impl Into<std::path::PathBuf>) -> Self {
-        Self { base_dir: base_dir.into(), made: Default::default() }
-    }
-
-    /// The signal of `ops` over `channels` (none = all) of `source` (`raw` answers what is not
-    /// processed). Made now (whitenings are fitted: seconds) and kept, most recent last.
-    pub fn make(&self, raw: Arc<dyn SignalBackend>, source: Arc<dyn RecordingSource>, channels: &[usize], ops: &[String]) -> Result<Arc<ProcessedSignal>, String> {
-        let signal = Arc::new(ProcessedSignal::of_json_ops(raw, source, ops, channels, &self.base_dir)?);
-        let mut made = self.made.lock().unwrap_or_else(|e| e.into_inner());
-        made.retain(|(key, _)| key.0 != channels || key.1 != ops);
-        if made.len() >= CHAINS_KEPT {
-            made.remove(0);
-        }
-        made.push(((channels.to_vec(), ops.to_vec()), signal.clone()));
-        Ok(signal)
-    }
-
-    /// Forgets the chains kept (a batch job takes the GPU: their device memory goes with them).
-    pub fn clear(&self) {
-        self.made.lock().unwrap_or_else(|e| e.into_inner()).clear();
-    }
-
-    /// Makes `view` of the chain of `ops` over `channels` ready without blocking on the device;
-    /// nothing to do for a chain not made here.
-    pub async fn warm(&self, channels: &[usize], ops: &[String], view: &View) -> DspResult<()> {
-        let signal = self.made.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(key, _)| key.0 == channels && key.1 == ops).map(|(_, s)| s.clone());
-        match signal {
-            Some(signal) => signal.warm_view_async(view).await,
-            None => Ok(()),
-        }
     }
 }
 
@@ -413,13 +338,13 @@ mod tests {
         let mut out = vec![0.0f32; channels * 2000];
         time("a zoomed-in read of 2000 samples (download)", &mut || p.read(&all, window / 2..window / 2 + 2000, &mut out).unwrap());
         // The browser's block size: the 20 s window in tiles of 16 Mi values
-        let tiled = p.with_max_values(dspk_view::PROCESSED_MAX_VALUES_BROWSER);
+        let tiled = p.with_max_values(crate::view::PREVIEW_MAX_VALUES_BROWSER);
         let wide = View { channels: all.clone(), start: 0, end: 2 * window, width: 1200 };
         time("a 20 s view in tiles of 16 Mi values", &mut || tiled.view(&wide, &mut env).unwrap());
         // The same with a one-step chain (a scale: almost no kernel time): the rest is reading
         // and uploading
         let source2 = tiled.preview.source();
-        let one = ProcessedSignal::new(Arc::new(LocalSignal::open(source2.clone(), None).unwrap()), source2, all.clone(), vec![PipelineStage::Scale { alpha: 1.0, beta: 0.0 }]).unwrap().with_max_values(dspk_view::PROCESSED_MAX_VALUES_BROWSER);
+        let one = ProcessedSignal::new(Arc::new(LocalSignal::open(source2.clone(), None).unwrap()), source2, all.clone(), vec![PipelineStage::Scale { alpha: 1.0, beta: 0.0 }]).unwrap().with_max_values(crate::view::PREVIEW_MAX_VALUES_BROWSER);
         time("the same 20 s with a one-step chain (a scale; first)", &mut || one.view(&wide, &mut env).unwrap());
     }
 

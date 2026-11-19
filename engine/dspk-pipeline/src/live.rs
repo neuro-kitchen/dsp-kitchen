@@ -33,68 +33,12 @@ use dspk_ops::{Pipeline, PipelineStage};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{Mode, Node, PipelineSpec};
+pub use crate::chain::{op_name, timing, CrossingParams, Refusal, Timing};
+use crate::chain::{stencil_halo, Purpose, Step};
+use crate::{Node, PipelineSpec};
 
 /// Block length of a chain that does not say (ms).
 pub const DEFAULT_BLOCK_MS: f64 = 10.0;
-
-/// When an op's output for a block is known.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Timing {
-    /// From the block and state carried from earlier blocks.
-    Causal,
-    /// Also needs this many samples before the block (not carried by stateful workspaces yet).
-    History(usize),
-    /// Also needs this many samples after each one: its output lags by them.
-    Delay(usize),
-    /// Needs the whole recording (zero-phase filters, a fit).
-    Offline,
-}
-
-/// The `op` name of a node (`iir`, `car`, …).
-pub fn op_name(node: &Node) -> String {
-    serde_json::to_value(node).ok().and_then(|v| v.get("op").and_then(Value::as_str).map(str::to_string)).unwrap_or_default()
-}
-
-/// When `node`'s output is known, and why when it is not live.
-pub fn timing(node: &Node) -> (Timing, &'static str) {
-    let filter = |mode: &Mode| match mode {
-        Mode::Forward => (Timing::Causal, ""),
-        Mode::ForwardBackward => (Timing::Offline, "zero-phase (forward-backward) filtering needs future samples: set mode = \"forward\""),
-    };
-    match node {
-        Node::Read { .. } | Node::Write { .. } | Node::Remap { .. } | Node::Crossings { .. } => (Timing::Causal, ""),
-        Node::Scale { .. } | Node::SubtractBaseline { .. } | Node::Clamp { .. } | Node::Rectify {} | Node::Square {} | Node::Sqrt {} | Node::Log10 {} => {
-            (Timing::Causal, "")
-        }
-        Node::Car {} | Node::Cmr {} | Node::Laplacian { .. } => (Timing::Causal, ""),
-        Node::Iir { mode, .. } | Node::Notch { mode, .. } | Node::Sos { mode, .. } => filter(mode),
-        Node::Whiten { .. } => (Timing::Offline, "whitening is fitted on the recording: not on a live source (a fit loaded from an earlier recording is planned)"),
-        Node::Fir { taps, centered: false, .. } => (Timing::History(taps.len().saturating_sub(1)), "a FIR filter needs the samples before each block; carried history is planned"),
-        Node::Fir { taps, centered: true, .. } => (Timing::Delay(taps.len() / 2), "a centred FIR filter needs samples after each one; delayed output is planned"),
-        Node::Median { width, .. } => (Timing::Delay(width / 2), "a running median needs samples after each one; delayed output is planned"),
-        Node::TeagerKaiser { .. } => (Timing::Delay(1), "Teager–Kaiser energy needs the next sample; delayed output is planned"),
-        Node::GaussianSmooth { sigma_samples, .. } => {
-            (Timing::Delay((sigma_samples * 4.0).ceil().max(1.0) as usize), "Gaussian smoothing is zero-phase: it needs samples after each one")
-        }
-        Node::Resample { .. } => (Timing::Delay(0), "resampling a live source is planned"),
-    }
-}
-
-/// Why one node of a spec was refused.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Refusal {
-    /// Node id ("" for the spec as a whole).
-    pub node: String,
-    pub op: String,
-    pub reason: String,
-}
-
-impl Refusal {
-    fn whole(reason: impl Into<String>) -> Self {
-        Self { node: String::new(), op: String::new(), reason: reason.into() }
-    }
-}
 
 /// What a tap carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,29 +92,6 @@ pub struct LiveChain {
     pub taps: Vec<LiveTap>,
     /// Samples the chain's output lags its input (0 until delayed ops are allowed).
     pub delay_samples: u64,
-}
-
-/// A crossings node's settings, before the sample rate turns times into samples.
-#[derive(Debug, Clone, PartialEq)]
-pub struct CrossingParams {
-    pub level: f32,
-    pub release: Option<f32>,
-    pub direction: crate::Direction,
-    pub min_duration_ms: f64,
-    pub refractory_ms: f64,
-}
-
-impl CrossingParams {
-    pub fn options(&self, sample_rate: f64) -> CrossingOptions {
-        let to_samples = |ms: f64| (ms * 1e-3 * sample_rate).round() as u64;
-        CrossingOptions {
-            levels: vec![self.level],
-            releases: self.release.map(|r| vec![r]).unwrap_or_default(),
-            direction: self.direction.into(),
-            min_duration_samples: to_samples(self.min_duration_ms),
-            refractory_samples: to_samples(self.refractory_ms),
-        }
-    }
 }
 
 /// The live additions of a spec.
@@ -273,95 +194,60 @@ pub fn check_live(text: &str, channels: usize) -> Result<LiveChain, Vec<Refusal>
         input_channels.retain(|&c| c < channels);
     }
 
-    let mut steps = Vec::new();
-    let mut crossings = None;
+    // The chain after the read, planned as views and runs plan it (writes record the node before
+    // them: they are not steps)
+    let chain_nodes: Vec<(String, Node)> = order.iter().skip(1).filter(|id| !matches!(spec.nodes[*id], Node::Write { .. })).map(|id| (id.clone(), spec.nodes[id].clone())).collect();
+    let (plan, refused) = crate::chain::plan_chain_all(&chain_nodes, &input_channels, Purpose::Live, None);
+    refusals.extend(refused);
+    let crossings = plan.crossings.clone();
+    // Each planned node's channels and delay after it, for its tap (a refused node has none)
+    let mut at: BTreeMap<String, (usize, u64)> = BTreeMap::new();
+    for (id, _) in &plan.lead {
+        at.insert(id.clone(), (plan.read.len(), 0));
+    }
+    for s in &plan.steps {
+        at.insert(s.id.clone(), (s.channels, s.delay));
+    }
+    if let Some((id, _)) = &plan.crossings {
+        at.insert(id.clone(), (plan.steps.last().map_or(plan.read.len(), |s| s.channels), plan.delay));
+    }
+    let mut steps: Vec<LiveStep> = plan.lead.iter().map(|(id, _)| LiveStep { node: id.clone(), op: "remap".into(), stage: None }).collect();
+    steps.extend(plan.steps.iter().map(|s| LiveStep {
+        node: s.id.clone(),
+        op: s.op.clone(),
+        stage: match &s.step {
+            Step::Stage(stage) => Some(stage.clone()),
+            Step::Reorder { order, .. } => Some(PipelineStage::ReorderChannels { order: order.clone() }),
+            // Refused live: never planned
+            Step::Whiten(_) => None,
+        },
+    }));
     let mut taps = Vec::new();
-    let mut leading = true;
-    let mut current = input_channels.len();
     let mut last_processing: Option<String> = None;
-    let mut delay = 0u64;
     for id in order.iter().skip(1) {
         let node = &spec.nodes[id];
-        let op = op_name(node);
-        let refuse = |reason: String| Refusal { node: id.clone(), op: op.clone(), reason };
-        let (t, why) = timing(node);
-        // Ops with a bounded history or look-ahead run with the samples carried between blocks
-        // (their delay is reported); the ones that need the whole recording, and resampling, do not
-        if t == Timing::Offline || matches!(node, Node::Resample { .. }) {
-            refusals.push(refuse(why.to_string()));
+        if let Node::Write { .. } = node {
+            // Records the node before it
+            match &last_processing {
+                Some(prev) => match taps.iter_mut().find(|t: &&mut LiveTap| &t.node == prev) {
+                    Some(tap) => tap.record = true,
+                    None => {
+                        let (name, _) = tap_decls.remove(prev).unwrap_or_else(|| (prev.clone(), true));
+                        let (channels, delay_samples) = at.get(prev).copied().unwrap_or((plan.read.len(), plan.delay));
+                        taps.push(LiveTap { name, node: prev.clone(), kind: kind_of(&crossings, prev), record: true, channels, delay_samples });
+                    }
+                },
+                None => refusals.push(Refusal { node: id.clone(), op: op_name(node), reason: "a write needs a processing node before it: the raw data is always recorded".into() }),
+            }
             continue;
         }
-        if crossings.is_some() && !matches!(node, Node::Write { .. }) {
-            refusals.push(refuse("crossings gives events: it ends the chain (only a write may follow)".into()));
-            continue;
-        }
-        match node {
-            Node::Write { .. } => {
-                // Records the node before it
-                if let Some(prev) = &last_processing {
-                    match taps.iter_mut().find(|t: &&mut LiveTap| &t.node == prev) {
-                        Some(tap) => tap.record = true,
-                        None => {
-                            let (name, _) = tap_decls.remove(prev).unwrap_or_else(|| (prev.clone(), true));
-                            taps.push(LiveTap { name, node: prev.clone(), kind: kind_of(&crossings, prev), record: true, channels: current, delay_samples: delay });
-                        }
-                    }
-                } else {
-                    refusals.push(refuse("a write needs a processing node before it: the raw data is always recorded".into()));
-                }
-                continue;
-            }
-            Node::Remap { .. } => match node.channel_map(None).ok().flatten().map(|m| m.resolve(current)) {
-                Some(Ok(order)) if leading => {
-                    input_channels = order.into_iter().map(|i| input_channels[i]).collect();
-                    current = input_channels.len();
-                    steps.push(LiveStep { node: id.clone(), op: op.clone(), stage: None });
-                }
-                Some(Ok(order)) => {
-                    let mut seen = order.clone();
-                    seen.sort_unstable();
-                    if seen != (0..current).collect::<Vec<_>>() {
-                        refusals.push(refuse(format!("a remap after processing keeps every channel ({current}); drop channels in a remap right after the read")));
-                    } else {
-                        steps.push(LiveStep { node: id.clone(), op: op.clone(), stage: Some(PipelineStage::ReorderChannels { order }) });
-                    }
-                }
-                Some(Err(e)) => refusals.push(refuse(e.to_string())),
-                None => refusals.push(refuse("a remap on a device gives its pairs in the spec (files are not read)".into())),
-            },
-            Node::Crossings { level, release, direction, min_duration_ms, refractory_ms } => {
-                if let Err(e) = node.stage() {
-                    refusals.push(refuse(e.to_string()));
-                } else {
-                    crossings = Some((id.clone(), CrossingParams { level: *level, release: *release, direction: *direction, min_duration_ms: *min_duration_ms, refractory_ms: *refractory_ms }));
-                }
-                leading = false;
-            }
-            _ => {
-                leading = false;
-                match node.stage() {
-                    Ok(Some(stage)) => {
-                        if let PipelineStage::SurfaceLaplacian(lap) = &stage
-                            && lap.num_channels != current
-                        {
-                            refusals.push(refuse(format!("the Laplacian's grid has {} electrodes; the chain has {current} channels here", lap.num_channels)));
-                            continue;
-                        }
-                        if let Some((_, after)) = stencil_halo(&stage) {
-                            delay += after as u64;
-                        }
-                        steps.push(LiveStep { node: id.clone(), op: op.clone(), stage: Some(stage) });
-                    }
-                    Ok(None) => steps.push(LiveStep { node: id.clone(), op: op.clone(), stage: None }),
-                    Err(e) => refusals.push(refuse(e.to_string())),
-                }
-            }
-        }
+        let Some(&(channels, delay_samples)) = at.get(id) else { continue };
         last_processing = Some(id.clone());
         if let Some((name, record)) = tap_decls.remove(id) {
-            taps.push(LiveTap { name, node: id.clone(), kind: kind_of(&crossings, id), record, channels: current, delay_samples: delay });
+            taps.push(LiveTap { name, node: id.clone(), kind: kind_of(&crossings, id), record, channels, delay_samples });
         }
     }
+    let (input_channels, delay) = (plan.read.clone(), plan.delay);
     // A tap on the read itself is the source's raw data, which every device publishes
     if let Some((name, _)) = tap_decls.remove(*read) {
         refusals.push(Refusal { node: (*read).clone(), op: "read".into(), reason: format!("tap {name}: the raw data is published already, under the source's name") });
@@ -420,15 +306,6 @@ pub enum TapOutput {
 /// A stage that reads samples around each one (FIR, median, Teager–Kaiser, Gaussian smoothing):
 /// how many before and after. `None` for the others (pointwise, spatial, forward filters, which
 /// carry their own state).
-fn stencil_halo(stage: &PipelineStage) -> Option<(usize, usize)> {
-    match stage {
-        PipelineStage::Fir { .. } | PipelineStage::Median { .. } | PipelineStage::TeagerKaiser { .. } | PipelineStage::GaussianSmooth { .. } => {
-            stage.settling(1.0).ok().filter(|&(b, a)| b + a > 0)
-        }
-        _ => None,
-    }
-}
-
 enum SegmentKind {
     /// Stages that carry their own state or need none, on the device as one stateful workspace.
     Stateful(Option<PipelineWorkspace<f32>>),

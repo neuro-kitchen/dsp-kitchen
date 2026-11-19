@@ -3692,6 +3692,7 @@ name = "dspk-stream"
 version = "0.0.12"
 dependencies = [
  "dspk-core",
+ "dspk-pipeline",
  "dspk-view",
  "futures-channel",
  "futures-util",
@@ -3780,6 +3781,7 @@ dependencies = [
  "dspk-core",
  "memmap2",
  "rayon",
+ "serde_json",
  "tracing",
  "wasm_thread",
 ]

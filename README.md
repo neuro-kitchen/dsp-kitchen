@@ -36,8 +36,9 @@ drawn from min/max pyramids built by `dspk-view`.*
 | | `dspk-io` | Raw binary and Zarr recordings, format detection, chunk cache | crates.io |
 | | `dspk-ops` | Filters, resampling, spatial operators, linear algebra, statistics, peaks, device pipelines | crates.io |
 | `engine/` | `dspk-pipeline` | Pipelines as data (JSON / TOML specs): plan, many inputs, merges, provenance | crates.io |
-| `serve/` | `dspk-view` | Min/max envelopes and pyramids for viewing, local or remote | crates.io |
-| | `dspk-stream` | Network sessions for continuous signals (QUIC + TLS, protobuf) | crates.io |
+| `view/` | `dspk-view` | Min/max envelopes and pyramids for viewing, local or remote | crates.io |
+| `serve/` | `dspk-stream` | Network sessions for continuous signals (QUIC + TLS, WebTransport, protobuf) | crates.io |
+| `devices/` | `dspk-device` | A device next to a sensor: live sources, a causal chain, taps, recordings | crates.io |
 | `synapse/` | `dspk-synapse` | Electrophysiology: NWB, SpikeGLX, mtscomp, Phy formats, probes, detection, clustering, matching, metrics, sorter building blocks, provenance | crates.io |
 | | `dspk-synapse-ml` | Pretrained models (DARTsort, SpikeNet2, UnitRefine) and their runtime | crates.io |
 | `synapse/sorters/` | `dspk-sorter-kilosort` | Kilosort4 and EMUsort (features `ks4`, `emusort`; GPL-3.0) | crates.io |

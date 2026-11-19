@@ -13,11 +13,15 @@ categories.workspace = true
 [features]
 # The live protocol for devices (`live`): messages, the Device trait, the QUIC transport
 live = []
+# A view's processing for the clients that ask for it (`pipeline`): dspk-pipeline's chains answer
+# `ViewProcessor` (what `dspk serve` and a browser page's engine run)
+pipeline = ["dep:dspk-pipeline"]
 
 [dependencies]
 dspk-core.workspace = true
 # Host envelopes only: a server answers views from its recording and pyramid
 dspk-view = { workspace = true, default-features = false }
+dspk-pipeline = { workspace = true, features = ["view"], optional = true }
 prost.workspace = true
 # The client registry of a server's authority (clients.json), certificate fingerprints
 serde.workspace = true

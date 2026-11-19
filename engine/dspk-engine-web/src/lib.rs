@@ -20,11 +20,11 @@ use std::sync::Arc;
 
 use dspk_core::RecordingSource;
 use dspk_io::{ByteSource, ByteSourceStore, RawParams, RawRecording, ZarrRecording};
-use dspk_pipeline::processed::ProcessedChains;
-use dspk_stream::engine::{answer_view, OpenRecording, ViewProcessor, WarmFuture};
+use dspk_pipeline::view::ProcessedChains;
+use dspk_stream::engine::{answer_view, OpenRecording};
 use dspk_stream::protocol::{convert, wire};
 use dspk_stream::{StreamError, StreamResult};
-use dspk_view::{Pyramid, SignalBackend, StoredSignal, MEMORY_BASE, RAW_BLOCK_VALUES};
+use dspk_view::{Pyramid, MEMORY_BASE, RAW_BLOCK_VALUES};
 use prost::Message as _;
 use wasm_bindgen::prelude::*;
 
@@ -59,35 +59,15 @@ fn text_of(file: &web_sys::File) -> Result<String, String> {
     reader.read_as_text(file).map_err(|e| format!("{}: {e:?}", file.name()))
 }
 
-/// Runs a view's ops on the browser's WebGPU, with the chains kept so a view can be made ready
-/// asynchronously before it is answered (the same code `dspk serve` uses).
-struct Processor(ProcessedChains);
-
-impl Default for Processor {
-    fn default() -> Self {
-        // Files the ops name (a remap's channel map) are not among a page's files yet
-        Self(ProcessedChains::new(""))
-    }
-}
-
-impl ViewProcessor for Processor {
-    fn processed(&self, source: Arc<dyn RecordingSource>, pyramid: Option<Arc<Pyramid>>, channels: &[usize], ops: &[String]) -> StreamResult<Arc<dyn SignalBackend>> {
-        let raw: Arc<dyn SignalBackend> = Arc::new(StoredSignal::new(source.clone(), pyramid));
-        Ok(self.0.make(raw, source, channels, ops).map_err(StreamError::Server)?)
-    }
-
-    fn warm<'a>(&'a self, channels: &'a [usize], ops: &'a [String], view: &'a dspk_view::View) -> WarmFuture<'a> {
-        Box::pin(async move { self.0.warm(channels, ops, view).await.map_err(|e| StreamError::Server(e.to_string())) })
-    }
-}
-
 /// The engine of one page: the files it was given and the recording it opened.
 struct Inner {
     /// The files picked, by their path inside the folder picked (or their name).
     /// By path: a picked folder can hold tens of thousands of files (an NWB-Zarr: ~20,000).
     files: std::collections::BTreeMap<String, web_sys::File>,
     current: Option<Arc<OpenRecording>>,
-    processor: Arc<Processor>,
+    /// Its views' chains, on the browser's WebGPU (the same code as `dspk serve`). Files the ops
+    /// name (a remap's channel map) are not among a page's files yet.
+    processor: Arc<ProcessedChains>,
     /// Why ops cannot run here, when they cannot (no WebGPU for computing).
     no_compute: Option<String>,
     /// Bumped at each open: an overview still being built for an earlier recording stops.
@@ -127,7 +107,7 @@ impl Engine {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Engine {
         console_error_panic_hook_set();
-        let inner = Inner { files: std::collections::BTreeMap::new(), current: None, processor: Arc::default(), no_compute: Some("WebGPU not opened yet".into()), generation: 0, overview: None };
+        let inner = Inner { files: std::collections::BTreeMap::new(), current: None, processor: Arc::new(ProcessedChains::new("")), no_compute: Some("WebGPU not opened yet".into()), generation: 0, overview: None };
         let inner = std::rc::Rc::new(std::cell::RefCell::new(inner));
         ENGINE.with(|e| *e.borrow_mut() = Some(inner.clone()));
         Engine { inner }

@@ -91,6 +91,20 @@ pub trait ViewProcessor: Send + Sync {
     }
 }
 
+/// A view's processing by dspk-pipeline's chains: what `dspk serve` and a browser page's engine
+/// run (the stored signal and its pyramid answer what a chain does not process).
+#[cfg(feature = "pipeline")]
+impl ViewProcessor for dspk_pipeline::view::ProcessedChains {
+    fn processed(&self, source: Arc<dyn RecordingSource>, pyramid: Option<Arc<Pyramid>>, channels: &[usize], ops: &[String]) -> StreamResult<Arc<dyn SignalBackend>> {
+        let raw: Arc<dyn SignalBackend> = Arc::new(dspk_view::StoredSignal::new(source.clone(), pyramid));
+        Ok(self.make(raw, source, channels, ops).map_err(StreamError::Server)?)
+    }
+
+    fn warm<'a>(&'a self, channels: &'a [usize], ops: &'a [String], view: &'a View) -> WarmFuture<'a> {
+        Box::pin(async move { dspk_pipeline::view::ProcessedChains::warm(self, channels, ops, view).await.map_err(|e| StreamError::Server(e.to_string())) })
+    }
+}
+
 /// What [`ViewProcessor::warm`] returns: sent between threads on a server's runtime; a browser's
 /// futures stay on their thread.
 #[cfg(not(target_family = "wasm"))]

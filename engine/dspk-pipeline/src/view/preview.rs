@@ -24,17 +24,7 @@ use dspk_ops::core::buffer;
 use dspk_ops::pipeline::PipelineWorkspace;
 use dspk_ops::{Pipeline, PipelineStage};
 
-/// Most values (channels × samples, halo and margin included) one preview processes:
-/// `dspk_view::PROCESSED_MAX_VALUES` on a computer, `PROCESSED_MAX_VALUES_BROWSER` in a page
-/// (the values are repeated here: dspk-view is optional for this crate).
-#[cfg(not(target_family = "wasm"))]
-pub const PREVIEW_MAX_VALUES: usize = 1 << 26;
-#[cfg(target_family = "wasm")]
-pub const PREVIEW_MAX_VALUES: usize = 1 << 24;
-
-/// Most tiles of [`PREVIEW_MAX_VALUES`] a zoomed-out view is processed in (each processed and
-/// reduced to its columns on the device in turn); wider windows are drawn raw.
-pub const PREVIEW_MAX_TILES: usize = 32; // dspk_view::PROCESSED_MAX_TILES
+use super::{PREVIEW_MAX_TILES, PREVIEW_MAX_VALUES};
 
 /// One processed block of the view's channels: its rows over `read` (the interior `range` and
 /// the chain's settling halo), channel-major, kept on the device (zoomed-out views of it are
@@ -398,52 +388,17 @@ pub struct ViewPlan {
 }
 
 /// The plan of `ops` (a view's enabled ops, in order) over `group` (the channels the view
-/// starts with): `group`, the channels read (through the remaps that open the chain: they fold
-/// into the read and may drop); `steps`, the processing on the device with each step's key (a
-/// remap between processing steps reorders there and keeps every channel); `shown`, the channels
-/// it ends with (through the remaps after the last processing step: they may drop). Resampling
-/// is not previewed. `base_dir`: where a remap's channel-map file is looked for.
-pub fn view_plan(ops: &[&crate::Node], mut group: Vec<usize>, base_dir: &std::path::Path) -> Result<ViewPlan, String> {
-    let is_remap = |n: &crate::Node| matches!(n, crate::Node::Remap { .. });
-    let map_of = |n: &crate::Node| n.channel_map(Some(base_dir)).map_err(|e| e.to_string()).map(|m| m.expect("a remap has a map"));
-    let lead = ops.iter().take_while(|n| is_remap(n)).count();
-    for n in &ops[..lead] {
-        let order = map_of(n)?.resolve(group.len()).map_err(|e| e.to_string())?;
-        group = order.into_iter().map(|i| group[i]).collect();
-    }
-    let last_processing = ops.iter().rposition(|n| !is_remap(n));
-    let mut steps = Vec::new();
-    let mut fits = Vec::new();
-    let mut current = group.clone();
-    for (i, n) in ops.iter().enumerate().skip(lead) {
-        let key = serde_json::to_string(n).unwrap_or_default();
-        if is_remap(n) {
-            let order = map_of(n)?.resolve(current.len()).map_err(|e| e.to_string())?;
-            if last_processing.is_some_and(|last| i > last) {
-                // After the last processing step: the channels shown (may drop)
-                current = order.into_iter().map(|j| current[j]).collect();
-                continue;
-            }
-            let mut seen = order.clone();
-            seen.sort_unstable();
-            if seen != (0..current.len()).collect::<Vec<_>>() {
-                return Err(format!("a remap between processing steps keeps every channel ({}; it reorders them): drop channels in a remap first or last", current.len()));
-            }
-            current = order.iter().map(|&j| current[j]).collect();
-            steps.push((key, PipelineStage::ReorderChannels { order }));
-        } else if let Some(fit) = n.whiten_fit() {
-            n.stage().map_err(|e| e.to_string())?;
-            fits.push((steps.len(), fit));
-            steps.push((key, PipelineStage::SpatialWhitening(crate::unfitted_whitening(current.len()))));
-        } else if let Some(stage) = n.stage().map_err(|e| e.to_string())? {
-            // A grid's operator is made for its electrodes
-            if let PipelineStage::SurfaceLaplacian(lap) = &stage
-                && lap.num_channels != current.len()
-            {
-                return Err(format!("the Laplacian's grid has {} electrodes; the view has {} channels", lap.num_channels, current.len()));
-            }
-            steps.push((key, stage));
-        }
-    }
-    Ok(ViewPlan { group, steps, shown: current, fits })
+/// starts with), planned as every chain is ([`crate::chain`], for a view): `group`, the channels
+/// read (through the remaps that open the chain: they fold into the read and may drop); `steps`,
+/// the processing on the device with each step's key (a remap between processing steps reorders
+/// there and keeps every channel); `shown`, the channels it ends with (through the remaps after
+/// the last processing step: they may drop). Resampling and crossings are not previewed (the view
+/// shows the signal before them). `base_dir`: where a remap's channel-map file is read.
+pub fn view_plan(ops: &[&crate::Node], group: Vec<usize>, base_dir: &std::path::Path) -> Result<ViewPlan, String> {
+    use crate::chain::{plan_chain, refusals_text, Purpose, Step};
+    let nodes: Vec<(String, crate::Node)> = ops.iter().enumerate().map(|(i, n)| (format!("op {}", i + 1), (*n).clone())).collect();
+    let plan = plan_chain(&nodes, &group, Purpose::View, Some(base_dir)).map_err(|r| refusals_text(&r))?;
+    let fits = plan.steps.iter().enumerate().filter_map(|(i, s)| if let Step::Whiten(fit) = &s.step { Some((i, *fit)) } else { None }).collect();
+    let steps = plan.stages(|_, channels| PipelineStage::SpatialWhitening(crate::unfitted_whitening(channels)));
+    Ok(ViewPlan { group: plan.read.clone(), steps, shown: plan.shown(), fits })
 }

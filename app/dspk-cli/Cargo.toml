@@ -37,7 +37,7 @@ dspk-hub = { workspace = true, features = ["synapse"] }
 # Where `sorters_program` installs dspk-cli-sorter (the user data folder)
 dirs.workspace = true
 dspk-pipeline = { workspace = true, features = ["view"] }
-dspk-stream.workspace = true
+dspk-stream = { workspace = true, features = ["pipeline"] }
 dspk-device = { workspace = true, optional = true }
 dspk-view = { workspace = true, default-features = false }
 cubecl.workspace = true

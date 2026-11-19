@@ -1,5 +1,5 @@
 # The device of deploy/Containerfile.device: a generator (test 1 of the real-time work).
-# Every key: serve/dspk-device/src/config.rs.
+# Every key: devices/dspk-device/src/config.rs.
 name = "generator"
 data = "/data"
 # Every interface of the container (only paired clients get a session); publish the port on

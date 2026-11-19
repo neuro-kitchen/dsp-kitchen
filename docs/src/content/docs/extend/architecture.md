@@ -26,8 +26,10 @@ dspk-cli, dspk-app (+ dspk-app-core, dspk-app-synapse), the Python package
 | Folder | Holds |
 |---|---|
 | `crates/` | The core: `dspk`, `dspk-core`, `dspk-io`, `dspk-ops` |
-| `engine/` | `dspk-pipeline` |
-| `serve/` | `dspk-view`, `dspk-stream` |
+| `engine/` | What computes: `dspk-pipeline` (chains planned once for views, batch runs and live devices; processed views), `dspk-session`, `dspk-engine-web` (the engine in a browser worker) |
+| `view/` | `dspk-view`: min/max envelopes and pyramids |
+| `serve/` | What transports: `dspk-stream` (QUIC, WebTransport, WebSocket) |
+| `devices/` | `dspk-device`: a device next to a sensor |
 | `synapse/`, `hub/` | The electrophysiology plugin and downloads |
 | `app/`, `plugins/` | Command line, app, and their plugins |
 | `bindings/python/` | The Python package |

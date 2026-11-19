@@ -22,7 +22,7 @@ feature (`stdarch_wasm_atomic_wait`), and threads need `-Z build-std`.
 | `index.html` | the loader: checks hardware drawing, WebGPU / WebGL2 and threads before downloading the app |
 | `isolate-sw.js` | a service worker that makes the page cross-origin isolated where the host sends no headers (GitHub Pages) |
 | `mt/` | the app, threaded: drawing on web workers |
-| `engine/` | the engine (`dspk-engine-web`), `engine-worker.js` and `overview-helper.js` (workers that build the overview on several cores with the browser's own gzip): for a page no server served |
+| `engine/` | the engine (`dspk-engine-web`), `engine-worker.js`, `overview-helper.js` and `overview-fold.js` (module workers that build the overview on several cores with the browser's own gzip; the fold is checked against the engine's by `engine/dspk-engine-web/tests`): for a page no server served |
 
 Two modules, because threads and computing cannot share one: a WebGPU device belongs to the
 thread that made it, and CubeCL's wgpu runtime does not build with shared memory. So the app
