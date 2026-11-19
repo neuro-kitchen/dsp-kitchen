@@ -614,8 +614,9 @@ mod tests {
         let raw: Arc<dyn SignalBackend> = Arc::new(LocalSignal::open(source.clone(), None).unwrap());
         let stages = vec![PipelineStage::bandpass(20.0, 200.0), PipelineStage::teager_kaiser()];
         let whole = ProcessedSignal::new(raw.clone(), source.clone(), vec![0, 1, 2], stages.clone()).unwrap();
-        // Blocks of 3 × 12,000 values: the 50,000-sample window takes tiles, where a stale request stops
-        let tiled = Arc::new(ProcessedSignal::new(raw, source, vec![0, 1, 2], stages).unwrap().with_max_values(3 * 12_000));
+        // Blocks of 3 × 20,000 values: the 50,000-sample window takes 3 tiles (within the tiles
+        // processed exactly), where a stale request stops
+        let tiled = Arc::new(ProcessedSignal::new(raw, source, vec![0, 1, 2], stages).unwrap().with_max_values(3 * 20_000));
         let range = (5_000u64, 55_000u64);
         assert!(!tiled.preview.fits_one_block(range.1 - range.0) && tiled.covers(range.1 - range.0));
         let views = [vec![0usize, 1], vec![0, 1, 2]];
