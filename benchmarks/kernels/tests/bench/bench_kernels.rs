@@ -5,7 +5,7 @@
 //! near 100 % is memory-bound and done; one far below is where work pays. Ignored by default:
 //!
 //! ```text
-//! cargo test -p dspk-benchmarks --profile validate --test bench_kernels -- --ignored --nocapture
+//! cargo test -p dspk-benchmarks --profile validate --test bench -- --ignored --nocapture bench_kernels::
 //! DSPK_TEST_RUNTIMES=cuda cargo test ...   # one runtime
 //! ```
 //!

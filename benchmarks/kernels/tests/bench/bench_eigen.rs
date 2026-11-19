@@ -3,7 +3,7 @@
 //! neighbourhoods (the batched shared-memory path). Ignored by default:
 //!
 //! ```text
-//! cargo test -p dspk-benchmarks --release --test bench_eigen -- --ignored --nocapture
+//! cargo test -p dspk-benchmarks --release --test bench -- --ignored --nocapture bench_eigen::
 //! ```
 
 use std::time::Instant;

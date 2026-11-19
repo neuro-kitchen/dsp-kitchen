@@ -145,7 +145,7 @@ pub fn decode_signal(frame: &wire::SignalFrame, info: &RecordingInfo) -> StreamR
 pub fn request_from_view(view: &View) -> StreamResult<wire::ViewRequest> {
     let channels = view.channels.iter().map(|&c| u32::try_from(c)).collect::<Result<_, _>>().map_err(|_| StreamError::protocol("channel index beyond 32 bits"))?;
     let width = u32::try_from(view.width).map_err(|_| StreamError::protocol("view width beyond 32 bits"))?;
-    Ok(wire::ViewRequest { channels, start: view.start, end: view.end, width, processing: None })
+    Ok(wire::ViewRequest { channels, start: view.start, end: view.end, width, processing: None, path: String::new(), source: String::new() })
 }
 
 pub fn view_from_request(request: &wire::ViewRequest) -> View {

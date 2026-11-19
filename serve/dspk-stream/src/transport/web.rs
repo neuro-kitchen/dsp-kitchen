@@ -17,7 +17,7 @@
 
 use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::Full;
@@ -32,7 +32,7 @@ use tokio_tungstenite::WebSocketStream;
 
 use super::auth::{Authority, Peer};
 use super::pairing::{PairReply, PairToken};
-use super::server::{answer, Current, Device};
+use super::server::{answer, Current, Device, Opened};
 use crate::error::{StreamError, StreamResult};
 use crate::protocol::wire;
 
@@ -452,7 +452,7 @@ where
     send_text(&mut socket, &WebWelcome { server_name: device.name.clone(), server_version: device.version.clone(), peer_name: peer.name.clone(), permission: peer.permission, has_files: device.files.is_some(), runtime: device.runtime.clone() }).await?;
     tracing::info!("web: {} connected ({})", peer.name, peer.permission);
 
-    let current: Current = Arc::new(Mutex::new(device.recording.clone()));
+    let current: Current = Opened::with(device.recording.clone());
     let peer = Arc::new(peer);
     let (mut sink, mut stream) = socket.split();
     // Answers are computed concurrently and written by one task, in the order they finish
@@ -580,7 +580,7 @@ async fn webtransport_session(incoming: wtransport::endpoint::IncomingSession, s
     let welcome = WebWelcome { server_name: device.name.clone(), server_version: device.version.clone(), peer_name: peer.name.clone(), permission: peer.permission, has_files: device.files.is_some(), runtime: device.runtime.clone() };
     wt_send_json(&mut send, &welcome).await?;
     tracing::info!("webtransport: {} connected ({})", peer.name, peer.permission);
-    let current: Current = Arc::new(Mutex::new(device.recording.clone()));
+    let current: Current = Opened::with(device.recording.clone());
     let peer = Arc::new(peer);
     // One stream per request, answered concurrently; a stream the page closes is a request it no
     // longer wants (the answer's write fails, nothing else waits on it)

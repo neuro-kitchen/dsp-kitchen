@@ -5,7 +5,7 @@
 //! The benchmarks themselves are ignored tests under `tests/`:
 //!
 //! ```text
-//! cargo test -p dspk-benchmarks --profile validate --test bench_kernels -- --ignored --nocapture
+//! cargo test -p dspk-benchmarks --profile validate --test bench -- --ignored --nocapture bench_kernels::
 //! DSPK_TEST_RUNTIMES=cuda cargo test -p dspk-benchmarks ...   # one runtime
 //! ```
 

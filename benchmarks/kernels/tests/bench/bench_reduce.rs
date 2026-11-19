@@ -3,7 +3,7 @@
 //! and the integrated GPU (wgpu). Ignored by default:
 //!
 //! ```text
-//! cargo test -p dspk-benchmarks --release --test bench_reduce -- --ignored --nocapture
+//! cargo test -p dspk-benchmarks --release --test bench -- --ignored --nocapture bench_reduce::
 //! ```
 
 use cubecl::device::{WgpuDevice, WgpuDeviceKind};

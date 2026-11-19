@@ -198,10 +198,49 @@ pub struct Device {
 }
 
 /// The recording a session has open (the initial one, or the last one it opened).
-pub(crate) type Current = Arc<Mutex<Option<Arc<OpenRecording>>>>;
+/// Recordings a connection keeps open at once (sources of one file in several views, files in
+/// tabs); the least recently opened goes past it.
+const OPEN_KEPT: usize = 8;
+
+/// The recordings a client opened, by path and source, and the one opened last (what the signal
+/// stream, a plugin, and a view that names none read).
+#[derive(Default)]
+pub(crate) struct Opened {
+    last: Option<Arc<OpenRecording>>,
+    by_target: Vec<((String, String), Arc<OpenRecording>)>,
+}
+
+impl Opened {
+    pub(crate) fn with(recording: Option<Arc<OpenRecording>>) -> Current {
+        Arc::new(Mutex::new(Self { last: recording, by_target: Vec::new() }))
+    }
+
+    fn put(&mut self, path: String, source: String, recording: Arc<OpenRecording>) {
+        self.by_target.retain(|(k, _)| *k != (path.clone(), source.clone()));
+        if self.by_target.len() >= OPEN_KEPT {
+            self.by_target.remove(0);
+        }
+        self.by_target.push(((path, source), recording.clone()));
+        self.last = Some(recording);
+    }
+
+    /// The recording of `path` and `source` (empty path: the one opened last).
+    fn get(&self, path: &str, source: &str) -> StreamResult<Arc<OpenRecording>> {
+        if path.is_empty() {
+            return self.last.clone().ok_or_else(|| StreamError::protocol("no recording is open"));
+        }
+        self.by_target
+            .iter()
+            .find(|((p, s), _)| p == path && s == source)
+            .map(|(_, r)| r.clone())
+            .ok_or_else(|| StreamError::Protocol(format!("{path:?} ({}) is not open on this connection: open it first", if source.is_empty() { "its default source" } else { source })))
+    }
+}
+
+pub(crate) type Current = Arc<Mutex<Opened>>;
 
 fn current_recording(current: &Current) -> Option<Arc<OpenRecording>> {
-    current.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    current.lock().unwrap_or_else(|e| e.into_inner()).last.clone()
 }
 
 /// Serves `source` to one client (the protocol's single-recording form: no files, anonymous).
@@ -233,7 +272,7 @@ pub async fn serve_session(connection: quinn::Connection, peer: Peer, device: Ar
         return Err(StreamError::protocol(format!("client speaks protocol {}, this server {PROTOCOL_VERSION}", hello.protocol_version)));
     }
 
-    let current: Current = Arc::new(Mutex::new(device.recording.clone()));
+    let current: Current = Opened::with(device.recording.clone());
     let requests = tokio::spawn(answer_requests(connection.clone(), device.clone(), current.clone(), Arc::new(peer)));
     let mut signal: Option<JoinHandle<StreamResult<()>>> = None;
     let result = loop {
@@ -297,7 +336,7 @@ pub(crate) async fn answer(request: wire::Request, device: &Device, current: &Cu
     use wire::response::Kind as Resp;
     match request.kind.ok_or_else(|| StreamError::protocol("empty request"))? {
         Req::View(view) => {
-            let recording = current_recording(current).ok_or_else(|| StreamError::protocol("no recording is open"))?;
+            let recording = current.lock().unwrap_or_else(|e| e.into_inner()).get(&view.path, &view.source)?;
             // A view the server does not answer is refused as a request; a read that fails is
             // the envelope's error
             crate::engine::checked_view(&view, recording.info())?;
@@ -307,10 +346,18 @@ pub(crate) async fn answer(request: wire::Request, device: &Device, current: &Cu
             if let Some(processing) = view.processing.clone().filter(|p| !p.ops.is_empty()) {
                 let made = recording.clone();
                 let warmed = match tokio::task::spawn_blocking(move || made.processed(&processing).map(|_| ())).await.map_err(StreamError::protocol)? {
-                    Ok(()) => crate::engine::warm_view(&recording, &view).await,
+                    // In a task of its own: a panic in a kernel's launch is this view's error, not
+                    // a request left unanswered (the page would wait on it forever)
+                    Ok(()) => {
+                        let (r, v) = (recording.clone(), view.clone());
+                        tokio::spawn(async move { crate::engine::warm_view(&r, &v).await }).await.unwrap_or_else(|e| Err(StreamError::Server(format!("the view failed: {e}"))))
+                    }
                     Err(e) => Err(e),
                 };
-                if let Err(e) = warmed {
+                // A GPU lost while warming: answered on the CPU below
+                if let Err(e) = warmed
+                    && !crate::engine::note_device_error(&e.reason())
+                {
                     return Ok(Resp::Envelope(frame_from_envelope(Err(e))));
                 }
             }
@@ -323,8 +370,19 @@ pub(crate) async fn answer(request: wire::Request, device: &Device, current: &Cu
             let files = tokio::task::spawn_blocking(move || root.list(&list.dir)).await.map_err(StreamError::protocol)??;
             Ok(Resp::Files(files))
         }
+        Req::Sources(list) => {
+            let (root, opener) = device.files.clone().ok_or_else(|| StreamError::protocol("this server serves no files"))?;
+            let sources = tokio::task::spawn_blocking(move || -> StreamResult<Vec<wire::SourceInfo>> {
+                let path = root.resolve(&list.path)?;
+                opener.sources(&path)
+            })
+            .await
+            .map_err(StreamError::protocol)??;
+            Ok(Resp::Sources(wire::SourceList { sources }))
+        }
         Req::Open(open) => {
             let (root, opener) = device.files.clone().ok_or_else(|| StreamError::protocol("this server serves no files"))?;
+            let key = (open.path.clone(), open.source.clone());
             let recording = tokio::task::spawn_blocking(move || -> StreamResult<OpenRecording> {
                 let path = root.resolve(&open.path)?;
                 if kind_of(&path, path.is_dir()) != wire::FileKind::Recording {
@@ -335,7 +393,7 @@ pub(crate) async fn answer(request: wire::Request, device: &Device, current: &Cu
             .await
             .map_err(StreamError::protocol)??;
             let header = header_from_info(recording.info());
-            *current.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(recording));
+            current.lock().unwrap_or_else(|e| e.into_inner()).put(key.0, key.1, Arc::new(recording));
             Ok(Resp::Header(header))
         }
         Req::Configure(configure) => {

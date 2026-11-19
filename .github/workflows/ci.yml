@@ -121,7 +121,7 @@ jobs:
         run: "cargo test -p dspk-synapse --lib io::"
       - name: Every dspk-ops operation against host references
         if: needs.changes.outputs.full == 'true'
-        run: cargo test -p dspk-ops --test kernel_runtimes --test filter_runtimes
+        run: cargo test -p dspk-ops --test it -- kernel_runtimes:: filter_runtimes::
       - name: Device buffer writes
         if: needs.changes.outputs.full == 'true'
         run: cargo test -p dspk-ops --lib core::buffer

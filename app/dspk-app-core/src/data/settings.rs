@@ -36,19 +36,29 @@ pub struct Settings {
 }
 
 /// The RAM limit when the setting is automatic: `DSPK_HOST_MEMORY` when set, else a quarter of the
-/// computer's RAM.
+/// computer's RAM (the app shares it with everything else); in a browser half of what it reports
+/// (`navigator.deviceMemory`, at most 8 GB: 4 GiB), the page's tab being the program that uses it.
 pub fn automatic_memory() -> u64 {
     if std::env::var_os("DSPK_HOST_MEMORY").is_some() {
         return dspk_core::memory::default_limit();
     }
     match total_memory() {
         0 => dspk_core::memory::default_limit(),
+        total if cfg!(target_family = "wasm") => total / 2,
         total => total / 4,
     }
 }
 
-/// The computer's RAM in bytes (0: unknown).
+/// The computer's RAM in bytes (0: unknown). In a browser, what it reports (`navigator.deviceMemory`:
+/// rounded, at most 8 GB; not every browser has it).
 pub fn total_memory() -> u64 {
+    #[cfg(target_family = "wasm")]
+    {
+        let navigator = js_sys::Reflect::get(&js_sys::global(), &"navigator".into()).ok();
+        let gb = navigator.and_then(|n| js_sys::Reflect::get(&n, &"deviceMemory".into()).ok()).and_then(|v| v.as_f64()).unwrap_or(0.0);
+        (gb * (1u64 << 30) as f64) as u64
+    }
+    #[cfg(not(target_family = "wasm"))]
     sysinfo::System::new().map_or(0, |mut sys| {
         sys.refresh_memory();
         sys.total_memory()

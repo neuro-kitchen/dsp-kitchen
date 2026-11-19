@@ -3,7 +3,7 @@
 //! runtime when compiled in. Ignored by default (minutes, mostly autotuning):
 //!
 //! ```text
-//! cargo test -p dspk-benchmarks --release --features cpu --test bench_linalg -- --ignored --nocapture
+//! cargo test -p dspk-benchmarks --release --features cpu --test bench -- --ignored --nocapture bench_linalg::
 //! ```
 //!
 //! The first call of each case is the warm-up (kernel compilation and autotuning); the reported

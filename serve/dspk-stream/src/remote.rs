@@ -51,10 +51,21 @@ fn dsp(e: StreamError) -> DspError {
     DspError::Io(format!("remote: {e}"))
 }
 
-/// The server's answer to `view` of its open recording, processed there when `processing` says.
-pub fn view_over(link: &dyn Link, view: &View, processing: Option<&wire::Processing>) -> StreamResult<Envelope> {
+/// Which of the recordings a client opened a request is for: the file's path and the source in
+/// it (empty: the one opened last).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Target {
+    pub path: String,
+    pub source: String,
+}
+
+/// The server's answer to `view` of `target` (opened before), processed there when
+/// `processing` says.
+pub fn view_over(link: &dyn Link, target: &Target, view: &View, processing: Option<&wire::Processing>) -> StreamResult<Envelope> {
     let mut request = convert::request_from_view(view)?;
     request.processing = processing.cloned();
+    request.path = target.path.clone();
+    request.source = target.source.clone();
     match link.request(wire::request::Kind::View(request))? {
         wire::response::Kind::Envelope(frame) => convert::envelope_from_frame(frame),
         _ => Err(StreamError::protocol("unexpected answer to a view")),
@@ -67,6 +78,15 @@ pub fn open_over(link: &dyn Link, path: &str, source: Option<&str>) -> StreamRes
     match link.request(wire::request::Kind::Open(open))? {
         wire::response::Kind::Header(header) => convert::info_from_header(&header),
         _ => Err(StreamError::protocol("unexpected answer to an open")),
+    }
+}
+
+/// The sources `path` holds (an NWB store's series; one entry for a single-signal file; empty
+/// from a server that does not list them), blocking.
+pub fn sources_over(link: &dyn Link, path: &str) -> StreamResult<Vec<wire::SourceInfo>> {
+    match link.request(wire::request::Kind::Sources(wire::ListSources { path: path.into() }))? {
+        wire::response::Kind::Sources(list) => Ok(list.sources),
+        _ => Err(StreamError::protocol("unexpected answer to a sources listing")),
     }
 }
 
@@ -93,11 +113,22 @@ pub fn plugin_call(link: &dyn Link, plugin: &str, method: &str, body: Vec<u8>) -
 pub struct RemoteSource {
     link: Arc<dyn Link>,
     info: RecordingInfo,
+    target: Target,
 }
 
 impl RemoteSource {
     pub fn new(link: Arc<dyn Link>, info: RecordingInfo) -> Self {
-        Self { link, info }
+        Self::of(link, info, Target::default())
+    }
+
+    /// The recording `target` (opened on `link` before), described by `info`.
+    pub fn of(link: Arc<dyn Link>, info: RecordingInfo, target: Target) -> Self {
+        Self { link, info, target }
+    }
+
+    /// Which recording of the connection this is.
+    pub fn target(&self) -> &Target {
+        &self.target
     }
 
     /// Samples of `channels` channels one request reads: a sample view of c channels and n
@@ -124,7 +155,7 @@ impl RecordingSource for RemoteSource {
             let end = (start + step).min(samples.end);
             let piece = (end - start) as usize;
             let view = View { channels: channels.to_vec(), start, end, width: piece };
-            let values = match view_over(self.link.as_ref(), &view, None).map_err(dsp)? {
+            let values = match view_over(self.link.as_ref(), &self.target, &view, None).map_err(dsp)? {
                 Envelope::Samples(values) => values,
                 Envelope::Columns { .. } => return Err(DspError::Io("remote: the server answered columns for a sample read".into())),
             };
@@ -158,14 +189,25 @@ pub struct RemoteSignal {
 impl RemoteSignal {
     /// The recording `link`'s server has open, described by `info`.
     pub fn over(link: Arc<dyn Link>, info: RecordingInfo) -> Self {
-        let source = Arc::new(RemoteSource::new(link.clone(), info));
+        Self::over_target(link, info, Target::default())
+    }
+
+    /// Recording `target` of `link`'s server (opened before), described by `info`.
+    pub fn over_target(link: Arc<dyn Link>, info: RecordingInfo, target: Target) -> Self {
+        let source = Arc::new(RemoteSource::of(link.clone(), info, target));
         Self { link, source, processing: None, complete: Arc::default(), built: Arc::default(), built_map: Arc::default(), listeners: Arc::default(), polling: Arc::default() }
     }
 
     /// Opens `path` on `link`'s server (blocking) and returns it as a signal.
     pub fn open(link: Arc<dyn Link>, path: &str) -> StreamResult<Self> {
-        let info = open_over(link.as_ref(), path, None)?;
-        Ok(Self::over(link, info))
+        Self::open_source(link, path, None)
+    }
+
+    /// Opens source `source` of `path` (`None`: the file's default) on `link`'s server (blocking):
+    /// its views name it, so several sources of one file are open on one connection at a time.
+    pub fn open_source(link: Arc<dyn Link>, path: &str, source: Option<&str>) -> StreamResult<Self> {
+        let info = open_over(link.as_ref(), path, source)?;
+        Ok(Self::over_target(link, info, Target { path: path.to_string(), source: source.unwrap_or_default().to_string() }))
     }
 
     /// The same recording as a [`RecordingSource`] (sample reads), sharing the connection.
@@ -183,7 +225,9 @@ impl RemoteSignal {
     /// are read as stored.
     pub fn processed(&self, channels: Vec<usize>, ops: Vec<String>) -> Self {
         let processing = wire::Processing { channels: channels.into_iter().map(|c| c as u32).collect(), ops };
-        Self { link: self.link.clone(), source: self.source.clone(), processing: Some(processing), complete: self.complete.clone(), built: self.built.clone(), built_map: self.built_map.clone(), listeners: self.listeners.clone(), polling: self.polling.clone() }
+        // Its own completeness and progress: the processed overview builds apart from the raw one
+        // (listeners shared: the viewers of either are told)
+        Self { link: self.link.clone(), source: self.source.clone(), processing: Some(processing), complete: Arc::default(), built: Arc::default(), built_map: Arc::default(), listeners: self.listeners.clone(), polling: Arc::default() }
     }
 
     fn tell(listeners: &Mutex<Vec<OnProgress>>, done: u64, total: u64) {
@@ -200,11 +244,16 @@ impl RemoteSignal {
         }
         let (link, complete, built, built_map, listeners, polling) = (self.link.clone(), self.complete.clone(), self.built.clone(), self.built_map.clone(), self.listeners.clone(), self.polling.clone());
         let total = self.source.info.samples;
+        let target = self.source.target.clone();
+        // Asked as this signal is: processed, the chain's overview being built on the server
+        let processing = self.processing.clone();
         let work = Box::new(move || {
-            let probe = View { channels: vec![0], start: 0, end: total, width: PROBE_COLUMNS };
+            // A channel the processing reads (its first), else the first
+            let channel = processing.as_ref().and_then(|p| p.channels.first()).map_or(0, |&c| c as usize);
+            let probe = View { channels: vec![channel], start: 0, end: total, width: PROBE_COLUMNS };
             while !complete.load(Ordering::Relaxed) {
                 std::thread::sleep(PYRAMID_POLL);
-                let done = match view_over(link.as_ref(), &probe, None) {
+                let done = match view_over(link.as_ref(), &target, &probe, processing.as_ref()) {
                     Ok(Envelope::Columns { complete: true, .. }) | Ok(Envelope::Samples(_)) => {
                         complete.store(true, Ordering::Relaxed);
                         total
@@ -237,7 +286,7 @@ impl SignalBackend for RemoteSignal {
     }
 
     fn view(&self, view: &View, out: &mut Envelope) -> DspResult<()> {
-        let envelope = view_over(self.link.as_ref(), view, self.processing.as_ref()).map_err(dsp)?;
+        let envelope = view_over(self.link.as_ref(), self.source.target(), view, self.processing.as_ref()).map_err(dsp)?;
         match &envelope {
             Envelope::Columns { complete: false, .. } => {
                 self.complete.store(false, Ordering::Relaxed);

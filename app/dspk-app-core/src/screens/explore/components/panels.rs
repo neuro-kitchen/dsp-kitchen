@@ -7,6 +7,7 @@ use std::rc::Rc;
 
 use gpui_kit::base::dock::{DockPlacement, Panel as BasePanel, PanelEvent};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::Disableable as _;
 use gpui_kit::component::dock::Panel;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::switch::Switch;
@@ -525,8 +526,10 @@ impl SettingsPanel {
         let kind = h_flex()
             .gap_1()
             .flex_wrap()
-            .child(layer("kind-traces", gpui_kit::assets::IconName::AudioWaveform, "Traces", "The traces alone", traces && !v.spikes, TimeViewKind::Traces, false))
-            .when(has_spikes || (traces && v.spikes), |row| {
+            // Spikes only where the data has them (a view's spikes setting does not make the layer
+            // appear before the recording's spikes are known: it showed, then went, on opening)
+            .child(layer("kind-traces", gpui_kit::assets::IconName::AudioWaveform, "Traces", "The traces alone", traces && !(v.spikes && has_spikes), TimeViewKind::Traces, false))
+            .when(has_spikes, |row| {
                 row.child(layer("kind-spikes", gpui_kit::assets::IconName::Activity, "Spikes", "Traces faint, each spike in its unit's colour", traces && v.spikes, TimeViewKind::Traces, true))
             })
             .when(has_units || v.kind == TimeViewKind::Raster, |row| {
@@ -558,18 +561,56 @@ impl SettingsPanel {
                 .child(div().min_w(px(64.)).flex().justify_center().text_sm().child(value))
                 .child(icon_button(SharedString::from(format!("{id}-up")), IconName::Plus, tip_up).on_click(move |_, _, cx| up(cx)))
         };
-        let lanes = v.lanes_on_screen();
-        let lanes_row = {
-            let (a, b) = (vm.clone(), vm.clone());
-            stepper(
-                "lanes",
-                lanes.to_string(),
-                "Fewer channels on screen",
-                "More channels on screen",
-                Rc::new(move |cx| a.update(cx, |vm, cx| vm.set_lanes(lanes.saturating_sub(1).max(1), cx))),
-                Rc::new(move |cx| b.update(cx, |vm, cx| vm.set_lanes(lanes + 1, cx))),
-            )
+        // Channels: what is on screen as a slice of the source's channels, start:end:step
+        // (1-based, the end included), as numpy slices an array. Traces draw a page of the
+        // selection (scrolling moves it), so the slice is the page drawn; a heatmap draws all of it.
+        // A page that is no even slice (picked in the channel list) shows its first and last
+        // channel, step 1, and "custom"
+        let total = sources.as_ref().map_or(0, |ss| ss.entry(&v.source).channels);
+        let drawn: Vec<usize> = v.drawn_channels().to_vec();
+        let (start, end, step, is_slice) = slice_of(&drawn, total);
+        let apply = {
+            let vm = vm.clone();
+            Rc::new(move |cx: &mut App, start: usize, end: usize, step: usize| {
+                let (start, end) = (start.clamp(1, total.max(1)), end.clamp(1, total.max(1)));
+                let (start, end) = (start.min(end), end.max(start));
+                let step = step.clamp(1, (end - start + 1).max(1));
+                let channels: Vec<usize> = (start - 1..end).step_by(step).collect();
+                let n = channels.len();
+                vm.update(cx, |vm, cx| {
+                    vm.set_selection(channels, cx);
+                    // Every channel of the slice on screen
+                    vm.set_lanes(n, cx);
+                })
+            })
         };
+        let range_step = |id: &'static str, value: usize, what: &'static str, f: Rc<dyn Fn(&mut App, i64)>| {
+            let (d, u) = (f.clone(), f);
+            stepper(id, value.to_string(), what, what, Rc::new(move |cx| d(cx, -1)), Rc::new(move |cx| u(cx, 1)))
+        };
+        let start_row = {
+            let a = apply.clone();
+            range_step("range-start", start, "The first channel shown", Rc::new(move |cx, d| a(cx, (start as i64 + d).max(1) as usize, end, step)))
+        };
+        let end_row = {
+            let a = apply.clone();
+            range_step("range-end", end, "The last channel shown (included)", Rc::new(move |cx, d| a(cx, start, (end as i64 + d).max(1) as usize, step)))
+        };
+        let step_row = {
+            let a = apply.clone();
+            range_step("range-step", step, "Every how many channels one is shown", Rc::new(move |cx, d| a(cx, start, end, (step as i64 + d).max(1) as usize)))
+        };
+        let all = {
+            let a = apply.clone();
+            Button::new("range-all").xsmall().outline().label("All").tooltip("Every channel of the source, all on screen").disabled(total == 0 || (start, end, step, is_slice) == (1, total, 1, true)).on_click(move |_, _, cx| a(cx, 1, total, 1))
+        };
+        let shown = drawn.len();
+        let summary = format!("Ch {start}–{end} · {shown} of {total}{}", match (is_slice, step) {
+            (false, _) => " · custom".to_string(),
+            (true, 1) => String::new(),
+            (true, s) => format!(" · every {s}"),
+        });
+        let range_head = h_flex().w_full().gap_2().justify_between().child(div().min_w_0().truncate().text_sm().child(summary)).child(all);
         let gain_row = {
             let (a, b) = (vm.clone(), vm.clone());
             stepper(
@@ -601,14 +642,34 @@ impl SettingsPanel {
         let facts = sources.as_ref().map(|ss| source_facts(ss.entry(&v.source), muted));
         let mut out = vec![
             div().text_sm().font_weight(gpui_kit::FontWeight::SEMIBOLD).truncate().child(v.title.clone()).into_any_element(),
-            Section::new("Source").children(source).children(facts).child(row("Range", div().text_sm().child(v.range_label()))).into_any_element(),
+            Section::new("Source").children(source).children(facts).into_any_element(),
+            Section::new("Channels")
+                .when(v.kind != TimeViewKind::Raster, |s| s.child(range_head).child(row("Start", start_row)).child(row("End", end_row)).child(row("Step", step_row)))
+                .when(v.kind == TimeViewKind::Raster, |s| s.child(row("Shown", div().text_sm().child(v.range_label()))))
+                .into_any_element(),
             Section::new("Layer").child(kind).when(traces, |d| d.child(row("Colour", color_by)).child(events).child(events_only)).into_any_element(),
         ];
         if traces {
-            out.push(Section::new("Traces").child(row("On screen", lanes_row)).child(row("Gain", gain_row)).into_any_element());
+            // How many are on screen is the Channels slice (End − Start): no second control for it
+            out.push(Section::new("Traces").child(row("Gain", gain_row)).into_any_element());
         }
         out.push(Section::new("Scaling").child(auto).child(dc).into_any_element());
         out
+    }
+}
+
+/// The selection as a slice of the source's `total` channels: (start, end, step) 1-based with the
+/// end included, and whether it is one (an even step through ascending channels).
+fn slice_of(selection: &[usize], total: usize) -> (usize, usize, usize, bool) {
+    match selection {
+        [] => (1, total.max(1), 1, false),
+        [one] => (one + 1, one + 1, 1, true),
+        [first, second, ..] => {
+            let last = *selection.last().expect("not empty");
+            let step = second.saturating_sub(*first);
+            let even = step > 0 && selection.windows(2).all(|w| w[1] == w[0] + step);
+            if even { (first + 1, last + 1, step, true) } else { (first + 1, last + 1, 1, false) }
+        }
     }
 }
 

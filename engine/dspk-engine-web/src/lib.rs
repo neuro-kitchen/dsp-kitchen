@@ -244,6 +244,8 @@ impl Inner {
         use wire::response::Kind as Resp;
         match request.kind.ok_or_else(|| StreamError::Server("empty request".into()))? {
             Req::ListFiles(list) => Ok(Resp::Files(inner.borrow().list(&list.dir))),
+            // One source per file here (the default series): the page lists none more
+            Req::Sources(_) => Ok(Resp::Sources(wire::SourceList::default())),
             Req::Open(open) => {
                 let (recording, source, pyramid) = inner.borrow().open(&open.path)?;
                 let recording = Arc::new(recording);

@@ -2,7 +2,7 @@
 //! cross-correlation of every channel pair), at HD-EMG size on the discrete GPU. Ignored by default:
 //!
 //! ```text
-//! cargo test -p dspk-benchmarks-sorters --profile validate --test bench_delay -- --ignored --nocapture
+//! cargo test -p dspk-benchmarks-sorters --profile validate --test bench -- --ignored --nocapture bench_delay::
 //! ```
 
 use cubecl::device::{WgpuDevice, WgpuDeviceKind};

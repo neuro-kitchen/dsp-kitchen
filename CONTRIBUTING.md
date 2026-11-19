@@ -35,7 +35,13 @@ feature sets or profiles recompile CubeCL and wgpu from scratch, so:
   GPU runtimes locally when you change a kernel.
 - Kernels with several implementations (vector widths, tiles, sorting networks) are autotuned;
   test each choice against the scalar one (vector versions are bit-identical by construction).
-- Timings: `cargo test -p dspk-benchmarks --profile validate --test bench_kernels -- --ignored --nocapture`
+- One feature set for building and testing, so neither rebuilds the other's work:
+  `cargo build --workspace --exclude dspk-py --profile validate --features dspk-cli/device,dspk-app/device`
+  and `cargo test --workspace --exclude dspk-app --exclude dspk-py --profile validate --features dspk-cli/device,dspk-app-core/device`
+  (put them in your git-ignored `.cargo/config.toml` as `[alias] vb = …` and `vt = …`). Narrow a
+  test run by name (`cargo vt -- view:: budget::`), not by `-p`: `-p` takes other features and
+  rebuilds. `DSPK_TEST_RUNTIMES=wgpu` runs the GPU suites on one runtime.
+- Timings: `cargo test -p dspk-benchmarks --profile validate --test bench -- --ignored --nocapture bench_kernels::`
   in a fresh process; see [benchmarks](benchmarks/README.md).
 
 ## Code

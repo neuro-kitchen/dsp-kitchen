@@ -79,28 +79,41 @@ pub struct Summary {
     pub rows: usize,
     pub buckets: usize,
     pub data: Vec<[f32; 2]>,
+    /// Which buckets are built (all of them once frozen; a summary being built fills in from the
+    /// part on screen outwards).
+    pub built: Vec<bool>,
 }
 
 impl Summary {
     /// `[min, max]` of each of `width` even columns of `range`, every row: the buckets each column
     /// overlaps folded (a column's edges reach at most one bucket past them).
     pub fn columns(&self, range: &Range<u64>, width: usize) -> Vec<[f32; 2]> {
+        self.columns_built(range, width).0
+    }
+
+    /// [`Self::columns`] from the buckets built so far (NaN where a column has none yet), and
+    /// whether every bucket of `range` is built.
+    pub fn columns_built(&self, range: &Range<u64>, width: usize) -> (Vec<[f32; 2]>, bool) {
         let len = range.end - range.start;
         let mut out = vec![[f32::NAN; 2]; self.rows * width];
+        let mut complete = true;
         for x in 0..width {
             let c0 = range.start + x as u64 * len / width as u64;
             let c1 = (range.start + (x as u64 + 1) * len / width as u64).max(c0 + 1);
             let b0 = ((c0 / SUMMARY_BUCKET) as usize).min(self.buckets);
             let b1 = (c1.div_ceil(SUMMARY_BUCKET) as usize).min(self.buckets);
+            complete &= self.built[b0..b1].iter().all(|&b| b);
             for r in 0..self.rows {
                 let mut v = [f32::NAN; 2];
-                for b in &self.data[r * self.buckets + b0..r * self.buckets + b1] {
-                    v = [v[0].min(b[0]), v[1].max(b[1])];
+                for (b, built) in self.data[r * self.buckets + b0..r * self.buckets + b1].iter().zip(&self.built[b0..b1]) {
+                    if *built {
+                        v = [v[0].min(b[0]), v[1].max(b[1])];
+                    }
                 }
                 out[r * width + x] = v;
             }
         }
-        out
+        (out, complete)
     }
 }
 
@@ -246,6 +259,8 @@ struct State {
     columns: Option<(Range<u64>, usize, Vec<[f32; 2]>)>,
     /// The trailing pointwise ops on the device (uploaded once).
     trailing: Option<Arc<PointwiseRun>>,
+    /// Whether the last columns answered were all known (false: a summary still being built).
+    columns_complete: bool,
     timings: PreviewTimings,
 }
 
@@ -280,6 +295,14 @@ pub struct Preview {
     summary_key: OnceLock<String>,
     #[cfg_attr(target_family = "wasm", allow(dead_code))]
     freezing: AtomicBool,
+    /// The summary while it is built (views of what is built are drawn from it), and the middle
+    /// of the last window asked for (the build starts there).
+    partial: Mutex<Option<Arc<Mutex<Summary>>>>,
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    last_center: std::sync::atomic::AtomicU64,
+    /// Bumped by each zoomed-out request that is not answered from what is kept: a request made
+    /// stale by a newer one stops at its next tile.
+    generation: std::sync::atomic::AtomicU64,
     last_view: Mutex<Instant>,
     me: OnceLock<Weak<Preview>>,
 }
@@ -320,7 +343,7 @@ impl Preview {
         let keep = stages.iter().rposition(|s| pointwise_op(s).is_none()).map_or(0, |i| i + 1);
         let trailing = stages[keep..].iter().filter_map(pointwise_op).collect();
         let pipeline = Pipeline::with_stages(stages[..keep].to_vec());
-        let state = State { workspace: None, block: None, columns: None, trailing: None, timings: PreviewTimings::default() };
+        let state = State { workspace: None, block: None, columns: None, trailing: None, columns_complete: true, timings: PreviewTimings::default() };
         // A branch shares its prefix's budget; its recipe is the prefix's then its own stages
         let (budget, recipe) = match &input {
             Input::Prefix(p) => (p.budget.clone(), (p.recipe.0.clone(), p.recipe.1.clone(), p.recipe.2.iter().chain(&stages).cloned().collect())),
@@ -342,6 +365,9 @@ impl Preview {
             recipe,
             summary_key: OnceLock::new(),
             freezing: AtomicBool::new(false),
+            partial: Mutex::new(None),
+            last_center: std::sync::atomic::AtomicU64::new(0),
+            generation: std::sync::atomic::AtomicU64::new(0),
             last_view: Mutex::new(Instant::now()),
             me: OnceLock::new(),
         };
@@ -388,7 +414,9 @@ impl Preview {
     /// A zoomed-out view was asked: after [`FREEZE_AFTER_SECS`] with views still asking for this
     /// chain, the whole recording is processed once in the background into its [`Summary`]
     /// (native; a browser keeps processing what it shows).
-    fn consider_freezing(&self) {
+    fn consider_freezing(&self, soon: bool) {
+        #[cfg(target_family = "wasm")]
+        let _ = soon;
         if self.summary_key.get().is_none() {
             // Not a chain the views keep (a summary's own builder): nothing to freeze
             return;
@@ -405,12 +433,13 @@ impl Preview {
             std::thread::Builder::new()
                 .name("dspk-freeze".into())
                 .spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_secs_f64(FREEZE_AFTER_SECS));
+                    // A window too wide to process is waited on for less (nothing else draws it)
+                    std::thread::sleep(std::time::Duration::from_secs_f64(if soon { YIELD_TO_VIEWS_SECS } else { FREEZE_AFTER_SECS }));
                     let Some(preview) = me.upgrade() else { return };
                     // Another chain was asked for since and this one not again: an edit replaced it
                     // (a parameter dragged); it may be asked again later
                     let replaced = LAST_ASKED.load(std::sync::atomic::Ordering::SeqCst) != preview.id;
-                    if replaced && preview.last_view.lock().unwrap().elapsed().as_secs_f64() > FREEZE_AFTER_SECS {
+                    if replaced && preview.last_view.lock().unwrap().elapsed().as_secs_f64() > FREEZE_AFTER_SECS.max(if soon { 0.0 } else { FREEZE_AFTER_SECS }) {
                         preview.freezing.store(false, std::sync::atomic::Ordering::SeqCst);
                         return;
                     }
@@ -419,11 +448,12 @@ impl Preview {
                     if let Some(preview) = me.upgrade() {
                         match built {
                             Some(summary) => {
-                                let bytes = (summary.data.len() * 8) as u64;
+                                let bytes = (summary.data.len() * 8 + summary.built.len()) as u64;
                                 dspk_core::memory::host_cache().put(key, Arc::new(summary), bytes);
                             }
                             None => preview.freezing.store(false, std::sync::atomic::Ordering::SeqCst),
                         }
+                        *preview.partial.lock().unwrap() = None;
                     }
                 })
                 .ok();
@@ -453,10 +483,21 @@ impl Preview {
         let segment = (fit / SUMMARY_BUCKET * SUMMARY_BUCKET).max(SUMMARY_BUCKET);
         let need = (Self::BUFFERS_PER_BLOCK as usize * builder.group.len() * size_class(segment as usize + 2 * READ_GRID as usize) * 4) as u64;
         let buckets = total.div_ceil(SUMMARY_BUCKET) as usize;
-        let mut data = vec![[f32::NAN; 2]; rows * buckets];
-        let mut start = 0u64;
-        while start < total {
-            me.upgrade()?;
+        let partial = Arc::new(Mutex::new(Summary { rows, buckets, data: vec![[f32::NAN; 2]; rows * buckets], built: vec![false; buckets] }));
+        let center = {
+            let p = me.upgrade()?;
+            *p.partial.lock().unwrap() = Some(partial.clone());
+            p.last_center.load(std::sync::atomic::Ordering::Relaxed)
+        };
+        // Segments from the one on screen outwards (as map tiles fill in from the view)
+        let count = total.div_ceil(segment);
+        let mid = (center / segment).min(count.saturating_sub(1)) as i64;
+        let mut order: Vec<u64> = (0..count).collect();
+        order.sort_by_key(|&k| ((k as i64 - mid).abs(), k));
+        for k in order {
+            let start = k * segment;
+            let p = me.upgrade()?;
+            drop(p);
             // Views first: wait while one is being drawn, and while the device has no room for a
             // segment (given up after a minute of waiting: frozen later, when asked again)
             let waited = Instant::now();
@@ -474,12 +515,26 @@ impl Preview {
             let width = (end - start).div_ceil(SUMMARY_BUCKET) as usize;
             let part = cubecl::future::block_on(builder.columns_async(start..end, width)).ok()?;
             let b0 = (start / SUMMARY_BUCKET) as usize;
+            let mut sum = partial.lock().unwrap();
             for r in 0..rows {
-                data[r * buckets + b0..r * buckets + b0 + width].copy_from_slice(&part[r * width..(r + 1) * width]);
+                sum.data[r * buckets + b0..r * buckets + b0 + width].copy_from_slice(&part[r * width..(r + 1) * width]);
             }
-            start = end;
+            sum.built[b0..b0 + width].iter_mut().for_each(|b| *b = true);
         }
-        Some(Summary { rows, buckets, data })
+        let done = std::mem::replace(&mut *partial.lock().unwrap(), Summary { rows: 0, buckets: 0, data: Vec::new(), built: Vec::new() });
+        Some(done)
+    }
+
+    /// A window `range` is asked for that is too wide to process now: its summary is built (from
+    /// there outwards), and views of it are drawn from what is built meanwhile.
+    pub fn want_overview(&self, range: &Range<u64>) {
+        self.last_center.store((range.start + range.end) / 2, std::sync::atomic::Ordering::Relaxed);
+        self.consider_freezing(true);
+    }
+
+    /// Whether a window of `samples` is processed exactly now: in one block or in a few tiles.
+    fn exact_now(&self, samples: u64) -> bool {
+        self.fits_one_block(samples) || self.tile_samples().is_some_and(|t| samples.div_ceil(t as u64) as usize <= PREVIEW_MAX_TILES)
     }
 
     /// The budget this preview is charged to.
@@ -510,9 +565,10 @@ impl Preview {
     /// Makes room in the budget for a block over `read` (with `tiles` blocks in flight) before it
     /// is made: the block, its input and a workspace for it, what this preview keeps now included.
     fn make_room(&self, read: &Range<u64>, tiles: u64, client: Option<&Client>) {
+        // Every buffer a block holds while it is made (input, upload and unpack, the workspace's
+        // ping-pong and scratch, its own copy, the reduction), per tile in flight
         let rows = self.block_bytes(read);
-        let ws = self.state.lock().unwrap().workspace.as_ref().map_or(4 * rows, |(ws, _)| ws.device_bytes().max(4 * rows));
-        self.budget.make_room(self.id, ws + (1 + tiles) * rows, client);
+        self.budget.make_room(self.id, (1 + tiles) * Self::BUFFERS_PER_BLOCK * rows / 2, client);
     }
 
     /// The same preview reading its recording's input through `cache` (shared by a recording's
@@ -546,6 +602,12 @@ impl Preview {
         &self.out_channels
     }
 
+    /// Whether the last zoomed-out columns were all known (false while a summary is built: ask
+    /// again for more).
+    pub fn columns_complete(&self) -> bool {
+        self.state.lock().unwrap().columns_complete
+    }
+
     /// Where the last view's time went ([`PreviewTimings`]).
     pub fn last_timings(&self) -> PreviewTimings {
         self.state.lock().unwrap().timings.clone()
@@ -554,7 +616,7 @@ impl Preview {
     /// Whether a window of `samples` samples is previewed processed: in one block, or zoomed out
     /// in up to [`PREVIEW_MAX_TILES`] tiles (else a viewer draws it raw).
     pub fn covers(&self, samples: u64) -> bool {
-        self.summary().is_some() || self.fits_one_block(samples) || self.tile_samples().is_some_and(|t| samples.div_ceil(t as u64) as usize <= PREVIEW_MAX_TILES)
+        self.summary().is_some() || self.partial.lock().unwrap().is_some() || self.exact_now(samples)
     }
 
     /// Whether a window of `samples` samples is processed in one block.
@@ -881,9 +943,12 @@ impl Preview {
     /// columns are awaited. The last answer is kept for [`Self::columns`].
     pub async fn columns_async(&self, range: Range<u64>, width: usize) -> DspResult<Vec<[f32; 2]>> {
         let kept = self.state.lock().unwrap().columns.as_ref().filter(|(r, w, _)| *r == range && *w == width).map(|(_, _, v)| v.clone());
-        self.consider_freezing();
+        let exact = self.exact_now(range.end - range.start);
+        self.last_center.store((range.start + range.end) / 2, std::sync::atomic::Ordering::Relaxed);
+        self.consider_freezing(!exact);
         if let Some(v) = kept {
             self.budget.touch(self.id);
+            self.state.lock().unwrap().columns_complete = true;
             return Ok(v);
         }
         // Frozen: folded from the summary's buckets (nothing processed)
@@ -891,9 +956,23 @@ impl Preview {
             && let Some(summary) = self.summary()
         {
             let v = summary.columns(&range, width);
-            self.state.lock().unwrap().columns = Some((range, width, v.clone()));
+            let mut state = self.state.lock().unwrap();
+            state.columns = Some((range, width, v.clone()));
+            state.columns_complete = true;
             return Ok(v);
         }
+        // Too wide to process now: what the summary being built holds (it fills in from here)
+        if !exact {
+            let built = self.partial.lock().unwrap().clone();
+            let (v, complete) = match built {
+                Some(p) => p.lock().unwrap().columns_built(&range, width),
+                None => (vec![[f32::NAN; 2]; self.group.len() * width], false),
+            };
+            self.state.lock().unwrap().columns_complete = complete;
+            return Ok(v);
+        }
+        self.state.lock().unwrap().columns_complete = true;
+        let generation = self.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         let nch = self.group.len();
         let columns = Columns::Even { start: range.start, len: range.end - range.start, width };
         let mut acc = if self.fits_one_block(range.end - range.start) {
@@ -920,8 +999,26 @@ impl Preview {
             let mut start = range.start;
             loop {
                 let next = (start < range.end).then(|| start..(start + tile).min(range.end));
+                // A newer view asked: this one is not drawn, stop here
+                if self.generation.load(std::sync::atomic::Ordering::SeqCst) != generation {
+                    return Err(DspError::ComputeError("a newer view replaced this one".into()));
+                }
                 if let Some(want) = &next {
                     let read = self.read_range(want);
+                    // Room for this tile before anything of it is allocated; with no room for two
+                    // in flight, the last one is read back first
+                    self.make_room(&read, 1, Some(&client));
+                    let two = 2 * Self::BUFFERS_PER_BLOCK * self.block_bytes(&read);
+                    if !self.budget.fits(two, Some(&client))
+                        && let Some((c, rows, read, valid)) = pending.take()
+                    {
+                        let t = Instant::now();
+                        let part = self.reduce(c, rows, read, valid, columns, width).await?;
+                        timings.readback += ms(t);
+                        for (a, p) in acc.iter_mut().zip(part) {
+                            *a = merge(*a, p);
+                        }
+                    }
                     let (mut ws, capacity) = {
                         let mut state = self.state.lock().unwrap();
                         self.workspace(&mut state, (read.end - read.start) as usize)?

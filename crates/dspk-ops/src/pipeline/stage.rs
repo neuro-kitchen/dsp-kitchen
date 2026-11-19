@@ -1,3 +1,4 @@
+use dspk_core::DspError;
 use crate::filter::design::{OpsError, FilterSpec, Sos};
 use crate::core::EdgeMode;
 use crate::filter::fir::gaussian::{gaussian_radius, GAUSSIAN_DEFAULT_EDGE, GAUSSIAN_TRUNCATE};
@@ -131,7 +132,15 @@ impl PipelineStage {
                 let r = gaussian_radius(*sigma_samples, GAUSSIAN_TRUNCATE);
                 (r, r)
             }
-            PipelineStage::Median { width, .. } => (width / 2, width / 2),
+            // Refused here, where a chain is checked, not where its kernel runs (an even width
+            // once panicked a server's view)
+            PipelineStage::Median { width, .. } => {
+                let most = crate::filter::non_linear::MAX_MEDIAN_WIDTH;
+                if width % 2 == 0 || *width > most {
+                    return Err(DspError::InvalidConfig(format!("median width {width}: it must be odd and at most {most} (e.g. {})", (width | 1).min(most))).into());
+                }
+                (width / 2, width / 2)
+            }
             // Finite memory: this much context gives the whole-signal result exactly
             PipelineStage::Fir { taps, centered: false, .. } => (taps.len().saturating_sub(1), 0),
             PipelineStage::Fir { taps, centered: true, .. } => (taps.len() / 2, taps.len() / 2),
