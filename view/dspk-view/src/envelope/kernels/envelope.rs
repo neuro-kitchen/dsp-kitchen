@@ -1,17 +1,24 @@
 use cubecl::prelude::*;
-use dspk_core::compute::{negative_infinity, positive_infinity, row_position};
+use dspk_core::compute::{apply_pointwise, negative_infinity, positive_infinity, row_position};
 
 /// Values stored per column: `min`, then `max`.
 pub const PAIR: u32 = 2;
 
 /// Min/max of samples `edges[x]..edges[x + 1]` of every channel row (rows `row_stride` apart),
 /// into `out[PAIR · (channel · columns + x)]` (min) and the value after it (max). Columns with no
-/// sample other than NaN stay `[+∞, −∞]`. `units` is the cube's x size (a power of two).
+/// sample other than NaN stay `[+∞, −∞]`. `units` is the cube's x size (a power of two). Each
+/// sample goes through the first `map_count` pointwise ops of `map_codes` / `map_params` first
+/// (`dspk_core::compute::apply_pointwise`; 0: as it is): a chain's last pointwise ops folded into
+/// its reduction, so their output is never written.
 #[cube(launch)]
+#[allow(clippy::too_many_arguments)]
 pub fn envelope_kernel<F: Float>(
     input: &[F],
     edges: &[u32],
     out: &mut [F],
+    map_codes: &[u32],
+    map_params: &[F],
+    map_count: u32,
     columns: u32,
     rows: u32,
     row_stride: u32,
@@ -31,7 +38,7 @@ pub fn envelope_kernel<F: Float>(
         let mut hi = negative_infinity::<F>();
         let mut s = edges[column as usize] + unit;
         while s < end {
-            let x = input[(base + s) as usize];
+            let x = apply_pointwise::<F>(input[(base + s) as usize], map_codes, map_params, map_count);
             if x < lo {
                 lo = x;
             }

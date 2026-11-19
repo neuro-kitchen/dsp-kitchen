@@ -16,8 +16,10 @@ pub mod unpack;
 pub mod stats;
 pub mod windows;
 pub mod xcorr;
+pub mod pointwise_run;
 
 pub use scaling::execute_scaling;
+pub use pointwise_run::{pointwise_op, PointwiseRun};
 pub use clamp::execute_clamp;
 pub use elementwise::{execute_elementwise, Elementwise, LOG10_FLOOR};
 pub use unpack::{execute_unpack_stored, stored_word_bytes, stored_words, upload_stored, write_stored, write_stored_owned};

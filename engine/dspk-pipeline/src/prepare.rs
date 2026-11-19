@@ -185,53 +185,6 @@ pub(crate) fn prepare(
         OutputFormat::Raw | OutputFormat::Events => dspk_io::ZarrOptions { parallel, ..Default::default() },
     };
 
-    // Remaps by position: right after read (fold into the read: may drop), between processing
-    // steps (a reorder stage on the device: keeps every channel), after the last one (a gather
-    // before the download: may drop)
-    let last_processing = chain.stages.iter().rposition(|(_, n)| !matches!(n, Node::Remap { .. }));
-    let mut lead = Vec::new();
-    let mut tail = Vec::new();
-    // The pipeline's steps in order: a stage, or a middle remap (its order is set once the
-    // channel count is known)
-    enum Step {
-        Stage(PipelineStage),
-        Reorder(dspk_core::ChannelMap),
-        Whiten(crate::WhitenFit),
-    }
-    let mut steps: Vec<(String, Step)> = Vec::with_capacity(chain.stages.len());
-    let mut resample = None;
-    // (level, release, direction, min duration ms, refractory ms) of a final `crossings` node
-    let mut crossings_node = None;
-    for (i, (id, node)) in chain.stages.iter().enumerate() {
-        let stage = node.stage().map_err(|e| PipelineError::Invalid(format!("node {id:?}: {e}")))?;
-        match (node, stage) {
-            (Node::Remap { .. }, _) => {
-                let map = node.channel_map(Some(base_dir)).map_err(|e| PipelineError::Invalid(format!("node {id:?}: {e}")))?.expect("a remap has a map");
-                match last_processing {
-                    Some(last) if i > last => tail.push(map),
-                    Some(_) if steps.is_empty() && resample.is_none() => lead.push(map),
-                    None => lead.push(map),
-                    Some(_) => steps.push((id.to_string(), Step::Reorder(map))),
-                }
-            }
-            (Node::Resample { up, down, beta, edge }, _) => {
-                if last_processing != Some(i) {
-                    return Err(PipelineError::Invalid(format!("node {id:?}: resample must be the last processing node before write (only remaps may follow)")));
-                }
-                resample = Some(Resample::new(*up, *down, *beta, (*edge).into()));
-            }
-            (Node::Crossings { level, release, direction, min_duration_ms, refractory_ms }, _) => {
-                if last_processing != Some(i) {
-                    return Err(PipelineError::Invalid(format!("node {id:?}: crossings must be the last processing node before write (only remaps may follow)")));
-                }
-                crossings_node = Some((*level, *release, *direction, *min_duration_ms, *refractory_ms));
-            }
-            (Node::Whiten { .. }, None) => steps.push((id.to_string(), Step::Whiten(node.whiten_fit().expect("a whiten node")))),
-            (_, Some(stage)) => steps.push((id.to_string(), Step::Stage(stage))),
-            (_, None) => unreachable!("every other processing node has a stage"),
-        }
-    }
-
     let input_paths: Vec<PathBuf> = match (input, inputs.as_deref()) {
         (Some(path), None) => vec![base_dir.join(path)],
         (None, Some([Input::Merge { merge }])) => merge.iter().map(|p| base_dir.join(&p.path)).collect(),
@@ -259,9 +212,13 @@ pub(crate) fn prepare(
     let rename = |names: &[String], map: &dspk_core::ChannelMap, order: &[usize]| -> Vec<String> {
         order.iter().zip(map.names()).map(|(&c, n)| n.unwrap_or_else(|| names[c].clone())).collect()
     };
-    if !lead.is_empty() {
+    // The chain, planned as views and live devices plan it (`crate::chain`)
+    let chain_nodes: Vec<(String, Node)> = chain.stages.iter().map(|(id, n)| (id.to_string(), (*n).clone())).collect();
+    let planned = crate::chain::plan_chain(&chain_nodes, &channels, crate::chain::Purpose::Batch, Some(base_dir))
+        .map_err(|r| PipelineError::Invalid(crate::chain::refusals_text(&r)))?;
+    if !planned.lead.is_empty() {
         let mut map = dspk_core::ChannelMap::from_order(&channels);
-        for r in &lead {
+        for (_, r) in &planned.lead {
             map = map.then(r).map_err(remap_err)?;
         }
         channels = map.resolve(info.channel_count()).map_err(remap_err)?;
@@ -269,59 +226,47 @@ pub(crate) fn prepare(
         names = rename(&all, &map, &channels);
     }
     let nch = channels.len();
-    let mut stages = Vec::with_capacity(steps.len());
+    let mut stages = Vec::with_capacity(planned.steps.len());
     let mut fits = Vec::new();
-    for (id, step) in steps {
-        let stage = match step {
-            Step::Stage(stage) => stage,
-            Step::Whiten(fit) => {
-                fits.push((stages.len(), fit));
+    for s in &planned.steps {
+        let stage = match &s.step {
+            crate::chain::Step::Stage(stage) => stage.clone(),
+            crate::chain::Step::Whiten(fit) => {
+                fits.push((stages.len(), fit.clone()));
                 PipelineStage::SpatialWhitening(crate::unfitted_whitening(nch))
             }
-            Step::Reorder(map) => {
-                let order = map.resolve(nch).map_err(|e| PipelineError::Invalid(format!("node {id:?}: {e}")))?;
-                if order.len() != nch {
-                    return Err(PipelineError::Invalid(format!(
-                        "node {id:?}: a remap between processing nodes keeps every channel ({nch}; it reorders them): drop channels in a remap right after read or right before write"
-                    )));
-                }
-                names = rename(&names, &map, &order);
-                PipelineStage::ReorderChannels { order }
+            crate::chain::Step::Reorder { map, order } => {
+                names = rename(&names, map, order);
+                PipelineStage::ReorderChannels { order: order.clone() }
             }
         };
-        stages.push((id, stage));
+        stages.push((s.id.clone(), stage));
     }
-    let keep = if tail.is_empty() {
+    let resample = planned.resample.as_ref().map(|(_, node)| match node {
+        Node::Resample { up, down, beta, edge } => Resample::new(*up, *down, *beta, (*edge).into()),
+        _ => unreachable!("the plan's resample is a resample node"),
+    });
+    let keep = if planned.tail.is_empty() {
         None
     } else {
         let mut map = dspk_core::ChannelMap::from_order(&(0..nch).collect::<Vec<_>>());
-        for r in &tail {
+        for (_, r) in &planned.tail {
             map = map.then(r).map_err(remap_err)?;
         }
         let order = map.resolve(nch).map_err(remap_err)?;
         names = rename(&names, &map, &order);
         Some(order)
     };
-    match (&crossings_node, format) {
+    match (&planned.crossings, format) {
         (Some(_), OutputFormat::Events) | (None, OutputFormat::Raw | OutputFormat::Zarr) => {}
         (Some(_), _) => return Err(PipelineError::Invalid("a crossings node gives events: write them with format = \"events\"".into())),
         (None, _) => return Err(PipelineError::Invalid("write: format = \"events\" needs a crossings node before it".into())),
-    }
-    if crossings_node.is_some() && resample.is_some() {
-        return Err(PipelineError::Invalid("crossings after resample: detect on the signal at its own rate".into()));
     }
     let stage_ids = stages.clone();
     let pipeline = Pipeline::with_stages(stages.into_iter().map(|(_, s)| s).collect());
     let range = select_range(*start, *stop, total)?;
     let unit = info.channels[channels[0]].unit.clone();
-    let to_samples = |ms: f64| (ms * 1e-3 * sample_rate).round() as u64;
-    let crossings = crossings_node.map(|(level, release, direction, min_ms, refr_ms)| dspk_ops::crossings::CrossingOptions {
-        levels: vec![level],
-        releases: release.map(|r| vec![r]).unwrap_or_default(),
-        direction: direction.into(),
-        min_duration_samples: to_samples(min_ms),
-        refractory_samples: to_samples(refr_ms),
-    });
+    let crossings = planned.crossings.as_ref().map(|(_, params)| params.options(sample_rate));
     pipeline.validate(sample_rate).map_err(|e| PipelineError::Invalid(e.to_string()))?;
 
     let mut mode = resolve_mode(spec.execution.mode, &pipeline, sample_rate)?;

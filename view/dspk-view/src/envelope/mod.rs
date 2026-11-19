@@ -15,7 +15,7 @@ pub mod kernels;
 
 pub use buckets::{min_max_decimate, min_max_decimate_into};
 #[cfg(feature = "device")]
-pub use device::{envelope_launch, envelope_on_device, envelope_pairs};
+pub use device::{envelope_launch, envelope_launch_mapped, envelope_on_device, envelope_pairs, PointwiseMap};
 #[cfg(feature = "device")]
 pub use kernels::envelope_kernel;
 pub use fold::{Block, Columns, EMPTY, fold, fold_block, fold_row, mean_range, merge};

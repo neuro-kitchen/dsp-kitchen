@@ -1,36 +1,81 @@
 //! Live preview of a view's op chain as a [`SignalBackend`]: the views are answered with the
-//! recording processed on the device by `dspk_pipeline::preview` (window by window, cached), the
+//! recording processed on the device by [`Preview`](super::Preview) (window by window, cached), the
 //! raw signal for channels outside the view's group and for windows zoomed out past
-//! [`PREVIEW_MAX_VALUES`] ([`ProcessedSignal::covers`] tells the UI to say so).
+//! [`PREVIEW_MAX_VALUES`](super::PREVIEW_MAX_VALUES) ([`ProcessedSignal::covers`] tells the UI to say so).
 
 use std::ops::Range;
 use std::sync::Arc;
 
 use dspk_core::{DspResult, RecordingInfo, RecordingSource, SampleFormat};
 use dspk_ops::PipelineStage;
-use crate::preview::Preview;
+use super::budget::DeviceBudget;
+use super::preview::{InputCache, Preview, PreviewTimings};
 use dspk_view::{Envelope, OnProgress, Progress, SignalBackend, View};
 
-pub use crate::preview::PREVIEW_MAX_VALUES;
 
 /// A view's signal with its op chain applied: [`Preview`] (dspk-pipeline) for the channels the
 /// chain processes, the raw signal for the others and for windows too large to preview.
 pub struct ProcessedSignal {
     raw: Arc<dyn SignalBackend>,
-    preview: Preview,
+    preview: Arc<Preview>,
+}
+
+/// `preview` shared, entered in its device budget.
+fn shared(preview: Preview) -> Arc<Preview> {
+    let preview = Arc::new(preview);
+    Preview::register(&preview);
+    preview
 }
 
 impl ProcessedSignal {
     /// The preview of `stages` over `group` (the view's channels) of `source`; `raw` answers what
-    /// is not processed (outside the group, or zoomed out past [`PREVIEW_MAX_VALUES`]).
+    /// is not processed (outside the group, or zoomed out past [`PREVIEW_MAX_VALUES`](super::PREVIEW_MAX_VALUES)).
     pub fn new(raw: Arc<dyn SignalBackend>, source: Arc<dyn RecordingSource>, group: Vec<usize>, stages: Vec<PipelineStage>) -> DspResult<Self> {
-        Ok(Self { raw, preview: Preview::new(source, group, stages)? })
+        Ok(Self { raw, preview: shared(Preview::new(source, group, stages)?) })
+    }
+
+    /// [`Self::new`] charged to `budget` instead of the process's device budget.
+    pub fn with_budget(raw: Arc<dyn SignalBackend>, source: Arc<dyn RecordingSource>, group: Vec<usize>, stages: Vec<PipelineStage>, cache: Arc<InputCache>, budget: Arc<DeviceBudget>) -> DspResult<Self> {
+        Ok(Self { raw, preview: shared(Preview::new(source, group, stages)?.with_input_cache(cache).with_budget(budget)) })
+    }
+
+    /// Freezes this chain under `key` in the RAM cache once it stops changing.
+    pub fn set_summary_key(&self, key: String) {
+        self.preview.set_summary_key(key);
+    }
+
+    /// Whether this chain's frozen summary is built (zoomed-out views are drawn from it).
+    pub fn frozen(&self) -> bool {
+        self.preview.summary().is_some()
+    }
+
+    /// The device budget this signal is charged to.
+    pub fn budget(&self) -> &Arc<DeviceBudget> {
+        self.preview.budget()
+    }
+
+    /// [`Self::new`] reading the recording through `cache` (shared by a recording's chains): an
+    /// edited chain over a window already uploaded does not read and upload it again.
+    pub fn with_input_cache(raw: Arc<dyn SignalBackend>, source: Arc<dyn RecordingSource>, group: Vec<usize>, stages: Vec<PipelineStage>, cache: Arc<InputCache>) -> DspResult<Self> {
+        Ok(Self { raw, preview: shared(Preview::new(source, group, stages)?.with_input_cache(cache)) })
+    }
+
+    /// A branch: `stages` run on `prefix`'s output on the device (the prefix is computed once for
+    /// both, and nothing is read back in between). Its rows are the prefix's output rows.
+    pub fn after(prefix: &ProcessedSignal, stages: Vec<PipelineStage>) -> DspResult<Self> {
+        Ok(Self { raw: prefix.raw.clone(), preview: shared(Preview::after(prefix.preview.clone(), stages)?) })
+    }
+
+    /// Where the last view's time went (read, upload, chain, read back; per step in measuring
+    /// mode, `DSPK_PREVIEW_TIMING=1`).
+    pub fn last_timings(&self) -> PreviewTimings {
+        self.preview.last_timings()
     }
 
     /// The same with blocks and tiles of at most `max_values` values ([`Preview::with_max_values`]).
-    pub fn with_max_values(mut self, max_values: usize) -> Self {
-        self.preview = self.preview.with_max_values(max_values);
-        self
+    pub fn with_max_values(self, max_values: usize) -> Self {
+        let preview = Arc::try_unwrap(self.preview).unwrap_or_else(|_| panic!("with_max_values before the signal is shared"));
+        Self { raw: self.raw, preview: shared(preview.with_max_values(max_values)) }
     }
 
     /// The source channel each output row stands for (the read channels through the reorders).
@@ -102,84 +147,10 @@ impl ProcessedSignal {
 }
 
 impl ProcessedSignal {
-    /// The processed signal of a view from its op chain (`ops`, the enabled ones in order) over
-    /// `channels` (the view's subset, or every channel), as [`crate::preview::view_plan`] lays
-    /// it out. Whitenings are fitted here, on the signal of the steps before them: this reads
-    /// the recording and takes seconds (call it off the drawing thread).
-    pub fn of_ops(raw: Arc<dyn SignalBackend>, source: Arc<dyn RecordingSource>, ops: &[&crate::Node], channels: Vec<usize>, base_dir: &std::path::Path) -> Result<Self, String> {
-        let plan = crate::preview::view_plan(ops, channels, base_dir)?;
-        let mut stages: Vec<PipelineStage> = plan.steps.into_iter().map(|(_, stage)| stage).collect();
-        // A whitening's fit reads the device back as it goes, which a browser cannot wait for
-        if cfg!(target_family = "wasm") && !plan.fits.is_empty() {
-            return Err("whitening is fitted on a server or in the desktop app, not in a browser yet".into());
-        }
-        for (at, fit) in plan.fits {
-            let target = dspk_core::ComputeTarget::from_env().map_err(|e| e.to_string())?;
-            let fitted = crate::fit_whitening(target, source.as_ref(), &plan.group, &stages[..at], &fit).map_err(|e| e.to_string())?;
-            stages[at] = PipelineStage::SpatialWhitening(fitted);
-        }
-        Self::new(raw, source, plan.group, stages).map_err(|e| e.to_string())
-    }
-
-    /// [`Self::of_ops`] for ops sent as JSON (pipeline nodes, in order) over `channels` (none =
-    /// all): a view's processing as a client that does not compute asks a server for it.
-    /// `base_dir` is where files the ops name (a remap's channel map) are read from.
-    pub fn of_json_ops(raw: Arc<dyn SignalBackend>, source: Arc<dyn RecordingSource>, ops: &[String], channels: &[usize], base_dir: &std::path::Path) -> Result<Self, String> {
-        let nodes: Vec<crate::Node> = ops.iter().map(|op| serde_json::from_str(op).map_err(|e| format!("an op that is not a pipeline node: {e}"))).collect::<Result<_, _>>()?;
-        let channels: Vec<usize> = if channels.is_empty() { (0..source.info().channel_count()).collect() } else { channels.to_vec() };
-        Self::of_ops(raw, source, &nodes.iter().collect::<Vec<_>>(), channels, base_dir)
-    }
-
     /// `channels` over `samples`, processed whatever the size (a branch reading this preview
     /// as its input: its halo makes the request larger than a view's).
     pub fn read_processed(&self, channels: &[usize], samples: Range<u64>, out: &mut [f32]) -> DspResult<()> {
         self.fill(channels, samples, false, out)
-    }
-}
-
-/// Processed signals kept per recording.
-const CHAINS_KEPT: usize = 8;
-
-/// The processed signals a client's views asked for, by chain (channels and ops), so a view can
-/// be made ready asynchronously ([`ProcessedSignal::warm_view_async`]) before it is answered: what
-/// `dspk serve` and a browser's engine hold for a recording they serve. Files the ops name (a
-/// remap's channel map) are read from `base_dir`.
-pub struct ProcessedChains {
-    base_dir: std::path::PathBuf,
-    made: std::sync::Mutex<Vec<((Vec<usize>, Vec<String>), Arc<ProcessedSignal>)>>,
-}
-
-impl ProcessedChains {
-    pub fn new(base_dir: impl Into<std::path::PathBuf>) -> Self {
-        Self { base_dir: base_dir.into(), made: Default::default() }
-    }
-
-    /// The signal of `ops` over `channels` (none = all) of `source` (`raw` answers what is not
-    /// processed). Made now (whitenings are fitted: seconds) and kept, most recent last.
-    pub fn make(&self, raw: Arc<dyn SignalBackend>, source: Arc<dyn RecordingSource>, channels: &[usize], ops: &[String]) -> Result<Arc<ProcessedSignal>, String> {
-        let signal = Arc::new(ProcessedSignal::of_json_ops(raw, source, ops, channels, &self.base_dir)?);
-        let mut made = self.made.lock().unwrap_or_else(|e| e.into_inner());
-        made.retain(|(key, _)| key.0 != channels || key.1 != ops);
-        if made.len() >= CHAINS_KEPT {
-            made.remove(0);
-        }
-        made.push(((channels.to_vec(), ops.to_vec()), signal.clone()));
-        Ok(signal)
-    }
-
-    /// Forgets the chains kept (a batch job takes the GPU: their device memory goes with them).
-    pub fn clear(&self) {
-        self.made.lock().unwrap_or_else(|e| e.into_inner()).clear();
-    }
-
-    /// Makes `view` of the chain of `ops` over `channels` ready without blocking on the device;
-    /// nothing to do for a chain not made here.
-    pub async fn warm(&self, channels: &[usize], ops: &[String], view: &View) -> DspResult<()> {
-        let signal = self.made.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(key, _)| key.0 == channels && key.1 == ops).map(|(_, s)| s.clone());
-        match signal {
-            Some(signal) => signal.warm_view_async(view).await,
-            None => Ok(()),
-        }
     }
 }
 
@@ -356,6 +327,197 @@ mod tests {
         }
     }
 
+    /// An edited chain over the window on screen reuses the window already uploaded (it is not
+    /// read again), and its view equals the same chain made from nothing, bit for bit.
+    #[test]
+    fn an_edit_reuses_the_uploaded_window_and_equals_a_fresh_chain() {
+        use crate::view::{Made, ProcessedChains, ViewPlan};
+        let source = recording(2, 8000);
+        let raw: Arc<dyn SignalBackend> = Arc::new(LocalSignal::open(source.clone(), None).unwrap());
+        let plan = |alpha: f32| ViewPlan {
+            group: vec![0, 1],
+            steps: vec![("bandpass".into(), PipelineStage::bandpass(20.0, 200.0)), (format!("scale {alpha}"), PipelineStage::Scale { alpha, beta: 0.0 }), ("tk".into(), PipelineStage::teager_kaiser())],
+            shown: vec![0, 1],
+            fits: Vec::new(),
+        };
+        let signal = |chains: &ProcessedChains, alpha: f32, editing: Option<usize>| match chains.signal_editing(raw.clone(), source.clone(), "main", &plan(alpha), editing).unwrap() {
+            Made::Ready(s) => s,
+            Made::NeedsFit(_) => panic!("no whitening"),
+        };
+        let view = View { channels: vec![0, 1], start: 2000, end: 6000, width: 64 };
+        let columns = |s: &ProcessedSignal| {
+            let mut env = Envelope::Samples(Vec::new());
+            s.view(&view, &mut env).unwrap();
+            let Envelope::Columns { values, .. } = env else { panic!("columns") };
+            values
+        };
+        let chains = ProcessedChains::new("");
+        let first = signal(&chains, 2.0, Some(1));
+        let _ = columns(&first);
+        assert!(!first.last_timings().input_reused, "the first chain reads the window");
+        // The scale dragged: the chain up to it is kept, the window is not read again
+        let edited = signal(&chains, 3.0, Some(1));
+        let got = columns(&edited);
+        // The same chain made from nothing (the same structure: a prefix, then the branch)
+        let fresh = signal(&ProcessedChains::new(""), 3.0, Some(1));
+        assert_eq!(got, columns(&fresh), "an edit computed from what was kept equals the chain made from nothing");
+        // And the whole chain in one block, within the window processing's halo tolerance
+        let whole = columns(&signal(&ProcessedChains::new(""), 3.0, None));
+        let scale = whole.iter().flat_map(|v| [v[0].abs(), v[1].abs()]).fold(0.0f32, f32::max).max(1.0);
+        for (x, (p, q)) in got.iter().zip(&whole).enumerate() {
+            assert!((p[0] - q[0]).abs() <= 1e-3 * scale && (p[1] - q[1]).abs() <= 1e-3 * scale, "column {x}: {p:?} vs {q:?}");
+        }
+    }
+
+    /// Chains and windows past the device budget: what the views keep stays within it (others
+    /// are released, off screen first), and a released chain made again equals what it gave.
+    #[test]
+    fn views_stay_within_the_device_budget_and_a_released_chain_comes_back_the_same() {
+        use crate::view::{DeviceBudget, Made, ProcessedChains, ViewPlan};
+        let source = recording(4, 400_000);
+        let raw: Arc<dyn SignalBackend> = Arc::new(LocalSignal::open(source.clone(), None).unwrap());
+        let limit = 64u64 << 20;
+        let chains = ProcessedChains::with_budget("", DeviceBudget::with_limit(limit));
+        let plan = |alpha: f32| ViewPlan {
+            group: vec![0, 1, 2, 3],
+            steps: vec![("bandpass".into(), PipelineStage::bandpass(20.0, 200.0)), (format!("scale {alpha}"), PipelineStage::Scale { alpha, beta: 0.0 }), ("tk".into(), PipelineStage::teager_kaiser())],
+            shown: vec![0, 1, 2, 3],
+            fits: Vec::new(),
+        };
+        let columns = |alpha: f32, start: u64, end: u64| {
+            let Made::Ready(s) = chains.signal(raw.clone(), source.clone(), "main", &plan(alpha)).unwrap() else { panic!("no whitening") };
+            let mut env = Envelope::Samples(Vec::new());
+            s.view(&View { channels: vec![0, 1, 2, 3], start, end, width: 128 }, &mut env).unwrap();
+            let Envelope::Columns { values, .. } = env else { panic!("columns") };
+            values
+        };
+        let first = columns(1.0, 0, 50_000);
+        // Six chains (fewer than are kept), each over a wider window
+        for (i, alpha) in [2.0f32, 3.0, 4.0, 5.0, 6.0].into_iter().enumerate() {
+            let _ = columns(alpha, 0, 80_000 * (i as u64 + 1));
+            let kept = chains.budget().charged();
+            assert!(kept <= limit, "chain {alpha}: {kept} bytes kept over a budget of {limit}");
+        }
+        assert!(chains.budget().released() > 0, "the wider windows needed room: some chain was released");
+        // The first chain was released long ago; asked again, it is made again, the same
+        assert_eq!(columns(1.0, 0, 50_000), first, "a chain released and made again gives what it gave");
+    }
+
+    /// A chain left unchanged is frozen: the whole recording processed once into buckets, and a
+    /// zoomed-out view then drawn from them holds what the view processed directly holds (each
+    /// column reaches at most one bucket past its edges), with the same extremes overall.
+    #[test]
+    fn a_chain_left_unchanged_is_frozen_and_its_summary_holds_the_processed_view() {
+        use crate::view::{Made, ProcessedChains, ViewPlan, SUMMARY_BUCKET};
+        let source = recording(3, 400_000);
+        let raw: Arc<dyn SignalBackend> = Arc::new(LocalSignal::open(source.clone(), None).unwrap());
+        let chains = ProcessedChains::new("");
+        let plan = ViewPlan {
+            group: vec![0, 1, 2],
+            steps: vec![("bandpass".into(), PipelineStage::bandpass(20.0, 200.0)), ("abs".into(), PipelineStage::Elementwise(dspk_ops::math::Elementwise::Abs))],
+            shown: vec![0, 1, 2],
+            fits: Vec::new(),
+        };
+        let Made::Ready(signal) = chains.signal(raw.clone(), source.clone(), "main", &plan).unwrap() else { panic!("no whitening") };
+        let view = View { channels: vec![0, 1, 2], start: 10_000, end: 300_000, width: 200 };
+        let columns = |s: &ProcessedSignal| {
+            let mut env = Envelope::Samples(Vec::new());
+            s.view(&view, &mut env).unwrap();
+            let Envelope::Columns { values, .. } = env else { panic!("columns") };
+            values
+        };
+        let direct = columns(&signal);
+        // Left as it is, no other chain asked for: frozen in the background
+        let t = std::time::Instant::now();
+        while !signal.frozen() {
+            assert!(t.elapsed().as_secs() < 120, "not frozen within two minutes");
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            // Drawn again in the first seconds (other tests ask for other chains meanwhile): still
+            // the one on screen when the freeze delay ends; then left alone, as a view left as it is
+            if t.elapsed().as_secs_f64() < 2.0 {
+                let _ = columns(&signal);
+            }
+        }
+        assert!((view.end - view.start) / view.width as u64 >= SUMMARY_BUCKET);
+        let frozen = columns(&signal);
+        let scale = direct.iter().flat_map(|v| [v[0].abs(), v[1].abs()]).fold(0.0f32, f32::max).max(1.0);
+        let tol = 1e-3 * scale;
+        for (x, (d, f)) in direct.iter().zip(&frozen).enumerate() {
+            assert!(f[0] <= d[0] + tol && f[1] >= d[1] - tol, "column {x}: frozen {f:?} does not hold {d:?}");
+        }
+        let extremes = |v: &[[f32; 2]]| v.iter().fold([f32::INFINITY, f32::NEG_INFINITY], |a, b| [a[0].min(b[0]), a[1].max(b[1])]);
+        let (a, b) = (extremes(&direct), extremes(&frozen));
+        assert!((a[0] - b[0]).abs() <= tol && (a[1] - b[1]).abs() <= tol, "{a:?} vs {b:?}");
+    }
+
+    /// Chains of one recording share the window uploaded: a chain with another first op (an op
+    /// added, removed or changed at the start) over the window on screen reads nothing again.
+    #[test]
+    fn a_new_chain_over_the_window_on_screen_reuses_its_upload() {
+        use crate::view::{Made, ProcessedChains, ViewPlan};
+        let source = recording(2, 20_000);
+        let raw: Arc<dyn SignalBackend> = Arc::new(LocalSignal::open(source.clone(), None).unwrap());
+        let chains = ProcessedChains::new("");
+        let plan = |steps: Vec<(String, PipelineStage)>| ViewPlan { group: vec![0, 1], steps, shown: vec![0, 1], fits: Vec::new() };
+        let view = View { channels: vec![0, 1], start: 4000, end: 12_000, width: 64 };
+        let timings = |p: ViewPlan| {
+            let Made::Ready(s) = chains.signal(raw.clone(), source.clone(), "main", &p).unwrap() else { panic!("no whitening") };
+            let mut env = Envelope::Samples(Vec::new());
+            s.view(&view, &mut env).unwrap();
+            s.last_timings()
+        };
+        let first = timings(plan(vec![("bandpass".into(), PipelineStage::bandpass(20.0, 200.0))]));
+        assert!(!first.input_reused);
+        let added = timings(plan(vec![("scale".into(), PipelineStage::Scale { alpha: 2.0, beta: 0.0 }), ("bandpass".into(), PipelineStage::bandpass(20.0, 200.0))]));
+        assert!(added.input_reused, "a chain with another first op over the same window reuses its upload: {added:?}");
+        assert_eq!(added.read, 0.0, "nothing read again");
+    }
+
+    /// Where adding an op to the view on screen spends its time (32 channels, 10 s at 24.4 kHz).
+    #[test]
+    #[ignore = "a measurement, not a check"]
+    fn where_adding_an_op_spends_its_time() {
+        use crate::view::{Made, ProcessedChains, ViewPlan};
+        let (channels, rate) = (32usize, 24_414.0625f64);
+        let samples = (rate * 60.0) as usize;
+        let data: Vec<f32> = (0..channels * samples).map(|i| ((i % samples) as f32 * 0.013).sin() * 50.0 + ((i * 7919) % 1013) as f32 * 0.1).collect();
+        let source: Arc<dyn RecordingSource> = Arc::new(MemoryRecording::new("bench", data, channels, rate).unwrap());
+        let raw: Arc<dyn SignalBackend> = Arc::new(LocalSignal::open(source.clone(), None).unwrap());
+        let chains = ProcessedChains::new("");
+        let all: Vec<usize> = (0..channels).collect();
+        let view = View { channels: all.clone(), start: 0, end: (rate * 10.0) as u64, width: 1200 };
+        let mut steps: Vec<(String, PipelineStage)> = Vec::new();
+        for (name, stage) in [("bandpass", PipelineStage::bandpass(300.0, 6000.0)), ("scale", PipelineStage::Scale { alpha: 2.0, beta: 0.0 }), ("tk", PipelineStage::teager_kaiser()), ("abs", PipelineStage::Elementwise(dspk_ops::math::Elementwise::Abs))] {
+            steps.push((name.into(), stage));
+            let plan = ViewPlan { group: all.clone(), steps: steps.clone(), shown: all.clone(), fits: Vec::new() };
+            let t = std::time::Instant::now();
+            let Made::Ready(s) = chains.signal(raw.clone(), source.clone(), "main", &plan).unwrap() else { panic!("no whitening") };
+            let mut env = Envelope::Samples(Vec::new());
+            s.view(&view, &mut env).unwrap();
+            println!("{:<44} {:>8.1} ms", format!("+ {name} ({} ops)", steps.len()), t.elapsed().as_secs_f64() * 1e3);
+            println!("    {:?}", s.last_timings());
+            let t = std::time::Instant::now();
+            s.view(&view, &mut env).unwrap();
+            println!("{:<44} {:>8.3} ms", "  the same view again", t.elapsed().as_secs_f64() * 1e3);
+        }
+    }
+
+    /// A branch read on the device equals its whole chain (as the host branch does).
+    #[test]
+    fn a_branch_on_the_device_equals_its_whole_chain() {
+        let source = recording(2, 6000);
+        let raw: Arc<dyn SignalBackend> = Arc::new(LocalSignal::open(source.clone(), None).unwrap());
+        let prefix = ProcessedSignal::new(raw.clone(), source.clone(), vec![0, 1], vec![PipelineStage::bandpass(20.0, 200.0), PipelineStage::Elementwise(dspk_ops::math::Elementwise::Abs)]).unwrap();
+        let branch = ProcessedSignal::after(&prefix, vec![PipelineStage::Scale { alpha: 3.0, beta: 0.0 }]).unwrap();
+        let whole = ProcessedSignal::new(raw, source, vec![0, 1], vec![PipelineStage::bandpass(20.0, 200.0), PipelineStage::Elementwise(dspk_ops::math::Elementwise::Abs), PipelineStage::Scale { alpha: 3.0, beta: 0.0 }]).unwrap();
+        let (mut a, mut b) = (vec![0.0f32; 2 * 400], vec![0.0f32; 2 * 400]);
+        branch.read(&[0, 1], 2000..2400, &mut a).unwrap();
+        whole.read(&[0, 1], 2000..2400, &mut b).unwrap();
+        for i in 0..800 {
+            assert!((a[i] - b[i]).abs() < 1e-3 * b[i].abs().max(1.0), "{i}: {} vs {}", a[i], b[i]);
+        }
+    }
+
     /// A window wider than one block is processed in tiles (each with the chain's halo, reduced
     /// over its interior), and gives the columns of the window processed whole.
     #[test]
@@ -408,18 +570,21 @@ mod tests {
         let mut env = Envelope::Samples(Vec::new());
         let view = |start: u64| View { channels: all.clone(), start, end: start + window, width: 1200 };
         time("first zoomed-out view (read, upload, chain, reduce)", &mut || p.view(&view(0), &mut env).unwrap());
+        println!("    {:?}", p.last_timings());
         time("the same view again (kept columns)", &mut || p.view(&view(0), &mut env).unwrap());
         time("a pan inside the kept block (reduce only)", &mut || p.view(&view(window / 8), &mut env).unwrap());
+        println!("    {:?}", p.last_timings());
         let mut out = vec![0.0f32; channels * 2000];
         time("a zoomed-in read of 2000 samples (download)", &mut || p.read(&all, window / 2..window / 2 + 2000, &mut out).unwrap());
         // The browser's block size: the 20 s window in tiles of 16 Mi values
-        let tiled = p.with_max_values(dspk_view::PROCESSED_MAX_VALUES_BROWSER);
+        let tiled = p.with_max_values(crate::view::PREVIEW_MAX_VALUES_BROWSER);
         let wide = View { channels: all.clone(), start: 0, end: 2 * window, width: 1200 };
         time("a 20 s view in tiles of 16 Mi values", &mut || tiled.view(&wide, &mut env).unwrap());
+        println!("    {:?}", tiled.last_timings());
         // The same with a one-step chain (a scale: almost no kernel time): the rest is reading
         // and uploading
         let source2 = tiled.preview.source();
-        let one = ProcessedSignal::new(Arc::new(LocalSignal::open(source2.clone(), None).unwrap()), source2, all.clone(), vec![PipelineStage::Scale { alpha: 1.0, beta: 0.0 }]).unwrap().with_max_values(dspk_view::PROCESSED_MAX_VALUES_BROWSER);
+        let one = ProcessedSignal::new(Arc::new(LocalSignal::open(source2.clone(), None).unwrap()), source2, all.clone(), vec![PipelineStage::Scale { alpha: 1.0, beta: 0.0 }]).unwrap().with_max_values(crate::view::PREVIEW_MAX_VALUES_BROWSER);
         time("the same 20 s with a one-step chain (a scale; first)", &mut || one.view(&wide, &mut env).unwrap());
     }
 

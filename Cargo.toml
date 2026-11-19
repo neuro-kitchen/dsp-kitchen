@@ -21,11 +21,12 @@ members = [
     "synapse/sorters/si",
     # Verified downloads of published artifacts
     "hub/dspk-hub",
-    # Serving
-    "serve/dspk-view",
+    # Viewing: min/max envelopes and pyramids, local or remote
+    "view/dspk-view",
+    # Serving: network sessions (QUIC, WebTransport, WebSocket)
     "serve/dspk-stream",
     # A device: live sources, a causal chain, taps, recording (the real-time work)
-    "serve/dspk-device",
+    "devices/dspk-device",
     # Front ends
     "app/dspk-cli",
     "app/dspk-app-core",
@@ -68,8 +69,8 @@ dspk-sorter-ms5 = { path = "synapse/sorters/ms5", version = "0.0.12", default-fe
 dspk-sorter-si = { path = "synapse/sorters/si", version = "0.0.12", default-features = false }
 dspk-hub = { path = "hub/dspk-hub", version = "0.0.12", default-features = false }
 dspk-stream = { path = "serve/dspk-stream", version = "0.0.12", default-features = false }
-dspk-view = { path = "serve/dspk-view", version = "0.0.12", default-features = false }
-dspk-device = { path = "serve/dspk-device", version = "0.0.12", default-features = false }
+dspk-view = { path = "view/dspk-view", version = "0.0.12", default-features = false }
+dspk-device = { path = "devices/dspk-device", version = "0.0.12", default-features = false }
 dspk-io = { path = "crates/dspk-io", version = "0.0.12", default-features = false }
 dspk-table = { path = "crates/dspk-table", version = "0.0.12" }
 dspk-pipeline = { path = "engine/dspk-pipeline", version = "0.0.12", default-features = false }
@@ -85,6 +86,7 @@ dspk-py-synapse = { path = "bindings/python/dspk-py-synapse", default-features =
 cubecl = { version = "0.11.4", default-features = false, features = ["std", "stdlib", "persistence"] }
 # Kernel library on CubeCL (matmul); CubeCL itself has no matmul since 0.11
 cubek-matmul = "0.3.1"
+cubek-fft = "0.3.1"
 cubek-std = "0.3.1"
 burn-tensor = "0.22.1"
 onnx-ir = "0.22.0"
@@ -161,7 +163,7 @@ thiserror = "2.0.21"
 # The clock, also in a browser (std's has none there); std's own on every other target
 web-time = "1.1.0"
 # Tables: only dspk-table depends on Polars; the other crates use its re-export
-polars = { version = "0.55.2", default-features = false, features = ["parquet", "dtype-slim"] }
+polars = { version = "0.55.2", default-features = false, features = ["lazy", "fmt", "parquet", "dtype-slim"] }
 anyhow = "1.0.104"
 num-traits = "0.2.19"
 num-complex = "0.4.6"
@@ -201,6 +203,12 @@ overflow-checks = false
 # session, `CARGO_PROFILE_DEV_DEBUG=full`.
 [profile.dev]
 debug = "line-tables-only"
+# The same dev profile as lucem and neuro-convert (one compiler cache serves them all): our crates
+# lightly optimized, dependencies fully (compiled once, cached)
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
 
 # wgpu-core's lock tracing (debug assertions only) keeps a thread-local that is already gone when a
 # CubeCL device runner shuts down, so the shutdown at exit (dspk-core `shutdown_devices`) aborted in

@@ -130,7 +130,7 @@ function startHelpers() {
 function addHelper() {
   const gen = generation;
   {
-    const h = { worker: new Worker(new URL("./overview-helper.js", import.meta.url)), busy: false };
+    const h = { worker: new Worker(new URL("./overview-helper.js", import.meta.url), { type: "module" }), busy: false };
     h.worker.onmessage = (e) => {
       const { generation: unitGen, pages, values, error } = e.data;
       if (gen !== generation || unitGen !== generation) return;

@@ -347,7 +347,11 @@ impl CurationWorkspace {
     /// plot's data coordinates) become a new unit, which joins the selection.
     fn split_lasso(&mut self, polygon: &[(f32, f32)], cx: &mut Context<Self>) {
         let (Some(path), Some(sorting), Some(&lead)) = (self.sorting_path(cx), self.sorting(cx), self.selected.first()) else { return };
-        if polygon.len() < 3 || sorting.amplitudes.is_empty() {
+        if polygon.len() < 3 {
+            return;
+        }
+        if sorting.amplitudes.is_empty() {
+            self.store.update(cx, |s, cx| s.set_status("Not split: this sorting stores no spike amplitudes. Draw the lasso on Features instead", cx));
             return;
         }
         let spikes = dspk_synapse::curation::split::spikes_in_polygon(&sorting, lead, polygon);
@@ -427,11 +431,59 @@ impl CurationWorkspace {
         cx.notify();
     }
 
+    /// Splits a sorting the page's server serves there: the server finds the lead unit's spikes
+    /// inside `polygon` (a features lasso reads every spike of the unit from its recording, as its
+    /// views did), and the split is a curation edit here, as a local one.
+    fn split_served(&mut self, path: std::path::PathBuf, polygon: &[(f32, f32)], features: Option<dspk_synapse::curation::views::FeatureBasis>, cx: &mut Context<Self>) {
+        let (Some(sorting), Some(&lead)) = (self.sorting(cx), self.selected.first()) else { return };
+        if polygon.len() < 3 {
+            return;
+        }
+        let ops = state(cx).and_then(|st| st.read(cx).curations.get(&path).map(|l| l.ops.clone())).unwrap_or_default();
+        let processing: Vec<String> = self.store.read(cx).active_view().map(|v| v.ops.iter().filter(|o| o.enabled).filter_map(|o| serde_json::to_string(&o.node).ok()).collect()).unwrap_or_default();
+        let by_features = features.is_some();
+        let call = dspk_synapse::curation::service::SplitCall { path: path.to_string_lossy().into_owned(), ops, unit: lead, polygon: polygon.to_vec(), features, processing };
+        let body = serde_json::to_vec(&call).unwrap_or_default();
+        self.store.update(cx, |s, cx| s.set_status("Splitting on the server: reading the unit's spikes…", cx));
+        self._work = Some(cx.spawn(async move |this, cx| {
+            let reply = dspk_app_core::platform::remote::plugin_call(dspk_synapse::curation::service::PLUGIN, "split", body).await;
+            let _ = this.update(cx, |w, cx| {
+                let spikes: Vec<u64> = match reply.map_err(|e| format!("{e:#}")).and_then(|r| serde_json::from_slice(&r).map_err(|e| e.to_string())) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        w.store.update(cx, |s, cx| s.set_status(format!("Not split: {e}"), cx));
+                        return;
+                    }
+                };
+                let n = spikes.len();
+                if n == 0 || n == sorting.by_unit[lead].len() {
+                    w.store.update(cx, |s, cx| s.set_status(if n == 0 { "The lasso holds none of the unit's spikes" } else { "The lasso holds every spike of the unit: nothing to split" }, cx));
+                    return;
+                }
+                let (unit, into, new_index) = (sorting.units[lead].info.unit_id, next_unit_id(&sorting), sorting.units.len());
+                let Some(st) = state(cx) else { return };
+                st.update(cx, |s, cx| s.curate(&path, CurationOp::Split { unit, spikes, into }, cx));
+                let how = if by_features { " (every spike of the unit, by its features)" } else { "" };
+                w.store.update(cx, |s, cx| s.set_status(format!("Unit {unit}: {n} spikes split off as unit {into}{how}"), cx));
+                w.selected = vec![lead, new_index];
+                w.compute(cx);
+            });
+        }));
+    }
+
     /// Splits off the lead unit's spikes inside the lasso drawn (see [`Self::hold_lasso`]).
     fn split_pending(&mut self, cx: &mut Context<Self>) {
         let Some((kind, lead, polygon)) = self.pending_split.take() else { return };
+        let served = self.sorting_path(cx).filter(|p| state(cx).is_some_and(|st| st.read(cx).served.contains(p)));
         if self.selected.first() != Some(&lead) {
             self.store.update(cx, |s, cx| s.set_status("The lasso was drawn for another unit: draw it again", cx));
+        } else if let Some(path) = served {
+            let features = if kind == ViewKind::Features { self.plots.features.clone() } else { None };
+            if kind == ViewKind::Features && features.is_none() {
+                self.store.update(cx, |s, cx| s.set_status("Not split: the features are still being computed", cx));
+            } else {
+                self.split_served(path, &polygon, features, cx);
+            }
         } else if kind == ViewKind::Features {
             self.split_features(&polygon, cx);
         } else {
@@ -709,7 +761,7 @@ impl CurationWorkspace {
                 if stale() || !reads_signal {
                     return Views::default();
                 }
-                let windows = crate::sorting::windows_of(&signal);
+                let windows = crate::sorting::windows_of(&signal, &sorting);
                 dspk_synapse::curation::views::from_signal(&sorting, &windows, &request, stale)
             }),
         };
@@ -1605,7 +1657,7 @@ mod bench {
         let source: Arc<dyn dspk_core::RecordingSource> = Arc::from(dspk_synapse::io::open_source(&rec, &id).unwrap());
         let signal: Arc<dyn SignalBackend> = Arc::new(LocalSignal::open(source, None).unwrap());
         let t = Instant::now();
-        let windows = crate::sorting::windows_of(&signal);
+        let windows = crate::sorting::windows_of(&signal, &sorting);
         println!("windows (once per signal): {:.0} ms, {} × {} samples × {} channels", t.elapsed().as_secs_f64() * 1e3, windows.starts.len(), windows.len, windows.channels);
         let palette = dspk_app_core::ui::theme::palette::Palette::of(true);
         let lead = sorting.alive().max_by_key(|&u| sorting.units[u].info.num_spikes).unwrap();

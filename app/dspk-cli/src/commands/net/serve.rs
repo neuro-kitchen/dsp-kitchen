@@ -14,6 +14,7 @@ use dspk_synapse::io::{SyntheticParams, SyntheticRecording};
 use dspk_stream::files::DataRoot;
 use dspk_stream::transport::server_config_with_pairing;
 use dspk_stream::{serve_session, Authority, Device, OpenRecording, Pacing, RecordingOpener, ServeOptions, Server, ServerIdentity, StreamError, StreamResult};
+use dspk_pipeline::view::ProcessedChains;
 use dspk_view::{Pyramid, PyramidBuilder, MEMORY_BASE};
 
 use crate::progress::TerminalProgress;
@@ -200,14 +201,15 @@ impl dspk_stream::ServerPlugin for SynapsePlugin {
         // then on the CPU
         let gpu = dspk_core::lease::interactive();
         let run = || -> StreamResult<Vec<u8>> {
-            let recording = if method == "views" { self.views_source(body, context)? } else { context.recording.clone() };
+            // Views and splits read the signal as the page shows it (its processing applied)
+            let recording = if method == "views" || method == "split" { self.views_source(body, context)? } else { context.recording.clone() };
             self.0.call(method, body, &resolve, recording.as_ref(), caller).map_err(|e| StreamError::Server(e.to_string()))
         };
         let answer = if gpu.is_none() { dspk_core::device::with_target(dspk_core::ComputeTarget::Cpu, run) } else { run() };
         drop(gpu);
         // What the read held on the GPU is not needed again (the windows are in memory): back to
         // the driver, so another program (a sort) finds it free
-        if method == "views" {
+        if method == "views" || method == "split" {
             dspk_core::compute::release_device_memory();
         }
         answer
@@ -264,7 +266,7 @@ impl RecordingOpener for FileOpener {
     fn open(&self, path: &Path, source: Option<&str>) -> StreamResult<OpenRecording> {
         let (source, pyramid) = open_with_pyramid(path, source).map_err(|e| StreamError::Protocol(format!("{e:#}")))?;
         let pyramid = Arc::new(pyramid);
-        let recording = OpenRecording::new(source.clone(), Some(pyramid.clone())).with_processor(Processor::of(path));
+        let recording = OpenRecording::new(source.clone(), Some(pyramid.clone())).with_processor(processor_of(path));
         if pyramid.is_complete() {
             return Ok(recording);
         }
@@ -272,34 +274,19 @@ impl RecordingOpener for FileOpener {
     }
 }
 
-/// Runs a view's ops for clients that cannot compute (pages), with the preview code of the
-/// desktop app (dspk-pipeline), on this server's runtime. Files the ops name (a remap's channel
-/// map) are read from the recording's folder.
-struct Processor(dspk_pipeline::processed::ProcessedChains);
-
-impl Processor {
-    fn of(recording: &Path) -> Arc<Self> {
-        let me = Arc::new(Self(dspk_pipeline::processed::ProcessedChains::new(recording.parent().map(Path::to_path_buf).unwrap_or_default())));
-        // A sort takes the GPU: the chains kept for views go (the next view makes its own)
-        let weak = Arc::downgrade(&me);
-        dspk_core::lease::on_release(move || {
-            if let Some(p) = weak.upgrade() {
-                p.0.clear();
-            }
-        });
-        me
-    }
-}
-
-impl dspk_stream::ViewProcessor for Processor {
-    fn processed(&self, source: Arc<dyn RecordingSource>, pyramid: Option<Arc<Pyramid>>, channels: &[usize], ops: &[String]) -> StreamResult<Arc<dyn dspk_view::SignalBackend>> {
-        let raw: Arc<dyn dspk_view::SignalBackend> = Arc::new(dspk_view::StoredSignal::new(source.clone(), pyramid));
-        Ok(self.0.make(raw, source, channels, ops).map_err(StreamError::Protocol)?)
-    }
-
-    fn warm<'a>(&'a self, channels: &'a [usize], ops: &'a [String], view: &'a dspk_view::View) -> dspk_stream::engine::WarmFuture<'a> {
-        Box::pin(async move { self.0.warm(channels, ops, view).await.map_err(|e| StreamError::Protocol(e.to_string())) })
-    }
+/// The chains a recording's views are processed with, for clients that cannot compute (pages):
+/// dspk-pipeline's, as the desktop app's (`dspk_stream` answers views with them). Files the ops
+/// name (a remap's channel map) are read from the recording's folder.
+fn processor_of(recording: &Path) -> Arc<ProcessedChains> {
+    let chains = Arc::new(ProcessedChains::new(recording.parent().map(Path::to_path_buf).unwrap_or_default()));
+    // A sort takes the GPU: the chains kept for views go (the next view makes its own)
+    let weak = Arc::downgrade(&chains);
+    dspk_core::lease::on_release(move || {
+        if let Some(chains) = weak.upgrade() {
+            chains.clear();
+        }
+    });
+    chains
 }
 
 /// The recording every client starts with: says what it is and builds its pyramid in the
@@ -318,11 +305,11 @@ fn start_recording(path: &Path, source: Arc<dyn RecordingSource>, pyramid: Pyram
                 bar.report(&ProgressEvent { stage: PYRAMID_STAGE, step: 1, steps: 1, done: p.done, total: p.total, unit: "samples" });
             });
             let refocus = build_pyramid(source.clone(), pyramid.clone(), on_progress);
-            return OpenRecording::new(source, Some(pyramid)).with_processor(Processor::of(path)).with_refocus(refocus);
+            return OpenRecording::new(source, Some(pyramid)).with_processor(processor_of(path)).with_refocus(refocus);
         }
     }
 
-    OpenRecording::new(source, Some(pyramid)).with_processor(Processor::of(path))
+    OpenRecording::new(source, Some(pyramid)).with_processor(processor_of(path))
 }
 
 /// Starts building `pyramid` in the background from the start, and returns what moves its work

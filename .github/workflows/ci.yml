@@ -68,7 +68,7 @@ jobs:
           code=$(echo "$files" | grep -vE '\.md$|^CITATION\.cff$' || true)
           rust=false
           python=false
-          if echo "$code" | grep -qE '^(crates|engine|serve|synapse|hub|app|plugins)/|^bindings/python/dspk-py|^Cargo\.(toml|lock)$|^rust-toolchain|^\.github/workflows/ci\.yml$'; then
+          if echo "$code" | grep -qE '^(crates|engine|serve|view|devices|synapse|hub|app|plugins)/|^bindings/python/dspk-py|^Cargo\.(toml|lock)$|^rust-toolchain|^\.github/workflows/ci\.yml$'; then
             rust=true
             python=true
           fi
@@ -108,6 +108,9 @@ jobs:
       # Every crate builds with wgpu + cuda + cpu by default (one feature set, so steps share builds)
       - name: Check the workspace
         run: cargo check --workspace --all-targets
+      # The page's overview fold (JS) against the Rust fold's fixture (dspk-view checks the fixture)
+      - name: Browser overview fold equals the engine's
+        run: node --test engine/dspk-engine-web/tests/*.test.mjs
       - name: Unit tests of the host-side crates
         if: needs.changes.outputs.full == 'true'
         run: >
