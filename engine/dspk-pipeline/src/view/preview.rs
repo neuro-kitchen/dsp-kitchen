@@ -382,9 +382,15 @@ pub struct Preview {
     partial: Mutex<Option<Arc<Mutex<Summary>>>>,
     #[cfg_attr(target_family = "wasm", allow(dead_code))]
     last_center: std::sync::atomic::AtomicU64,
-    /// Bumped by each zoomed-out request that is not answered from what is kept: a request made
-    /// stale by a newer one stops at its next tile.
-    generation: std::sync::atomic::AtomicU64,
+    /// The newest range asked for at each width. A view's own zoom or pan keeps its width and moves
+    /// its range: a request whose width was asked since for another range is stale and stops at its
+    /// next tile. Two views of one chain (traces, a heatmap) ask for the same range: neither is
+    /// stale.
+    latest: Mutex<Vec<(usize, Range<u64>)>>,
+    /// Columns being computed, by range and width, with the requests waiting for them: a second
+    /// view asking for the same columns waits for the first's and reads them, instead of computing
+    /// them again.
+    in_flight: Mutex<Vec<((Range<u64>, usize), Vec<std::task::Waker>)>>,
     last_view: Mutex<Instant>,
     me: OnceLock<Weak<Preview>>,
 }
@@ -475,7 +481,8 @@ impl Preview {
             freezing: AtomicBool::new(false),
             partial: Mutex::new(None),
             last_center: std::sync::atomic::AtomicU64::new(0),
-            generation: std::sync::atomic::AtomicU64::new(0),
+            latest: Mutex::new(Vec::new()),
+            in_flight: Mutex::new(Vec::new()),
             last_view: Mutex::new(Instant::now()),
             me: OnceLock::new(),
         };
@@ -1160,7 +1167,32 @@ impl Preview {
             return Ok(v);
         }
         self.state.lock().unwrap().columns_complete = true;
-        let generation = self.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        // The newest range at this width (this view's zoom or pan supersedes its earlier requests)
+        {
+            let mut latest = self.latest.lock().unwrap();
+            latest.retain(|(w, _)| *w != width);
+            latest.push((width, range.clone()));
+        }
+        // One computation per range and width: the same asked by another view waits for it
+        let key = (range.clone(), width);
+        loop {
+            let busy = {
+                let mut flights = self.in_flight.lock().unwrap();
+                let busy = flights.iter().any(|(k, _)| *k == key);
+                if !busy {
+                    flights.push((key.clone(), Vec::new()));
+                }
+                busy
+            };
+            if !busy {
+                break;
+            }
+            InFlight { preview: self, key: &key }.await;
+            if let Some((_, _, v)) = self.state.lock().unwrap().columns.as_ref().filter(|(r, w, _)| *r == range && *w == width) {
+                return Ok(v.clone());
+            }
+        }
+        let _flight = Flight { preview: self, key: key.clone() };
         let nch = self.group.len();
         let columns = Columns::Even { start: range.start, len: range.end - range.start, width };
         let mut acc = if self.fits_one_block(range.end - range.start) {
@@ -1187,8 +1219,9 @@ impl Preview {
             let mut start = range.start;
             loop {
                 let next = (start < range.end).then(|| start..(start + tile).min(range.end));
-                // A newer view asked: this one is not drawn, stop here
-                if self.generation.load(std::sync::atomic::Ordering::SeqCst) != generation {
+                // This view zoomed or panned since: what this computes is not drawn, stop here
+                if self.latest.lock().unwrap().iter().any(|(w, r)| *w == width && *r != range) {
+                    tracing::debug!(?range, width, "a processed view stopped: a newer request of the same view replaced it");
                     return Err(DspError::ComputeError("a newer view replaced this one".into()));
                 }
                 if let Some(want) = &next {
@@ -1281,6 +1314,47 @@ impl Preview {
             })?;
         }
         Ok(rows.iter().enumerate().filter(|(_, r)| r.is_none()).map(|(k, _)| k).collect())
+    }
+}
+
+/// Waits until the columns `key` stop being computed ([`Preview::in_flight`]).
+struct InFlight<'a> {
+    preview: &'a Preview,
+    key: &'a (Range<u64>, usize),
+}
+
+impl std::future::Future for InFlight<'_> {
+    type Output = ();
+
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+        let mut flights = self.preview.in_flight.lock().unwrap();
+        match flights.iter_mut().find(|(k, _)| k == self.key) {
+            Some((_, waiting)) => {
+                waiting.push(cx.waker().clone());
+                std::task::Poll::Pending
+            }
+            None => std::task::Poll::Ready(()),
+        }
+    }
+}
+
+/// The columns `key` being computed: done when dropped (finished, failed or cancelled), waking
+/// the requests waiting for them.
+struct Flight<'a> {
+    preview: &'a Preview,
+    key: (Range<u64>, usize),
+}
+
+impl Drop for Flight<'_> {
+    fn drop(&mut self) {
+        let waiting = {
+            let mut flights = self.preview.in_flight.lock().unwrap();
+            let at = flights.iter().position(|(k, _)| *k == self.key);
+            at.map(|i| flights.swap_remove(i).1).unwrap_or_default()
+        };
+        for w in waiting {
+            w.wake();
+        }
     }
 }
 

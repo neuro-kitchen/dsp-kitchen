@@ -604,6 +604,48 @@ mod tests {
         }
     }
 
+    /// Two views of one chain (traces of some channels, a heatmap of all) asking for the same
+    /// tiled window at once: neither stops the other, and both get the window's columns.
+    #[test]
+    fn two_views_of_one_chain_asking_at_once_both_get_their_columns() {
+        let samples = 60_000;
+        let data: Vec<f32> = (0..3 * samples).map(|i| ((i % samples) as f32 * 0.21).sin() * 30.0 + (i / samples) as f32 * 5.0).collect();
+        let source: Arc<dyn RecordingSource> = Arc::new(MemoryRecording::new("two views", data, 3, 1000.0).unwrap());
+        let raw: Arc<dyn SignalBackend> = Arc::new(LocalSignal::open(source.clone(), None).unwrap());
+        let stages = vec![PipelineStage::bandpass(20.0, 200.0), PipelineStage::teager_kaiser()];
+        let whole = ProcessedSignal::new(raw.clone(), source.clone(), vec![0, 1, 2], stages.clone()).unwrap();
+        // Blocks of 3 × 12,000 values: the 50,000-sample window takes tiles, where a stale request stops
+        let tiled = Arc::new(ProcessedSignal::new(raw, source, vec![0, 1, 2], stages).unwrap().with_max_values(3 * 12_000));
+        let range = (5_000u64, 55_000u64);
+        assert!(!tiled.preview.fits_one_block(range.1 - range.0) && tiled.covers(range.1 - range.0));
+        let views = [vec![0usize, 1], vec![0, 1, 2]];
+        let answers: Vec<Vec<[f32; 2]>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = views
+                .iter()
+                .map(|channels| {
+                    let (tiled, channels) = (tiled.clone(), channels.clone());
+                    scope.spawn(move || {
+                        let mut env = Envelope::Samples(Vec::new());
+                        tiled.view(&View { channels, start: range.0, end: range.1, width: 160 }, &mut env).expect("neither view stops the other");
+                        let Envelope::Columns { values, .. } = env else { panic!("columns") };
+                        values
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let mut env = Envelope::Samples(Vec::new());
+        whole.view(&View { channels: vec![0, 1, 2], start: range.0, end: range.1, width: 160 }, &mut env).unwrap();
+        let Envelope::Columns { values: expected, .. } = env else { panic!("columns") };
+        let scale = expected.iter().flat_map(|v| [v[0].abs(), v[1].abs()]).fold(0.0f32, f32::max);
+        for (k, got) in answers.iter().enumerate() {
+            let rows = views[k].len();
+            for (x, (p, q)) in got.iter().zip(&expected[..rows * 160]).enumerate() {
+                assert!((p[0] - q[0]).abs() <= 1e-3 * scale && (p[1] - q[1]).abs() <= 1e-3 * scale, "view {k} column {x}: {p:?} vs {q:?}");
+            }
+        }
+    }
+
     /// A branch read on the device equals its whole chain (as the host branch does).
     #[test]
     fn a_branch_on_the_device_equals_its_whole_chain() {

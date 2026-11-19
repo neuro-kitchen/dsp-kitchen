@@ -23,6 +23,7 @@ view = ["dep:dspk-view", "dspk-view/device"]
 live = ["dspk-io/live"]
 
 [dependencies]
+tracing.workspace = true
 web-time.workspace = true
 dspk-core = { workspace = true, features = ["compute", "schema"] }
 dspk-io.workspace = true
