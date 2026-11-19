@@ -215,13 +215,20 @@ impl Opened {
         Arc::new(Mutex::new(Self { last: recording, by_target: Vec::new() }))
     }
 
+    /// Keeps `recording` as `path`'s `source`. It becomes the one opened last (what requests that
+    /// name none read: a plugin's calls, the signal stream) unless another source of the same file
+    /// is open: a page opens a file's other sources beside the one it shows, and those must not
+    /// take its place (Curation read a one-channel series of an NWB store instead of its HD-EMG).
     fn put(&mut self, path: String, source: String, recording: Arc<OpenRecording>) {
+        let file_open = self.by_target.iter().any(|((p, _), _)| *p == path) && self.last.is_some();
         self.by_target.retain(|(k, _)| *k != (path.clone(), source.clone()));
         if self.by_target.len() >= OPEN_KEPT {
             self.by_target.remove(0);
         }
         self.by_target.push(((path, source), recording.clone()));
-        self.last = Some(recording);
+        if !file_open {
+            self.last = Some(recording);
+        }
     }
 
     /// The recording of `path` and `source` (empty path: the one opened last).
@@ -418,7 +425,12 @@ pub(crate) async fn answer(request: wire::Request, device: &Device, current: &Cu
             let context = crate::plugin::PluginContext { resolve: root.map(|r| Box::new(move |p: &str| r.resolve(p)) as Box<dyn Fn(&str) -> StreamResult<std::path::PathBuf> + Send + Sync>), recording, peer: peer.name.clone(), may_write: peer.permission == Permission::Control, processed };
             // A call that writes a file is audited with the jobs (who, what, whether it worked)
             let writes = plugin.writes(&call.method, &call.body).map(|what| (what, format!("{}", call.plugin), call.method.clone()));
+            let (plugin_id, method) = (call.plugin.clone(), call.method.clone());
             let replied = tokio::task::spawn_blocking(move || plugin.call(&call.method, &call.body, &context)).await.map_err(StreamError::protocol)?;
+            // The page shows a failed call as empty panels: said here too
+            if let Err(e) = &replied {
+                tracing::warn!("{plugin_id} {method} for {}: {e}", peer.name);
+            }
             if let (Some((what, plugin_id, method)), Some(jobs)) = (writes, &device.jobs) {
                 jobs.audit_plugin_write(peer, &plugin_id, &method, &what, &replied.as_ref().map(|_| ()).map_err(|e| e.to_string()));
             }
@@ -527,4 +539,30 @@ async fn stream_signal(connection: quinn::Connection, recording: Arc<OpenRecordi
         StreamResult::Ok(())
     }
     .await
+}
+
+#[cfg(test)]
+mod opened_tests {
+    use super::*;
+    use dspk_core::MemoryRecording;
+
+    fn recording(channels: usize) -> Arc<OpenRecording> {
+        let source: Arc<dyn dspk_core::RecordingSource> = Arc::new(MemoryRecording::new("r", vec![0.0; channels * 10], channels, 1000.0).unwrap());
+        Arc::new(OpenRecording::new(source, None))
+    }
+
+    /// A file's other sources, opened beside the one shown, do not become what requests that name
+    /// no recording read; another file does.
+    #[test]
+    fn other_sources_of_an_open_file_do_not_take_the_last_place() {
+        let current = Opened::with(None);
+        let (main, other, next) = (recording(32), recording(1), recording(4));
+        let mut opened = current.lock().unwrap();
+        opened.put("rec.nwb.zarr".into(), String::new(), main.clone());
+        opened.put("rec.nwb.zarr".into(), "/acquisition/inPe".into(), other.clone());
+        assert!(Arc::ptr_eq(opened.last.as_ref().unwrap(), &main), "the series shown stays the one requests read");
+        assert!(Arc::ptr_eq(&opened.get("rec.nwb.zarr", "/acquisition/inPe").unwrap(), &other), "the other series is open by name");
+        opened.put("next.bin".into(), String::new(), next.clone());
+        assert!(Arc::ptr_eq(opened.last.as_ref().unwrap(), &next), "another file is opened last");
+    }
 }
