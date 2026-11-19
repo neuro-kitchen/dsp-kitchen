@@ -3,6 +3,19 @@
 //! Filters are described by a [`FilterSpec`] (what to build and how to run it) and designed into a
 //! cascade of second-order sections ([`Sos`]) that the SOS kernel executes. Designs are equivalent
 //! to `scipy.signal.butter(..., output="sos")` and `scipy.signal.iirnotch`.
+//!
+//! **Precision rule for recursive filters.** Designed in f64 here; run in float32 or wider by the
+//! kernel's state-variable sections, never float16 or bfloat16: rounding a design's coefficients
+//! moves poles next to z = 1, and at half precision they leave the unit circle (a 4–8 Hz order-4
+//! Butterworth gave NaN: braindecode #1657). float32 holds: the device stays at float32's rounding
+//! floor down to cutoff ratios of 1.7e-5 (tests: `filter_scipy::device_low_cutoffs_match_f64_reference`,
+//! and `accuracy`, the sweep over orders 1–16 and cutoff ratios 1e-4–0.45, which also checks every
+//! section stays stable rounded to float32).
+//!
+//! **Settling.** A window processed with [`FilterSpec::settling_with`]`(rate, tol)` of context
+//! differs from the whole recording by at most `tol` of the input's peak; previews use
+//! [`DEFAULT_SETTLING_TOLERANCE`], batch runs one count of the stored data
+//! ([`settling_tolerance_for`]).
 
 mod butterworth;
 mod notch;
@@ -157,12 +170,41 @@ impl FilterSpec {
     ///
     /// As [`Self::design`].
     pub fn settling(&self, sample_rate: f64) -> Result<(usize, usize), OpsError> {
-        let s = self.design(sample_rate)?.settling_samples(DEFAULT_SETTLING_TOLERANCE);
+        self.settling_with(sample_rate, DEFAULT_SETTLING_TOLERANCE)
+    }
+
+    /// [`Self::settling`] with the impulse response decayed below `tol` of its total: a window
+    /// processed with this context differs from the whole recording by at most `tol` of the
+    /// input's peak (|y − y_whole| ≤ Σ_{k>L} |h[k]| · max|x| ≤ tol · max|x| · Σ|h|, the tail
+    /// bound the settling length is chosen by). [`settling_tolerance_for`] picks `tol` from the
+    /// data.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::design`].
+    pub fn settling_with(&self, sample_rate: f64, tol: f64) -> Result<(usize, usize), OpsError> {
+        let s = self.design(sample_rate)?.settling_samples(tol);
         Ok(match self.mode {
             FilterMode::Forward => (s, 0),
             FilterMode::ForwardBackward => (s, s),
         })
     }
+}
+
+/// The settling tolerance at which a window's edge error is below one count of `format`, the
+/// stored values' resolution (relative to full scale): 2⁻¹⁵ for 16-bit integers, 2⁻²³ (float32's
+/// own resolution, the floor of computing in float32) for 24- and 32-bit integers and floats. Never
+/// looser than [`DEFAULT_SETTLING_TOLERANCE`] (8-bit data keeps it). What a batch run or a sort
+/// uses; a preview keeps the default (its edges are tested at 1e-3 of the scale).
+pub fn settling_tolerance_for(format: dspk_core::SampleFormat) -> f64 {
+    use dspk_core::SampleFormat as F;
+    let count = match format {
+        F::I8 | F::U8 => 2f64.powi(-7),
+        F::I16 | F::U16 => 2f64.powi(-15),
+        F::F16 => 2f64.powi(-10),
+        F::I24 | F::I32 | F::F32 | F::F64 => 2f64.powi(-23),
+    };
+    count.min(DEFAULT_SETTLING_TOLERANCE)
 }
 
 pub(crate) fn check_sample_rate(fs: f64) -> Result<(), OpsError> {

@@ -226,6 +226,30 @@ fn fold_frames(frames: &[f32], channels: usize, first: u64, columns: Columns, ac
 mod tests {
     use super::*;
 
+    /// Columns merge in any order and grouping, and EMPTY changes nothing: what lets tiles,
+    /// pyramid levels and a summary's buckets be reduced apart and folded together.
+    #[test]
+    fn merging_columns_is_associative_and_commutative_with_empty_as_identity() {
+        let mut s = 0x9e3779b97f4a7c15u64;
+        let mut next = || {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            ((s >> 40) as f32 / (1u64 << 24) as f32 - 0.5) * 1000.0
+        };
+        for _ in 0..10_000 {
+            let mut pair = || {
+                let (p, q) = (next(), next());
+                [p.min(q), p.max(q)]
+            };
+            let (a, b, c) = (pair(), pair(), pair());
+            assert_eq!(merge(merge(a, b), c), merge(a, merge(b, c)));
+            assert_eq!(merge(a, b), merge(b, a));
+            assert_eq!(merge(EMPTY, a), a);
+            assert_eq!(merge(a, EMPTY), a);
+        }
+    }
+
     #[test]
     fn test_mean_range() {
         // 2 rows × 3 columns; the last column is uncovered

@@ -87,8 +87,14 @@ impl Pipeline {
     ///
     /// [`OpsError`] when a stage's design is invalid at `sample_rate` (see [`validate`](Self::validate)).
     pub fn settling(&self, sample_rate: f64) -> Result<(usize, usize), OpsError> {
+        self.settling_with(sample_rate, crate::filter::design::DEFAULT_SETTLING_TOLERANCE)
+    }
+
+    /// [`Self::settling`] with filters settled below `tol` (see
+    /// [`crate::filter::FilterSpec::settling_with`] for the bound it gives).
+    pub fn settling_with(&self, sample_rate: f64, tol: f64) -> Result<(usize, usize), OpsError> {
         self.stages.iter().try_fold((0, 0), |(l, r), stage| {
-            let (sl, sr) = stage.settling(sample_rate)?;
+            let (sl, sr) = stage.settling_with(sample_rate, tol)?;
             Ok((l + sl, r + sr))
         })
     }

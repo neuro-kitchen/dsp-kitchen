@@ -28,7 +28,9 @@ use cubecl::prelude::Client;
 use cubecl::server::Handle;
 use dspk_core::{ComputeTarget, DspError, DspResult, RecordingInfo, RecordingSource, SampleFormat};
 use dspk_ops::core::buffer;
+use dspk_ops::filter::{FilterBand, FilterDesign};
 use dspk_ops::math::{pointwise_op, PointwiseRun};
+use dspk_ops::resampler::{decimate_len, execute_resample_poly, firwin, FirWindow, ResampleFilter, RESAMPLE_POLY_DEFAULT_EDGE};
 use dspk_ops::pipeline::PipelineWorkspace;
 use dspk_ops::{Pipeline, PipelineStage};
 use dspk_view::envelope::fold::{finish, merge, EMPTY};
@@ -114,6 +116,80 @@ impl Summary {
             }
         }
         (out, complete)
+    }
+}
+
+/// Largest rate reduction of a chain's tail ([`LowRate`]).
+const MAX_RATE_FACTOR: usize = 256;
+
+/// The new rate is at least this many times the low-pass's cutoff.
+const RATE_PER_CUTOFF: f64 = 8.0;
+
+/// Taps of the decimating filter per unit of the factor, and its Kaiser shape: about 100 dB of
+/// stop-band from 0.7 × the new rate on, flat to 0.3 × it. What matters is what folds into the
+/// low-pass's band (0..fc, fc ≤ new rate / 8): energy near multiples of the new rate, from
+/// new rate − fc ≥ 0.875 × it, all of it in the stop-band. A Hamming window's 53 dB let a
+/// Teager-Kaiser output's broadband power fold in at 7 % of an envelope's scale.
+const DECIMATE_TAPS_PER_FACTOR: usize = 16;
+const DECIMATE_KAISER_BETA: f64 = 10.0;
+
+/// A chain whose last processing step is a low-pass at `fc` holds nothing above about `fc` from
+/// there on, but would be computed and kept at the full rate (about 600× more than Nyquist needs
+/// for a 20 Hz envelope at 24.4 kHz). Its low-pass runs at the rate divided by `factor` instead:
+/// the steps before it at the full rate, then a polyphase FIR decimation (anti-aliasing low-pass at
+/// the new Nyquist, every `factor`-th output only: ~20 multiply-adds per input sample), then the
+/// low-pass at the low rate. Blocks, columns and frozen overviews are `factor` times smaller, and
+/// the low-pass's cutoff ratio rises from 8e-4 to about 0.1.
+///
+/// Exactness: the result equals the full-rate chain within the decimating filter's pass-band
+/// ripple and stop-band leakage (Kaiser `firwin`, β 10: below 1e-4 and about 100 dB), and zoomed-in samples
+/// are the low-rate output linearly interpolated (a band-limited signal sampled at 8× its cutoff:
+/// within about 2 % between samples). `DSPK_PREVIEW_FULL_RATE=1` turns it off.
+struct LowRate {
+    /// The full rate over the low one (a power of two, 4 to [`MAX_RATE_FACTOR`]: it divides
+    /// [`READ_GRID`], so every block's decimated samples are the recording's samples k · factor).
+    factor: usize,
+    /// The low-pass, run at the low rate.
+    pipeline: Pipeline,
+    /// The decimating filter's taps (at the full rate, centred).
+    taps: Vec<f64>,
+}
+
+impl LowRate {
+    /// The lower-rate tail of `stages` (the chain's processing, its trailing pointwise ops left
+    /// out) at `rate`: when its last step is a low-pass with room for a factor of at least 4.
+    fn plan(stages: &[PipelineStage], rate: f64) -> Option<Self> {
+        if std::env::var_os("DSPK_PREVIEW_FULL_RATE").is_some() {
+            return None;
+        }
+        let PipelineStage::Filter(spec) = stages.last()? else { return None };
+        let band = match &spec.design {
+            FilterDesign::Butterworth { band, .. } | FilterDesign::Chebyshev1 { band, .. } | FilterDesign::Bessel { band, .. } => *band,
+            _ => return None,
+        };
+        let FilterBand::Lowpass(fc) = band else { return None };
+        let most = ((rate / (RATE_PER_CUTOFF * fc)).floor() as usize).min(MAX_RATE_FACTOR);
+        if most < 4 {
+            return None;
+        }
+        let factor = 1usize << (usize::BITS - 1 - most.leading_zeros());
+        // Cut at the new Nyquist (firwin's cutoff is a fraction of the full rate's Nyquist)
+        let taps = firwin(DECIMATE_TAPS_PER_FACTOR * factor + 1, 1.0 / factor as f64, FirWindow::Kaiser { beta: DECIMATE_KAISER_BETA });
+        Some(Self { factor, pipeline: Pipeline::with_stages(vec![stages.last()?.clone()]), taps })
+    }
+
+    /// Samples of context the decimating filter reaches on each side (its half length).
+    fn reach(&self) -> usize {
+        self.taps.len().div_ceil(2) + self.factor
+    }
+
+    /// `columns` (in the recording's samples) in the low rate's samples.
+    fn columns(&self, columns: Columns) -> Columns {
+        let f = self.factor as u64;
+        match columns {
+            Columns::Even { start, len, width } => Columns::Even { start: start / f, len: (start + len).div_ceil(f) - start / f, width },
+            Columns::Buckets { origin, size, count } => Columns::Buckets { origin: origin / f, size: size.div_ceil(f).max(1), count },
+        }
     }
 }
 
@@ -261,6 +337,8 @@ struct State {
     trailing: Option<Arc<PointwiseRun>>,
     /// Whether the last columns answered were all known (false: a summary still being built).
     columns_complete: bool,
+    /// The low-rate tail's workspace ([`LowRate`]) and its capacity.
+    low_ws: Option<(PipelineWorkspace<f32>, usize)>,
     timings: PreviewTimings,
 }
 
@@ -272,8 +350,12 @@ pub struct Preview {
     group: Vec<usize>,
     /// The source channel each output row stands for: `group` through the chain's reorders.
     out_channels: Vec<usize>,
-    /// The chain without its trailing pointwise ops.
+    /// The chain without its trailing pointwise ops (and without its low-pass when that runs at a
+    /// lower rate: [`Self::low`]).
     pipeline: Pipeline,
+    /// The chain's low-pass run at a lower rate, when it ends in one ([`LowRate`]): the block's
+    /// rows are then at the low rate.
+    low: Option<LowRate>,
     /// The chain's last pointwise ops (`(code, a, b)`): folded into the reduction of a zoomed-out
     /// view (their output is never written), one fused kernel on samples read back.
     trailing: Vec<(u32, f64, f64)>,
@@ -316,17 +398,30 @@ impl Preview {
         // without stored reads are scaled on the host and sent as float32
         let mut probe = vec![0u8; group.len().min(1) * info.format.bytes()];
         let stored = !matches!(info.format, SampleFormat::F16 | SampleFormat::F64) && (info.samples == 0 || source.read_stored(&group[..group.len().min(1)], 0..1, &mut probe).is_ok());
-        Self::with_input(source, Input::Recording { stored, cache: None }, group, stages)
+        Self::with_input(source, Input::Recording { stored, cache: None }, group, stages, true)
+    }
+
+    /// [`Self::new`] with every step at the recording's rate (no [`LowRate`] tail): what the
+    /// lower-rate tail is checked against.
+    pub fn new_full_rate(source: Arc<dyn RecordingSource>, group: Vec<usize>, stages: Vec<PipelineStage>) -> DspResult<Self> {
+        let info = source.info();
+        let mut probe = vec![0u8; group.len().min(1) * info.format.bytes()];
+        let stored = !matches!(info.format, SampleFormat::F16 | SampleFormat::F64) && (info.samples == 0 || source.read_stored(&group[..group.len().min(1)], 0..1, &mut probe).is_ok());
+        Self::with_input(source, Input::Recording { stored, cache: None }, group, stages, false)
     }
 
     /// A branch: `stages` run on `prefix`'s output, on the device (no read back and upload in
     /// between). The branch's rows are the prefix's output rows, in its order.
     pub fn after(prefix: Arc<Preview>, stages: Vec<PipelineStage>) -> DspResult<Self> {
+        if prefix.low.is_some() {
+            // Its rows are at a lower rate: the branch runs from the recording instead
+            return Err(DspError::InvalidConfig("the prefix runs its low-pass at a lower rate".into()));
+        }
         let (source, group) = (prefix.source.clone(), prefix.out_channels.clone());
-        Self::with_input(source, Input::Prefix(prefix), group, stages)
+        Self::with_input(source, Input::Prefix(prefix), group, stages, false)
     }
 
-    fn with_input(source: Arc<dyn RecordingSource>, input: Input, group: Vec<usize>, stages: Vec<PipelineStage>) -> DspResult<Self> {
+    fn with_input(source: Arc<dyn RecordingSource>, input: Input, group: Vec<usize>, stages: Vec<PipelineStage>, lower_rate: bool) -> DspResult<Self> {
         let rate = source.info().sample_rate_hz();
         let full = Pipeline::with_stages(stages.clone());
         let halo = full.settling(rate)?;
@@ -342,8 +437,20 @@ impl Preview {
         // The chain's trailing pointwise ops run with the reduction or the read back
         let keep = stages.iter().rposition(|s| pointwise_op(s).is_none()).map_or(0, |i| i + 1);
         let trailing = stages[keep..].iter().filter_map(pointwise_op).collect();
-        let pipeline = Pipeline::with_stages(stages[..keep].to_vec());
-        let state = State { workspace: None, block: None, columns: None, trailing: None, columns_complete: true, timings: PreviewTimings::default() };
+        // A low-pass last runs at a lower rate (a branch reads its prefix's full-rate rows: not
+        // there)
+        let low = if lower_rate && matches!(input, Input::Recording { .. }) { LowRate::plan(&stages[..keep], rate) } else { None };
+        let (pipeline, halo) = match &low {
+            Some(low) => {
+                let head = Pipeline::with_stages(stages[..keep - 1].to_vec());
+                let (hl, hr) = head.settling(rate)?;
+                let (tl, tr) = low.pipeline.settling(rate / low.factor as f64)?;
+                let (reach, f) = (low.reach(), low.factor);
+                (head, (hl + reach + tl * f, hr + reach + tr * f))
+            }
+            None => (Pipeline::with_stages(stages[..keep].to_vec()), halo),
+        };
+        let state = State { workspace: None, block: None, columns: None, trailing: None, columns_complete: true, low_ws: None, timings: PreviewTimings::default() };
         // A branch shares its prefix's budget; its recipe is the prefix's then its own stages
         let (budget, recipe) = match &input {
             Input::Prefix(p) => (p.budget.clone(), (p.recipe.0.clone(), p.recipe.1.clone(), p.recipe.2.iter().chain(&stages).cloned().collect())),
@@ -355,6 +462,7 @@ impl Preview {
             group,
             out_channels,
             pipeline,
+            low,
             trailing,
             halo,
             max_values: PREVIEW_MAX_VALUES,
@@ -602,6 +710,12 @@ impl Preview {
         &self.out_channels
     }
 
+    /// The factor the chain's low-pass runs at below the recording's rate (1: every step at the
+    /// recording's rate; [`LowRate`]).
+    pub fn rate_factor(&self) -> usize {
+        self.low.as_ref().map_or(1, |l| l.factor)
+    }
+
     /// Whether the last zoomed-out columns were all known (false while a summary is built: ask
     /// again for more).
     pub fn columns_complete(&self) -> bool {
@@ -780,7 +894,35 @@ impl Preview {
         };
         let own = buffer::empty::<f32>(ws.client(), nch * size_class(n));
         buffer::copy::<f32>(ws.client(), &out, &own, nch * n);
+        // The low-pass at the lower rate: the block's rows are the low rate's
+        let own = match &self.low {
+            Some(low) => self.lower_rate(ws.client(), &own, n, low)?,
+            None => own,
+        };
         timings.process += ms(t);
+        Ok(own)
+    }
+
+    /// `rows` (`[group, n]` at the full rate) decimated by `low.factor` and low-passed at the low
+    /// rate, into a buffer of their own (`[group, decimate_len(n, factor)]`).
+    fn lower_rate(&self, client: &Client, rows: &Handle, n: usize, low: &LowRate) -> DspResult<Handle> {
+        let nch = self.group.len();
+        let m = decimate_len(n, low.factor);
+        let decimated = buffer::empty::<f32>(client, (nch * m).max(1));
+        // Polyphase: only every factor-th output is computed
+        execute_resample_poly::<f32>(client, rows, &decimated, nch, n, 1, low.factor, &ResampleFilter::Taps(low.taps.clone()), RESAMPLE_POLY_DEFAULT_EDGE);
+        let kept = self.state.lock().unwrap().low_ws.take().filter(|(_, cap)| *cap >= m);
+        let (mut ws, cap) = match kept {
+            Some(k) => k,
+            None => {
+                let cap = size_class(m.max(1));
+                (PipelineWorkspace::<f32>::new(client.clone(), low.pipeline.clone(), nch, cap, self.source.info().sample_rate_hz() / low.factor as f64)?, cap)
+            }
+        };
+        let out = ws.process_handle(&decimated, m);
+        let own = buffer::empty::<f32>(client, (nch * size_class(m.max(1))).max(1));
+        buffer::copy::<f32>(client, &out, &own, nch * m);
+        self.state.lock().unwrap().low_ws = Some((ws, cap));
         Ok(own)
     }
 
@@ -909,6 +1051,9 @@ impl Preview {
         if nch == 0 || m == 0 {
             return Ok(Vec::new());
         }
+        if let Some(low) = &self.low {
+            return self.download_low(client, rows, read, region, low).await;
+        }
         let cropped = buffer::empty::<f32>(client, nch * m);
         dspk_ops::core::layout::crop_rows::<f32>(client, rows, &cropped, nch, n, (region.start - read.start) as usize, m);
         let out = match self.trailing_run(client) {
@@ -922,14 +1067,57 @@ impl Preview {
         buffer::download_prefix_async::<f32>(client, out, nch * m).await.map_err(DspError::ComputeError)
     }
 
+    /// [`Self::download_region`] of low-rate rows: the low-rate samples around `region` read back,
+    /// interpolated linearly to the recording's samples (the signal is band-limited well below the
+    /// low rate's Nyquist).
+    async fn download_low(&self, client: &Client, rows: &Handle, read: &Range<u64>, region: &Range<u64>, low: &LowRate) -> DspResult<Vec<f32>> {
+        let (nch, f) = (self.group.len(), low.factor as u64);
+        let n_low = decimate_len((read.end - read.start) as usize, low.factor) as u64;
+        let base = read.start / f;
+        let lo = (region.start / f).max(base);
+        let hi = (region.end.div_ceil(f) + 1).min(base + n_low).max(lo + 1);
+        let k = (hi - lo) as usize;
+        let cropped = buffer::empty::<f32>(client, nch * k);
+        dspk_ops::core::layout::crop_rows::<f32>(client, rows, &cropped, nch, n_low as usize, (lo - base) as usize, k);
+        let out = match self.trailing_run(client) {
+            Some(run) => {
+                let out = buffer::empty::<f32>(client, nch * k);
+                run.apply::<f32>(client, &cropped, &out, nch * k);
+                out
+            }
+            None => cropped,
+        };
+        let values = buffer::download_prefix_async::<f32>(client, out, nch * k).await.map_err(DspError::ComputeError)?;
+        let m = (region.end - region.start) as usize;
+        let mut samples = Vec::with_capacity(nch * m);
+        for row in values.chunks_exact(k) {
+            for t in region.clone() {
+                let pos = (t as f64 / f as f64 - lo as f64).max(0.0);
+                let i = (pos.floor() as usize).min(k - 1);
+                let j = (i + 1).min(k - 1);
+                let w = (pos - i as f64).clamp(0.0, 1.0) as f32;
+                samples.push(row[i] * (1.0 - w) + row[j] * w);
+            }
+        }
+        Ok(samples)
+    }
+
     /// Reduces rows over `read` (`rows`, on `client`) to `columns` over the interior `valid`, the
     /// chain's trailing ops applied on the way, and reads the columns back (before `finish`).
     async fn reduce(&self, client: Client, rows: Handle, read: Range<u64>, valid: Range<u64>, columns: Columns, width: usize) -> DspResult<Vec<[f32; 2]>> {
         let nch = self.group.len();
         let n = (read.end - read.start) as usize;
+        // Low-rate rows: everything in the low rate's samples
+        let (n, start, valid, columns) = match &self.low {
+            Some(low) => {
+                let f = low.factor as u64;
+                (decimate_len(n, low.factor), read.start / f, valid.start / f..valid.end.div_ceil(f), low.columns(columns))
+            }
+            None => (n, read.start, valid, columns),
+        };
         let run = self.trailing_run(&client);
         let map = run.as_ref().map(|r| PointwiseMap { codes: r.codes(), params: r.params(), count: r.count() });
-        let Some(out) = envelope_launch_mapped::<f32>(&client, &rows, nch, n, read.start, valid, columns, map)? else { return Ok(vec![EMPTY; nch * width]) };
+        let Some(out) = envelope_launch_mapped::<f32>(&client, &rows, nch, n, start, valid, columns, map)? else { return Ok(vec![EMPTY; nch * width]) };
         let pairs = buffer::download_prefix_async::<f32>(&client, out, nch * width * 2).await.map_err(DspError::ComputeError)?;
         Ok(pairs.as_chunks::<2>().0.to_vec())
     }

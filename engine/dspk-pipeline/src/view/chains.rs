@@ -156,15 +156,18 @@ impl ProcessedChains {
             let made = lock(&self.made);
             (2..=key.len()).rev().find_map(|k| made.iter().find(|(c, _)| c[..] == key[..k]).map(|(_, p)| (k, p.clone())))
         };
+        let fresh = |raw: Arc<dyn SignalBackend>, source: Arc<dyn RecordingSource>, stages: Vec<PipelineStage>| {
+            // The recording read through the RAM cache: windows come back without decoding again
+            let cached = self.cached_source(source, source_key);
+            ProcessedSignal::with_budget(raw, cached, group.clone(), stages, self.inputs.clone(), self.budget.clone())
+        };
         let built = match found {
             Some((k, p)) if k == key.len() => return Ok(Made::Ready(p)),
-            // A branch reads the shared prefix's rows on the device, in the order it leaves them
-            Some((k, p)) => ProcessedSignal::after(&p, stages[k - 1..].to_vec()),
-            None => {
-                // The recording read through the RAM cache: windows come back without decoding again
-                let cached = self.cached_source(source, source_key);
-                ProcessedSignal::with_budget(raw, cached, group, stages, self.inputs.clone(), self.budget.clone())
-            }
+            // A branch reads the shared prefix's rows on the device, in the order it leaves them;
+            // a prefix whose low-pass runs at a lower rate has no full-rate rows to give: made
+            // from the recording
+            Some((k, p)) => ProcessedSignal::after(&p, stages[k - 1..].to_vec()).or_else(|_| fresh(raw.clone(), source.clone(), stages.clone())),
+            None => fresh(raw, source, stages),
         }
         .map(Arc::new)
         .map_err(|e| e.to_string())?;

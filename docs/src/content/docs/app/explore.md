@@ -39,7 +39,10 @@ A new view goes beside the one in focus. Its options are in the Inspector, not i
 The Inspector shows what is selected, in one place. For a view:
 
 - **Source:** the one place to pick what it reads, and what that source is. The title bar names it.
-- **Display:** how it is drawn, such as gain and how many traces.
+- **Channels:** what is on screen, as a slice of the source's channels: **Start**, **End** and
+  **Step** (1-based, the end included: 1, 32, 4 shows channels 1, 5, 9 … 29), and **All**. A view
+  opens on channels 1–8; scrolling the traces moves the slice.
+- **Display:** how it is drawn, such as the gain.
 - **Processing:** its chain of operations. **Add op** has one submenu per family, with presets under
   each operation. Each op can be switched off to compare with and without it.
 - **Output:** write the chain to a file.
@@ -50,8 +53,9 @@ The Inspector shows what is selected, in one place. For a view:
 
 ![The chain with Teager-Kaiser energy added](/dsp-kitchen/img/app/17-2_real-time-processing.png)
 
-The chain previews live on the device. A chain with whitening shows the raw signal and says
-"fitting the whitening…" until the fit is done.
+The chain runs on the device over the window on screen
+([how a view is processed](/dsp-kitchen/app/processing/)). A chain with whitening shows the raw
+signal and says "fitting the whitening…" until the fit is done.
 
 ![Traces with a sorting's spikes coloured on them](/dsp-kitchen/img/app/17-3_change-view-type.png)
 
@@ -111,5 +115,6 @@ writes the fields the output lacks, and says which required ones are still missi
 ![The Timeline panel with two recordings and a Baseline epoch](/dsp-kitchen/img/app/08_add-multiple-recordings.png)
 
 A file can hold several sources (an NWB file with neural and EMG channels, for example), and views
-can show different sources and different recordings side by side. Each view has its own chain.
+can show different sources and different recordings side by side. The Inspector's **Source** lists
+every source of the file, on a server too, where they open together with the file. Each view has its own chain.
 A view you close or switch away is forgotten if it holds no work; a view with processing stays.
