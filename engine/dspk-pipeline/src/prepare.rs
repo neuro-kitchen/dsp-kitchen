@@ -110,7 +110,14 @@ impl Prepared {
     pub(crate) fn plan(&self) -> Plan {
         let nch = self.channels.len() as u64;
         let read: u64 = self.schedule.windows().iter().map(|w| w.read_len() as u64).sum::<u64>() * nch;
-        let per_sample_up = if self.stored_upload { self.stored_format.bytes() } else { 4 } as u64;
+        // As the run uploads: stored values in whole 4-byte words per window (an odd-length int16
+        // window is padded), else float32
+        let uploaded: u64 = if self.stored_upload {
+            let bytes = self.stored_format.bytes() as u64;
+            self.schedule.windows().iter().map(|w| dspk_ops::math::stored_word_bytes((w.read_len() as u64 * nch * bytes) as usize) as u64).sum()
+        } else {
+            read * 4
+        };
         Plan {
             input: self.input_label.clone(),
             output: self.output.clone(),
@@ -125,7 +132,7 @@ impl Prepared {
             windows: self.schedule.len(),
             max_window_samples: self.schedule.max_read_samples(),
             bytes_read: read * self.stored_format.bytes() as u64,
-            bytes_uploaded: read * per_sample_up,
+            bytes_uploaded: uploaded,
         }
     }
 }
@@ -269,7 +276,10 @@ pub(crate) fn prepare(
     let crossings = planned.crossings.as_ref().map(|(_, params)| params.options(sample_rate));
     pipeline.validate(sample_rate).map_err(|e| PipelineError::Invalid(e.to_string()))?;
 
-    let mut mode = resolve_mode(spec.execution.mode, &pipeline, sample_rate)?;
+    // Windows settle to one count of the stored data (a batch run is exact to the data's
+    // resolution; a preview keeps the looser default)
+    let tol = dspk_ops::filter::design::settling_tolerance_for(stored_format);
+    let mut mode = resolve_mode(spec.execution.mode, &pipeline, sample_rate, tol)?;
     let stored_upload = resolve_upload(spec.execution.upload, stored_format)?;
     let mut chunk = spec.execution.chunk_samples.max(1);
     let (mut out_rate, mut out_samples) = (sample_rate, range.end - range.start);
@@ -282,7 +292,7 @@ pub(crate) fn prepare(
         if range.start % r.down as u64 != 0 {
             return Err(PipelineError::Invalid(format!("read: start {} must be a multiple of the resample's down ({})", range.start, r.down)));
         }
-        let (left, right) = pipeline.settling(sample_rate).map_err(|e| PipelineError::Invalid(e.to_string()))?;
+        let (left, right) = pipeline.settling_with(sample_rate, tol).map_err(|e| PipelineError::Invalid(e.to_string()))?;
         let align = |x: usize| x.div_ceil(r.down) * r.down;
         mode = ExecutedMode::Windows { left: align(left + r.reach), right: align(right + r.reach) };
         chunk = align(chunk);
@@ -370,7 +380,7 @@ fn resolve_upload(requested: Upload, format: SampleFormat) -> Result<bool, Pipel
 /// `stream` needs every filter forward (zero-phase needs future samples) and no stencil stage
 /// (median, Gaussian, Teager–Kaiser, FIR read neighbours across window edges and carry no state;
 /// for FIR, window mode with its halo is exact).
-fn resolve_mode(requested: ExecMode, pipeline: &Pipeline, sample_rate: f64) -> Result<ExecutedMode, PipelineError> {
+fn resolve_mode(requested: ExecMode, pipeline: &Pipeline, sample_rate: f64, tol: f64) -> Result<ExecutedMode, PipelineError> {
     let blocker = pipeline.stages().iter().find_map(|stage| match stage {
         PipelineStage::Filter(spec) if spec.mode == FilterMode::ForwardBackward => Some("a zero-phase (forward_backward) filter"),
         PipelineStage::Median { .. } => Some("a median stage"),
@@ -380,7 +390,7 @@ fn resolve_mode(requested: ExecMode, pipeline: &Pipeline, sample_rate: f64) -> R
         _ => None,
     });
     let windows = || {
-        let (left, right) = pipeline.settling(sample_rate).map_err(|e| PipelineError::Invalid(e.to_string()))?;
+        let (left, right) = pipeline.settling_with(sample_rate, tol).map_err(|e| PipelineError::Invalid(e.to_string()))?;
         Ok(ExecutedMode::Windows { left, right })
     };
     match (requested, blocker) {

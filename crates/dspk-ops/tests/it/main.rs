@@ -2,9 +2,11 @@
 //!
 //! Run one module: `cargo test --test it -- <module>::`.
 
+mod accuracy;
 mod common;
 mod filter_blocks;
 mod filter_chunks;
 mod filter_runtimes;
 mod filter_scipy;
 mod kernel_runtimes;
+mod properties;

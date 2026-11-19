@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
-use dspk_ops::filter::{FilterBand, FilterSpec, Section, Sos};
+use cubecl::prelude::*;
+use dspk_ops::filter::{DeviceFilter, FilterBand, FilterMode, FilterSpec, FilterStart, Section, Sos};
 use serde_json::Value;
 
 /// Same formula as `test_signal` in `scipy_reference.py`.
@@ -94,3 +95,22 @@ pub fn test_clients() -> Vec<cubecl::prelude::Client> {
     assert!(!targets.is_empty(), "no runtime to test (compiled in and allowed by DSPK_TEST_RUNTIMES)");
     targets.into_iter().map(|t| t.client().unwrap_or_else(|e| panic!("{}: {e}", t.name()))).collect()
 }
+
+/// `x` filtered by `sos` on `client` in float32, on `channels` copies of it (channel `c` scaled by
+/// `1 + c` going in and unscaled coming out), as f64.
+pub fn run_device(client: &Client, sos: &Sos, mode: FilterMode, start: FilterStart, x: &[f64], channels: usize) -> Vec<Vec<f64>> {
+    let n = x.len();
+    let data: Vec<f32> = (0..channels).flat_map(|c| x.iter().map(move |v| (*v as f32) * (1.0 + c as f32))).collect();
+    let input = client.create_from_slice(f32::as_bytes(&data));
+    let output = client.empty(data.len() * 4);
+    let filter = DeviceFilter::<f32>::from_sos(client, sos.clone(), mode).with_start(start);
+    let scratch = client.empty((filter.scratch_len(channels, n) * 4).max(4));
+    let state = client.empty(channels * filter.state_len() * 4);
+    filter.apply(client, &input, &output, &scratch, &state, channels, n);
+    let out = f32::from_bytes(&client.read_one_unchecked(output)).to_vec();
+    out.chunks(n)
+        .enumerate()
+        .map(|(c, row)| row.iter().map(|v| *v as f64 / (1.0 + c as f64)).collect())
+        .collect()
+}
+

@@ -126,8 +126,14 @@ impl PipelineStage {
     ///
     /// [`OpsError`] when a filter stage's design is invalid at `sample_rate`.
     pub fn settling(&self, sample_rate: f64) -> Result<(usize, usize), OpsError> {
+        self.settling_with(sample_rate, crate::filter::design::DEFAULT_SETTLING_TOLERANCE)
+    }
+
+    /// [`Self::settling`] with filters settled below `tol` ([`FilterSpec::settling_with`]); the
+    /// other stages' context is exact whatever `tol`.
+    pub fn settling_with(&self, sample_rate: f64, tol: f64) -> Result<(usize, usize), OpsError> {
         Ok(match self {
-            PipelineStage::Filter(spec) => spec.settling(sample_rate)?,
+            PipelineStage::Filter(spec) => spec.settling_with(sample_rate, tol)?,
             PipelineStage::GaussianSmooth { sigma_samples, .. } => {
                 let r = gaussian_radius(*sigma_samples, GAUSSIAN_TRUNCATE);
                 (r, r)

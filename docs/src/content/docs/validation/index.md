@@ -11,6 +11,7 @@ came out.
 | Page | What it shows |
 |---|---|
 | [Against SciPy](/dsp-kitchen/validation/scipy/) | Each signal operation against SciPy and NumPy: time and agreement, per runtime |
+| [Numerical accuracy](/dsp-kitchen/validation/accuracy/) | How close float32 results are to float64, the bounds a window and a lower rate keep, and the tests behind them |
 | [What the tests check](/dsp-kitchen/validation/tests/) | The rules the test suite enforces |
 | [Speed on real recordings](/dsp-kitchen/validation/throughput/) | Multiples of real time for whole files |
 | [Sorters](/dsp-kitchen/plugins/synapse/validation/) | Each sorter against Kilosort4's saved results |

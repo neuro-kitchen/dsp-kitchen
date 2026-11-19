@@ -535,6 +535,118 @@ mod tests {
         assert!(finite * 10 >= values.len() * 9, "{finite} of {} columns hold values", values.len());
     }
 
+    /// A chain ending in a low-pass runs it at a lower rate; what it shows is the chain run at the
+    /// full rate: zoomed in, within 2 % of the scale (samples interpolated from the low rate);
+    /// zoomed out, each column's extremes within 3 low-rate samples of the column's edges.
+    #[test]
+    fn a_low_pass_run_at_a_lower_rate_equals_it_at_the_full_rate() {
+        let (channels, rate) = (3usize, 24_414.0625f64);
+        let samples = (rate * 40.0) as usize;
+        // Bursts of broadband activity, modulated at 1.3 Hz: an envelope to follow
+        let data: Vec<f32> = (0..channels * samples)
+            .map(|i| {
+                let (c, t) = (i / samples, (i % samples) as f64 / rate);
+                let carrier = ((i as u64).wrapping_mul(2654435761) % 1000) as f64 / 500.0 - 1.0;
+                let envelope = 1.0 + (2.0 * std::f64::consts::PI * 1.3 * t + c as f64).sin();
+                (carrier * envelope * 40.0 + (2.0 * std::f64::consts::PI * 1500.0 * t).sin() * 20.0 * envelope) as f32
+            })
+            .collect();
+        let source: Arc<dyn RecordingSource> = Arc::new(MemoryRecording::new("envelope", data, channels, rate).unwrap());
+        let raw: Arc<dyn SignalBackend> = Arc::new(LocalSignal::open(source.clone(), None).unwrap());
+        let stages = vec![PipelineStage::bandpass(300.0, 6000.0), PipelineStage::teager_kaiser(), PipelineStage::lowpass(20.0)];
+        let low = ProcessedSignal::new(raw.clone(), source.clone(), vec![0, 1, 2], stages.clone()).unwrap();
+        let full = ProcessedSignal { raw, preview: shared(Preview::new_full_rate(source, vec![0, 1, 2], stages).unwrap()) };
+        assert_eq!(low.preview.rate_factor(), 128, "20 Hz at 24.4 kHz: the low-pass at 191 Hz");
+        assert_eq!(full.preview.rate_factor(), 1);
+        let compare = |view: View, what: &str| {
+            let (mut a, mut b) = (Envelope::Samples(Vec::new()), Envelope::Samples(Vec::new()));
+            low.view(&view, &mut a).unwrap();
+            full.view(&view, &mut b).unwrap();
+            let flat = |e: Envelope| match e {
+                Envelope::Columns { values, .. } => values.into_iter().flatten().collect::<Vec<f32>>(),
+                Envelope::Samples(v) => v,
+            };
+            let (a, b) = (flat(a), flat(b));
+            let scale = b.iter().fold(0.0f32, |m, v| m.max(v.abs())).max(1e-6);
+            let (at, worst) = a.iter().zip(&b).map(|(p, q)| (p - q).abs()).enumerate().fold((0, 0.0f32), |m, (i, d)| if d > m.1 { (i, d) } else { m });
+            let near = |v: &[f32]| v[at.saturating_sub(4)..(at + 5).min(v.len())].to_vec();
+            assert!(worst <= 0.02 * scale, "{what}: {worst} of {scale} at value {at} of {}: lower rate {:?}, full rate {:?}", a.len(), near(&a), near(&b));
+        };
+        let all: Vec<usize> = (0..channels).collect();
+        compare(View { channels: all.clone(), start: (rate * 10.0) as u64, end: (rate * 10.0) as u64 + 2000, width: 2000 }, "zoomed in");
+        // Zoomed out, a column of the lower rate holds the full-rate signal's extremes over the
+        // column to within 3 low-rate samples of its edges (its edges in the low rate's samples
+        // fall up to 2 of them early, and its last sample up to one more before its edge): between
+        // the full rate's [min, max] over the column shrunk by 3·M on each side and grown by 3·M
+        let (start, end, width) = ((rate * 5.0) as u64, (rate * 35.0) as u64, 300usize);
+        let mut env = Envelope::Samples(Vec::new());
+        low.view(&View { channels: all.clone(), start, end, width }, &mut env).unwrap();
+        let Envelope::Columns { values: cols, .. } = env else { panic!("columns") };
+        let reach = 3 * low.preview.rate_factor() as u64;
+        let (from, to) = (start - reach, end + reach);
+        let mut whole = vec![0f32; channels * (to - from) as usize];
+        full.read_processed(&all, from..to, &mut whole).unwrap();
+        let len = (to - from) as usize;
+        let scale = whole.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        let extremes = |c: usize, a: u64, b: u64| {
+            let row = &whole[c * len + (a - from) as usize..c * len + (b - from) as usize];
+            row.iter().fold([f32::INFINITY, f32::NEG_INFINITY], |m, v| [m[0].min(*v), m[1].max(*v)])
+        };
+        for c in 0..channels {
+            for x in 0..width {
+                let (c0, c1) = (start + x as u64 * (end - start) / width as u64, start + (x as u64 + 1) * (end - start) / width as u64);
+                let (outer, inner) = (extremes(c, c0 - reach, c1 + reach), extremes(c, c0 + reach, c1 - reach));
+                let [lo, hi] = cols[c * width + x];
+                let tol = 0.005 * scale;
+                assert!(lo >= outer[0] - tol && lo <= inner[0] + tol, "channel {c} column {x}: min {lo} outside [{}, {}]", outer[0], inner[0]);
+                assert!(hi <= outer[1] + tol && hi >= inner[1] - tol, "channel {c} column {x}: max {hi} outside [{}, {}]", inner[1], outer[1]);
+            }
+        }
+    }
+
+    /// Two views of one chain (traces of some channels, a heatmap of all) asking for the same
+    /// tiled window at once: neither stops the other, and both get the window's columns.
+    #[test]
+    fn two_views_of_one_chain_asking_at_once_both_get_their_columns() {
+        let samples = 60_000;
+        let data: Vec<f32> = (0..3 * samples).map(|i| ((i % samples) as f32 * 0.21).sin() * 30.0 + (i / samples) as f32 * 5.0).collect();
+        let source: Arc<dyn RecordingSource> = Arc::new(MemoryRecording::new("two views", data, 3, 1000.0).unwrap());
+        let raw: Arc<dyn SignalBackend> = Arc::new(LocalSignal::open(source.clone(), None).unwrap());
+        let stages = vec![PipelineStage::bandpass(20.0, 200.0), PipelineStage::teager_kaiser()];
+        let whole = ProcessedSignal::new(raw.clone(), source.clone(), vec![0, 1, 2], stages.clone()).unwrap();
+        // Blocks of 3 × 20,000 values: the 50,000-sample window takes 3 tiles (within the tiles
+        // processed exactly), where a stale request stops
+        let tiled = Arc::new(ProcessedSignal::new(raw, source, vec![0, 1, 2], stages).unwrap().with_max_values(3 * 20_000));
+        let range = (5_000u64, 55_000u64);
+        assert!(!tiled.preview.fits_one_block(range.1 - range.0) && tiled.covers(range.1 - range.0));
+        let views = [vec![0usize, 1], vec![0, 1, 2]];
+        let answers: Vec<Vec<[f32; 2]>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = views
+                .iter()
+                .map(|channels| {
+                    let (tiled, channels) = (tiled.clone(), channels.clone());
+                    scope.spawn(move || {
+                        let mut env = Envelope::Samples(Vec::new());
+                        tiled.view(&View { channels, start: range.0, end: range.1, width: 160 }, &mut env).expect("neither view stops the other");
+                        let Envelope::Columns { values, .. } = env else { panic!("columns") };
+                        values
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let mut env = Envelope::Samples(Vec::new());
+        whole.view(&View { channels: vec![0, 1, 2], start: range.0, end: range.1, width: 160 }, &mut env).unwrap();
+        let Envelope::Columns { values: expected, .. } = env else { panic!("columns") };
+        let scale = expected.iter().flat_map(|v| [v[0].abs(), v[1].abs()]).fold(0.0f32, f32::max);
+        for (k, got) in answers.iter().enumerate() {
+            let rows = views[k].len();
+            for (x, (p, q)) in got.iter().zip(&expected[..rows * 160]).enumerate() {
+                assert!((p[0] - q[0]).abs() <= 1e-3 * scale && (p[1] - q[1]).abs() <= 1e-3 * scale, "view {k} column {x}: {p:?} vs {q:?}");
+            }
+        }
+    }
+
     /// A branch read on the device equals its whole chain (as the host branch does).
     #[test]
     fn a_branch_on_the_device_equals_its_whole_chain() {

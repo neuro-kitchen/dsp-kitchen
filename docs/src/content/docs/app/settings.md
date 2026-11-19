@@ -12,6 +12,7 @@ sidebar:
 | Servers | Add, edit, remove and test the servers the app works with |
 | Results folder | Where results fetched from a server go |
 | Compute runtime | Which runtime the app uses |
+| Memory | RAM the app keeps to be fast, for every open recording: decoded chunks, processed overviews, spike windows. Automatic is a quarter of the RAM (half of what a browser reports, at most 4 GiB). Past it, the least recently used goes and is read or computed again. Also `[compute] memory` in `settings.toml`, as `"8GiB"` |
 | Theme | Light or dark, or follow the system. **View** also has "Dark plots in the light theme" |
 
 ![Settings with the compute runtime menu open: automatic, wgpu, CUDA or CPU](/dsp-kitchen/img/app/10_Settings-select-runtime.png)
