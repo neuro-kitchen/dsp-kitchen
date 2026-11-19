@@ -53,6 +53,8 @@ const SIMILAR_MAX: usize = 20;
 /// Table row height and the table's width in layouts (logical px).
 const ROW_H: f32 = 24.;
 const TABLE_W: f32 = 560.;
+/// Width of the Similar units column beside the table.
+const SIMILAR_W: f32 = 300.;
 
 /// How a view is shown: its icon on the Curation side bar and its title (the views and what
 /// they compute are dspk-synapse's).
@@ -640,9 +642,10 @@ impl CurationWorkspace {
             .clone()
     }
 
-    /// The visible views in the grid: the table on the left, plots in rows of `columns`.
+    /// The visible views: the table on the left, Similar units in a column of its own beside it
+    /// (a plot added or closed does not move it), the plots in rows of `columns`.
     fn apply_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let plot_kinds: Vec<ViewKind> = self.visible.iter().copied().filter(|k| *k != ViewKind::Table).collect();
+        let plot_kinds: Vec<ViewKind> = self.visible.iter().copied().filter(|k| !matches!(k, ViewKind::Table | ViewKind::Similarity)).collect();
         let cols = match self.grid {
             Grid::Auto => (plot_kinds.len() as f32).sqrt().ceil().max(1.0) as usize,
             Grid::Columns(n) => n.max(1),
@@ -658,15 +661,26 @@ impl CurationWorkspace {
             grid = grid.child(row, None);
             any = true;
         }
-        let root = if self.visible.contains(&ViewKind::Table) {
-            let table = self.panel(ViewKind::Table, cx);
-            let mut root = DockLayout::h_split().child(DockLayout::tabs().panel_view(panel_handle(table), cx), Some(px(TABLE_W)));
+        // Fixed columns on the left: the table, then Similar units; the grid takes the rest
+        let mut columns: Vec<(ViewKind, f32)> = Vec::new();
+        if self.visible.contains(&ViewKind::Table) {
+            columns.push((ViewKind::Table, TABLE_W));
+        }
+        if self.visible.contains(&ViewKind::Similarity) {
+            columns.push((ViewKind::Similarity, SIMILAR_W));
+        }
+        let root = if columns.is_empty() {
+            grid
+        } else {
+            let mut root = DockLayout::h_split();
+            for (kind, width) in columns {
+                let p = self.panel(kind, cx);
+                root = root.child(DockLayout::tabs().panel_view(panel_handle(p), cx), Some(px(width)));
+            }
             if any {
                 root = root.child(grid, None);
             }
             root
-        } else {
-            grid
         };
         // Rebuilding takes the panels out of the dock (they report it while this workspace is
         // being updated): flagged so they do not take it for the user closing them
