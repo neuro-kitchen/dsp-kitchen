@@ -204,6 +204,22 @@ impl SortingData {
     pub fn summary(&self) -> String {
         format!("{} · {} units · {} spikes", self.sorter, self.alive().count(), self.times.len())
     }
+
+    /// Why this sorting does not fit a recording of `channels` channels at `rate` Hz, or `None`
+    /// when it does. Views that read the recording at the sorting's spikes (waveforms, features)
+    /// need the recording it was sorted from; views of the spike trains alone (ISI,
+    /// correlograms, amplitudes) work either way.
+    pub fn mismatch(&self, channels: usize, rate: f64) -> Option<String> {
+        let mut why = Vec::new();
+        if self.sample_rate > 0.0 && rate > 0.0 && (self.sample_rate - rate).abs() > 1e-3 * rate {
+            why.push(format!("it was sorted at {:.0} Hz, the recording is {:.0} Hz", self.sample_rate, rate));
+        }
+        let used = self.channels.or_else(|| self.units.iter().map(|u| u.info.primary_channel + 1).max());
+        if let Some(n) = used.filter(|&n| n > channels) {
+            why.push(format!("it was sorted on {n} channels, the recording has {channels}"));
+        }
+        (!why.is_empty()).then(|| why.join("; "))
+    }
 }
 
 /// Where the sorting at `store` starts in its recording (s), from the app's notes.
@@ -348,6 +364,17 @@ pub mod testing {
 mod tests {
     use super::testing::sorting_of_units;
     use super::*;
+
+    #[test]
+    fn a_sorting_of_another_recording_says_why_it_does_not_fit() {
+        let mut s = sorting_of_units(&[(5, 0, 6), (6, 90, 4)]);
+        s.sample_rate = 30_000.0;
+        assert_eq!(s.mismatch(384, 30_000.0), None, "its own recording");
+        assert_eq!(s.mismatch(32, 30_000.0).as_deref(), Some("it was sorted on 91 channels, the recording has 32"));
+        s.channels = Some(384);
+        let why = s.mismatch(32, 24_414.0625).unwrap();
+        assert!(why.contains("30000 Hz, the recording is 24414 Hz") && why.contains("384 channels, the recording has 32"), "{why}");
+    }
 
     #[test]
     fn test_extent_follows_the_template() {

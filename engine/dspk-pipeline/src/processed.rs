@@ -9,8 +9,6 @@ use std::sync::Arc;
 use dspk_core::{DspResult, RecordingInfo, RecordingSource, SampleFormat};
 use dspk_ops::PipelineStage;
 use crate::preview::Preview;
-use dspk_view::envelope::fold::finish;
-use dspk_view::envelope::{fold_row, Columns, EMPTY};
 use dspk_view::{Envelope, OnProgress, Progress, SignalBackend, View};
 
 pub use crate::preview::PREVIEW_MAX_VALUES;
@@ -27,6 +25,12 @@ impl ProcessedSignal {
     /// is not processed (outside the group, or zoomed out past [`PREVIEW_MAX_VALUES`]).
     pub fn new(raw: Arc<dyn SignalBackend>, source: Arc<dyn RecordingSource>, group: Vec<usize>, stages: Vec<PipelineStage>) -> DspResult<Self> {
         Ok(Self { raw, preview: Preview::new(source, group, stages)? })
+    }
+
+    /// The same with blocks and tiles of at most `max_values` values ([`Preview::with_max_values`]).
+    pub fn with_max_values(mut self, max_values: usize) -> Self {
+        self.preview = self.preview.with_max_values(max_values);
+        self
     }
 
     /// The source channel each output row stands for (the read channels through the reorders).
@@ -46,7 +50,44 @@ impl ProcessedSignal {
         if !self.covers(view.samples()) {
             return Ok(());
         }
+        // Zoomed out: reduced on the device, only the columns read back
+        if view.samples() > view.width as u64 {
+            return self.preview.columns_async(view.start..view.end, view.width).await.map(|_| ());
+        }
         self.preview.warm_async(view.start..view.end, true).await
+    }
+
+    /// A zoomed-out `view` from the device's columns ([`Preview::columns`]): the group's rows
+    /// processed, the other channels' rows from the raw signal's view.
+    fn columns_view(&self, view: &View, out: &mut Envelope) -> DspResult<()> {
+        let width = view.width;
+        let group = self.preview.columns(view.start..view.end, width)?;
+        let outs = self.preview.out_channels();
+        let mut values = vec![[f32::NAN; 2]; view.channels.len() * width];
+        let mut missing = Vec::new();
+        for (k, c) in view.channels.iter().enumerate() {
+            match outs.iter().position(|g| g == c) {
+                Some(r) => values[k * width..(k + 1) * width].copy_from_slice(&group[r * width..(r + 1) * width]),
+                None => missing.push(k),
+            }
+        }
+        let mut complete = true;
+        if !missing.is_empty() {
+            let raw_view = View { channels: missing.iter().map(|&k| view.channels[k]).collect(), ..view.clone() };
+            let mut raw = Envelope::Samples(Vec::new());
+            self.raw.view(&raw_view, &mut raw)?;
+            match raw {
+                Envelope::Columns { values: rows, complete: c } => {
+                    complete = c;
+                    for (i, &k) in missing.iter().enumerate() {
+                        values[k * width..(k + 1) * width].copy_from_slice(&rows[i * width..(i + 1) * width]);
+                    }
+                }
+                Envelope::Samples(_) => return Err(dspk_core::DspError::ComputeError("a zoomed-out raw view answered samples".into())),
+            }
+        }
+        *out = Envelope::Columns { values, complete };
+        Ok(())
     }
 
     /// `channels` over `samples` (channel-major into `out`): processed rows for the group's
@@ -183,24 +224,18 @@ impl SignalBackend for ProcessedSignal {
         }
         view.validate(self.info().channel_count(), self.info().samples)?;
         let rows = view.channels.len();
+        if n > view.width as u64 {
+            return self.columns_view(view, out);
+        }
+        // Zoomed in: the samples themselves
         let mut samples = vec![0.0f32; rows * n as usize];
         self.fill(&view.channels, view.start..view.end, true, &mut samples)?;
-        if n <= view.width as u64 {
-            *out = Envelope::Samples(samples);
-            return Ok(());
-        }
-        let columns = Columns::Even { start: view.start, len: n, width: view.width };
-        let mut values = vec![EMPTY; rows * view.width];
-        for r in 0..rows {
-            fold_row(&samples[r * n as usize..(r + 1) * n as usize], view.start, columns, &mut values[r * view.width..(r + 1) * view.width]);
-        }
-        finish(&mut values);
-        *out = Envelope::Columns { values, complete: true };
+        *out = Envelope::Samples(samples);
         Ok(())
     }
 
     fn read(&self, channels: &[usize], samples: Range<u64>, out: &mut [f32]) -> DspResult<()> {
-        if !self.covers(samples.end - samples.start) {
+        if !self.preview.fits_one_block(samples.end - samples.start) {
             return self.raw.read(channels, samples, out);
         }
         self.fill(channels, samples, true, out)
@@ -216,6 +251,10 @@ impl SignalBackend for ProcessedSignal {
 
     fn progress(&self) -> Progress {
         self.raw.progress()
+    }
+
+    fn built(&self, columns: usize) -> Vec<bool> {
+        self.raw.built(columns)
     }
 
     fn watch(&self, on_progress: OnProgress) {
@@ -292,6 +331,96 @@ mod tests {
         for i in 0..800 {
             assert!((a[i] - b[i]).abs() < 1e-3 * b[i].abs().max(1.0), "{i}: {} vs {}", a[i], b[i]);
         }
+    }
+
+    /// A zoomed-out processed view is reduced on the device: its columns are exactly the min and
+    /// max of the processed samples of the same block (read back here for the check).
+    #[test]
+    fn zoomed_out_columns_are_the_extremes_of_the_processed_samples() {
+        let source = recording(3, 6000);
+        let raw: Arc<dyn SignalBackend> = Arc::new(LocalSignal::open(source.clone(), None).unwrap());
+        let p = ProcessedSignal::new(raw, source, vec![0, 2], vec![PipelineStage::bandpass(20.0, 200.0), PipelineStage::Scale { alpha: 2.0, beta: 0.5 }]).unwrap();
+        let view = View { channels: vec![0, 1, 2], start: 1000, end: 5000, width: 97 };
+        let mut env = Envelope::Samples(Vec::new());
+        p.view(&view, &mut env).unwrap();
+        let Envelope::Columns { values, complete } = env else { panic!("zoomed out: columns") };
+        assert!(complete);
+        let mut samples = vec![0.0f32; 3 * 4000];
+        p.read(&[0, 1, 2], 1000..5000, &mut samples).unwrap();
+        let columns = dspk_view::Columns::Even { start: 1000, len: 4000, width: 97 };
+        for (k, row) in samples.chunks_exact(4000).enumerate() {
+            let mut expected = vec![dspk_view::envelope::EMPTY; 97];
+            dspk_view::envelope::fold_row(row, 1000, columns, &mut expected);
+            dspk_view::envelope::fold::finish(&mut expected);
+            assert_eq!(&values[k * 97..(k + 1) * 97], &expected[..], "channel {k} (1: outside the group, raw)");
+        }
+    }
+
+    /// A window wider than one block is processed in tiles (each with the chain's halo, reduced
+    /// over its interior), and gives the columns of the window processed whole.
+    #[test]
+    fn tiled_columns_equal_the_window_processed_whole() {
+        // Channels unlike each other (the median reference leaves their differences)
+        let samples = 40_000;
+        let data: Vec<f32> = (0..2 * samples).map(|i| {
+            let (c, t) = ((i / samples) as f32, (i % samples) as f32);
+            (t * 0.31 * (c + 1.0)).sin() * (c + 1.0) * 40.0 + (t * 0.07).sin() * 10.0 + c * 3.0
+        }).collect();
+        let source: Arc<dyn RecordingSource> = Arc::new(MemoryRecording::new("test", data, 2, 1000.0).unwrap());
+        let raw: Arc<dyn SignalBackend> = Arc::new(LocalSignal::open(source.clone(), None).unwrap());
+        let stages = vec![PipelineStage::bandpass(20.0, 200.0), PipelineStage::CommonMedianReference];
+        let whole = ProcessedSignal::new(raw.clone(), source.clone(), vec![0, 1], stages.clone()).unwrap();
+        // Blocks of 2 × 6000 values: the 30,000-sample window takes several tiles
+        let tiled = ProcessedSignal::new(raw, source, vec![0, 1], stages).unwrap().with_max_values(2 * 6000);
+        let view = View { channels: vec![0, 1], start: 5000, end: 35_000, width: 211 };
+        assert!(!tiled.preview.fits_one_block(30_000) && tiled.covers(30_000), "tiles, not raw");
+        let (mut a, mut b) = (Envelope::Samples(Vec::new()), Envelope::Samples(Vec::new()));
+        whole.view(&view, &mut a).unwrap();
+        tiled.view(&view, &mut b).unwrap();
+        let (Envelope::Columns { values: a, .. }, Envelope::Columns { values: b, .. }) = (a, b) else { panic!("columns") };
+        let scale = a.iter().flat_map(|v| [v[0].abs(), v[1].abs()]).fold(0.0f32, f32::max);
+        assert!(scale > 1.0, "a signal to compare, not rounding noise ({scale})");
+        for (x, (p, q)) in a.iter().zip(&b).enumerate() {
+            assert!((p[0] - q[0]).abs() <= 1e-3 * scale && (p[1] - q[1]).abs() <= 1e-3 * scale, "column {x}: {p:?} vs {q:?}");
+        }
+    }
+
+    /// Where a processed view's time goes (the Author's chain, a 10 s window of 32 channels at
+    /// 24.4 kHz): `cargo test -p dspk-pipeline --features view --profile validate --
+    /// --ignored where_a_processed_view --nocapture`.
+    #[test]
+    #[ignore = "a measurement, not a check"]
+    fn where_a_processed_view_spends_its_time() {
+        let (channels, rate, seconds) = (32usize, 24_414.0625f64, 20.0f64);
+        let samples = (rate * seconds) as usize;
+        let data: Vec<f32> = (0..channels * samples).map(|i| ((i % samples) as f32 * 0.013).sin() * 50.0 + ((i * 7919) % 1013) as f32 * 0.1).collect();
+        let source: Arc<dyn RecordingSource> = Arc::new(MemoryRecording::new("bench", data, channels, rate).unwrap());
+        let raw: Arc<dyn SignalBackend> = Arc::new(LocalSignal::open(source.clone(), None).unwrap());
+        let stages = vec![PipelineStage::bandpass(300.0, 6000.0), PipelineStage::lowpass(300.0), PipelineStage::teager_kaiser(), PipelineStage::fir(vec![0.2; 5])];
+        let all: Vec<usize> = (0..channels).collect();
+        let p = ProcessedSignal::new(raw, source, all.clone(), stages).unwrap();
+        let window = (rate * 10.0) as u64;
+        let time = |label: &str, f: &mut dyn FnMut()| {
+            let t = std::time::Instant::now();
+            f();
+            println!("{label:<52} {:8.1} ms", t.elapsed().as_secs_f64() * 1e3);
+        };
+        let mut env = Envelope::Samples(Vec::new());
+        let view = |start: u64| View { channels: all.clone(), start, end: start + window, width: 1200 };
+        time("first zoomed-out view (read, upload, chain, reduce)", &mut || p.view(&view(0), &mut env).unwrap());
+        time("the same view again (kept columns)", &mut || p.view(&view(0), &mut env).unwrap());
+        time("a pan inside the kept block (reduce only)", &mut || p.view(&view(window / 8), &mut env).unwrap());
+        let mut out = vec![0.0f32; channels * 2000];
+        time("a zoomed-in read of 2000 samples (download)", &mut || p.read(&all, window / 2..window / 2 + 2000, &mut out).unwrap());
+        // The browser's block size: the 20 s window in tiles of 16 Mi values
+        let tiled = p.with_max_values(dspk_view::PROCESSED_MAX_VALUES_BROWSER);
+        let wide = View { channels: all.clone(), start: 0, end: 2 * window, width: 1200 };
+        time("a 20 s view in tiles of 16 Mi values", &mut || tiled.view(&wide, &mut env).unwrap());
+        // The same with a one-step chain (a scale: almost no kernel time): the rest is reading
+        // and uploading
+        let source2 = tiled.preview.source();
+        let one = ProcessedSignal::new(Arc::new(LocalSignal::open(source2.clone(), None).unwrap()), source2, all.clone(), vec![PipelineStage::Scale { alpha: 1.0, beta: 0.0 }]).unwrap().with_max_values(dspk_view::PROCESSED_MAX_VALUES_BROWSER);
+        time("the same 20 s with a one-step chain (a scale; first)", &mut || one.view(&wide, &mut env).unwrap());
     }
 
     #[test]

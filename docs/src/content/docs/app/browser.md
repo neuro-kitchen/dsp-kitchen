@@ -11,13 +11,23 @@ the page, and processing runs on your own graphics card.
 
 ## Open a recording
 
-**Open folder…** and pick the folder that holds your recordings (or a `.zarr` folder itself).
-The viewer reads:
+**Drop it on the page**, or use the buttons:
+
+- **Open file…**: the file chooser, as for a PDF (no question from the browser): a `.wav`, or a
+  `.bin` with its `.meta` (select both).
+- **Open project…**: a project, or a Zarr recording (`.zarr`, `.nwb.zarr`). A Zarr recording
+  is stored as a folder, so your browser asks once to let the page read it ("View files"):
+  nothing is uploaded, the page reads it where it is. Dropping it on the page skips that question.
+
+One recording opens at once; only a project holding several asks which. The viewer reads:
 
 - **Zarr recordings** (`.zarr`, as `dspk convert` and `dspk run` write them: zstd, Blosc-LZ4,
   gzip or uncompressed, sharded or not). Only the chunks a view needs are read.
+- **NWB as Zarr** (`.nwb.zarr`): its largest electrical series in `/acquisition` (or its largest
+  continuous series), scaled to µV, with the channel names of its electrodes table. NWB in
+  HDF5 (`.nwb`) opens in the desktop app and the container.
 - **WAV files** (`.wav`): 8-, 16-, 24- or 32-bit PCM, or 32- or 64-bit float, any number of
-  channels. Integers are shown scaled to ±1. A good first file to try: any recording saved as audio.
+  channels. Integers are shown scaled to ±1.
 - **Raw recordings**: a `.bin` with its `.meta`, dspk's JSON layout:
 
 ```json
@@ -25,9 +35,8 @@ The viewer reads:
   "gain": 0.195, "unit": "microvolt" }
 ```
 
-One recording in the folder opens at once; with several, the viewer lists them. **Open files…**
-picks a `.wav`, or a `.bin` and its `.meta`, by hand. Files are read in pieces, so a recording
-larger than the browser's memory opens too; its overview fills in while you look.
+Files are read in pieces, so a recording larger than the browser's memory opens too; its
+overview fills in while you look.
 
 ## Curate a sorting
 
@@ -37,7 +46,7 @@ every view, label, merge and split, computed in the page on your CPU's threads. 
 to write to: **Save** downloads `dspk-curation.json`. Put it into the `.sorting.zarr` folder, where
 the desktop app and `dspk` read it.
 
-Not in the viewer yet: SpikeGLX (`.ap.bin` with SpikeGLX's `.meta`), NWB recordings, sorting a
+Not in the viewer yet: SpikeGLX (`.ap.bin` with SpikeGLX's `.meta`), NWB in HDF5, sorting a
 recording, and the analytics. Use the [desktop app](/dsp-kitchen/app/) or
 [the container](/dsp-kitchen/deploy/image/#the-app-in-your-browser), where the server sorts and
 curates.

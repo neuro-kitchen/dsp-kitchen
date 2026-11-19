@@ -184,6 +184,12 @@ pub struct Store {
     dark: bool,
     /// Pyramid progress per source id being built: (samples built, of all).
     pub pyramids: HashMap<String, (u64, u64)>,
+    /// When each source's overview was first seen building, and how far it was then (its rate:
+    /// time left in the label).
+    pyramid_clock: HashMap<String, (Instant, u64)>,
+    /// The overview that finished last: its source, how long it took, and when (said for a few
+    /// seconds: "Overview ready · built in 3 min 04 s").
+    pyramid_ready: Option<(String, f64, Instant)>,
     /// The session document: views, their op chains, display and linked sortings.
     pub doc: SessionDoc,
     doc_path: Option<PathBuf>,
@@ -195,6 +201,9 @@ pub struct Store {
     settings_path: Option<PathBuf>,
     settings_text: String,
     _settings_watch: Option<Task<()>>,
+    /// Why what the user last opened in a page is not a recording here: shown on the start
+    /// screen, under its buttons (not only in the status bar).
+    pub open_note: Option<String>,
     /// Live preview of each view's op chain (views of the open recording with enabled ops).
     previews: HashMap<String, Arc<ProcessedSignal>>,
     /// The same, computed by the recording's server when this app cannot compute (a page
@@ -253,6 +262,8 @@ impl Store {
             clock: None,
             dark: true,
             pyramids: HashMap::new(),
+            pyramid_clock: HashMap::new(),
+            pyramid_ready: None,
             doc: SessionDoc::default(),
             doc_path: None,
             doc_text: String::new(),
@@ -260,6 +271,7 @@ impl Store {
             settings_path: None,
             settings_text: String::new(),
             _settings_watch: None,
+            open_note: None,
             previews: HashMap::new(),
             remote_previews: HashMap::new(),
             live: None,
@@ -664,8 +676,16 @@ impl Store {
         if v.display.show != Show::Processed || !self.on_open_recording(v, source) {
             return None;
         }
-        // The server decides what it processes: a page's preview counts as covering
-        self.previews.get(&v.id).map(|p| p.covers(samples)).or_else(|| self.remote_previews.contains_key(&v.id).then_some(true))
+        if let Some(p) = self.previews.get(&v.id) {
+            return Some(p.covers(samples));
+        }
+        // Processed elsewhere: by this page's engine (a browser's limit) or the server (a
+        // computer's); past it the view is drawn raw, and the panel says so
+        self.remote_previews.contains_key(&v.id).then(|| {
+            let channels = v.recording.channels.as_ref().map_or_else(|| self.sources().map_or(0, |s| s.entry(source).channels), Vec::len);
+            let max = if crate::platform::remote::runs_alone() { dspk_view::PROCESSED_MAX_VALUES_BROWSER } else { dspk_view::PROCESSED_MAX_VALUES };
+            channels as u64 * samples <= (max * dspk_view::PROCESSED_MAX_TILES) as u64
+        })
     }
 
     /// Rebuilds the preview of view `id` from its enabled ops (none: no preview).
@@ -1582,6 +1602,8 @@ impl Store {
         self.timeline = TimelineState::new(recording.sources.extent_sec());
         self.selection = recording.sources.entries().iter().map(|e| (e.id.clone(), (0..e.channels).collect())).collect();
         self.pyramids.clear();
+        self.pyramid_clock.clear();
+        self.pyramid_ready = None;
         self.previews.clear();
         self.remote_previews.clear();
         self.preview_cache.clear();
@@ -1634,6 +1656,8 @@ impl Store {
             self.timeline = TimelineState::new(1.0);
             self.selection.clear();
             self.pyramids.clear();
+        self.pyramid_clock.clear();
+        self.pyramid_ready = None;
             self.previews.clear();
             self.remote_previews.clear();
             self.preview_cache.clear();
@@ -1667,13 +1691,18 @@ impl Store {
         }
         if !self.pyramids.contains_key(source) {
             self.pyramids.insert(source.to_string(), (progress.done, progress.total));
+            self.pyramid_clock.insert(source.to_string(), (Instant::now(), progress.done));
             let (tx, mut rx) = crate::data::channel::unbounded::<Progress>();
             let id = source.to_string();
             cx.spawn(async move |this, cx| {
                 while let Ok(p) = rx.recv().await {
                     let alive = this.update(cx, |s, cx| {
                         if let Some(entry) = s.pyramids.get_mut(&id) {
+                            let was_building = entry.0 < entry.1;
                             *entry = (p.done, p.total);
+                            if was_building && p.done >= p.total {
+                                s.overview_finished(&id, cx);
+                            }
                             cx.emit(AppEvent::PyramidProgress(id.clone()));
                         }
                     });
@@ -1691,13 +1720,96 @@ impl Store {
         signal.focus(focus);
     }
 
-    /// `Building overview 12 / 45 s` while the default source's pyramid builds.
+    /// Seconds an "Overview ready" notice stays.
+    const READY_NOTICE_SEC: f64 = 6.0;
+
+    /// Source `id`'s overview has just finished: say so for a few seconds.
+    fn overview_finished(&mut self, id: &str, cx: &mut Context<Self>) {
+        let took = self.pyramid_clock.get(id).map_or(0.0, |(t0, _)| t0.elapsed().as_secs_f64());
+        self.pyramid_ready = Some((id.to_string(), took, Instant::now()));
+        // Redraw once the notice is over, so it goes
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(std::time::Duration::from_secs_f64(Self::READY_NOTICE_SEC + 0.1)).await;
+            let _ = this.update(cx, |s, cx| {
+                if s.pyramid_ready.as_ref().is_some_and(|(_, _, at)| at.elapsed().as_secs_f64() >= Self::READY_NOTICE_SEC) {
+                    s.pyramid_ready = None;
+                    cx.emit(AppEvent::PyramidProgress(String::new()));
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// The default source's overview while it builds: (fraction built, seconds left once the
+    /// rate is known).
+    pub fn pyramid_status(&self) -> Option<(f64, Option<f64>)> {
+        let id = &self.sources()?.default_entry().id;
+        let &(done, total) = self.pyramids.get(id)?;
+        if done >= total || total == 0 {
+            return None;
+        }
+        let left = self.pyramid_clock.get(id).and_then(|&(t0, from)| {
+            let elapsed = t0.elapsed().as_secs_f64();
+            // A rate from a few seconds of building, not the first jump
+            (elapsed >= 3.0 && done > from).then(|| (total - done) as f64 * elapsed / (done - from) as f64)
+        });
+        Some((done as f64 / total as f64, left))
+    }
+
+    /// `Overview 19 % · 2 min 10 s left` while the default source's overview builds, then
+    /// `Overview ready · built in 3 min 04 s` for a few seconds.
     pub fn pyramid_label(&self) -> Option<String> {
+        if let Some((fraction, left)) = self.pyramid_status() {
+            let percent = (fraction * 100.0).floor().min(99.0);
+            return Some(match left {
+                Some(sec) => format!("Overview {percent:.0} % · {} left", duration(sec.max(1.0))),
+                None => format!("Overview {percent:.0} %"),
+            });
+        }
+        let (id, took, at) = self.pyramid_ready.as_ref()?;
+        (at.elapsed().as_secs_f64() < Self::READY_NOTICE_SEC && self.sources().is_some_and(|s| s.default_entry().id == *id)).then(|| {
+            if *took >= 1.0 { format!("Overview ready · built in {}", duration(*took)) } else { "Overview ready".to_string() }
+        })
+    }
+
+    /// What the overview label's tooltip explains: what the overview is, how far, where it is
+    /// built, how fast, and whether it is kept for next time.
+    pub fn pyramid_detail(&self) -> Option<String> {
         let sources = self.sources()?;
         let e = sources.default_entry();
-        let &(done, total) = self.pyramids.get(&e.id)?;
-        let hz = e.sample_rate.rate_hz();
-        (done < total && hz > 0.0).then(|| format!("Building overview {:.0} / {:.0} s", done as f64 / hz, total as f64 / hz))
+        let (fraction, _) = self.pyramid_status()?;
+        let info = sources.get(&e.id).signal().info().clone();
+        let total_sec = info.samples as f64 / info.sample_rate_hz().max(1e-9);
+        let (where_, kept) = if crate::platform::remote::runs_alone() {
+            ("in this browser (nothing is uploaded)", "kept in this browser once complete: the next open of these files is instant")
+        } else if cfg!(target_family = "wasm") {
+            ("on the server", "kept by the server next to the recording")
+        } else {
+            ("on this computer", "kept next to the recording when its folder can be written")
+        };
+        let mut lines = vec![
+            "Zoomed-out views fill in as the overview is built, nearest what you look at first; zoomed-in views read the recording directly.".to_string(),
+            format!("Built: {} of {} ({:.0} %).", duration(fraction * total_sec), duration(total_sec), fraction * 100.0),
+            format!("Where: {where_}."),
+        ];
+        if let Some(&(t0, from)) = self.pyramid_clock.get(&e.id) {
+            let elapsed = t0.elapsed().as_secs_f64();
+            let done = (fraction * info.samples as f64) as u64;
+            if elapsed >= 3.0 && done > from {
+                let bytes = (done - from) as f64 * info.channel_count() as f64 * info.format.bytes() as f64;
+                lines.push(format!("Speed: {:.0} MB/s of samples.", bytes / elapsed / 1e6));
+            }
+        }
+        lines.push(format!("It is {kept}."));
+        Some(lines.join("\n"))
+    }
+
+    /// Which of `columns` equal parts of the default source have their overview, while it builds
+    /// (`None` once complete): the band under the timeline.
+    pub fn pyramid_built(&self, columns: usize) -> Option<Vec<bool>> {
+        self.pyramid_status()?;
+        let sources = self.sources()?;
+        Some(sources.get(&sources.default_entry().id).signal().built(columns))
     }
 
     // ------------------------------------------------------------------------

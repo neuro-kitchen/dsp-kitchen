@@ -77,6 +77,15 @@ fn backend() -> gpui_kit::web::WebBackendPreference {
 
 #[wasm_bindgen(start)]
 pub fn start() {
+    // A panic in a page aborts with "unreachable": say what it was first (the console; the
+    // loader shows `window.dspkLastPanic`). As lucem's.
+    std::panic::set_hook(Box::new(|info| {
+        let text = format!("dspk panicked: {info}");
+        log::error!("{text}");
+        if let Some(w) = web_sys::window() {
+            let _ = js_sys::Reflect::set(&w, &"dspkLastPanic".into(), &text.into());
+        }
+    }));
     static CONSTRUCTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if !CONSTRUCTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
         // SAFETY: the linker's own function; called once, before anything reads a registry

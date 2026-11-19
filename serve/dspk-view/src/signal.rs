@@ -42,6 +42,14 @@ pub trait SignalBackend: Send + Sync {
 
     /// Calls `on_progress` whenever more zoomed-out data is ready.
     fn watch(&self, on_progress: OnProgress);
+
+    /// Whether each of `columns` equal parts of the recording has its zoomed-out data (a map of
+    /// the overview under a timeline). The default assumes it builds from the start.
+    fn built(&self, columns: usize) -> Vec<bool> {
+        let p = self.progress();
+        let total = p.total.max(1);
+        (0..columns).map(|x| p.done >= total || (x as u64 + 1) * total <= p.done * columns as u64).collect()
+    }
 }
 
 /// A recording in this process, its min/max [`Pyramid`] (a file for recordings of at least
@@ -143,6 +151,10 @@ impl SignalBackend for LocalSignal {
 
     fn progress(&self) -> Progress {
         Progress { filled: 0..0, done: self.done.load(Ordering::Relaxed), total: self.source.info().samples }
+    }
+
+    fn built(&self, columns: usize) -> Vec<bool> {
+        self.pyramid.built_columns(columns)
     }
 
     fn watch(&self, on_progress: OnProgress) {

@@ -13,10 +13,14 @@ use std::sync::Arc;
 use dspk_core::recording::{check_read, check_read_stored};
 use dspk_core::{DspError, DspResult, MemoryOrder, RationalTime, RecordingInfo, RecordingSource, SampleFormat, SampleRate, SignalUnit, MICROVOLTS_PER_VOLT};
 use serde_json::Value;
-use zarrs::array::{Array, ArrayBytes};
+use zarrs::array::chunk_cache::{ChunkCache as _, ChunkCacheDecodedLruSizeLimit};
+use zarrs::array::{Array, ArrayBytes, CodecOptions};
+
+/// Bytes of decoded chunks an NWB series keeps (a few dozen chunks of a typical series).
+const CHUNK_CACHE_BYTES: u64 = 96 << 20;
 
 use dspk_io::container::binary::codec::{native_to_le, scale_frames, select_stored};
-use dspk_io::container::zarr::{read_all, read_node_json};
+use dspk_io::container::zarr::{read_all, read_node_json, read_node_json_in};
 use zarrs::storage::ReadableStorageTraits;
 
 type Storage = dyn ReadableStorageTraits;
@@ -50,18 +54,27 @@ pub struct SeriesEntry {
 /// (irregular, timestamped series such as event trains are not recordings).
 pub fn list_series(store: &Path) -> Vec<SeriesEntry> {
     let Ok(entries) = std::fs::read_dir(store.join("acquisition")) else { return Vec::new() };
-    let mut out: Vec<SeriesEntry> = entries
-        .flatten()
-        .filter_map(|e| {
-            let path = format!("/acquisition/{}", e.file_name().to_string_lossy());
-            let meta = read_node_json(store, &path)?;
+    let names: Vec<String> = entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    let Ok(fs) = dspk_io::container::zarr::open_store(store) else { return Vec::new() };
+    let fs: Arc<Storage> = fs;
+    list_series_in(&fs, &names)
+}
+
+/// [`list_series`] in `store`, whose `/acquisition` holds the nodes `names` (a store that cannot
+/// list itself: a browser page's picked files, whose paths say what is there).
+pub fn list_series_in(store: &Arc<Storage>, names: &[String]) -> Vec<SeriesEntry> {
+    let mut out: Vec<SeriesEntry> = names
+        .iter()
+        .filter_map(|name| {
+            let path = format!("/acquisition/{name}");
+            let meta = read_node_json_in(store, &path)?;
             let kind = meta["attributes"]["neurodata_type"].as_str()?.to_string();
             if !matches!(kind.as_str(), "ElectricalSeries" | "TimeSeries") {
                 return None;
             }
-            let start_meta = read_node_json(store, &format!("{path}/starting_time"))?;
+            let start_meta = read_node_json_in(store, &format!("{path}/starting_time"))?;
             let rate = start_meta["attributes"]["rate"].as_f64()?;
-            let data_meta = read_node_json(store, &format!("{path}/data"))?;
+            let data_meta = read_node_json_in(store, &format!("{path}/data"))?;
             let unit = data_meta["attributes"]["unit"].as_str().unwrap_or("a.u.").to_string();
             let format = SampleFormat::parse(data_meta["data_type"].as_str()?)?;
             let shape: Vec<u64> = data_meta["shape"].as_array()?.iter().filter_map(Value::as_u64).collect();
@@ -70,8 +83,7 @@ pub fn list_series(store: &Path) -> Vec<SeriesEntry> {
                 [t, c] => (t, c as usize),
                 _ => return None,
             };
-            let fs: Arc<Storage> = dspk_io::container::zarr::open_store(store).ok()?;
-            let start_time = read_all::<f64>(&fs, &format!("{path}/starting_time")).and_then(|v| v.first().copied()).unwrap_or(0.0);
+            let start_time = read_all::<f64>(store, &format!("{path}/starting_time")).and_then(|v| v.first().copied()).unwrap_or(0.0);
             Some(SeriesEntry { path, neurodata_type: kind, channels, samples, rate, start_time, format, unit })
         })
         .collect();
@@ -81,16 +93,19 @@ pub fn list_series(store: &Path) -> Vec<SeriesEntry> {
 
 pub struct NwbZarrRecording {
     info: RecordingInfo,
-    data: Array<Storage>,
+    /// The series' `data` array, through decoded chunks kept for reads that come back to them
+    /// (a sorting's spike windows, panning): a chunk of a compressed series is decoded whole for
+    /// any read inside it.
+    cache: ChunkCacheDecodedLruSizeLimit,
     two_d: bool,
     /// Samples per chunk along time (the first chunk's).
     chunk_samples: Option<u64>,
 }
 
 // SAFETY: on wasm zarrs stops requiring `Send` / `Sync` of its traits, so `Array` lacks them
-// there (on other targets it has them and these are not compiled). A browser page has no file
-// system: the store is opened through `open_store`, which refuses there, so no NWB recording is
-// ever made in a browser; the impls only let the type compile with the rest of the reader.
+// there (on other targets it has them and these are not compiled). In a browser an NWB recording
+// is made only by the page's engine ([`NwbZarrRecording::open_in`]), a single-thread module in
+// one worker: nothing it holds is ever reached from another thread.
 #[cfg(target_family = "wasm")]
 unsafe impl Send for NwbZarrRecording {}
 #[cfg(target_family = "wasm")]
@@ -99,24 +114,40 @@ unsafe impl Sync for NwbZarrRecording {}
 impl NwbZarrRecording {
     /// Opens the largest `ElectricalSeries`, or the largest continuous series if there is none.
     pub fn open(path: &Path) -> DspResult<Self> {
-        let series = list_series(path);
+        let store: Arc<Storage> = dspk_io::container::zarr::open_store(path)?;
+        let names: Vec<String> = std::fs::read_dir(path.join("acquisition")).map(|d| d.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default();
+        Self::open_in(store, &path.to_string_lossy(), &names)
+    }
+
+    /// Opens the series at `series` (e.g. `/acquisition/HDEMG`).
+    pub fn open_series(path: &Path, series: &str) -> DspResult<Self> {
+        let store: Arc<Storage> = dspk_io::container::zarr::open_store(path)?;
+        let others: Vec<String> = list_series(path).into_iter().map(|s| s.path).filter(|p| p != series).collect();
+        Self::open_series_in(store, &path.to_string_lossy(), series, others)
+    }
+
+    /// [`Self::open`] over `store` (named `label`), whose `/acquisition` holds the nodes
+    /// `acquisition`: what a browser page's engine opens from the files picked.
+    pub fn open_in(store: Arc<Storage>, label: &str, acquisition: &[String]) -> DspResult<Self> {
+        let series = list_series_in(&store, acquisition);
         let size = |s: &&SeriesEntry| s.samples * s.channels as u64;
         let pick = series
             .iter()
             .filter(|s| s.neurodata_type == "ElectricalSeries")
             .max_by_key(size)
             .or_else(|| series.iter().max_by_key(size))
-            .ok_or_else(|| err(format!("{} has no continuous series in /acquisition", path.display())))?;
-        Self::open_series(path, &pick.path)
+            .ok_or_else(|| err(format!("{label} has no continuous series in /acquisition")))?;
+        let others: Vec<String> = series.iter().map(|s| s.path.clone()).filter(|p| *p != pick.path).collect();
+        Self::open_series_in(store, label, &pick.path, others)
     }
 
-    /// Opens the series at `series` (e.g. `/acquisition/HDEMG`).
-    pub fn open_series(path: &Path, series: &str) -> DspResult<Self> {
-        let store: Arc<Storage> = dspk_io::container::zarr::open_store(path)?;
+    /// [`Self::open_series`] over `store` (named `label`); `others`: the store's other series,
+    /// named in the recording's metadata.
+    pub fn open_series_in(store: Arc<Storage>, label: &str, series: &str, others: Vec<String>) -> DspResult<Self> {
         let data_path = format!("{series}/data");
-        let data = Array::open(store.clone(), &data_path).map_err(|e| err(format!("{data_path}: {e}")))?;
-        let meta = read_node_json(path, &data_path).ok_or_else(|| err(format!("{data_path}: no metadata")))?;
-        let group = read_node_json(path, series).unwrap_or(Value::Null);
+        let data = Arc::new(Array::open(store.clone(), &data_path).map_err(|e| err(format!("{data_path}: {e}")))?);
+        let meta = read_node_json_in(&store, &data_path).ok_or_else(|| err(format!("{data_path}: no metadata")))?;
+        let group = read_node_json_in(&store, series).unwrap_or(Value::Null);
         let kind = group["attributes"]["neurodata_type"].as_str().unwrap_or("TimeSeries").to_string();
 
         let data_type = meta["data_type"].as_str();
@@ -130,7 +161,7 @@ impl NwbZarrRecording {
             _ => return Err(DspError::UnsupportedFormat(format!("{data_path}: {}-D data", shape.len()))),
         };
 
-        let start_meta = read_node_json(path, &format!("{series}/starting_time"))
+        let start_meta = read_node_json_in(&store, &format!("{series}/starting_time"))
             .ok_or_else(|| DspError::UnsupportedFormat(format!("{series} has timestamps, not a regular rate")))?;
         let rate = start_meta["attributes"]["rate"].as_f64().ok_or_else(|| err(format!("{series}/starting_time has no rate")))?;
         let start = read_all::<f64>(&store, &format!("{series}/starting_time")).and_then(|v| v.first().copied()).unwrap_or(0.0);
@@ -150,7 +181,7 @@ impl NwbZarrRecording {
 
         let name = format!(
             "{} · {}",
-            path.file_name().map_or_else(|| "nwb".into(), |n| n.to_string_lossy().into_owned()),
+            label.trim_end_matches(['/', '\\']).rsplit(['/', '\\']).next().filter(|n| !n.is_empty()).unwrap_or("nwb"),
             series.rsplit('/').next().unwrap_or(series)
         );
         let mut info = RecordingInfo::new(name, channels, samples, SampleRate::new(rate)?, format, MemoryOrder::TimeMajor);
@@ -176,13 +207,13 @@ impl NwbZarrRecording {
         info.metadata.insert("nwb_series".into(), series.to_string());
         info.metadata.insert("nwb_type".into(), kind);
         info.metadata.insert("unit".into(), if to_uv > 1.0 { "uV".into() } else { unit });
-        let others: Vec<String> = list_series(path).into_iter().map(|s| s.path).filter(|p| p != series).collect();
         if !others.is_empty() {
             info.metadata.insert("nwb_other_series".into(), others.join(", "));
         }
         let origin = vec![0; data.shape().len()];
         let chunk_samples = data.chunk_shape(&origin).ok().map(|c| c[0].get());
-        Ok(Self { info, data, two_d, chunk_samples })
+        let cache = ChunkCacheDecodedLruSizeLimit::new(data.clone(), CHUNK_CACHE_BYTES);
+        Ok(Self { info, cache, two_d, chunk_samples })
     }
 
     fn retrieve(&self, ch: Range<u64>, samples: Range<u64>) -> DspResult<Vec<f32>> {
@@ -190,9 +221,9 @@ impl NwbZarrRecording {
         macro_rules! get {
             ($t:ty) => {
                 if self.two_d {
-                    self.data.retrieve_array_subset::<Vec<$t>>(&[samples.clone(), ch.clone()]).map_err(read)?
+                    self.cache.retrieve_array_subset::<Vec<$t>>(&[samples.clone(), ch.clone()], &CodecOptions::default()).map_err(read)?
                 } else {
-                    self.data.retrieve_array_subset::<Vec<$t>>(&[samples.clone()]).map_err(read)?
+                    self.cache.retrieve_array_subset::<Vec<$t>>(&[samples.clone()], &CodecOptions::default()).map_err(read)?
                 }
             };
         }
@@ -244,9 +275,9 @@ impl RecordingSource for NwbZarrRecording {
         let hi = *channels.iter().max().unwrap() + 1;
         let bytes = self.info.format.bytes();
         let fetched = if self.two_d {
-            self.data.retrieve_array_subset::<ArrayBytes<'static>>(&[samples.clone(), lo as u64..hi as u64])
+            self.cache.retrieve_array_subset::<ArrayBytes<'static>>(&[samples.clone(), lo as u64..hi as u64], &CodecOptions::default())
         } else {
-            self.data.retrieve_array_subset::<ArrayBytes<'static>>(&[samples.clone()])
+            self.cache.retrieve_array_subset::<ArrayBytes<'static>>(&[samples.clone()], &CodecOptions::default())
         };
         let mut block = fetched.map_err(err)?.into_fixed().map_err(|e| err(e.to_string()))?.into_owned();
         native_to_le(&mut block, bytes);

@@ -200,7 +200,7 @@ impl Render for ServerBrowser {
             .max_h(gpui_kit::relative(0.85))
             .overflow_y_scroll()
             .gap_2()
-            .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(if alone { "Open a recording" } else { "Open from server" }))
+            .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(if alone { "Which recording?" } else { "Open from server" }))
             .child(if alone {
                 // A page on its own: the folder picked, read in this browser (no server to choose)
                 div().into_any_element()

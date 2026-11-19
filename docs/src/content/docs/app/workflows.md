@@ -9,7 +9,7 @@ sidebar:
 
 This takes a recording from raw to a processed file.
 
-1. **Open it.** File → Open file… or Open folder… (SpikeGLX, raw `.bin` + `.meta`, NWB Zarr and more). The first
+1. **Open it.** File → Open file… or Open project… (SpikeGLX, raw `.bin` + `.meta`, NWB Zarr and more). The first
    open of a long file builds its pyramid in the background; you can scroll meanwhile.
 2. **Find what you need.** In Explore, zoom out with Ctrl+wheel, and use a heatmap to see all channels.
    Double-click it to bring a channel up as traces.

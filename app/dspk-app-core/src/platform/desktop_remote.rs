@@ -172,6 +172,11 @@ pub fn served() -> bool {
     false
 }
 
+/// The desktop always knows where its recordings come from (its disk).
+pub fn connected() -> bool {
+    true
+}
+
 /// A page's call to its server's plugin; the desktop computes itself.
 pub async fn plugin_call(_plugin: &str, _method: &str, _body: Vec<u8>) -> anyhow::Result<Vec<u8>> {
     anyhow::bail!("the desktop app computes itself")

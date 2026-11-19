@@ -28,9 +28,31 @@ pub fn envelope_on_device<F: Float + CubeElement>(
     first: u64,
     columns: Columns,
 ) -> DspResult<Vec<[f32; 2]>> {
+    let last = first + samples as u64;
+    let Some(out) = envelope_launch::<F>(client, input, channels, samples, first, first..last, columns)? else { return Ok(Vec::new()) };
+    let mut env = envelope_pairs::<F>(&client.read_one_unchecked(out));
+    finish(&mut env);
+    Ok(env)
+}
+
+/// Launches [`envelope_on_device`]'s reduction without reading it back (a browser reads back
+/// only asynchronously), counting only the buffer's samples inside `valid` (recording samples:
+/// a processed block's settling halo stays out). Returns the device buffer of
+/// `channels × columns.count()` `[min, max]` pairs of `F`, `[+∞, −∞]` where no sample fell
+/// ([`envelope_pairs`] reads them; [`finish`] turns those into NaN once every part is merged),
+/// or `None` when there is nothing to reduce.
+pub fn envelope_launch<F: Float + CubeElement>(
+    client: &Client,
+    input: &Handle,
+    channels: usize,
+    samples: usize,
+    first: u64,
+    valid: std::ops::Range<u64>,
+    columns: Columns,
+) -> DspResult<Option<Handle>> {
     let count = columns.count();
     if channels == 0 || count == 0 {
-        return Ok(Vec::new());
+        return Ok(None);
     }
     let values = channels.checked_mul(samples).filter(|&v| u32::try_from(v).is_ok());
     let rows = channels.checked_mul(count).filter(|&r| u32::try_from(r * PAIR as usize).is_ok());
@@ -40,9 +62,9 @@ pub fn envelope_on_device<F: Float + CubeElement>(
         )));
     };
 
-    // Column edges as offsets into the buffer, clipped to it
-    let last = first + samples as u64;
-    let offset = |s: u64| (s.clamp(first, last) - first) as u32;
+    // Column edges as offsets into the buffer, clipped to it and to `valid`
+    let (lo, hi) = (valid.start.max(first), valid.end.min(first + samples as u64).max(valid.start.max(first)));
+    let offset = |s: u64| (s.clamp(lo, hi) - first) as u32;
     let edges: Vec<u32> = (0..count).map(|x| offset(columns.start(x))).chain([offset(columns.end())]).collect();
     let longest = edges.windows(2).map(|w| w[1].saturating_sub(w[0])).max().unwrap_or(0) as usize;
 
@@ -63,15 +85,13 @@ pub fn envelope_on_device<F: Float + CubeElement>(
             geom.cube_dim.x,
         );
     }
-    let bytes = client.read_one_unchecked(out);
-    let mut env: Vec<[f32; 2]> = F::from_bytes(&bytes)
-        .as_chunks::<{ PAIR as usize }>()
-        .0
-        .iter()
-        .map(|p| [p[0].to_f32().unwrap_or(f32::NAN), p[1].to_f32().unwrap_or(f32::NAN)])
-        .collect();
-    finish(&mut env);
-    Ok(env)
+    Ok(Some(out))
+}
+
+/// The `[min, max]` pairs of an [`envelope_launch`] output read back as bytes (before
+/// [`finish`]: columns no sample reached are still `[+∞, −∞]`, so parts merge).
+pub fn envelope_pairs<F: Float + CubeElement>(bytes: &[u8]) -> Vec<[f32; 2]> {
+    F::from_bytes(bytes).as_chunks::<{ PAIR as usize }>().0.iter().map(|p| [p[0].to_f32().unwrap_or(f32::NAN), p[1].to_f32().unwrap_or(f32::NAN)]).collect()
 }
 
 #[cfg(test)]
@@ -115,6 +135,34 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// Samples outside `valid` (a processed block's halo) never reach a column.
+    struct Valid;
+
+    impl ComputeTask for Valid {
+        type Output = ();
+        fn run(self, client: Client) {
+            let (samples, first) = (1_000usize, 500u64);
+            // Halo values far outside the interior's range
+            let data: Vec<f32> = (0..samples).map(|i| if !(100..900).contains(&i) { 1e6 } else { (i % 17) as f32 }).collect();
+            let input = client.create_from_slice(f32::as_bytes(&data));
+            let columns = Columns::Even { start: first, len: samples as u64, width: 10 };
+            let out = envelope_launch::<f32>(&client, &input, 1, samples, first, first + 100..first + 900, columns).unwrap().unwrap();
+            let mut env = envelope_pairs::<f32>(&client.read_one_unchecked(out));
+            finish(&mut env);
+            assert!(env[0][0].is_nan() && env[9][0].is_nan(), "columns wholly in the halo are empty: {env:?}");
+            for x in 1..9 {
+                assert!(env[x][1] <= 16.0, "{} column {x}: {:?}", client.name(), env[x]);
+            }
+        }
+    }
+
+    #[test]
+    fn device_envelope_leaves_out_samples_outside_valid() {
+        for target in ComputeTarget::for_tests() {
+            target.run(Valid).expect("compiled-in runtime");
         }
     }
 

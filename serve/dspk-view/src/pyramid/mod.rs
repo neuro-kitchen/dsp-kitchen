@@ -218,7 +218,18 @@ impl Pyramid {
         let offset = (range.start - block.first) as usize;
         let columns = Columns::Buckets { origin: range.start, size: l.base, count };
         fold_block(block, offset..offset + (range.end - range.start) as usize, columns, scratch);
-        for (ch, row) in scratch.chunks_exact(count).enumerate() {
+        self.publish_page(page, scratch, count);
+    }
+
+    /// Writes page `page`'s level-0 buckets (`rows`: `count` per channel, channel after channel),
+    /// merges its finer levels and the coarser buckets it completes, and marks it built. The
+    /// caller claimed the page.
+    fn publish_page(&self, page: u64, rows: &[[f32; 2]], count: usize) {
+        let (word, bit) = ((page / 64) as usize, 1u64 << (page % 64));
+        let l = &self.layout;
+        let range = l.page_range(page);
+        let first = l.buckets_of(0, &range);
+        for (ch, row) in rows.chunks_exact(count).take(l.channels).enumerate() {
             // SAFETY: level-0 buckets of this page are contiguous per channel and owned by us.
             unsafe { std::ptr::copy_nonoverlapping(row.as_ptr(), self.slot(0, ch, first.start), count) };
         }
@@ -328,6 +339,96 @@ impl Pyramid {
         let j1 = if x + 1 == width { end.div_ceil(bucket) } else { edge(x + 1) };
         Some((edge(x) * bucket, (j1 * bucket).min(self.layout.samples)))
     }
+
+    /// Pages in all (the unit of filling, [`Self::page_samples`] each, the last one shorter).
+    pub fn pages(&self) -> u64 {
+        self.layout.pages
+    }
+
+    /// Whether page `page` is built.
+    pub fn page_built(&self, page: u64) -> bool {
+        page < self.layout.pages && self.page_ready(page)
+    }
+
+    /// Level-0 buckets ([`Self::base`] samples each) of page `page`.
+    pub fn page_buckets(&self, page: u64) -> usize {
+        let range = self.layout.page_range(page);
+        let b = self.layout.buckets_of(0, &range);
+        (b.end - b.start) as usize
+    }
+
+    /// Builds page `page` from its level-0 `[min, max]` buckets, computed elsewhere (a browser
+    /// page decodes chunks on several workers and sends only these): `rows` holds
+    /// [`Self::page_buckets`] per channel, channel after channel, [`EMPTY`] (`[+∞, −∞]`)
+    /// for buckets without samples. Returns `false` when the page was built or taken already, or `rows` has the wrong
+    /// length. Fills the same buckets as [`Self::fill`] given the same samples.
+    pub fn build_page_from_buckets(&self, page: u64, rows: &[[f32; 2]]) -> DspResult<bool> {
+        if page >= self.layout.pages {
+            return Ok(false);
+        }
+        let count = self.page_buckets(page);
+        if rows.len() != count * self.layout.channels {
+            return Err(DspError::ShapeMismatch { expected: vec![self.layout.channels, count], actual: vec![rows.len()] });
+        }
+        let (word, bit) = ((page / 64) as usize, 1u64 << (page % 64));
+        if self.claimed[word].fetch_or(bit, Ordering::AcqRel) & bit != 0 {
+            return Ok(false);
+        }
+        self.publish_page(page, rows, count);
+        if self.is_complete() && !self.marked_complete.swap(true, Ordering::AcqRel) {
+            self.storage.mark_complete()?;
+        }
+        Ok(true)
+    }
+
+    /// Whether each of `columns` equal parts of the recording is built (every page in it): a
+    /// map of the overview for a progress bar.
+    pub fn built_columns(&self, columns: usize) -> Vec<bool> {
+        let total = self.layout.samples;
+        (0..columns)
+            .map(|x| {
+                let (a, b) = (total * x as u64 / columns as u64, total * (x as u64 + 1) / columns as u64);
+                self.covers(a, b.max(a + 1))
+            })
+            .collect()
+    }
+
+    /// The whole pyramid as bytes, once complete (to keep it: a browser page stores its
+    /// in-memory pyramid so the recording opens complete next time); `None` before.
+    pub fn complete_bytes(&self) -> Option<Vec<u8>> {
+        if !self.is_complete() {
+            return None;
+        }
+        // SAFETY: every bucket is built, and built buckets are never written again.
+        Some(unsafe { std::slice::from_raw_parts(self.storage.ptr(), self.layout.bytes) }.to_vec())
+    }
+
+    /// Fills this (still empty) pyramid from `bytes` that [`Self::complete_bytes`] gave for the
+    /// same recording and base, and marks it complete. Returns `false`, changing nothing, when
+    /// the length does not match or a page was taken already.
+    pub fn restore(&self, bytes: &[u8]) -> bool {
+        if bytes.len() != self.layout.bytes || (0..self.layout.pages).any(|p| self.claimed[(p / 64) as usize].load(Ordering::Acquire) & (1 << (p % 64)) != 0) {
+            return false;
+        }
+        for w in &self.claimed {
+            w.store(u64::MAX, Ordering::Release);
+        }
+        // SAFETY: no page was claimed, so no thread writes or reads a bucket of it; readers only
+        // read buckets after their ready bit (set below, `Release`).
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), self.storage.ptr(), bytes.len()) };
+        let n = self.layout.pages;
+        for (w, word) in self.ready.iter().enumerate() {
+            let valid = (n - 64 * w as u64).min(64);
+            word.store(if valid == 64 { u64::MAX } else { (1 << valid) - 1 }, Ordering::Release);
+        }
+        for level in &self.upper {
+            for state in level {
+                state.store(DONE, Ordering::Release);
+            }
+        }
+        self.marked_complete.store(true, Ordering::Release);
+        true
+    }
 }
 
 fn check_base(base: u64) -> DspResult<()> {
@@ -366,6 +467,72 @@ mod tests {
             }
         }
         out
+    }
+
+    /// Level-0 buckets of page `page` computed here as a browser helper does: from the samples
+    /// alone, `[+∞, −∞]` where no sample falls.
+    fn page_rows(rec: &MemoryRecording, p: &Pyramid, page: u64) -> Vec<[f32; 2]> {
+        let (start, count) = (page * p.page_samples(), p.page_buckets(page));
+        let end = (start + p.page_samples()).min(p.samples());
+        let channels: Vec<usize> = (0..rec.info().channel_count()).collect();
+        let mut buf = vec![0.0f32; channels.len() * (end - start) as usize];
+        rec.read(&channels, start..end, &mut buf).unwrap();
+        let mut rows = vec![EMPTY; channels.len() * count];
+        for (c, row) in buf.chunks_exact((end - start) as usize).enumerate() {
+            for (i, &v) in row.iter().enumerate() {
+                let b = &mut rows[c * count + i / p.base() as usize];
+                *b = [b[0].min(v), b[1].max(v)];
+            }
+        }
+        rows
+    }
+
+    #[test]
+    fn pages_from_buckets_equal_pages_filled_in_any_order() {
+        let rec = recording(3, 100_003);
+        let (filled, given) = (Pyramid::in_memory(&rec, 16).unwrap(), Pyramid::in_memory(&rec, 16).unwrap());
+        filled.fill(&rec, 0, 100_003, 1 << 16, || false).unwrap();
+        // Last page first, then the middle outwards: the order a focus gives
+        let pages = given.pages();
+        let mut order: Vec<u64> = (0..pages).collect();
+        order.sort_by_key(|&q| (q as i64 - pages as i64 / 2).abs());
+        order.insert(0, pages - 1);
+        for q in order {
+            let rows = page_rows(&rec, &given, q);
+            given.build_page_from_buckets(q, &rows).unwrap();
+        }
+        assert!(given.is_complete());
+        assert!(given.built_columns(7).iter().all(|&b| b));
+        for &(start, end, width) in &[(0u64, 100_003u64, 64usize), (12_345, 54_321, 33), (99_000, 100_003, 4)] {
+            let (mut a, mut b) = (vec![[0.0; 2]; 3 * width], vec![[0.0; 2]; 3 * width]);
+            filled.envelope(&[0, 1, 2], start, end, width, &mut a).unwrap();
+            given.envelope(&[0, 1, 2], start, end, width, &mut b).unwrap();
+            assert_eq!(a, b, "{start}..{end} at {width}");
+        }
+        // A page given twice, or with the wrong length, changes nothing
+        assert!(!given.build_page_from_buckets(0, &page_rows(&rec, &given, 0)).unwrap());
+        assert!(Pyramid::in_memory(&rec, 16).unwrap().build_page_from_buckets(0, &[EMPTY; 3]).is_err());
+    }
+
+    #[test]
+    fn a_complete_pyramid_restores_from_its_bytes() {
+        let rec = recording(2, 40_000);
+        let p = Pyramid::in_memory(&rec, 16).unwrap();
+        assert!(p.complete_bytes().is_none(), "not before it is complete");
+        p.fill(&rec, 0, 40_000, 1 << 16, || false).unwrap();
+        let bytes = p.complete_bytes().unwrap();
+        let back = Pyramid::in_memory(&rec, 16).unwrap();
+        assert!(!back.restore(&bytes[1..]), "a wrong length is refused");
+        assert!(back.restore(&bytes));
+        assert!(back.is_complete());
+        let (mut a, mut b) = (vec![[0.0; 2]; 2 * 50], vec![[0.0; 2]; 2 * 50]);
+        p.envelope(&[0, 1], 0, 40_000, 50, &mut a).unwrap();
+        back.envelope(&[0, 1], 0, 40_000, 50, &mut b).unwrap();
+        assert_eq!(a, b);
+        // A pyramid that started building is not overwritten
+        let started = Pyramid::in_memory(&rec, 16).unwrap();
+        started.fill(&rec, 0, 100, 1 << 16, || false).unwrap();
+        assert!(!started.restore(&bytes));
     }
 
     fn temp_dir(name: &str) -> PathBuf {

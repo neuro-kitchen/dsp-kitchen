@@ -13,8 +13,25 @@ use crate::error::{StreamError, StreamResult};
 pub(crate) const ID_CLIENT: &[u8] = b"dspk-pair-client";
 pub(crate) const ID_SERVER: &[u8] = b"dspk-pair-server";
 
-/// The path of the WebSocket on the server for browsers.
+/// The path of the WebSocket on the server for browsers (the fallback where WebTransport, UDP,
+/// does not get through).
 pub const WS_PATH: &str = "/ws";
+/// The path of the WebTransport session on the server for browsers.
+pub const WT_PATH: &str = "/dspk";
+
+/// What `dspk serve` tells a page before it connects (`dspk-serve.json`): its name, and where its
+/// WebTransport endpoint is with the SHA-256 of its certificate (a browser accepts a self-signed
+/// certificate for WebTransport only by this hash, and only for an ECDSA certificate valid 14
+/// days at most). A page on its own (GitHub Pages) ships `{"server": null}`. (As lucem's.)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ServeInfo {
+    pub server: Option<String>,
+    #[serde(default)]
+    pub webtransport_port: Option<u16>,
+    /// The certificate's SHA-256 (32 bytes), for `serverCertificateHashes`.
+    #[serde(default)]
+    pub certificate_sha256: Vec<u8>,
+}
 
 /// What a client may do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
