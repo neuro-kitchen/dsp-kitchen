@@ -1,9 +1,14 @@
 //! The chains made for a recording's views, kept so views share what they have in common.
 //!
 //! A chain's **key** is its source and channels, then each step's key (the node as JSON). A view
-//! whose chain starts with a kept chain's whole key reads that chain's output and runs only its
-//! own steps ([`PreviewSource`]): two views of one recording, one band-passed and one band-passed
-//! then rectified, compute the band-pass once.
+//! whose chain starts with a kept chain's whole key reads that chain's output on the device and
+//! runs only its own steps ([`ProcessedSignal::after`]): two views of one recording, one
+//! band-passed and one band-passed then rectified, compute the band-pass once.
+//!
+//! **Editing a step** ([`ProcessedChains::signal_editing`]): the chain up to the step being edited
+//! is kept as a chain of its own, so each new value of the step reruns only from there; and every
+//! chain of a recording reads its windows through one [`InputCache`], so a new chain over the window
+//! already on screen does not read and upload it again.
 //!
 //! A **whitening** is fitted on the signal of the steps before it, which reads the recording
 //! (seconds). Fits are kept by the key of the chain up to them; a chain that needs one not fitted
@@ -20,10 +25,15 @@ use dspk_ops::PipelineStage;
 use dspk_view::{SignalBackend, View};
 
 use super::preview::{view_plan, ViewPlan};
-use super::processed::{PreviewSource, ProcessedSignal};
+use super::budget::{next_id, DeviceBudget};
+use super::cached::CachedSource;
+use super::preview::InputCache;
+use super::processed::ProcessedSignal;
 use crate::WhitenFit;
 
-/// Chains kept per recording (each holds device memory while it is kept).
+/// Chains kept per recording. What they keep on the device is the device budget's to bound
+/// ([`DeviceBudget`]): a chain released for room keeps its plan and fit, and is made again when a
+/// view asks for it.
 const CHAINS_KEPT: usize = 8;
 
 /// What [`ProcessedChains::signal`] gives.
@@ -61,6 +71,23 @@ pub struct ProcessedChains {
     /// Chains asked by their ops as JSON (a page's requests carry them), by (channels, ops).
     asked: Mutex<Vec<((Vec<usize>, Vec<String>), Arc<ProcessedSignal>)>>,
     fitted: Mutex<HashMap<String, SpatialWhitening>>,
+    /// The recording's uploaded windows, shared by its chains.
+    inputs: Arc<InputCache>,
+    /// What every chain keeps on the device is charged to.
+    budget: Arc<DeviceBudget>,
+    /// These chains' entries in the RAM cache (decoded recording blocks, frozen summaries) are
+    /// under `chains:{id}:`; dropped with them.
+    id: usize,
+    /// Each source read through the RAM cache, made once (by its key and the source itself): every
+    /// chain of a source reads the same one, so the uploaded windows ([`InputCache`], keyed by it)
+    /// serve them all.
+    cached: Mutex<Vec<(String, usize, Arc<dyn RecordingSource>)>>,
+}
+
+impl Drop for ProcessedChains {
+    fn drop(&mut self) {
+        dspk_core::memory::host_cache().forget_prefix(&format!("chains:{}:", self.id));
+    }
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -69,7 +96,19 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 impl ProcessedChains {
     pub fn new(base_dir: impl Into<PathBuf>) -> Self {
-        Self { base_dir: base_dir.into(), made: Default::default(), asked: Default::default(), fitted: Default::default() }
+        Self::with_budget(base_dir, DeviceBudget::global())
+    }
+
+    /// [`Self::new`] charging the chains' device memory to `budget` (tests; the process's budget is
+    /// sized from the device).
+    pub fn with_budget(base_dir: impl Into<PathBuf>, budget: Arc<DeviceBudget>) -> Self {
+        let inputs = InputCache::with_budget(budget.clone());
+        Self { base_dir: base_dir.into(), made: Default::default(), asked: Default::default(), fitted: Default::default(), inputs, budget, id: next_id(), cached: Mutex::default() }
+    }
+
+    /// The device budget the chains are charged to.
+    pub fn budget(&self) -> &Arc<DeviceBudget> {
+        &self.budget
     }
 
     /// Where files the ops name are read from.
@@ -82,6 +121,24 @@ impl ProcessedChains {
     /// recording's. Kept, sharing the longest kept prefix; a whitening not fitted yet is a
     /// [`Made::NeedsFit`].
     pub fn signal(&self, raw: Arc<dyn SignalBackend>, source: Arc<dyn RecordingSource>, source_key: &str, plan: &ViewPlan) -> Result<Made, String> {
+        self.signal_editing(raw, source, source_key, plan, None)
+    }
+
+    /// [`Self::signal`] while step `editing` of the plan is being edited (a parameter dragged):
+    /// the chain up to it is kept on its own first, so the next values of the step rerun only the
+    /// steps from it on.
+    pub fn signal_editing(&self, raw: Arc<dyn SignalBackend>, source: Arc<dyn RecordingSource>, source_key: &str, plan: &ViewPlan, editing: Option<usize>) -> Result<Made, String> {
+        if let Some(k) = editing.filter(|&k| k > 0 && k < plan.steps.len()) {
+            let prefix = ViewPlan {
+                group: plan.group.clone(),
+                steps: plan.steps[..k].to_vec(),
+                shown: plan.group.clone(),
+                fits: plan.fits.iter().filter(|(at, _)| *at < k).cloned().collect(),
+            };
+            if let Made::NeedsFit(job) = self.signal_editing(raw.clone(), source.clone(), source_key, &prefix, None)? {
+                return Ok(Made::NeedsFit(job));
+            }
+        }
         let group = plan.group.clone();
         let mut stages: Vec<PipelineStage> = plan.steps.iter().map(|(_, st)| st.clone()).collect();
         // The chain's key, step by step: [source and channels, step 1, step 2, …]
@@ -101,12 +158,18 @@ impl ProcessedChains {
         };
         let built = match found {
             Some((k, p)) if k == key.len() => return Ok(Made::Ready(p)),
-            // A branch reads the shared prefix's rows, in the order that prefix leaves them
-            Some((k, p)) => ProcessedSignal::new(raw, Arc::new(PreviewSource::new(p.clone())), p.out_channels().to_vec(), stages[k - 1..].to_vec()),
-            None => ProcessedSignal::new(raw, source, group, stages),
+            // A branch reads the shared prefix's rows on the device, in the order it leaves them
+            Some((k, p)) => ProcessedSignal::after(&p, stages[k - 1..].to_vec()),
+            None => {
+                // The recording read through the RAM cache: windows come back without decoding again
+                let cached = self.cached_source(source, source_key);
+                ProcessedSignal::with_budget(raw, cached, group, stages, self.inputs.clone(), self.budget.clone())
+            }
         }
         .map(Arc::new)
         .map_err(|e| e.to_string())?;
+        // Frozen once it stops changing, under its key
+        built.set_summary_key(format!("chains:{}:summary:{}", self.id, key.join("\n")));
         let mut made = lock(&self.made);
         made.retain(|(c, _)| *c != key);
         if made.len() >= CHAINS_KEPT {
@@ -114,6 +177,20 @@ impl ProcessedChains {
         }
         made.push((key, built.clone()));
         Ok(Made::Ready(built))
+    }
+
+    /// `source` read through the RAM cache: one wrapper per source, kept (the same object for every
+    /// chain, so their uploaded windows are shared).
+    fn cached_source(&self, source: Arc<dyn RecordingSource>, source_key: &str) -> Arc<dyn RecordingSource> {
+        let ptr = Arc::as_ptr(&source) as *const () as usize;
+        let mut cached = lock(&self.cached);
+        if let Some((_, _, c)) = cached.iter().find(|(k, p, _)| k == source_key && *p == ptr) {
+            return c.clone();
+        }
+        let c: Arc<dyn RecordingSource> = Arc::new(CachedSource::new(source, format!("chains:{}:raw:{source_key}:{ptr}", self.id)));
+        cached.retain(|(k, _, _)| k != source_key);
+        cached.push((source_key.to_string(), ptr, c.clone()));
+        c
     }
 
     /// Keeps a whitening fitted for the chain up to it ([`FitJob::key`]).
@@ -154,6 +231,7 @@ impl ProcessedChains {
     pub fn clear(&self) {
         lock(&self.made).clear();
         lock(&self.asked).clear();
+        self.inputs.clear();
     }
 
     /// Makes `view` of the chain of `ops` over `channels` ([`Self::make`]) ready without

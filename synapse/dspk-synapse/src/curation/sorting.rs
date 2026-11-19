@@ -174,6 +174,14 @@ impl SortingData {
     }
 
     /// Indices of the spikes with times in `samples`.
+    /// The samples the sorting's spikes span (its first spike to its last, one second more on each
+    /// side for their waveforms); `None` without spikes.
+    pub fn span(&self) -> Option<std::ops::Range<u64>> {
+        let (first, last) = (self.times.iter().min()?, self.times.iter().max()?);
+        let pad = self.sample_rate.round() as u64;
+        Some(first.saturating_sub(pad)..last + pad)
+    }
+
     pub fn in_range(&self, start: u64, end: u64) -> std::ops::Range<usize> {
         let lo = self.times.partition_point(|&t| t < start);
         let hi = self.times.partition_point(|&t| t < end);

@@ -720,7 +720,16 @@ impl Store {
             return;
         }
         // Planned and kept by the recording's chains (shared prefixes, fitted whitenings)
-        match self.chains.signal(ds.signal().clone(), raw, &source, &plan) {
+        // The op selected in the Processing panel is the one being edited: the chain up to it is
+        // kept, so each new value reruns only from there
+        let editing = self
+            .picked_op
+            .as_ref()
+            .and_then(|op| v.op(op))
+            .filter(|o| o.enabled)
+            .and_then(|o| serde_json::to_string(&o.node).ok())
+            .and_then(|key| plan.steps.iter().position(|(k, _)| *k == key));
+        match self.chains.signal_editing(ds.signal().clone(), raw, &source, &plan, editing) {
             Ok(Made::Ready(p)) => {
                 self.previews.insert(id.to_string(), p);
             }
@@ -1202,6 +1211,14 @@ impl Store {
             Some(p) => self.session.forget_recent(p),
             None => self.session.clear_recent(),
         }
+        self.save_session();
+        cx.notify();
+    }
+
+    /// The RAM the app may keep (`None`: automatic), applied now and saved.
+    pub fn set_memory(&mut self, memory: Option<u64>, cx: &mut Context<Self>) {
+        self.session.memory = memory;
+        crate::data::settings::apply_memory(memory);
         self.save_session();
         cx.notify();
     }

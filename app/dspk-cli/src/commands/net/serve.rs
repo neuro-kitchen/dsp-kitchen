@@ -201,14 +201,15 @@ impl dspk_stream::ServerPlugin for SynapsePlugin {
         // then on the CPU
         let gpu = dspk_core::lease::interactive();
         let run = || -> StreamResult<Vec<u8>> {
-            let recording = if method == "views" { self.views_source(body, context)? } else { context.recording.clone() };
+            // Views and splits read the signal as the page shows it (its processing applied)
+            let recording = if method == "views" || method == "split" { self.views_source(body, context)? } else { context.recording.clone() };
             self.0.call(method, body, &resolve, recording.as_ref(), caller).map_err(|e| StreamError::Server(e.to_string()))
         };
         let answer = if gpu.is_none() { dspk_core::device::with_target(dspk_core::ComputeTarget::Cpu, run) } else { run() };
         drop(gpu);
         // What the read held on the GPU is not needed again (the windows are in memory): back to
         // the driver, so another program (a sort) finds it free
-        if method == "views" {
+        if method == "views" || method == "split" {
             dspk_core::compute::release_device_memory();
         }
         answer

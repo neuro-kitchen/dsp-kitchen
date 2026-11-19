@@ -157,6 +157,9 @@ pub struct Session {
     /// Open the last recording when the app starts (default off: the start screen).
     #[serde(default, skip_serializing)]
     pub reopen_last: bool,
+    /// RAM the app may keep, in bytes (`None`: automatic); `settings.toml` `[compute] memory`.
+    #[serde(default, skip_serializing)]
+    pub memory: Option<u64>,
 }
 
 /// `"#rrggbb"`, `null`, or a colour as a number (lime, the app's own accent, is `None`); anything

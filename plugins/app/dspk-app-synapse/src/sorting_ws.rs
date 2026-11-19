@@ -432,7 +432,7 @@ impl SortingWorkspace {
         }
         self.computing = true;
         let work = cx.background_spawn(async move {
-            let windows = crate::sorting::windows_of(&signal);
+            let windows = crate::sorting::windows_of(&signal, &sorting);
             let snippets = Snippets::read(&sorting, &windows, &units, view_channel, SPIKES_PER_UNIT);
             let cards = units
                 .iter()

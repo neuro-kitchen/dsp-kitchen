@@ -9,14 +9,21 @@
 //!   windows processed in tiles ([`Preview`]), only the columns or the samples read coming back.
 //!
 //! **How much one block processes** ([`PREVIEW_MAX_VALUES`]) is the device's limit, here and
-//! nowhere else: a computer's GPU holds more than a browser's WebGPU will bind.
+//! nowhere else: a computer's GPU holds more than a browser's WebGPU will bind. It is lowered to
+//! fit the device budget.
+//! - [`DeviceBudget`]: everything the views keep on the device, within half of the device's
+//!   memory; views off screen give theirs back first.
 
+pub mod budget;
+pub mod cached;
 mod chains;
 pub mod preview;
 pub mod processed;
 
+pub use budget::{device_limit, size_class, DeviceBudget};
 pub use chains::{FitJob, Made, ProcessedChains};
-pub use preview::{view_plan, Preview, ViewPlan};
+pub use cached::CachedSource;
+pub use preview::{view_plan, InputCache, Preview, PreviewTimings, Summary, ViewPlan, SUMMARY_BUCKET};
 pub use processed::{PreviewSource, ProcessedSignal};
 
 /// Values (channels × samples, the chain's halo and margin included) one block processes on a

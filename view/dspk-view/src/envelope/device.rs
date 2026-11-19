@@ -50,6 +50,30 @@ pub fn envelope_launch<F: Float + CubeElement>(
     valid: std::ops::Range<u64>,
     columns: Columns,
 ) -> DspResult<Option<Handle>> {
+    envelope_launch_mapped::<F>(client, input, channels, samples, first, valid, columns, None)
+}
+
+/// A run of pointwise ops on the device, as `dspk-ops`' `PointwiseRun` holds it: `count` codes
+/// (`u32`) and `2 · count` parameters of the element type (`dspk_core::compute::POINTWISE_*`).
+pub struct PointwiseMap<'a> {
+    pub codes: &'a Handle,
+    pub params: &'a Handle,
+    pub count: usize,
+}
+
+/// [`envelope_launch`] with every sample first mapped through `map` (a chain's last pointwise
+/// ops, folded into the reduction so their output is never written); `None`: as it is.
+#[allow(clippy::too_many_arguments)]
+pub fn envelope_launch_mapped<F: Float + CubeElement>(
+    client: &Client,
+    input: &Handle,
+    channels: usize,
+    samples: usize,
+    first: u64,
+    valid: std::ops::Range<u64>,
+    columns: Columns,
+    map: Option<PointwiseMap<'_>>,
+) -> DspResult<Option<Handle>> {
     let count = columns.count();
     if channels == 0 || count == 0 {
         return Ok(None);
@@ -69,6 +93,11 @@ pub fn envelope_launch<F: Float + CubeElement>(
     let longest = edges.windows(2).map(|w| w[1].saturating_sub(w[0])).max().unwrap_or(0) as usize;
 
     let edges_handle = client.create_from_slice(u32::as_bytes(&edges));
+    // No map: one identity op bound but not applied (a binding may not be empty)
+    let (map_codes, map_params, map_count) = match &map {
+        Some(m) if m.count > 0 => (m.codes.clone(), m.params.clone(), m.count),
+        _ => (client.create_from_slice(u32::as_bytes(&[0u32])), client.create_from_slice(&vec![0u8; 2 * size_of::<F>()]), 0),
+    };
     let out = client.empty(rows * PAIR as usize * std::mem::size_of::<F>());
     let geom = LaunchGeometry::per_row(client, rows, longest);
     unsafe {
@@ -79,6 +108,9 @@ pub fn envelope_launch<F: Float + CubeElement>(
             BufferArg::from_raw_parts(input.clone(), values),
             BufferArg::from_raw_parts(edges_handle, edges.len()),
             BufferArg::from_raw_parts(out.clone(), rows * PAIR as usize),
+            BufferArg::from_raw_parts(map_codes, map_count.max(1)),
+            BufferArg::from_raw_parts(map_params, 2 * map_count.max(1)),
+            map_count as u32,
             count as u32,
             rows as u32,
             samples as u32,

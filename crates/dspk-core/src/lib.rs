@@ -19,6 +19,7 @@ pub mod buffer;
 pub mod compute;
 pub mod device;
 pub mod lease;
+pub mod memory;
 pub mod progress;
 pub mod recording;
 pub mod window;

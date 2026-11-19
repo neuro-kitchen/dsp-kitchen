@@ -4,4 +4,4 @@ pub mod session;
 
 pub use stage::PipelineStage;
 pub use engine::Pipeline;
-pub use session::{ChunkMode, PipelineWorkspace};
+pub use session::{CapturedPipeline, ChunkMode, PipelineWorkspace};

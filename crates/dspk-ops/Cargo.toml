@@ -22,6 +22,8 @@ web-time.workspace = true
 dspk-core = { workspace = true, features = ["compute"] }
 cubecl.workspace = true
 cubek-matmul.workspace = true
+# FFT convolution (overlap-save) for long FIR filters
+cubek-fft.workspace = true
 cubek-std.workspace = true
 thiserror.workspace = true
 num-complex.workspace = true

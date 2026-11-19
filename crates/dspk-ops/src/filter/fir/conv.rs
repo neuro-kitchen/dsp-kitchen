@@ -31,6 +31,10 @@ pub enum FirKernel {
     /// widest width up to `width` that the runtime offers (else `Direct`); rows it does not divide
     /// store their outputs lane by lane.
     Vectorized { width: usize },
+    /// FFT convolution (overlap-save, [`super::overlap_save`]) for long filters: float32 and from
+    /// [`super::overlap_save::MIN_TAPS`] taps (else `Direct`). Equal to the direct kernels within
+    /// FFT rounding.
+    Fft,
 }
 
 /// Taps reaching back only (`y[t] = Σ taps[k] · x[t − k]`) or centred on the output sample.
@@ -69,6 +73,11 @@ struct FirInputs {
 
 impl FirInputs {
     fn run<F: DspFloat>(&self, kernel: FirKernel) {
+        let num_taps = self.shape.num_taps();
+        if kernel == FirKernel::Fft && num_taps >= super::overlap_save::MIN_TAPS && super::overlap_save::supports::<F>(num_taps) {
+            let centered = matches!(self.shape, Shape::Centered { .. });
+            return super::overlap_save::execute::<F>(&self.client, &self.input, &self.output, &self.taps, self.channels, self.samples, num_taps, centered, self.edge);
+        }
         if let FirKernel::Vectorized { width } = kernel {
             if let Some(width) = vector_width::<F>(&self.client, width) {
                 return self.run_vectorized::<F>(width);
@@ -172,7 +181,7 @@ fn vector_width<F: DspFloat>(client: &Client, at_most: usize) -> Option<usize> {
 /// [`FirInputs::run`] with the kernel CubeCL's autotuner found fastest for this device, element type,
 /// filter shape and problem size. Benchmarks write to a scratch output.
 fn tuned<F: DspFloat>(inputs: FirInputs) {
-    static TUNER: LocalTuner<String, String> = local_tuner!("fir-kernel-v3");
+    static TUNER: LocalTuner<String, String> = local_tuner!("fir-kernel-v4");
     let client = inputs.client.clone();
     let id = tune_id(&client);
     let widths: Vec<usize> = client.io_optimized_vector_sizes(size_of::<F>()).filter(|&w| w > 1).collect();
@@ -185,7 +194,8 @@ fn tuned<F: DspFloat>(inputs: FirInputs) {
         };
         let scratch = |_: &String, p: &FirInputs| FirInputs { output: buffer::empty::<F>(&p.client, p.channels * p.samples), ..p.clone() };
         let set: TunableSet<String, FirInputs, ()> = TunableSet::new(key, scratch);
-        let kernels = [FirKernel::Direct, FirKernel::Tiled].into_iter().filter(|&k| !(k == FirKernel::Tiled && cpu)).chain(widths.iter().map(|&width| FirKernel::Vectorized { width }));
+        // The FFT path is timed too (it runs `Direct` where it does not apply: short filters)
+        let kernels = [FirKernel::Direct, FirKernel::Tiled, FirKernel::Fft].into_iter().filter(|&k| !(k == FirKernel::Tiled && cpu)).chain(widths.iter().map(|&width| FirKernel::Vectorized { width }));
         kernels.fold(set, |set, kernel| {
             set.with(Tunable::new(&format!("{kernel:?}"), move |p: FirInputs| {
                 p.run::<F>(kernel);
@@ -202,8 +212,19 @@ fn dispatch<F: DspFloat>(inputs: FirInputs, kernel: Option<FirKernel>) {
     }
     match kernel {
         Some(kernel) => inputs.run::<F>(kernel),
+        // Pinned (a preview, a reproducible run): a fixed rule, never a benchmark. The FFT path
+        // rounds differently from the direct kernels, so it is part of the rule, not a tuner's
+        // pick that could change from run to run
+        None if dspk_core::compute::tuned_choices_pinned() => inputs.run::<F>(pinned_kernel::<F>(inputs.shape.num_taps())),
         None => tuned::<F>(inputs),
     }
+}
+
+/// The kernel a pinned FIR runs: FFT (overlap-save) from [`super::overlap_save::MIN_TAPS`] taps
+/// where it applies, the direct kernel below (the tiled and vectorized kernels give the same values
+/// as the direct one; only their speed differs).
+fn pinned_kernel<F: DspFloat>(num_taps: usize) -> FirKernel {
+    if num_taps >= super::overlap_save::MIN_TAPS && super::overlap_save::supports::<F>(num_taps) { FirKernel::Fft } else { FirKernel::Direct }
 }
 
 /// Causal multi-channel FIR filtering of a `[channels, samples]` buffer with `num_taps` taps.

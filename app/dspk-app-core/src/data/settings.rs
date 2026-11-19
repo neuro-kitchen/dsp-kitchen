@@ -30,6 +30,34 @@ pub struct Settings {
     pub runtime: Option<String>,
     /// `None`: [`Session::default_results_dir`].
     pub results_dir: Option<PathBuf>,
+    /// RAM the app may keep (decoded recording chunks, frozen processed views, spike windows), in
+    /// bytes; `None`: automatic ([`automatic_memory`]).
+    pub memory: Option<u64>,
+}
+
+/// The RAM limit when the setting is automatic: `DSPK_HOST_MEMORY` when set, else a quarter of the
+/// computer's RAM.
+pub fn automatic_memory() -> u64 {
+    if std::env::var_os("DSPK_HOST_MEMORY").is_some() {
+        return dspk_core::memory::default_limit();
+    }
+    match total_memory() {
+        0 => dspk_core::memory::default_limit(),
+        total => total / 4,
+    }
+}
+
+/// The computer's RAM in bytes (0: unknown).
+pub fn total_memory() -> u64 {
+    sysinfo::System::new().map_or(0, |mut sys| {
+        sys.refresh_memory();
+        sys.total_memory()
+    })
+}
+
+/// Applies the RAM setting to the app's cache ([`dspk_core::memory::host_cache`]).
+pub fn apply_memory(memory: Option<u64>) {
+    dspk_core::memory::host_cache().set_limit(memory.unwrap_or_else(automatic_memory));
 }
 
 const TEMPLATE: &str = r##"# dspk-app settings. The Settings screen writes this file; edits made here apply while the app runs.
@@ -45,17 +73,26 @@ reopen_last = false     # open the last recording when the app starts
 
 [compute]
 runtime = "automatic"   # "automatic" | "wgpu" | "cuda" | "cpu"; takes effect at the next start
+memory = "automatic"    # RAM the app may keep to be fast, as "8GiB" or "512MiB"; "automatic" is a quarter of the RAM
 
 [remote]
 results_dir = ""        # where results fetched from servers go; "" is ~/dspk/remote
 "##;
 
 /// What `settings.toml` may hold: (section, key).
-const KNOWN: &[(&str, &[&str])] = &[("appearance", &["theme", "accent", "dark_plots"]), ("start", &["reopen_last"]), ("compute", &["runtime"]), ("remote", &["results_dir"])];
+const KNOWN: &[(&str, &[&str])] = &[("appearance", &["theme", "accent", "dark_plots"]), ("start", &["reopen_last"]), ("compute", &["runtime", "memory"]), ("remote", &["results_dir"])];
 
 impl Settings {
     pub fn from_session(s: &Session) -> Self {
-        Self { theme: s.dark, accent: s.accent, dark_plots: s.dark_plots, reopen_last: s.reopen_last, runtime: s.runtime.clone().filter(|r| !r.is_empty()), results_dir: s.results_dir.clone() }
+        Self {
+            theme: s.dark,
+            accent: s.accent,
+            dark_plots: s.dark_plots,
+            reopen_last: s.reopen_last,
+            runtime: s.runtime.clone().filter(|r| !r.is_empty()),
+            results_dir: s.results_dir.clone(),
+            memory: s.memory,
+        }
     }
 
     pub fn apply_to(&self, s: &mut Session) {
@@ -65,6 +102,8 @@ impl Settings {
         s.reopen_last = self.reopen_last;
         s.runtime = self.runtime.clone();
         s.results_dir = self.results_dir.clone();
+        s.memory = self.memory;
+        apply_memory(self.memory);
     }
 
     /// The settings in `text` and a notice per line that was not understood (which keeps its
@@ -121,6 +160,13 @@ impl Settings {
             None | Some("automatic") | Some("") => {}
             Some(name) => out.runtime = Some(name.to_string()),
         }
+        match text_of("compute", "memory", &mut notices).as_deref() {
+            None | Some("automatic") | Some("") => {}
+            Some(size) => match dspk_core::memory::parse_bytes(size) {
+                Some(bytes) => out.memory = Some(bytes.max(256 << 20)),
+                None => notices.push(format!("settings.toml: compute.memory {size:?} is not \"automatic\" or a size such as \"8GiB\"")),
+            },
+        }
         match text_of("remote", "results_dir", &mut notices).as_deref() {
             None | Some("") => {}
             Some(dir) => out.results_dir = Some(expand_home(dir)),
@@ -142,6 +188,12 @@ impl Settings {
         set(&mut doc, "appearance", "dark_plots", self.dark_plots.into());
         set(&mut doc, "start", "reopen_last", self.reopen_last.into());
         set(&mut doc, "compute", "runtime", self.runtime.clone().unwrap_or_else(|| "automatic".into()).into());
+        let memory = match self.memory {
+            None => "automatic".to_string(),
+            Some(b) if b % (1 << 30) == 0 => format!("{}GiB", b >> 30),
+            Some(b) => format!("{}MiB", b >> 20),
+        };
+        set(&mut doc, "compute", "memory", memory.into());
         set(&mut doc, "remote", "results_dir", self.results_dir.as_ref().map(|p| p.display().to_string()).unwrap_or_default().into());
         doc.to_string()
     }
@@ -359,7 +411,7 @@ mod tests {
 
     #[test]
     fn settings_round_trip_and_keep_the_comments() {
-        let s = Settings { theme: Some(false), accent: Some(kitchen_ui::Rgb(0x2b7f86)), dark_plots: true, reopen_last: true, runtime: Some("cuda".into()), results_dir: Some("/data/results".into()) };
+        let s = Settings { theme: Some(false), accent: Some(kitchen_ui::Rgb(0x2b7f86)), dark_plots: true, reopen_last: true, runtime: Some("cuda".into()), results_dir: Some("/data/results".into()), memory: Some(8 << 30) };
         let text = s.write_into("");
         assert!(text.contains("theme = \"light\"        # \"system\" | \"dark\" | \"light\""), "{text}");
         assert!(text.contains("accent = \"#2b7f86\""), "{text}");
