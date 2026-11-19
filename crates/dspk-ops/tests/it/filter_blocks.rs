@@ -3,7 +3,7 @@
 //! stateful streaming passes, from rest and from the steady state, in channel-major and time-major
 //! memory order, on every compiled-in runtime.
 
-mod common;
+use crate::common;
 
 use common::*;
 use cubecl::prelude::*;

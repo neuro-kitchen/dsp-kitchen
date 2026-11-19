@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! HDBSCAN_POINTS=40000 HDBSCAN_REFERENCE=/tmp/hdbscan_ref.bin \
-//!   cargo test -p dspk-benchmarks --release --test bench_hdbscan -- --ignored --nocapture
+//!   cargo test -p dspk-benchmarks --release --test bench -- --ignored --nocapture bench_hdbscan::
 //! ```
 //!
 //! The first run writes `HDBSCAN_REFERENCE`; later runs compare against it.

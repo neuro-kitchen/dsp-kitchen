@@ -9,6 +9,8 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 /// The protocol's messages (a remote job is a `wire::Configure`), for the app's plugins.
 pub use dspk_stream::protocol::wire;
+use dspk_core::SignalUnit;
+use dspk_io::{SourceEntry, SourceKind};
 use dspk_stream::RemoteSignal;
 use dspk_view::SignalBackend;
 use serde::{Deserialize, Serialize};
@@ -98,6 +100,39 @@ pub fn results_dir(base: &Path, profile: &ServerProfile) -> PathBuf {
 fn opened() -> &'static Mutex<Vec<Arc<RemoteSignal>>> {
     static OPENED: OnceLock<Mutex<Vec<Arc<RemoteSignal>>>> = OnceLock::new();
     OPENED.get_or_init(Mutex::default)
+}
+
+/// The sources (signals) the server's file at `path` holds, asked through `signal`'s connection
+/// (the file opened there): an NWB store's series. Empty from a server that does not list them.
+pub fn sources_uri(signal: &dspk_stream::RemoteSignal, path: &Path) -> anyhow::Result<Vec<SourceEntry>> {
+    let (_, remote) = parse_uri(path).ok_or_else(|| anyhow::anyhow!("{} is not a dspk:// path", path.display()))?;
+    let listed = dspk_stream::sources_over(signal.link().as_ref(), &remote)?;
+    listed.into_iter().map(entry_of).collect()
+}
+
+/// A server's [`wire::SourceInfo`] as the app lists sources.
+fn entry_of(s: wire::SourceInfo) -> anyhow::Result<SourceEntry> {
+    let unit = match s.unit.as_str() {
+        "V" => SignalUnit::Volt,
+        "mV" => SignalUnit::Millivolt,
+        "µV" | "uV" => SignalUnit::Microvolt,
+        "A" => SignalUnit::Ampere,
+        "mA" => SignalUnit::Milliampere,
+        "µA" | "uA" => SignalUnit::Microampere,
+        "" => SignalUnit::Dimensionless,
+        other => SignalUnit::Other(other.to_string()),
+    };
+    Ok(SourceEntry {
+        id: s.id,
+        name: s.name,
+        kind: if s.kind == "electrical" { SourceKind::Electrical } else { SourceKind::Other },
+        channels: s.channels as usize,
+        samples: s.samples,
+        sample_rate: dspk_core::SampleRate::new(s.sample_rate_hz)?,
+        start_time: dspk_core::RationalTime::from_seconds_f64(s.start_sec)?,
+        format: dspk_core::SampleFormat::parse(&s.format).unwrap_or(dspk_core::SampleFormat::F32),
+        unit,
+    })
 }
 
 /// Keeps `signal` among the recordings opened on servers (the platforms' `open_uri` call it).

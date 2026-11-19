@@ -449,9 +449,15 @@ pub fn runtime() -> &'static PageRuntime {
 /// Opens the `dspk://` recording `path` on the page's server (from a worker: it waits). The page
 /// has one connection, so one recording of the server is open at a time.
 pub fn open_uri(path: &Path) -> anyhow::Result<Arc<RemoteSignal>> {
+    open_uri_source(path, None)
+}
+
+/// [`open_uri`] of source `source` of the file (`None`: its default): kept open beside the
+/// others on the page's connection (each view names the one it reads).
+pub fn open_uri_source(path: &Path, source: Option<&str>) -> anyhow::Result<Arc<RemoteSignal>> {
     let (_, remote) = parse_uri(path).ok_or_else(|| anyhow::anyhow!("{} is not a dspk:// path", path.display()))?;
     // The engine's own words for a page on its own (it is not a server)
-    let signal = Arc::new(RemoteSignal::open(link()?, &remote).map_err(|e| if runs_alone() { anyhow::anyhow!("this browser's engine: {}", e.reason()) } else { anyhow::Error::from(e) })?);
+    let signal = Arc::new(RemoteSignal::open_source(link()?, &remote, source).map_err(|e| if runs_alone() { anyhow::anyhow!("this browser's engine: {}", e.reason()) } else { anyhow::Error::from(e) })?);
     remember(&signal);
     Ok(signal)
 }

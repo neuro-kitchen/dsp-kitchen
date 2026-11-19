@@ -3,7 +3,7 @@
 //! Each window is uploaded and detected, as in a run. Ignored by default:
 //!
 //! ```text
-//! cargo test -p dspk-benchmarks-sorters --profile validate --test bench_detection -- --ignored --nocapture
+//! cargo test -p dspk-benchmarks-sorters --profile validate --test bench -- --ignored --nocapture bench_detection::
 //! ```
 
 use std::time::Instant;

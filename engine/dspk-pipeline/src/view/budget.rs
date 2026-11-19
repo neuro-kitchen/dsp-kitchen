@@ -101,10 +101,34 @@ pub fn device_limit(client: &Client) -> u64 {
         return bytes;
     }
     let memory = &client.properties().memory;
-    match memory.max_memory() {
+    match memory.max_memory().or_else(device_total) {
         Some(total) => total / 2,
         None => (4 * memory.max_page_size).clamp(256 << 20, 2 << 30),
     }
+}
+
+/// The GPU's memory where the runtime reports none (wgpu on Vulkan without the extension CubeCL
+/// reads it from): NVIDIA's `nvidia-smi`, AMD's `mem_info_vram_total` (Linux). `None` in a browser
+/// or where neither answers.
+fn device_total() -> Option<u64> {
+    #[cfg(not(target_family = "wasm"))]
+    {
+        static TOTAL: OnceLock<Option<u64>> = OnceLock::new();
+        *TOTAL.get_or_init(|| {
+            let nvidia = std::process::Command::new("nvidia-smi")
+                .args(["--query-gpu=memory.total", "--format=csv,noheader,nounits"])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .and_then(|o| String::from_utf8_lossy(&o.stdout).lines().next()?.trim().parse::<u64>().ok())
+                .map(|mib| mib << 20);
+            nvidia.or_else(|| {
+                std::fs::read_dir("/sys/class/drm").ok()?.flatten().filter_map(|e| std::fs::read_to_string(e.path().join("device/mem_info_vram_total")).ok()).filter_map(|t| t.trim().parse::<u64>().ok()).max()
+            })
+        })
+    }
+    #[cfg(target_family = "wasm")]
+    None
 }
 
 impl DeviceBudget {
@@ -170,7 +194,7 @@ impl DeviceBudget {
         #[cfg(not(target_family = "wasm"))]
         {
             let client = client?;
-            let total = client.properties().memory.max_memory().unwrap_or(2 * limit);
+            let total = client.properties().memory.max_memory().or_else(device_total).unwrap_or(2 * limit);
             let reserved = client.memory_report(cubecl::MemoryScope::Device).usage().bytes_reserved;
             Some((reserved, total / 4 * 3))
         }
@@ -270,6 +294,14 @@ impl DeviceBudget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "prints the device's memory limits"]
+    fn device_memory_limits() {
+        let client = dspk_core::ComputeTarget::from_env().and_then(dspk_core::ComputeTarget::client).unwrap();
+        let m = &client.properties().memory;
+        println!("{}: max page {} MiB, max memory {:?} MiB, budget {} MiB", client.name(), m.max_page_size >> 20, m.max_memory().map(|b| b >> 20), device_limit(&client) >> 20);
+    }
 
     #[test]
     fn size_classes_round_up_by_at_most_a_quarter() {

@@ -269,6 +269,7 @@ message Request {
     GetLogs logs = 8;
     Fetch fetch = 9;
     PluginCall plugin = 10;
+    ListSources sources = 11;
   }
 }
 
@@ -287,7 +288,35 @@ message Response {
     // The answer to Fetch; FileChunk messages follow.
     FileHeader file = 7;
     PluginReply plugin = 8;
+    // The answer to ListSources.
+    SourceList sources = 9;
   }
+}
+
+// The sources (signals) a file holds: an NWB store's series, a SpikeGLX run's streams. Each is
+// opened with Open { path, source = id }; a client keeps several open and names the one each view
+// reads (ViewRequest.path, .source).
+message ListSources {
+  string path = 1;
+}
+
+message SourceInfo {
+  string id = 1;
+  string name = 2;
+  // "electrical", "analog", "digital", … (dspk-io's SourceKind, lower case).
+  string kind = 3;
+  uint32 channels = 4;
+  uint64 samples = 5;
+  double sample_rate_hz = 6;
+  string unit = 7;
+  string format = 8;
+  double start_sec = 9;
+  // The one a plain Open picks.
+  bool default = 10;
+}
+
+message SourceList {
+  repeated SourceInfo sources = 1;
 }
 
 // A view of the open recording: [min, max] columns or samples of some channels.
@@ -299,6 +328,10 @@ message ViewRequest {
   // Answer with the signal processed on the server (a client that cannot compute: a page).
   // Absent: the recording as stored.
   Processing processing = 5;
+  // The recording the view is of: one the client opened (path and source as in Open). Empty: the
+  // one opened last.
+  string path = 6;
+  string source = 7;
 }
 
 // A view's processing: its enabled ops in order, over the channels it reads.

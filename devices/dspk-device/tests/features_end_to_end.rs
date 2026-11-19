@@ -96,7 +96,7 @@ async fn the_second_round() {
     assert_eq!(back.data.len(), 100 * 4);
 
     // Views of the past: the newest per plot wins
-    let past = session::ViewRequest { channels: vec![0], start: 0, end: 400, width: 40, processing: None };
+    let past = session::ViewRequest { channels: vec![0], start: 0, end: 400, width: 40, processing: None, ..Default::default() };
     let (a, b) = tokio::join!(d.view("ephys", 5, past.clone()), d.view("ephys", 5, past.clone()));
     assert!(a.is_ok() || b.is_ok(), "one of them is answered");
 

@@ -2,7 +2,7 @@
 //! 92 MB), each ending in a device sync. Ignored by default:
 //!
 //! ```text
-//! cargo test -p dspk-benchmarks --profile validate --test bench_upload -- --ignored --nocapture
+//! cargo test -p dspk-benchmarks --profile validate --test bench -- --ignored --nocapture bench_upload::
 //! ```
 
 use std::time::Instant;

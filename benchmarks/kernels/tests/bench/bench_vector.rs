@@ -4,7 +4,7 @@
 //! autotuner picks among the same choices in normal use; this shows all of them.
 //!
 //! ```text
-//! cargo test -p dspk-benchmarks --profile validate --test bench_vector -- --ignored --nocapture
+//! cargo test -p dspk-benchmarks --profile validate --test bench -- --ignored --nocapture bench_vector::
 //! ```
 
 use cubecl::prelude::*;

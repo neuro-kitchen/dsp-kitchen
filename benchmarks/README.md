@@ -50,7 +50,7 @@ The device alone, no host transfers: ignored Rust tests that print a table and w
 | `bench_hdbscan` | HDBSCAN on synthetic clips (`HDBSCAN_POINTS`, `HDBSCAN_REFERENCE` to compare labels) |
 
 ```bash
-cargo test -p dspk-benchmarks --profile validate --test bench_kernels -- --ignored --nocapture
+cargo test -p dspk-benchmarks --profile validate --test bench -- --ignored --nocapture bench_kernels::
 DSPK_TEST_RUNTIMES=cuda cargo test -p dspk-benchmarks ...   # one runtime
 ```
 
@@ -63,7 +63,7 @@ by name; the others run on every runtime of `DSPK_TEST_RUNTIMES`.
 estimation, per window:
 
 ```bash
-cargo test -p dspk-benchmarks-sorters --profile validate --test bench_detection -- --ignored --nocapture
+cargo test -p dspk-benchmarks-sorters --profile validate --test bench -- --ignored --nocapture bench_detection::
 ```
 
 The Python scripts below run the sorter program `dspk-cli-sorter` (found through

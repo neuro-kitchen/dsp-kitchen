@@ -272,6 +272,30 @@ impl RecordingOpener for FileOpener {
         }
         Ok(recording.with_refocus(build_pyramid(source, pyramid, Arc::new(|_| {}))))
     }
+
+    /// The file's sources as dspk-synapse lists them (an NWB store's series), the default marked.
+    fn sources(&self, path: &Path) -> StreamResult<Vec<dspk_stream::protocol::wire::SourceInfo>> {
+        let entries = dspk_synapse::io::sources(path).map_err(|e| StreamError::Protocol(format!("{e:#}")))?;
+        let default = dspk_io::default_source(&entries).map(|e| e.id.clone()).unwrap_or_default();
+        Ok(entries
+            .into_iter()
+            .map(|e| dspk_stream::protocol::wire::SourceInfo {
+                default: e.id == default,
+                kind: match e.kind {
+                    dspk_io::SourceKind::Electrical => "electrical".into(),
+                    dspk_io::SourceKind::Other => "other".into(),
+                },
+                channels: e.channels as u32,
+                samples: e.samples,
+                sample_rate_hz: e.sample_rate.rate_hz(),
+                unit: e.unit.symbol().to_string(),
+                format: e.format.name().to_string(),
+                start_sec: e.start_time.as_seconds_f64(),
+                name: e.name,
+                id: e.id,
+            })
+            .collect())
+    }
 }
 
 /// The chains a recording's views are processed with, for clients that cannot compute (pages):

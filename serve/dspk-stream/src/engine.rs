@@ -203,6 +203,12 @@ impl OpenRecording {
 pub trait RecordingOpener: Send + Sync {
     /// Opens `path` (`source`: one of the file's sources, `None` = its default).
     fn open(&self, path: &Path, source: Option<&str>) -> StreamResult<OpenRecording>;
+
+    /// The sources `path` holds (an NWB store's series); none when the format has one only, or
+    /// the opener does not list them.
+    fn sources(&self, _path: &Path) -> StreamResult<Vec<crate::protocol::wire::SourceInfo>> {
+        Ok(Vec::new())
+    }
 }
 
 /// The view a client asks for, refused when it is outside the recording or larger than the
@@ -233,8 +239,9 @@ pub fn checked_view(request: &wire::ViewRequest, info: &RecordingInfo) -> Stream
 /// chains. Views without ops need nothing.
 pub async fn warm_view(recording: &OpenRecording, request: &wire::ViewRequest) -> StreamResult<()> {
     let Some(processing) = request.processing.as_ref().filter(|p| !p.ops.is_empty()) else { return Ok(()) };
-    // A batch job holds the GPU: the view is answered on the CPU, nothing to warm on the device
-    if dspk_core::lease::batch_running() {
+    // A batch job holds the GPU, or the GPU was lost: the view is answered on the CPU, nothing to
+    // warm on the device
+    if dspk_core::lease::batch_running() || gpu_lost() {
         return Ok(());
     }
     let view = checked_view(request, recording.info())?;
@@ -246,6 +253,35 @@ pub async fn warm_view(recording: &OpenRecording, request: &wire::ViewRequest) -
     }
 }
 
+/// Whether the server's GPU was lost (wgpu poisons a device that runs out of memory or resets:
+/// every later launch on it fails until the process restarts). Processed views then run on the
+/// CPU, the same chains, instead of failing.
+static GPU_LOST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether `error` says the device is gone, not that one view failed.
+fn device_lost(error: &str) -> bool {
+    // What a poisoned wgpu device answers: the out-of-memory itself, then every later launch's
+    // missing buffers
+    ["Out of Memory", "device runner", "poison", "Device lost", "DeviceLost", "Memory location was never initialized", "couldn't find resource for that handle"].iter().any(|m| error.contains(m))
+}
+
+/// Notes a view's error: when it says the GPU is gone, processed views move to the CPU from now
+/// on (true: the caller answers again, on the CPU).
+pub fn note_device_error(error: &str) -> bool {
+    if !device_lost(error) {
+        return false;
+    }
+    if !GPU_LOST.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        tracing::error!("the GPU was lost ({error}): processed views run on the CPU until the server restarts");
+    }
+    true
+}
+
+/// Whether processed views run on the CPU because the GPU was lost ([`GPU_LOST`]).
+pub fn gpu_lost() -> bool {
+    GPU_LOST.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The answer to view `request` of `recording`: from its pyramid or its samples, or processed
 /// when the request carries ops (blocking: a chain may take seconds to make).
 pub fn answer_view(recording: &OpenRecording, request: &wire::ViewRequest) -> StreamResult<Envelope> {
@@ -255,13 +291,20 @@ pub fn answer_view(recording: &OpenRecording, request: &wire::ViewRequest) -> St
         Some(processing) => {
             // The GPU unless a batch job (a sort) holds it: then the CPU, the same chain
             let gpu = dspk_core::lease::interactive();
-            let on_cpu = gpu.is_none();
-            let answer = || -> StreamResult<Envelope> {
+            let on_cpu = gpu.is_none() || gpu_lost();
+            let answer = |on_cpu: bool| -> StreamResult<Envelope> {
                 let mut out = Envelope::Samples(Vec::new());
                 recording.processed_on(processing, on_cpu)?.view(&view, &mut out)?;
                 Ok(out)
             };
-            if on_cpu { dspk_core::device::with_target(dspk_core::ComputeTarget::Cpu, answer) } else { answer() }
+            let cpu = || dspk_core::device::with_target(dspk_core::ComputeTarget::Cpu, || answer(true));
+            if on_cpu {
+                return cpu();
+            }
+            match answer(false) {
+                Err(e) if note_device_error(&e.reason()) => cpu(),
+                other => other,
+            }
         }
         None => Ok(view.read(recording.source.as_ref(), recording.pyramid.as_deref())?),
     }

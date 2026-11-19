@@ -243,6 +243,9 @@ impl EventEmitter<AppEvent> for Store {}
 impl Store {
     pub fn new(session: Session, session_path: Option<PathBuf>) -> Self {
         crate::data::remote::set_profiles(&session.servers);
+        // The RAM limit from the start (the setting, else the rule: a page without settings.toml
+        // too, which otherwise kept dspk-core's 1 GiB)
+        crate::data::settings::apply_memory(session.memory);
         Self {
             recording: None,
             loaded: Vec::new(),

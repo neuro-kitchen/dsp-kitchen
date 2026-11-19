@@ -19,9 +19,14 @@ const STATUS_EVERY: Duration = Duration::from_secs(1);
 /// Opens the `dspk://` recording `path` (blocking: from a background thread, never on the
 /// network runtime).
 pub fn open_uri(path: &Path) -> anyhow::Result<Arc<RemoteSignal>> {
+    open_uri_source(path, None)
+}
+
+/// [`open_uri`] of source `source` of the file (`None`: its default), on a connection of its own.
+pub fn open_uri_source(path: &Path, source: Option<&str>) -> anyhow::Result<Arc<RemoteSignal>> {
     let (server, remote) = parse_uri(path).with_context(|| format!("{} is not a dspk:// path", dspk_session::paths::short_path(&path)))?;
     let profile = profile_named(&server).with_context(|| format!("no server named {server:?} in Settings"))?;
-    let signal = runtime().block_on(open_recording(profile, remote))?;
+    let signal = runtime().block_on(open_recording_source(profile, remote, source.map(str::to_string)))?;
     remember(&signal);
     Ok(signal)
 }
@@ -66,8 +71,13 @@ pub async fn list(profile: ServerProfile, dir: String) -> anyhow::Result<wire::F
 
 /// The recording at `path` on the server, as a signal the app draws (a session of its own).
 pub async fn open_recording(profile: ServerProfile, path: String) -> anyhow::Result<Arc<RemoteSignal>> {
+    open_recording_source(profile, path, None).await
+}
+
+/// [`open_recording`] of source `source` of the file (`None`: its default).
+pub async fn open_recording_source(profile: ServerProfile, path: String, source: Option<String>) -> anyhow::Result<Arc<RemoteSignal>> {
     let mut session = connect(&profile).await?;
-    session.open(&path, None).await?;
+    session.open(&path, source.as_deref()).await?;
     Ok(Arc::new(RemoteSignal::new(Arc::new(session), runtime().handle().clone())?))
 }
 

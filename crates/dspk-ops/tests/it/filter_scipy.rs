@@ -4,7 +4,7 @@
 // filter_blocks and kernel_runtimes.
 #![cfg(feature = "wgpu")]
 
-mod common;
+use crate::common;
 
 use common::*;
 use cubecl::prelude::*;

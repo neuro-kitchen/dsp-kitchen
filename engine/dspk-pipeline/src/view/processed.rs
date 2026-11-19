@@ -93,6 +93,7 @@ impl ProcessedSignal {
     /// this computed. Views drawn raw (zoomed out past the preview) need nothing.
     pub async fn warm_view_async(&self, view: &View) -> DspResult<()> {
         if !self.covers(view.samples()) {
+            self.preview.want_overview(&(view.start..view.end));
             return Ok(());
         }
         // Zoomed out: reduced on the device, only the columns read back
@@ -116,14 +117,15 @@ impl ProcessedSignal {
                 None => missing.push(k),
             }
         }
-        let mut complete = true;
+        // A summary still being built leaves columns to fill in: the viewer asks again
+        let mut complete = self.preview.columns_complete();
         if !missing.is_empty() {
             let raw_view = View { channels: missing.iter().map(|&k| view.channels[k]).collect(), ..view.clone() };
             let mut raw = Envelope::Samples(Vec::new());
             self.raw.view(&raw_view, &mut raw)?;
             match raw {
                 Envelope::Columns { values: rows, complete: c } => {
-                    complete = c;
+                    complete &= c;
                     for (i, &k) in missing.iter().enumerate() {
                         values[k * width..(k + 1) * width].copy_from_slice(&rows[i * width..(i + 1) * width]);
                     }
@@ -191,6 +193,8 @@ impl SignalBackend for ProcessedSignal {
     fn view(&self, view: &View, out: &mut Envelope) -> DspResult<()> {
         let n = view.samples();
         if !self.covers(n) {
+            // Too wide to process now: its processed overview is built from here, raw meanwhile
+            self.preview.want_overview(&(view.start..view.end));
             return self.raw.view(view, out);
         }
         view.validate(self.info().channel_count(), self.info().samples)?;
@@ -502,6 +506,35 @@ mod tests {
         }
     }
 
+    /// The Author's chain (band-pass, Teager-Kaiser, a 20 Hz low-pass) over a one-minute window of
+    /// 32 channels at 24.4 kHz: drawn, not blank (a page showed it white).
+    #[test]
+    #[ignore = "a GPU-sized check: run with DSPK_RUNTIME=wgpu"]
+    fn a_one_minute_window_of_the_authors_chain_has_values() {
+        use crate::view::{Made, ProcessedChains, ViewPlan};
+        let (channels, rate) = (32usize, 24_414.0625f64);
+        let samples = (rate * 120.0) as usize;
+        let data: Vec<f32> = (0..channels * samples).map(|i| ((i % samples) as f32 * 0.013).sin() * 50.0 + ((i * 7919) % 1013) as f32 * 0.1).collect();
+        let source: Arc<dyn RecordingSource> = Arc::new(MemoryRecording::new("minute", data, channels, rate).unwrap());
+        let raw: Arc<dyn SignalBackend> = Arc::new(LocalSignal::open(source.clone(), None).unwrap());
+        let chains = ProcessedChains::new("");
+        let all: Vec<usize> = (0..channels).collect();
+        let steps = vec![("bp".into(), PipelineStage::bandpass(300.0, 6000.0)), ("tk".into(), PipelineStage::teager_kaiser()), ("lp".into(), PipelineStage::lowpass(20.0))];
+        let plan = ViewPlan { group: all.clone(), steps, shown: all.clone(), fits: Vec::new() };
+        let Made::Ready(s) = chains.signal(raw, source, "main", &plan).unwrap() else { panic!("no whitening") };
+        let start = (rate * 30.0) as u64;
+        let view = View { channels: (0..8).collect(), start, end: start + (rate * 60.0) as u64, width: 1200 };
+        println!("covers {}, one block {}", s.covers(view.samples()), s.preview.fits_one_block(view.samples()));
+        let t = std::time::Instant::now();
+        let mut env = Envelope::Samples(Vec::new());
+        s.view(&view, &mut env).unwrap();
+        println!("{:.1} ms {:?}", t.elapsed().as_secs_f64() * 1e3, s.last_timings());
+        let Envelope::Columns { values, complete } = env else { panic!("columns") };
+        let finite = values.iter().filter(|v| v[0].is_finite() && v[1].is_finite()).count();
+        println!("{finite} of {} columns hold values, complete {complete}", values.len());
+        assert!(finite * 10 >= values.len() * 9, "{finite} of {} columns hold values", values.len());
+    }
+
     /// A branch read on the device equals its whole chain (as the host branch does).
     #[test]
     fn a_branch_on_the_device_equals_its_whole_chain() {
@@ -532,8 +565,9 @@ mod tests {
         let raw: Arc<dyn SignalBackend> = Arc::new(LocalSignal::open(source.clone(), None).unwrap());
         let stages = vec![PipelineStage::bandpass(20.0, 200.0), PipelineStage::CommonMedianReference];
         let whole = ProcessedSignal::new(raw.clone(), source.clone(), vec![0, 1], stages.clone()).unwrap();
-        // Blocks of 2 × 6000 values: the 30,000-sample window takes several tiles
-        let tiled = ProcessedSignal::new(raw, source, vec![0, 1], stages).unwrap().with_max_values(2 * 6000);
+        // Blocks of 2 × 12,000 values: the 30,000-sample window takes a few tiles (within the
+        // tiles processed exactly, `PREVIEW_MAX_TILES`)
+        let tiled = ProcessedSignal::new(raw, source, vec![0, 1], stages).unwrap().with_max_values(2 * 12_000);
         let view = View { channels: vec![0, 1], start: 5000, end: 35_000, width: 211 };
         assert!(!tiled.preview.fits_one_block(30_000) && tiled.covers(30_000), "tiles, not raw");
         let (mut a, mut b) = (Envelope::Samples(Vec::new()), Envelope::Samples(Vec::new()));

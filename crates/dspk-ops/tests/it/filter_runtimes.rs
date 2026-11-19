@@ -1,7 +1,7 @@
 //! The SOS kernel gives the same result on every CubeCL runtime (one launch geometry, no
 //! device-specific paths): every runtime compiled in, limited by `DSPK_TEST_RUNTIMES`.
 
-mod common;
+use crate::common;
 
 use common::*;
 use cubecl::prelude::*;

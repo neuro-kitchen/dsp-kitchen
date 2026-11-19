@@ -27,9 +27,12 @@ pub use preview::{view_plan, InputCache, Preview, PreviewTimings, Summary, ViewP
 pub use processed::{PreviewSource, ProcessedSignal};
 
 /// Values (channels × samples, the chain's halo and margin included) one block processes on a
-/// computer's GPU (`dspk serve`, the desktop app): 64 Mi float32 = 256 MiB on the device (384
-/// channels: about 5.8 s at 30 kHz).
-pub const PREVIEW_MAX_VALUES_DEVICE: usize = 1 << 26;
+/// computer's GPU (`dspk serve`, the desktop app): 16 Mi float32 = 64 MiB per buffer (32 channels:
+/// about 20 s at 24.4 kHz; [`PREVIEW_MAX_TILES`] of them are processed exactly, wider windows come
+/// from the processed overview). Blocks of 64 Mi values (256 MiB buffers, 320 MiB in their size
+/// class) made the device's memory pools grow pages of up to 2 GiB, and wgpu ran out of memory on
+/// an 8 GB card at about 4 GB in use.
+pub const PREVIEW_MAX_VALUES_DEVICE: usize = 1 << 24;
 
 /// The same in a browser (a page's engine on WebGPU): 16 Mi float32 = 64 MiB per buffer. A
 /// browser's WebGPU binds at most 128 MiB per storage buffer by default and takes the device back
@@ -42,6 +45,9 @@ pub const PREVIEW_MAX_VALUES: usize = PREVIEW_MAX_VALUES_DEVICE;
 #[cfg(target_family = "wasm")]
 pub const PREVIEW_MAX_VALUES: usize = PREVIEW_MAX_VALUES_BROWSER;
 
-/// Most tiles of [`PREVIEW_MAX_VALUES`] a zoomed-out view is processed in (each processed and
-/// reduced to its columns on the device in turn); wider windows are drawn raw.
-pub const PREVIEW_MAX_TILES: usize = 32;
+/// Most tiles of [`PREVIEW_MAX_VALUES`] a zoomed-out view is processed in exactly (each processed
+/// and reduced to its columns on the device in turn). A wider window is drawn from the chain's
+/// processed overview ([`Summary`]), built from the part on screen outwards as soon as it is asked
+/// for (drawn raw until the build starts): processing 50 million samples per channel to draw
+/// 1200 columns took seconds and the device's memory.
+pub const PREVIEW_MAX_TILES: usize = 4;
