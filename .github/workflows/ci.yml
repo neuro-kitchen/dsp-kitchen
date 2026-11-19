@@ -110,7 +110,7 @@ jobs:
         run: cargo check --workspace --all-targets
       # The page's overview fold (JS) against the Rust fold's fixture (dspk-view checks the fixture)
       - name: Browser overview fold equals the engine's
-        run: node --test engine/dspk-engine-web/tests/
+        run: node --test engine/dspk-engine-web/tests/*.test.mjs
       - name: Unit tests of the host-side crates
         if: needs.changes.outputs.full == 'true'
         run: >

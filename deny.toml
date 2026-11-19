@@ -15,7 +15,15 @@ yanked = "deny"
 # A crate no longer maintained is an error when dspk depends on it directly; deep in the GUI
 # (fonts, D-Bus) and Burn stacks it is the upstream's to replace, and CI would fail on every one
 unmaintained = "workspace"
-ignore = []
+ignore = [
+    # quick-xml 0.39 (quadratic time on duplicate attribute names; unbounded namespace allocation) is reached only through polars'
+    # cloud storage (object_store), which polars 0.55 compiles in with `parquet` (parquet → its
+    # streaming engine → file_cache → cloud) and dspk never calls: nothing parses XML from it.
+    # Drop this when polars moves to an object_store on quick-xml ≥ 0.40.
+    { id = "RUSTSEC-2026-0194", reason = "only via polars' cloud storage, compiled in by `parquet` and never used" },
+    # The same crate and path: namespace declarations allocated without bound in `NsReader`
+    { id = "RUSTSEC-2026-0195", reason = "only via polars' cloud storage, compiled in by `parquet` and never used" },
+]
 
 [licenses]
 version = 2
