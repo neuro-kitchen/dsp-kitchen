@@ -168,7 +168,7 @@ impl Render for TemplateGrid {
                             })),
                         )
                         .children(units.iter().enumerate().filter(|(_, u)| selected.contains(u)).map(|(k, _)| {
-                            div().absolute().top_0().left(px(k as f32 * CELL_W)).w(px(CELL_W)).h(px(CELL_H)).border_2().border_color(frame).rounded_sm()
+                            div().absolute().top_0().left(px(k as f32 * CELL_W)).w(px(CELL_W)).h(px(CELL_H)).bg(frame.opacity(0.16)).rounded_sm()
                         }))
                 })
                 .collect()

@@ -12,7 +12,7 @@ use std::sync::Arc;
 use dspk_app_core::data::recording::Dataset;
 use dspk_app_core::data::store::{duration, AppEvent, Store};
 use dspk_app_core::navigation::route::Workspace;
-use dspk_app_core::screens::explore::trace::renderer::TimeViewKind;
+use dspk_app_core::screens::explore::trace::renderer::{ColorBy, TimeViewKind};
 use dspk_app_core::screens::explore::trace::trace_panel::{color, TracePanel};
 use dspk_app_core::screens::explore::TraceVm;
 use dspk_app_core::ui::panel_edge::{panel_edge, Side};
@@ -40,14 +40,18 @@ const SPIKE_WINDOW_SEC: f64 = 0.2;
 const TICKS_PER_UNIT: usize = 4000;
 /// Trace view ids of the strips (Explore numbers its views from 1).
 const STRIP_VIEW_ID: u64 = 1 << 40;
+const STRIP_RASTER_ID: u64 = (1 << 40) + 1024;
 
 pub struct BottomStrip {
     store: Entity<Store>,
     workspace: Workspace,
     vm: Entity<TraceVm>,
     panel: Entity<TracePanel>,
+    raster_vm: Entity<TraceVm>,
+    raster_panel: Entity<TracePanel>,
     pub open: bool,
-    raster: bool,
+    show_traces: bool,
+    show_raster: bool,
     /// Units followed (the first leads) and their channels.
     units: Vec<usize>,
     channels: Vec<usize>,
@@ -72,15 +76,46 @@ impl BottomStrip {
             let mut vm = TraceVm::new(store.clone(), id, TimeViewKind::Traces, &source, cx);
             vm.set_home(workspace, cx);
             vm.set_spikes(true, cx);
+            // Keep background traces neutral grey at all zoom levels (never recolour past the overlay window threshold)
+            vm.set_color_by(ColorBy::Single, cx);
             vm
         });
         let panel = cx.new(|cx| TracePanel::new(vm.clone(), WeakEntity::new_invalid(), cx));
+        let rid = STRIP_RASTER_ID + workspace as u64;
+        let raster_vm = cx.new(|cx| {
+            let mut vm = TraceVm::new(store.clone(), rid, TimeViewKind::Raster, &source, cx);
+            vm.set_home(workspace, cx);
+            vm.set_spikes(true, cx);
+            vm
+        });
+        let raster_panel = cx.new(|cx| TracePanel::new(raster_vm.clone(), WeakEntity::new_invalid(), cx));
         let subs = vec![cx.subscribe(&store, |_, _, e: &AppEvent, cx| {
             if matches!(e, AppEvent::WindowMoved | AppEvent::RecordingChanged | AppEvent::WorkspaceChanged) {
                 cx.notify();
             }
         })];
-        Self { store, workspace, vm, panel, open: true, raster: false, units: Vec::new(), channels: Vec::new(), overview: Rc::new(Cell::new(Bounds::default())), _subs: subs }
+        Self {
+            store,
+            workspace,
+            vm,
+            panel,
+            raster_vm,
+            raster_panel,
+            open: true,
+            show_traces: true,
+            show_raster: false,
+            units: Vec::new(),
+            channels: Vec::new(),
+            overview: Rc::new(Cell::new(Bounds::default())),
+            _subs: subs,
+        }
+    }
+
+    /// Switches the strip's recording source (e.g. when the user picks a source in Curation).
+    pub fn set_source(&mut self, source: &str, cx: &mut Context<Self>) {
+        self.vm.update(cx, |vm, cx| vm.set_source(source, cx));
+        self.raster_vm.update(cx, |vm, cx| vm.set_source(source, cx));
+        cx.notify();
     }
 
     /// Follow `units` (the first leads): their channels pinned, only their spikes coloured.
@@ -99,15 +134,31 @@ impl BottomStrip {
         self.vm.update(cx, |vm, cx| {
             vm.set_pinned_selection(true, cx);
             if !pinned.is_empty() {
+                vm.set_selection(pinned.clone(), cx);
+            }
+        });
+        self.raster_vm.update(cx, |vm, cx| {
+            vm.set_pinned_selection(true, cx);
+            if !pinned.is_empty() {
                 vm.set_selection(pinned, cx);
             }
         });
         cx.notify();
     }
 
-    fn set_raster(&mut self, raster: bool, cx: &mut Context<Self>) {
-        self.raster = raster;
-        self.vm.update(cx, |vm, cx| vm.set_kind(if raster { TimeViewKind::Raster } else { TimeViewKind::Traces }, cx));
+    fn toggle_traces(&mut self, cx: &mut Context<Self>) {
+        if self.show_traces && !self.show_raster {
+            return;
+        }
+        self.show_traces = !self.show_traces;
+        cx.notify();
+    }
+
+    fn toggle_raster(&mut self, cx: &mut Context<Self>) {
+        if self.show_raster && !self.show_traces {
+            return;
+        }
+        self.show_raster = !self.show_raster;
         cx.notify();
     }
 
@@ -195,9 +246,8 @@ impl BottomStrip {
                             window.paint_quad(fill(Bounds { origin: point(x0 + px(f * w), y0 + px(3.0)), size: size(px(1.0), px(h - 6.0)) }, c.opacity(0.8)));
                         }
                         let (a, z) = (span.0.clamp(0.0, 1.0) * w, span.1.clamp(0.0, 1.0) * w);
-                        let r = Bounds { origin: point(x0 + px(a), y0), size: size(px((z - a).max(2.0)), px(h)) };
-                        window.paint_quad(fill(r, frame.opacity(0.18)));
-                        window.paint_quad(gpui_kit::outline(r, frame, gpui_kit::BorderStyle::Solid));
+                        let r = Bounds { origin: point(x0 + px(a), y0), size: size(px((z - a).max(3.0)), px(h)) };
+                        window.paint_quad(fill(r, frame.opacity(0.28)));
                     },
                 )
                 .size_full(),
@@ -214,11 +264,29 @@ impl Render for BottomStrip {
             (tl.window_start_sec, tl.visible_window_sec)
         };
         let me = cx.entity().downgrade();
-        let tab = |id: &'static str, label: &'static str, raster: bool| {
+        let traces_btn = {
             let me = me.clone();
-            Button::new(id).ghost().small().label(label).selected(self.raster == raster).on_click(move |_, _, cx| {
-                let _ = me.update(cx, |s, cx| s.set_raster(raster, cx));
-            })
+            Button::new("strip-traces")
+                .ghost()
+                .small()
+                .label("Traces")
+                .tooltip("Toggle traces (click both Traces and Raster to stack Raster above Traces)")
+                .selected(self.show_traces)
+                .on_click(move |_, _, cx| {
+                    let _ = me.update(cx, |s, cx| s.toggle_traces(cx));
+                })
+        };
+        let raster_btn = {
+            let me = me.clone();
+            Button::new("strip-raster")
+                .ghost()
+                .small()
+                .label("Raster")
+                .tooltip("Toggle spike raster (stacks above Traces when both are active)")
+                .selected(self.show_raster)
+                .on_click(move |_, _, cx| {
+                    let _ = me.update(cx, |s, cx| s.toggle_raster(cx));
+                })
         };
         let act = |id: &'static str, icon: IconName, tip: &'static str, f: fn(&mut BottomStrip, &mut Context<BottomStrip>)| {
             let me = me.clone();
@@ -238,19 +306,36 @@ impl Render for BottomStrip {
             1 => format!("{} channels of the unit · its spikes coloured", self.channels.len().min(MAX_CHANNELS)),
             n => format!("{} channels · {n} units' spikes coloured", self.channels.len().min(MAX_CHANNELS)),
         };
-        let header = h_flex()
+        let mut header = h_flex()
             .h(px(HEADER_H))
             .flex_none()
             .px_2()
             .gap_1()
+            .items_center()
             .border_b_1()
             .border_color(border)
-            .child(tab("strip-traces", "Traces", false))
-            .child(tab("strip-raster", "Raster", true))
+            .child(traces_btn)
+            .child(raster_btn)
             .child(div().w(px(1.)).h(px(16.)).bg(border).mx_1())
             .child(act("strip-prev", IconName::ChevronLeft, "The lead unit's previous spike", |s, cx| s.step_spike(false, cx)))
             .child(act("strip-next", IconName::ChevronRight, "The lead unit's next spike", |s, cx| s.step_spike(true, cx)))
-            .child(div().flex_none().text_xs().text_color(muted).child(format!("{w0:.3} s · {}", duration(win))))
+            .child(div().flex_none().text_xs().text_color(muted).child(format!("{w0:.3} s · {}", duration(win))));
+        if self.show_raster {
+            let (tw, th) = {
+                let v = &self.raster_vm.read(cx).view;
+                (v.raster_tick_w, v.raster_tick_h)
+            };
+            let (vw1, vw2, vh1, vh2) = (self.raster_vm.clone(), self.raster_vm.clone(), self.raster_vm.clone(), self.raster_vm.clone());
+            header = header
+                .child(div().w(px(1.)).h(px(16.)).bg(border).mx_1())
+                .child(div().text_xs().text_color(muted).child(format!("W {tw:.1}")))
+                .child(icon_button("strip-tw-down", IconName::Minus, "Narrower raster ticks").xsmall().on_click(move |_, _, cx| vw1.update(cx, |vm, cx| vm.set_raster_tick_w(tw - 0.5, cx))))
+                .child(icon_button("strip-tw-up", IconName::Plus, "Wider raster ticks").xsmall().on_click(move |_, _, cx| vw2.update(cx, |vm, cx| vm.set_raster_tick_w(tw + 0.5, cx))))
+                .child(div().text_xs().text_color(muted).ml_1().child(format!("H {:.0}%", th * 100.0)))
+                .child(icon_button("strip-th-down", IconName::Minus, "Shorter raster ticks").xsmall().on_click(move |_, _, cx| vh1.update(cx, |vm, cx| vm.set_raster_tick_h(th - 0.1, cx))))
+                .child(icon_button("strip-th-up", IconName::Plus, "Taller raster ticks").xsmall().on_click(move |_, _, cx| vh2.update(cx, |vm, cx| vm.set_raster_tick_h(th + 0.1, cx))));
+        }
+        let header = header
             .child(div().flex_1().min_w_0().truncate().text_xs().text_color(muted).text_right().child(focus))
             .child(act(
                 "strip-toggle",
@@ -263,6 +348,21 @@ impl Render for BottomStrip {
             return v_flex().id("bottom-strip").w_full().h(px(HEADER_H)).flex_none().rounded(px(RADIUS_LG)).overflow_hidden().bg(bg).child(header);
         }
         let height = self.store.read(cx).panel_width("strip.height", STRIP_H);
+        // When both Traces and Raster are toggled on, stack Raster compactly on top (~30%) above Traces (~70%)
+        let body: gpui_kit::AnyElement = match (self.show_raster, self.show_traces) {
+            (true, true) => {
+                let raster_h = ((height - HEADER_H - OVERVIEW_H) * 0.30).clamp(44.0, 120.0);
+                v_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .child(div().h(px(raster_h)).w_full().flex_none().child(self.raster_panel.clone()))
+                    .child(div().h(px(1.)).w_full().flex_none().bg(border))
+                    .child(div().flex_1().min_h_0().child(self.panel.clone()))
+                    .into_any_element()
+            }
+            (true, false) => div().flex_1().min_h_0().child(self.raster_panel.clone()).into_any_element(),
+            (_, _) => div().flex_1().min_h_0().child(self.panel.clone()).into_any_element(),
+        };
         v_flex()
             .id("bottom-strip")
             .relative()
@@ -273,7 +373,7 @@ impl Render for BottomStrip {
             .overflow_hidden()
             .bg(bg)
             .child(header)
-            .child(div().flex_1().min_h_0().child(self.panel.clone()))
+            .child(body)
             .child(self.overview(cx))
             // The workspace's padding is under the strip
             .child(panel_edge("strip.height", Side::Bottom, PANE_GAP))

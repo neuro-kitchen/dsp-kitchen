@@ -107,6 +107,8 @@ pub struct SynapseState {
     /// Sortings on the server a page is served by (paths under its data root): the server
     /// computes their signal views and saves their curation.
     pub served: HashSet<PathBuf>,
+    /// Sorting opened directly in Curation without an open recording / active view.
+    pub standalone_sorting: Option<PathBuf>,
     _store: Subscription,
 }
 
@@ -146,16 +148,29 @@ impl SynapseState {
             sorter: 0,
             probe: 0,
             served: HashSet::new(),
+            standalone_sorting: None,
             _store: sub,
         };
         this.load_active(cx);
         this
     }
 
+    /// Path of the active view's linked sorting, or a standalone sorting opened without a recording.
+    pub fn active_sorting_path(&self, cx: &App) -> Option<PathBuf> {
+        self.store.read(cx).active_view().and_then(sorting_of).or_else(|| self.standalone_sorting.clone())
+    }
+
     /// The active view's sorting (curated), loaded once.
     pub fn active_sorting(&self, cx: &App) -> Option<Arc<SortingData>> {
-        let path = sorting_of(self.store.read(cx).active_view()?)?;
+        let path = self.active_sorting_path(cx)?;
         self.sorting(&path)
+    }
+
+    /// Opens a sorting standalone (when no recording is open yet).
+    pub fn set_standalone_sorting(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.standalone_sorting = Some(path.clone());
+        self.load(path, cx);
+        cx.notify();
     }
 
     /// A loaded sorting as curated.
