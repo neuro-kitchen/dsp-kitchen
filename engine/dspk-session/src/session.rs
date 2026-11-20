@@ -60,12 +60,27 @@ impl Default for SessionDoc {
     }
 }
 
+/// Generates a random UUIDv4 string for a derived signal chain (`drv/<uuid>_drv_<source>.minmax`).
+pub fn new_drv_id() -> String {
+    let mut b = [0u8; 16];
+    let _ = getrandom::fill(&mut b);
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]
+    )
+}
+
 /// One view: a recording, its op chain, its display and its results.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ViewDoc {
     /// Unique within the session (`v1`, `v2`, …).
     pub id: String,
+    /// Persistent UUID of the derived signal chain (`<rec>.cache/drv/<drv_id>_drv_<source>.minmax`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drv_id: Option<String>,
     /// Shown in tabs and lists.
     pub name: String,
     pub recording: RecordingRef,
@@ -411,6 +426,7 @@ mod tests {
     fn doc() -> SessionDoc {
         let view = ViewDoc {
             id: "v1".into(),
+            drv_id: None,
             name: "probe A".into(),
             recording: RecordingRef { path: "/data/rec.bin".into(), source: None, channels: Some(vec![0, 1, 2]) },
             ops: vec![

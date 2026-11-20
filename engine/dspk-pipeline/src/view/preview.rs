@@ -21,7 +21,7 @@
 //! views.
 
 use std::ops::Range;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use cubecl::prelude::Client;
@@ -30,11 +30,11 @@ use dspk_core::{ComputeTarget, DspError, DspResult, RecordingInfo, RecordingSour
 use dspk_ops::core::buffer;
 use dspk_ops::filter::{FilterBand, FilterDesign};
 use dspk_ops::math::{pointwise_op, PointwiseRun};
-use dspk_ops::resampler::{decimate_len, execute_resample_poly, firwin, FirWindow, ResampleFilter, RESAMPLE_POLY_DEFAULT_EDGE};
 use dspk_ops::pipeline::PipelineWorkspace;
+use dspk_ops::resampler::{decimate_len, execute_resample_poly, firwin, FirWindow, ResampleFilter, RESAMPLE_POLY_DEFAULT_EDGE};
 use dspk_ops::{Pipeline, PipelineStage};
 use dspk_view::envelope::fold::{finish, merge, EMPTY};
-use dspk_view::{envelope_launch_mapped, Columns, PointwiseMap};
+use dspk_view::{envelope_launch_mapped, Columns, OnProgress, PointwiseMap, Progress, Pyramid};
 use web_time::Instant;
 
 use super::budget::{next_id, size_class, DeviceBudget, Holder};
@@ -58,11 +58,7 @@ pub const SUMMARY_BUCKET: u64 = 256;
 #[cfg_attr(target_family = "wasm", allow(dead_code))]
 const FREEZE_AFTER_SECS: f64 = 1.5;
 
-/// The preview a zoomed-out view asked for last: a chain is frozen when, after
-/// [`FREEZE_AFTER_SECS`], no other chain was asked for since (a view left as it is counts).
-static LAST_ASKED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-/// When a view last asked for a chain (any chain): a freeze pass waits while views are drawn.
+/// When a view last asked for a chain (any chain): a background pyramid pass yields while views draw.
 static VIEW_AT: Mutex<Option<Instant>> = Mutex::new(None);
 
 /// One freeze pass at a time (each takes the device and the recording's reads for seconds).
@@ -370,18 +366,22 @@ pub struct Preview {
     id: usize,
     budget: Arc<DeviceBudget>,
     /// How to make this chain from the recording alone (the source, the channels read, every stage
-    /// from the recording on): what a frozen summary is built with.
+    /// from the recording on): what the background pyramid builder runs with.
     recipe: (Arc<dyn RecordingSource>, Vec<usize>, Vec<PipelineStage>),
-    /// Where the frozen summary is kept in the RAM cache (set by the chains that keep this one;
-    /// none: never frozen), whether one is being built, and when a view last asked.
-    summary_key: OnceLock<String>,
+    /// Resumable min/max pyramid of the final op's output (`drv/<drv_uuid>_drv_<source>.minmax`
+    /// on disk, or in memory when no recording path is given). Zoomed-out views (> 1 block) are
+    /// served directly from it while the background GPU builder fills pages outward from `focus`.
+    pyramid: OnceLock<Arc<Pyramid>>,
     #[cfg_attr(target_family = "wasm", allow(dead_code))]
-    freezing: AtomicBool,
-    /// The summary while it is built (views of what is built are drawn from it), and the middle
-    /// of the last window asked for (the build starts there).
-    partial: Mutex<Option<Arc<Mutex<Summary>>>>,
-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
-    last_center: std::sync::atomic::AtomicU64,
+    building_pyramid: AtomicBool,
+    /// Set on drop to stop the background GPU pyramid builder cleanly (leaving built pages in the
+    /// mmapped file).
+    pyramid_cancel: Arc<AtomicBool>,
+    /// Current viewport center (samples): the background GPU pyramid builder re-reads this before
+    /// every segment and always builds the nearest unbuilt page next.
+    focus: Arc<AtomicU64>,
+    /// Listeners notified as pages of [`Self::pyramid`] complete.
+    listeners: Arc<Mutex<Vec<OnProgress>>>,
     /// The newest range asked for at each width. A view's own zoom or pan keeps its width and moves
     /// its range: a request whose width was asked since for another range is stale and stops at its
     /// next tile. Two views of one chain (traces, a heatmap) ask for the same range: neither is
@@ -393,6 +393,12 @@ pub struct Preview {
     in_flight: Mutex<Vec<((Range<u64>, usize), Vec<std::task::Waker>)>>,
     last_view: Mutex<Instant>,
     me: OnceLock<Weak<Preview>>,
+}
+
+impl Drop for Preview {
+    fn drop(&mut self) {
+        self.pyramid_cancel.store(true, Ordering::Relaxed);
+    }
 }
 
 impl Preview {
@@ -477,10 +483,11 @@ impl Preview {
             id: next_id(),
             budget,
             recipe,
-            summary_key: OnceLock::new(),
-            freezing: AtomicBool::new(false),
-            partial: Mutex::new(None),
-            last_center: std::sync::atomic::AtomicU64::new(0),
+            pyramid: OnceLock::new(),
+            building_pyramid: AtomicBool::new(false),
+            pyramid_cancel: Arc::new(AtomicBool::new(false)),
+            focus: Arc::new(AtomicU64::new(0)),
+            listeners: Arc::new(Mutex::new(Vec::new())),
             latest: Mutex::new(Vec::new()),
             in_flight: Mutex::new(Vec::new()),
             last_view: Mutex::new(Instant::now()),
@@ -516,135 +523,240 @@ impl Preview {
         let _ = preview.me.set(Arc::downgrade(preview));
     }
 
-    /// Freezes this chain under `key` in the RAM cache once it stops changing ([`Summary`]).
-    pub fn set_summary_key(&self, key: String) {
-        let _ = self.summary_key.set(key);
+    /// Attaches a resumable min/max [`Pyramid`] (mmapped `drv/<drv_uuid>_drv_<source>.minmax` or
+    /// in-memory) to hold the final op's zoomed-out overview.
+    pub fn attach_pyramid(&self, pyramid: Arc<Pyramid>) {
+        let _ = self.pyramid.set(pyramid);
     }
 
-    /// The frozen summary, when built and still kept.
-    pub fn summary(&self) -> Option<Arc<Summary>> {
-        dspk_core::memory::host_cache().get::<Summary>(self.summary_key.get()?)
+    /// The attached processed pyramid, if any.
+    pub fn pyramid(&self) -> Option<&Arc<Pyramid>> {
+        self.pyramid.get()
     }
 
-    /// A zoomed-out view was asked: after [`FREEZE_AFTER_SECS`] with views still asking for this
-    /// chain, the whole recording is processed once in the background into its [`Summary`]
-    /// (native; a browser keeps processing what it shows).
-    fn consider_freezing(&self, soon: bool) {
+    /// Whether the processed pyramid is built completely.
+    pub fn is_pyramid_complete(&self) -> bool {
+        self.pyramid.get().is_some_and(|p| p.is_complete())
+    }
+
+    /// Steers the background GPU pyramid builder toward `sample` and starts it if needed.
+    pub fn focus_pyramid(&self, sample: u64) {
+        self.focus.store(sample, Ordering::Relaxed);
+        self.start_pyramid_builder(false);
+    }
+
+    /// Registers a listener notified whenever pages of the processed pyramid complete.
+    pub fn watch(&self, on_progress: OnProgress) {
+        self.listeners.lock().unwrap_or_else(|e| e.into_inner()).push(on_progress);
+    }
+
+    /// Progress of the processed pyramid (`None` when no pyramid is attached).
+    pub fn pyramid_progress(&self) -> Option<Progress> {
+        let p = self.pyramid.get()?;
+        Some(Progress { filled: 0..0, done: p.done_samples(), total: p.samples() })
+    }
+
+    /// Built-column map of the processed pyramid (`None` when no pyramid is attached).
+    pub fn pyramid_built(&self, columns: usize) -> Option<Vec<bool>> {
+        Some(self.pyramid.get()?.built_columns(columns))
+    }
+
+    /// Starts the background GPU pyramid builder if a pyramid is attached and not yet complete.
+    /// `soon == false`: debounced by [`FREEZE_AFTER_SECS`] so rapid parameter drags in a zoomed-in
+    /// view don't thrash the GPU or disk; `soon == true`: starts promptly for zoomed-out views.
+    fn start_pyramid_builder(&self, soon: bool) {
         #[cfg(target_family = "wasm")]
         let _ = soon;
-        if self.summary_key.get().is_none() {
-            // Not a chain the views keep (a summary's own builder): nothing to freeze
+        let Some(pyramid) = self.pyramid.get().cloned() else { return };
+        if pyramid.is_complete() {
             return;
         }
-        *self.last_view.lock().unwrap() = Instant::now();
-        *VIEW_AT.lock().unwrap() = Some(Instant::now());
-        LAST_ASKED.store(self.id, std::sync::atomic::Ordering::SeqCst);
+        *self.last_view.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
+        *VIEW_AT.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
         #[cfg(not(target_family = "wasm"))]
         {
-            let (Some(key), Some(me)) = (self.summary_key.get().cloned(), self.me.get().cloned()) else { return };
-            if self.summary().is_some() || self.freezing.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            let Some(me) = self.me.get().cloned() else { return };
+            if self.building_pyramid.swap(true, Ordering::SeqCst) {
                 return;
             }
-            std::thread::Builder::new()
-                .name("dspk-freeze".into())
-                .spawn(move || {
-                    // A window too wide to process is waited on for less (nothing else draws it)
-                    std::thread::sleep(std::time::Duration::from_secs_f64(if soon { YIELD_TO_VIEWS_SECS } else { FREEZE_AFTER_SECS }));
-                    let Some(preview) = me.upgrade() else { return };
-                    // Another chain was asked for since and this one not again: an edit replaced it
-                    // (a parameter dragged); it may be asked again later
-                    let replaced = LAST_ASKED.load(std::sync::atomic::Ordering::SeqCst) != preview.id;
-                    if replaced && preview.last_view.lock().unwrap().elapsed().as_secs_f64() > FREEZE_AFTER_SECS.max(if soon { 0.0 } else { FREEZE_AFTER_SECS }) {
-                        preview.freezing.store(false, std::sync::atomic::Ordering::SeqCst);
+            let focus = self.focus.clone();
+            let cancel = self.pyramid_cancel.clone();
+            let listeners = self.listeners.clone();
+            let spawned = std::thread::Builder::new().name("dspk-drv-pyramid".into()).spawn(move || {
+                // Debounce in small steps so cancellation (e.g. a chain edited and replaced)
+                // stops promptly without thrashing the GPU or disk
+                let delay = if soon { YIELD_TO_VIEWS_SECS } else { FREEZE_AFTER_SECS };
+                let t0 = Instant::now();
+                while t0.elapsed().as_secs_f64() < delay {
+                    if cancel.load(Ordering::Relaxed) || me.strong_count() == 0 {
+                        if let Some(p) = me.upgrade() {
+                            p.building_pyramid.store(false, Ordering::SeqCst);
+                        }
                         return;
                     }
-                    drop(preview);
-                    let built = Self::freeze(&me);
-                    if let Some(preview) = me.upgrade() {
-                        match built {
-                            Some(summary) => {
-                                let bytes = (summary.data.len() * 8 + summary.built.len()) as u64;
-                                dspk_core::memory::host_cache().put(key, Arc::new(summary), bytes);
-                            }
-                            None => preview.freezing.store(false, std::sync::atomic::Ordering::SeqCst),
-                        }
-                        *preview.partial.lock().unwrap() = None;
-                    }
-                })
-                .ok();
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Self::build_pyramid(&me, pyramid, focus, cancel, listeners);
+                if let Some(preview) = me.upgrade() {
+                    preview.building_pyramid.store(false, Ordering::SeqCst);
+                }
+            });
+            if spawned.is_err() {
+                self.building_pyramid.store(false, Ordering::SeqCst);
+            }
         }
     }
 
-    /// The chain over the whole recording as a [`Summary`]: made from the recording by a preview of
-    /// its own (the views' blocks stay), segment by segment, each reduced to its buckets on the
-    /// device. `None` when the chain went (dropped) or a segment failed.
+    /// Fills `pyramid` progressively outward from `focus` on the GPU, committing each completed
+    /// page directly into the mmapped file and notifying `listeners`. Never discards completed
+    /// pages on pause, VRAM pressure, or cancellation.
     #[cfg(not(target_family = "wasm"))]
-    fn freeze(me: &Weak<Preview>) -> Option<Summary> {
+    fn build_pyramid(
+        me: &Weak<Preview>,
+        pyramid: Arc<Pyramid>,
+        focus: Arc<AtomicU64>,
+        cancel: Arc<AtomicBool>,
+        listeners: Arc<Mutex<Vec<OnProgress>>>,
+    ) {
         let (source, group, stages, budget) = {
-            let p = me.upgrade()?;
+            let Some(p) = me.upgrade() else { return };
             (p.recipe.0.clone(), p.recipe.1.clone(), p.recipe.2.clone(), p.budget.clone())
         };
-        // One pass at a time
+        // One background GPU pyramid pass at a time
         let _one = FREEZING.lock().unwrap_or_else(|e| e.into_inner());
-        // A quarter of a view's block: the pass leaves the device to what is on screen
+        if cancel.load(Ordering::Relaxed) || me.strong_count() == 0 || pyramid.is_complete() {
+            return;
+        }
+        // Quarter of a view's block so interactive zoomed-in views always have headroom
         let quarter = (budget.limit() / (4 * Self::BUFFERS_PER_BLOCK) / 4) as usize;
-        let builder = Arc::new(Preview::new(source, group, stages).ok()?.with_budget(budget.clone()).with_max_values(quarter.max(1 << 20)));
+        let Ok(builder) = Preview::new(source, group, stages) else { return };
+        let builder = Arc::new(builder.with_budget(budget.clone()).with_max_values(quarter.max(1 << 20)));
         Preview::register(&builder);
-        let client = Self::client().ok()?;
-        let total = builder.info().samples;
+        let Ok(client) = Self::client() else { return };
         let rows = builder.out_channels.len();
-        // Segments of whole buckets that fit one block
+        let base = pyramid.base();
+        let pages = pyramid.pages();
+        let page_samples = pyramid.page_samples();
+        let total = pyramid.samples();
         let fit = (builder.max_values / builder.group.len().max(1)).saturating_sub(builder.halo.0 + builder.halo.1 + 2 * READ_GRID as usize) as u64;
-        let segment = (fit / SUMMARY_BUCKET * SUMMARY_BUCKET).max(SUMMARY_BUCKET);
-        let need = (Self::BUFFERS_PER_BLOCK as usize * builder.group.len() * size_class(segment as usize + 2 * READ_GRID as usize) * 4) as u64;
-        let buckets = total.div_ceil(SUMMARY_BUCKET) as usize;
-        let partial = Arc::new(Mutex::new(Summary { rows, buckets, data: vec![[f32::NAN; 2]; rows * buckets], built: vec![false; buckets] }));
-        let center = {
-            let p = me.upgrade()?;
-            *p.partial.lock().unwrap() = Some(partial.clone());
-            p.last_center.load(std::sync::atomic::Ordering::Relaxed)
-        };
-        // Segments from the one on screen outwards (as map tiles fill in from the view)
-        let count = total.div_ceil(segment);
-        let mid = (center / segment).min(count.saturating_sub(1)) as i64;
-        let mut order: Vec<u64> = (0..count).collect();
-        order.sort_by_key(|&k| ((k as i64 - mid).abs(), k));
-        for k in order {
-            let start = k * segment;
-            let p = me.upgrade()?;
-            drop(p);
-            // Views first: wait while one is being drawn, and while the device has no room for a
-            // segment (given up after a minute of waiting: frozen later, when asked again)
-            let waited = Instant::now();
+        let max_pages = (fit / page_samples).max(1);
+
+        loop {
+            if cancel.load(Ordering::Relaxed) || me.strong_count() == 0 || pyramid.is_complete() {
+                return;
+            }
+            // Dynamically pick the unbuilt page nearest the current viewport center
+            let mid = (focus.load(Ordering::Relaxed) / page_samples).min(pages.saturating_sub(1));
+            let mut next_page = None;
+            for d in 0..pages {
+                if mid + d < pages && !pyramid.page_built(mid + d) {
+                    next_page = Some(mid + d);
+                    break;
+                }
+                if d > 0
+                    && let Some(p) = mid.checked_sub(d)
+                    && !pyramid.page_built(p)
+                {
+                    next_page = Some(p);
+                    break;
+                }
+            }
+            let Some(first_page) = next_page else { return };
+            // Batch consecutive unbuilt pages up to `max_pages`
+            let mut last_page = first_page;
+            while last_page + 1 < pages && (last_page + 1 - first_page) < max_pages && !pyramid.page_built(last_page + 1) {
+                last_page += 1;
+            }
+            let seg_start = pyramid.page_range(first_page).start;
+            let seg_end = pyramid.page_range(last_page).end;
+            let seg_samples = (seg_end - seg_start) as usize;
+            let need = (Self::BUFFERS_PER_BLOCK as usize * builder.group.len() * size_class(seg_samples + builder.halo.0 + builder.halo.1 + 2 * READ_GRID as usize) * 4) as u64;
+
+            // Yield while a zoomed-in view is actively drawing or VRAM is tight (never discarding
+            // pages already committed to the mmapped file)
             loop {
-                let viewing = VIEW_AT.lock().unwrap().is_some_and(|t| t.elapsed().as_secs_f64() < YIELD_TO_VIEWS_SECS);
+                if cancel.load(Ordering::Relaxed) || me.strong_count() == 0 {
+                    return;
+                }
+                let viewing = VIEW_AT.lock().unwrap_or_else(|e| e.into_inner()).is_some_and(|t| t.elapsed().as_secs_f64() < YIELD_TO_VIEWS_SECS);
                 if !viewing && budget.fits(need, Some(&client)) {
                     break;
                 }
-                if waited.elapsed().as_secs() > 60 {
-                    return None;
-                }
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
-            let end = (start + segment).min(total);
-            let width = (end - start).div_ceil(SUMMARY_BUCKET) as usize;
-            let part = cubecl::future::block_on(builder.columns_async(start..end, width)).ok()?;
-            let b0 = (start / SUMMARY_BUCKET) as usize;
-            let mut sum = partial.lock().unwrap();
-            for r in 0..rows {
-                sum.data[r * buckets + b0..r * buckets + b0 + width].copy_from_slice(&part[r * width..(r + 1) * width]);
+            if cancel.load(Ordering::Relaxed) || me.strong_count() == 0 {
+                return;
             }
-            sum.built[b0..b0 + width].iter_mut().for_each(|b| *b = true);
+            let total_buckets = (seg_end - seg_start).div_ceil(base) as usize;
+            let Ok(part) = cubecl::future::block_on(builder.reduce_buckets_async(seg_start..seg_end, base, total_buckets)) else {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                continue;
+            };
+            // Commit each page into the mmapped pyramid (persisting its ready bit immediately)
+            let mut bucket_off = 0usize;
+            for page in first_page..=last_page {
+                let count = pyramid.page_buckets(page);
+                let mut page_rows = Vec::with_capacity(rows * count);
+                for r in 0..rows {
+                    let row_start = r * total_buckets + bucket_off;
+                    page_rows.extend_from_slice(&part[row_start..row_start + count]);
+                }
+                let _ = pyramid.build_page_from_buckets(page, &page_rows);
+                bucket_off += count;
+            }
+            let progress = Progress { filled: seg_start..seg_end, done: pyramid.done_samples(), total };
+            let snapshot: Vec<OnProgress> = listeners.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            for cb in snapshot {
+                cb(progress.clone());
+            }
         }
-        let done = std::mem::replace(&mut *partial.lock().unwrap(), Summary { rows: 0, buckets: 0, data: Vec::new(), built: Vec::new() });
-        Some(done)
     }
 
-    /// A window `range` is asked for that is too wide to process now: its summary is built (from
-    /// there outwards), and views of it are drawn from what is built meanwhile.
+    /// Reduces `range` on the GPU into `count` exact level-0 buckets of `base` samples (before
+    /// `finish`, so empty buckets remain [`EMPTY`], as [`Pyramid::build_page_from_buckets`] expects).
+    #[cfg(not(target_family = "wasm"))]
+    async fn reduce_buckets_async(&self, range: Range<u64>, base: u64, count: usize) -> DspResult<Vec<[f32; 2]>> {
+        let nch = self.group.len();
+        let columns = Columns::Buckets { origin: range.start, size: base, count };
+        if self.fits_one_block(range.end - range.start) {
+            self.block_async(range.clone(), false).await?;
+            let (client, rows, read) = {
+                let state = self.state.lock().unwrap();
+                let b = state.block.as_ref().filter(|b| b.range.start <= range.start && range.end <= b.range.end).ok_or_else(|| DspError::ComputeError("the builder block was replaced".into()))?;
+                (b.client.clone(), b.device.clone(), b.read.clone())
+            };
+            return self.reduce(client, rows, read, range, columns, count).await;
+        }
+        let tile = self.tile_samples().ok_or_else(|| DspError::InvalidConfig("the chain's settling halo alone fills a preview tile".into()))? as u64;
+        let client = Self::client()?;
+        let mut timings = PreviewTimings::default();
+        let mut acc = vec![EMPTY; nch * count];
+        let mut start = range.start;
+        while start < range.end {
+            let want = start..(start + tile).min(range.end);
+            let read = self.read_range(&want);
+            self.make_room(&read, 0, Some(&client));
+            let (mut ws, capacity) = {
+                let mut state = self.state.lock().unwrap();
+                self.workspace(&mut state, (read.end - read.start) as usize)?
+            };
+            let processed = self.process(&mut ws, &read, false, &mut timings).await?;
+            let c = ws.client().clone();
+            self.state.lock().unwrap().workspace = Some((ws, capacity));
+            let part = self.reduce(c, processed, read, want.clone(), columns, count).await?;
+            for (a, p) in acc.iter_mut().zip(part) {
+                *a = merge(*a, p);
+            }
+            start = want.end;
+        }
+        Ok(acc)
+    }
+
+    /// A window `range` is asked for that is wider than one block: steer the processed pyramid
+    /// builder here immediately.
     pub fn want_overview(&self, range: &Range<u64>) {
-        self.last_center.store((range.start + range.end) / 2, std::sync::atomic::Ordering::Relaxed);
-        self.consider_freezing(true);
+        self.focus.store((range.start + range.end) / 2, Ordering::Relaxed);
+        self.start_pyramid_builder(true);
     }
 
     /// Whether a window of `samples` is processed exactly now: in one block or in a few tiles.
@@ -734,10 +846,10 @@ impl Preview {
         self.state.lock().unwrap().timings.clone()
     }
 
-    /// Whether a window of `samples` samples is previewed processed: in one block, or zoomed out
-    /// in up to [`PREVIEW_MAX_TILES`] tiles (else a viewer draws it raw).
+    /// Whether a window of `samples` samples is previewed processed: any zoom level when a
+    /// processed pyramid is attached, else up to [`PREVIEW_MAX_TILES`] tiles.
     pub fn covers(&self, samples: u64) -> bool {
-        self.summary().is_some() || self.partial.lock().unwrap().is_some() || self.exact_now(samples)
+        self.pyramid.get().is_some() || self.exact_now(samples)
     }
 
     /// Whether a window of `samples` samples is processed in one block.
@@ -1130,41 +1242,53 @@ impl Preview {
     }
 
     /// `[min, max]` of each of `width` even columns of samples `range`, for every row of the group
-    /// (row after row, NaN where a column holds no sample): reduced on the device, so only the
-    /// columns are read back. A window that fits one block is processed as a block (kept: pans
-    /// and finer views reuse it); a wider one in tiles of [`PREVIEW_MAX_VALUES`], each with the
-    /// chain's halo on both sides and reduced over its own interior only, the tiles' partial
-    /// columns merged. Tiles overlap: the next tile is read and launched before the last one's
-    /// columns are awaited. The last answer is kept for [`Self::columns`].
+    /// (row after row, NaN where a column holds no sample):
+    /// - Zoomed in (`≤ 1 block`): reduced on the device from the kept single GPU block (or read
+    ///   from the attached pyramid when already built and coarse enough).
+    /// - Zoomed out (`> 1 block`): read directly from the attached resumable mmapped [`Pyramid`]
+    ///   while the background GPU builder fills unbuilt pages outward from the viewport center.
     pub async fn columns_async(&self, range: Range<u64>, width: usize) -> DspResult<Vec<[f32; 2]>> {
+        self.columns_async_with_cancel(range, width, None).await
+    }
+
+    async fn columns_async_with_cancel(&self, range: Range<u64>, width: usize, cancel: Option<&AtomicBool>) -> DspResult<Vec<[f32; 2]>> {
+        if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+            return Err(DspError::ComputeError("a newer view replaced this one".into()));
+        }
+        let len = range.end - range.start;
+        let one_block = self.fits_one_block(len);
+        self.focus.store((range.start + range.end) / 2, Ordering::Relaxed);
+        self.start_pyramid_builder(!one_block);
+
+        // Serve from the attached mmapped pyramid when:
+        // 1. already built over this range and coarse enough (>= base samples/column), OR
+        // 2. zoomed out past one GPU block (no uncached multi-tile blocking on the render thread).
+        if let Some(pyramid) = self.pyramid.get()
+            && len >= pyramid.base() * width as u64
+            && (!one_block || pyramid.covers(range.start, range.end))
+        {
+            let rows: Vec<usize> = (0..self.out_channels.len()).collect();
+            let mut out = vec![[f32::NAN; 2]; rows.len() * width];
+            if pyramid.envelope(&rows, range.start, range.end, width, &mut out)? {
+                let complete = pyramid.covers(range.start, range.end);
+                let mut state = self.state.lock().unwrap();
+                if complete {
+                    state.columns = Some((range, width, out.clone()));
+                }
+                state.columns_complete = complete;
+                return Ok(out);
+            }
+        }
+
         let kept = self.state.lock().unwrap().columns.as_ref().filter(|(r, w, _)| *r == range && *w == width).map(|(_, _, v)| v.clone());
-        let exact = self.exact_now(range.end - range.start);
-        self.last_center.store((range.start + range.end) / 2, std::sync::atomic::Ordering::Relaxed);
-        self.consider_freezing(!exact);
         if let Some(v) = kept {
             self.budget.touch(self.id);
             self.state.lock().unwrap().columns_complete = true;
             return Ok(v);
         }
-        // Frozen: folded from the summary's buckets (nothing processed)
-        if (range.end - range.start) >= SUMMARY_BUCKET * width as u64
-            && let Some(summary) = self.summary()
-        {
-            let v = summary.columns(&range, width);
-            let mut state = self.state.lock().unwrap();
-            state.columns = Some((range, width, v.clone()));
-            state.columns_complete = true;
-            return Ok(v);
-        }
-        // Too wide to process now: what the summary being built holds (it fills in from here)
-        if !exact {
-            let built = self.partial.lock().unwrap().clone();
-            let (v, complete) = match built {
-                Some(p) => p.lock().unwrap().columns_built(&range, width),
-                None => (vec![[f32::NAN; 2]; self.group.len() * width], false),
-            };
-            self.state.lock().unwrap().columns_complete = complete;
-            return Ok(v);
+        if !self.exact_now(len) {
+            self.state.lock().unwrap().columns_complete = false;
+            return Ok(vec![[f32::NAN; 2]; self.group.len() * width]);
         }
         self.state.lock().unwrap().columns_complete = true;
         // The newest range at this width (this view's zoom or pan supersedes its earlier requests)
@@ -1176,6 +1300,9 @@ impl Preview {
         // One computation per range and width: the same asked by another view waits for it
         let key = (range.clone(), width);
         loop {
+            if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+                return Err(DspError::ComputeError("a newer view replaced this one".into()));
+            }
             let busy = {
                 let mut flights = self.in_flight.lock().unwrap();
                 let busy = flights.iter().any(|(k, _)| *k == key);
@@ -1194,9 +1321,12 @@ impl Preview {
         }
         let _flight = Flight { preview: self, key: key.clone() };
         let nch = self.group.len();
-        let columns = Columns::Even { start: range.start, len: range.end - range.start, width };
-        let mut acc = if self.fits_one_block(range.end - range.start) {
+        let columns = Columns::Even { start: range.start, len, width };
+        let mut acc = if one_block {
             self.block_async(range.clone(), true).await?;
+            if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+                return Err(DspError::ComputeError("a newer view replaced this one".into()));
+            }
             let (client, rows, read) = {
                 let state = self.state.lock().unwrap();
                 let b = state.block.as_ref().filter(|b| b.range.start <= range.start && range.end <= b.range.end).ok_or_else(|| DspError::ComputeError("the processed block was replaced while it was reduced".into()))?;
@@ -1220,7 +1350,9 @@ impl Preview {
             loop {
                 let next = (start < range.end).then(|| start..(start + tile).min(range.end));
                 // This view zoomed or panned since: what this computes is not drawn, stop here
-                if self.latest.lock().unwrap().iter().any(|(w, r)| *w == width && *r != range) {
+                if cancel.is_some_and(|c| c.load(Ordering::Relaxed))
+                    || self.latest.lock().unwrap().iter().any(|(w, r)| *w == width && *r != range)
+                {
                     tracing::debug!(?range, width, "a processed view stopped: a newer request of the same view replaced it");
                     return Err(DspError::ComputeError("a newer view replaced this one".into()));
                 }
@@ -1288,8 +1420,49 @@ impl Preview {
     /// [`Self::columns_async`], answered from the last one when it was for this range and width,
     /// else made now, waited for (the desktop, a server; in a browser it is made first).
     pub fn columns(&self, range: Range<u64>, width: usize) -> DspResult<Vec<[f32; 2]>> {
+        self.columns_cancellable(range, width, None)
+    }
+
+    /// [`Self::columns`] with cooperative cancellation: updates `latest` before waiting on
+    /// `making` so an in-flight stale request stops immediately, and serves zoomed-out pyramid
+    /// reads without acquiring `making`.
+    pub fn columns_cancellable(&self, range: Range<u64>, width: usize, cancel: Option<&AtomicBool>) -> DspResult<Vec<[f32; 2]>> {
+        if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+            return Err(DspError::ComputeError("a newer view replaced this one".into()));
+        }
+        // Publish the newest range for this width BEFORE acquiring `making` so any running tile
+        // loop sees it and aborts instead of serializing behind it
+        {
+            let mut latest = self.latest.lock().unwrap();
+            latest.retain(|(w, _)| *w != width);
+            latest.push((width, range.clone()));
+        }
+        // Fast path: zoomed-out pyramid reads need no GPU lock
+        let len = range.end - range.start;
+        let one_block = self.fits_one_block(len);
+        if let Some(pyramid) = self.pyramid.get()
+            && len >= pyramid.base() * width as u64
+            && (!one_block || pyramid.covers(range.start, range.end))
+        {
+            self.focus.store((range.start + range.end) / 2, Ordering::Relaxed);
+            self.start_pyramid_builder(!one_block);
+            let rows: Vec<usize> = (0..self.out_channels.len()).collect();
+            let mut out = vec![[f32::NAN; 2]; rows.len() * width];
+            if pyramid.envelope(&rows, range.start, range.end, width, &mut out)? {
+                let complete = pyramid.covers(range.start, range.end);
+                let mut state = self.state.lock().unwrap();
+                if complete {
+                    state.columns = Some((range, width, out.clone()));
+                }
+                state.columns_complete = complete;
+                return Ok(out);
+            }
+        }
         let _making = self.making.lock().unwrap();
-        cubecl::future::reader::try_read_sync(self.columns_async(range, width))
+        if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+            return Err(DspError::ComputeError("a newer view replaced this one".into()));
+        }
+        cubecl::future::reader::try_read_sync(self.columns_async_with_cancel(range, width, cancel))
             .ok_or_else(|| DspError::ComputeError("the processed columns were not made ready before they were read (a browser cannot wait for the device)".into()))?
     }
 

@@ -302,7 +302,7 @@ impl RecordingOpener for FileOpener {
 /// dspk-pipeline's, as the desktop app's (`dspk_stream` answers views with them). Files the ops
 /// name (a remap's channel map) are read from the recording's folder.
 fn processor_of(recording: &Path) -> Arc<ProcessedChains> {
-    let chains = Arc::new(ProcessedChains::new(recording.parent().map(Path::to_path_buf).unwrap_or_default()));
+    let chains = Arc::new(ProcessedChains::for_recording(recording));
     // A sort takes the GPU: the chains kept for views go (the next view makes its own)
     let weak = Arc::downgrade(&chains);
     dspk_core::lease::on_release(move || {

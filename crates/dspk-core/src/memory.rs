@@ -80,7 +80,7 @@ pub fn default_limit() -> u64 {
     if cfg!(target_family = "wasm") {
         return 1 << 30;
     }
-    total_ram().map_or(2 << 30, |r| r / 4)
+    total_ram().map_or(512 << 20, |r| (r / 4).min(512 << 20))
 }
 
 /// The process's cache.

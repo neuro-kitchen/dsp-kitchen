@@ -10,9 +10,9 @@ use dspk_io::{CachedRecording, SourceEntry, SourceKind};
 
 use super::dataset::Dataset;
 
-/// Decoded chunks kept per opened source (memory bound): views, hover readouts and repeated
-/// frames over the same region decode each chunk once.
-const CHUNK_CACHE_BYTES: usize = 128 << 20;
+/// Decoded chunks kept per opened source (memory bound): hover readouts and small raw windows
+/// avoid re-decoding the same chunk; larger processed reads go through the global `host_cache()`.
+const CHUNK_CACHE_BYTES: usize = 16 << 20;
 
 pub struct SourceSet {
     path: Option<PathBuf>,

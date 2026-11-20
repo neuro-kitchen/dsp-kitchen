@@ -61,6 +61,9 @@ pub enum NodeKind {
     /// A stream shown in Explore (a view of the session).
     View {
         name: String,
+        /// Persistent UUID of this derived signal chain (`<rec>.cache/drv/<drv_id>_drv_<source>.minmax`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        drv_id: Option<String>,
         #[serde(default)]
         display: DisplayDoc,
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -272,9 +275,9 @@ impl GraphDoc {
         self.nodes
             .iter()
             .filter_map(|n| {
-                let NodeKind::View { name, display, plugins } = &n.kind else { return None };
+                let NodeKind::View { name, drv_id, display, plugins } = &n.kind else { return None };
                 let (recording, ops) = self.chain(&n.id, recipes)?;
-                Some(ViewDoc { id: n.id.clone(), name: name.clone(), recording, ops, display: display.clone(), plugins: plugins.clone() })
+                Some(ViewDoc { id: n.id.clone(), drv_id: drv_id.clone(), name: name.clone(), recording, ops, display: display.clone(), plugins: plugins.clone() })
             })
             .collect()
     }
@@ -295,7 +298,7 @@ impl GraphDoc {
                 g.edges.push(EdgeDoc { from: last, to: id.clone() });
                 last = id;
             }
-            let kind = NodeKind::View { name: v.name.clone(), display: v.display.clone(), plugins: v.plugins.clone() };
+            let kind = NodeKind::View { name: v.name.clone(), drv_id: v.drv_id.clone(), display: v.display.clone(), plugins: v.plugins.clone() };
             g.nodes.push(GraphNode { id: v.id.clone(), x: (v.ops.len() + 1) as f32 * COLUMN, y, kind });
             g.edges.push(EdgeDoc { from: last, to: v.id.clone() });
         }
@@ -312,7 +315,7 @@ mod tests {
     }
 
     fn view(name: &str) -> NodeKind {
-        NodeKind::View { name: name.into(), display: DisplayDoc::default(), plugins: BTreeMap::new() }
+        NodeKind::View { name: name.into(), drv_id: None, display: DisplayDoc::default(), plugins: BTreeMap::new() }
     }
 
     /// s1 → hp → cmr → spikes, and s1 → lp → lfp

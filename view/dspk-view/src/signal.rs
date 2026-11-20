@@ -14,9 +14,9 @@ use crate::pyramid::{pyramid_path, OnProgress, Progress, Pyramid, PyramidBuilder
 use crate::view::{Envelope, View, RAW_BLOCK_VALUES};
 
 /// Recordings with at least this many stored bytes keep their pyramid in a file next to them
-/// (built once, nearest the view first, and reused by every later open); smaller ones keep it in
+/// (built once, nearest the view first, resumable across restarts); smaller ones keep it in
 /// memory for the session.
-pub const FILE_PYRAMID_MIN_BYTES: u64 = 64 << 20;
+pub const FILE_PYRAMID_MIN_BYTES: u64 = 1 << 20;
 
 /// What a viewer needs from a signal. Calls block; viewers call them from worker threads.
 pub trait SignalBackend: Send + Sync {
@@ -26,6 +26,14 @@ pub trait SignalBackend: Send + Sync {
     /// The contents of `view` into `out` (its buffer is reused). Zoomed-out columns not built yet
     /// are NaN and `complete` is false: ask again after [`Self::watch`] reports progress.
     fn view(&self, view: &View, out: &mut Envelope) -> DspResult<()>;
+
+    /// [`Self::view`], stopping early when `cancel` is set (a newer frame superseded this one).
+    fn view_cancellable(&self, view: &View, out: &mut Envelope, cancel: &AtomicBool) -> DspResult<()> {
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        self.view(view, out)
+    }
 
     /// Samples `samples` of `channels`, channel-major (e.g. the value under the cursor).
     fn read(&self, channels: &[usize], samples: Range<u64>, out: &mut [f32]) -> DspResult<()>;
@@ -71,8 +79,7 @@ impl LocalSignal {
     /// complete file next to it, else (large recordings) a new file there, else memory.
     pub fn open(source: Arc<dyn RecordingSource>, recording: Option<(&Path, &str)>) -> DspResult<Self> {
         let pyramid = Self::choose_pyramid(source.as_ref(), recording)?;
-        let total = source.info().samples;
-        let done = if pyramid.is_complete() { total } else { 0 };
+        let done = pyramid.done_samples();
         Ok(Self {
             source,
             pyramid: Arc::new(pyramid),

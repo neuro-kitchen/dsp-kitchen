@@ -72,7 +72,7 @@ pub fn release_processed() {
 type ChainSlot = std::sync::OnceLock<Result<Arc<dyn SignalBackend>, String>>;
 
 /// Processed signals kept per open recording.
-const PROCESSED_KEPT: usize = 4;
+const PROCESSED_KEPT: usize = 2;
 
 /// Runs a view's ops on the server for clients that cannot compute (pages). The ops and the
 /// device are the caller's (dspk-stream knows neither): the command line runs dspk-pipeline.

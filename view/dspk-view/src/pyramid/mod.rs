@@ -20,17 +20,18 @@ mod storage;
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::Mutex;
 
 use dspk_core::{DspError, DspResult, RecordingSource};
 
 use crate::envelope::fold::{finish, fold_block, merge, Block, Columns, EMPTY};
 use crate::read::read_pipelined;
 use layout::Layout;
-use storage::{Storage, HEADER_BYTES};
+use storage::{data_offset, Storage};
 
 pub use builder::{OnProgress, Progress, PyramidBuilder};
 pub use layout::PAGE_SEC;
-pub use storage::{pyramid_path, PyramidIdentity};
+pub use storage::{cache_dir, drv_pyramid_path, new_uuid, pyramid_path, recording_uuid, PyramidIdentity};
 
 /// Level-0 bucket (samples) of an in-memory pyramid. The pyramid holds about `4 / base` floats
 /// per sample, so 256 costs 1/64 of the recording as f32 (filled regions only).
@@ -52,6 +53,9 @@ pub struct Pyramid {
     claimed: Vec<AtomicU64>,
     /// One bit per page: built (published with `Release`).
     ready: Vec<AtomicU64>,
+    /// Serializes writing a ready word into the mmapped bitmap so concurrent pages in the same
+    /// 64-page word never clobber each other's bit.
+    bitmap_lock: Mutex<()>,
     /// Per level above `layout.page_level`, the state of each bucket.
     upper: Vec<Vec<AtomicU8>>,
     marked_complete: AtomicBool,
@@ -68,18 +72,32 @@ fn bits(n: u64) -> Vec<AtomicU64> {
 }
 
 impl Pyramid {
-    fn with_storage(storage: Storage, layout: Layout, complete: bool) -> Self {
-        // One bit per page, all set for a complete pyramid
-        let full = |n: u64| -> Vec<AtomicU64> {
-            if !complete {
-                return bits(n);
+    fn file_layout(channels: usize, samples: u64, sample_rate_hz: f64, base: u64) -> Layout {
+        let pages = Layout::new(channels, samples, sample_rate_hz, base, 0).pages;
+        Layout::new(channels, samples, sample_rate_hz, base, data_offset(pages))
+    }
+
+    fn with_storage(storage: Storage, layout: Layout, ready_words: Option<&[u64]>, complete: bool) -> Self {
+        let make_bits = |n: u64| -> Vec<AtomicU64> {
+            let words = n.div_ceil(64) as usize;
+            if complete {
+                return (0..words)
+                    .map(|w| {
+                        let valid = (n - 64 * w as u64).min(64);
+                        AtomicU64::new(if valid == 64 { u64::MAX } else { (1 << valid) - 1 })
+                    })
+                    .collect();
             }
-            (0..n.div_ceil(64))
-                .map(|w| {
-                    let valid = (n - 64 * w).min(64);
-                    AtomicU64::new(if valid == 64 { u64::MAX } else { (1 << valid) - 1 })
-                })
-                .collect()
+            if let Some(saved) = ready_words {
+                return (0..words)
+                    .map(|w| {
+                        let valid = (n - 64 * w as u64).min(64);
+                        let mask = if valid == 64 { u64::MAX } else { (1 << valid) - 1 };
+                        AtomicU64::new(saved.get(w).copied().unwrap_or(0) & mask)
+                    })
+                    .collect();
+            }
+            bits(n)
         };
         let upper = (layout.page_level + 1..layout.levels.len())
             .map(|k| {
@@ -87,7 +105,37 @@ impl Pyramid {
                 (0..layout.levels[k].buckets).map(|j| AtomicU8::new(if complete { DONE } else if 2 * j + 1 < below { 2 } else { 1 })).collect()
             })
             .collect();
-        Self { claimed: full(layout.pages), ready: full(layout.pages), upper, marked_complete: AtomicBool::new(complete), storage, layout }
+        let p = Self {
+            claimed: make_bits(layout.pages),
+            ready: make_bits(layout.pages),
+            bitmap_lock: Mutex::new(()),
+            upper,
+            marked_complete: AtomicBool::new(complete),
+            storage,
+            layout,
+        };
+        // Reconstruct coarser levels for a resumed partial file from the persisted ready pages
+        if !complete && ready_words.is_some() {
+            for k in p.layout.page_level + 1..p.layout.levels.len() {
+                let below = p.layout.levels[k - 1].buckets;
+                for j in 0..p.layout.levels[k].buckets {
+                    let left_ready = p.bucket_ready(k - 1, 2 * j);
+                    let has_right = 2 * j + 1 < below;
+                    let right_ready = !has_right || p.bucket_ready(k - 1, 2 * j + 1);
+                    if left_ready && right_ready {
+                        p.merge_children(k, j, below);
+                        p.upper[k - p.layout.page_level - 1][j as usize].store(DONE, Ordering::Release);
+                    } else {
+                        let remaining = (!left_ready as u8) + (has_right && !right_ready) as u8;
+                        p.upper[k - p.layout.page_level - 1][j as usize].store(remaining, Ordering::Release);
+                    }
+                }
+            }
+            if p.is_complete() && !p.marked_complete.swap(true, Ordering::AcqRel) {
+                let _ = p.storage.mark_complete();
+            }
+        }
+        p
     }
 
     /// An empty pyramid of `source` in memory, with level-0 buckets of `base` samples
@@ -96,33 +144,66 @@ impl Pyramid {
         check_base(base)?;
         let info = source.info();
         let layout = Layout::new(info.channel_count(), info.samples, info.sample_rate_hz(), base, 0);
-        Ok(Self::with_storage(Storage::memory(layout.bytes)?, layout, false))
+        Ok(Self::with_storage(Storage::memory(layout.bytes)?, layout, None, false))
     }
 
-    /// The complete pyramid file at `path` built from `identity` with level-0 bucket `base`;
-    /// `None` when it is missing, incomplete or built from something else.
+    /// An empty pyramid with the given shape in memory (e.g. a derived chain whose channel count
+    /// differs from the raw recording's).
+    pub fn in_memory_shape(channels: usize, samples: u64, sample_rate_hz: f64, base: u64) -> DspResult<Self> {
+        check_base(base)?;
+        let layout = Layout::new(channels, samples, sample_rate_hz, base, 0);
+        Ok(Self::with_storage(Storage::memory(layout.bytes)?, layout, None, false))
+    }
+
+    /// Opens an existing pyramid file at `path` built from `identity` with level-0 bucket `base`
+    /// (complete or partial — partial files resume from their persisted ready-page bitmap);
+    /// `None` when it is missing or built from a different recording, base, or chain signature.
     pub fn open_file(path: &Path, identity: &PyramidIdentity, base: u64) -> DspResult<Option<Self>> {
         check_base(base)?;
-        let layout = Layout::new(identity.channels, identity.samples, identity.sample_rate_hz, base, HEADER_BYTES);
-        Ok(Storage::open_file(path, identity, base, layout.bytes)?.map(|s| Self::with_storage(s, layout, true)))
+        let layout = Self::file_layout(identity.channels, identity.samples, identity.sample_rate_hz, base);
+        let words = layout.pages.div_ceil(64) as usize;
+        Ok(Storage::open_file(path, identity, base, layout.bytes, words)?.map(|(s, ready, complete)| {
+            Self::with_storage(s, layout, if complete { None } else { Some(&ready) }, complete)
+        }))
     }
 
-    /// A new, empty pyramid file at `path` (replacing any other) to fill.
+    /// A new, empty pyramid file at `path` (replacing any other in place) to fill.
     pub fn create_file(path: &Path, identity: &PyramidIdentity, base: u64) -> DspResult<Self> {
         check_base(base)?;
-        let layout = Layout::new(identity.channels, identity.samples, identity.sample_rate_hz, base, HEADER_BYTES);
-        Ok(Self::with_storage(Storage::create_file(path, identity, base, layout.bytes)?, layout, false))
+        let layout = Self::file_layout(identity.channels, identity.samples, identity.sample_rate_hz, base);
+        let words = layout.pages.div_ceil(64) as usize;
+        Ok(Self::with_storage(Storage::create_file(path, identity, base, layout.bytes, words)?, layout, None, false))
+    }
+
+    /// Opens or creates/resets the derived-chain pyramid at
+    /// `<dir>/cache/<file name>.cache/drv/<drv_id>_drv_<source_id>.minmax` for `identity` (which
+    /// carries the chain's signature). Resumes if the file matches `identity`; resets in place if
+    /// the chain changed; falls back to memory if the folder cannot be written.
+    pub fn open_or_create_drv(path: &Path, source_id: &str, drv_id: &str, identity: &PyramidIdentity, base: u64) -> DspResult<Self> {
+        let file = drv_pyramid_path(path, source_id, drv_id);
+        if let Some(pyramid) = Self::open_file(&file, identity, base)? {
+            return Ok(pyramid);
+        }
+        match Self::create_file(&file, identity, base) {
+            Ok(pyramid) => Ok(pyramid),
+            Err(e) => {
+                tracing::warn!("cannot write {}: {e}; keeping the derived min/max pyramid in memory", file.display());
+                Self::in_memory_shape(identity.channels, identity.samples, identity.sample_rate_hz, base)
+            }
+        }
     }
 
     /// The pyramid of source `source_id` of the recording at `path`, base [`FILE_BASE`]: the
-    /// complete file next to it, else a new file there, else (no path, or a folder that cannot
-    /// be written) one in memory at [`MEMORY_BASE`]. Returns it and whether it is complete.
+    /// existing file next to it (complete or resumable), else a new file there, else (no path, or
+    /// a folder that cannot be written) one in memory at [`MEMORY_BASE`]. Returns it and whether
+    /// it is complete.
     pub fn open_or_create(source: &dyn RecordingSource, recording: Option<(&Path, &str)>) -> DspResult<(Self, bool)> {
         let Some((path, id)) = recording else { return Ok((Self::in_memory(source, MEMORY_BASE)?, false)) };
         let identity = PyramidIdentity::of(path, id, source)?;
         let file = pyramid_path(path, id);
         if let Some(pyramid) = Self::open_file(&file, &identity, FILE_BASE)? {
-            return Ok((pyramid, true));
+            let complete = pyramid.is_complete();
+            return Ok((pyramid, complete));
         }
         match Self::create_file(&file, &identity, FILE_BASE) {
             Ok(pyramid) => Ok((pyramid, false)),
@@ -240,6 +321,11 @@ impl Pyramid {
             }
         }
         self.ready[word].fetch_or(bit, Ordering::Release);
+        {
+            let _g = self.bitmap_lock.lock().unwrap_or_else(|e| e.into_inner());
+            let current = self.ready[word].load(Ordering::Acquire);
+            self.storage.write_ready_word(word, current);
+        }
 
         // Coarser levels: the last child of a bucket merges it, then reports to its parent
         let mut child = page;
@@ -348,6 +434,22 @@ impl Pyramid {
     /// Whether page `page` is built.
     pub fn page_built(&self, page: u64) -> bool {
         page < self.layout.pages && self.page_ready(page)
+    }
+
+    /// Sample range `start..end` covered by page `page`.
+    pub fn page_range(&self, page: u64) -> std::ops::Range<u64> {
+        self.layout.page_range(page)
+    }
+
+    /// Total samples across all ready pages (equals [`Self::samples`] once complete).
+    pub fn done_samples(&self) -> u64 {
+        (0..self.layout.pages)
+            .filter(|&p| self.page_ready(p))
+            .map(|p| {
+                let r = self.layout.page_range(p);
+                r.end - r.start
+            })
+            .sum()
     }
 
     /// Level-0 buckets ([`Self::base`] samples each) of page `page`.
@@ -541,7 +643,7 @@ mod tests {
 
     fn identity(rec: &MemoryRecording) -> PyramidIdentity {
         let info = rec.info();
-        PyramidIdentity { source_id: "main".into(), len: 0, mtime_ns: 0, channels: info.channel_count(), samples: info.samples, sample_rate_hz: info.sample_rate_hz() }
+        PyramidIdentity { source_id: "main".into(), len: 0, mtime_ns: 0, channels: info.channel_count(), samples: info.samples, sample_rate_hz: info.sample_rate_hz(), signature: [0u8; 32] }
     }
 
     fn check_matches_brute_force(rec: &MemoryRecording, p: &Pyramid) {
@@ -622,20 +724,28 @@ mod tests {
     }
 
     #[test]
-    fn files_reopen_only_when_complete_and_unchanged() {
+    fn files_resume_partial_builds_and_invalidate_on_change() {
         let rec = recording(2, 50_000);
         let dir = temp_dir("reopen");
         let path = pyramid_path(&dir.join("rec.bin"), "main");
         let id = identity(&rec);
 
+        // Partial build: persists ready pages and resumes on reopen without starting over
         let p = Pyramid::create_file(&path, &id, 8).unwrap();
         assert!(p.fill(&rec, 0, 20_000, 1 << 20, || false).unwrap());
+        let done_before = p.done_samples();
+        assert!(done_before >= 20_000 && done_before < 50_000);
         drop(p);
-        assert!(Pyramid::open_file(&path, &id, 8).unwrap().is_none(), "incomplete files are rebuilt");
 
-        let p = Pyramid::create_file(&path, &id, 8).unwrap();
-        assert!(p.fill(&rec, 0, 50_000, 1 << 20, || false).unwrap());
-        drop(p);
+        let resumed = Pyramid::open_file(&path, &id, 8).unwrap().expect("partial files resume");
+        assert!(!resumed.is_complete());
+        assert_eq!(resumed.done_samples(), done_before);
+        assert!(resumed.covers(0, 20_000));
+        // Finish the rest
+        assert!(resumed.fill(&rec, 0, 50_000, 1 << 20, || false).unwrap());
+        assert!(resumed.is_complete());
+        drop(resumed);
+
         let reopened = Pyramid::open_file(&path, &id, 8).unwrap().expect("complete files reopen");
         assert!(reopened.is_complete() && reopened.covers(0, 50_000));
         let mut out = vec![[0.0; 2]; 50];
@@ -643,6 +753,7 @@ mod tests {
         assert!(out.iter().all(|v| v[0].is_finite()));
         drop(reopened);
         assert!(Pyramid::open_file(&path, &PyramidIdentity { mtime_ns: 1, ..id.clone() }, 8).unwrap().is_none());
+        assert!(Pyramid::open_file(&path, &id.clone().with_signature([7u8; 32]), 8).unwrap().is_none());
         assert!(Pyramid::open_file(&path, &id, 16).unwrap().is_none());
         std::fs::remove_dir_all(&dir).unwrap();
     }

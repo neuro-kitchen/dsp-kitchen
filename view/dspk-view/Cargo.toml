@@ -25,6 +25,7 @@ cubecl = { workspace = true, optional = true }
 rayon.workspace = true
 memmap2.workspace = true
 tracing.workspace = true
+getrandom.workspace = true
 
 # Threads in a browser (web workers), when the build has them
 [target.'cfg(target_family = "wasm")'.dependencies]

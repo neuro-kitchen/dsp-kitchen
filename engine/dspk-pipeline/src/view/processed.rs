@@ -4,13 +4,14 @@
 //! [`PREVIEW_MAX_VALUES`](super::PREVIEW_MAX_VALUES) ([`ProcessedSignal::covers`] tells the UI to say so).
 
 use std::ops::Range;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use dspk_core::{DspResult, RecordingInfo, RecordingSource, SampleFormat};
 use dspk_ops::PipelineStage;
 use super::budget::DeviceBudget;
 use super::preview::{InputCache, Preview, PreviewTimings};
-use dspk_view::{Envelope, OnProgress, Progress, SignalBackend, View};
+use dspk_view::{Envelope, OnProgress, Progress, Pyramid, SignalBackend, View};
 
 
 /// A view's signal with its op chain applied: [`Preview`] (dspk-pipeline) for the channels the
@@ -39,14 +40,15 @@ impl ProcessedSignal {
         Ok(Self { raw, preview: shared(Preview::new(source, group, stages)?.with_input_cache(cache).with_budget(budget)) })
     }
 
-    /// Freezes this chain under `key` in the RAM cache once it stops changing.
-    pub fn set_summary_key(&self, key: String) {
-        self.preview.set_summary_key(key);
+    /// Attaches a resumable min/max [`Pyramid`] (mmapped `drv/<drv_uuid>_drv_<source>.minmax` or
+    /// in-memory) to hold the final op's zoomed-out overview.
+    pub fn attach_pyramid(&self, pyramid: Arc<Pyramid>) {
+        self.preview.attach_pyramid(pyramid);
     }
 
-    /// Whether this chain's frozen summary is built (zoomed-out views are drawn from it).
+    /// Whether this chain's processed pyramid is built completely.
     pub fn frozen(&self) -> bool {
-        self.preview.summary().is_some()
+        self.preview.is_pyramid_complete()
     }
 
     /// The device budget this signal is charged to.
@@ -103,11 +105,11 @@ impl ProcessedSignal {
         self.preview.warm_async(view.start..view.end, true).await
     }
 
-    /// A zoomed-out `view` from the device's columns ([`Preview::columns`]): the group's rows
-    /// processed, the other channels' rows from the raw signal's view.
-    fn columns_view(&self, view: &View, out: &mut Envelope) -> DspResult<()> {
+    /// A zoomed-out `view` from the device's columns ([`Preview::columns_cancellable`]): the
+    /// group's rows processed, the other channels' rows from the raw signal's view.
+    fn columns_view(&self, view: &View, out: &mut Envelope, cancel: Option<&AtomicBool>) -> DspResult<()> {
         let width = view.width;
-        let group = self.preview.columns(view.start..view.end, width)?;
+        let group = self.preview.columns_cancellable(view.start..view.end, width, cancel)?;
         let outs = self.preview.out_channels();
         let mut values = vec![[f32::NAN; 2]; view.channels.len() * width];
         let mut missing = Vec::new();
@@ -117,7 +119,7 @@ impl ProcessedSignal {
                 None => missing.push(k),
             }
         }
-        // A summary still being built leaves columns to fill in: the viewer asks again
+        // A pyramid still being built leaves columns to fill in: the viewer asks again on progress
         let mut complete = self.preview.columns_complete();
         if !missing.is_empty() {
             let raw_view = View { channels: missing.iter().map(|&k| view.channels[k]).collect(), ..view.clone() };
@@ -191,22 +193,11 @@ impl SignalBackend for ProcessedSignal {
     }
 
     fn view(&self, view: &View, out: &mut Envelope) -> DspResult<()> {
-        let n = view.samples();
-        if !self.covers(n) {
-            // Too wide to process now: its processed overview is built from here, raw meanwhile
-            self.preview.want_overview(&(view.start..view.end));
-            return self.raw.view(view, out);
-        }
-        view.validate(self.info().channel_count(), self.info().samples)?;
-        let rows = view.channels.len();
-        if n > view.width as u64 {
-            return self.columns_view(view, out);
-        }
-        // Zoomed in: the samples themselves
-        let mut samples = vec![0.0f32; rows * n as usize];
-        self.fill(&view.channels, view.start..view.end, true, &mut samples)?;
-        *out = Envelope::Samples(samples);
-        Ok(())
+        self.view_with_cancel(view, out, None)
+    }
+
+    fn view_cancellable(&self, view: &View, out: &mut Envelope, cancel: &AtomicBool) -> DspResult<()> {
+        self.view_with_cancel(view, out, Some(cancel))
     }
 
     fn read(&self, channels: &[usize], samples: Range<u64>, out: &mut [f32]) -> DspResult<()> {
@@ -218,6 +209,7 @@ impl SignalBackend for ProcessedSignal {
 
     fn focus(&self, sample: u64) {
         self.raw.focus(sample);
+        self.preview.focus_pyramid(sample);
     }
 
     fn prepare(&self, start: u64, end: u64) -> DspResult<()> {
@@ -225,15 +217,42 @@ impl SignalBackend for ProcessedSignal {
     }
 
     fn progress(&self) -> Progress {
-        self.raw.progress()
+        self.preview.pyramid_progress().unwrap_or_else(|| self.raw.progress())
     }
 
     fn built(&self, columns: usize) -> Vec<bool> {
-        self.raw.built(columns)
+        self.preview.pyramid_built(columns).unwrap_or_else(|| self.raw.built(columns))
     }
 
     fn watch(&self, on_progress: OnProgress) {
-        self.raw.watch(on_progress);
+        if self.preview.pyramid().is_some() {
+            self.preview.watch(on_progress);
+        } else {
+            self.raw.watch(on_progress);
+        }
+    }
+}
+
+impl ProcessedSignal {
+    fn view_with_cancel(&self, view: &View, out: &mut Envelope, cancel: Option<&AtomicBool>) -> DspResult<()> {
+        if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+            return Ok(());
+        }
+        let n = view.samples();
+        if !self.covers(n) {
+            self.preview.want_overview(&(view.start..view.end));
+            return self.raw.view(view, out);
+        }
+        view.validate(self.info().channel_count(), self.info().samples)?;
+        let rows = view.channels.len();
+        if n > view.width as u64 {
+            return self.columns_view(view, out, cancel);
+        }
+        // Zoomed in: the samples themselves
+        let mut samples = vec![0.0f32; rows * n as usize];
+        self.fill(&view.channels, view.start..view.end, true, &mut samples)?;
+        *out = Envelope::Samples(samples);
+        Ok(())
     }
 }
 
@@ -446,8 +465,18 @@ mod tests {
         let frozen = columns(&signal);
         let scale = direct.iter().flat_map(|v| [v[0].abs(), v[1].abs()]).fold(0.0f32, f32::max).max(1.0);
         let tol = 1e-3 * scale;
-        for (x, (d, f)) in direct.iter().zip(&frozen).enumerate() {
-            assert!(f[0] <= d[0] + tol && f[1] >= d[1] - tol, "column {x}: frozen {f:?} does not hold {d:?}");
+        // Pyramid::envelope aligns column edges to buckets (moving by < 1 column so every sample
+        // falls in exactly one column): each direct column's extremes lie within its column or a
+        // neighbour in the pyramid.
+        let w = view.width;
+        for ch in 0..3 {
+            let d_row = &direct[ch * w..(ch + 1) * w];
+            let f_row = &frozen[ch * w..(ch + 1) * w];
+            for x in 0..w {
+                let lo = f_row[x.saturating_sub(1)..=(x + 1).min(w - 1)].iter().map(|v| v[0]).fold(f32::INFINITY, f32::min);
+                let hi = f_row[x.saturating_sub(1)..=(x + 1).min(w - 1)].iter().map(|v| v[1]).fold(f32::NEG_INFINITY, f32::max);
+                assert!(lo <= d_row[x][0] + tol && hi >= d_row[x][1] - tol, "ch {ch} col {x}: pyramid [{lo}, {hi}] does not hold {:?}", d_row[x]);
+            }
         }
         let extremes = |v: &[[f32; 2]]| v.iter().fold([f32::INFINITY, f32::NEG_INFINITY], |a, b| [a[0].min(b[0]), a[1].max(b[1])]);
         let (a, b) = (extremes(&direct), extremes(&frozen));
@@ -752,5 +781,81 @@ mod tests {
                 assert!((w - a).abs() < 1e-3 * a.abs().max(1.0), "ch {c} sample {i}: {w} vs {a}");
             }
         }
+    }
+
+    /// A named derived chain (`signal_for_drv`) runs flat (constant VRAM even with 4+ ops, keeping
+    /// LowRate active), persists its mmapped pyramid under `<rec>.cache/drv/<uuid>_drv_<source>.minmax`,
+    /// reopens complete on the next session without recomputing, and resets in place when edited.
+    #[test]
+    fn derived_chain_persists_drv_minmax_and_resets_in_place_on_edit() {
+        use crate::view::{Made, ProcessedChains, ViewPlan};
+        let dir = std::env::temp_dir().join(format!("dspk_drv_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let rec_path = dir.join("rec.bin");
+        std::fs::write(&rec_path, b"placeholder").unwrap();
+
+        let source = recording(2, 120_000);
+        let raw: Arc<dyn SignalBackend> = Arc::new(LocalSignal::open(source.clone(), None).unwrap());
+        let drv_id = dspk_view::new_uuid();
+        let drv_file = dspk_view::drv_pyramid_path(&rec_path, "main", &drv_id);
+
+        let make_plan = |alpha: f32| ViewPlan {
+            group: vec![0, 1],
+            steps: vec![
+                ("bp".into(), PipelineStage::bandpass(20.0, 200.0)),
+                ("cmr".into(), PipelineStage::CommonMedianReference),
+                ("tk".into(), PipelineStage::teager_kaiser()),
+                (format!("scale {alpha}"), PipelineStage::Scale { alpha, beta: 0.0 }),
+            ],
+            shown: vec![0, 1],
+            fits: Vec::new(),
+        };
+
+        // Session 1: build the 4-op derived chain and wait for its background pyramid to finish
+        let chains1 = ProcessedChains::new(&dir);
+        let Made::Ready(sig1) = chains1.signal_for_drv(&drv_id, Some(&rec_path), raw.clone(), source.clone(), "main", &make_plan(2.0)).unwrap() else {
+            panic!("no whitening");
+        };
+        assert!(drv_file.exists(), "drv minmax file created at {}", drv_file.display());
+        sig1.focus(60_000);
+        let t0 = std::time::Instant::now();
+        while !sig1.frozen() {
+            assert!(t0.elapsed().as_secs() < 60, "derived pyramid did not finish in time");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let view = View { channels: vec![0, 1], start: 0, end: 120_000, width: 100 };
+        let mut env1 = Envelope::Samples(Vec::new());
+        sig1.view(&view, &mut env1).unwrap();
+        drop(sig1);
+        drop(chains1);
+
+        // Session 2: reopen the same drv_id + same ops -> already complete immediately!
+        let chains2 = ProcessedChains::new(&dir);
+        let Made::Ready(sig2) = chains2.signal_for_drv(&drv_id, Some(&rec_path), raw.clone(), source.clone(), "main", &make_plan(2.0)).unwrap() else {
+            panic!("no whitening");
+        };
+        assert!(sig2.frozen(), "reopened drv pyramid is immediately complete without recomputing");
+        let mut env2 = Envelope::Samples(Vec::new());
+        sig2.view(&view, &mut env2).unwrap();
+        assert_eq!(env1, env2);
+
+        // Edit ops on the same drv_id -> resets the SAME file in place (no second file created)
+        let Made::Ready(sig3) = chains2.signal_for_drv(&drv_id, Some(&rec_path), raw.clone(), source.clone(), "main", &make_plan(5.0)).unwrap() else {
+            panic!("no whitening");
+        };
+        assert!(!sig3.frozen(), "edited chain invalidated and reset the drv pyramid in place");
+        let drv_files: Vec<_> = std::fs::read_dir(drv_file.parent().unwrap()).unwrap().filter_map(Result::ok).collect();
+        assert_eq!(drv_files.len(), 1, "editing reuses the single drv file instead of accumulating files");
+
+        // Cooperative cancellation: a pre-cancelled view returns immediately
+        let cancelled = AtomicBool::new(true);
+        let mut env_cancel = Envelope::Samples(Vec::new());
+        sig3.view_cancellable(&view, &mut env_cancel, &cancelled).unwrap();
+
+        drop(sig3);
+        drop(sig2);
+        drop(chains2);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
