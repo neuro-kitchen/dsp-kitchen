@@ -90,6 +90,12 @@ pub struct TimeView {
     /// view of the same chain).
     #[serde(default)]
     pub events_only: bool,
+    /// Raster: horizontal tick width multiplier (2.5 = crisp thick ticks by default).
+    #[serde(default = "default_tick_w")]
+    pub raster_tick_w: f32,
+    /// Raster: vertical tick height as fraction of row height (0.1..=1.0).
+    #[serde(default = "default_tick_h")]
+    pub raster_tick_h: f32,
     /// Units that fill a lane at gain 1: reported by the renderer (auto-scale) or nominal.
     #[serde(skip, default = "nominal")]
     pub amp_scale: f32,
@@ -135,6 +141,12 @@ pub struct Solo {
 fn one() -> f32 {
     1.0
 }
+fn default_tick_w() -> f32 {
+    2.5
+}
+fn default_tick_h() -> f32 {
+    0.8
+}
 fn yes() -> bool {
     true
 }
@@ -177,6 +189,8 @@ impl TimeView {
             recording: None,
             events: true,
             events_only: false,
+            raster_tick_w: 2.5,
+            raster_tick_h: 0.8,
         }
     }
 
@@ -461,6 +475,8 @@ impl TimeView {
             // A plugin's marks (spikes) are set by the view model, which knows the plugins
             overlay: None,
             raster: None,
+            raster_tick_w: self.raster_tick_w,
+            raster_tick_h: self.raster_tick_h,
             color_by: self.color_by,
             palette,
         }

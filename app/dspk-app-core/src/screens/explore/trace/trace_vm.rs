@@ -319,6 +319,10 @@ impl TraceVm {
         // of another recording: as stored)
         let shown = if foreign { None } else { self.shown_view(store) };
         let signal = shown.and_then(|v| store.preview_of(&v.id)).unwrap_or_else(|| dataset.signal().clone());
+        // Steer the active signal's pyramid (raw or derived) toward the viewport center
+        let center_sec = timeline.window_start_sec + timeline.visible_window_sec * 0.5;
+        let center_sample = ((center_sec - dataset.start_time_sec) * dataset.sample_rate).max(0.0) as u64;
+        signal.focus(center_sample);
         let mut req = self.view.render_request(&timeline, signal, events, store.palette());
         let window = req.window_start_sec..req.window_start_sec + req.window_sec;
         match req.mode {
@@ -443,6 +447,24 @@ impl TraceVm {
     pub fn set_color_by(&mut self, color_by: crate::screens::explore::trace::renderer::ColorBy, cx: &mut Context<Self>) {
         if self.view.color_by != color_by {
             self.view.color_by = color_by;
+            cx.emit(TraceEvent::Changed);
+            self.request_render(cx);
+        }
+    }
+
+    pub fn set_raster_tick_w(&mut self, w: f32, cx: &mut Context<Self>) {
+        let w = w.clamp(0.5, 16.0);
+        if (self.view.raster_tick_w - w).abs() > 1e-4 {
+            self.view.raster_tick_w = w;
+            cx.emit(TraceEvent::Changed);
+            self.request_render(cx);
+        }
+    }
+
+    pub fn set_raster_tick_h(&mut self, h: f32, cx: &mut Context<Self>) {
+        let h = h.clamp(0.1, 1.0);
+        if (self.view.raster_tick_h - h).abs() > 1e-4 {
+            self.view.raster_tick_h = h;
             cx.emit(TraceEvent::Changed);
             self.request_render(cx);
         }

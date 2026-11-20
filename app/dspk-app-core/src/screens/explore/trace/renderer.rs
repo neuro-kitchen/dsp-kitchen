@@ -99,6 +99,10 @@ pub struct RenderRequest {
     pub overlay: Option<Arc<crate::plugin::TraceOverlay>>,
     /// Raster rows (one per unit) for [`TimeViewKind::Raster`].
     pub raster: Option<Arc<crate::plugin::Raster>>,
+    /// Horizontal scale factor for raster spike ticks (1.0 = 1 logical px).
+    pub raster_tick_w: f32,
+    /// Vertical fraction of each raster row filled by a spike tick (0.1..=1.0).
+    pub raster_tick_h: f32,
     pub color_by: ColorBy,
     pub palette: Palette,
 }
@@ -117,11 +121,11 @@ pub fn render_on_worker(req: &RenderRequest, cancel: &AtomicBool) -> Option<(Fra
     if cancel.load(Ordering::Relaxed) {
         return None;
     }
-    Some(RENDERER.with(|r| {
+    RENDERER.with(|r| {
         let mut r = r.borrow_mut();
-        let (frame, scale) = r.render_scaled(req);
-        (frame, scale, r.complete)
-    }))
+        let (frame, scale) = r.render_scaled_cancellable(req, cancel)?;
+        Some((frame, scale, r.complete))
+    })
 }
 
 /// Visible sample range of `req`'s source and the pixel columns `x0..x1` it covers (sources can
@@ -186,13 +190,14 @@ fn draw_raster(canvas: &mut Canvas, req: &RenderRequest) {
     }
     let row_h = canvas.height as f32 / n as f32;
     let w = canvas.width as f64;
-    let tick = (row_h * 0.8).max(1.0);
+    let tick_h = (row_h * req.raster_tick_h.clamp(0.1, 1.0)).max(1.0);
+    let tick_w = (req.scale.max(1.0) * req.raster_tick_w.clamp(0.5, 16.0)).max(1.0);
     for (i, row) in r.rows.iter().enumerate() {
-        let top = i as f32 * row_h + (row_h - tick) * 0.5;
+        let top = i as f32 * row_h + (row_h - tick_h) * 0.5;
         for &t in &row.times {
             let x = ((t - req.window_start_sec) / req.window_sec * w) as f32;
             if x >= 0.0 && x < w as f32 {
-                canvas.rect(x, top, x + req.scale.max(1.0), top + tick, row.color, 1.0);
+                canvas.rect(x, top, x + tick_w, top + tick_h, row.color, 1.0);
             }
         }
     }
@@ -248,6 +253,11 @@ impl WaveformRenderer {
     /// Renders and returns the amplitude scale used (units filling a lane at gain 1). Zoomed out,
     /// columns come from the signal's pyramid (pages not built yet draw empty).
     pub fn render_scaled(&mut self, req: &RenderRequest) -> (Frame, f32) {
+        let never = AtomicBool::new(false);
+        self.render_scaled_cancellable(req, &never).expect("uncancelled render")
+    }
+
+    fn render_scaled_cancellable(&mut self, req: &RenderRequest, cancel: &AtomicBool) -> Option<(Frame, f32)> {
         let signal = req.signal.as_ref();
         let width = req.width.max(1);
         let height = req.height.max(1);
@@ -256,7 +266,7 @@ impl WaveformRenderer {
         canvas.pixels.fill(req.palette.background);
 
         let Some((start, end, x0, x1)) = visible(req) else {
-            return (pixel_buffer, req.scale_hint.max(0.0));
+            return Some((pixel_buffer, req.scale_hint.max(0.0)));
         };
 
         // Time grid aligned with the axis ticks
@@ -271,10 +281,15 @@ impl WaveformRenderer {
         if req.mode == TimeViewKind::Raster {
             self.complete = true;
             draw_raster(&mut canvas, req);
-            return (pixel_buffer, req.scale_hint.max(0.0));
+            return Some((pixel_buffer, req.scale_hint.max(0.0)));
         }
 
-        self.envelope(signal, &req.channels, start, end, x1.saturating_sub(x0));
+        if !self.envelope(signal, &req.channels, start, end, x1.saturating_sub(x0), cancel) {
+            return None;
+        }
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
         self.place_columns(req.channels.len(), x0, x1, canvas.width);
         let scale = self.adjust(req, canvas.width);
         let has_samples = end > start;
@@ -284,7 +299,7 @@ impl WaveformRenderer {
             TimeViewKind::Raster => {}
         }
 
-        (pixel_buffer, scale)
+        Some((pixel_buffer, scale))
     }
 
     /// Spreads `cols`-wide envelope rows into `width`-wide rows starting at column `x0`; columns
@@ -338,7 +353,7 @@ impl WaveformRenderer {
     /// samples and is spread over the columns. Every sample of the window lands in a column, so no
     /// peak is dropped. Rows of channels the signal lacks, and every row when it cannot answer,
     /// stay NaN (drawn empty).
-    fn envelope(&mut self, signal: &dyn SignalBackend, rows: &[usize], start: usize, end: usize, width: usize) {
+    fn envelope(&mut self, signal: &dyn SignalBackend, rows: &[usize], start: usize, end: usize, width: usize, cancel: &AtomicBool) -> bool {
         let total = signal.info().channel_count();
         self.complete = true;
         self.env.clear();
@@ -352,13 +367,21 @@ impl WaveformRenderer {
             self.read_rows.push(r);
         }
         if self.read_channels.is_empty() || end <= start || width == 0 {
-            return;
+            return true;
+        }
+        if cancel.load(Ordering::Relaxed) {
+            return false;
         }
         let view = View { channels: self.read_channels.clone(), start: start as u64, end: end as u64, width };
         let answer = self.answer.get_or_insert_with(|| Envelope::Samples(Vec::new()));
-        if let Err(e) = signal.view(&view, answer) {
-            tracing::warn!("cannot draw samples {start}..{end}: {e}");
-            return;
+        if let Err(e) = signal.view_cancellable(&view, answer, cancel) {
+            if !cancel.load(Ordering::Relaxed) {
+                tracing::warn!("cannot draw samples {start}..{end}: {e}");
+            }
+            return !cancel.load(Ordering::Relaxed);
+        }
+        if cancel.load(Ordering::Relaxed) {
+            return false;
         }
         match answer {
             Envelope::Columns { values, complete } => {
@@ -374,6 +397,7 @@ impl WaveformRenderer {
                 }
             }
         }
+        true
     }
 
     fn draw_traces(&mut self, canvas: &mut Canvas, events: &SpikeEventStore, req: &RenderRequest, has_samples: bool, scale: f32) {
@@ -556,6 +580,8 @@ mod tests {
             highlights: vec![(crate::ui::plot::canvas::Pixel::rgb(255, 0, 0), vec![(0.05, 0)])],
             overlay: None,
             raster: None,
+            raster_tick_w: 1.0,
+            raster_tick_h: 0.8,
             color_by: ColorBy::default(),
             palette: Palette::DARK,
         }
@@ -668,7 +694,7 @@ mod tests {
 
         let mut r = WaveformRenderer::default();
         let rows = [2usize, 0];
-        r.envelope(ds.signal().as_ref(), &rows, start, end, width);
+        r.envelope(ds.signal().as_ref(), &rows, start, end, width, &AtomicBool::new(false));
 
         let n = end - start;
         for (k, &ch) in rows.iter().enumerate() {
