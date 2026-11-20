@@ -99,11 +99,14 @@ pub fn op_summary(node: &Node) -> String {
 }
 
 pub struct ProcessingPanel {
+    explore: Entity<ExploreVm>,
     store: Entity<Store>,
     dock: DockToggle,
     focus: FocusHandle,
     /// The selected op's parameters.
     params: Entity<ParamEditor>,
+    /// User dismissed the Lucem-style Quick Start presets card.
+    starters_dismissed: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -112,13 +115,16 @@ side_panel!(ProcessingPanel, "dspk-app.processing", "Processing");
 impl ProcessingPanel {
     pub fn new(explore: Entity<ExploreVm>, dock: DockToggle, cx: &mut Context<Self>) -> Self {
         let store = explore.read(cx).store().clone();
-        let subs = vec![cx.subscribe(&store, |_, _, e: &AppEvent, cx| {
-            if matches!(e, AppEvent::Document(_) | AppEvent::Picked | AppEvent::JobChanged | AppEvent::RecordingChanged | AppEvent::SelectionChanged(_)) {
-                cx.notify();
-            }
-        })];
+        let subs = vec![
+            cx.observe(&explore, |_, _, cx| cx.notify()),
+            cx.subscribe(&store, |_, _, e: &AppEvent, cx| {
+                if matches!(e, AppEvent::Document(_) | AppEvent::Picked | AppEvent::JobChanged | AppEvent::RecordingChanged | AppEvent::SelectionChanged(_)) {
+                    cx.notify();
+                }
+            }),
+        ];
         let params = cx.new(|_| ParamEditor::new());
-        Self { store, dock, focus: cx.focus_handle(), params, _subs: subs }
+        Self { explore, store, dock, focus: cx.focus_handle(), params, starters_dismissed: false, _subs: subs }
     }
 
     fn header_extra(&self, cx: &App) -> Option<AnyElement> {
@@ -175,11 +181,42 @@ impl ProcessingPanel {
             _ => None,
         };
 
-        // The channel
-        let channel_line = match picked {
-            Some(c) => format!("Ch {c}{}", label.map(|l| format!(" · {l}")).unwrap_or_default()),
-            None => "Click a channel (list or traces) to show its processing".to_string(),
-        };
+        let _ = (picked, label);
+        // Lucem-style Quick Start card when the chain is still empty
+        let quick_start = (view.ops.is_empty() && !self.starters_dismissed).then(|| {
+            let apply_nodes = |id_btn: &'static str, icon: gpui_kit::assets::IconName, text: &'static str, tip: &'static str, nodes: Vec<Node>| {
+                let (store, view_id) = (self.store.clone(), id.clone());
+                Button::new(id_btn).ghost().xsmall().icon(gpui_kit::component::Icon::new(icon)).label(text).tooltip(tip).on_click(move |_, _, cx| {
+                    store.update(cx, |s, cx| {
+                        for node in nodes.clone() {
+                            let _ = s.execute(SessionCommand::AddOp { view: view_id.clone(), node, index: None, id: None }, cx);
+                        }
+                        let new = s.active_view().and_then(|v| v.ops.last()).map(|o| o.id.clone());
+                        s.pick_op(new, cx);
+                    });
+                })
+            };
+            let bp = Node::Iir { band: Band::Bandpass, cutoff: vec![300.0, 6000.0], order: 3, design: Default::default(), ripple_db: None, mode: dspk_pipeline::Mode::ForwardBackward, start: Default::default() };
+            let lp = Node::Iir { band: Band::Lowpass, cutoff: vec![20.0], order: 3, design: Default::default(), ripple_db: None, mode: dspk_pipeline::Mode::ForwardBackward, start: Default::default() };
+            v_flex()
+                .gap_1()
+                .p_2()
+                .rounded_md()
+                .bg(cx.theme().secondary)
+                .child(
+                    h_flex()
+                        .items_center()
+                        .child(div().flex_1().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(muted).child("QUICK START"))
+                        .child(icon_button("starter-dismiss", IconName::Close, "Dismiss quick start").xsmall().on_click(cx.listener(|this, _, _, cx| {
+                            this.starters_dismissed = true;
+                            cx.notify();
+                        }))),
+                )
+                .child(apply_nodes("qs-bp", gpui_kit::assets::IconName::AudioWaveform, "Spike band-pass (300–6 kHz)", "Zero-phase Butterworth band-pass", vec![bp.clone()]))
+                .child(apply_nodes("qs-cmr", gpui_kit::assets::IconName::SlidersHorizontal, "Common median reference", "Subtract median across channels", vec![Node::Cmr {}]))
+                .child(apply_nodes("qs-env", gpui_kit::assets::IconName::Activity, "Envelope (BP → TKEO → LP 20 Hz)", "Band-pass, Teager–Kaiser energy, 20 Hz low-pass", vec![bp, Node::TeagerKaiser { edge: dspk_pipeline::Edge::Zeros }, lp]))
+                .child(div().text_xs().text_color(muted).child("Or press Ctrl+Shift+O to search GPU ops."))
+        });
 
         // The op tree
         let n_ops = view.ops.len();
@@ -310,11 +347,15 @@ impl ProcessingPanel {
                 .into_any_element(),
         };
 
-        let mut out = vec![
+        let mut out = Vec::new();
+        if let Some(vm) = self.explore.read(cx).focused.clone() {
+            out.push(Section::new("View").child(super::panels::view_kind_selector("proc-kind", &vm, cx)).into_any_element());
+        }
+        out.push(
                 Section::new("Processing")
-                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child(channel_line))
                     .child(h_flex().gap_1().child(show(Show::Processed, "Processed")).child(show(Show::Raw, "Raw")))
                     .children(preview_note.map(|n| div().text_xs().text_color(muted).child(n)))
+                    .children(quick_start)
                     .child(tree)
                     .child(add)
                     .children(self.store.read(cx).live.as_ref().and_then(|l| l.send.clone()).map(|send| {
@@ -335,7 +376,7 @@ impl ProcessingPanel {
                             })
                     }))
                     .into_any_element(),
-        ];
+        );
         out.extend(params.map(IntoElement::into_any_element));
         out.push(Section::new("Output").child(output).into_any_element());
         out

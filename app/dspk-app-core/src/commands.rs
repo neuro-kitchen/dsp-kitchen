@@ -227,7 +227,7 @@ pub fn register(registry: &Registry, c: &Ctx) {
     let mut list = vec![
         // File
         CommandSpec::new("file.open", "Open file…", IconName::File, move |w, cx| open_command(&o1, Pick::File, &b1, w, cx)).group("File").hint("A recording: .bin, .cbin, .wav, .zarr, .nwb.zarr").key("secondary-o"),
-        CommandSpec::new("file.open_folder", "Open project…", IconName::FolderOpen, move |w, cx| open_command(&o2, Pick::Folder, &b2, w, cx)).group("File").hint("A project, or a recording stored as Zarr (.zarr, .nwb.zarr)").key("secondary-shift-o"),
+        CommandSpec::new("file.open_folder", "Open project…", IconName::FolderOpen, move |w, cx| open_command(&o2, Pick::Folder, &b2, w, cx)).group("File").hint("A project, or a recording stored as Zarr (.zarr, .nwb.zarr)").key("secondary-alt-o"),
         CommandSpec::with_args::<PathArgs>("file.open_path", "Open a file", IconName::FolderOpen, move |a, _, cx| {
             o3.update(cx, |s, cx| s.open(a.path.into(), cx));
             Ok(Value::Null)
@@ -251,6 +251,11 @@ pub fn register(registry: &Registry, c: &Ctx) {
         // Edit
         CommandSpec::new("edit.undo", "Undo", IconName::Undo2, st(|s, cx| s.undo(false, cx))).group("Edit").hint("Undo the last change of the session").key("secondary-z"),
         CommandSpec::new("edit.redo", "Redo", IconName::Redo2, st(|s, cx| s.undo(true, cx))).group("Edit").hint("Redo what was undone").key("secondary-shift-z"),
+        // Export (Curation)
+        CommandSpec::new("curation.export_phy", "Export to Phy…", IconName::FolderOpen, st(|s, cx| s.trigger_export_phy(cx)))
+            .group("Export")
+            .hint("Write the curated sorting as Phy reads it (spike_clusters.npy, cluster_group.tsv, cluster_info.tsv)")
+            .enabled(|_| crate::platform::LOCAL_FILES.then_some(()).ok_or_else(|| "Available in the desktop app".into())),
     ];
     // Real time: dspk devices (feature `device`)
     #[cfg(feature = "device")]
@@ -334,7 +339,7 @@ pub fn register(registry: &Registry, c: &Ctx) {
         })
         .group("Process")
         .hint("Search the operations only")
-        .key("f3")
+        .key("secondary-shift-o")
         .read_only(),
     );
     // Help, where the app runs
@@ -428,11 +433,21 @@ pub fn explore_menus() -> Vec<MenuSpec> {
     ]
 }
 
-/// The menu row of the workspaces plugins provide (Sorting, Curation) and Analytics: Edit, View,
-/// Process.
+/// The menu row of the workspaces plugins provide (Sorting) and Analytics: Edit, View, Process.
 pub fn other_menus() -> Vec<MenuSpec> {
     let c = |id: &str| MenuItem::command(id.to_string());
     vec![MenuSpec::new("Edit", vec![c("edit.undo"), c("edit.redo")]), MenuSpec::new("View", vec![c("view.dark_plots"), c("view.follow_system"), c("shell.theme")]), process_menu()]
+}
+
+/// Curation's menu row: Edit, View, Process, Export (Export to Phy… lives here instead of cluttering the toolbar).
+pub fn curation_menus() -> Vec<MenuSpec> {
+    let c = |id: &str| MenuItem::command(id.to_string());
+    vec![
+        MenuSpec::new("Edit", vec![c("edit.undo"), c("edit.redo")]),
+        MenuSpec::new("View", vec![c("view.dark_plots"), c("view.follow_system"), c("shell.theme")]),
+        process_menu(),
+        MenuSpec::new("Export", vec![c("curation.export_phy")]),
+    ]
 }
 
 /// Opens `content` over the frame in a card ("Open from server").

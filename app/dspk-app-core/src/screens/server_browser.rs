@@ -20,6 +20,7 @@ pub struct ServerBrowser {
     dir: String,
     list: Option<wire::FileList>,
     loading: bool,
+    show_cache: bool,
     message: Option<(bool, String)>,
     _tasks: Vec<Task<()>>,
 }
@@ -35,7 +36,7 @@ impl gpui_kit::EventEmitter<BrowserEvent> for ServerBrowser {}
 impl ServerBrowser {
     pub fn new(store: Entity<Store>, cx: &mut Context<Self>) -> Self {
         let first = (!store.read(cx).session.servers.is_empty()).then_some(0);
-        let mut b = Self { store, server: first, dir: String::new(), list: None, loading: false, message: None, _tasks: Vec::new() };
+        let mut b = Self { store, server: first, dir: String::new(), list: None, loading: false, show_cache: false, message: None, _tasks: Vec::new() };
         if first.is_some() {
             b.load(String::new(), cx);
         }
@@ -133,36 +134,43 @@ impl Render for ServerBrowser {
             }
             for (i, e) in list.entries.iter().enumerate() {
                 let kind = wire::FileKind::try_from(e.kind).unwrap_or(wire::FileKind::Other);
+                // Hide internal cache folders by default
+                if !self.show_cache && kind == wire::FileKind::Directory && (e.name == "cache" || e.name.ends_with(".cache")) {
+                    continue;
+                }
                 let label = match kind {
-                    wire::FileKind::Recording => "recording",
-                    wire::FileKind::Sorting => "sorting",
-                    wire::FileKind::Directory => "folder",
+                    wire::FileKind::Recording => "Recording",
+                    wire::FileKind::Sorting => "Sorting",
+                    wire::FileKind::Directory => "Folder",
                     _ => "",
                 };
                 let size = if e.size > 0 { format!("{:.1} MB", e.size as f64 / 1e6) } else { String::new() };
                 let name = e.name.clone();
+                // Consistent M3 button order on every row: secondary (Fetch) on the left, primary
+                // (Open / Curate / Enter) on the right
                 let mut actions = h_flex().gap_1().flex_none();
+                if kind != wire::FileKind::Directory && !alone {
+                    let (m, n) = (me.clone(), name.clone());
+                    actions = actions.child(Button::new(SharedString::from(format!("browser-fetch-{i}"))).ghost().xsmall().label("Fetch").on_click(move |_, _, cx| {
+                        let _ = m.update(cx, |b, cx| b.fetch(&n, cx));
+                    }));
+                }
+                if kind == wire::FileKind::Directory {
+                    let (m, n) = (me.clone(), name.clone());
+                    actions = actions.child(Button::new(SharedString::from(format!("browser-cd-{i}"))).ghost().xsmall().label("Enter").on_click(move |_, _, cx| {
+                        let _ = m.update(cx, |b, cx| {
+                            let p = b.path_of(&n);
+                            b.load(p, cx)
+                        });
+                    }));
+                }
                 if kind == wire::FileKind::Recording {
                     let (m, n) = (me.clone(), name.clone());
                     actions = actions.child(Button::new(SharedString::from(format!("browser-open-{i}"))).primary().xsmall().label("Open").on_click(move |_, _, cx| {
                         let _ = m.update(cx, |b, cx| b.open(&n, cx));
                     }));
                 }
-                if kind == wire::FileKind::Directory {
-                    let (m, n) = (me.clone(), name.clone());
-                    actions = actions.child(Button::new(SharedString::from(format!("browser-cd-{i}"))).outline().xsmall().label("Enter").on_click(move |_, _, cx| {
-                        let _ = m.update(cx, |b, cx| {
-                            let p = b.path_of(&n);
-                            b.load(p, cx)
-                        });
-                    }));
-                } else if !alone {
-                    let (m, n) = (me.clone(), name.clone());
-                    actions = actions.child(Button::new(SharedString::from(format!("browser-fetch-{i}"))).outline().xsmall().label("Fetch").on_click(move |_, _, cx| {
-                        let _ = m.update(cx, |b, cx| b.fetch(&n, cx));
-                    }));
-                }
-                // What plugins do with this kind of entry (a sorting: Curate)
+                // Plugin primary actions (e.g. Curate on a Sorting) always sit on the right
                 for (k, (label, action)) in crate::plugin::server_entry_actions(kind).into_iter().enumerate() {
                     let (m, n) = (me.clone(), name.clone());
                     actions = actions.child(Button::new(SharedString::from(format!("browser-plugin-{i}-{k}"))).primary().xsmall().label(label).on_click(move |_, window, cx| {

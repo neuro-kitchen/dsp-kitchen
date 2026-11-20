@@ -141,8 +141,8 @@ pub struct ChannelsPanel {
     _subs: Vec<Subscription>,
 }
 
-/// Channels per group when the recording has one group (or no layout): chunks of this many.
-const CHANNEL_BLOCK: usize = 32;
+/// Channels per group when the recording has one group (or no layout): compact chunks of 8.
+const CHANNEL_BLOCK: usize = 8;
 /// Row height (8 pt grid).
 const ROW_H: f32 = 24.;
 
@@ -165,12 +165,14 @@ impl ChannelsPanel {
     pub fn new(explore: Entity<ExploreVm>, dock: DockToggle, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Find, or show 0-31, 40 ⏎"));
         let store = explore.read(cx).store().clone();
+        let store_ev = store.clone();
         let subs = vec![
             cx.observe(&explore, |_, _, cx| cx.notify()),
             cx.subscribe(&explore, |_, _, _: &ExploreEvent, cx| cx.notify()),
-            cx.subscribe(&store, |this, _, e: &AppEvent, cx| {
+            cx.subscribe(&store, move |this, _, e: &AppEvent, cx| {
                 if matches!(e, AppEvent::RecordingChanged) {
-                    this.expanded = [0].into_iter().collect();
+                    let small = store_ev.read(cx).sources().is_some_and(|s| s.default_entry().channels <= 2);
+                    this.expanded = if small { [0].into_iter().collect() } else { Default::default() };
                 }
                 if matches!(e, AppEvent::SelectionChanged(_) | AppEvent::RecordingChanged | AppEvent::Picked) {
                     cx.notify();
@@ -190,7 +192,8 @@ impl ChannelsPanel {
                 _ => {}
             }),
         ];
-        Self { explore, dock, focus: cx.focus_handle(), filter, range_error: None, expanded: [0].into_iter().collect(), _subs: subs }
+        let small = store.read(cx).sources().is_some_and(|s| s.default_entry().channels <= 2);
+        Self { explore, dock, focus: cx.focus_handle(), filter, range_error: None, expanded: if small { [0].into_iter().collect() } else { Default::default() }, _subs: subs }
     }
 
     fn store(&self, cx: &App) -> Entity<Store> {
@@ -462,6 +465,65 @@ pub struct SettingsPanel {
 
 side_panel!(SettingsPanel, "dspk-app.view-settings", "Display");
 
+/// Reusable `Processed | Raw` toggle buttons shared by Inspector and Processing.
+pub(crate) fn show_raw_processed_buttons(id_prefix: &'static str, store: &Entity<Store>, cx: &App) -> Option<gpui_kit::AnyElement> {
+    let view = store.read(cx).active_view()?.clone();
+    let show = |which: dspk_session::session::Show, text: &'static str| {
+        let (store, id, display) = (store.clone(), view.id.clone(), view.display.clone());
+        Button::new(SharedString::from(format!("{id_prefix}-{text}")))
+            .xsmall()
+            .label(text)
+            .map(|b| if display.show == which { b.primary() } else { b.ghost() })
+            .on_click(move |_, _, cx| {
+                let display = dspk_session::session::DisplayDoc { show: which, ..display.clone() };
+                let _ = store.update(cx, |s, cx| s.execute(dspk_session::command::SessionCommand::SetDisplay { view: id.clone(), display }, cx));
+            })
+    };
+    Some(h_flex().gap_1().child(show(dspk_session::session::Show::Processed, "Processed")).child(show(dspk_session::session::Show::Raw, "Raw")).into_any_element())
+}
+
+/// Reusable View-kind selector (`Traces`, `Spikes`, `Raster`, `Heatmap`) shared by Inspector and Processing.
+pub(crate) fn view_kind_selector(id_prefix: &'static str, vm: &Entity<crate::screens::explore::TraceVm>, cx: &App) -> gpui_kit::AnyElement {
+    let v = vm.read(cx).view.clone();
+    let traces = v.kind == TimeViewKind::Traces;
+    let layer = |suffix: &'static str, icon: gpui_kit::assets::IconName, label: &'static str, tip: &'static str, on: bool, kind: TimeViewKind, spikes: bool| {
+        let vm = vm.clone();
+        Button::new(SharedString::from(format!("{id_prefix}-{suffix}")))
+            .xsmall()
+            .icon(icon)
+            .label(label)
+            .tooltip(tip)
+            .map(|b| if on { b.primary() } else { b.ghost() })
+            .on_click(move |_, _, cx| {
+                vm.update(cx, |vm, cx| {
+                    vm.set_kind(kind, cx);
+                    if kind == TimeViewKind::Traces {
+                        vm.set_spikes(spikes, cx);
+                    }
+                })
+            })
+    };
+    let (has_spikes, has_units) = {
+        let vm_ref = vm.read(cx);
+        let store = vm_ref.store().read(cx);
+        let layers = vm_ref.shown_view(store).map(|sv| crate::plugin::layers(store, sv, cx)).unwrap_or_default();
+        let events = store.recording.as_ref().is_some_and(|r| !r.events.is_empty());
+        (layers.spikes || events, layers.units)
+    };
+    h_flex()
+        .gap_1()
+        .flex_wrap()
+        .child(layer("traces", gpui_kit::assets::IconName::AudioWaveform, "Traces", "The traces alone", traces && !(v.spikes && has_spikes), TimeViewKind::Traces, false))
+        .when(has_spikes, |row| {
+            row.child(layer("spikes", gpui_kit::assets::IconName::Activity, "Spikes", "Traces faint, each spike in its unit's colour", traces && v.spikes, TimeViewKind::Traces, true))
+        })
+        .when(has_units || v.kind == TimeViewKind::Raster, |row| {
+            row.child(layer("raster", gpui_kit::assets::IconName::GitCommitVertical, "Raster", "Spike times, one row per unit", v.kind == TimeViewKind::Raster, TimeViewKind::Raster, false))
+        })
+        .child(layer("heatmap", gpui_kit::assets::IconName::Flame, "Heatmap", "Every channel as a row, colour = amplitude", v.kind == TimeViewKind::Heatmap, TimeViewKind::Heatmap, false))
+        .into_any_element()
+}
+
 impl SettingsPanel {
     pub fn new(explore: Entity<ExploreVm>, dock: DockToggle, cx: &mut Context<Self>) -> Self {
         let subs = vec![cx.subscribe(&explore, |this, _, e: &ExploreEvent, cx| {
@@ -502,40 +564,7 @@ impl SettingsPanel {
         let sources = vm.read(cx).store().read(cx).sources().cloned();
         let traces = v.kind == TimeViewKind::Traces;
 
-        // Layers: what the view draws (one at a time)
-        let layer = |id: &'static str, icon: gpui_kit::assets::IconName, label: &'static str, tip: &'static str, on: bool, kind: TimeViewKind, spikes: bool| {
-            let vm = vm.clone();
-            Button::new(id).xsmall().icon(icon).label(label).tooltip(tip).map(|b| if on { b.primary() } else { b.ghost() }).on_click(move |_, _, cx| {
-                vm.update(cx, |vm, cx| {
-                    vm.set_kind(kind, cx);
-                    if kind == TimeViewKind::Traces {
-                        vm.set_spikes(spikes, cx);
-                    }
-                })
-            })
-        };
-        // What this view's data holds beyond its signal: spikes (a linked sorting or detected
-        // events) and units (a linked sorting); the layers that need them show only then
-        let (has_spikes, has_units) = {
-            let vm_ref = vm.read(cx);
-            let store = vm_ref.store().read(cx);
-            let layers = vm_ref.shown_view(store).map(|sv| crate::plugin::layers(store, sv, cx)).unwrap_or_default();
-            let events = store.recording.as_ref().is_some_and(|r| !r.events.is_empty());
-            (layers.spikes || events, layers.units)
-        };
-        let kind = h_flex()
-            .gap_1()
-            .flex_wrap()
-            // Spikes only where the data has them (a view's spikes setting does not make the layer
-            // appear before the recording's spikes are known: it showed, then went, on opening)
-            .child(layer("kind-traces", gpui_kit::assets::IconName::AudioWaveform, "Traces", "The traces alone", traces && !(v.spikes && has_spikes), TimeViewKind::Traces, false))
-            .when(has_spikes, |row| {
-                row.child(layer("kind-spikes", gpui_kit::assets::IconName::Activity, "Spikes", "Traces faint, each spike in its unit's colour", traces && v.spikes, TimeViewKind::Traces, true))
-            })
-            .when(has_units || v.kind == TimeViewKind::Raster, |row| {
-                row.child(layer("kind-raster", gpui_kit::assets::IconName::GitCommitVertical, "Raster", "Spike times, one row per unit", v.kind == TimeViewKind::Raster, TimeViewKind::Raster, false))
-            })
-            .child(layer("kind-heatmap", gpui_kit::assets::IconName::Flame, "Heatmap", "Every channel as a row, colour = amplitude", v.kind == TimeViewKind::Heatmap, TimeViewKind::Heatmap, false));
+        let kind = view_kind_selector("kind", &vm, cx);
         let color_by = {
             let vm = vm.clone();
             let names: Vec<SharedString> = ColorBy::ALL.iter().map(|c| SharedString::from(c.name())).collect();
@@ -561,11 +590,7 @@ impl SettingsPanel {
                 .child(div().min_w(px(64.)).flex().justify_center().text_sm().child(value))
                 .child(icon_button(SharedString::from(format!("{id}-up")), IconName::Plus, tip_up).on_click(move |_, _, cx| up(cx)))
         };
-        // Channels: what is on screen as a slice of the source's channels, start:end:step
-        // (1-based, the end included), as numpy slices an array. Traces draw a page of the
-        // selection (scrolling moves it), so the slice is the page drawn; a heatmap draws all of it.
-        // A page that is no even slice (picked in the channel list) shows its first and last
-        // channel, step 1, and "custom"
+        // Channels: compact page/range controls (replaces the 3-stepper Start / End / Step wall)
         let total = sources.as_ref().map_or(0, |ss| ss.entry(&v.source).channels);
         let drawn: Vec<usize> = v.drawn_channels().to_vec();
         let (start, end, step, is_slice) = slice_of(&drawn, total);
@@ -579,38 +604,90 @@ impl SettingsPanel {
                 let n = channels.len();
                 vm.update(cx, |vm, cx| {
                     vm.set_selection(channels, cx);
-                    // Every channel of the slice on screen
                     vm.set_lanes(n, cx);
                 })
             })
         };
-        let range_step = |id: &'static str, value: usize, what: &'static str, f: Rc<dyn Fn(&mut App, i64)>| {
-            let (d, u) = (f.clone(), f);
-            stepper(id, value.to_string(), what, what, Rc::new(move |cx| d(cx, -1)), Rc::new(move |cx| u(cx, 1)))
-        };
-        let start_row = {
-            let a = apply.clone();
-            range_step("range-start", start, "The first channel shown", Rc::new(move |cx, d| a(cx, (start as i64 + d).max(1) as usize, end, step)))
-        };
-        let end_row = {
-            let a = apply.clone();
-            range_step("range-end", end, "The last channel shown (included)", Rc::new(move |cx, d| a(cx, start, (end as i64 + d).max(1) as usize, step)))
-        };
-        let step_row = {
-            let a = apply.clone();
-            range_step("range-step", step, "Every how many channels one is shown", Rc::new(move |cx, d| a(cx, start, end, (step as i64 + d).max(1) as usize)))
-        };
-        let all = {
-            let a = apply.clone();
-            Button::new("range-all").xsmall().outline().label("All").tooltip("Every channel of the source, all on screen").disabled(total == 0 || (start, end, step, is_slice) == (1, total, 1, true)).on_click(move |_, _, cx| a(cx, 1, total, 1))
-        };
         let shown = drawn.len();
+        let page_len = shown.max(1);
         let summary = format!("Ch {start}–{end} · {shown} of {total}{}", match (is_slice, step) {
             (false, _) => " · custom".to_string(),
             (true, 1) => String::new(),
             (true, s) => format!(" · every {s}"),
         });
-        let range_head = h_flex().w_full().gap_2().justify_between().child(div().min_w_0().truncate().text_sm().child(summary)).child(all);
+        let page_prev = {
+            let a = apply.clone();
+            icon_button("range-prev", IconName::ChevronLeft, "Previous channels")
+                .xsmall()
+                .disabled(start <= 1)
+                .on_click(move |_, _, cx| {
+                    let s0 = start.saturating_sub(page_len).max(1);
+                    let e0 = (s0 + page_len - 1).min(total.max(1));
+                    a(cx, s0, e0, step);
+                })
+        };
+        let page_next = {
+            let a = apply.clone();
+            icon_button("range-next", IconName::ChevronRight, "Next channels")
+                .xsmall()
+                .disabled(end >= total)
+                .on_click(move |_, _, cx| {
+                    let e0 = (end + page_len).min(total.max(1));
+                    let s0 = e0.saturating_sub(page_len - 1).max(1);
+                    a(cx, s0, e0, step);
+                })
+        };
+        let range_head = h_flex()
+            .w_full()
+            .gap_1()
+            .items_center()
+            .child(div().flex_1().min_w_0().truncate().text_sm().child(summary))
+            .child(page_prev)
+            .child(page_next);
+        // Quick count chips (M3 tonal/filled pills, zero colored edges)
+        let mut count_chips = h_flex().gap_1().flex_wrap();
+        for &n in &[4usize, 8, 16, 32] {
+            if n < total {
+                let a = apply.clone();
+                let active = is_slice && step == 1 && shown == n;
+                count_chips = count_chips.child(
+                    Button::new(SharedString::from(format!("range-n-{n}")))
+                        .xsmall()
+                        .label(n.to_string())
+                        .tooltip(format!("Show {n} channels at once"))
+                        .map(|b| if active { b.primary() } else { b.ghost() })
+                        .on_click(move |_, _, cx| {
+                            let s0 = start.min(total.saturating_sub(n) + 1).max(1);
+                            let e0 = (s0 + n - 1).min(total);
+                            a(cx, s0, e0, 1);
+                        }),
+                );
+            }
+        }
+        {
+            let a = apply.clone();
+            let active = total > 0 && (start, end, step, is_slice) == (1, total, 1, true);
+            count_chips = count_chips.child(
+                Button::new("range-all")
+                    .xsmall()
+                    .label("All")
+                    .tooltip("Show every channel of the source")
+                    .map(|b| if active { b.primary() } else { b.ghost() })
+                    .disabled(total == 0)
+                    .on_click(move |_, _, cx| a(cx, 1, total, 1)),
+            );
+        }
+        let step_row = {
+            let (a1, a2) = (apply.clone(), apply.clone());
+            stepper(
+                "range-step",
+                step.to_string(),
+                "Smaller step",
+                "Larger step (show every Nth channel)",
+                Rc::new(move |cx| a1(cx, start, end, step.saturating_sub(1).max(1))),
+                Rc::new(move |cx| a2(cx, start, end, (step + 1).min(total.max(1)))),
+            )
+        };
         let gain_row = {
             let (a, b) = (vm.clone(), vm.clone());
             stepper(
@@ -630,27 +707,51 @@ impl SettingsPanel {
             let vm = vm.clone();
             Switch::new("remove-dc").checked(v.remove_dc).label("Remove DC offset").on_click(move |on, _, cx| vm.update(cx, |vm, cx| vm.set_remove_dc(*on, cx)))
         };
-        let events = {
-            let vm = vm.clone();
-            Switch::new("view-events").checked(v.events).label("Events as ticks").on_click(move |on, _, cx| vm.update(cx, |vm, cx| vm.set_events(*on, cx)))
+        let tick_w_row = {
+            let (a, b) = (vm.clone(), vm.clone());
+            let cur = v.raster_tick_w;
+            stepper(
+                "raster-tick-w",
+                format!("{cur:.1} px"),
+                "Narrower raster ticks",
+                "Wider raster ticks",
+                Rc::new(move |cx| a.update(cx, |vm, cx| vm.set_raster_tick_w(cur - 0.5, cx))),
+                Rc::new(move |cx| b.update(cx, |vm, cx| vm.set_raster_tick_w(cur + 0.5, cx))),
+            )
         };
-        let events_only = {
-            let vm = vm.clone();
-            Switch::new("view-events-only").checked(v.events_only).label("Events only (hide the signal)").on_click(move |on, _, cx| vm.update(cx, |vm, cx| vm.set_events_only(*on, cx)))
+        let tick_h_row = {
+            let (a, b) = (vm.clone(), vm.clone());
+            let cur = v.raster_tick_h;
+            stepper(
+                "raster-tick-h",
+                format!("{:.0}%", cur * 100.0),
+                "Shorter raster ticks",
+                "Taller raster ticks",
+                Rc::new(move |cx| a.update(cx, |vm, cx| vm.set_raster_tick_h(cur - 0.1, cx))),
+                Rc::new(move |cx| b.update(cx, |vm, cx| vm.set_raster_tick_h(cur + 0.1, cx))),
+            )
         };
 
-        let facts = sources.as_ref().map(|ss| source_facts(ss.entry(&v.source), muted));
+        // Compact 1-line source metadata summary instead of 4 tall rows
+        let compact_facts = sources.as_ref().map(|ss| {
+            let e = ss.entry(&v.source);
+            let line = format!("{} ch · {:.1} kHz · {} · {}", e.channels, e.sample_rate.rate_hz() / 1e3, crate::data::store::duration(e.duration_sec()), e.format.name());
+            div().text_xs().text_color(muted).truncate().child(line)
+        });
+        let raw_processed = show_raw_processed_buttons("insp-show", vm.read(cx).store(), cx);
         let mut out = vec![
-            div().text_sm().font_weight(gpui_kit::FontWeight::SEMIBOLD).truncate().child(v.title.clone()).into_any_element(),
-            Section::new("Source").children(source).children(facts).into_any_element(),
+            Section::new("Source").children(source).children(compact_facts).into_any_element(),
+            // View (renamed from Layer) sits directly below Source, with Processed | Raw toggle
+            Section::new("View").child(kind).children(raw_processed).when(traces, |d| d.child(row("Colour", color_by))).into_any_element(),
             Section::new("Channels")
-                .when(v.kind != TimeViewKind::Raster, |s| s.child(range_head).child(row("Start", start_row)).child(row("End", end_row)).child(row("Step", step_row)))
+                .when(v.kind != TimeViewKind::Raster, |s| s.child(range_head).child(count_chips).when(total > 8, |s| s.child(row("Step", step_row))))
                 .when(v.kind == TimeViewKind::Raster, |s| s.child(row("Shown", div().text_sm().child(v.range_label()))))
                 .into_any_element(),
-            Section::new("Layer").child(kind).when(traces, |d| d.child(row("Colour", color_by)).child(events).child(events_only)).into_any_element(),
         ];
+        if v.kind == TimeViewKind::Raster {
+            out.push(Section::new("Raster ticks").child(row("Width", tick_w_row)).child(row("Height", tick_h_row)).into_any_element());
+        }
         if traces {
-            // How many are on screen is the Channels slice (End − Start): no second control for it
             out.push(Section::new("Traces").child(row("Gain", gain_row)).into_any_element());
         }
         out.push(Section::new("Scaling").child(auto).child(dc).into_any_element());
@@ -1055,9 +1156,8 @@ impl TimelinePanel {
                     .left(relative(a))
                     .w(relative((b - a).max(0.004)))
                     .min_w(px(6.))
-                    .bg(accent.opacity(0.22))
-                    .border_x_2()
-                    .border_color(accent)
+                    .rounded_sm()
+                    .bg(accent.opacity(0.28))
                     .cursor(CursorStyle::ResizeLeftRight)
                     .overflow_hidden()
                     .flex()
@@ -1074,9 +1174,8 @@ impl TimelinePanel {
                     .bottom_0()
                     .left(relative(a))
                     .w(relative(w.max(0.002)))
-                    .bg(c.opacity(0.22))
-                    .border_t_2()
-                    .border_color(c)
+                    .rounded_sm()
+                    .bg(c.opacity(0.24))
                     .overflow_hidden()
                     .px_1()
                     .text_xs()

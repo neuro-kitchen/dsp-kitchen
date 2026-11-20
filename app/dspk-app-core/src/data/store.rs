@@ -64,6 +64,8 @@ pub enum AppEvent {
     PluginChanged,
     /// A floating window opened or closed.
     Floating,
+    /// User asked to export the active Curation sorting to Phy from the top Export menu.
+    ExportPhy,
 }
 
 /// A floating window over the workspace.
@@ -174,6 +176,10 @@ pub struct Store {
     /// What is being opened, while a file opens.
     pub opening: Option<String>,
     pub status: String,
+    /// Recent status & system notifications (Lucem-style bottom-right bell popover).
+    pub notifications: Vec<String>,
+    pub unread_notifications: usize,
+    pub notifications_open: bool,
     /// Render time and density of the latest frame (status bar).
     pub render_info: String,
     /// The playback clock while playing.
@@ -257,6 +263,9 @@ impl Store {
             session_path,
             opening: None,
             status: String::new(),
+            notifications: Vec::new(),
+            unread_notifications: 0,
+            notifications_open: false,
             render_info: String::new(),
             clock: None,
             dark: true,
@@ -722,18 +731,26 @@ impl Store {
             }
             return;
         }
-        // Planned and kept by the recording's chains (shared prefixes, fitted whitenings)
-        // The op selected in the Processing panel is the one being edited: the chain up to it is
-        // kept, so each new value reruns only from there
-        let editing = self
-            .picked_op
-            .as_ref()
-            .and_then(|op| v.op(op))
-            .filter(|o| o.enabled)
-            .and_then(|o| serde_json::to_string(&o.node).ok())
-            .and_then(|key| plan.steps.iter().position(|(k, _)| *k == key));
-        match self.chains.signal_editing(ds.signal().clone(), raw, &source, &plan, editing) {
+        // Flat single-workspace derived signal backed by `<rec>.cache/drv/<drv_id>_drv_<source>.minmax`
+        let drv_id = v.drv_id.as_deref().unwrap_or(&v.id);
+        let rec_path = self.recording.as_ref().and_then(|r| r.path.as_deref());
+        match self.chains.signal_for_drv(drv_id, rec_path, ds.signal().clone(), raw, &source, &plan) {
             Ok(Made::Ready(p)) => {
+                // Forward processed pyramid progress through the same `PyramidProgress` event so
+                // views repaint progressively as zoomed-out pages complete (zero ops in UI)
+                let (tx, mut rx) = crate::data::channel::unbounded::<Progress>();
+                let src = source.clone();
+                cx.spawn(async move |this, cx| {
+                    while rx.recv().await.is_ok() {
+                        if this.update(cx, |_, cx| cx.emit(AppEvent::PyramidProgress(src.clone()))).is_err() {
+                            break;
+                        }
+                    }
+                })
+                .detach();
+                p.watch(Arc::new(move |prog| {
+                    let _ = tx.try_send(prog);
+                }));
                 self.previews.insert(id.to_string(), p);
             }
             // A whitening fit reads the recording: it runs in the background (the view draws the
@@ -1020,7 +1037,7 @@ impl Store {
             self.set_status(format!("{id} is not connected to a recording"), cx);
             return;
         };
-        let v = ViewDoc { id: id.to_string(), name: id.to_string(), recording, ops, display: Default::default(), plugins: Default::default() };
+        let v = ViewDoc { id: id.to_string(), drv_id: None, name: id.to_string(), recording, ops, display: Default::default(), plugins: Default::default() };
         self.write_view(v, cx);
     }
 
@@ -1043,14 +1060,14 @@ impl Store {
         let mut outputs = Vec::new();
         for w in &writes {
             let Some((recording, ops)) = self.doc.graph.chain(w, &self.doc.recipes) else { continue };
-            let v = ViewDoc { id: w.clone(), name: w.clone(), recording: recording.clone(), ops: ops.clone(), display: Default::default(), plugins: Default::default() };
+            let v = ViewDoc { id: w.clone(), drv_id: None, name: w.clone(), recording: recording.clone(), ops: ops.clone(), display: Default::default(), plugins: Default::default() };
             if jobs::gives_events(&v) {
                 // Events are found on their own (a branched run writes signals)
                 self.set_status(format!("{w} gives events: run it on its own (double-click it)"), cx);
                 continue;
             }
             outputs.push(jobs::processed_path(&recording.path, w));
-            chains.push(ViewDoc { id: w.clone(), name: w.clone(), recording, ops, display: Default::default(), plugins: Default::default() });
+            chains.push(ViewDoc { id: w.clone(), drv_id: None, name: w.clone(), recording, ops, display: Default::default(), plugins: Default::default() });
         }
         let n = chains.len();
         let nodes: std::collections::BTreeSet<String> = writes.iter().flat_map(|w| self.chain_nodes(w)).collect();
@@ -1404,8 +1421,37 @@ impl Store {
     }
 
     pub fn set_status(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
-        self.status = text.into();
+        let msg = text.into();
+        if !msg.is_empty() && self.notifications.first().map(String::as_str) != Some(msg.as_str()) {
+            self.notifications.insert(0, msg.clone());
+            self.notifications.truncate(30);
+            if !self.notifications_open {
+                self.unread_notifications = self.unread_notifications.saturating_add(1);
+            }
+        }
+        self.status = msg;
         cx.emit(AppEvent::Status);
+    }
+
+    /// Toggles the bottom-right notification history popover and marks items read.
+    pub fn toggle_notifications(&mut self, cx: &mut Context<Self>) {
+        self.notifications_open = !self.notifications_open;
+        if self.notifications_open {
+            self.unread_notifications = 0;
+        }
+        cx.emit(AppEvent::Status);
+        cx.notify();
+    }
+
+    pub fn clear_notifications(&mut self, cx: &mut Context<Self>) {
+        self.notifications.clear();
+        self.unread_notifications = 0;
+        cx.emit(AppEvent::Status);
+        cx.notify();
+    }
+
+    pub fn trigger_export_phy(&mut self, cx: &mut Context<Self>) {
+        cx.emit(AppEvent::ExportPhy);
     }
 
     /// Latest frame's numbers (no event: the status bar observes the store).
@@ -1446,6 +1492,15 @@ impl Store {
                         store.session.push_recent(&path);
                         let source = sources.default_entry().id.clone();
                         store.install(Recording::new(sources, Some(path.clone())), cx);
+                        // Automatic per-recording session.json sidecar in `<dir>/cache/<rec>.cache/session.json`
+                        // so reopening restores views, ops, and linked curation automatically.
+                        #[cfg(not(target_family = "wasm"))]
+                        if store.doc_path.is_none() && path.exists() {
+                            let cache = dspk_view::cache_dir(&path);
+                            if std::fs::create_dir_all(&cache).is_ok() {
+                                store.attach_document(cache.join("session.json"), cx);
+                            }
+                        }
                         store.ensure_view(&path, &source, cx);
                         store.load_epochs(&path, cx);
                         store.load_event_sets(&path, cx);

@@ -94,10 +94,11 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
         "Anywhere",
         &[
             ("Ctrl+O", "Open a recording file"),
-            ("Ctrl+Shift+O", "Open a recording folder (Zarr)"),
+            ("Ctrl+Alt+O", "Open a recording folder (Zarr)"),
+            ("Ctrl+Shift+O", "Search & add a GPU operation"),
             ("Ctrl+T / Ctrl+H", "Add a traces / heatmap view"),
             ("Ctrl+B / Ctrl+Alt+B / Ctrl+J", "Show or hide Channels / View settings / Timeline"),
-            ("Ctrl+K · F3", "Search: any action, view, operation or recipe by name · the operations only"),
+            ("Ctrl+K", "Command palette: any action, view, operation or recipe"),
             ("Ctrl+Z / Ctrl+Shift+Z", "Undo / redo any change of the session (Curation: of the curation)"),
             ("F1", "This list"),
             ("Ctrl+Q", "Quit"),
