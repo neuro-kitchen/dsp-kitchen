@@ -352,8 +352,49 @@ pub fn inverse_kernel(positions: &[[f32; 2]], sigma_um: f32) -> Vec<f64> {
     inv
 }
 
+/// Maximum device memory spent precomputing per-batch kriging matrices `M_b` (covers ~14.5 min on
+/// 384 channels; larger multi-hour recordings compute on demand).
+const MAX_PRECOMPUTED_KRIGING_BYTES: usize = 256 * 1024 * 1024;
+
+/// Builds a batch's kriging matrix `M_b = K(y − shift, x) · inverse` on `client`.
+fn compute_kriging_matrix(
+    client: &Client,
+    x: &Handle,
+    y: &Handle,
+    inverse: &Handle,
+    kyx: &Handle,
+    m: &Handle,
+    shifts: &[f32],
+    channels: usize,
+    sigma_um: f32,
+) {
+    let shifts = buffer::upload(client, shifts);
+    let geom = LaunchGeometry::elementwise(client, channels * channels);
+    // SAFETY: `x`, `y`, `shifts` hold `channels`, `kyx` `channels²` values
+    unsafe {
+        kriging_kernel::launch::<f32>(
+            client,
+            geom.cube_count,
+            geom.cube_dim,
+            BufferArg::from_raw_parts(x.clone(), channels),
+            BufferArg::from_raw_parts(y.clone(), channels),
+            BufferArg::from_raw_parts(shifts, channels),
+            BufferArg::from_raw_parts(kyx.clone(), channels * channels),
+            channels as u32,
+            1.0 / (2.0 * sigma_um * sigma_um),
+        );
+    }
+    let kyx_view = MatrixView::row_major(kyx, channels * channels, channels, channels);
+    let inv_view = MatrixView::row_major(inverse, channels * channels, channels, channels);
+    matmul::<f32>(client, &kyx_view, &inv_view, m, channels * channels);
+}
+
 /// Drift correction as a per-window step after whitening (module docs): the window `X` becomes
 /// `K(y − shift, x) · (K(x, x) + 0.01·I)⁻¹ · X`, its batch's shifts.
+///
+/// Precomputes every batch's `[channels, channels]` kriging matrix `M_b` once at construction (up
+/// to [`MAX_PRECOMPUTED_KRIGING_BYTES`]) so subsequent passes (`STAGE_DETECTION`, `STAGE_MATCHING`)
+/// pay only `M_b · X`.
 pub struct DriftCorrector {
     client: Client,
     model: DriftModel,
@@ -361,11 +402,8 @@ pub struct DriftCorrector {
     channels: usize,
     max_samples: usize,
     sigma_um: f32,
-    x: Handle,
-    y: Handle,
-    inverse: Handle,
-    kyx: Handle,
-    m: Handle,
+    matrices: Vec<Handle>,
+    fallback: Option<(Handle, Handle, Handle, Handle, Handle)>,
     output: Handle,
 }
 
@@ -376,19 +414,38 @@ impl DriftCorrector {
         let inverse: Vec<f32> = inverse_kernel(positions, sigma_um).into_iter().map(|v| v as f32).collect();
         let xs: Vec<f32> = positions.iter().map(|p| p[0]).collect();
         let channel_y: Vec<f32> = positions.iter().map(|p| p[1]).collect();
+        let x_h = buffer::upload(client, &xs);
+        let y_h = buffer::upload(client, &channel_y);
+        let inv_h = buffer::upload(client, &inverse);
+        let batches = model.batches.max(1);
+        let precompute_bytes = batches.saturating_mul(channels).saturating_mul(channels).saturating_mul(size_of::<f32>());
+
+        let (matrices, fallback) = if channels > 0 && precompute_bytes <= MAX_PRECOMPUTED_KRIGING_BYTES {
+            let kyx = buffer::empty::<f32>(client, channels * channels);
+            let mut matrices = Vec::with_capacity(batches);
+            for b in 0..batches {
+                let m = buffer::empty::<f32>(client, channels * channels);
+                let shifts = model.channel_shifts(b, &channel_y);
+                compute_kriging_matrix(client, &x_h, &y_h, &inv_h, &kyx, &m, &shifts, channels, sigma_um);
+                matrices.push(m);
+            }
+            (matrices, None)
+        } else {
+            let kyx = buffer::empty::<f32>(client, channels * channels);
+            let m = buffer::empty::<f32>(client, channels * channels);
+            (Vec::new(), Some((x_h, y_h, inv_h, kyx, m)))
+        };
+
         Self {
             client: client.clone(),
             model,
+            channel_y,
             channels,
             max_samples,
             sigma_um,
-            x: buffer::upload(client, &xs),
-            y: buffer::upload(client, &channel_y),
-            inverse: buffer::upload(client, &inverse),
-            kyx: buffer::empty::<f32>(client, channels * channels),
-            m: buffer::empty::<f32>(client, channels * channels),
+            matrices,
+            fallback,
             output: buffer::empty::<f32>(client, channels * max_samples),
-            channel_y,
         }
     }
 
@@ -401,28 +458,17 @@ impl DriftCorrector {
     pub fn correct(&mut self, input: &Handle, batch: usize, samples: usize) -> Handle {
         assert!(samples <= self.max_samples, "window of {samples} samples exceeds the corrector's {}", self.max_samples);
         let c = self.channels;
-        let shifts = buffer::upload(&self.client, &self.model.channel_shifts(batch, &self.channel_y));
-        let geom = LaunchGeometry::elementwise(&self.client, c * c);
-        // SAFETY: `x`, `y`, `shifts` hold `c`, `kyx` `c²` values
-        unsafe {
-            kriging_kernel::launch::<f32>(
-                &self.client,
-                geom.cube_count,
-                geom.cube_dim,
-                BufferArg::from_raw_parts(self.x.clone(), c),
-                BufferArg::from_raw_parts(self.y.clone(), c),
-                BufferArg::from_raw_parts(shifts, c),
-                BufferArg::from_raw_parts(self.kyx.clone(), c * c),
-                c as u32,
-                1.0 / (2.0 * self.sigma_um * self.sigma_um),
-            );
-        }
-        let kyx = MatrixView::row_major(&self.kyx, c * c, c, c);
-        let inverse = MatrixView::row_major(&self.inverse, c * c, c, c);
-        matmul::<f32>(&self.client, &kyx, &inverse, &self.m, c * c);
-        let m = MatrixView::row_major(&self.m, c * c, c, c);
         let x = MatrixView::row_major(input, c * samples, c, samples);
-        matmul::<f32>(&self.client, &m, &x, &self.output, c * self.max_samples);
+        if !self.matrices.is_empty() {
+            let m_h = &self.matrices[batch.min(self.matrices.len() - 1)];
+            let m = MatrixView::row_major(m_h, c * c, c, c);
+            matmul::<f32>(&self.client, &m, &x, &self.output, c * self.max_samples);
+        } else if let Some((x_h, y_h, inv_h, kyx, m_h)) = &self.fallback {
+            let shifts = self.model.channel_shifts(batch, &self.channel_y);
+            compute_kriging_matrix(&self.client, x_h, y_h, inv_h, kyx, m_h, &shifts, c, self.sigma_um);
+            let m = MatrixView::row_major(m_h, c * c, c, c);
+            matmul::<f32>(&self.client, &m, &x, &self.output, c * self.max_samples);
+        }
         self.output.clone()
     }
 }
@@ -503,5 +549,54 @@ mod tests {
     fn channel_shifts_interpolate_between_blocks() {
         let model = DriftModel { batches: 1, blocks: 3, dshift: vec![0.0, 10.0, 30.0], block_centres_um: vec![100.0, 200.0, 300.0] };
         assert_eq!(model.channel_shifts(0, &[50.0, 150.0, 250.0, 400.0]), vec![-5.0, 5.0, 20.0, 50.0]);
+    }
+
+    /// Precomputed per-batch kriging matrices produce bit-identical `correct` output to the
+    /// on-demand `compute_kriging_matrix` + `matmul` path across multiple batches.
+    #[test]
+    fn precomputed_corrector_matches_on_demand() {
+        let Ok(target) = dspk_core::compute::ComputeTarget::from_env() else { return };
+        let client = target.client().expect("client");
+        let (channels, samples, batches, sigma_um) = (32usize, 128usize, 4usize, 20.0f32);
+        let positions: Vec<[f32; 2]> = (0..channels).map(|c| [(c % 2) as f32 * 32.0, (c / 2) as f32 * 20.0]).collect();
+        let dshift: Vec<f32> = (0..batches * 2).map(|i| (i as f32 - 3.0) * 4.5).collect();
+        let model = DriftModel { batches, blocks: 2, dshift, block_centres_um: vec![80.0, 220.0] };
+        let mut state = 0xA5A5_1234u32;
+        let input: Vec<f32> = (0..channels * samples)
+            .map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (state >> 8) as f32 / (1u32 << 24) as f32 - 0.5
+            })
+            .collect();
+        let input_h = buffer::upload(&client, &input);
+
+        let mut precomputed = DriftCorrector::new(&client, model.clone(), &positions, sigma_um, samples);
+        assert!(!precomputed.matrices.is_empty());
+
+        let inverse: Vec<f32> = inverse_kernel(&positions, sigma_um).into_iter().map(|v| v as f32).collect();
+        let xs: Vec<f32> = positions.iter().map(|p| p[0]).collect();
+        let ys: Vec<f32> = positions.iter().map(|p| p[1]).collect();
+        let x_h = buffer::upload(&client, &xs);
+        let y_h = buffer::upload(&client, &ys);
+        let inv_h = buffer::upload(&client, &inverse);
+        let kyx_h = buffer::empty::<f32>(&client, channels * channels);
+        let m_h = buffer::empty::<f32>(&client, channels * channels);
+        let ref_out = buffer::empty::<f32>(&client, channels * samples);
+
+        for batch in 0..batches {
+            let pre_h = precomputed.correct(&input_h, batch, samples);
+            let pre_vals = buffer::download::<f32>(&client, pre_h);
+
+            let shifts = model.channel_shifts(batch, &ys);
+            compute_kriging_matrix(&client, &x_h, &y_h, &inv_h, &kyx_h, &m_h, &shifts, channels, sigma_um);
+            let m_view = MatrixView::row_major(&m_h, channels * channels, channels, channels);
+            let x_view = MatrixView::row_major(&input_h, channels * samples, channels, samples);
+            matmul::<f32>(&client, &m_view, &x_view, &ref_out, channels * samples);
+            let ref_vals = buffer::download::<f32>(&client, ref_out.clone());
+
+            let pre_bits: Vec<u32> = pre_vals.into_iter().map(f32::to_bits).collect();
+            let ref_bits: Vec<u32> = ref_vals.into_iter().map(f32::to_bits).collect();
+            assert_eq!(pre_bits, ref_bits, "mismatch on batch {batch}");
+        }
     }
 }
