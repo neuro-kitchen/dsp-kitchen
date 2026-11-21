@@ -31,8 +31,16 @@ const app = new URL('app/', img);
 await mkdir(app, { recursive: true });
 for (const file of (await readdir(screens)).filter((f) => f.endsWith('.png'))) await cp(new URL(file, screens), new URL(file, app));
 // The committed benchmark figures, for the Validation pages
-const results = new URL('../../benchmarks/signal-operations/results/', import.meta.url);
 const benchmarks = new URL('../public/benchmarks/', import.meta.url);
 await mkdir(benchmarks, { recursive: true });
-for (const file of (await readdir(results)).filter((f) => f.endsWith('.png'))) await cp(new URL(file, results), new URL(file, benchmarks));
+for (const dir of [
+  '../../benchmarks/signal-operations/results/',
+  '../../benchmarks/sorters/results/',
+  '../../benchmarks/kernels/results/',
+]) {
+  const results = new URL(dir, import.meta.url);
+  for (const file of (await readdir(results)).filter((f) => f.endsWith('.png'))) {
+    await cp(new URL(file, results), new URL(file, benchmarks));
+  }
+}
 console.log(`figures: ${copied} copied from the playground`);

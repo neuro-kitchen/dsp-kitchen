@@ -42,9 +42,13 @@ The Inspector shows what is selected, in one place. For a view:
 - **Channels:** what is on screen, as a slice of the source's channels: **Start**, **End** and
   **Step** (1-based, the end included: 1, 32, 4 shows channels 1, 5, 9 … 29), and **All**. A view
   opens on channels 1–8; scrolling the traces moves the slice.
-- **Display:** how it is drawn, such as the gain.
-- **Processing:** its chain of operations. **Add op** has one submenu per family, with presets under
-  each operation. Each op can be switched off to compare with and without it.
+- **Display:** how it is drawn, such as the gain, and **raster tick width and height** when
+  viewing sorted spikes.
+- **Processing:** its chain of operations. When a chain is empty, **Processing Quick Start**
+  offers one-click preset recipes; once populated, **Add op** has one submenu per family, with
+  presets under each operation. Each op can be switched off to compare with and without it. Rapid
+  edits cooperatively cancel superseded window requests so previews stay responsive while dragging
+  parameters.
 - **Output:** write the chain to a file.
 
 ![Traces of the raw signal, before any processing](/dsp-kitchen/img/app/17-0_real-time-processing.png)

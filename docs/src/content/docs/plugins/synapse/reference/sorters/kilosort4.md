@@ -27,7 +27,7 @@ In dsp-kitchen it lives in the `dspk-sorter-kilosort` crate. It is **written fro
 | Clustering of the matched spikes into the final units, with the refractory (CCG) criterion | implemented (device) |
 | Export as a `SortingOutput` (one unit per cluster, with its waveform template) | implemented |
 | Global merges (waveform similarity + refractory CCG), duplicate-spike removal, good / mua labels | implemented |
-| Drift correction | not yet |
+| Drift correction (depth × amplitude fingerprints, rigid + block alignment, on-device kriging) | implemented (device) |
 
 ## Universal templates
 

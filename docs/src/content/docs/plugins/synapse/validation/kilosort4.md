@@ -1,82 +1,75 @@
 ---
 title: "Kilosort4"
-description: "Speed per stage, and agreement with Kilosort4's own results."
+description: "Speed per stage, resource usage, and agreement against Kilosort4 4.1.3 and saved results."
 sidebar:
   order: 1
 ---
 
 :::note
-Measured on 2026-11-09 with the release build of `dspk-cli-sorter`, on the setup in the [overview](/dsp-kitchen/plugins/synapse/validation/). `benchmarks/sorters` has the scripts, and their results are in `benchmarks/sorters/results/`.
+Measured on 2026-11-21 with `dspk-cli-sorter 0.0.13` in a pre-autotuned GPU container on
+`ZFM-02370_mini.nwb.zarr` (45 s, 383 ch @ 30 kHz), alongside direct `kilosort 4.1.3` and
+`spikeinterface 0.106.0` on the [validation setup](/dsp-kitchen/plugins/synapse/validation/). Raw
+records are in `benchmarks/sorters/results/`.
 :::
 
 ## Processing time
 
-**Kilosort4**, Neuropixels, warm (kernels already compiled and tuned):
+**Kilosort4**, Neuropixels (45 s), warm repeat 2 (kernels already compiled and autotuned):
 
-| Stage | wgpu (s) | CUDA (s) |
-|---|---|---|
-| Fitting preprocessing | 0.5 | 0.3 |
-| Finding clips | 0.2 | 0.2 |
-| Learning templates | 0.3 | 0.1 |
-| Detecting spikes | 5.3 | 3.0 |
-| Clustering spikes | 6.1 | 2.9 |
-| Matching templates | 7.5 | 2.9 |
-| Clustering matched spikes | 4.5 | 2.3 |
-| Merging units | 2.4 | 1.3 |
-| **Whole program** | **26.9**: 1.7× real time | **13.0**: 3.4× real time |
+| Stage | `dspk` wgpu (s) | `dspk` CUDA (s) | Upstream KS4 `4.1.3` (CUDA, s) |
+|---|---:|---:|---:|
+| Fitting preprocessing | 0.41 | 0.25 | 0.55 |
+| Finding clips | 0.35 | 0.38 | — |
+| Learning templates | 0.17 | 0.09 | — |
+| Computing drift | 5.44 | 4.69 | 30.12 |
+| Detecting spikes | 5.75 | 4.26 | 24.69 |
+| Clustering spikes | 3.18 | 0.96 | 16.82 |
+| Matching templates | 5.31 | 3.79 | 8.04 |
+| Clustering matched spikes | 2.08 | 0.62 | 16.95 |
+| Merging units | 0.46 | 0.49 | 0.41 |
+| **Solver total** | **23.15** | **15.50** | **106.07** |
+| **Whole program (e2e)** | **23.56** (1.91× RT) | **15.76** (2.86× RT) | **112.42** (0.40× RT) |
 
-The whole program includes starting up and writing the output; the last stage runs to the end of the process. wgpu peaks at 3.2 GB of GPU memory and 1.6 GB of host memory, and two runs give identical spikes and units. A first run on a device also compiles and tunes: CUDA took 39 s the first time here.
+SpikeInterface `0.106.0` wrapping Kilosort4 `4.1.3` took **114.79 s** e2e (`107.48 s` solver). On
+this recording, `dspk` is **7.13× faster on CUDA** and **4.77× faster on wgpu** than upstream
+PyTorch CUDA Kilosort4.
 
-**Slower than October.** On wgpu the stages October timed took 19.6 s then and 24.5 s now, mostly in clustering and template matching. The cause hasn't been investigated: the code, the system (a kernel and Mesa update on 2026-11-04) and how stages are timed all changed. Results are unchanged.
+- **Resources & determinism.** CUDA peaks at **3,754 MiB** GPU memory and **1,313 MiB** RSS; wgpu
+  peaks at **3,232 MiB** GPU memory and **1,438 MiB** RSS — compared with **5,432 MiB** peak GPU
+  *(run 1)* and **3,752 MiB** RSS in upstream Kilosort4. Repeat runs of `dspk` produce bit-exact
+  spikes, clusters, amplitudes, locations, and templates on both backends.
+- **`wgpu` optimization impact.** Shared-memory staging in `centre_response_kernel`, amplitude-only
+  `STAGE_DRIFT` detection, and precomputed per-batch kriging matrices reduced `wgpu` end-to-end
+  time from `250.53 s` to `23.56 s` (`Computing drift` `119.53 s → 5.44 s`, `Detecting spikes`
+  `118.61 s → 5.75 s`) with zero byte differences ([why and how](/dsp-kitchen/gpu/detection/)).
+
+![Stage-by-stage latency comparison for Kilosort4 and EMUsort](/dsp-kitchen/benchmarks/sorter_stage_latency.png)
 
 ## Agreement with Kilosort4's results
 
-Reference: Kilosort4's saved results for the Neuropixels recording (`.datasets/kilosort4/saved_results/`,
-a Phy folder: 138 666 spikes, 267 units of which 127 labelled *good*). Its settings (`ops.npy`) equal
-our defaults. Kilosort4 ran drift correction; its correction on this recording is ±0.5 µm.
+**How spikes are compared.** Unit ids differ between sorters, so an upstream spike counts as found
+when one of ours lies within **±0.4 ms** and **40 µm** of its position (`spike_positions.npy`). Each
+upstream unit is paired with the unit of ours holding most of its found spikes.
 
-**How spikes are compared.** Unit ids differ between sorters, so a Kilosort4 spike counts as found
-when one of ours lies within ±0.4 ms **and** within 40 µm of its position (`spike_positions.npy`).
-Time alone is not enough at this spike density: some spike of ours falls within ±0.4 ms of any
-instant 80% of the time. Each Kilosort4 unit is paired with the unit of ours holding most of its
-found spikes.
+![Kilosort4 unit parity, precision-recall, and temporal lag](/dsp-kitchen/benchmarks/ks4_parity_accuracy.png)
 
-| | Ours | Kilosort4 |
-|---|---|---|
-| Spikes | 130 551 | 138 666 |
-| Units (good by the refractory labels) | 291 (152) | 267 (127) |
-| Kilosort4 spikes found (time and place) | 86.6% | |
+| Comparison (±0.4 ms, 40 µm) | Spikes / Units (good) | Total spikes found | Good units: found / not split / precision / F1 (median) | Template cosine (median) |
+|---|---|---:|---:|---:|
+| `dspk (cuda)` vs live KS4 `4.1.3` | 128 325 / 283 (149) | 85.3% | 1.00 / 0.98 / 0.93 / **0.86** | 0.946 |
+| `dspk (wgpu)` vs live KS4 `4.1.3` | 128 416 / 278 (145) | 85.9% | 1.00 / 0.97 / 0.95 / **0.86** | 0.946 |
+| `SpikeInterface 0.106` vs live KS4 `4.1.3` | 137 374 / 263 (126) | 100.0% | 1.00 / 1.00 / 1.00 / 1.00 | 1.000 |
+| `dspk (cuda)` vs `saved_results/` | 128 325 / 283 (149) | 85.2% | 1.00 / 0.98 / 0.91 / 0.80 | — |
+| `dspk (wgpu)` vs `saved_results/` | 128 416 / 278 (145) | 86.1% | 1.00 / 0.98 / 0.94 / 0.82 | — |
+| Live KS4 `4.1.3` vs `saved_results/` | 137 374 / 263 (126) | 95.5% | 1.00 / 0.98 / 0.95 / 0.90 | — |
 
-Per Kilosort4 unit (median, 25th percentile in brackets):
+On good units against live Kilosort4 `4.1.3`, **54.8%** (`cuda`) and **59.5%** (`wgpu`) reach
+accuracy ≥ 0.8 (**75.4%** and **74.6%** ≥ 0.5), with peak spike-time lag at **0 samples**.
 
-| | All 267 units | 127 good units |
-|---|---|---|
-| Spikes found | 0.95 (0.82) | 1.00 (0.97) |
-| Of those, in one unit of ours (not split) | 0.91 (0.73) | 0.98 (0.93) |
-| That unit's spikes that are this unit's (precision) | 0.82 (0.53) | 0.95 (0.52) |
-| Accuracy `found / (n_ks + n_ours − found)` | 0.57 (0.39) | 0.82 (0.45) |
-| Units with accuracy ≥ 0.8 / ≥ 0.5 | 30% / 60% | 52% / 72% |
-
-The export round trip passes: the Phy folder and the `.sorting.zarr` read back the same spikes and
-units, and the Phy folder has every file Kilosort4 writes (templates included) except Kilosort's
-internal ones. Per channel, 86.2% of Kilosort4's spikes have one of ours within ±0.4 ms and 40 µm,
-91.5% of ours have one of Kilosort4's, and the time differences peak at 0. A matched spike is placed
-at its template's position, so ours sit on fewer channels (197) than Kilosort4's per-spike positions
-(350).
-
-How each stage moved the good units' median accuracy: universal-template detection with one unit per
-universal template is not comparable (6 "units"); with the first clustering, 0.46; with learned-
-template matching and the clustering of its spikes, 0.82. The remaining gap is mostly units whose
-precision is low (a quarter of the good units below 0.55: two neurons in one unit), which the
-refractory criteria and the global merges were meant to address; with both in place (numbers above,
-rerun 2026-10-09) the good units' median precision is 0.95, its 25th percentile still 0.52.
-
-Earlier stages, checked against the same results (October, except where noted):
+Earlier stage-by-stage checks against `saved_results/`:
 
 | Check | Result |
 |---|---|
 | Learned `wTEMP` / `wPCA` vs Kilosort4's (best \|cos\| per row) | 0.98–1.00 / 0.94–1.00 |
-| Detection with Kilosort4's own learned templates (re-run 2026-11-09) | same match as with ours (0.860 and 0.862): learning is not where they differ |
 | Template centres vs `ops['xcup']`, `ops['ycup']` | identical (1532); channel sets differ only among equidistant channels |
 | Spike times | difference ours − Kilosort4 peaks at 0 samples (troughs, as Kilosort4) |
 | Spike positions (a well-isolated unit) | median 8 µm apart |

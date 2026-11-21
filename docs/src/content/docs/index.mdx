@@ -1,12 +1,14 @@
 ---
 title: dsp-kitchen
-description: GPU signal processing for neural recordings, from a Python call to a lab server.
+description: GPU signal processing and spike sorting for neural recordings, from a Python call to a lab server.
 template: splash
 editUrl: false
 lastUpdated: false
 hero:
-  title: GPU signal processing for neural recordings
-  tagline: One library from a Python call to a lab server, on CUDA, wgpu or the CPU.
+  title: GPU signal processing and spike sorting for neural recordings
+  tagline: Stream Neuropixels and HD-EMG recordings, preview GPU filter chains live, sort spikes with Kilosort4 drift correction and EMUsort, and curate units on desktop, browser, or a lab server.
+  image:
+    html: '<div class="hero-shot"><img class="light:sl-hidden" src="/dsp-kitchen/img/app/00_main-dark.png" alt="dsp-kitchen desktop app in dark mode" /><img class="dark:sl-hidden" src="/dsp-kitchen/img/app/01_main-light.png" alt="dsp-kitchen desktop app in light mode" /></div>'
   actions:
     - text: Get started
       link: learn/
@@ -20,7 +22,23 @@ hero:
 ---
 
 import EntryPoints from '../../components/EntryPoints.astro';
+import { Card, CardGrid } from '@astrojs/starlight/components';
 
-<p class="install">Install with <code>pip install dspk</code> or <code>cargo add dspk</code>.</p>
+<p class="install">Install with <code>pip install dspk</code> or <code>cargo add dspk</code> · Run the desktop app: <code>cargo install dspk-app</code>.</p>
+
+<CardGrid>
+  <Card title="Electrophysiologist & Curating Scientist" icon="open-book">
+    Explore long Neuropixels and HD-EMG recordings from pyramids, preview filter chains live on the GPU, run **Kilosort4** (with drift correction) or **EMUsort**, and curate in standalone **Curation**.
+    <br /><a href="/dsp-kitchen/app/">Explore the App →</a> · <a href="/dsp-kitchen/plugins/synapse/learn/sorting-in-the-app/">Sorting in the App →</a>
+  </Card>
+  <Card title="Python & Rust Researcher" icon="laptop">
+    Stream `.bin`/`.cbin`, NWB, Zarr, or WAV files lazily, fuse 30+ GPU CubeCL signal ops in a `Pipeline`, and follow the 9-chapter electrophysiology course.
+    <br /><a href="/dsp-kitchen/learn/python/operations/">Python Guide →</a> · <a href="/dsp-kitchen/reference/python/">Python API →</a>
+  </Card>
+  <Card title="Lab Server & Real-Time Admin" icon="setting">
+    Serve multi-source recordings with `dspk serve`, run container sorts (`cuda` and `wgpu`), and connect live `dspk-device` sensor streams over WebTransport / QUIC.
+    <br /><a href="/dsp-kitchen/deploy/">Deploy Server →</a> · <a href="/dsp-kitchen/reference/rust/">Rust Crates →</a>
+  </Card>
+</CardGrid>
 
 <EntryPoints />
