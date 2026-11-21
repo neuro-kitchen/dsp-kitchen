@@ -21,7 +21,7 @@ pub use design::{FilterBand, FilterDesign, OpsError, FilterMode, FilterSpec, Fil
 pub use iir::{DeviceFilter, PassLayout, execute_filter};
 pub use fir::{
     execute_fir, execute_fir_centered,
-    execute_gaussian_smooth, gaussian_kernel_1d, gaussian_smooth_1d, FIR_DEFAULT_EDGE, GAUSSIAN_DEFAULT_EDGE,
+    execute_gaussian_smooth, gaussian_kernel_1d, gaussian_smooth_1d, PreparedFir, FIR_DEFAULT_EDGE, GAUSSIAN_DEFAULT_EDGE,
 };
 pub use non_linear::{execute_median, execute_median_9p, execute_teager_kaiser};
 pub use template::TemplateFilter;

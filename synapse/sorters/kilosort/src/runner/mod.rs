@@ -460,7 +460,7 @@ pub fn run_plan(
         let mut seen = 0u64;
         stages.report(STAGE_DRIFT, 0, windows);
         device.for_each_while(schedule.windows(), |window, prepared| {
-            for spike in detector.detect(prepared, window.read_len())? {
+            for spike in detector.detect_for_drift(prepared, window.read_len())? {
                 if window.remap_event(spike.sample).is_some() {
                     drift_spikes.push(crate::drift::DriftSpike { batch: window.index, y_um: spike.y_um, amplitude: spike.amplitude });
                 }

@@ -29,7 +29,7 @@ use crate::ui::widgets::{pane, HEADER_HEIGHT};
 
 use super::components::inspector::InspectorPanel;
 use super::components::panels::{ChannelsPanel, DockToggle, TimelinePanel};
-use super::components::plugin_panel::PluginPanel;
+use super::components::processing::ProcessingPanel;
 use super::components::timeline_tab::TimelineTab;
 use super::trace::trace_panel::TracePanel;
 
@@ -39,26 +39,26 @@ const RIGHT_W: f32 = 328.;
 const RAIL_W: f32 = 40.;
 const TIMELINE_H: f32 = 136.;
 
-/// The panel shown on the right.
+/// The panel shown on the right of Explore (Sorting belongs in its own workspace).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RightPanel {
-    /// The selected view (source, display, processing, output) or recording source.
+    /// The selected view's display (source, view type, channels, scaling) or recording metadata.
     Inspector,
-    /// The i-th plugin panel.
-    Plugin(usize),
+    /// The active view's GPU processing chain, parameters and output.
+    Processing,
 }
 
 impl RightPanel {
     fn key(self) -> String {
         match self {
             Self::Inspector => "inspector".into(),
-            Self::Plugin(i) => format!("plugin{i}"),
+            Self::Processing => "processing".into(),
         }
     }
 
     fn from_key(key: &str) -> Self {
         match key {
-            k if k.starts_with("plugin") => k[6..].parse().map(Self::Plugin).unwrap_or(Self::Inspector),
+            "processing" => Self::Processing,
             _ => Self::Inspector,
         }
     }
@@ -75,9 +75,8 @@ pub struct ExploreView {
     /// The left side shows the timeline tab (else Channels).
     left_timeline: bool,
     inspector: Entity<InspectorPanel>,
+    processing: Entity<ProcessingPanel>,
     timeline: Entity<TimelinePanel>,
-    /// Plugins' panels: title, icon, view.
-    plugin_panels: Vec<(SharedString, Rc<dyn Fn() -> Icon>, Entity<PluginPanel>)>,
     left_open: bool,
     /// The right panel shown, and the last one (an icon click on a hidden side shows it again).
     right: Option<RightPanel>,
@@ -148,17 +147,8 @@ impl ExploreView {
         let channels = cx.new(|cx| ChannelsPanel::new(vm.clone(), toggle_of(me.clone(), DockPlacement::Left), window, cx));
         let timeline_tab = cx.new(|cx| TimelineTab::new(vm.clone(), toggle_of(me.clone(), DockPlacement::Left), cx));
         let inspector = cx.new(|cx| InspectorPanel::new(vm.clone(), toggle_of(me.clone(), DockPlacement::Right), cx));
+        let processing = cx.new(|cx| ProcessingPanel::new(vm.clone(), toggle_of(me.clone(), DockPlacement::Right), cx));
         let timeline = cx.new(|cx| TimelinePanel::new(store.clone(), toggle_of(me.clone(), DockPlacement::Bottom), cx));
-        let plugin_panels = crate::plugin::plugins()
-            .iter()
-            .enumerate()
-            .filter_map(|(i, p)| {
-                let (title, icon) = p.panel()?;
-                let toggle = toggle_of(me.clone(), DockPlacement::Right);
-                let panel = cx.new(|cx| PluginPanel::new(store.clone(), i, title, toggle, cx));
-                Some((SharedString::from(title), icon, panel))
-            })
-            .collect();
         let saved = store.read(cx).session.explore.clone();
         let last_right = RightPanel::from_key(&saved.right_panel);
         let sub = cx.subscribe_in(&vm, window, |this, _, event, window, cx| match event {
@@ -178,10 +168,18 @@ impl ExploreView {
                 this.show_epochs(view.clone(), window, cx);
             }
         });
-        // Picking a channel shows its processing
-        let picked = cx.subscribe(&store, |this, _, e: &AppEvent, cx| {
-            if matches!(e, AppEvent::Picked) && this.right != Some(RightPanel::Inspector) {
-                this.show_right(RightPanel::Inspector, cx);
+        // Picking a recording source opens Inspector; picking/adding an op keeps/opens Processing (never reverts to Inspector)
+        let store_ev = store.clone();
+        let picked = cx.subscribe(&store, move |this, _, e: &AppEvent, cx| {
+            if matches!(e, AppEvent::Picked) {
+                let s = store_ev.read(cx);
+                if s.inspected.is_some() {
+                    if this.right != Some(RightPanel::Inspector) {
+                        this.show_right(RightPanel::Inspector, cx);
+                    }
+                } else if s.picked_op.is_some() && this.right != Some(RightPanel::Processing) {
+                    this.show_right(RightPanel::Processing, cx);
+                }
             }
             if matches!(e, AppEvent::Document(_) | AppEvent::RecordingChanged) {
                 cx.notify();
@@ -196,8 +194,8 @@ impl ExploreView {
             timeline_tab,
             left_timeline: false,
             inspector,
+            processing,
             timeline,
-            plugin_panels,
             left_open: saved.left_open,
             right: saved.right_open.then_some(last_right),
             last_right,
@@ -477,7 +475,7 @@ impl ExploreView {
     fn right_view(&self, which: RightPanel) -> Option<AnyView> {
         Some(match which {
             RightPanel::Inspector => self.inspector.clone().into(),
-            RightPanel::Plugin(i) => self.plugin_panels.get(i)?.2.clone().into(),
+            RightPanel::Processing => self.processing.clone().into(),
         })
     }
 }
@@ -645,6 +643,15 @@ impl ExploreView {
                     .on_click(move |_, window, cx| me.update(cx, |e, cx| e.set_pipeline(!on, window, cx)))
             })
             .when_some(shown, |d, label| d.child(div().text_xs().text_color(muted).truncate().child(label)))
+            .child(div().flex_1())
+            .child(
+                Button::new("explore-keys-help")
+                    .ghost()
+                    .small()
+                    .label("?")
+                    .tooltip("Search keyboard & mouse shortcuts (F1)")
+                    .on_click(|_, window, cx| crate::commands::run_command("help.keys", window, cx)),
+            )
     }
 
     /// No views: say so, and offer "Add view…" (or opening a recording).
@@ -685,12 +692,10 @@ impl Render for ExploreView {
                     let _ = me.update(cx, |e, cx| e.show_left(true, w, cx));
                 }))
         };
-        let mut items: Vec<(String, Icon, SharedString, RightPanel)> = vec![
-            ("rail-inspector".into(), Icon::new(gpui_kit::assets::IconName::SlidersHorizontal), "Inspector: the selected view or source".into(), RightPanel::Inspector),
+        let items: Vec<(String, Icon, SharedString, RightPanel)> = vec![
+            ("rail-inspector".into(), Icon::new(gpui_kit::assets::IconName::SlidersHorizontal), "Inspector: source, view, channels & display".into(), RightPanel::Inspector),
+            ("rail-processing".into(), Icon::new(gpui_kit::assets::IconName::Workflow), "Processing: op chain & parameters".into(), RightPanel::Processing),
         ];
-        for (i, (title, icon, _)) in self.plugin_panels.iter().enumerate() {
-            items.push((format!("rail-plugin-{i}"), icon(), title.clone(), RightPanel::Plugin(i)));
-        }
         let right_rail = rail_card().children(items.into_iter().map(|(id, icon, tip, which)| {
             let me = me.clone();
             rail_button(id, icon, tip, self.right == Some(which), move |_, cx| {

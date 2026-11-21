@@ -29,7 +29,7 @@ pub mod transport;
 
 pub use error::{StreamError, StreamResult};
 pub use plugin::{PluginContext, ServerPlugin};
-pub use remote::{plugin_call, Link, RemoteSignal, RemoteSource};
+pub use remote::{plugin_call, sources_over, Link, RemoteSignal, RemoteSource, Target};
 /// Files under a server's data root (safe paths, listings).
 #[cfg(not(target_family = "wasm"))]
 pub use transport::files;

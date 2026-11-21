@@ -13,3 +13,5 @@ pub use lanes::{load_lanes, store_lanes};
 pub use reduce::row_mean_std_kernel;
 pub use transpose::transpose_strided_kernel;
 pub use select::{row_kth_radix_kernel, KEY_ABS, KEY_ABS_DEV, KEY_SIGNED, RADIX_BINS, RADIX_BITS};
+pub mod crop;
+pub use crop::crop_rows_kernel;

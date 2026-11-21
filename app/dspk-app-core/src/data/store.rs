@@ -3,7 +3,6 @@
 //! Changes go through its methods, which emit the [`AppEvent`] they caused (never a blanket
 //! `notify`); view models subscribe to the events they show.
 
-use dspk_ops::PipelineStage;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -14,7 +13,7 @@ use gpui_kit::{AppContext as _, Context, EventEmitter, Task};
 
 use dspk_view::{Progress, SignalBackend};
 use crate::data::jobs::{self, Cancel, JobMessage};
-use crate::data::recording::processed::{PreviewSource, ProcessedSignal};
+use crate::data::recording::processed::{Made, ProcessedChains, ProcessedSignal};
 use crate::data::recording::{Dataset, SourceSet, SpikeEventStore};
 use crate::ui::theme::palette::Palette;
 use dspk_session::timeline::TimelineState;
@@ -25,7 +24,6 @@ use dspk_session::session::{RecordingRef, SessionDoc, Show, ViewDoc};
 use crate::navigation::route::Workspace;
 
 /// Previews kept by chain.
-const PREVIEW_CACHE: usize = 6;
 /// Changes of the session that can be undone.
 const UNDO_DEPTH: usize = 200;
 /// Playback clock period.
@@ -66,6 +64,8 @@ pub enum AppEvent {
     PluginChanged,
     /// A floating window opened or closed.
     Floating,
+    /// User asked to export the active Curation sorting to Phy from the top Export menu.
+    ExportPhy,
 }
 
 /// A floating window over the workspace.
@@ -154,7 +154,7 @@ impl Recording {
     }
 }
 
-pub use dspk_pipeline::preview::ViewPlan;
+pub use dspk_pipeline::view::ViewPlan;
 
 pub struct Store {
     /// The active recording (what Explore draws and Processing edits).
@@ -176,6 +176,10 @@ pub struct Store {
     /// What is being opened, while a file opens.
     pub opening: Option<String>,
     pub status: String,
+    /// Recent status & system notifications (Lucem-style bottom-right bell popover).
+    pub notifications: Vec<String>,
+    pub unread_notifications: usize,
+    pub notifications_open: bool,
     /// Render time and density of the latest frame (status bar).
     pub render_info: String,
     /// The playback clock while playing.
@@ -184,6 +188,12 @@ pub struct Store {
     dark: bool,
     /// Pyramid progress per source id being built: (samples built, of all).
     pub pyramids: HashMap<String, (u64, u64)>,
+    /// When each source's overview was first seen building, and how far it was then (its rate:
+    /// time left in the label).
+    pyramid_clock: HashMap<String, (Instant, u64)>,
+    /// The overview that finished last: its source, how long it took, and when (said for a few
+    /// seconds: "Overview ready · built in 3 min 04 s").
+    pyramid_ready: Option<(String, f64, Instant)>,
     /// The session document: views, their op chains, display and linked sortings.
     pub doc: SessionDoc,
     doc_path: Option<PathBuf>,
@@ -195,17 +205,18 @@ pub struct Store {
     settings_path: Option<PathBuf>,
     settings_text: String,
     _settings_watch: Option<Task<()>>,
+    /// Why what the user last opened in a page is not a recording here: shown on the start
+    /// screen, under its buttons (not only in the status bar).
+    pub open_note: Option<String>,
     /// Live preview of each view's op chain (views of the open recording with enabled ops).
     previews: HashMap<String, Arc<ProcessedSignal>>,
     /// The same, computed by the recording's server when this app cannot compute (a page
     /// without WebGPU): `remote::processed`.
     remote_previews: HashMap<String, Arc<dyn SignalBackend>>,
-    /// Previews by chain (source, channels, enabled ops), most recent last: views with the same
-    /// chain share one, and a branch reads the preview of the ops it shares with another.
-    preview_cache: Vec<(Vec<String>, Arc<ProcessedSignal>)>,
-    /// Whitenings fitted for previews, by the key of the chain up to them (fitting reads the
-    /// recording: once per chain, not per redraw).
-    whiten_cache: HashMap<String, dspk_ops::spatial::SpatialWhitening>,
+    /// The open recording's chains (dspk-pipeline's, as `dspk serve` and a page's engine keep
+    /// them): views with the same chain share one, a branch reads the chain it starts with, and
+    /// whitenings are fitted once per chain.
+    chains: Arc<ProcessedChains>,
     /// Whitening fits running in the background (their keys).
     whiten_fitting: std::collections::HashSet<String>,
     /// The channel the Processing panel is about, and the op selected in it.
@@ -238,6 +249,9 @@ impl EventEmitter<AppEvent> for Store {}
 impl Store {
     pub fn new(session: Session, session_path: Option<PathBuf>) -> Self {
         crate::data::remote::set_profiles(&session.servers);
+        // The RAM limit from the start (the setting, else the rule: a page without settings.toml
+        // too, which otherwise kept dspk-core's 1 GiB)
+        crate::data::settings::apply_memory(session.memory);
         Self {
             recording: None,
             loaded: Vec::new(),
@@ -249,10 +263,15 @@ impl Store {
             session_path,
             opening: None,
             status: String::new(),
+            notifications: Vec::new(),
+            unread_notifications: 0,
+            notifications_open: false,
             render_info: String::new(),
             clock: None,
             dark: true,
             pyramids: HashMap::new(),
+            pyramid_clock: HashMap::new(),
+            pyramid_ready: None,
             doc: SessionDoc::default(),
             doc_path: None,
             doc_text: String::new(),
@@ -260,12 +279,12 @@ impl Store {
             settings_path: None,
             settings_text: String::new(),
             _settings_watch: None,
+            open_note: None,
             previews: HashMap::new(),
             remote_previews: HashMap::new(),
             live: None,
             live_task: None,
-            preview_cache: Vec::new(),
-            whiten_cache: HashMap::new(),
+            chains: Arc::new(ProcessedChains::new("")),
             whiten_fitting: Default::default(),
             picked_channel: None,
             picked_op: None,
@@ -664,8 +683,17 @@ impl Store {
         if v.display.show != Show::Processed || !self.on_open_recording(v, source) {
             return None;
         }
-        // The server decides what it processes: a page's preview counts as covering
-        self.previews.get(&v.id).map(|p| p.covers(samples)).or_else(|| self.remote_previews.contains_key(&v.id).then_some(true))
+        if let Some(p) = self.previews.get(&v.id) {
+            return Some(p.covers(samples));
+        }
+        // Processed elsewhere: by this page's engine (a browser's limit) or the server (a
+        // computer's); past it the view is drawn raw, and the panel says so
+        self.remote_previews.contains_key(&v.id).then(|| {
+            let channels = v.recording.channels.as_ref().map_or_else(|| self.sources().map_or(0, |s| s.entry(source).channels), Vec::len);
+            use dspk_pipeline::view::{PREVIEW_MAX_TILES, PREVIEW_MAX_VALUES_BROWSER, PREVIEW_MAX_VALUES_DEVICE};
+            let max = if crate::platform::remote::runs_alone() { PREVIEW_MAX_VALUES_BROWSER } else { PREVIEW_MAX_VALUES_DEVICE };
+            channels as u64 * samples <= (max * PREVIEW_MAX_TILES) as u64
+        })
     }
 
     /// Rebuilds the preview of view `id` from its enabled ops (none: no preview).
@@ -703,31 +731,42 @@ impl Store {
             }
             return;
         }
-        let group = plan.group;
-        let mut stages: Vec<PipelineStage> = plan.steps.iter().map(|(_, st)| st.clone()).collect();
-        // The chain's key, step by step: [source and channels, step 1, step 2, …]
-        let mut key = vec![format!("{source}|{group:?}")];
-        key.extend(plan.steps.into_iter().map(|(k, _)| k));
-        // Whitenings fitted on the signal of the steps before them, as the pipeline does. A fit
-        // reads the recording: it runs in the background (the view draws the raw signal
-        // meanwhile) and the preview is built again when it is done
-        for (at, fit) in plan.fits {
-            let up_to = key[..at + 2].join("\n");
-            let Some(fitted) = self.whiten_cache.get(&up_to).cloned() else {
-                if self.whiten_fitting.insert(up_to.clone()) {
+        // Flat single-workspace derived signal backed by `<rec>.cache/drv/<drv_id>_drv_<source>.minmax`
+        let drv_id = v.drv_id.as_deref().unwrap_or(&v.id);
+        let rec_path = self.recording.as_ref().and_then(|r| r.path.as_deref());
+        match self.chains.signal_for_drv(drv_id, rec_path, ds.signal().clone(), raw, &source, &plan) {
+            Ok(Made::Ready(p)) => {
+                // Forward processed pyramid progress through the same `PyramidProgress` event so
+                // views repaint progressively as zoomed-out pages complete (zero ops in UI)
+                let (tx, mut rx) = crate::data::channel::unbounded::<Progress>();
+                let src = source.clone();
+                cx.spawn(async move |this, cx| {
+                    while rx.recv().await.is_ok() {
+                        if this.update(cx, |_, cx| cx.emit(AppEvent::PyramidProgress(src.clone()))).is_err() {
+                            break;
+                        }
+                    }
+                })
+                .detach();
+                p.watch(Arc::new(move |prog| {
+                    let _ = tx.try_send(prog);
+                }));
+                self.previews.insert(id.to_string(), p);
+            }
+            // A whitening fit reads the recording: it runs in the background (the view draws the
+            // raw signal meanwhile) and the preview is built again when it is done
+            Ok(Made::NeedsFit(job)) => {
+                if self.whiten_fitting.insert(job.key.clone()) {
                     self.set_status(format!("{}: fitting the whitening…", v.name), cx);
-                    let (before, group, raw, view, name) = (stages[..at].to_vec(), group.clone(), raw.clone(), id.to_string(), v.name.clone());
-                    let task = cx.background_spawn(async move {
-                        let target = dspk_core::ComputeTarget::from_env().map_err(|e| e.to_string())?;
-                        dspk_pipeline::fit_whitening(target, raw.as_ref(), &group, &before, &fit).map_err(|e| e.to_string())
-                    });
+                    let (view, name, chains, key) = (id.to_string(), v.name.clone(), self.chains.clone(), job.key.clone());
+                    let task = cx.background_spawn(async move { job.run() });
                     cx.spawn(async move |this, cx| {
                         let result = task.await;
                         let _ = this.update(cx, |s, cx| {
-                            s.whiten_fitting.remove(&up_to);
+                            s.whiten_fitting.remove(&key);
                             match result {
                                 Ok(w) => {
-                                    s.whiten_cache.insert(up_to, w);
+                                    chains.put_fit(key, w);
                                     s.set_status(format!("{name}: whitening fitted"), cx);
                                     s.rebuild_preview(&view, cx);
                                     cx.emit(AppEvent::WindowMoved);
@@ -738,26 +777,6 @@ impl Store {
                     })
                     .detach();
                 }
-                return;
-            };
-            stages[at] = PipelineStage::SpatialWhitening(fitted);
-        }
-        // The longest computed prefix of this chain
-        let found = (2..=key.len()).rev().find_map(|k| self.preview_cache.iter().find(|(c, _)| c[..] == key[..k]).map(|(_, p)| (k, p.clone())));
-        let built = match found {
-            Some((k, p)) if k == key.len() => Ok(p),
-            // A branch reads the shared prefix's rows, in the order that prefix leaves them
-            Some((k, p)) => ProcessedSignal::new(ds.signal().clone(), Arc::new(PreviewSource::new(p.clone())), p.out_channels().to_vec(), stages[k - 1..].to_vec()).map(Arc::new),
-            None => ProcessedSignal::new(ds.signal().clone(), raw, group, stages).map(Arc::new),
-        };
-        match built {
-            Ok(p) => {
-                self.preview_cache.retain(|(c, _)| *c != key);
-                self.preview_cache.push((key, p.clone()));
-                if self.preview_cache.len() > PREVIEW_CACHE {
-                    self.preview_cache.remove(0);
-                }
-                self.previews.insert(id.to_string(), p);
             }
             Err(e) => self.set_status(format!("{}: {e}", v.name), cx),
         }
@@ -773,7 +792,7 @@ impl Store {
         let group: Vec<usize> = v.recording.channels.clone().unwrap_or_else(|| (0..total).collect());
         let base_dir = self.doc_path.as_ref().and_then(|p| p.parent().map(Path::to_path_buf)).unwrap_or_default();
         let ops: Vec<&dspk_pipeline::Node> = v.ops.iter().filter(|o| o.enabled).map(|o| &o.node).collect();
-        dspk_pipeline::preview::view_plan(&ops, group, &base_dir)
+        dspk_pipeline::view::view_plan(&ops, group, &base_dir)
     }
 
     /// The channels view `v` shows, in order (see [`Self::view_plan`]).
@@ -1018,7 +1037,7 @@ impl Store {
             self.set_status(format!("{id} is not connected to a recording"), cx);
             return;
         };
-        let v = ViewDoc { id: id.to_string(), name: id.to_string(), recording, ops, display: Default::default(), plugins: Default::default() };
+        let v = ViewDoc { id: id.to_string(), drv_id: None, name: id.to_string(), recording, ops, display: Default::default(), plugins: Default::default() };
         self.write_view(v, cx);
     }
 
@@ -1041,14 +1060,14 @@ impl Store {
         let mut outputs = Vec::new();
         for w in &writes {
             let Some((recording, ops)) = self.doc.graph.chain(w, &self.doc.recipes) else { continue };
-            let v = ViewDoc { id: w.clone(), name: w.clone(), recording: recording.clone(), ops: ops.clone(), display: Default::default(), plugins: Default::default() };
+            let v = ViewDoc { id: w.clone(), drv_id: None, name: w.clone(), recording: recording.clone(), ops: ops.clone(), display: Default::default(), plugins: Default::default() };
             if jobs::gives_events(&v) {
                 // Events are found on their own (a branched run writes signals)
                 self.set_status(format!("{w} gives events: run it on its own (double-click it)"), cx);
                 continue;
             }
             outputs.push(jobs::processed_path(&recording.path, w));
-            chains.push(ViewDoc { id: w.clone(), name: w.clone(), recording, ops, display: Default::default(), plugins: Default::default() });
+            chains.push(ViewDoc { id: w.clone(), drv_id: None, name: w.clone(), recording, ops, display: Default::default(), plugins: Default::default() });
         }
         let n = chains.len();
         let nodes: std::collections::BTreeSet<String> = writes.iter().flat_map(|w| self.chain_nodes(w)).collect();
@@ -1212,6 +1231,14 @@ impl Store {
             Some(p) => self.session.forget_recent(p),
             None => self.session.clear_recent(),
         }
+        self.save_session();
+        cx.notify();
+    }
+
+    /// The RAM the app may keep (`None`: automatic), applied now and saved.
+    pub fn set_memory(&mut self, memory: Option<u64>, cx: &mut Context<Self>) {
+        self.session.memory = memory;
+        crate::data::settings::apply_memory(memory);
         self.save_session();
         cx.notify();
     }
@@ -1394,8 +1421,37 @@ impl Store {
     }
 
     pub fn set_status(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
-        self.status = text.into();
+        let msg = text.into();
+        if !msg.is_empty() && self.notifications.first().map(String::as_str) != Some(msg.as_str()) {
+            self.notifications.insert(0, msg.clone());
+            self.notifications.truncate(30);
+            if !self.notifications_open {
+                self.unread_notifications = self.unread_notifications.saturating_add(1);
+            }
+        }
+        self.status = msg;
         cx.emit(AppEvent::Status);
+    }
+
+    /// Toggles the bottom-right notification history popover and marks items read.
+    pub fn toggle_notifications(&mut self, cx: &mut Context<Self>) {
+        self.notifications_open = !self.notifications_open;
+        if self.notifications_open {
+            self.unread_notifications = 0;
+        }
+        cx.emit(AppEvent::Status);
+        cx.notify();
+    }
+
+    pub fn clear_notifications(&mut self, cx: &mut Context<Self>) {
+        self.notifications.clear();
+        self.unread_notifications = 0;
+        cx.emit(AppEvent::Status);
+        cx.notify();
+    }
+
+    pub fn trigger_export_phy(&mut self, cx: &mut Context<Self>) {
+        cx.emit(AppEvent::ExportPhy);
     }
 
     /// Latest frame's numbers (no event: the status bar observes the store).
@@ -1436,6 +1492,15 @@ impl Store {
                         store.session.push_recent(&path);
                         let source = sources.default_entry().id.clone();
                         store.install(Recording::new(sources, Some(path.clone())), cx);
+                        // Automatic per-recording session.json sidecar in `<dir>/cache/<rec>.cache/session.json`
+                        // so reopening restores views, ops, and linked curation automatically.
+                        #[cfg(not(target_family = "wasm"))]
+                        if store.doc_path.is_none() && path.exists() {
+                            let cache = dspk_view::cache_dir(&path);
+                            if std::fs::create_dir_all(&cache).is_ok() {
+                                store.attach_document(cache.join("session.json"), cx);
+                            }
+                        }
                         store.ensure_view(&path, &source, cx);
                         store.load_epochs(&path, cx);
                         store.load_event_sets(&path, cx);
@@ -1582,10 +1647,11 @@ impl Store {
         self.timeline = TimelineState::new(recording.sources.extent_sec());
         self.selection = recording.sources.entries().iter().map(|e| (e.id.clone(), (0..e.channels).collect())).collect();
         self.pyramids.clear();
+        self.pyramid_clock.clear();
+        self.pyramid_ready = None;
         self.previews.clear();
         self.remote_previews.clear();
-        self.preview_cache.clear();
-        self.whiten_cache.clear();
+        self.chains = Arc::new(ProcessedChains::new(""));
         self.applied_view = None;
         self.picked_channel = None;
         self.picked_op = None;
@@ -1634,10 +1700,11 @@ impl Store {
             self.timeline = TimelineState::new(1.0);
             self.selection.clear();
             self.pyramids.clear();
+        self.pyramid_clock.clear();
+        self.pyramid_ready = None;
             self.previews.clear();
             self.remote_previews.clear();
-            self.preview_cache.clear();
-        self.whiten_cache.clear();
+            self.chains = Arc::new(ProcessedChains::new(""));
             self.applied_view = None;
             self.picked_channel = None;
             self.picked_op = None;
@@ -1667,13 +1734,18 @@ impl Store {
         }
         if !self.pyramids.contains_key(source) {
             self.pyramids.insert(source.to_string(), (progress.done, progress.total));
+            self.pyramid_clock.insert(source.to_string(), (Instant::now(), progress.done));
             let (tx, mut rx) = crate::data::channel::unbounded::<Progress>();
             let id = source.to_string();
             cx.spawn(async move |this, cx| {
                 while let Ok(p) = rx.recv().await {
                     let alive = this.update(cx, |s, cx| {
                         if let Some(entry) = s.pyramids.get_mut(&id) {
+                            let was_building = entry.0 < entry.1;
                             *entry = (p.done, p.total);
+                            if was_building && p.done >= p.total {
+                                s.overview_finished(&id, cx);
+                            }
                             cx.emit(AppEvent::PyramidProgress(id.clone()));
                         }
                     });
@@ -1691,13 +1763,96 @@ impl Store {
         signal.focus(focus);
     }
 
-    /// `Building overview 12 / 45 s` while the default source's pyramid builds.
+    /// Seconds an "Overview ready" notice stays.
+    const READY_NOTICE_SEC: f64 = 6.0;
+
+    /// Source `id`'s overview has just finished: say so for a few seconds.
+    fn overview_finished(&mut self, id: &str, cx: &mut Context<Self>) {
+        let took = self.pyramid_clock.get(id).map_or(0.0, |(t0, _)| t0.elapsed().as_secs_f64());
+        self.pyramid_ready = Some((id.to_string(), took, Instant::now()));
+        // Redraw once the notice is over, so it goes
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(std::time::Duration::from_secs_f64(Self::READY_NOTICE_SEC + 0.1)).await;
+            let _ = this.update(cx, |s, cx| {
+                if s.pyramid_ready.as_ref().is_some_and(|(_, _, at)| at.elapsed().as_secs_f64() >= Self::READY_NOTICE_SEC) {
+                    s.pyramid_ready = None;
+                    cx.emit(AppEvent::PyramidProgress(String::new()));
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// The default source's overview while it builds: (fraction built, seconds left once the
+    /// rate is known).
+    pub fn pyramid_status(&self) -> Option<(f64, Option<f64>)> {
+        let id = &self.sources()?.default_entry().id;
+        let &(done, total) = self.pyramids.get(id)?;
+        if done >= total || total == 0 {
+            return None;
+        }
+        let left = self.pyramid_clock.get(id).and_then(|&(t0, from)| {
+            let elapsed = t0.elapsed().as_secs_f64();
+            // A rate from a few seconds of building, not the first jump
+            (elapsed >= 3.0 && done > from).then(|| (total - done) as f64 * elapsed / (done - from) as f64)
+        });
+        Some((done as f64 / total as f64, left))
+    }
+
+    /// `Overview 19 % · 2 min 10 s left` while the default source's overview builds, then
+    /// `Overview ready · built in 3 min 04 s` for a few seconds.
     pub fn pyramid_label(&self) -> Option<String> {
+        if let Some((fraction, left)) = self.pyramid_status() {
+            let percent = (fraction * 100.0).floor().min(99.0);
+            return Some(match left {
+                Some(sec) => format!("Overview {percent:.0} % · {} left", duration(sec.max(1.0))),
+                None => format!("Overview {percent:.0} %"),
+            });
+        }
+        let (id, took, at) = self.pyramid_ready.as_ref()?;
+        (at.elapsed().as_secs_f64() < Self::READY_NOTICE_SEC && self.sources().is_some_and(|s| s.default_entry().id == *id)).then(|| {
+            if *took >= 1.0 { format!("Overview ready · built in {}", duration(*took)) } else { "Overview ready".to_string() }
+        })
+    }
+
+    /// What the overview label's tooltip explains: what the overview is, how far, where it is
+    /// built, how fast, and whether it is kept for next time.
+    pub fn pyramid_detail(&self) -> Option<String> {
         let sources = self.sources()?;
         let e = sources.default_entry();
-        let &(done, total) = self.pyramids.get(&e.id)?;
-        let hz = e.sample_rate.rate_hz();
-        (done < total && hz > 0.0).then(|| format!("Building overview {:.0} / {:.0} s", done as f64 / hz, total as f64 / hz))
+        let (fraction, _) = self.pyramid_status()?;
+        let info = sources.get(&e.id).signal().info().clone();
+        let total_sec = info.samples as f64 / info.sample_rate_hz().max(1e-9);
+        let (where_, kept) = if crate::platform::remote::runs_alone() {
+            ("in this browser (nothing is uploaded)", "kept in this browser once complete: the next open of these files is instant")
+        } else if cfg!(target_family = "wasm") {
+            ("on the server", "kept by the server next to the recording")
+        } else {
+            ("on this computer", "kept next to the recording when its folder can be written")
+        };
+        let mut lines = vec![
+            "Zoomed-out views fill in as the overview is built, nearest what you look at first; zoomed-in views read the recording directly.".to_string(),
+            format!("Built: {} of {} ({:.0} %).", duration(fraction * total_sec), duration(total_sec), fraction * 100.0),
+            format!("Where: {where_}."),
+        ];
+        if let Some(&(t0, from)) = self.pyramid_clock.get(&e.id) {
+            let elapsed = t0.elapsed().as_secs_f64();
+            let done = (fraction * info.samples as f64) as u64;
+            if elapsed >= 3.0 && done > from {
+                let bytes = (done - from) as f64 * info.channel_count() as f64 * info.format.bytes() as f64;
+                lines.push(format!("Speed: {:.0} MB/s of samples.", bytes / elapsed / 1e6));
+            }
+        }
+        lines.push(format!("It is {kept}."));
+        Some(lines.join("\n"))
+    }
+
+    /// Which of `columns` equal parts of the default source have their overview, while it builds
+    /// (`None` once complete): the band under the timeline.
+    pub fn pyramid_built(&self, columns: usize) -> Option<Vec<bool>> {
+        self.pyramid_status()?;
+        let sources = self.sources()?;
+        Some(sources.get(&sources.default_entry().id).signal().built(columns))
     }
 
     // ------------------------------------------------------------------------

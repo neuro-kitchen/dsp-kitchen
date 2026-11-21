@@ -44,7 +44,7 @@ pub fn section(store: &Entity<Store>, view: &ViewDoc, _window: &mut Window, cx: 
                     .gap_2()
                     .cursor_pointer()
                     .rounded_sm()
-                    .child(div().size(px(9.)).rounded_full().when(!hidden, |d| d.bg(color(palette.unit(u)))).border_1().border_color(color(palette.unit(u))))
+                    .child(div().size(px(9.)).rounded_full().bg(if hidden { color(palette.unit(u)).opacity(0.25) } else { color(palette.unit(u)) }))
                     .child(div().w(px(40.)).text_xs().when(hidden, |d| d.text_color(muted)).child(unit.info.unit_id.to_string()))
                     .child(div().flex_1().min_w_0().truncate().text_xs().text_color(muted).child(unit.info.quality_label.clone()))
                     .child(div().text_xs().text_color(muted).child(unit.info.num_spikes.to_string()))
@@ -200,16 +200,97 @@ fn pick_into_page(store: &Entity<Store>, view: String, cx: &mut App) {
     .detach();
 }
 
-/// A page served by a server: links the sorting at `path` (under the server's data root) to the
-/// active view and opens Curation; the plugin's state reads it from the server.
-pub fn open_server_sorting(store: &Entity<Store>, path: String, cx: &mut App) {
-    if store.read(cx).active_view().is_none() {
-        store.update(cx, |s, cx| s.set_status("Open a recording first: a sorting belongs to one", cx));
+/// Opens a sorting directly from Curation's empty state (works with or without an open recording,
+/// on desktop, standalone browser, or served browser).
+pub fn open_sorting_for_curation(store: &Entity<Store>, window: &mut Window, cx: &mut App) {
+    if dspk_app_core::platform::remote::served() {
+        store.update(cx, |s, cx| s.set_status("Pick a sorting on the server: Curate", cx));
+        dspk_app_core::commands::run_command("file.open_server", window, cx);
         return;
     }
+    if let Some(view) = store.read(cx).active_view().map(|v| v.id.clone()) {
+        pick_and_attach(store, view, cx);
+        return;
+    }
+    if dspk_app_core::platform::remote::runs_alone() {
+        let Some(state) = state(cx) else { return };
+        let store = store.clone();
+        cx.spawn(async move |cx| {
+            let picked = dspk_app_core::platform::remote::pick_folder_bytes().await;
+            let (name, files) = match picked {
+                Ok(Some(folder)) => folder,
+                Ok(None) => return,
+                Err(e) => {
+                    let _ = store.update(cx, |s, cx| s.set_status(format!("Sorting not read: {e:#}"), cx));
+                    return;
+                }
+            };
+            if !name.to_ascii_lowercase().ends_with(".sorting.zarr") {
+                let _ = store.update(cx, |s, cx| s.set_status(format!("{name} is not a .sorting.zarr"), cx));
+                return;
+            }
+            let task_name = name.clone();
+            let loaded = cx.background_executor().spawn(async move { dspk_synapse::curation::sorting::SortingData::load_files(&task_name, files) }).await;
+            let path = PathBuf::from(&name);
+            match loaded {
+                Ok(data) => {
+                    let _ = state.update(cx, |st, cx| {
+                        st.standalone_sorting = Some(path.clone());
+                        st.loaded(path, data, Ok(Default::default()), cx);
+                    });
+                    let _ = store.update(cx, |s, cx| s.set_workspace(dspk_app_core::navigation::route::Workspace::Curation, cx));
+                }
+                Err(e) => {
+                    let _ = store.update(cx, |s, cx| s.set_status(format!("{name}: {e:#}"), cx));
+                }
+            }
+        })
+        .detach();
+        return;
+    }
+    if !dspk_app_core::platform::LOCAL_FILES {
+        store.update(cx, |s, cx| s.set_status("Sortings open in the desktop app for now", cx));
+        return;
+    }
+    let rx = cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Open a sorting (.sorting.zarr or Phy folder)".into()) });
+    let store = store.clone();
+    cx.spawn(async move |cx| {
+        let Ok(Ok(Some(paths))) = rx.await else { return };
+        let Some(path) = paths.into_iter().next() else { return };
+        let path = if dspk_synapse::io::phy::PhyFolder::is_phy_folder(&path) {
+            let folder = path.clone();
+            match cx.background_executor().spawn(async move { dspk_synapse::curation::phy::import_phy(&folder) }).await {
+                Ok(imported) => imported,
+                Err(e) => {
+                    let _ = store.update(cx, |s, cx| s.set_status(format!("Phy folder not imported: {e:#}"), cx));
+                    return;
+                }
+            }
+        } else {
+            path
+        };
+        let _ = cx.update(|cx| {
+            if let Some(st) = state(cx) {
+                st.update(cx, |st, cx| st.set_standalone_sorting(path, cx));
+            }
+            store.update(cx, |s, cx| s.set_workspace(dspk_app_core::navigation::route::Workspace::Curation, cx));
+        });
+    })
+    .detach();
+}
+
+/// A page served by a server: links the sorting at `path` (under the server's data root) to the
+/// active view (or opens standalone if no recording is open yet) and opens Curation.
+pub fn open_server_sorting(store: &Entity<Store>, path: String, cx: &mut App) {
     let path = PathBuf::from(path);
+    let has_view = store.read(cx).active_view().is_some();
     if let Some(st) = state(cx) {
-        st.update(cx, |st, cx| st.load(path.clone(), cx));
+        st.update(cx, |st, cx| {
+            if !has_view {
+                st.standalone_sorting = Some(path.clone());
+            }
+            st.load(path.clone(), cx);
+        });
     }
     store.update(cx, |s, cx| {
         if let Some(view) = s.active_view().map(|v| v.id.clone()) {

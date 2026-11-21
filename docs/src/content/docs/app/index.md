@@ -28,7 +28,7 @@ The tabs along the top are workspaces. They share one session and one timeline.
 
 ## Start here
 
-1. **File → Open file…** (Ctrl+O) for a `.bin` or `.cbin`, **Open folder…** (Ctrl+Shift+O) for a Zarr store, or **Synthetic recording** to try it with no data.
+1. **File → Open file…** (Ctrl+O) for a `.bin` or `.cbin`, **Open project…** (Ctrl+Shift+O) for a project or a Zarr recording (`.zarr`, `.nwb.zarr`), or **Synthetic recording** to try it with no data.
 2. Follow [Filter and inspect a recording](/dsp-kitchen/app/workflows/).
 
 Press **F1** at any time for the [keyboard and mouse list](/dsp-kitchen/app/keyboard/), and **Ctrl+K**

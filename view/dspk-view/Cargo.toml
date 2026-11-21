@@ -1,0 +1,37 @@
+[package]
+name = "dspk-view"
+description = "Preparing multi-channel signals for viewing: min/max envelopes and pyramids, local or remote"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["wgpu", "cuda", "cpu"]
+## Envelopes of samples already on a CubeCL device.
+device = ["dep:cubecl", "dspk-core/compute"]
+wgpu = ["device", "dspk-core/wgpu"]
+cpu = ["device", "dspk-core/cpu"]
+cuda = ["device", "dspk-core/cuda"]
+hip = ["device", "dspk-core/hip"]
+
+[dependencies]
+dspk-core.workspace = true
+cubecl = { workspace = true, optional = true }
+rayon.workspace = true
+memmap2.workspace = true
+tracing.workspace = true
+getrandom.workspace = true
+
+# Threads in a browser (web workers), when the build has them
+[target.'cfg(target_family = "wasm")'.dependencies]
+wasm_thread = { version = "0.3.3", features = ["es_modules"] }
+
+
+[dev-dependencies]
+# The overview fold's fixture, shared with the page's JS fold (tests/fixtures/overview-fold.json)
+serde_json.workspace = true

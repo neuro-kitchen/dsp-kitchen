@@ -7,6 +7,9 @@
 //!   its connection's message size, and computes the spike-train views itself);
 //! - `views` [`ViewsCall`] → [`Views`]: the views read from the recording (waveforms, features),
 //!   computed here on the server's own recording rather than sending its windows to the page;
+//! - `split` [`SplitCall`] → spike times (`Vec<u64>`): the lead unit's spikes inside a lasso,
+//!   found here (a features lasso projects every spike of the unit, read from the recording as the
+//!   views read it: one pass on the server, not a round trip per second of signal from the page);
 //! - `save` [`SaveCall`]: the curation log written into the sorting, on the server.
 //!
 //! The page sends its curation edits with each `views` call, so units are numbered as on the page
@@ -51,6 +54,24 @@ pub struct ReadCall {
     pub len: u64,
 }
 
+/// A lasso to split the lead unit by: on the amplitude view (time s, amplitude) or on the
+/// features view (PC1, PC2 of `basis`, which the page's views were computed with).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SplitCall {
+    pub path: String,
+    /// The page's curation edits, saved or not (units numbered as on the page).
+    pub ops: Vec<CurationOp>,
+    /// The unit split (its index after `ops`).
+    pub unit: usize,
+    pub polygon: Vec<(f32, f32)>,
+    /// The features view's projection; `None`: an amplitude lasso.
+    #[serde(default)]
+    pub features: Option<super::views::FeatureBasis>,
+    /// As [`ViewsCall::processing`]: the signal read as the views read it.
+    #[serde(default)]
+    pub processing: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ViewsCall {
     pub path: String,
@@ -89,7 +110,7 @@ pub struct Caller<'a> {
 pub struct Service {
     sortings: Mutex<HashMap<PathBuf, Arc<SortingData>>>,
     /// The windows of the last recording asked about, by its address.
-    windows: Mutex<Option<(usize, Arc<Windows>)>>,
+    windows: Mutex<Option<((usize, Option<std::ops::Range<u64>>), Arc<Windows>)>>,
 }
 
 fn bad(e: impl std::fmt::Display) -> DspError {
@@ -115,8 +136,30 @@ impl Service {
                 let path = resolve(&call.path)?;
                 let recording = recording.ok_or_else(|| bad("no recording is open on the server"))?;
                 let sorting = apply(self.sorting(&path)?.as_ref(), &call.ops);
-                let windows = self.windows(recording);
+                let windows = self.windows(recording, sorting.span());
                 json(&from_signal(&sorting, &windows, &call.request, || false))
+            }
+            "split" => {
+                let call: SplitCall = serde_json::from_slice(body).map_err(bad)?;
+                let path = resolve(&call.path)?;
+                let sorting = apply(self.sorting(&path)?.as_ref(), &call.ops);
+                if call.unit >= sorting.units.len() {
+                    return Err(bad(format!("no unit {} in the sorting as curated", call.unit)));
+                }
+                let spikes = match &call.features {
+                    None => {
+                        if sorting.amplitudes.is_empty() {
+                            return Err(bad("this sorting stores no spike amplitudes: split it on Features"));
+                        }
+                        super::split::spikes_in_polygon(&sorting, call.unit, &call.polygon)
+                    }
+                    Some(f) => {
+                        let recording = recording.ok_or_else(|| bad("no recording is open on the server"))?;
+                        let total = recording.info().samples;
+                        super::split::spikes_in_feature_polygon(&sorting, call.unit, f.before, f.after, &f.basis, &call.polygon, total, |range, out| recording.read(&[f.channel], range, out))?
+                    }
+                };
+                json(&spikes)
             }
             "save" => {
                 if !caller.may_write {
@@ -150,16 +193,17 @@ impl Service {
         Ok(s)
     }
 
-    /// The windows of `recording`, read once (until another recording is asked about).
-    fn windows(&self, recording: &Arc<dyn RecordingSource>) -> Arc<Windows> {
-        let key = Arc::as_ptr(recording) as *const () as usize;
+    /// The windows of `recording` over `span` (the sorting's), read once (until another recording
+    /// or sorting is asked about).
+    fn windows(&self, recording: &Arc<dyn RecordingSource>, span: Option<std::ops::Range<u64>>) -> Arc<Windows> {
+        let key = (Arc::as_ptr(recording) as *const () as usize, span.clone());
         let mut cache = self.windows.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((k, w)) = cache.as_ref() {
             if *k == key {
                 return w.clone();
             }
         }
-        let w = Arc::new(Windows::read_with(recording.info(), |channels, samples, out| recording.read(channels, samples, out)));
+        let w = Arc::new(Windows::read_with(recording.info(), span, |channels, samples, out| recording.read(channels, samples, out)));
         *cache = Some((key, w.clone()));
         w
     }

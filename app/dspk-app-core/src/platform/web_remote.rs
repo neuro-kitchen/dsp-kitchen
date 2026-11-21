@@ -112,12 +112,20 @@ pub async fn start_engine() -> anyhow::Result<String> {
     Ok(why)
 }
 
-/// Asks the user for a folder (`folder`) or files, hands every file to the engine worker with
-/// its path inside the folder, and returns the recordings among them (each `.bin` whose `.meta`
-/// came too), by path, and, when there is none, what was picked instead. A dialog closed without
-/// a choice fires no event: the page simply waits for the next one.
-pub async fn pick_files(folder: bool) -> anyhow::Result<(Vec<String>, Option<String>)> {
-    let Some(PageLink::Engine(engine)) = LINK.get() else { anyhow::bail!("picking files needs the page's engine") };
+/// Whether the page knows where its recordings come from yet (its server answered, or its engine
+/// started): until then the start screen draws nothing, rather than a server's Open dialog that
+/// a page running alone would replace a moment later.
+pub fn connected() -> bool {
+    LINK.get().is_some()
+}
+
+/// Asks the user for a project (`project`: its place, the browser's folder chooser, where the
+/// browser asks once to let the page read it) or a file (the file chooser, as for a PDF: no
+/// prompt), hands every file to the engine worker with its path, and returns the recordings among
+/// them by path and, when there is none, what was picked instead. A dialog closed without a choice
+/// fires no event: the page simply waits for the next one.
+pub async fn pick_files(project: bool) -> anyhow::Result<(Vec<String>, Option<String>)> {
+    let folder = project;
     let js = |e: wasm_bindgen::JsValue| anyhow::anyhow!("{e:?}");
     // Each picked file with its path "<folder picked>/<path inside>" (or its name alone)
     let picked: Vec<(String, web_sys::File)> = match folder.then(folder_picker).flatten() {
@@ -139,6 +147,46 @@ pub async fn pick_files(folder: bool) -> anyhow::Result<(Vec<String>, Option<Str
         }
         None => input_files(folder).await?,
     };
+    take_files(picked)
+}
+
+/// Files dropped on the page (a recording's `.zarr`, a `.wav`, a `.bin` with its `.meta`, or a
+/// project's place): the same as picking them, with no dialog and no prompt.
+pub fn take_dropped(dropped: Vec<(String, web_sys::File)>) -> anyhow::Result<(Vec<String>, Option<String>)> {
+    take_files(dropped)
+}
+
+/// What the loader hands over when something is dropped on the page: each drop's files with
+/// their paths. The loader's drop handler is installed by the first call.
+pub fn drops() -> futures_channel::mpsc::UnboundedReceiver<Vec<(String, web_sys::File)>> {
+    let (tx, rx) = futures_channel::mpsc::unbounded();
+    let handler = wasm_bindgen::closure::Closure::<dyn FnMut(wasm_bindgen::JsValue)>::new(move |entries: wasm_bindgen::JsValue| {
+        let _ = tx.unbounded_send(entries_of(&entries));
+    });
+    if let Some(window) = web_sys::window() {
+        let _ = js_sys::Reflect::set(&window, &"dspkDrop".into(), handler.as_ref());
+    }
+    // The page's for its whole life
+    handler.forget();
+    rx
+}
+
+/// `[{path, file}]` from the loader, as (path, file).
+fn entries_of(entries: &wasm_bindgen::JsValue) -> Vec<(String, web_sys::File)> {
+    js_sys::Array::from(entries)
+        .iter()
+        .filter_map(|e| {
+            let path = js_sys::Reflect::get(&e, &"path".into()).ok()?.as_string()?;
+            let file = wasm_bindgen::JsCast::dyn_into::<web_sys::File>(js_sys::Reflect::get(&e, &"file".into()).ok()?).ok()?;
+            Some((path, file))
+        })
+        .collect()
+}
+
+/// Hands `picked` to the engine worker and finds the recordings among them.
+fn take_files(picked: Vec<(String, web_sys::File)>) -> anyhow::Result<(Vec<String>, Option<String>)> {
+    let Some(PageLink::Engine(engine)) = LINK.get() else { anyhow::bail!("opening files needs the page's engine") };
+    let js = |e: wasm_bindgen::JsValue| anyhow::anyhow!("{e:?}");
     let (files, mut paths) = (js_sys::Array::new(), Vec::new());
     for (relative, file) in picked {
         // "<folder>/<path>": the folder's own name is left out, unless the folder picked is a
@@ -158,10 +206,17 @@ pub async fn pick_files(folder: bool) -> anyhow::Result<(Vec<String>, Option<Str
     let mut recordings: Vec<String> = paths.iter().filter(|p| p.to_ascii_lowercase().ends_with(".bin") && paths.contains(&p[..p.len() - 4].to_string().add_meta())).cloned().collect();
     // WAV files: their header says the layout
     recordings.extend(paths.iter().filter(|p| p.to_ascii_lowercase().ends_with(".wav")).cloned());
-    // dspk Zarr recordings: a `.zarr` folder with a `/traces` array (an NWB folder is not one)
+    // Zarr recordings: dspk's (a `.zarr` folder with a `/traces` array) and NWB's (an
+    // `/acquisition` group: the engine opens its largest continuous series)
     for p in &paths {
         if let Some(folder) = p.strip_suffix("/traces/zarr.json").filter(|f| f.to_ascii_lowercase().ends_with(".zarr")) {
             recordings.push(folder.to_string());
+        }
+        if let Some(folder) = p.strip_suffix("/zarr.json").filter(|f| f.to_ascii_lowercase().ends_with(".zarr")) {
+            let acquisition = format!("{folder}/acquisition/");
+            if paths.iter().any(|q| q.starts_with(&acquisition)) {
+                recordings.push(folder.to_string());
+            }
         }
     }
     recordings.sort();
@@ -218,13 +273,16 @@ fn not_a_recording(paths: &[String]) -> String {
     if let Some(f) = folder(".sorting.zarr") {
         return format!("{f} is a sorting: sortings open in the desktop app or the container for now");
     }
-    if let Some(f) = folder(".nwb.zarr").or_else(|| paths.iter().find(|p| p.to_ascii_lowercase().ends_with(".nwb")).cloned()) {
-        return format!("{f} is NWB: NWB opens in the desktop app or the container for now");
+    if let Some(f) = folder(".nwb.zarr") {
+        return format!("{f} has no continuous recording in /acquisition");
+    }
+    if let Some(f) = paths.iter().find(|p| p.to_ascii_lowercase().ends_with(".nwb")) {
+        return format!("{f} is NWB in HDF5: in a browser, NWB opens as Zarr (.nwb.zarr); the desktop app and the container open both");
     }
     if paths.iter().any(|p| p.to_ascii_lowercase().ends_with(".bin")) {
         return "A .bin needs its .meta (dspk's JSON layout) beside it".to_string();
     }
-    format!("No recording among the {} files picked (a .zarr folder, a .wav, or a .bin with its .meta)", paths.len())
+    format!("No recording among the {} files (a .zarr, an .nwb.zarr, a .wav, or a .bin with its .meta)", paths.len())
 }
 
 /// The loader's folder picker (`window.dspkPickFolder`), where the browser has the File System
@@ -248,7 +306,7 @@ async fn input_files(folder: bool) -> anyhow::Result<Vec<(String, web_sys::File)
     if folder {
         input.set_attribute("webkitdirectory", "").map_err(js)?;
     } else {
-        input.set_accept(".wav,.bin,.meta");
+        input.set_accept(".wav,.bin,.meta,.nwb");
     }
     let (tx, rx) = futures_channel::oneshot::channel::<()>();
     let tx = std::cell::RefCell::new(Some(tx));
@@ -321,9 +379,11 @@ pub async fn connect_page() -> anyhow::Result<Option<WebWelcome>> {
         return Ok(None);
     }
     let Some(url) = socket_url() else { return Ok(None) };
+    // Where the server's WebTransport is, and its certificate's hash (dspk-serve.json)
+    let serve_info = fetch_serve_info().await;
     let kept = storage().and_then(|s| s.get_item(TOKEN_KEY).ok().flatten()).filter(|t| !t.is_empty());
     if let Some(token) = kept {
-        match web_client::connect(&url, Hello::Token(token)).await {
+        match web_client::connect_best(&url, serve_info.as_ref(), Hello::Token(token)).await {
             Ok((link, _)) => return Ok(Some(keep(link))),
             Err(_) => {
                 if let Some(s) = storage() {
@@ -344,7 +404,7 @@ pub async fn connect_page() -> anyhow::Result<Option<WebWelcome>> {
     }
     // A name of its own: the server knows each paired browser by name
     let name = format!("browser-{:06x}", (js_sys::Math::random() * 16_777_216.0) as u32);
-    let (link, token) = web_client::connect(&url, Hello::Code { code, name }).await?;
+    let (link, token) = web_client::connect_best(&url, serve_info.as_ref(), Hello::Code { code, name }).await?;
     if let (Some(token), Some(s)) = (token, storage()) {
         let _ = s.set_item(TOKEN_KEY, &token);
     }
@@ -389,9 +449,15 @@ pub fn runtime() -> &'static PageRuntime {
 /// Opens the `dspk://` recording `path` on the page's server (from a worker: it waits). The page
 /// has one connection, so one recording of the server is open at a time.
 pub fn open_uri(path: &Path) -> anyhow::Result<Arc<RemoteSignal>> {
+    open_uri_source(path, None)
+}
+
+/// [`open_uri`] of source `source` of the file (`None`: its default): kept open beside the
+/// others on the page's connection (each view names the one it reads).
+pub fn open_uri_source(path: &Path, source: Option<&str>) -> anyhow::Result<Arc<RemoteSignal>> {
     let (_, remote) = parse_uri(path).ok_or_else(|| anyhow::anyhow!("{} is not a dspk:// path", path.display()))?;
     // The engine's own words for a page on its own (it is not a server)
-    let signal = Arc::new(RemoteSignal::open(link()?, &remote).map_err(|e| if runs_alone() { anyhow::anyhow!("this browser's engine: {}", e.reason()) } else { anyhow::Error::from(e) })?);
+    let signal = Arc::new(RemoteSignal::open_source(link()?, &remote, source).map_err(|e| if runs_alone() { anyhow::anyhow!("this browser's engine: {}", e.reason()) } else { anyhow::Error::from(e) })?);
     remember(&signal);
     Ok(signal)
 }
@@ -474,4 +540,13 @@ async fn sleep_ms(ms: i32) {
         }
     });
     let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+}
+
+/// What `dspk serve` says about itself (`dspk-serve.json` next to the page), if anything.
+async fn fetch_serve_info() -> Option<dspk_stream::pair::ServeInfo> {
+    let window = web_sys::window()?;
+    let response = wasm_bindgen_futures::JsFuture::from(window.fetch_with_str("./dspk-serve.json")).await.ok()?;
+    let response: web_sys::Response = wasm_bindgen::JsCast::dyn_into(response).ok()?;
+    let text = wasm_bindgen_futures::JsFuture::from(response.text().ok()?).await.ok()?.as_string()?;
+    serde_json::from_str(&text).ok()
 }

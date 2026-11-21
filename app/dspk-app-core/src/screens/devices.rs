@@ -312,7 +312,8 @@ impl Render for DevicesPanel {
                 let (m, n) = (me.clone(), name.clone());
                 let chosen = self.tap.as_deref() == Some(name.as_str());
                 let b = Button::new(SharedString::from(format!("devices-tap-{i}"))).xsmall().label(name);
-                let b = if chosen { b.primary() } else { b.ghost() };
+                // Outlined when not watched (a ghost button read as text), filled when watched
+                let b = if chosen { b.primary() } else { b.outline() };
                 tap_row = tap_row.child(b.on_click(move |_, _, cx| {
                     let _ = m.update(cx, |p, cx| p.watch(n.clone(), cx));
                 }));

@@ -37,18 +37,25 @@ of the progress report:
 2. **Templates**: every `nskip`-th window (upstream `range(0, n_batches, nskip)`: a recording of
    `nskip` windows or fewer is learned from window 0, as upstream). Each window comes down once for
    clip extraction on the host; only if too few clips are found are the other windows scanned.
-3. **Detection**: every window, on the device; only spikes come back. Each window keeps its own
-   spikes (`HaloWindow::remap_event`).
-4. **Clustering** of the detected spikes, section by section (stage 4 below), and the **learned
+3. **Drift** (`STAGE_DRIFT`, when `config.drift.nblocks >= 1`): amplitude-only universal detection
+   (`UniversalDetector::detect_for_drift`, skipping PCA feature projection) across every window;
+   `estimate_drift` estimates per-batch depth shifts on the host, and `DriftCorrector` precomputes
+   per-batch `[channels, channels]` kriging matrices `M_b` (within a 256 MiB budget) applied on the
+   device immediately after whitening in subsequent passes.
+4. **Detection**: every window, preprocessed, drift-corrected, and detected on the device; only
+   spikes and their `wPCA` features come back (`HaloWindow::remap_event`).
+5. **Clustering** of the detected spikes, section by section (stage 4 below), and the **learned
    templates** (stage 5).
-5. **Matching**: every window again, matched against the learned templates (stage 6).
-6. **Clustering of the matched spikes** into the final units (stage 7), then the **global merges**
+6. **Matching**: every window again, drift-corrected on the device and matched against the learned
+   templates (stage 6).
+7. **Clustering of the matched spikes** into the final units (stage 7), then the **global merges**
    (stage 8); duplicate spikes are removed and units labelled (stage 9).
 
 | Result (`Kilosort4Result`) | |
 |---|---|
 | `fitted` (`FittedPreprocessing`) | the preprocessing `Pipeline`, `SpatialWhitening`, `channel_delays` (EMUsort), schedule and halos, and the `FitSettings` they were fitted with |
 | `templates` | the universal templates (`wPCA`, `wTEMP`) |
+| `drift` | `Option<DriftModel>` with per-batch, per-block depth shifts (µm) and block centres (`None` when `nblocks == 0`) |
 | `detected`, `first_clusters` | the universal-template spikes and their first clustering |
 | `learned` | the learned templates (`LearnedTemplates`) |
 | `spikes`, `clusters` | the matched spikes (sample, template, amplitude, position, features) and their units |
@@ -206,7 +213,25 @@ leaves the pool. Choice of ours: a merged template is the spike-count-weighted m
 - **Composite score**: EMUsort's per-unit score (see the [EMUsort pipeline](/dsp-kitchen/plugins/synapse/reference/sorters/emusort-pipeline/)),
   written to `cluster_info.tsv` (`composite_score`).
 
-## 10. Not yet
+## 10. Drift estimation and correction — *implemented (device)*
 
-- **Drift correction.** On the Neuropixels test recording Kilosort4's own correction is ±0.5 µm
-  (`ops['dshift']`), so it does not explain any difference there.
+`kilosort4::drift::{estimate_drift, DriftOptions, DriftModel, DriftCorrector}` follows the
+paper's *Drift correction* (`datashift.py` and `get_drift_matrix`):
+
+1. **Fingerprints** (host, from `STAGE_DRIFT` amplitude-only spikes): each batch builds a
+   `[depth_bins, 20]` histogram over `binning_depth_um` depth bins (starting 1 µm below the
+   lowest channel) and 20 logarithmic amplitude bins from the universal threshold to 99, scaled
+   as `log2(1 + count)`.
+2. **Rigid alignment:** mean-subtracted fingerprints are shifted over `−15..=15` depth bins to
+   maximize correlation against a reference target (initial middle batch, or batch 300), updating
+   the target as the aligned mean over 10 rounds.
+3. **Fine block alignment:** across `2 · nblocks − 1` half-overlapping depth blocks, each block
+   searches `−5..=5` bins, smooths the `(shift, batch, block)` score volume with a 3D reflect
+   Gaussian filter, upsamples ×10 with a Gaussian interpolation kernel, and adds the sub-bin peak
+   to produce `dshift[batch, block]` in µm.
+4. **Device correction (`DriftCorrector`):** per batch, each channel's vertical shift is
+   linearly interpolated between block centres (extrapolated past the ends), and the window `X`
+   becomes `M_b · X`, where `M_b = K(y − shift_b, x) · (K(x, x) + 0.01·I)⁻¹` using a Gaussian
+   kernel with width `sig_interp_um`. Matrices `M_b` are precomputed once at construction (up to
+   `MAX_PRECOMPUTED_KRIGING_BYTES = 256 MiB`, falling back to on-demand computation for larger
+   recordings) so `STAGE_DETECTION` and `STAGE_MATCHING` pay only `M_b · X` on the device.

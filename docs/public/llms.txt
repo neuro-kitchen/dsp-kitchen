@@ -1,0 +1,48 @@
+# dsp-kitchen — GPU Signal Processing & Spike Sorting for Electrophysiology
+
+> dsp-kitchen is a Rust + Python + WebAssembly platform for streaming neural recordings, running deterministic GPU signal pipelines (CubeCL), sorting high-density Neuropixels & HD-EMG data (Kilosort4 with drift correction, EMUsort, MountainSort 5, SpyKING CIRCUS 2, Tridesclous 2), and curating sorted units interactively.
+
+## Quick links
+
+- Docs home: https://neuro-kitchen.github.io/dsp-kitchen/
+- Interactive browser viewer: https://neuro-kitchen.github.io/dsp-kitchen/viewer/
+- Repository: https://github.com/neuro-kitchen/dsp-kitchen
+
+## Installation
+
+- Python (core): `pip install dspk`
+- Python + Synapse sorting/curation: `pip install "dspk[synapse]"`
+- Python + Desktop app: `pip install "dspk[app]"`
+- Rust CLI & Desktop app: `cargo install dspk-app` / `cargo add dspk`
+
+## Workspaces (App)
+
+- **Explore (`Ctrl+1`)**: Traces and heatmap views of multi-channel recordings, Inspector processing chains with live previews, Processing Quick Start recipes, epochs, and multi-source/recording overlays.
+- **Pipeline (`Ctrl+2`)**: Non-destructive GPU processing graph with branching chains and export to `.dspk.zarr`, `.nwb.zarr`, or `.pipeline.json`.
+- **Sorting**: Run GPU spike sorters (Kilosort4 with rigid/non-rigid drift correction, EMUsort, MountainSort 5, SpyKING CIRCUS 2, Tridesclous 2) and attach `.sorting.zarr` or Phy outputs.
+- **Curation**: Interactive unit table, Affinity left rail, source picker, waveforms, feature projections, auto/cross-correlograms, ISI, amplitude over time, stacked Raster/Traces strip, merge, lasso Split, Unmerge, and Phy round-trip export.
+- **Analytics**: Event-aligned PETHs, rasters, and session ledger.
+
+## Spike Sorters (Synapse)
+
+- **Kilosort4 (`dspk-sorter-kilosort`)**: Learned or predefined universal templates, host/device drift estimation and on-device Gaussian kriging correction (`nblocks >= 1`), shared-memory detection kernels, bipartite modularity clustering, matching pursuit, CCG refractory merges (`15.8 s` CUDA / `23.6 s` wgpu on 45 s × 383 ch Neuropixels).
+- **EMUsort (`dspk-sorter-kilosort`, feature `emusort`)**: Cross-channel delay estimation/alignment, HDBSCAN outlier rejection, composite quality score (`9.0 s` CUDA / `14.7 s` wgpu on 200 s × 32 ch HD-EMG).
+- **MountainSort 5, SpyKING CIRCUS 2, Tridesclous 2**: GPU-accelerated implementations in `dspk-sorter-ms5` and `dspk-sorter-si`.
+
+## Core Python API
+
+- `dspk.open(path)` — open `.bin`/`.cbin` SpikeGLX, NWB, Zarr, or WAV recordings
+- `dspk.ops.*` — GPU-accelerated Butterworth IIR, FIR, notch, CAR/CMR, ZCA whitening, Laplacian, resampling, and median filters
+- `dspk.Pipeline` — fuse and stream operations over halo windows with exact settling bounds
+- `dspk.synapse.*` — probes, detection, feature extraction, sorting, curation, and quality metrics
+
+## Key Documentation Pages
+
+- Get Started: https://neuro-kitchen.github.io/dsp-kitchen/learn/get-started/install/
+- Desktop & Browser App: https://neuro-kitchen.github.io/dsp-kitchen/app/
+- Synapse & Spike Sorters: https://neuro-kitchen.github.io/dsp-kitchen/plugins/synapse/
+- Kilosort4 Pipeline (incl. Drift Correction): https://neuro-kitchen.github.io/dsp-kitchen/plugins/synapse/reference/sorters/kilosort4-pipeline/
+- Sorter Validation & Benchmarks: https://neuro-kitchen.github.io/dsp-kitchen/plugins/synapse/validation/
+- Python API Reference: https://neuro-kitchen.github.io/dsp-kitchen/reference/python/
+- CLI Reference: https://neuro-kitchen.github.io/dsp-kitchen/reference/cli/
+- Server & Real-Time Deployment: https://neuro-kitchen.github.io/dsp-kitchen/deploy/

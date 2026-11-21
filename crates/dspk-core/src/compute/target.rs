@@ -82,7 +82,15 @@ pub async fn open_browser_gpu() -> Result<(), String> {
     configure_runtime();
     cubecl::wgpu::try_init_setup_async::<cubecl::wgpu::AutoGraphicsApi>(&cubecl::wgpu::WgpuDevice::default(), Default::default())
         .await
-        .map(|_| ())
+        .map(|setup| {
+            // A browser takes the device back when it is asked for more than it holds (or its GPU
+            // resets); every later job would fail without a word. Remember why, to say so.
+            setup.device.set_device_lost_callback(|reason, message| {
+                let why = format!("{reason:?}: {message}");
+                tracing::error!("the browser's GPU was lost ({why})");
+                *BROWSER_GPU_LOST.lock().unwrap_or_else(|e| e.into_inner()) = Some(why);
+            });
+        })
         .map_err(|e| match e {
             // The browser has no WebGPU (or none for this page): say so plainly, the reason after
             cubecl::wgpu::WgpuInitError::AdapterUnavailable { message, .. } | cubecl::wgpu::WgpuInitError::RequestDevice { message } => {
@@ -90,6 +98,15 @@ pub async fn open_browser_gpu() -> Result<(), String> {
             }
             other => format!("WebGPU could not start for computing ({other})"),
         })
+}
+
+/// Why the browser took its GPU back, once it has ([`open_browser_gpu`]).
+static BROWSER_GPU_LOST: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Why the browser's GPU was lost, if it was: nothing can be computed on it after that (a reload
+/// of the page opens a new one).
+pub fn browser_gpu_lost() -> Option<String> {
+    BROWSER_GPU_LOST.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 /// Work to run on whichever runtime a [`ComputeTarget`] selects.

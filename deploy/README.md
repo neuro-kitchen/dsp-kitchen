@@ -115,6 +115,29 @@ podman run --rm -p 50051:50051/udp --device nvidia.com/gpu=all --security-opt=la
   be writable. Later runs reuse it.
 - The second line hardens the container; see [Hardening](#hardening).
 
+### The web app
+
+The image serves the web app on port 50052 and prints a one-time pairing code in its log
+(`podman logs`). Publish the port to this computer only, both TCP (the page and its WebSocket)
+and UDP (its WebTransport, faster when UDP passes):
+
+```bash
+podman run --rm -p 50051:50051/udp -p 127.0.0.1:50052:50052/tcp -p 127.0.0.1:50052:50052/udp \
+  --device nvidia.com/gpu=all --security-opt=label=disable --userns=keep-id:uid=10001,gid=10001 \
+  -v ~/dspk-data:/data:Z dspk-serve:nvidia
+```
+
+Open `http://localhost:50052` and type the code. Routes to the page from elsewhere:
+
+| Route | Transport the page uses |
+|---|---|
+| This computer (`localhost`) | WebTransport (UDP), else the WebSocket |
+| An SSH tunnel (`ssh -L 50052:localhost:50052`) | The WebSocket (a tunnel carries TCP only) |
+| `tailscale serve` or a proxy with a real certificate (Caddy) | The WebSocket through the proxy; WebTransport when its UDP port is reachable too |
+
+WebTransport's certificate is made at each start and is valid for 14 days: restart the
+container within that time, or the page falls back to the WebSocket.
+
 ## Hardening
 
 The image runs as a non-root user (uid 10001). The service file (`dspk-serve.container`) and the

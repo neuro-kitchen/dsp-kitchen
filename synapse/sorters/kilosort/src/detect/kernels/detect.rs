@@ -81,10 +81,9 @@ pub fn correlate_templates_kernel<F: Float>(
 /// signed `1 + s · n_templates + k` of the maximum (sign of the response; the first maximum in
 /// `(s, k)` order). One unit per `(centre, t)`.
 ///
-/// Per unit this is a small product, `R[s, k] = Σ_c W[s, c] · B[c, k]` (`n_sizes × n_chans` by
-/// `n_chans × n_templates`): each `B[c, k]` serves every size. The sizes are comptime, so the
-/// loops unroll and the `n_chans · n_templates` values of `B` and the channel indices are loaded
-/// once into registers (instead of once per size); sums keep the order `c = 0, 1, …`.
+/// The cube's `tile_y` rows collaboratively stage their centres' `iC` and `weights` tables into
+/// shared memory (`ic_s`, `w_s`), eliminating per-thread `chan` and `resp` local arrays while
+/// preserving exact `c = 0, 1, …` summation order and lexicographical `(s, k)` tie-breaking.
 #[cube(launch)]
 #[allow(clippy::too_many_arguments)]
 pub fn centre_response_kernel<F: Float>(
@@ -98,43 +97,76 @@ pub fn centre_response_kernel<F: Float>(
     #[comptime] n_chans: u32,
     #[comptime] n_sizes: u32,
     #[comptime] n_templates: u32,
+    #[comptime] tile_x: u32,
+    #[comptime] tile_y: u32,
 ) {
+    let mut ic_s = Shared::<[u32]>::new_slice(comptime!((tile_y * n_chans) as usize));
+    let mut w_s = Shared::<[F]>::new_slice(comptime!((tile_y * n_sizes * n_chans) as usize));
+    let c0 = CUBE_POS_Y * tile_y;
+    let unit = UNIT_POS_Y * tile_x + UNIT_POS_X;
+    let total_units = comptime!(tile_x * tile_y);
+
+    let mut idx_ic = unit;
+    while idx_ic < comptime!(tile_y * n_chans) {
+        let local_y = idx_ic / n_chans;
+        let c = idx_ic - local_y * n_chans;
+        let g_centre = c0 + local_y;
+        let mut ch_val = 0u32;
+        if g_centre < n_centres {
+            ch_val = ic[(c * n_centres + g_centre) as usize];
+        }
+        ic_s[idx_ic as usize] = ch_val;
+        idx_ic += total_units;
+    }
+
+    let size_chans = comptime!(n_sizes * n_chans);
+    let mut idx_w = unit;
+    while idx_w < comptime!(tile_y * n_sizes * n_chans) {
+        let local_y = idx_w / size_chans;
+        let rem = idx_w - local_y * size_chans;
+        let s = rem / n_chans;
+        let c = rem - s * n_chans;
+        let g_centre = c0 + local_y;
+        let mut w_val = F::new(0.0f32);
+        if g_centre < n_centres {
+            w_val = weights[((s * n_chans + c) * n_centres + g_centre) as usize];
+        }
+        w_s[idx_w as usize] = w_val;
+        idx_w += total_units;
+    }
+    sync_cube();
+
     let t = sample_position();
     let centre = channel_position();
     if centre < n_centres && t < samples {
-        let mut chan = Array::<u32>::new(comptime!(n_chans as usize));
-        #[unroll]
-        for c in 0..n_chans {
-            chan[c as usize] = ic[(c * n_centres + centre) as usize];
-        }
-        let mut resp = Array::<F>::new(comptime!((n_sizes * n_templates) as usize));
+        let ic_base = UNIT_POS_Y * n_chans;
+        let w_base = UNIT_POS_Y * size_chans;
+        let mut best = F::new(-1.0f32);
+        let mut best_arg = 0i32;
+        let mut best_s = 0xffff_ffffu32;
         #[unroll]
         for k in 0..n_templates {
             let mut bv = Array::<F>::new(comptime!(n_chans as usize));
             #[unroll]
             for c in 0..n_chans {
-                bv[c as usize] = b[((chan[c as usize] * n_templates + k) * samples + t) as usize];
+                let ch = ic_s[(ic_base + c) as usize];
+                bv[c as usize] = b[((ch * n_templates + k) * samples + t) as usize];
             }
             #[unroll]
             for s in 0..n_sizes {
                 let mut acc = F::new(0.0f32);
                 #[unroll]
                 for c in 0..n_chans {
-                    acc += weights[((s * n_chans + c) * n_centres + centre) as usize] * bv[c as usize];
+                    acc += w_s[(w_base + s * n_chans + c) as usize] * bv[c as usize];
                 }
-                resp[(s * n_templates + k) as usize] = acc;
-            }
-        }
-        let mut best = F::new(-1.0f32);
-        let mut best_arg = 0i32;
-        #[unroll]
-        for s in 0..n_sizes {
-            #[unroll]
-            for k in 0..n_templates {
-                let acc = resp[(s * n_templates + k) as usize];
                 let mag = F::abs(acc);
-                if mag > best {
+                let mut better = mag > best;
+                if mag == best && s < best_s {
+                    better = true;
+                }
+                if better {
                     best = mag;
+                    best_s = s;
                     let id = i32::cast_from(1u32 + s * n_templates + k);
                     best_arg = id;
                     if acc < F::new(0.0f32) {
@@ -239,6 +271,104 @@ pub fn local_peak_score_kernel<F: Float>(
     }
 }
 
+/// Fused spatial-neighbour maximum and temporal peak pooling: stages the block's neighbour union
+/// (`u_max × (tile_x + 2·pool)`) into shared memory, computes `Amax` into a shared tile
+/// (`tile_y × span_x`), and immediately pools `t ± pool` to write `score[centre, t]`,
+/// eliminating the global `a_max` intermediate buffer.
+#[cube(launch)]
+#[allow(clippy::too_many_arguments)]
+pub fn neighbour_max_score_kernel<F: Float>(
+    a_s: &[F],
+    union_rows: &[u32],
+    union_len: &[u32],
+    local_nb: &[u32],
+    score: &mut [F],
+    samples: u32,
+    n_centres: u32,
+    n_neighbours: u32,
+    nt: u32,
+    pool: u32,
+    #[comptime] tile_x: u32,
+    #[comptime] tile_y: u32,
+    #[comptime] u_max: u32,
+    #[comptime] span_x: u32,
+) {
+    let block = CUBE_POS_Y;
+    let t_base = CUBE_POS_X * tile_x;
+    let mut rows = Shared::<[F]>::new_slice(comptime!((u_max * span_x) as usize));
+    let mut amax = Shared::<[F]>::new_slice(comptime!((tile_y * span_x) as usize));
+    let count = union_len[block as usize];
+    let mut r = UNIT_POS_Y;
+    while r < count {
+        let row_src = union_rows[(block * u_max + r) as usize] * samples;
+        let mut dx = UNIT_POS_X;
+        while dx < span_x {
+            let mut v = F::new(0.0f32);
+            if t_base + dx >= pool && t_base + dx < pool + samples {
+                let u = t_base + dx - pool;
+                if u >= nt && u + nt < samples {
+                    v = a_s[(row_src + u) as usize];
+                }
+            }
+            rows[(r * span_x + dx) as usize] = v;
+            dx += tile_x;
+        }
+        r += tile_y;
+    }
+    sync_cube();
+    let centre = block * tile_y + UNIT_POS_Y;
+    let mut dx = UNIT_POS_X;
+    while dx < span_x {
+        let mut m = F::new(0.0f32);
+        if centre < n_centres && t_base + dx >= pool && t_base + dx < pool + samples {
+            let u = t_base + dx - pool;
+            if u >= nt && u + nt < samples {
+                let mut j = 0u32;
+                while j < n_neighbours {
+                    let local = local_nb[(j * n_centres + centre) as usize];
+                    m = F::max(m, rows[(local * span_x + dx) as usize]);
+                    j += 1u32;
+                }
+            }
+        }
+        amax[(UNIT_POS_Y * span_x + dx) as usize] = m;
+        dx += tile_x;
+    }
+    sync_cube();
+    let t = t_base + UNIT_POS_X;
+    if centre < n_centres && t < samples {
+        let base = UNIT_POS_Y * span_x + UNIT_POS_X;
+        let window = 2u32 * pool + 1u32;
+        let mut pooled = F::new(0.0f32);
+        let mut d = 0u32;
+        while d < window {
+            pooled = F::max(pooled, amax[(base + d) as usize]);
+            d += 1u32;
+        }
+        let idx = (centre * samples + t) as usize;
+        let v = a_s[idx];
+        let mut out = F::new(0.0f32);
+        if v == pooled && v > F::new(0.0f32) {
+            out = v;
+        }
+        score[idx] = out;
+    }
+}
+
+/// Template index encoded by signed `arg`: `(|a| − 1) mod n_templates`.
+#[cube]
+fn decode_picked_template(a: i32, n_templates: u32) -> u32 {
+    let mut magnitude = u32::cast_from(a);
+    if a < 0i32 {
+        magnitude = u32::cast_from(-a);
+    }
+    let mut template = 0u32;
+    if magnitude > 0u32 {
+        template = (magnitude - 1u32) % n_templates;
+    }
+    template
+}
+
 /// Per spike `i` (centre `centres[i]`, sample `times[i]`) and centre channel `c`: the signed
 /// arg-max `picked[i] = arg[centre, t]` (written by `c = 0`), the template it encodes
 /// (`(|a| − 1) mod n_templates`), features `feat[i, c, p] = Σ_j x[iC[c, centre], t − nt/2 + j] ·
@@ -275,14 +405,7 @@ pub fn spike_features_kernel<F: Float>(
         if c == 0u32 {
             picked[i as usize] = a;
         }
-        let mut magnitude = u32::cast_from(a);
-        if a < 0i32 {
-            magnitude = u32::cast_from(-a);
-        }
-        let mut template = 0u32;
-        if magnitude > 0u32 {
-            template = (magnitude - 1u32) % n_templates;
-        }
+        let template = decode_picked_template(a, n_templates);
         let ch = ic[(c * n_centres + centre) as usize];
         let half = nt / 2u32;
         let mut p = 0u32;
@@ -298,6 +421,40 @@ pub fn spike_features_kernel<F: Float>(
             feat[((i * n_chans + c) * n_pcs + p) as usize] = acc;
             p += 1u32;
         }
+        amp[(i * n_chans + c) as usize] = b[((ch * n_templates + template) * samples + t) as usize];
+    }
+}
+
+/// Amplitude-only variant of [`spike_features_kernel`] for the drift estimation pass: skips reading
+/// `x`/`wpca` and computing `feat`, writing only `picked` and `amp`.
+#[cube(launch)]
+#[allow(clippy::too_many_arguments)]
+pub fn spike_amplitudes_kernel<F: Float>(
+    b: &[F],
+    ic: &[u32],
+    arg: &[i32],
+    centres: &[u32],
+    times: &[u32],
+    picked: &mut [i32],
+    amp: &mut [F],
+    samples: u32,
+    n_templates: u32,
+    n_centres: u32,
+    n_chans: u32,
+    n_spikes: u32,
+) {
+    let unit = element_position() as u32;
+    if unit < n_spikes * n_chans {
+        let i = unit / n_chans;
+        let c = unit - i * n_chans;
+        let centre = centres[i as usize];
+        let t = times[i as usize];
+        let a = arg[(centre * samples + t) as usize];
+        if c == 0u32 {
+            picked[i as usize] = a;
+        }
+        let template = decode_picked_template(a, n_templates);
+        let ch = ic[(c * n_centres + centre) as usize];
         amp[(i * n_chans + c) as usize] = b[((ch * n_templates + template) * samples + t) as usize];
     }
 }
@@ -387,6 +544,8 @@ mod tests {
                 n_chans as u32,
                 n_sizes as u32,
                 n_templates as u32,
+                geom.cube_dim.x,
+                geom.cube_dim.y,
             );
         }
         let (got_a, got_arg) = (buffer::download::<f32>(&client, a_s), buffer::download::<i32>(&client, arg));
@@ -413,5 +572,46 @@ mod tests {
                 assert_eq!(got_arg[e], best_arg, "centre {centre} t {t}");
             }
         }
+
+        // Exact ties across `(s, k)` must resolve identically in `(s, k)` order even when
+        // visited in `(k, s)` order: `(k=0, s=1)` (= 1.0) vs `(k=1, s=0)` (= 1.0) must pick `(s=0, k=1)`.
+        let mut b_tie = vec![0.0f32; channels * n_templates * 4];
+        let mut w_tie = vec![0.0f32; n_sizes * n_chans * n_centres];
+        for t in 0..4 {
+            b_tie[(0 * n_templates + 0) * 4 + t] = 1.0; // ch=0, k=0
+            b_tie[(1 * n_templates + 1) * 4 + t] = 2.0; // ch=1, k=1
+        }
+        for centre in 0..n_centres {
+            w_tie[(0 * n_chans + 1) * n_centres + centre] = 0.5; // s=0, c=1
+            w_tie[(1 * n_chans + 0) * n_centres + centre] = 1.0; // s=1, c=0
+        }
+        let mut ic_tie = vec![2u32; n_chans * n_centres];
+        for centre in 0..n_centres {
+            ic_tie[centre] = 0; // c=0 -> ch=0
+            ic_tie[n_centres + centre] = 1; // c=1 -> ch=1
+        }
+        let (a_tie, arg_tie) = (buffer::empty::<f32>(&client, n_centres * 4), buffer::empty::<i32>(&client, n_centres * 4));
+        let geom_tie = LaunchGeometry::channels_samples(&client, n_centres, 4);
+        unsafe {
+            centre_response_kernel::launch::<f32>(
+                &client,
+                geom_tie.cube_count,
+                geom_tie.cube_dim,
+                BufferArg::from_raw_parts(buffer::upload(&client, &b_tie), b_tie.len()),
+                BufferArg::from_raw_parts(buffer::upload(&client, &w_tie), w_tie.len()),
+                BufferArg::from_raw_parts(buffer::upload(&client, &ic_tie), ic_tie.len()),
+                BufferArg::from_raw_parts(a_tie, n_centres * 4),
+                BufferArg::from_raw_parts(arg_tie.clone(), n_centres * 4),
+                4u32,
+                n_centres as u32,
+                n_chans as u32,
+                n_sizes as u32,
+                n_templates as u32,
+                geom_tie.cube_dim.x,
+                geom_tie.cube_dim.y,
+            );
+        }
+        // Both (s=1, k=0) and (s=0, k=1) give 1.0; (s=0, k=1) has smaller s => id = 1 + 0*3 + 1 = 2
+        assert!(buffer::download::<i32>(&client, arg_tie).into_iter().all(|v| v == 2));
     }
 }

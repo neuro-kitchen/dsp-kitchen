@@ -368,6 +368,31 @@ impl SettingsScreen {
             s1.update(cx, |s, cx| s.set_runtime(choice, cx));
         });
         let now = std::env::var("DSPK_RUNTIME").unwrap_or_else(|_| "automatic".into());
+        // RAM: automatic, or a size up to the computer's RAM
+        let memory = self.store.read(cx).session.memory;
+        let total = crate::data::settings::total_memory();
+        let auto = crate::data::settings::automatic_memory();
+        let sizes: Vec<Option<u64>> = std::iter::once(None).chain([1u64, 2, 4, 8, 16, 32, 64].into_iter().map(|g| g << 30).filter(|&b| total == 0 || b <= total).map(Some)).collect();
+        let memory_names: Vec<SharedString> = sizes
+            .iter()
+            .map(|b| match b {
+                None => SharedString::from(format!("Automatic ({})", dspk_core::memory::format_bytes(auto))),
+                Some(b) => SharedString::from(dspk_core::memory::format_bytes(*b)),
+            })
+            .collect();
+        let memory_sel = sizes.iter().position(|b| *b == memory);
+        let sm = store.clone();
+        let memory_menu = MenuSelect::new("settings-memory", memory_names, memory_sel, move |i, _, cx| {
+            let choice = sizes[i];
+            sm.update(cx, |s, cx| s.set_memory(choice, cx));
+        });
+        let cache = dspk_core::memory::host_cache();
+        let memory_now = format!(
+            "RAM the app keeps to be fast, for every recording open: decoded recording chunks, processed views frozen once they stop changing, spike windows. Past it, the least recently used go (they are read or computed again). Now {} of {}{}.",
+            dspk_core::memory::format_bytes(cache.used()),
+            dspk_core::memory::format_bytes(cache.limit()),
+            if total > 0 { format!("; this computer has {}", dspk_core::memory::format_bytes(total)) } else { String::new() }
+        );
         let theme_names: Vec<SharedString> = THEMES.iter().map(|(n, _)| SharedString::from(*n)).collect();
         let theme_sel = THEMES.iter().position(|(_, v)| *v == theme_choice);
         let s2 = store.clone();
@@ -414,6 +439,7 @@ impl SettingsScreen {
                     div(),
                     cx,
                 ),
+                Self::setting("Memory", &memory_now, "Automatic (a quarter of the RAM)", memory_menu, cx),
                 Self::setting("Runtime", &format!("Where processing and sorting run. Takes effect at the next start (now: {now}); DSPK_RUNTIME in the environment overrides it."), "Automatic (first compiled in)", runtime_menu, cx),
                 Self::setting("Tune this device", "Measures the fastest kernel settings once and keeps them, so first runs and previews are fast: File → Tune this device.", "", div(), cx),
             ],

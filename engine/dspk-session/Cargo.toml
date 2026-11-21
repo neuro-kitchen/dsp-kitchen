@@ -28,6 +28,7 @@ schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+getrandom.workspace = true
 
 # Zarr stores are files on disk: not in a browser (`target_family = "wasm"`), where there is no
 # file system

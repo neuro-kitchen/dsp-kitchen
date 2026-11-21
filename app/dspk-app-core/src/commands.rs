@@ -81,7 +81,7 @@ pub fn prompt_open(store: &Entity<Store>, pick: Pick, cx: &mut App) {
     .detach();
 }
 
-/// What "Open recording…" / "Open folder…" do here: the system's file dialog on a computer; on
+/// What "Open file…" / "Open project…" do here: the system's file dialog on a computer; on
 /// a page served by `dspk serve`, the server's recordings; on a page on its own, the files the
 /// user picks, read by the page's engine.
 fn open_command(store: &Entity<Store>, pick: Pick, browser: &Rc<dyn Fn(&mut Window, &mut App)>, window: &mut Window, cx: &mut App) {
@@ -94,26 +94,69 @@ fn open_command(store: &Entity<Store>, pick: Pick, browser: &Rc<dyn Fn(&mut Wind
     }
 }
 
-/// A page on its own: asks for a folder (or files: a `.bin` and its `.meta`), hands them to the
-/// page's engine, then opens the one recording among them, or lists them when there are several.
-pub fn pick_page_files(store: &Entity<Store>, folder: bool, browser: Rc<dyn Fn(&mut Window, &mut App)>, window: &mut Window, cx: &mut App) {
+/// A page on its own: asks for a file (the file chooser, like a PDF's: a `.wav`, a `.bin` and its
+/// `.meta`) or a project (its place: the browser's folder chooser, which also takes a `.zarr`),
+/// hands what was picked to the page's engine, then opens the one recording among it at once;
+/// only a project holding several asks which.
+pub fn pick_page_files(store: &Entity<Store>, project: bool, browser: Rc<dyn Fn(&mut Window, &mut App)>, window: &mut Window, cx: &mut App) {
     let store = store.clone();
     window
-        .spawn(cx, async move |cx| match crate::platform::remote::pick_files(folder).await {
-            Ok((recordings, _)) if recordings.len() == 1 => {
-                let _ = store.update(cx, |s, cx| s.open_remote(crate::platform::remote::page_profile(), recordings[0].clone(), cx));
+        .spawn(cx, async move |cx| {
+            let picked = crate::platform::remote::pick_files(project).await;
+            open_picked(&store, picked, &browser, cx);
+        })
+        .detach();
+}
+
+/// Opens what was picked or dropped: the one recording at once, several by asking which; a note
+/// on the start screen when there is none.
+fn open_picked(store: &Entity<Store>, picked: anyhow::Result<(Vec<String>, Option<String>)>, browser: &Rc<dyn Fn(&mut Window, &mut App)>, cx: &mut gpui_kit::AsyncWindowContext) {
+    match picked {
+        Ok((recordings, _)) if recordings.len() == 1 => {
+            let _ = store.update(cx, |s, cx| {
+                s.open_note = None;
+                s.open_remote(crate::platform::remote::page_profile(), recordings[0].clone(), cx)
+            });
+        }
+        Ok((recordings, note)) if recordings.is_empty() => {
+            // A dialog closed without a choice: no note, nothing to say
+            if let Some(note) = note {
+                let _ = store.update(cx, |s, cx| {
+                    s.open_note = Some(note.clone());
+                    s.set_status(note, cx);
+                    cx.notify();
+                });
             }
-            Ok((recordings, note)) if recordings.is_empty() => {
-                // A dialog closed without a choice: no note, nothing to say
-                if let Some(note) = note {
-                    let _ = store.update(cx, |s, cx| s.set_status(note, cx));
+        }
+        Ok(_) => {
+            let _ = store.update(cx, |s, cx| {
+                s.open_note = None;
+                cx.notify();
+            });
+            let _ = cx.update(|window, cx| browser(window, cx));
+        }
+        Err(e) => {
+            let _ = store.update(cx, |s, cx| s.set_status(format!("Not opened: {e:#}"), cx));
+        }
+    }
+}
+
+/// A page on its own: what is dropped on the window opens as if picked (a `.zarr` this way needs
+/// no browser prompt). A served page opens its server's recordings, so it says so.
+#[cfg(target_family = "wasm")]
+pub fn open_dropped(store: &Entity<Store>, browser: Rc<dyn Fn(&mut Window, &mut App)>, window: &mut Window, cx: &mut App) {
+    use futures_util::StreamExt as _;
+    let store = store.clone();
+    let mut drops = crate::platform::remote::drops();
+    window
+        .spawn(cx, async move |cx| {
+            while let Some(dropped) = drops.next().await {
+                if crate::platform::remote::runs_alone() {
+                    let taken = crate::platform::remote::take_dropped(dropped);
+                    open_picked(&store, taken, &browser, cx);
+                } else {
+                    let _ = store.update(cx, |s, cx| s.set_status("This page opens its server's recordings: File › Open from server…", cx));
                 }
-            }
-            Ok(_) => {
-                let _ = cx.update(|window, cx| browser(window, cx));
-            }
-            Err(e) => {
-                let _ = store.update(cx, |s, cx| s.set_status(format!("Files not opened: {e:#}"), cx));
             }
         })
         .detach();
@@ -183,8 +226,8 @@ pub fn register(registry: &Registry, c: &Ctx) {
     let recent = s.clone();
     let mut list = vec![
         // File
-        CommandSpec::new("file.open", "Open recording…", IconName::FolderOpen, move |w, cx| open_command(&o1, Pick::File, &b1, w, cx)).group("File").hint("A recording from this computer: .bin, .cbin, .zarr, .nwb.zarr").key("secondary-o"),
-        CommandSpec::new("file.open_folder", "Open folder…", IconName::FolderOpen, move |w, cx| open_command(&o2, Pick::Folder, &b2, w, cx)).group("File").hint("A recording stored as a folder (Zarr)").key("secondary-shift-o"),
+        CommandSpec::new("file.open", "Open file…", IconName::File, move |w, cx| open_command(&o1, Pick::File, &b1, w, cx)).group("File").hint("A recording: .bin, .cbin, .wav, .zarr, .nwb.zarr").key("secondary-o"),
+        CommandSpec::new("file.open_folder", "Open project…", IconName::FolderOpen, move |w, cx| open_command(&o2, Pick::Folder, &b2, w, cx)).group("File").hint("A project, or a recording stored as Zarr (.zarr, .nwb.zarr)").key("secondary-alt-o"),
         CommandSpec::with_args::<PathArgs>("file.open_path", "Open a file", IconName::FolderOpen, move |a, _, cx| {
             o3.update(cx, |s, cx| s.open(a.path.into(), cx));
             Ok(Value::Null)
@@ -208,6 +251,11 @@ pub fn register(registry: &Registry, c: &Ctx) {
         // Edit
         CommandSpec::new("edit.undo", "Undo", IconName::Undo2, st(|s, cx| s.undo(false, cx))).group("Edit").hint("Undo the last change of the session").key("secondary-z"),
         CommandSpec::new("edit.redo", "Redo", IconName::Redo2, st(|s, cx| s.undo(true, cx))).group("Edit").hint("Redo what was undone").key("secondary-shift-z"),
+        // Export (Curation)
+        CommandSpec::new("curation.export_phy", "Export to Phy…", IconName::FolderOpen, st(|s, cx| s.trigger_export_phy(cx)))
+            .group("Export")
+            .hint("Write the curated sorting as Phy reads it (spike_clusters.npy, cluster_group.tsv, cluster_info.tsv)")
+            .enabled(|_| crate::platform::LOCAL_FILES.then_some(()).ok_or_else(|| "Available in the desktop app".into())),
     ];
     // Real time: dspk devices (feature `device`)
     #[cfg(feature = "device")]
@@ -291,7 +339,7 @@ pub fn register(registry: &Registry, c: &Ctx) {
         })
         .group("Process")
         .hint("Search the operations only")
-        .key("f3")
+        .key("secondary-shift-o")
         .read_only(),
     );
     // Help, where the app runs
@@ -385,11 +433,21 @@ pub fn explore_menus() -> Vec<MenuSpec> {
     ]
 }
 
-/// The menu row of the workspaces plugins provide (Sorting, Curation) and Analytics: Edit, View,
-/// Process.
+/// The menu row of the workspaces plugins provide (Sorting) and Analytics: Edit, View, Process.
 pub fn other_menus() -> Vec<MenuSpec> {
     let c = |id: &str| MenuItem::command(id.to_string());
     vec![MenuSpec::new("Edit", vec![c("edit.undo"), c("edit.redo")]), MenuSpec::new("View", vec![c("view.dark_plots"), c("view.follow_system"), c("shell.theme")]), process_menu()]
+}
+
+/// Curation's menu row: Edit, View, Process, Export (Export to Phy… lives here instead of cluttering the toolbar).
+pub fn curation_menus() -> Vec<MenuSpec> {
+    let c = |id: &str| MenuItem::command(id.to_string());
+    vec![
+        MenuSpec::new("Edit", vec![c("edit.undo"), c("edit.redo")]),
+        MenuSpec::new("View", vec![c("view.dark_plots"), c("view.follow_system"), c("shell.theme")]),
+        process_menu(),
+        MenuSpec::new("Export", vec![c("curation.export_phy")]),
+    ]
 }
 
 /// Opens `content` over the frame in a card ("Open from server").

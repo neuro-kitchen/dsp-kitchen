@@ -1,0 +1,55 @@
+{
+  "runs": [
+    {
+      "tool": "kilosort 4.1.3 (direct)",
+      "torch": "2.5.1+cu124",
+      "cuda_device": "NVIDIA GeForce RTX 2070 with Max-Q Design",
+      "end_to_end_sec": 119.76195361200007,
+      "nwb_decode_sec": 6.712520600001881,
+      "solver_sec": 113.0494099360003,
+      "stages_sec": {
+        "Preprocessing": 0.864633273002255,
+        "Drift correction": 31.359330818999297,
+        "Detecting spikes": 24.625270854998234,
+        "Clustering spikes": 18.800748264002323,
+        "Matching templates": 7.9841657529977965,
+        "Clustering matched spikes": 21.31961765199958,
+        "Merging units": 0.36128621700117947,
+        "Saving output": 7.571384630999091
+      },
+      "peak_rss_mib": 2723.171875,
+      "peak_gpu_mib": 5432.0,
+      "torch_peak_alloc_mib": 10.97265625,
+      "spikes": 137374,
+      "units": 263,
+      "units_good": 126,
+      "results_dir": "results/phy_run0"
+    },
+    {
+      "tool": "kilosort 4.1.3 (direct)",
+      "torch": "2.5.1+cu124",
+      "cuda_device": "NVIDIA GeForce RTX 2070 with Max-Q Design",
+      "end_to_end_sec": 112.42105234599876,
+      "nwb_decode_sec": 6.35234307599967,
+      "solver_sec": 106.06867942199824,
+      "stages_sec": {
+        "Preprocessing": 0.5477927630017803,
+        "Drift correction": 30.1238657899994,
+        "Detecting spikes": 24.687188444997446,
+        "Clustering spikes": 16.823656163000123,
+        "Matching templates": 8.043494113000634,
+        "Clustering matched spikes": 16.951888649000466,
+        "Merging units": 0.4100458950015309,
+        "Saving output": 8.455333507998148
+      },
+      "peak_rss_mib": 3752.171875,
+      "peak_gpu_mib": 10.97265625,
+      "torch_peak_alloc_mib": 10.97265625,
+      "spikes": 137374,
+      "units": 263,
+      "units_good": 126,
+      "results_dir": "results/phy_run1"
+    }
+  ],
+  "reproducible": true
+}

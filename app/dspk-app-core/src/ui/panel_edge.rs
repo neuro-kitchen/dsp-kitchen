@@ -2,10 +2,16 @@
 //! pointer is on it) and the listener the workspace root runs while it is dragged. Widths are
 //! remembered per workspace and panel in the preferences (`panel_widths`).
 
+use std::rc::Rc;
+
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::resizable::{resize_handle, HandleEdge};
 use gpui_kit::component::{v_flex, Icon, Selectable as _};
-use gpui_kit::{div, px, App, AppContext as _, Axis, Context, DragMoveEvent, Entity, IntoElement, ParentElement as _, Render, SharedString, Styled as _, Window};
+use gpui_kit::{
+    div, px, App, AppContext as _, Axis, Context, DragMoveEvent, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window,
+};
 
 use crate::data::store::Store;
 
@@ -82,11 +88,124 @@ pub struct RailItem {
 /// An icon rail on a workspace's edge (as Explore's), a card on the chrome: a click on a panel's
 /// icon shows it, a click on the shown one hides its side.
 pub fn rail(items: Vec<RailItem>) -> impl IntoElement + use<> {
-    let bar = v_flex().w(px(RAIL_W)).flex_none().h_full().py_2().gap_1().items_center().rounded(px(crate::ui::theme::RADIUS_LG)).bg(crate::ui::theme::color::panel());
-    bar.children(items.into_iter().map(|it| {
-        let f = it.on_click;
-        Button::new(gpui_kit::ElementId::Name(it.id)).ghost().icon(it.icon).tooltip(it.tip).selected(it.selected).on_click(move |_, window, cx| f(window, cx))
-    }))
+    rail_grouped(vec![items])
+}
+
+/// An icon rail with logical clusters separated by subtle neutral dividers (zero coloured edges),
+/// scrollable when taller than the viewport.
+pub fn rail_grouped(groups: Vec<Vec<RailItem>>) -> impl IntoElement + use<> {
+    let mut bar = v_flex()
+        .id("grouped-rail")
+        .w(px(RAIL_W))
+        .flex_none()
+        .h_full()
+        .py_2()
+        .gap_1()
+        .items_center()
+        .overflow_y_scroll()
+        .rounded(px(crate::ui::theme::RADIUS_LG))
+        .bg(crate::ui::theme::color::panel());
+    let divider = gpui_kit::hsla(0., 0., 1., 0.10);
+    for (gi, group) in groups.into_iter().filter(|g| !g.is_empty()).enumerate() {
+        if gi > 0 {
+            bar = bar.child(div().w(px(20.)).h(px(1.)).my_1().flex_none().bg(divider));
+        }
+        bar = bar.children(group.into_iter().map(|it| {
+            let f = it.on_click;
+            Button::new(gpui_kit::ElementId::Name(it.id)).ghost().icon(it.icon).tooltip(it.tip).selected(it.selected).on_click(move |_, window, cx| f(window, cx))
+        }));
+    }
+    bar
+}
+
+/// One sub-tool inside an Affinity-style grouped rail button.
+pub struct RailSubItem {
+    pub label: SharedString,
+    pub checked: bool,
+    pub on_click: Rc<dyn Fn(&mut Window, &mut App)>,
+}
+
+/// An Affinity-style parent tool group on a left rail: shows its primary icon, a tiny bottom-right
+/// corner indicator when it holds multiple sub-tools, and opens a flyout menu to toggle any sub-tool.
+pub struct RailGroup {
+    pub id: SharedString,
+    pub icon: Icon,
+    pub tip: SharedString,
+    pub selected: bool,
+    pub items: Vec<RailSubItem>,
+}
+
+/// Scrollable Affinity-style left rail with grouped sub-tool flyout menus and an optional
+/// bottom-pinned footer section (e.g. Views, Layout, Shortcuts).
+pub fn rail_affinity(groups: Vec<RailGroup>, footer: Vec<gpui_kit::AnyElement>) -> impl IntoElement + use<> {
+    let mut top = v_flex()
+        .id("affinity-rail-top")
+        .flex_1()
+        .min_h_0()
+        .w_full()
+        .gap_1p5()
+        .items_center()
+        .overflow_y_scroll();
+    let corner_color = gpui_kit::hsla(0., 0., 1., 0.55);
+    let divider = gpui_kit::hsla(0., 0., 1., 0.10);
+    for g in groups {
+        if g.items.len() <= 1 {
+            let click = g.items.into_iter().next().map(|it| it.on_click);
+            let mut btn = Button::new(gpui_kit::ElementId::Name(g.id)).ghost().icon(g.icon).tooltip(g.tip).selected(g.selected);
+            if let Some(f) = click {
+                btn = btn.on_click(move |_, window, cx| f(window, cx));
+            }
+            top = top.child(btn);
+        } else {
+            let items: Rc<Vec<RailSubItem>> = Rc::new(g.items);
+            let btn = Button::new(gpui_kit::ElementId::Name(g.id))
+                .ghost()
+                .icon(g.icon)
+                .tooltip(g.tip)
+                .selected(g.selected)
+                .dropdown_menu(move |menu: PopupMenu, _, _| {
+                    let mut menu = menu;
+                    for it in items.iter() {
+                        let f = it.on_click.clone();
+                        menu = menu.item(PopupMenuItem::new(it.label.clone()).checked(it.checked).on_click(move |_, window, cx| f(window, cx)));
+                    }
+                    menu
+                });
+            // Subtle Affinity-style bottom-right corner indicator showing sub-tools exist
+            let wrapped = div()
+                .relative()
+                .flex_none()
+                .child(btn)
+                .child(
+                    div()
+                        .absolute()
+                        .bottom(px(3.))
+                        .right(px(3.))
+                        .w(px(4.))
+                        .h(px(4.))
+                        .rounded_xs()
+                        .bg(corner_color),
+                );
+            top = top.child(wrapped);
+        }
+    }
+    let mut bar = v_flex()
+        .id("affinity-rail")
+        .w(px(RAIL_W))
+        .flex_none()
+        .h_full()
+        .py_2()
+        .gap_1()
+        .items_center()
+        .rounded(px(crate::ui::theme::RADIUS_LG))
+        .bg(crate::ui::theme::color::panel())
+        .child(top);
+    if !footer.is_empty() {
+        bar = bar
+            .child(div().w(px(20.)).h(px(1.)).my_1().flex_none().bg(divider))
+            .child(v_flex().flex_none().gap_1().items_center().children(footer));
+    }
+    bar
 }
 
 /// A rail item toggling side panel `key`.

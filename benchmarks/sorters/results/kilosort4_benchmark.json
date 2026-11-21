@@ -1,84 +1,88 @@
 {
- "date": "2026-11-09",
- "program": "dspk-cli-sorter 0.0.8",
- "machine": "NVIDIA GeForce RTX 2070 with Max-Q Design \u00b7 Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz (12 threads) \u00b7 Linux 7.2.15-300.fc45.x86_64",
+ "date": "2026-11-21",
+ "program": "dspk-cli-sorter 0.0.13",
+ "machine": "NVIDIA GeForce RTX 2070 with Max-Q Design \u00b7 Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz (12 threads) \u00b7 Linux 7.3.4-300.fc45.x86_64",
  "runs": [
   {
    "runtime": "wgpu",
    "run": 1,
-   "wall_sec": 26.986020190999625,
+   "wall_sec": 49.043368663002184,
    "stages_sec": {
-    "Fitting preprocessing": 0.5442778010001348,
-    "Finding clips": 0.23460252999939257,
-    "Learning templates": 0.4327410610003426,
-    "Detecting spikes": 5.134114489999774,
-    "Clustering spikes": 6.372596152999904,
-    "Matching templates": 7.448196363000534,
-    "Clustering matched spikes": 4.571523487000377,
-    "Merging units": 2.2479683059991658
+    "Fitting preprocessing": 0.9962070430010499,
+    "Finding clips": 0.4336792809990584,
+    "Learning templates": 0.28890428300292115,
+    "Computing drift": 6.368836759997066,
+    "Detecting spikes": 4.976821760999883,
+    "Clustering spikes": 20.299543860000995,
+    "Matching templates": 6.6062210140007664,
+    "Clustering matched spikes": 8.26188301699949,
+    "Merging units": 0.4415763600009086
    },
-   "real_time": 1.6675300648818308,
-   "units": 291,
-   "spikes": 130551
+   "real_time": 0.9175552407512653,
+   "units": 278,
+   "spikes": 128416
   },
   {
    "runtime": "wgpu",
    "run": 2,
-   "wall_sec": 26.944747475999975,
+   "wall_sec": 23.560618470000918,
    "stages_sec": {
-    "Fitting preprocessing": 0.5355997649985511,
-    "Finding clips": 0.23018531600064307,
-    "Learning templates": 0.3040861480003514,
-    "Detecting spikes": 5.322602328000357,
-    "Clustering spikes": 6.08787428100004,
-    "Matching templates": 7.491298902999915,
-    "Clustering matched spikes": 4.545349537998845,
-    "Merging units": 2.427751197001271
+    "Fitting preprocessing": 0.41413797499990324,
+    "Finding clips": 0.3499792990005517,
+    "Learning templates": 0.16961095000078785,
+    "Computing drift": 5.444330663998699,
+    "Detecting spikes": 5.74783543599915,
+    "Clustering spikes": 3.1753591830020014,
+    "Matching templates": 5.305013311000948,
+    "Clustering matched spikes": 2.077006611998513,
+    "Merging units": 0.4631028809999407
    },
-   "real_time": 1.6700843101269391,
-   "units": 291,
-   "spikes": 130551
+   "real_time": 1.9099668381964538,
+   "units": 278,
+   "spikes": 128416
   },
   {
    "runtime": "cuda",
    "run": 1,
-   "wall_sec": 39.44054691499878,
+   "wall_sec": 14.88817937299973,
    "stages_sec": {
-    "Fitting preprocessing": 0.7467996420000418,
-    "Finding clips": 0.23846548499932396,
-    "Learning templates": 0.31314077299975906,
-    "Detecting spikes": 3.403803508001147,
-    "Clustering spikes": 18.01162372899853,
-    "Matching templates": 3.2397669769998174,
-    "Clustering matched spikes": 7.689193017000434,
-    "Merging units": 5.797753783999724
+    "Fitting preprocessing": 0.25335267500122427,
+    "Finding clips": 0.28376084599949536,
+    "Learning templates": 0.09211750699978438,
+    "Computing drift": 4.341094126000826,
+    "Detecting spikes": 3.878665110001748,
+    "Clustering spikes": 0.9306604369994602,
+    "Matching templates": 3.7924798219974036,
+    "Clustering matched spikes": 0.641893866002647,
+    "Merging units": 0.3789535989999422
    },
-   "real_time": 1.1409578091546957,
-   "units": 301,
-   "spikes": 130836
+   "real_time": 3.0225321000282186,
+   "units": 283,
+   "spikes": 128325
   },
   {
    "runtime": "cuda",
    "run": 2,
-   "wall_sec": 13.047264499999073,
+   "wall_sec": 15.759960450999642,
    "stages_sec": {
-    "Fitting preprocessing": 0.25623120599993854,
-    "Finding clips": 0.21992758399937884,
-    "Learning templates": 0.13469962999988638,
-    "Detecting spikes": 3.039691928001048,
-    "Clustering spikes": 2.867162403999828,
-    "Matching templates": 2.9071726339989254,
-    "Clustering matched spikes": 2.315261523001027,
-    "Merging units": 1.3071175909990416
+    "Fitting preprocessing": 0.2548743400002422,
+    "Finding clips": 0.3798635359999025,
+    "Learning templates": 0.09383891499965102,
+    "Computing drift": 4.691762996000762,
+    "Detecting spikes": 4.2592306890001055,
+    "Clustering spikes": 0.9619174189974729,
+    "Matching templates": 3.7897278030031885,
+    "Clustering matched spikes": 0.6216827879979974,
+    "Merging units": 0.48680841700115707
    },
-   "real_time": 3.448998830368097,
-   "units": 301,
-   "spikes": 130836
+   "real_time": 2.855337117025313,
+   "units": 283,
+   "spikes": 128325
   }
  ],
- "recall": 0.8961677551269531,
- "precision": 0.9497997760772705,
- "units_found": 267,
- "ks4_units": 267,
- "median_unit_recall": 0.9964028776978417
+ "recall": 0.8587,
+ "precision": 0.9523,
+ "units_found": 263,
+ "ks4_units": 263,
+ "median_unit_recall": 0.9996
 }

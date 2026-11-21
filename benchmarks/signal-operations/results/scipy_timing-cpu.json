@@ -1,88 +1,133 @@
 {
   "schema": 1,
   "benchmark": "signal-operations/scipy",
-  "date": "2026-11-06",
+  "date": "2026-11-21",
   "dspk": {
-    "version": "0.0.6",
-    "commit": "6eeb6f6",
+    "version": "0.0.13",
+    "commit": "",
     "runtime": "cpu"
   },
   "reference": {
     "tool": "scipy",
-    "version": "1.18.1"
+    "version": "1.17.1"
   },
-  "machine": "NVIDIA GeForce RTX 2070 with Max-Q Design · Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz (12 threads) · Linux 7.2.15-300.fc45.x86_64",
-  "notes": "One 384 × 60000 float32 block (2 s of Neuropixels at 30 kHz). Each time is the median of 5 calls after a warm-up, end to end from a NumPy array (upload, kernels, download) for dspk; scipy / numpy in float64 on the CPU. Error: max |dspk − scipy| / max |scipy|.",
+  "machine": "NVIDIA GeForce RTX 2070 with Max-Q Design \u00b7 Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz (12 threads) \u00b7 Linux 7.3.4-300.fc45.x86_64",
+  "notes": "Pre-autotuned 384x300000 (10.0s @ 30kHz) float32 block; median of 5 calls end-to-end from NumPy (upload + kernel + download); SciPy/NumPy in float64.",
   "cases": [
     {
-      "name": "zero-phase band-pass",
+      "name": "zero-phase IIR bandpass",
       "shape": [
         384,
-        60000
+        300000
       ],
       "dtype": "float32",
-      "dspk_ms": 336.4384020023863,
-      "reference_ms": 524.7331430000486,
-      "max_abs_err": 8.740515963978623e-05,
-      "rel_err": 2.3522555374113182e-06,
+      "dspk_ms": 1264.836661001027,
+      "reference_ms": 3349.0895190006995,
+      "max_abs_err": 8.499741496237334e-05,
+      "rel_err": 1.897654609879365e-06,
       "tolerance": 1e-05,
       "extra": {},
       "pass": true
     },
     {
-      "name": "causal band-pass",
+      "name": "causal IIR bandpass",
       "shape": [
         384,
-        60000
+        300000
       ],
       "dtype": "float32",
-      "dspk_ms": 257.87914599641226,
-      "reference_ms": 259.486929004197,
-      "max_abs_err": 3.795221141178473e-05,
-      "rel_err": 1.138213072382086e-06,
+      "dspk_ms": 1046.3739879996865,
+      "reference_ms": 1285.9043600001314,
+      "max_abs_err": 4.979245152814116e-05,
+      "rel_err": 1.444308425929413e-06,
       "tolerance": 1e-05,
       "extra": {},
       "pass": true
     },
     {
-      "name": "notch 60 Hz",
+      "name": "notch 60 Hz (Q=30)",
       "shape": [
         384,
-        60000
+        300000
       ],
       "dtype": "float32",
-      "dspk_ms": 262.8286859981017,
-      "reference_ms": 2461.4882789974217,
-      "max_abs_err": 0.00019227025858747915,
-      "rel_err": 3.5887402631095973e-06,
+      "dspk_ms": 1284.7850849975657,
+      "reference_ms": 2916.47109099722,
+      "max_abs_err": 0.00020955423204327417,
+      "rel_err": 3.687812658248828e-06,
       "tolerance": 1e-05,
       "extra": {},
       "pass": true
     },
     {
-      "name": "FIR 101 taps",
+      "name": "FIR 101 taps (causal)",
       "shape": [
         384,
-        60000
+        300000
       ],
       "dtype": "float32",
-      "dspk_ms": 258.4395070007304,
-      "reference_ms": 605.0905470037833,
-      "max_abs_err": 2.836645798254267e-05,
-      "rel_err": 6.464110005518959e-07,
+      "dspk_ms": 1136.353011999745,
+      "reference_ms": 3761.7453769998974,
+      "max_abs_err": 2.924754714683786e-05,
+      "rel_err": 6.664891410309786e-07,
       "tolerance": 1e-05,
       "extra": {},
       "pass": true
     },
     {
-      "name": "median width 5",
+      "name": "FIR 101 taps (centered)",
       "shape": [
         384,
-        60000
+        300000
       ],
       "dtype": "float32",
-      "dspk_ms": 209.70903399575036,
-      "reference_ms": 1042.0120030030375,
+      "dspk_ms": 977.0262860001822,
+      "reference_ms": 5981.882955999026,
+      "max_abs_err": 3.03522274478496e-05,
+      "rel_err": 6.916624460346006e-07,
+      "tolerance": 1e-05,
+      "extra": {},
+      "pass": true
+    },
+    {
+      "name": "FIR 257 taps (Pipeline cached)",
+      "shape": [
+        384,
+        300000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 1476.1402059993998,
+      "reference_ms": 15189.83449499865,
+      "max_abs_err": 4.64323433249092e-05,
+      "rel_err": 1.0570413083746991e-06,
+      "tolerance": 1e-05,
+      "extra": {},
+      "pass": true
+    },
+    {
+      "name": "Gaussian smooth (sigma=2)",
+      "shape": [
+        384,
+        300000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 1022.2200019998127,
+      "reference_ms": 1343.8493239991658,
+      "max_abs_err": 1.2902318957230818e-05,
+      "rel_err": 3.314461550971946e-07,
+      "tolerance": 1e-05,
+      "extra": {},
+      "pass": true
+    },
+    {
+      "name": "median filter (width=5)",
+      "shape": [
+        384,
+        300000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 857.2081180027453,
+      "reference_ms": 3774.995771000249,
       "max_abs_err": 0.0,
       "rel_err": 0.0,
       "tolerance": 1e-06,
@@ -90,32 +135,107 @@
       "pass": true
     },
     {
-      "name": "resample 1/3",
+      "name": "Teager-Kaiser energy",
       "shape": [
         384,
-        20000
+        300000
       ],
       "dtype": "float32",
-      "dspk_ms": 162.67035299824784,
-      "reference_ms": 556.1815410037525,
-      "max_abs_err": 3.4332275390625e-05,
-      "rel_err": 7.184720112043315e-07,
+      "dspk_ms": 871.9178350002039,
+      "reference_ms": 479.0253629980725,
+      "max_abs_err": 0.00024572487382101826,
+      "rel_err": 4.8217658310688084e-08,
+      "tolerance": 1e-06,
+      "extra": {},
+      "pass": true
+    },
+    {
+      "name": "resample_poly (1/3)",
+      "shape": [
+        384,
+        100000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 739.0392590023112,
+      "reference_ms": 2517.215269999724,
+      "max_abs_err": 2.4090304854951228e-05,
+      "rel_err": 4.6443591636666357e-07,
       "tolerance": 1e-05,
       "extra": {},
       "pass": true
     },
     {
-      "name": "common median reference",
+      "name": "CAR (common average ref)",
       "shape": [
         384,
-        60000
+        300000
       ],
       "dtype": "float32",
-      "dspk_ms": 425.04786599602085,
-      "reference_ms": 316.19545300054597,
-      "max_abs_err": 0.0,
-      "rel_err": 0.0,
+      "dspk_ms": 1031.3222439981473,
+      "reference_ms": 339.0840579995711,
+      "max_abs_err": 2.8950472671596117e-05,
+      "rel_err": 5.070087277528821e-07,
+      "tolerance": 1e-05,
+      "extra": {},
+      "pass": true
+    },
+    {
+      "name": "CMR (common median ref)",
+      "shape": [
+        384,
+        300000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 1968.3537240016449,
+      "reference_ms": 2236.1707870004466,
+      "max_abs_err": 2.86102294921875e-06,
+      "rel_err": 4.9541099147229244e-08,
       "tolerance": 1e-06,
+      "extra": {},
+      "pass": true
+    },
+    {
+      "name": "ZCA local-kNN (apply)",
+      "shape": [
+        384,
+        300000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 1693.5899910022272,
+      "reference_ms": 1063.363446002768,
+      "max_abs_err": 2.4694153726301238e-06,
+      "rel_err": 4.292296295625792e-07,
+      "tolerance": 0.0001,
+      "extra": {},
+      "pass": true
+    },
+    {
+      "name": "Surface Laplacian (apply)",
+      "shape": [
+        384,
+        300000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 1049.1187110019382,
+      "reference_ms": 1076.3457960019878,
+      "max_abs_err": 6.198883056640625e-06,
+      "rel_err": 9.633435728727267e-08,
+      "tolerance": 0.0001,
+      "extra": {},
+      "pass": true
+    },
+    {
+      "name": "Fused Pipeline (i16->BP+CAR+ZCA)",
+      "shape": [
+        384,
+        300000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 2258.5376009992615,
+      "reference_ms": 5450.241177997668,
+      "max_abs_err": 7.913893675137729e-05,
+      "rel_err": 1.787838959627553e-06,
+      "tolerance": 0.0002,
       "extra": {},
       "pass": true
     }

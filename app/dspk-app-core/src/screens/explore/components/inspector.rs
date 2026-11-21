@@ -20,14 +20,12 @@ use crate::screens::explore::ExploreVm;
 use crate::ui::widgets::{PanelHeader, Section};
 
 use super::panels::{side_panel, source_facts, DockToggle, SettingsPanel};
-use super::processing::ProcessingPanel;
 
 pub struct InspectorPanel {
     store: Entity<Store>,
     dock: DockToggle,
     focus: FocusHandle,
     settings: Entity<SettingsPanel>,
-    processing: Entity<ProcessingPanel>,
     _subs: Vec<Subscription>,
 }
 
@@ -37,17 +35,15 @@ impl InspectorPanel {
     pub fn new(explore: Entity<ExploreVm>, dock: DockToggle, cx: &mut Context<Self>) -> Self {
         let store = explore.read(cx).store().clone();
         let settings = cx.new(|cx| SettingsPanel::new(explore.clone(), dock.clone(), cx));
-        let processing = cx.new(|cx| ProcessingPanel::new(explore.clone(), dock.clone(), cx));
         let subs = vec![
             cx.observe(&settings, |_, _, cx| cx.notify()),
-            cx.observe(&processing, |_, _, cx| cx.notify()),
             cx.subscribe(&store, |_, _, e: &AppEvent, cx| {
                 if matches!(e, AppEvent::Picked | AppEvent::Status | AppEvent::RecordingChanged | AppEvent::Document(_)) {
                     cx.notify();
                 }
             }),
         ];
-        Self { store, dock, focus: cx.focus_handle(), settings, processing, _subs: subs }
+        Self { store, dock, focus: cx.focus_handle(), settings, _subs: subs }
     }
 
     fn header_extra(&self, cx: &App) -> Option<AnyElement> {
@@ -86,11 +82,7 @@ impl InspectorPanel {
     fn body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let sections = match self.store.read(cx).inspected.clone() {
             Some((path, source)) => self.source_sections(&path, &source, cx),
-            None => {
-                let mut out = self.settings.update(cx, |p, cx| p.sections(window, cx));
-                out.extend(self.processing.update(cx, |p, cx| p.sections(window, cx)));
-                out
-            }
+            None => self.settings.update(cx, |p, cx| p.sections(window, cx)),
         };
         v_flex().id("inspector-panel").test_support().size_full().gap_4().p_3().overflow_y_scroll().children(sections).into_any_element()
     }

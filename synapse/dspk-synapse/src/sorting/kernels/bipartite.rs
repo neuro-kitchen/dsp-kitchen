@@ -98,6 +98,15 @@ pub fn count_values_kernel(values: &[u32], counts: &mut [Atomic<u32>], n: u32, b
     }
 }
 
+/// Zeroes the first `len` elements of `buf` in place.
+#[cube(launch)]
+pub fn zero_u32_kernel(buf: &mut [u32], len: u32) {
+    let i = element_position() as u32;
+    if i < len {
+        buf[i as usize] = 0u32;
+    }
+}
+
 /// Every edge `(t, r)` adds 1 to `counts[r · c + left[t]]` (`[m, c]`, zeroed): how many of each
 /// right node's left neighbours sit in each cluster. One unit per edge.
 #[cube(launch)]
@@ -114,11 +123,12 @@ pub fn right_counts_kernel(nb: &[u32], left: &[u32], counts: &mut [Atomic<u32>],
 
 /// Right step: each right node `r` joins the cluster `c` among its neighbours' maximizing
 /// `counts[r, c] − γ · deg[r] · k_left[c] / 2m` (the paper's bipartite modularity gain), the
-/// smallest `c` on ties; a node without edges keeps its label. One unit per right node.
+/// smallest `c` on ties; a node without edges keeps its label. Clears its row of `counts` back to
+/// zero in place so the next iteration needs no full-matrix clear. One unit per right node.
 #[cube(launch)]
 #[allow(clippy::too_many_arguments)]
 pub fn right_assign_kernel<F: DspFloat>(
-    counts: &[u32],
+    counts: &mut [u32],
     degree: &[u32],
     k_left: &[u32],
     right: &mut [u32],
@@ -134,8 +144,10 @@ pub fn right_assign_kernel<F: DspFloat>(
         let mut found = false;
         let mut j = 0u32;
         while j < c {
-            let n_rc = counts[(r * c + j) as usize];
+            let slot = (r * c + j) as usize;
+            let n_rc = counts[slot];
             if n_rc > 0u32 {
+                counts[slot] = 0u32;
                 let gain = F::cast_from(n_rc) - penalty * deg * F::cast_from(k_left[j as usize]);
                 if !found || gain > best {
                     best = gain;
@@ -163,7 +175,7 @@ pub fn degree_sums_kernel(labels: &[u32], degree: &[u32], sums: &mut [Atomic<u32
 
 /// Left step: each left node `t` joins the cluster among its `k` right neighbours' labels
 /// maximizing `n_tc − γ · k · k_right[c] / 2m` (every left node has degree `k`), the smallest
-/// label on ties; `changed[0]` counts the nodes that moved. One unit per left node.
+/// label on ties; `changed[round]` counts the nodes that moved. One unit per left node.
 #[cube(launch)]
 #[allow(clippy::too_many_arguments)]
 pub fn left_assign_kernel<F: DspFloat>(
@@ -175,6 +187,7 @@ pub fn left_assign_kernel<F: DspFloat>(
     n: u32,
     c: u32,
     penalty: F,
+    round: u32,
     #[comptime] k: u32,
 ) {
     let t = element_position() as u32;
@@ -209,7 +222,7 @@ pub fn left_assign_kernel<F: DspFloat>(
         }
         if best_c != left[t as usize] {
             left[t as usize] = best_c;
-            Atomic::fetch_add(&changed[0], 1u32);
+            Atomic::fetch_add(&changed[round as usize], 1u32);
         }
     }
 }
@@ -403,6 +416,61 @@ pub fn closest_update_chosen_kernel<F: Float>(x: &[F], closest: &mut [F], chosen
     let i = element_position() as u32;
     if i < n {
         let c = chosen[0];
+        let mut dist = F::new(0.0f32);
+        let mut f = 0u32;
+        while f < d {
+            let diff = x[(f * n + i) as usize] - x[(f * n + c) as usize];
+            dist += diff * diff;
+            f += 1u32;
+        }
+        closest[i as usize] = F::min(closest[i as usize], dist);
+    }
+}
+
+/// Fused seed selection and closest-distance update: picks the trial with lowest potential (`cand[best_t]`),
+/// stores it in `seeds[s]`, and updates `closest[i] = min(closest[i], ‖x_i − x_{picked}‖²)` in place.
+#[cube(launch)]
+#[allow(clippy::too_many_arguments)]
+pub fn pick_and_update_closest_kernel<F: Float>(
+    x: &[F],
+    closest: &mut [F],
+    partial: &[F],
+    cand: &[u32],
+    seeds: &mut [u32],
+    n: u32,
+    d: u32,
+    trials: u32,
+    blocks: u32,
+    s: u32,
+) {
+    let mut shared_seed = Shared::<[u32]>::new_slice(1usize);
+    if UNIT_POS == 0u32 {
+        let mut best = F::max_value();
+        let mut best_t = 0u32;
+        let mut t = 0u32;
+        while t < trials {
+            let mut pot = F::new(0.0f32);
+            let mut b = 0u32;
+            while b < blocks {
+                pot += partial[(t * blocks + b) as usize];
+                b += 1u32;
+            }
+            if pot < best {
+                best = pot;
+                best_t = t;
+            }
+            t += 1u32;
+        }
+        let picked = cand[best_t as usize];
+        shared_seed[0usize] = picked;
+        if CUBE_POS == 0 {
+            seeds[s as usize] = picked;
+        }
+    }
+    sync_cube();
+    let i = element_position() as u32;
+    if i < n {
+        let c = shared_seed[0usize];
         let mut dist = F::new(0.0f32);
         let mut f = 0u32;
         while f < d {

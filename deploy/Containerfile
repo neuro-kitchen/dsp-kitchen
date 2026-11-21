@@ -21,7 +21,7 @@
 #   podman build -f deploy/Containerfile --ignorefile deploy/.containerignore --target nvidia -t dspk-serve:nvidia .
 # The web app must be built first (it goes into every target): app/dspk-app-web/build.sh mt
 # Run (recordings under ./data; the web app at http://localhost:50052, the pairing code in the log):
-#   podman run --rm -p 50051:50051/udp -p 127.0.0.1:50052:50052 -v ./data:/data:Z --device nvidia.com/gpu=all dspk-serve:nvidia
+#   podman run --rm -p 50051:50051/udp -p 127.0.0.1:50052:50052/tcp -p 127.0.0.1:50052:50052/udp -v ./data:/data:Z --device nvidia.com/gpu=all dspk-serve:nvidia
 
 # Rust toolchain of the build (edition 2024 needs >= 1.85; CI uses the latest stable)
 ARG RUST_VERSION=1.99
@@ -66,7 +66,7 @@ COPY --from=binaries --chmod=0755 /out/dspk /out/dspk-cli-sorter /usr/local/bin/
 # The web app (the threaded browser build and its loader), built before the image with
 # `app/dspk-app-web/build.sh mt` (nightly Rust; the release workflow does it): the page is served
 # by `dspk serve --web`, and computes on this server
-COPY app/dspk-app-web/dist/index.html /usr/share/dspk/web/index.html
+COPY app/dspk-app-web/dist/index.html app/dspk-app-web/dist/loader.js app/dspk-app-web/dist/isolate-sw.js app/dspk-app-web/dist/montserrat-dspk.woff2 /usr/share/dspk/web/
 COPY app/dspk-app-web/dist/mt /usr/share/dspk/web/mt
 # Not root (uid 10001); /data holds the recordings, their pyramids (written next to them, so the
 # volume is writable), sortings and the certificate the server writes for clients
@@ -85,6 +85,10 @@ EXPOSE 50051/udp
 # (a browser counts localhost as secure: no warning, threads work); for other computers put a
 # proxy with a certificate in front (Caddy, `tailscale serve`)
 EXPOSE 50052/tcp
+# The page's WebTransport on the same port number, over UDP (QUIC; its certificate is made at each
+# start, valid 14 days, its hash in /dspk-serve.json). Where UDP does not pass (an SSH tunnel, a
+# proxy), the page uses the WebSocket on 50052/tcp instead
+EXPOSE 50052/udp
 # `dspk serve` stops cleanly on SIGTERM (podman stop, systemd) and Ctrl+C
 ENTRYPOINT ["dspk"]
 # The server's authority (its CA and the enrolled clients) is kept with the data, so it survives
@@ -113,10 +117,13 @@ ARG CUDA_REPO=https://developer.download.nvidia.com/compute/cuda/repos/debian12/
 ADD --checksum=sha256:e7f219eab6fe4819cdb5c15b98233dc3420302d9c00883219cd3d896857cf48d ${CUDA_REPO}/cuda-keyring_1.1-1_all.deb /tmp/cuda-keyring.deb
 RUN dpkg -i /tmp/cuda-keyring.deb && rm /tmp/cuda-keyring.deb \
     && apt-get update \
-    && apt-get install -y --no-install-recommends libvulkan1 libx11-6 libxext6 cuda-nvrtc-${CUDA_NVRTC} \
+    && apt-get install -y --no-install-recommends libvulkan1 libx11-6 libxext6 cuda-nvrtc-${CUDA_NVRTC} cuda-nvcc-${CUDA_NVRTC} \
     && rm -rf /var/lib/apt/lists/* \
-    && echo "/usr/local/cuda-$(echo ${CUDA_NVRTC} | tr - .)/targets/x86_64-linux/lib" > /etc/ld.so.conf.d/cuda-nvrtc.conf \
+    && CUDA_VER=$(echo ${CUDA_NVRTC} | tr - .) \
+    && ln -sfn "/usr/local/cuda-${CUDA_VER}" /usr/local/cuda \
+    && echo "/usr/local/cuda-${CUDA_VER}/targets/x86_64-linux/lib" > /etc/ld.so.conf.d/cuda-nvrtc.conf \
     && ldconfig
+ENV CUDA_PATH=/usr/local/cuda
 # Vulkan through the driver's EGL library: the toolkit passes in a driver file naming
 # libGLX_nvidia, whose vkCreateInstance fails without an X server ("Found no drivers");
 # libEGL_nvidia (passed in too) works headless

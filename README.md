@@ -36,8 +36,9 @@ drawn from min/max pyramids built by `dspk-view`.*
 | | `dspk-io` | Raw binary and Zarr recordings, format detection, chunk cache | crates.io |
 | | `dspk-ops` | Filters, resampling, spatial operators, linear algebra, statistics, peaks, device pipelines | crates.io |
 | `engine/` | `dspk-pipeline` | Pipelines as data (JSON / TOML specs): plan, many inputs, merges, provenance | crates.io |
-| `serve/` | `dspk-view` | Min/max envelopes and pyramids for viewing, local or remote | crates.io |
-| | `dspk-stream` | Network sessions for continuous signals (QUIC + TLS, protobuf) | crates.io |
+| `view/` | `dspk-view` | Min/max envelopes and pyramids for viewing, local or remote | crates.io |
+| `serve/` | `dspk-stream` | Network sessions for continuous signals (QUIC + TLS, WebTransport, protobuf) | crates.io |
+| `devices/` | `dspk-device` | A device next to a sensor: live sources, a causal chain, taps, recordings | crates.io |
 | `synapse/` | `dspk-synapse` | Electrophysiology: NWB, SpikeGLX, mtscomp, Phy formats, probes, detection, clustering, matching, metrics, sorter building blocks, provenance | crates.io |
 | | `dspk-synapse-ml` | Pretrained models (DARTsort, SpikeNet2, UnitRefine) and their runtime | crates.io |
 | `synapse/sorters/` | `dspk-sorter-kilosort` | Kilosort4 and EMUsort (features `ks4`, `emusort`; GPL-3.0) | crates.io |
@@ -71,8 +72,8 @@ Runtimes are crate features; the device is picked at run time with `dspk::core::
 
 ```toml
 [dependencies]
-dspk = "0.0.12"                                                                  # wgpu, cuda and cpu (default)
-# dspk = { version = "0.0.12", default-features = false, features = ["wgpu", "zarr"] }  # wgpu only
+dspk = "0.0.13"                                                                  # wgpu, cuda and cpu (default)
+# dspk = { version = "0.0.13", default-features = false, features = ["wgpu", "zarr"] }  # wgpu only
 ```
 
 | Feature | Runtime | Tested |
@@ -108,7 +109,7 @@ on the device and keeps the fastest. The vector versions are bit-identical to th
 other alternatives (FIR tiles, IIR time blocks) agree to rounding;
 `dspk_core::compute::pin_tuned_choices` fixes the IIR block split and the matrix-multiply choice for
 runs that must reproduce bit for bit. Reproduce with
-`cargo test -p dspk-benchmarks --profile validate --test bench_kernels -- --ignored --nocapture` (and
+`cargo test -p dspk-benchmarks --profile validate --test bench -- --ignored --nocapture bench_kernels::` (and
 `bench_vector` for every choice); timings against scipy from Python are in
 [benchmarks](benchmarks/README.md).
 

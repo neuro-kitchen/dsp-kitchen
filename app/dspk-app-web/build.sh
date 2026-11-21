@@ -66,7 +66,7 @@ compress() {
 }
 
 mkdir -p "$dist"
-cp "$here/index.html" "$here/isolate-sw.js" "$dist/"
+cp "$here/index.html" "$here/loader.js" "$here/isolate-sw.js" "$here/montserrat-dspk.woff2" "$dist/"
 # A page on its own says so; `dspk serve` answers this address with its name instead
 echo '{"server": null}' > "$dist/dspk-serve.json"
 
@@ -85,7 +85,7 @@ if [ "$WHICH" = all ] || [ "$WHICH" = engine ]; then
     export CARGO_TARGET_DIR="$target/web-engine"
     RUSTFLAGS='-C target-feature=+simd128' \
     build engine dspk_engine_web rustup run "$TOOLCHAIN" cargo build -p dspk-engine-web --lib --target wasm32-unknown-unknown --release
-    cp "$root/engine/dspk-engine-web/engine-worker.js" "$dist/engine/"
+    cp "$root/engine/dspk-engine-web/engine-worker.js" "$root/engine/dspk-engine-web/overview-helper.js" "$root/engine/dspk-engine-web/overview-fold.js" "$dist/engine/"
 fi
 compress
 echo "Built into $dist (serve it: dspk serve --web $dist)"

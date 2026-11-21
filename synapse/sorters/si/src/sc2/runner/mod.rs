@@ -283,11 +283,11 @@ pub fn run(client: &Client, source: &dyn RecordingSource, probe: &SensorLayout, 
     let mut threshold_chunks: Vec<(Handle, usize)> = Vec::new();
     let mf_windows = spread_windows(total, cfg.matched_filter_chunks, ms(500.0) as u64, halos);
     device.for_each_while(&mf_windows, |w, prepared| {
-        // The valid part only, copied out of the reused window buffer
-        let x = buffer::download_prefix::<f32>(client, prepared.clone(), channels * w.read_len());
+        // Crop the valid part directly on the device instead of downloading and re-uploading
         let v = w.valid_len();
-        let part: Vec<f32> = (0..channels).flat_map(|c| x[c * w.read_len() + w.valid_local.start..c * w.read_len() + w.valid_local.end].iter().copied()).collect();
-        threshold_chunks.push((buffer::upload(client, &part), v));
+        let part = buffer::empty::<f32>(client, channels * v);
+        dspk_ops::core::layout::crop_rows::<f32>(client, prepared, &part, channels, w.read_len(), w.valid_local.start, v);
+        threshold_chunks.push((part, v));
         Ok(true)
     })?;
     mf.fit_thresholds(client, &threshold_chunks);

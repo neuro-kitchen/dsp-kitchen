@@ -41,4 +41,4 @@ Data already on the device, autotuned, one block of 384 channels × 60,000 sampl
 | Common average reference | 1.0 ms | 1.2 ms | 11 ms |
 | `resample_poly` 1 / 3 | 1.4 ms | 1.7 ms | 16 ms |
 
-Reproduce with `cargo test -p dspk-benchmarks --profile validate --test bench_kernels -- --ignored --nocapture`.
+Reproduce with `cargo test -p dspk-benchmarks --profile validate --test bench -- --ignored --nocapture bench_kernels::`.

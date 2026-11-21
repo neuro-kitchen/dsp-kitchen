@@ -25,9 +25,9 @@ impl Pick {
 /// The open actions a menu offers, as `(label, what it picks)`.
 pub fn open_actions(cx: &App) -> &'static [(&'static str, Pick)] {
     if cx.can_select_mixed_files_and_dirs() {
-        &[("Open recording…", Pick::File)]
+        &[("Open file…", Pick::File)]
     } else {
-        &[("Open file…", Pick::File), ("Open folder…", Pick::Folder)]
+        &[("Open file…", Pick::File), ("Open project…", Pick::Folder)]
     }
 }
 

@@ -5,7 +5,7 @@ mod format;
 pub mod intervals;
 pub mod units;
 
-pub use acquisition::{is_nwb_zarr, list_series, NwbZarrRecording, SeriesEntry};
+pub use acquisition::{is_nwb_zarr, list_series, list_series_in, NwbZarrRecording, SeriesEntry};
 pub use format::Nwb;
 pub use intervals::{read_intervals, NwbInterval};
 pub use units::{infer_nwb_sample_rate, NwbUnitsTable};

@@ -14,6 +14,8 @@ on:
       - "CHANGELOG.md"
       - "playground/*/figures/**"
       - "benchmarks/signal-operations/results/**"
+      - "benchmarks/sorters/results/**"
+      - "benchmarks/kernels/results/**"
       - "assets/img/**"
       - "app/dspk-app-web/**"
       - "engine/dspk-engine-web/**"

@@ -10,9 +10,9 @@ use dspk_io::{CachedRecording, SourceEntry, SourceKind};
 
 use super::dataset::Dataset;
 
-/// Decoded chunks kept per opened source (memory bound): views, hover readouts and repeated
-/// frames over the same region decode each chunk once.
-const CHUNK_CACHE_BYTES: usize = 128 << 20;
+/// Decoded chunks kept per opened source (memory bound): hover readouts and small raw windows
+/// avoid re-decoding the same chunk; larger processed reads go through the global `host_cache()`.
+const CHUNK_CACHE_BYTES: usize = 16 << 20;
 
 pub struct SourceSet {
     path: Option<PathBuf>,
@@ -29,10 +29,38 @@ impl SourceSet {
         // A recording on a server: the desktop app's own connection, or the page's
         if crate::data::remote::parse_uri(path).is_some() {
             let signal = crate::data::remote::open_uri(path)?;
+            // Every source the server's file holds (an NWB store's series); each opened the first
+            // time a view shows it, beside the others on the connection
+            let listed = crate::data::remote::sources_uri(&signal, path).unwrap_or_else(|e| {
+                tracing::warn!("the server did not list the file's sources: {e:#}");
+                Vec::new()
+            });
             let source: Arc<dyn dspk_core::RecordingSource> = signal.source();
-            let mut set = Self::single(Dataset::new(signal, None).with_source(source));
-            set.path = Some(path.to_path_buf());
-            return Ok(set);
+            let first = Arc::new(Dataset::new(signal, None).with_source(source));
+            if listed.len() <= 1 {
+                let mut set = Self::single(Arc::try_unwrap(first).unwrap_or_else(|_| unreachable!("just made")));
+                set.path = Some(path.to_path_buf());
+                return Ok(set);
+            }
+            let default = dspk_io::default_source(&listed).and_then(|d| listed.iter().position(|e| e.id == d.id)).unwrap_or(0);
+            let mut opened = vec![None; listed.len()];
+            opened[default] = Some(first);
+            // The others opened now, here (a worker: opening waits on the server), not when a view
+            // first shows one: that is the page's main thread, which may not wait (switching
+            // sources froze the page)
+            for (i, e) in listed.iter().enumerate() {
+                if i == default {
+                    continue;
+                }
+                match crate::data::remote::open_uri_source(path, Some(&e.id)) {
+                    Ok(signal) => {
+                        let source: Arc<dyn dspk_core::RecordingSource> = signal.source();
+                        opened[i] = Some(Arc::new(Dataset::new(signal, None).with_source(source)));
+                    }
+                    Err(err) => tracing::warn!("source {} of the server's file: {err:#}", e.name),
+                }
+            }
+            return Ok(Self { path: Some(path.to_path_buf()), entries: listed, default, opened: Mutex::new(opened) });
         }
         let entries = crate::plugin::sources(path).with_context(|| format!("Failed to open {}", dspk_session::paths::short_path(&path)))?;
         let default_id = dspk_io::default_source(&entries).map(|e| e.id.clone()).unwrap_or_default();
@@ -98,6 +126,14 @@ impl SourceSet {
         }
         let path = self.path.as_deref().context("in-memory source set has one source")?;
         let entry = &self.entries[i];
+        // A source of a file on a server: opened there, drawn from its pyramid
+        if crate::data::remote::parse_uri(path).is_some() {
+            let signal = crate::data::remote::open_uri_source(path, Some(&entry.id)).with_context(|| format!("Failed to open source {} on the server", entry.name))?;
+            let source: Arc<dyn dspk_core::RecordingSource> = signal.source();
+            let ds = Arc::new(Dataset::new(signal, None).with_source(source));
+            self.opened.lock().unwrap()[i] = Some(ds.clone());
+            return Ok(ds);
+        }
         let rec = crate::plugin::open_source(path, &entry.id).with_context(|| format!("Failed to open source {}", entry.name))?;
         let source: Arc<dyn dspk_core::RecordingSource> = Arc::from(CachedRecording::wrap(rec, CHUNK_CACHE_BYTES));
         let signal = dspk_view::LocalSignal::open(source.clone(), Some((path, &entry.id))).with_context(|| format!("Failed to prepare {} for viewing", entry.name))?;

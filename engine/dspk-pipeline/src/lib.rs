@@ -19,14 +19,15 @@
 //! - One spec runs over many inputs (globs, lists) and may read several recordings as one (merge).
 //! - [`plan`] says what a run would do (mode, halos, windows, bytes) without touching the device;
 //!   [`run_with`] reports progress after each window and can cancel.
+//! - [`chain`] plans a chain of nodes once for every use: a view's preview, a batch run, a live
+//!   device (`live`), each refusing only what it cannot run, with the reason. `view` (feature
+//!   `view`) is a view's processed signal: the desktop app, `dspk serve` and a browser page use it.
 
+pub mod chain;
 mod fit;
 mod prepare;
 #[cfg(all(feature = "live", not(target_family = "wasm")))]
 pub mod live;
-pub mod preview;
-#[cfg(feature = "view")]
-pub mod processed;
 mod run;
 mod spec;
 
@@ -56,3 +57,5 @@ pub enum PipelineError {
     #[error("cancelled")]
     Cancelled,
 }
+#[cfg(feature = "view")]
+pub mod view;

@@ -14,16 +14,18 @@ pub mod bench;
 pub mod launch;
 pub mod limits;
 pub mod pinning;
+pub mod pointwise;
 mod special;
 mod target;
 pub mod tune;
 
 pub use crate::device::{ComputeError, ComputeTarget, RUNTIME_ENV, TEST_RUNTIMES_ENV};
-pub use target::{configure_runtime, exit_now, open_device, release_device_memory, shutdown_devices, CACHE_DIR_ENV, KERNEL_CACHE_ENV};
+pub use target::{browser_gpu_lost, configure_runtime, exit_now, open_device, release_device_memory, shutdown_devices, CACHE_DIR_ENV, KERNEL_CACHE_ENV};
 pub use limits::{device_elements, MAX_DEVICE_ELEMENTS};
 pub use pinning::{pin_tuned_choices, tuned_choices_pinned, PinnedChoices};
 pub use launch::{LaunchGeometry, RowShare, channel_position, element_position, row_position, row_share, sample_position};
 pub use special::{negative_infinity, positive_infinity, NEGATIVE_INFINITY_BITS, POSITIVE_INFINITY_BITS};
 pub use target::ComputeTask;
+pub use pointwise::{apply_pointwise, POINTWISE_ABS, POINTWISE_AFFINE, POINTWISE_CLAMP, POINTWISE_LOG10, POINTWISE_SQRT, POINTWISE_SQUARE};
 #[cfg(all(target_family = "wasm", feature = "wgpu"))]
 pub use target::open_browser_gpu;

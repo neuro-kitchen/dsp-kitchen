@@ -186,7 +186,7 @@ fn apply_graph(doc: &mut SessionDoc, cmd: SessionCommand) -> Result<Changed, Com
         C::CopyView { view, channels, name } => {
             let path = view_path(doc, &view)?;
             let NodeKind::Source { recording } = node(doc, &path[0])?.kind.clone() else { unreachable!("a path starts at a source") };
-            let NodeKind::View { name: old, display, plugins } = node(doc, &view)?.kind.clone() else { unreachable!("checked by view_path") };
+            let NodeKind::View { name: old, display, plugins, .. } = node(doc, &view)?.kind.clone() else { unreachable!("checked by view_path") };
             check_channels(&channels)?;
             let y = doc.graph.next_row();
             let source = match channels {
@@ -218,7 +218,7 @@ fn apply_graph(doc: &mut SessionDoc, cmd: SessionCommand) -> Result<Changed, Com
             }
             let v = doc.new_view_id();
             let name = name.unwrap_or_else(|| format!("{old} (copy)"));
-            doc.graph.nodes.push(GraphNode { id: v.clone(), x, y, kind: NodeKind::View { name, display, plugins } });
+            doc.graph.nodes.push(GraphNode { id: v.clone(), x, y, kind: NodeKind::View { name, drv_id: Some(crate::session::new_drv_id()), display, plugins } });
             doc.graph.connect(&last, &v).map_err(CommandError::Invalid)?;
             doc.active_view = Some(v);
             Ok(Changed::Views)
@@ -625,9 +625,9 @@ fn chain_order(doc: &SessionDoc, nodes: &[String]) -> Result<Vec<String>, Comman
     Ok(order)
 }
 
-/// A new view node.
+/// A new view node, with a fresh derived-signal UUID (`drv/<drv_id>_drv_<source>.minmax`).
 pub fn view_kind(name: String) -> NodeKind {
-    NodeKind::View { name, display: DisplayDoc::default(), plugins: Default::default() }
+    NodeKind::View { name, drv_id: Some(crate::session::new_drv_id()), display: DisplayDoc::default(), plugins: Default::default() }
 }
 
 fn source_id(doc: &SessionDoc) -> String {

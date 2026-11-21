@@ -53,7 +53,7 @@ use dspk_synapse::sorting::kernels::bipartite::{relabel_kernel, NO_LABEL};
 use dspk_synapse::sorting::{execute_bipartite_clustering, execute_cluster_sums, BipartiteOptions, DevicePoints};
 
 use super::detect::{TemplateCentres, UniversalSpike};
-use self::kernels::cluster::{embed_section_kernel, projection_histogram_kernel, weigh_node_kernel, SIDE_NEG, SIDE_NONE, SIDE_POS};
+use self::kernels::cluster::{embed_section_kernel, projection_histogram_active_kernel, weigh_active_node_kernel};
 
 /// Bins of the regression-axis histogram, its range, smoothing (bins) and trough search range.
 const HIST_BINS: usize = 400;
@@ -234,76 +234,113 @@ fn solve_ridge(mut g: Vec<f64>, h: &[f64], d: usize) -> Vec<f64> {
     z
 }
 
-/// A clustered section on the device: its points, leaf labels and leaf sizes.
+/// A clustered section on the device: its points, leaf sums (`[nc, d]` in `f64`), leaf labels, and
+/// point indices grouped per leaf for compact active-subset regression & histogram passes.
 struct Section<'a> {
     client: &'a Client,
     points: &'a DevicePoints,
-    labels: &'a Handle,
     sizes: Vec<usize>,
-    /// Scratch of [`Section::bimodality`]: weighted points, weighted targets, `√w`, Gram, `Σ w y x`,
-    /// `Σ w x`.
+    leaf_sums: Vec<f64>,
+    leaf_labels: Vec<u32>,
+    leaf_points: Vec<Vec<u32>>,
+    /// Scratch of [`Section::bimodality`]: compact weighted active points (`[d, m]`) and Gram (`[d, d]`).
     xs: Handle,
-    v: Handle,
-    s: Handle,
     gram: Handle,
-    rhs: Handle,
-    mean: Handle,
 }
 
 impl<'a> Section<'a> {
     fn new(client: &'a Client, points: &'a DevicePoints, labels: &'a Handle, sizes: Vec<usize>) -> Self {
-        let (n, d) = (points.n, points.d);
+        let (n, d, nc) = (points.n, points.d, sizes.len());
+        let (leaf_sums, _) = execute_cluster_sums(client, points, labels, nc);
+        let leaf_labels = buffer::download_prefix::<u32>(client, labels.clone(), n);
+        let mut leaf_points: Vec<Vec<u32>> = sizes.iter().map(|&sz| Vec::with_capacity(sz)).collect();
+        for (i, &l) in leaf_labels.iter().enumerate() {
+            if let Some(bucket) = leaf_points.get_mut(l as usize) {
+                bucket.push(i as u32);
+            }
+        }
         Self {
             client,
             points,
-            labels,
             sizes,
+            leaf_sums,
+            leaf_labels,
+            leaf_points,
             xs: buffer::empty::<f32>(client, d * n),
-            v: buffer::empty::<f32>(client, n),
-            s: buffer::empty::<f32>(client, n),
             gram: buffer::empty::<f32>(client, d * d),
-            rhs: buffer::empty::<f32>(client, d),
-            mean: buffer::empty::<f32>(client, d),
         }
     }
 
-    /// Bimodality score of the leaves `neg` against the leaves `pos` (module docs). Crosses the bus:
-    /// `side` and `u` up (`nc` + `d` values), `Σ w x xᵀ`, `Σ w y x`, `Σ w x` and the histogram down.
+    /// Bimodality score of the leaves `neg` against the leaves `pos` (module docs).
+    /// Computes `rhs` and `mean` directly in `f64` from precomputed `leaf_sums`, gathers only the
+    /// `m = n_neg + n_pos` participating points onto `xs [d, m]` for `G = xs · xsᵀ`, and projects
+    /// only those `m` active points into the histogram.
     fn bimodality(&self, neg: &[usize], pos: &[usize]) -> f64 {
-        let (client, n, d, nc) = (self.client, self.points.n, self.points.d, self.sizes.len());
+        let (client, n, d) = (self.client, self.points.n, self.points.d);
         let (n_neg, n_pos) = (neg.iter().map(|&l| self.sizes[l]).sum::<usize>() as f64, pos.iter().map(|&l| self.sizes[l]).sum::<usize>() as f64);
-        let mut side = vec![SIDE_NONE; nc];
-        neg.iter().for_each(|&l| side[l] = SIDE_NEG);
-        pos.iter().for_each(|&l| side[l] = SIDE_POS);
-        let side = buffer::upload(client, &side);
+        if n_neg <= 0.0 || n_pos <= 0.0 {
+            return 0.0;
+        }
         // Balanced weights: each half weighs by the other half's share
         let (w_neg, w_pos) = (n_pos / (n_neg + n_pos), n_neg / (n_neg + n_pos));
-        let per_point = LaunchGeometry::elementwise(client, n);
-        // SAFETY: `points`, `xs` hold `d · n`, `labels`, `v` `n`, `side` `nc` values
+
+        let mut active_idx = Vec::with_capacity((n_neg + n_pos) as usize);
+        for &l in neg {
+            active_idx.extend_from_slice(&self.leaf_points[l]);
+        }
+        let neg_len = active_idx.len();
+        for &l in pos {
+            active_idx.extend_from_slice(&self.leaf_points[l]);
+        }
+        let m = active_idx.len();
+        if neg_len == 0 || m == neg_len {
+            return 0.0;
+        }
+
+        let mut sum_neg = vec![0.0f64; d];
+        for &l in neg {
+            let row = &self.leaf_sums[l * d..(l + 1) * d];
+            for (dst, &v) in sum_neg.iter_mut().zip(row) {
+                *dst += v;
+            }
+        }
+        let mut sum_pos = vec![0.0f64; d];
+        for &l in pos {
+            let row = &self.leaf_sums[l * d..(l + 1) * d];
+            for (dst, &v) in sum_pos.iter_mut().zip(row) {
+                *dst += v;
+            }
+        }
+        let mut h = Vec::with_capacity(d);
+        let mut sx = Vec::with_capacity(d);
+        for f in 0..d {
+            h.push(-w_neg * sum_neg[f] + w_pos * sum_pos[f]);
+            sx.push(w_neg * sum_neg[f] + w_pos * sum_pos[f]);
+        }
+
+        let active_h = buffer::upload(client, &active_idx);
+        let per_active = LaunchGeometry::elementwise(client, m);
+        // SAFETY: `points` holds `d · n`, `xs` holds `d · n >= d · m`, `active_h` holds `m` valid indices `< n`
         unsafe {
-            weigh_node_kernel::launch::<f32>(
+            weigh_active_node_kernel::launch::<f32>(
                 client,
-                per_point.cube_count.clone(),
-                per_point.cube_dim.clone(),
+                per_active.cube_count.clone(),
+                per_active.cube_dim.clone(),
                 BufferArg::from_raw_parts(self.points.handle.clone(), d * n),
-                BufferArg::from_raw_parts(self.labels.clone(), n),
-                BufferArg::from_raw_parts(side.clone(), nc),
-                BufferArg::from_raw_parts(self.xs.clone(), d * n),
-                BufferArg::from_raw_parts(self.v.clone(), n),
-                BufferArg::from_raw_parts(self.s.clone(), n),
+                BufferArg::from_raw_parts(active_h.clone(), m),
+                BufferArg::from_raw_parts(self.xs.clone(), d * m),
                 n as u32,
+                m as u32,
                 d as u32,
-                nc as u32,
+                neg_len as u32,
                 w_neg.sqrt() as f32,
                 w_pos.sqrt() as f32,
             );
         }
-        let xs = MatrixView::row_major(&self.xs, d * n, d, n);
-        matmul::<f32>(client, &xs, &xs.transposed(), &self.gram, d * d);
-        matmul::<f32>(client, &xs, &MatrixView::row_major(&self.v, n, n, 1), &self.rhs, d);
-        matmul::<f32>(client, &xs, &MatrixView::row_major(&self.s, n, n, 1), &self.mean, d);
-        let down = |h: &Handle, len: usize| -> Vec<f64> { buffer::download_prefix::<f32>(client, h.clone(), len).into_iter().map(f64::from).collect() };
-        let (g, h, sx) = (down(&self.gram, d * d), down(&self.rhs, d), down(&self.mean, d));
+        let xs_m = MatrixView::row_major(&self.xs, d * m, d, m);
+        matmul::<f32>(client, &xs_m, &xs_m.transposed(), &self.gram, d * d);
+        let g: Vec<f64> = buffer::download_prefix::<f32>(client, self.gram.clone(), d * d).into_iter().map(f64::from).collect();
+
         // Augmented system over (u, b): [[Σwxxᵀ, Σwx], [Σwxᵀ, Σw]] (u, b) = (Σwyx, Σwy), Σwy = 0
         let e = d + 1;
         let mut ga = vec![0.0f64; e * e];
@@ -321,18 +358,17 @@ impl<'a> Section<'a> {
         let hist = buffer::zeros::<u32>(client, HIST_BINS);
         // SAFETY: as above; `u` holds `d`, `hist` `HIST_BINS` values
         unsafe {
-            projection_histogram_kernel::launch::<f32>(
+            projection_histogram_active_kernel::launch::<f32>(
                 client,
-                per_point.cube_count,
-                per_point.cube_dim,
+                per_active.cube_count,
+                per_active.cube_dim,
                 BufferArg::from_raw_parts(self.points.handle.clone(), d * n),
-                BufferArg::from_raw_parts(self.labels.clone(), n),
-                BufferArg::from_raw_parts(side, nc),
+                BufferArg::from_raw_parts(active_h, m),
                 BufferArg::from_raw_parts(buffer::upload(client, &u), d),
                 BufferArg::from_raw_parts(hist.clone(), HIST_BINS),
                 n as u32,
+                m as u32,
                 d as u32,
-                nc as u32,
                 HIST_BINS as u32,
                 bias,
                 -HIST_RANGE,
@@ -481,12 +517,11 @@ pub fn cluster_spikes(
             let sizes = graph.sizes.clone();
             let tree = merge_tree(&graph.edges, nc);
             let section = Section::new(client, &points, &graph.labels, sizes);
-            // Spike times of each leaf, for the halves' cross-correlograms (one label download)
+            // Spike times of each leaf, for the halves' cross-correlograms (reusing Section's downloaded labels)
             let leaf_times: Vec<Vec<u64>> = match sample_rate_hz {
                 Some(_) => {
-                    let leaf = buffer::download_prefix::<u32>(client, graph.labels.clone(), n);
                     let mut times = vec![Vec::new(); nc];
-                    for (&i, &l) in members.iter().zip(&leaf) {
+                    for (&i, &l) in members.iter().zip(&section.leaf_labels) {
                         if let Some(t) = times.get_mut(l as usize) {
                             t.push(spikes[i].sample as u64);
                         }

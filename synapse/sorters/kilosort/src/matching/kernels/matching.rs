@@ -103,8 +103,9 @@ pub fn subtract_scores_kernel<F: Float>(
     }
 }
 
-/// Removes the matched spikes of one class from the data: `x[ch, t − nt/2 + τ] −= amp_t · ŵ_i[ch, τ]`.
-/// One unit per `(spike, ch, τ)`.
+/// Removes all matched spikes of the round from the data: `x[ch, t − nt/2 + τ] −= amp_t · ŵ_i[ch, τ]`.
+/// Since spikes of one round are at least `nt + 1` samples apart while each template spans `nt`, no
+/// two spikes overlap in `x`, so every spike runs in one parallel pass. One unit per `(spike, ch, τ)`.
 #[cube(launch)]
 #[allow(clippy::too_many_arguments)]
 pub fn subtract_data_kernel<F: Float>(
@@ -117,8 +118,6 @@ pub fn subtract_data_kernel<F: Float>(
     channels: u32,
     samples: u32,
     nt: u32,
-    pool: u32,
-    class: u32,
 ) {
     let unit = element_position() as u32;
     if unit < spikes * channels * nt {
@@ -127,12 +126,10 @@ pub fn subtract_data_kernel<F: Float>(
         let ch = rest / nt;
         let tau = rest - ch * nt;
         let t = times[k as usize];
-        if (t / (pool + 1u32)) % 3u32 == class {
-            let half = nt / 2u32;
-            if t + tau >= half && t + tau - half < samples {
-                let i = best[t as usize];
-                x[(ch * samples + t + tau - half) as usize] -= amp[t as usize] * w[((i * channels + ch) * nt + tau) as usize];
-            }
+        let half = nt / 2u32;
+        if t + tau >= half && t + tau - half < samples {
+            let i = best[t as usize];
+            x[(ch * samples + t + tau - half) as usize] -= amp[t as usize] * w[((i * channels + ch) * nt + tau) as usize];
         }
     }
 }

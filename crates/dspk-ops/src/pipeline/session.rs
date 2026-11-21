@@ -5,11 +5,11 @@ use cubecl::server::Handle;
 
 use super::engine::Pipeline;
 use super::stage::PipelineStage;
-use crate::core::{buffer, cast, cast_f32, DspFloat, EdgeMode};
+use crate::core::{buffer, cast, cast_f32, DspFloat};
 use crate::filter::design::OpsError;
 use crate::filter::fir::gaussian::GAUSSIAN_TRUNCATE;
 use crate::filter::iir::DeviceFilter;
-use crate::filter::{execute_fir, execute_fir_centered, execute_median, execute_teager_kaiser, gaussian_kernel_1d, FilterMode};
+use crate::filter::{execute_median, execute_teager_kaiser, gaussian_kernel_1d, FilterMode, PreparedFir};
 use crate::math::{execute_clamp, execute_scaling, execute_unpack_stored, stored_word_bytes, write_stored_owned};
 use crate::spatial::{execute_common_median, execute_direct_car, DeviceSpatialMatrix};
 use dspk_core::{DspError, SampleFormat};
@@ -35,10 +35,11 @@ enum Planned<F: DspFloat> {
     Stage(PipelineStage),
     Filter { filter: DeviceFilter<F>, state: Handle },
     SpatialMatrix(DeviceSpatialMatrix),
-    CenteredFir { taps: Handle, radius: usize, edge: EdgeMode },
-    CausalFir { taps: Handle, num_taps: usize, edge: EdgeMode },
+    Fir(PreparedFir),
     /// The channel order, uploaded once.
     Reorder { rows: Handle },
+    /// Consecutive pointwise stages fused into one kernel (two or more; one runs as it is).
+    Pointwise(crate::math::PointwiseRun),
 }
 
 /// Pre-allocated device workspace for running a [`Pipeline`] over many chunks of `F` values.
@@ -134,14 +135,15 @@ impl<F: DspFloat> PipelineWorkspace<F> {
                     let handle = buffer::upload(&client, &cast_f32::<F>(taps));
                     if *centered {
                         assert!(taps.len() % 2 == 1, "centered FIR needs an odd number of taps, got {}", taps.len());
-                        plan.push(Planned::CenteredFir { taps: handle, radius: taps.len() / 2, edge: *edge });
+                        plan.push(Planned::Fir(PreparedFir::centered::<F>(&client, handle, taps.len() / 2, *edge)));
                     } else {
-                        plan.push(Planned::CausalFir { taps: handle, num_taps: taps.len(), edge: *edge });
+                        plan.push(Planned::Fir(PreparedFir::causal::<F>(&client, handle, taps.len(), *edge)));
                     }
                 }
                 PipelineStage::GaussianSmooth { sigma_samples, edge } => {
                     let (taps, radius) = gaussian_kernel_1d(*sigma_samples, GAUSSIAN_TRUNCATE);
-                    plan.push(Planned::CenteredFir { taps: buffer::upload(&client, &cast_f32::<F>(&taps)), radius, edge: *edge });
+                    let handle = buffer::upload(&client, &cast_f32::<F>(&taps));
+                    plan.push(Planned::Fir(PreparedFir::centered::<F>(&client, handle, radius, *edge)));
                 }
                 PipelineStage::ReorderChannels { order } => {
                     let mut seen = vec![false; channels];
@@ -159,6 +161,34 @@ impl<F: DspFloat> PipelineWorkspace<F> {
                 other => plan.push(Planned::Stage(other.clone())),
             }
         }
+        // Runs of two or more pointwise stages become one kernel (each sample read and written once
+        // for the run instead of once per stage)
+        let mut fused: Vec<Planned<F>> = Vec::with_capacity(plan.len());
+        let mut run: Vec<(u32, f64, f64)> = Vec::new();
+        let flush = |run: &mut Vec<(u32, f64, f64)>, stages: &mut Vec<PipelineStage>, fused: &mut Vec<Planned<F>>, client: &Client| {
+            if run.len() >= 2 {
+                fused.push(Planned::Pointwise(crate::math::PointwiseRun::upload::<F>(client, run)));
+            } else {
+                fused.extend(stages.drain(..).map(Planned::Stage));
+            }
+            run.clear();
+            stages.clear();
+        };
+        let mut run_stages: Vec<PipelineStage> = Vec::new();
+        for planned in plan {
+            match &planned {
+                Planned::Stage(stage) if crate::math::pointwise_op(stage).is_some() => {
+                    run.push(crate::math::pointwise_op(stage).expect("a pointwise stage"));
+                    run_stages.push(stage.clone());
+                }
+                _ => {
+                    flush(&mut run, &mut run_stages, &mut fused, &client);
+                    fused.push(planned);
+                }
+            }
+        }
+        flush(&mut run, &mut run_stages, &mut fused, &client);
+        let plan = fused;
         let mut workspace = Self {
             buf_ping: buffer::empty::<F>(&client, channels * initial_samples),
             buf_pong: buffer::empty::<F>(&client, channels * initial_samples),
@@ -184,6 +214,26 @@ impl<F: DspFloat> PipelineWorkspace<F> {
     #[inline]
     pub fn client(&self) -> &Client {
         &self.client
+    }
+
+    /// Number of channels this workspace processes.
+    #[inline]
+    pub fn channels(&self) -> usize {
+        self.channels
+    }
+
+    /// Bytes this workspace keeps on the device (its ping-pong and scratch buffers, the upload and
+    /// unpack buffers once made, filter state): what a memory budget charges it.
+    pub fn device_bytes(&self) -> u64 {
+        let f = size_of::<F>() as u64;
+        let rows = (self.channels * self.capacity_samples) as u64 * f;
+        let state: u64 = self.plan.iter().map(|p| if let Planned::Filter { filter, .. } = p { (self.channels * filter.state_len()) as u64 * f } else { 0 }).sum();
+        2 * rows
+            + self.scratch_len as u64 * f
+            + if self.unpacked.is_some() { rows } else { 0 }
+            + if self.input.is_some() { rows } else { 0 }
+            + self.stored_input.as_ref().map_or(0, |(_, bytes)| *bytes as u64)
+            + state
     }
 
     /// Reference to the underlying [`Pipeline`].
@@ -215,7 +265,7 @@ impl<F: DspFloat> PipelineWorkspace<F> {
             .iter()
             .map(|p| match p {
                 Planned::Filter { filter, .. } => filter.scratch_len(self.channels, samples),
-                Planned::Stage(_) | Planned::SpatialMatrix(_) | Planned::CenteredFir { .. } | Planned::CausalFir { .. } | Planned::Reorder { .. } => 0,
+                Planned::Stage(_) | Planned::SpatialMatrix(_) | Planned::Fir(_) | Planned::Reorder { .. } | Planned::Pointwise(_) => 0,
             })
             .max()
             .unwrap_or(0);
@@ -228,6 +278,17 @@ impl<F: DspFloat> PipelineWorkspace<F> {
     /// Runs the pipeline on a `[channels, samples]` device buffer and returns a handle to the
     /// result. The handle views one of the workspace's buffers: read it before the next call.
     pub fn process_handle(&mut self, input: &Handle, samples: usize) -> Handle {
+        self.process_handle_with(input, samples, |_| {})
+    }
+
+    /// Kernels the pipeline runs per chunk, in order (a fused run of pointwise stages counts once).
+    pub fn launches(&self) -> usize {
+        self.plan.len()
+    }
+
+    /// [`Self::process_handle`], calling `after(i)` once each planned step `i` (of
+    /// [`Self::launches`]) is launched: a measuring caller syncs there to time each step.
+    pub fn process_handle_with(&mut self, input: &Handle, samples: usize, mut after: impl FnMut(usize)) -> Handle {
         if self.plan.is_empty() {
             return input.clone();
         }
@@ -238,7 +299,7 @@ impl<F: DspFloat> PipelineWorkspace<F> {
 
         let mut current_in = input.clone();
         let mut use_ping = true;
-        for planned in &self.plan {
+        for (step, planned) in self.plan.iter().enumerate() {
             let out = if use_ping { self.buf_ping.clone() } else { self.buf_pong.clone() };
             let client = &self.client;
             match planned {
@@ -251,15 +312,13 @@ impl<F: DspFloat> PipelineWorkspace<F> {
                         .expect("stateful workspaces only hold forward filters"),
                 },
                 Planned::SpatialMatrix(matrix) => matrix.apply::<F>(client, &current_in, &out, channels, samples),
-                Planned::CenteredFir { taps, radius, edge } => {
-                    execute_fir_centered::<F>(client, &current_in, &out, taps, channels, samples, *radius, *edge);
-                }
-                Planned::CausalFir { taps, num_taps, edge } => {
-                    execute_fir::<F>(client, &current_in, &out, taps, channels, samples, *num_taps, *edge);
+                Planned::Fir(fir) => {
+                    fir.execute::<F>(client, &current_in, &out, channels, samples);
                 }
                 Planned::Reorder { rows } => {
                     crate::core::layout::execute_gather_rows::<F>(client, &current_in, rows, &out, channels, channels, samples);
                 }
+                Planned::Pointwise(run) => run.apply::<F>(client, &current_in, &out, total),
                 Planned::Stage(stage) => match stage {
                     PipelineStage::Scale { alpha, beta } => {
                         execute_scaling::<F>(client, &current_in, &out, total, cast(*alpha as f64), cast(*beta as f64))
@@ -295,6 +354,7 @@ impl<F: DspFloat> PipelineWorkspace<F> {
             }
             current_in = out;
             use_ping = !use_ping;
+            after(step);
         }
 
         buffer::truncate::<F>(current_in, (self.capacity_samples - samples) * channels)
@@ -377,6 +437,56 @@ impl<F: DspFloat> PipelineWorkspace<F> {
         Ok(self.process_handle(&unpacked, samples))
     }
 
+    /// Uploads a `[channels, samples]` chunk of stored values and scales it on the device, into a
+    /// buffer of its own (not one of the workspace's): an input kept for later chains of the same
+    /// window (a parameter changed, an op turned on or off) run with [`Self::process_handle`]
+    /// without reading and uploading the window again.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::process_stored_chunk_in_vram`].
+    pub fn upload_stored_owned(&mut self, stored: Vec<u8>, format: SampleFormat, samples: usize) -> OpsResult<Handle> {
+        if stored.len() != self.channels * samples * format.bytes() {
+            return Err(DspError::ShapeMismatch { expected: vec![self.channels, samples, format.bytes()], actual: vec![stored.len()] }.into());
+        }
+        let (gains, offsets) = self
+            .stored_scaling
+            .clone()
+            .ok_or_else(|| DspError::InvalidConfig("set_stored_scaling before processing stored chunks".into()))?;
+        let words = self.client.empty(stored_word_bytes(stored.len()));
+        write_stored_owned(&self.client, &words, stored);
+        // Sized to the workspace's capacity (a caller that sizes workspaces in classes gets inputs
+        // the device's pool reuses across window sizes); the rows are `samples` long
+        let unpacked = buffer::empty::<F>(&self.client, self.channels * self.capacity_samples.max(samples));
+        execute_unpack_stored::<F>(&self.client, &words, format, &gains, &offsets, &unpacked, self.channels, samples)?;
+        Ok(unpacked)
+    }
+
+    /// Records the pipeline over `input` (`[channels, samples]` on the device) as a CubeCL graph,
+    /// replayed as one submission (CUDA, HIP: a hardware graph; wgpu: a software graph). For work
+    /// of one shape repeated (same-size windows, live blocks): write the next input into `input` in
+    /// place between replays. Runs the pipeline once to warm it (kernels compiled, buffers sized),
+    /// then once recorded. Independent chunks only (a stateful workspace's carried state changes
+    /// what a recording would replay). Nothing else may use the device while it records: another
+    /// thread's launches or reads on the same client land in the recording or fail.
+    ///
+    /// # Errors
+    ///
+    /// When the runtime has no graph support (the CPU runtime) or the recording is refused (an
+    /// allocation or a host read inside it): run [`Self::process_handle`] instead.
+    pub fn capture(&mut self, input: &Handle, samples: usize) -> Result<CapturedPipeline, String> {
+        if self.mode != ChunkMode::Independent {
+            return Err("only independent chunks are captured".into());
+        }
+        self.client.graph_prepare().map_err(|e| format!("graph capture: {e:?}"))?;
+        // Warm: compiles the kernels and sizes every buffer, so the recording allocates nothing
+        let _ = self.process_handle(input, samples);
+        self.client.start_capture().map_err(|e| format!("graph capture: {e:?}"))?;
+        let output = self.process_handle(input, samples);
+        let graph = self.client.stop_capture().map_err(|e| format!("graph capture: {e:?}"))?;
+        Ok(CapturedPipeline { graph, output })
+    }
+
     /// Runs the pipeline on a `[channels, samples]` host chunk and writes the result to `output`.
     pub fn process_chunk(&mut self, input: &[F], samples: usize, output: &mut [F]) {
         assert_eq!(input.len(), self.channels * samples);
@@ -392,3 +502,29 @@ impl<F: DspFloat> PipelineWorkspace<F> {
     }
 }
 
+/// A pipeline recorded by [`PipelineWorkspace::capture`]: replay it after writing the next input
+/// into the buffer it was recorded over; the result lands in [`Self::output`].
+pub struct CapturedPipeline {
+    graph: cubecl::client::Graph,
+    output: Handle,
+}
+
+impl CapturedPipeline {
+    /// Where every replay writes its result (a view of the workspace's buffers: read it before the
+    /// next replay).
+    pub fn output(&self) -> &Handle {
+        &self.output
+    }
+
+    /// Runs the recorded launches again.
+    ///
+    /// # Safety
+    ///
+    /// The input buffer it was recorded over and the workspace that recorded it must still exist,
+    /// unshared, until the replay's work completes (CubeCL replays against the recorded buffers
+    /// without checking them).
+    pub unsafe fn replay(&self) -> Result<(), String> {
+        // SAFETY: the caller keeps the recorded buffers alive (see above)
+        unsafe { self.graph.replay() }.map_err(|e| format!("graph replay: {e:?}"))
+    }
+}

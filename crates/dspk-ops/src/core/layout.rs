@@ -122,3 +122,29 @@ mod tests {
     }
     runtime_test!(gather_channels_follows_the_order, gathers_channels_in_the_given_order);
 }
+
+/// Samples `offset .. offset + len` of each of `rows` rows (`in_row_len` long, channel-major) of
+/// `input`, into `output` as a compact `[rows, len]` buffer: part of a block, on the device, with
+/// no alignment rule on `offset` (a kernel argument, not a buffer offset).
+pub fn crop_rows<F: DspFloat>(client: &Client, input: &Handle, output: &Handle, rows: usize, in_row_len: usize, offset: usize, len: usize) {
+    let total = rows * len;
+    if total == 0 {
+        return;
+    }
+    debug_assert!(offset + len <= in_row_len, "the crop lies within each row");
+    let geom = dspk_core::compute::LaunchGeometry::elementwise(client, total);
+    // SAFETY: the input holds `rows · in_row_len` values, the output `rows · len`
+    unsafe {
+        super::kernels::crop_rows_kernel::launch::<F>(
+            client,
+            geom.cube_count,
+            geom.cube_dim,
+            BufferArg::from_raw_parts(input.clone(), rows * in_row_len),
+            BufferArg::from_raw_parts(output.clone(), total),
+            in_row_len as u32,
+            offset as u32,
+            len as u32,
+            total as u32,
+        );
+    }
+}

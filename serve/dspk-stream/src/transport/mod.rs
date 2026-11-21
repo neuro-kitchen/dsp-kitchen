@@ -141,12 +141,12 @@ mod tests {
         let info = recording().info().clone();
         let mut big = info.clone();
         big.samples = u64::MAX / 2;
-        let request = wire::ViewRequest { channels: vec![0, 1, 2, 3], start: 0, end: big.samples, width: MAX_VIEW_COLUMNS, processing: None };
+        let request = wire::ViewRequest { channels: vec![0, 1, 2, 3], start: 0, end: big.samples, width: MAX_VIEW_COLUMNS, processing: None, ..Default::default() };
         assert!(checked_view(&request, &big).is_ok(), "4 channels × 65536 columns is within the limit");
         let mut many = info;
         many.channels = (0..1024).map(|_| many.channels[0].clone()).collect();
         many.samples = u64::MAX / 2;
-        let request = wire::ViewRequest { channels: (0..1024).collect(), start: 0, end: many.samples, width: MAX_VIEW_COLUMNS, processing: None };
+        let request = wire::ViewRequest { channels: (0..1024).collect(), start: 0, end: many.samples, width: MAX_VIEW_COLUMNS, processing: None, ..Default::default() };
         assert!(checked_view(&request, &many).is_err(), "1024 × 65536 values is over the limit");
     }
 

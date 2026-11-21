@@ -23,8 +23,9 @@ Five sorters run on the GPU or the CPU, from the raw file to sorted units:
 
 :::caution
 These are reimplementations in progress. Until a sorter reproduces its paper's results on the paper's
-data, it isn't a substitute for the original. Drift correction isn't implemented yet. See
-[Validation](/dsp-kitchen/plugins/synapse/validation/).
+data, it isn't a substitute for the original. Kilosort4 includes drift estimation and on-device
+Gaussian kriging correction (`nblocks >= 1`). See [Validation](/dsp-kitchen/plugins/synapse/validation/)
+for comparisons against upstream Kilosort4 (`v4.1.3`), SpikeInterface (`v0.106.0`), and EMUsort (`v1.1.0`).
 :::
 
 ## Where to go

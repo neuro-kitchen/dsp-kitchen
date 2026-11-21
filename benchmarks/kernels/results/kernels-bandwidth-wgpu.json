@@ -1,0 +1,329 @@
+{
+  "schema": 1,
+  "benchmark": "kernels/bandwidth",
+  "date": "2026-11-21",
+  "dspk": {
+    "version": "0.0.13",
+    "commit": "",
+    "runtime": "wgpu"
+  },
+  "reference": null,
+  "machine": "NVIDIA GeForce RTX 2070 with Max-Q Design \u00b7 Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz (12 threads) \u00b7 linux 7.3.4-300.fc45.x86_64",
+  "notes": "384 \u00d7 60000 float32 block; median of 7 launches after a warm-up; bandwidth = least bytes moved / time; share of the scale kernel's (the ceiling)",
+  "cases": [
+    {
+      "name": "scale (ceiling)",
+      "shape": [
+        384,
+        60000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 0.791193,
+      "reference_ms": null,
+      "max_abs_err": null,
+      "rel_err": null,
+      "tolerance": null,
+      "pass": null,
+      "extra": {
+        "gb_per_s": 232.96464958613132,
+        "share_of_ceiling": 1.0
+      }
+    },
+    {
+      "name": "clamp",
+      "shape": [
+        384,
+        60000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 0.7830069999999999,
+      "reference_ms": null,
+      "max_abs_err": null,
+      "rel_err": null,
+      "tolerance": null,
+      "pass": null,
+      "extra": {
+        "gb_per_s": 235.40019437884976,
+        "share_of_ceiling": 1.0104545680945383
+      }
+    },
+    {
+      "name": "car (mean)",
+      "shape": [
+        384,
+        60000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 1.133851,
+      "reference_ms": null,
+      "max_abs_err": null,
+      "rel_err": null,
+      "tolerance": null,
+      "pass": null,
+      "extra": {
+        "gb_per_s": 162.5610419711232,
+        "share_of_ceiling": 0.6977927434909879
+      }
+    },
+    {
+      "name": "cmr (median, autotuned)",
+      "shape": [
+        384,
+        60000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 16.980271000000002,
+      "reference_ms": null,
+      "max_abs_err": null,
+      "rel_err": null,
+      "tolerance": null,
+      "pass": null,
+      "extra": {
+        "gb_per_s": 10.854950430414213,
+        "share_of_ceiling": 0.046594839387427915
+      }
+    },
+    {
+      "name": "cmr: rank counting",
+      "shape": [
+        384,
+        60000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 33.652699,
+      "reference_ms": null,
+      "max_abs_err": null,
+      "rel_err": null,
+      "tolerance": null,
+      "pass": null,
+      "extra": {
+        "gb_per_s": 5.477123840795058,
+        "share_of_ceiling": 0.023510536257433618,
+        "gop_per_s": 525.8038887163256
+      }
+    },
+    {
+      "name": "cmr: bitonic sort",
+      "shape": [
+        384,
+        60000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 16.791241,
+      "reference_ms": null,
+      "max_abs_err": null,
+      "rel_err": null,
+      "tolerance": null,
+      "pass": null,
+      "extra": {
+        "gb_per_s": 10.97715171856565,
+        "share_of_ceiling": 0.047119388019027306
+      }
+    },
+    {
+      "name": "iir bandpass 5, forward",
+      "shape": [
+        384,
+        60000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 12.552062,
+      "reference_ms": null,
+      "max_abs_err": null,
+      "rel_err": null,
+      "tolerance": null,
+      "pass": null,
+      "extra": {
+        "gb_per_s": 14.68443989521403,
+        "share_of_ceiling": 0.06303291044929511,
+        "gop_per_s": 82.59997441057892
+      }
+    },
+    {
+      "name": "iir bandpass 5, zero-phase",
+      "shape": [
+        384,
+        60000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 25.984292,
+      "reference_ms": null,
+      "max_abs_err": null,
+      "rel_err": null,
+      "tolerance": null,
+      "pass": null,
+      "extra": {
+        "gb_per_s": 7.093516344413001,
+        "share_of_ceiling": 0.030448895817519292,
+        "gop_per_s": 79.80205887464626
+      }
+    },
+    {
+      "name": "fir 63 taps, causal",
+      "shape": [
+        384,
+        60000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 3.3561110000000003,
+      "reference_ms": null,
+      "max_abs_err": null,
+      "rel_err": null,
+      "tolerance": null,
+      "pass": null,
+      "extra": {
+        "gb_per_s": 54.92071031023705,
+        "share_of_ceiling": 0.23574697022833865,
+        "gop_per_s": 865.0011873862336
+      }
+    },
+    {
+      "name": "fir 63 taps, centred",
+      "shape": [
+        384,
+        60000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 4.0506329999999995,
+      "reference_ms": null,
+      "max_abs_err": null,
+      "rel_err": null,
+      "tolerance": null,
+      "pass": null,
+      "extra": {
+        "gb_per_s": 45.503999004600026,
+        "share_of_ceiling": 0.19532576760224885,
+        "gop_per_s": 716.6879843224503
+      }
+    },
+    {
+      "name": "median width 5",
+      "shape": [
+        384,
+        60000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 0.7508779999999999,
+      "reference_ms": null,
+      "max_abs_err": null,
+      "rel_err": null,
+      "tolerance": null,
+      "pass": null,
+      "extra": {
+        "gb_per_s": 245.47263337053425,
+        "share_of_ceiling": 1.0536904796784565,
+        "gop_per_s": 1534.203958565839
+      }
+    },
+    {
+      "name": "median width 31",
+      "shape": [
+        384,
+        60000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 28.339133,
+      "reference_ms": null,
+      "max_abs_err": null,
+      "rel_err": null,
+      "tolerance": null,
+      "pass": null,
+      "extra": {
+        "gb_per_s": 6.504080417703675,
+        "share_of_ceiling": 0.02791874402085625,
+        "gop_per_s": 1562.605320353308
+      }
+    },
+    {
+      "name": "teager-kaiser",
+      "shape": [
+        384,
+        60000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 0.829797,
+      "reference_ms": null,
+      "max_abs_err": null,
+      "rel_err": null,
+      "tolerance": null,
+      "pass": null,
+      "extra": {
+        "gb_per_s": 222.12661650982108,
+        "share_of_ceiling": 0.9534777782999939
+      }
+    },
+    {
+      "name": "resample_poly 1/3",
+      "shape": [
+        384,
+        60000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 1.65359,
+      "reference_ms": null,
+      "max_abs_err": null,
+      "rel_err": null,
+      "tolerance": null,
+      "pass": null,
+      "extra": {
+        "gb_per_s": 74.31104445479231,
+        "share_of_ceiling": 0.3189799164242648,
+        "gop_per_s": 566.6217139677913
+      }
+    },
+    {
+      "name": "channel mean/std",
+      "shape": [
+        384,
+        60000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 0.5996779999999999,
+      "reference_ms": null,
+      "max_abs_err": null,
+      "rel_err": null,
+      "tolerance": null,
+      "pass": null,
+      "extra": {
+        "gb_per_s": 153.68247626226076,
+        "share_of_ceiling": 0.659681529087277
+      }
+    },
+    {
+      "name": "channel noise (median |x|)",
+      "shape": [
+        384,
+        60000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 2.152806,
+      "reference_ms": null,
+      "max_abs_err": null,
+      "rel_err": null,
+      "tolerance": null,
+      "pass": null,
+      "extra": {
+        "gb_per_s": 42.80924523621729,
+        "share_of_ceiling": 0.18375854582345091
+      }
+    },
+    {
+      "name": "peak candidates (spikes)",
+      "shape": [
+        384,
+        60000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 2.169441,
+      "reference_ms": null,
+      "max_abs_err": null,
+      "rel_err": null,
+      "tolerance": null,
+      "pass": null,
+      "extra": {
+        "gb_per_s": 42.48098934241586,
+        "share_of_ceiling": 0.18234950846784956
+      }
+    }
+  ]
+}

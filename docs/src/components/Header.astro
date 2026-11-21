@@ -1,9 +1,10 @@
 ---
-// Starlight's header with a row of topic tabs under it: the main topics, then "Plugins" and
-// "More" menus (grouping in src/data/nav.mjs). On narrow screens the tabs are one scrolling row
-// with every topic, since a menu inside a scrolling row would be clipped. After the main topics,
-// "Viewer" opens the app itself (built into /viewer/ by docs.yml), not a topic of the docs.
-import Default from '@astrojs/starlight/components/Header.astro';
+// Single-row desktop header: [Logo] [Topic tabs + Viewer + Plugins + More] ... [Search] [GitHub] [Theme].
+// On narrow screens (< 64rem) the topic tabs wrap onto a compact scrolling row underneath.
+import SiteTitle from '@astrojs/starlight/components/SiteTitle.astro';
+import Search from '@astrojs/starlight/components/Search.astro';
+import SocialIcons from '@astrojs/starlight/components/SocialIcons.astro';
+import ThemeSelect from '@astrojs/starlight/components/ThemeSelect.astro';
 import { MAIN, MORE, PLUGINS } from '../data/nav.mjs';
 
 const topics = Astro.locals.starlightSidebarTopics?.topics ?? [];
@@ -16,37 +17,51 @@ const anyCurrent = (list: typeof topics) => list.some((t) => t.isCurrent);
 const viewer = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/viewer/`;
 ---
 
-<div class="bar"><Default {...Astro.props} /></div>
+<div class="header-row">
+  <div class="title-wrap">
+    <SiteTitle {...Astro.props} />
+  </div>
 
-<nav class="tabs wide" aria-label="Topics">
-  {
-    main.map((t) => (
-      <a href={t.link} aria-current={t.isCurrent ? 'page' : undefined}>
-        {t.label}
-      </a>
-    ))
-  }
-  <a class="app" href={viewer} title="dsp-kitchen in your browser: open a recording from your disk">Viewer</a>
-  {
-    [
-      { label: 'Plugins', list: plugins },
-      { label: 'More', list: more },
-    ].map(({ label, list }) => (
-      <details class="menu" data-current={anyCurrent(list) ? '' : undefined}>
-        <summary>{label}</summary>
-        <ul>
-          {list.map((t) => (
-            <li>
-              <a href={t.link} aria-current={t.isCurrent ? 'page' : undefined}>
-                {t.label}
-              </a>
-            </li>
-          ))}
-        </ul>
-      </details>
-    ))
-  }
-</nav>
+  <nav class="tabs wide" aria-label="Topics">
+    {
+      main.map((t) => (
+        <a href={t.link} aria-current={t.isCurrent ? 'page' : undefined}>
+          {t.label}
+        </a>
+      ))
+    }
+    <a class="app" href={viewer} title="dsp-kitchen in your browser: open a recording from your disk">Viewer</a>
+    {
+      [
+        { label: 'Plugins', list: plugins },
+        { label: 'More', list: more },
+      ].map(({ label, list }) => (
+        <details class="menu" data-current={anyCurrent(list) ? '' : undefined}>
+          <summary>{label}</summary>
+          <ul>
+            {list.map((t) => (
+              <li>
+                <a href={t.link} aria-current={t.isCurrent ? 'page' : undefined}>
+                  {t.label}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </details>
+      ))
+    }
+  </nav>
+
+  <div class="right-group">
+    <div class="search-wrap">
+      <Search {...Astro.props} />
+    </div>
+    <div class="sl-hidden md:sl-flex social-theme">
+      <SocialIcons {...Astro.props} />
+      <ThemeSelect {...Astro.props} />
+    </div>
+  </div>
+</div>
 
 <nav class="tabs narrow" aria-label="Topics">
   {
@@ -89,24 +104,83 @@ const viewer = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/viewer/`;
 </script>
 
 <style>
-  .bar {
+  .header-row {
+    display: flex;
+    align-items: center;
+    gap: 1.25rem;
     height: calc(var(--dk-nav-base) - 2 * var(--sl-nav-pad-y));
+    width: 100%;
+  }
+
+  .title-wrap {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+  }
+
+  .right-group {
+    margin-inline-start: auto;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex: 0 1 auto;
+  }
+
+  .search-wrap {
+    width: min(14rem, 32vw);
+  }
+  .search-wrap :global(button[data-open-modal]) {
+    width: 100%;
+    max-width: 14rem;
+  }
+
+  .social-theme {
+    align-items: center;
+    gap: 0.75rem;
+  }
+  .social-theme::before {
+    content: '';
+    width: 1px;
+    height: 1.25rem;
+    background: var(--sl-color-gray-5);
   }
 
   .tabs {
     display: flex;
     align-items: stretch;
-    gap: 0.25rem;
+    gap: 0.15rem;
+  }
+  .tabs.wide {
+    display: none;
+    height: var(--dk-nav-base);
+    align-items: stretch;
+  }
+  .tabs.narrow {
     height: calc(var(--dk-tabs) + var(--sl-nav-pad-y));
     margin-block-end: calc(-1 * var(--sl-nav-pad-y));
     padding-block-start: var(--sl-nav-pad-y);
-    margin-inline: -0.75rem;
+    margin-inline: -0.5rem;
+    overflow-x: auto;
+    scrollbar-width: none;
   }
+  .tabs.narrow::-webkit-scrollbar {
+    display: none;
+  }
+
+  @media (min-width: 64rem) {
+    .tabs.wide {
+      display: flex;
+    }
+    .tabs.narrow {
+      display: none;
+    }
+  }
+
   .tabs a,
   .tabs summary {
     display: flex;
     align-items: center;
-    padding-inline: 0.75rem;
+    padding-inline: 0.65rem;
     border-block-end: 2px solid transparent;
     color: var(--sl-color-gray-2);
     font-size: var(--sl-text-sm);
@@ -166,8 +240,9 @@ const viewer = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/viewer/`;
   }
   .menu ul {
     position: absolute;
-    inset-block-start: calc(100% + 1px);
+    inset-block-start: calc(100% + 0.25rem);
     inset-inline-start: 0;
+    z-index: 20;
     min-width: 12rem;
     margin: 0;
     padding: 0.35rem;
@@ -177,31 +252,16 @@ const viewer = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/viewer/`;
     border-radius: 0.5rem;
     box-shadow: var(--sl-shadow-md);
   }
-  .menu ul a {
-    padding: 0.5rem 0.65rem;
-    border: none;
-    border-radius: 0.35rem;
+  .menu li a {
+    padding: 0.4rem 0.65rem;
+    border: 0;
+    border-radius: 0.3rem;
   }
-  .menu ul a:hover {
+  .menu li a:hover {
     background: var(--sl-color-gray-6);
   }
-  .menu ul a[aria-current='page'] {
+  .menu li a[aria-current='page'] {
     color: var(--sl-color-text-accent);
-  }
-
-  .narrow {
-    display: none;
-  }
-  @media (max-width: 50rem) {
-    .wide {
-      display: none;
-    }
-    .narrow {
-      display: flex;
-      overflow-x: auto;
-      scrollbar-width: none;
-      /* The row fades at the edge: there are more topics to scroll to. */
-      mask-image: linear-gradient(to right, #000 calc(100% - 2.5rem), transparent);
-    }
+    background: var(--sl-color-accent-low);
   }
 </style>

@@ -25,7 +25,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dock::{panel_handle, DockSkin, Panel};
 use dspk_app_core::ui::theme::{PANE_GAP, RADIUS_LG};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
-use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Disableable as _, Icon, IconName};
+use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     div, img, px, uniform_list, AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, InteractiveElement as _, IntoElement,
@@ -36,10 +36,10 @@ use crate::chart::{ChartGrid, GridView as _, Range2};
 use crate::curation::{next_unit_id, similar, CurationOp, LABELS};
 use crate::plots;
 use crate::sorting::SortingData;
-use crate::strip::{view_signal, BottomStrip};
+use crate::strip::BottomStrip;
 use crate::table::{UnitTable, COLUMNS};
 use crate::templates::TemplateGrid;
-use crate::{sorting_of, state, SynapseEvent};
+use crate::{state, SynapseEvent};
 
 pub use dspk_synapse::curation::views::{PlotSettings, ViewKind, FEATURE_GRID_CHANNELS, SPIKES_PER_UNIT};
 use dspk_synapse::curation::views::{ViewsRequest, Views};
@@ -53,6 +53,8 @@ const SIMILAR_MAX: usize = 20;
 /// Table row height and the table's width in layouts (logical px).
 const ROW_H: f32 = 24.;
 const TABLE_W: f32 = 560.;
+/// Width of the Similar units column beside the table.
+const SIMILAR_W: f32 = 300.;
 
 /// How a view is shown: its icon on the Curation side bar and its title (the views and what
 /// they compute are dspk-synapse's).
@@ -152,6 +154,10 @@ pub struct CurationWorkspace {
     generation: Arc<AtomicU64>,
     /// The keyboard help shows.
     show_keys: bool,
+    /// Optional explicit recording source selected in Curation's toolbar (`None` = active view's source).
+    source_override: Option<String>,
+    /// When `true`, extract waveforms/features from the raw stored source rather than Explore's processed chain.
+    use_raw_signal: bool,
     /// A lasso drawn and not applied yet: on which view, for which lead unit (index), and the
     /// polygon in the chart's units. **Split** applies it.
     pending_split: Option<(ViewKind, usize, Vec<(f32, f32)>)>,
@@ -167,18 +173,23 @@ impl CurationWorkspace {
             DockArea::new("curation", Some(1), window, cx).with_renderer(skin)
         });
         let strip = cx.new(|cx| BottomStrip::new(store.clone(), dspk_app_core::navigation::route::Workspace::Curation, cx));
+        let relayout: std::rc::Rc<std::cell::Cell<bool>> = Default::default();
         let me = cx.weak_entity();
         let templates = cx.new(|_| {
             TemplateGrid::new(std::rc::Rc::new(move |u, add, _, cx| {
                 let _ = me.update(cx, |w, cx| w.pick_unit(u, add, cx));
             }))
         });
-        let mut subs = vec![cx.subscribe(&store, |this, _, e: &AppEvent, cx| {
-            if matches!(e, AppEvent::Document(_) | AppEvent::RecordingChanged | AppEvent::PaletteChanged) {
+        let mut subs = vec![cx.subscribe(&store, |this, _, e: &AppEvent, cx| match e {
+            AppEvent::Document(_) | AppEvent::RecordingChanged | AppEvent::PaletteChanged => {
                 this.selected.clear();
                 this.plots = Plots::default();
                 this.refresh(cx);
             }
+            AppEvent::ExportPhy => {
+                this.export_phy(cx);
+            }
+            _ => {}
         })];
         if let Some(st) = state(cx) {
             subs.push(cx.subscribe(&st, |this, _, e: &SynapseEvent, cx| match e {
@@ -204,7 +215,7 @@ impl CurationWorkspace {
             templates,
             focus: cx.focus_handle(),
             panels: HashMap::new(),
-            relayout: Default::default(),
+            relayout,
             visible,
             grid: Grid::Auto,
             selected: Vec::new(),
@@ -217,6 +228,8 @@ impl CurationWorkspace {
             computing: false,
             generation: Arc::new(AtomicU64::new(0)),
             show_keys: false,
+            source_override: None,
+            use_raw_signal: false,
             pending_split: None,
             settings: PlotSettings::default(),
             _work: None,
@@ -229,6 +242,15 @@ impl CurationWorkspace {
 
     fn sorting(&self, cx: &App) -> Option<Arc<SortingData>> {
         state(cx)?.read(cx).active_sorting(cx)
+    }
+
+    /// Why the active sorting does not fit the open recording ([`SortingData::mismatch`]), if it
+    /// does not: views that read the recording at its spikes say this instead of drawing.
+    fn mismatch(&self, cx: &App) -> Option<String> {
+        let sorting = self.sorting(cx)?;
+        let sources = self.store.read(cx).sources()?.clone();
+        let e = sources.default_entry();
+        sorting.mismatch(e.channels, e.sample_rate.rate_hz())
     }
 
     /// The table of the loaded sorting (built once per sorting), its order, a default selection.
@@ -300,7 +322,33 @@ impl CurationWorkspace {
     }
 
     fn sorting_path(&self, cx: &App) -> Option<std::path::PathBuf> {
-        sorting_of(self.store.read(cx).active_view()?)
+        state(cx)?.read(cx).active_sorting_path(cx)
+    }
+
+    fn set_source(&mut self, source: Option<String>, use_raw: bool, cx: &mut Context<Self>) {
+        self.source_override = source.clone();
+        self.use_raw_signal = use_raw;
+        if let Some(src) = source {
+            self.strip.update(cx, |s, cx| s.set_source(&src, cx));
+        }
+        self.compute(cx);
+    }
+
+    /// Resolves the signal, dataset, and source id Curation uses (respecting `source_override` and `use_raw_signal`).
+    fn curation_signal(&self, cx: &App) -> Option<(Arc<dyn dspk_view::SignalBackend>, Arc<dspk_app_core::data::recording::Dataset>, String, bool)> {
+        let store = self.store.read(cx);
+        let sources = store.sources()?;
+        let source = self
+            .source_override
+            .clone()
+            .filter(|id| sources.entries().iter().any(|e| &e.id == id))
+            .or_else(|| store.active_view().map(|v| store.view_source(v)))
+            .unwrap_or_else(|| sources.default_entry().id.clone());
+        let dataset = sources.get(&source);
+        let processed_sig = (!self.use_raw_signal).then(|| store.signal_for(&source)).flatten();
+        let is_processed = processed_sig.is_some();
+        let signal = processed_sig.unwrap_or_else(|| dataset.signal().clone());
+        Some((signal, dataset, source, is_processed))
     }
 
     /// The next (`dir` 1) or previous (−1) unit of the table's order, alone.
@@ -338,7 +386,11 @@ impl CurationWorkspace {
     /// plot's data coordinates) become a new unit, which joins the selection.
     fn split_lasso(&mut self, polygon: &[(f32, f32)], cx: &mut Context<Self>) {
         let (Some(path), Some(sorting), Some(&lead)) = (self.sorting_path(cx), self.sorting(cx), self.selected.first()) else { return };
-        if polygon.len() < 3 || sorting.amplitudes.is_empty() {
+        if polygon.len() < 3 {
+            return;
+        }
+        if sorting.amplitudes.is_empty() {
+            self.store.update(cx, |s, cx| s.set_status("Not split: this sorting stores no spike amplitudes. Draw the lasso on Features instead", cx));
             return;
         }
         let spikes = dspk_synapse::curation::split::spikes_in_polygon(&sorting, lead, polygon);
@@ -373,7 +425,7 @@ impl CurationWorkspace {
         if polygon.len() < 3 {
             return;
         }
-        let Some((signal, dataset, _)) = view_signal(self.store.read(cx)) else { return };
+        let Some((signal, dataset, _, _)) = self.curation_signal(cx) else { return };
         let (polygon, total) = (polygon.to_vec(), dataset.total_samples as u64);
         self.store.update(cx, |s, cx| s.set_status("Splitting: reading the unit's spikes…", cx));
         let work = cx.background_spawn({
@@ -418,11 +470,59 @@ impl CurationWorkspace {
         cx.notify();
     }
 
+    /// Splits a sorting the page's server serves there: the server finds the lead unit's spikes
+    /// inside `polygon` (a features lasso reads every spike of the unit from its recording, as its
+    /// views did), and the split is a curation edit here, as a local one.
+    fn split_served(&mut self, path: std::path::PathBuf, polygon: &[(f32, f32)], features: Option<dspk_synapse::curation::views::FeatureBasis>, cx: &mut Context<Self>) {
+        let (Some(sorting), Some(&lead)) = (self.sorting(cx), self.selected.first()) else { return };
+        if polygon.len() < 3 {
+            return;
+        }
+        let ops = state(cx).and_then(|st| st.read(cx).curations.get(&path).map(|l| l.ops.clone())).unwrap_or_default();
+        let processing: Vec<String> = self.store.read(cx).active_view().map(|v| v.ops.iter().filter(|o| o.enabled).filter_map(|o| serde_json::to_string(&o.node).ok()).collect()).unwrap_or_default();
+        let by_features = features.is_some();
+        let call = dspk_synapse::curation::service::SplitCall { path: path.to_string_lossy().into_owned(), ops, unit: lead, polygon: polygon.to_vec(), features, processing };
+        let body = serde_json::to_vec(&call).unwrap_or_default();
+        self.store.update(cx, |s, cx| s.set_status("Splitting on the server: reading the unit's spikes…", cx));
+        self._work = Some(cx.spawn(async move |this, cx| {
+            let reply = dspk_app_core::platform::remote::plugin_call(dspk_synapse::curation::service::PLUGIN, "split", body).await;
+            let _ = this.update(cx, |w, cx| {
+                let spikes: Vec<u64> = match reply.map_err(|e| format!("{e:#}")).and_then(|r| serde_json::from_slice(&r).map_err(|e| e.to_string())) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        w.store.update(cx, |s, cx| s.set_status(format!("Not split: {e}"), cx));
+                        return;
+                    }
+                };
+                let n = spikes.len();
+                if n == 0 || n == sorting.by_unit[lead].len() {
+                    w.store.update(cx, |s, cx| s.set_status(if n == 0 { "The lasso holds none of the unit's spikes" } else { "The lasso holds every spike of the unit: nothing to split" }, cx));
+                    return;
+                }
+                let (unit, into, new_index) = (sorting.units[lead].info.unit_id, next_unit_id(&sorting), sorting.units.len());
+                let Some(st) = state(cx) else { return };
+                st.update(cx, |s, cx| s.curate(&path, CurationOp::Split { unit, spikes, into }, cx));
+                let how = if by_features { " (every spike of the unit, by its features)" } else { "" };
+                w.store.update(cx, |s, cx| s.set_status(format!("Unit {unit}: {n} spikes split off as unit {into}{how}"), cx));
+                w.selected = vec![lead, new_index];
+                w.compute(cx);
+            });
+        }));
+    }
+
     /// Splits off the lead unit's spikes inside the lasso drawn (see [`Self::hold_lasso`]).
     fn split_pending(&mut self, cx: &mut Context<Self>) {
         let Some((kind, lead, polygon)) = self.pending_split.take() else { return };
+        let served = self.sorting_path(cx).filter(|p| state(cx).is_some_and(|st| st.read(cx).served.contains(p)));
         if self.selected.first() != Some(&lead) {
             self.store.update(cx, |s, cx| s.set_status("The lasso was drawn for another unit: draw it again", cx));
+        } else if let Some(path) = served {
+            let features = if kind == ViewKind::Features { self.plots.features.clone() } else { None };
+            if kind == ViewKind::Features && features.is_none() {
+                self.store.update(cx, |s, cx| s.set_status("Not split: the features are still being computed", cx));
+            } else {
+                self.split_served(path, &polygon, features, cx);
+            }
         } else if kind == ViewKind::Features {
             self.split_features(&polygon, cx);
         } else {
@@ -579,9 +679,10 @@ impl CurationWorkspace {
             .clone()
     }
 
-    /// The visible views in the grid: the table on the left, plots in rows of `columns`.
+    /// The visible views: the table on the left, Similar units in a column of its own beside it
+    /// (a plot added or closed does not move it), the plots in rows of `columns`.
     fn apply_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let plot_kinds: Vec<ViewKind> = self.visible.iter().copied().filter(|k| *k != ViewKind::Table).collect();
+        let plot_kinds: Vec<ViewKind> = self.visible.iter().copied().filter(|k| !matches!(k, ViewKind::Table | ViewKind::Similarity)).collect();
         let cols = match self.grid {
             Grid::Auto => (plot_kinds.len() as f32).sqrt().ceil().max(1.0) as usize,
             Grid::Columns(n) => n.max(1),
@@ -597,15 +698,26 @@ impl CurationWorkspace {
             grid = grid.child(row, None);
             any = true;
         }
-        let root = if self.visible.contains(&ViewKind::Table) {
-            let table = self.panel(ViewKind::Table, cx);
-            let mut root = DockLayout::h_split().child(DockLayout::tabs().panel_view(panel_handle(table), cx), Some(px(TABLE_W)));
+        // Fixed columns on the left: the table, then Similar units; the grid takes the rest
+        let mut columns: Vec<(ViewKind, f32)> = Vec::new();
+        if self.visible.contains(&ViewKind::Table) {
+            columns.push((ViewKind::Table, TABLE_W));
+        }
+        if self.visible.contains(&ViewKind::Similarity) {
+            columns.push((ViewKind::Similarity, SIMILAR_W));
+        }
+        let root = if columns.is_empty() {
+            grid
+        } else {
+            let mut root = DockLayout::h_split();
+            for (kind, width) in columns {
+                let p = self.panel(kind, cx);
+                root = root.child(DockLayout::tabs().panel_view(panel_handle(p), cx), Some(px(width)));
+            }
             if any {
                 root = root.child(grid, None);
             }
             root
-        } else {
-            grid
         };
         // Rebuilding takes the panels out of the dock (they report it while this workspace is
         // being updated): flagged so they do not take it for the user closing them
@@ -638,18 +750,26 @@ impl CurationWorkspace {
             return;
         };
         // The last plots stay until the new ones replace them (no blank "Computing…" panels)
-        let Some((signal, dataset, source)) = view_signal(self.store.read(cx)) else { return };
+        let rec_signal = self.curation_signal(cx);
         let to_view = self.channel_map(&sorting, cx);
-        let Some(channel) = to_view(sorting.units[lead].info.primary_channel) else { return };
+        let channel = to_view(sorting.units[lead].info.primary_channel).unwrap_or(sorting.units[lead].info.primary_channel);
         let units = self.selected.clone();
-        let duration = (dataset.total_samples as f64 / dataset.sample_rate) as f32;
+        let duration = match &rec_signal {
+            Some((_, dataset, _, _)) => (dataset.total_samples as f64 / dataset.sample_rate) as f32,
+            None => {
+                let max_t = (0..sorting.units.len()).filter_map(|u| sorting.unit_times(u).last().copied()).max().unwrap_or(0);
+                ((max_t as f64 / sorting.sample_rate.max(1.0)) as f32).max(1.0)
+            }
+        };
         // The strip follows the selection: the lead unit's channels
         let strip_channels: Vec<usize> = sorting.units[lead].extent.channels.iter().filter_map(|&c| to_view(c)).collect();
         let strip_units = units.clone();
         self.strip.update(cx, |s, cx| s.set_focus(strip_units, strip_channels, cx));
-        let processed = self.store.read(cx).signal_for(&source).is_some();
         let set = self.settings;
-        let note = format!("Ch {channel} · ≤{} spikes per unit · {}", set.spikes, if processed { "processed" } else { "as stored" });
+        let note = match &rec_signal {
+            Some((_, _, _, processed)) => format!("Ch {channel} · ≤{} spikes · {}", set.spikes, if *processed { "processed" } else { "as stored" }),
+            None => format!("Ch {channel} · spike-only (no recording attached)"),
+        };
         let wanted: Vec<ViewKind> = self.visible.clone();
         // A newer selection makes this work stale: it stops at its next step
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
@@ -666,7 +786,7 @@ impl CurationWorkspace {
             channel,
             grid_channels: sorting.units[lead].extent.channels.iter().filter_map(|&c| to_view(c)).take(FEATURE_GRID_CHANNELS).collect(),
         };
-        // Fast: everything from the spike times alone (shown at once)
+        // Fast: everything from the spike times alone (shown at once — works even without a recording!)
         let fast = cx.background_spawn({
             let (sorting, request, stale) = (sorting.clone(), request.clone(), stale.clone());
             async move { dspk_synapse::curation::views::from_spikes(&sorting, &request, stale) }
@@ -676,11 +796,14 @@ impl CurationWorkspace {
         // so units are numbered alike) rather than its windows sent here
         let reads_signal = dspk_synapse::curation::views::SIGNAL_VIEWS.iter().any(|k| request.wanted.contains(k));
         let served = self.sorting_path(cx).filter(|p| state(cx).is_some_and(|st| st.read(cx).served.contains(p)));
-        let slow: Task<Views> = match served {
-            Some(path) => {
+        let slow: Task<Views> = match (served, rec_signal) {
+            (Some(path), _) => {
                 let ops = state(cx).and_then(|st| st.read(cx).curations.get(&path).map(|l| l.ops.clone())).unwrap_or_default();
-                // The view's processing goes along: waveforms from the signal as it is shown
-                let processing: Vec<String> = self.store.read(cx).active_view().map(|v| v.ops.iter().filter(|o| o.enabled).filter_map(|o| serde_json::to_string(&o.node).ok()).collect()).unwrap_or_default();
+                let processing: Vec<String> = if self.use_raw_signal {
+                    Vec::new()
+                } else {
+                    self.store.read(cx).active_view().map(|v| v.ops.iter().filter(|o| o.enabled).filter_map(|o| serde_json::to_string(&o.node).ok()).collect()).unwrap_or_default()
+                };
                 let call = dspk_synapse::curation::service::ViewsCall { path: path.to_string_lossy().into_owned(), ops, request, processing };
                 let body = serde_json::to_vec(&call).unwrap_or_default();
                 cx.spawn(async move |_, _| {
@@ -696,13 +819,14 @@ impl CurationWorkspace {
                     }
                 })
             }
-            None => cx.background_spawn(async move {
+            (None, Some((signal, _, _, _))) => cx.background_spawn(async move {
                 if stale() || !reads_signal {
                     return Views::default();
                 }
-                let windows = crate::sorting::windows_of(&signal);
+                let windows = crate::sorting::windows_of(&signal, &sorting);
                 dspk_synapse::curation::views::from_signal(&sorting, &windows, &request, stale)
             }),
+            (None, None) => cx.spawn(async move |_, _| Views::default()),
         };
         self.plots.note = note;
         self._work = Some(cx.spawn(async move |this, cx| {
@@ -749,19 +873,40 @@ impl Render for CurationWorkspace {
         let t = cx.theme();
         let (muted, bg) = (t.muted_foreground, t.background);
         let Some(sorting) = self.sorting(cx) else {
+            let store_open = self.store.clone();
+            let store_sort = self.store.clone();
             return div()
                 .size_full()
-                .child(EmptyState::new(
-                    dspk_app_core::navigation::route::Workspace::Curation.icon(),
-                    "No sorting on the active view",
-                    "Run a sorter in Sorting, or link a .sorting.zarr in Explore → Sorting.",
-                ))
+                .child(
+                    EmptyState::new(
+                        dspk_app_core::navigation::route::Workspace::Curation.icon(),
+                        "No sorting loaded",
+                        "Open a .sorting.zarr or Phy folder directly (works with or without a recording), or run a sorter in Sorting.",
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("curation-open-sorting")
+                                    .primary()
+                                    .icon(IconName::FolderOpen)
+                                    .label("Open sorting file…")
+                                    .on_click(move |_, w, cx| crate::panel::open_sorting_for_curation(&store_open, w, cx)),
+                            )
+                            .child(
+                                Button::new("curation-go-sorting")
+                                    .ghost()
+                                    .label("Go to Sorting")
+                                    .on_click(move |_, _, cx| store_sort.update(cx, |s, cx| s.set_workspace(dspk_app_core::navigation::route::Workspace::Sorting, cx))),
+                            ),
+                    ),
+                )
                 .into_any_element();
         };
         let me = cx.weak_entity();
         let views = {
             let (me, visible) = (me.clone(), self.visible.clone());
-            Button::new("curation-views").ghost().icon(IconName::Eye).label("Views").dropdown_menu(move |menu: PopupMenu, _, _| {
+            Button::new("curation-views").ghost().icon(IconName::Eye).tooltip("Show or hide curation views").dropdown_menu(move |menu: PopupMenu, _, _| {
                 let mut menu = menu;
                 for k in ViewKind::ALL {
                     let me = me.clone();
@@ -797,10 +942,12 @@ impl Render for CurationWorkspace {
             .and_then(|p| state(cx).and_then(|st| st.read(cx).curations.get(p).map(|c| (!c.ops.is_empty(), !c.undone.is_empty(), c.dirty(), c.ops.len()))))
             .unwrap_or_default();
         let n = self.selected.len();
+        let lead_label: Option<String> = self.selected.first().and_then(|&u| sorting.units.get(u)).map(|u| u.info.quality_label.to_ascii_lowercase());
         let label_button = |label: &'static str, keys: &'static str| {
             let me = me.clone();
+            let active = lead_label.as_deref() == Some(label);
             Button::new(SharedString::from(format!("label-{label}")))
-                .outline()
+                .map(|b| if active { b.primary().icon(IconName::Check) } else { b.ghost() })
                 .label(label)
                 .tooltip(format!("Label the selected units {label} ({keys})"))
                 .disabled(n == 0)
@@ -814,18 +961,86 @@ impl Render for CurationWorkspace {
                 let _ = me.update(cx, |w, cx| f(w, cx));
             })
         };
-        let keys = ["Alt+G", "Alt+M", "Alt+N", ""];
+        let keys = ["Alt+G", "Alt+M", "Alt+N", "Alt+U"];
         let mut labels = h_flex().gap_1().flex_none();
         for (l, k) in LABELS.iter().zip(keys) {
-            labels = labels.child(label_button(l, if k.is_empty() { "no key" } else { k }));
+            labels = labels.child(label_button(l, k));
         }
+        // Source dropdown: lets the user see and pick which recording source Curation extracts waveforms from
+        let source_picker = {
+            let sources: Vec<(String, String)> = self.store.read(cx).sources().map(|s| s.entries().iter().map(|e| (e.id.clone(), e.name.clone())).collect()).unwrap_or_default();
+            let active_src = self
+                .source_override
+                .clone()
+                .or_else(|| self.store.read(cx).active_view().map(|v| self.store.read(cx).view_source(v)))
+                .or_else(|| sources.first().map(|(id, _)| id.clone()));
+            let src_label = match (&active_src, sources.is_empty()) {
+                (_, true) => "No recording".to_string(),
+                (Some(id), false) => {
+                    let name = sources.iter().find(|(i, _)| i == id).map(|(_, n)| n.clone()).unwrap_or_else(|| id.clone());
+                    if self.use_raw_signal { format!("{name} (raw)") } else { name }
+                }
+                (None, false) => "Source".to_string(),
+            };
+            let me = me.clone();
+            let cur_raw = self.use_raw_signal;
+            Button::new("curation-source")
+                .ghost()
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        .child(Icon::new(gpui_kit::assets::IconName::AudioWaveform).xsmall())
+                        .child(src_label)
+                        .child(Icon::new(IconName::ChevronDown).xsmall()),
+                )
+                .tooltip("Recording source used for waveform & feature extraction")
+                .disabled(sources.is_empty())
+                .dropdown_menu(move |menu: PopupMenu, _, _| {
+                    let mut menu = menu;
+                    for (id, name) in &sources {
+                        let me = me.clone();
+                        let id_c = id.clone();
+                        let checked = active_src.as_deref() == Some(id.as_str());
+                        menu = menu.item(PopupMenuItem::new(name.clone()).checked(checked).on_click(move |_, _, cx| {
+                            let id_c = id_c.clone();
+                            let _ = me.update(cx, |ws, cx| ws.set_source(Some(id_c), cur_raw, cx));
+                        }));
+                    }
+                    let me_raw = me.clone();
+                    let active_c = active_src.clone();
+                    menu = menu.separator().item(
+                        PopupMenuItem::new("Use raw signal (ignore Explore ops)")
+                            .checked(cur_raw)
+                            .on_click(move |_, _, cx| {
+                                let active_c = active_c.clone();
+                                let _ = me_raw.update(cx, |ws, cx| ws.set_source(active_c, !cur_raw, cx));
+                            }),
+                    );
+                    menu
+                })
+        };
+        let help_btn = {
+            let me = me.clone();
+            let on = self.show_keys;
+            Button::new("curation-keys-help")
+                .map(|b| if on { b.primary() } else { b.ghost() })
+                .label("?")
+                .tooltip("Per-view Curation shortcuts (? or H)")
+                .on_click(move |_, _, cx| {
+                    let _ = me.update(cx, |w, cx| {
+                        w.show_keys = !w.show_keys;
+                        cx.notify();
+                    });
+                })
+        };
         let edit = h_flex()
             .gap_1()
-            .flex_none()
+            .flex_wrap()
             .child(labels)
             .child({
                 let me = me.clone();
-                Button::new("curation-merge").outline().icon(Icon::new(gpui_kit::assets::IconName::Merge)).label("Merge").tooltip("Merge the selected units into one (G)").disabled(n < 2).on_click(move |_, _, cx| {
+                Button::new("curation-merge").ghost().icon(Icon::new(gpui_kit::assets::IconName::Merge)).label("Merge").tooltip("Merge the selected units into one (G)").disabled(n < 2).on_click(move |_, _, cx| {
                     let _ = me.update(cx, |w, cx| w.merge_selected(cx));
                 })
             })
@@ -833,7 +1048,7 @@ impl Render for CurationWorkspace {
                 let me = me.clone();
                 let ready = self.pending_split.as_ref().is_some_and(|(_, lead, _)| self.selected.first() == Some(lead));
                 Button::new("curation-split")
-                    .outline()
+                    .ghost()
                     .icon(Icon::new(gpui_kit::assets::IconName::Scissors))
                     .label("Split")
                     .tooltip(if ready { "Separate the lead unit's spikes inside the lasso into a new unit" } else { "Draw a lasso on Features or Amplitude first: Split separates the lead unit's spikes inside it" })
@@ -846,7 +1061,7 @@ impl Render for CurationWorkspace {
                 let me = me.clone();
                 let merged = self.lead_is_merge(cx);
                 Button::new("curation-unmerge")
-                    .outline()
+                    .ghost()
                     .icon(Icon::new(gpui_kit::assets::IconName::Split))
                     .label("Unmerge")
                     .tooltip(if merged { "Take the lead unit apart: the units merged into it come back, with their spikes and labels" } else { "Select a merged unit to take it apart" })
@@ -868,42 +1083,59 @@ impl Render for CurationWorkspace {
                     .on_click(move |_, _, cx| {
                         let _ = me.update(cx, |w, cx| w.save(cx));
                     })
-            })
-            .child({
-                let me = me.clone();
-                Button::new("curation-export-phy").ghost().label("To Phy").disabled(!dspk_app_core::platform::LOCAL_FILES).tooltip(if dspk_app_core::platform::LOCAL_FILES { "Write the curated sorting as phy reads it (spike_clusters.npy, cluster_group.tsv, cluster_info.tsv): into the Phy folder it came from, or one you pick" } else { "Not in the browser yet: the desktop app does it" }).on_click(move |_, _, cx| {
-                    let _ = me.update(cx, |w, cx| w.export_phy(cx));
-                })
             });
         let toolbar = h_flex()
-            .h(px(40.))
-            .flex_none()
+            .min_h(px(40.))
+            .py_1()
             .px_2()
             .gap_2()
+            .flex_wrap()
+            .min_w_0()
+            .items_center()
             .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).flex_none().child(SharedString::from(sorting.summary())))
+            .child(source_picker)
             .child(edit)
             .child(legend)
-            .child(div().flex_1())
-            .child(div().text_xs().text_color(muted).truncate().child(status))
-            .child(views)
-            .child(layout);
-        // The side bar: one icon per view, lit while it shows; a click shows or hides it
-        let rail_items = ViewKind::ALL
-            .into_iter()
-            .map(|k| {
-                let me = me.clone();
-                dspk_app_core::ui::panel_edge::RailItem {
-                    id: SharedString::from(format!("rail-view-{k:?}")),
-                    icon: Icon::new(k.icon()),
-                    tip: k.title().into(),
-                    selected: self.visible.contains(&k),
-                    on_click: Box::new(move |window, cx| {
-                        let _ = me.update(cx, |w, cx| w.toggle_view(k, window, cx));
-                    }),
-                }
-            })
-            .collect();
-        let rail = dspk_app_core::ui::panel_edge::rail(rail_items);
+            .child(div().flex_1().min_w_0())
+            .child(div().text_xs().text_color(muted).truncate().child(status));
+        // Affinity-style grouped & scrollable left rail with Views, Layout & ? pinned at bottom
+        let make_group = |id: &'static str, tip: &'static str, icon_override: Option<gpui_kit::assets::IconName>, kinds: &[ViewKind]| {
+            let active_kind = kinds.iter().copied().find(|k| self.visible.contains(k)).unwrap_or(kinds[0]);
+            let selected = kinds.iter().any(|k| self.visible.contains(k));
+            let items = kinds
+                .iter()
+                .map(|&k| {
+                    let me = me.clone();
+                    dspk_app_core::ui::panel_edge::RailSubItem {
+                        label: k.title().into(),
+                        checked: self.visible.contains(&k),
+                        on_click: std::rc::Rc::new(move |window, cx| {
+                            let _ = me.update(cx, |w, cx| w.toggle_view(k, window, cx));
+                        }),
+                    }
+                })
+                .collect();
+            dspk_app_core::ui::panel_edge::RailGroup {
+                id: SharedString::from(id),
+                icon: Icon::new(icon_override.unwrap_or_else(|| active_kind.icon())),
+                tip: tip.into(),
+                selected,
+                items,
+            }
+        };
+        let rail = dspk_app_core::ui::panel_edge::rail_affinity(
+            vec![
+                make_group("rail-units", "Units", None, &[ViewKind::Table]),
+                make_group("rail-similar", "Similar units", None, &[ViewKind::Similarity]),
+                make_group("rail-waveforms", "Waveforms", None, &[ViewKind::Waveforms]),
+                make_group("rail-group-templates", "Template & All templates", None, &[ViewKind::Template, ViewKind::Templates]),
+                make_group("rail-group-timing", "Timing (Correlograms, ACG, ISI, Firing rate)", Some(gpui_kit::assets::IconName::ChartColumn), &[ViewKind::Correlograms, ViewKind::Acg, ViewKind::Isi, ViewKind::FiringRate]),
+                make_group("rail-group-features", "Features & PCA", None, &[ViewKind::Features, ViewKind::FeatureGrid, ViewKind::TemplateFeatures]),
+                make_group("rail-group-amplitude", "Amplitude & Quality", None, &[ViewKind::Amplitude, ViewKind::AmplitudeHist, ViewKind::UnitScatter]),
+                make_group("rail-probe", "Probe", None, &[ViewKind::Probe]),
+            ],
+            vec![views.into_any_element(), layout.into_any_element(), help_btn.into_any_element()],
+        );
         v_flex()
             .id("curation-workspace")
             .track_focus(&self.focus)
@@ -913,8 +1145,7 @@ impl Render for CurationWorkspace {
                 this.strip.update(cx, |_, cx| cx.notify());
             }))
             .on_mouse_down(gpui_kit::MouseButton::Left, cx.listener(|this, _, window, cx| window.focus(&this.focus, cx)))
-            // The toolbar, the rail, the views and the strip are cards on the chrome, PANE_GAP
-            // apart (kitchen-ui)
+            // The toolbar, the rail, the views and the bottom strip are cards on the chrome
             .size_full()
             .p(px(PANE_GAP))
             .gap(px(PANE_GAP))
@@ -967,38 +1198,66 @@ fn curation_command(cmd: bool, alt: bool, shift: bool, key: &str) -> Option<&'st
     curation_keys().iter().find(|(c, a, s, k, _)| *c == cmd && *a == alt && (symbol || *s == shift) && k == &key.to_lowercase()).map(|b| b.4)
 }
 
-const KEYS: [(&str, &str); 13] = [
-    ("Click / Ctrl+click", "Select a unit / add it"),
-    ("↓ ↑  (J K)", "Next / previous unit of the table"),
-    ("Space / Shift+Space", "Next / previous most similar unit beside the lead"),
-    ("Alt+G  Alt+M  Alt+N", "Label good / mua / noise"),
-    ("Alt+U", "Label unsorted"),
-    ("G", "Merge the selected units"),
-    ("Lasso on Features or Amplitude", "Marks the lead unit's spikes inside it; Split separates them"),
-    ("Unmerge", "Takes a merged unit apart"),
-    ("Ctrl+Z / Ctrl+Shift+Z", "Undo / redo"),
-    ("Ctrl+S", "Save the curation in the .sorting.zarr"),
-    ("◀ ▶ in the strip", "The lead unit's previous / next spike"),
-    ("Ctrl+wheel in the strip", "Zoom in time"),
-    ("? or H", "This help"),
+const KEY_GROUPS: &[(&str, &[(&str, &str)])] = &[
+    (
+        "Units & Navigation",
+        &[
+            ("Click / Ctrl+click", "Select a unit / add to selection"),
+            ("↓ ↑  (J / K)", "Next / previous unit in table"),
+            ("Space / Shift+Space", "Next / previous most similar unit"),
+        ],
+    ),
+    (
+        "Classifying & Editing",
+        &[
+            ("Alt+G · Alt+M · Alt+N", "Label good · mua · noise"),
+            ("Alt+U", "Label unsorted"),
+            ("G", "Merge selected units"),
+            ("Ctrl+Z / Ctrl+Shift+Z", "Undo / redo curation edit"),
+            ("Ctrl+S", "Save curation log into .sorting.zarr"),
+        ],
+    ),
+    (
+        "Waveforms, Features & Amplitude",
+        &[
+            ("Drag lasso", "Select spikes on Features or Amplitude, then click Split"),
+            ("Wheel / Double-click", "Zoom plot / reset view"),
+        ],
+    ),
+    (
+        "Traces & Raster Strip",
+        &[
+            ("◀ ▶", "Jump to lead unit's previous / next spike"),
+            ("Ctrl+wheel", "Zoom strip in time"),
+            ("? or H", "Toggle this shortcuts card"),
+        ],
+    ),
 ];
 
 fn keys_help(cx: &App) -> impl IntoElement + use<> {
     let t = cx.theme();
     v_flex()
         .absolute()
-        .top(px(48.))
+        .top(px(52.))
         .right(px(16.))
-        .w(px(420.))
-        .p_3()
-        .gap_1p5()
+        .w(px(440.))
+        .p_4()
+        .gap_3()
         .rounded_lg()
-        .border_1()
-        .border_color(t.border)
         .bg(t.popover)
         .shadow_lg()
-        .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Curation keys (Phy)"))
-        .children(KEYS.iter().map(|(k, what)| h_flex().gap_3().child(div().w(px(170.)).text_xs().font_weight(FontWeight::SEMIBOLD).child(*k)).child(div().text_xs().text_color(t.muted_foreground).child(*what))))
+        .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).child("Curation shortcuts"))
+        .children(KEY_GROUPS.iter().map(|(group, rows)| {
+            v_flex()
+                .gap_1()
+                .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(t.muted_foreground).child(*group))
+                .children(rows.iter().map(|(k, what)| {
+                    h_flex()
+                        .gap_3()
+                        .child(div().w(px(165.)).flex_none().text_xs().font_weight(FontWeight::MEDIUM).child(*k))
+                        .child(div().flex_1().min_w_0().text_xs().text_color(t.muted_foreground).child(*what))
+                }))
+        }))
 }
 
 /// One view of the Curation workspace as a dock panel.
@@ -1164,12 +1423,16 @@ impl CurationPanel {
         if self.kind == ViewKind::Templates {
             return div().size_full().p_1().child(ws.read(cx).templates.clone()).into_any_element();
         }
-        let (chart, computing, picked) = {
+        let (chart, computing, picked, mismatch) = {
             let w = ws.read(cx);
-            (w.plots.charts.get(&self.kind).cloned(), w.computing, w.selected.len())
+            (w.plots.charts.get(&self.kind).cloned(), w.computing, w.selected.len(), w.mismatch(cx))
         };
+        // Views read from the recording at the sorting's spikes: none from another recording
+        let reads_recording = matches!(self.kind, ViewKind::Waveforms | ViewKind::Features | ViewKind::FeatureGrid | ViewKind::TemplateFeatures);
+        let not_this_recording = mismatch.filter(|_| reads_recording).map(|why| format!("Needs the recording this sorting was made from: {why}"));
         // Why a view is empty, when it is not waiting for a selection
         let empty = match self.kind {
+            _ if not_this_recording.is_some() => not_this_recording.as_deref().unwrap_or_default(),
             _ if computing => "Computing…",
             _ if picked == 0 => "Select units in the table",
             ViewKind::TemplateFeatures if picked < 2 => "Select two units (Ctrl+click in the table)",
@@ -1184,9 +1447,11 @@ impl CurationPanel {
                 .flex()
                 .items_center()
                 .justify_center()
+                .px_4()
+                .text_center()
                 .text_sm()
                 .text_color(muted)
-                .child(empty)
+                .child(empty.to_string())
                 .into_any_element(),
         }
     }
@@ -1590,7 +1855,7 @@ mod bench {
         let source: Arc<dyn dspk_core::RecordingSource> = Arc::from(dspk_synapse::io::open_source(&rec, &id).unwrap());
         let signal: Arc<dyn SignalBackend> = Arc::new(LocalSignal::open(source, None).unwrap());
         let t = Instant::now();
-        let windows = crate::sorting::windows_of(&signal);
+        let windows = crate::sorting::windows_of(&signal, &sorting);
         println!("windows (once per signal): {:.0} ms, {} × {} samples × {} channels", t.elapsed().as_secs_f64() * 1e3, windows.starts.len(), windows.len, windows.channels);
         let palette = dspk_app_core::ui::theme::palette::Palette::of(true);
         let lead = sorting.alive().max_by_key(|&u| sorting.units[u].info.num_spikes).unwrap();

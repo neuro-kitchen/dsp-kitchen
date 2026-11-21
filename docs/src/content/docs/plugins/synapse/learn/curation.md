@@ -9,8 +9,10 @@ sidebar:
 
 ![Curation: the unit table, similar units, waveforms, features, correlograms, ISI, amplitude over time and template of one unit](/dsp-kitchen/img/app/18-data-curation.png)
 
-**Curation** shows the active view's sorting in views you arrange: each is a dock panel you can drag,
-snap or close. The **Views** menu toggles each one, and the **Layout** menu applies a grid.
+**Curation** shows the active view's sorting in views you arrange, or opens directly on a
+`.sorting.zarr` or Phy folder as a standalone workspace without a loaded recording: use the left
+**Affinity** rail and **Source** picker to move between units, and arrange each dock panel you can
+drag, snap or close. The **Views** menu toggles each one, and the **Layout** menu applies a grid.
 
 | View | Shows |
 |---|---|
@@ -28,7 +30,8 @@ snap or close. The **Views** menu toggles each one, and the **Layout** menu appl
 | Similarity | The units most like it: merge candidates |
 | Probe | Units on the probe |
 
-Under them, the bottom strip shows the lead unit's channels over the shared timeline, or a raster.
+Under them, a stacked **Raster + Traces** bottom strip shows sorted spikes alongside the lead
+unit's channels over the shared timeline.
 
 Charts are interactive: wheel zooms (Shift for x, Alt for y), drag pans, and double-click resets. Each
 has its settings under ⋯.

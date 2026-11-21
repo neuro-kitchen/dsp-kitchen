@@ -17,7 +17,7 @@
 
 use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::Full;
@@ -32,7 +32,7 @@ use tokio_tungstenite::WebSocketStream;
 
 use super::auth::{Authority, Peer};
 use super::pairing::{PairReply, PairToken};
-use super::server::{answer, Current, Device};
+use super::server::{answer, Current, Device, Opened};
 use crate::error::{StreamError, StreamResult};
 use crate::protocol::wire;
 
@@ -46,6 +46,32 @@ pub const MAX_WEB_FRAME_BYTES: usize = 1 << 20;
 /// Where a page reaches a device's live protocol (`dspk-device` serving pages).
 #[cfg(feature = "live")]
 pub const LIVE_WS_PATH: &str = "/live";
+/// What the page may load and connect to: its own files and server only (no inline script: the
+/// loader is `loader.js`; WebAssembly from the page's own module; workers from the page or the
+/// blobs the threads start from). `'unsafe-eval'`: `wasm_thread` evaluates two constant strings
+/// at start (`eval("self")`, its script-path finder); without it the page panics at start.
+/// `connect-src` also names 127.0.0.1: a page at `localhost` reaches WebTransport there (QUIC
+/// does not fall back from ::1); a CSP source cannot name an IPv6 literal with a wildcard port.
+/// (As lucem's, found in its first browser run.)
+pub const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://127.0.0.1:*; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+
+/// Whether a connection's `Origin` is the page's own (`authority`: the `host:port` it reached):
+/// another site open in the same browser may not use the server, whatever it knows. No origin:
+/// not a browser (it still needs a token or a code). Loopback names on one port are one.
+pub(super) fn same_origin(origin: Option<&str>, authority: &str) -> bool {
+    let Some(origin) = origin else { return true };
+    let host = origin.strip_prefix("https://").or_else(|| origin.strip_prefix("http://")).unwrap_or("").trim_end_matches('/');
+    if host.is_empty() {
+        return false;
+    }
+    if host.eq_ignore_ascii_case(authority) {
+        return true;
+    }
+    let split = |a: &str| a.rsplit_once(':').map(|(h, p)| (h.trim_matches(['[', ']']).to_ascii_lowercase(), p.to_string()));
+    let loopback = |h: &str| h == "localhost" || h == "::1" || h.starts_with("127.");
+    matches!((split(host), split(authority)), (Some((h1, p1)), Some((h2, p2))) if p1 == p2 && loopback(&h1) && loopback(&h2))
+}
+
 /// How long a page has to say who it is.
 pub(super) const HELLO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -54,6 +80,8 @@ pub struct WebServer {
     listener: tokio::net::TcpListener,
     /// `None`: plain HTTP (see [`WebTls::Plain`]).
     tls: Option<tokio_rustls::TlsAcceptor>,
+    /// WebTransport on the same port number, UDP ([`WT_PATH`]).
+    transport: wtransport::Endpoint<wtransport::endpoint::endpoint_side::Server>,
     state: Arc<State>,
 }
 
@@ -80,6 +108,8 @@ pub(super) struct State {
     /// The folder of the web app's files; `None`: only the WebSocket is served.
     web_root: Option<PathBuf>,
     names: Vec<String>,
+    /// What a page is told before it connects (`dspk-serve.json`).
+    serve_info: crate::pair::ServeInfo,
     /// A device whose live protocol pages reach at [`LIVE_WS_PATH`] (`dspk-device`).
     #[cfg(feature = "live")]
     pub(super) live: Option<Arc<dyn crate::live::Device>>,
@@ -104,14 +134,33 @@ impl WebServer {
             None => None,
         };
         let listener = tokio::net::TcpListener::bind(addr).await?;
+        let port = listener.local_addr()?.port();
+        // WebTransport: the same port number, UDP; a fresh ECDSA certificate valid 14 days, which a
+        // page accepts by its SHA-256 (in dspk-serve.json); restart within 14 days (as lucem)
+        let mut sans: Vec<String> = names.clone();
+        for loopback in ["localhost", "127.0.0.1", "::1"] {
+            if !sans.iter().any(|n| n == loopback) {
+                sans.push(loopback.into());
+            }
+        }
+        if !addr.ip().is_unspecified() && !sans.contains(&addr.ip().to_string()) {
+            sans.push(addr.ip().to_string());
+        }
+        let identity = wtransport::Identity::self_signed(&sans).map_err(|e| StreamError::Tls(format!("the WebTransport certificate: {e}")))?;
+        let certificate_sha256 = identity.certificate_chain().as_slice().first().map(|c| c.hash().as_ref().to_vec()).unwrap_or_default();
+        let config = wtransport::ServerConfig::builder().with_bind_address(SocketAddr::new(addr.ip(), port)).with_identity(identity).keep_alive_interval(Some(std::time::Duration::from_secs(5))).build();
+        let transport = wtransport::Endpoint::server(config)?;
+        let serve_info = crate::pair::ServeInfo { server: Some(device.name.clone()), webtransport_port: Some(port), certificate_sha256 };
         Ok(Self {
             listener,
             tls,
+            transport,
             state: Arc::new(State {
                 authority,
                 device,
                 web_root,
                 names,
+                serve_info,
                 #[cfg(feature = "live")]
                 live: None,
             }),
@@ -134,35 +183,54 @@ impl WebServer {
         Ok(self.listener.local_addr()?)
     }
 
-    /// Serves pages until the task is dropped.
+    /// Serves pages until the task is dropped: HTTP(S) and the WebSocket on TCP, WebTransport on
+    /// UDP.
     pub async fn run(self) {
-        loop {
-            let (tcp, remote) = match self.listener.accept().await {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!("web: accept failed: {e}");
-                    continue;
-                }
-            };
-            let (tls, state) = (self.tls.clone(), self.state.clone());
-            tokio::spawn(async move {
-                let service = hyper::service::service_fn(move |request| handle(request, state.clone()));
-                let http = hyper::server::conn::http1::Builder::new();
-                let served = match tls {
-                    Some(tls) => match tls.accept(tcp).await {
-                        Ok(stream) => http.serve_connection(TokioIo::new(stream), service).with_upgrades().await,
+        let Self { listener, tls, transport, state } = self;
+        let http = {
+            let state = state.clone();
+            async move {
+                loop {
+                    let (tcp, remote) = match listener.accept().await {
+                        Ok(c) => c,
                         Err(e) => {
-                            tracing::debug!("web: TLS handshake with {remote} failed: {e}");
-                            return;
+                            tracing::warn!("web: accept failed: {e}");
+                            continue;
                         }
-                    },
-                    None => http.serve_connection(TokioIo::new(tcp), service).with_upgrades().await,
-                };
-                if let Err(e) = served {
-                    tracing::debug!("web: connection with {remote} ended: {e}");
+                    };
+                    let (tls, state) = (tls.clone(), state.clone());
+                    tokio::spawn(async move {
+                        let service = hyper::service::service_fn(move |request| handle(request, state.clone()));
+                        let http = hyper::server::conn::http1::Builder::new();
+                        let served = match tls {
+                            Some(tls) => match tls.accept(tcp).await {
+                                Ok(stream) => http.serve_connection(TokioIo::new(stream), service).with_upgrades().await,
+                                Err(e) => {
+                                    tracing::debug!("web: TLS handshake with {remote} failed: {e}");
+                                    return;
+                                }
+                            },
+                            None => http.serve_connection(TokioIo::new(tcp), service).with_upgrades().await,
+                        };
+                        if let Err(e) = served {
+                            tracing::debug!("web: connection with {remote} ended: {e}");
+                        }
+                    });
                 }
-            });
-        }
+            }
+        };
+        let webtransport = async move {
+            loop {
+                let incoming = transport.accept().await;
+                let state = state.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = webtransport_session(incoming, state).await {
+                        tracing::debug!("webtransport: session ended: {e}");
+                    }
+                });
+            }
+        };
+        tokio::join!(http, webtransport);
     }
 }
 
@@ -176,12 +244,20 @@ fn reply(status: StatusCode, content_type: &str, body: impl Into<Bytes>) -> Repl
         .header("cross-origin-opener-policy", "same-origin")
         .header("cross-origin-embedder-policy", "require-corp")
         .header("x-content-type-options", "nosniff")
+        .header("content-security-policy", CONTENT_SECURITY_POLICY)
+        .header("referrer-policy", "no-referrer")
         .body(Full::new(body.into()))
         .expect("a response")
 }
 
 async fn handle(mut request: Request<Incoming>, state: Arc<State>) -> Result<Reply, std::convert::Infallible> {
     if request.uri().path() == WS_PATH {
+        let origin = request.headers().get("origin").and_then(|v| v.to_str().ok());
+        let host = request.headers().get("host").and_then(|v| v.to_str().ok()).unwrap_or_default();
+        if !same_origin(origin, host) {
+            tracing::warn!("web: refused a WebSocket from {origin:?} (not the page's origin)");
+            return Ok(reply(StatusCode::FORBIDDEN, "text/plain", "not this page's origin"));
+        }
         return Ok(upgrade(&mut request, state, false));
     }
     #[cfg(feature = "live")]
@@ -194,7 +270,8 @@ async fn handle(mut request: Request<Incoming>, state: Arc<State>) -> Result<Rep
     // The page's loader asks this first: answered, the page is a client of this server; not
     // found (a plain file server, GitHub Pages), it runs alone with its own engine
     if request.uri().path().ends_with(SERVE_PATH) {
-        return Ok(reply(StatusCode::OK, "application/json", format!("{{\"server\":{:?}}}", state.device.name)));
+        let info = serde_json::to_string(&state.serve_info).unwrap_or_else(|_| "{}".into());
+        return Ok(reply(StatusCode::OK, "application/json", info));
     }
     if request.method() != hyper::Method::GET {
         return Ok(reply(StatusCode::METHOD_NOT_ALLOWED, "text/plain", "GET only"));
@@ -375,7 +452,7 @@ where
     send_text(&mut socket, &WebWelcome { server_name: device.name.clone(), server_version: device.version.clone(), peer_name: peer.name.clone(), permission: peer.permission, has_files: device.files.is_some(), runtime: device.runtime.clone() }).await?;
     tracing::info!("web: {} connected ({})", peer.name, peer.permission);
 
-    let current: Current = Arc::new(Mutex::new(device.recording.clone()));
+    let current: Current = Opened::with(device.recording.clone());
     let peer = Arc::new(peer);
     let (mut sink, mut stream) = socket.split();
     // Answers are computed concurrently and written by one task, in the order they finish
@@ -415,6 +492,113 @@ where
     }
     drop(answers);
     writer.abort();
+    Ok(())
+}
+
+// ---- WebTransport (as lucem's: one stream per request; the first one says who the page is) ----
+
+/// Largest JSON message while a page says who it is.
+const MAX_HELLO_BYTES: usize = 64 << 10;
+
+async fn read_frame(recv: &mut wtransport::RecvStream, max: usize) -> StreamResult<Vec<u8>> {
+    let mut len = [0u8; 4];
+    recv.read_exact(&mut len).await.map_err(web_error)?;
+    let len = u32::from_be_bytes(len) as usize;
+    if len > max {
+        return Err(StreamError::TooLarge { len, max });
+    }
+    let mut body = vec![0u8; len];
+    recv.read_exact(&mut body).await.map_err(web_error)?;
+    Ok(body)
+}
+
+async fn write_frame(send: &mut wtransport::SendStream, bytes: &[u8]) -> StreamResult<()> {
+    let mut frame = Vec::with_capacity(4 + bytes.len());
+    frame.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+    frame.extend_from_slice(bytes);
+    send.write_all(&frame).await.map_err(web_error)
+}
+
+async fn wt_send_json(send: &mut wtransport::SendStream, message: &impl Serialize) -> StreamResult<()> {
+    write_frame(send, serde_json::to_string(message).map_err(web_error)?.as_bytes()).await
+}
+
+async fn wt_next_json<M: for<'de> Deserialize<'de>>(recv: &mut wtransport::RecvStream) -> StreamResult<M> {
+    serde_json::from_slice(&read_frame(recv, MAX_HELLO_BYTES).await?).map_err(web_error)
+}
+
+/// Who the page is, on the session's first stream: by its token, or by pairing now.
+async fn identify_wt(send: &mut wtransport::SendStream, recv: &mut wtransport::RecvStream, state: &State) -> StreamResult<Option<Peer>> {
+    match wt_next_json::<WebHello>(recv).await? {
+        WebHello::Token { token } => Ok(state.authority.authorize_token(&token)),
+        WebHello::Pair { pair } => {
+            let pairing = match state.authority.pairing_start(&pair) {
+                Ok((pairing, reply)) => {
+                    wt_send_json(send, &reply).await?;
+                    pairing
+                }
+                Err(refusal) => {
+                    wt_send_json(send, &refusal).await?;
+                    return Ok(None);
+                }
+            };
+            let proof: PairToken = wt_next_json(recv).await?;
+            let reply = state.authority.pairing_finish_token(pairing, &proof, &state.names);
+            let peer = match &reply {
+                PairReply::Token { token, .. } => state.authority.authorize_token(token),
+                _ => None,
+            };
+            wt_send_json(send, &reply).await?;
+            Ok(peer)
+        }
+    }
+}
+
+async fn webtransport_session(incoming: wtransport::endpoint::IncomingSession, state: Arc<State>) -> StreamResult<()> {
+    let request = incoming.await.map_err(web_error)?;
+    if request.path() != crate::pair::WT_PATH {
+        request.not_found().await;
+        return Ok(());
+    }
+    if !same_origin(request.origin(), request.authority()) {
+        tracing::warn!("webtransport: refused a session from {:?} (not the page's origin)", request.origin());
+        request.forbidden().await;
+        return Ok(());
+    }
+    let connection = request.accept().await.map_err(web_error)?;
+    let (mut send, mut recv) = connection.accept_bi().await.map_err(web_error)?;
+    let peer = match tokio::time::timeout(HELLO_TIMEOUT, identify_wt(&mut send, &mut recv, &state)).await {
+        Ok(Ok(Some(peer))) => peer,
+        Ok(Ok(None)) => {
+            connection.close(wtransport::VarInt::from_u32(1), b"not let in");
+            return Err(StreamError::protocol("not let in"));
+        }
+        Ok(Err(e)) => return Err(e),
+        Err(_) => return Err(StreamError::protocol("the page did not say who it is")),
+    };
+    let device = state.device.clone();
+    let welcome = WebWelcome { server_name: device.name.clone(), server_version: device.version.clone(), peer_name: peer.name.clone(), permission: peer.permission, has_files: device.files.is_some(), runtime: device.runtime.clone() };
+    wt_send_json(&mut send, &welcome).await?;
+    tracing::info!("webtransport: {} connected ({})", peer.name, peer.permission);
+    let current: Current = Opened::with(device.recording.clone());
+    let peer = Arc::new(peer);
+    // One stream per request, answered concurrently; a stream the page closes is a request it no
+    // longer wants (the answer's write fails, nothing else waits on it)
+    loop {
+        let Ok((mut send, mut recv)) = connection.accept_bi().await else { break };
+        let (device, current, peer) = (device.clone(), current.clone(), peer.clone());
+        tokio::spawn(async move {
+            let kind = match read_frame(&mut recv, MAX_WEB_FRAME_BYTES).await.and_then(|b| wire::Request::decode(b.as_slice()).map_err(web_error)) {
+                Ok(wire::Request { kind: Some(wire::request::Kind::Fetch(_)) }) => wire::response::Kind::Error("downloads are not offered to browsers".into()),
+                Ok(request) => answer(request, &device, &current, &peer).await.unwrap_or_else(|e| wire::response::Kind::Error(e.reason())),
+                Err(e) => wire::response::Kind::Error(format!("not a request: {e}")),
+            };
+            let response = wire::Response { kind: Some(kind) };
+            if write_frame(&mut send, &response.encode_to_vec()).await.is_ok() {
+                let _ = send.finish().await;
+            }
+        });
+    }
     Ok(())
 }
 
@@ -517,6 +701,22 @@ mod tests {
         say(&mut socket, &WebHello::Token { token: paired.token }).await;
         assert!(text::<WebWelcome>(&mut socket).await.is_none(), "revoked");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_the_pages_own_origin_connects() {
+        assert!(same_origin(Some("http://127.0.0.1:50052"), "127.0.0.1:50052"));
+        assert!(same_origin(None, "127.0.0.1:50052"), "not a browser");
+        assert!(!same_origin(Some("https://evil.example"), "127.0.0.1:50052"));
+        assert!(!same_origin(Some("http://127.0.0.1:9000"), "127.0.0.1:50052"), "another port");
+        assert!(same_origin(Some("http://localhost:50052"), "127.0.0.1:50052"), "a loopback name, same port");
+        assert!(!same_origin(Some("null"), "127.0.0.1:50052"));
+    }
+
+    #[test]
+    fn the_page_gets_a_content_security_policy() {
+        let r = reply(StatusCode::OK, "text/html", "x");
+        assert!(r.headers().get("content-security-policy").unwrap().to_str().unwrap().contains("script-src 'self'"));
     }
 
     #[test]

@@ -10,7 +10,7 @@ use burn_tensor::{Device, Shape, Tensor, TensorData};
 use dspk_core::{ComputeTarget, DspError, DspResult};
 
 /// The Burn device for `target`: wgpu for [`ComputeTarget::Wgpu`], Flex (CPU) otherwise.
-fn burn_device(target: ComputeTarget) -> DspResult<Device> {
+pub(crate) fn burn_device(target: ComputeTarget) -> DspResult<Device> {
     match target {
         #[cfg(feature = "wgpu")]
         ComputeTarget::Wgpu => Ok(Device::wgpu(burn_tensor::DeviceKind::DefaultDevice)),
@@ -18,6 +18,145 @@ fn burn_device(target: ComputeTarget) -> DspResult<Device> {
         _ => Ok(Device::flex()),
         #[cfg(not(feature = "flex"))]
         other => Err(DspError::InvalidConfig(format!("Burn backend not compiled for compute target {other}"))),
+    }
+}
+
+/// Pre-uploaded `f32` linear layer weights stored already transposed `[in_features, out_features]` on
+/// the active device.
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedLinear2d {
+    pub(crate) weight_t: Tensor<2>,
+    pub(crate) bias: Option<Tensor<2>>,
+}
+
+impl PreparedLinear2d {
+    /// Uploads `weight` (`[out_features, in_features]` row-major) and optional `bias` (`[out_features]`)
+    /// to `dev`, transposing `weight` once on upload.
+    pub(crate) fn new(
+        dev: &Device,
+        weight: &[f32],
+        out_features: usize,
+        in_features: usize,
+        bias: Option<&[f32]>,
+    ) -> DspResult<Self> {
+        if weight.len() != out_features * in_features {
+            return Err(DspError::InvalidConfig(format!(
+                "PreparedLinear2d: weight len {} != out_features ({out_features}) * in_features ({in_features})",
+                weight.len()
+            )));
+        }
+        if let Some(b) = bias {
+            if b.len() != out_features {
+                return Err(DspError::InvalidConfig(format!(
+                    "PreparedLinear2d: bias len {} != out_features ({out_features})",
+                    b.len()
+                )));
+            }
+        }
+        let weight_t = Tensor::<2>::from_data(
+            TensorData::new(weight.to_vec(), Shape::new([out_features, in_features])),
+            dev,
+        )
+        .transpose();
+        let bias = bias.map(|b| {
+            Tensor::<2>::from_data(TensorData::new(b.to_vec(), Shape::new([1, out_features])), dev)
+        });
+        Ok(Self { weight_t, bias })
+    }
+
+    /// Creates from a pre-transposed `[in_features, out_features]` weight slice.
+    pub(crate) fn from_pretransposed(
+        dev: &Device,
+        weight_t: &[f32],
+        in_features: usize,
+        out_features: usize,
+        bias: Option<&[f32]>,
+    ) -> DspResult<Self> {
+        if weight_t.len() != in_features * out_features {
+            return Err(DspError::InvalidConfig(format!(
+                "PreparedLinear2d: weight_t len {} != [{in_features}, {out_features}]",
+                weight_t.len()
+            )));
+        }
+        if let Some(b) = bias {
+            if b.len() != out_features {
+                return Err(DspError::InvalidConfig(format!(
+                    "PreparedLinear2d: bias len {} != out_features ({out_features})",
+                    b.len()
+                )));
+            }
+        }
+        let weight_t = Tensor::<2>::from_data(
+            TensorData::new(weight_t.to_vec(), Shape::new([in_features, out_features])),
+            dev,
+        );
+        let bias = bias.map(|b| {
+            Tensor::<2>::from_data(TensorData::new(b.to_vec(), Shape::new([1, out_features])), dev)
+        });
+        Ok(Self { weight_t, bias })
+    }
+
+    pub(crate) fn forward(&self, x: Tensor<2>) -> Tensor<2> {
+        let y = x.matmul(self.weight_t.clone());
+        match &self.bias {
+            Some(b) => y + b.clone(),
+            None => y,
+        }
+    }
+}
+
+/// Pre-uploaded `f32` 1D convolution kernel `[out_channels, in_channels / groups, kernel_size]` and bias.
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedConv1d {
+    pub(crate) weight: Tensor<3>,
+    pub(crate) bias: Option<Tensor<1>>,
+    pub(crate) stride: usize,
+    pub(crate) padding: usize,
+    pub(crate) dilation: usize,
+    pub(crate) groups: usize,
+}
+
+impl PreparedConv1d {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        dev: &Device,
+        weight: &[f32],
+        out_channels: usize,
+        in_per_group: usize,
+        kernel_size: usize,
+        bias: Option<&[f32]>,
+        stride: usize,
+        padding: usize,
+        dilation: usize,
+        groups: usize,
+    ) -> DspResult<Self> {
+        let expected_w = out_channels * in_per_group * kernel_size;
+        if weight.len() != expected_w {
+            return Err(DspError::InvalidConfig(format!(
+                "PreparedConv1d: weight len {} != [{out_channels}, {in_per_group}, {kernel_size}]",
+                weight.len()
+            )));
+        }
+        let weight = Tensor::<3>::from_data(
+            TensorData::new(weight.to_vec(), Shape::new([out_channels, in_per_group, kernel_size])),
+            dev,
+        );
+        let bias = bias.map(|b_slice| {
+            Tensor::<1>::from_data(TensorData::new(b_slice.to_vec(), Shape::new([out_channels])), dev)
+        });
+        Ok(Self {
+            weight,
+            bias,
+            stride,
+            padding,
+            dilation,
+            groups,
+        })
+    }
+
+    pub(crate) fn forward(&self, x: Tensor<3>) -> Tensor<3> {
+        let options = ConvOptions::new([self.stride], [self.padding], [self.dilation], self.groups);
+        conv1d(x, self.weight.clone(), self.bias.clone(), options)
     }
 }
 

@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "benchmark": "kernels/hdbscan",
+  "date": "2026-11-21",
+  "dspk": {
+    "version": "0.0.13",
+    "commit": "",
+    "runtime": "cuda"
+  },
+  "reference": null,
+  "machine": "NVIDIA GeForce RTX 2070 with Max-Q Design \u00b7 Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz (12 threads) \u00b7 linux 7.3.4-300.fc45.x86_64",
+  "notes": "HDBSCAN of 40000 synthetic clips \u00d7 61 features (min cluster size 20), one run",
+  "cases": [
+    {
+      "name": "hdbscan 40000 points",
+      "shape": [
+        40000,
+        61
+      ],
+      "dtype": "float32",
+      "dspk_ms": 1058.366626,
+      "reference_ms": null,
+      "max_abs_err": null,
+      "rel_err": null,
+      "tolerance": null,
+      "pass": null,
+      "extra": {
+        "clusters": 9.0,
+        "noise_points": 8778.0
+      }
+    }
+  ]
+}

@@ -383,9 +383,10 @@ pub fn run(client: &Client, source: &dyn RecordingSource, probe: &SensorLayout, 
         (true, Some(proto)) => {
             let mut chunks = Vec::new();
             device.for_each_while(&spread_windows(total, cfg.fine_detector_chunks, ms(500.0) as u64, halos), |w, prepared| {
-                let x = buffer::download_prefix::<f32>(client, prepared.clone(), channels * w.read_len());
                 let v = w.valid_len();
-                chunks.push(((0..channels).flat_map(|c| x[c * w.read_len() + w.valid_local.start..c * w.read_len() + w.valid_local.end].iter().copied()).collect::<Vec<f32>>(), v));
+                let part = buffer::empty::<f32>(client, channels * v);
+                dspk_ops::core::layout::crop_rows::<f32>(client, prepared, &part, channels, w.read_len(), w.valid_local.start, v);
+                chunks.push((buffer::download_prefix::<f32>(client, part, channels * v), v));
                 Ok(true)
             })?;
             Some(FineFilter::fit(&proto, nbefore, &positions, &chunks, cfg.detect_threshold))

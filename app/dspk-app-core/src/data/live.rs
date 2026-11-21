@@ -79,9 +79,7 @@ pub fn detect(signal: &Arc<dyn SignalBackend>, channels: &[usize], samples: Rang
         return Ok(Vec::new());
     }
     let mut rows = vec![0.0f32; channels.len() * n];
-    for (i, &ch) in channels.iter().enumerate() {
-        signal.read(&[ch], from..end, &mut rows[i * n..(i + 1) * n])?;
-    }
+    signal.read(channels, from..end, &mut rows)?;
     let mut tracker = CrossingTracker::new(channels.len(), &options).map_err(|e| DspError::InvalidConfig(e.to_string()))?;
     tracker.push_host_window(&rows, n, 0..n, from);
     let secs = |s: u64| s as f64 / rate;

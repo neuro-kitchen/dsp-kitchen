@@ -11,6 +11,7 @@ use std::rc::Rc;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{h_flex, v_flex, ActiveTheme as _, Sizable as _};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
     div, px, AnyElement, AnyView, App, AppContext as _, Context, Entity, ExternalPaths, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
@@ -48,6 +49,28 @@ impl Render for StatusReadings {
             (Some(d), Some(_)) => format!("{} · working", d.label),
             (Some(d), None) => d.label.clone(),
         };
+        let unread = s.unread_notifications;
+        let total = s.notifications.len();
+        let store = self.store.clone();
+        let bell_label = if unread > 0 {
+            unread.to_string()
+        } else if total > 0 {
+            total.to_string()
+        } else {
+            String::new()
+        };
+        let bell = h_flex()
+            .id("status-notifications")
+            .gap(px(theme::XS))
+            .px_1()
+            .rounded_sm()
+            .items_center()
+            .cursor_pointer()
+            .text_color(if unread > 0 { cx.theme().foreground } else { color::text_muted() })
+            .child(gpui_kit::component::Icon::new(IconName::Bell).small())
+            .when(!bell_label.is_empty(), |d| d.child(bell_label))
+            .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Notifications & recent status messages").build(w, cx))
+            .on_click(move |_, _, cx| store.update(cx, |s, cx| s.toggle_notifications(cx)));
         h_flex()
             .gap(px(theme::LG))
             .items_center()
@@ -55,6 +78,7 @@ impl Render for StatusReadings {
             .children(opening)
             .child(div().text_color(color::text_muted()).child(s.render_info.clone()))
             .child(meter(IconName::Gpu, device, "Where processing runs: the compute device (Settings › Compute)"))
+            .child(bell)
     }
 }
 
@@ -94,16 +118,61 @@ impl Render for Modal {
     }
 }
 
-/// The Keyboard & mouse sheet (F1).
+/// The searchable Keyboard & mouse sheet (F1 / `?`, Spotlight-style).
 pub struct HelpSheet {
+    query: Entity<gpui_kit::component::input::InputState>,
     close: Rc<dyn Fn(&mut Window, &mut App)>,
+    _sub: Subscription,
 }
+
+impl HelpSheet {
+    pub fn new(close: Rc<dyn Fn(&mut Window, &mut App)>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let query = cx.new(|cx| gpui_kit::component::input::InputState::new(window, cx).placeholder("Search shortcuts… (e.g. zoom, merge, filter, undo)"));
+        let sub = cx.subscribe(&query, |_, _, e: &gpui_kit::component::input::InputEvent, cx| {
+            if matches!(e, gpui_kit::component::input::InputEvent::Change) {
+                cx.notify();
+            }
+        });
+        Self { query, close, _sub: sub }
+    }
+}
+
+const CURATION_HELP: &[(&str, &str)] = &[
+    ("Click / Ctrl+click", "Select a unit / add to selection"),
+    ("↓ ↑ (J / K)", "Next / previous unit in Curation table"),
+    ("Space / Shift+Space", "Next / previous most similar unit"),
+    ("Alt+G · Alt+M · Alt+N · Alt+U", "Label unit good · mua · noise · unsorted"),
+    ("G", "Merge selected units"),
+    ("Ctrl+S", "Save curation log into .sorting.zarr"),
+    ("? or H", "Toggle Curation shortcuts"),
+];
 
 impl Render for HelpSheet {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.theme();
-        let (muted, bg, border) = (t.muted_foreground, t.popover, t.border);
+        let (muted, bg) = (t.muted_foreground, t.popover);
         let (c1, c2) = (self.close.clone(), self.close.clone());
+        let q = self.query.read(cx).value().trim().to_ascii_lowercase();
+        let mut groups: Vec<(&'static str, Vec<(&'static str, &'static str)>)> = HELP
+            .iter()
+            .map(|(g, rows)| {
+                let filtered: Vec<_> = rows
+                    .iter()
+                    .copied()
+                    .filter(|(k, w)| q.is_empty() || k.to_ascii_lowercase().contains(&q) || w.to_ascii_lowercase().contains(&q) || g.to_ascii_lowercase().contains(&q))
+                    .collect();
+                (*g, filtered)
+            })
+            .filter(|(_, rows)| !rows.is_empty())
+            .collect();
+        let curation_rows: Vec<_> = CURATION_HELP
+            .iter()
+            .copied()
+            .filter(|(k, w)| q.is_empty() || k.to_ascii_lowercase().contains(&q) || w.to_ascii_lowercase().contains(&q) || "curation".contains(&q))
+            .collect();
+        if !curation_rows.is_empty() {
+            groups.push(("Curation", curation_rows));
+        }
         div()
             .id("help-overlay")
             .absolute()
@@ -116,21 +185,36 @@ impl Render for HelpSheet {
             .child(
                 v_flex()
                     .id("help")
-                    .w(px(560.))
+                    .w(px(580.))
+                    .max_h(px(620.))
                     .p_4()
                     .gap_3()
                     .rounded_lg()
-                    .border_1()
-                    .border_color(border)
                     .bg(bg)
+                    .shadow_lg()
                     .on_click(|_, _, cx| cx.stop_propagation())
                     .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Keyboard & mouse"))
-                    .children(HELP.iter().map(|(group, rows)| {
-                        v_flex().gap_1().child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(muted).child(*group)).children(
-                            rows.iter().map(|(keys, what)| h_flex().gap_3().child(div().w(px(230.)).text_sm().font_weight(FontWeight::MEDIUM).child(*keys)).child(div().text_sm().child(*what))),
-                        )
-                    }))
-                    .child(h_flex().justify_end().child(Button::new("help-close").outline().small().label("Close").on_click(move |_, w, cx| c2(w, cx)))),
+                    .child(gpui_kit::component::input::Input::new(&self.query).small().cleanable(true))
+                    .child(
+                        v_flex()
+                            .id("help-rows")
+                            .flex_1()
+                            .min_h_0()
+                            .gap_3()
+                            .overflow_y_scroll()
+                            .when(groups.is_empty(), |d| d.child(div().py_4().text_sm().text_color(muted).child("No matching shortcuts.")))
+                            .children(groups.into_iter().map(|(group, rows)| {
+                                v_flex().gap_1().child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(muted).child(group)).children(
+                                    rows.into_iter().map(|(keys, what)| {
+                                        h_flex()
+                                            .gap_3()
+                                            .child(div().w(px(230.)).flex_none().text_sm().font_weight(FontWeight::MEDIUM).child(keys))
+                                            .child(div().flex_1().min_w_0().text_sm().child(what))
+                                    }),
+                                )
+                            })),
+                    )
+                    .child(h_flex().justify_end().child(Button::new("help-close").ghost().small().label("Close").on_click(move |_, w, cx| c2(w, cx)))),
             )
     }
 }
@@ -211,21 +295,40 @@ impl WorkspaceBody {
             let opening = EmptyState::new(IconName::AudioWaveform, format!("Opening {name}…"), "Its first views appear in a moment; the overview fills in as you look");
             return div().id("start-screen").test_support().size_full().child(opening).into_any_element();
         }
+        // A page that does not know yet whether a server sent it: nothing, rather than a server's
+        // Open dialog that a page running alone replaces a moment later
+        if !crate::platform::remote::connected() {
+            return div().id("start-screen").test_support().size_full().into_any_element();
+        }
         // Files on this computer, or (a page served by `dspk serve`) the recordings of its server
         let mut screen = if crate::platform::remote::runs_alone() {
-            // A page on its own: the files the user picks, read and processed in this browser
-            EmptyState::new(IconName::AudioWaveform, "Open a recording", "A folder with your recordings (.zarr, .wav, or a .bin and its .meta), read in this browser").child(
-                h_flex()
-                    .gap_2()
-                    .child({
-                        let (store, browser) = (store.clone(), self.open_browser.clone());
-                        Button::new("start-pick-folder").primary().icon(IconName::FolderOpen).label("Open folder…").on_click(move |_, w, cx| commands::pick_page_files(&store, true, browser.clone(), w, cx))
-                    })
-                    .child({
-                        let (store, browser) = (store.clone(), self.open_browser.clone());
-                        Button::new("start-pick-files").outline().icon(IconName::File).label("Open files…").tooltip("Pick a .wav, or a .bin and its .meta (Ctrl+click both), without their folder").on_click(move |_, w, cx| commands::pick_page_files(&store, false, browser.clone(), w, cx))
-                    }),
-            )
+            // A page on its own: a file (the file chooser, as for a PDF), a project (its place),
+            // or a recording dropped on the window; read and processed in this browser, never sent
+            let note = self.store.read(cx).open_note.clone();
+            EmptyState::new(IconName::AudioWaveform, "Open a recording", "Drop a recording here (.zarr, .nwb.zarr, .wav), or open it. It is read in this browser and never leaves this computer.")
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child({
+                            let (store, browser) = (store.clone(), self.open_browser.clone());
+                            Button::new("start-open-file")
+                                .primary()
+                                .icon(IconName::File)
+                                .label("Open file…")
+                                .tooltip("A .wav, or a .bin with its .meta (select both)")
+                                .on_click(move |_, w, cx| commands::pick_page_files(&store, false, browser.clone(), w, cx))
+                        })
+                        .child({
+                            let (store, browser) = (store.clone(), self.open_browser.clone());
+                            Button::new("start-open-project")
+                                .outline()
+                                .icon(IconName::FolderOpen)
+                                .label("Open project…")
+                                .tooltip("A project, or a .zarr / .nwb.zarr recording: your browser asks once to let this page read it")
+                                .on_click(move |_, w, cx| commands::pick_page_files(&store, true, browser.clone(), w, cx))
+                        }),
+                )
+                .children(note.map(|n| div().pt_2().max_w(px(520.)).text_sm().text_color(cx.theme().danger).child(n)))
         } else if !crate::platform::LOCAL_FILES {
             EmptyState::new(IconName::AudioWaveform, "Open a recording", "The recordings of this page's server").child({
                 let open = self.open_browser.clone();
@@ -355,7 +458,7 @@ impl DspApp {
             let cell = shell_cell.clone();
             Rc::new(move |w, cx| overlay(&cell, None, false, w, cx))
         };
-        let help = cx.new(|_| HelpSheet { close: close.clone() });
+        let help = cx.new(|cx| HelpSheet::new(close.clone(), window, cx));
         let about = cx.new(|_| AboutSheet { close: close.clone() });
         let (c1, c2, c3) = (shell_cell.clone(), shell_cell.clone(), shell_cell.clone());
         let browser_store = store.clone();
@@ -397,6 +500,9 @@ impl DspApp {
                 })
             },
         };
+        // A page on its own: what is dropped on the window opens (no dialog, no browser prompt)
+        #[cfg(target_family = "wasm")]
+        commands::open_dropped(&store, ctx.open_browser.clone(), window, cx);
         commands::register(&registry, &ctx);
         let open_browser = ctx.open_browser.clone();
         registry.extend(crate::screens::pipeline::PipelineView::commands(pipeline.downgrade(), store.clone()));
@@ -412,6 +518,7 @@ impl DspApp {
                 let menus = match w {
                     Workspace::Explore => commands::explore_menus(),
                     Workspace::Pipeline => crate::screens::pipeline::PipelineView::menu_specs(),
+                    Workspace::Curation => commands::curation_menus(),
                     _ => commands::other_menus(),
                 };
                 WorkspaceSpec::new(commands::workspace_id(w), w.title(), w.icon(), body(w, cx)).hint(w.hint()).menus(menus)
@@ -430,7 +537,6 @@ impl DspApp {
         spec.app_menu = commands::app_menu(cx);
         spec.help_menu = vec![MenuItem::command("help.keys"), MenuItem::command("help.about")];
         spec.settings = sections;
-        spec.layout_toggles = vec!["view.channels".into(), "view.inspector".into()];
         spec.remote = Some(RemoteSpec { label: crate::platform::host_label().into(), icon: IconName::Server, menu: vec![MenuItem::command("remote.this"), MenuItem::Separator, MenuItem::command("remote.connect")] });
         spec.status_items = Some(Rc::new(move |_, _| readings.clone().into_any_element()));
         // Who works: a person's name (or a guest) on what is done and saved
@@ -556,6 +662,58 @@ impl DspApp {
 impl Render for DspApp {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _ = &self.pipeline;
+        let (notifs_open, notifs) = {
+            let s = self.store.read(cx);
+            (s.notifications_open, s.notifications.clone())
+        };
+        let notif_popover = notifs_open.then(|| {
+            let t = cx.theme();
+            let (bg, muted, item_bg) = (t.popover, t.muted_foreground, t.secondary);
+            let s_clear = self.store.clone();
+            let s_close = self.store.clone();
+            v_flex()
+                .id("notifications-popover")
+                .absolute()
+                .bottom(px(34.))
+                .right(px(10.))
+                .w(px(360.))
+                .max_h(px(320.))
+                .p_3()
+                .gap_2()
+                .rounded_lg()
+                .bg(bg)
+                .shadow_lg()
+                .on_click(|_, _, cx| cx.stop_propagation())
+                .child(
+                    h_flex()
+                        .items_center()
+                        .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).child("Notifications"))
+                        .child(div().flex_1())
+                        .when(!notifs.is_empty(), |d| {
+                            d.child(Button::new("notifs-clear").ghost().xsmall().label("Clear").on_click(move |_, _, cx| s_clear.update(cx, |s, cx| s.clear_notifications(cx))))
+                        })
+                        .child(crate::ui::widgets::icon_button("notifs-close", IconName::Close, "Close").xsmall().on_click(move |_, _, cx| s_close.update(cx, |s, cx| s.toggle_notifications(cx)))),
+                )
+                .child(
+                    v_flex()
+                        .id("notifications-list")
+                        .flex_1()
+                        .min_h_0()
+                        .gap_1()
+                        .overflow_y_scroll()
+                        .when(notifs.is_empty(), |d| d.child(div().py_2().text_xs().text_color(muted).child("No notifications yet.")))
+                        .children(notifs.into_iter().enumerate().map(|(i, msg)| {
+                            div()
+                                .id(("notif-item", i))
+                                .px_2()
+                                .py_1()
+                                .rounded_md()
+                                .bg(item_bg)
+                                .text_xs()
+                                .child(msg)
+                        })),
+                )
+        });
         div()
             .id("dspk-app")
             .size_full()
@@ -568,6 +726,7 @@ impl Render for DspApp {
             }))
             .child(self.shell.clone())
             .child(self.floating.clone())
+            .children(notif_popover)
     }
 }
 
@@ -1276,7 +1435,8 @@ mod tests {
         wait_until(cx, window, |cx| cx.update(|cx| store.read(cx).pyramids.get("main").is_some_and(|&(done, total)| done == total)));
         cx.update(|cx| {
             assert_eq!(store.read(cx).pyramids.len(), 1, "one pyramid for the source both views show");
-            assert!(store.read(cx).pyramid_label().is_none(), "nothing left to build");
+            assert!(store.read(cx).pyramid_status().is_none(), "nothing left to build");
+            assert!(store.read(cx).pyramid_label().is_none_or(|l| l.starts_with("Overview ready")), "at most the notice that it is ready");
             let ds = store.read(cx).sources().unwrap().get("main");
             let p = ds.signal().progress();
             assert_eq!(p.done, p.total);

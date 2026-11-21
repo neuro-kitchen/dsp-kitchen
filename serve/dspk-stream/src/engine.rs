@@ -40,6 +40,8 @@ pub struct OpenRecording {
     #[cfg_attr(target_family = "wasm", allow(dead_code))]
     pub(crate) stored: bool,
     processor: Option<Arc<dyn ViewProcessor>>,
+    /// Moves where the pyramid's builder works next (a view looked at a sample), while it builds.
+    refocus: Option<Arc<dyn Fn(u64) + Send + Sync>>,
     /// The processed signals clients asked views of, latest last (a few: each holds device memory),
     /// and whether each runs on the CPU (made while a batch job held the GPU).
     processed: Arc<Mutex<Vec<(wire::Processing, bool, Arc<ChainSlot>)>>>,
@@ -70,7 +72,7 @@ pub fn release_processed() {
 type ChainSlot = std::sync::OnceLock<Result<Arc<dyn SignalBackend>, String>>;
 
 /// Processed signals kept per open recording.
-const PROCESSED_KEPT: usize = 4;
+const PROCESSED_KEPT: usize = 2;
 
 /// Runs a view's ops on the server for clients that cannot compute (pages). The ops and the
 /// device are the caller's (dspk-stream knows neither): the command line runs dspk-pipeline.
@@ -89,6 +91,20 @@ pub trait ViewProcessor: Send + Sync {
     }
 }
 
+/// A view's processing by dspk-pipeline's chains: what `dspk serve` and a browser page's engine
+/// run (the stored signal and its pyramid answer what a chain does not process).
+#[cfg(feature = "pipeline")]
+impl ViewProcessor for dspk_pipeline::view::ProcessedChains {
+    fn processed(&self, source: Arc<dyn RecordingSource>, pyramid: Option<Arc<Pyramid>>, channels: &[usize], ops: &[String]) -> StreamResult<Arc<dyn SignalBackend>> {
+        let raw: Arc<dyn SignalBackend> = Arc::new(dspk_view::StoredSignal::new(source.clone(), pyramid));
+        Ok(self.make(raw, source, channels, ops).map_err(StreamError::Server)?)
+    }
+
+    fn warm<'a>(&'a self, channels: &'a [usize], ops: &'a [String], view: &'a View) -> WarmFuture<'a> {
+        Box::pin(async move { dspk_pipeline::view::ProcessedChains::warm(self, channels, ops, view).await.map_err(|e| StreamError::Server(e.to_string())) })
+    }
+}
+
 /// What [`ViewProcessor::warm`] returns: sent between threads on a server's runtime; a browser's
 /// futures stay on their thread.
 #[cfg(not(target_family = "wasm"))]
@@ -104,7 +120,24 @@ impl OpenRecording {
         all.retain(|w| w.strong_count() > 0);
         all.push(Arc::downgrade(&processed));
         drop(all);
-        Self { source, pyramid, info, stored, processor: None, processed }
+        Self { source, pyramid, info, stored, processor: None, refocus: None, processed }
+    }
+
+    /// Views move the pyramid's builder to where they look ([`Self::look_at`]): `refocus` gets the
+    /// sample at a view's centre.
+    pub fn with_refocus(mut self, refocus: Arc<dyn Fn(u64) + Send + Sync>) -> Self {
+        self.refocus = Some(refocus);
+        self
+    }
+
+    /// A view of samples `start..end` was asked: while the pyramid builds, it builds there next.
+    /// Views of most of the recording (a client asking how far the build is) move nothing.
+    pub fn look_at(&self, start: u64, end: u64) {
+        let total = self.info.samples;
+        let Some(refocus) = self.refocus.as_ref().filter(|_| self.pyramid.as_ref().is_some_and(|p| !p.is_complete())) else { return };
+        if end > start && (end - start) * 2 < total {
+            refocus(start + (end - start) / 2);
+        }
     }
 
     /// Views with processing are answered through `processor` (without one they are refused).
@@ -170,6 +203,12 @@ impl OpenRecording {
 pub trait RecordingOpener: Send + Sync {
     /// Opens `path` (`source`: one of the file's sources, `None` = its default).
     fn open(&self, path: &Path, source: Option<&str>) -> StreamResult<OpenRecording>;
+
+    /// The sources `path` holds (an NWB store's series); none when the format has one only, or
+    /// the opener does not list them.
+    fn sources(&self, _path: &Path) -> StreamResult<Vec<crate::protocol::wire::SourceInfo>> {
+        Ok(Vec::new())
+    }
 }
 
 /// The view a client asks for, refused when it is outside the recording or larger than the
@@ -200,8 +239,9 @@ pub fn checked_view(request: &wire::ViewRequest, info: &RecordingInfo) -> Stream
 /// chains. Views without ops need nothing.
 pub async fn warm_view(recording: &OpenRecording, request: &wire::ViewRequest) -> StreamResult<()> {
     let Some(processing) = request.processing.as_ref().filter(|p| !p.ops.is_empty()) else { return Ok(()) };
-    // A batch job holds the GPU: the view is answered on the CPU, nothing to warm on the device
-    if dspk_core::lease::batch_running() {
+    // A batch job holds the GPU, or the GPU was lost: the view is answered on the CPU, nothing to
+    // warm on the device
+    if dspk_core::lease::batch_running() || gpu_lost() {
         return Ok(());
     }
     let view = checked_view(request, recording.info())?;
@@ -213,21 +253,58 @@ pub async fn warm_view(recording: &OpenRecording, request: &wire::ViewRequest) -
     }
 }
 
+/// Whether the server's GPU was lost (wgpu poisons a device that runs out of memory or resets:
+/// every later launch on it fails until the process restarts). Processed views then run on the
+/// CPU, the same chains, instead of failing.
+static GPU_LOST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether `error` says the device is gone, not that one view failed.
+fn device_lost(error: &str) -> bool {
+    // What a poisoned wgpu device answers: the out-of-memory itself, then every later launch's
+    // missing buffers
+    ["Out of Memory", "device runner", "poison", "Device lost", "DeviceLost", "Memory location was never initialized", "couldn't find resource for that handle"].iter().any(|m| error.contains(m))
+}
+
+/// Notes a view's error: when it says the GPU is gone, processed views move to the CPU from now
+/// on (true: the caller answers again, on the CPU).
+pub fn note_device_error(error: &str) -> bool {
+    if !device_lost(error) {
+        return false;
+    }
+    if !GPU_LOST.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        tracing::error!("the GPU was lost ({error}): processed views run on the CPU until the server restarts");
+    }
+    true
+}
+
+/// Whether processed views run on the CPU because the GPU was lost ([`GPU_LOST`]).
+pub fn gpu_lost() -> bool {
+    GPU_LOST.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The answer to view `request` of `recording`: from its pyramid or its samples, or processed
 /// when the request carries ops (blocking: a chain may take seconds to make).
 pub fn answer_view(recording: &OpenRecording, request: &wire::ViewRequest) -> StreamResult<Envelope> {
     let view = checked_view(request, recording.info())?;
+    recording.look_at(view.start, view.end);
     match request.processing.as_ref().filter(|p| !p.ops.is_empty()) {
         Some(processing) => {
             // The GPU unless a batch job (a sort) holds it: then the CPU, the same chain
             let gpu = dspk_core::lease::interactive();
-            let on_cpu = gpu.is_none();
-            let answer = || -> StreamResult<Envelope> {
+            let on_cpu = gpu.is_none() || gpu_lost();
+            let answer = |on_cpu: bool| -> StreamResult<Envelope> {
                 let mut out = Envelope::Samples(Vec::new());
                 recording.processed_on(processing, on_cpu)?.view(&view, &mut out)?;
                 Ok(out)
             };
-            if on_cpu { dspk_core::device::with_target(dspk_core::ComputeTarget::Cpu, answer) } else { answer() }
+            let cpu = || dspk_core::device::with_target(dspk_core::ComputeTarget::Cpu, || answer(true));
+            if on_cpu {
+                return cpu();
+            }
+            match answer(false) {
+                Err(e) if note_device_error(&e.reason()) => cpu(),
+                other => other,
+            }
         }
         None => Ok(view.read(recording.source.as_ref(), recording.pyramid.as_deref())?),
     }
@@ -290,7 +367,9 @@ mod tests {
         assert!(matches!(open.processed(&chain("bad")), Err(StreamError::Server(_))));
         assert!(open.processed(&chain("bad")).is_err());
         assert_eq!(maker.made.lock().unwrap().iter().filter(|op| *op == "bad").count(), 2, "a failed chain is tried again");
-        assert_eq!(open.processed.lock().unwrap().len(), 2, "failed chains are not kept");
+        let kept = open.processed.lock().unwrap();
+        assert!(!kept.iter().any(|(p, _, _)| p == &chain("bad")), "failed chains are not kept");
+        assert_eq!(kept.len(), 1, "LRU eviction leaves only the surviving chain");
     }
 }
 

@@ -8,6 +8,10 @@ pub fn spawn(name: &str, work: impl FnOnce() + Send + 'static) -> std::io::Resul
     std::thread::Builder::new().name(name.into()).spawn(work).map(|_| ())
 }
 
+/// Trace frame timings for a measuring script: a page keeps them (`platform::web`); the desktop
+/// shows them in the status bar only.
+pub fn record_frame_timing(_render_ms: f64, _samples_per_px: f64, _complete: bool) {}
+
 /// Where recordings come from, for the title bar.
 pub fn host_label() -> String {
     "This computer".into()

@@ -2,9 +2,10 @@
 
 pub mod dataset;
 pub mod events;
-/// A view's processed signal (dspk-pipeline's, shared with `dspk serve`).
+/// A view's processed signal and the chains kept for a recording (dspk-pipeline's, shared with
+/// `dspk serve` and a page's engine).
 pub mod processed {
-    pub use dspk_pipeline::processed::*;
+    pub use dspk_pipeline::view::{Made, PreviewSource, ProcessedChains, ProcessedSignal};
 }
 pub mod sources;
 

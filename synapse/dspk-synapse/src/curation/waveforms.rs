@@ -8,14 +8,20 @@ use dspk_core::{DspResult, RecordingInfo, RecordingSource};
 
 use super::sorting::{SortingData, DEFAULT_HALF_WIDTH_MS};
 
-/// Waveforms are read from windows spread over the recording, each this long (s), every channel
-/// at once and kept for the session (one processing of each window serves every unit and
-/// channel): as many as fit in [`WINDOW_BUDGET_BYTES`], between [`MIN_WINDOWS`] and
-/// [`MAX_WINDOWS`].
+/// Waveforms are read from windows spread over **the span the sorting covers** (its first spike
+/// to its last: a sorting of the first 200 s of a 47 min recording finds its spikes there), each
+/// this long (s), every channel at once and kept for the session (one processing of each window
+/// serves every unit and channel): as many as fit in [`window_budget_bytes`], between
+/// [`MIN_WINDOWS`] and [`MAX_WINDOWS`]. More windows, more spikes per unit to show.
 pub const WINDOW_SEC: f64 = 1.0;
-pub const WINDOW_BUDGET_BYTES: usize = 256 << 20;
 pub const MIN_WINDOWS: usize = 2;
-pub const MAX_WINDOWS: usize = 12;
+pub const MAX_WINDOWS: usize = 64;
+
+/// RAM the windows may take: an eighth of the app's memory limit
+/// ([`dspk_core::memory::host_cache`]), at most 512 MiB.
+pub fn window_budget_bytes() -> usize {
+    (dspk_core::memory::host_cache().limit() / 8).min(512 << 20) as usize
+}
 
 /// Waveforms of some spikes of the sorting view: `snippets[k]` is spike `spikes[k]` on one
 /// channel, `before + after` samples.
@@ -184,19 +190,30 @@ pub struct Windows {
 impl Windows {
     /// Reads the windows of `source` (every channel; blocking).
     pub fn read(source: &dyn RecordingSource) -> Self {
-        Self::read_with(source.info(), |channels, samples, out| source.read(channels, samples, out))
+        Self::read_with(source.info(), None, |channels, samples, out| source.read(channels, samples, out))
     }
 
     /// Reads the windows of a signal described by `info` through `read` (as
     /// [`RecordingSource::read`]: `samples` of `channels`, channel-major): for signals that are
     /// not a [`RecordingSource`], e.g. a viewer's processed preview.
-    pub fn read_with(info: &RecordingInfo, read: impl Fn(&[usize], std::ops::Range<u64>, &mut [f32]) -> DspResult<()>) -> Self {
+    ///
+    /// `span`: where the windows go (a sorting's spikes: [`SortingData::span`]); `None`, the whole
+    /// recording.
+    pub fn read_with(info: &RecordingInfo, span: Option<std::ops::Range<u64>>, read: impl Fn(&[usize], std::ops::Range<u64>, &mut [f32]) -> DspResult<()>) -> Self {
         let (total, channels) = (info.samples, info.channels.len());
+        let span = span.map_or(0..total, |s| s.start.min(total)..s.end.min(total).max(s.start.min(total)));
+        let (first, extent) = (span.start, span.end - span.start);
         let rate = info.sample_rate_hz();
         let len = ((WINDOW_SEC * rate) as u64).clamp(1, total.max(1));
         let per_window = channels.max(1) * len as usize * 4;
-        let count = (WINDOW_BUDGET_BYTES / per_window.max(1)).clamp(MIN_WINDOWS, MAX_WINDOWS);
-        let starts: Vec<u64> = if total <= len { vec![0] } else { (0..count).map(|i| (total - len) * i as u64 / (count - 1) as u64).collect() };
+        // As many as fit, but no more than the span holds side by side
+        let fit = (extent / len.max(1)).max(1) as usize;
+        let count = (window_budget_bytes() / per_window.max(1)).clamp(MIN_WINDOWS, MAX_WINDOWS).min(fit.max(1));
+        let starts: Vec<u64> = if extent <= len || count < 2 {
+            vec![first.min(total.saturating_sub(len))]
+        } else {
+            (0..count).map(|i| first + (extent - len) * i as u64 / (count - 1) as u64).collect()
+        };
         let all: Vec<usize> = (0..channels).collect();
         let mut data = Vec::with_capacity(starts.len());
         let mut kept = Vec::with_capacity(starts.len());
