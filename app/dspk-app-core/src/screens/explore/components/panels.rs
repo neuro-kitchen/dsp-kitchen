@@ -821,9 +821,13 @@ enum TrackHit {
 pub struct TimelinePanel {
     store: Entity<Store>,
     dock: DockToggle,
-    /// Activity per overview column (and the width it was computed for); dropped when more of
-    /// the recording is summarized.
+    /// Activity per overview column (and the width it was computed for); kept visible while a
+    /// throttled refresh updates it.
     activity: Option<(usize, Rc<Vec<f32>>)>,
+    activity_dirty: bool,
+    activity_in_flight: bool,
+    last_activity_at: Option<web_time::Instant>,
+    activity_raw_done: u64,
     focus: FocusHandle,
     track: Rc<Cell<Bounds<Pixels>>>,
     drag: Option<TrackDrag>,
@@ -838,9 +842,23 @@ side_panel!(TimelinePanel, "dspk-app.timeline", "Timeline");
 
 impl TimelinePanel {
     pub fn new(store: Entity<Store>, dock: DockToggle, cx: &mut Context<Self>) -> Self {
-        let sub = cx.subscribe(&store, |this, _, e: &AppEvent, cx| {
-            if matches!(e, AppEvent::RecordingChanged | AppEvent::PyramidProgress(_) | AppEvent::PaletteChanged) {
-                this.activity = None;
+        let sub = cx.subscribe(&store, |this, store, e: &AppEvent, cx| {
+            match e {
+                AppEvent::RecordingChanged | AppEvent::PaletteChanged => {
+                    this.activity = None;
+                    this.activity_dirty = true;
+                    this.last_activity_at = None;
+                    this.activity_raw_done = 0;
+                }
+                AppEvent::PyramidProgress(_) => {
+                    // Only refresh raw activity when the default raw dataset's pyramid advances,
+                    // not on derived processed pyramid pages; keep existing bars visible meanwhile.
+                    let raw_done = s_sources_default(&store, cx).map(|ds| ds.signal().progress().done);
+                    if raw_done.is_some_and(|d| d != this.activity_raw_done) {
+                        this.activity_dirty = true;
+                    }
+                }
+                _ => {}
             }
             if matches!(e, AppEvent::WindowMoved | AppEvent::PlaybackChanged | AppEvent::RecordingChanged | AppEvent::PyramidProgress(_) | AppEvent::PaletteChanged) {
                 cx.notify();
@@ -850,6 +868,10 @@ impl TimelinePanel {
             store,
             dock,
             activity: None,
+            activity_dirty: true,
+            activity_in_flight: false,
+            last_activity_at: None,
+            activity_raw_done: 0,
             focus: cx.focus_handle(),
             track: Rc::new(Cell::new(Bounds::default())),
             drag: None,
@@ -1065,23 +1087,38 @@ impl TimelinePanel {
             .map(|e| (((e.start_sec / tl.total_duration_sec.max(1e-9)) as f32), (((e.end_sec - e.start_sec) / tl.total_duration_sec.max(1e-9)) as f32), super::timeline_tab::epoch_color(&e.kind), e.name.clone()))
             .collect();
         let marked = self.marked.map(|(a, b)| (((a / tl.total_duration_sec.max(1e-9)) as f32), (((b - a) / tl.total_duration_sec.max(1e-9)) as f32)));
-        // Activity of the whole recording behind the window box (columns of ~2 px)
+        // Activity of the whole recording behind the window box (columns of ~2 px), throttled while
+        // the raw pyramid builds so derived pyramid ticks never thrash the background thread or
+        // flicker existing bars.
         let columns = (self.track.get().size.width.as_f32() / 2.0).round().max(1.0) as usize;
-        if self.activity.as_ref().is_none_or(|(w, _)| *w != columns) {
-            // Computed off this thread (a recording on a server answers over the network, and a
-            // page's drawing thread may not wait at all); the strip appears when it arrives
-            self.activity = Some((columns, Rc::new(Vec::new())));
+        let raw_pyramid_complete = self.store.read(cx).pyramid_status().is_none();
+        let need_refresh = self.activity.as_ref().is_none_or(|(w, _)| *w != columns)
+            || (self.activity_dirty && self.last_activity_at.is_none_or(|t| t.elapsed().as_secs_f64() >= 1.0 || raw_pyramid_complete));
+        if need_refresh && !self.activity_in_flight {
+            self.activity_in_flight = true;
+            self.activity_dirty = false;
+            self.last_activity_at = Some(web_time::Instant::now());
+            let kept = self.activity.take().map(|(_, v)| v).unwrap_or_default();
+            self.activity = Some((columns, kept));
             if let Some(ds) = s_sources_default(&self.store, cx) {
+                let done_before = ds.signal().progress().done;
                 cx.spawn(async move |this, cx| {
                     let values = cx.background_spawn(async move { crate::data::recording::dataset::activity(&ds, columns) }).await;
                     let _ = this.update(cx, |panel, cx| {
+                        panel.activity_in_flight = false;
                         if panel.activity.as_ref().is_some_and(|(w, _)| *w == columns) {
                             panel.activity = Some((columns, Rc::new(values)));
+                            panel.activity_raw_done = done_before;
+                            if s_sources_default(&panel.store, cx).is_some_and(|d| d.signal().progress().done != done_before) {
+                                panel.activity_dirty = true;
+                            }
                             cx.notify();
                         }
                     });
                 })
                 .detach();
+            } else {
+                self.activity_in_flight = false;
             }
         }
         let activity = self.activity.as_ref().map(|(_, v)| v.clone()).unwrap_or_default();
