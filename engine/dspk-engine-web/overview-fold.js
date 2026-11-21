@@ -9,10 +9,23 @@
 // samples, base, page_samples, chunk_samples, chunk_channels). unit: from Engine.overview_next
 // (pages, samples, chunks [{t0, c0, file}]). Returns a Float32Array: per channel, the unit's
 // buckets in turn, min and max interleaved, [+Infinity, -Infinity] where no sample falls.
-const TYPES = {
-  float32: Float32Array, float64: Float64Array, int8: Int8Array, uint8: Uint8Array,
-  int16: Int16Array, uint16: Uint16Array, int32: Int32Array, uint32: Uint32Array,
-};
+const SUPPORTED_TYPES = new Set([
+  "float32", "float64", "int8", "uint8", "int16", "uint16", "int32", "uint32",
+]);
+
+function typedView(dataType, buffer) {
+  switch (dataType) {
+    case "float32": return new Float32Array(buffer);
+    case "float64": return new Float64Array(buffer);
+    case "int8": return new Int8Array(buffer);
+    case "uint8": return new Uint8Array(buffer);
+    case "int16": return new Int16Array(buffer);
+    case "uint16": return new Uint16Array(buffer);
+    case "int32": return new Int32Array(buffer);
+    case "uint32": return new Uint32Array(buffer);
+    default: throw new Error(`samples of type ${dataType}`);
+  }
+}
 
 function decoded(file, compression) {
   if (!file) return Promise.resolve(null);
@@ -30,8 +43,7 @@ export async function fold(meta, unit) {
   for (let p = p0; p < p1; p++) nb += Math.ceil((Math.min((p + 1) * ps, total) - p * ps) / base);
   const lo = new Float64Array(C * nb).fill(Infinity);
   const hi = new Float64Array(C * nb).fill(-Infinity);
-  const Typed = TYPES[meta.data_type];
-  if (!Typed) throw new Error(`samples of type ${meta.data_type}`);
+  if (!SUPPORTED_TYPES.has(meta.data_type)) throw new Error(`samples of type ${meta.data_type}`);
   const buffers = await Promise.all(unit.chunks.map((c) => decoded(c.file, meta.compression)));
   unit.chunks.forEach((c, k) => {
     const width = Math.min(cc, C - c.c0);
@@ -53,7 +65,7 @@ export async function fold(meta, unit) {
       return;
     }
     // A chunk is stored whole ([chunk_samples, chunk_channels], C order), edge chunks too
-    const a = new Typed(buffer);
+    const a = typedView(meta.data_type, buffer);
     if (a.length < ct * cc) throw new Error(`a chunk of ${a.length} values (${ct * cc} expected)`);
     for (let t = first; t < last; t++) {
       const b = Math.floor((t - s0) / base);
