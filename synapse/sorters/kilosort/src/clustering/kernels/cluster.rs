@@ -111,3 +111,68 @@ pub fn projection_histogram_kernel<F: DspFloat>(
         }
     }
 }
+
+/// Compact weighted regression inputs of the `m = neg_len + n_pos` active points participating in
+/// a merge-tree node (`active_idx[0..neg_len]` are the negative half, `active_idx[neg_len..m]`
+/// the positive half): `xs[f · m + j] = √w · x[f · n + active_idx[j]]`. One unit per active point.
+#[cube(launch)]
+#[allow(clippy::too_many_arguments)]
+pub fn weigh_active_node_kernel<F: DspFloat>(
+    x: &[F],
+    active_idx: &[u32],
+    xs: &mut [F],
+    n: u32,
+    m: u32,
+    d: u32,
+    neg_len: u32,
+    root_w_neg: F,
+    root_w_pos: F,
+) {
+    let j = element_position() as u32;
+    if j < m {
+        let i = active_idx[j as usize];
+        let mut scale = root_w_pos;
+        if j < neg_len {
+            scale = root_w_neg;
+        }
+        let mut f = 0u32;
+        while f < d {
+            xs[(f * m + j) as usize] = scale * x[(f * n + i) as usize];
+            f += 1u32;
+        }
+    }
+}
+
+/// Histogram of the active points' projections `u · x[active_idx[j]] + bias` in `bins` equal bins
+/// over `[lo, hi]` (`hist` zeroed). One unit per active point `j < m`.
+#[cube(launch)]
+#[allow(clippy::too_many_arguments)]
+pub fn projection_histogram_active_kernel<F: DspFloat>(
+    x: &[F],
+    active_idx: &[u32],
+    u: &[F],
+    hist: &mut [Atomic<u32>],
+    n: u32,
+    m: u32,
+    d: u32,
+    bins: u32,
+    bias: F,
+    lo: F,
+    hi: F,
+) {
+    let j = element_position() as u32;
+    if j < m {
+        let i = active_idx[j as usize];
+        let mut p = bias;
+        let mut f = 0u32;
+        while f < d {
+            p += u[f as usize] * x[(f * n + i) as usize];
+            f += 1u32;
+        }
+        if p >= lo && p <= hi {
+            let scaled = (p - lo) / (hi - lo) * F::cast_from(bins);
+            let b = u32::min(u32::cast_from(F::floor(scaled)), bins - 1u32);
+            Atomic::fetch_add(&hist[b as usize], 1u32);
+        }
+    }
+}

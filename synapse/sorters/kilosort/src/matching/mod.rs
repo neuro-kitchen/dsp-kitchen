@@ -87,7 +87,7 @@ pub struct TemplateMatcher {
     position: Vec<[f32; 2]>,
     chans: Vec<u32>,
     n_chans: usize,
-    /// Scratch: residual, PC projections, scores, per-sample best, peak marks.
+    /// Scratch: residual, PC projections, scores, per-sample best, peak marks, positive threshold.
     residual: Handle,
     b: Handle,
     s: Handle,
@@ -95,6 +95,7 @@ pub struct TemplateMatcher {
     best: Handle,
     amp: Handle,
     peak: Handle,
+    heights: Handle,
 }
 
 impl TemplateMatcher {
@@ -214,6 +215,7 @@ impl TemplateMatcher {
             best: buffer::empty::<u32>(client, max_samples),
             amp: buffer::empty::<f32>(client, max_samples),
             peak: buffer::empty::<f32>(client, max_samples),
+            heights: buffer::upload(client, &[f32::MIN_POSITIVE]),
         })
     }
 
@@ -271,7 +273,6 @@ impl TemplateMatcher {
         self.scores(samples);
 
         let per_sample = LaunchGeometry::elementwise(&client, samples);
-        let heights = buffer::upload(&client, &[f32::MIN_POSITIVE]);
         let (mut times, mut best, mut amp) = (Vec::new(), Vec::new(), Vec::new());
         let mut round_handles = Vec::new();
         for _ in 0..self.max_peels {
@@ -305,7 +306,7 @@ impl TemplateMatcher {
             }
             // Compacted on the device (marks are isolated, so each is a local maximum); the count
             // comes back to size the launches
-            let cand = find_peak_candidates_on_device::<f32>(&client, &self.peak, &heights, 1, samples, lo..hi, Polarity::Positive);
+            let cand = find_peak_candidates_on_device::<f32>(&client, &self.peak, &self.heights, 1, samples, lo..hi, Polarity::Positive);
             let k = cand.total;
             if k == 0 {
                 break;
@@ -344,23 +345,21 @@ impl TemplateMatcher {
                         nt as u32,
                         class,
                     );
-                    subtract_data_kernel::launch::<f32>(
-                        &client,
-                        per_data.cube_count.clone(),
-                        per_data.cube_dim.clone(),
-                        BufferArg::from_raw_parts(self.residual.clone(), len),
-                        BufferArg::from_raw_parts(self.w.clone(), n * self.channels * nt),
-                        BufferArg::from_raw_parts(cand.indices.clone(), k),
-                        BufferArg::from_raw_parts(self.best.clone(), samples),
-                        BufferArg::from_raw_parts(self.amp.clone(), samples),
-                        k as u32,
-                        self.channels as u32,
-                        samples as u32,
-                        nt as u32,
-                        nt as u32,
-                        class,
-                    );
                 }
+                subtract_data_kernel::launch::<f32>(
+                    &client,
+                    per_data.cube_count,
+                    per_data.cube_dim,
+                    BufferArg::from_raw_parts(self.residual.clone(), len),
+                    BufferArg::from_raw_parts(self.w.clone(), n * self.channels * nt),
+                    BufferArg::from_raw_parts(cand.indices.clone(), k),
+                    BufferArg::from_raw_parts(self.best.clone(), samples),
+                    BufferArg::from_raw_parts(self.amp.clone(), samples),
+                    k as u32,
+                    self.channels as u32,
+                    samples as u32,
+                    nt as u32,
+                );
             }
             round_handles.push((cand.indices, out_best, out_amp, k));
         }

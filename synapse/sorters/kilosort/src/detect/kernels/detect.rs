@@ -239,6 +239,90 @@ pub fn local_peak_score_kernel<F: Float>(
     }
 }
 
+/// Fused spatial-neighbour maximum and temporal peak pooling: stages the block's neighbour union
+/// (`u_max × (tile_x + 2·pool)`) into shared memory, computes `Amax` into a shared tile
+/// (`tile_y × span_x`), and immediately pools `t ± pool` to write `score[centre, t]`,
+/// eliminating the global `a_max` intermediate buffer.
+#[cube(launch)]
+#[allow(clippy::too_many_arguments)]
+pub fn neighbour_max_score_kernel<F: Float>(
+    a_s: &[F],
+    union_rows: &[u32],
+    union_len: &[u32],
+    local_nb: &[u32],
+    score: &mut [F],
+    samples: u32,
+    n_centres: u32,
+    n_neighbours: u32,
+    nt: u32,
+    pool: u32,
+    #[comptime] tile_x: u32,
+    #[comptime] tile_y: u32,
+    #[comptime] u_max: u32,
+    #[comptime] span_x: u32,
+) {
+    let block = CUBE_POS_Y;
+    let t_base = CUBE_POS_X * tile_x;
+    let mut rows = Shared::<[F]>::new_slice(comptime!((u_max * span_x) as usize));
+    let mut amax = Shared::<[F]>::new_slice(comptime!((tile_y * span_x) as usize));
+    let count = union_len[block as usize];
+    let mut r = UNIT_POS_Y;
+    while r < count {
+        let row_src = union_rows[(block * u_max + r) as usize] * samples;
+        let mut dx = UNIT_POS_X;
+        while dx < span_x {
+            let mut v = F::new(0.0f32);
+            if t_base + dx >= pool && t_base + dx < pool + samples {
+                let u = t_base + dx - pool;
+                if u >= nt && u + nt < samples {
+                    v = a_s[(row_src + u) as usize];
+                }
+            }
+            rows[(r * span_x + dx) as usize] = v;
+            dx += tile_x;
+        }
+        r += tile_y;
+    }
+    sync_cube();
+    let centre = block * tile_y + UNIT_POS_Y;
+    let mut dx = UNIT_POS_X;
+    while dx < span_x {
+        let mut m = F::new(0.0f32);
+        if centre < n_centres && t_base + dx >= pool && t_base + dx < pool + samples {
+            let u = t_base + dx - pool;
+            if u >= nt && u + nt < samples {
+                let mut j = 0u32;
+                while j < n_neighbours {
+                    let local = local_nb[(j * n_centres + centre) as usize];
+                    m = F::max(m, rows[(local * span_x + dx) as usize]);
+                    j += 1u32;
+                }
+            }
+        }
+        amax[(UNIT_POS_Y * span_x + dx) as usize] = m;
+        dx += tile_x;
+    }
+    sync_cube();
+    let t = t_base + UNIT_POS_X;
+    if centre < n_centres && t < samples {
+        let base = UNIT_POS_Y * span_x + UNIT_POS_X;
+        let window = 2u32 * pool + 1u32;
+        let mut pooled = F::new(0.0f32);
+        let mut d = 0u32;
+        while d < window {
+            pooled = F::max(pooled, amax[(base + d) as usize]);
+            d += 1u32;
+        }
+        let idx = (centre * samples + t) as usize;
+        let v = a_s[idx];
+        let mut out = F::new(0.0f32);
+        if v == pooled && v > F::new(0.0f32) {
+            out = v;
+        }
+        score[idx] = out;
+    }
+}
+
 /// Per spike `i` (centre `centres[i]`, sample `times[i]`) and centre channel `c`: the signed
 /// arg-max `picked[i] = arg[centre, t]` (written by `c = 0`), the template it encodes
 /// (`(|a| − 1) mod n_templates`), features `feat[i, c, p] = Σ_j x[iC[c, centre], t − nt/2 + j] ·

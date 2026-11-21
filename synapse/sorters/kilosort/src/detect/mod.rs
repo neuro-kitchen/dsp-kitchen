@@ -31,7 +31,7 @@ use dspk_synapse::io::probe::SensorLayout;
 
 use self::kernels::{
     centre_response_kernel, correlate_templates_kernel, local_peak_score_kernel, neighbour_max_kernel,
-    spike_features_kernel,
+    neighbour_max_score_kernel, spike_features_kernel,
 };
 use super::templates::UniversalTemplates;
 
@@ -211,18 +211,49 @@ struct NeighbourTiles {
     u_max: usize,
     tile_x: usize,
     tile_y: usize,
+    span_x: usize,
+    fused: bool,
 }
 
 impl NeighbourTiles {
-    fn new(client: &Client, centres: &TemplateCentres, max_samples: usize) -> DspResult<Self> {
+    fn new(client: &Client, centres: &TemplateCentres, max_samples: usize, pool: usize) -> DspResult<Self> {
         let hw = &client.properties().hardware;
         let tile_x = LaunchGeometry::plane_lanes(client).max(1) as usize;
         if max_samples.div_ceil(tile_x) > hw.max_cube_count.0 as usize {
             return Err(DspError::InvalidConfig(format!("windows of {max_samples} samples exceed the device's cube grid")));
         }
         let shared = hw.max_shared_memory_size;
-        let mut tile_y = (hw.max_units_per_cube as usize / tile_x).max(1);
-        tile_y = 1 << (usize::BITS - 1 - tile_y.leading_zeros());
+        let max_tile_y = {
+            let ty = (hw.max_units_per_cube as usize / tile_x).max(1);
+            1usize << (usize::BITS - 1 - ty.leading_zeros())
+        };
+        let span_fused = tile_x + 2 * pool;
+        let mut tile_y = max_tile_y;
+        loop {
+            let host = Self::build(centres, tile_y);
+            let fits_fused = (host.3 + tile_y) * span_fused * size_of::<f32>() <= shared;
+            if fits_fused {
+                let (union_rows, union_len, local_nb, u_max) = host;
+                let blocks = union_len.len();
+                return Ok(Self {
+                    union_rows: buffer::upload(client, &union_rows),
+                    union_len: buffer::upload(client, &union_len),
+                    local_nb: buffer::upload(client, &local_nb),
+                    blocks,
+                    u_max,
+                    tile_x,
+                    tile_y,
+                    span_x: span_fused,
+                    fused: true,
+                });
+            }
+            if tile_y == 1 {
+                break;
+            }
+            tile_y /= 2;
+        }
+        // Fallback when `span_fused` exceeds shared memory: unfused `neighbour_max_kernel` + `local_peak_score_kernel`
+        let mut tile_y = max_tile_y;
         loop {
             let host = Self::build(centres, tile_y);
             let fits = host.3 * tile_x * size_of::<f32>() <= shared;
@@ -243,6 +274,8 @@ impl NeighbourTiles {
                     u_max,
                     tile_x,
                     tile_y,
+                    span_x: tile_x,
+                    fused: false,
                 });
             }
             tile_y /= 2;
@@ -352,6 +385,12 @@ impl UniversalDetector {
         // The correlation buffer is the largest: channels × templates × samples
         device_elements("detector correlations [channels, templates, samples]", &[channels, k, max_samples])?;
         let per_centre = device_elements("centre responses [centres, samples]", &[n_centres, max_samples])?;
+        let tiles = NeighbourTiles::new(client, centres, max_samples, nt0min)?;
+        let a_max = if tiles.fused {
+            buffer::empty::<f32>(client, 1)
+        } else {
+            buffer::empty::<f32>(client, per_centre)
+        };
         Ok(Self {
             client: client.clone(),
             channels,
@@ -364,13 +403,13 @@ impl UniversalDetector {
             wtemp: buffer::upload(client, &templates.wtemp),
             wpca: buffer::upload(client, &templates.wpca),
             ic: buffer::upload(client, &centres.ic),
-            tiles: NeighbourTiles::new(client, centres, max_samples)?,
+            tiles,
             weights: buffer::upload(client, &centres.weights),
             heights: buffer::upload(client, &vec![th_universal; n_centres.max(1)]),
             b: buffer::empty::<f32>(client, channels * k * max_samples),
             a_s: buffer::empty::<f32>(client, per_centre),
             arg: buffer::empty::<i32>(client, per_centre),
-            a_max: buffer::empty::<f32>(client, per_centre),
+            a_max,
             score: buffer::empty::<f32>(client, per_centre),
         })
     }
@@ -423,34 +462,56 @@ impl UniversalDetector {
                 k as u32,
             );
             let tiles = &self.tiles;
-            neighbour_max_kernel::launch::<f32>(
-                client,
-                tiles.cube_count(samples),
-                tiles.cube_dim(),
-                BufferArg::from_raw_parts(self.a_s.clone(), c_len),
-                BufferArg::from_raw_parts(tiles.union_rows.clone(), tiles.blocks * tiles.u_max),
-                BufferArg::from_raw_parts(tiles.union_len.clone(), tiles.blocks),
-                BufferArg::from_raw_parts(tiles.local_nb.clone(), centres.ic2.len()),
-                BufferArg::from_raw_parts(self.a_max.clone(), c_len),
-                samples as u32,
-                n_centres as u32,
-                centres.n_neighbours as u32,
-                nt as u32,
-                tiles.tile_x as u32,
-                tiles.tile_y as u32,
-                tiles.u_max as u32,
-            );
-            local_peak_score_kernel::launch::<f32>(
-                client,
-                per_centre.cube_count,
-                per_centre.cube_dim,
-                BufferArg::from_raw_parts(self.a_s.clone(), c_len),
-                BufferArg::from_raw_parts(self.a_max.clone(), c_len),
-                BufferArg::from_raw_parts(self.score.clone(), c_len),
-                samples as u32,
-                n_centres as u32,
-                self.nt0min as u32,
-            );
+            if tiles.fused {
+                neighbour_max_score_kernel::launch::<f32>(
+                    client,
+                    tiles.cube_count(samples),
+                    tiles.cube_dim(),
+                    BufferArg::from_raw_parts(self.a_s.clone(), c_len),
+                    BufferArg::from_raw_parts(tiles.union_rows.clone(), tiles.blocks * tiles.u_max),
+                    BufferArg::from_raw_parts(tiles.union_len.clone(), tiles.blocks),
+                    BufferArg::from_raw_parts(tiles.local_nb.clone(), centres.ic2.len()),
+                    BufferArg::from_raw_parts(self.score.clone(), c_len),
+                    samples as u32,
+                    n_centres as u32,
+                    centres.n_neighbours as u32,
+                    nt as u32,
+                    self.nt0min as u32,
+                    tiles.tile_x as u32,
+                    tiles.tile_y as u32,
+                    tiles.u_max as u32,
+                    tiles.span_x as u32,
+                );
+            } else {
+                neighbour_max_kernel::launch::<f32>(
+                    client,
+                    tiles.cube_count(samples),
+                    tiles.cube_dim(),
+                    BufferArg::from_raw_parts(self.a_s.clone(), c_len),
+                    BufferArg::from_raw_parts(tiles.union_rows.clone(), tiles.blocks * tiles.u_max),
+                    BufferArg::from_raw_parts(tiles.union_len.clone(), tiles.blocks),
+                    BufferArg::from_raw_parts(tiles.local_nb.clone(), centres.ic2.len()),
+                    BufferArg::from_raw_parts(self.a_max.clone(), c_len),
+                    samples as u32,
+                    n_centres as u32,
+                    centres.n_neighbours as u32,
+                    nt as u32,
+                    tiles.tile_x as u32,
+                    tiles.tile_y as u32,
+                    tiles.u_max as u32,
+                );
+                local_peak_score_kernel::launch::<f32>(
+                    client,
+                    per_centre.cube_count,
+                    per_centre.cube_dim,
+                    BufferArg::from_raw_parts(self.a_s.clone(), c_len),
+                    BufferArg::from_raw_parts(self.a_max.clone(), c_len),
+                    BufferArg::from_raw_parts(self.score.clone(), c_len),
+                    samples as u32,
+                    n_centres as u32,
+                    self.nt0min as u32,
+                );
+            }
         }
 
         // Local maxima of the score above Th_universal, compacted and kept on the device (read 1:
@@ -668,7 +729,7 @@ mod tests {
                 (state >> 8) as f32 / (1u32 << 24) as f32
             })
             .collect();
-        let tiles = NeighbourTiles::new(&client, &centres, samples).expect("tiles");
+        let tiles = NeighbourTiles::new(&client, &centres, samples, 0).expect("tiles");
         let out = buffer::empty::<f32>(&client, n_centres * samples);
         unsafe {
             neighbour_max_kernel::launch::<f32>(
@@ -700,5 +761,85 @@ mod tests {
                 assert_eq!(got[c * samples + t], want, "centre {c} t {t}");
             }
         }
+    }
+
+    /// Fused `neighbour_max_score_kernel` produces the bit-exact output of `neighbour_max_kernel` +
+    /// `local_peak_score_kernel` without the intermediate global `a_max` buffer.
+    #[test]
+    fn fused_neighbour_max_score_matches_unfused() {
+        let Ok(target) = ComputeTarget::from_env() else { return };
+        let client = target.client().expect("client");
+        let channels = 64usize;
+        let ids: Vec<usize> = (0..channels).collect();
+        let positions: Vec<[f32; 2]> = (0..channels).map(|c| [(c % 2) as f32 * 32.0, (c / 2) as f32 * 20.0]).collect();
+        let probe = SensorLayout::from_channel_arrays("64ch", &ids, &positions, &vec![0; channels]).expect("probe");
+        let centres = TemplateCentres::new(&probe, &CentreOptions::default()).expect("centres");
+        let (n_centres, samples, nt, pool) = (centres.n_centres(), 333usize, 21usize, 15usize);
+        let mut state = 0x1234_5678u32;
+        let a_s: Vec<f32> = (0..n_centres * samples)
+            .map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (state >> 8) as f32 / (1u32 << 24) as f32
+            })
+            .collect();
+        let tiles = NeighbourTiles::new(&client, &centres, samples, pool).expect("tiles");
+        if !tiles.fused {
+            return;
+        }
+        let a_s_h = buffer::upload(&client, &a_s);
+        let a_max = buffer::empty::<f32>(&client, n_centres * samples);
+        let ref_score = buffer::empty::<f32>(&client, n_centres * samples);
+        let fused_score = buffer::empty::<f32>(&client, n_centres * samples);
+        let per_centre = LaunchGeometry::channels_samples(&client, n_centres, samples);
+        unsafe {
+            neighbour_max_kernel::launch::<f32>(
+                &client,
+                tiles.cube_count(samples),
+                tiles.cube_dim(),
+                BufferArg::from_raw_parts(a_s_h.clone(), a_s.len()),
+                BufferArg::from_raw_parts(tiles.union_rows.clone(), tiles.blocks * tiles.u_max),
+                BufferArg::from_raw_parts(tiles.union_len.clone(), tiles.blocks),
+                BufferArg::from_raw_parts(tiles.local_nb.clone(), centres.ic2.len()),
+                BufferArg::from_raw_parts(a_max.clone(), a_s.len()),
+                samples as u32,
+                n_centres as u32,
+                centres.n_neighbours as u32,
+                nt as u32,
+                tiles.tile_x as u32,
+                tiles.tile_y as u32,
+                tiles.u_max as u32,
+            );
+            local_peak_score_kernel::launch::<f32>(
+                &client,
+                per_centre.cube_count,
+                per_centre.cube_dim,
+                BufferArg::from_raw_parts(a_s_h.clone(), a_s.len()),
+                BufferArg::from_raw_parts(a_max, a_s.len()),
+                BufferArg::from_raw_parts(ref_score.clone(), a_s.len()),
+                samples as u32,
+                n_centres as u32,
+                pool as u32,
+            );
+            neighbour_max_score_kernel::launch::<f32>(
+                &client,
+                tiles.cube_count(samples),
+                tiles.cube_dim(),
+                BufferArg::from_raw_parts(a_s_h, a_s.len()),
+                BufferArg::from_raw_parts(tiles.union_rows.clone(), tiles.blocks * tiles.u_max),
+                BufferArg::from_raw_parts(tiles.union_len.clone(), tiles.blocks),
+                BufferArg::from_raw_parts(tiles.local_nb.clone(), centres.ic2.len()),
+                BufferArg::from_raw_parts(fused_score.clone(), a_s.len()),
+                samples as u32,
+                n_centres as u32,
+                centres.n_neighbours as u32,
+                nt as u32,
+                pool as u32,
+                tiles.tile_x as u32,
+                tiles.tile_y as u32,
+                tiles.u_max as u32,
+                tiles.span_x as u32,
+            );
+        }
+        assert_eq!(buffer::download::<f32>(&client, fused_score), buffer::download::<f32>(&client, ref_score));
     }
 }
