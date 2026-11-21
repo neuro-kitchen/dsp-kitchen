@@ -39,22 +39,14 @@ pub fn supports<F: DspFloat>(num_taps: usize) -> bool {
     size_of::<F>() == 4 && num_taps >= 2 && 4 * num_taps <= 16_384
 }
 
-/// `output = fir(input)` by overlap-save: `channels` rows of `samples`, `num_taps` taps (`taps` on
-/// the device), causal or centred (then `num_taps = 2 · radius + 1`), edges by `edge`.
-#[allow(clippy::too_many_arguments)]
-pub fn execute<F: DspFloat>(client: &Client, input: &Handle, output: &Handle, taps: &Handle, channels: usize, samples: usize, num_taps: usize, centered: bool, edge: EdgeMode) {
-    debug_assert!(supports::<F>(num_taps));
-    if channels == 0 || samples == 0 {
-        return;
+/// Precomputes the complex filter spectrum `(h_re, h_im)` for [`execute_with_spectrum`],
+/// returning `None` when [`supports`] is false or `num_taps < MIN_TAPS`.
+pub fn prepare_spectrum<F: DspFloat>(client: &Client, taps: &Handle, num_taps: usize, centered: bool) -> Option<(Handle, Handle)> {
+    if !supports::<F>(num_taps) || num_taps < MIN_TAPS {
+        return None;
     }
     let dtype = ElemType::Float(FloatKind::F32);
     let n_fft = fft_len(num_taps);
-    let step = n_fft - (num_taps - 1);
-    let (pad, right) = if centered { ((num_taps - 1) / 2, (num_taps - 1) / 2) } else { (num_taps - 1, 0) };
-    let frames_per_row = samples.div_ceil(step);
-    let rows = channels * frames_per_row;
-
-    // The filter on N samples (reversed for a centred one), and its spectrum
     let padded_taps = buffer::empty::<F>(client, n_fft);
     let geom = LaunchGeometry::elementwise(client, n_fft);
     // SAFETY: `taps` holds `num_taps` values, `padded_taps` `n_fft`
@@ -70,8 +62,70 @@ pub fn execute<F: DspFloat>(client: &Client, input: &Handle, output: &Handle, ta
             centered,
         );
     }
+    let tensor = TensorHandle::new_contiguous(vec![1, n_fft], padded_taps, dtype);
+    let (h_re, h_im) = cubek_fft::rfft(client, tensor, 1, dtype);
+    Some((h_re.handle, h_im.handle))
+}
+
+/// `output = fir(input)` by overlap-save: `channels` rows of `samples`, `num_taps` taps (`taps` on
+/// the device), causal or centred (then `num_taps = 2 · radius + 1`), edges by `edge`.
+#[allow(clippy::too_many_arguments)]
+pub fn execute<F: DspFloat>(client: &Client, input: &Handle, output: &Handle, taps: &Handle, channels: usize, samples: usize, num_taps: usize, centered: bool, edge: EdgeMode) {
+    execute_with_spectrum::<F>(client, input, output, taps, None, channels, samples, num_taps, centered, edge);
+}
+
+/// [`execute`] reusing a precomputed `(h_re, h_im)` filter spectrum from [`prepare_spectrum`] when
+/// `spectrum` is `Some` (eliminating per-chunk tap padding and tap `rfft`).
+#[allow(clippy::too_many_arguments)]
+pub fn execute_with_spectrum<F: DspFloat>(
+    client: &Client,
+    input: &Handle,
+    output: &Handle,
+    taps: &Handle,
+    spectrum: Option<&(Handle, Handle)>,
+    channels: usize,
+    samples: usize,
+    num_taps: usize,
+    centered: bool,
+    edge: EdgeMode,
+) {
+    debug_assert!(supports::<F>(num_taps));
+    if channels == 0 || samples == 0 {
+        return;
+    }
+    let dtype = ElemType::Float(FloatKind::F32);
+    let n_fft = fft_len(num_taps);
+    let step = n_fft - (num_taps - 1);
+    let (pad, right) = if centered { ((num_taps - 1) / 2, (num_taps - 1) / 2) } else { (num_taps - 1, 0) };
+    let frames_per_row = samples.div_ceil(step);
+    let rows = channels * frames_per_row;
     let tensor = |handle: Handle, shape: Vec<usize>| TensorHandle::new_contiguous(shape, handle, dtype);
-    let (h_re, h_im) = cubek_fft::rfft(client, tensor(padded_taps, vec![1, n_fft]), 1, dtype);
+
+    let computed;
+    let (h_re_handle, h_im_handle) = match spectrum {
+        Some((re, im)) => (re, im),
+        None => {
+            // The filter on N samples (reversed for a centred one), and its spectrum
+            let padded_taps = buffer::empty::<F>(client, n_fft);
+            let geom = LaunchGeometry::elementwise(client, n_fft);
+            // SAFETY: `taps` holds `num_taps` values, `padded_taps` `n_fft`
+            unsafe {
+                ols_taps_kernel::launch::<F>(
+                    client,
+                    geom.cube_count,
+                    geom.cube_dim,
+                    BufferArg::from_raw_parts(taps.clone(), num_taps),
+                    BufferArg::from_raw_parts(padded_taps.clone(), n_fft),
+                    num_taps as u32,
+                    n_fft as u32,
+                    centered,
+                );
+            }
+            let (h_re, h_im) = cubek_fft::rfft(client, tensor(padded_taps, vec![1, n_fft]), 1, dtype);
+            computed = (h_re.handle, h_im.handle);
+            (&computed.0, &computed.1)
+        }
+    };
 
     // The extended rows cut into overlapping frames
     let frames = buffer::empty::<F>(client, rows * n_fft);
@@ -97,20 +151,20 @@ pub fn execute<F: DspFloat>(client: &Client, input: &Handle, output: &Handle, ta
     }
     let (re, im) = cubek_fft::rfft(client, tensor(frames, vec![rows, n_fft]), 1, dtype);
     let bins = n_fft / 2 + 1;
-    let spectrum = rows * bins;
-    let geom = LaunchGeometry::elementwise(client, spectrum);
+    let spectrum_len = rows * bins;
+    let geom = LaunchGeometry::elementwise(client, spectrum_len);
     // SAFETY: the frames' spectra hold `rows · bins` values each, the filter's `bins`
     unsafe {
         ols_multiply_kernel::launch::<F>(
             client,
             geom.cube_count,
             geom.cube_dim,
-            BufferArg::from_raw_parts(re.handle.clone(), spectrum),
-            BufferArg::from_raw_parts(im.handle.clone(), spectrum),
-            BufferArg::from_raw_parts(h_re.handle.clone(), bins),
-            BufferArg::from_raw_parts(h_im.handle.clone(), bins),
+            BufferArg::from_raw_parts(re.handle.clone(), spectrum_len),
+            BufferArg::from_raw_parts(im.handle.clone(), spectrum_len),
+            BufferArg::from_raw_parts(h_re_handle.clone(), bins),
+            BufferArg::from_raw_parts(h_im_handle.clone(), bins),
             bins as u32,
-            spectrum as u32,
+            spectrum_len as u32,
         );
     }
     let filtered = cubek_fft::irfft(client, re, im, 1, dtype);

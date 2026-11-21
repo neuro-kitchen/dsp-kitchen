@@ -4,6 +4,9 @@
 //! Vector widths that do not divide the row run the unaligned kernels (outputs stored lane by
 //! lane). Every choice gives the same output.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
 use cubecl::prelude::*;
 use cubecl::server::Handle;
 use cubecl::tune::{LocalTuner, Tunable, TunableSet, local_tuner};
@@ -58,6 +61,63 @@ impl Shape {
     }
 }
 
+/// Precomputed FIR artifacts reused across chunks in a streaming workspace:
+/// optional complex tap spectrum for FFT overlap-save and cached shifted-tap tables per vector width.
+#[derive(Clone)]
+pub struct PreparedFir {
+    taps: Handle,
+    shape: Shape,
+    edge: EdgeMode,
+    spectrum: Option<(Handle, Handle)>,
+    tables: Arc<Mutex<HashMap<usize, Handle>>>,
+}
+
+impl PreparedFir {
+    /// Precomputes cached FIR artifacts for a causal filter of `num_taps` taps.
+    pub fn causal<F: DspFloat>(client: &Client, taps: Handle, num_taps: usize, edge: EdgeMode) -> Self {
+        let num_taps = num_taps.max(1);
+        let spectrum = super::overlap_save::prepare_spectrum::<F>(client, &taps, num_taps, false);
+        Self {
+            taps,
+            shape: Shape::Causal { num_taps },
+            edge,
+            spectrum,
+            tables: Arc::default(),
+        }
+    }
+
+    /// Precomputes cached FIR artifacts for a centered filter of `2 * radius + 1` taps.
+    pub fn centered<F: DspFloat>(client: &Client, taps: Handle, radius: usize, edge: EdgeMode) -> Self {
+        let num_taps = 2 * radius + 1;
+        let spectrum = super::overlap_save::prepare_spectrum::<F>(client, &taps, num_taps, true);
+        Self {
+            taps,
+            shape: Shape::Centered { radius },
+            edge,
+            spectrum,
+            tables: Arc::default(),
+        }
+    }
+
+    /// Executes the prepared FIR filter over `[channels, samples]` without recomputing tap spectra or
+    /// rebuilding previously seen vector tap tables.
+    pub fn execute<F: DspFloat>(&self, client: &Client, input: &Handle, output: &Handle, channels: usize, samples: usize) {
+        let inputs = FirInputs {
+            client: client.clone(),
+            input: input.clone(),
+            output: output.clone(),
+            taps: self.taps.clone(),
+            channels,
+            samples,
+            shape: self.shape,
+            edge: self.edge,
+            spectrum: self.spectrum.clone(),
+            tables: Some(self.tables.clone()),
+        };
+        dispatch::<F>(inputs, None);
+    }
+}
+
 /// One FIR call (cloned per autotune candidate).
 #[derive(Clone)]
 struct FirInputs {
@@ -69,6 +129,8 @@ struct FirInputs {
     samples: usize,
     shape: Shape,
     edge: EdgeMode,
+    spectrum: Option<(Handle, Handle)>,
+    tables: Option<Arc<Mutex<HashMap<usize, Handle>>>>,
 }
 
 impl FirInputs {
@@ -76,7 +138,18 @@ impl FirInputs {
         let num_taps = self.shape.num_taps();
         if kernel == FirKernel::Fft && num_taps >= super::overlap_save::MIN_TAPS && super::overlap_save::supports::<F>(num_taps) {
             let centered = matches!(self.shape, Shape::Centered { .. });
-            return super::overlap_save::execute::<F>(&self.client, &self.input, &self.output, &self.taps, self.channels, self.samples, num_taps, centered, self.edge);
+            return super::overlap_save::execute_with_spectrum::<F>(
+                &self.client,
+                &self.input,
+                &self.output,
+                &self.taps,
+                self.spectrum.as_ref(),
+                self.channels,
+                self.samples,
+                num_taps,
+                centered,
+                self.edge,
+            );
         }
         if let FirKernel::Vectorized { width } = kernel {
             if let Some(width) = vector_width::<F>(&self.client, width) {
@@ -115,13 +188,9 @@ impl FirInputs {
 }
 
 impl FirInputs {
-    /// The vectorized kernels with `width` outputs per unit: aligned vectors when `width` divides
-    /// `samples`, else the unaligned kernels.
-    fn run_vectorized<F: DspFloat>(&self, width: usize) {
-        let (client, total, num_taps) = (&self.client, self.channels * self.samples, self.shape.num_taps());
+    fn build_vector_table<F: DspFloat>(client: &Client, taps: &Handle, num_taps: usize, width: usize, centered: bool) -> Handle {
         let table_len = (num_taps + width - 1) * width;
         let table = buffer::empty::<F>(client, table_len);
-        let centered = matches!(self.shape, Shape::Centered { .. });
         let geom = LaunchGeometry::elementwise(client, table_len);
         // SAFETY: `taps` holds `num_taps` values of `F`, `table` `table_len`
         unsafe {
@@ -129,13 +198,31 @@ impl FirInputs {
                 client,
                 geom.cube_count,
                 geom.cube_dim,
-                BufferArg::from_raw_parts(self.taps.clone(), num_taps),
+                BufferArg::from_raw_parts(taps.clone(), num_taps),
                 BufferArg::from_raw_parts(table.clone(), table_len),
                 num_taps as u32,
                 width as u32,
                 centered,
             );
         }
+        table
+    }
+
+    /// The vectorized kernels with `width` outputs per unit: aligned vectors when `width` divides
+    /// `samples`, else the unaligned kernels.
+    fn run_vectorized<F: DspFloat>(&self, width: usize) {
+        let (client, total, num_taps) = (&self.client, self.channels * self.samples, self.shape.num_taps());
+        let table_len = (num_taps + width - 1) * width;
+        let centered = matches!(self.shape, Shape::Centered { .. });
+        let table = match &self.tables {
+            Some(cache) => cache
+                .lock()
+                .expect("fir vector table cache")
+                .entry(width)
+                .or_insert_with(|| Self::build_vector_table::<F>(client, &self.taps, num_taps, width, centered))
+                .clone(),
+            None => Self::build_vector_table::<F>(client, &self.taps, num_taps, width, centered),
+        };
         // SAFETY: input and output hold `total` samples of `F` (`total / width` vectors when
         // aligned), `table` `table_len` values
         let (input, output, table) = unsafe {
@@ -264,6 +351,8 @@ pub fn execute_fir_with<F: DspFloat>(
         samples,
         shape: Shape::Causal { num_taps: num_taps.max(1) },
         edge,
+        spectrum: None,
+        tables: None,
     };
     dispatch::<F>(inputs, kernel);
 }
@@ -305,6 +394,8 @@ pub fn execute_fir_centered_with<F: DspFloat>(
         samples,
         shape: Shape::Centered { radius },
         edge,
+        spectrum: None,
+        tables: None,
     };
     dispatch::<F>(inputs, kernel);
 }

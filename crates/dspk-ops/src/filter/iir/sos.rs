@@ -72,6 +72,10 @@ struct PassWorkspace {
     slots: Scratch,
     input_t: Scratch,
     output_t: Scratch,
+    /// Time-major output `[ext, lanes]` held in place between the forward and backward passes of
+    /// [`FilterMode::ForwardBackward`] so no intermediate host/channel-major transpose runs.
+    forward_t: Scratch,
+    forward_t_lanes: Option<usize>,
     /// Filter state for padded channel lanes (`TimeMajorVectorized` on a channel count the width
     /// does not divide).
     state_padded: Scratch,
@@ -208,7 +212,7 @@ impl<F: DspFloat> DeviceFilter<F> {
         // A short buffer would not fail on the device (writes past its end are dropped): check here
         self.check_buffer("state", state, channels * self.state_len());
         self.check_buffer("scratch", scratch, self.scratch_len(channels, samples));
-        let pass = |input: &Handle, output: &Handle, in_len, pad, out_start, out_len, reverse, rest| Pass {
+        let pass = |input: &Handle, output: &Handle, in_len, pad, out_start, out_len, reverse, rest, role| Pass {
             input: input.clone(),
             output: output.clone(),
             state: state.clone(),
@@ -220,15 +224,16 @@ impl<F: DspFloat> DeviceFilter<F> {
             reverse,
             carry: false,
             rest,
+            role,
         };
         let rest = self.start == FilterStart::Rest;
         match self.mode {
-            FilterMode::Forward => self.run(client, pass(input, output, samples, 0, 0, samples, false, rest)),
+            FilterMode::Forward => self.run(client, pass(input, output, samples, 0, 0, samples, false, rest, PassRole::Single)),
             FilterMode::ForwardBackward => {
                 let pad = self.edge_pad(samples);
                 let ext = samples + 2 * pad;
-                self.run(client, pass(input, scratch, samples, pad, 0, ext, false, false));
-                self.run(client, pass(scratch, output, ext, 0, pad, samples, true, false));
+                self.run(client, pass(input, scratch, samples, pad, 0, ext, false, false, PassRole::ForwardOfZeroPhase));
+                self.run(client, pass(scratch, output, ext, 0, pad, samples, true, false, PassRole::BackwardOfZeroPhase));
             }
         }
     }
@@ -267,6 +272,7 @@ impl<F: DspFloat> DeviceFilter<F> {
                 reverse: false,
                 carry: !first,
                 rest: first && self.start == FilterStart::Rest,
+                role: PassRole::Single,
             };
             self.run(client, pass);
         }
@@ -415,6 +421,13 @@ fn transition_power(coeffs: &[f64], n_sections: usize, power: usize) -> Vec<f64>
     result
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PassRole {
+    Single,
+    ForwardOfZeroPhase,
+    BackwardOfZeroPhase,
+}
+
 /// Geometry and flags of one pass.
 #[derive(Clone)]
 struct Pass {
@@ -429,6 +442,7 @@ struct Pass {
     reverse: bool,
     carry: bool,
     rest: bool,
+    role: PassRole,
 }
 
 /// One pass of a [`DeviceFilter`] (cloned per autotune candidate).
@@ -466,16 +480,38 @@ impl<F: DspFloat> PassInputs<F> {
         let padded = lanes > p.channels;
         let state_len = f.state_len();
         let slots = ws.slots.get::<F>(client, lanes * blocks * state_len);
+        let prev_forward_lanes = match p.role {
+            PassRole::BackwardOfZeroPhase => ws.forward_t_lanes.take(),
+            PassRole::ForwardOfZeroPhase => {
+                ws.forward_t_lanes = None;
+                None
+            }
+            PassRole::Single => None,
+        };
+        let reuse_forward_t = time_major && p.role == PassRole::BackwardOfZeroPhase && prev_forward_lanes == Some(lanes);
+        if let (false, Some(prev_lanes)) = (reuse_forward_t, prev_forward_lanes) {
+            let forward_t = ws.forward_t.get::<F>(client, prev_lanes * p.in_len);
+            layout::transpose_strided::<F>(client, &forward_t, &p.input, p.in_len, p.channels, prev_lanes, p.in_len);
+        }
         // Buffers the kernel reads and writes, and their (channel, time) strides
         let (input, output, in_strides, out_strides) = match time_major {
             false => (p.input.clone(), p.output.clone(), (p.in_len, 1), (p.out_len, 1)),
             true => {
-                let input_t = ws.input_t.get::<F>(client, lanes * p.in_len);
-                if padded {
-                    buffer::fill::<F>(client, &input_t, lanes * p.in_len, cast::<F>(0.0));
-                }
-                layout::transpose_strided::<F>(client, &p.input, &input_t, p.channels, p.in_len, p.in_len, lanes);
-                let output_t = ws.output_t.get::<F>(client, lanes * p.out_len);
+                let input_t = if reuse_forward_t {
+                    ws.forward_t.get::<F>(client, lanes * p.in_len)
+                } else {
+                    let input_t = ws.input_t.get::<F>(client, lanes * p.in_len);
+                    if padded {
+                        buffer::fill::<F>(client, &input_t, lanes * p.in_len, cast::<F>(0.0));
+                    }
+                    layout::transpose_strided::<F>(client, &p.input, &input_t, p.channels, p.in_len, p.in_len, lanes);
+                    input_t
+                };
+                let output_t = if p.role == PassRole::ForwardOfZeroPhase {
+                    ws.forward_t.get::<F>(client, lanes * p.out_len)
+                } else {
+                    ws.output_t.get::<F>(client, lanes * p.out_len)
+                };
                 (input_t, output_t, (1, lanes), (1, lanes))
             }
         };
@@ -564,7 +600,11 @@ impl<F: DspFloat> PassInputs<F> {
         }
         launch(1, blocks);
         if time_major {
-            layout::transpose_strided::<F>(client, &output, &p.output, p.out_len, p.channels, lanes, p.out_len);
+            if p.role == PassRole::ForwardOfZeroPhase {
+                ws.forward_t_lanes = Some(lanes);
+            } else {
+                layout::transpose_strided::<F>(client, &output, &p.output, p.out_len, p.channels, lanes, p.out_len);
+            }
         }
         if padded {
             buffer::copy::<F>(client, &state, &p.state, p.channels * state_len);
@@ -594,6 +634,7 @@ fn tuned_pass<F: DspFloat>(inputs: PassInputs<F>) {
         };
         let scratch = |_: &String, p: &PassInputs<F>| {
             let mut pass = p.pass.clone();
+            pass.role = PassRole::Single;
             // Benchmarks run on at most `TUNE_MAX_STEPS` steps (rows read at the shorter stride
             // stay inside the input; the values do not change the timing)
             if p.steps() > TUNE_MAX_STEPS {

@@ -5,11 +5,11 @@ use cubecl::server::Handle;
 
 use super::engine::Pipeline;
 use super::stage::PipelineStage;
-use crate::core::{buffer, cast, cast_f32, DspFloat, EdgeMode};
+use crate::core::{buffer, cast, cast_f32, DspFloat};
 use crate::filter::design::OpsError;
 use crate::filter::fir::gaussian::GAUSSIAN_TRUNCATE;
 use crate::filter::iir::DeviceFilter;
-use crate::filter::{execute_fir, execute_fir_centered, execute_median, execute_teager_kaiser, gaussian_kernel_1d, FilterMode};
+use crate::filter::{execute_median, execute_teager_kaiser, gaussian_kernel_1d, FilterMode, PreparedFir};
 use crate::math::{execute_clamp, execute_scaling, execute_unpack_stored, stored_word_bytes, write_stored_owned};
 use crate::spatial::{execute_common_median, execute_direct_car, DeviceSpatialMatrix};
 use dspk_core::{DspError, SampleFormat};
@@ -35,8 +35,7 @@ enum Planned<F: DspFloat> {
     Stage(PipelineStage),
     Filter { filter: DeviceFilter<F>, state: Handle },
     SpatialMatrix(DeviceSpatialMatrix),
-    CenteredFir { taps: Handle, radius: usize, edge: EdgeMode },
-    CausalFir { taps: Handle, num_taps: usize, edge: EdgeMode },
+    Fir(PreparedFir),
     /// The channel order, uploaded once.
     Reorder { rows: Handle },
     /// Consecutive pointwise stages fused into one kernel (two or more; one runs as it is).
@@ -136,14 +135,15 @@ impl<F: DspFloat> PipelineWorkspace<F> {
                     let handle = buffer::upload(&client, &cast_f32::<F>(taps));
                     if *centered {
                         assert!(taps.len() % 2 == 1, "centered FIR needs an odd number of taps, got {}", taps.len());
-                        plan.push(Planned::CenteredFir { taps: handle, radius: taps.len() / 2, edge: *edge });
+                        plan.push(Planned::Fir(PreparedFir::centered::<F>(&client, handle, taps.len() / 2, *edge)));
                     } else {
-                        plan.push(Planned::CausalFir { taps: handle, num_taps: taps.len(), edge: *edge });
+                        plan.push(Planned::Fir(PreparedFir::causal::<F>(&client, handle, taps.len(), *edge)));
                     }
                 }
                 PipelineStage::GaussianSmooth { sigma_samples, edge } => {
                     let (taps, radius) = gaussian_kernel_1d(*sigma_samples, GAUSSIAN_TRUNCATE);
-                    plan.push(Planned::CenteredFir { taps: buffer::upload(&client, &cast_f32::<F>(&taps)), radius, edge: *edge });
+                    let handle = buffer::upload(&client, &cast_f32::<F>(&taps));
+                    plan.push(Planned::Fir(PreparedFir::centered::<F>(&client, handle, radius, *edge)));
                 }
                 PipelineStage::ReorderChannels { order } => {
                     let mut seen = vec![false; channels];
@@ -216,6 +216,12 @@ impl<F: DspFloat> PipelineWorkspace<F> {
         &self.client
     }
 
+    /// Number of channels this workspace processes.
+    #[inline]
+    pub fn channels(&self) -> usize {
+        self.channels
+    }
+
     /// Bytes this workspace keeps on the device (its ping-pong and scratch buffers, the upload and
     /// unpack buffers once made, filter state): what a memory budget charges it.
     pub fn device_bytes(&self) -> u64 {
@@ -259,7 +265,7 @@ impl<F: DspFloat> PipelineWorkspace<F> {
             .iter()
             .map(|p| match p {
                 Planned::Filter { filter, .. } => filter.scratch_len(self.channels, samples),
-                Planned::Stage(_) | Planned::SpatialMatrix(_) | Planned::CenteredFir { .. } | Planned::CausalFir { .. } | Planned::Reorder { .. } | Planned::Pointwise(_) => 0,
+                Planned::Stage(_) | Planned::SpatialMatrix(_) | Planned::Fir(_) | Planned::Reorder { .. } | Planned::Pointwise(_) => 0,
             })
             .max()
             .unwrap_or(0);
@@ -306,11 +312,8 @@ impl<F: DspFloat> PipelineWorkspace<F> {
                         .expect("stateful workspaces only hold forward filters"),
                 },
                 Planned::SpatialMatrix(matrix) => matrix.apply::<F>(client, &current_in, &out, channels, samples),
-                Planned::CenteredFir { taps, radius, edge } => {
-                    execute_fir_centered::<F>(client, &current_in, &out, taps, channels, samples, *radius, *edge);
-                }
-                Planned::CausalFir { taps, num_taps, edge } => {
-                    execute_fir::<F>(client, &current_in, &out, taps, channels, samples, *num_taps, *edge);
+                Planned::Fir(fir) => {
+                    fir.execute::<F>(client, &current_in, &out, channels, samples);
                 }
                 Planned::Reorder { rows } => {
                     crate::core::layout::execute_gather_rows::<F>(client, &current_in, rows, &out, channels, channels, samples);
