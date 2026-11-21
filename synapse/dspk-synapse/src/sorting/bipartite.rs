@@ -32,8 +32,8 @@ use dspk_core::compute::LaunchGeometry;
 
 use super::kernels::bipartite::{
     closest_update_chosen_kernel, count_values_kernel, cluster_edges_kernel, degree_sums_kernel, draw_candidates_kernel, left_assign_kernel,
-    pick_seed_kernel, relabel_kernel, right_assign_kernel, right_counts_kernel, select_neighbours_kernel, sq_norms_kernel,
-    trial_potentials_kernel, NO_LABEL,
+    pick_and_update_closest_kernel, relabel_kernel, right_assign_kernel, right_counts_kernel, select_neighbours_kernel, sq_norms_kernel,
+    trial_potentials_kernel, zero_u32_kernel, NO_LABEL,
 };
 use super::kernels::points::block_sums_kernel;
 use super::kmeans::Rng;
@@ -193,25 +193,23 @@ fn kmeans_plus_plus_seeds_blocked(client: &Client, points: &DevicePoints, k: usi
     let per_point = LaunchGeometry::elementwise(client, n);
     let per_block = LaunchGeometry::elementwise(client, blocks);
     let per_trial = LaunchGeometry::elementwise(client, trials);
-    let update = || {
-        // SAFETY: `points` holds `d · n`, `closest` `n`, `chosen` one value
-        unsafe {
-            closest_update_chosen_kernel::launch::<f32>(
-                client,
-                per_point.cube_count.clone(),
-                per_point.cube_dim.clone(),
-                BufferArg::from_raw_parts(points.handle.clone(), d * n),
-                BufferArg::from_raw_parts(closest.clone(), n),
-                BufferArg::from_raw_parts(chosen.clone(), 1),
-                n as u32,
-                d as u32,
-            );
-        }
-    };
-    update();
+    // Initial distance update for `first`
+    // SAFETY: `points` holds `d · n`, `closest` `n`, `chosen` one value
+    unsafe {
+        closest_update_chosen_kernel::launch::<f32>(
+            client,
+            per_point.cube_count.clone(),
+            per_point.cube_dim.clone(),
+            BufferArg::from_raw_parts(points.handle.clone(), d * n),
+            BufferArg::from_raw_parts(closest.clone(), n),
+            BufferArg::from_raw_parts(chosen, 1),
+            n as u32,
+            d as u32,
+        );
+    }
     for s in 1..k {
         // SAFETY: `closest` holds `n`, `sums` `blocks`, `uniforms` `k · trials`, `cand` `trials`,
-        // `partial` `trials · cubes`, `seeds` `k`, `chosen` one value
+        // `partial` `trials · cubes`, `seeds` `k`
         unsafe {
             block_sums_kernel::launch::<f32>(
                 client,
@@ -251,20 +249,22 @@ fn kmeans_plus_plus_seeds_blocked(client: &Client, points: &DevicePoints, k: usi
                 trials as u32,
                 units as u32,
             );
-            pick_seed_kernel::launch::<f32>(
+            pick_and_update_closest_kernel::launch::<f32>(
                 client,
-                CubeCount::Static(1, 1, 1),
-                CubeDim::new_1d(1),
+                per_point.cube_count.clone(),
+                per_point.cube_dim.clone(),
+                BufferArg::from_raw_parts(points.handle.clone(), d * n),
+                BufferArg::from_raw_parts(closest.clone(), n),
                 BufferArg::from_raw_parts(partial.clone(), trials * cubes),
                 BufferArg::from_raw_parts(cand.clone(), trials),
                 BufferArg::from_raw_parts(seeds.clone(), k),
-                BufferArg::from_raw_parts(chosen.clone(), 1),
+                n as u32,
+                d as u32,
                 trials as u32,
                 cubes as u32,
                 s as u32,
             );
         }
-        update();
     }
     buffer::download_prefix::<u32>(client, seeds, k)
 }
@@ -312,73 +312,115 @@ pub fn execute_bipartite_clustering(client: &Client, points: &DevicePoints, opts
     let left = execute_nearest_neighbours(client, points, &points.gather(client, &seeds), &vec![NO_LABEL; c], 1);
     let right = buffer::upload(client, &vec![NO_LABEL; m]);
 
-    // 3. Alternating right / left assignment
+    // 3. Alternating right / left assignment (batched sync every 4 rounds, zeroing scratch in place)
+    const LOUVAIN_SYNC_BATCH: usize = 4;
     let penalty = opts.resolution / (2.0 * edges_n as f64);
     let per_edge = LaunchGeometry::elementwise(client, edges_n);
     let per_right = LaunchGeometry::elementwise(client, m);
     let per_left = LaunchGeometry::elementwise(client, n);
+    let per_c = LaunchGeometry::elementwise(client, c);
+    let per_batch = LaunchGeometry::elementwise(client, LOUVAIN_SYNC_BATCH);
+    let counts = buffer::zeros::<u32>(client, m * c);
+    let k_left = buffer::empty::<u32>(client, c);
+    let k_right = buffer::empty::<u32>(client, c);
+    let changed = buffer::empty::<u32>(client, LOUVAIN_SYNC_BATCH);
     let mut iterations = 0;
     while iterations < opts.max_iterations {
-        iterations += 1;
-        let k_left = count_values(client, &left, n, c);
-        let counts = buffer::zeros::<u32>(client, m * c);
-        let k_right = buffer::zeros::<u32>(client, c);
-        let changed = buffer::zeros::<u32>(client, 1);
-        // SAFETY: `nb` holds `n · k`, `left` `n`, `right` and `right_degree` `m`, `counts` `m · c`,
-        // `k_left` / `k_right` `c` values
+        let rounds = LOUVAIN_SYNC_BATCH.min(opts.max_iterations - iterations);
+        // SAFETY: `changed` holds `LOUVAIN_SYNC_BATCH` elements
         unsafe {
-            right_counts_kernel::launch(
+            zero_u32_kernel::launch(
                 client,
-                per_edge.cube_count.clone(),
-                per_edge.cube_dim.clone(),
-                BufferArg::from_raw_parts(nb.clone(), edges_n),
-                BufferArg::from_raw_parts(left.clone(), n),
-                BufferArg::from_raw_parts(counts.clone(), m * c),
-                edges_n as u32,
-                k as u32,
-                c as u32,
-            );
-            // Left nodes all have degree k: their degree sum per cluster is k · their count
-            right_assign_kernel::launch::<f32>(
-                client,
-                per_right.cube_count.clone(),
-                per_right.cube_dim.clone(),
-                BufferArg::from_raw_parts(counts.clone(), m * c),
-                BufferArg::from_raw_parts(right_degree.clone(), m),
-                BufferArg::from_raw_parts(k_left.clone(), c),
-                BufferArg::from_raw_parts(right.clone(), m),
-                m as u32,
-                c as u32,
-                (penalty * k as f64) as f32,
-            );
-            degree_sums_kernel::launch(
-                client,
-                per_right.cube_count.clone(),
-                per_right.cube_dim.clone(),
-                BufferArg::from_raw_parts(right.clone(), m),
-                BufferArg::from_raw_parts(right_degree.clone(), m),
-                BufferArg::from_raw_parts(k_right.clone(), c),
-                m as u32,
-                c as u32,
-            );
-            left_assign_kernel::launch::<f32>(
-                client,
-                per_left.cube_count.clone(),
-                per_left.cube_dim.clone(),
-                BufferArg::from_raw_parts(nb.clone(), edges_n),
-                BufferArg::from_raw_parts(right.clone(), m),
-                BufferArg::from_raw_parts(k_right.clone(), c),
-                BufferArg::from_raw_parts(left.clone(), n),
-                BufferArg::from_raw_parts(changed.clone(), 1),
-                n as u32,
-                c as u32,
-                penalty as f32,
-                k as u32,
+                per_batch.cube_count.clone(),
+                per_batch.cube_dim.clone(),
+                BufferArg::from_raw_parts(changed.clone(), LOUVAIN_SYNC_BATCH),
+                rounds as u32,
             );
         }
-        if buffer::download::<u32>(client, changed)[0] == 0 {
+        for round in 0..rounds {
+            // SAFETY: `nb` holds `n · k`, `left` `n`, `right` and `right_degree` `m`, `counts` `m · c`
+            // (already zeroed by the previous `right_assign_kernel`), `k_left` / `k_right` `c` values
+            unsafe {
+                zero_u32_kernel::launch(
+                    client,
+                    per_c.cube_count.clone(),
+                    per_c.cube_dim.clone(),
+                    BufferArg::from_raw_parts(k_left.clone(), c),
+                    c as u32,
+                );
+                count_values_kernel::launch(
+                    client,
+                    per_left.cube_count.clone(),
+                    per_left.cube_dim.clone(),
+                    BufferArg::from_raw_parts(left.clone(), n),
+                    BufferArg::from_raw_parts(k_left.clone(), c),
+                    n as u32,
+                    c as u32,
+                );
+                right_counts_kernel::launch(
+                    client,
+                    per_edge.cube_count.clone(),
+                    per_edge.cube_dim.clone(),
+                    BufferArg::from_raw_parts(nb.clone(), edges_n),
+                    BufferArg::from_raw_parts(left.clone(), n),
+                    BufferArg::from_raw_parts(counts.clone(), m * c),
+                    edges_n as u32,
+                    k as u32,
+                    c as u32,
+                );
+                // Left nodes all have degree k: their degree sum per cluster is k · their count
+                right_assign_kernel::launch::<f32>(
+                    client,
+                    per_right.cube_count.clone(),
+                    per_right.cube_dim.clone(),
+                    BufferArg::from_raw_parts(counts.clone(), m * c),
+                    BufferArg::from_raw_parts(right_degree.clone(), m),
+                    BufferArg::from_raw_parts(k_left.clone(), c),
+                    BufferArg::from_raw_parts(right.clone(), m),
+                    m as u32,
+                    c as u32,
+                    (penalty * k as f64) as f32,
+                );
+                zero_u32_kernel::launch(
+                    client,
+                    per_c.cube_count.clone(),
+                    per_c.cube_dim.clone(),
+                    BufferArg::from_raw_parts(k_right.clone(), c),
+                    c as u32,
+                );
+                degree_sums_kernel::launch(
+                    client,
+                    per_right.cube_count.clone(),
+                    per_right.cube_dim.clone(),
+                    BufferArg::from_raw_parts(right.clone(), m),
+                    BufferArg::from_raw_parts(right_degree.clone(), m),
+                    BufferArg::from_raw_parts(k_right.clone(), c),
+                    m as u32,
+                    c as u32,
+                );
+                left_assign_kernel::launch::<f32>(
+                    client,
+                    per_left.cube_count.clone(),
+                    per_left.cube_dim.clone(),
+                    BufferArg::from_raw_parts(nb.clone(), edges_n),
+                    BufferArg::from_raw_parts(right.clone(), m),
+                    BufferArg::from_raw_parts(k_right.clone(), c),
+                    BufferArg::from_raw_parts(left.clone(), n),
+                    BufferArg::from_raw_parts(changed.clone(), LOUVAIN_SYNC_BATCH),
+                    n as u32,
+                    c as u32,
+                    penalty as f32,
+                    round as u32,
+                    k as u32,
+                );
+            }
+        }
+        let moved = buffer::download_prefix::<u32>(client, changed.clone(), rounds);
+        if let Some(done_r) = moved.iter().position(|&cnt| cnt == 0) {
+            iterations += done_r + 1;
             break;
         }
+        iterations += rounds;
     }
 
     // 4. Compact labels (clusters keeping left nodes, in label order) and count edges between them
