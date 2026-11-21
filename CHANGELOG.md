@@ -4,6 +4,48 @@ All notable changes, newest first. Versions follow [Semantic Versioning](https:/
 0.0.x any release may change the API. The crates, the Python package and `dspk-sorters` share one
 version number.
 
+## 0.0.13 — 2026-11-21
+
+### Added
+
+- **Drift estimation & on-device correction in Kilosort4.** `kilosort4::drift` estimates rigid
+  and non-rigid (`2 · nblocks − 1` half-overlapping depth blocks) shifts from universal-template
+  spike depth × logarithmic-amplitude fingerprints (`estimate_drift`, 10 rigid rounds + 3D reflect
+  Gaussian smoothing and 10× upsampling) and applies Gaussian kriging interpolation
+  (`DriftCorrector`) on the device after whitening.
+- **Standalone Curation, Affinity rail & Explore improvements.** Curation opens `.sorting.zarr` or
+  Phy folders without a loaded recording and adds the left **Affinity** rail, **Source** picker,
+  and a stacked **Raster + Traces** bottom strip. Explore adds **Processing Quick Start** recipes
+  for empty chains, configurable raster tick width/height, cooperative view cancellation, searchable
+  shortcuts, notifications, and multi-source view support with wide processed overviews.
+- **Browser viewer (`dspk-app-web`) upgrades.** Added NWB-Zarr browser reading, multi-core
+  nearest-view overview building, WebTransport support (with WebSocket fallback), and a new
+  animated neural spike WebAssembly loading page (`montserrat-dspk.woff2`).
+
+### Performance
+
+- **Kilosort4 detection & drift kernels (`wgpu` & `cuda`):** staged `ic` and `weights` tables in
+  workgroup shared memory inside `centre_response_kernel` to eliminate per-thread register spilling
+  in WGSL, maximized unfused `tile_y` alongside shared-memory-guarded `neighbour_max_score_kernel`,
+  reused device buffers with `download_prefix`, added amplitude-only `spike_amplitudes_kernel` for
+  `STAGE_DRIFT`, and precomputed per-batch kriging matrices in `DriftCorrector` (within a 256 MiB
+  budget). Cuts 383-channel Neuropixels `wgpu` sorting from `250.5 s` to `23.6 s` (`22×` faster
+  drift pass, `21×` faster detection pass) and CUDA from `17.5 s` to `15.8 s` (**7.1×** and
+  **4.8×** faster than upstream Kilosort4 `4.1.3`) with 100% bit-exact output parity.
+- **Signal ops, clustering & view caching:** precomputed FIR tap spectra/vector tables, skipped
+  zero-phase IIR intermediate transposes, fused KS4 detection pooling & compact subtree bimodality,
+  cropped SI windows and kept `f32` ML weights on device, and added a resumable mmapped minmax
+  cache with flat GPU workspaces and unified block caching.
+
+### Fixed
+
+- **CUDA `nvidia` container runtime:** installed `cuda-nvcc` (`libdevice.10.bc`) and set
+  `CUDA_PATH=/usr/local/cuda` in `deploy/Containerfile`, and copied all `dspk-app-web` loader/font
+  assets into `/usr/share/dspk/web/`.
+- **Serve & views:** fixed multi-source switching overriding active sources in `dspk serve`,
+  prevented identical concurrent view chains from cancelling each other, and moved **Similar units**
+  into its own column in Curation.
+
 ## 0.0.12 — 2026-11-17
 
 ### Added
