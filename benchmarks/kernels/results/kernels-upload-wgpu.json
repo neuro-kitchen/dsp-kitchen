@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "benchmark": "kernels/upload",
+  "date": "2026-11-21",
+  "dspk": {
+    "version": "0.0.12",
+    "commit": "",
+    "runtime": "wgpu"
+  },
+  "reference": null,
+  "machine": "NVIDIA GeForce RTX 2070 with Max-Q Design \u00b7 Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz (12 threads) \u00b7 linux 7.3.4-300.fc45.x86_64",
+  "notes": "one 384 \u00d7 60000 float32 window per upload, each ending in a device sync; mean of 5 after a warm-up",
+  "cases": [
+    {
+      "name": "(a) create_from_slice (new buffer)",
+      "shape": [
+        384,
+        60000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 158.1133926,
+      "reference_ms": null,
+      "max_abs_err": null,
+      "rel_err": null,
+      "tolerance": null,
+      "pass": null,
+      "extra": {
+        "gb_per_s": 0.5828728261694387
+      }
+    },
+    {
+      "name": "(b) create(Bytes) (new buffer, owned)",
+      "shape": [
+        384,
+        60000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 68.4023172,
+      "reference_ms": null,
+      "max_abs_err": null,
+      "rel_err": null,
+      "tolerance": null,
+      "pass": null,
+      "extra": {
+        "gb_per_s": 1.3473227775388872
+      }
+    },
+    {
+      "name": "(c) write into a persistent buffer",
+      "shape": [
+        384,
+        60000
+      ],
+      "dtype": "float32",
+      "dspk_ms": 69.01744099999999,
+      "reference_ms": null,
+      "max_abs_err": null,
+      "rel_err": null,
+      "tolerance": null,
+      "pass": null,
+      "extra": {
+        "gb_per_s": 1.33531464894504
+      }
+    }
+  ]
+}

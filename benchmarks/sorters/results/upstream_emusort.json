@@ -1,0 +1,35 @@
+{
+  "runs": [
+    {
+      "tool": "EMUsort (kilosort 4.0.18, SI 0.104.7)",
+      "duration_sec": 199.99997952,
+      "sample_rate": 24414.0625,
+      "end_to_end_sec": 87.37004401200102,
+      "nwb_decode_sec": 4.1512917680011014,
+      "si_preprocess_sec": 11.101810725998803,
+      "solver_sec": 72.1158386040006,
+      "stages_sec": {},
+      "peak_rss_mib": 2744.359375,
+      "peak_gpu_mib": 1314.0,
+      "spikes": 176759,
+      "units": 89,
+      "results_dir": "results/run0/emu_ks4/sorter_output"
+    },
+    {
+      "tool": "EMUsort (kilosort 4.0.18, SI 0.104.7)",
+      "duration_sec": 199.99997952,
+      "sample_rate": 24414.0625,
+      "end_to_end_sec": 85.06077382999865,
+      "nwb_decode_sec": 3.7517488290031906,
+      "si_preprocess_sec": 10.462642159000097,
+      "solver_sec": 70.84633945399764,
+      "stages_sec": {},
+      "peak_rss_mib": 2861.14453125,
+      "peak_gpu_mib": 711.123046875,
+      "spikes": 177152,
+      "units": 102,
+      "results_dir": "results/run1/emu_ks4/sorter_output"
+    }
+  ],
+  "reproducible": false
+}

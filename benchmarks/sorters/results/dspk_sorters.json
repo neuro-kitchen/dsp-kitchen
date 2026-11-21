@@ -1,0 +1,206 @@
+{
+  "kilosort4": {
+    "cuda": {
+      "runs": [
+        {
+          "tool": "dspk-cli-sorter (cuda)",
+          "runtime": "cuda",
+          "end_to_end_sec": 17.250965732000623,
+          "solver_sec": 16.939418913,
+          "stages_sec": {
+            "Fitting preprocessing": 0.23826857300082338,
+            "Finding clips": 0.2516573159991822,
+            "Learning templates": 0.09338261099765077,
+            "Computing drift": 5.7992198370011465,
+            "Detecting spikes": 5.402878494998731,
+            "Clustering spikes": 0.8413728680025088,
+            "Matching templates": 3.3531967389972124,
+            "Clustering matched spikes": 0.6124356310028816,
+            "Merging units": 0.3551728889979131
+          },
+          "peak_rss_mib": 1307.09765625,
+          "peak_gpu_mib": 2866.0,
+          "spikes": 128325,
+          "units": 283,
+          "units_good": 149,
+          "output": "results/kilosort4/cuda_run0.sorting.zarr"
+        },
+        {
+          "tool": "dspk-cli-sorter (cuda)",
+          "runtime": "cuda",
+          "end_to_end_sec": 17.467065966997325,
+          "solver_sec": 17.234424065,
+          "stages_sec": {
+            "Fitting preprocessing": 0.2492297349999717,
+            "Finding clips": 0.24438985199958552,
+            "Learning templates": 0.07983588600109215,
+            "Computing drift": 5.8620663350011455,
+            "Detecting spikes": 5.407854138997209,
+            "Clustering spikes": 0.8296727300003113,
+            "Matching templates": 3.6216599860017595,
+            "Clustering matched spikes": 0.5885682879998058,
+            "Merging units": 0.3806350749982812
+          },
+          "peak_rss_mib": 1286.3046875,
+          "peak_gpu_mib": 2866.0,
+          "spikes": 128325,
+          "units": 283,
+          "units_good": 149,
+          "output": "results/kilosort4/cuda_run1.sorting.zarr"
+        }
+      ],
+      "reproducible": true
+    },
+    "wgpu": {
+      "runs": [
+        {
+          "tool": "dspk-cli-sorter (wgpu)",
+          "runtime": "wgpu",
+          "end_to_end_sec": 279.07978152899886,
+          "solver_sec": 278.698849802,
+          "stages_sec": {
+            "Fitting preprocessing": 0.9028079720010282,
+            "Finding clips": 0.31362483500197413,
+            "Learning templates": 0.33673978299702867,
+            "Computing drift": 119.98713797600067,
+            "Detecting spikes": 118.58710415899986,
+            "Clustering spikes": 22.037233240000205,
+            "Matching templates": 6.280318352000904,
+            "Clustering matched spikes": 9.841090352998435,
+            "Merging units": 0.41002581900102086
+          },
+          "peak_rss_mib": 1445.59375,
+          "peak_gpu_mib": 2756.0,
+          "spikes": 128416,
+          "units": 278,
+          "units_good": 145,
+          "output": "results/kilosort4/wgpu_run0.sorting.zarr"
+        },
+        {
+          "tool": "dspk-cli-sorter (wgpu)",
+          "runtime": "wgpu",
+          "end_to_end_sec": 250.52701515999797,
+          "solver_sec": 250.156499453,
+          "stages_sec": {
+            "Fitting preprocessing": 0.46014082100009546,
+            "Finding clips": 0.3554297079972457,
+            "Learning templates": 0.21061765299964463,
+            "Computing drift": 119.52806133700142,
+            "Detecting spikes": 118.60703507600192,
+            "Clustering spikes": 3.227046034997329,
+            "Matching templates": 5.3656584810014465,
+            "Clustering matched spikes": 1.9831360249991121,
+            "Merging units": 0.37307057799989707
+          },
+          "peak_rss_mib": 1418.05078125,
+          "peak_gpu_mib": 2720.0,
+          "spikes": 128416,
+          "units": 278,
+          "units_good": 145,
+          "output": "results/kilosort4/wgpu_run1.sorting.zarr"
+        }
+      ],
+      "reproducible": true
+    }
+  },
+  "emusort": {
+    "cuda": {
+      "runs": [
+        {
+          "tool": "dspk-cli-sorter (cuda)",
+          "runtime": "cuda",
+          "end_to_end_sec": 8.38895500000217,
+          "solver_sec": 8.174972864,
+          "stages_sec": {
+            "Fitting preprocessing": 1.1887499599979492,
+            "Finding clips": 1.8207119940016128,
+            "Learning templates": 0.15131772899985663,
+            "Detecting spikes": 1.9680691799985652,
+            "Clustering spikes": 0.5085765170006198,
+            "Matching templates": 1.8502365380008996,
+            "Clustering matched spikes": 0.5572213960003864,
+            "Merging units": 0.21335114799876465
+          },
+          "peak_rss_mib": 1045.89453125,
+          "peak_gpu_mib": 834.0,
+          "spikes": 124195,
+          "units": 61,
+          "units_good": 3,
+          "output": "results/emusort/cuda_run0.sorting.zarr"
+        },
+        {
+          "tool": "dspk-cli-sorter (cuda)",
+          "runtime": "cuda",
+          "end_to_end_sec": 8.454220188003092,
+          "solver_sec": 8.240872706,
+          "stages_sec": {
+            "Fitting preprocessing": 1.1684780799987493,
+            "Finding clips": 1.7319254219983122,
+            "Learning templates": 0.13359961500100326,
+            "Detecting spikes": 2.077062031999958,
+            "Clustering spikes": 0.4902835579996463,
+            "Matching templates": 1.9434507430014492,
+            "Clustering matched spikes": 0.5552841169992462,
+            "Merging units": 0.22433983000155422
+          },
+          "peak_rss_mib": 991.66015625,
+          "peak_gpu_mib": 867.0,
+          "spikes": 124195,
+          "units": 61,
+          "units_good": 3,
+          "output": "results/emusort/cuda_run1.sorting.zarr"
+        }
+      ],
+      "reproducible": true
+    },
+    "wgpu": {
+      "runs": [
+        {
+          "tool": "dspk-cli-sorter (wgpu)",
+          "runtime": "wgpu",
+          "end_to_end_sec": 20.965382836999197,
+          "solver_sec": 20.647741167,
+          "stages_sec": {
+            "Fitting preprocessing": 1.5377980440025567,
+            "Finding clips": 2.9076246469994658,
+            "Learning templates": 0.9633384240005398,
+            "Detecting spikes": 3.21177519900084,
+            "Clustering spikes": 4.547964088997105,
+            "Matching templates": 4.207490245000372,
+            "Clustering matched spikes": 3.110243013001309,
+            "Merging units": 0.23063381099927938
+          },
+          "peak_rss_mib": 950.109375,
+          "peak_gpu_mib": 770.0,
+          "spikes": 127346,
+          "units": 78,
+          "units_good": 3,
+          "output": "results/emusort/wgpu_run0.sorting.zarr"
+        },
+        {
+          "tool": "dspk-cli-sorter (wgpu)",
+          "runtime": "wgpu",
+          "end_to_end_sec": 14.978352460999304,
+          "solver_sec": 14.639925439,
+          "stages_sec": {
+            "Fitting preprocessing": 1.4953949230002763,
+            "Finding clips": 2.216650933998608,
+            "Learning templates": 0.4728757830016548,
+            "Detecting spikes": 3.0068545449976227,
+            "Clustering spikes": 1.995715179000399,
+            "Matching templates": 3.7112103950021265,
+            "Clustering matched spikes": 1.5631441740006267,
+            "Merging units": 0.25866138099809177
+          },
+          "peak_rss_mib": 971.87109375,
+          "peak_gpu_mib": 638.0,
+          "spikes": 127346,
+          "units": 78,
+          "units_good": 3,
+          "output": "results/emusort/wgpu_run1.sorting.zarr"
+        }
+      ],
+      "reproducible": true
+    }
+  }
+}
