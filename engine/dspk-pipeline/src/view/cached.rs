@@ -38,42 +38,64 @@ impl CachedSource {
         Self { inner, prefix, block }
     }
 
-    /// `samples` of `channels` (channel-major, `bytes` per value) through the cache: `read` reads a
-    /// range of the recording into a buffer, `kind` names what is read (stored or scaled).
-    fn cached(&self, kind: &str, channels: &[usize], samples: Range<u64>, bytes: usize, out: &mut [u8], read: impl Fn(Range<u64>, &mut [u8]) -> DspResult<()>) -> DspResult<()> {
+    /// `samples` of `channels` (channel-major, `bytes` per value) through the cache: `read` reads
+    /// the given channels and sample range into a channel-major buffer; `kind` names what is read
+    /// (stored or scaled).
+    fn cached(&self, kind: &str, channels: &[usize], samples: Range<u64>, bytes: usize, out: &mut [u8], read: impl Fn(&[usize], Range<u64>, &mut [u8]) -> DspResult<()>) -> DspResult<()> {
         let n = (samples.end - samples.start) as usize;
-        let total = self.inner.info().samples;
-        if n == 0 {
+        let info = self.inner.info();
+        let total = info.samples;
+        let total_ch = info.channel_count();
+        if n == 0 || channels.is_empty() {
             return Ok(());
         }
-        if (channels.len() * n * bytes) as u64 > MAX_CACHED_BYTES || samples.end > total {
-            return read(samples, out);
+        if (channels.len() * n * bytes) as u64 > MAX_CACHED_BYTES || samples.end > total || channels.iter().any(|&c| c >= total_ch) {
+            return read(channels, samples, out);
         }
+        // Share all-channel blocks across different view channel subsets (e.g. Traces + Heatmap)
+        // whenever one all-channel block fits comfortably in the cache limit.
+        let all_ch = total_ch > 0 && (total_ch as u64 * self.block * bytes as u64) <= (MAX_CACHED_BYTES / 2);
+        let all_vec: Vec<usize>;
+        let (fetch_chs, key_tag): (&[usize], String) = if all_ch {
+            all_vec = (0..total_ch).collect();
+            (&all_vec, "all".to_string())
+        } else {
+            (channels, format!("{channels:?}"))
+        };
         let cache = host_cache();
-        let key = |b: u64| format!("{}:{kind}:{channels:?}:{b}", self.prefix);
+        let key = |b: u64| format!("{}:{kind}:{key_tag}:{b}", self.prefix);
         let (first, last) = (samples.start / self.block, (samples.end - 1) / self.block);
         let mut blocks: Vec<Option<Arc<Vec<u8>>>> = (first..=last).map(|b| cache.get::<Vec<u8>>(&key(b))).collect();
-        // The missing blocks, read in one call (from the first missing to the last)
-        if let (Some(a), Some(z)) = (blocks.iter().position(Option::is_none), blocks.iter().rposition(Option::is_none)) {
-            let (b0, b1) = (first + a as u64, first + z as u64);
+        // Read only contiguous runs of missing blocks so already-cached middle blocks are reused.
+        let mut idx = 0;
+        while idx < blocks.len() {
+            if blocks[idx].is_some() {
+                idx += 1;
+                continue;
+            }
+            let start_idx = idx;
+            while idx < blocks.len() && blocks[idx].is_none() {
+                idx += 1;
+            }
+            let (b0, b1) = (first + start_idx as u64, first + (idx - 1) as u64);
             let span = b0 * self.block..((b1 + 1) * self.block).min(total);
             let m = (span.end - span.start) as usize;
-            let mut buf = vec![0u8; channels.len() * m * bytes];
-            read(span.clone(), &mut buf)?;
+            let mut buf = vec![0u8; fetch_chs.len() * m * bytes];
+            read(fetch_chs, span.clone(), &mut buf)?;
             for b in b0..=b1 {
                 let r = b * self.block..((b + 1) * self.block).min(total);
                 let len = (r.end - r.start) as usize;
                 let at = (r.start - span.start) as usize;
-                let mut data = Vec::with_capacity(channels.len() * len * bytes);
-                for c in 0..channels.len() {
+                let mut data = Vec::with_capacity(fetch_chs.len() * len * bytes);
+                for c in 0..fetch_chs.len() {
                     let row = c * m + at;
                     data.extend_from_slice(&buf[row * bytes..(row + len) * bytes]);
                 }
                 let data = Arc::new(data);
-                let idx = (b - first) as usize;
-                if blocks[idx].is_none() {
-                    cache.put(key(b), data.clone(), (channels.len() * len * bytes) as u64);
-                    blocks[idx] = Some(data);
+                let bi = (b - first) as usize;
+                if blocks[bi].is_none() {
+                    cache.put(key(b), data.clone(), (fetch_chs.len() * len * bytes) as u64);
+                    blocks[bi] = Some(data);
                 }
             }
         }
@@ -85,8 +107,9 @@ impl CachedSource {
             let (from, to) = (samples.start.max(r.start), samples.end.min(r.end));
             let (a, k) = ((from - r.start) as usize, (to - from) as usize);
             let dst = (from - samples.start) as usize;
-            for c in 0..channels.len() {
-                let src = c * len + a;
+            for (c, &ch) in channels.iter().enumerate() {
+                let src_row = if all_ch { ch } else { c };
+                let src = src_row * len + a;
                 let d = c * n + dst;
                 out[d * bytes..(d + k) * bytes].copy_from_slice(&data[src * bytes..(src + k) * bytes]);
             }
@@ -102,9 +125,9 @@ impl RecordingSource for CachedSource {
 
     fn read(&self, channels: &[usize], samples: Range<u64>, out: &mut [f32]) -> DspResult<()> {
         let bytes: &mut [u8] = bytemuck_f32(out);
-        self.cached("f32", channels, samples, 4, bytes, |r, buf| {
+        self.cached("f32", channels, samples, 4, bytes, |chs, r, buf| {
             let mut values = vec![0f32; buf.len() / 4];
-            self.inner.read(channels, r, &mut values)?;
+            self.inner.read(chs, r, &mut values)?;
             for (d, v) in buf.chunks_exact_mut(4).zip(values) {
                 d.copy_from_slice(&v.to_ne_bytes());
             }
@@ -114,7 +137,7 @@ impl RecordingSource for CachedSource {
 
     fn read_stored(&self, channels: &[usize], samples: Range<u64>, out: &mut [u8]) -> DspResult<()> {
         let bytes = self.inner.info().format.bytes();
-        self.cached("stored", channels, samples, bytes, out, |r, buf| self.inner.read_stored(channels, r, buf))
+        self.cached("stored", channels, samples, bytes, out, |chs, r, buf| self.inner.read_stored(chs, r, buf))
     }
 
     fn chunk_samples(&self) -> Option<u64> {
@@ -148,5 +171,52 @@ mod tests {
         }
         assert!(host_cache().used() > 0, "blocks were kept");
         host_cache().forget_prefix("test-cached-1");
+    }
+
+    #[test]
+    fn shares_all_channel_blocks_and_skips_cached_middle_blocks() {
+        use std::sync::Mutex;
+
+        struct CountingSource {
+            inner: MemoryRecording,
+            reads: Mutex<Vec<Range<u64>>>,
+        }
+        impl RecordingSource for CountingSource {
+            fn info(&self) -> &RecordingInfo {
+                self.inner.info()
+            }
+            fn read(&self, channels: &[usize], samples: Range<u64>, out: &mut [f32]) -> DspResult<()> {
+                self.reads.lock().unwrap().push(samples.clone());
+                self.inner.read(channels, samples, out)
+            }
+        }
+
+        let (channels, samples) = (4usize, 300_000usize);
+        let data: Vec<f32> = (0..channels * samples).map(|i| (i as f32 * 0.13).cos() * 50.0).collect();
+        let inner = Arc::new(CountingSource { inner: MemoryRecording::new("counting", data, channels, 30_000.0).unwrap(), reads: Mutex::default() });
+        let prefix = format!("test-cached-2-{}", std::process::id());
+        let cached = CachedSource::new(inner.clone(), prefix.clone());
+
+        // 1. Read middle block [1] using channels [0, 1] -> reads 1 block across all channels.
+        let mut a = vec![0f32; 2 * 1000];
+        cached.read(&[0, 1], 70_000..71_000, &mut a).unwrap();
+        assert_eq!(inner.reads.lock().unwrap().len(), 1);
+
+        // 2. Different channel subset [2, 3] over the same middle block -> 0 extra reads!
+        let mut b = vec![0f32; 2 * 1000];
+        cached.read(&[2, 3], 70_000..71_000, &mut b).unwrap();
+        assert_eq!(inner.reads.lock().unwrap().len(), 1, "different channels share the cached all-channel block");
+
+        // 3. Wide read spanning blocks 0, 1, 2 -> reads ONLY block 0 and block 2, skipping cached block 1!
+        inner.reads.lock().unwrap().clear();
+        let mut wide = vec![0f32; 2 * 140_000];
+        cached.read(&[0, 3], 10_000..150_000, &mut wide).unwrap();
+        let spans = inner.reads.lock().unwrap().clone();
+        assert_eq!(spans, vec![0..65_536, 131_072..196_608], "cached middle block 1 was not re-read");
+
+        let mut expected = vec![0f32; 2 * 140_000];
+        inner.inner.read(&[0, 3], 10_000..150_000, &mut expected).unwrap();
+        assert_eq!(wide, expected);
+        host_cache().forget_prefix(&prefix);
     }
 }

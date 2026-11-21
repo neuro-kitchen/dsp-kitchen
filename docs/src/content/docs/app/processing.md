@@ -59,25 +59,6 @@ is processed once in the background into `[min, max]` per 256 samples.
 - **Where it lives.** It's kept in RAM (see **Memory** below).
 - **Its accuracy.** Each column reaches at most one bucket (256 samples) past its own edges.
 
-## A chain that ends in a low-pass
-
-After a low-pass at `fc`, the signal holds nothing much above `fc`, so it doesn't need the
-recording's rate. When a chain's last processing step is a low-pass, that low-pass runs at the rate
-divided by `M`:
-
-- `M` is the largest power of two with the new rate still at least 8 × `fc`, from 4 to 256. A 20 Hz
-  low-pass on a 24.4 kHz recording runs at 191 Hz (`M` = 128).
-- The steps before it run at the full rate. A band-pass to 6 kHz needs it, and so does Teager-Kaiser,
-  whose output reaches twice its input's frequencies.
-- A polyphase FIR filter takes the signal down, computing only the samples it keeps. It's a Kaiser
-  window cut at the new Nyquist, about 100 dB down where energy would fold into the low-pass's band.
-- Blocks, columns and the processed overview of such a chain are `M` times smaller.
-- **Zoomed in,** samples come from the low rate, interpolated linearly.
-- **Accuracy:** zoomed in, the samples are within 2 % of the full-rate chain's. Zoomed out, each
-  column holds the full-rate extremes to within 3 low-rate samples of its edges (16 ms for a 20 Hz
-  low-pass at 24.4 kHz).
-- `DSPK_PREVIEW_FULL_RATE=1` runs every step at the full rate.
-
 ## Editing a chain
 
 - **Changing or adding an op** reuses what is already on the GPU.
@@ -121,5 +102,4 @@ run on the CPU, the same chains, until it restarts.
 | Settings → Memory, `[compute] memory` | Automatic | RAM the app keeps for decoded chunks, overviews and spike windows |
 | `DSPK_DEVICE_MEMORY` | Half the GPU | GPU memory the views may keep |
 | `DSPK_HOST_MEMORY` | A quarter of the RAM | RAM limit where there are no settings (a server) |
-| `DSPK_PREVIEW_FULL_RATE=1` | Off | Every step at the recording's rate |
 | `DSPK_PREVIEW_TIMING=1` | Off | Each view's time per step, in the status line and timings |

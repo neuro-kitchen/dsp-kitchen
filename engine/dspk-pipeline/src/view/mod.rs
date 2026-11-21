@@ -23,7 +23,7 @@ pub mod processed;
 pub use budget::{device_limit, size_class, DeviceBudget};
 pub use chains::{FitJob, Made, ProcessedChains};
 pub use cached::CachedSource;
-pub use preview::{view_plan, InputCache, Preview, PreviewTimings, Summary, ViewPlan, SUMMARY_BUCKET};
+pub use preview::{view_plan, InputCache, Preview, PreviewTimings, ViewPlan, SUMMARY_BUCKET};
 pub use processed::{PreviewSource, ProcessedSignal};
 
 /// Values (channels × samples, the chain's halo and margin included) one block processes on a
@@ -47,7 +47,7 @@ pub const PREVIEW_MAX_VALUES: usize = PREVIEW_MAX_VALUES_BROWSER;
 
 /// Most tiles of [`PREVIEW_MAX_VALUES`] a zoomed-out view is processed in exactly (each processed
 /// and reduced to its columns on the device in turn). A wider window is drawn from the chain's
-/// processed overview ([`Summary`]), built from the part on screen outwards as soon as it is asked
+/// processed overview (`Pyramid`), built from the part on screen outwards as soon as it is asked
 /// for (drawn raw until the build starts): processing 50 million samples per channel to draw
 /// 1200 columns took seconds and the device's memory.
 pub const PREVIEW_MAX_TILES: usize = 4;

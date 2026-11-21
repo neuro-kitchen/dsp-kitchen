@@ -390,6 +390,17 @@ impl Pyramid {
     /// NaN samples, are NaN. Returns `false` (leaving `out` untouched) when a column spans fewer
     /// than `base` samples: read those windows from the recording.
     pub fn envelope(&self, channels: &[usize], start: u64, end: u64, width: usize, out: &mut [[f32; 2]]) -> DspResult<bool> {
+        self.envelope_inner(channels, start, end, width, false, out)
+    }
+
+    /// Like [`Self::envelope`], but falls back to level 0 when a column spans fewer than `base`
+    /// samples (so zoomed-out views wider than the GPU tile budget never hit a blank dead zone on
+    /// high-channel recordings or 4K displays).
+    pub fn envelope_clamped(&self, channels: &[usize], start: u64, end: u64, width: usize, out: &mut [[f32; 2]]) -> DspResult<()> {
+        self.envelope_inner(channels, start, end, width, true, out).map(|_| ())
+    }
+
+    fn envelope_inner(&self, channels: &[usize], start: u64, end: u64, width: usize, clamp: bool, out: &mut [[f32; 2]]) -> DspResult<bool> {
         let l = &self.layout;
         if let Some(&channel) = channels.iter().find(|&&c| c >= l.channels) {
             return Err(DspError::InvalidChannel { channel, total: l.channels });
@@ -401,12 +412,21 @@ impl Pyramid {
             return Err(DspError::ShapeMismatch { expected: vec![channels.len(), width], actual: vec![out.len()] });
         }
         let n = end - start;
-        let Some(k) = l.view_level(n, width) else { return Ok(false) };
+        let k = match l.view_level(n, width) {
+            Some(k) => k,
+            None if clamp => 0,
+            None => return Ok(false),
+        };
         let bucket = l.levels[k].bucket;
+        let max_buckets = l.levels[k].buckets;
         let edge = |x: usize| (start + x as u64 * n / width as u64) / bucket;
         for x in 0..width {
-            let j0 = edge(x);
-            let j1 = if x + 1 == width { end.div_ceil(bucket) } else { edge(x + 1) };
+            let mut j0 = edge(x);
+            let mut j1 = if x + 1 == width { end.div_ceil(bucket) } else { edge(x + 1) };
+            if clamp {
+                j0 = j0.min(max_buckets.saturating_sub(1));
+                j1 = j1.max(j0 + 1).min(max_buckets);
+            }
             let built = (j0..j1).all(|j| self.bucket_ready(k, j));
             for (r, &ch) in channels.iter().enumerate() {
                 out[r * width + x] = if built { (j0..j1).fold(EMPTY, |acc, j| merge(acc, self.get(k, ch, j))) } else { EMPTY };
@@ -756,5 +776,17 @@ mod tests {
         assert!(Pyramid::open_file(&path, &id.clone().with_signature([7u8; 32]), 8).unwrap().is_none());
         assert!(Pyramid::open_file(&path, &id, 16).unwrap().is_none());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn clamped_envelope_falls_back_to_level_0_for_fine_windows() {
+        let rec = recording(2, 4_000);
+        let p = Pyramid::in_memory(&rec, 64).unwrap();
+        assert!(p.fill(&rec, 0, 4_000, 1 << 16, || false).unwrap());
+        let mut out = vec![[0.0; 2]; 2 * 100];
+        // 1000 samples / 100 cols = 10 samples/col (< base 64): normal envelope returns false, clamped reads level 0.
+        assert!(!p.envelope(&[0, 1], 0, 1_000, 100, &mut out).unwrap());
+        p.envelope_clamped(&[0, 1], 0, 1_000, 100, &mut out).unwrap();
+        assert!(out.iter().all(|v| v[0].is_finite() && v[1].is_finite() && v[0] <= v[1]));
     }
 }

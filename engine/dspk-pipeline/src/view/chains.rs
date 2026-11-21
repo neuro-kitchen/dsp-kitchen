@@ -23,7 +23,7 @@ use dspk_core::RecordingSource;
 use dspk_ops::spatial::SpatialWhitening;
 use dspk_ops::PipelineStage;
 #[cfg(not(target_family = "wasm"))]
-use dspk_view::PyramidIdentity;
+use dspk_view::{PyramidIdentity, FILE_BASE};
 use dspk_view::{Pyramid, SignalBackend, View};
 use sha2::{Digest, Sha256};
 
@@ -35,9 +35,12 @@ use super::preview::{view_plan, InputCache, ViewPlan};
 use super::processed::ProcessedSignal;
 use crate::WhitenFit;
 
-/// Chains kept per recording for anonymous (non-`drv_id`) callers (`dspk serve`, browser engine).
-/// Named derived chains (`signal_for_drv`) hold strictly one slot per `drv_id`.
-const CHAINS_KEPT: usize = 2;
+/// Virtual-voice chains kept per recording: what they keep on the device is bounded by
+/// [`DeviceBudget`] (released chains keep their plan and fit, and recompute when asked again).
+const CHAINS_KEPT: usize = 8;
+
+/// Anonymous derived slots kept in `by_drv` for un-named server requests (`dspk serve`).
+const ANON_DRV_KEPT: usize = 2;
 
 /// What [`ProcessedChains::signal`] gives.
 pub enum Made {
@@ -186,9 +189,9 @@ impl ProcessedChains {
         lock(&self.by_drv).remove(drv_id);
     }
 
-    /// [`Self::signal`] (flat single-workspace execution; `editing` is accepted for API compatibility
-    /// — the shared [`InputCache`] reuses the uploaded window without recursive prefix chains).
-    pub fn signal_editing(&self, raw: Arc<dyn SignalBackend>, source: Arc<dyn RecordingSource>, source_key: &str, plan: &ViewPlan, _editing: Option<usize>) -> Result<Made, String> {
+    /// [`Self::signal`], keeping the chain up to op `editing` (when `0 < k < stages.len()`) as a
+    /// reusable 1-level GPU prefix so parameter drags re-run only steps `k..` on the device.
+    pub fn signal_editing(&self, raw: Arc<dyn SignalBackend>, source: Arc<dyn RecordingSource>, source_key: &str, plan: &ViewPlan, editing: Option<usize>) -> Result<Made, String> {
         let (key, stages) = match self.resolve_stages(&source, source_key, plan) {
             Ok(v) => v,
             Err(job) => return Ok(Made::NeedsFit(job)),
@@ -196,14 +199,46 @@ impl ProcessedChains {
         if let Some((_, p)) = lock(&self.made).iter().find(|(c, _)| *c == key) {
             return Ok(Made::Ready(p.clone()));
         }
+        if let Some(k) = editing.filter(|&k| k > 0 && k < stages.len()) {
+            let prefix_key = key[..k + 1].to_vec();
+            let prefix = {
+                let mut made = lock(&self.made);
+                made.iter().position(|(c, _)| *c == prefix_key).map(|i| {
+                    let entry = made.remove(i);
+                    let sig = entry.1.clone();
+                    made.push(entry);
+                    sig
+                })
+            };
+            let prefix = match prefix {
+                Some(p) => p,
+                None => {
+                    let cached = self.cached_source(source.clone(), source_key);
+                    let p = Arc::new(
+                        ProcessedSignal::with_budget(raw, cached, plan.group.clone(), stages[..k].to_vec(), self.inputs.clone(), self.budget.clone())
+                            .map_err(|e| e.to_string())?,
+                    );
+                    self.keep_made(prefix_key, p.clone());
+                    p
+                }
+            };
+            let built = Arc::new(ProcessedSignal::after(&prefix, stages[k..].to_vec()).map_err(|e| e.to_string())?);
+            self.attach_pyramid(&built, &source, source_key, &key, None);
+            self.keep_made(key, built.clone());
+            return Ok(Made::Ready(built));
+        }
         let built = self.build_flat(raw, source, source_key, plan.group.clone(), stages, &key, None)?;
+        self.keep_made(key, built.clone());
+        Ok(Made::Ready(built))
+    }
+
+    fn keep_made(&self, key: Vec<String>, signal: Arc<ProcessedSignal>) {
         let mut made = lock(&self.made);
         made.retain(|(c, _)| *c != key);
         if made.len() >= CHAINS_KEPT {
             made.remove(0);
         }
-        made.push((key, built.clone()));
-        Ok(Made::Ready(built))
+        made.push((key, signal));
     }
 
     fn resolve_stages(&self, source: &Arc<dyn RecordingSource>, source_key: &str, plan: &ViewPlan) -> Result<(Vec<String>, Vec<PipelineStage>), FitJob> {
@@ -236,20 +271,24 @@ impl ProcessedChains {
             ProcessedSignal::with_budget(raw, cached, group, stages, self.inputs.clone(), self.budget.clone())
                 .map_err(|e| e.to_string())?,
         );
-        // Attach a resumable mmapped pyramid (for named derived chains on disk) or an in-memory
-        // pyramid (for anonymous / wasm / synthetic chains)
+        self.attach_pyramid(&built, &source, source_key, key, drv_file);
+        Ok(built)
+    }
+
+    fn attach_pyramid(&self, built: &ProcessedSignal, source: &Arc<dyn RecordingSource>, source_key: &str, key: &[String], drv_file: Option<(&Path, &str)>) {
+        // Attach a resumable mmapped pyramid (for named derived chains on disk, at `FILE_BASE`) or
+        // an in-memory pyramid (for anonymous / wasm / synthetic chains)
         let info = source.info();
         let rows = built.out_channels().len();
         let sig = chain_signature(key);
         #[cfg(not(target_family = "wasm"))]
         let pyramid = match drv_file {
             Some((rec_path, drv_id)) => {
-                let id = PyramidIdentity::of(rec_path, source_key, source.as_ref())
-                    .map(|mut id| {
-                        id.channels = rows;
-                        id.with_signature(sig)
-                    });
-                match id.and_then(|id| Pyramid::open_or_create_drv(rec_path, source_key, drv_id, &id, SUMMARY_BUCKET)) {
+                let id = PyramidIdentity::of(rec_path, source_key, source.as_ref()).map(|mut id| {
+                    id.channels = rows;
+                    id.with_signature(sig)
+                });
+                match id.and_then(|id| Pyramid::open_or_create_drv(rec_path, source_key, drv_id, &id, FILE_BASE)) {
                     Ok(p) => Some(Arc::new(p)),
                     Err(e) => {
                         tracing::warn!("derived pyramid for {drv_id}: {e}; using in-memory pyramid");
@@ -267,7 +306,6 @@ impl ProcessedChains {
         if let Some(p) = pyramid {
             built.attach_pyramid(p);
         }
-        Ok(built)
     }
 
     /// `source` read through the RAM cache: one wrapper per source, kept (the same object for every
@@ -322,10 +360,10 @@ impl ProcessedChains {
                 }
             }
         };
-        // Keep at most `CHAINS_KEPT` slots in `by_drv` for anonymous server requests too
+        // Keep at most `ANON_DRV_KEPT` slots in `by_drv` for anonymous server requests too
         if let Some(id) = &drv_id {
             let mut by_drv = lock(&self.by_drv);
-            if by_drv.len() > CHAINS_KEPT {
+            if by_drv.len() > ANON_DRV_KEPT {
                 let drop_key = by_drv.keys().find(|k| *k != id).cloned();
                 if let Some(k) = drop_key {
                     by_drv.remove(&k);
