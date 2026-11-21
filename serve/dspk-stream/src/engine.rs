@@ -367,7 +367,9 @@ mod tests {
         assert!(matches!(open.processed(&chain("bad")), Err(StreamError::Server(_))));
         assert!(open.processed(&chain("bad")).is_err());
         assert_eq!(maker.made.lock().unwrap().iter().filter(|op| *op == "bad").count(), 2, "a failed chain is tried again");
-        assert_eq!(open.processed.lock().unwrap().len(), 2, "failed chains are not kept");
+        let kept = open.processed.lock().unwrap();
+        assert!(!kept.iter().any(|(p, _, _)| p == &chain("bad")), "failed chains are not kept");
+        assert_eq!(kept.len(), 1, "LRU eviction leaves only the surviving chain");
     }
 }
 
