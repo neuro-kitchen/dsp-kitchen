@@ -162,6 +162,11 @@ if (window.showDirectoryPicker) {
 }
 const note = document.getElementById("note");
 const say = (html) => (note.firstElementChild.innerHTML = html);
+const saySub = (text) => {
+  const sub = note.querySelector(".sub");
+  if (sub) sub.textContent = text;
+  else say(`<p>${text}</p>`);
+};
 const params = new URLSearchParams(location.search);
 
 /** Hardware WebGL2: refused when the browser would draw in software. */
@@ -229,7 +234,7 @@ if (!threads) {
   drawing ??= "webgl";
   // What the app reads at start (`dspk_app_web::backend`)
   window.dspkWeb = { drawing, server, renderer: drawing === "webgpu" ? gpu : gl };
-  say(`<p>Loading dsp-kitchen (${drawing === "webgpu" ? "WebGPU" : "WebGL2"})…</p>`);
+  saySub(`Starting ${drawing === "webgpu" ? "WebGPU" : "WebGL2"} workspace…`);
   try {
     const app = await import("./mt/dspk_app_web.js");
     await app.default();

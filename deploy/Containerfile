@@ -66,7 +66,7 @@ COPY --from=binaries --chmod=0755 /out/dspk /out/dspk-cli-sorter /usr/local/bin/
 # The web app (the threaded browser build and its loader), built before the image with
 # `app/dspk-app-web/build.sh mt` (nightly Rust; the release workflow does it): the page is served
 # by `dspk serve --web`, and computes on this server
-COPY app/dspk-app-web/dist/index.html /usr/share/dspk/web/index.html
+COPY app/dspk-app-web/dist/index.html app/dspk-app-web/dist/loader.js app/dspk-app-web/dist/isolate-sw.js app/dspk-app-web/dist/montserrat-dspk.woff2 /usr/share/dspk/web/
 COPY app/dspk-app-web/dist/mt /usr/share/dspk/web/mt
 # Not root (uid 10001); /data holds the recordings, their pyramids (written next to them, so the
 # volume is writable), sortings and the certificate the server writes for clients

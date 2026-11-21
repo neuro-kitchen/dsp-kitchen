@@ -66,7 +66,7 @@ compress() {
 }
 
 mkdir -p "$dist"
-cp "$here/index.html" "$here/loader.js" "$here/isolate-sw.js" "$dist/"
+cp "$here/index.html" "$here/loader.js" "$here/isolate-sw.js" "$here/montserrat-dspk.woff2" "$dist/"
 # A page on its own says so; `dspk serve` answers this address with its name instead
 echo '{"server": null}' > "$dist/dspk-serve.json"
 

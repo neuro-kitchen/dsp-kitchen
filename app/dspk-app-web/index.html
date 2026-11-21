@@ -3,22 +3,133 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>dsp-kitchen</title>
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%235b8def'/%3E%3Cpath d='M4 17h5l3-9 4 17 3-11 2 3h7' fill='none' stroke='white' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+    <title>DSPKitchen</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 80 80' fill='none'%3E%3Crect width='80' height='80' rx='18' fill='%230a0e17'/%3E%3Cpath d='M10 46 H22 C25 46 27 45 29 50 L33 62 L40 16 L47 56 L53 38 C55 43 57 46 60 46 H70' stroke='%23c6f26b' stroke-width='4.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
     <style>
-      :root { color-scheme: dark light; --bg: #1e1e1e; --fg: #e6e6e6; --muted: #a0a0a0; --accent: #5b8def; }
-      @media (prefers-color-scheme: light) { :root { --bg: #fafafa; --fg: #1e1e1e; --muted: #5a5a5a; } }
-      html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); overflow: hidden; font: 15px/1.5 system-ui, sans-serif; }
-      #note { position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; }
-      #note > div { max-width: 560px; }
-      #note h1 { font-size: 20px; margin: 0 0 8px; }
+      @font-face {
+        font-family: "Montserrat";
+        font-style: normal;
+        font-weight: 600;
+        font-display: swap;
+        src: url("./montserrat-dspk.woff2") format("woff2");
+      }
+      :root {
+        color-scheme: dark light;
+        --bg: #0a0e17;
+        --fg: #e8ecf4;
+        --muted: #8691a3;
+        --accent: #84cc16;
+        --accent-2: #c6f26b;
+        --track: rgba(255, 255, 255, 0.08);
+      }
+      @media (prefers-color-scheme: light) {
+        :root {
+          --bg: #f7f3e8;
+          --fg: #1a2130;
+          --muted: #5d6778;
+          --accent: #3f6212;
+          --accent-2: #4d7c0f;
+          --track: rgba(0, 0, 0, 0.08);
+        }
+      }
+      html, body {
+        margin: 0;
+        height: 100%;
+        background:
+          radial-gradient(620px circle at 50% 44%, rgba(198, 242, 107, 0.14), transparent 65%),
+          var(--bg);
+        color: var(--fg);
+        overflow: hidden;
+        font: 14px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      #note { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; }
+      #note > div { max-width: 520px; text-align: center; }
+      #note .loader { display: flex; flex-direction: column; align-items: center; gap: 14px; }
+      #note .mark {
+        width: 78px;
+        height: 78px;
+        overflow: visible;
+        animation: dspk-breathe 2.4s ease-in-out infinite;
+        will-change: transform, opacity;
+      }
+      #note .spike-sweep {
+        stroke-dasharray: 28 72;
+        animation: dspk-sweep 2.4s ease-in-out infinite;
+        will-change: stroke-dashoffset, opacity;
+      }
+      #note .brand {
+        font-family: "Montserrat", system-ui, sans-serif;
+        font-style: normal;
+        font-size: 30px;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+        line-height: 1.1;
+        margin: 0;
+        color: var(--fg);
+      }
+      #note .sub {
+        font-size: 12.5px;
+        letter-spacing: 0.02em;
+        margin: -4px 0 0;
+        color: var(--muted);
+      }
+      #note .bar {
+        width: 180px;
+        height: 3px;
+        border-radius: 999px;
+        background: var(--track);
+        overflow: hidden;
+      }
+      #note .bar-fill {
+        width: 44%;
+        height: 100%;
+        border-radius: 999px;
+        background: linear-gradient(90deg, var(--accent), var(--accent-2));
+        animation: dspk-slide 1.4s ease-in-out infinite;
+      }
+      #note h1 { font-size: 18px; font-weight: 600; margin: 0 0 8px; text-align: left; }
       #note p, #note li { color: var(--muted); }
-      #note code { color: var(--fg); }
-      #note a { color: var(--accent); }
+      #note ul { text-align: left; }
+      #note code { color: var(--fg); font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12.5px; }
+      #note a { color: var(--accent-2); text-decoration: none; }
+      #note a:hover { text-decoration: underline; }
+      @keyframes dspk-breathe {
+        0%, 100% { transform: scale(1); opacity: 0.94; }
+        50% { transform: scale(1.03); opacity: 1; }
+      }
+      @keyframes dspk-sweep {
+        0% { stroke-dashoffset: 28; opacity: 0.2; }
+        38% { opacity: 0.95; }
+        75% { stroke-dashoffset: -100; opacity: 0.2; }
+        100% { stroke-dashoffset: -100; opacity: 0; }
+      }
+      @keyframes dspk-slide {
+        0% { transform: translateX(-110%); }
+        100% { transform: translateX(250%); }
+      }
     </style>
   </head>
   <body>
-    <div id="note"><div><p>Checking this browser…</p></div></div>
+    <div id="note">
+      <div class="loader">
+        <svg class="mark" viewBox="0 0 80 80" fill="none" aria-hidden="true">
+          <defs>
+            <filter id="pencil" x="-12%" y="-12%" width="124%" height="124%">
+              <feTurbulence type="fractalNoise" baseFrequency="0.06" numOctaves="2" result="noise" />
+              <feDisplacementMap in="SourceGraphic" in2="noise" scale="1.05" xChannelSelector="R" yChannelSelector="G" />
+            </filter>
+          </defs>
+          <g filter="url(#pencil)" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10 46 H22 C25 46, 27 45, 29 50 L33 62 L40 16 L47 56 L53 38 C55 43, 57 46, 60 46 H70" stroke="var(--accent-2)" stroke-width="2.8" />
+            <path class="spike-sweep" pathLength="100" d="M10 46 H22 C25 46, 27 45, 29 50 L33 62 L40 16 L47 56 L53 38 C55 43, 57 46, 60 46 H70" stroke="var(--fg)" stroke-width="3" />
+          </g>
+        </svg>
+        <p class="brand">DSPKitchen</p>
+        <p class="sub">Preparing workspace…</p>
+        <div class="bar" aria-hidden="true"><div class="bar-fill"></div></div>
+      </div>
+    </div>
     <script type="module" src="./loader.js"></script>
   </body>
 </html>
