@@ -302,6 +302,8 @@ jobs:
           name: sdist
           path: dist
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          skip-existing: true
 
   # Its own job and environment: PyPI lets one workflow + environment be the pending publisher of
   # only one new project, and a failure here shouldn't hold up the rest of the release.
@@ -320,6 +322,8 @@ jobs:
           path: dist
           merge-multiple: true
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          skip-existing: true
 
   github-release:
     name: GitHub release (dspk-cli-sorter)
