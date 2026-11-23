@@ -3389,7 +3389,7 @@ dependencies = [
  "image",
  "js-sys",
  "kitchen-shell",
- "kitchen-ui",
+ "kitchen-ui 0.0.8",
  "schemars",
  "serde",
  "serde_json",
@@ -3424,7 +3424,7 @@ dependencies = [
  "gpui-kit",
  "image",
  "kitchen-shell",
- "kitchen-ui",
+ "kitchen-ui 0.0.8",
  "serde",
  "serde_json",
  "tracing",
@@ -6907,7 +6907,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "60a488f91fd73aaec1fbe523d9e511858f1298f8cfd36703d421dc95a42ce79d"
 dependencies = [
  "gpui-kit",
- "kitchen-ui",
+ "kitchen-ui 0.0.7",
  "schemars",
  "serde",
  "serde_json",
@@ -6920,6 +6920,19 @@ name = "kitchen-ui"
 version = "0.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d204f4fc65d8df98209297d88780a9211a5927c4d3e47e63ec9619330fc95b3"
+dependencies = [
+ "gpui-kit",
+ "jiff",
+ "serde",
+ "serde_json",
+ "similar 3.2.1",
+]
+
+[[package]]
+name = "kitchen-ui"
+version = "0.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0268f7e7d2a37f920c23b967c66a81badbfd43dab4db9218e537f42a160bffad"
 dependencies = [
  "gpui-kit",
  "jiff",
